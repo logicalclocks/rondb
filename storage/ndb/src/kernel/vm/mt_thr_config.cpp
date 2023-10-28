@@ -72,7 +72,6 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   {
     Uint32 num_main_threads = getThreadCount(T_REP) +
                               getThreadCount(T_MAIN);
-    Uint32 num_recv_threads = getThreadCount(T_RECV);
 
     if (num_main_threads == 2)
       return &m_threads[T_MAIN][instanceNo];

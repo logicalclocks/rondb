@@ -5870,13 +5870,10 @@ SimulatedBlock::print_static_distr_info(DistributionHandler * const handle)
   /* Print the LDM groups */
   for (Uint32 ldm = 0; ldm < num_ldm_instances; ldm++)
   {
-    if (ldm < getNumLDMInstances())
-    {
-      g_eventLogger->info("LDM Group %u contains LDM thread %u",
-                          ldm, ldm + 1);
-      g_eventLogger->info("LDM Thread %u contains Query Worker",
-                          ldm + 1);
-    }
+    g_eventLogger->info("LDM Group %u contains LDM thread %u",
+                        ldm, ldm + 1);
+    g_eventLogger->info("LDM Thread %u contains Query Worker",
+                        ldm + 1);
   }
   /* Print the Round Robin groups */
   Uint32 found_query = 0;

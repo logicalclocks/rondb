@@ -81,7 +81,6 @@ struct ndb_hwinfo
   Uint32 num_cpu_per_core;
   Uint32 num_shared_l3_caches;
   Uint32 num_virt_l3_caches;
-  Uint32 num_cpus_per_group;
 
   char cpu_model_name[128];
 
@@ -150,8 +149,7 @@ extern "C"
    * Round Robin groups of LDM groups that are contained in the same
    * virtual L3 cache groups.
    */
-  Uint32 Ndb_CreateCPUMap(Uint32 num_ldm_instances,
-                          Uint32 num_query_threads_per_ldm);
+  Uint32 Ndb_CreateCPUMap(Uint32 num_ldm_instances);
   Uint32 Ndb_GetFirstCPUInMap();
   Uint32 Ndb_GetNextCPUInMap(Uint32 cpu_id);
 

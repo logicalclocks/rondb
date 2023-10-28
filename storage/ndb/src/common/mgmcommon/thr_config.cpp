@@ -292,8 +292,6 @@ computeThreadConfig(Uint32 MaxNoOfExecutionThreads,
   recvthreads = table[P].recv;
 }
 
-static Uint32 g_num_query_threads_per_ldm = 0;
-
 void
 THRConfig::compute_automatic_thread_config(
   Uint32 num_cpus,
@@ -730,7 +728,6 @@ THRConfig::compute_automatic_thread_config(
      * as recover thread, thus we can decrease the amount of recover
      * threads with the amount of LDM threads.
      */
-    g_num_query_threads_per_ldm = 1;
   }
   else
   {
@@ -891,9 +888,8 @@ THRConfig::do_parse(unsigned realtime,
     {
       thread_ldm_type = T_RECV;
     }
-    Uint32 num_query_threads_per_ldm = g_num_query_threads_per_ldm;
     num_rr_groups =
-      Ndb_CreateCPUMap(num_ldm_threads, num_query_threads_per_ldm);
+      Ndb_CreateCPUMap(num_ldm_threads);
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
     Uint32 num_database_threads = num_ldm_threads;

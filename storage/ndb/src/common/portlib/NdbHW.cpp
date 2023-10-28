@@ -37,8 +37,8 @@
 #include <iostream>
 #include <thread>
 
-//#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
-#define DEBUG_HW(arglist) do { } while(0)
+#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
+//#define DEBUG_HW(arglist) do { } while(0)
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -200,11 +200,13 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
   }
   Uint32 index = 1;
   Uint32 core_id = hwinfo->cpu_info[cpu_id].core_id;
+  Uint32 package_id = hwinfo->cpu_info[cpu_id].package_id;
   cpu_ids[0] = cpu_id;
   for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
   {
     if ((hwinfo->cpu_info[i].online == 1) &&
         (hwinfo->cpu_info[i].core_id == core_id) &&
+        (hwinfo->cpu_info[i].package_id == package_id) &&
         (i != cpu_id))
     {
       cpu_ids[index] = i;
@@ -257,16 +259,15 @@ create_prev_list(struct ndb_hwinfo *hwinfo)
 
 static void
 create_cpu_list(struct ndb_hwinfo *hwinfo,
-                Uint32 num_cpus_per_ldm_group,
                 Uint32 num_rr_groups,
-                Uint32 num_ldm_instances)
+                Uint32 num_query_instances)
 {
-  Uint32 found_ldm_groups = 0;
   Uint32 prev_cpu = RNIL;
   Uint32 next_cpu = RNIL;
   Uint32 all_groups = hwinfo->num_virt_l3_caches;
   Uint32 current_groups = num_rr_groups > 0 ? num_rr_groups : all_groups;
   bool found = false;
+  Uint32 found_query = 0;
   Uint32 first_virt_l3_cache[MAX_NUM_CPUS];
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
@@ -277,35 +278,28 @@ create_cpu_list(struct ndb_hwinfo *hwinfo,
     found = false;
     for (Uint32 i = 0; i < current_groups; i++)
     {
-      for (Uint32 j = 0; j < num_cpus_per_ldm_group; j++)
-      {
-        next_cpu = first_virt_l3_cache[i];
-        if (next_cpu == RNIL)
-        {
-          break;
-        }
-        found = true;
-        if (prev_cpu != RNIL)
-        {
-          hwinfo->cpu_info[prev_cpu].next_cpu_map = next_cpu;
-        }
-        else
-        {
-          hwinfo->first_cpu_map = next_cpu;
-        }
-        prev_cpu = next_cpu;
-        first_virt_l3_cache[i] =
-          hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
-        hwinfo->cpu_info[next_cpu].next_cpu_map = RNIL;
-      }
+      next_cpu = first_virt_l3_cache[i];
       if (next_cpu == RNIL)
       {
-        require(found_ldm_groups >= num_ldm_instances);
+        continue;
+      }
+      found = true;
+      if (prev_cpu != RNIL)
+      {
+        hwinfo->cpu_info[prev_cpu].next_cpu_map = next_cpu;
       }
       else
       {
-        found_ldm_groups++;
-        if (found_ldm_groups == num_ldm_instances)
+        hwinfo->first_cpu_map = next_cpu;
+      }
+      prev_cpu = next_cpu;
+      first_virt_l3_cache[i] =
+        hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
+      hwinfo->cpu_info[next_cpu].next_cpu_map = RNIL;
+      found_query++;
+      if (next_cpu != RNIL)
+      {
+        if (found_query >= num_query_instances)
         {
           /**
            * We have setup all LDM and Query instances, now we can process the
@@ -317,6 +311,7 @@ create_cpu_list(struct ndb_hwinfo *hwinfo,
       }
     }
   } while (found);
+  require(found_query >= num_query_instances);
   return;
 }
 
@@ -574,19 +569,16 @@ static bool
 check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
                                   Uint32 group_size,
                                   Uint32 num_groups,
-                                  Uint32 num_ldm_instances,
-                                  Uint32 ldm_group_size)
+                                  Uint32 num_query_instances)
 {
   Uint32 count_full_groups_found = 0;
   Uint32 count_non_full_groups_found = 0;
-  Uint32 full_group_size = group_size * ldm_group_size;
-  Uint32 non_full_group_size = (group_size - 1) * ldm_group_size;
+  Uint32 full_group_size = group_size;
+  Uint32 non_full_group_size = (group_size - 1);
   DEBUG_HW((stderr,
-            "full group size: %u, non full group size: %u"
-            ", ldm group size: %u\n",
+            "full group size: %u, non full group size: %u\n",
             full_group_size,
-            non_full_group_size,
-            ldm_group_size));
+            non_full_group_size));
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
     Uint32 num_cpus_in_group = g_num_virt_l3_cpus[i];
@@ -615,20 +607,19 @@ check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
     count_non_full_groups_found * (group_size - 1);
   DEBUG_HW((stderr,
             "Total LDM groups found: %u\n", tot_ldm_groups_found));
-  return (tot_ldm_groups_found >= num_ldm_instances);
+  return (tot_ldm_groups_found >= num_query_instances);
 }
 
 static bool
 check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
                              Uint32 group_size,
                              Uint32 num_groups,
-                             Uint32 num_ldm_instances,
-                             Uint32 ldm_group_size)
+                             Uint32 num_query_instances)
 {
   Uint32 count_full_groups_found = 0;
   Uint32 count_non_full_groups_found = 0;
-  Uint32 full_group_size = group_size * ldm_group_size;
-  Uint32 non_full_group_size = (group_size - 1) * ldm_group_size;
+  Uint32 full_group_size = group_size;
+  Uint32 non_full_group_size = (group_size - 1);
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
     Uint32 num_cpus_in_group = g_num_virt_l3_cpus[i];
@@ -643,12 +634,12 @@ check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
   }
   count_non_full_groups_found = MIN(count_non_full_groups_found,
                                     (num_groups - count_full_groups_found));
-  Uint32 tot_ldm_groups_found =
+  Uint32 tot_query_found =
     count_full_groups_found * group_size +
     count_non_full_groups_found * (group_size - 1);
   DEBUG_HW((stderr,
-            "Total LDM groups found: %u\n", tot_ldm_groups_found));
-  return (tot_ldm_groups_found >= num_ldm_instances);
+            "Total Query instances found: %u\n", tot_query_found));
+  return ((tot_query_found) >= num_query_instances);
 }
 
 
@@ -656,17 +647,15 @@ static void
 merge_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
                          Uint32 largest_list,
                          Uint32 second_largest_list,
-                         Uint32 min_group_size,
-                         Uint32 ldm_group_size)
+                         Uint32 min_group_size)
 {
   DEBUG_HW((stderr,
             "merge_virt_l3_cache_list, "
             " into group %u from group %u, "
-            " min_group_size: %u, ldm_group_size: %u\n",
+            " min_group_size: %u\n",
             largest_list,
             second_largest_list,
-            min_group_size,
-            ldm_group_size));
+            min_group_size));
   /**
    * Merge first list at end of second list. Make second list as long
    * as the minimum group size, but not larger than that to avoid
@@ -676,7 +665,7 @@ merge_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
    * Move last entry into removed entry if not removed entry was the
    * last entry.
    */
-  Uint32 group_size = ldm_group_size * min_group_size;
+  Uint32 group_size = min_group_size;
   Uint32 num_cpus_in_first_list = g_num_virt_l3_cpus[largest_list];
   Uint32 first_cpu_next = g_first_virt_l3_cache[largest_list];
   Uint32 last_cpu_first;
@@ -765,23 +754,22 @@ split_group(struct ndb_hwinfo *hwinfo,
 static void
 adjust_rr_group_sizes(struct ndb_hwinfo *hwinfo,
                       Uint32 num_rr_groups,
-                      Uint32 ldm_group_size,
-                      Uint32 num_ldm_instances)
+                      Uint32 num_query_instances)
 {
   if(num_rr_groups == 0)
     return;
   Uint32 group_size =
-    (num_ldm_instances + (num_rr_groups - 1)) / num_rr_groups;
+    (num_query_instances + (num_rr_groups - 1)) / num_rr_groups;
   Uint32 non_full_groups =
-    (group_size * num_rr_groups) - num_ldm_instances;
+    (group_size * num_rr_groups) - num_query_instances;
   Uint32 full_groups = num_rr_groups - non_full_groups;
   require(full_groups > 0);
   for (Uint32 i = 0; i < num_rr_groups; i++)
   {
-    Uint32 check_group_size = group_size * ldm_group_size;
+    Uint32 check_group_size = group_size;
     if (i >= full_groups)
     {
-      check_group_size = (group_size - 1) * ldm_group_size;
+      check_group_size = (group_size - 1);
     }
     if (g_num_virt_l3_cpus[i] > check_group_size)
     {
@@ -794,12 +782,11 @@ adjust_rr_group_sizes(struct ndb_hwinfo *hwinfo,
 
 static bool
 split_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
-                         Uint32 group_size,
-                         Uint32 ldm_group_size)
+                         Uint32 group_size)
 {
   DEBUG_HW((stderr,
             "split_virt_l3_cache_list\n"));
-  Uint32 check_group_size = group_size * ldm_group_size;
+  Uint32 check_group_size = group_size;
   Uint32 largest_group_size = 0;
   Uint32 largest_group_id = RNIL;
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
@@ -826,8 +813,7 @@ split_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
 
 static bool
 create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
-                              Uint32 min_group_size,
-                              Uint32 ldm_group_size)
+                              Uint32 min_group_size)
 {
   if (hwinfo->num_virt_l3_caches == 1)
   {
@@ -835,7 +821,7 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   }
   Uint32 largest_group_id = RNIL;
   Uint32 largest_group_size = 0;
-  Uint32 group_size = ldm_group_size * min_group_size;
+  Uint32 group_size = min_group_size;
   DEBUG_HW((stderr,
             "create_min_virt_l3_cache_list\n"));
   DEBUG_HW((stderr,
@@ -876,12 +862,24 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
              largest_group_size,
              sec_largest_group_id,
              sec_largest_group_size));
+  if (sec_largest_group_id == RNIL)
+  {
+    sec_largest_group_id = largest_group_id;
+    largest_group_id = RNIL;
+    for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
+    {
+      if (g_num_virt_l3_cpus[i] >= group_size)
+      {
+        largest_group_id = i;
+      }
+    }
+  }
   require(sec_largest_group_id != RNIL);
+  require(largest_group_id != RNIL);
   merge_virt_l3_cache_list(hwinfo,
                            largest_group_id,
                            sec_largest_group_id,
-                           min_group_size,
-                           ldm_group_size);
+                           min_group_size);
   return true;
 }
 
@@ -900,11 +898,10 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
                           Uint32 optimal_group_size,
                           Uint32 min_group_size,
                           Uint32 max_num_groups,
-                          Uint32 ldm_group_size,
-                          Uint32 num_ldm_instances)
+                          Uint32 num_query_instances)
 {
   create_init_virt_l3_cache_list(hwinfo);
-  if(num_ldm_instances == 0 && max_num_groups == 0)
+  if(num_query_instances == 0 && max_num_groups == 0)
     return 0;
 
   /**
@@ -937,15 +934,14 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
        check_group_size--)
   {
     Uint32 num_groups =
-      (num_ldm_instances + (check_group_size - 1)) /
+      (num_query_instances + (check_group_size - 1)) /
         check_group_size;
-    if (num_groups * (check_group_size - 1) < num_ldm_instances)
+    if (num_groups * (check_group_size - 1) < num_query_instances)
     {
       if (check_if_virt_l3_cache_will_be_ok(hwinfo,
                                             check_group_size,
                                             num_groups,
-                                            num_ldm_instances,
-                                            ldm_group_size))
+                                            num_query_instances))
       {
         DEBUG_HW((stderr,
                   "Virtual L3 cache will be ok with group size %u\n",
@@ -963,15 +959,13 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
     if (check_if_virt_l3_cache_is_ok(hwinfo,
                                      used_group_size,
                                      used_num_groups,
-                                     num_ldm_instances,
-                                     ldm_group_size))
+                                     num_query_instances))
     {
       return used_num_groups;
     }
     DEBUG_HW((stderr, "Split virtual L3 cache list\n"));
     if (!split_virt_l3_cache_list(hwinfo,
-                                  used_group_size,
-                                  ldm_group_size))
+                                  used_group_size))
     {
       break;
     }
@@ -993,14 +987,19 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
    * L3 cache groups to be able to form groups of at least the minimum
    * group size.
    */
+  DEBUG_HW((stderr,
+            "Start merge loop, min_group_size: %u, max_num_groups: %u, "
+            "num_query_instances: %u\n",
+            min_group_size,
+            max_num_groups,
+            num_query_instances));
   loop_count = 0;
   do
   {
     if (check_if_virt_l3_cache_is_ok(hwinfo,
                                      min_group_size,
                                      max_num_groups,
-                                     num_ldm_instances,
-                                     ldm_group_size))
+                                     num_query_instances))
     {
       return max_num_groups;
     }
@@ -1009,8 +1008,7 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
               ", minimum group size is %u\n",
               min_group_size));
     if (!create_min_virt_l3_cache_list(hwinfo,
-                                       min_group_size,
-                                       ldm_group_size))
+                                       min_group_size))
     {
       break;
     }
@@ -1022,8 +1020,7 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
 }
 
 Uint32
-Ndb_CreateCPUMap(Uint32 num_ldm_instances,
-                 Uint32 num_query_threads_per_ldm)
+Ndb_CreateCPUMap(Uint32 num_query_instances)
 {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
   /**
@@ -1039,48 +1036,42 @@ Ndb_CreateCPUMap(Uint32 num_ldm_instances,
    * this list will be ok even if we set number of LDM instances to 0
    * here.
    */
-  num_ldm_instances = (num_ldm_instances == 0) ? 1 : num_ldm_instances;
-  Uint32 num_cpus_per_ldm_group = 1 + num_query_threads_per_ldm;
+  num_query_instances = (num_query_instances == 0) ? 1 : num_query_instances;
   Uint32 optimal_num_ldm_groups =
-    (num_ldm_instances + (MAX_RR_GROUP_SIZE - 1)) /
+    (num_query_instances + (MAX_RR_GROUP_SIZE - 1)) /
     MAX_RR_GROUP_SIZE;
-  Uint32 optimal_group_size = (num_ldm_instances > 0) ?
-    (num_ldm_instances + (optimal_num_ldm_groups - 1)) /
+  Uint32 optimal_group_size = (num_query_instances > 0) ?
+    (num_query_instances + (optimal_num_ldm_groups - 1)) /
     optimal_num_ldm_groups : 0;
-  Uint32 max_num_groups = num_ldm_instances < MAX_RR_GROUP_SIZE ? 1 :
-    num_ldm_instances / MIN_RR_GROUP_SIZE;
-  max_num_groups = (num_ldm_instances > 0) ? max_num_groups : 0;
+  Uint32 max_num_groups = num_query_instances < MAX_RR_GROUP_SIZE ? 1 :
+    num_query_instances / MIN_RR_GROUP_SIZE;
+  max_num_groups = (num_query_instances > 0) ? max_num_groups : 0;
   Uint32 min_group_size = (max_num_groups > 0) ?
-      (num_ldm_instances + (max_num_groups - 1)) / max_num_groups : 0;
+      (num_query_instances + (max_num_groups - 1)) / max_num_groups : 0;
 
-  hwinfo->num_cpus_per_group = num_cpus_per_ldm_group;
   DEBUG_HW((stderr,
             "Call create_virt_l3_cache_list: "
-            " %u opt groups, size: %u ::"
-            " %u min groups, size: %u ::"
-            " num ldms: %u CPUs per group: %u\n",
+            " %u opt groups, size: %u\n"
+            " max_num_groups: %u min_group_size: %u\n"
+            " num query instances: %u\n",
             optimal_num_ldm_groups,
             optimal_group_size,
             max_num_groups,
             min_group_size,
-            num_ldm_instances,
-            num_cpus_per_ldm_group));
+            num_query_instances));
   Uint32 num_rr_groups = create_virt_l3_cache_list(hwinfo,
                                                    optimal_group_size,
                                                    min_group_size,
                                                    max_num_groups,
-                                                   num_cpus_per_ldm_group,
-                                                   num_ldm_instances);
+                                                   num_query_instances);
   sort_virt_l3_caches(hwinfo);
   adjust_rr_group_sizes(hwinfo,
-                     num_rr_groups,
-                     num_cpus_per_ldm_group,
-                     num_ldm_instances);
+                        num_rr_groups,
+                        num_query_instances);
   create_prev_list(hwinfo);
   create_cpu_list(hwinfo,
-                  num_cpus_per_ldm_group,
                   num_rr_groups,
-                  num_ldm_instances);
+                  num_query_instances);
   return num_rr_groups;
 }
 
@@ -2762,164 +2753,151 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *)
 struct test_cpumap_data
 {
   Uint32 num_l3_caches;
+  Uint32 num_cpus_per_l3_cache;
   Uint32 num_cpus_in_l3_cache[MAX_NUM_L3_CACHES];
-  Uint32 num_query_threads_per_ldm;
-  Uint32 num_ldm_instances;
-  Uint32 cores_per_package;
+  Uint32 num_query_instances;
+  Uint32 num_cpus_per_package;
+  Uint32 num_p_cpus_per_core;
+  Uint32 num_p_cpus_per_package;
+  Uint32 num_e_cpus_per_package;
+  Uint32 num_e_cpus_per_core;
   bool exact_core;
-  bool intel_core;
 };
 
 static void test_1(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 1;
+  map->num_cpus_per_l3_cache = 4;
   map->num_cpus_in_l3_cache[0] = 4;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 2;
-  map->cores_per_package = 4;
+  map->num_query_instances = 4;
+  map->num_cpus_per_package = 4;
   map->exact_core = true;
-  map->intel_core = false;
   printf("Run test 1 with 1 L3 group with 4 CPUs, 2 LDMs\n");
 }
 
 static void test_2(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 1;
+  map->num_cpus_per_l3_cache = 16;
   map->num_cpus_in_l3_cache[0] = 16;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 6;
-  map->cores_per_package = 16;
+  map->num_query_instances = 12;
+  map->num_cpus_per_package = 16;
   map->exact_core = true;
-  map->intel_core = false;
   printf("Run test 2 with 1 L3 group with 16 CPUs, 6 LDMs\n");
 }
 
 static void test_3(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 8;
   map->num_cpus_in_l3_cache[0] = 8;
   map->num_cpus_in_l3_cache[1] = 8;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 8;
-  map->cores_per_package = 8;
+  map->num_query_instances = 16;
+  map->num_cpus_per_package = 8;
   map->exact_core = true;
-  map->intel_core = false;
   printf("Run test 3 with 2 L3 group with 8,8 CPUs, 8 LDMs\n");
 }
 
 static void test_4(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 4;
+  map->num_cpus_per_l3_cache = 8;
   map->num_cpus_in_l3_cache[0] = 4;
   map->num_cpus_in_l3_cache[1] = 8;
   map->num_cpus_in_l3_cache[2] = 2;
   map->num_cpus_in_l3_cache[3] = 6;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 8;
-  map->cores_per_package = 32;
-  map->exact_core = true;
-  map->intel_core = false;
+  map->num_query_instances = 16;
+  map->num_cpus_per_package = 32;
   printf("Run test 4 with 4 L3 group with 4,8,2,6 CPUs, 8 LDMs\n");
 }
 
 static void test_5(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 4;
+  map->num_cpus_per_l3_cache = 8;
   map->num_cpus_in_l3_cache[0] = 4;
   map->num_cpus_in_l3_cache[1] = 8;
   map->num_cpus_in_l3_cache[2] = 2;
   map->num_cpus_in_l3_cache[3] = 4;
-  map->cores_per_package = 16;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 8;
-  map->exact_core = true;
-  map->intel_core = false;
+  map->num_cpus_per_package = 16;
+  map->num_query_instances = 8;
   printf("Run test 5 with 4 L3 group with 4,8,2,4 CPUs, 8 LDMs\n");
 }
 
 static void test_6(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 30;
   map->num_cpus_in_l3_cache[0] = 30;
   map->num_cpus_in_l3_cache[1] = 30;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 16;
-  map->cores_per_package = 15;
+  map->num_query_instances = 16;
+  map->num_cpus_per_package = 30;
   map->exact_core = true;
-  map->intel_core = false;
   printf("Run test 6 with 2 L3 group with 30,30 CPUs, 16 LDMs\n");
 }
 
 static void test_7(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 30;
   map->num_cpus_in_l3_cache[0] = 30;
   map->num_cpus_in_l3_cache[1] = 30;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 18;
-  map->cores_per_package = 15;
+  map->num_query_instances = 18;
+  map->num_cpus_per_package = 60;
   map->exact_core = true;
-  map->intel_core = false;
   printf("Run test 7 with 2 L3 group with 30,30 CPUs, 18 LDMs\n");
 }
 
 static void test_8(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 3;
+  map->num_cpus_per_l3_cache = 24;
   map->num_cpus_in_l3_cache[0] = 23;
   map->num_cpus_in_l3_cache[1] = 11;
   map->num_cpus_in_l3_cache[2] = 8;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 20;
-  map->cores_per_package = 12;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 20;
+  map->num_cpus_per_package = 24;
   printf("Run test 8 with 3 L3 group with 23,11,8 CPUs, 20 LDMs\n");
 }
 
 static void test_9(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 36;
   map->num_cpus_in_l3_cache[0] = 33;
   map->num_cpus_in_l3_cache[1] = 11;
-  map->num_query_threads_per_ldm = 2;
-  map->num_ldm_instances = 14;
-  map->cores_per_package = 12;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 14;
+  map->num_cpus_per_package = 36;
   printf("Run test 9 with 2 L3 group with 33,11 CPUs, 14(2) LDMs\n");
 }
 
 static void test_10(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 16;
   map->num_cpus_in_l3_cache[0] = 15;
   map->num_cpus_in_l3_cache[1] = 12;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 13;
-  map->cores_per_package = 8;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 13;
+  map->num_cpus_per_package = 16;
   printf("Run test 10 with 2 L3 group with 15,12 CPUs, 13 LDMs\n");
 }
 
 static void test_11(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 3;
+  map->num_cpus_per_l3_cache = 16;
   map->num_cpus_in_l3_cache[0] = 15;
   map->num_cpus_in_l3_cache[1] = 13;
   map->num_cpus_in_l3_cache[2] = 13;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 19;
-  map->cores_per_package = 8;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 19;
+  map->num_cpus_per_package = 16;
   printf("Run test 11 with 3 L3 group with 15,13,13 CPUs, 19 LDMs\n");
 }
 
 static void test_12(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 8;
+  map->num_cpus_per_l3_cache = 16;
   map->num_cpus_in_l3_cache[0] = 11;
   map->num_cpus_in_l3_cache[1] = 13;
   map->num_cpus_in_l3_cache[2] = 13;
@@ -2928,17 +2906,15 @@ static void test_12(struct test_cpumap_data *map)
   map->num_cpus_in_l3_cache[5] = 13;
   map->num_cpus_in_l3_cache[6] = 13;
   map->num_cpus_in_l3_cache[7] = 13;
-  map->num_query_threads_per_ldm = 3;
-  map->num_ldm_instances = 24;
-  map->cores_per_package = 4;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 24;
+  map->num_cpus_per_package = 32;
   printf("Run test 12 with 8 L3 group with 11,13,,,,13 CPUs, 24 LDMs\n");
 }
 
 static void test_13(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 8;
+  map->num_cpus_per_l3_cache = 16;
   map->num_cpus_in_l3_cache[0] = 16;
   map->num_cpus_in_l3_cache[1] = 16;
   map->num_cpus_in_l3_cache[2] = 16;
@@ -2947,17 +2923,15 @@ static void test_13(struct test_cpumap_data *map)
   map->num_cpus_in_l3_cache[5] = 16;
   map->num_cpus_in_l3_cache[6] = 8;
   map->num_cpus_in_l3_cache[7] = 8;
-  map->num_query_threads_per_ldm = 3;
-  map->num_ldm_instances = 24;
-  map->cores_per_package = 4;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 24;
+  map->num_cpus_per_package = 64;
   printf("Run test 13 with 8 L3 group with 16,,,16,8,8 CPUs, 24 LDMs\n");
 }
 
 static void test_14(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 16;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 1;
   map->num_cpus_in_l3_cache[1] = 1;
   map->num_cpus_in_l3_cache[2] = 1;
@@ -2974,17 +2948,15 @@ static void test_14(struct test_cpumap_data *map)
   map->num_cpus_in_l3_cache[13] = 1;
   map->num_cpus_in_l3_cache[14] = 1;
   map->num_cpus_in_l3_cache[15] = 1;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 6;
-  map->cores_per_package = 4;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 6;
+  map->num_cpus_per_package = 2;
   printf("Run test 14 with 16 L3 group with 1 CPU, 6 LDMs\n");
 }
 
 static void test_15(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 16;
+  map->num_cpus_per_l3_cache = 16;
   map->num_cpus_in_l3_cache[0] = 1;
   map->num_cpus_in_l3_cache[1] = 2;
   map->num_cpus_in_l3_cache[2] = 4;
@@ -3001,99 +2973,84 @@ static void test_15(struct test_cpumap_data *map)
   map->num_cpus_in_l3_cache[13] = 2;
   map->num_cpus_in_l3_cache[14] = 4;
   map->num_cpus_in_l3_cache[15] = 2;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 24;
-  map->cores_per_package = 4;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 24;
+  map->num_cpus_per_package = 32;
   printf("Run test 15 with 16 L3 group with 0/1 CPU, 4 LDMs\n");
 }
 
 static void test_16(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 1;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 2;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 0;
-  map->cores_per_package = 1;
+  map->num_query_instances = 0;
+  map->num_cpus_per_package = 2;
   map->exact_core = true;
-  map->intel_core = true;
   printf("Run test 16 with 1 L3 group with 2 CPU, 0 LDMs\n");
 }
 
 static void test_17(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 1;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 2;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 0;
-  map->cores_per_package = 1;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 0;
+  map->num_cpus_per_package = 1;
   printf("Run test 17 with 1 L3 group with 2 CPU, 0 LDMs\n");
 }
 
 static void test_18(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 1;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 2;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 0;
-  map->cores_per_package = 1;
+  map->num_query_instances = 0;
+  map->num_cpus_per_package = 2;
   map->exact_core = true;
-  map->intel_core = false;
   printf("Run test 18 with 1 L3 group with 2 CPU, 0 LDMs\n");
 }
 
 static void test_19(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 1;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 2;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 0;
-  map->cores_per_package = 1;
-  map->exact_core = false;
-  map->intel_core = false;
+  map->num_query_instances = 0;
+  map->num_cpus_per_package = 1;
   printf("Run test 19 with 1 L3 group with 2 CPU, 0 LDMs\n");
 }
 
 static void test_20(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 2;
   map->num_cpus_in_l3_cache[1] = 1;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 0;
-  map->cores_per_package = 1;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 0;
+  map->num_cpus_per_package = 2;
   printf("Run test 20 with 2 L3 group with 1 CPU, 0 LDMs\n");
 }
 
 static void test_21(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 3;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 1;
   map->num_cpus_in_l3_cache[1] = 1;
   map->num_cpus_in_l3_cache[2] = 1;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 0;
-  map->cores_per_package = 1;
-  map->exact_core = false;
-  map->intel_core = true;
+  map->num_query_instances = 0;
+  map->num_cpus_per_package = 2;
   printf("Run test 21 with 3 L3 group with 1 CPU, 0 LDMs\n");
 }
 
 static void test_22(struct test_cpumap_data *map)
 {
   map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 2;
   map->num_cpus_in_l3_cache[0] = 1;
   map->num_cpus_in_l3_cache[1] = 1;
-  map->num_query_threads_per_ldm = 1;
-  map->num_ldm_instances = 0;
-  map->cores_per_package = 2;
-  map->exact_core = true;
-  map->intel_core = true;
+  map->num_query_instances = 0;
+  map->num_cpus_per_package = 2;
   printf("Run test 22 with 2 L3 group with 1 CPU, 0 LDMs\n");
 }
 
@@ -3116,29 +3073,52 @@ create_hwinfo_test_cpu_map(struct test_cpumap_data *map)
   Uint32 cpu_id = 0;
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
   Uint32 core_id = 0;
+  Uint32 package_id = 0;
+  Uint32 core_cpu_count = 0;
+  Uint32 num_cpus_per_core = map->num_p_cpus_per_core;
   for (Uint32 l3_cache_id = 0; l3_cache_id < map->num_l3_caches; l3_cache_id++)
   {
-    for (Uint32 i = 0; i < map->num_cpus_in_l3_cache[l3_cache_id]; i++)
+    require(map->num_cpus_per_l3_cache >=
+            map->num_cpus_in_l3_cache[l3_cache_id]);
+    for (Uint32 i = 0; i < map->num_cpus_per_l3_cache; i++)
     {
-      hwinfo->cpu_info[cpu_id].l3_cache_id = l3_cache_id;
-      hwinfo->cpu_info[cpu_id].cpu_no = cpu_id;
-      if (map->intel_core)
+      if (i < map->num_cpus_in_l3_cache[l3_cache_id])
       {
+        /* Online CPU */
+        hwinfo->cpu_info[cpu_id].l3_cache_id = l3_cache_id;
+        hwinfo->cpu_info[cpu_id].cpu_no = cpu_id;
         hwinfo->cpu_info[cpu_id].core_id = core_id;
-        core_id++;
-        if (core_id == map->cores_per_package)
-        {
-          core_id = 0;
-        }
+        hwinfo->cpu_info[cpu_id].socket_id = package_id;
+        hwinfo->cpu_info[cpu_id].package_id = package_id;
+        hwinfo->cpu_info[cpu_id].online = 1;
       }
       else
       {
-        hwinfo->cpu_info[cpu_id].core_id = cpu_id / 2;
+        hwinfo->cpu_info[cpu_id].l3_cache_id = l3_cache_id;
+        hwinfo->cpu_info[cpu_id].socket_id = package_id;
+        hwinfo->cpu_info[cpu_id].package_id = package_id;
+        hwinfo->cpu_info[cpu_id].online = 0;
+        hwinfo->cpu_info[cpu_id].core_id = core_id;
       }
-      hwinfo->cpu_info[cpu_id].socket_id = 0;
-      hwinfo->cpu_info[cpu_id].package_id = 0;
-      hwinfo->cpu_info[cpu_id].online = 1;
       cpu_id++;
+      core_cpu_count++;
+      if (core_cpu_count == num_cpus_per_core)
+      {
+        core_id++;
+        core_cpu_count = 0;
+      }
+      if (cpu_id == map->num_p_cpus_per_package)
+      {
+        num_cpus_per_core = map->num_e_cpus_per_core;
+        core_cpu_count = 0;
+      }
+      if (cpu_id == map->num_cpus_per_package)
+      {
+        package_id++;
+        core_id = 0;
+        num_cpus_per_core = map->num_p_cpus_per_core;
+        core_cpu_count = 0;
+      }
     }
   }
   create_l3_cache_list(g_ndb_hwinfo);
@@ -3191,6 +3171,12 @@ cleanup_test()
 static void
 test_create(struct test_cpumap_data *map, Uint32 test_case)
 {
+  /* Set default values */
+  map->exact_core = false;
+  map->num_p_cpus_per_core = 2;
+  map->num_e_cpus_per_core = 1;
+  map->num_p_cpus_per_package = 0;
+  map->num_e_cpus_per_package = 0;
   switch (test_case)
   {
     case 0:
@@ -3309,6 +3295,11 @@ test_create(struct test_cpumap_data *map, Uint32 test_case)
       break;
     }
   }
+  if (map->num_p_cpus_per_package == 0)
+    map->num_p_cpus_per_package = map->num_cpus_per_package;
+  require(map->num_cpus_per_package ==
+          (map->num_p_cpus_per_package +
+           map->num_e_cpus_per_package));
   return;
 }
 
@@ -3328,8 +3319,8 @@ test_create_cpumap()
   expected_res[8] = 3;
   expected_res[9] = 2;
   expected_res[10] = 3;
-  expected_res[11] = 6;
-  expected_res[12] = 6;
+  expected_res[11] = 12;
+  expected_res[12] = 12;
   expected_res[13] = 1;
   expected_res[14] = 6;
   expected_res[15] = 1;
@@ -3348,27 +3339,33 @@ test_create_cpumap()
     create_hwinfo_test_cpu_map(&test_map);
     printf("Create CPUMap for test %u\n", i + 1);
     Uint32 num_rr_groups =
-      Ndb_CreateCPUMap(test_map.num_ldm_instances,
-                       test_map.num_query_threads_per_ldm);
+      Ndb_CreateCPUMap(test_map.num_query_instances);
     for (Uint32 id = 0; id < g_ndb_hwinfo->cpu_cnt_max; id++)
     {
-      Uint32 cpu_ids[8];
+      Uint32 cpu_ids[MAX_USED_NUM_CPUS];
       Uint32 num_cpus;
-      Ndb_GetCoreCPUIds(id, &cpu_ids[0], num_cpus);
-      printf("Ndb_GetCoreCPUIds: id: %u, num_cpus: %u\n",
-             id,
-             num_cpus);
-      if (test_map.exact_core)
+      if (g_ndb_hwinfo->cpu_info[id].online)
       {
-        OK(num_cpus == (test_map.num_query_threads_per_ldm + 1));
-      }
-      else
-      {
-        OK(num_cpus <= (test_map.num_query_threads_per_ldm + 1));
+        Ndb_GetCoreCPUIds(id, &cpu_ids[0], num_cpus);
+        printf("Ndb_GetCoreCPUIds: id: %u, num_cpus: %u\n",
+               id,
+               num_cpus);
+        if (test_map.exact_core)
+        {
+          OK(num_cpus == (test_map.num_p_cpus_per_core));
+        }
+        else
+        {
+          OK(num_cpus <= (test_map.num_p_cpus_per_core));
+        }
       }
     }
-    OK(num_rr_groups == expected_res[i]);
     cleanup_test();
+    printf("Test %u num_rr_groups: %u, expected: %u\n",
+           i + 1,
+           num_rr_groups,
+           expected_res[i]);
+    OK(num_rr_groups == expected_res[i]);
   }
   printf("test_create_cpumap passed\n");
 }
