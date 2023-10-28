@@ -571,15 +571,23 @@ create_l3_cache_list(struct ndb_hwinfo *hwinfo)
 }
 
 static bool
-check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
-                                  Uint32 group_size,
-                                  Uint32 num_groups,
-                                  Uint32 num_query_instances)
+check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
+                             Uint32 group_size,
+                             Uint32 num_groups,
+                             Uint32 num_query_instances,
+                             Uint32 min_group_size,
+                             bool will_be_ok)
 {
+  Uint32 count_non_fit_groups = 0;
+  Uint32 count_non_fit_group_cpus = 0;
+  Uint32 count_extra_cpus = 0;
   Uint32 count_full_groups_found = 0;
   Uint32 count_non_full_groups_found = 0;
   Uint32 full_group_size = group_size;
-  Uint32 non_full_group_size = (group_size - 1);
+  Uint32 non_full_group_size = group_size - 2;
+  if (non_full_group_size < min_group_size)
+    non_full_group_size = min_group_size;
+
   DEBUG_HW((stderr,
             "full group size: %u, non full group size: %u\n",
             full_group_size,
@@ -590,14 +598,30 @@ check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
     DEBUG_HW((stderr,
               "num_cpus %u in group %u\n",
               num_cpus_in_group, i));
-    while (num_cpus_in_group >= full_group_size)
+    bool found_full_group = false;
+    while (num_cpus_in_group >= full_group_size && will_be_ok)
     {
+      found_full_group = true;
       num_cpus_in_group -= full_group_size;
       count_full_groups_found++;
     }
     if (num_cpus_in_group >= non_full_group_size)
     {
       count_non_full_groups_found++;
+    }
+    else if (!found_full_group)
+    {
+      count_non_fit_groups++;
+      count_non_fit_group_cpus += num_cpus_in_group;
+    }
+    else
+    {
+      count_extra_cpus += num_cpus_in_group;
+      continue;
+    }
+    if (num_cpus_in_group > non_full_group_size)
+    {
+      count_extra_cpus += (num_cpus_in_group - min_group_size);
     }
   }
   DEBUG_HW((stderr,
@@ -609,44 +633,15 @@ check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
                                     (num_groups - count_full_groups_found));
   Uint32 tot_query_found =
     count_full_groups_found * group_size +
-    count_non_full_groups_found * (group_size - 1);
+    count_non_full_groups_found * non_full_group_size;
+
+  if (count_extra_cpus == 0 && count_non_fit_groups == 1)
+    tot_query_found += count_non_fit_group_cpus;
+
   DEBUG_HW((stderr,
             "Total Query instances found: %u\n", tot_query_found));
   return (tot_query_found >= num_query_instances);
 }
-
-static bool
-check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
-                             Uint32 group_size,
-                             Uint32 num_groups,
-                             Uint32 num_query_instances)
-{
-  Uint32 count_full_groups_found = 0;
-  Uint32 count_non_full_groups_found = 0;
-  Uint32 full_group_size = group_size;
-  Uint32 non_full_group_size = (group_size - 1);
-  for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
-  {
-    Uint32 num_cpus_in_group = g_num_virt_l3_cpus[i];
-    if (num_cpus_in_group >= full_group_size)
-    {
-      count_full_groups_found++;
-    }
-    else if (num_cpus_in_group >= non_full_group_size)
-    {
-      count_non_full_groups_found++;
-    }
-  }
-  count_non_full_groups_found = MIN(count_non_full_groups_found,
-                                    (num_groups - count_full_groups_found));
-  Uint32 tot_query_found =
-    count_full_groups_found * group_size +
-    count_non_full_groups_found * (group_size - 1);
-  DEBUG_HW((stderr,
-            "Total Query instances found: %u\n", tot_query_found));
-  return ((tot_query_found) >= num_query_instances);
-}
-
 
 static void
 merge_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
@@ -874,15 +869,7 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
              sec_largest_group_size));
   if (sec_largest_group_id == RNIL)
   {
-    sec_largest_group_id = largest_group_id;
-    largest_group_id = RNIL;
-    for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
-    {
-      if (g_num_virt_l3_cpus[i] >= group_size)
-      {
-        largest_group_id = i;
-      }
-    }
+    return true;
   }
   require(sec_largest_group_id != RNIL);
   require(largest_group_id != RNIL);
@@ -936,22 +923,30 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
    * and is thus the last step when nothing else works to create a
    * set of minimally sized groups.
    */
+  if (min_group_size < MIN_RR_GROUP_SIZE)
+  {
+    /* In this case use group size = 1 */
+    min_group_size = 1;
+    optimal_group_size = 1;
+  }
   bool found_group_size = false;
   Uint32 used_group_size = min_group_size;
   Uint32 used_num_groups = max_num_groups;
   for (Uint32 check_group_size = optimal_group_size;
        check_group_size >= min_group_size;
-       check_group_size--)
+       check_group_size -= 2)
   {
     Uint32 num_groups =
       (num_query_instances + (check_group_size - 1)) /
         check_group_size;
     if (num_groups * (check_group_size - 1) < num_query_instances)
     {
-      if (check_if_virt_l3_cache_will_be_ok(hwinfo,
-                                            check_group_size,
-                                            num_groups,
-                                            num_query_instances))
+      if (check_if_virt_l3_cache_is_ok(hwinfo,
+                                       check_group_size,
+                                       num_groups,
+                                       num_query_instances,
+                                       min_group_size,
+                                       true))
       {
         DEBUG_HW((stderr,
                   "Virtual L3 cache will be ok with group size %u\n",
@@ -969,7 +964,9 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
     if (check_if_virt_l3_cache_is_ok(hwinfo,
                                      used_group_size,
                                      used_num_groups,
-                                     num_query_instances))
+                                     num_query_instances,
+                                     min_group_size,
+                                     false))
     {
       return used_num_groups;
     }
@@ -1009,7 +1006,9 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
     if (check_if_virt_l3_cache_is_ok(hwinfo,
                                      min_group_size,
                                      max_num_groups,
-                                     num_query_instances))
+                                     num_query_instances,
+                                     min_group_size,
+                                     false))
     {
       return max_num_groups;
     }
@@ -1047,24 +1046,16 @@ Ndb_CreateCPUMap(Uint32 num_query_instances)
    * here.
    */
   num_query_instances = (num_query_instances == 0) ? 1 : num_query_instances;
-  Uint32 optimal_num_ldm_groups =
-    (num_query_instances + (MAX_RR_GROUP_SIZE - 1)) /
-    MAX_RR_GROUP_SIZE;
-  Uint32 optimal_group_size = (num_query_instances > 0) ?
-    (num_query_instances + (optimal_num_ldm_groups - 1)) /
-    optimal_num_ldm_groups : 0;
-  Uint32 max_num_groups = num_query_instances < MAX_RR_GROUP_SIZE ? 1 :
-    num_query_instances / MIN_RR_GROUP_SIZE;
-  max_num_groups = (num_query_instances > 0) ? max_num_groups : 0;
-  Uint32 min_group_size = (max_num_groups > 0) ?
-      (num_query_instances + (max_num_groups - 1)) / max_num_groups : 0;
+  Uint32 optimal_group_size = MAX_RR_GROUP_SIZE;
+  Uint32 min_group_size = MIN(MIN_RR_GROUP_SIZE, num_query_instances);
+  Uint32 max_num_groups =
+    (num_query_instances + (min_group_size - 1)) / min_group_size;
 
   DEBUG_HW((stderr,
             "Call create_virt_l3_cache_list: "
-            " %u opt groups, size: %u\n"
+            " opt group size: %u\n"
             " max_num_groups: %u min_group_size: %u\n"
             " num query instances: %u\n",
-            optimal_num_ldm_groups,
             optimal_group_size,
             max_num_groups,
             min_group_size,
@@ -3319,7 +3310,7 @@ test_create_cpumap()
   expected_res[0] = 1;
   expected_res[1] = 1;
   expected_res[2] = 2;
-  expected_res[3] = 4;
+  expected_res[3] = 5;
   expected_res[4] = 2;
   expected_res[5] = 2;
   expected_res[6] = 3;
