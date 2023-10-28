@@ -5866,8 +5866,9 @@ void
 SimulatedBlock::print_static_distr_info(DistributionHandler * const handle)
 {
   Uint32 num_query_instances = getNumQueryInstances();
+  Uint32 num_ldm_instances = getNumLDMInstances();
   /* Print the LDM groups */
-  for (Uint32 ldm = 0; ldm < num_query_instances; ldm++)
+  for (Uint32 ldm = 0; ldm < num_ldm_instances; ldm++)
   {
     if (ldm < getNumLDMInstances())
     {

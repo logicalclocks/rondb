@@ -877,6 +877,7 @@ THRConfig::do_parse(unsigned realtime,
   {
     add(T_RECV, realtime, spintime);
   }
+  Uint32 num_ldm_threads = ldm_threads > 0 ? ldm_threads : recv_threads;
   struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
   if (hwinfo->is_cpuinfo_available && num_cpus == 0)
   {
@@ -892,15 +893,10 @@ THRConfig::do_parse(unsigned realtime,
     }
     Uint32 num_query_threads_per_ldm = g_num_query_threads_per_ldm;
     num_rr_groups =
-      Ndb_CreateCPUMap(ldm_threads, num_query_threads_per_ldm);
+      Ndb_CreateCPUMap(num_ldm_threads, num_query_threads_per_ldm);
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
-    Uint32 num_database_threads = ldm_threads;
-    if (num_database_threads == 0)
-    {
-      num_database_threads = recv_threads;
-      recv_threads = 0;
-    }
+    Uint32 num_database_threads = num_ldm_threads;
     for (Uint32 i = 0; i < num_database_threads; i++)
     {
       require(next_cpu_id != Uint32(RNIL));
@@ -1000,7 +996,7 @@ THRConfig::do_parse(unsigned realtime,
   }
   else
   {
-    num_rr_groups = Ndb_GetRRGroups(ldm_threads);
+    num_rr_groups = Ndb_GetRRGroups(num_ldm_threads);
   }
   return 0;
 }
