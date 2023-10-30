@@ -3177,6 +3177,7 @@ create_hwinfo_test_cpu_map(struct test_cpumap_data *map)
   Uint32 core_cpu_count = 0;
   Uint32 num_cpus_per_core = map->num_p_cpus_per_core;
   ncpu = 0;
+  Uint32 package_cpu_id = 0;
   for (Uint32 l3_cache_id = 0; l3_cache_id < map->num_l3_caches; l3_cache_id++)
   {
     require(map->num_cpus_per_l3_cache >=
@@ -3203,21 +3204,23 @@ create_hwinfo_test_cpu_map(struct test_cpumap_data *map)
       }
       ncpu++;
       cpu_id++;
+      package_cpu_id++;
       core_cpu_count++;
       if (core_cpu_count == num_cpus_per_core)
       {
         core_id++;
         core_cpu_count = 0;
       }
-      if (cpu_id == map->num_p_cpus_per_package)
+      if (package_cpu_id == map->num_p_cpus_per_package)
       {
         num_cpus_per_core = map->num_e_cpus_per_core;
         core_cpu_count = 0;
       }
-      if (cpu_id == map->num_cpus_per_package)
+      if (package_cpu_id == map->num_cpus_per_package)
       {
         package_id++;
         core_id = 0;
+        package_cpu_id = 0;
         num_cpus_per_core = map->num_p_cpus_per_core;
         core_cpu_count = 0;
       }
@@ -3237,9 +3240,10 @@ cleanup_test()
     Uint32 next_cpu = g_first_virt_l3_cache[i];
     do
     {
-      printf("    CPU %u, core: %u, l3_cache_id: %u\n",
+      printf("    CPU %u, core: %u, package_id: %u, l3_cache_id: %u\n",
              next_cpu,
              hwinfo->cpu_info[next_cpu].core_id,
+             hwinfo->cpu_info[next_cpu].package_id,
              hwinfo->cpu_info[next_cpu].l3_cache_id);
       next_cpu = hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
     } while (next_cpu != RNIL);
@@ -3248,9 +3252,10 @@ cleanup_test()
   Uint32 next_cpu = hwinfo->first_cpu_map;
   do
   {
-    printf("    CPU %u, core: %u, l3_cache_id: %u\n",
+    printf("    CPU %u, core: %u, package_id: %u, l3_cache_id: %u\n",
            next_cpu,
            hwinfo->cpu_info[next_cpu].core_id,
+           hwinfo->cpu_info[next_cpu].package_id,
            hwinfo->cpu_info[next_cpu].l3_cache_id);
     next_cpu = hwinfo->cpu_info[next_cpu].next_cpu_map;
   } while (next_cpu != RNIL);
