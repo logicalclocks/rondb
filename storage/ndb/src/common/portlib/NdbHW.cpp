@@ -622,7 +622,7 @@ create_l3_cache_list(struct ndb_hwinfo *hwinfo)
 static bool
 check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
                              Uint32 group_size,
-                             Uint32 & num_groups,
+                             Uint32 num_groups,
                              Uint32 num_query_instances,
                              Uint32 min_group_size,
                              bool will_be_ok)
@@ -694,23 +694,12 @@ check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
     count_full_groups_found * group_size +
     count_non_full_groups_found * non_full_group_size;
 
-  if (tot_query_found >= num_query_instances)
-    return true;
   if (count_extra_cpus == 0 && count_non_fit_groups == 1)
     tot_query_found += count_non_fit_group_cpus;
 
   DEBUG_HW((stderr,
             "Total Query instances found: %u\n", tot_query_found));
-
-  if (tot_query_found >= num_query_instances)
-  {
-    if (!will_be_ok)
-    {
-      //num_groups++;
-    }
-    return true;
-  }
-  return false;
+  return (tot_query_found >= num_query_instances);
 }
 
 static void
@@ -988,7 +977,7 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
     Uint32 num_groups =
       (num_query_instances + (check_group_size - 1)) /
         check_group_size;
-    if (num_groups * (check_group_size - 1) < num_query_instances)
+    if (num_groups * check_group_size >= num_query_instances)
     {
       if (check_if_virt_l3_cache_is_ok(hwinfo,
                                        check_group_size,
@@ -3122,6 +3111,53 @@ static void test_22(struct test_cpumap_data *map)
   printf("Run test 22 with 2 L3 group with 1 CPU, 2 Query\n");
 }
 
+static void test_23(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 6;
+  map->num_cpus_in_l3_cache[0] = 6;
+  map->num_cpus_in_l3_cache[1] = 6;
+  map->num_query_instances = 11;
+  map->num_cpus_per_package = 12;
+  printf("Run test 23 with 2 L3 group with 6 CPU, 11 Query\n");
+}
+
+static void test_24(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 10;
+  map->num_cpus_in_l3_cache[0] = 10;
+  map->num_cpus_in_l3_cache[1] = 10;
+  map->num_query_instances = 19;
+  map->num_cpus_per_package = 20;
+  printf("Run test 24 with 2 L3 group with 10 CPUs, 19 Query\n");
+}
+
+static void test_25(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 1;
+  map->num_cpus_per_l3_cache = 32;
+  map->num_cpus_in_l3_cache[0] = 32;
+  map->num_p_cpus_per_package = 16;
+  map->num_e_cpus_per_package = 16;
+  map->num_query_instances = 30;
+  map->num_cpus_per_package = 32;
+  printf("Run test 25 with 1 L3 group with 32 CPUs, 30 Query, Intel Rapid Lake\n");
+}
+
+static void test_26(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 2;
+  map->num_cpus_per_l3_cache = 28;
+  map->num_cpus_in_l3_cache[0] = 28;
+  map->num_cpus_in_l3_cache[1] = 28;
+  map->num_p_cpus_per_package = 12;
+  map->num_e_cpus_per_package = 16;
+  map->num_query_instances = 54;
+  map->num_cpus_per_package = 28;
+  printf("Run test 26 with 2 L3 group with 28 CPUs, 54 Query, Intel Rapid Lake\n");
+}
+
 static void
 create_hwinfo_test_cpu_map(struct test_cpumap_data *map)
 {
@@ -3355,6 +3391,26 @@ test_create(struct test_cpumap_data *map, Uint32 test_case)
       test_22(map);
       break;
     }
+    case 22:
+    {
+      test_23(map);
+      break;
+    }
+    case 23:
+    {
+      test_24(map);
+      break;
+    }
+    case 24:
+    {
+      test_25(map);
+      break;
+    }
+    case 25:
+    {
+      test_26(map);
+      break;
+    }
     default:
     {
       require(false);
@@ -3369,7 +3425,7 @@ test_create(struct test_cpumap_data *map, Uint32 test_case)
   return;
 }
 
-#define NUM_TESTS 22
+#define NUM_TESTS 26
 static void
 test_create_cpumap()
 {
@@ -3379,11 +3435,11 @@ test_create_cpumap()
   expected_res[2] = 2;
   expected_res[3] = 5;
   expected_res[4] = 5;
-  expected_res[5] = 5;
+  expected_res[5] = 4;
   expected_res[6] = 4;
   expected_res[7] = 11;
   expected_res[8] = 11;
-  expected_res[9] = 7;
+  expected_res[9] = 2;
   expected_res[10] = 10;
   expected_res[11] = 25;
   expected_res[12] = 14;
@@ -3396,6 +3452,10 @@ test_create_cpumap()
   expected_res[19] = 2;
   expected_res[20] = 2;
   expected_res[21] = 1;
+  expected_res[22] = 2;
+  expected_res[23] = 2;
+  expected_res[24] = 2;
+  expected_res[25] = 4;
   struct test_cpumap_data test_map;
   for (Uint32 i = 0; i < NUM_TESTS; i++)
   {
