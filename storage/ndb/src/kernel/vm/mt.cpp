@@ -8030,7 +8030,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   Uint32 thr_no = 0;
-  Uint32 num_lqh_workers = 0;
+  Uint32 num_lqh_workers = num_lqh_threads;
   bool receive_threads_only = false;
 
   if (num_lqh_threads == 0 &&
@@ -8102,15 +8102,8 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      * TC threads comes after LDM threads
      * Thus same calculation in both cases, both with and without TC threads.
      */
-    if (num_tc_threads == 0)
-    {
-      thr_no += (instance - 1);
-    }
-    else
-    {
-      thr_no += (num_lqh_threads +
-                 (instance - 1));
-    }
+    thr_no += (num_lqh_threads +
+               (instance - 1));
     break;
   }
   case THRMAN:
