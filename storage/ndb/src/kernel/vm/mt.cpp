@@ -8030,6 +8030,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   Uint32 thr_no = 0;
+  Uint32 num_lqh_workers = 0;
   bool receive_threads_only = false;
 
   if (num_lqh_threads == 0 &&
@@ -8054,15 +8055,15 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      */
     receive_threads_only = true;
     require(num_tc_threads == 0);
-    num_lqh_threads = 1;
+    num_lqh_workers = 1;
   }
   else if (num_lqh_threads == 0 &&
            globalData.ndbMtReceiveThreads > 1)
   {
     require(num_tc_threads == 0);
     receive_threads_only = true;
-    num_lqh_threads = globalData.ndbMtReceiveThreads;
-    require(num_lqh_threads == globalData.ndbMtLqhWorkers);
+    num_lqh_workers = globalData.ndbMtReceiveThreads;
+    require(num_lqh_workers == globalData.ndbMtLqhWorkers);
   }
   require(instance != 0);
   switch(block){
@@ -8083,7 +8084,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     thr_no += (instance - 1);
     break;
   case PGMAN:
-    if (instance == num_lqh_threads + 1)
+    if (instance == num_lqh_workers + 1)
     {
       // Put extra PGMAN together with it's Proxy
       thr_no = block2ThreadId(block, 0);
@@ -8101,7 +8102,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      * TC threads comes after LDM threads
      * Thus same calculation in both cases, both with and without TC threads.
      */
-    if (receive_threads_only)
+    if (num_tc_threads == 0)
     {
       thr_no += (instance - 1);
     }
