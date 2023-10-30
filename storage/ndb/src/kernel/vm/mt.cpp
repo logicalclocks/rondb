@@ -8101,8 +8101,15 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      * TC threads comes after LDM threads
      * Thus same calculation in both cases, both with and without TC threads.
      */
-    thr_no += (num_lqh_threads +
-               (instance - 1));
+    if (receive_threads_only)
+    {
+      thr_no += (instance - 1);
+    }
+    else
+    {
+      thr_no += (num_lqh_threads +
+                 (instance - 1));
+    }
     break;
   }
   case THRMAN:
