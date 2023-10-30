@@ -403,6 +403,15 @@ sort_virt_l3_caches(struct ndb_hwinfo *hwinfo)
       }
     }
   }
+#ifdef VM_TRACE
+  for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
+  {
+    Uint32 num_cpus_in_group = g_num_virt_l3_cpus[i];
+    DEBUG_HW((stderr,
+              "num_cpus %u in group %u\n",
+              num_cpus_in_group, i));
+  }
+#endif
 }
 
 static void create_init_virt_l3_cache_list(struct ndb_hwinfo *hwinfo)
@@ -613,7 +622,7 @@ create_l3_cache_list(struct ndb_hwinfo *hwinfo)
 static bool
 check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
                              Uint32 group_size,
-                             Uint32 num_groups,
+                             Uint32 & num_groups,
                              Uint32 num_query_instances,
                              Uint32 min_group_size,
                              bool will_be_ok)
@@ -624,14 +633,17 @@ check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
   Uint32 count_full_groups_found = 0;
   Uint32 count_non_full_groups_found = 0;
   Uint32 full_group_size = group_size;
-  Uint32 non_full_group_size = group_size - 2;
+  Uint32 non_full_group_size = group_size > 2 ? group_size - 2 : 1;
   if (non_full_group_size < min_group_size)
     non_full_group_size = min_group_size;
 
   DEBUG_HW((stderr,
-            "full group size: %u, non full group size: %u\n",
+            "full group size: %u, non full group size: %u"
+            ", num_groups: %u, will_be_ok: %u\n",
             full_group_size,
-            non_full_group_size));
+            non_full_group_size,
+            num_groups,
+            will_be_ok));
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
     Uint32 num_cpus_in_group = g_num_virt_l3_cpus[i];
@@ -639,13 +651,15 @@ check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
               "num_cpus %u in group %u\n",
               num_cpus_in_group, i));
     bool found_full_group = false;
-    while (num_cpus_in_group >= full_group_size && will_be_ok)
+    while (num_cpus_in_group >= full_group_size)
     {
       found_full_group = true;
       num_cpus_in_group -= full_group_size;
       count_full_groups_found++;
+      if (!will_be_ok)
+        break;
     }
-    if (num_cpus_in_group >= non_full_group_size)
+    if (!found_full_group && num_cpus_in_group >= non_full_group_size)
     {
       count_non_full_groups_found++;
     }
@@ -665,9 +679,14 @@ check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
     }
   }
   DEBUG_HW((stderr,
-            "Full groups: %u, Non-full groups: %u\n",
+            "Full groups: %u, Non-full groups: %u"
+            ", extra_cpus: %u, non-fit_groups: %u"
+            ", non-fit group cpus: %u\n",
             count_full_groups_found,
-            count_non_full_groups_found));
+            count_non_full_groups_found,
+            count_extra_cpus,
+            count_non_fit_groups,
+            count_non_fit_group_cpus));
   /* Only count non full groups up until the searched number of groups */
   count_non_full_groups_found = MIN(count_non_full_groups_found,
                                     (num_groups - count_full_groups_found));
@@ -675,12 +694,23 @@ check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
     count_full_groups_found * group_size +
     count_non_full_groups_found * non_full_group_size;
 
+  if (tot_query_found >= num_query_instances)
+    return true;
   if (count_extra_cpus == 0 && count_non_fit_groups == 1)
     tot_query_found += count_non_fit_group_cpus;
 
   DEBUG_HW((stderr,
             "Total Query instances found: %u\n", tot_query_found));
-  return (tot_query_found >= num_query_instances);
+
+  if (tot_query_found >= num_query_instances)
+  {
+    if (!will_be_ok)
+    {
+      //num_groups++;
+    }
+    return true;
+  }
+  return false;
 }
 
 static void
@@ -794,35 +824,6 @@ split_group(struct ndb_hwinfo *hwinfo,
   g_first_virt_l3_cache[last_group_id] = next_cpu;
   hwinfo->cpu_info[prev_cpu].next_virt_l3_cpu_map = RNIL;
   hwinfo->num_virt_l3_caches++;
-}
-
-static void
-adjust_rr_group_sizes(struct ndb_hwinfo *hwinfo,
-                      Uint32 num_rr_groups,
-                      Uint32 num_query_instances)
-{
-  if(num_rr_groups == 0)
-    return;
-  Uint32 group_size =
-    (num_query_instances + (num_rr_groups - 1)) / num_rr_groups;
-  Uint32 non_full_groups =
-    (group_size * num_rr_groups) - num_query_instances;
-  Uint32 full_groups = num_rr_groups - non_full_groups;
-  require(full_groups > 0);
-  for (Uint32 i = 0; i < num_rr_groups; i++)
-  {
-    Uint32 check_group_size = group_size;
-    if (i >= full_groups)
-    {
-      check_group_size = (group_size - 1);
-    }
-    if (num_rr_groups > 1 && g_num_virt_l3_cpus[i] > check_group_size)
-    {
-      split_group(hwinfo,
-                  i,
-                  check_group_size);
-    }
-  }
 }
 
 static bool
@@ -966,8 +967,16 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   if (min_group_size < MIN_RR_GROUP_SIZE)
   {
     /* In this case use group size = 1 */
-    min_group_size = 1;
-    optimal_group_size = 1;
+    if (min_group_size >= 2)
+    {
+      min_group_size = 2;
+      optimal_group_size = 2;
+    }
+    else
+    {
+      min_group_size = 1;
+      optimal_group_size = 1;
+    }
   }
   bool found_group_size = false;
   Uint32 used_group_size = min_group_size;
@@ -1017,7 +1026,7 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
       break;
     }
     loop_count++;
-    require(loop_count < 100); //Make sure we don't enter eternal loop
+    require(loop_count < 10000); //Make sure we don't enter eternal loop
   } while (true);
   require(!found_group_size);
   /**
@@ -1062,7 +1071,7 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
       break;
     }
     loop_count++;
-    require(loop_count < 10); //Make sure we don't enter eternal loop
+    require(loop_count < 10000); //Make sure we don't enter eternal loop
   } while (true);
   require(false);
   return 0;
@@ -1107,13 +1116,30 @@ Ndb_CreateCPUMap(Uint32 num_query_instances, Uint32 max_threads)
                                                    max_num_groups,
                                                    num_query_instances);
   sort_virt_l3_caches(hwinfo);
-  adjust_rr_group_sizes(hwinfo,
-                        num_rr_groups,
-                        num_query_instances);
   create_prev_list(hwinfo);
+
+  /**
+   * Check if we need to bring along the last group with too
+   * few CPUs, but still required to fill the number of
+   * instances we seek.
+   */
+  Uint32 found_instances = 0;
+  for (Uint32 i = 0; i < num_rr_groups; i++)
+  {
+    found_instances += g_num_virt_l3_cpus[i];
+  }
+  if (found_instances < num_query_instances)
+  {
+    require(num_rr_groups < hwinfo->num_virt_l3_caches);
+    found_instances += g_num_virt_l3_cpus[num_rr_groups];
+    require(found_instances >= num_query_instances);
+    num_rr_groups++;
+  }
+
   create_cpu_list(hwinfo,
                   num_rr_groups,
                   num_query_instances);
+  require(found_instances >= num_query_instances);
   return num_rr_groups;
 }
 
@@ -3352,23 +3378,23 @@ test_create_cpumap()
   expected_res[1] = 1;
   expected_res[2] = 2;
   expected_res[3] = 5;
-  expected_res[4] = 2;
-  expected_res[5] = 2;
-  expected_res[6] = 3;
-  expected_res[7] = 5;
-  expected_res[8] = 3;
-  expected_res[9] = 2;
-  expected_res[10] = 3;
-  expected_res[11] = 12;
-  expected_res[12] = 12;
-  expected_res[13] = 1;
-  expected_res[14] = 6;
+  expected_res[4] = 5;
+  expected_res[5] = 5;
+  expected_res[6] = 4;
+  expected_res[7] = 11;
+  expected_res[8] = 11;
+  expected_res[9] = 7;
+  expected_res[10] = 10;
+  expected_res[11] = 25;
+  expected_res[12] = 14;
+  expected_res[13] = 4;
+  expected_res[14] = 13;
   expected_res[15] = 1;
   expected_res[16] = 1;
   expected_res[17] = 1;
   expected_res[18] = 1;
-  expected_res[19] = 1;
-  expected_res[20] = 1;
+  expected_res[19] = 2;
+  expected_res[20] = 2;
   expected_res[21] = 1;
   struct test_cpumap_data test_map;
   for (Uint32 i = 0; i < NUM_TESTS; i++)
