@@ -66,18 +66,19 @@ public:
   int setLockExecuteThreadToCPU(const char * val);
   int setLockIoThreadsToCPU(unsigned val);
 
-  int do_parse(unsigned realtime,
-               unsigned spintime,
-               unsigned num_cpus,
-               unsigned &num_rr_groups);
-  int do_parse(const char * ThreadConfig,
-               unsigned realtime,
-               unsigned spintime);
-  int do_parse(unsigned MaxNoOfExecutionThreads,
-               unsigned __ndbmt_lqh_threads,
-               unsigned __ndbmt_classic,
-               unsigned realtime,
-               unsigned spintime);
+  int do_parse_auto(unsigned realtime,
+                    unsigned spintime,
+                    unsigned num_cpus,
+                    unsigned &num_rr_groups,
+                    unsigned max_threads);
+  int do_parse_thrconfig(const char * ThreadConfig,
+                         unsigned realtime,
+                         unsigned spintime);
+  int do_parse_classic(unsigned MaxNoOfExecutionThreads,
+                       unsigned __ndbmt_lqh_threads,
+                       unsigned __ndbmt_classic,
+                       unsigned realtime,
+                       unsigned spintime);
 
   const char * getConfigString();
 

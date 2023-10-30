@@ -149,7 +149,11 @@ extern "C"
    * Round Robin groups of LDM groups that are contained in the same
    * virtual L3 cache groups.
    */
-  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances);
+  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances, Uint32 max_threads);
+  void Ndb_InitRRGroups(Uint32 *rr_group,
+                        Uint32 num_rr_groups,
+                        Uint32 num_query_instances,
+                        Uint32 max_threads);
   Uint32 Ndb_GetFirstCPUInMap();
   Uint32 Ndb_GetNextCPUInMap(Uint32 cpu_id);
 

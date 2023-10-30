@@ -2174,20 +2174,10 @@ public:
 
     m_num_rr_groups = num_rr_groups;
     m_num_distribution_threads = num_distr_threads;
-    Uint32 rr_group = 0;
-    for (Uint32 i = 0; i < MAX_DISTR_THREADS; i++)
-    {
-      m_rr_group[i] = 0xFFFFFFFF; //Ensure group not valid as init value
-    }
-    for (Uint32 i = 0; i < num_query_instances; i++)
-    {
-      m_rr_group[i] = rr_group;
-      rr_group++;
-      if (rr_group == num_rr_groups)
-      {
-        rr_group = 0;
-      }
-    }
+    Ndb_InitRRGroups(&m_rr_group[0],
+                     num_rr_groups,
+                     num_query_instances,
+                     MAX_DISTR_THREADS);
   }
   void distribute_new_weights(DistributionHandler *handle,
                               RoundRobinInfo *rr_info)

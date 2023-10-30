@@ -58,6 +58,7 @@ static Uint32 *g_first_virt_l3_cache = nullptr;
 static Uint32 *g_num_l3_cpus = nullptr;
 static Uint32 *g_num_l3_cpus_online = nullptr;
 static Uint32 *g_num_virt_l3_cpus = nullptr;
+static Uint32 *g_create_cpu_map = nullptr;
 
 /**
  * initialize list of cpu
@@ -182,6 +183,43 @@ void NdbHW_End()
 }
 
 void
+Ndb_InitRRGroups(Uint32 *rr_group,
+                 Uint32 num_rr_groups,
+                 Uint32 num_query_instances,
+                 Uint32 max_threads)
+{
+  require(num_query_instances <= max_threads);
+  require(num_rr_groups > 0);
+  for (Uint32 i = 0; i < max_threads; i++)
+  {
+    rr_group[i] = 0xFFFFFFFF; //Ensure group not valid as init value
+  }
+  if (g_create_cpu_map)
+  {
+    memcpy(rr_group,
+           g_create_cpu_map,
+           sizeof(Uint32) * num_query_instances);
+    for (Uint32 i = 0; i < num_query_instances; i++)
+    {
+      require(rr_group[i] < num_rr_groups);
+    }
+  }
+  else
+  {
+    Uint32 rr_group_id = 0;
+    for (Uint32 i = 0; i < num_query_instances; i++)
+    {
+      rr_group[i] = rr_group_id;
+      rr_group_id++;
+      if (rr_group_id == num_rr_groups)
+      {
+        rr_group_id = 0;
+      }
+    }
+  }
+}
+
+void
 Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
 {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
@@ -282,6 +320,7 @@ create_cpu_list(struct ndb_hwinfo *hwinfo,
    * we make use of all CPUs available.
    */
   Uint32 num_groups = num_rr_groups;
+  Uint32 inx = 0;
   do
   {
     found = false;
@@ -307,6 +346,7 @@ create_cpu_list(struct ndb_hwinfo *hwinfo,
         first_virt_l3_cache[i] =
           hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
         hwinfo->cpu_info[next_cpu].next_cpu_map = RNIL;
+        g_create_cpu_map[inx++] = i;
         found_query++;
       }
     }
@@ -1029,7 +1069,7 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
 }
 
 Uint32
-Ndb_CreateCPUMap(Uint32 num_query_instances)
+Ndb_CreateCPUMap(Uint32 num_query_instances, Uint32 max_threads)
 {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
   /**
@@ -1045,6 +1085,7 @@ Ndb_CreateCPUMap(Uint32 num_query_instances)
    * this list will be ok even if we set number of LDM instances to 0
    * here.
    */
+  g_create_cpu_map = (Uint32*)malloc(sizeof(Uint32) * max_threads);
   num_query_instances = (num_query_instances == 0) ? 1 : num_query_instances;
   Uint32 optimal_group_size = MAX_RR_GROUP_SIZE;
   Uint32 min_group_size = MIN(MIN_RR_GROUP_SIZE, num_query_instances);
@@ -3338,7 +3379,7 @@ test_create_cpumap()
     create_hwinfo_test_cpu_map(&test_map);
     printf("Create CPUMap for test %u\n", i + 1);
     Uint32 num_rr_groups =
-      Ndb_CreateCPUMap(test_map.num_query_instances);
+      Ndb_CreateCPUMap(test_map.num_query_instances, 1024);
     for (Uint32 id = 0; id < g_ndb_hwinfo->cpu_cnt_max; id++)
     {
       Uint32 cpu_ids[MAX_USED_NUM_CPUS];

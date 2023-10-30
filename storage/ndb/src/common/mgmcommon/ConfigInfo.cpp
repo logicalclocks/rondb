@@ -6073,7 +6073,7 @@ checkThreadConfig(InitConfigFileParser::Context & ctx, const char * unused)
   }
   else if (ctx.m_currentSection->get("ThreadConfig", &thrconfig))
   {
-    int ret = tmp.do_parse(thrconfig, realtimeScheduler, spinTimer);
+    int ret = tmp.do_parse_thrconfig(thrconfig, realtimeScheduler, spinTimer);
     if (ret)
     {
       ctx.reportError("Unable to parse ThreadConfig: %s",
@@ -6098,7 +6098,7 @@ checkThreadConfig(InitConfigFileParser::Context & ctx, const char * unused)
   }
   else if (maxExecuteThreads || lqhThreads || classic)
   {
-    int ret = tmp.do_parse(
+    int ret = tmp.do_parse_classic(
         maxExecuteThreads, lqhThreads, classic, realtimeScheduler, spinTimer);
     if (ret)
     {

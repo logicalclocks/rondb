@@ -1675,7 +1675,7 @@ Configuration::setupConfiguration()
   if (auto_thread_config == 0 &&
       thrconfigstring != nullptr && thrconfigstring[0] != 0)
   {
-    int res = m_thr_config.do_parse(
+    int res = m_thr_config.do_parse_thrconfig(
         thrconfigstring, _realtimeScheduler, _schedulerSpinTimer);
     if (res != 0)
     {
@@ -1691,10 +1691,11 @@ Configuration::setupConfiguration()
       Uint32 num_cpus = 0;
       iter.get(CFG_DB_NUM_CPUS, &num_cpus);
       g_eventLogger->info("Use automatic thread configuration");
-      m_thr_config.do_parse(_realtimeScheduler,
-                            _schedulerSpinTimer,
-                            num_cpus,
-                            globalData.ndbRRGroups);
+      m_thr_config.do_parse_auto(_realtimeScheduler,
+                                 _schedulerSpinTimer,
+                                 num_cpus,
+                                 globalData.ndbRRGroups,
+                                 MAX_DISTR_THREADS);
     }
     else
     {
@@ -1710,11 +1711,11 @@ Configuration::setupConfiguration()
 #endif
       Uint32 lqhthreads = 0;
       iter.get(CFG_NDBMT_LQH_THREADS, &lqhthreads);
-      int res = m_thr_config.do_parse(mtthreads,
-                                      lqhthreads,
-                                      classic,
-                                      _realtimeScheduler,
-                                      _schedulerSpinTimer);
+      int res = m_thr_config.do_parse_classic(mtthreads,
+                                              lqhthreads,
+                                              classic,
+                                              _realtimeScheduler,
+                                              _schedulerSpinTimer);
       if (res != 0)
       {
         ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,

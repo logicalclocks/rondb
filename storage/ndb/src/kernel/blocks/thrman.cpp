@@ -2248,8 +2248,6 @@ Thrman::execUPD_THR_LOAD_ORD(Signal *signal)
   Uint32 send_load = thrLoadOrd->sendLoad;
   Uint32 send_instance = thrLoadOrd->sendInstance;
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
-  Uint32 last_ldm_instance = first_ldm_instance +
-                             getNumLDMInstances() - 1;
   Uint32 last_query_instance = getNumQueryInstances();
   ndbrequire(send_instance >= first_ldm_instance);
   ndbrequire(send_instance <= last_query_instance);

@@ -795,10 +795,11 @@ THRConfig::get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads)
 }
 
 int
-THRConfig::do_parse(unsigned realtime,
-                    unsigned spintime,
-                    unsigned num_cpus,
-                    unsigned &num_rr_groups)
+THRConfig::do_parse_auto(unsigned realtime,
+                         unsigned spintime,
+                         unsigned num_cpus,
+                         unsigned &num_rr_groups,
+                         unsigned max_threads)
 {
   Uint32 tc_threads = 0;
   Uint32 ldm_threads = 0;
@@ -890,24 +891,37 @@ THRConfig::do_parse(unsigned realtime,
      * With CPU information available we will perform CPU locking as well
      * in an automated fashion. We have prepared the HW information such
      * that we can simply assign the CPUs from the CPU map.
+     *
+     * We will assign 2 LDM threads, next 2 non-LDM threads and continue
+     * like that. The idea is that the 2 LDM threads will share the same
+     * CPU core if it is running on a hyperthreaded CPU. If it is running
+     * on a CPU with a single CPU per core it won't matter so much how
+     * we distribute threads inside L3 caches, it only matters which
+     * L3 cache the CPUs belong to.
      */
     num_rr_groups =
-      Ndb_CreateCPUMap(num_query_instances);
+      Ndb_CreateCPUMap(num_query_instances, max_threads);
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
-    bool use_ldm = true;
+    Uint32 use_ldm = 2;
+    Uint32 use_non_ldm = 2;
     for (Uint32 i = 0; i < num_cpus; i++)
     {
       Uint32 thread_ldm_type;
-      if (ldm_threads > 0 && use_ldm)
+      if (ldm_threads > 0 && use_ldm > 0)
       {
         thread_ldm_type = T_LDM;
-        use_ldm = false;
+        use_ldm--;
         ldm_threads--;
       }
       else
       {
-        use_ldm = true;
+        use_non_ldm--;
+        if (use_non_ldm == 0)
+        {
+          use_ldm = 2;
+          use_non_ldm = 2;
+        }
         if (recv_threads > 0)
         {
           thread_ldm_type = T_RECV;
@@ -962,11 +976,11 @@ THRConfig::do_parse(unsigned realtime,
 }
 
 int
-THRConfig::do_parse(unsigned MaxNoOfExecutionThreads,
-                    unsigned __ndbmt_lqh_threads,
-                    unsigned __ndbmt_classic,
-                    unsigned realtime,
-                    unsigned spintime)
+THRConfig::do_parse_classic(unsigned MaxNoOfExecutionThreads,
+                            unsigned __ndbmt_lqh_threads,
+                            unsigned __ndbmt_classic,
+                            unsigned realtime,
+                            unsigned spintime)
 {
   /**
    * This is old ndbd.cpp : get_multithreaded_config
@@ -1765,9 +1779,9 @@ THRConfig::do_validate_thread_counts()
 }
 
 int
-THRConfig::do_parse(const char * ThreadConfig,
-                    unsigned realtime,
-                    unsigned spintime)
+THRConfig::do_parse_thrconfig(const char * ThreadConfig,
+                              unsigned realtime,
+                              unsigned spintime)
 {
   int ret = handle_spec(ThreadConfig, realtime, spintime);
   if (ret != 0)
@@ -1863,7 +1877,7 @@ TAPTEST(thr_config)
   ndb_init();
   {
     THRConfig tmp;
-    OK(tmp.do_parse(8, 0, 0, 0, 0) == 0);
+    OK(tmp.do_parse_classic(8, 0, 0, 0, 0) == 0);
   }
 
   /**
@@ -1951,8 +1965,8 @@ TAPTEST(thr_config)
     for (Uint32 i = 0; ok[i]; i++)
     {
       THRConfig tmp;
-      int res = tmp.do_parse(ok[i], 0, 0);
-      printf("do_parse(%s) => %s - %s\n", ok[i],
+      int res = tmp.do_parse_thrconfig(ok[i], 0, 0);
+      printf("do_parse_thrconfig(%s) => %s - %s\n", ok[i],
              res == 0 ? "OK" : "FAIL",
              res == 0 ? tmp.getConfigString() :
              tmp.getErrorMessage());
@@ -1960,7 +1974,7 @@ TAPTEST(thr_config)
       {
         BaseString out(tmp.getConfigString());
         THRConfig check;
-        OK(check.do_parse(out.c_str(), 0, 0) == 0);
+        OK(check.do_parse_thrconfig(out.c_str(), 0, 0) == 0);
         OK(strcmp(out.c_str(), check.getConfigString()) == 0);
       }
     }
@@ -1968,8 +1982,8 @@ TAPTEST(thr_config)
     for (Uint32 i = 0; fail[i]; i++)
     {
       THRConfig tmp;
-      int res = tmp.do_parse(fail[i], 0, 0);
-      printf("do_parse(%s) => %s - %s\n", fail[i],
+      int res = tmp.do_parse_thrconfig(fail[i], 0, 0);
+      printf("do_parse_thrconfig(%s) => %s - %s\n", fail[i],
              res == 0 ? "OK" : "FAIL",
              res == 0 ? "" : tmp.getErrorMessage());
       OK(res != 0);
@@ -2134,7 +2148,7 @@ TAPTEST(thr_config)
     {
       THRConfig tmp;
       tmp.setLockExecuteThreadToCPU(t[i+0]);
-      const int _res = tmp.do_parse(t[i+1], 0, 0);
+      const int _res = tmp.do_parse_thrconfig(t[i+1], 0, 0);
       const int expect_res = strcmp(t[i+2], "OK") == 0 ? 0 : -1;
       const int res = _res == expect_res ? 0 : -1;
       int ok = expect_res == 0 ?
