@@ -37,8 +37,8 @@
 #include <iostream>
 #include <thread>
 
-#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
-//#define DEBUG_HW(arglist) do { } while(0)
+//#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
+#define DEBUG_HW(arglist) do { } while(0)
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>

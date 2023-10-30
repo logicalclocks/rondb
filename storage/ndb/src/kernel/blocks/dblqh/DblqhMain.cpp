@@ -20817,6 +20817,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
           prim_tab_fragptr.p->m_cond_write_key_waiters == 0 &&
           prim_tab_fragptr.p->m_cond_exclusive_waiters == 0)
       {
+        jamDebug();
         scan_direct_count = 1;
         m_tot_scan_direct_count = tot_scan_direct_count;
         /**
@@ -20836,6 +20837,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
            * Insert scan into TUX index node to ensure we get back to correct
            * position after real-time break.
            */
+          jamDebug();
           c_tux->relinkScan(__LINE__);
         }
         /* Early release to ensure waiters can quickly get started */

@@ -6330,6 +6330,8 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
           break;
         }
       }
+      jamDebug();
+      jamDataDebug(query_instance_no);
       block_instance_no = query_instance_no;
       block_num = DBQLQH;
     }
