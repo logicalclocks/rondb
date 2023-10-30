@@ -2262,8 +2262,6 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
                                    MeasurementRecordPtr measurePtr)
 {
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
-  Uint32 last_ldm_instance = first_ldm_instance +
-                             globalData.ndbMtLqhThreads - 1;
   Uint32 last_query_instance = getNumQueryInstances();
   Uint32 our_instance = instance();
   if (globalData.ndbMtLqhThreads == 0 ||
