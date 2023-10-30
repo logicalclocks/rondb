@@ -407,6 +407,7 @@ sort_virt_l3_caches(struct ndb_hwinfo *hwinfo)
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
     Uint32 num_cpus_in_group = g_num_virt_l3_cpus[i];
+    (void)num_cpus_in_group;
     DEBUG_HW((stderr,
               "num_cpus %u in group %u\n",
               num_cpus_in_group, i));
