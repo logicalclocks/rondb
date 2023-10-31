@@ -70,7 +70,9 @@ public:
                     unsigned spintime,
                     unsigned num_cpus,
                     unsigned &num_rr_groups,
-                    unsigned max_threads);
+                    unsigned max_threads,
+                    bool use_tc_threads,
+                    bool use_ldm_threads);
   int do_parse_thrconfig(const char * ThreadConfig,
                          unsigned realtime,
                          unsigned spintime);

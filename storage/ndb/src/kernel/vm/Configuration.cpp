@@ -1691,11 +1691,17 @@ Configuration::setupConfiguration()
       Uint32 num_cpus = 0;
       iter.get(CFG_DB_NUM_CPUS, &num_cpus);
       g_eventLogger->info("Use automatic thread configuration");
+      Uint32 use_tc_threads = 1;
+      iter.get(CFG_DB_USE_TC_THREADS, &use_tc_threads);
+      Uint32 use_ldm_threads = 1;
+      iter.get(CFG_DB_USE_LDM_THREADS, &use_ldm_threads);
       m_thr_config.do_parse_auto(_realtimeScheduler,
                                  _schedulerSpinTimer,
                                  num_cpus,
                                  globalData.ndbRRGroups,
-                                 MAX_DISTR_THREADS);
+                                 MAX_DISTR_THREADS,
+                                 use_tc_threads,
+                                 use_ldm_threads);
     }
     else
     {

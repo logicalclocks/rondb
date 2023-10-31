@@ -2128,6 +2128,32 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
   },
 
   {
+    CFG_DB_USE_TC_THREADS,
+    "UseTcThreads",
+    DB_TOKEN,
+    "Use TC threads in automatic thread configuration",
+    ConfigInfo::CI_USED,
+    CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true"
+  },
+
+  {
+    CFG_DB_USE_LDM_THREADS,
+    "UseLdmThreads",
+    DB_TOKEN,
+    "Use LDM threads in automatic thread configuration",
+    ConfigInfo::CI_USED,
+    CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true"
+  },
+
+  {
     CFG_DB_MT_THREADS,
     "MaxNoOfExecutionThreads",
     DB_TOKEN,

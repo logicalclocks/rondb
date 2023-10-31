@@ -298,7 +298,6 @@ THRConfig::compute_automatic_thread_config(
   Uint32 & tc_threads,
   Uint32 & ldm_threads,
   Uint32 & query_threads,
-  Uint32 & recover_threads,
   Uint32 & main_threads,
   Uint32 & rep_threads,
   Uint32 & send_threads,
@@ -579,8 +578,8 @@ THRConfig::compute_automatic_thread_config(
     Uint32 recv_threads;
   } table[] = {
     { 0, 0, 0, 0, 0, 0, 0, 1 }, // 1 CPU
-    { 1, 0, 0, 0, 0, 0, 0, 2 }, // 2-3 CPUs
-    { 2, 1, 0, 2, 0, 0, 0, 1 }, // 4-5 CPUs
+    { 1, 0, 0, 1, 0, 0, 0, 1 }, // 2-3 CPUs
+    { 2, 0, 0, 2, 0, 1, 0, 1 }, // 4-5 CPUs
     { 3, 0, 0, 2, 2, 0, 1, 1 }, // 6-7 CPUs
     { 4, 0, 0, 2, 2, 2, 1, 1 }, // 8-9 CPUs
     { 5, 0, 0, 3, 3, 2, 1, 1 }, // 10-11 CPUs
@@ -754,31 +753,15 @@ THRConfig::compute_automatic_thread_config(
   tc_threads = table[used_map_id].tc_threads;
   send_threads = table[used_map_id].send_threads;
   recv_threads = table[used_map_id].recv_threads;
+
   ldm_threads += query_threads;
   query_threads = 0;
-
-  recover_threads = cpu_cnt - ldm_threads;
-
-  if (cpu_cnt < 5)
-  {
-    main_threads = 0;
-    recover_threads = 0;
-    ldm_threads = 0;
-    recv_threads = cpu_cnt;
-  }
 
   Uint32 tot_threads = main_threads;
   tot_threads += rep_threads;
   tot_threads += ldm_threads;
   tot_threads += tc_threads;
   tot_threads += recv_threads;
-
-  if (tot_threads > NDBMT_MAX_BLOCK_INSTANCES)
-  {
-    /* Have to ensure total number of block instances are not beyond limit */
-    recover_threads -=
-      (tot_threads - NDBMT_MAX_BLOCK_INSTANCES);
-  }
 }
 
 unsigned
@@ -799,12 +782,13 @@ THRConfig::do_parse_auto(unsigned realtime,
                          unsigned spintime,
                          unsigned num_cpus,
                          unsigned &num_rr_groups,
-                         unsigned max_threads)
+                         unsigned max_threads,
+                         bool use_tc_threads,
+                         bool use_ldm_threads)
 {
   Uint32 tc_threads = 0;
   Uint32 ldm_threads = 0;
   Uint32 query_threads = 0;
-  Uint32 recover_threads = 0;
   Uint32 main_threads = 0;
   Uint32 rep_threads = 0;
   Uint32 send_threads = 0;
@@ -813,22 +797,27 @@ THRConfig::do_parse_auto(unsigned realtime,
                                   tc_threads,
                                   ldm_threads,
                                   query_threads,
-                                  recover_threads,
                                   main_threads,
                                   rep_threads,
                                   send_threads,
                                   recv_threads);
+  if (!use_tc_threads)
+  {
+    recv_threads += tc_threads;
+  }
+  if (!use_ldm_threads)
+  {
+    recv_threads += ldm_threads;
+  }
   g_eventLogger->info("Auto thread config uses:\n"
                       " %u LDM+Query threads,\n"
                       " %u tc threads,\n"
-                      " %u Recover threads,\n"
                       " %u main threads,\n"
                       " %u rep threads,\n"
                       " %u recv threads,\n"
                       " %u send threads",
                       ldm_threads,
                       tc_threads,
-                      recover_threads,
                       main_threads,
                       rep_threads,
                       recv_threads,
