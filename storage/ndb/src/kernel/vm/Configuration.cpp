@@ -1874,11 +1874,19 @@ Configuration::setupConfiguration()
       }
     }
 
-    if ((globalData.ndbMtQueryWorkers) > MAX_NDBMT_QUERY_THREADS)
+    if ((globalData.ndbMtQueryWorkers) > MAX_NDBMT_QUERY_WORKERS)
     {
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
                 "Invalid configuration fetched. ",
                 "Query workers can be max 127");
+    }
+    if (globalData.ndbRRGroups == 0)
+    {
+      /**
+       * ndbRRGroups haven't been set yet, means we didn't use
+       * do_parse_auto. Calculate it here.
+       */
+      globalData.ndbRRGroups = Ndb_GetRRGroups(globalData.ndbMtQueryWorkers);
     }
   } while (0);
 

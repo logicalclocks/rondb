@@ -1417,15 +1417,15 @@ Dblqh::sttor_startphase1(Signal *signal)
     m_restore_mutex = NdbMutex_Create();
     ndbrequire(m_restore_mutex != 0);
     m_num_recover_active = (Uint32*) ndbd_malloc(sizeof(Uint32) *
-                                       (MAX_NDBMT_QUERY_THREADS + 1));
+                                       (MAX_NDBMT_QUERY_WORKERS + 1));
     memset(m_num_recover_active,
            0,
-           sizeof(Uint32) * (MAX_NDBMT_QUERY_THREADS + 1));
+           sizeof(Uint32) * (MAX_NDBMT_QUERY_WORKERS + 1));
     m_instance_recover_active = (Uint32*) ndbd_malloc(sizeof(Uint32) *
-                                       (MAX_NDBMT_LQH_THREADS + 1));
+                                       (MAX_NDBMT_LQH_WORKERS + 1));
     memset(m_instance_recover_active,
            0,
-           sizeof(Uint32) * (MAX_NDBMT_LQH_THREADS + 1));
+           sizeof(Uint32) * (MAX_NDBMT_LQH_WORKERS + 1));
     /**
      * The number of active instances is tracked when we are using query
      * threads and recover threads. The reason is that we want to enable
@@ -6383,7 +6383,7 @@ void Dblqh::sendCommitLqh(Signal* signal,
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     /* No send packed support in these cases */
@@ -6438,7 +6438,7 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     /* No send packed support in these cases */
@@ -6488,7 +6488,7 @@ void Dblqh::sendCommittedTc(Signal* signal,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS)
+  if (instanceKey > MAX_NDBMT_TC_WORKERS)
   {
     /* No send packed support in these cases */
     jam();
@@ -6536,7 +6536,7 @@ void Dblqh::sendCompletedTc(Signal* signal,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS)
+  if (instanceKey > MAX_NDBMT_TC_WORKERS)
   {
     /* No handling of send packed in those cases */
     jam();
@@ -6596,7 +6596,7 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   }
   if (block == getDBLQH())
   {
-    if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+    if (instanceKey <= MAX_NDBMT_LQH_WORKERS)
     {
       container = &Thostptr.p->lqh_pack[instanceKey];
     }
@@ -6607,7 +6607,7 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   }
   else if (block == DBTC)
   {
-    if (instanceKey <= MAX_NDBMT_TC_THREADS)
+    if (instanceKey <= MAX_NDBMT_TC_WORKERS)
     {
       container = &Thostptr.p->tc_pack[instanceKey];
     }
@@ -6646,12 +6646,12 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
 
     if (block == getDBLQH())
     {
-      if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+      if (instanceKey <= MAX_NDBMT_LQH_WORKERS)
         Thostptr.p->lqh_pack_mask.set(instanceKey);
     }
     else if (block == DBTC)
     {
-      if (instanceKey <= MAX_NDBMT_TC_THREADS)
+      if (instanceKey <= MAX_NDBMT_TC_WORKERS)
         Thostptr.p->tc_pack_mask.set(instanceKey);
     }
   }
@@ -13389,7 +13389,7 @@ Dblqh::sendFireTrigConfTc(Signal* signal,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS)
+  if (instanceKey > MAX_NDBMT_TC_WORKERS)
   {
     jam();
     memcpy(signal->theData, Tdata, 4 * FireTrigConf::SignalLength);

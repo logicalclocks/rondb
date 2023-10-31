@@ -1802,13 +1802,13 @@ public:
 #define NUM_LQHKEYREQ_COUNTS 4
 #define NUM_SCAN_FRAGREQ_COUNTS 1
 #define MAX_LDM_THREAD_GROUPS_PER_RR_GROUP 8
-#define MAX_RR_GROUPS ((MAX_NDBMT_QUERY_THREADS + \
+#define MAX_RR_GROUPS ((MAX_NDBMT_QUERY_WORKERS + \
                         (MIN_QUERY_INSTANCES_PER_RR_GROUP - 1)) /  \
                       MIN_QUERY_INSTANCES_PER_RR_GROUP)
 #define MAX_DISTRIBUTION_WEIGHT 16
 #define MAX_NUM_DISTR_SIGNAL \
           (MAX_DISTRIBUTION_WEIGHT * MAX_QUERY_INSTANCES_PER_RR_GROUP)
-#define MAX_DISTR_THREADS (MAX_NDBMT_LQH_THREADS)
+#define MAX_DISTR_THREADS (MAX_NDBMT_QUERY_WORKERS)
 public:
   struct RoundRobinInfo
   {
@@ -1877,7 +1877,7 @@ public:
 
     struct RoundRobinInfo m_rr_info[MAX_RR_GROUPS];
     struct QueryThreadState
-      m_query_state[MAX_NDBMT_QUERY_THREADS + MAX_NDBMT_LQH_THREADS];
+      m_query_state[MAX_NDBMT_QUERY_WORKERS];
 #ifdef DEBUG_SCHED_STATS
     Uint64 m_lqhkeyreq_lqh;
     Uint64 m_lqhkeyreq_qt;
@@ -1885,8 +1885,8 @@ public:
     Uint64 m_scan_fragreq_lqh;
     Uint64 m_scan_fragreq_qt;
     Uint64 m_scan_fragreq_rr;
-    Uint32 m_lqhkeyreq_qt_count[MAX_NDBMT_LQH_THREADS];
-    Uint32 m_scan_fragreq_qt_count[MAX_NDBMT_LQH_THREADS];
+    Uint32 m_lqhkeyreq_qt_count[MAX_NDBMT_LQH_WORKERS];
+    Uint32 m_scan_fragreq_qt_count[MAX_NDBMT_LQH_WORKERS];
 #endif
   };
   void print_static_distr_info(DistributionHandler *handle);

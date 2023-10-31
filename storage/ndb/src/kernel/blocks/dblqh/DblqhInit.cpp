@@ -922,7 +922,7 @@ Dblqh::~Dblqh()
       NdbMutex_Destroy(m_restore_mutex);
       m_restore_mutex = 0;
       ndbd_free((void*)m_num_recover_active,
-                sizeof(Uint32) * (MAX_NDBMT_QUERY_THREADS + 1));
+                sizeof(Uint32) * (MAX_NDBMT_QUERY_WORKERS + 1));
       m_num_recover_active = 0;
     }
     {

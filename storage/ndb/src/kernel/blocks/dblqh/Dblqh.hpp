@@ -521,7 +521,7 @@ public:
     Uint32 prevList;
   };
   typedef Ptr<CopyFragRecord> CopyFragRecordPtr;
-#define ZCOPYFRAGREC_FILE_SIZE MAX_NDBMT_LQH_THREADS
+#define ZCOPYFRAGREC_FILE_SIZE MAX_NDBMT_LQH_WORKERS
   typedef ArrayPool<CopyFragRecord> CopyFragRecord_pool;
   typedef DLFifoList<CopyFragRecord_pool> CopyFragRecord_fifo;
 
@@ -1302,10 +1302,10 @@ public:
   typedef Ptr<GcpRecord> GcpRecordPtr;
 
   struct HostRecord {
-    Bitmask<(MAX_NDBMT_LQH_THREADS+1+31)/32> lqh_pack_mask;
-    Bitmask<(MAX_NDBMT_TC_THREADS+1+31)/32> tc_pack_mask;
-    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_THREADS+1];
-    struct PackedWordsContainer tc_pack[MAX_NDBMT_TC_THREADS+1];
+    Bitmask<(MAX_NDBMT_LQH_WORKERS+1+31)/32> lqh_pack_mask;
+    Bitmask<(MAX_NDBMT_TC_WORKERS+1+31)/32> tc_pack_mask;
+    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_WORKERS+1];
+    struct PackedWordsContainer tc_pack[MAX_NDBMT_TC_WORKERS+1];
     Uint8 inPackedList;
     Uint8 nodestatus;
   };

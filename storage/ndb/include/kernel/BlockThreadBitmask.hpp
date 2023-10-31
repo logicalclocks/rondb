@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,10 +33,7 @@
 
 #define JAM_FILE_ID 513
 
-static constexpr Uint32 NDB_MAX_BLOCK_THREADS = NDBMT_MAIN_THREADS +
-                                                MAX_NDBMT_TC_THREADS +
-                                                MAX_NDBMT_RECEIVE_THREADS +
-                                                MAX_NDBMT_LQH_THREADS;
+static constexpr Uint32 NDB_MAX_BLOCK_THREADS = NDBMT_MAX_BLOCK_INSTANCES;
 
 static constexpr Uint32 NDB_BLOCK_THREAD_BITMASK_SIZE =
     ndb_ceil_div(NDB_MAX_BLOCK_THREADS, 32U);

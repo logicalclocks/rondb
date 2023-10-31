@@ -72,15 +72,15 @@ static const struct THRConfig::Entries m_entries[] =
 { 
   //type                min max                       exec thread   permanent default_count
   { THRConfig::T_MAIN,  0, 1,                         true,         true,     1 },
-  { THRConfig::T_LDM,   0, MAX_NDBMT_LQH_THREADS,     true,         true,     1 },
+  { THRConfig::T_LDM,   0, MAX_NDBMT_LQH_WORKERS,     true,         true,     1 },
   { THRConfig::T_RECV,  1, MAX_NDBMT_RECEIVE_THREADS, true,         true,     1 },
   { THRConfig::T_REP,   0, 1,                         true,         true,     1 },
   { THRConfig::T_IO,    1, 1,                         false,        true,     1 },
   { THRConfig::T_WD,    1, 1,                         false,        true,     1 },
-  { THRConfig::T_TC,    0, MAX_NDBMT_TC_THREADS,      true,         true,     0 },
+  { THRConfig::T_TC,    0, MAX_NDBMT_TC_WORKERS,      true,         true,     0 },
   { THRConfig::T_SEND,  0, MAX_NDBMT_SEND_THREADS,    true,         true,     0 },
   { THRConfig::T_IXBLD, 0, 1,                         false,        false,    0 },
-  { THRConfig::T_QUERY, 0, MAX_NDBMT_QUERY_THREADS,   true,         true,     0 },
+  { THRConfig::T_QUERY, 0, MAX_NDBMT_QUERY_WORKERS,   true,         true,     0 },
 };
 
 static const struct ParseParams m_params[] =

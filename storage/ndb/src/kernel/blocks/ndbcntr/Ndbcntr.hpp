@@ -562,7 +562,7 @@ private:
   Uint32 m_local_lcp_id;
   RedoStateRep::RedoAlertState m_global_redo_alert_state;
   RedoStateRep::RedoAlertState m_node_redo_alert_state;
-  RedoStateRep::RedoAlertState m_redo_alert_state[MAX_NDBMT_LQH_THREADS];
+  RedoStateRep::RedoAlertState m_redo_alert_state[MAX_NDBMT_LQH_WORKERS];
 
   RedoStateRep::RedoAlertState get_node_redo_alert_state();
   Uint32 send_to_all_lqh(Signal*, Uint32 gsn, Uint32 sig_len);

@@ -6331,7 +6331,7 @@ bool
 Dbtc::CommitAckMarker::insert_in_commit_ack_marker_all(Dbtc *tc,
                                                        NodeId node_id)
 {
-  for (Uint32 ikey = 1; ikey <= MAX_NDBMT_LQH_THREADS; ikey++)
+  for (Uint32 ikey = 1; ikey <= MAX_NDBMT_LQH_WORKERS; ikey++)
   {
     if (!insert_in_commit_ack_marker(tc, ikey, node_id))
       return false;
@@ -7733,7 +7733,7 @@ Dbtc::sendCommitLqh(Signal* signal,
   Uint32 len = 5;
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceNo > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceNo > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     memcpy(&signal->theData[0], &Tdata[0], len << 2);
@@ -8266,7 +8266,7 @@ Dbtc::sendCompleteLqh(Signal* signal,
 
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceNo > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceNo > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     memcpy(&signal->theData[0], &Tdata[0], len << 2);
@@ -8495,7 +8495,7 @@ Dbtc::sendFireTrigReqLqh(Signal* signal,
   req->pass = pass;
   Uint32 len = FireTrigReq::SignalLength;
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
-  if (instanceNo > MAX_NDBMT_LQH_THREADS) {
+  if (instanceNo > MAX_NDBMT_LQH_WORKERS) {
     memcpy(signal->theData, Tdata, len << 2);
     BlockReference lqhRef = numberToRef(DBLQH, instanceNo, Tnode);
     sendSignal(lqhRef, GSN_FIRE_TRIG_REQ, signal, len, JBB);
@@ -8768,7 +8768,7 @@ Dbtc::sendRemoveMarker(Signal* signal,
   Tdata[2] = transid2;
   Uint32 len = 3;
   Uint32 instanceNo = getInstanceNo(nodeId, instanceKey);
-  if (instanceNo > MAX_NDBMT_LQH_THREADS) {
+  if (instanceNo > MAX_NDBMT_LQH_WORKERS) {
     jam();
     // first word omitted
     memcpy(&signal->theData[0], &Tdata[1], (len - 1) << 2);

@@ -157,7 +157,7 @@ struct GlobalData {
     ndbMtReceiveThreads = 0;
     ndbMtMainThreads = 0;
     ndbLogParts = 0;
-    ndbRRGroups = 1;
+    ndbRRGroups = 0;
     num_io_laggers = 0;
     theMicrosSleep = 0;
     theBufferFullMicrosSleep = 0;

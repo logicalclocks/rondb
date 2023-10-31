@@ -48,10 +48,7 @@
   messages directed to other nodes and contains no blocks and
   executes thus no signals.
 */
-#define MAX_BLOCK_THREADS (MAX_MAIN_THREADS +       \
-                           MAX_NDBMT_LQH_THREADS +  \
-                           MAX_NDBMT_TC_THREADS +   \
-                           MAX_NDBMT_RECEIVE_THREADS)
+#define MAX_BLOCK_THREADS (NDBMT_MAX_BLOCK_INSTANCES)
 
 /**
  * The worst case is the single thread instance running the receive thread,

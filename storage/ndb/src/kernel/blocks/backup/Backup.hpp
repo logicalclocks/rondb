@@ -819,7 +819,8 @@ private:
     Uint32 masterRef;
     NdbNodeBitmask nodes;
 
-    Bitmask<(Uint32)(MAX_NDBMT_LQH_THREADS/sizeof(Uint32))> fragWorkers[MAX_NDB_NODES];
+    Bitmask<(Uint32)(MAX_NDBMT_LQH_WORKERS/sizeof(Uint32))>
+      fragWorkers[MAX_NDB_NODES];
     Uint32 idleFragWorkerCount;
 
     /**

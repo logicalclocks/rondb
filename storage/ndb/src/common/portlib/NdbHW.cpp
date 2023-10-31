@@ -256,9 +256,9 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
 }
 
 Uint32
-Ndb_GetRRGroups(Uint32 ldm_threads)
+Ndb_GetRRGroups(Uint32 num_query_instances)
 {
-  return (ldm_threads + MAX_RR_GROUP_SIZE) / MAX_RR_GROUP_SIZE;
+  return (num_query_instances + MAX_RR_GROUP_SIZE) / MAX_RR_GROUP_SIZE;
 }
 
 Uint32

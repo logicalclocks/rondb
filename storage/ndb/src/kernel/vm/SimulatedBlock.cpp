@@ -5939,7 +5939,7 @@ SimulatedBlock::print_debug_sched_stats(DistributionHandler * const handle)
   handle->m_scan_fragreq_qt = 0;
   handle->m_scan_fragreq_rr = 0;
   for (Uint32 i = 0;
-       i < MAX_NDBMT_LQH_THREADS+MAX_NDBMT_QUERY_THREADS;
+       i < MAX_NDBMT_QUERY_WORKERS;
        i++)
   {
     handle->m_lqhkeyreq_qt_count[i] = 0;
