@@ -294,7 +294,7 @@ computeThreadConfig(Uint32 MaxNoOfExecutionThreads,
 
 void
 THRConfig::compute_automatic_thread_config(
-  Uint32 num_cpus,
+  Uint32 & num_cpus,
   Uint32 & tc_threads,
   Uint32 & ldm_threads,
   Uint32 & query_threads,
@@ -672,6 +672,7 @@ THRConfig::compute_automatic_thread_config(
       cpu_cnt = hwinfo->cpu_cnt_max;
       cpu_cnt = MIN(cpu_cnt, MAX_USED_NUM_CPUS);
     }
+    num_cpus = cpu_cnt;
 #if 0
     /* Consistency check of above tables */
     Uint32 expected_map_id = 0;

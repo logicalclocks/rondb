@@ -146,7 +146,7 @@ protected:
   void bind_unbound(Vector<T_Thread> & vec, unsigned cpu);
 
   void compute_automatic_thread_config(
-    Uint32 num_cpus,
+    Uint32 & num_cpus,
     Uint32 & tc_threads,
     Uint32 & ldm_threads,
     Uint32 & query_threads,
