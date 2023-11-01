@@ -7633,7 +7633,10 @@ run_job_buffers(thr_data *selfptr,
                 Signal *sig,
                 Uint32 & send_sum,
                 Uint32 & flush_sum,
-                bool & pending_send)
+                bool is_recv_thread,
+                bool & pending_send,
+                Uint32 & num_events,
+                TransporterReceiveHandle *recvdata)
 {
   Uint32 signal_count = 0;
   Uint32 signal_count_since_last_zero_time_queue = 0;
@@ -7691,6 +7694,7 @@ run_job_buffers(thr_data *selfptr,
    */
   const Uint32 first_jbb_no = selfptr->m_next_jbb_no;
   selfptr->m_watchdog_counter = 13;
+  Uint32 current_signal_count = 0;
   for (unsigned jbb_instance = selfptr->m_jbb_read_mask.find_next(first_jbb_no);
        jbb_instance != BitmaskImpl::NotFound;
        jbb_instance = selfptr->m_jbb_read_mask.find_next(jbb_instance+1))
@@ -7846,6 +7850,17 @@ run_job_buffers(thr_data *selfptr,
         selfptr->m_next_jbb_no = jbb_instance;
         selfptr->m_outstanding_send_wakeups = 0;
         return signal_count;
+      }
+      if (is_recv_thread && (current_signal_count - signal_count > 5))
+      {
+        current_signal_count = signal_count;
+        num_events = globalTransporterRegistry.pollReceive(0, *recvdata);
+        if (num_events > 0)
+        {
+          selfptr->m_next_jbb_no = jbb_instance;
+          selfptr->m_outstanding_send_wakeups = 0;
+          return signal_count;
+        }
       }
     }
   }
@@ -8551,12 +8566,16 @@ mt_receiver_thread_main(void *thr_arg)
     now = NdbTick_getCurrentTicks();
     selfptr->m_curr_ticks = now;
     const Uint32 lagging_timers = scan_time_queues(selfptr, now);
+    Uint32 num_events = 0;
 
     Uint32 sum = run_job_buffers(selfptr,
                                  signal,
                                  send_sum,
                                  flush_sum,
-                                 pending_send);
+                                 true,
+                                 pending_send,
+                                 num_events,
+                                 &recvdata);
     /**
      * Need to call sendpacked even when no signals have been executed since
      * it can be used for NDBFS communication.
@@ -8607,7 +8626,6 @@ mt_receiver_thread_main(void *thr_arg)
      * the actual spin timer.
      */
     Uint32 delay = 0;
-    Uint32 num_events = 0;
     update_spin_config(selfptr, min_spin_timer_us);
     before = NdbTick_getCurrentTicks();
 
@@ -9018,12 +9036,17 @@ mt_job_thread_main(void *thr_arg)
 
     watchDogCounter = 2;
     const Uint32 lagging_timers = scan_time_queues(selfptr, now);
+    Uint32 dummy;
 
     Uint32 sum = run_job_buffers(selfptr,
                                  signal,
                                  send_sum,
                                  flush_sum,
-                                 pending_send);
+                                 false,
+                                 pending_send,
+                                 dummy,
+                                 nullptr);
+    (void)dummy;
 
     /**
      * Need to call sendpacked even when no signals have been executed since
