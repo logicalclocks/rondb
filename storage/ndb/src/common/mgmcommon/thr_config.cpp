@@ -670,6 +670,7 @@ THRConfig::compute_automatic_thread_config(
       cpu_cnt = hwinfo->cpu_cnt_max;
       cpu_cnt = MIN(cpu_cnt, MAX_USED_NUM_CPUS);
     }
+    num_cpus = cpu_cnt;
 #if 0
     /* Consistency check of above tables */
     Uint32 expected_map_id = 0;
@@ -790,10 +791,12 @@ THRConfig::do_parse_auto(unsigned realtime,
   if (!use_tc_threads)
   {
     recv_threads += tc_threads;
+    tc_threads = 0;
   }
   if (!use_ldm_threads)
   {
     recv_threads += ldm_threads;
+    ldm_threads = 0;
   }
   g_eventLogger->info("Auto thread config uses:\n"
                       " %u LDM+Query threads,\n"
@@ -857,7 +860,7 @@ THRConfig::do_parse_auto(unsigned realtime,
     main_threads +
     rep_threads;
   Uint32 calc_num_cpus = num_query_instances + send_threads;
-  require(calc_num_cpus == num_cpus);
+  require(calc_num_cpus <= num_cpus);
 
   struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
   if (hwinfo->is_cpuinfo_available && num_cpus == 0)
