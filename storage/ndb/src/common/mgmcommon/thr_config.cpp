@@ -799,10 +799,12 @@ THRConfig::do_parse_auto(unsigned realtime,
   if (!use_tc_threads)
   {
     recv_threads += tc_threads;
+    tc_threads = 0;
   }
   if (!use_ldm_threads)
   {
     recv_threads += ldm_threads;
+    ldm_threads = 0;
   }
   g_eventLogger->info("Auto thread config uses:\n"
                       " %u LDM+Query threads,\n"
@@ -866,7 +868,7 @@ THRConfig::do_parse_auto(unsigned realtime,
     main_threads +
     rep_threads;
   Uint32 calc_num_cpus = num_query_instances + send_threads;
-  require(calc_num_cpus == num_cpus);
+  require(calc_num_cpus <= num_cpus);
 
   struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
   if (hwinfo->is_cpuinfo_available && num_cpus == 0)
