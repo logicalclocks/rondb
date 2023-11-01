@@ -756,12 +756,6 @@ THRConfig::compute_automatic_thread_config(
 
   ldm_threads += query_threads;
   query_threads = 0;
-
-  Uint32 tot_threads = main_threads;
-  tot_threads += rep_threads;
-  tot_threads += ldm_threads;
-  tot_threads += tc_threads;
-  tot_threads += recv_threads;
 }
 
 unsigned
