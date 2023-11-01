@@ -144,6 +144,7 @@ int NdbHW_Init()
     abort();
   }
 #endif
+  fprintf(stderr, "Found %u CPUs on the machine\n", ncpu);
   if (NdbHW_Init_platform() != 0)
   {
     perror("Failed NdbHW_Init_platform()");
