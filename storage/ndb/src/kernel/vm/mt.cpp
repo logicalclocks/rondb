@@ -7356,15 +7356,22 @@ static void flush_all_local_signals_and_wakeup(struct thr_data *selfptr);
  * thus be changed as the environment changes.
  */
 static
-void handle_scheduling_decisions(thr_data *selfptr,
-                                 Signal *signal,
-                                 Uint32 & send_sum,
-                                 Uint32 & flush_sum,
-                                 bool & pending_send)
+Uint32
+handle_scheduling_decisions(thr_data *selfptr,
+                            Signal *signal,
+                            Uint32 & send_sum,
+                            Uint32 & flush_sum,
+                            bool & pending_send)
 {
+  Uint32 signal_count = 0;
   if (selfptr->m_outstanding_send_wakeups >=
       selfptr->m_max_send_wakeups)
   {
+    /* Read the prio A state often, to avoid starvation of prio A. */
+    signal_count = execute_high_prio_signals(signal,
+                                             selfptr,
+                                             send_sum,
+                                             flush_sum);
     /* Try to send, but skip for now in case of lock contention. */
     sendpacked(selfptr, signal);
     selfptr->m_watchdog_counter = 6;
@@ -7376,6 +7383,7 @@ void handle_scheduling_decisions(thr_data *selfptr,
     send_sum = 0;
     flush_sum = 0;
   }
+  return signal_count;
 }
 
 #if defined(USE_INIT_GLOBAL_VARIABLES)
@@ -7629,6 +7637,44 @@ execute_signals(thr_data *selfptr,
 
 static
 Uint32
+execute_high_prio_signals(Signal *sig,
+                          selfptr,
+                          Uint32 & send_sum,
+                          Uint32 & flush_sum)
+{
+  while (!read_jba_state(selfptr))
+  {
+    rmb();  // See memory barrier reasoning right below
+    selfptr->m_sent_local_prioa_signal = false;
+    static Uint32 max_prioA = thr_job_queue::SIZE * thr_job_buffer::SIZE;
+    Uint32 num_signals = execute_signals(selfptr,
+                                         &(selfptr->m_jba),
+                                         &(selfptr->m_jba_read_state),
+                                         sig,
+                                         max_prioA,
+                                         false,
+                                         send_sum,
+                                         flush_sum);
+#ifdef DEBUG_SCHED_STATS
+    selfptr->m_jbb_total_signals+= num_signals;
+#endif
+    signal_count += num_signals;
+    send_sum += num_signals;
+    flush_sum += num_signals;
+    if (!selfptr->m_sent_local_prioa_signal)
+    {
+      /**
+       * Break out of loop if there was no prio A signals generated
+       * from the local execution.
+       */
+      break;
+    }
+  }
+  return signal_count;
+}
+
+static
+Uint32
 run_job_buffers(thr_data *selfptr,
                 Signal *sig,
                 Uint32 & send_sum,
@@ -7638,34 +7684,13 @@ run_job_buffers(thr_data *selfptr,
   Uint32 signal_count = 0;
   Uint32 signal_count_since_last_zero_time_queue = 0;
 
+  signal_count = execute_high_prio_signals(sig,
+                                           selfptr,
+                                           send_sum,
+                                           flush_sum);
   if (read_all_jbb_state(selfptr, false))
   {
     // JBB is empty, execute any JBA signals
-    while (!read_jba_state(selfptr))
-    {
-      rmb();  // See memory barrier reasoning right below
-      selfptr->m_sent_local_prioa_signal = false;
-      static Uint32 max_prioA = thr_job_queue::SIZE * thr_job_buffer::SIZE;
-      Uint32 num_signals = execute_signals(selfptr,
-                                           &(selfptr->m_jba),
-                                           &(selfptr->m_jba_read_state),
-                                           sig,
-                                           max_prioA,
-                                           false,
-                                           send_sum,
-                                           flush_sum);
-      signal_count += num_signals;
-      send_sum += num_signals;
-      flush_sum += num_signals;
-      if (!selfptr->m_sent_local_prioa_signal)
-      {
-        /**
-         * Break out of loop if there was no prio A signals generated
-         * from the local execution.
-         */
-        break;
-      }
-    }
     // As we had no JBB signals, we are done
     assert(selfptr->m_jbb_read_mask.isclear());
     return signal_count;
@@ -7695,36 +7720,6 @@ run_job_buffers(thr_data *selfptr,
        jbb_instance != BitmaskImpl::NotFound;
        jbb_instance = selfptr->m_jbb_read_mask.find_next(jbb_instance+1))
   {
-    /* Read the prio A state often, to avoid starvation of prio A. */
-    while (!read_jba_state(selfptr))
-    {
-      rmb();  // See memory barrier reasoning above
-      selfptr->m_sent_local_prioa_signal = false;
-      static Uint32 max_prioA = thr_job_queue::SIZE * thr_job_buffer::SIZE;
-      Uint32 num_signals = execute_signals(selfptr,
-                                           &(selfptr->m_jba),
-                                           &(selfptr->m_jba_read_state),
-                                           sig,
-                                           max_prioA,
-                                           false,
-                                           send_sum,
-                                           flush_sum);
-#ifdef DEBUG_SCHED_STATS
-      selfptr->m_jbb_total_signals+= num_signals;
-#endif
-      signal_count += num_signals;
-      send_sum += num_signals;
-      flush_sum += num_signals;
-      if (!selfptr->m_sent_local_prioa_signal)
-      {
-        /**
-         * Break out of loop if there was no prio A signals generated
-         * from the local execution.
-         */
-        break;
-      }
-    }
-
     thr_job_queue *queue = selfptr->m_jbb + jbb_instance;
     thr_jb_read_state *read_state = selfptr->m_jbb_read_state + jbb_instance;
     /**
@@ -7788,7 +7783,6 @@ run_job_buffers(thr_data *selfptr,
                                          true,
                                          send_sum,
                                          flush_sum);
-
     if (num_signals > 0)
     {
 #ifdef DEBUG_SCHED_STATS
@@ -7797,11 +7791,11 @@ run_job_buffers(thr_data *selfptr,
       signal_count += num_signals;
       send_sum += num_signals;
       flush_sum += num_signals;
-      handle_scheduling_decisions(selfptr,
-                                  sig,
-                                  send_sum,
-                                  flush_sum,
-                                  pending_send);
+      signal_count += handle_scheduling_decisions(selfptr,
+                                                  sig,
+                                                  send_sum,
+                                                  flush_sum,
+                                                  pending_send);
 
       if (signal_count - signal_count_since_last_zero_time_queue >
           (MAX_SIGNALS_EXECUTED_BEFORE_ZERO_TIME_QUEUE_SCAN -
