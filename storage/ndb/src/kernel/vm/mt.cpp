@@ -7337,6 +7337,56 @@ sendpacked(struct thr_data* thr_ptr, Signal* signal)
 
 static void flush_all_local_signals_and_wakeup(struct thr_data *selfptr);
 
+static
+Uint32
+execute_signals(thr_data *selfptr,
+                thr_job_queue *q,
+                thr_jb_read_state *r,
+                Signal *sig,
+                Uint32 max_signals,
+                bool priob_signal,
+                Uint32 & send_sum,
+                Uint32 & flush_sum);
+
+static
+Uint32
+execute_high_prio_signals(Signal *sig,
+                          thr_data *selfptr,
+                          Uint32 & send_sum,
+                          Uint32 & flush_sum)
+{
+  Uint32 signal_count = 0;
+  while (!read_jba_state(selfptr))
+  {
+    rmb();  // See memory barrier reasoning right below
+    selfptr->m_sent_local_prioa_signal = false;
+    static Uint32 max_prioA = thr_job_queue::SIZE * thr_job_buffer::SIZE;
+    Uint32 num_signals = execute_signals(selfptr,
+                                         &(selfptr->m_jba),
+                                         &(selfptr->m_jba_read_state),
+                                         sig,
+                                         max_prioA,
+                                         false,
+                                         send_sum,
+                                         flush_sum);
+#ifdef DEBUG_SCHED_STATS
+    selfptr->m_jbb_total_signals+= num_signals;
+#endif
+    signal_count += num_signals;
+    send_sum += num_signals;
+    flush_sum += num_signals;
+    if (!selfptr->m_sent_local_prioa_signal)
+    {
+      /**
+       * Break out of loop if there was no prio A signals generated
+       * from the local execution.
+       */
+      break;
+    }
+  }
+  return signal_count;
+}
+
 /**
  * We check whether it is time to call do_send or do_flush. These are
  * central decisions to the data node scheduler in a multithreaded data
@@ -7637,44 +7687,6 @@ execute_signals(thr_data *selfptr,
 
 static
 Uint32
-execute_high_prio_signals(Signal *sig,
-                          selfptr,
-                          Uint32 & send_sum,
-                          Uint32 & flush_sum)
-{
-  while (!read_jba_state(selfptr))
-  {
-    rmb();  // See memory barrier reasoning right below
-    selfptr->m_sent_local_prioa_signal = false;
-    static Uint32 max_prioA = thr_job_queue::SIZE * thr_job_buffer::SIZE;
-    Uint32 num_signals = execute_signals(selfptr,
-                                         &(selfptr->m_jba),
-                                         &(selfptr->m_jba_read_state),
-                                         sig,
-                                         max_prioA,
-                                         false,
-                                         send_sum,
-                                         flush_sum);
-#ifdef DEBUG_SCHED_STATS
-    selfptr->m_jbb_total_signals+= num_signals;
-#endif
-    signal_count += num_signals;
-    send_sum += num_signals;
-    flush_sum += num_signals;
-    if (!selfptr->m_sent_local_prioa_signal)
-    {
-      /**
-       * Break out of loop if there was no prio A signals generated
-       * from the local execution.
-       */
-      break;
-    }
-  }
-  return signal_count;
-}
-
-static
-Uint32
 run_job_buffers(thr_data *selfptr,
                 Signal *sig,
                 Uint32 & send_sum,
@@ -7722,6 +7734,11 @@ run_job_buffers(thr_data *selfptr,
   {
     thr_job_queue *queue = selfptr->m_jbb + jbb_instance;
     thr_jb_read_state *read_state = selfptr->m_jbb_read_state + jbb_instance;
+    Uint32 read_index = read_state->m_read_index;
+    Uint32 write_index = read_state->m_write_index;
+    Uint32 read_pos = read_state->m_read_pos;
+    Uint32 read_end = read_state->m_read_end;
+
     /**
      * Contended queues get an extra execute quota:
      *
@@ -7749,7 +7766,7 @@ run_job_buffers(thr_data *selfptr,
     Uint32 perjb = selfptr->m_max_signals_per_jb;
     Uint32 extra = 0;
 
-    if (perjb < MAX_SIGNALS_PER_JB)  // Has a job buffer contention
+    if (unlikely(perjb < MAX_SIGNALS_PER_JB))  // Has a job buffer contention
     {
       // Prefer a tighter JB-quota control when executing in congested state:
       recheck_congested_job_buffers(selfptr);
@@ -7772,18 +7789,19 @@ run_job_buffers(thr_data *selfptr,
       extra = 0;
     }
 #endif
-
+    if (read_index == write_index && read_pos >= read_end)
+      continue;
     /* Now execute prio B signals from one thread. */
     const Uint32 max_signals = std::min(perjb+extra,MAX_SIGNALS_PER_JB);
     const Uint32 num_signals = execute_signals(selfptr,
-                                         queue,
-                                         read_state,
-                                         sig,
-                                         max_signals,
-                                         true,
-                                         send_sum,
-                                         flush_sum);
-    if (num_signals > 0)
+                                               queue,
+                                               read_state,
+                                               sig,
+                                               max_signals,
+                                               true,
+                                               send_sum,
+                                               flush_sum);
+    if (likely(num_signals > 0))
     {
 #ifdef DEBUG_SCHED_STATS
       selfptr->m_jbb_total_signals+= num_signals;
