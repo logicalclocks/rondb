@@ -144,7 +144,6 @@ int NdbHW_Init()
     abort();
   }
 #endif
-  fprintf(stderr, "Found %u CPUs on the machine\n", ncpu);
   if (NdbHW_Init_platform() != 0)
   {
     perror("Failed NdbHW_Init_platform()");
@@ -1178,6 +1177,7 @@ static struct ndb_hwinfo *Ndb_SetHWInfo()
   res->cpu_data = (ndb_cpudata*)p_cpudata;
   res->cpu_cnt_max = ncpu;
   res->cpu_cnt = ncpu;
+  fprintf(stderr, "Found %u CPUs on the machine\n", ncpu);
   res->total_cpu_capacity = ncpu * 100;
 
   for (Uint32 i = 0; i < ncpu; i++)
@@ -1704,6 +1704,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     goto error_exit;
 
   hwinfo->cpu_cnt = active_cpu;
+  fprintf(stderr, "Found %u active CPUs on the machine\n", active_cpu);
   hwinfo->num_cpu_cores = cpu_cores;
   hwinfo->num_cpu_sockets = cpu_sockets;
   hwinfo->hw_memory_size = (Uint64)memory_size;
@@ -1798,6 +1799,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     hwinfo->cpu_info[i].online = true;
   }
   hwinfo->cpu_cnt = active_cpu;
+  fprintf(stderr, "Found %u active CPUs on the machine\n", active_cpu);
   check_cpu_online(hwinfo);
   hwinfo->num_cpu_cores = 0;
   hwinfo->num_cpu_sockets = 0;
@@ -2632,6 +2634,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
   {
     /* Linux ARM needs information from other sources */
     hwinfo->cpu_cnt = cpu_online_count;
+    fprintf(stderr, "Found %u active CPUs on the machine\n", cpu_online_count);
     DEBUG_HW((stderr,
               "Found %u CPUs online, no core info in /proc/cpuinfo\n",
               cpu_online_count));
@@ -2699,6 +2702,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
               num_cpu_per_core));
   }
   hwinfo->cpu_cnt = cpu_online_count;
+  fprintf(stderr, "Found %u active CPUs on the machine\n", cpu_online_count);
   DEBUG_HW((stderr,
             "There are %u CPUs online before checking\n",
             cpu_online_count));
@@ -2767,6 +2771,7 @@ static int init_hwinfo(struct ndb_hwinfo *)
 static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
 {
   hwinfo->cpu_cnt_max = ncpu;
+  fprintf(stderr, "Found %u active CPUs on the machine\n", ncpu);
   hwinfo->cpu_cnt = ncpu;
   check_cpu_online(hwinfo);
   return 0;
