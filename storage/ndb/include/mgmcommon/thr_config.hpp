@@ -149,7 +149,6 @@ protected:
     Uint32 & num_cpus,
     Uint32 & tc_threads,
     Uint32 & ldm_threads,
-    Uint32 & query_threads,
     Uint32 & main_threads,
     Uint32 & rep_threads,
     Uint32 & send_threads,
