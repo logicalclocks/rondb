@@ -7734,10 +7734,6 @@ run_job_buffers(thr_data *selfptr,
   {
     thr_job_queue *queue = selfptr->m_jbb + jbb_instance;
     thr_jb_read_state *read_state = selfptr->m_jbb_read_state + jbb_instance;
-    Uint32 read_index = read_state->m_read_index;
-    Uint32 write_index = read_state->m_write_index;
-    Uint32 read_pos = read_state->m_read_pos;
-    Uint32 read_end = read_state->m_read_end;
 
     /**
      * Contended queues get an extra execute quota:
@@ -7789,8 +7785,6 @@ run_job_buffers(thr_data *selfptr,
       extra = 0;
     }
 #endif
-    if (read_index == write_index && read_pos >= read_end)
-      continue;
     /* Now execute prio B signals from one thread. */
     const Uint32 max_signals = std::min(perjb+extra,MAX_SIGNALS_PER_JB);
     const Uint32 num_signals = execute_signals(selfptr,
@@ -7801,7 +7795,7 @@ run_job_buffers(thr_data *selfptr,
                                                true,
                                                send_sum,
                                                flush_sum);
-    if (likely(num_signals > 0))
+    if (num_signals > 0)
     {
 #ifdef DEBUG_SCHED_STATS
       selfptr->m_jbb_total_signals+= num_signals;
