@@ -4016,6 +4016,14 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
   assert(m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD);
   if (m_trp_state[trp_id].m_micros_delayed > 0)     // Trp send is delayed
   {
+    if (!is_send_thread(thr_no))
+    {
+      /**
+       * Assisting block threads need not care to send on a transporter
+       * which needs further delay. Handled by send threads.
+       */
+      return false;
+    }
     /**
      * The only transporter ready for send was a transporter that still
      * required waiting. We will only send if we have enough data to
@@ -4023,30 +4031,19 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
      */
     if (m_trp_state[trp_id].m_send_overload)        // Pause overloaded trp
     {
+      /**
+       * Go to sleep and hopefully the overload has cleared when we wake up
+       * again.
+       */
       return false;
     }
 
-    if (mt_get_send_buffer_bytes(trp_id) >= MAX_SEND_BUFFER_SIZE_TO_DELAY)
-      set_max_delay(trp_id, now, 0);              // Large packet -> Send now
-    else                                          // Sleep, let last awake send
-    {
-      if (is_send_thread(thr_no))
-      {
-        /**
-         * When encountering g_max_send_delay from send thread we
-         * will let the send thread go to sleep for as long as
-         * this trp has to wait (it is the shortest sleep we
-         * we have. For non-send threads the trp will simply
-         * be reinserted and someone will pick up later to handle
-         * things.
-         *
-         * At this point in time there are no transporters ready to
-         * send, they all are waiting for the delay to expire.
-         */
-        send_instance->m_more_trps = false;
-      }
-      return false;
-    }
+    /**
+     * In this case we only have delayed signals to handle, and we are
+     * the send thread, so to avoid a millisecond of sleep we immediately
+     * proceed to handle the sending.
+     */
+    set_max_delay(trp_id, now, 0); // Send now
   }
 
   /**
