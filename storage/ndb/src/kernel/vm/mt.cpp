@@ -3177,9 +3177,6 @@ thr_send_threads::check_delay_expired(TrpId trp_id, NDB_TICKS now)
  * of the workings of the MaxSendDelay parameter.
  */
 
-static Uint64 mt_get_send_buffer_bytes(NodeId id);
-
-
 /**
  * Get a trp having data to be sent to a trp (returned).
  *
@@ -3775,7 +3772,7 @@ check_yield(thr_data *selfptr,
         /**
          * Assist send thread once every 25 microseconds during spin.
          */
-        do_send(selfptr, true, true);
+        do_send(selfptr, false, true);
       }
     }
     if (!cont_flag)
@@ -3942,13 +3939,24 @@ thr_send_threads::assist_send_thread(bool must_send,
   }
   else if (!send_instance->m_awake)
   {
+    /**
+     * The send thread is not awake, so obviously not overloaded,
+     * we can continue our work, no need to assist.
+     */
     wakeup(&(send_instance->m_waiter_struct));
-    if (!must_send)
-    {
-      NdbMutex_Unlock(send_instance->send_thread_mutex);
-      return false;
-    }
+    NdbMutex_Unlock(send_instance->send_thread_mutex);
+    return false;
   }
+  else if (send_instance->m_num_trps_ready <= 2)
+  {
+    /**
+     * The send thread is awake and has only 1-2 transporters to
+     * attend to, no need to assist the send thread in this case.
+     */
+    NdbMutex_Unlock(send_instance->send_thread_mutex);
+    return false;
+  }
+  
   while (globalData.theRestartFlag != perform_stop &&
          loop < max_num_trps &&
          (trp_id = get_trp(NO_SEND_THREAD, now, send_instance)) != 0)
@@ -6795,34 +6803,6 @@ mt_send_handle::getWritePtr(NodeId nodeId,
   return 0;
 }
 
-/**
- * Acquire total send buffer size without locking and without gathering
- *
- * OJA: The usability of this function is rather questionable.
- *      m_buffered_size and m_sending_size is updated by
- *      link_thread_send_buffers(), get_bytes_to_send_iovec() and
- *      bytes_sent() - All part of performSend(). Thus, it is
- *      valid *after* a send.
- *
- *      However, checking it *before* a send in order to
- *      determine if the payload is yet too small doesn't
- *      really provide correct information of the current state.
- *      Most likely '0 will be returned if previous send succeeded.
- *
- *      A better alternative could be to add a 'min_send' argument
- *      to perform_send(), and skip sending if not '>='.
- *      (After real size is recalculated)
- */
-static Uint64
-mt_get_send_buffer_bytes(TrpId trp_id)
-{
-  thr_repository *rep = g_thr_repository;
-  thr_repository::send_buffer *sb = &rep->m_send_buffers[trp_id];
-  const Uint64 total_send_buffer_size =
-    sb->m_buffered_size + sb->m_sending_size;
-  return total_send_buffer_size;
-}
-
 void
 mt_getSendBufferLevel(Uint32 self, NodeId id, SB_LevelType &level)
 {
@@ -8582,7 +8562,7 @@ mt_receiver_thread_main(void *thr_arg)
     {
       watchDogCounter = 6;
       flush_all_local_signals_and_wakeup(selfptr);
-      pending_send = do_send(selfptr, true, false);
+      pending_send = do_send(selfptr, false, true);
       send_sum = 0;
       flush_sum = 0;
     }
