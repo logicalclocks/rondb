@@ -3510,9 +3510,8 @@ thr_send_threads::alert_send_thread(TrpId trp_id, NDB_TICKS now)
   insert_trp(trp_id, send_instance);       // IDLE -> PENDING
 
   /**
-   * We need to delay sending the data, as set in config.
-   * This is the first send to this trp, so we start the
-   * delay timer now.
+   * We need to delay sending the data.
+   * This is the first send to this trp, so we start the delay timer now.
    */
   Uint32 max_send_delay = MAX(g_conf_max_send_delay, g_max_send_delay);
   if (max_send_delay > 0)                   // Wait for more payload?
@@ -3947,10 +3946,10 @@ thr_send_threads::assist_send_thread(bool must_send,
     NdbMutex_Unlock(send_instance->send_thread_mutex);
     return false;
   }
-  else if (send_instance->m_num_trps_ready <= 2)
+  else if (send_instance->m_num_trps_ready <= 3)
   {
     /**
-     * The send thread is awake and has only 1-2 transporters to
+     * The send thread is awake and has only 1-3 transporters to
      * attend to, no need to assist the send thread in this case.
      */
     NdbMutex_Unlock(send_instance->send_thread_mutex);
