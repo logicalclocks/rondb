@@ -30,7 +30,7 @@ type BatchOpRequest struct {
 type BatchSubOp struct {
 	Method      *string     `json:"method"        binding:"required,oneof=POST"`
 	RelativeURL *string     `json:"relative-url"  binding:"required,min=1"`
-	Body        *PKReadBody `json:"body"          binding:"required,min=1"`
+	Body        *PKReadBody `json:"body"          binding:"required"`
 }
 
 // Response
