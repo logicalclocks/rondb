@@ -755,6 +755,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     }
 
     public synchronized void close() {
+        dropSessionCache();
         // close all of the cluster connections
         for (ClusterConnection clusterConnection: pooledConnections) {
             clusterConnection.close();

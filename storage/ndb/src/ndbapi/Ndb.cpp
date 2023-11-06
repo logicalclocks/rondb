@@ -949,7 +949,6 @@ Ndb::startTransaction(const NdbDictionary::Table *table,
       Uint32 hashValue;
       {
         Uint32 values[4];
-        assert((keyLen & 3) == 0);
         rondb_calc_hash(values,
                         (const char*)keyData,
                         keyLen >> 2,
