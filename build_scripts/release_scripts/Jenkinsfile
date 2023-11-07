@@ -66,10 +66,12 @@ pipeline {
                 if [ "$RELEASE_FINAL_CLUSTERJ" = true ]; then
                   RELEASE_FINAL_CLUSTERJ_ARG="--build-arg RELEASE_FINAL_CLUSTERJ=1"
                 fi
+
                 DOCKER_FILE_NAME="Dockerfile.oraclelinux7"
                 if [ "$BRANCH" = "22.10.1" ]; then
                   DOCKER_FILE_NAME="Dockerfile.oraclelinux8"
                 fi
+
                 export DOCKER_CLI_EXPERIMENTAL=enabled
                 export BUILDKIT_PROGRESS=plain
                 docker buildx build . \
@@ -80,17 +82,6 @@ pipeline {
                   --build-arg BUILD_THREADS=$BUILD_CORES \
                   --build-arg DEPLOY_TO_REPO=1 \
                   $RELEASE_ARG $RELEASE_FINAL_CLUSTERJ_ARG
-                if [ "$BRANCH" = "22.10.1" ]; then
-                  DOCKER_FILE_NAME="Dockerfile.oraclelinux8"
-                  docker buildx build . \
-                    -f $DOCKER_FILE_NAME \
-                    --tag rondb-build-all:$RONDB_VERSION \
-                    --target build-all \
-                    --no-cache \
-                    --build-arg BUILD_THREADS=$BUILD_CORES \
-                    --build-arg DEPLOY_TO_REPO=1 \
-                    $RELEASE_ARG
-                fi
               '''
             }
         }
