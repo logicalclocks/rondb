@@ -195,6 +195,11 @@ var DB027Scheme string
 
 const DB027 = "db027"
 
+//go:embed fixed/DB028.sql
+var DB028Scheme string
+
+const DB028 = "db028"
+
 //go:embed fixed/FSDB001.sql
 var FSDB001Scheme string
 
