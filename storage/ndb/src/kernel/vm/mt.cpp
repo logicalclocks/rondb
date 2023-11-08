@@ -2536,6 +2536,7 @@ public:
             }
             break;
           }
+          prev_trp_id = next_trp_id;
           next_trp_id = m_trp_state[next_trp_id].m_next;
         }
         require(found);
