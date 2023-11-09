@@ -1785,3 +1785,25 @@ func TestDataTypesBitColumn(t *testing.T) {
 	}
 	pkTestMultiple(t, tests, true)
 }
+
+func TestDataTypesDefaultValues(t *testing.T) {
+	testTable := "table_1"
+	testDb := testdbs.DB028
+	validateColumns := []interface{}{"col0", "col1", "col2", "col3"}
+	tests := map[string]api.PKTestInfo{
+		"test1": {
+			PkReq: api.PKReadBody{Filters: testclient.NewFiltersKVs("id", 1),
+				ReadColumns: testclient.NewReadColumns("col", 4),
+				OperationID: testclient.NewOperationID(64),
+			},
+			Table:          testTable,
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+	}
+
+	pkTestMultiple(t, tests, false)
+
+}

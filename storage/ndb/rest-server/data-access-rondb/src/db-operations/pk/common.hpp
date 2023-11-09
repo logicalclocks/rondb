@@ -23,6 +23,7 @@
 #include <NdbDictionary.hpp>
 #include "src/rdrs-dal.h"
 #include <my_time.h>
+#include <memory>
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
 
