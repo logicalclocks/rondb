@@ -108,6 +108,11 @@ class PKRResponse {
   void *GetWritePointer();
 
   /**
+   * Advance write pointer
+   */
+  void AdvanceWritePointer(Uint32 add);
+
+  /**
    * Append to response buffer
    */
   RS_Status Append_iu32(const char *colName, Uint32 num);

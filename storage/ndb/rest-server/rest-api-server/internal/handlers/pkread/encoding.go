@@ -33,6 +33,7 @@ import (
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/pkg/api"
+	// "zappem.net/pub/debug/xxd"
 )
 
 // See internal/router/handler/pkread/encoding-scheme.png
@@ -152,12 +153,17 @@ func CreateNativeRequest(
 	iBuf[C.PK_REQ_OP_ID_IDX] = uint32(opIdOffset)
 
 	// only for debugging.
-	// bBuf := unsafe.Slice((*byte)(request.Buffer), request.Size/C.ADDRESS_SIZE)
+	// bBuf := unsafe.Slice((*byte)(request.Buffer), request.Size)
 	// xxd.Print(0, bBuf[:512])
 	return
 }
 
 func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadResponse) (int32, string, error) {
+
+	// only for debugging.
+	// bBuf := unsafe.Slice((*byte)(respBuff.Buffer), respBuff.Size)
+	// xxd.Print(0, bBuf[:512])
+
 	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size)
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]

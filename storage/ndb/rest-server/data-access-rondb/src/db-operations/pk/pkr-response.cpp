@@ -186,6 +186,10 @@ void *PKRResponse::GetWritePointer() {
   return resp->buffer + writeHeader;
 }
 
+void PKRResponse::AdvanceWritePointer(Uint32 add) {
+  writeHeader += add;
+}
+
 RS_Status PKRResponse::Append_string(const char *colName, std::string value, Uint32 type) {
   if ((value.length() + 1) > GetRemainingCapacity()) {  // +1 null terminator
     return RS_SERVER_ERROR(ERROR_016);
@@ -260,25 +264,29 @@ RS_Status PKRResponse::Append_i64(const char *colName, Int64 num) {
 
 RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Uint32 fromBuffLen,
                                    CHARSET_INFO *fromCS) {
-  Uint32 extraSpace     = 1;  // +1 for null terminator
-  Uint32 estimatedBytes = fromBuffLen + extraSpace;
+  Uint32 extraSpace = 3;  // +1 for null terminator 
 
-  if (estimatedBytes > GetRemainingCapacity()) {
+  if ((fromBuffLen + extraSpace) > GetRemainingCapacity()) {
     return RS_SERVER_ERROR(ERROR_010 + std::string(" Response buffer remaining capacity: ") +
                            std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
-                           std::to_string(estimatedBytes));
+                           std::to_string(fromBuffLen + extraSpace));
   }
-  // TODO JIRA - RONDB-281, RONDB-277
   //  from_buffer -> printable string  -> escaped string
-  char tempBuff[MAX_TUPLE_SIZE_IN_BYTES_ESCAPED];
-  const char *well_formed_error_pos;
-  const char *cannot_convert_error_pos;
-  const char *from_end_pos;
-  const char *error_pos;
 
-  /* convert_to_printable(tempBuff, tempBuffLen, fromBuffer, fromLength, fromCS, 0); */
+  // allocate a buffer large enough to hold the formatted string
+  uint64 estimated_bytes = (fromBuffLen / fromCS->mbminlen + 1) * fromCS->mbmaxlen + 1;
+  estimated_bytes        = std::min(estimated_bytes, static_cast<uint64>(UINT_MAX32));
+  std::shared_ptr<char> tempBuff(new char[estimated_bytes], [](const char *buff) {
+    delete[] buff;  // Custom deleter to delete the array
+  });
+
+  const char *well_formed_error_pos    = nullptr;
+  const char *cannot_convert_error_pos = nullptr;
+  const char *from_end_pos             = nullptr;
+  const char *error_pos                = nullptr;
+
   int bytesFormed = well_formed_copy_nchars(
-      fromCS, tempBuff, MAX_TUPLE_SIZE_IN_BYTES_ESCAPED, fromCS, fromBuff, fromBuffLen, UINT32_MAX,
+      fromCS, tempBuff.get(), estimated_bytes, fromCS, fromBuff, fromBuffLen, UINT32_MAX,
       &well_formed_error_pos, &cannot_convert_error_pos, &from_end_pos);
 
   error_pos = well_formed_error_pos ? well_formed_error_pos : cannot_convert_error_pos;
@@ -297,7 +305,7 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
                            std::string(". Bytes left to copy: ") +
                            std::to_string((fromBuff + fromBuffLen) - from_end_pos));
   }
-  std::string wellFormedString = std::string(tempBuff, bytesFormed);
+  std::string wellFormedString = std::string(tempBuff.get(), bytesFormed);
   // remove blank spaces that are padded to the string
   size_t endpos = wellFormedString.find_last_not_of(" ");
   if (std::string::npos != endpos) {
@@ -305,8 +313,11 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
   }
 
   std::string escapedstr = escape_string(wellFormedString);
-  if ((escapedstr.length() + extraSpace) >= GetRemainingCapacity()) {  // +2 for quotation marks
-    return RS_SERVER_ERROR(ERROR_010);
+  if ((escapedstr.length() + extraSpace) >= GetRemainingCapacity()) {  // +1 for null terminator 
+    return RS_SERVER_ERROR(ERROR_010 + std::string(" Response buffer remaining capacity: ") +
+                           std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
+                           std::to_string(escapedstr.length() + extraSpace));
   }
+
   return this->SetColumnData(colName, escapedstr.c_str(), RDRS_STRING_DATATYPE);
 }
