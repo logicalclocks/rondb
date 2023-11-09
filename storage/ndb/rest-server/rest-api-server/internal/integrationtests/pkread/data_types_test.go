@@ -805,18 +805,19 @@ func TestDataTypesText(t *testing.T) {
 			ErrMsgContains: "",
 			RespKVs:        validateColumns,
 		},
-		"simple4": { // all characters needs to be escaped. non printable unicode
-			PkReq: api.PKReadBody{
-				Filters:     testclient.NewFiltersKVs("id0", "5"),
-				ReadColumns: testclient.NewReadColumns("col", 2),
-				OperationID: testclient.NewOperationID(5),
-			},
-			Table:          "text_table",
-			Db:             testDb,
-			HttpCode:       http.StatusOK,
-			ErrMsgContains: "",
-			RespKVs:        validateColumns,
-		},
+		// Test skipped in 21.04. See comment in db013.sql
+		// "simple4": { // all characters needs to be escaped. non printable unicode
+		// PkReq: api.PKReadBody{
+		// Filters:     testclient.NewFiltersKVs("id0", "5"),
+		// ReadColumns: testclient.NewReadColumns("col", 2),
+		// OperationID: testclient.NewOperationID(5),
+		// },
+		// Table:          "text_table",
+		// Db:             testDb,
+		// HttpCode:       http.StatusOK,
+		// ErrMsgContains: "",
+		// RespKVs:        validateColumns,
+		// },
 	}
 
 	pkTestMultiple(t, tests, false)

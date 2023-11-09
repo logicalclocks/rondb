@@ -56,9 +56,11 @@ INSERT INTO
 VALUES
     ("4", lpad("", 64000, 0x17), 1);
 
+-- 21.04 fails to insert the following with error
+-- ERROR 1366 HY000)(: Incorrect string value: '\xE2\x80' for column 'col0' at row 1)
 -- 0x17 Non printable unicode character U+2000 ==  0xe2 0x80 0x80 
-INSERT INTO
-    text_table
-VALUES
-    ("5", lpad("", 20000, 0xe28080), 1);
+-- INSERT INTO
+--     text_table
+-- VALUES
+--     ("5", lpad("", 20000, 0xe28080), 1);
  

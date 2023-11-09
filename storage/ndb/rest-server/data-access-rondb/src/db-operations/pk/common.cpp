@@ -1091,7 +1091,7 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
     uint precision = col->getPrecision();
 
     timeval myTV{};
-    my_timestamp_from_binary(&myTV, (const unsigned char *)attr->aRef(), precision);
+    my_timestamp_from_binary(&myTV, (const unsigned char *)colRec->ndbRec->aRef(), precision);
 
     Int64 epochIn = myTV.tv_sec;
     std::time_t stdtime(epochIn);
