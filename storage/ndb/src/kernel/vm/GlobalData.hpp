@@ -96,7 +96,6 @@ struct GlobalData {
   Uint32     ndbMtLqhThreads;
   Uint32     ndbMtTcWorkers;
   Uint32     ndbMtTcThreads;
-  Uint32     ndbMtQueryThreads;
   Uint32     ndbMtQueryWorkers;
   Uint32     ndbMtSendThreads;
   Uint32     ndbMtReceiveThreads;
@@ -151,7 +150,6 @@ struct GlobalData {
     ndbMtLqhThreads = 0;
     ndbMtTcWorkers = 0;
     ndbMtTcThreads = 0;
-    ndbMtQueryThreads = 0;
     ndbMtQueryWorkers = 0;
     ndbMtSendThreads = 0;
     ndbMtReceiveThreads = 0;
@@ -204,8 +202,8 @@ struct GlobalData {
 
   Uint32 getBlockThreads() const {
     return ndbMtLqhThreads +
-           ndbMtQueryThreads +
            ndbMtTcThreads +
+           ndbMtMainThreads +
            ndbMtReceiveThreads;
   }
 

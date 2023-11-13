@@ -55,7 +55,6 @@ static const struct ParseEntries m_parse_entries[] =
   { "tc",    THRConfig::T_TC   },
   { "send",  THRConfig::T_SEND },
   { "idxbld",THRConfig::T_IXBLD},
-  { "query", THRConfig::T_QUERY},
 };
 
 /**
@@ -80,7 +79,6 @@ static const struct THRConfig::Entries m_entries[] =
   { THRConfig::T_TC,    0, MAX_NDBMT_TC_WORKERS,      true,         true,     0 },
   { THRConfig::T_SEND,  0, MAX_NDBMT_SEND_THREADS,    true,         true,     0 },
   { THRConfig::T_IXBLD, 0, 1,                         false,        false,    0 },
-  { THRConfig::T_QUERY, 0, MAX_NDBMT_QUERY_WORKERS,   true,         true,     0 },
 };
 
 static const struct ParseParams m_params[] =
@@ -515,6 +513,7 @@ THRConfig::do_parse_auto(unsigned realtime,
   Uint32 rep_threads = 0;
   Uint32 send_threads = 0;
   Uint32 recv_threads = 0;
+  Uint32 config_num_cpus = num_cpus;
   compute_automatic_thread_config(num_cpus,
                                   tc_threads,
                                   ldm_threads,
@@ -597,7 +596,7 @@ THRConfig::do_parse_auto(unsigned realtime,
   require(calc_num_cpus <= num_cpus);
 
   struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
-  if (hwinfo->is_cpuinfo_available && num_cpus == 0)
+  if (hwinfo->is_cpuinfo_available && config_num_cpus == 0)
   {
     /**
      * With CPU information available we will perform CPU locking as well
@@ -1353,7 +1352,6 @@ int THRConfig::handle_spec(const char* str,
         !(type == T_LDM ||
           type == T_TC ||
           type == T_RECV ||
-          type == T_QUERY ||
           type == T_MAIN ||
           type == T_REP))
     {

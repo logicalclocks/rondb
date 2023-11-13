@@ -2353,8 +2353,7 @@ public:
    * A block thread provides assistance to send thread by executing send
    * to one of the trps.
    */
-  bool assist_send_thread(bool must_send,
-                          Uint32 max_num_trps,
+  bool assist_send_thread(Uint32 max_num_trps,
                           Uint32 thr_no,
                           NDB_TICKS now,
                           Uint32 &watchdog_counter,
@@ -3771,7 +3770,7 @@ check_yield(thr_data *selfptr,
         /**
          * Assist send thread once every 25 microseconds during spin.
          */
-        do_send(selfptr, false, true);
+        do_send(selfptr, true, true);
       }
     }
     if (!cont_flag)
@@ -3916,8 +3915,7 @@ check_recv_yield(thr_data *selfptr,
  * false and we leave no longer holding the mutex.
  */
 bool
-thr_send_threads::assist_send_thread(bool must_send,
-                                     Uint32 max_num_trps,
+thr_send_threads::assist_send_thread(Uint32 max_num_trps,
                                      Uint32 thr_no,
                                      NDB_TICKS now,
                                      Uint32 &watchdog_counter,
@@ -3946,10 +3944,10 @@ thr_send_threads::assist_send_thread(bool must_send,
     NdbMutex_Unlock(send_instance->send_thread_mutex);
     return false;
   }
-  else if (send_instance->m_num_trps_ready <= 3)
+  else if (send_instance->m_num_trps_ready <= 2)
   {
     /**
-     * The send thread is awake and has only 1-3 transporters to
+     * The send thread is awake and has only 1-2 transporters to
      * attend to, no need to assist the send thread in this case.
      */
     NdbMutex_Unlock(send_instance->send_thread_mutex);
@@ -4044,6 +4042,19 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
        */
       return false;
     }
+
+    /**
+     * When encountering g_max_send_delay from send thread we
+     * will let the send thread go to sleep for as long as
+     * this trp has to wait (it is the shortest sleep we
+     * we have. For non-send threads the trp will simply
+     * be reinserted and someone will pick up later to handle
+     * things.
+     *
+     * At this point in time there are no transporters ready to
+     * send, they all are waiting for the delay to expire.
+     */
+   send_instance->m_more_trps = false;
 
     /**
      * In this case we only have delayed signals to handle, and we are
@@ -6466,6 +6477,16 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
 
   if (count == 0)
   {
+    if (!must_send && globalData.ndbMtMainThreads > 0)
+    {
+      /**
+       * Assist send threads from main and rep threads if assist_send_thread
+       * is set. Main and rep threads are woken up regularly to assist send
+       * threads and are special helpers to send threads.
+       */
+      unsigned thr_no = selfptr->m_thr_no;
+      must_send = (is_main_thread(thr_no) || is_rep_thread(thr_no));
+    }
     if (must_send && assist_send && g_send_threads &&
         (selfptr->m_nosend_tmp == 0))
     {
@@ -6508,7 +6529,6 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        */
       Uint32 num_trps_to_send_to = 1;
       pending_send = g_send_threads->assist_send_thread(
-                                         must_send,
                                          num_trps_to_send_to,
                                          selfptr->m_thr_no,
                                          now,
@@ -6595,19 +6615,12 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        * do some send assistance. We check so that we don't perform
        * this wakeup function too often.
        */
-       OverloadStatus overload_status = selfptr->m_overload_status;
-       Uint32 num_trps_to_send_to = num_trps_inserted;
-      if (overload_status >= (OverloadStatus)MEDIUM_LOAD_CONST)
-      {
-        num_trps_to_send_to = num_trps_inserted != 0 ? 1 : 0;
-      }
-
+      Uint32 num_trps_to_send_to = num_trps_inserted;
       num_trps_to_send_to = num_trps_inserted != 0 ? 1 : 0;
       send_wakeup_thread_ord(selfptr, now);
       if (num_trps_to_send_to > 0)
       {
         pending_send = g_send_threads->assist_send_thread(
-                                           must_send,
                                            num_trps_to_send_to,
                                            selfptr->m_thr_no,
                                            now,
@@ -8012,7 +8025,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   Uint32 thr_no = 0;
-  Uint32 num_lqh_workers = num_lqh_threads;
+  Uint32 num_lqh_workers = globalData.ndbMtLqhWorkers;
   bool receive_threads_only = false;
 
   if (num_lqh_threads == 0 &&
@@ -8037,15 +8050,12 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      */
     receive_threads_only = true;
     require(num_tc_threads == 0);
-    num_lqh_workers = 1;
   }
   else if (num_lqh_threads == 0 &&
            globalData.ndbMtReceiveThreads > 1)
   {
     require(num_tc_threads == 0);
     receive_threads_only = true;
-    num_lqh_workers = globalData.ndbMtReceiveThreads;
-    require(num_lqh_workers == globalData.ndbMtLqhWorkers);
   }
   require(instance != 0);
   switch(block){
@@ -9035,7 +9045,7 @@ mt_job_thread_main(void *thr_arg)
       send_sum = 0;
       flush_sum = 0;
     }
-    else
+    else if (sum == 0)
     {
       /* No signals processed, prepare to sleep to wait for more */
       /* About to sleep, _must_ send now. */
@@ -9551,123 +9561,34 @@ mt_getPerformanceTimers(Uint32 self,
   micros_send = selfptr->m_nanos_send / 1000;
 }
 
-const char *
-mt_getThreadDescription(Uint32 self)
+void
+mt_getThreadDescription(Uint32 thr_no, char *desc)
 {
-  if (globalData.ndbMtLqhThreads == 0)
-  {
-    if (globalData.ndbMtMainThreads == 0)
-    {
-      if (is_main_thread(self))
-      {
-        if (is_rep_thread(self))
-        {
-          return "recv_ldm_tc_main_rep";
-        }
-        else
-        {
-          return "recv_ldm_tc_main";
-        }
-      }
-      else if (is_rep_thread(self))
-      {
-        return "recv_ldm_tc_rep";
-      }
-      else
-      {
-        return "recv_ldm_tc";
-      }
-    }
-    if (self < globalData.ndbMtReceiveThreads)
-    {
-      return "recv_ldm_tc";
-    }
-    else if (is_main_thread(self))
-    {
-      if (is_rep_thread(self))
-      {
-        return "main_rep";
-      }
-      return "main";
-    }
-    else
-    {
-      return "rep";
-    }
+  std::string res;
+  if (is_recv_thread(thr_no)) {
+    res += "_recv";
   }
-  if (self < globalData.ndbMtLqhThreads)
-  {
-    return "ldm";
+  if (is_ldm_thread(thr_no)) {
+    res += "_ldm";
   }
-  if (self < (globalData.ndbMtLqhThreads + globalData.ndbMtTcThreads))
-  {
-    return "tc";
+  if (is_tc_thread(thr_no)) {
+    res += "_tc";
   }
-  if (self < (globalData.ndbMtLqhThreads +
-              globalData.ndbMtTcThreads +
-              globalData.ndbMtReceiveThreads))
-  {
-    if (globalData.ndbMtTcThreads == 0)
-    {
-      if (is_main_thread(self))
-      {
-        if (is_rep_thread(self))
-        {
-          return "recv_tc_main_rep";
-        }
-        return "recv_tc_main";
-      }
-      else if (is_rep_thread(self))
-      {
-        return "recv_tc_rep";
-      }
-      else
-      {
-        return "recv_tc";
-      }
-    }
-    else
-    {
-      if (globalData.ndbMtMainThreads == 0)
-      {
-        if (is_main_thread(self))
-        {
-          if (is_rep_thread(self))
-          {
-            return "recv_main_rep";
-          }
-          return "recv_main";
-        }
-        else if (is_rep_thread(self))
-        {
-          return "recv_rep";
-        }
-        else
-        {
-          return "recv";
-        }
-      }
-      else
-      {
-        return "recv";
-      }
-    }
+  if (is_main_thread(thr_no)) {
+    res += "_main";
   }
-  else if (is_main_thread(self))
-  {
-    if (is_rep_thread(self))
-    {
-      return "main_rep";
-    }
-    return "main";
+  if (is_rep_thread(thr_no)) {
+    res += "_rep";
   }
-  return "rep";
+  assert(!res.empty());
+  res.erase(res.begin());
+  strncpy(desc, res.c_str(), 32);
 }
 
-const char *
-mt_getThreadName(Uint32 self)
+void
+mt_getThreadName(Uint32 self, char *name)
 {
-  return mt_getThreadDescription(self);
+  mt_getThreadDescription(self, name);
 }
 
 void

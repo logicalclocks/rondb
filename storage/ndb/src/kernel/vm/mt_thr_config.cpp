@@ -73,9 +73,7 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
     Uint32 num_main_threads = getThreadCount(T_REP) +
                               getThreadCount(T_MAIN);
 
-    if (num_main_threads == 2)
-      return &m_threads[T_MAIN][instanceNo];
-    else if (num_main_threads == 1)
+    if (num_main_threads != 0)
       return &m_threads[T_MAIN][instanceNo];
     else
       return &m_threads[T_RECV][0];
@@ -422,9 +420,6 @@ THRConfigApplier::do_bind(NdbThread* thread,
       break;
     case T_IXBLD:
       type_str = "ixbld";
-      break;
-    case T_QUERY:
-      type_str = "query";
       break;
     default:
       break;

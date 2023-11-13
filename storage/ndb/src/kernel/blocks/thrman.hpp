@@ -83,9 +83,9 @@ private:
   bool m_tc_thread;
   bool m_ldm_thread;
 
-  const char *m_thread_name;
+  char m_thread_name[32];
   const char *m_send_thread_name;
-  const char *m_thread_description;
+  char m_thread_description[32];
   const char *m_send_thread_description;
 
   struct ndb_rusage m_last_50ms_rusage;

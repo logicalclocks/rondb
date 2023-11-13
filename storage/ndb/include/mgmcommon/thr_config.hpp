@@ -55,8 +55,7 @@ public:
     T_TC    = 6, /* TC+SPJ */
     T_SEND  = 7, /* No blocks */
     T_IXBLD = 8, /* File thread during offline index build */
-    T_QUERY = 9, /* Query threads */
-    T_END  = 10
+    T_END  = 9
   };
 
   THRConfig();

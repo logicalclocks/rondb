@@ -293,7 +293,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
   m_tc_thread = false;
   m_spin_time_change_count = 0;
   Uint32 thr_no = instance() - 1;
-  m_thread_name = getThreadName();
+  getThreadName(&m_thread_name[0]);
   if (globalData.ndbMtLqhThreads > 0)
   {
     if (thr_no < globalData.ndbMtLqhThreads)
@@ -311,7 +311,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
     if (thr_no < globalData.ndbMtReceiveThreads)
       m_recv_thread = true;
   }
-  m_thread_description = getThreadDescription();
+  getThreadDescription(&m_thread_description[0]);
   m_send_thread_name = "send";
   m_send_thread_description = "Send thread";
   m_enable_adaptive_spinning = false;

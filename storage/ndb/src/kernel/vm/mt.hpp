@@ -121,8 +121,8 @@ void mt_setSpintime(Uint32 self, Uint32 new_spintime);
 Uint32 mt_getWakeupLatency(void);
 void mt_setWakeupLatency(Uint32);
 
-const char *mt_getThreadName(Uint32 self);
-const char *mt_getThreadDescription(Uint32 self);
+void mt_getThreadName(Uint32 self, char *name);
+void mt_getThreadDescription(Uint32 self, char *desc);
 void mt_getSendPerformanceTimers(Uint32 send_instance,
                                  Uint64 & exec_time,
                                  Uint64 & sleep_time,

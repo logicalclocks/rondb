@@ -582,8 +582,7 @@ protected:
   Uint32 getFirstReceiveThreadId()
   {
     return globalData.ndbMtLqhThreads +
-           globalData.ndbMtTcThreads +
-           globalData.ndbMtMainThreads;
+           globalData.ndbMtTcThreads;
   }
 
   static
@@ -784,8 +783,8 @@ protected:
   Uint32 getNumSendThreads();
   Uint32 getNumThreads();
   Uint32 getMainThrmanInstance();
-  const char * getThreadName();
-  const char * getThreadDescription();
+  void getThreadName(char *name);
+  void getThreadDescription(char *desc);
   void flush_send_buffers();
   void insert_activate_trp(TrpId trp_id);
   void set_watchdog_counter();

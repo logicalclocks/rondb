@@ -1285,11 +1285,8 @@ Configuration::assign_default_memory_sizes(
 Uint64
 Configuration::compute_restore_memory()
 {
-  Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-  Uint32 num_restore_threads = 
-    (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
-  num_ldm_threads += num_restore_threads;
-  Uint64 restore_memory = Uint64(4) * MBYTE64 * Uint64(num_ldm_threads);
+  Uint32 num_restore_threads = globalData.ndbMtQueryWorkers;
+  Uint64 restore_memory = Uint64(4) * MBYTE64 * Uint64(num_restore_threads);
   return restore_memory;
 }
 
@@ -1771,17 +1768,6 @@ Configuration::setupConfiguration()
       m_thr_config.getThreadCount(THRConfig::T_RECV);
     globalData.ndbMtSendThreads =
       m_thr_config.getThreadCount(THRConfig::T_SEND);
-    globalData.ndbMtQueryThreads =
-      m_thr_config.getThreadCount(THRConfig::T_QUERY);
-    if (globalData.ndbMtQueryThreads > 0)
-    {
-      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
-               "Invalid configuration fetched. ",
-               " Query threads are no longer supported"
-               ", instead Query blocks are part of LDM threads,"
-               " thus move the query thread instances to LDM threads"
-               " and also the CPU bindings should be moved");
-    }
     globalData.ndbMtTcThreads = m_thr_config.getThreadCount(THRConfig::T_TC);
     if (globalData.ndbMtTcThreads == 0)
     {

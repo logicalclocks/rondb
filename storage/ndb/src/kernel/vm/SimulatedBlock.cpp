@@ -870,28 +870,24 @@ SimulatedBlock::getPerformanceTimers(Uint64 & micros_sleep,
 #endif
 }
 
-const char *
-SimulatedBlock::getThreadDescription()
+void
+SimulatedBlock::getThreadDescription(char *desc)
 {
-  const char *desc;
 #ifdef NDBD_MULTITHREADED
-  desc = mt_getThreadDescription(m_threadId);
+  mt_getThreadDescription(m_threadId, desc);
 #else
-  desc = "ndbd single thread";
+  strncpy(desc, "ndbd single thread", 32);
 #endif
-  return desc;
 }
 
-const char *
-SimulatedBlock::getThreadName()
+void
+SimulatedBlock::getThreadName(char *name)
 {
-  const char *name;
 #ifdef NDBD_MULTITHREADED
-  name = mt_getThreadName(m_threadId);
+  mt_getThreadName(m_threadId, name);
 #else
-  name = "main";
+  strncpy(name, "main", 32);
 #endif
-  return name;
 }
 
 void
