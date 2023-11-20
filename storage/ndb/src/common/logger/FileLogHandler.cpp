@@ -61,6 +61,7 @@ FileLogHandler::open()
       if (!createNewFile())
       {
 	setErrorCode(errno);
+        setErrorStr(strerror(errno));
 	rc = false; 
       }
     }
@@ -68,6 +69,7 @@ FileLogHandler::open()
   else
   {
     setErrorCode(errno);
+    setErrorStr(strerror(errno));
     rc = false;
   }
 
@@ -87,6 +89,7 @@ FileLogHandler::close()
   if (!m_pLogFile->close())
   {
     setErrorCode(errno);
+    setErrorStr(strerror(errno));
     rc = false;
   }	
 
@@ -185,6 +188,7 @@ FileLogHandler::createNewFile()
   if (!File_class::rename(m_pLogFile->getName(), newName))
   {		
     setErrorCode(errno);
+    setErrorStr(strerror(errno));
     rc = false;
   }
 
@@ -192,6 +196,7 @@ FileLogHandler::createNewFile()
   if (!m_pLogFile->open())
   {
     setErrorCode(errno);
+    setErrorStr(strerror(errno));
     rc = false;
   }				
   
