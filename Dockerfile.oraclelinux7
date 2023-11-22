@@ -13,6 +13,7 @@ ARG BOOST_VERSION_MAJOR=1
 ARG BOOST_VERSION_MINOR=77
 ARG BOOST_VERSION_PATCH=0
 ARG GO_VERSION=1.20.3
+ARG JSONCPP_VERSION=1.9.5
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
 ARG BUILD_THREADS
@@ -96,6 +97,7 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     source scl_source enable devtoolset-11 \
+    && rm -f  $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz \
     && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
         https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
     && tar xzf $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz -C . \
@@ -134,6 +136,28 @@ COPY <<-"EOF" /root/.m2/settings.xml
     </servers>
 </settings>
 EOF
+
+# install updated jsoncpp
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+    https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/$JSONCPP_VERSION.tar.gz \
+    && tar xf $DOWNLOADS_CACHE_DIR/$JSONCPP_VERSION.tar.gz -C . \
+    && source scl_source enable devtoolset-11 \
+    && ls -al  \
+    && cd jsoncpp-$JSONCPP_VERSION \
+    && mkdir build \
+    && cd build \
+    && cmake -DCMAKE_BUILD_TYPE=release -DBUILD_SHARED_LIBS=ON -DARCHIVE_INSTALL_DIR=. -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_INCLUDEDIR=include/jsoncpp .. \
+    && make -j$THREADS_ARG  \
+    && make install \
+    && cd ../.. \
+    && rm -rf jsoncpp-$JSONCPP_VERSION $JSONCPP_VERSION.tar.gz
+
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
+    yum -y update \
+    && yum -y install \
+    uuid-devel libudev-devel
 
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all

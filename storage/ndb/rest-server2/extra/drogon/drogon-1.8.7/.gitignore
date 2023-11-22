@@ -1,0 +1,50 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+build/
+cmake-build-debug/
+cmake-build-debug-visual-studio/
+.idea/
+lib/inc/drogon/version.h
+html/
+latex/
+.vscode
+*.kdev4
+.cproject
+.project
+.settings/
+.vs/
+CMakeSettings.json
+install
+trace.json
+.cache/

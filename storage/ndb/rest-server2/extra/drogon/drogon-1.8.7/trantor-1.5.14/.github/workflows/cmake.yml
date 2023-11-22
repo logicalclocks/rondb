@@ -1,0 +1,139 @@
+name: Build Trantor
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: Release
+
+jobs:
+  windows:
+    name: 'windows/msvc - ${{matrix.link}}'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        link: [ 'STATIC', 'SHARED' ]
+    steps:
+      - name: Checkout Trantor source code
+        uses: actions/checkout@v2
+        with:
+          submodules: false
+
+      - name: Install dependencies
+        run: |
+          pip install conan
+
+      - name: Create build directory
+        run: |
+          mkdir build
+
+      - name: Install conan packages
+        shell: pwsh
+        working-directory: ./build
+        run: |
+          conan profile detect
+          conan install .. -s compiler="msvc" -s compiler.version=193 -sbuild_type=Debug --build=missing
+
+      - name: Create Build Environment & Configure Cmake
+        shell: bash
+        working-directory: ./build
+        run: |
+          [[ ${{ matrix.link }} == "SHARED" ]] && shared="ON" || shared="OFF"
+          cmake .. -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=on -DBUILD_SHARED_LIBS=$shared -DCMAKE_TOOLCHAIN_FILE="conan_toolchain.cmake" -DCMAKE_INSTALL_PREFIX=../install -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+
+      - name: Build
+        working-directory: ${{env.GITHUB_WORKSPACE}}
+        shell: bash
+        run: |
+          cd build
+          cmake --build . --target install --parallel
+  unix:
+    name: ${{matrix.buildname}}
+    runs-on: ${{matrix.os}}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-20.04
+            buildname: 'ubuntu-20.04/gcc - OpenSSL'
+            triplet: x64-linux
+            compiler: gcc_64
+          - os: ubuntu-20.04
+            buildname: 'ubuntu-20.04/gcc'
+            triplet: x64-linux
+            compiler: gcc_64
+          - os: macos-latest
+            buildname: 'macos/clang'
+            triplet: x64-osx
+            compiler: clang_64
+
+    steps:
+    - name: Checkout Trantor source code
+      uses: actions/checkout@v2
+      with:
+        submodules: true
+        fetch-depth: 0
+
+    - name: (macOS) Install dependencies
+      if: runner.os == 'macOS'
+      run: |
+        brew install c-ares openssl
+
+    - name: (Linux) Install dependencies - OpenSSL
+      if: matrix.buildname == 'ubuntu-20.04/gcc - OpenSSL'
+      run: |
+        # Installing packages might fail as the github image becomes outdated
+        sudo apt update
+        sudo apt install openssl libssl-dev dos2unix
+    - name: (Linux) Install dependencies
+      if: matrix.buildname == 'ubuntu-20.04/gcc'
+      run: |
+        # Installing packages might fail as the github image becomes outdated
+        sudo apt update
+        sudo apt install dos2unix
+    - name: install gtest
+      run: |
+        wget https://github.com/google/googletest/archive/refs/tags/v1.13.0.tar.gz
+        tar xf v1.13.0.tar.gz
+        cd googletest-1.13.0
+        cmake .
+        make
+        sudo make install
+  
+    - name: Create Build Environment & Configure Cmake
+      # Some projects don't allow in-source building, so create a separate build directory
+      # We'll use this as our working directory for all subsequent commands
+      shell: bash
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: |
+        mkdir build
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DBUILD_TESTING=on
+
+    - name: Build
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      shell: bash
+      # Execute the build.  You can specify a specific target with "--target <NAME>"
+      run: |
+        cd build
+        sudo make && sudo make install
+
+    - name: Test
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      shell: bash
+      # Execute tests defined by the CMake configuration.  
+      # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
+      run: |
+        cd build
+        make test
+
+    - name: Lint
+      if: matrix.os == 'ubuntu-20.04'
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      shell: bash
+      run: ./format.sh && git diff --exit-code
