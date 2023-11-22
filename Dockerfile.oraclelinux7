@@ -97,6 +97,7 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     source scl_source enable devtoolset-11 \
+    && rm -f  $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz \
     && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
         https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
     && tar xzf $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz -C . \
@@ -141,7 +142,7 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
     https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/$JSONCPP_VERSION.tar.gz \
     && tar xf $DOWNLOADS_CACHE_DIR/$JSONCPP_VERSION.tar.gz -C . \
-    && source scl_source enable devtoolset-10 \
+    && source scl_source enable devtoolset-11 \
     && ls -al  \
     && cd jsoncpp-$JSONCPP_VERSION \
     && mkdir build \
