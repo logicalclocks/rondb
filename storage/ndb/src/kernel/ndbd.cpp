@@ -594,13 +594,13 @@ get_multithreaded_config(EmulatorData& ed)
   if (!globalData.isNdbMtLqh)
     return 0;
 
-  g_eventLogger->info("NDBMT: ldm_workers=%u ldm_threads=%u"
+  g_eventLogger->info("NDBMT: ldm_threads=%u ldm_workers=%u"
                       " query_workers=%u\n"
                       " tc_threads=%u tc_workers=%u"
                       " send=%u receive=%u main_threads=%u",
-                      globalData.ndbMtLqhWorkers, globalData.ndbMtLqhThreads,
+                      globalData.ndbMtLqhThreads, globalData.ndbMtLqhWorkers,
                       globalData.ndbMtQueryWorkers,
-                      globalData.ndbMtTcWorkers, globalData.ndbMtTcThreads,
+                      globalData.ndbMtTcThreads, globalData.ndbMtTcWorkers,
                       globalData.ndbMtSendThreads, globalData.ndbMtReceiveThreads,
                       globalData.ndbMtMainThreads);
 
