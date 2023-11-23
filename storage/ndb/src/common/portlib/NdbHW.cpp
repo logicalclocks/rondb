@@ -1177,7 +1177,9 @@ static struct ndb_hwinfo *Ndb_SetHWInfo()
   res->cpu_data = (ndb_cpudata*)p_cpudata;
   res->cpu_cnt_max = ncpu;
   res->cpu_cnt = ncpu;
+#if 0
   fprintf(stderr, "Found %u CPUs on the machine\n", ncpu);
+#endif
   res->total_cpu_capacity = ncpu * 100;
 
   for (Uint32 i = 0; i < ncpu; i++)
