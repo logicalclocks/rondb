@@ -618,12 +618,14 @@ THRConfig::do_parse_auto(unsigned realtime,
     Uint32 use_non_ldm = 2;
     for (Uint32 i = 0; i < num_cpus; i++)
     {
-      Uint32 thread_ldm_type;
+      Uint32 thread_type;
+      Uint32 inx = 0;
       if (ldm_threads > 0 && use_ldm > 0)
       {
-        thread_ldm_type = T_LDM;
+        thread_type = T_LDM;
         use_ldm--;
         ldm_threads--;
+        inx = ldm_threads;
       }
       else
       {
@@ -635,35 +637,40 @@ THRConfig::do_parse_auto(unsigned realtime,
         }
         if (recv_threads > 0)
         {
-          thread_ldm_type = T_RECV;
+          thread_type = T_RECV;
           recv_threads--;
+          inx = recv_threads;
         }
         else if (tc_threads > 0)
         {
-          thread_ldm_type = T_TC;
+          thread_type = T_TC;
           tc_threads--;
+          inx = tc_threads;
         }
         else if (main_threads > 0)
         {
-          thread_ldm_type = T_MAIN;
+          thread_type = T_MAIN;
           main_threads--;
+          inx = main_threads;
         }
         else if (rep_threads > 0)
         {
-          thread_ldm_type = T_REP;
+          thread_type = T_REP;
           rep_threads--;
+          inx = rep_threads;
         }
         else
         {
           require(send_threads > 0);
-          thread_ldm_type = T_SEND;
+          thread_type = T_SEND;
           send_threads--;
+          inx = send_threads;
         }
       }
       require(next_cpu_id != Uint32(RNIL));
-      m_threads[thread_ldm_type][i].m_bind_no = next_cpu_id;
-      m_threads[thread_ldm_type][i].m_bind_type = T_Thread::B_CPU_BIND;
-      m_threads[thread_ldm_type][i].m_core_bind = true;
+      m_threads[thread_type][inx].m_bind_no = next_cpu_id;
+      m_threads[thread_type][inx].m_bind_type = T_Thread::B_CPU_BIND;
+      m_threads[thread_type][inx].m_core_bind = true;
 
       Uint32 core_cpu_ids[MAX_NUM_CPUS];
       Uint32 num_core_cpus = 0;
@@ -674,7 +681,7 @@ THRConfig::do_parse_auto(unsigned realtime,
       {
         /* First CPU in core list is always our own CPU id */
         Uint32 neighbour_cpu = core_cpu_ids[1];
-        m_threads[thread_ldm_type][i].m_shared_cpu_id = neighbour_cpu;
+        m_threads[thread_type][i].m_shared_cpu_id = neighbour_cpu;
       }
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
