@@ -614,27 +614,18 @@ THRConfig::do_parse_auto(unsigned realtime,
       Ndb_CreateCPUMap(num_query_instances, max_threads);
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
-    Uint32 use_ldm = 2;
-    Uint32 use_non_ldm = 2;
     for (Uint32 i = 0; i < num_cpus; i++)
     {
       Uint32 thread_type;
       Uint32 inx = 0;
-      if (ldm_threads > 0 && use_ldm > 0)
+      if (ldm_threads > 0)
       {
         thread_type = T_LDM;
-        use_ldm--;
         ldm_threads--;
         inx = ldm_threads;
       }
       else
       {
-        use_non_ldm--;
-        if (use_non_ldm == 0)
-        {
-          use_ldm = 2;
-          use_non_ldm = 2;
-        }
         if (recv_threads > 0)
         {
           thread_type = T_RECV;
