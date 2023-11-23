@@ -8259,7 +8259,7 @@ init_thread(thr_data *selfptr)
   }
   else if (res > 0)
   {
-    tmp.appfmt("OK ");
+    tmp.appfmt(", OK ");
   }
 
   unsigned thread_prio;
