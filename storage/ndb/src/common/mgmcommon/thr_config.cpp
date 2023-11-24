@@ -681,7 +681,7 @@ THRConfig::do_parse_auto(unsigned realtime,
       {
         /* First CPU in core list is always our own CPU id */
         Uint32 neighbour_cpu = core_cpu_ids[1];
-        m_threads[thread_type][i].m_shared_cpu_id = neighbour_cpu;
+        m_threads[thread_type][inx].m_shared_cpu_id = neighbour_cpu;
       }
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
