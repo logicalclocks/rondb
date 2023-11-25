@@ -64,8 +64,8 @@ SET GLOBAL ndb_metadata_check = false;
 --echo Check various include/exclude variants
 --echo **************************************
 --echo Normal full restore
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 # checksum table tab1, tab2;
@@ -82,8 +82,8 @@ drop table db1.tab1, db1.tab2, db2.tab1, db2.tab2;
 --echo ****************
 --echo Include only db2
 --echo ****************
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-databases db2>> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-databases db2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-databases db2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-databases db2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 --error ER_NO_SUCH_TABLE
@@ -100,8 +100,8 @@ drop table db2.tab1, db2.tab2;
 --echo ****************
 --echo Exclude only db2
 --echo ****************
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-databases db2>> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-databases db2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-databases db2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-databases db2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 # checksum table tab1, tab2;
@@ -119,7 +119,7 @@ drop table db1.tab1, db1.tab2;
 --echo ************
 --echo Exclude both
 --echo ************
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-databases db2,db1>> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-databases db2,db1 >> $NDB_TOOLS_OUTPUT
 --exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-databases db2,db1 >> $NDB_TOOLS_OUTPUT
 
 use db1;
@@ -137,8 +137,8 @@ show create table tab2;
 --echo Include only db1.tab1 and db2.tab2
 --echo **********************************
 
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1,db2.tab2 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1,db2.tab2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1,db2.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1,db2.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 --error ER_NO_SUCH_TABLE
@@ -159,8 +159,8 @@ drop table db1.tab1, db2.tab2;
 --echo Exclude db1.tab1 and db2.tab2
 --echo *****************************
 --echo Should result in db1.tab2 and db2.tab1 being restored
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1,db2.tab2 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1,db2.tab2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1,db2.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1,db2.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 --error ER_NO_SUCH_TABLE
@@ -182,7 +182,7 @@ drop table db1.tab2, db2.tab1;
 
 --echo Should result in only db1.tab1 being restored
 --exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-databases db1 --include-tables db1.tab1 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id  --exclude-databases db1 --include-tables db1.tab1>> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-databases db1 --include-tables db1.tab1 >> $NDB_TOOLS_OUTPUT
 
 use db1;
 --error ER_NO_SUCH_TABLE
@@ -202,8 +202,8 @@ drop table db1.tab1;
 --echo Exclude db1.tab1, but include db1
 --echo *********************************
 --echo Should result in only db1.tab2 being restored
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id  --include-databases db1 --exclude-tables db1.tab1 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id  --include-databases db1 --exclude_tables db1.tab1 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-databases db1 --exclude-tables db1.tab1 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-databases db1 --exclude_tables db1.tab1 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 --error ER_NO_SUCH_TABLE
@@ -244,8 +244,8 @@ drop table db1.tab1;
 --echo Exclude db2, and include db2
 --echo ****************************
 --echo Should result in db2 only restored.
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-databases db2 --include-databases db2 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-databases db2 --include-databases db2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-databases db2 --include-databases db2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-databases db2 --include-databases db2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 --error ER_NO_SUCH_TABLE
@@ -263,8 +263,8 @@ drop table db2.tab1, db2.tab2;
 --echo Include db1, and include db2.tab1
 --echo *********************************
 --echo Should result in all tables in db1 and db2.tab1 being restored.
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-databases db1 --include-tables db2.tab1 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-databases db1 --include-tables db2.tab1 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-databases db1 --include-tables db2.tab1 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-databases db1 --include-tables db2.tab1 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 show create table tab1;
@@ -301,8 +301,8 @@ show create table tab2;
 --echo Exclude unknown table
 --echo *********************
 --echo Should result in everything restored
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-tables db1.unhappy_customer >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-tables db1.unhappy_customer >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-tables db1.unhappy_customer --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-tables db1.unhappy_customer --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 show databases like "db%";
 
@@ -322,8 +322,8 @@ drop table db2.tab1, db2.tab2;
 --echo Check accumulative include arguments
 --echo ************************************
 --echo Should result in both db1.tab1 and db1.tab2 restored.
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1 --include-tables db1.tab2 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1 --include-tables db1.tab2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1 --include-tables db1.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --include-tables db1.tab1 --include-tables db1.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 show create table tab1;
@@ -342,8 +342,8 @@ drop table db1.tab1, db1.tab2;
 --echo Check accumulative exclude arguments
 --echo ************************************
 --echo Should result in both db2.tab1 and db2.tab2 restored.
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1 --exclude-tables db1.tab2 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1 --exclude-tables db1.tab2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r -m  $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1 --exclude-tables db1.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r     $NDB_BACKUPS-$the_backup_id --exclude-tables db1.tab1 --exclude-tables db1.tab2 --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 
 use db1;
 --error ER_NO_SUCH_TABLE

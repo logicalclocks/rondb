@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -69,7 +70,8 @@ public:
                 Uint32 parallelism) :
     m_ndb(NULL),
     m_cluster_connection(conn),
-    m_fatal_error(false)
+    m_fatal_error(false),
+    m_data_error(false)
 #ifdef ERROR_INSERT
     ,m_error_insert(0)
 #endif
@@ -116,6 +118,8 @@ public:
   void tuple_free() override;
   virtual void tuple_a(restore_callback_t *cb);
   virtual void tuple_SYSTAB_0(restore_callback_t *cb, const TableS &);
+  void logErrorWithTuple(const char* prefix, TupleS const *tup);
+  void logErrorWithLogEntry(const char* prefix, LogEntry const *le);
   virtual void cback(int result, restore_callback_t *cb);
   virtual void cback_logentry(int result, restore_callback_t *cb);
   virtual bool errorHandler(restore_callback_t *cb);
@@ -226,6 +230,8 @@ public:
                             Uint64 next_val);
   bool get_fatal_error();
   void set_fatal_error(bool);
+  bool has_data_error() override;
+  void set_data_error(bool);
 
   Ndb * m_ndb;
   Ndb_cluster_connection * m_cluster_connection;
@@ -273,6 +279,7 @@ public:
   bool m_temp_error;
   Uint64 m_pk_update_warning_count;
   bool m_fatal_error;
+  bool m_data_error;
 
   /**
    * m_new_table_ids[X] = Y;

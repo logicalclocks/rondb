@@ -676,7 +676,6 @@ public:
          ATTRIBUTE_FORMAT(printf, 2, 3);
   void setThreadPrefix(const char* prefix);
   const char* getThreadPrefix() const;
-private:
   NdbMutex *m_mutex;
 };
 
@@ -684,6 +683,7 @@ NdbOut& operator<<(NdbOut& ndbout, const TableS&);
 NdbOut& operator<<(NdbOut& ndbout, const TupleS&);
 NdbOut& operator<<(NdbOut& ndbout, const LogEntry&);
 NdbOut& operator<<(NdbOut& ndbout, const RestoreMetaData&);
+NdbOut& operator<<(NdbOut& ndbout, const AttributeS&);
 
 bool readSYSTAB_0(const TupleS & tup, Uint32 * syskey, Uint64 * nextid);
 

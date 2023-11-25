@@ -1,5 +1,6 @@
 /*
    Copyright (C) 2004-2006 MySQL AB, 2009 Sun Microsystems, Inc.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
    Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
@@ -25,6 +26,8 @@
 
 #include "consumer_restore.hpp"
 #include <NdbSleep.h>
+
+#error This file should not be built. Many issues are unaddressed here, including but not limited to RONDB-428.
 
 extern FilteredNdbOut err;
 extern FilteredNdbOut info;
