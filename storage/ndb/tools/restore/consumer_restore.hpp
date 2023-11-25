@@ -118,6 +118,8 @@ public:
   void tuple_free() override;
   virtual void tuple_a(restore_callback_t *cb);
   virtual void tuple_SYSTAB_0(restore_callback_t *cb, const TableS &);
+  void logErrorWithTuple(const char* prefix, TupleS const *tup);
+  void logErrorWithLogEntry(const char* prefix, LogEntry const *le);
   virtual void cback(int result, restore_callback_t *cb);
   virtual void cback_logentry(int result, restore_callback_t *cb);
   virtual bool errorHandler(restore_callback_t *cb);
