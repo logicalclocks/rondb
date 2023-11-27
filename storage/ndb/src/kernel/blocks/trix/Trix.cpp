@@ -56,6 +56,8 @@
 #define TUPLE_NOT_FOUND 626
 #define FK_NO_PARENT_ROW_EXISTS 21033
 
+extern EventLogger * g_eventLogger;
+
 static
 bool
 check_timeout(Uint32 errCode)
@@ -149,6 +151,8 @@ Trix::execREAD_CONFIG_REQ(Signal* signal)
 
   Uint32 ref = req->senderRef;
   Uint32 senderData = req->senderData;
+
+  m_enable_debug_insert_build = false;
 
   const ndb_mgm_configuration_iterator * p = 
     m_ctx.m_config.getOwnConfigIterator();
@@ -528,6 +532,16 @@ Trix::execDUMP_STATE_ORD(Signal* signal)
 	       JBB, ls_ptr, 2);
     break;
   }
+  case(105000): {
+    g_eventLogger->info("Enable debug insert build");
+    m_enable_debug_insert_build = true;
+    break;
+  }
+  case(105001): {
+    g_eventLogger->info("Disable debug insert build");
+    m_enable_debug_insert_build = false;
+    break;
+  }
   default: {
     // Ignore
   }
@@ -685,6 +699,12 @@ void Trix:: execBUILD_INDX_IMPL_REQ(Signal* signal)
   subRec->m_rows_processed = 0;
   subRec->m_flags = SubscriptionRecord::RF_WAIT_GCP; // Todo make configurable
   subRec->m_gci = 0;
+  if (unlikely(m_enable_debug_insert_build))
+  {
+    g_eventLogger->info("Build index source_tab(%u), dest_tab(%u)",
+                        subRec->sourceTableId,
+                        subRec->targetTableId);
+  }
   if (buildIndxReq->requestType & BuildIndxImplReq::RF_NO_DISK)
   {
     subRec->m_flags |= SubscriptionRecord::RF_NO_DISK;
@@ -1242,6 +1262,32 @@ void Trix::executeBuildInsertTransaction(Signal* signal,
   copy(headerBuffer, headerPtr);
   copy(dataBuffer, dataPtr);
   releaseSections(handle);
+
+  if (unlikely(m_enable_debug_insert_build))
+  {
+    g_eventLogger->info("subRecPtr[%u]: source_tab(%u,%u), dest_tab(%u),"
+                        " header: sz: %u, 0x%x,0x%x,0x%x,0x%x"
+                        ",0x%x0x%x. dataBuffer: sz: %u, 0x%x,0x%x,0x%x,0x%x"
+                        ",0x%x,0x%x.",
+                        subRecPtr.i,
+                        subRecPtr.p->sourceTableId,
+                        subRecPtr.p->fragId,
+                        subRecPtr.p->targetTableId,
+                        headerPtr.sz,
+                        headerBuffer[0],
+                        headerBuffer[1],
+                        headerBuffer[2],
+                        headerBuffer[3],
+                        headerBuffer[4],
+                        headerBuffer[5],
+                        dataPtr.sz,
+                        dataBuffer[0],
+                        dataBuffer[1],
+                        dataBuffer[2],
+                        dataBuffer[3],
+                        dataBuffer[4],
+                        dataBuffer[5]);
+  }
 
   // Calculate packed key size
   Uint32 noOfKeyData = 0;
