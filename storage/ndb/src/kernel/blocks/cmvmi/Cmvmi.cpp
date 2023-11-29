@@ -1757,17 +1757,6 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
           Uint32 val = signal->theData[1];
           setConfMaxSendDelay(val);
         }
-        else if (val == DumpStateOrd::CmvmiSetMinSendDelay)
-        {
-          jam();
-          if (signal->length() != 2)
-          {
-            jam();
-            return;
-          }
-          Uint32 val = signal->theData[1];
-          setConfMinSendDelay(val);
-        }
         else if (val == DumpStateOrd::CmvmiSetMaxSendBufferSizeDelay)
         {
           jam();

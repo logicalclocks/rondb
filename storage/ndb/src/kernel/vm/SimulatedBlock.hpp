@@ -752,8 +752,6 @@ protected:
   Uint32 getCPUSocket(Uint32 thr_no);
   void setOverloadStatus(OverloadStatus new_status);
   void setConfMaxSendDelay(Uint32 max_send_delay);
-  void setConfMinSendDelay(Uint32 min_send_delay);
-  void setMaxSendDelay(Uint32 max_send_delay);
   void setMinSendDelay(Uint32 min_send_delay);
   void setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay);
   void setWakeupThread(Uint32 wakeup_instance);

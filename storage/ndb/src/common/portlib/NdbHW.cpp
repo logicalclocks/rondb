@@ -1706,7 +1706,9 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     goto error_exit;
 
   hwinfo->cpu_cnt = active_cpu;
+#if 0
   fprintf(stderr, "Found %u active CPUs on the machine\n", active_cpu);
+#endif
   hwinfo->num_cpu_cores = cpu_cores;
   hwinfo->num_cpu_sockets = cpu_sockets;
   hwinfo->hw_memory_size = (Uint64)memory_size;

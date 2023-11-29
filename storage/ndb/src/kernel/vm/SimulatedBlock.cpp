@@ -759,22 +759,6 @@ SimulatedBlock::setConfMaxSendDelay(Uint32 max_send_delay)
 }
 
 void
-SimulatedBlock::setMaxSendDelay(Uint32 max_send_delay)
-{
-#ifdef NDBD_MULTITHREADED
-  mt_setMaxSendDelay(max_send_delay);
-#endif
-}
-
-void
-SimulatedBlock::setConfMinSendDelay(Uint32 min_send_delay)
-{
-#ifdef NDBD_MULTITHREADED
-  mt_setConfMinSendDelay(min_send_delay);
-#endif
-}
-
-void
 SimulatedBlock::setMinSendDelay(Uint32 min_send_delay)
 {
 #ifdef NDBD_MULTITHREADED

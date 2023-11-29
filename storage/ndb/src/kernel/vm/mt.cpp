@@ -163,8 +163,6 @@ static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
-static Uint32 g_conf_min_send_delay = 0;
-static Uint32 g_max_send_delay = 0;
 static Uint32 g_min_send_delay = 0;
 static Uint32 g_max_send_buffer_size_delay = MAX_SEND_BUFFER_SIZE_TO_DELAY;
 static Uint32 glob_ndbfs_thr_no = 0;
@@ -3016,11 +3014,11 @@ thr_send_threads::insert_trp(TrpId trp_id,
  *
  * Another delay handling happens at overload. Overload happens when a
  * send returns having sent 0 bytes. In this case we will set the
- * delay to 200 microseconds. However the transporter will in this
+ * delay to 500 microseconds. However the transporter will in this
  * case still be in the transporter queue, this one will never call
- * set_send_delay while waiting for those 200 microseconds to arrive.
+ * set_send_delay while waiting for those 500 microseconds to arrive.
  */
-#define MAX_SEND_DELAY 200
+#define MAX_SEND_DELAY 500
 #define MIN_SEND_WAIT_DELAY 30
 void
 thr_send_threads::set_send_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
@@ -3111,7 +3109,7 @@ thr_send_threads::set_send_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
     Uint64 micros_passed = 0;
     if (now.getUint64() > trp_state.m_inserted_time.getUint64())
     {
-      micros_passed = NdbTick_Elapsed(trp_state,m_inserted_time,
+      micros_passed = NdbTick_Elapsed(trp_state.m_inserted_time,
                                       now).microSec();
     }
     if ((micros_passed + MIN_SEND_WAIT_DELAY) > trp_state.m_micros_delayed)
@@ -3164,14 +3162,14 @@ thr_send_threads::check_delay_expired(TrpId trp_id, NDB_TICKS now)
     return 0;
 
   Uint64 micros_passed;
-  if (now.getUint64() > trp_state.m_inserted_time.getUint64())
+  if (now.getUint64() >= trp_state.m_inserted_time.getUint64())
   {
     micros_passed = NdbTick_Elapsed(trp_state.m_inserted_time,
                                     now).microSec();
   }
   else
   {
-    now = trp_state.m_inserted_time;
+    /* Expire timer when time moves backwards */
     micros_passed = micros_delayed;
   }
   if (micros_passed >= micros_delayed) //Expired
@@ -3531,10 +3529,7 @@ thr_send_threads::alert_send_thread(TrpId trp_id, NDB_TICKS now)
    * This is the first send to this trp, so we start the delay timer now.
    */
   Uint32 min_send_delay = MIN(g_min_send_delay, MIN_SEND_WAIT_DELAY);
-  if (min_send_delay > 0)                   // Wait for more payload?
-  {
-    set_send_delay(trp_id, now, min_send_delay);
-  }
+  set_send_delay(trp_id, now, min_send_delay);
   /*
    * Check if the send thread especially responsible for this transporter
    * is awake, if not wake it up.
@@ -4039,47 +4034,31 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
   assert(m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD);
   if (m_trp_state[trp_id].m_micros_delayed > 0)     // Trp send is delayed
   {
+    /**
+     * We have transporters ready to send, but the send delay is still too
+     * high, thus we have to wait before sending to avoid generating too many
+     * interrupts both on send and receive side.
+     *
+     * Block threads assisting send threads will simply return, send threads
+     * need to do busy wait to avoid that ready transporters have to wait for
+     * up to a millisecond until the OS returns the thread to execution.
+     */
     if (!is_send_thread(thr_no))
     {
-      /**
-       * Assisting block threads need not care to send on a transporter
-       * which needs further delay. Handled by send threads.
-       */
       return false;
     }
     /**
-     * The only transporter ready for send was a transporter that still
-     * required waiting. We will only send if we have enough data to
-     * send without delay.
+     * Looping through transporters could take some time, retrieve time
+     * and recheck the delay condition before deciding to spin for a
+     * while longer. Only reasonable to check this for send threads,
+     * no reason to be so active in assisting send threads.
      */
-    if (m_trp_state[trp_id].m_send_overload)        // Pause overloaded trp
+    now = NdbTick_getCurrentTicks();
+    if (check_delay_expired(trp_id, now) != 0)
     {
-      /**
-       * Go to sleep and hopefully the overload has cleared when we wake up
-       * again.
-       */
+      /* Timer still hasn't expired, continue waiting */
       return false;
     }
-
-    /**
-     * When encountering g_max_send_delay from send thread we
-     * will let the send thread go to sleep for as long as
-     * this trp has to wait (it is the shortest sleep we
-     * we have. For non-send threads the trp will simply
-     * be reinserted and someone will pick up later to handle
-     * things.
-     *
-     * At this point in time there are no transporters ready to
-     * send, they all are waiting for the delay to expire.
-     */
-   send_instance->m_more_trps = false;
-
-    /**
-     * In this case we only have delayed signals to handle, and we are
-     * the send thread, so to avoid a millisecond of sleep we immediately
-     * proceed to handle the sending.
-     */
-    set_send_delay(trp_id, now, 0); // Send now
   }
 
   /**
@@ -4226,12 +4205,12 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
    * We control this parameter using an adaptive algorithm in THRMAN.
    *
    * The g_min_send_delay is calculated using the adaptive algorithm in
-   * THRMAN. g_conf_min_send_delay sets a limit to the min send delay.
+   * THRMAN. g_conf_max_send_delay sets a limit to the min send delay.
    * It can also be set through a DUMP command to enable experimentation
    * to figure out the optimal parameters.
    */
   m_trp_state[trp_id].m_micros_delayed = 0;
-  Uint32 min_send_delay = MIN(g_min_send_delay, g_conf_min_send_delay);
+  Uint32 min_send_delay = MIN(g_min_send_delay, g_conf_max_send_delay);
   set_send_delay(trp_id, now, min_send_delay);
   return true;
 }
@@ -4403,12 +4382,12 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
   NDB_TICKS last_now = NdbTick_getCurrentTicks();
   NDB_TICKS last_rusage = last_now;
   NDB_TICKS first_now = last_now;
+  NDB_TICKS now = last_now;
 
   while (globalData.theRestartFlag != perform_stop)
   {
     this_send_thread->m_watchdog_counter = 19;
 
-    NDB_TICKS now = NdbTick_getCurrentTicks();
     Uint64 sleep_time_ns = nanos_sleep;
     Uint64 exec_time_ns = NdbTick_Elapsed(last_now, now).nanoSec();
     Uint64 time_since_update_rusage =
@@ -4524,30 +4503,42 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
      * spin timer for send threads.
      */
     {
-      Uint32 max_wait_nsec;
       /**
        * We sleep a max time, possibly waiting for a specific trp
        * with delayed send (overloaded, or waiting for more payload).
        * (Will be alerted to start working when more send work arrives)
        */
-      if (trp_wait == 0)
+      NDB_TICKS before = NdbTick_getCurrentTicks();
+      bool waited = true;
+      if (trp_wait)
       {
-        //50ms, has to wakeup before 100ms watchdog alert.
-        max_wait_nsec = 50*1000*1000;
+        /**
+         * Busy wait, we have ready transporters
+         * We will wait at least 6-7 microseconds,
+         * no need to rush to send in this case.
+         */
+        NdbSpin();
+        NdbSpin();
+        NdbSpin();
+        NdbSpin();
+        NdbSpin();
+        NdbSpin();
+        NdbSpin();
+        NdbSpin();
       }
       else
       {
-        max_wait_nsec = trp_wait * 1000;
+        //50ms, has to wakeup before 100ms watchdog alert.
+        Uint32 max_wait_nsec = 50*1000*1000;
+        waited = yield(&this_send_thread->m_waiter_struct,
+                       max_wait_nsec,
+                       check_available_send_data,
+                       this_send_thread);
       }
-      NDB_TICKS before = NdbTick_getCurrentTicks();
-      bool waited = yield(&this_send_thread->m_waiter_struct,
-                          max_wait_nsec,
-                          check_available_send_data,
-                          this_send_thread);
+      now = NdbTick_getCurrentTicks();
       if (waited)
       {
-        NDB_TICKS after = NdbTick_getCurrentTicks();
-        nanos_sleep += NdbTick_Elapsed(before, after).nanoSec();
+        nanos_sleep += NdbTick_Elapsed(before, now).nanoSec();
       }
     }
   }
@@ -9417,21 +9408,6 @@ void
 mt_setConfMaxSendDelay(Uint32 send_delay)
 {
   g_conf_max_send_delay = send_delay;
-}
-
-void
-mt_setMaxSendDelay(Uint32 max_send_delay)
-{
-  if (max_send_delay != g_max_send_delay)
-  {
-    g_max_send_delay = max_send_delay;
-  }
-}
-
-void
-mt_setConfMinSendDelay(Uint32 send_delay)
-{
-  g_conf_min_send_delay = send_delay;
 }
 
 void
