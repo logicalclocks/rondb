@@ -213,7 +213,9 @@ private:
            const ndb_mgm_configuration_iterator *p);
   static Uint64 get_and_set_long_message_buffer(
            const ndb_mgm_configuration_iterator *p);
-  static Uint64 compute_os_overhead(Uint64 total_memory);
+  static Uint64 compute_os_overhead(
+    Uint64 total_memory,
+    const ndb_mgm_configuration_iterator *p);
   static Uint64 compute_static_overhead();
   static Uint64 compute_backup_page_memory(
                   const ndb_mgm_configuration_iterator *p);

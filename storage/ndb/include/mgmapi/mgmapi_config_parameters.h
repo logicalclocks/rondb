@@ -267,6 +267,8 @@
 #define CFG_DB_NUM_CPUS               676
 #define CFG_DB_AUTO_THREAD_CONFIG     677
 
+#define CFG_DB_OS_STATIC_OVERHEAD     694
+#define CFG_DB_OS_CPU_OVERHEAD        695
 #define CFG_DB_LOW_LATENCY            696
 #define CFG_DB_UNDO_BUFFER            697
 #define CFG_DB_TOTAL_MEMORY_CONFIG    698
