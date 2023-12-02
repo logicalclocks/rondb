@@ -56,10 +56,6 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 # Important env variable for RonDB compilation
 ENV BOOST_ROOT="/${BOOST_LABEL}"
 
-# Ubuntu 22.04 contains openssl-3.x
-# RonDB 22.10 requires an older OpenSSL version (1.1.1t) and will look for 
-# it in $OPENSSL_ROOT. We will not overwrite the system's OpenSSL library, 
-# but just install the specified version.
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
