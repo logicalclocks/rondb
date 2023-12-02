@@ -3024,7 +3024,6 @@ void
 thr_send_threads::set_send_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
 {
   struct thr_send_trps &trp_state = m_trp_state[trp_id];
-  require(trp_state.m_data_available > 0);
   assert(!trp_state.m_send_overload);
 
   if (delay_usec == 0 || trp_state.m_micros_delayed < delay_usec)
@@ -4182,7 +4181,7 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
     }
     if (unlikely(more && bytes_sent == 0)) //Trp is overloaded
     {
-      set_overload_delay(trp_id, MAX_SEND_DELAY);//Delay send-retry by 200 us
+      set_overload_delay(trp_id, MAX_SEND_DELAY);//Delay send-retry by 500 us
       return true;
     }
   }
