@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2000, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -483,6 +484,7 @@ THD::THD(bool enable_plugins)
   utime_after_lock = 0L;
   current_linfo = nullptr;
   slave_thread = false;
+  override_slave_filtering = THD::NO_OVERRIDE_SLAVE_FILTERING;
   memset(&variables, 0, sizeof(variables));
   m_thread_id = Global_THD_manager::reserved_thread_id;
   file_id = 0;

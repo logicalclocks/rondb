@@ -1,5 +1,6 @@
 /*
   Copyright (c) 2019, 2022, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -290,15 +291,25 @@ bool ThreadContext::exec_sql(const std::string &statement) {
 
   /* Many queries can be ignored if we are a slave thread. Since this query is
      executed for internal purposes, we always want it to execute. We therefore
-     pretend to not be a slave thread. */
-  bool save_slave_thread = m_thd->slave_thread;
-  m_thd->slave_thread = false;
+     set a flag to override suppression of query execution in slave thread. */
+  DBUG_ASSERT(m_thd->override_slave_filtering ==
+              THD::NO_OVERRIDE_SLAVE_FILTERING);
+  if(m_thd->slave_thread) {
+    m_thd->override_slave_filtering = THD::OVERRIDE_SLAVE_FILTERING;
+  }
 
   /* execute_query_iso() returns false on success */
   m_closed = execute_query_iso(sql_text, ignore_mysql_errors, nullptr);
 
-  /* Restore the slave_thread flag */
-  m_thd->slave_thread = save_slave_thread;
+  /* Restore the flag for overriding suppression of query execution */
+  if(m_thd->slave_thread) {
+    DBUG_ASSERT(m_thd->override_slave_filtering ==
+                THD::OVERRIDE_SLAVE_FILTERING);
+    m_thd->override_slave_filtering = THD::NO_OVERRIDE_SLAVE_FILTERING;
+  } else {
+    DBUG_ASSERT(m_thd->override_slave_filtering ==
+                THD::NO_OVERRIDE_SLAVE_FILTERING);
+  }
 
   return m_closed;
 }

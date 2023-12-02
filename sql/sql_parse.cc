@@ -1,4 +1,5 @@
 /* Copyright (c) 1999, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2718,6 +2719,12 @@ int mysql_execute_command(THD *thd, bool first_level) {
   DBUG_ASSERT(!thd->m_transactional_ddl.inited() ||
               thd->in_active_multi_stmt_transaction());
 
+  DBUG_ASSERT(thd->override_slave_filtering ==
+              THD::NO_OVERRIDE_SLAVE_FILTERING ||
+              (thd->override_slave_filtering ==
+               THD::OVERRIDE_SLAVE_FILTERING &&
+               thd->slave_thread));
+
   /*
     If there is a CREATE TABLE...START TRANSACTION command which
     is not yet committed or rollbacked, then we should allow only
@@ -2909,12 +2916,14 @@ int mysql_execute_command(THD *thd, bool first_level) {
         in 5.0 there are no SET statements in the binary log)
       - DROP TEMPORARY TABLE IF EXISTS: we always execute it (otherwise we
         have stale files on slave caused by exclusion of one tmp table).
+      - Slave filtering is overridden, e.g. since the query is internal.
     */
     if (!(lex->sql_command == SQLCOM_UPDATE_MULTI) &&
         !(lex->sql_command == SQLCOM_SET_OPTION) &&
         !(lex->sql_command == SQLCOM_DROP_TABLE && lex->drop_temporary &&
           lex->drop_if_exists) &&
-        all_tables_not_ok(thd, all_tables)) {
+        all_tables_not_ok(thd, all_tables) &&
+        thd->override_slave_filtering == THD::NO_OVERRIDE_SLAVE_FILTERING) {
       /* we warn the slave SQL thread */
       my_error(ER_SLAVE_IGNORED_TABLE, MYF(0));
       binlog_gtid_end_transaction(thd);
