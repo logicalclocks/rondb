@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,6 +48,13 @@ Ndb *check_ndb_in_thd(THD *thd, bool validate_ndb) {
   else if (validate_ndb && !thd_ndb->valid_ndb()) {
     if (!thd_ndb->recycle_ndb()) return nullptr;
   }
+
+
+  assert(thd->override_replica_filtering ==
+         THD::NO_OVERRIDE_REPLICA_FILTERING ||
+         (thd->override_replica_filtering ==
+          THD::OVERRIDE_REPLICA_FILTERING &&
+          thd->slave_thread));
 
   return thd_ndb->ndb;
 }

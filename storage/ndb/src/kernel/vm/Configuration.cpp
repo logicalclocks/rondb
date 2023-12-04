@@ -1013,7 +1013,9 @@ Configuration::get_and_set_long_message_buffer(
 }
 
 Uint64
-Configuration::compute_os_overhead(Uint64 total_memory)
+Configuration::compute_os_overhead(
+  Uint64 total_memory,
+  const ndb_mgm_configuration_iterator *p)
 {
   /**
    * This includes memory used by the OS for all sorts of internal operations.
@@ -1030,10 +1032,21 @@ Configuration::compute_os_overhead(Uint64 total_memory)
    * We remove 1% of the total memory, 100 MBytes per thread, in addition
    * we remove 1.4 GByte to handle smaller VM sizes.
    */
+  Uint64 os_static_overhead = 0;
+  ndb_mgm_get_int64_parameter(p, CFG_DB_OS_STATIC_OVERHEAD, &os_static_overhead);
+  Uint64 os_cpu_overhead = 0;
+  ndb_mgm_get_int64_parameter(p, CFG_DB_OS_CPU_OVERHEAD, &os_cpu_overhead);
+  if (os_static_overhead == 0)
+  {
+    os_static_overhead = Uint64(1400) * MBYTE64;
+  }
+  if (os_cpu_overhead == 0)
+  {
+    os_cpu_overhead = Uint64(100) * MBYTE64;
+  }
   Uint64 reserved_part = total_memory / Uint64(100);
   Uint32 num_threads = get_num_threads() + globalData.ndbMtRecoverThreads;
-  Uint64 os_static_overhead = Uint64(1400) * MBYTE64;
-  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(100) * MBYTE64;
+  os_cpu_overhead *= Uint64(num_threads);
   return os_static_overhead + os_cpu_overhead + reserved_part;
 }
 
@@ -1326,7 +1339,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   Uint64 os_overhead = 0;
   if (!total_memory_set)
   {
-    os_overhead = compute_os_overhead(total_memory);
+    os_overhead = compute_os_overhead(total_memory, p);
   }
   Uint64 send_buffer = get_send_buffer(p);
   Uint64 backup_page_memory = compute_backup_page_memory(p);

@@ -249,8 +249,8 @@ drop table test.t1;
 --exec $NDB_RESTORE -b $the_backup_id -n 1 -r --exclude-databases=test $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
 --source suite/ndb/include/ndb_restore_check_warn.inc
 
---echo # restore data : should not warn since indexes are disabled in one of the previous steps
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
+--echo # restore data : should warn since unique indexes to be restored
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id --allow-unique-indexes > $dump_file 2>&1
 --source suite/ndb/include/ndb_restore_check_warn.inc
 
 --echo # restore epoch : should not warn

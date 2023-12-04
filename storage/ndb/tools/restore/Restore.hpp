@@ -677,8 +677,8 @@ public:
   const char* getThreadPrefix() const;
   void set_print_timestamp(bool print_TS);
   bool get_print_timestamp();
-private:
   NdbMutex *m_mutex;
+private:
   char timestamp[64];
   bool print_timestamp;
 };
@@ -687,6 +687,7 @@ NdbOut& operator<<(NdbOut& ndbout, const TableS&);
 NdbOut& operator<<(NdbOut& ndbout, const TupleS&);
 NdbOut& operator<<(NdbOut& ndbout, const LogEntry&);
 NdbOut& operator<<(NdbOut& ndbout, const RestoreMetaData&);
+NdbOut& operator<<(NdbOut& ndbout, const AttributeS&);
 
 bool readSYSTAB_0(const TupleS & tup, Uint32 * syskey, Uint64 * nextid);
 
