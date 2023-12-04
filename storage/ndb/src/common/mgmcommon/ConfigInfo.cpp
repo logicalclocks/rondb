@@ -2135,7 +2135,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
     ConfigInfo::CI_BOOL,
-    "false",
+    "true",
     "false",
     "true"
   },
