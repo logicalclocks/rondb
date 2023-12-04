@@ -1,4 +1,5 @@
 /* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2664,6 +2665,18 @@ class THD : public MDL_context_owner,
   /// @todo: slave_thread is completely redundant, we should use 'system_thread'
   /// instead /sven
   bool slave_thread;
+
+  // override_replica_filtering is used to indicate that we want to execute a
+  // query that normally would be suppressed in a replica thread.
+  enum enum_override_replica_filtering {
+    // Use a couple of semi-random constants to ensure initialization. They are
+    // chosen to encode "OSFY" and "OSFN" (meaning "override slave(replica) filtering
+    // yes/no") to aid debugging.
+    // Debug search terms: OSFY, OSFN, YFSO, NFSO
+    OVERRIDE_REPLICA_FILTERING = 0x4f534659,
+    NO_OVERRIDE_REPLICA_FILTERING = 0x4f53464e,
+  };
+  enum enum_override_replica_filtering override_replica_filtering;
 
   uchar password;
 

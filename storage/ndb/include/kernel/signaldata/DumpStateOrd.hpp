@@ -107,6 +107,12 @@ public:
     SetSpintimePerCall = 104003,
     EnableAdaptiveSpinning = 104004,
     _THRMANMax = 104999,
+
+    _TRIXMin = 105000,
+    EnableDebugInsertBuild = 105000,
+    DisableDebugInsertBuild = 105001,
+    _TRIXMax = 105999,
+
     // 1 QMGR Dump information about phase 1 variables
     // 13 CMVMI Dump signal counter
     // 13 NDBCNTR Dump start phase information

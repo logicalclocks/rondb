@@ -1786,6 +1786,11 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
       sendSignal(THRMAN_REF, GSN_DUMP_STATE_ORD, signal,
                  signal->length(), JBB);
     }
+    else if (check_block(TRIX, val))
+    {
+      sendSignal(TRIX_REF, GSN_DUMP_STATE_ORD, signal,
+                 signal->length(), JBB);
+    }
     return;
   }
 

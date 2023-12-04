@@ -305,6 +305,8 @@ private:
   Uint32 c_maxFKBuildBatchSize;
   Uint32 c_maxReorgBuildBatchSize;
 
+  bool m_enable_debug_insert_build;
+
   // System start
   void execREAD_CONFIG_REQ(Signal* signal);
   void execSTTOR(Signal* signal);

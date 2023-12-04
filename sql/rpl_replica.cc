@@ -1,4 +1,5 @@
 /* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4063,6 +4064,7 @@ int init_replica_thread(THD *thd, SLAVE_THD_TYPE thd_type) {
                                  : SYSTEM_THREAD_SLAVE_IO;
   thd->get_protocol_classic()->init_net(nullptr);
   thd->slave_thread = true;
+  thd->override_replica_filtering = THD::NO_OVERRIDE_REPLICA_FILTERING;
   thd->enable_slow_log = opt_log_slow_replica_statements;
   set_slave_thread_options(thd);
 
