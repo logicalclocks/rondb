@@ -47,9 +47,9 @@ SET GLOBAL ndb_metadata_check = false;
 --source include/ndb_backup.inc
 drop table host_test;
 --exec $NDB_RESTORE -b $the_backup_id -n 1 -m --disable-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 1 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 2 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $the_backup_id -n 3 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --print --print_meta $NDB_BACKUPS-$the_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --print --print_meta $NDB_BACKUPS-$the_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 3 -r --print --print_meta $NDB_BACKUPS-$the_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
 --exec $NDB_RESTORE -b $the_backup_id -n 1 --rebuild-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
 
 select a,b from host_test where a = 1;
