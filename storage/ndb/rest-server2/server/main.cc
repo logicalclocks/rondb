@@ -2,6 +2,7 @@
 #include <drogon/drogon.h>
 
 // #define NDEBUG
+#define SIMDJSON_VERBOSE_LOGGING 1
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -11,6 +12,11 @@
 #include <thread>
 #include "data-structs.h"
 #include <simdjson.h>
+#include "pk-data-structs.hpp"
+#include "connection.hpp"
+#include "config_structs.hpp"
+#include "src/rdrs-dal.h"
+#include "encoding.hpp"
 
 using namespace drogon;
 using namespace drogon::orm;
@@ -25,6 +31,8 @@ bool serialization = true;
 #define MAX_THREADS 16
 
 char buffers[MAX_THREADS][BODY_MAX_SIZE];
+
+AllConfigs globalConfigs;
 
 void create_dummy_batch_req(BatchOpRequest *req, int num_ops) {
   for (int i = 0; i < num_ops; i++) {
@@ -102,7 +110,139 @@ void simple_to_string(BatchOpRequest *req) {
   // std::cout<<ss.str()<<std::endl;
 }
 
-int simdJsonParse(std::basic_string_view<char> &req_body, int thradID, int *opCount) {
+int json_parse(std::string_view &reqBody, PKReadParams &reqStruct, int threadId) {
+  char* json = buffers[threadId];
+
+  if (reqBody.size() >= (BODY_MAX_SIZE - SIMDJSON_PADDING)) {
+    return simdjson::error_code::INSUFFICIENT_PADDING;
+  }
+
+  memcpy(json, reqBody.data(), reqBody.size());
+  json[reqBody.size()] = 0;
+  simdjson::padded_string padded_json(json, reqBody.size());
+
+  ondemand::parser parser;
+  ondemand::document doc;
+
+  auto error = parser.iterate(padded_json).get(doc);
+  if (error) {
+    std::cout << "Parsing request failed. Error: " << error
+      << " at " << doc.current_location() << std::endl;
+    return error;
+  }
+
+  ondemand::object req_object;
+  error = doc.get_object().get(req_object);
+  if (error) {
+    std::cout << "Parsing request failed. Error: " << error
+      << " at " << doc.current_location() << std::endl;
+    return error;
+  }
+
+  ondemand::array filters;
+  error = req_object["filters"].get_array().get(filters);
+  if (error) {
+    std::cout << "Parsing request failed. Error: " << error
+      << " at " << doc.current_location() << std::endl;
+    return error;
+  }
+
+  for (auto filter: filters) {
+    PKReadFilter pk_read_filter;
+    ondemand::object filter_obj;
+    error = filter.get(filter_obj);
+    if (error) {
+      std::cout << "Parsing request failed. Error: " << error
+        << " at " << doc.current_location() << std::endl;
+      return error;
+    }
+
+    std::string_view column;
+    error = filter_obj["column"].get(column);
+    if (error) {
+      std::cout << "Parsing request failed. Error: " << error
+        << " at " << doc.current_location() << std::endl;
+      return error;
+    }
+    pk_read_filter.column = column;
+
+    ondemand::value value;
+    error = filter_obj["value"].get(value);
+    if (error) {
+      std::cout << "Parsing request failed. Error: " << error
+        << " at " << doc.current_location() << std::endl;
+      return error;
+    }
+    if (value.type() == ondemand::json_type::number) {
+      double value_double = value.get_double();
+      std::vector<char> bytes(sizeof(double));
+      std::memcpy(bytes.data(), &value_double, sizeof(double));
+      pk_read_filter.value = bytes;
+    } else if (value.type() == ondemand::json_type::string) {
+      std::string_view value_str = value.get_string();
+      std::vector<char> bytes(value_str.begin(), value_str.end());
+      pk_read_filter.value = bytes;
+    } else {
+      std::cout << "Parsing request failed. Error: " << error
+        << " at " << doc.current_location() << std::endl;
+      return error;
+    }
+
+    reqStruct.filters.emplace_back(pk_read_filter);
+  }
+
+  ondemand::array read_columns;
+  error = req_object["readColumns"].get_array().get(read_columns);
+  if (error) {
+    std::cout << "Parsing request failed. Error: " << error
+      << " at " << doc.current_location() << std::endl;
+    return error;
+  }
+
+  for (auto read_column: read_columns) {
+    PKReadReadColumn pk_read_read_column;
+    ondemand::object read_column_obj;
+    error = read_column.get(read_column_obj);
+    if (error) {
+      std::cout << "Parsing request failed. Error: " << error
+        << " at " << doc.current_location() << std::endl;
+      return error;
+    }
+
+    std::string_view column;
+    error = read_column_obj["column"].get(column);
+    if (error) {
+      std::cout << "Parsing request failed. Error: " << error
+        << " at " << doc.current_location() << std::endl;
+      return error;
+    }
+    pk_read_read_column.column = column;
+
+    std::string_view data_return_type;
+    error = read_column_obj["dataReturnType"].get(data_return_type);
+    if (error) {
+      std::cout << "Parsing request failed. Error: " << error
+        << " at " << doc.current_location() << std::endl;
+      return error;
+    }
+    pk_read_read_column.returnType = data_return_type;
+
+    reqStruct.readColumns.emplace_back(pk_read_read_column);
+  }
+
+  std::string_view operation_id;
+  error = req_object["operationId"].get(operation_id);
+  if (error) {
+    std::cout << "Parsing request failed. Error: " << error
+      << " at " << doc.current_location() << std::endl;
+    return error;
+  }
+
+  reqStruct.operationId = operation_id;
+  return simdjson::SUCCESS;
+}
+
+int batch_parse(std::basic_string_view<char> &req_body, BatchOpRequest &req_struct, int thradID, int *opCount) {
   char *json = buffers[thradID];
 
   if (req_body.size() >= (BODY_MAX_SIZE - SIMDJSON_PADDING)) {
@@ -275,7 +415,7 @@ int simdJsonParse(std::basic_string_view<char> &req_body, int thradID, int *opCo
       }
     }
   }
-  return SUCCESS;
+  return simdjson::SUCCESS;
 }
 
 int main() {
@@ -328,22 +468,32 @@ int main() {
          std::function<void(const HttpResponsePtr &)> &&callback
          //,const std::string &db, const std::string table) {
         ) {
-        auto req_body = req->getBody();
+        auto reqBody = req->getBody();
         // printf("Current thread %d\n",app().getCurrentThreadIndex());
 
-        int opCount = 0;
-        int error = simdJsonParse(req_body, app().getCurrentThreadIndex(), &opCount);
+        PKReadParams reqStruct;
+        int error = json_parse(reqBody, reqStruct, app().getCurrentThreadIndex());
 
-        if (error == SUCCESS) {
-            if (serialization) {
-              BatchOpRequest req{};
-              create_dummy_batch_req(&req, opCount);
-              simple_to_string(&req);
-            }
+        if (error == simdjson::SUCCESS) {
+          RS_BufferManager reqBuffManager = RS_BufferManager(globalConfigs.internal.bufferSize);
+          RS_BufferManager respBuffManager = RS_BufferManager(globalConfigs.internal.bufferSize);
+          RS_Buffer* reqBuff = reqBuffManager.getBuffer();
+          RS_Buffer* respBuff = respBuffManager.getBuffer();
+
+          create_native_request(reqStruct, reqBuff->buffer, respBuff->buffer);
 
           auto resp = HttpResponse::newHttpResponse();
-          resp->setBody("OK");
           resp->setStatusCode(drogon::HttpStatusCode::k200OK);
+
+          // pk_read
+          pk_read(reqBuff, respBuff);
+          // convert resp to json
+          char* respData = respBuff->buffer;
+          PKReadResponseJSON respJson;
+          respJson.init();
+          process_pkread_response(respData, respJson);
+          resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+          resp->setBody(respJson.toString());
           callback(resp);
         } else {
           printf("Operation failed\n");
@@ -355,9 +505,22 @@ int main() {
       },
       {Post});
 
-  printf("Server running on 0.0.0.0:4046\n");
-  app().addListener("0.0.0.0", 4046);
-  app().setThreadNum(MAX_THREADS);
-  app().disableSession();
-  app().run();
+  // connect to rondb
+  globalConfigs = AllConfigs();
+  RonDBConnection rondbConnection(globalConfigs.ronDB,
+                                  globalConfigs.ronDbMetaDataCluster);
+
+  if (globalConfigs.security.tls.enableTLS) {}
+
+  if (globalConfigs.grpc.enable) {}
+
+  if (globalConfigs.rest.enable) {
+    printf("Server running on 0.0.0.0:4046\n");
+    app().addListener("0.0.0.0", 4046);
+    app().setThreadNum(MAX_THREADS);
+    app().disableSession();
+    app().run();
+  }
+
+  return 0;
 }

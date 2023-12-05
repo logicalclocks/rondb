@@ -4,32 +4,30 @@
 #include <string>
 #include <vector>
 
-using namespace std;
-
 struct Filter {
-    string Column;
-    string Value;
+    std::string Column;
+    std::string Value;
 };
 
 struct ReadColumn {
-    string Column;
-    string DataReturnType;
+    std::string Column;
+    std::string DataReturnType;
 };
 
 struct PKReadBody {
-    vector<Filter> Filters;
-    vector<ReadColumn> ReadColumns;
-    string OperationID;
+    std::vector<Filter> Filters;
+    std::vector<ReadColumn> ReadColumns;
+    std::string OperationID;
 };
 
 struct BatchSubOp {
-    string Method;
-    string RelativeURL;
+    std::string Method;
+    std::string RelativeURL;
     PKReadBody Body;
 };
 
 struct BatchOpRequest {
-    vector<BatchSubOp> Operations;
+    std::vector<BatchSubOp> Operations;
 };
 
 #endif
