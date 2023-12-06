@@ -5,34 +5,35 @@
 #include <string>
 #include <string_view>
 #include <iostream>
+#include <drogon/drogon.h>
 
 uint32_t copy_str_to_buffer(std::vector<char> src, void* dst, uint32_t offset) {
 	if (dst == nullptr) {
-			throw std::invalid_argument("Destination buffer pointer is null");
+		throw std::invalid_argument("Destination buffer pointer is null");
 	}
 
 	uint32_t src_length = static_cast<uint32_t>(src.size());
 
-	std::memcpy(static_cast<uint8_t*>(dst) + offset, src.data(), src_length);
+	for (uint32_t i = offset, j = 0; i < offset + src_length; ++i, ++j) {
+		static_cast<char*>(dst)[i] = src[j];
+	}
 
-	// Append a NULL terminator after the copied string
-	static_cast<uint8_t*>(dst)[offset + src_length] = 0x00;
+	static_cast<char*>(dst)[offset + src_length] = 0x00;
 
 	return offset + src_length + 1;
 }
 
 uint32_t copy_ndb_str_to_buffer(std::vector<char> src, void* dst, uint32_t offset) {
 	if (dst == nullptr) {
-			throw std::invalid_argument("Destination buffer pointer is null");
+		throw std::invalid_argument("Destination buffer pointer is null");
 	}
 
 	// Remove quotation marks from string, if present
 	std::vector<char> processed_src;
 	if (src.size() >= 2 && src.front() == '\"' && src.back() == '\"') {
-			// Copy string without the first and last character (quotation marks)
-			processed_src.insert(processed_src.end(), src.begin() + 1, src.end() - 1);
+		processed_src.insert(processed_src.end(), src.begin() + 1, src.end() - 1);
 	} else {
-			processed_src = src;
+		processed_src = src;
 	}
 
 	uint32_t src_length = static_cast<uint32_t>(processed_src.size());
@@ -42,30 +43,29 @@ uint32_t copy_ndb_str_to_buffer(std::vector<char> src, void* dst, uint32_t offse
 	static_cast<char*>(dst)[offset + 1] = static_cast<char>(src_length / 256);
 	offset += 2;
 
-	// Reserve space for mutable length, manipulated by the C layer (initialized to zero)
 	static_cast<char*>(dst)[offset] = 0;
 	static_cast<char*>(dst)[offset + 1] = 0;
 	offset += 2;
 
-	// Copy the processed source data to the destination buffer
-	std::memcpy(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(dst) + offset), processed_src.data(), src_length);
+	for (uint32_t i = offset, j = 0; i < offset + src_length; ++i, ++j) {
+		static_cast<char*>(dst)[i] = processed_src[j];
+	}
 
-	// Append a NULL terminator after the copied data
-	static_cast<uint8_t*>(dst)[offset + src_length] = 0x00;
+	static_cast<char*>(dst)[offset + src_length] = 0x00;
 
 	return offset + src_length + 1;
 }
 
 std::vector<char> string_to_byte_array(const std::string& str) {
-    return std::vector<char>(str.begin(), str.end());
+	return std::vector<char>(str.begin(), str.end());
 }
 
 std::vector<char> string_view_to_byte_array(const std::string_view& str_view) {
-    return std::vector<char>(str_view.begin(), str_view.end());
+	return std::vector<char>(str_view.begin(), str_view.end());
 }
 
 uint32_t align_word(uint32_t head) {
-	uint32_t a = head / 4;
+	uint32_t a = head % 4;
 	if (a != 0)
 		head += (4 - a);
 	return head;

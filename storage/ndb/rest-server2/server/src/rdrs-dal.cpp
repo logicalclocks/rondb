@@ -140,6 +140,7 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   DATA_OP_RETRY_HANDLER(
       PKROperation pkread(reqBuff, respBuff, ndb_object);
       status = pkread.PerformOperation();
+      std::cout << "PKRead operation status: " << std::dec << status.http_code << std::endl;
   )
   /* clang-format on */
 

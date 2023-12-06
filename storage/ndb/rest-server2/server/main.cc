@@ -114,6 +114,8 @@ int json_parse(std::string_view &reqBody, PKReadParams &reqStruct, int threadId)
   char* json = buffers[threadId];
 
   if (reqBody.size() >= (BODY_MAX_SIZE - SIMDJSON_PADDING)) {
+    std::cout << "Parsing request failed. Error: " << simdjson::error_code::INSUFFICIENT_PADDING
+      << " at " << __LINE__ << std::endl;
     return simdjson::error_code::INSUFFICIENT_PADDING;
   }
 
@@ -418,6 +420,71 @@ int batch_parse(std::basic_string_view<char> &req_body, BatchOpRequest &req_stru
   return simdjson::SUCCESS;
 }
 
+void printCharArray(const char* array, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        std::cout << array[i];
+    }
+    std::cout << std::endl;
+}
+
+void printReqBuffer(RS_Buffer* reqBuff) {
+  char* reqData = reqBuff->buffer;
+  unsigned int reqSize = reqBuff->size;
+  std::cout << "Request buffer: " << std::endl;
+  std::cout << "OP Type: " << std::hex << "0x" << ((uint32_t*)reqData)[0] << std::endl;
+  std::cout << "Capacity: " << std::hex << "0x" << ((uint32_t*)reqData)[1] << std::endl;
+  std::cout << "Length: " << std::hex << "0x" << ((uint32_t*)reqData)[2] << std::endl;
+  std::cout << "Flags: " << std::hex << "0x" << ((uint32_t*)reqData)[3] << std::endl;
+  std::cout << "DB Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[4] << std::endl;
+  std::cout << "Table Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[5] << std::endl;
+  std::cout << "PK Cols Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[6] << std::endl;
+  std::cout << "Read Cols Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[7] << std::endl;
+  std::cout << "OP ID Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[8] << std::endl;
+  std::cout << "DB: ";
+  uint32_t dbIdx = ((uint32_t*)reqData)[4];
+  std::cout << (char*)((uintptr_t)reqData + dbIdx) << std::endl;
+  std::cout << "Table: ";
+  uint32_t tableIdx = ((uint32_t*)reqData)[5];
+  std::cout << (char*)((uintptr_t)reqData + tableIdx) << std::endl;
+  uint32_t pkColsIdx = ((uint32_t*)reqData)[6];
+  std::cout << "PK Cols Count: " << std::hex << "0x" << 
+    *((uint32_t*)((uintptr_t)reqData + pkColsIdx)) << std::endl;
+  for (int i = 0; i < *((uint32_t*)((uintptr_t)reqData + pkColsIdx)); i++) {
+    int step = (i + 1) * ADDRESS_SIZE;
+    std::cout << "KV pair " << i << " Idx: " << std::hex << "0x" << 
+      *((uint32_t*)((uintptr_t)reqData + pkColsIdx + step)) << std::endl;
+    uint32_t kvPairIdx = *((uint32_t*)((uintptr_t)reqData + pkColsIdx + step));
+    uint32_t keyIdx = ((uint32_t*)reqData)[kvPairIdx / ADDRESS_SIZE];
+    std::cout << "Key idx: " << std::hex << "0x" << keyIdx << std::endl;
+    std::cout << "Key " << i + 1 << ": " << std::endl;
+    std::cout << (char*)((uintptr_t)reqData + keyIdx) << std::endl;
+    uint32_t valueIdx = ((uint32_t*)reqData)[(kvPairIdx / ADDRESS_SIZE) + 1];
+    std::cout << "Value idx: " << std::hex << "0x" << valueIdx << std::endl;
+    std::cout << "Size " << i + 1 << ": "<< std::endl;
+    std::cout << *((uint16_t*)((uintptr_t)reqData + valueIdx)) << std::endl;
+    std::cout << "Value " << i + 1 << " (as double): " << std::endl;
+    std::cout << *((double*)((uintptr_t)reqData + valueIdx + ADDRESS_SIZE)) << std::endl;
+    std::cout << "Value " << i + 1 << " (as string): " << std::endl;
+    std::cout << (char*)((uintptr_t)reqData + valueIdx + ADDRESS_SIZE) << std::endl;
+  }
+  uint32_t readColsIdx = ((uint32_t*)reqData)[7];
+  std::cout << "Read Cols Count: " << std::hex << "0x" <<
+    *((uint32_t*)((uintptr_t)reqData + readColsIdx)) << std::endl;
+  for (int i = 0; i < *((uint32_t*)((uintptr_t)reqData + readColsIdx)); i++) {
+    int step = (i + 1) * ADDRESS_SIZE;
+    std::cout << "Read Col " << i << " Idx: " << std::hex << "0x" << 
+      *((uint32_t*)((uintptr_t)reqData + readColsIdx + step)) << std::endl;
+    uint32_t readColIdx = *((uint32_t*)((uintptr_t)reqData + readColsIdx + step));
+    uint32_t returnType = ((uint32_t*)reqData)[readColIdx / ADDRESS_SIZE];
+    std::cout << "Return type: " << std::hex << "0x" << returnType << std::endl;
+    std::cout << "Col " << i + 1 << ": " << std::endl;
+    std::cout << (char*)((uintptr_t)reqData + readColIdx + ADDRESS_SIZE) << std::endl;
+  }
+  uint32_t opIDIdx = ((uint32_t*)reqData)[8];
+  std::cout << "Op ID: " << std::endl;
+  std::cout << (char*)((uintptr_t)reqData + opIDIdx) << std::endl;
+}
+
 int main() {
   app().registerHandler(
       "/ping",
@@ -466,34 +533,53 @@ int main() {
       "/dbopsimd/{db}/{table}",
       [](const HttpRequestPtr &req,
          std::function<void(const HttpResponsePtr &)> &&callback
-         //,const std::string &db, const std::string table) {
-        ) {
+         ,const std::string &db, const std::string table) {
         auto reqBody = req->getBody();
         // printf("Current thread %d\n",app().getCurrentThreadIndex());
 
         PKReadParams reqStruct;
+        reqStruct.path.db = db;
+        reqStruct.path.table = table;
         int error = json_parse(reqBody, reqStruct, app().getCurrentThreadIndex());
 
         if (error == simdjson::SUCCESS) {
+          std::cout << reqStruct.to_string() << std::endl;
           RS_BufferManager reqBuffManager = RS_BufferManager(globalConfigs.internal.bufferSize);
           RS_BufferManager respBuffManager = RS_BufferManager(globalConfigs.internal.bufferSize);
           RS_Buffer* reqBuff = reqBuffManager.getBuffer();
           RS_Buffer* respBuff = respBuffManager.getBuffer();
 
           create_native_request(reqStruct, reqBuff->buffer, respBuff->buffer);
+          uintptr_t length_ptr = (uintptr_t)reqBuff->buffer + PK_REQ_LENGTH_IDX * ADDRESS_SIZE;
+          // Get the hex value and transform it back to decimal
+          uint32_t* length_ptr_casted = reinterpret_cast<uint32_t*>(length_ptr);
+          reqBuff->size = *length_ptr_casted;
+          // Print out the request buffer
+          printReqBuffer(reqBuff);
 
           auto resp = HttpResponse::newHttpResponse();
           resp->setStatusCode(drogon::HttpStatusCode::k200OK);
 
           // pk_read
-          pk_read(reqBuff, respBuff);
+          auto status = pk_read(reqBuff, respBuff);
+          std::cout << "status.http_code = " << std::dec << status.http_code << std::endl;
+
           // convert resp to json
           char* respData = respBuff->buffer;
+
           PKReadResponseJSON respJson;
           respJson.init();
           process_pkread_response(respData, respJson);
+
+          std::cout << respJson.to_string() << std::endl;
+          std::cout << "respJson.data: " << std::endl;
+          for (auto datum : respJson.getData()) {
+            std::cout << datum.first << ": ";
+            printCharArray(datum.second.data(), datum.second.size());
+          }
+          std::cout << "respJson.operationId: " << respJson.getOperationID() << std::endl;
           resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-          resp->setBody(respJson.toString());
+          resp->setBody(respJson.to_string());
           callback(resp);
         } else {
           printf("Operation failed\n");
@@ -515,8 +601,8 @@ int main() {
   if (globalConfigs.grpc.enable) {}
 
   if (globalConfigs.rest.enable) {
-    printf("Server running on 0.0.0.0:4046\n");
-    app().addListener("0.0.0.0", 4046);
+    printf("Server running on 0.0.0.0:5406\n");
+    app().addListener("0.0.0.0", 5406);
     app().setThreadNum(MAX_THREADS);
     app().disableSession();
     app().run();

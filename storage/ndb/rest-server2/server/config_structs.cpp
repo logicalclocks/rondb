@@ -11,7 +11,7 @@ Internal::Internal() {
 GRPC::GRPC() {
 	enable = true;
 	serverIP = "0.0.0.0";
-	serverPort = 5406;
+	serverPort = 4406;
 }
 
 REST::REST() {
@@ -23,10 +23,11 @@ REST::REST() {
 RonDB::RonDB() {
 	Mgmds = {Mgmd()};
 	connectionPoolSize = 1;
+	nodeIDs = {0};
 	connectionRetries = 5;
 	connectionRetryDelayInSec = 5;
 	opRetryOnTransientErrorsCount = 3;
-	opRetryInitialDelayInMS = 100;
+	opRetryInitialDelayInMS = 500;
 	opRetryJitterInMS = 100;
 }
 
@@ -37,7 +38,7 @@ TestParameters::TestParameters() {
 
 Mgmd::Mgmd() {
 	IP = "localhost";
-	port = 1186;
+	port = 13000;
 }
 
 TLS::TLS() {
@@ -73,7 +74,7 @@ MySQL::MySQL() {
 
 MySQLServer::MySQLServer() {
 	IP = "localhost";
-	port = 3306;
+	port = 13001;
 }
 
 void Mgmd::validate() {

@@ -278,6 +278,8 @@ RS_Status PKROperation::CreateResponse() {
   }
 
   if (!found && !isBatch) {
+    std::cout << "No data found for operation: " << subOpTuples[0].pkRequest->OperationId()
+              << std::endl;
     return RS_CLIENT_404_ERROR();
   }
   return RS_OK;
@@ -464,6 +466,7 @@ RS_Status PKROperation::PerformOperation() {
 
   status = CreateResponse();
   if (status.http_code != SUCCESS) {
+    std::cout << "Failed to create response, with status: " << std::dec << status.http_code << std::endl;
     this->HandleNDBError(status);
     return status;
   }

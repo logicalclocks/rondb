@@ -19,20 +19,20 @@ std::string to_string(DataReturnType drt) {
 
 class PKReadFilter {
 public:
-	std::string_view column;
+	std::string column;
 	std::vector<char> value;
 };
 
 class PKReadReadColumn {
 public:
-	std::string_view column;
-	std::string_view returnType;
+	std::string column;
+	std::string returnType;
 };
 
 class PKReadPath {
 public:
-	std::string_view db; // json:"db" uri:"db"  binding:"required,min=1,max=64"
-	std::string_view table; // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
+	std::string db; // json:"db" uri:"db"  binding:"required,min=1,max=64"
+	std::string table; // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
 };
 
 class PKReadParams {
@@ -40,7 +40,22 @@ public:
 	PKReadPath path;
 	std::vector<PKReadFilter> filters;
 	std::vector<PKReadReadColumn> readColumns;
-	std::string_view operationId;
+	std::string operationId;
+	std::string to_string() {
+		std::stringstream ss;
+		ss << "PKReadParams: { path: { db: " << path.db << ", table: " << path.table << " }, filters: [";
+		for (auto& filter : filters) {
+			ss << "{ column: " << filter.column;
+			ss << ", value (as double): " << *reinterpret_cast<double*>(filter.value.data());
+			ss << ", value (as string): " << std::string(filter.value.begin(), filter.value.end()) << " }, ";
+		}
+		ss << "], readColumns: [";
+		for (auto& readColumn : readColumns) {
+			ss << "{ column: " << readColumn.column << ", returnType: " << readColumn.returnType << " }, ";
+		}
+		ss << "], operationId: " << operationId << " }";
+		return ss.str();
+	}
 };
 
 struct Column {
@@ -54,7 +69,7 @@ public:
     virtual void init() = 0;
     virtual void setOperationID(std::string& opID) = 0;
     virtual void setColumnData(std::string& column, const std::vector<char>& value) = 0;
-    virtual std::string toString() const = 0;
+    virtual std::string to_string() const = 0;
 
     virtual ~PKReadResponse() = default;
 };
@@ -91,9 +106,9 @@ public:
 			data[column] = value;
     }
 
-		std::string toString() const override {
+		std::string to_string() const override {
 			std::stringstream ss;
-			ss << "{ \"operation_id\": \"" << operationID << "\", \"data\": {";
+			ss << "{ \"operationId\": \"" << operationID << "\", \"data\": {";
 			for (auto& [column, value] : data) {
 					ss << "\"" << column << "\": \"" << std::string(value.begin(), value.end()) << "\",";
 			}
