@@ -1803,7 +1803,9 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     hwinfo->cpu_info[i].online = true;
   }
   hwinfo->cpu_cnt = active_cpu;
+#if 0
   fprintf(stderr, "Found %u active CPUs on the machine\n", active_cpu);
+#endif
   check_cpu_online(hwinfo);
   hwinfo->num_cpu_cores = 0;
   hwinfo->num_cpu_sockets = 0;
@@ -2638,7 +2640,9 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
   {
     /* Linux ARM needs information from other sources */
     hwinfo->cpu_cnt = cpu_online_count;
+#if 0
     fprintf(stderr, "Found %u active CPUs on the machine\n", cpu_online_count);
+#endif
     DEBUG_HW((stderr,
               "Found %u CPUs online, no core info in /proc/cpuinfo\n",
               cpu_online_count));
@@ -2706,7 +2710,9 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
               num_cpu_per_core));
   }
   hwinfo->cpu_cnt = cpu_online_count;
+#if 0
   fprintf(stderr, "Found %u active CPUs on the machine\n", cpu_online_count);
+#endif
   DEBUG_HW((stderr,
             "There are %u CPUs online before checking\n",
             cpu_online_count));
@@ -2775,7 +2781,9 @@ static int init_hwinfo(struct ndb_hwinfo *)
 static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
 {
   hwinfo->cpu_cnt_max = ncpu;
+#if 0
   fprintf(stderr, "Found %u active CPUs on the machine\n", ncpu);
+#endif
   hwinfo->cpu_cnt = ncpu;
   check_cpu_online(hwinfo);
   return 0;
