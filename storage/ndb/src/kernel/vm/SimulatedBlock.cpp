@@ -751,6 +751,14 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 }
 
 void
+SimulatedBlock::setConfMaxMicrosAwake(Uint32 max_micros_awake)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxMicrosAwake(max_micros_awake);
+#endif
+}
+
+void
 SimulatedBlock::setConfMaxSendDelay(Uint32 max_send_delay)
 {
 #ifdef NDBD_MULTITHREADED

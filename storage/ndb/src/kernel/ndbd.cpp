@@ -1137,6 +1137,11 @@ ndbd_run(bool foreground, int report_fd,
     require(globalData.filesystemPasswordLength> 0);
   }
 
+  /* Initialise g_conf_max_micros_awake in mt.cpp */
+  Uint32 max_micros_awake = 1000;
+  ndb_mgm_get_int_parameter(p, CFG_DB_MAX_MICROS_AWAKE, &max_micros_awake);
+  mt_setConfMaxMicrosAwake(max_micros_awake);
+
   /* Initialise g_conf_max_send_delay in mt.cpp */
   Uint32 max_send_delay = 125;
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_SEND_DELAY, &max_send_delay);

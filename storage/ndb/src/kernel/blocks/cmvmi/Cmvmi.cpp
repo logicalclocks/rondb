@@ -1746,6 +1746,21 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
                      signal->length(), JBB, ptr, num_secs);
           delete[] sec_alloc;
         }
+        else if (val == DumpStateOrd::CmvmiSetMaxMicrosAwake)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          if (val > 10000)
+          {
+            val = 10000;
+          }
+          setConfMaxMicrosAwake(val);
+        }
         else if (val == DumpStateOrd::CmvmiSetMaxSendDelay)
         {
           jam();
@@ -1755,6 +1770,10 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             return;
           }
           Uint32 val = signal->theData[1];
+          if (val > 500)
+          {
+            val = 500;
+          }
           setConfMaxSendDelay(val);
         }
         else if (val == DumpStateOrd::CmvmiSetMaxSendBufferSizeDelay)

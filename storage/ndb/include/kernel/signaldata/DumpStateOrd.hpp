@@ -98,6 +98,7 @@ public:
     CmvmiSetMaxSendDelay = 103006,
     CmvmiSetMinSendDelay = 103007, // Deprecated
     CmvmiSetMaxSendBufferSizeDelay = 103008,
+    CmvmiSetMaxMicrosAwake = 103009,
     _CMVMIMax = 103099,
 
     _THRMANMin = 104000,

@@ -163,6 +163,7 @@ static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
+static Uint32 g_conf_max_micros_awake = 10000;
 static Uint32 g_min_send_delay = 0;
 static Uint32 g_max_send_buffer_size_delay = MAX_SEND_BUFFER_SIZE_TO_DELAY;
 static Uint32 glob_ndbfs_thr_no = 0;
@@ -1670,6 +1671,9 @@ struct alignas(NDB_CL) thr_data
   bool m_cpu_percentage_changed;
   /* Last read of current ticks */
   NDB_TICKS m_curr_ticks;
+
+  /* Last time we woke up after sleep */
+  NDB_TICKS m_wakeup_time;
 
   NDB_TICKS m_ticks;
   struct thr_tq m_tq;
@@ -8509,6 +8513,7 @@ mt_receiver_thread_main(void *thr_arg)
   NDB_TICKS now = NdbTick_getCurrentTicks();
   before = now;
   selfptr->m_curr_ticks = now;
+  selfptr->m_wakeup_time = now;
   selfptr->m_signal = signal;
   selfptr->m_ticks = selfptr->m_scan_real_ticks = yield_ticks = now;
   Ndb_GetRUsage(&selfptr->m_scan_time_queue_rusage, false);
@@ -8607,6 +8612,9 @@ mt_receiver_thread_main(void *thr_arg)
      *    This check is performed in check_recv_yield as well as in
      *    recv_yield, so no need to do it before everything as well.
      * 4) There are no 'min_spin' configured or min_spin has elapsed
+     * 5) We have already been awake for the maximum amount of time
+     *    This will avoid spinning when this limit has been reached.
+     *
      * We will not check spin timer until we have checked the
      * transporters at least one loop and discovered no data. We also
      * ensure that we have not executed any signals before we start
@@ -8616,11 +8624,14 @@ mt_receiver_thread_main(void *thr_arg)
     Uint32 num_events = 0;
     update_spin_config(selfptr, min_spin_timer_us);
     before = NdbTick_getCurrentTicks();
+    Uint64 micros_awake =
+      NdbTick_Elapsed(selfptr->m_wakeup_time, before).microSec();
 
     if (lagging_timers == 0 &&          // 1)
         pending_send  == false &&       // 2)
         send_sum == 0 &&                // 2)
         (min_spin_timer_us == 0 ||      // 4)
+         micros_awake > g_conf_max_micros_awake || // 5)
          (sum == 0 &&
           !has_received &&
           check_recv_yield(selfptr,
@@ -8656,6 +8667,7 @@ mt_receiver_thread_main(void *thr_arg)
     if (delay > 0)
     {
       NDB_TICKS after = NdbTick_getCurrentTicks();
+      selfptr->m_wakeup_time = after;
       Uint64 nanos_sleep = NdbTick_Elapsed(before, after).nanoSec();
       selfptr->m_nanos_sleep += nanos_sleep;
       wait_time_tracking(selfptr, nanos_sleep);
@@ -8698,6 +8710,7 @@ mt_receiver_thread_main(void *thr_arg)
         if (waited)
         {
           NDB_TICKS after = NdbTick_getCurrentTicks();
+          selfptr->m_wakeup_time = after;
           selfptr->m_read_jbb_state_consumed = true;
           selfptr->m_buffer_full_nanos_sleep +=
             NdbTick_Elapsed(before, after).nanoSec();
@@ -9000,6 +9013,7 @@ mt_job_thread_main(void *thr_arg)
   selfptr->m_scan_real_ticks = now;
   selfptr->m_signal = signal;
   selfptr->m_curr_ticks = now;
+  selfptr->m_wakeup_time = now;
   Ndb_GetRUsage(&selfptr->m_scan_time_queue_rusage, false);
   init_jbb_estimate(selfptr, now);
 
@@ -9094,8 +9108,11 @@ mt_job_thread_main(void *thr_arg)
         Uint32 spin_time_in_ns = 0;
         update_spin_config(selfptr, min_spin_timer_us);
         NDB_TICKS before = NdbTick_getCurrentTicks();
+        Uint64 micros_awake =
+          NdbTick_Elapsed(selfptr->m_wakeup_time, before).microSec();
         bool has_spun = (min_spin_timer_us != 0);
         if (min_spin_timer_us == 0 ||
+            micros_awake > g_conf_max_micros_awake ||
             check_yield(selfptr,
                         min_spin_timer_us,
                         &spin_time_in_ns,
@@ -9130,6 +9147,7 @@ mt_job_thread_main(void *thr_arg)
             /* Update current time after sleeping */
             now = NdbTick_getCurrentTicks();
             selfptr->m_curr_ticks = now;
+            selfptr->m_wakeup_time = now;
             yield_ticks = now;
             Uint64 nanos_sleep = NdbTick_Elapsed(before, now).nanoSec();
             selfptr->m_nanos_sleep += nanos_sleep;
@@ -9407,6 +9425,12 @@ void
 mt_setConfMaxSendDelay(Uint32 send_delay)
 {
   g_conf_max_send_delay = send_delay;
+}
+
+void
+mt_setConfMaxMicrosAwake(Uint32 max_micros_awake)
+{
+  g_conf_max_micros_awake = max_micros_awake;
 }
 
 Uint32
