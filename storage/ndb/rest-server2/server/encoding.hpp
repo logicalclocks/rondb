@@ -20,8 +20,6 @@ void create_native_request(
 
 	uint32_t dbOffset = head;
 
-	std::cout << std::hex << "db offset at: " << "0x" << head << std::endl;
-
 	try
 	{
 		head = copy_str_to_buffer(string_to_byte_array(pkReadParams.path.db), reqBuff, head);
@@ -34,8 +32,6 @@ void create_native_request(
 
 	uint32_t tableOffset = head;
 
-	std::cout << std::hex << "table offset at: " << "0x" << head << std::endl;
-
 	try
 	{
 		head = copy_str_to_buffer(string_to_byte_array(pkReadParams.path.table), reqBuff, head);
@@ -46,18 +42,12 @@ void create_native_request(
 		return;
 	}
 
-	std::cout << std::hex << "before align: " << "0x" << head << std::endl;
-
 	// PK Filters
 	head = align_word(head);
-
-	std::cout << std::hex << "number of filters at: " << "0x" << head << std::endl;
 
 	uint32_t pkOffset = head;
 	buf[head / ADDRESS_SIZE] = uint32_t(pkReadParams.filters.size());
 	head += ADDRESS_SIZE;
-
-	std::cout << std::hex << "kv pairs at: " << "0x" << head << std::endl;
 
 	uint32_t kvi = head / ADDRESS_SIZE; // index for storing offsets for each key/value pair
 	// skip for N number of offsets one for each key/value pair
@@ -66,13 +56,9 @@ void create_native_request(
 	for (auto filter: pkReadParams.filters) {
 		head = align_word(head);
 
-		std::cout << std::hex << "tuple offset at: " << "0x" << head << std::endl;
-
 		uint32_t tupleOffset = head;
 
 		head += 8;
-
-		std::cout << std::hex << "key offset at: " << "0x" << head << std::endl;
 
 		uint32_t keyOffset = head;
 
@@ -86,14 +72,11 @@ void create_native_request(
 			return;
 		}
 
-		std::cout << std::hex << "value offset at: " << "0x" << head << std::endl;
-
 		uint32_t value_offset = head;
 		
 		try
 		{
 			head = copy_ndb_str_to_buffer(filter.value, reqBuff, head);
-			std::cout << std::hex << "head: " << "0x" << head << std::endl;
 		}
 		catch(const std::exception& e)
 		{
@@ -111,12 +94,9 @@ void create_native_request(
 	head = align_word(head);
 	uint32_t readColsOffset = 0;
 	if (!pkReadParams.readColumns.empty()) {
-		std::cout << std::hex << "number of read columns at: " << "0x" << head << std::endl;
 		readColsOffset = head;
 		buf[head / ADDRESS_SIZE] = (uint32_t)(pkReadParams.readColumns.size());
 		head += ADDRESS_SIZE;
-
-		std::cout << std::hex << "read columns at: " << "0x" << head << std::endl;
 
 		uint32_t rci = head / ADDRESS_SIZE;
 		head += uint32_t(pkReadParams.readColumns.size()) * ADDRESS_SIZE;
@@ -136,12 +116,8 @@ void create_native_request(
 						return;
 			}
 
-			std::cout << std::hex << "data return type at: " << "0x" << head << std::endl;
-
 			buf[head / ADDRESS_SIZE] = drt;
 			head += ADDRESS_SIZE;
-
-			std::cout << std::hex << "column name at: " << "0x" << head << std::endl;
 
 			// col name
 			try
@@ -161,8 +137,6 @@ void create_native_request(
 	if (!pkReadParams.operationId.empty()) {
 		op_id_offset = head;
 
-		std::cout << std::hex << "operation id at: " << "0x" << head << std::endl;
-
 		try
 		{
 			head = copy_str_to_buffer(string_to_byte_array(pkReadParams.operationId), reqBuff, head);
@@ -173,8 +147,6 @@ void create_native_request(
 			return;
 		}
 	}
-
-	std::cout << std::hex << "length: " << "0x" << head << " with decimal value: " << std::dec << head << std::endl;
 
 	// request buffer header
 	buf[PK_REQ_OP_TYPE_IDX] = (uint32_t)(RDRS_PK_REQ_ID);
@@ -195,7 +167,6 @@ std::string process_pkread_response(
 	uint32_t* buf = (uint32_t*)(respBuff);
 
 	uint32_t responseType = buf[PK_RESP_OP_TYPE_IDX];
-	std::cout << "responseType: " << std::hex << "0x" << responseType << std::endl;
 
 	if (responseType != RDRS_PK_RESP_ID) {
 		std::string message = "internal server error. Wrong response type";
@@ -205,8 +176,6 @@ std::string process_pkread_response(
 	// some sanity checks
 	uint32_t capacity = buf[PK_RESP_CAPACITY_IDX];
 	uint32_t dataLength = buf[PK_RESP_LENGTH_IDX];
-	std::cout << "capacity: " << std::hex << "0x" << capacity << std::endl;
-	std::cout << "dataLength: " << std::hex << "0x" << dataLength << std::endl;
 	
 	if (capacity < dataLength) {
 		std::string message = "internal server error. response buffer may be corrupt. ";
@@ -215,19 +184,15 @@ std::string process_pkread_response(
 	}
 
 	uint32_t opIDX = buf[PK_RESP_OP_ID_IDX];
-	std::cout << "opIDX: " << std::hex << "0x" << opIDX << std::endl;
 	if (opIDX != 0) {
 		uintptr_t opIDXPtr = (uintptr_t)respBuff + (uintptr_t)opIDX;
 		std::string goOpID = std::string((char*)opIDXPtr);
-		std::cout << "goOpID: " << goOpID << std::endl;
 		response.setOperationID(goOpID);
 	}
 
 	int32_t status = (int32_t)(buf[PK_RESP_OP_STATUS_IDX]);
-	std::cout << "status: " << std::dec << status << std::endl;
 	if (status == drogon::HttpStatusCode::k200OK) {
 		uint32_t colIDX = buf[PK_RESP_COLS_IDX];
-		std::cout << "colIDX: " << std::hex << "0x" << colIDX << std::endl;
 		uintptr_t colIDXPtr = (uintptr_t)respBuff + (uintptr_t)colIDX;
 		uint32_t colCount = *(uint32_t*)colIDXPtr;
  

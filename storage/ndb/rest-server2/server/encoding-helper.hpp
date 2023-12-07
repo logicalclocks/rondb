@@ -1,11 +1,13 @@
 #ifndef ENCODING_HELPER_HPP
 #define ENCODING_HELPER_HPP
+
 #include <cstdint>
 #include <vector>
 #include <string>
 #include <string_view>
 #include <iostream>
-#include <drogon/drogon.h>
+#include "pk-data-structs.hpp"
+#include "src/rdrs-const.h"
 
 uint32_t copy_str_to_buffer(std::vector<char> src, void* dst, uint32_t offset) {
 	if (dst == nullptr) {
@@ -95,6 +97,69 @@ std::string quote_if_string(uint32_t dataType, std::string value) {
 	} else {
 		return "\"" + value + "\"";
 	}
+}
+
+void printCharArray(const char* array, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        std::cout << array[i];
+    }
+    std::cout << std::endl;
+}
+
+void printReqBuffer(const RS_Buffer* reqBuff) {
+  char* reqData = reqBuff->buffer;
+  unsigned int reqSize = reqBuff->size;
+  std::cout << "Request buffer: " << std::endl;
+  std::cout << "OP Type: " << std::hex << "0x" << ((uint32_t*)reqData)[0] << std::endl;
+  std::cout << "Capacity: " << std::hex << "0x" << ((uint32_t*)reqData)[1] << std::endl;
+  std::cout << "Length: " << std::hex << "0x" << ((uint32_t*)reqData)[2] << std::endl;
+  std::cout << "Flags: " << std::hex << "0x" << ((uint32_t*)reqData)[3] << std::endl;
+  std::cout << "DB Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[4] << std::endl;
+  std::cout << "Table Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[5] << std::endl;
+  std::cout << "PK Cols Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[6] << std::endl;
+  std::cout << "Read Cols Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[7] << std::endl;
+  std::cout << "OP ID Idx: " << std::hex << "0x" << ((uint32_t*)reqData)[8] << std::endl;
+  std::cout << "DB: ";
+  uint32_t dbIdx = ((uint32_t*)reqData)[4];
+  std::cout << (char*)((uintptr_t)reqData + dbIdx) << std::endl;
+  std::cout << "Table: ";
+  uint32_t tableIdx = ((uint32_t*)reqData)[5];
+  std::cout << (char*)((uintptr_t)reqData + tableIdx) << std::endl;
+  uint32_t pkColsIdx = ((uint32_t*)reqData)[6];
+  std::cout << "PK Cols Count: " << std::hex << "0x" << 
+    *((uint32_t*)((uintptr_t)reqData + pkColsIdx)) << std::endl;
+  for (int i = 0; i < *((uint32_t*)((uintptr_t)reqData + pkColsIdx)); i++) {
+    int step = (i + 1) * ADDRESS_SIZE;
+    std::cout << "KV pair " << i << " Idx: " << std::hex << "0x" << 
+      *((uint32_t*)((uintptr_t)reqData + pkColsIdx + step)) << std::endl;
+    uint32_t kvPairIdx = *((uint32_t*)((uintptr_t)reqData + pkColsIdx + step));
+    uint32_t keyIdx = ((uint32_t*)reqData)[kvPairIdx / ADDRESS_SIZE];
+    std::cout << "Key idx: " << std::hex << "0x" << keyIdx << std::endl;
+    std::cout << "Key " << i + 1 << ": ";
+    std::cout << (char*)((uintptr_t)reqData + keyIdx) << std::endl;
+    uint32_t valueIdx = ((uint32_t*)reqData)[(kvPairIdx / ADDRESS_SIZE) + 1];
+    std::cout << "Value idx: " << std::hex << "0x" << valueIdx << std::endl;
+    std::cout << "Size " << i + 1 << ": ";
+    std::cout << *((uint16_t*)((uintptr_t)reqData + valueIdx)) << std::endl;
+    std::cout << "Value " << i + 1 << ": ";
+    std::cout << (char*)((uintptr_t)reqData + valueIdx + ADDRESS_SIZE) << std::endl;
+  }
+  uint32_t readColsIdx = ((uint32_t*)reqData)[7];
+  std::cout << "Read Cols Count: " << std::hex << "0x" <<
+    *((uint32_t*)((uintptr_t)reqData + readColsIdx)) << std::endl;
+  for (int i = 0; i < *((uint32_t*)((uintptr_t)reqData + readColsIdx)); i++) {
+    int step = (i + 1) * ADDRESS_SIZE;
+    std::cout << "Read Col " << i << " Idx: " << std::hex << "0x" << 
+      *((uint32_t*)((uintptr_t)reqData + readColsIdx + step)) << std::endl;
+    uint32_t readColIdx = *((uint32_t*)((uintptr_t)reqData + readColsIdx + step));
+    uint32_t returnType = ((uint32_t*)reqData)[readColIdx / ADDRESS_SIZE];
+    std::cout << "Return type: " << std::hex << "0x" << returnType << std::endl;
+    std::cout << "Col " << i + 1 << ": ";
+    std::cout << (char*)((uintptr_t)reqData + readColIdx + ADDRESS_SIZE) << std::endl;
+  }
+  uint32_t opIDIdx = ((uint32_t*)reqData)[8];
+  std::cout << "Op ID: ";
+  std::cout << (char*)((uintptr_t)reqData + opIDIdx) << std::endl;
 }
 
 #endif // ENCODING_HELPER_HPP

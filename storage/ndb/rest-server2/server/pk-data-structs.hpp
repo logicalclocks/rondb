@@ -7,6 +7,7 @@
 #include <map>
 #include <iostream>
 #include <sstream>
+#include <iomanip>
 
 std::string to_string(DataReturnType drt) {
 	switch (drt) {
@@ -46,8 +47,11 @@ public:
 		ss << "PKReadParams: { path: { db: " << path.db << ", table: " << path.table << " }, filters: [";
 		for (auto& filter : filters) {
 			ss << "{ column: " << filter.column;
-			ss << ", value (as double): " << *reinterpret_cast<double*>(filter.value.data());
-			ss << ", value (as string): " << std::string(filter.value.begin(), filter.value.end()) << " }, ";
+			ss << ", value with each byte separately: ";
+			for (auto& byte : filter.value) {
+				ss << byte << " ";
+			}
+			ss << "}, ";			
 		}
 		ss << "], readColumns: [";
 		for (auto& readColumn : readColumns) {
@@ -108,11 +112,21 @@ public:
 
 		std::string to_string() const override {
 			std::stringstream ss;
-			ss << "{ \"operationId\": \"" << operationID << "\", \"data\": {";
+			ss << "{" << std::endl;
+			ss << "  \"operationId\": \"" << operationID << "\"," << std::endl;
+			ss << "  \"data\": {";
+			bool first = true;
 			for (auto& [column, value] : data) {
-					ss << "\"" << column << "\": \"" << std::string(value.begin(), value.end()) << "\",";
+				if (!first) {
+					ss << ",";
+				}
+				first = false;
+				ss << std::endl;
+				ss << "    \"" << column << "\": ";
+				ss << std::string(value.begin(), value.end());
 			}
-			ss << "} }";
+			ss << std::endl << "  }" << std::endl;
+			ss << "}" << std::endl;
 			return ss.str();
 		}
 		
