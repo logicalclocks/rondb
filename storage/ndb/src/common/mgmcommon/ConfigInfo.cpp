@@ -750,9 +750,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_DEPRECATED,
     false,
     ConfigInfo::CI_INT,
+    "125",
     "0",
-    "0",
-    "11000" },
+    "1000" },
 
   {
     CFG_DB_SCHED_SPIN_TIME,

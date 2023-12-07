@@ -109,6 +109,9 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
   m_allowed_spin_overhead = 130;
   m_phase2_done = false;
   m_is_idle = true;
+  m_current_send_delay = 0;
+  m_medium_send_delay = 100;
+  m_high_send_delay = 125;
   m_rep_thrman_instance = mt_getRepThrmanInstance();
 }
 
@@ -1125,10 +1128,23 @@ Thrman::get_idle_block_threads(Uint32 *thread_list,
 void
 Thrman::handle_send_delay()
 {
-  /* Only called from rep thread */
+  /**
+   * Only called from rep thread
+   *
+   * No need to handle send delay when not using send thread
+   *
+   * No need to handle send delay for very small nodes
+   */
   if (m_num_send_threads == 0)
     return;
-  Uint32 min_send_delay = 0;
+  if (m_num_threads < 6)
+    return;
+
+  m_high_send_delay = getConfMaxSendDelay();
+  m_medium_send_delay = 80 * m_high_send_delay;
+  m_medium_send_delay /= 100;
+
+  Uint32 min_send_delay = m_current_send_delay;
   Uint32 tot_send_load = 0;
   Uint32 first_ldm = getFirstLDMThreadInstance();
   Uint32 last_query = getNumQueryInstances();
@@ -1141,30 +1157,91 @@ Thrman::handle_send_delay()
   tot_send_load += (m_num_send_threads * m_send_thread_percentage);
   Uint32 tot_send_percentage = tot_send_load / m_num_send_threads;
 
-  if (tot_send_percentage > 150)
+  Uint32 tot_block_thread_load = 0;
+  for (Uint32 i = first_ldm; i <= last_query; i++)
   {
-    min_send_delay = 250;
+    Uint32 instance = i - first_ldm;
+    Uint32 block_thread_load = m_thr_load[instance][0].m_cpu_load;
+    tot_block_thread_load += block_thread_load;
   }
-  else if (tot_send_percentage > 120)
+  Uint32 num_block_threads = (last_query - first_ldm) + 1;
+  Uint32 tot_block_thread_percentage =
+    tot_block_thread_load / num_block_threads;
+
+  Uint32 load_level = 0;
+  if (tot_block_thread_percentage > 90)
   {
-    min_send_delay = 180;
+    load_level = 3;
   }
-  else if (tot_send_percentage > 100)
+  else if (tot_block_thread_percentage > 70)
   {
-    min_send_delay = 150;
+    load_level = 2;
   }
-  else if (tot_send_percentage > 80)
+  else if (tot_block_thread_percentage > 45)
   {
-    min_send_delay = 100;
+    load_level = 1;
   }
-  else if (tot_send_percentage > 60)
+  if (m_current_send_delay == 0)
   {
-    min_send_delay = 50;
+    /**
+     * No send delay, this means the send load becomes high at
+     * high load scenarios.
+     */
+    if (load_level >= 3)
+    {
+      if (tot_send_percentage > 100)
+      {
+        min_send_delay = m_medium_send_delay;
+      }
+    }
+    else
+    {
+      if (tot_send_percentage > 125)
+      {
+        min_send_delay = m_medium_send_delay;
+      }
+    }
   }
-  else if (tot_send_percentage > 40)
+  else if (m_current_send_delay <= m_medium_send_delay)
   {
-    min_send_delay = 30;
+    /**
+     * We have increased the send delay, this means the send
+     * load will go down significantly. Thus to return to 0
+     * send delay requires send load to decrease below a much
+     * lower average.
+     *
+     * Similarly to increase to the next level of send delay
+     * requires less send load with the same reasoning.
+     */
+    if (tot_send_percentage < 70)
+    {
+      min_send_delay = 0;
+    }
+    else if (tot_send_percentage < 85 && load_level == 0)
+    {
+      min_send_delay = 0;
+    }
+    else if (tot_send_percentage > 100 && load_level >= 2)
+    {
+      min_send_delay = m_high_send_delay;
+    }
   }
+  else if (m_current_send_delay <= m_high_send_delay)
+  {
+    if (tot_send_percentage < 70)
+    {
+      min_send_delay = 0;
+    }
+    else if (tot_send_percentage < 90 && load_level < 3)
+    {
+      min_send_delay = m_medium_send_delay;
+    }
+  }
+  else
+  {
+    min_send_delay = m_high_send_delay;
+  }
+  m_current_send_delay = min_send_delay;
   setMinSendDelay(min_send_delay);
 }
 
@@ -1180,7 +1257,8 @@ Thrman::execOVERLOAD_STATUS_REP(Signal *signal)
   Uint32 thr_no = signal->theData[0];
   Uint32 overload_status = signal->theData[1];
   ndbrequire(thr_no < NDB_ARRAY_SIZE(m_thread_overload_status));
-  m_thread_overload_status[thr_no].overload_status = (OverloadStatus)overload_status;
+  m_thread_overload_status[thr_no].overload_status =
+    (OverloadStatus)overload_status;
 
   Uint32 node_overload_level = 0;
   for (Uint32 instance_no = 1; instance_no <= m_num_threads; instance_no++)

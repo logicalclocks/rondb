@@ -9409,6 +9409,12 @@ mt_setConfMaxSendDelay(Uint32 send_delay)
   g_conf_max_send_delay = send_delay;
 }
 
+Uint32
+mt_getConfMaxSendDelay()
+{
+  return g_conf_max_send_delay;
+}
+
 void
 mt_setMinSendDelay(Uint32 min_send_delay)
 {

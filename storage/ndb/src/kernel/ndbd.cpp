@@ -38,6 +38,7 @@
 #include "vm/WatchDog.hpp"
 #include "vm/ThreadConfig.hpp"
 #include "vm/Configuration.hpp"
+#include "vm/mt.hpp"
 
 #include "ndb_stacktrace.h"
 #include "ndbd.hpp"
@@ -1136,12 +1137,18 @@ ndbd_run(bool foreground, int report_fd,
     require(globalData.filesystemPasswordLength> 0);
   }
 
+  /* Initialise g_conf_max_send_delay in mt.cpp */
+  Uint32 max_send_delay = 125;
+  ndb_mgm_get_int_parameter(p, CFG_DB_MAX_SEND_DELAY, &max_send_delay);
+  mt_setConfMaxSendDelay(max_send_delay);
+
   /**
     Initialise the data of the run-time environment, this prepares the
     data setup for the various threads that need to communicate using
     our internal memory. The threads haven't started yet, but as soon as
     they start they will be ready to communicate.
   */
+
   globalEmulatorData.theThreadConfig->init();
 
   globalEmulatorData.theConfiguration->addThread(log_threadvar, NdbfsThread);

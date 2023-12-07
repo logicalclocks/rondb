@@ -72,6 +72,9 @@ protected:
 private:
 
   /* Private variables */
+  Uint32 m_medium_send_delay;
+  Uint32 m_high_send_delay;
+  Uint32 m_current_send_delay;
   Uint32 m_num_send_threads;
   Uint32 m_num_threads;
   Uint32 m_send_thread_percentage;
