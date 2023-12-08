@@ -96,8 +96,13 @@ pipeline {
                 source ./MYSQL_VERSION
                 RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
 
+                DOCKER_FILE_NAME="Dockerfile.oraclelinux7"
+                if [ "$BRANCH" = "22.10.1" ]; then
+                  DOCKER_FILE_NAME="Dockerfile.oraclelinux8"
+                fi
+
                  DOCKER_BUILDKIT=1 docker buildx build . \
-                 -f Dockerfile.oraclelinux7 \
+                 -f $DOCKER_FILE_NAME \
                  --tag rdrs:$RONDB_VERSION \
                  --target rdrs \
                  --build-arg BUILD_THREADS=$BUILD_CORES 
