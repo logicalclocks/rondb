@@ -25,6 +25,7 @@
 #include "ndb_global.h"
 #include "portlib/NdbTCP.h"
 #include "portlib/ndb_sockaddr.h"
+#include <NdbAutoPtr.hpp>
 
 #include <string.h>
 
@@ -189,16 +190,33 @@ int
 Ndb_split_string_address_port(const char *arg, char *host, size_t hostlen,
                               char *serv, size_t servlen)
 {
-  const char* sep = strchr(arg, ' ');
+  char * argCopy = strdup(arg);
+  NdbAutoPtr<char> tmp_aptr(argCopy);
+
+  // remove leading spaces
+  while (std::isspace(*argCopy)) {
+    argCopy++;
+  }
+
+  // remove trailing spaces
+  if (*argCopy != '\0' ) {
+    char* end = argCopy + std::strlen(argCopy) - 1;
+    while (end > argCopy && std::isspace(*end)) {
+      end--;
+    }
+    *(end + 1) = '\0';
+  }
+
+  const char* sep = strchr(argCopy, ' ');
   if (sep != nullptr)
   {
-    size_t hlen = sep - arg;
+    size_t hlen = sep - argCopy;
     char unchecked_host[NDB_ADDR_STRLEN];
     if (hlen >= sizeof(unchecked_host))
     {
       return -1;
     }
-    memcpy(unchecked_host, arg, hlen);
+    memcpy(unchecked_host, argCopy, hlen);
     unchecked_host[hlen] = 0;
     while (*sep == ' ') sep++;
     serv[servlen - 1] = 0;
@@ -218,10 +236,10 @@ Ndb_split_string_address_port(const char *arg, char *host, size_t hostlen,
 
   const char *port_colon = nullptr;
 
-  if (*arg == '[')
+  if (*argCopy == '[')
   {
     // checking for [IPv6_address]:port
-    const char *check_closing_bracket = strchr(arg, ']');
+    const char *check_closing_bracket = strchr(argCopy, ']');
 
     if (check_closing_bracket == nullptr)
       return -1;
@@ -230,17 +248,17 @@ Ndb_split_string_address_port(const char *arg, char *host, size_t hostlen,
 
     if ((*port_colon == ':') || (*port_colon == '\0'))
     {
-      size_t copy_bytes = port_colon - arg - 2;
+      size_t copy_bytes = port_colon - argCopy - 2;
       if ((copy_bytes >= hostlen) ||
           (*port_colon != '\0' && strlen(port_colon + 1) >= servlen))
         return -1; // fail on truncate
 
       // Check if host has at least one colon
-      const char* first_colon = strchr(arg + 1, ':');
+      const char* first_colon = strchr(argCopy + 1, ':');
       if (first_colon == nullptr || first_colon >= port_colon)
         return -1;
 
-      strncpy(host, arg + 1, copy_bytes);
+      strncpy(host, argCopy + 1, copy_bytes);
       host[copy_bytes] = '\0';
       if (*port_colon == ':')
       {
@@ -257,15 +275,15 @@ Ndb_split_string_address_port(const char *arg, char *host, size_t hostlen,
     }
     return -1;
   }
-  else if ((port_colon = strchr(arg, ':')) &&
+  else if ((port_colon = strchr(argCopy, ':')) &&
             (strchr(port_colon + 1, ':') == nullptr))
   {
     // checking for IPv4_address:port or hostname:port
-    size_t copy_bytes = port_colon - arg;
+    size_t copy_bytes = port_colon - argCopy;
     if ((copy_bytes >= hostlen) || (strlen(port_colon + 1) >= servlen))
       return -1; // fail on truncate
-    strncpy(host, arg, copy_bytes);
-    host[port_colon - arg] = '\0';
+    strncpy(host, argCopy, copy_bytes);
+    host[port_colon - argCopy] = '\0';
     serv[servlen - 1] = '\0';
     strncpy(serv, port_colon + 1, servlen);
     if (serv[servlen - 1] != '\0')
@@ -273,10 +291,10 @@ Ndb_split_string_address_port(const char *arg, char *host, size_t hostlen,
     return 0;
   }
   // more than one colon or no colon - assume no port !
-  if (strlen(arg) >= hostlen)
+  if (strlen(argCopy) >= hostlen)
     return -1; // fail on truncate
   host[hostlen - 1] = '\0';
-  strncpy(host, arg, hostlen);
+  strncpy(host, argCopy, hostlen);
   if (host[hostlen - 1] != '\0')
     return -1;
   serv[0] = '\0';
