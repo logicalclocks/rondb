@@ -149,23 +149,17 @@ static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_OTHER = 20;
 
 static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
 
-/**
- * MAX_SEND_BUFFER_SIZE_TO_DELAY is a heauristic constant that specifies
- * a send buffer size that will always be sent. The size of this is based
- * on experience that maximum performance of the send part is achieved at
- * around 64 kBytes of send buffer size and that the difference between
- * 20 kB and 64 kByte is small. So thus avoiding unnecessary delays that
- * gain no significant performance gain.
- */
-static const Uint64 MAX_SEND_BUFFER_SIZE_TO_DELAY = (20 * 1024);
+#define MAX_EXTEND_DELAY 4
+#define MIN_SEND_WAIT_DELAY 30
 
 static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
-static Uint32 g_conf_max_micros_awake = 10000;
+static Uint32 g_extend_send_delay = MIN_SEND_WAIT_DELAY;
+static Uint32 g_max_num_extended_delay = MAX_EXTEND_DELAY;
+static Uint32 g_conf_max_micros_awake = 1000;
 static Uint32 g_min_send_delay = 0;
-static Uint32 g_max_send_buffer_size_delay = MAX_SEND_BUFFER_SIZE_TO_DELAY;
 static Uint32 glob_ndbfs_thr_no = 0;
 static Uint32 glob_wakeup_latency = 25;
 static Uint32 glob_num_job_buffers_per_thread = 0;
@@ -2324,6 +2318,11 @@ struct thr_send_trps
   bool m_in_list_no_neighbour;
 
   /**
+   * Number of times we have extended the send delay.
+   */
+  Uint16 m_num_delay_extended;
+
+  /**
    * Further sending to this trp should be delayed until
    * 'm_micros_delayed' has passed since 'm_inserted_time'.
    */
@@ -3023,7 +3022,6 @@ thr_send_threads::insert_trp(TrpId trp_id,
  * set_send_delay while waiting for those 500 microseconds to arrive.
  */
 #define MAX_SEND_DELAY 500
-#define MIN_SEND_WAIT_DELAY 30
 void
 thr_send_threads::set_send_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
 {
@@ -3109,13 +3107,14 @@ thr_send_threads::set_send_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
      * that we don't wake up too fast since it is a high probability we will
      * need to send more in a short time. Maximised extra wait is 30 micros.
      */
-    Uint64 micros_passed = 0;
+    Uint64 micros_passed = 10000;
     if (now.getUint64() > trp_state.m_inserted_time.getUint64())
     {
       micros_passed = NdbTick_Elapsed(trp_state.m_inserted_time,
                                       now).microSec();
     }
-    if ((micros_passed + MIN_SEND_WAIT_DELAY) > trp_state.m_micros_delayed)
+    trp_state.m_num_delay_extended++;
+    if ((micros_passed + delay_usec) > trp_state.m_micros_delayed)
     {
       /* Timer expired, set new timer to new delay */
       trp_state.m_micros_delayed = delay_usec;
@@ -3519,6 +3518,11 @@ thr_send_threads::alert_send_thread(TrpId trp_id, NDB_TICKS now)
      * become available. In the later case, the send thread will schedule
      * the trp for another round with insert_trp()
      */
+    if (g_min_send_delay > 0 &&
+        trp_state.m_num_delay_extended < g_max_num_extended_delay)
+    {
+      set_send_delay(trp_id, now, g_extend_send_delay);
+    }
     NdbMutex_Unlock(send_instance->send_thread_mutex);
     return 0;
   }
@@ -3531,8 +3535,10 @@ thr_send_threads::alert_send_thread(TrpId trp_id, NDB_TICKS now)
    * We will set the minimum send delay to a constant delay of 
    * This is the first send to this trp, so we start the delay timer now.
    */
-  Uint32 min_send_delay = MIN(g_min_send_delay, MIN_SEND_WAIT_DELAY);
-  set_send_delay(trp_id, now, min_send_delay);
+  if (g_min_send_delay > 0)
+  {
+    set_send_delay(trp_id, now, g_extend_send_delay);
+  }
   /*
    * Check if the send thread especially responsible for this transporter
    * is awake, if not wake it up.
@@ -4033,9 +4039,10 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
                                   Uint32 & watchdog_counter,
                          struct thr_send_thread_instance *send_instance)
 {
+  struct thr_send_trps& trp_state = m_trp_state[trp_id];
   assert(send_instance == get_send_thread_instance_by_trp(trp_id));
   assert(m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD);
-  if (m_trp_state[trp_id].m_micros_delayed > 0)     // Trp send is delayed
+  if (trp_state.m_micros_delayed > 0)     // Trp send is delayed
   {
     /**
      * We have transporters ready to send, but the send delay is still too
@@ -4074,10 +4081,10 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
 #ifdef VM_TRACE
   my_thread_yield();
 #endif
-  assert(m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD);
-  m_trp_state[trp_id].m_thr_no_sender = thr_no;
-  require(m_trp_state[trp_id].m_neighbour_trp ||
-          m_trp_state[trp_id].m_in_list_no_neighbour == false);
+  assert(trp_state.m_thr_no_sender == NO_OWNER_THREAD);
+  trp_state.m_thr_no_sender = thr_no;
+  require(trp_state.m_neighbour_trp ||
+          trp_state.m_in_list_no_neighbour == false);
   NdbMutex_Unlock(send_instance->send_thread_mutex);
 
   watchdog_counter = 6;
@@ -4147,13 +4154,13 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
   now = NdbTick_getCurrentTicks();
 
   NdbMutex_Lock(send_instance->send_thread_mutex);
-  require(m_trp_state[trp_id].m_neighbour_trp ||
-          m_trp_state[trp_id].m_in_list_no_neighbour == false);
+  require(trp_state.m_neighbour_trp ||
+          trp_state.m_in_list_no_neighbour == false);
 #ifdef VM_TRACE
   my_thread_yield();
 #endif
-  assert(m_trp_state[trp_id].m_thr_no_sender == thr_no);
-  m_trp_state[trp_id].m_thr_no_sender = NO_OWNER_THREAD;
+  assert(trp_state.m_thr_no_sender == thr_no);
+  trp_state.m_thr_no_sender = NO_OWNER_THREAD;
   if (more ||                   // ACTIVE   -> PENDING
       !check_done_trp(trp_id))  // ACTIVE-P -> PENDING
   {
@@ -4212,8 +4219,17 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
    * It can also be set through a DUMP command to enable experimentation
    * to figure out the optimal parameters.
    */
-  m_trp_state[trp_id].m_micros_delayed = 0;
-  Uint32 min_send_delay = MIN(g_min_send_delay, g_conf_max_send_delay);
+  trp_state.m_micros_delayed = 0;
+  Uint32 min_send_delay = g_min_send_delay;
+  if (trp_state.m_data_available > 0)
+  {
+    min_send_delay = (g_min_send_delay * 2) / 3;
+    trp_state.m_num_delay_extended = 1;
+  }
+  else
+  {
+    trp_state.m_num_delay_extended = 0;
+  }
   set_send_delay(trp_id, now, min_send_delay);
   return true;
 }
@@ -9440,20 +9456,23 @@ mt_getConfMaxSendDelay()
 }
 
 void
+mt_setExtendDelay(Uint32 extend_delay)
+{
+  g_extend_send_delay = extend_delay;
+}
+
+void
+mt_setMaxNumExtendedDelay(Uint32 max_num_extended_delay)
+{
+  g_max_num_extended_delay = max_num_extended_delay;
+}
+
+void
 mt_setMinSendDelay(Uint32 min_send_delay)
 {
   if (min_send_delay != g_min_send_delay)
   {
     g_min_send_delay = min_send_delay;
-  }
-}
-
-void
-mt_setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay)
-{
-  if (max_send_buffer_size_delay <= 65536)
-  {
-    g_max_send_buffer_size_delay = max_send_buffer_size_delay;
   }
 }
 

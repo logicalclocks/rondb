@@ -751,6 +751,22 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 }
 
 void
+SimulatedBlock::setConfMaxNumExtendedDelay(Uint32 max_num_extended_delay)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setMaxNumExtendedDelay(max_num_extended_delay);
+#endif
+}
+
+void
+SimulatedBlock::setConfExtendDelay(Uint32 extend_delay)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setExtendDelay(extend_delay);
+#endif
+}
+
+void
 SimulatedBlock::setConfMaxMicrosAwake(Uint32 max_micros_awake)
 {
 #ifdef NDBD_MULTITHREADED
@@ -781,14 +797,6 @@ SimulatedBlock::setMinSendDelay(Uint32 min_send_delay)
 {
 #ifdef NDBD_MULTITHREADED
   mt_setMinSendDelay(min_send_delay);
-#endif
-}
-
-void
-SimulatedBlock::setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay)
-{
-#ifdef NDBD_MULTITHREADED
-  mt_setMaxSendBufferSizeDelay(max_send_buffer_size_delay);
 #endif
 }
 

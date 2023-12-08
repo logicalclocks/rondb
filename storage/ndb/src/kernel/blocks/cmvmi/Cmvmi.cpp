@@ -1761,6 +1761,36 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
           }
           setConfMaxMicrosAwake(val);
         }
+        else if (val == DumpStateOrd::CmvmiSetExtendDelay)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          if (val > 200)
+          {
+            val = 200;
+          }
+          setConfExtendDelay(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxNumExtendedDelay)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          if (val > 20)
+          {
+            val = 20;
+          }
+          setConfMaxNumExtendedDelay(val);
+        }
         else if (val == DumpStateOrd::CmvmiSetMaxSendDelay)
         {
           jam();
@@ -1775,17 +1805,6 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             val = 500;
           }
           setConfMaxSendDelay(val);
-        }
-        else if (val == DumpStateOrd::CmvmiSetMaxSendBufferSizeDelay)
-        {
-          jam();
-          if (signal->length() != 2)
-          {
-            jam();
-            return;
-          }
-          Uint32 val = signal->theData[1];
-          setMaxSendBufferSizeDelay(val);
         }
       }
     }
