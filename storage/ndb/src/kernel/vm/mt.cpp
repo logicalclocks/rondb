@@ -149,13 +149,18 @@ static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_OTHER = 20;
 
 static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
 
-#define MAX_EXTEND_DELAY 4
-#define MIN_SEND_WAIT_DELAY 30
+#define MAX_EXTEND_DELAY 5
+#define MIN_SEND_WAIT_DELAY 10
 
 static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
+static Uint32 g_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP;
+static Uint32 g_max_signals_before_flush_other =
+                MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+static Uint32 g_max_signals_before_flush_receiver =
+                MAX_SIGNALS_BEFORE_FLUSH_RECEIVER;
 static Uint32 g_extend_send_delay = MIN_SEND_WAIT_DELAY;
 static Uint32 g_max_num_extended_delay = MAX_EXTEND_DELAY;
 static Uint32 g_conf_max_micros_awake = 1000;
@@ -9410,6 +9415,36 @@ mt_endChangeNeighbourNode()
 }
 
 void
+mt_setConfMaxSignalsBeforeWakeup(Uint32 max_signals_before_wakeup)
+{
+  if (max_signals_before_wakeup > 200)
+  {
+    max_signals_before_wakeup = 200;
+  }
+  g_max_signals_before_wakeup = max_signals_before_wakeup;
+}
+
+void
+mt_setConfMaxSignalsBeforeFlushOther(Uint32 max_signals_before_flush_other)
+{
+  if (max_signals_before_flush_other > MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+  {
+    max_signals_before_flush_other = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
+  g_max_signals_before_flush_other = max_signals_before_flush_other;
+}
+
+void
+mt_setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver)
+{
+  if (max_signals_before_flush_receiver > MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+  {
+    max_signals_before_flush_receiver = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
+  g_max_signals_before_flush_receiver = max_signals_before_flush_receiver;
+}
+
+void
 mt_setConfMaxSendDelay(Uint32 send_delay)
 {
   g_conf_max_send_delay = send_delay;
@@ -9748,7 +9783,7 @@ flush_local_signals(struct thr_data *selfptr,
     num_signals = copy_out_local_buffer(selfptr, q, next_signal);
   }
   else if (selfptr->m_first_local[dst].m_num_signals <=
-	     MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+	     g_max_signals_before_flush_other)
   {
     /**
      * Copy data into local flush_buffer before grabbing the write mutex.
@@ -9812,7 +9847,7 @@ flush_local_signals(struct thr_data *selfptr,
   if (dst != self)
   {
     q->m_pending_signals += num_signals;
-    if (q->m_pending_signals >= MAX_SIGNALS_BEFORE_WAKEUP)
+    if (q->m_pending_signals >= g_max_signals_before_wakeup)
     {
       // This thread will wakeup 'dst' now, restart counting of 'pending'
       q->m_pending_signals = 0;
@@ -10097,8 +10132,8 @@ insert_local_signal(struct thr_data *selfptr,
   const unsigned self = selfptr->m_thr_no;
   const unsigned MAX_SIGNALS_BEFORE_FLUSH =
     (self >= g_first_receiver_thread_no)
-      ? MAX_SIGNALS_BEFORE_FLUSH_RECEIVER
-      : MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+      ? g_max_signals_before_flush_receiver
+      : g_max_signals_before_flush_other;
 
   if (unlikely(local_buffer->m_len > MAX_LOCAL_BUFFER_USAGE))
   {

@@ -751,6 +751,30 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 }
 
 void
+SimulatedBlock::setConfMaxSignalsBeforeWakeup(Uint32 max_signals_before_wakeup)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeWakeup(max_signals_before_wakeup);
+#endif
+}
+
+void
+SimulatedBlock::setConfMaxSignalsBeforeFlushOther(Uint32 max_signals_before_flush_other)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeFlushOther(max_signals_before_flush_other);
+#endif
+}
+
+void
+SimulatedBlock::setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeFlushReceiver(max_signals_before_flush_receiver);
+#endif
+}
+
+void
 SimulatedBlock::setConfMaxNumExtendedDelay(Uint32 max_num_extended_delay)
 {
 #ifdef NDBD_MULTITHREADED

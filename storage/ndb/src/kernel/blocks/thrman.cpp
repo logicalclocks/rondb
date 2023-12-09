@@ -1189,14 +1189,14 @@ Thrman::handle_send_delay()
      */
     if (load_level >= 3)
     {
-      if (tot_send_percentage > 100)
+      if (tot_send_percentage > 125)
       {
         min_send_delay = m_medium_send_delay;
       }
     }
     else
     {
-      if (tot_send_percentage > 125)
+      if (tot_send_percentage > 150)
       {
         min_send_delay = m_medium_send_delay;
       }
@@ -1213,15 +1213,15 @@ Thrman::handle_send_delay()
      * Similarly to increase to the next level of send delay
      * requires less send load with the same reasoning.
      */
-    if (tot_send_percentage < 70)
+    if (tot_send_percentage < 80)
     {
       min_send_delay = 0;
     }
-    else if (tot_send_percentage < 85 && load_level == 0)
+    else if (tot_send_percentage < 95 && load_level == 0)
     {
       min_send_delay = 0;
     }
-    else if (tot_send_percentage > 100 && load_level >= 2)
+    else if (tot_send_percentage > 120 && load_level >= 2)
     {
       min_send_delay = m_high_send_delay;
     }
@@ -1232,7 +1232,7 @@ Thrman::handle_send_delay()
     {
       min_send_delay = 0;
     }
-    else if (tot_send_percentage < 90 && load_level < 3)
+    else if (tot_send_percentage < 100 && load_level < 3)
     {
       min_send_delay = m_medium_send_delay;
     }

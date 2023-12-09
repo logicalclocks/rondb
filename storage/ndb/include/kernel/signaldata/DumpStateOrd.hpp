@@ -101,6 +101,9 @@ public:
     CmvmiSetMaxMicrosAwake = 103009,
     CmvmiSetMaxNumExtendedDelay = 103010,
     CmvmiSetExtendDelay = 103011,
+    CmvmiSetMaxSignalsBeforeWakeup = 103012,
+    CmvmiSetMaxSignalsBeforeFlushOther = 103013,
+    CmvmiSetMaxSignalsBeforeFlushReceiver = 103014,
     _CMVMIMax = 103099,
 
     _THRMANMin = 104000,

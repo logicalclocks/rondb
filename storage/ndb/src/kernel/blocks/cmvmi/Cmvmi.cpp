@@ -1806,6 +1806,39 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
           }
           setConfMaxSendDelay(val);
         }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeWakeup)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeWakeup(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushOther)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushOther(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushReceiver)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushReceiver(val);
+        }
       }
     }
     else if (check_block(THRMAN, val))
