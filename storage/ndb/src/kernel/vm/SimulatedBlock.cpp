@@ -6276,7 +6276,9 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
-  //Uint32 loop = 0;
+#ifdef VM_TRACE
+  Uint32 loop = 0;
+#endif
   do
   {
     Uint32 count = rr_info->m_lqhkeyreq_to_same_thread;
@@ -6308,7 +6310,9 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
     jamDataDebug(inx);
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
-    //require(loop++ < 9);
+#ifdef VM_TRACE
+    require(loop++ < 9);
+#endif
     if (current_stolen < weight)
     {
       jamDebug();
@@ -6432,7 +6436,9 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
-  //Uint32 loop = 0;
+#ifdef VM_TRACE
+  Uint32 loop = 0;
+#endif
   do
   {
     Uint32 count = rr_info->m_scan_fragreq_to_same_thread;
@@ -6464,7 +6470,9 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
     jamDataDebug(inx);
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
-    //require(loop++ < 9);
+#ifdef VM_TRACE
+    require(loop++ < 9);
+#endif
     if (current_stolen < weight)
     {
       jamDebug();
