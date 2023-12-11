@@ -824,6 +824,62 @@ SimulatedBlock::getConfMaxSendDelay()
 #endif
 }
 
+Int32
+SimulatedBlock::getConfLdmIncrease()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getConfLdmIncrease();
+#else
+  return 0;
+#endif
+}
+
+Int32
+SimulatedBlock::getConfTcDecrease()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getConfTcDecrease();
+#else
+  return 0;
+#endif
+}
+
+Int32
+SimulatedBlock::getConfRecvDecrease()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getConfRecvDecrease();
+#else
+  return 0;
+#endif
+}
+
+void
+SimulatedBlock::setConfQueryThread(Int32 query_thread_change)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfQueryThread(query_thread_change);
+#endif
+}
+
+Uint32
+SimulatedBlock::getConfQueryThreadActive()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getConfQueryThreadActive();
+#else
+  return 0;
+#endif
+}
+
+void
+SimulatedBlock::setConfQueryThreadActive(Uint32 query_thread_active)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfQueryThreadActive(query_thread_active);
+#endif
+}
+
 void
 SimulatedBlock::setMinSendDelay(Uint32 min_send_delay)
 {

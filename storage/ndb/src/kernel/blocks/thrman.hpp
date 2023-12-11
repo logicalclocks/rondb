@@ -70,7 +70,6 @@ public:
 protected:
 
 private:
-
   /* Private variables */
   Uint32 m_medium_send_delay;
   Uint32 m_high_send_delay;

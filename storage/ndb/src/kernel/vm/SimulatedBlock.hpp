@@ -760,6 +760,15 @@ protected:
   void setConfMaxMicrosAwake(Uint32 max_micros_awake);
   void setConfMaxSendDelay(Uint32 max_send_delay);
   Uint32 getConfMaxSendDelay();
+
+  void setConfQueryThreadActive(Uint32);
+  Uint32 getConfQueryThreadActive();
+
+  void setConfQueryThread(Int32);
+  Int32 getConfLdmIncrease();
+  Int32 getConfTcDecrease();
+  Int32 getConfRecvDecrease();
+
   void setMinSendDelay(Uint32 min_send_delay);
   void setWakeupThread(Uint32 wakeup_instance);
   void setNodeOverloadStatus(OverloadStatus new_status);

@@ -2235,9 +2235,18 @@ Thrman::initial_query_distribution(Signal *signal)
 {
   Uint32 num_distr_threads = getNumQueryInstances();
   memset(m_curr_weights, 0, sizeof(m_curr_weights));
+  Uint32 num_ldm_threads = getNumLDMInstances();
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
-    m_curr_weights[i] = 8;
+    if (i < num_ldm_threads)
+    {
+      m_curr_weights[i] = 8;
+    }
+    else
+    {
+      /* Don't use TC and recv threads at low load as query threads */
+      m_curr_weights[i] = 0;
+    }
   }
   send_query_distribution(&m_curr_weights[0], signal);
 }
@@ -2472,14 +2481,63 @@ Thrman::update_query_distribution(Signal *signal)
    * query thread CPUs.
    */
   /* Combined LDM+Query threads treated as Query threads */
+  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
+  Uint32 num_tc_threads = globalData.ndbMtTcThreads;
+  Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
     Uint32 cpu_load = weighted_cpu_load[i];
-    Uint32 loc_change =
-      get_change_percent(cpu_load - average_cpu_load);
+    bool recv_thread = false;
+    if (i >= (num_ldm_threads + num_tc_threads) &&
+             i < (num_ldm_threads + num_tc_threads + num_recv_threads))
+    {
+      recv_thread = true;
+    }
+    int change = 0;
+    if (i < num_ldm_threads)
+    {
+      change = getConfLdmIncrease();
+    }
+    else if (i < (num_ldm_threads + num_tc_threads))
+    {
+      change = -getConfTcDecrease();
+    }
+    else if (recv_thread && num_ldm_threads > 0)
+    {
+      change = -getConfTcDecrease();
+    }
+    else if (recv_thread && num_ldm_threads == 0)
+    {
+      change = 0;
+    }
+    else
+    {
+      change = getConfLdmIncrease();
+    }
+
+    Uint32 cpu_change = (cpu_load - average_cpu_load) + change;
+    Uint32 loc_change = get_change_percent(cpu_change);
     m_curr_weights[i] = apply_change_query(loc_change,
                                            move_weights_down,
                                            m_curr_weights[i]);
+    if (i < num_ldm_threads)
+    {
+      ; // Nothing to do
+    }
+    else if (i < (num_ldm_threads + num_tc_threads))
+    {
+      if (getConfQueryThreadActive() == 0)
+      {
+        m_curr_weights[i] = 0;
+      }
+    }
+    else if (recv_thread && num_ldm_threads > 0)
+    {
+      if (getConfQueryThreadActive() != 2)
+      {
+        m_curr_weights[i] = 0;
+      }
+    }
   }
   DEB_SCHED_WEIGHTS(("LDM/QT CPU load stats: %u %u %u %u %u %u %u %u"
                      " %u %u %u %u %u %u %u %u",
@@ -2500,7 +2558,7 @@ Thrman::update_query_distribution(Signal *signal)
   check_weights();
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
-    if (m_curr_weights[i] == 0)
+    if ((num_ldm_threads == 0 || i < num_ldm_threads) && m_curr_weights[i] == 0)
     {
       /**
        * Combined LDM+Query must allow for use of all LDM+Query threads.

@@ -157,6 +157,13 @@ static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
+
+static Uint32 g_query_thread_active = 2; // All blocks threads active
+static Int32 g_ldm_increase = 7;
+static Int32 g_tc_decrease = 5;
+static Int32 g_recv_decrease = 10;
+
+static Uint32 g_max_signals_per_run_receive = MAX_SIGNALS_PER_JB_RECEIVE;
 static Uint32 g_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP;
 static Uint32 g_max_signals_before_flush_other =
                 MAX_SIGNALS_BEFORE_FLUSH_OTHER;
@@ -7854,9 +7861,10 @@ run_job_buffers(thr_data *selfptr,
        * important things by returning to upper levels, where we handle_full,
        * checking scan_time_queues and decide further scheduling strategies.
        */
-      if (selfptr->m_thr_no == glob_ndbfs_thr_no ||            // 1.
-          (selfptr->m_max_signals_per_jb == 0 && perjb > 0) || // 2.
-          selfptr->m_is_recv_thread)                           // 3.
+      if (((selfptr->m_thr_no == glob_ndbfs_thr_no ||        // 1.
+            selfptr->m_is_recv_thread) &&                    // 2.
+           signal_count >= g_max_signals_per_run_receive) ||
+          (selfptr->m_max_signals_per_jb == 0 && perjb > 0)) // 2.
       {
         // We will resume execution from next jbb_instance later.
         jbb_instance = selfptr->m_jbb_read_mask.find_next(jbb_instance+1);
@@ -9475,6 +9483,70 @@ mt_setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive)
     struct thr_data *selfptr = &rep->m_thread[thr_no];
     selfptr->m_default_max_signals_per_jb = max_signals_per_jbb_receive;
   }
+  g_max_signals_per_run_receive = max_signals_per_jbb_receive;
+}
+
+void
+mt_setConfQueryThreadActive(Uint32 query_thread_active)
+{
+  if (query_thread_active > 2)
+  {
+    query_thread_active = 2;
+  }
+  /**
+   * 0: Only LDM and main and rep threads used as query threads
+   * 1: LDM, TC, main and rep threads active as query threads
+   * 2: LDM, TC, main, rep and recv threads active as query threads
+   */
+  g_query_thread_active = query_thread_active;
+  if (query_thread_active == 0)
+  {
+    g_ldm_increase = 0;
+  }
+  else if (query_thread_active == 1)
+  {
+    g_recv_decrease = 0;
+    g_tc_decrease = g_ldm_increase;
+  }
+}
+
+Uint32
+mt_getConfQueryThreadActive()
+{
+  return g_query_thread_active;
+}
+
+Int32
+mt_getConfLdmIncrease()
+{
+  return g_ldm_increase;
+}
+
+Int32
+mt_getConfTcDecrease()
+{
+  return g_tc_decrease;
+}
+
+Int32 mt_getConfRecvDecrease()
+{
+  return g_recv_decrease;
+}
+
+void
+mt_setConfQueryThread(Int32 query_thread_change)
+{
+  if (query_thread_change < 0)
+  {
+    query_thread_change = -query_thread_change;
+  }
+  if (query_thread_change > 50)
+  {
+    query_thread_change = 50;
+  }
+  g_recv_decrease = query_thread_change;
+  g_tc_decrease = query_thread_change / 2;
+  g_ldm_increase = (7 * query_thread_change) / 10;
 }
 
 void
