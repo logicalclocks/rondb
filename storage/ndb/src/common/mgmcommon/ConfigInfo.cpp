@@ -1019,6 +1019,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "true" },
 
   {
+    CFG_DB_TOTAL_MEMORY_CONFIG,
+    "TotalMemoryConfig",
+    DB_TOKEN,
+    "Avoid using this amount of memory by data node",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT64,
+    "0",
+    "2G",
+    "65536G" },
+
+  {
     CFG_DB_OS_STATIC_OVERHEAD,
     "OsStaticOverhead",
     DB_TOKEN,
