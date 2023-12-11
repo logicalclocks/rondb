@@ -104,6 +104,7 @@ public:
     CmvmiSetMaxSignalsBeforeWakeup = 103012,
     CmvmiSetMaxSignalsBeforeFlushOther = 103013,
     CmvmiSetMaxSignalsBeforeFlushReceiver = 103014,
+    CmvmiSetMaxSignalsPerJBBReceive = 103015,
     _CMVMIMax = 103099,
 
     _THRMANMin = 104000,

@@ -137,6 +137,7 @@ GlobalData::mt_getBlock(BlockNumber blockNo, Uint32 instanceNo)
  * possible stuff to do.
  */
 static constexpr Uint32 MAX_SIGNALS_PER_JB = 75;
+static constexpr Uint32 MAX_SIGNALS_PER_JB_RECEIVE = 5;
 
 /**
  * Max signals written to other thread before calling wakeup_pending_signals
@@ -1582,6 +1583,12 @@ struct alignas(NDB_CL) thr_data
    * Index of thread locally in Configuration.cpp
    */
   unsigned m_thr_index;
+
+  /**
+   * Default max signals to execute per JBB buffer
+   * Different value based on thread type.
+   */
+  unsigned m_default_max_signals_per_jb;
 
   /**
    * max signals to execute per JBB buffer
@@ -5240,7 +5247,7 @@ set_congested_jb_quotas(thr_data *selfptr, Uint32 congested, Uint32 free)
     const Uint32 avail =
         compute_max_signals_to_execute(free - thr_job_queue::RESERVED);
     const Uint32 perjb = compute_max_signals_per_jb(avail);
-    if (perjb < MAX_SIGNALS_PER_JB)
+    if (perjb < selfptr->m_default_max_signals_per_jb)
     {
       selfptr->m_congested_threads_mask.set(congested);
       selfptr->m_max_signals_per_jb = MIN(perjb, selfptr->m_max_signals_per_jb);
@@ -7762,7 +7769,7 @@ run_job_buffers(thr_data *selfptr,
     Uint32 perjb = selfptr->m_max_signals_per_jb;
     Uint32 extra = 0;
 
-    if (unlikely(perjb < MAX_SIGNALS_PER_JB))  // Has a job buffer contention
+    if (unlikely(perjb < selfptr->m_default_max_signals_per_jb))  // Has a job buffer contention
     {
       // Prefer a tighter JB-quota control when executing in congested state:
       recheck_congested_job_buffers(selfptr);
@@ -7786,7 +7793,8 @@ run_job_buffers(thr_data *selfptr,
     }
 #endif
     /* Now execute prio B signals from one thread. */
-    const Uint32 max_signals = std::min(perjb+extra,MAX_SIGNALS_PER_JB);
+    const Uint32 max_signals =
+      std::min(perjb+extra,selfptr->m_default_max_signals_per_jb);
     const Uint32 num_signals = execute_signals(selfptr,
                                                queue,
                                                read_state,
@@ -7811,7 +7819,8 @@ run_job_buffers(thr_data *selfptr,
 
       if (signal_count - signal_count_since_last_zero_time_queue >
           (MAX_SIGNALS_EXECUTED_BEFORE_ZERO_TIME_QUEUE_SCAN -
-           MAX_SIGNALS_PER_JB))
+           MAX_SIGNALS_PER_JB) &&
+           selfptr->m_is_recv_thread == false)
       {
         /**
          * Each execution of execute_signals can at most execute 75 signals
@@ -7835,13 +7844,19 @@ run_job_buffers(thr_data *selfptr,
        *    more lengthy.
        * 2. Last execute_signals() filled the job_buffers to a level
        *    where normal execution can't continue.
+       * 3. The rececive thread will only execute short bursts, the receive
+       *    threads must handle primarily their main target to quickly
+       *    distribute signals received. To perform this task they cannot
+       *    execute for long periods, they must regularly check whether any
+       *    signals were received from the network.
        *
        * We ensure that we don't miss out on heartbeats and other
        * important things by returning to upper levels, where we handle_full,
        * checking scan_time_queues and decide further scheduling strategies.
        */
-      if (selfptr->m_thr_no == 0 ||                            // 1.
-          (selfptr->m_max_signals_per_jb == 0 && perjb > 0))   // 2.
+      if (selfptr->m_thr_no == glob_ndbfs_thr_no ||            // 1.
+          (selfptr->m_max_signals_per_jb == 0 && perjb > 0) || // 2.
+          selfptr->m_is_recv_thread)                           // 3.
       {
         // We will resume execution from next jbb_instance later.
         jbb_instance = selfptr->m_jbb_read_mask.find_next(jbb_instance+1);
@@ -8482,6 +8497,7 @@ mt_receiver_thread_main(void *thr_arg)
 
   init_thread(selfptr);
   selfptr->m_is_recv_thread = true;
+  selfptr->m_default_max_signals_per_jb = MAX_SIGNALS_PER_JB_RECEIVE;
   signal = aligned_signal(signal_buf, thr_no);
   update_rt_config(selfptr, real_time, ReceiveThread);
   update_spin_config(selfptr, min_spin_timer_us);
@@ -9445,6 +9461,23 @@ mt_setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver
 }
 
 void
+mt_setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive)
+{
+  if (max_signals_per_jbb_receive > MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+  {
+    max_signals_per_jbb_receive = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  Uint32 first_recv = g_first_receiver_thread_no;
+  Uint32 end_recv = g_first_receiver_thread_no + globalData.ndbMtReceiveThreads;
+  for (Uint32 thr_no = first_recv; thr_no < end_recv; thr_no++)
+  {
+    struct thr_data *selfptr = &rep->m_thread[thr_no];
+    selfptr->m_default_max_signals_per_jb = max_signals_per_jbb_receive;
+  }
+}
+
+void
 mt_setConfMaxSendDelay(Uint32 send_delay)
 {
   g_conf_max_send_delay = send_delay;
@@ -9768,7 +9801,7 @@ flush_local_signals(struct thr_data *selfptr,
     if (selfptr->m_congested_threads_mask.isclear())
     {
       // Last congestion cleared, assume full JB quotas
-      selfptr->m_max_signals_per_jb = MAX_SIGNALS_PER_JB;
+      selfptr->m_max_signals_per_jb = selfptr->m_default_max_signals_per_jb;
       selfptr->m_total_extra_signals =
           compute_max_signals_to_execute(thr_job_queue::RESERVED);
     }
@@ -9911,7 +9944,7 @@ recheck_congested_job_buffers(struct thr_data *selfptr)
   struct thr_repository *rep = g_thr_repository;
 
   // Assume full JB quotas, reduce below if congested
-  selfptr->m_max_signals_per_jb = MAX_SIGNALS_PER_JB;
+  selfptr->m_max_signals_per_jb = selfptr->m_default_max_signals_per_jb;
   selfptr->m_total_extra_signals =
       compute_max_signals_to_execute(thr_job_queue::RESERVED);
 
@@ -10467,6 +10500,7 @@ thr_init(struct thr_repository* rep, struct thr_data *selfptr, unsigned int cnt,
   selfptr->m_thr_no = thr_no;
   selfptr->m_next_jbb_no = 0;
   selfptr->m_max_signals_per_jb = MAX_SIGNALS_PER_JB;
+  selfptr->m_default_max_signals_per_jb = MAX_SIGNALS_PER_JB;
   selfptr->m_total_extra_signals =
       compute_max_signals_to_execute(thr_job_queue::RESERVED);
   selfptr->m_first_free = 0;

@@ -775,6 +775,14 @@ SimulatedBlock::setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_f
 }
 
 void
+SimulatedBlock::setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsPerJBBReceive(max_signals_per_jbb_receive);
+#endif
+}
+
+void
 SimulatedBlock::setConfMaxNumExtendedDelay(Uint32 max_num_extended_delay)
 {
 #ifdef NDBD_MULTITHREADED

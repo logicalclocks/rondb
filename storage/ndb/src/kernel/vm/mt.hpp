@@ -105,6 +105,7 @@ void mt_setExtendDelay(Uint32);
 void mt_setConfMaxSignalsBeforeWakeup(Uint32);
 void mt_setConfMaxSignalsBeforeFlushOther(Uint32);
 void mt_setConfMaxSignalsBeforeFlushReceiver(Uint32);
+void mt_setConfMaxSignalsPerJBBReceive(Uint32);
 void mt_setConfMaxMicrosAwake(Uint32 max_micros_awake);
 void mt_setConfMaxSendDelay(Uint32 max_send_delay);
 Uint32 mt_getConfMaxSendDelay();

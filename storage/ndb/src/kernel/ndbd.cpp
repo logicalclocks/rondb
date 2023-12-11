@@ -1143,7 +1143,7 @@ ndbd_run(bool foreground, int report_fd,
   mt_setConfMaxMicrosAwake(max_micros_awake);
 
   /* Initialise g_conf_max_send_delay in mt.cpp */
-  Uint32 max_send_delay = 100;
+  Uint32 max_send_delay = 120;
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_SEND_DELAY, &max_send_delay);
   mt_setConfMaxSendDelay(max_send_delay);
 
