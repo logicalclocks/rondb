@@ -2021,6 +2021,9 @@ public:
         if (m_rr_group[thr_no] != rr_group)
         {
           /* Ignore threads from other RR groups */
+          jamDebug();
+          jamDataDebug(thr_no);
+          jamDataDebug(rr_group);
           handle->m_next_round[thr_no].m_next_pos = Uint32(~0);
         }
         else
@@ -2030,6 +2033,8 @@ public:
           handle->m_next_round[thr_no].m_next_pos = 0;
         }
       }
+      jamDebug();
+      jamDataDebug(rr_group);
       struct RoundRobinInfo * rr_info = &handle->m_rr_info[rr_group];
       calculate_rr_distribution(handle, rr_info);
     }
@@ -2039,6 +2044,9 @@ public:
     {
       struct QueryThreadState *q_state = &handle->m_query_state[i];
       q_state->m_current_weight = handle->m_weights[i];
+      jamDebug();
+      jamDataDebug(i);
+      jamDataDebug(q_state->m_current_weight);
     }
   }
   void
@@ -2075,6 +2083,8 @@ public:
      * initialisation of new weights.
      */
     ndbrequire(dist_pos);
+    jamDebug();
+    jamDataDebug(dist_pos);
     rr_info->m_distribution_signal_size = dist_pos;
     rr_info->m_lqhkeyreq_to_same_thread = NUM_LQHKEYREQ_COUNTS;
     rr_info->m_scan_fragreq_to_same_thread = NUM_SCAN_FRAGREQ_COUNTS;
@@ -2089,6 +2099,8 @@ public:
        * Weight 0 means that we will not use this thread at all since it is
        * overloaded.
        */
+      jamDebug();
+      jamDataDebug(thr_no);
       handle->m_next_round[thr_no].m_next_pos = Uint32(~0);
     }
     Uint32 curr_pos = handle->m_next_round[thr_no].m_next_pos;

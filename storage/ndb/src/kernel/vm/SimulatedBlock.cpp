@@ -6194,6 +6194,8 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
 {
 #ifdef NDBD_MULTITHREADED
   Uint32 rr_group = m_rr_group[ldm_instance_no - 1];
+  jamDebug();
+  jamDataDebug(rr_group);
   struct RoundRobinInfo *rr_info = 
     (struct RoundRobinInfo*)&handle->m_rr_info[rr_group];
   Uint32 block_num = DBLQH;
@@ -6274,6 +6276,11 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
       block_num = DBQLQH;
     }
   }
+  if (rr_info->m_total_weight >= 0)
+  {
+    jam();
+    distribute_new_weights(handle, rr_info);
+  }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
 #ifdef VM_TRACE
@@ -6311,7 +6318,8 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
 #ifdef VM_TRACE
-    require(loop++ < 9);
+    require(loop < rr_info->m_distribution_signal_size);
+    loop++;
 #endif
     if (current_stolen < weight)
     {
@@ -6357,6 +6365,8 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
 {
 #ifdef NDBD_MULTITHREADED
   Uint32 rr_group = m_rr_group[ldm_instance_no - 1];
+  jamDebug();
+  jamDataDebug(rr_group);
   struct RoundRobinInfo *rr_info = 
     (struct RoundRobinInfo*)&handle->m_rr_info[rr_group];
   Uint32 block_num = DBLQH;
@@ -6434,6 +6444,11 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
       block_num = DBQLQH;
     }
   }
+  if (rr_info->m_total_weight >= 0)
+  {
+    jam();
+    distribute_new_weights(handle, rr_info);
+  }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
 #ifdef VM_TRACE
@@ -6471,7 +6486,8 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
 #ifdef VM_TRACE
-    require(loop++ < 9);
+    require(loop < rr_info->m_distribution_signal_size);
+    loop++;
 #endif
     if (current_stolen < weight)
     {
