@@ -9334,19 +9334,9 @@ void
 prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group)
 {
   struct thr_repository* rep = g_thr_repository;
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  Uint32 first_ldm_instance = globalData.ndbMtMainThreads;
-  Uint32 num_distr_threads = num_ldm_threads;
-  for (Uint32 i = 0; i < num_ldm_threads; i++)
-  {
-    if (rr_groups[i] == rr_group)
-    {
-      Uint32 dst = i + first_ldm_instance;
-      struct thr_data *dstptr = &rep->m_thread[dst];
-      NDB_PREFETCH_READ(&dstptr->m_load_indicator);
-    }
-  }
-  for (Uint32 i = num_ldm_threads; i < num_distr_threads; i++)
+  Uint32 num_query_workers = globalData.ndbMtQueryWorkers;
+  Uint32 first_ldm_instance = 0;
+  for (Uint32 i = 0; i < num_query_workers; i++)
   {
     if (rr_groups[i] == rr_group)
     {
@@ -9362,18 +9352,6 @@ Uint32 get_load_indicator(Uint32 dst)
   struct thr_repository* rep = g_thr_repository;
   struct thr_data *dstptr = &rep->m_thread[dst];
   return dstptr->m_load_indicator;
-}
-
-Uint32 get_qt_jbb_level(Uint32 instance_no)
-{
-  assert(instance_no > 0);
-  struct thr_repository* rep = g_thr_repository;
-  Uint32 num_main_threads = globalData.ndbMtMainThreads;
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  Uint32 first_qt = num_main_threads + num_ldm_threads;
-  Uint32 qt_thr_no = first_qt + (instance_no - 1);
-  struct thr_data *qt_ptr = &rep->m_thread[qt_thr_no];
-  return qt_ptr->m_jbb_estimated_queue_size_in_words;
 }
 
 NDB_TICKS

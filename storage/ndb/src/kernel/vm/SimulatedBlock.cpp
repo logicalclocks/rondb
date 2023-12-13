@@ -6076,10 +6076,10 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
 {
 #ifdef NDBD_MULTITHREADED
   prefetch_load_indicators(&m_rr_group[0], rr_group);
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  Uint32 first_ldm_instance = globalData.ndbMtMainThreads;
+  Uint32 num_query_workers = globalData.ndbMtQueryWorkers;
+  Uint32 first_ldm_instance = 0;
   Uint32 min_load = 0xFF;
-  for (Uint32 i = 0; i < num_ldm_threads; i++)
+  for (Uint32 i = 0; i < num_query_workers; i++)
   {
     if (m_rr_group[i] == rr_group)
     {
@@ -6095,7 +6095,7 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
      * All threads in round robin group are overloaded, thus set minimum
      * load to represent the unloaded case.
      */
-    for (Uint32 i = 0; i < num_ldm_threads; i++)
+    for (Uint32 i = 0; i < num_query_workers; i++)
     {
       if (m_rr_group[i] == rr_group)
       {
