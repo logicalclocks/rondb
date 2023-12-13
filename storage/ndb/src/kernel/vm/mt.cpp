@@ -161,7 +161,7 @@ static Uint32 g_conf_max_send_delay = 0;
 static Uint32 g_query_thread_active = 2; // All blocks threads active
 static Int32 g_ldm_increase = 7;
 static Int32 g_tc_decrease = 5;
-static Int32 g_recv_decrease = 10;
+static Int32 g_recv_decrease = 20;
 
 static Uint32 g_max_signals_per_run_receive = MAX_SIGNALS_PER_JB_RECEIVE;
 static Uint32 g_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP;

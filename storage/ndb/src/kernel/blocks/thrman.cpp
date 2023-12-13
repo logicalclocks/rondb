@@ -2468,9 +2468,11 @@ Thrman::update_query_distribution(Signal *signal)
     }
     else
     {
-      /* Main and rep threads handled as ldm threads */
-      sum_cpu_load_ldm += cpu_load;
-      sum_send_load_ldm += send_load;
+      /**
+       * Main and rep threads handled as average thread
+       * Not counted in average CPU load for any specific thread.
+       */
+      ;
     }
   }
   /* Calculate average and max CPU load on Query and LDM threads */
@@ -2493,7 +2495,7 @@ Thrman::update_query_distribution(Signal *signal)
   if (num_ldm_threads > 0)
   {
     average_cpu_load_ldm =
-      sum_cpu_load_ldm / (num_ldm_threads + num_main_threads);
+      sum_cpu_load_ldm / num_ldm_threads;
   }
   if (num_tc_threads > 0)
   {
@@ -2571,18 +2573,18 @@ Thrman::update_query_distribution(Signal *signal)
          * large enough. Keep it unless the difference is more than 10
          * percent higher than the goal difference.
          */
-        if (diff_ldm_tc > (min_tc_diff + 10))
+        if (diff_ldm_tc > (min_tc_diff + 3))
         {
           /**
            * Increase the load by increasing the cpu_change in positive
            * direction.
            */
-          change = +5;
+          change = -8;
         }
       }
       else
       {
-        change = -5;
+        change = +6;
       }
       cpu_change = cpu_load - average_cpu_load_tc;
       cpu_change += change;
@@ -2592,22 +2594,22 @@ Thrman::update_query_distribution(Signal *signal)
       /* Same handling as Tc threads, but instead using min_recv_diff */
       if (diff_ldm_recv > min_recv_diff)
       {
-        if (diff_ldm_recv > (min_recv_diff + 10))
+        if (diff_ldm_recv > (min_recv_diff + 3))
         {
-          change = +5;
+          change = -8;
         }
       }
       else
       {
-        change = -5;
+        change = +6;
       }
       cpu_change = cpu_load - average_cpu_load_recv;
       cpu_change += change;
     }
     else
     {
-      /* Main thread treated as LDM threads */
-      cpu_change = cpu_load - average_cpu_load_ldm;
+      /* Main thread treated as average threads */
+      cpu_change = cpu_load - average_cpu_load;
     }
     Int32 loc_change = get_change_percent(cpu_change);
     m_curr_weights[i] = apply_change_query(loc_change,
