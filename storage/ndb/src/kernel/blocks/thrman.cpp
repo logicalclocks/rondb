@@ -2651,7 +2651,7 @@ Thrman::update_query_distribution(Signal *signal)
   check_weights();
   for (Int32 i = 0; i < num_distr_threads; i++)
   {
-    if ((num_ldm_threads == 0 || i < num_ldm_threads) && m_curr_weights[i] == 0)
+    if (m_curr_weights[i] == 0)
     {
       /**
        * Combined LDM+Query must allow for use of all LDM+Query threads.
