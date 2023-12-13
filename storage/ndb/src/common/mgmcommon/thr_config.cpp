@@ -530,8 +530,18 @@ THRConfig::do_parse_auto(unsigned realtime,
   }
   if (!use_ldm_threads)
   {
+    /**
+     * No LDM threads is equal to only recv threads, thus
+     * also no TC and main threads is implied by this.
+     */
     recv_threads += ldm_threads;
     ldm_threads = 0;
+    recv_threads += tc_threads;
+    tc_threads = 0;
+    recv_threads += main_threads;
+    main_threads = 0;
+    recv_threads += rep_threads;
+    rep_threads = 0;
   }
   g_eventLogger->info("Auto thread config uses:\n"
                       " %u LDM+Query threads,\n"
