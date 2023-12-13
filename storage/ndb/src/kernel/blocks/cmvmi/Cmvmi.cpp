@@ -1850,7 +1850,7 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
           Uint32 val = signal->theData[1];
           setConfMaxSignalsPerJBBReceive(val);
         }
-        else if (val == DumpStateOrd::CmvmiSetQueryThread)
+        else if (val == DumpStateOrd::CmvmiSetTcQueryThreadDistance)
         {
           jam();
           if (signal->length() != 2)
@@ -1859,9 +1859,9 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             return;
           }
           Uint32 val = signal->theData[1];
-          setConfQueryThread(val);
+          setTcQueryThreadDistance(val);
         }
-        else if (val == DumpStateOrd::CmvmiSetQueryThreadActive)
+        else if (val == DumpStateOrd::CmvmiSetRecvQueryThreadDistance)
         {
           jam();
           if (signal->length() != 2)
@@ -1870,7 +1870,7 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             return;
           }
           Uint32 val = signal->theData[1];
-          setConfQueryThreadActive(val);
+          setRecvQueryThreadDistance(val);
         }
       }
     }

@@ -158,10 +158,8 @@ static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
 
-static Uint32 g_query_thread_active = 2; // All blocks threads active
-static Int32 g_ldm_increase = 7;
-static Int32 g_tc_decrease = 5;
-static Int32 g_recv_decrease = 20;
+static Int32 g_tc_decrease = 12;
+static Int32 g_recv_decrease = 25;
 
 static Uint32 g_max_signals_per_run_receive = MAX_SIGNALS_PER_JB_RECEIVE;
 static Uint32 g_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP;
@@ -9464,67 +9462,43 @@ mt_setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive)
   g_max_signals_per_run_receive = max_signals_per_jbb_receive;
 }
 
-void
-mt_setConfQueryThreadActive(Uint32 query_thread_active)
-{
-  if (query_thread_active > 2)
-  {
-    query_thread_active = 2;
-  }
-  /**
-   * 0: Only LDM and main and rep threads used as query threads
-   * 1: LDM, TC, main and rep threads active as query threads
-   * 2: LDM, TC, main, rep and recv threads active as query threads
-   */
-  g_query_thread_active = query_thread_active;
-  if (query_thread_active == 0)
-  {
-    g_ldm_increase = 0;
-  }
-  else if (query_thread_active == 1)
-  {
-    g_recv_decrease = 0;
-    g_tc_decrease = g_ldm_increase;
-  }
-}
-
-Uint32
-mt_getConfQueryThreadActive()
-{
-  return g_query_thread_active;
-}
-
 Int32
-mt_getConfLdmIncrease()
-{
-  return g_ldm_increase;
-}
-
-Int32
-mt_getConfTcDecrease()
+mt_getTcDecrease()
 {
   return g_tc_decrease;
 }
 
-Int32 mt_getConfRecvDecrease()
+Int32 mt_getRecvDecrease()
 {
   return g_recv_decrease;
 }
 
 void
-mt_setConfQueryThread(Int32 query_thread_change)
+mt_setTcQueryThreadDistance(Int32 query_thread_tc)
 {
-  if (query_thread_change < 0)
+  if (query_thread_tc < 0)
   {
-    query_thread_change = -query_thread_change;
+    query_thread_tc = -query_thread_tc;
   }
-  if (query_thread_change > 50)
+  if (query_thread_tc > 80)
   {
-    query_thread_change = 50;
+    query_thread_tc = 80;
   }
-  g_recv_decrease = query_thread_change;
-  g_tc_decrease = query_thread_change / 2;
-  g_ldm_increase = (7 * query_thread_change) / 10;
+  g_tc_decrease = query_thread_tc;
+}
+
+void
+mt_setRecvQueryThreadDistance(Int32 query_thread_recv)
+{
+  if (query_thread_recv < 0)
+  {
+    query_thread_recv = -query_thread_recv;
+  }
+  if (query_thread_recv > 80)
+  {
+    query_thread_recv = 80;
+  }
+  g_recv_decrease = query_thread_recv;
 }
 
 void

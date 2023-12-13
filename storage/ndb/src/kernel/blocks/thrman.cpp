@@ -2538,8 +2538,8 @@ Thrman::update_query_distribution(Signal *signal)
   /* Combined LDM+Query threads treated as Query threads */
   Int32 diff_ldm_tc = average_cpu_load_ldm - average_cpu_load_tc;
   Int32 diff_ldm_recv = average_cpu_load_ldm - average_cpu_load_recv;
-  Int32 min_tc_diff = getConfLdmIncrease() + getConfTcDecrease();
-  Int32 min_recv_diff = getConfLdmIncrease() + getConfRecvDecrease();
+  Int32 min_tc_diff = getTcDecrease();
+  Int32 min_recv_diff = getRecvDecrease();
 
   for (Int32 i = 0; i < num_distr_threads; i++)
   {
@@ -2615,24 +2615,6 @@ Thrman::update_query_distribution(Signal *signal)
     m_curr_weights[i] = apply_change_query(loc_change,
                                            move_weights_down,
                                            m_curr_weights[i]);
-    if (i < num_ldm_threads)
-    {
-      ; // Nothing to do
-    }
-    else if (i < (num_ldm_threads + num_tc_threads))
-    {
-      if (getConfQueryThreadActive() == 0)
-      {
-        m_curr_weights[i] = 0;
-      }
-    }
-    else if (i < (num_ldm_threads + num_tc_threads + num_recv_threads))
-    {
-      if (getConfQueryThreadActive() != 2)
-      {
-        m_curr_weights[i] = 0;
-      }
-    }
   }
   DEB_SCHED_WEIGHTS(("LDM/QT CPU load stats: %u %u %u %u %u %u %u %u"
                      " %u %u %u %u %u %u %u %u",

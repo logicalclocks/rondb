@@ -110,13 +110,10 @@ void mt_setConfMaxMicrosAwake(Uint32 max_micros_awake);
 void mt_setConfMaxSendDelay(Uint32 max_send_delay);
 Uint32 mt_getConfMaxSendDelay();
 
-void mt_setConfQueryThreadActive(Uint32);
-Uint32 mt_getConfQueryThreadActive();
-
-Int32 mt_getConfLdmIncrease();
-Int32 mt_getConfTcDecrease();
-Int32 mt_getConfRecvDecrease();
-void mt_setConfQueryThread(Int32);
+Int32 mt_getTcDecrease();
+Int32 mt_getRecvDecrease();
+void mt_setTcQueryThreadDistance(Int32);
+void mt_setRecvQueryThreadDistance(Int32);
 
 void mt_setMinSendDelay(Uint32 min_send_delay);
 void mt_setOverloadStatus(Uint32 self,

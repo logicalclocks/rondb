@@ -825,58 +825,38 @@ SimulatedBlock::getConfMaxSendDelay()
 }
 
 Int32
-SimulatedBlock::getConfLdmIncrease()
+SimulatedBlock::getTcDecrease()
 {
 #ifdef NDBD_MULTITHREADED
-  return mt_getConfLdmIncrease();
+  return mt_getTcDecrease();
 #else
   return 0;
 #endif
 }
 
 Int32
-SimulatedBlock::getConfTcDecrease()
+SimulatedBlock::getRecvDecrease()
 {
 #ifdef NDBD_MULTITHREADED
-  return mt_getConfTcDecrease();
-#else
-  return 0;
-#endif
-}
-
-Int32
-SimulatedBlock::getConfRecvDecrease()
-{
-#ifdef NDBD_MULTITHREADED
-  return mt_getConfRecvDecrease();
+  return mt_getRecvDecrease();
 #else
   return 0;
 #endif
 }
 
 void
-SimulatedBlock::setConfQueryThread(Int32 query_thread_change)
+SimulatedBlock::setTcQueryThreadDistance(Int32 query_thread_tc)
 {
 #ifdef NDBD_MULTITHREADED
-  mt_setConfQueryThread(query_thread_change);
-#endif
-}
-
-Uint32
-SimulatedBlock::getConfQueryThreadActive()
-{
-#ifdef NDBD_MULTITHREADED
-  return mt_getConfQueryThreadActive();
-#else
-  return 0;
+  mt_setTcQueryThreadDistance(query_thread_tc);
 #endif
 }
 
 void
-SimulatedBlock::setConfQueryThreadActive(Uint32 query_thread_active)
+SimulatedBlock::setRecvQueryThreadDistance(Int32 query_thread_recv)
 {
 #ifdef NDBD_MULTITHREADED
-  mt_setConfQueryThreadActive(query_thread_active);
+  mt_setRecvQueryThreadDistance(query_thread_recv);
 #endif
 }
 
