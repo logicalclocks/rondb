@@ -1837,6 +1837,7 @@ public:
      * next two for table scans and range scans.
      */
     Uint32 m_load_indicator_counter;
+    Uint32 m_query_counter;
 
     Uint32 m_total_weight;
     Uint32 m_used_weight;
@@ -1857,6 +1858,7 @@ public:
     Uint32 m_distribution_signal[MAX_NUM_DISTR_SIGNAL];
     Uint32 m_not_used;
   };
+
   static Uint32 m_shared_ldm_instance[MAX_DISTR_THREADS];
   static Uint32 m_rr_group[MAX_DISTR_THREADS];
   static Uint32 m_num_lqhkeyreq_counts;
@@ -2085,6 +2087,10 @@ public:
     ndbrequire(dist_pos);
     jamDebug();
     jamDataDebug(dist_pos);
+    if (dist_pos < rr_info->m_lqhkeyreq_distr_signal_index)
+    {
+      rr_info->m_lqhkeyreq_distr_signal_index = 0;
+    }
     rr_info->m_distribution_signal_size = dist_pos;
     rr_info->m_lqhkeyreq_to_same_thread = NUM_LQHKEYREQ_COUNTS;
     rr_info->m_scan_fragreq_to_same_thread = NUM_SCAN_FRAGREQ_COUNTS;

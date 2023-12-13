@@ -6225,9 +6225,32 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
   ndbassert(num_ldm_instances >= ldm_instance_no);
 #endif
   {
+    Uint32 query_counter = rr_info->m_query_counter;
     Uint32 query_instance_no = ldm_instance_no;
     Uint32 block_instance_no = ldm_instance_no;
-    for (Uint32 i = 0; i < 2; i++)
+    Uint32 num_lqhs = 2;
+    if ((query_counter & 1) == 1)
+    {
+      /**
+       * The first loop will always pick a LDM thread, either the
+       * owner LDM thread or the shared instance. This is good for
+       * efficiency, since these LDM threads are likely the most
+       * efficient to serve the request.
+       *
+       * However if all requests are served by the LDM owner and its
+       * shared instance then it is default to share the load with
+       * other LDM threads and even more difficult to share it with
+       * other query worker threads (TC, recv, main and rep threads).
+       *
+       * To handle a compromise between efficiency and fair scheduling
+       * we will send half to select from the distribution list and the other
+       * half will attempt to send from the LDM owner or its shared instance.
+       */
+      num_lqhs = 0;
+      block_num = DBQLQH;
+    }
+    rr_info->m_query_counter = query_counter + 1;
+    for (Uint32 i = 0; i < num_lqhs; i++)
     {
       struct QueryThreadState *q_state =
         &handle->m_query_state[query_instance_no - 1];
@@ -6398,7 +6421,16 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
   {
     Uint32 query_instance_no = ldm_instance_no;
     Uint32 block_instance_no = ldm_instance_no;
-    for (Uint32 i = 0; i < 2; i++)
+    Uint32 query_counter = rr_info->m_query_counter;
+    Uint32 num_lqhs = 2;
+    if ((query_counter & 1) == 1)
+    {
+      /* See comment in get_lqhkeyreq_ref */
+      num_lqhs = 0;
+      block_num = DBQLQH;
+    }
+    rr_info->m_query_counter = query_counter + 1;
+    for (Uint32 i = 0; i < num_lqhs; i++)
     {
       struct QueryThreadState *q_state =
         &handle->m_query_state[query_instance_no - 1];
