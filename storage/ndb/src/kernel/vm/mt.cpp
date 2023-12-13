@@ -137,7 +137,7 @@ GlobalData::mt_getBlock(BlockNumber blockNo, Uint32 instanceNo)
  * possible stuff to do.
  */
 static constexpr Uint32 MAX_SIGNALS_PER_JB = 75;
-static constexpr Uint32 MAX_SIGNALS_PER_JB_RECEIVE = 5;
+static constexpr Uint32 MAX_SIGNALS_PER_JB_RECEIVE = 10;
 
 /**
  * Max signals written to other thread before calling wakeup_pending_signals
@@ -150,16 +150,16 @@ static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_OTHER = 20;
 
 static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
 
-#define MAX_EXTEND_DELAY 5
-#define MIN_SEND_WAIT_DELAY 10
+#define MAX_EXTEND_DELAY 8
+#define MIN_SEND_WAIT_DELAY 8
 
 static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
 
-static Int32 g_tc_decrease = 12;
-static Int32 g_recv_decrease = 25;
+static Int32 g_tc_decrease = 0;
+static Int32 g_recv_decrease = 10;
 
 static Uint32 g_max_signals_per_run_receive = MAX_SIGNALS_PER_JB_RECEIVE;
 static Uint32 g_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP;
@@ -169,7 +169,7 @@ static Uint32 g_max_signals_before_flush_receiver =
                 MAX_SIGNALS_BEFORE_FLUSH_RECEIVER;
 static Uint32 g_extend_send_delay = MIN_SEND_WAIT_DELAY;
 static Uint32 g_max_num_extended_delay = MAX_EXTEND_DELAY;
-static Uint32 g_conf_max_micros_awake = 1000;
+static Uint32 g_conf_max_micros_awake = 3000;
 static Uint32 g_min_send_delay = 0;
 static Uint32 g_min_send_delay_available = 0;
 static Uint32 glob_ndbfs_thr_no = 0;

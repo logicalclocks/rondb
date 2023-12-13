@@ -6209,7 +6209,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
     Uint32 query_instance_no = ldm_instance_no;
     Uint32 block_instance_no = ldm_instance_no;
     Uint32 num_lqhs = 2;
-    if ((query_counter & 1) == 1)
+    if ((query_counter & 3) == 1)
     {
       /**
        * The first loop will always pick a LDM thread, either the
@@ -6403,7 +6403,7 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
     Uint32 block_instance_no = ldm_instance_no;
     Uint32 query_counter = rr_info->m_query_counter;
     Uint32 num_lqhs = 2;
-    if ((query_counter & 1) == 1)
+    if ((query_counter & 3) == 1)
     {
       /* See comment in get_lqhkeyreq_ref */
       num_lqhs = 0;
@@ -6534,6 +6534,11 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
       handle->m_scan_fragreq_rr++;
       handle->m_scan_fragreq_qt_count[query_instance_no]++;
 #endif
+      if (unlikely(query_instance_no == ldm_instance_no))
+      {
+        /* Use DBLQH in rare cases where it is choosen in this path */
+        ref = numberToRef(DBLQH, query_instance_no, getOwnNodeId());
+      }
       return ref;
     }
     rr_info->m_scan_fragreq_to_same_thread = m_num_scan_fragreq_counts;
