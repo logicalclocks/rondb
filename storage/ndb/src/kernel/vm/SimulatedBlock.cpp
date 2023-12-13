@@ -6016,16 +6016,26 @@ SimulatedBlock::print_debug_sched_stats(DistributionHandler * const handle)
     handle->m_scan_fragreq_lqh,
     handle->m_scan_fragreq_qt,
     handle->m_scan_fragreq_rr);
-  g_eventLogger->info("LQHKEYREQ QT instances %u %u %u %u %u %u %u %u",
+  g_eventLogger->info("LQHKEYREQ QT instances %u %u %u %u %u %u %u %u"
+                      " %u %u %u %u %u %u %u %u",
     handle->m_lqhkeyreq_qt_count[1], handle->m_lqhkeyreq_qt_count[2],
     handle->m_lqhkeyreq_qt_count[3], handle->m_lqhkeyreq_qt_count[4],
     handle->m_lqhkeyreq_qt_count[5], handle->m_lqhkeyreq_qt_count[6],
-    handle->m_lqhkeyreq_qt_count[7], handle->m_lqhkeyreq_qt_count[8]);
-  g_eventLogger->info("SCAN_FRAGREQ QT instances %u %u %u %u %u %u %u %u",
+    handle->m_lqhkeyreq_qt_count[7], handle->m_lqhkeyreq_qt_count[8],
+    handle->m_lqhkeyreq_qt_count[9], handle->m_lqhkeyreq_qt_count[10],
+    handle->m_lqhkeyreq_qt_count[11], handle->m_lqhkeyreq_qt_count[12],
+    handle->m_lqhkeyreq_qt_count[13], handle->m_lqhkeyreq_qt_count[14],
+    handle->m_lqhkeyreq_qt_count[15], handle->m_lqhkeyreq_qt_count[16]);
+  g_eventLogger->info("SCAN_FRAGREQ QT instances %u %u %u %u %u %u %u %u"
+                      " %u %u %u %u %u %u %u %u",
     handle->m_scan_fragreq_qt_count[1], handle->m_scan_fragreq_qt_count[2],
     handle->m_scan_fragreq_qt_count[3], handle->m_scan_fragreq_qt_count[4],
     handle->m_scan_fragreq_qt_count[5], handle->m_scan_fragreq_qt_count[6],
-    handle->m_scan_fragreq_qt_count[7], handle->m_scan_fragreq_qt_count[8]);
+    handle->m_scan_fragreq_qt_count[7], handle->m_scan_fragreq_qt_count[8],
+    handle->m_scan_fragreq_qt_count[9], handle->m_scan_fragreq_qt_count[10],
+    handle->m_scan_fragreq_qt_count[11], handle->m_scan_fragreq_qt_count[12],
+    handle->m_scan_fragreq_qt_count[13], handle->m_scan_fragreq_qt_count[14],
+    handle->m_scan_fragreq_qt_count[15], handle->m_scan_fragreq_qt_count[16]);
   handle->m_lqhkeyreq_lqh = 0;
   handle->m_lqhkeyreq_qt = 0;
   handle->m_lqhkeyreq_rr = 0;
@@ -6042,14 +6052,14 @@ SimulatedBlock::print_debug_sched_stats(DistributionHandler * const handle)
   Uint64 *total_signals;
   Uint64 *total_words;
   Uint64 *est_stat;
-  for (Uint32 j = 1; j <= 8; j++)
+  for (Uint32 j = 1; j <= globalData.ndbMtQueryWorkers; j++)
   {
-    get_jbb_estimated_stats(DBLQH,
+    get_jbb_estimated_stats(DBQLQH,
                             j,
                             &total_signals,
                             &total_words,
                             &est_stat);
-    g_eventLogger->info("LDM(%u) total_signals: %llu, total_words: %llu, "
+    g_eventLogger->info("QT(%u) total_signals: %llu, total_words: %llu, "
                         "%llu %llu %llu %llu "
                         "%llu %llu %llu %llu "
                         "%llu %llu %llu %llu "

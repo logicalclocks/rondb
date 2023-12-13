@@ -624,43 +624,48 @@ THRConfig::do_parse_auto(unsigned realtime,
      */
     num_rr_groups =
       Ndb_CreateCPUMap(num_query_instances, max_threads);
+    Uint32 count_ldm_threads = ldm_threads;
+    Uint32 count_tc_threads = tc_threads;
+    Uint32 count_recv_threads = recv_threads;
+    Uint32 count_main_threads = main_threads;
+    Uint32 count_rep_threads = rep_threads;
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
     for (Uint32 i = 0; i < num_cpus; i++)
     {
       Uint32 thread_type;
       Uint32 inx = 0;
-      if (ldm_threads > 0)
+      if (count_ldm_threads > 0)
       {
         thread_type = T_LDM;
-        ldm_threads--;
-        inx = ldm_threads;
+        count_ldm_threads--;
+        inx = count_ldm_threads;
       }
       else
       {
-        if (recv_threads > 0)
+        if (count_recv_threads > 0)
         {
           thread_type = T_RECV;
-          recv_threads--;
-          inx = recv_threads;
+          count_recv_threads--;
+          inx = count_recv_threads;
         }
-        else if (tc_threads > 0)
+        else if (count_tc_threads > 0)
         {
           thread_type = T_TC;
-          tc_threads--;
-          inx = tc_threads;
+          count_tc_threads--;
+          inx = count_tc_threads;
         }
-        else if (main_threads > 0)
+        else if (count_main_threads > 0)
         {
           thread_type = T_MAIN;
-          main_threads--;
-          inx = main_threads;
+          count_main_threads--;
+          inx = count_main_threads;
         }
-        else if (rep_threads > 0)
+        else if (count_rep_threads > 0)
         {
           thread_type = T_REP;
-          rep_threads--;
-          inx = rep_threads;
+          count_rep_threads--;
+          inx = count_rep_threads;
         }
         else
         {
@@ -687,6 +692,63 @@ THRConfig::do_parse_auto(unsigned realtime,
         m_threads[thread_type][inx].m_shared_cpu_id = neighbour_cpu;
       }
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
+    }
+    /**
+     * This code is used to discover where we have the shared
+     * instance (if one exists).
+     *
+     * The shared instance is used as the second option after
+     * selecting the LQH block.
+     */
+    Uint32 thread_type = T_LDM;
+    Uint32 num_ldm_threads = ldm_threads;
+    if (num_ldm_threads == 0)
+    {
+      thread_type = T_RECV;
+      num_ldm_threads = recv_threads;
+    }
+    for (Uint32 i = 0; i < num_ldm_threads; i++)
+    {
+      if (m_threads[thread_type][i].m_shared_cpu_id != Uint32(~0))
+      {
+        Uint32 shared_cpu_id = m_threads[thread_type][i].m_shared_cpu_id;
+        Uint32 inx = 0;
+        for (Uint32 j = 0; j < ldm_threads; j++, inx++)
+        {
+          if (m_threads[T_LDM][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < tc_threads; j++, inx++)
+        {
+          if (m_threads[T_TC][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < recv_threads; j++, inx++)
+        {
+          if (m_threads[T_RECV][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < main_threads; j++, inx++)
+        {
+          if (m_threads[T_MAIN][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < rep_threads; j++, inx++)
+        {
+          if (m_threads[T_REP][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+      }
     }
   }
   else
