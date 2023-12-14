@@ -753,6 +753,7 @@ protected:
   void setOverloadStatus(OverloadStatus new_status);
   void setConfMaxSignalsBeforeWakeup(Uint32);
   void setConfMaxSignalsBeforeFlushOther(Uint32);
+  void setConfMaxSignalsBeforeFlushTc(Uint32);
   void setConfMaxSignalsBeforeFlushReceiver(Uint32);
   void setConfMaxSignalsPerJBBReceive(Uint32);
   void setConfMaxNumExtendedDelay(Uint32);

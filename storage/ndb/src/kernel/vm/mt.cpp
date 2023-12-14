@@ -146,6 +146,7 @@ static constexpr Uint32 MAX_SIGNALS_BEFORE_WAKEUP = 128;
 
 /* Max signals written to other thread before calling flush_local_signals */
 static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_RECEIVER = 2;
+static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_TC = 5;
 static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_OTHER = 20;
 
 static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
@@ -163,10 +164,6 @@ static Int32 g_recv_decrease = 10;
 
 static Uint32 g_max_signals_per_run_receive = MAX_SIGNALS_PER_JB_RECEIVE;
 static Uint32 g_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP;
-static Uint32 g_max_signals_before_flush_other =
-                MAX_SIGNALS_BEFORE_FLUSH_OTHER;
-static Uint32 g_max_signals_before_flush_receiver =
-                MAX_SIGNALS_BEFORE_FLUSH_RECEIVER;
 static Uint32 g_extend_send_delay = MIN_SEND_WAIT_DELAY;
 static Uint32 g_max_num_extended_delay = MAX_EXTEND_DELAY;
 static Uint32 g_conf_max_micros_awake = 3000;
@@ -1306,6 +1303,19 @@ is_tc_thread(unsigned thr_no)
 }
 
 static bool
+is_tc_only_thread(unsigned thr_no)
+{
+  Uint32 num_tc_threads = globalData.ndbMtTcThreads;
+  if (globalData.ndbMtTcThreads == 0)
+  {
+    return false;
+  }
+  unsigned tc_base = globalData.ndbMtLqhThreads;
+  return thr_no >= tc_base &&
+         thr_no <  tc_base + num_tc_threads;
+}
+
+static bool
 is_recv_thread(unsigned thr_no)
 {
   unsigned recv_base = g_first_receiver_thread_no;
@@ -1545,6 +1555,11 @@ struct alignas(NDB_CL) thr_data
    * Is this a recv thread
    */
   unsigned m_is_recv_thread;
+
+  /**
+   * Max signals sent to other threads before we flush
+   */
+  unsigned m_max_signals_before_flush;
 
   /**
    * A pointer to the TransporterReceiveHandle for the receive threads.
@@ -8488,6 +8503,7 @@ mt_receiver_thread_main(void *thr_arg)
 
   init_thread(selfptr);
   selfptr->m_is_recv_thread = true;
+  selfptr->m_max_signals_before_flush = MAX_SIGNALS_BEFORE_FLUSH_RECEIVER;
   selfptr->m_default_max_signals_per_jb = MAX_SIGNALS_PER_JB_RECEIVE;
   signal = aligned_signal(signal_buf, thr_no);
   update_rt_config(selfptr, real_time, ReceiveThread);
@@ -8981,6 +8997,14 @@ mt_job_thread_main(void *thr_arg)
   Uint32& watchDogCounter = selfptr->m_watchdog_counter;
 
   unsigned thr_no = selfptr->m_thr_no;
+  if (is_tc_only_thread(thr_no))
+  {
+    selfptr->m_max_signals_before_flush = MAX_SIGNALS_BEFORE_FLUSH_TC;
+  }
+  else
+  {
+    selfptr->m_max_signals_before_flush = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
   signal = aligned_signal(signal_buf, thr_no);
 
   /* Avoid false watchdog alarms caused by race condition. */
@@ -9405,7 +9429,33 @@ mt_setConfMaxSignalsBeforeFlushOther(Uint32 max_signals_before_flush_other)
   {
     max_signals_before_flush_other = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
   }
-  g_max_signals_before_flush_other = max_signals_before_flush_other;
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (!(is_tc_only_thread(thr_no) || is_recv_thread(thr_no)))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_flush = max_signals_before_flush_other;
+    }
+  }
+}
+
+void
+mt_setConfMaxSignalsBeforeFlushTc(Uint32 max_signals_before_flush_tc)
+{
+  if (max_signals_before_flush_tc > MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+  {
+    max_signals_before_flush_tc = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (is_tc_only_thread(thr_no))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_flush = max_signals_before_flush_tc;
+    }
+  }
 }
 
 void
@@ -9415,7 +9465,15 @@ mt_setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver
   {
     max_signals_before_flush_receiver = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
   }
-  g_max_signals_before_flush_receiver = max_signals_before_flush_receiver;
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (is_recv_thread(thr_no))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_flush = max_signals_before_flush_receiver;
+    }
+  }
 }
 
 void
@@ -9426,12 +9484,13 @@ mt_setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive)
     max_signals_per_jbb_receive = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
   }
   struct thr_repository* rep = g_thr_repository;
-  Uint32 first_recv = g_first_receiver_thread_no;
-  Uint32 end_recv = g_first_receiver_thread_no + globalData.ndbMtReceiveThreads;
-  for (Uint32 thr_no = first_recv; thr_no < end_recv; thr_no++)
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
   {
-    struct thr_data *selfptr = &rep->m_thread[thr_no];
-    selfptr->m_default_max_signals_per_jb = max_signals_per_jbb_receive;
+    if (is_recv_thread(thr_no))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_default_max_signals_per_jb = max_signals_per_jbb_receive;
+    }
   }
   g_max_signals_per_run_receive = max_signals_per_jbb_receive;
 }
@@ -9814,7 +9873,7 @@ flush_local_signals(struct thr_data *selfptr,
     num_signals = copy_out_local_buffer(selfptr, q, next_signal);
   }
   else if (selfptr->m_first_local[dst].m_num_signals <=
-	     g_max_signals_before_flush_other)
+	     selfptr->m_max_signals_before_flush)
   {
     /**
      * Copy data into local flush_buffer before grabbing the write mutex.
@@ -10160,17 +10219,11 @@ insert_local_signal(struct thr_data *selfptr,
   assert(sh->theLength + sh->m_noOfSections <= 25);
   selfptr->m_local_signals_mask.set(dst);
 
-  const unsigned self = selfptr->m_thr_no;
-  const unsigned MAX_SIGNALS_BEFORE_FLUSH =
-    (self >= g_first_receiver_thread_no)
-      ? g_max_signals_before_flush_receiver
-      : g_max_signals_before_flush_other;
-
   if (unlikely(local_buffer->m_len > MAX_LOCAL_BUFFER_USAGE))
   {
     flush_all_local_signals(selfptr);
   }
-  else if (unlikely(num_signals >= MAX_SIGNALS_BEFORE_FLUSH))
+  else if (num_signals >= selfptr->m_max_signals_before_flush)
   {
     flush_local_signals(selfptr, dst);
     if (selfptr->m_local_signals_mask.isclear()) {

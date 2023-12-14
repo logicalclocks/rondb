@@ -767,6 +767,14 @@ SimulatedBlock::setConfMaxSignalsBeforeFlushOther(Uint32 max_signals_before_flus
 }
 
 void
+SimulatedBlock::setConfMaxSignalsBeforeFlushTc(Uint32 max_signals_before_flush_tc)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeFlushTc(max_signals_before_flush_tc);
+#endif
+}
+
+void
 SimulatedBlock::setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver)
 {
 #ifdef NDBD_MULTITHREADED

@@ -2244,8 +2244,8 @@ Thrman::initial_query_distribution(Signal *signal)
     }
     else
     {
-      /* Don't use TC and recv threads at low load as query threads */
-      m_curr_weights[i] = 0;
+      /* Minimize use of TC and recv threads at low load as query threads */
+      m_curr_weights[i] = 1;
     }
   }
   send_query_distribution(&m_curr_weights[0], signal);
