@@ -2624,8 +2624,65 @@ Thrman::update_query_distribution(Signal *signal)
     weighted_cpu_load[9], weighted_cpu_load[10], weighted_cpu_load[11],
     weighted_cpu_load[12], weighted_cpu_load[13], weighted_cpu_load[14],
     weighted_cpu_load[15]));
+  adjust_weights(&m_curr_weights[0]);
   check_weights();
   send_query_distribution(&m_curr_weights[0], signal);
+}
+
+void
+Thrman::adjust_weights(Uint32 *weights)
+{
+  /**
+   * This function ensures that no RR Group will have so small
+   * weights that they cannot handle any requests at all in a
+   * call to distribute_new_heights.
+   *
+   * In principle all threads could have overallocated up to
+   * 20 - 1 in scan requests. 20 = 5 * LOAD_SCAN_FRAGREQ where
+   * 5 is the maximum load indicator and -1 comes from that
+   * it cannot be used if there isn't at least one weight left
+   * to steal.
+   *
+   * This means we must ensure that at least one thread will have
+   * a weight of at least 5 since the weights are multiplied by
+   * LOAD_SCAN_FRAGREQ. We actually ensure that the largest one
+   * is even bigger than 8 since we also want each distribute call
+   * to handle a few signals before a new call is made.
+   */
+  Uint32 num_distr_threads = getNumQueryInstances();
+  for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
+  {
+    Uint32 max_weight = 1;
+    for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
+    {
+      if (m_rr_group[thr_no] == rr_group)
+      {
+        max_weight = std::max(max_weight, weights[thr_no]);
+      }
+    }
+    if (max_weight > (MAX_DISTRIBUTION_WEIGHT / 2))
+      continue;
+    Uint32 mult_weight = MAX_DISTRIBUTION_WEIGHT / max_weight;
+    jamDebug();
+    jamDataDebug(rr_group);
+    jamDataDebug(mult_weight);
+    for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
+    {
+      if (m_rr_group[thr_no] == rr_group)
+      {
+        weights[thr_no] *= mult_weight;
+        if (weights[thr_no] == 0)
+        {
+          /**
+           * Combined LDM+Query must allow for use of all LDM+Query threads.
+           * Otherwise we would disable the use of load indicators to monitor
+           * the load at shorter timespans.
+           */
+          weights[thr_no] = 1;
+        }
+      }
+    }
+  }
 }
 
 void

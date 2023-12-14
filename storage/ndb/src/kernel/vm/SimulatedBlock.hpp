@@ -1905,61 +1905,6 @@ public:
   void print_debug_sched_stats(DistributionHandler * const);
   void get_load_indicators(DistributionHandler * const, Uint32);
 
-  void adjust_weights(DistributionHandler *handle)
-  {
-    /**
-     * This function ensures that no RR Group will have so small
-     * weights that they cannot handle any requests at all in a
-     * call to distribute_new_heights.
-     *
-     * In principle all threads could have overallocated up to
-     * 20 - 1 in scan requests. 20 = 5 * LOAD_SCAN_FRAGREQ where
-     * 5 is the maximum load indicator and -1 comes from that
-     * it cannot be used if there isn't at least one weight left
-     * to steal.
-     *
-     * This means we must ensure that at least one thread will have
-     * a weight of at least 5 since the weights are multiplied by
-     * LOAD_SCAN_FRAGREQ. We actually ensure that the largest one
-     * is even bigger than 8 since we also want each distribute call
-     * to handle a few signals before a new call is made.
-     */
-    ndbassert(globalData.ndbMtQueryWorkers > 0);
-    Uint32 num_query_instances = getNumQueryInstances();
-    for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
-    {
-      Uint32 max_weight = 1;
-      for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
-      {
-        if (m_rr_group[thr_no] == rr_group)
-        {
-          max_weight = MAX(max_weight, handle->m_weights[thr_no]);
-        }
-      }
-      if (max_weight > (MAX_DISTRIBUTION_WEIGHT / 2))
-        continue;
-      Uint32 mult_weight = MAX_DISTRIBUTION_WEIGHT / max_weight;
-      jamDebug();
-      jamDataDebug(rr_group);
-      jamDataDebug(mult_weight);
-      for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
-      {
-        if (m_rr_group[thr_no] == rr_group)
-        {
-          handle->m_weights[thr_no] *= mult_weight;
-          if (handle->m_weights[thr_no] == 0)
-          {
-            /**
-             * Combined LDM+Query must allow for use of all LDM+Query threads.
-             * Otherwise we would disable the use of load indicators to monitor
-             * the load at shorter timespans.
-             */
-            handle->m_weights[thr_no] = 1;
-          }
-        }
-      }
-    }
-  }
   /**
    * 50ms have passed and it is time to update the DistributionInfo and
    * RoundRobinInfo to reflect the current CPU load in the node.
@@ -1972,7 +1917,6 @@ public:
     jamLine(m_num_rr_groups);
     ndbrequire(m_inited_rr_groups);
     ndbrequire(m_num_distribution_threads);
-    adjust_weights(handle);
     for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
     {
       jam();
