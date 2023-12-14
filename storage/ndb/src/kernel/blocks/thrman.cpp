@@ -2624,27 +2624,7 @@ Thrman::update_query_distribution(Signal *signal)
     weighted_cpu_load[9], weighted_cpu_load[10], weighted_cpu_load[11],
     weighted_cpu_load[12], weighted_cpu_load[13], weighted_cpu_load[14],
     weighted_cpu_load[15]));
-  DEB_SCHED_WEIGHTS(("CPU weights: %u %u %u %u %u %u %u %u"
-                     " %u %u %u %u %u %u %u %u",
-    m_curr_weights[0], m_curr_weights[1], m_curr_weights[2],
-    m_curr_weights[3], m_curr_weights[4], m_curr_weights[5],
-    m_curr_weights[6], m_curr_weights[7], m_curr_weights[8],
-    m_curr_weights[9], m_curr_weights[10],m_curr_weights[11],
-    m_curr_weights[12],m_curr_weights[13],m_curr_weights[14],
-    m_curr_weights[15]));
   check_weights();
-  for (Int32 i = 0; i < num_distr_threads; i++)
-  {
-    if (m_curr_weights[i] == 0)
-    {
-      /**
-       * Combined LDM+Query must allow for use of all LDM+Query threads.
-       * Otherwise we would disable the use of load indicators to monitor
-       * the load at shorter timespans.
-       */
-      m_curr_weights[i] = 1;
-    }
-  }
   send_query_distribution(&m_curr_weights[0], signal);
 }
 

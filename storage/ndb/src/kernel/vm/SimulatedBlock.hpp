@@ -1928,7 +1928,7 @@ public:
     Uint32 num_query_instances = getNumQueryInstances();
     for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
     {
-      Uint32 max_weight = 0;
+      Uint32 max_weight = 1;
       for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
       {
         if (m_rr_group[thr_no] == rr_group)
@@ -1947,12 +1947,21 @@ public:
         if (m_rr_group[thr_no] == rr_group)
         {
           handle->m_weights[thr_no] *= mult_weight;
+          if (handle->m_weights[thr_no] == 0)
+          {
+            /**
+             * Combined LDM+Query must allow for use of all LDM+Query threads.
+             * Otherwise we would disable the use of load indicators to monitor
+             * the load at shorter timespans.
+             */
+            handle->m_weights[thr_no] = 1;
+          }
         }
       }
     }
   }
   /**
-   * 100ms have passed and it is time to update the DistributionInfo and
+   * 50ms have passed and it is time to update the DistributionInfo and
    * RoundRobinInfo to reflect the current CPU load in the node.
    */
   void calculate_distribution_signal(DistributionHandler *handle)
