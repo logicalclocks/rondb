@@ -6209,7 +6209,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
     Uint32 query_instance_no = ldm_instance_no;
     Uint32 block_instance_no = ldm_instance_no;
     Uint32 num_lqhs = 2;
-    if ((query_counter & 3) == 1)
+    if ((query_counter & 1) == 1)
     {
       /**
        * The first loop will always pick a LDM thread, either the
@@ -6217,14 +6217,10 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
        * efficiency, since these LDM threads are likely the most
        * efficient to serve the request.
        *
-       * However if all requests are served by the LDM owner and its
-       * shared instance then it is default to share the load with
-       * other LDM threads and even more difficult to share it with
-       * other query worker threads (TC, recv, main and rep threads).
+       * To spread out the use of the DBLQH block a bit we only send
+       * 50% of the requests to DBLQH, the rest will go immediately
+       * to the round robin distribution.
        *
-       * To handle a compromise between efficiency and fair scheduling
-       * we will send half to select from the distribution list and the other
-       * half will attempt to send from the LDM owner or its shared instance.
        */
       num_lqhs = 0;
       block_num = DBQLQH;
@@ -6365,11 +6361,6 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
       handle->m_lqhkeyreq_rr++;
       handle->m_lqhkeyreq_qt_count[query_instance_no]++;
 #endif
-      if (unlikely(query_instance_no == ldm_instance_no))
-      {
-        /* Use DBLQH in rare cases where it is choosen in this path */
-        ref = numberToRef(DBLQH, query_instance_no, getOwnNodeId());
-      }
       return ref;
     }
     rr_info->m_lqhkeyreq_to_same_thread = m_num_lqhkeyreq_counts;
@@ -6410,7 +6401,13 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
     Uint32 num_lqhs = 2;
     if ((query_counter & 7) == 1)
     {
-      /* See comment in get_lqhkeyreq_ref */
+      /**
+       * See comment in get_lqhkeyreq_ref
+       * We prefer to use DBLQH more for scans since it is a more
+       * complex operation and should gain more by using DBLQH.
+       * So here only 12.5% of the requests are passed to the
+       * next level.
+       */
       num_lqhs = 0;
       block_num = DBQLQH;
     }
@@ -6435,7 +6432,8 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
                                  block_instance_no,
                                  getOwnNodeId());
         Uint32 new_current_stolen = current_stolen +
-                                    load_indicator;
+                                    load_indicator +
+                                    LOAD_SCAN_FRAGREQ;
         q_state->m_current_stolen = new_current_stolen;
         Uint32 extra = (new_current_stolen <= weight) ?
                         0 : (new_current_stolen - weight);
@@ -6522,7 +6520,8 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
       jamDataDebug(load_indicator);
       assert(load_indicator > 0);
       Uint32 new_current_stolen = current_stolen +
-                                  load_indicator;
+                                  load_indicator +
+                                  LOAD_SCAN_FRAGREQ;
       q_state->m_current_stolen = new_current_stolen;
       Uint32 extra = (new_current_stolen <= weight) ?
                       0 : (new_current_stolen - weight);
@@ -6539,11 +6538,6 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
       handle->m_scan_fragreq_rr++;
       handle->m_scan_fragreq_qt_count[query_instance_no]++;
 #endif
-      if (unlikely(query_instance_no == ldm_instance_no))
-      {
-        /* Use DBLQH in rare cases where it is choosen in this path */
-        ref = numberToRef(DBLQH, query_instance_no, getOwnNodeId());
-      }
       return ref;
     }
     rr_info->m_scan_fragreq_to_same_thread = m_num_scan_fragreq_counts;
