@@ -6300,9 +6300,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
-#ifdef VM_TRACE
   Uint32 loop = 0;
-#endif
   do
   {
     Uint32 count = rr_info->m_lqhkeyreq_to_same_thread;
@@ -6321,6 +6319,13 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
       }
       rr_info->m_lqhkeyreq_distr_signal_index = inx;
     }
+    if (unlikely(loop == rr_info->m_distribution_signal_size))
+    {
+      jam();
+      assert(false);
+      distribute_new_weights(handle, rr_info);
+    }
+    loop++;
     Uint32 ref = rr_info->m_distribution_signal[inx];
     rr_info->m_lqhkeyreq_to_same_thread = count + 1;
     Uint32 query_instance_no = refToInstance(ref);
@@ -6334,10 +6339,6 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
     jamDataDebug(inx);
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
-#ifdef VM_TRACE
-    require(loop < rr_info->m_distribution_signal_size);
-    loop++;
-#endif
     if (current_stolen < weight)
     {
       jamDebug();
@@ -6436,16 +6437,15 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
         jamDebug();
         jamDataDebug(load_indicator);
         assert(load_indicator > 0);
+        Uint32 cost = load_indicator + LOAD_SCAN_FRAGREQ;
         Uint32 ref = numberToRef(block_num,
                                  block_instance_no,
                                  getOwnNodeId());
-        Uint32 new_current_stolen = current_stolen +
-                                    load_indicator +
-                                    LOAD_SCAN_FRAGREQ;
+        Uint32 new_current_stolen = current_stolen + cost;
         q_state->m_current_stolen = new_current_stolen;
         Uint32 extra = (new_current_stolen <= weight) ?
                         0 : (new_current_stolen - weight);
-        rr_info->m_used_weight += (load_indicator + extra);
+        rr_info->m_used_weight += (cost + extra);
         jamDataDebug(rr_info->m_used_weight);
         jamDataDebug(rr_info->m_total_weight);
         if (unlikely(rr_info->m_used_weight >=
@@ -6505,6 +6505,20 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
       }
       rr_info->m_scan_distr_signal_index = inx;
     }
+    if (unlikely(loop == rr_info->m_distribution_signal_size))
+    {
+      jam();
+      jamDataDebug(rr_info->m_distribution_signal_size);
+      jamDataDebug(rr_info->m_used_weight);
+      jamDataDebug(rr_info->m_total_weight);
+      distribute_new_weights(handle, rr_info);
+      jam();
+      jamDataDebug(rr_info->m_distribution_signal_size);
+      jamDataDebug(rr_info->m_used_weight);
+      jamDataDebug(rr_info->m_total_weight);
+      assert(false);
+    }
+    loop++;
     Uint32 ref = rr_info->m_distribution_signal[inx];
     rr_info->m_scan_fragreq_to_same_thread = count + 1;
     Uint32 query_instance_no = refToInstance(ref);
@@ -6518,22 +6532,17 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
     jamDataDebug(inx);
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
-#ifdef VM_TRACE
-    require(loop < rr_info->m_distribution_signal_size);
-    loop++;
-#endif
     if (current_stolen < weight)
     {
       jamDebug();
       jamDataDebug(load_indicator);
       assert(load_indicator > 0);
-      Uint32 new_current_stolen = current_stolen +
-                                  load_indicator +
-                                  LOAD_SCAN_FRAGREQ;
+      Uint32 cost = load_indicator + LOAD_SCAN_FRAGREQ;
+      Uint32 new_current_stolen = current_stolen + cost;
       q_state->m_current_stolen = new_current_stolen;
       Uint32 extra = (new_current_stolen <= weight) ?
                       0 : (new_current_stolen - weight);
-      rr_info->m_used_weight += (load_indicator + extra);
+      rr_info->m_used_weight += (cost + extra);
       jamDataDebug(rr_info->m_used_weight);
       jamDataDebug(rr_info->m_total_weight);
       if (unlikely(rr_info->m_used_weight >=
