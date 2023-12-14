@@ -6484,9 +6484,7 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
-#ifdef VM_TRACE
   Uint32 loop = 0;
-#endif
   do
   {
     Uint32 count = rr_info->m_scan_fragreq_to_same_thread;
