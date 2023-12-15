@@ -100,11 +100,11 @@ void mt_startChangeNeighbourNode();
 void mt_setNeighbourNode(NodeId node);
 void mt_endChangeNeighbourNode();
 void mt_setWakeupThread(Uint32 self, Uint32 wakeup_instance);
-void mt_setConfMaxSendDelay(Uint32 max_send_delay);
-void mt_setConfMinSendDelay(Uint32 min_send_delay);
+void mt_setMaxNumExtendedDelay(Uint32);
+void mt_setExtendDelay(Uint32);
+Uint32 mt_getMaxSendDelay(void);
 void mt_setMaxSendDelay(Uint32 max_send_delay);
 void mt_setMinSendDelay(Uint32 min_send_delay);
-void mt_setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay);
 void mt_setOverloadStatus(Uint32 self,
                          OverloadStatus new_status);
 void mt_setNodeOverloadStatus(Uint32 self,

@@ -38,6 +38,7 @@
 #include "vm/WatchDog.hpp"
 #include "vm/ThreadConfig.hpp"
 #include "vm/Configuration.hpp"
+#include "vm/mt.hpp"
 
 #include "ndb_stacktrace.h"
 #include "ndbd.hpp"
@@ -1162,6 +1163,11 @@ ndbd_run(bool foreground, int report_fd,
     globalData.filesystemPasswordLength = pwd_size;
     require(globalData.filesystemPasswordLength> 0);
   }
+
+  /* Initialise g_conf_max_send_delay in mt.cpp */
+  Uint32 max_send_delay = 125;
+  ndb_mgm_get_int_parameter(p, CFG_DB_MAX_SEND_DELAY, &max_send_delay);
+  mt_setMaxSendDelay(max_send_delay);
 
   /**
     Initialise the data of the run-time environment, this prepares the

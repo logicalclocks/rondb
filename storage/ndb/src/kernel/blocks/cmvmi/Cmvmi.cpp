@@ -1746,6 +1746,36 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
                      signal->length(), JBB, ptr, num_secs);
           delete[] sec_alloc;
         }
+        else if (val == DumpStateOrd::CmvmiSetExtendDelay)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          if (val > 30)
+          {
+            val = 30;
+          }
+          setExtendDelay(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxNumExtendedDelay)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          if (val > 10)
+          {
+            val = 10;
+          }
+          setMaxNumExtendedDelay(val);
+        }
         else if (val == DumpStateOrd::CmvmiSetMaxSendDelay)
         {
           jam();
@@ -1755,29 +1785,11 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             return;
           }
           Uint32 val = signal->theData[1];
-          setConfMaxSendDelay(val);
-        }
-        else if (val == DumpStateOrd::CmvmiSetMinSendDelay)
-        {
-          jam();
-          if (signal->length() != 2)
+          if (val > 300)
           {
-            jam();
-            return;
+            val = 300;
           }
-          Uint32 val = signal->theData[1];
-          setConfMinSendDelay(val);
-        }
-        else if (val == DumpStateOrd::CmvmiSetMaxSendBufferSizeDelay)
-        {
-          jam();
-          if (signal->length() != 2)
-          {
-            jam();
-            return;
-          }
-          Uint32 val = signal->theData[1];
-          setMaxSendBufferSizeDelay(val);
+          setMaxSendDelay(val);
         }
       }
     }

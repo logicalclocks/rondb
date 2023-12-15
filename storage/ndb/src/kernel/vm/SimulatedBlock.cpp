@@ -751,10 +751,20 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 }
 
 void
-SimulatedBlock::setConfMaxSendDelay(Uint32 max_send_delay)
+SimulatedBlock::setMinSendDelay(Uint32 min_send_delay)
 {
 #ifdef NDBD_MULTITHREADED
-  mt_setConfMaxSendDelay(max_send_delay);
+  mt_setMinSendDelay(min_send_delay);
+#endif
+}
+
+Uint32
+SimulatedBlock::getMaxSendDelay()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getMaxSendDelay();
+#else
+  return 0;
 #endif
 }
 
@@ -767,26 +777,18 @@ SimulatedBlock::setMaxSendDelay(Uint32 max_send_delay)
 }
 
 void
-SimulatedBlock::setConfMinSendDelay(Uint32 min_send_delay)
+SimulatedBlock::setMaxNumExtendedDelay(Uint32 max_num_extended_delay)
 {
 #ifdef NDBD_MULTITHREADED
-  mt_setConfMinSendDelay(min_send_delay);
+  mt_setMaxNumExtendedDelay(max_num_extended_delay);
 #endif
 }
 
 void
-SimulatedBlock::setMinSendDelay(Uint32 min_send_delay)
+SimulatedBlock::setExtendDelay(Uint32 extend_delay)
 {
 #ifdef NDBD_MULTITHREADED
-  mt_setMinSendDelay(min_send_delay);
-#endif
-}
-
-void
-SimulatedBlock::setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay)
-{
-#ifdef NDBD_MULTITHREADED
-  mt_setMaxSendBufferSizeDelay(max_send_buffer_size_delay);
+  mt_setExtendDelay(extend_delay);
 #endif
 }
 

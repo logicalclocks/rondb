@@ -109,7 +109,11 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
   m_allowed_spin_overhead = 130;
   m_phase2_done = false;
   m_is_idle = true;
-   m_rep_thrman_instance = mt_getRepThrmanInstance();
+  m_current_send_delay = 0;
+  m_medium_send_delay = 0;
+  m_high_send_delay = 0;
+  m_rep_thrman_instance = mt_getRepThrmanInstance();
+  m_rep_thrman_instance = mt_getRepThrmanInstance();
 
 }
 
@@ -1126,202 +1130,127 @@ Thrman::get_idle_block_threads(Uint32 *thread_list,
 void
 Thrman::handle_send_delay()
 {
-  Uint32 num_medium_load = 0;
-  Uint32 num_light_load = 0;
-  Uint32 num_high_load = 0;
-  Uint32 num_overload = 0;
-  /* Ignore restore threads in this calculation */
-  Uint32 num_threads = m_num_threads;
-  if (num_threads < 6)
-  {
-    /**
-     * In situations with only a small number of threads, the likelihood
-     * of improvements based on waiting to send is small. Thus the
-     * adaptive handling of sending is limited to a bit larger data nodes.
-     */
-    return;
-  }
-  Uint32 half_num_threads = num_threads / 2;
-  Uint32 num_threads_25_percent = (1 * num_threads) / 4;
-  Uint32 num_threads_75_percent = (3 * num_threads) / 4;
-
   /**
-   * The more threads we have in the data nodes, the higher the likelihood
-   * that send delay will be beneficial. Larger data nodes need a bit more
-   * batch-like handling to be efficient. Thus we increase the max send
-   * delay that can be set based on the number of threads in the node.
-   * We will however never set this number to be higher than 200 microseconds.
+   * Only called from rep thread
+   *
+   * No need to handle send delay when not using send thread
+   *
+   * No need to handle send delay for very small nodes
    */
-  Uint32 max_delay_settable = 0;
-  if (num_threads <= 16)
-  {
-    jam();
-    max_delay_settable = 80;
-  }
-  else if (num_threads <= 32)
-  {
-    jam();
-    max_delay_settable = 120;
-  }
-  else if (num_threads <= 64)
-  {
-    jam();
-    max_delay_settable = 160;
-  }
-  else
-  {
-    jam();
-    max_delay_settable = 200;
-  }
-  for (Uint32 instance_no = 1;
-       instance_no <= m_num_threads;
-       instance_no++)
-  {
-    if (m_thread_overload_status[instance_no].overload_status ==
-        (OverloadStatus)LIGHT_LOAD_CONST)
-    {
-      jam();
-      num_light_load++;
-    }
-    else if (m_thread_overload_status[instance_no].overload_status ==
-             (OverloadStatus)MEDIUM_LOAD_CONST)
-    {
-      jam();
-      num_medium_load++;
-    }
-    else if (m_thread_overload_status[instance_no].overload_status ==
-             (OverloadStatus)HIGH_LOAD_CONST)
-    {
-      jam();
-      num_high_load++;
-    }
-    else if (m_thread_overload_status[instance_no].overload_status ==
-             (OverloadStatus)OVERLOAD_CONST)
-    {
-      jam();
-      num_overload++;
-    }
-    else
-    {
-      ndbabort();
-    }
-  }
-  Uint32 send_delay_percent = 0;
-  Uint32 min_send_delay = 40;
-  if (num_medium_load == 0 && num_high_load == 0 && num_overload == 0)
-  {
-    jam();
-    /**
-     * Not a single thread in high load or overload. In this case
-     * we will set max_send_delay to 0 and min_send_delay to 0
-     * as well.
-     */
-    send_delay_percent = 0;
-    min_send_delay = 0;
-  }
-  else if (num_high_load == 0 && num_overload == 0)
-  {
-    jam();
-    /**
-     * We have a number of threads at medium load level, we will start
-     * protecting the receivers by setting min_send_delay.
-     */
-    if (num_medium_load < num_threads_25_percent)
-    {
-      jam();
-      min_send_delay = 10;
-    }
-    else if (num_medium_load < half_num_threads)
-    {
-      jam();
-      min_send_delay = 20;
-    }
-    else if (num_medium_load < num_threads_75_percent)
-    {
-      jam();
-      min_send_delay = 30;
-    }
-    else
-    {
-      jam();
-      min_send_delay = 40;
-    }
-  }
-  else if (num_overload == 0)
-  {
-    /**
-     * Highest load level is high load level. Based on the number of threads
-     * that are at this level, we will set the send delay appropriately.
-     */
-    if (num_high_load < num_threads_25_percent)
-    {
-      jam();
-      send_delay_percent = 30;
-    }
-    else if (num_high_load < half_num_threads)
-    {
-      jam();
-      send_delay_percent = 50;
-    }
-    else if (num_high_load < num_threads_75_percent)
-    {
-      jam();
-      send_delay_percent = 70;
-    }
-    else
-    {
-      jam();
-      send_delay_percent = 90;
-    }
-  }
-  else
-  {
-    /**
-     * We have threads at overload level, set send delay based on the
-     * number of threads at high or critical level.
-     */
-    Uint32 num_check_load = num_overload + num_high_load;
-    if (num_check_load < num_threads_25_percent)
-    {
-      jam();
-      send_delay_percent = 50;
-    }
-    else if (num_check_load < half_num_threads)
-    {
-      jam();
-      send_delay_percent = 70;
-    }
-    else if (num_check_load < num_threads_75_percent)
-    {
-      jam();
-      send_delay_percent = 90;
-    }
-    else
-    {
-      jam();
-      send_delay_percent = 100;
-    }
-  }
-  Uint32 max_send_delay = send_delay_percent * max_delay_settable / 100;
-  if (max_send_delay < 20)
-  {
-    /* We won't set MaxSendDelay smaller than 20 microseconds */
-    max_send_delay = 0;
-  }
+  if (m_num_send_threads == 0)
+    return;
+  if (m_num_threads < 6)
+    return;
 
-  DEB_OVERLOAD_STATUS(("max_delay_settable: %u, send_delay_percent: %u,"
-                       " max_send_delay: %u, min_send_delay: %u",
-                       max_delay_settable,
-                       send_delay_percent,
-                       max_send_delay,
-                       min_send_delay));
-  DEB_OVERLOAD_STATUS(("num_light_load: %u, num_medium_load: %u,"
-                       " num_high_load: %u, num_overload: %u",
-                       num_light_load,
-                       num_medium_load,
-                       num_high_load,
-                       num_overload));
-  setMaxSendDelay(max_send_delay);
+  m_high_send_delay = getMaxSendDelay();
+  m_medium_send_delay = 80 * m_high_send_delay;
+  m_medium_send_delay /= 100;
+
+  Uint32 min_send_delay = m_current_send_delay;
+  Uint32 tot_send_load = 0;
+  Uint32 first_ldm = getFirstLDMThreadInstance();
+  Uint32 last_query = getNumQueryInstances();
+  for (Uint32 i = first_ldm; i <= last_query; i++)
+  {
+    Uint32 instance = i - first_ldm;
+    Uint32 send_load = m_thr_load[instance][0].m_send_load;
+    tot_send_load += send_load;
+  }
+  tot_send_load += (m_num_send_threads * m_send_thread_percentage);
+  Uint32 tot_send_percentage = tot_send_load / m_num_send_threads;
+
+  Uint32 tot_block_thread_load = 0;
+  for (Uint32 i = first_ldm; i <= last_query; i++)
+  {
+    Uint32 instance = i - first_ldm;
+    Uint32 block_thread_load = m_thr_load[instance][0].m_cpu_load;
+    tot_block_thread_load += block_thread_load;
+  }
+  Uint32 num_block_threads = (last_query - first_ldm) + 1;
+  Uint32 tot_block_thread_percentage =
+    tot_block_thread_load / num_block_threads;
+
+  Uint32 load_level = 0;
+  if (tot_block_thread_percentage > 90)
+  {
+    load_level = 3;
+  }
+  else if (tot_block_thread_percentage > 70)
+  {
+    load_level = 2;
+  }
+  else if (tot_block_thread_percentage > 45)
+  {
+    load_level = 1;
+  }
+  if (m_current_send_delay == 0)
+  {
+    /**
+     * No send delay, this means the send load becomes high at
+     * high load scenarios.
+     */
+    if (load_level >= 3)
+    {
+      if (tot_send_percentage > 140)
+      {
+        min_send_delay = m_medium_send_delay;
+      }
+    }
+    else if (load_level == 2)
+    {
+      if (tot_send_percentage > 180)
+      {
+        min_send_delay = m_medium_send_delay;
+      }
+    }
+    else
+    {
+      if (tot_send_percentage > 210)
+      {
+        min_send_delay = m_medium_send_delay;
+      }
+    }
+  }
+  else if (m_current_send_delay <= m_medium_send_delay)
+  {
+    /**
+     * We have increased the send delay, this means the send
+     * load will go down significantly. Thus to return to 0
+     * send delay requires send load to decrease below a much
+     * lower average.
+     *
+     * Similarly to increase to the next level of send delay
+     * requires less send load with the same reasoning.
+     */
+    if (tot_send_percentage < 100)
+    {
+      min_send_delay = 0;
+    }
+    else if (tot_send_percentage < 125 && load_level == 0)
+    {
+      min_send_delay = 0;
+    }
+    else if (tot_send_percentage > 140 && load_level >= 2)
+    {
+      min_send_delay = m_high_send_delay;
+    }
+  }
+  else if (m_current_send_delay <= m_high_send_delay)
+  {
+    if (tot_send_percentage < 90)
+    {
+      min_send_delay = 0;
+    }
+    else if (tot_send_percentage < 120 && load_level < 3)
+    {
+      min_send_delay = m_medium_send_delay;
+    }
+  }
+  else
+  {
+    min_send_delay = m_high_send_delay;
+  }
+  m_current_send_delay = min_send_delay;
   setMinSendDelay(min_send_delay);
 }
 
@@ -1366,7 +1295,6 @@ Thrman::execOVERLOAD_STATUS_REP(Signal *signal)
       sendSignal(ref, GSN_NODE_OVERLOAD_STATUS_ORD, signal, 1, JBB);
     }
   }
-  handle_send_delay();
   check_send_thread_helpers(signal);
 }
 
@@ -2255,6 +2183,10 @@ Thrman::execUPD_THR_LOAD_ORD(Signal *signal)
   m_thr_load[instance_no][1] = m_thr_load[instance_no][0];
   m_thr_load[instance_no][0].m_cpu_load = cpu_load;
   m_thr_load[instance_no][0].m_send_load = send_load;
+  if (send_instance == m_rep_thrman_instance)
+  {
+    handle_send_delay();
+  }
 }
 
 void

@@ -96,8 +96,11 @@ public:
     CmvmiDummySignal = 103004,
     CmvmiSendDummySignal = 103005,
     CmvmiSetMaxSendDelay = 103006,
-    CmvmiSetMinSendDelay = 103007,
-    CmvmiSetMaxSendBufferSizeDelay = 103008,
+    CmvmiSetMinSendDelay = 103007, /* Deprecated */
+    CmvmiSetMaxSendBufferSizeDelay = 103008, /* Deprecated */
+    CmvmiSetMaxNumExtendedDelay = 103009,
+    CmvmiSetExtendDelay = 103010,
+
     _CMVMIMax = 103099,
 
     _THRMANMin = 104000,
