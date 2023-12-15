@@ -83,9 +83,9 @@ private:
   bool m_tc_thread;
   bool m_ldm_thread;
 
-  const char *m_thread_name;
+  char m_thread_name[32];
+  char m_thread_description[32];
   const char *m_send_thread_name;
-  const char *m_thread_description;
   const char *m_send_thread_description;
 
   struct ndb_rusage m_last_50ms_rusage;
@@ -438,6 +438,7 @@ private:
   void update_query_distribution(Signal*);
   void initial_query_distribution(Signal*);
   void send_query_distribution(Uint32*, Signal*);
+  void adjust_weights(Uint32*);
 
   struct ThrLoad
   {

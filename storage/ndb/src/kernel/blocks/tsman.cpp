@@ -99,7 +99,7 @@ Tsman::Tsman(Block_context& ctx) :
   if (isNdbMtLqh())
   {
     jam();
-    for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS + 1; i++)
+    for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++)
     {
       m_client_mutex[i] = NdbMutex_Create();
       ndbrequire(m_client_mutex[i] != 0);
@@ -147,7 +147,7 @@ Tsman::~Tsman()
 {
   if (isNdbMtLqh())
   {
-    for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS + 1; i++)
+    for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++)
     {
       NdbMutex_Destroy(m_client_mutex[i]);
       m_client_mutex[i] = 0;
@@ -3457,7 +3457,7 @@ Tsman::client_lock() const
 {
   if (isNdbMtLqh())
   {
-    for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS + 1; i++)
+    for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++)
     {
       int ret = NdbMutex_Lock(m_client_mutex[i]);
       ndbrequire(ret == 0);
@@ -3470,7 +3470,7 @@ Tsman::client_unlock() const
 {
   if (isNdbMtLqh())
   {
-    for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS + 1; i++)
+    for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++)
     {
       int ret = NdbMutex_Unlock(m_client_mutex[i]);
       ndbrequire(ret == 0);

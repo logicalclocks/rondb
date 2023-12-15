@@ -6755,9 +6755,7 @@ Dbacc::get_lock_information(Dbacc **acc_block, Dblqh** lqh_block)
   {
     (*acc_block) = this;
     (*lqh_block) = c_lqh;
-    if (!c_lqh->is_restore_phase_done() &&
-        (globalData.ndbMtRecoverThreads +
-         globalData.ndbMtQueryWorkers) > 0)
+    if (!c_lqh->is_restore_phase_done())
     {
       lock_flag = true;
     }

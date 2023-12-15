@@ -1567,7 +1567,7 @@ private:
     static const uint MaxInternalReqs =
                   MAX_NDB_NODES +                   /* restartCreateObj() forward to Master */
                   1 +                               /* SUMA SUB_CREATE_REQ */
-                  (2 * MAX_NDBMT_LQH_THREADS) +     /* Backup - 1 LCP + 1 Backup per LDM instance */
+                  (2 * MAX_NDBMT_LQH_WORKERS) +     /* Backup - 1 LCP + 1 Backup per LDM instance */
                   1;                                /* Trix Index stat */
 
     /**

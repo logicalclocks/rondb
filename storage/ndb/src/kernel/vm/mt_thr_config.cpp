@@ -54,18 +54,29 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   {
     Uint32 num_main_threads = getThreadCount(T_REP) +
                               getThreadCount(T_MAIN);
+    Uint32 num_recv_threads = getThreadCount(T_RECV);
+
     if (num_main_threads == 2)
       return &m_threads[T_REP][instanceNo];
     else if (num_main_threads == 1)
       return &m_threads[T_MAIN][instanceNo];
     else if (num_main_threads == 0)
-      return &m_threads[T_RECV][instanceNo];
+      if (num_recv_threads == 1)
+        return &m_threads[T_RECV][0];
+      else
+        return &m_threads[T_RECV][1];
     else
       abort();
   }
   else if ((instanceNo = findBlock(DBDIH, instancelist, cnt)) >= 0)
   {
-    return &m_threads[T_MAIN][instanceNo];
+    Uint32 num_main_threads = getThreadCount(T_REP) +
+                              getThreadCount(T_MAIN);
+
+    if (num_main_threads != 0)
+      return &m_threads[T_MAIN][instanceNo];
+    else
+      return &m_threads[T_RECV][0];
   }
   else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
   {
@@ -74,19 +85,6 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   else if ((instanceNo = findBlock(DBLQH, instancelist, cnt)) >= 0)
   {
     return &m_threads[T_LDM][instanceNo - 1]; // remove proxy...
-  }
-  else if ((instanceNo = findBlock(DBQLQH, instancelist, cnt)) >= 0)
-  {
-    int num_ldm_threads = (int)getThreadCount(T_LDM);
-    if ((instanceNo - 1) < num_ldm_threads)
-    {
-      abort();
-    }
-    else
-    {
-      instanceNo -= num_ldm_threads;
-      return &m_threads[T_RECOVER][instanceNo - 1]; // remove proxy...
-    }
   }
   else if ((instanceNo = findBlock(DBTC, instancelist, cnt)) >= 0)
   {
@@ -422,12 +420,6 @@ THRConfigApplier::do_bind(NdbThread* thread,
       break;
     case T_IXBLD:
       type_str = "ixbld";
-      break;
-    case T_QUERY:
-      type_str = "query";
-      break;
-    case T_RECOVER:
-      type_str = "recover";
       break;
     default:
       break;

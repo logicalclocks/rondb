@@ -109,30 +109,8 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
   m_allowed_spin_overhead = 130;
   m_phase2_done = false;
   m_is_idle = true;
-  if (!isNdbMtLqh())
-  {
-    jam();
-    m_rep_thrman_instance = 0;
-  }
-  else if (globalData.ndbMtMainThreads == 2)
-  {
-    jam();
-    m_rep_thrman_instance = 2;
-  }
-  else if (globalData.ndbMtMainThreads == 1)
-  {
-    jam();
-    m_rep_thrman_instance = 1;
-  }
-  else
-  {
-    jam();
-    /* Main and rep threads are handled by first receive thread */
-    m_rep_thrman_instance =
-      1 + globalData.ndbMtLqhThreads +
-          globalData.ndbMtTcThreads +
-          globalData.ndbMtRecoverThreads;
-  }
+   m_rep_thrman_instance = mt_getRepThrmanInstance();
+
 }
 
 Thrman::~Thrman()
@@ -311,24 +289,30 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
   Uint32 ref = req->senderRef;
   Uint32 senderData = req->senderData;
 
-  m_thread_name = getThreadName();
   m_recv_thread = false;
   m_ldm_thread = false;
   m_tc_thread = false;
   m_spin_time_change_count = 0;
-  if (strcmp(m_thread_name, "recv") == 0)
+  Uint32 thr_no = instance() - 1;
+  getThreadName(&m_thread_name[0]);
+  if (globalData.ndbMtLqhThreads > 0)
   {
-    m_recv_thread = true;
+    if (thr_no < globalData.ndbMtLqhThreads)
+      m_ldm_thread = true;
+    else if (thr_no < (globalData.ndbMtLqhThreads +
+                       globalData.ndbMtTcThreads))
+      m_tc_thread = true;
+    else if (thr_no < globalData.ndbMtLqhThreads +
+                      globalData.ndbMtTcThreads +
+                      globalData.ndbMtReceiveThreads)
+      m_recv_thread = true;
   }
-  if (strcmp(m_thread_name, "tc") == 0)
+  else
   {
-    m_tc_thread = true;
+    if (thr_no < globalData.ndbMtReceiveThreads)
+      m_recv_thread = true;
   }
-  if (strcmp(m_thread_name, "ldm") == 0)
-  {
-    m_ldm_thread = true;
-  }
-  m_thread_description = getThreadDescription();
+  getThreadDescription(&m_thread_description[0]);
   m_send_thread_name = "send";
   m_send_thread_description = "Send thread";
   m_enable_adaptive_spinning = false;
@@ -771,8 +755,7 @@ Thrman::execSTTOR(Signal *signal)
       sendNextCONTINUEB(signal, 10, ZCONTINUEB_CHECK_SPINTIME);
       sendSTTORRY(signal, false);
     }
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryWorkers > 0)
+    if (instance() == m_rep_thrman_instance)
     {
       jam();
       initial_query_distribution(signal);
@@ -792,8 +775,7 @@ Thrman::execSTTOR(Signal *signal)
   }
   case 9:
   {
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryWorkers > 0)
+    if (instance() == m_rep_thrman_instance)
     {
       jam();
       signal->theData[0] = ZUPDATE_QUERY_DISTRIBUTION;
@@ -1107,14 +1089,14 @@ Thrman::get_idle_block_threads(Uint32 *thread_list,
    * We only use main threads (the main and rep thread) as idle threads. These
    * are likely to be idle a lot and to be able to assist as send threads. But
    * using other threads as assistant is likely to cause unbalanced loads that
-   * will be scalability hogs. By starting the search from 1 we will always find
-   * the main threads, the main thread and the rep thread which are
-   * instance 1 and 2 when both exist, if only one exist it will be instance 1
-   * and if none exists we will not use any idle block threads.
+   * will be scalability hogs. We will only use those if there are real main
+   * threads.
    */
+  if (globalData.ndbMtMainThreads == 0)
+    return;
   Uint32 instance_no;
-  for (instance_no = 1;
-       instance_no <= globalData.ndbMtMainThreads;
+  for (instance_no = m_main_thrman_instance;
+       instance_no <= m_rep_thrman_instance;
        instance_no++)
   {
     if (m_thread_overload_status[instance_no].overload_status ==
@@ -1149,7 +1131,7 @@ Thrman::handle_send_delay()
   Uint32 num_high_load = 0;
   Uint32 num_overload = 0;
   /* Ignore restore threads in this calculation */
-  Uint32 num_threads = m_num_threads - globalData.ndbMtRecoverThreads;
+  Uint32 num_threads = m_num_threads;
   if (num_threads < 6)
   {
     /**
@@ -1195,11 +1177,6 @@ Thrman::handle_send_delay()
        instance_no <= m_num_threads;
        instance_no++)
   {
-    if (is_recover_thread(instance_no - 1))
-    {
-      /* Ignore restore threads */
-      continue;
-    }
     if (m_thread_overload_status[instance_no].overload_status ==
         (OverloadStatus)LIGHT_LOAD_CONST)
     {
@@ -2265,16 +2242,13 @@ Thrman::execSEND_PUSH_ORD(Signal *signal)
 void
 Thrman::execUPD_THR_LOAD_ORD(Signal *signal)
 {
-  ndbrequire(globalData.ndbMtLqhThreads > 0);
   UpdThrLoadOrd * const thrLoadOrd = (UpdThrLoadOrd*)&signal->theData[0];
   ndbrequire(instance() == m_rep_thrman_instance);
   Uint32 cpu_load = thrLoadOrd->cpuLoad;
   Uint32 send_load = thrLoadOrd->sendLoad;
   Uint32 send_instance = thrLoadOrd->sendInstance;
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
-  Uint32 last_ldm_instance = first_ldm_instance +
-                             globalData.ndbMtLqhThreads - 1;
-  Uint32 last_query_instance = last_ldm_instance;
+  Uint32 last_query_instance = getNumQueryInstances();
   ndbrequire(send_instance >= first_ldm_instance);
   ndbrequire(send_instance <= last_query_instance);
   Uint32 instance_no = send_instance - first_ldm_instance;
@@ -2288,16 +2262,19 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
                                    MeasurementRecordPtr measurePtr)
 {
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
-  Uint32 last_ldm_instance = first_ldm_instance +
-                             globalData.ndbMtLqhThreads - 1;
-  Uint32 last_query_instance = last_ldm_instance;
+  Uint32 last_query_instance = getNumQueryInstances();
   Uint32 our_instance = instance();
-  if (globalData.ndbMtLqhThreads == 0 ||
-      our_instance < first_ldm_instance ||
+  if (our_instance < first_ldm_instance ||
       our_instance > last_query_instance)
   {
     jam();
-    /* Only THRMAN in LDM and query threads need to send this signal */
+    /**
+     * Only THRMAN in LDM and threads with query blocks need to send
+     * this signal.
+     * Since all block threads have query blocks this should never be
+     * true.
+     */
+    ndbrequire(false);
     return;
   }
   jam();
@@ -2332,11 +2309,20 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
 void
 Thrman::initial_query_distribution(Signal *signal)
 {
-  Uint32 num_distr_threads = getNumLDMInstances();
+  Uint32 num_distr_threads = getNumQueryInstances();
+  Uint32 num_ldm_threads = getNumLDMInstances();
   memset(m_curr_weights, 0, sizeof(m_curr_weights));
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
-    m_curr_weights[i] = 8;
+    if (i < num_ldm_threads)
+    {
+      m_curr_weights[i] = 8;
+    }
+    else
+    {
+      /* Minimize use of TC and recv threads at low load as query threads */
+      m_curr_weights[i] = 1;
+    }
   }
   send_query_distribution(&m_curr_weights[0], signal);
 }
@@ -2483,7 +2469,7 @@ static Uint32 apply_change_query(Int32 change,
 
 void Thrman::check_weights()
 {
-  Uint32 num_distr_threads = getNumLDMInstances();
+  Uint32 num_distr_threads = getNumQueryInstances();
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
     ndbrequire(m_curr_weights[i] <= MAX_DISTRIBUTION_WEIGHT);
@@ -2493,39 +2479,83 @@ void Thrman::check_weights()
 void
 Thrman::update_query_distribution(Signal *signal)
 {
-  Uint32 max_load = 0;
+  Int32 max_load = 0;
   check_weights();
+
+  Int32 num_ldm_threads = (Int32)globalData.ndbMtLqhThreads;
+  Int32 num_tc_threads = (Int32)globalData.ndbMtTcThreads;
+  Int32 num_recv_threads = (Int32)globalData.ndbMtReceiveThreads;
+  Int32 num_main_threads = (Int32)globalData.ndbMtMainThreads;
+
   /**
    * This function takes the CPU load information from the last
    * 100 milliseconds and use this information to calculate the
    * weights to be used by DBTC, DBSPJ and the receive threads
    * when mapping virtual blocks to LDM and query thread instances.
    */
-  Uint32 num_distr_threads = getNumLDMInstances();
-  Uint32 sum_cpu_load = 0;
-  Uint32 sum_send_load = 0;
-  Uint32 weighted_cpu_load[MAX_DISTR_THREADS];
+  Int32 num_distr_threads = (Int32)getNumQueryInstances();
+  Int32 sum_cpu_load = 0;
+  Int32 sum_send_load = 0;
+  Int32 sum_cpu_load_ldm = 0;
+  Int32 sum_send_load_ldm = 0;
+  Int32 sum_cpu_load_tc = 0;
+  Int32 sum_send_load_tc = 0;
+  Int32 sum_cpu_load_recv = 0;
+  Int32 sum_send_load_recv = 0;
+  Int32 weighted_cpu_load[MAX_DISTR_THREADS];
+
+  if (num_ldm_threads == 0)
+  {
+    num_recv_threads += num_main_threads;
+    num_main_threads = 0;
+  }
   /**
    * Count sum of CPU load in LDM and Query threads
    * Count sum of send CPU load in LDM and Query threads
    * Count max CPU load on any LDM and Query thread
    * Count max send CPU load on any LDM and Query thread
    */
-  for (Uint32 i = 0; i < num_distr_threads; i++)
+  for (Int32 i = 0; i < num_distr_threads; i++)
   {
-    Uint32 cpu_load =
+    Int32 cpu_load = (Int32)
       calculate_weighted_load(m_thr_load[i][0].m_cpu_load,
                               m_thr_load[i][1].m_cpu_load);
     weighted_cpu_load[i] = cpu_load;
-    Uint32 send_load =
+    Int32 send_load = (Int32)
       calculate_weighted_load(m_thr_load[i][0].m_send_load,
                               m_thr_load[i][1].m_send_load);
     sum_cpu_load += cpu_load;
     sum_send_load += send_load;
     max_load = MAX(cpu_load + send_load, max_load);
+    if (i < num_ldm_threads)
+    {
+      sum_cpu_load_ldm += cpu_load;
+      sum_send_load_ldm += send_load;
+    }
+    else if (i < (num_ldm_threads + num_tc_threads))
+    {
+      sum_cpu_load_tc += cpu_load;
+      sum_send_load_tc += send_load;
+    }
+    else if (i < (num_ldm_threads + num_tc_threads + num_recv_threads))
+    {
+      sum_cpu_load_recv += cpu_load;
+      sum_send_load_recv += send_load;
+    }
+    else
+    {
+      /**
+       * Main and rep threads handled as average thread
+       * Not counted in average CPU load for any specific thread.
+       */
+      ;
+    }
   }
   /* Calculate average and max CPU load on Query and LDM threads */
-  Uint32 average_cpu_load = sum_cpu_load / num_distr_threads;
+  Int32 average_cpu_load_ldm = 0;
+  Int32 average_cpu_load_tc = 0;
+  Int32 average_cpu_load_recv = 0;
+  Int32 average_cpu_load = sum_cpu_load / num_distr_threads;
   if (average_cpu_load < 30 &&
       max_load < 40)
   {
@@ -2538,6 +2568,17 @@ Thrman::update_query_distribution(Signal *signal)
     initial_query_distribution(signal);
     return;
   }
+  if (num_ldm_threads > 0)
+  {
+    average_cpu_load_ldm =
+      sum_cpu_load_ldm / num_ldm_threads;
+  }
+  if (num_tc_threads > 0)
+  {
+    average_cpu_load_tc = sum_cpu_load_tc / num_tc_threads;
+  }
+  average_cpu_load_recv = sum_cpu_load_recv / num_recv_threads;
+
   Uint32 average_weight;
   {
     /**
@@ -2551,7 +2592,7 @@ Thrman::update_query_distribution(Signal *signal)
      * desired direction.
      */
     Uint32 sum_weights = 0;
-    for (Uint32 i = 0; i < num_distr_threads; i++)
+    for (Int32 i = 0; i < num_distr_threads; i++)
     {
       sum_weights += m_curr_weights[i];
     }
@@ -2571,11 +2612,82 @@ Thrman::update_query_distribution(Signal *signal)
    * query thread CPUs.
    */
   /* Combined LDM+Query threads treated as Query threads */
-  for (Uint32 i = 0; i < num_distr_threads; i++)
+  Int32 diff_ldm_tc = average_cpu_load_ldm - average_cpu_load_tc;
+  Int32 diff_ldm_recv = average_cpu_load_ldm - average_cpu_load_recv;
+  Int32 min_tc_diff = 0;
+  Int32 min_recv_diff = 10;
+
+  for (Int32 i = 0; i < num_distr_threads; i++)
   {
-    Uint32 cpu_load = weighted_cpu_load[i];
-    Uint32 loc_change =
-      get_change_percent(cpu_load - average_cpu_load);
+    Int32 cpu_load = (Int32)weighted_cpu_load[i];
+    Int32 cpu_change = 0;
+    Int32 change = 0;
+    if (num_ldm_threads == 0)
+    {
+      /* All threads are receive thread */
+      cpu_change = cpu_load - average_cpu_load;
+    }
+    else if (i < num_ldm_threads)
+    {
+      /**
+       * LDM thread load isn't changed, we simply try to keep them at
+       * current load.
+       */
+      cpu_change = cpu_load - average_cpu_load_ldm;
+    }
+    else if (i < (num_ldm_threads + num_tc_threads))
+    {
+      Int32 change = 0;
+      /**
+       * We try to change the cpu_change such that we have a lower load
+       * in TC threads according to the value calculated in min_tc_diff.
+       */
+      if (diff_ldm_tc > min_tc_diff)
+      {
+        /**
+         * The diff between TC thread load and LDM thread load is already
+         * large enough. Keep it unless the difference is more than 10
+         * percent higher than the goal difference.
+         */
+        if (diff_ldm_tc > (min_tc_diff + 3))
+        {
+          /**
+           * Increase the load by increasing the cpu_change in positive
+           * direction.
+           */
+          change = -8;
+        }
+      }
+      else
+      {
+        change = +6;
+      }
+      cpu_change = cpu_load - average_cpu_load_tc;
+      cpu_change += change;
+    }
+    else if (i < (num_ldm_threads + num_tc_threads + num_recv_threads))
+    {
+      /* Same handling as Tc threads, but instead using min_recv_diff */
+      if (diff_ldm_recv > min_recv_diff)
+      {
+        if (diff_ldm_recv > (min_recv_diff + 3))
+        {
+          change = -8;
+        }
+      }
+      else
+      {
+        change = +6;
+      }
+      cpu_change = cpu_load - average_cpu_load_recv;
+      cpu_change += change;
+    }
+    else
+    {
+      /* Main thread treated as average threads */
+      cpu_change = cpu_load - average_cpu_load;
+    }
+    Int32 loc_change = get_change_percent(cpu_change);
     m_curr_weights[i] = apply_change_query(loc_change,
                                            move_weights_down,
                                            m_curr_weights[i]);
@@ -2588,34 +2700,71 @@ Thrman::update_query_distribution(Signal *signal)
     weighted_cpu_load[9], weighted_cpu_load[10], weighted_cpu_load[11],
     weighted_cpu_load[12], weighted_cpu_load[13], weighted_cpu_load[14],
     weighted_cpu_load[15]));
-  DEB_SCHED_WEIGHTS(("CPU weights: %u %u %u %u %u %u %u %u"
-                     " %u %u %u %u %u %u %u %u",
-    m_curr_weights[0], m_curr_weights[1], m_curr_weights[2],
-    m_curr_weights[3], m_curr_weights[4], m_curr_weights[5],
-    m_curr_weights[6], m_curr_weights[7], m_curr_weights[8],
-    m_curr_weights[9], m_curr_weights[10],m_curr_weights[11],
-    m_curr_weights[12],m_curr_weights[13],m_curr_weights[14],
-    m_curr_weights[15]));
+  adjust_weights(&m_curr_weights[0]);
   check_weights();
-  for (Uint32 i = 0; i < num_distr_threads; i++)
+  send_query_distribution(&m_curr_weights[0], signal);
+}
+
+void
+Thrman::adjust_weights(Uint32 *weights)
+{
+  /**
+   * This function ensures that no RR Group will have so small
+   * weights that they cannot handle any requests at all in a
+   * call to distribute_new_heights.
+   *
+   * In principle all threads could have overallocated up to
+   * 20 - 1 in scan requests. 20 = 5 * LOAD_SCAN_FRAGREQ where
+   * 5 is the maximum load indicator and -1 comes from that
+   * it cannot be used if there isn't at least one weight left
+   * to steal.
+   *
+   * This means we must ensure that at least one thread will have
+   * a weight of at least 5 since the weights are multiplied by
+   * LOAD_SCAN_FRAGREQ. We actually ensure that the largest one
+   * is even bigger than 8 since we also want each distribute call
+   * to handle a few signals before a new call is made.
+   */
+  Uint32 num_distr_threads = getNumQueryInstances();
+  for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
   {
-    if (m_curr_weights[i] == 0)
+    Uint32 max_weight = 1;
+    for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
     {
-      /**
-       * Combined LDM+Query must allow for use of all LDM+Query threads.
-       * Otherwise we would disable the use of load indicators to monitor
-       * the load at shorter timespans.
-       */
-      m_curr_weights[i] = 1;
+      if (m_rr_group[thr_no] == rr_group)
+      {
+        max_weight = std::max(max_weight, weights[thr_no]);
+      }
+    }
+    if (max_weight > (MAX_DISTRIBUTION_WEIGHT / 2))
+      continue;
+    Uint32 mult_weight = MAX_DISTRIBUTION_WEIGHT / max_weight;
+    jamDebug();
+    jamDataDebug(rr_group);
+    jamDataDebug(mult_weight);
+    for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
+    {
+      if (m_rr_group[thr_no] == rr_group)
+      {
+        weights[thr_no] *= mult_weight;
+        if (weights[thr_no] == 0)
+        {
+          /**
+           * Combined LDM+Query must allow for use of all LDM+Query threads.
+           * Otherwise we would disable the use of load indicators to monitor
+           * the load at shorter timespans.
+           */
+          weights[thr_no] = 1;
+        }
+      }
     }
   }
-  send_query_distribution(&m_curr_weights[0], signal);
 }
 
 void
 Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
 {
-  Uint32 num_distr_threads = getNumLDMInstances();
+  Uint32 num_distr_threads = getNumQueryInstances();
   BlockReference ref;
 
   DEB_SCHED_WEIGHTS(("LDM/QT weights: %u %u %u %u %u %u %u %u"

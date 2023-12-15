@@ -7003,7 +7003,7 @@ RedoStateRep::RedoAlertState
 Ndbcntr::get_node_redo_alert_state()
 {
   RedoStateRep::RedoAlertState redo_alert_state = RedoStateRep::NO_REDO_ALERT;
-  for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS; i++)
+  for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS; i++)
   {
     if (m_redo_alert_state[i] > redo_alert_state)
     {

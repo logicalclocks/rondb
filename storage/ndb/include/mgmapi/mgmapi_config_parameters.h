@@ -270,6 +270,10 @@
 #define CFG_DB_TRANS_ERROR_LOGLEVEL 679
 #define CFG_DB_ENCRYPTED_FILE_SYSTEM  680
 
+/* Start RonDB only configuration parameters */
+#define CFG_DB_USE_TC_THREADS         689
+#define CFG_DB_USE_LDM_THREADS        690
+
 #define CFG_DB_OS_STATIC_OVERHEAD     691
 #define CFG_DB_OS_CPU_OVERHEAD        692
 
@@ -281,6 +285,7 @@
 #define CFG_DB_UNDO_BUFFER            697
 #define CFG_DB_TOTAL_MEMORY_CONFIG    698
 #define CFG_DB_AUTO_MEMORY_CONFIG     699
+/* End RonDB only configuration parameters */
 
 #define CFG_NODE_ARBIT_RANK           200
 #define CFG_NODE_ARBIT_DELAY          201
