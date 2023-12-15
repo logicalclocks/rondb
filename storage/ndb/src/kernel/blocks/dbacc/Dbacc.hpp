@@ -1332,7 +1332,7 @@ public:
                                Uint32 & inx)
   {
     inx = 0;
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     {
       LHBits32 hashVal = getElementHash(opPtr);
       inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
@@ -1353,7 +1353,7 @@ public:
   void release_frag_mutex_hash(Fragmentrec *fragPtrP,
                                Uint32 inx)
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       jam();
@@ -1365,15 +1365,11 @@ public:
       jamDebug();
       jamLine(inx);
     }
-    else
-    {
-      ndbassert(inx == 0);
-    }
   }
   void acquire_frag_mutex_bucket(Fragmentrec *fragPtrP,
                                  Uint32 bucket)
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     {
       Uint32 inx = bucket & (NUM_ACC_FRAGMENT_MUTEXES - 1);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -1386,7 +1382,7 @@ public:
   }
   void release_frag_mutex_bucket(Fragmentrec *fragPtrP, Uint32 bucket)
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     {
       Uint32 inx = bucket & (NUM_ACC_FRAGMENT_MUTEXES - 1);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)

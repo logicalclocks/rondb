@@ -383,8 +383,8 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     /**
      * Disk page buffer memory
      */
-    Uint32 recoverInstances = globalData.ndbMtRecoverThreads +
-                              globalData.ndbMtQueryThreads;
+    Uint32 recoverInstances = 
+      (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
     Uint64 page_buffer = globalData.theDiskPageBufferMemory;
 
     Uint32 pages = 0;
@@ -621,13 +621,13 @@ get_multithreaded_config(EmulatorData& ed)
   if (!globalData.isNdbMtLqh)
     return 0;
 
-  g_eventLogger->info("NDBMT: ldm_workers=%u ldm_threads=%u"
-                      " query_workers=%u query_threads=%u\n"
+  g_eventLogger->info("NDBMT: ldm_threads=%u ldm_workers=%u"
+                      " query_workers=%u\n"
                       " tc_threads=%u tc_workers=%u"
                       " send=%u receive=%u main_threads=%u",
-                      globalData.ndbMtLqhWorkers, globalData.ndbMtLqhThreads,
-                      globalData.ndbMtQueryWorkers, globalData.ndbMtQueryThreads,
-                      globalData.ndbMtTcWorkers, globalData.ndbMtTcThreads,
+                      globalData.ndbMtLqhThreads, globalData.ndbMtLqhWorkers,
+                      globalData.ndbMtQueryWorkers,
+                      globalData.ndbMtTcThreads, globalData.ndbMtTcWorkers,
                       globalData.ndbMtSendThreads, globalData.ndbMtReceiveThreads,
                       globalData.ndbMtMainThreads);
 

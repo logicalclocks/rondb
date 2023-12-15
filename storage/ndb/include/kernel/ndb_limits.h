@@ -46,10 +46,10 @@
 #define MAX_BACKUPS   0xFFFFFFFF
 #define MAX_INSTANCE_KEYS 1024
 #define MAX_NUM_CPUS 2500
-#define MAX_USED_NUM_CPUS 1024
+#define MAX_USED_NUM_CPUS 800
 #define MAX_QUERY_THREAD_PER_LDM 3
 #define MIN_RR_GROUP_SIZE 4
-#define MAX_RR_GROUP_SIZE 8
+#define MAX_RR_GROUP_SIZE 16
 
 /**************************************************************************
  * IT SHOULD BE (MAX_NDB_NODES - 1).
@@ -314,41 +314,20 @@
 
 #define NDBMT_MAIN_THREADS         2 /* Without receiver threads */
 
-#if NDB_VERSION_D < NDB_MAKE_VERSION(7,2,0)
-#define NDB_MAX_LOG_PARTS          4
-#define MAX_NDBMT_TC_THREADS       2
-#define MAX_NDBMT_RECEIVE_THREADS  1
-#define MAX_NDBMT_SEND_THREADS     0
-#elif NDB_VERSION_D < NDB_MAKE_VERSION(8,0,23)
 #define NDB_MAX_LOG_PARTS         32
-#define MAX_NDBMT_TC_THREADS      32
-#define MAX_NDBMT_RECEIVE_THREADS 16 
-#define MAX_NDBMT_SEND_THREADS    16
-#else
-#define NDB_MAX_LOG_PARTS         32
-#define MAX_NDBMT_TC_THREADS      160
-#define MAX_NDBMT_RECEIVE_THREADS 80
+#define MAX_NDBMT_RECEIVE_THREADS 360
+#define MAX_NDBMT_TC_WORKERS      MAX_NDBMT_RECEIVE_THREADS
 #define MAX_NDBMT_SEND_THREADS    80
-#endif
 
-#define MAX_NDBMT_LQH_WORKERS 332 
-#define MAX_NDBMT_LQH_THREADS 332
-#define MAX_NDBMT_QUERY_THREADS 332
+#define MAX_NDBMT_LQH_WORKERS 360
+#define MAX_NDBMT_QUERY_WORKERS 722
 
-#define NDBMT_MAX_BLOCK_INSTANCES (MAX_NDBMT_LQH_THREADS + \
-                                   MAX_NDBMT_QUERY_THREADS + \
-                                   MAX_NDBMT_TC_THREADS + \
-                                   MAX_NDBMT_RECEIVE_THREADS + \
-                                   NDBMT_MAIN_THREADS)
+#define NDBMT_MAX_BLOCK_INSTANCES (MAX_NDBMT_QUERY_WORKERS)
 /* Proxy block 0 is not a worker */
 #define NDBMT_MAX_WORKER_INSTANCES (NDBMT_MAX_BLOCK_INSTANCES - 1)
 
-#define MAX_THREADS_TO_WATCH (MAX_NDBMT_LQH_THREADS + \
-                              MAX_NDBMT_QUERY_THREADS + \
-                              MAX_NDBMT_TC_THREADS + \
-                              MAX_NDBMT_SEND_THREADS + \
-                              MAX_NDBMT_RECEIVE_THREADS + \
-                              NDBMT_MAIN_THREADS)
+#define MAX_THREADS_TO_WATCH (MAX_NDBMT_QUERY_WORKERS + \
+                              MAX_NDBMT_SEND_THREADS)
 
 #define NDB_FILE_BUFFER_SIZE (256*1024)
 

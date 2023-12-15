@@ -1411,23 +1411,21 @@ Dblqh::sttor_startphase1(Signal *signal)
     m_lock_tup_page_mutex = NdbMutex_Create();
   }
   if (instance() == 1 &&
-      !m_is_query_block &&
-      (globalData.ndbMtRecoverThreads +
-       globalData.ndbMtQueryWorkers) > 0)
+      !m_is_query_block)
   {
     jam();
     m_restore_mutex = NdbMutex_Create();
     ndbrequire(m_restore_mutex != 0);
     m_num_recover_active = (Uint32*) ndbd_malloc(sizeof(Uint32) *
-                                       (MAX_NDBMT_QUERY_THREADS + 1));
+                                       (MAX_NDBMT_QUERY_WORKERS + 1));
     memset(m_num_recover_active,
            0,
-           sizeof(Uint32) * (MAX_NDBMT_QUERY_THREADS + 1));
+           sizeof(Uint32) * (MAX_NDBMT_QUERY_WORKERS + 1));
     m_instance_recover_active = (Uint32*) ndbd_malloc(sizeof(Uint32) *
-                                       (MAX_NDBMT_LQH_THREADS + 1));
+                                       (MAX_NDBMT_LQH_WORKERS + 1));
     memset(m_instance_recover_active,
            0,
-           sizeof(Uint32) * (MAX_NDBMT_LQH_THREADS + 1));
+           sizeof(Uint32) * (MAX_NDBMT_LQH_WORKERS + 1));
     /**
      * The number of active instances is tracked when we are using query
      * threads and recover threads. The reason is that we want to enable
@@ -1449,10 +1447,10 @@ Dblqh::sttor_startphase1(Signal *signal)
   if (!m_is_query_block)
   {
     jam();
-    Uint32 num_restore_threads = 1 + (
-      (globalData.ndbMtRecoverThreads +
+    Uint32 num_restore_threads =
+      (globalData.ndbMtQueryWorkers +
        (globalData.ndbMtLqhWorkers - 1)) /
-      globalData.ndbMtLqhWorkers);
+      globalData.ndbMtLqhWorkers;
     m_num_restore_threads = num_restore_threads;
   }
 
@@ -6385,7 +6383,7 @@ void Dblqh::sendCommitLqh(Signal* signal,
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     /* No send packed support in these cases */
@@ -6440,7 +6438,7 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     /* No send packed support in these cases */
@@ -6490,7 +6488,7 @@ void Dblqh::sendCommittedTc(Signal* signal,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS)
+  if (instanceKey > MAX_NDBMT_TC_WORKERS)
   {
     /* No send packed support in these cases */
     jam();
@@ -6538,7 +6536,7 @@ void Dblqh::sendCompletedTc(Signal* signal,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS)
+  if (instanceKey > MAX_NDBMT_TC_WORKERS)
   {
     /* No handling of send packed in those cases */
     jam();
@@ -6598,7 +6596,7 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   }
   if (block == getDBLQH())
   {
-    if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+    if (instanceKey <= MAX_NDBMT_LQH_WORKERS)
     {
       container = &Thostptr.p->lqh_pack[instanceKey];
     }
@@ -6609,7 +6607,7 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   }
   else if (block == DBTC)
   {
-    if (instanceKey <= MAX_NDBMT_TC_THREADS)
+    if (instanceKey <= MAX_NDBMT_TC_WORKERS)
     {
       container = &Thostptr.p->tc_pack[instanceKey];
     }
@@ -6648,12 +6646,12 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
 
     if (block == getDBLQH())
     {
-      if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+      if (instanceKey <= MAX_NDBMT_LQH_WORKERS)
         Thostptr.p->lqh_pack_mask.set(instanceKey);
     }
     else if (block == DBTC)
     {
-      if (instanceKey <= MAX_NDBMT_TC_THREADS)
+      if (instanceKey <= MAX_NDBMT_TC_WORKERS)
         Thostptr.p->tc_pack_mask.set(instanceKey);
     }
   }
@@ -10010,8 +10008,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
       0;
   }//if
   ndbassert(regTcPtr->totReclenAi == regTcPtr->currReclenAi);
-  if (qt_likely((globalData.ndbMtQueryWorkers > 0) &&
-      refToMain(regTcPtr->clientBlockref) != getRESTORE()))
+  if (refToMain(regTcPtr->clientBlockref) != getRESTORE())
   {
     acquire_frag_prepare_key_access(fragptr.p, regTcPtr);
   }
@@ -13392,7 +13389,7 @@ Dblqh::sendFireTrigConfTc(Signal* signal,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS)
+  if (instanceKey > MAX_NDBMT_TC_WORKERS)
   {
     jam();
     memcpy(signal->theData, Tdata, 4 * FireTrigConf::SignalLength);
@@ -16804,7 +16801,7 @@ void Dblqh::setup_key_pointers(Uint32 tcIndex, bool acquire_lock)
   ndbrequire(Magic::check_ptr(tcConnectptr.p));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->accConnectPtrP));
-  if (qt_likely((globalData.ndbMtQueryWorkers > 0) && acquire_lock))
+  if (acquire_lock)
   {
     acquire_frag_prepare_key_access(fragPtr.p, tcConnectptr.p);
   }
@@ -20820,6 +20817,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
           prim_tab_fragptr.p->m_cond_write_key_waiters == 0 &&
           prim_tab_fragptr.p->m_cond_exclusive_waiters == 0)
       {
+        jamDebug();
         scan_direct_count = 1;
         m_tot_scan_direct_count = tot_scan_direct_count;
         /**
@@ -20839,6 +20837,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
            * Insert scan into TUX index node to ensure we get back to correct
            * position after real-time break.
            */
+          jamDebug();
           c_tux->relinkScan(__LINE__);
         }
         /* Early release to ensure waiters can quickly get started */
@@ -29185,7 +29184,8 @@ Dblqh::get_recover_thread_instance()
    * we return 0, otherwise we return the instance number of the recover
    * thread we can use (instance number 0 is the proxy instance).
    */
-  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads =
+    (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
   if (num_recover_threads == 0)
   {
     return 0;
@@ -29212,9 +29212,11 @@ Dblqh::completed_restore(Uint32 instance)
    * A restore of a fragment has completed, we release the recover thread
    * for someone else to use.
    */
+  Uint32 num_recover_threads =
+    (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
   ndbrequire(instance > globalData.ndbMtLqhWorkers);
   instance -= globalData.ndbMtLqhWorkers;
-  ndbrequire(instance <= globalData.ndbMtRecoverThreads);
+  ndbrequire(instance <= num_recover_threads);
   Uint32 *num_recover_active = c_restore_mutex_lqh->m_num_recover_active;
   NdbMutex_Lock(c_restore_mutex_lqh->m_restore_mutex);
   ndbrequire(num_recover_active[instance] == 1);
@@ -29233,7 +29235,8 @@ Dblqh::instance_completed_restore(Uint32 instance)
    * false. This is used to send a signal to the recover threads to
    * log output about its restore operations.
    */
-  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads =
+    (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
   if (num_recover_threads == 0)
   {
     jam();
@@ -40626,7 +40629,8 @@ Dblqh::mark_end_of_lcp_restore(Signal* signal)
      * All LDM threads are done. Now time to also report
      * restore rates performed by Recover threads.
      */
-    Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
+    Uint32 num_recover_threads =
+      (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
     for (Uint32 i = 1; i <= num_recover_threads; i++)
     {
       Uint32 instance = globalData.ndbMtLqhWorkers + i;
@@ -40868,7 +40872,7 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
    * path as the first ABORT signal. Thus we only check the query threads
    * here.
    */
-  ndbrequire(globalData.ndbMtQueryWorkers > 0);
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
   {
     jam();
@@ -40899,14 +40903,8 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
 void
 Dblqh::set_up_qt_our_rr_group()
 {
-  if (globalData.ndbMtQueryWorkers == 0)
-  {
-    /* Not used in this case. */
-    return;
-  }
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   /* Round Robin group information is static variables in SimulatedBlock */
-  ndbrequire(globalData.ndbMtQueryThreads == 0);
-  ndbrequire(globalData.ndbMtLqhWorkers == globalData.ndbMtQueryWorkers);
   Uint32 first_qt_thr_no = getFirstQueryThreadId();
   m_num_qt_our_rr_group = 0;
   Uint32 our_rr_group = m_rr_group[instance() - 1];

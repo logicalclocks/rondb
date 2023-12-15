@@ -1561,10 +1561,6 @@ Dbtux::checkScanInstance(Uint32 scanInstance)
   const bool scanInstance_is_tux =
     (get_block_from_scan_instance(scanInstance) == DBTUX);
 
-  /* Basic sanity */
-  ndbrequire((i_am_tux && scanInstance_is_tux) ||
-             (globalData.ndbMtQueryWorkers > 0));
-
   if (i_am_tux)
   {
     /* TUX */
@@ -1604,7 +1600,6 @@ Dbtux::relinkScan(ScanOp& scan,
                   bool need_lock,
                   Uint32 line)
 {
-  ndbrequire(checkScanInstance(scanInstance));
   /**
    * This is called at the end of a real-time break. We do
    * two actions here. At first we move the linked scan record
@@ -1629,7 +1624,7 @@ Dbtux::relinkScan(ScanOp& scan,
    * done by writers and these have already acquired exclusive access to
    * the index (and the whole table for that matter).
    */
-  ndbassert(checkScanInstance(scanInstance));
+  ndbrequire(checkScanInstance(scanInstance));
   if (scan.m_scanLinkedPos == scan.m_scanPos.m_loc)
   {
     jamDebug();
@@ -1637,10 +1632,6 @@ Dbtux::relinkScan(ScanOp& scan,
                scan.m_scanLinkedPos == NullTupLoc);
     scan.m_scanLinkedPos = NullTupLoc;
     return;
-  }
-  if (qt_unlikely(globalData.ndbMtQueryWorkers == 0))
-  {
-    need_lock = false;
   }
   NodeHandle old_node(frag);
   NodeHandle new_node(frag);

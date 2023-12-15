@@ -987,8 +987,6 @@ Configuration::get_send_buffer(const ndb_mgm_configuration_iterator *p)
   else
   {
     Uint32 num_threads = get_num_threads();
-    Uint32 num_extra_threads = globalData.ndbMtRecoverThreads;
-    num_threads += num_extra_threads;
     mem = globalTransporterRegistry.get_total_max_send_buffer();
     mem += (Uint64(2) * MBYTE64 * num_threads);
   }
@@ -1045,7 +1043,7 @@ Configuration::compute_os_overhead(
     os_cpu_overhead = Uint64(100) * MBYTE64;
   }
   Uint64 reserved_part = total_memory / Uint64(100);
-  Uint32 num_threads = get_num_threads() + globalData.ndbMtRecoverThreads;
+  Uint32 num_threads = get_num_threads();
   os_cpu_overhead *= Uint64(num_threads);
   return os_static_overhead + os_cpu_overhead + reserved_part;
 }
@@ -1287,10 +1285,8 @@ Configuration::assign_default_memory_sizes(
 Uint64
 Configuration::compute_restore_memory()
 {
-  Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-  Uint32 num_restore_threads = globalData.ndbMtRecoverThreads;
-  num_ldm_threads += num_restore_threads;
-  Uint64 restore_memory = Uint64(4) * MBYTE64 * Uint64(num_ldm_threads);
+  Uint32 num_restore_threads = globalData.ndbMtQueryWorkers;
+  Uint64 restore_memory = Uint64(4) * MBYTE64 * Uint64(num_restore_threads);
   return restore_memory;
 }
 
@@ -1303,11 +1299,10 @@ Configuration::compute_static_overhead()
    */
   Uint64 static_overhead = Uint64(208) * MBYTE64;
   Uint32 num_threads = get_num_threads();
-  Uint32 num_extra_threads = globalData.ndbMtRecoverThreads;
   static_overhead += // Small memory allocations
-    ((num_threads + num_extra_threads) * MBYTE64);
+    ((num_threads) * MBYTE64);
   Uint32 num_send_threads = globalData.ndbMtSendThreads;
-  Uint64 num_all_threads = num_threads + num_extra_threads + num_send_threads;
+  Uint64 num_all_threads = num_threads + num_send_threads;
   static_overhead += (num_all_threads * 2 * MBYTE64); // Stack memory
   return static_overhead;
 }
@@ -1694,7 +1689,7 @@ Configuration::setupConfiguration()
   if (auto_thread_config == 0 &&
       thrconfigstring != nullptr && thrconfigstring[0] != 0)
   {
-    int res = m_thr_config.do_parse(
+    int res = m_thr_config.do_parse_thrconfig(
         thrconfigstring, _realtimeScheduler, _schedulerSpinTimer);
     if (res != 0)
     {
@@ -1710,10 +1705,17 @@ Configuration::setupConfiguration()
       Uint32 num_cpus = 0;
       iter.get(CFG_DB_NUM_CPUS, &num_cpus);
       g_eventLogger->info("Use automatic thread configuration");
-      m_thr_config.do_parse(_realtimeScheduler,
-                            _schedulerSpinTimer,
-                            num_cpus,
-                            globalData.ndbRRGroups);
+      Uint32 use_tc_threads = 1;
+      iter.get(CFG_DB_USE_TC_THREADS, &use_tc_threads);
+      Uint32 use_ldm_threads = 1;
+      iter.get(CFG_DB_USE_LDM_THREADS, &use_ldm_threads);
+      m_thr_config.do_parse_auto(_realtimeScheduler,
+                                 _schedulerSpinTimer,
+                                 num_cpus,
+                                 globalData.ndbRRGroups,
+                                 MAX_DISTR_THREADS,
+                                 use_tc_threads,
+                                 use_ldm_threads);
     }
     else
     {
@@ -1729,11 +1731,11 @@ Configuration::setupConfiguration()
 #endif
       Uint32 lqhthreads = 0;
       iter.get(CFG_NDBMT_LQH_THREADS, &lqhthreads);
-      int res = m_thr_config.do_parse(mtthreads,
-                                      lqhthreads,
-                                      classic,
-                                      _realtimeScheduler,
-                                      _schedulerSpinTimer);
+      int res = m_thr_config.do_parse_classic(mtthreads,
+                                              lqhthreads,
+                                              classic,
+                                              _realtimeScheduler,
+                                              _schedulerSpinTimer);
       if (res != 0)
       {
         ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
@@ -1783,19 +1785,6 @@ Configuration::setupConfiguration()
       m_thr_config.getThreadCount(THRConfig::T_RECV);
     globalData.ndbMtSendThreads =
       m_thr_config.getThreadCount(THRConfig::T_SEND);
-    globalData.ndbMtQueryThreads =
-      m_thr_config.getThreadCount(THRConfig::T_QUERY);
-    if (globalData.ndbMtQueryThreads > 0)
-    {
-      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
-               "Invalid configuration fetched. ",
-               " Query threads are no longer supported"
-               ", instead Query blocks are part of LDM threads,"
-               " thus move the query thread instances to LDM threads"
-               " and also the CPU bindings should be moved");
-    }
-    globalData.ndbMtRecoverThreads =
-      m_thr_config.getThreadCount(THRConfig::T_RECOVER);
     globalData.ndbMtTcThreads = m_thr_config.getThreadCount(THRConfig::T_TC);
     if (globalData.ndbMtTcThreads == 0)
     {
@@ -1856,7 +1845,15 @@ Configuration::setupConfiguration()
 
     globalData.ndbMtLqhWorkers = ldm_workers;
     globalData.ndbMtLqhThreads = ldm_threads;
-    globalData.ndbMtQueryWorkers = ldm_workers;
+    /**
+     * Each block thread will have one Query worker, thus no more
+     * any need for recover threads.
+     */
+    globalData.ndbMtQueryWorkers = ldm_threads +
+                                   globalData.ndbMtTcThreads +
+                                   globalData.ndbMtMainThreads +
+                                   globalData.ndbMtReceiveThreads;
+
     if (ldm_threads == 0)
     {
       /**
@@ -1869,54 +1866,37 @@ Configuration::setupConfiguration()
        * With 1 receive thread we will allow for a maximum of 1 main
        * thread.
        */
-      if ((globalData.ndbMtTcThreads > 0) ||
-          (globalData.ndbMtRecoverThreads > 0))
+      if (globalData.ndbMtTcThreads > 0)
       {
         ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
                   "Invalid configuration fetched. ",
                   "Setting number of ldm threads to 0 must be combined"
-                  " with 0 tc and recover threads");
+                  " with 0 tc threads");
       }
-      if (globalData.ndbMtReceiveThreads > 1)
+      if (globalData.ndbMtReceiveThreads == 1 &&
+          globalData.ndbMtMainThreads > 1)
       {
-        /**
-         * In the case of 1 receive thread and no LDM threads we will not
-         * assign any Query workers. But with more than 1 receive thread
-         * and no LDM thread we will use 1 LDM worker and 1 Query worker in
-         * each receive thread in addition to a TC worker.
-         *
-         * This ensures that the receive thread can take care of the entire
-         * query for Committed Read queries, a sort of parallel ndbd setup.
-         */
-        globalData.ndbMtQueryWorkers = globalData.ndbMtReceiveThreads;
+        ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
+                  "Invalid configuration fetched. ",
+                  "No LDM threads with 1 receive thread allows for"
+                  " 1 main thread, but no more");
       }
-      else
-      {
-        globalData.ndbMtQueryWorkers = 0;
-        if (globalData.ndbMtMainThreads > 1)
-        {
-          ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
-                    "Invalid configuration fetched. ",
-                    "No LDM threads with 1 receive thread allows for"
-                    " 1 main thread, but no more");
-        }
-      }
-    }
-    globalData.QueryThreadsPerLdm = 0;
-    if (globalData.ndbMtQueryWorkers > 0)
-    {
-      globalData.QueryThreadsPerLdm = 1;
     }
 
-    if ((globalData.ndbMtRecoverThreads + globalData.ndbMtQueryWorkers) >
-         MAX_NDBMT_QUERY_THREADS)
+    if ((globalData.ndbMtQueryWorkers) > MAX_NDBMT_QUERY_WORKERS)
     {
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
                 "Invalid configuration fetched. ",
-                "Sum of recover threads and query threads can be max 127");
+                "Query workers can be max 127");
     }
-    require(globalData.ndbMtQueryWorkers == globalData.ndbMtLqhThreads ||
-            globalData.ndbMtQueryWorkers == globalData.ndbMtReceiveThreads);
+    if (globalData.ndbRRGroups == 0)
+    {
+      /**
+       * ndbRRGroups haven't been set yet, means we didn't use
+       * do_parse_auto. Calculate it here.
+       */
+      globalData.ndbRRGroups = Ndb_GetRRGroups(globalData.ndbMtQueryWorkers);
+    }
   } while (0);
 
   calcSizeAlt(cf);

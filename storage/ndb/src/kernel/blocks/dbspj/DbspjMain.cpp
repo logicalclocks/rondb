@@ -8239,7 +8239,7 @@ Dbspj::scanFrag_send(Signal* signal,
       {
         if (nodeId == getOwnNodeId())
         {
-          if (globalData.ndbMtQueryWorkers > 0)
+          ndbassert(globalData.ndbMtQueryWorkers > 0);
           {
             /**
              * ReadCommittedFlag is always set in DBSPJ when Query threads are
@@ -8275,22 +8275,6 @@ Dbspj::scanFrag_send(Signal* signal,
             jam();
             ref = get_scan_fragreq_ref(&c_tc->m_distribution_handle,
                                        instance_no);
-            fragPtr.p->m_next_ref = ref;
-          }
-          else
-          {
-            jam();
-            /**
-             * We are not using query threads in this node, we can set
-             * m_next_ref immediately, we can also set m_ref to the proper
-             * DBLQH location since there is no flexible scheduling without
-             * query threads.
-             *
-             * There is no need to set the query thread flag here since we
-             * already know the location where SCAN_FRAGREQ is executed.
-             */
-            ref = numberToRef(DBLQH, instance_no, nodeId);
-            fragPtr.p->m_ref = ref;
             fragPtr.p->m_next_ref = ref;
           }
         }

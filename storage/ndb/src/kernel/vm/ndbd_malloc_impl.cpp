@@ -2130,7 +2130,6 @@ Ndbd_mem_manager::init_memory_pools()
   glob_mem_manager = this;
   unsigned int num_threads =
     globalData.ndbMtLqhThreads +
-    globalData.ndbMtQueryThreads +
     globalData.ndbMtReceiveThreads + 
     globalData.ndbMtMainThreads +
     globalData.ndbMtTcThreads;

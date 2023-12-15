@@ -10084,31 +10084,8 @@ void Dbdih::execNODE_FAILREP(Signal* signal)
   sendSignal(DBSPJ_REF, GSN_NODE_FAILREP, signal,
              NodeFailRep::SignalLength, JBB, lsptr, 1);
 
-  if ((globalData.ndbMtQueryWorkers +
-       globalData.ndbMtRecoverThreads) > 0)
-  {
-    sendSignal(DBQLQH_REF, GSN_NODE_FAILREP, signal,
-               NodeFailRep::SignalLength, JBB, lsptr, 1);
-  }
-  else
-  {
-    /* No query threads, report complete already here */
-    for (i = 0; i < noOfFailedNodes; i++)
-    {
-      jam();
-      NodeRecordPtr TNodePtr;
-      TNodePtr.i = failedNodes[i];
-      ptrCheckGuard(TNodePtr, MAX_NDB_NODES, nodeRecord);
-      /* ----------------------------------------------------------------- */
-      // Report the event that DBQLQH completed node failure handling.
-      /* ----------------------------------------------------------------- */
-      signal->theData[0] = NDB_LE_NodeFailCompleted;
-      signal->theData[1] = DBQLQH;
-      signal->theData[2] = TNodePtr.i;
-      sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 3, JBB);
-    }
-  }
-
+  sendSignal(DBQLQH_REF, GSN_NODE_FAILREP, signal,
+             NodeFailRep::SignalLength, JBB, lsptr, 1);
 
   if (ERROR_INSERTED(7179) || ERROR_INSERTED(7217))
   {
@@ -10492,17 +10469,8 @@ void Dbdih::failedNodeSynchHandling(Signal* signal,
   failedNodePtr.p->dbtcFailCompleted = ZFALSE;
   failedNodePtr.p->dbdihFailCompleted = ZFALSE;
   failedNodePtr.p->dblqhFailCompleted = ZFALSE;
-  if ((globalData.ndbMtQueryWorkers +
-       globalData.ndbMtRecoverThreads) > 0)
-  {
-    jam();
-    failedNodePtr.p->dbqlqhFailCompleted = ZFALSE;
-  }
-  else
-  {
-    jam();
-    failedNodePtr.p->dbqlqhFailCompleted = ZTRUE;
-  }
+  jam();
+  failedNodePtr.p->dbqlqhFailCompleted = ZFALSE;
   
   failedNodePtr.p->m_NF_COMPLETE_REP.clearWaitingFor();
 
