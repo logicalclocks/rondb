@@ -1,5 +1,8 @@
 #include "config_structs.hpp"
 
+AllConfigs globalConfig;
+std::mutex globalConfigMutex;
+
 Internal::Internal() {
 	bufferSize = 5 * 1024 * 1024;
 	preAllocatedBuffers = 32;
@@ -129,4 +132,20 @@ AllConfigs::AllConfigs() {
 	security = Security();
 	log = LogConfig();
 	testing = Testing();
+}
+
+AllConfigs AllConfigs::getAll() {
+	return globalConfig;
+}
+
+ void AllConfigs::setAll(AllConfigs allConfigs) {
+	globalConfigMutex.lock();
+	globalConfig = allConfigs;
+	globalConfigMutex.unlock();
+}
+
+void AllConfigs::setToDefaults() {
+	globalConfigMutex.lock();
+	globalConfig = AllConfigs();
+	globalConfigMutex.unlock();
 }

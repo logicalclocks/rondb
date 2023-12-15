@@ -1,15 +1,6 @@
-#ifndef ENCODING_HELPER_HPP
-#define ENCODING_HELPER_HPP
+#include "encoding_helper.hpp"
 
-#include <cstdint>
-#include <vector>
-#include <string>
-#include <string_view>
-#include <iostream>
-#include "pk-data-structs.hpp"
-#include "src/rdrs-const.h"
-
-uint32_t copy_str_to_buffer(std::vector<char> src, void* dst, uint32_t offset) {
+uint32_t copy_str_to_buffer(const std::vector<char>& src, void* dst, uint32_t offset) {
 	if (dst == nullptr) {
 		throw std::invalid_argument("Destination buffer pointer is null");
 	}
@@ -25,20 +16,18 @@ uint32_t copy_str_to_buffer(std::vector<char> src, void* dst, uint32_t offset) {
 	return offset + src_length + 1;
 }
 
-uint32_t copy_ndb_str_to_buffer(std::vector<char> src, void* dst, uint32_t offset) {
+
+uint32_t copy_ndb_str_to_buffer(std::vector<char>& src, void* dst, uint32_t offset) {
 	if (dst == nullptr) {
 		throw std::invalid_argument("Destination buffer pointer is null");
 	}
 
-	// Remove quotation marks from string, if present
-	std::vector<char> processed_src;
-	if (src.size() >= 2 && src.front() == '\"' && src.back() == '\"') {
-		processed_src.insert(processed_src.end(), src.begin() + 1, src.end() - 1);
-	} else {
-		processed_src = src;
-	}
+	// Remove quotation marks from string, if it's a quoted string
+  if (src.size() >= 2 && src.front() == '"' && src.back() == '"') {
+    unquote(src, true);
+  } 
 
-	uint32_t src_length = static_cast<uint32_t>(processed_src.size());
+	uint32_t src_length = static_cast<uint32_t>(src.size());
 
 	// Write immutable length of the string
 	static_cast<char*>(dst)[offset] = static_cast<char>(src_length % 256);
@@ -50,7 +39,7 @@ uint32_t copy_ndb_str_to_buffer(std::vector<char> src, void* dst, uint32_t offse
 	offset += 2;
 
 	for (uint32_t i = offset, j = 0; i < offset + src_length; ++i, ++j) {
-		static_cast<char*>(dst)[i] = processed_src[j];
+		static_cast<char*>(dst)[i] = src[j];
 	}
 
 	static_cast<char*>(dst)[offset + src_length] = 0x00;
@@ -58,8 +47,10 @@ uint32_t copy_ndb_str_to_buffer(std::vector<char> src, void* dst, uint32_t offse
 	return offset + src_length + 1;
 }
 
-std::vector<char> string_to_byte_array(const std::string& str) {
-	return std::vector<char>(str.begin(), str.end());
+std::vector<char> string_to_byte_array(std::string str) {
+  std::vector<char> byte_array;
+  byte_array.assign(std::make_move_iterator(str.begin()), std::make_move_iterator(str.end()));
+  return byte_array;
 }
 
 std::vector<char> string_view_to_byte_array(const std::string_view& str_view) {
@@ -162,4 +153,32 @@ void printReqBuffer(const RS_Buffer* reqBuff) {
   std::cout << (char*)((uintptr_t)reqData + opIDIdx) << std::endl;
 }
 
-#endif // ENCODING_HELPER_HPP
+void printStatus(RS_Status status) {
+  std::cout << "Status: " << std::endl;
+  std::cout << "http_code: " << status.http_code << std::endl;
+  std::cout << "status: " << status.status << std::endl;
+  std::cout << "classification: " << status.classification << std::endl;
+  std::cout << "code: " << status.code << std::endl;
+  std::cout << "mysql_code: " << status.mysql_code << std::endl;
+  std::cout << "message: " << status.message << std::endl;
+  std::cout << "err_line_no: " << status.err_line_no << std::endl;
+  std::cout << "err_file_name: " << status.err_file_name << std::endl;
+}
+
+void unquote(std::vector<char>& str, bool unescape) {
+  if (str.size() < 2 || str.front() != '"' || str.back() != '"') {
+    return;
+  }
+
+  // if str[1] is \, str[2] is " and str[len-3] is \ and str[len-2] is ", remove the two \"s
+  // else just remove the outer most quotes
+  if (str.size() >= 4 && str[1] == '\\' && str[2] == '"' && str[str.size() - 3] == '\\' && str[str.size() - 2] == '"') {
+    str.erase(str.begin() + str.size() - 3, str.begin() + str.size() - 1);
+    str.erase(str.begin() + 1, str.begin() + 3);
+  } else if (str.size() >= 2) {
+    str.erase(str.begin() + str.size() - 1);
+    str.erase(str.begin());
+  } else {
+    throw std::invalid_argument("Invalid string");
+  }
+}

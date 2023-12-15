@@ -462,7 +462,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
-		"Error:Field validation for 'Filters' failed", http.StatusBadRequest)
+		"Error: Field validation for 'Filters' failed", http.StatusBadRequest)
 }
 
 func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {

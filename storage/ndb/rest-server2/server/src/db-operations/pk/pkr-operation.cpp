@@ -466,7 +466,6 @@ RS_Status PKROperation::PerformOperation() {
 
   status = CreateResponse();
   if (status.http_code != SUCCESS) {
-    std::cout << "Failed to create response, with status: " << std::dec << status.http_code << std::endl;
     this->HandleNDBError(status);
     return status;
   }

@@ -3,6 +3,12 @@
 
 #include <string>
 #include "log.hpp"
+#include <mutex>
+
+class AllConfigs;
+
+extern AllConfigs globalConfig;
+extern std::mutex globalConfigMutex;
 
 class Internal {
 public:
@@ -158,6 +164,9 @@ public:
 	std::string string();
 	AllConfigs();
 	AllConfigs(Internal, REST, GRPC, RonDB, RonDB, Security, LogConfig, Testing);
+	static AllConfigs getAll();
+	static void setAll(AllConfigs newConfig);
+	static void setToDefaults();
 };
 
 #endif

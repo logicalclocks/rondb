@@ -31,7 +31,6 @@ import (
 	"hopsworks.ai/rdrs/internal/metrics"
 	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
 
-	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
@@ -100,7 +99,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	}
 
 	//---------------------------- HEAP ---------------------------------------
-	newHeap, releaseBuffers, err := heap.New()
+	_, releaseBuffers, err := heap.New()
 	if err != nil {
 		cleanupWrapper(cleanupFNs)()
 		return nil, fmt.Errorf("failed creating new heap; error: %v ", err)
@@ -117,19 +116,19 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	})
 
 	//---------------------------- Prometheus metrics -------------------------
-	rdrsMetrics, rdrsMetricsCleanup := metrics.NewRDRSMetrics()
+	_, rdrsMetricsCleanup := metrics.NewRDRSMetrics()
 	cleanupFNs = append(cleanupFNs, rdrsMetricsCleanup)
 
 	//---------------------------- Servers ------------------------------------
 	// Wait for interrupt signal to gracefully shutdown the server
-	quit := make(chan os.Signal)
-	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache,
-		rdrsMetrics, quit)
-	if err != nil {
-		cleanupWrapper(cleanupFNs)()
-		return nil, err
-	}
-	cleanupFNs = append(cleanupFNs, cleanupServers)
+	// quit := make(chan os.Signal)
+	// cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache,
+	// 	rdrsMetrics, quit)
+	// if err != nil {
+	// 	cleanupWrapper(cleanupFNs)()
+	// 	return nil, err
+	// }
+	// cleanupFNs = append(cleanupFNs, cleanupServers)
 
 	// some times the servers take some time to start and units tests fail due to connection failures
 	time.Sleep(1000 * time.Millisecond) // need to find a more reliable way to determine if every thing is up
