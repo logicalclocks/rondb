@@ -436,14 +436,14 @@ create table type2_4 (entry_key bigint unsigned not null,
 
 --echo Run normal restore for first set of content
 # Varying #slices for fun
---exec $NDB_RESTORE --allow-unique-indexes -b $first_backup_id -n 1 -r --allow-pk-changes --num-slices=3 --slice-id=0 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $first_backup_id -n 1 -r --allow-pk-changes --num-slices=3 --slice-id=1 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $first_backup_id -n 1 -r --allow-pk-changes --num-slices=3 --slice-id=2 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 1 -r --allow-pk-changes --num-slices=3 --slice-id=0 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 1 -r --allow-pk-changes --num-slices=3 --slice-id=1 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 1 -r --allow-pk-changes --num-slices=3 --slice-id=2 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
 
---exec $NDB_RESTORE --allow-unique-indexes -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=0 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=1 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=2 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=3 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=0 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=1 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=2 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 2 -r --allow-pk-changes --num-slices=4 --slice-id=3 $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
 
 --let next_entry_key=query_get_value(select auto_increment from information_schema.tables where table_schema='test' and table_name='idx_tbl', AUTO_INCREMENT, 1)
 --let next_type2_1=query_get_value(select auto_increment from information_schema.tables where table_schema='test' and table_name='type2_1', AUTO_INCREMENT, 1)
@@ -467,16 +467,16 @@ create table type2_4 (entry_key bigint unsigned not null,
 --echo Remap args : $remap_args
 
 --echo Run offset restore for second set of content
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=0 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=1 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=2 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=3 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=4 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=0 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=1 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=2 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=3 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 1 -r --allow-pk-changes --num-slices=5 --slice-id=4 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
 
 
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 2 -r --allow-pk-changes --num-slices=3 --slice-id=0 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 2 -r --allow-pk-changes --num-slices=3 --slice-id=1 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE --allow-unique-indexes -b $second_backup_id -n 2 -r --allow-pk-changes --num-slices=3 --slice-id=2 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 2 -r --allow-pk-changes --num-slices=3 --slice-id=0 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 2 -r --allow-pk-changes --num-slices=3 --slice-id=1 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 2 -r --allow-pk-changes --num-slices=3 --slice-id=2 $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
 
 --echo Combined dataset
 --echo -----------------
