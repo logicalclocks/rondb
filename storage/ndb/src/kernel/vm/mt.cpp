@@ -7384,7 +7384,6 @@ static
 void handle_scheduling_decisions(thr_data *selfptr,
                                  Signal *signal,
                                  Uint32 & send_sum,
-                                 Uint32 & flush_sum,
                                  bool & pending_send)
 {
   if (selfptr->m_outstanding_send_wakeups >=
@@ -7399,7 +7398,6 @@ void handle_scheduling_decisions(thr_data *selfptr,
     selfptr->m_outstanding_send_wakeups = 0;
     selfptr->m_watchdog_counter = 20;
     send_sum = 0;
-    flush_sum = 0;
   }
 }
 
@@ -7499,8 +7497,7 @@ execute_signals(thr_data *selfptr,
                 Signal *sig,
                 Uint32 max_signals,
                 bool priob_signal,
-                Uint32 & send_sum,
-                Uint32 & flush_sum)
+                Uint32 & send_sum)
 {
   Uint32 num_signals;
   Uint32 extra_signals = 0;
@@ -7657,7 +7654,6 @@ Uint32
 run_job_buffers(thr_data *selfptr,
                 Signal *sig,
                 Uint32 & send_sum,
-                Uint32 & flush_sum,
                 bool & pending_send)
 {
   Uint32 signal_count = 0;
@@ -7677,11 +7673,9 @@ run_job_buffers(thr_data *selfptr,
                                            sig,
                                            max_prioA,
                                            false,
-                                           send_sum,
-                                           flush_sum);
+                                           send_sum);
       signal_count += num_signals;
       send_sum += num_signals;
-      flush_sum += num_signals;
       if (!selfptr->m_sent_local_prioa_signal)
       {
         /**
@@ -7732,14 +7726,12 @@ run_job_buffers(thr_data *selfptr,
                                            sig,
                                            max_prioA,
                                            false,
-                                           send_sum,
-                                           flush_sum);
+                                           send_sum);
 #ifdef DEBUG_SCHED_STATS
       selfptr->m_jbb_total_signals+= num_signals;
 #endif
       signal_count += num_signals;
       send_sum += num_signals;
-      flush_sum += num_signals;
       if (!selfptr->m_sent_local_prioa_signal)
       {
         /**
@@ -7813,8 +7805,7 @@ run_job_buffers(thr_data *selfptr,
                                          sig,
                                          max_signals,
                                          true,
-                                         send_sum,
-                                         flush_sum);
+                                         send_sum);
 
     if (num_signals > 0)
     {
@@ -7823,11 +7814,9 @@ run_job_buffers(thr_data *selfptr,
 #endif
       signal_count += num_signals;
       send_sum += num_signals;
-      flush_sum += num_signals;
       handle_scheduling_decisions(selfptr,
                                   sig,
                                   send_sum,
-                                  flush_sum,
                                   pending_send);
 
       if (signal_count - signal_count_since_last_zero_time_queue >
@@ -8627,7 +8616,6 @@ mt_receiver_thread_main(void *thr_arg)
   init_jbb_estimate(selfptr, now);
 
   Uint32 send_sum = 0;
-  Uint32 flush_sum = 0;
   bool pending_send = false;
   while (globalData.theRestartFlag != perform_stop)
   {
@@ -8680,7 +8668,6 @@ mt_receiver_thread_main(void *thr_arg)
     Uint32 sum = run_job_buffers(selfptr,
                                  signal,
                                  send_sum,
-                                 flush_sum,
                                  pending_send);
     /**
      * Need to call sendpacked even when no signals have been executed since
@@ -8690,14 +8677,13 @@ mt_receiver_thread_main(void *thr_arg)
     sendpacked(selfptr, signal);
     if (sum || has_received)
     {
-      if (send_sum > 0 || flush_sum > 0)
+      if (send_sum > 0)
       {
         watchDogCounter = 6;
         flush_all_local_signals_and_wakeup(selfptr);
         pending_send = do_send(selfptr, false, false);
         selfptr->m_outstanding_send_wakeups = 0;
         send_sum = 0;
-        flush_sum = 0;
       }
     }
     else
@@ -8706,7 +8692,6 @@ mt_receiver_thread_main(void *thr_arg)
       flush_all_local_signals_and_wakeup(selfptr);
       pending_send = do_send(selfptr, false, true);
       send_sum = 0;
-      flush_sum = 0;
     }
     watchDogCounter = 7;
 
@@ -8838,7 +8823,6 @@ mt_receiver_thread_main(void *thr_arg)
       watchDogCounter = 6;
       flush_all_local_signals_and_wakeup(selfptr);
       do_flush(selfptr);
-      flush_sum = 0;
     }
     selfptr->m_stat.m_loop_cnt++;
   }
@@ -8912,8 +8896,7 @@ has_full_in_queues(struct thr_data* selfptr)
 static
 bool
 handle_full_job_buffers(struct thr_data* selfptr,
-                        Uint32 & send_sum,
-                        Uint32 & flush_sum)
+                        Uint32 & send_sum)
 {
   unsigned sleeploop = 0;
   const unsigned self_jbb = selfptr->m_thr_no % NUM_JOB_BUFFERS_PER_THREAD;
@@ -8960,7 +8943,6 @@ handle_full_job_buffers(struct thr_data* selfptr,
     do_send(selfptr, true, true);
     selfptr->m_outstanding_send_wakeups = 0;
     send_sum = 0;
-    flush_sum = 0;
     thr_job_queue *congested_queue = &congested->m_jbb[self_jbb];
     static constexpr Uint32 nano_wait_1ms = 1000*1000;    /* -> 1 ms */
     /**
@@ -9032,7 +9014,6 @@ mt_job_thread_main(void *thr_arg)
 
   bool pending_send = false;
   Uint32 send_sum = 0;
-  Uint32 flush_sum = 0;
   Uint32 loops = 0;
   Uint32 maxloops = 10;/* Loops before reading clock, fuzzy adapted to 1ms freq. */
   Uint32 waits = 0;
@@ -9078,7 +9059,6 @@ mt_job_thread_main(void *thr_arg)
     Uint32 sum = run_job_buffers(selfptr,
                                  signal,
                                  send_sum,
-                                 flush_sum,
                                  pending_send);
 
     /**
@@ -9107,7 +9087,6 @@ mt_job_thread_main(void *thr_arg)
       pending_send = do_send(selfptr, false, false);
       selfptr->m_outstanding_send_wakeups = 0;
       send_sum = 0;
-      flush_sum = 0;
     }
     else
     {
@@ -9219,8 +9198,7 @@ mt_job_thread_main(void *thr_arg)
     if (unlikely(selfptr->m_max_signals_per_jb == 0))  // JB's are full?
     {
       if (handle_full_job_buffers(selfptr,
-                                  send_sum,
-                                  flush_sum))
+                                  send_sum))
       {
         selfptr->m_stat.m_wait_cnt += waits;
         selfptr->m_stat.m_loop_cnt += loops;
