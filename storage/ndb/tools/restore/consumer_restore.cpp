@@ -2429,27 +2429,66 @@ BackupRestore::table_compatible_check(TableS & tableS)
   const NdbTableImpl & tmptab = NdbTableImpl::getImpl(* tableS.m_dictTable);
   if ((int) tmptab.m_indexType != (int) NdbDictionary::Index::Undefined)
   {
-    if((int) tmptab.m_indexType == (int) NdbDictionary::Index::UniqueHashIndex)
+    if((int) tmptab.m_indexType != (int) NdbDictionary::Index::UniqueHashIndex)
+      return true;
+
+    // We now know that tablename refers to a unique hash index in the backup.
+    // Find out whether this unique hash index exists in the database.
+    const char *index_qualified_name = tablename;
+    const char *table_qualified_name = tmptab.m_primaryTable.c_str();
+    BaseString index_db_name, index_schema_name, index_name, table_db_name, table_schema_name, table_name;
+    if (!dissect_index_name(index_qualified_name, index_db_name, index_schema_name, index_name))
+      return false;
+    if (!dissect_table_name(table_qualified_name, table_db_name, table_schema_name, table_name))
+      return false;
+    if(strcmp(index_db_name.c_str(), "sys") != 0)
     {
-      BaseString dummy1, dummy2, indexname;
-      dissect_index_name(tablename, dummy1, dummy2, indexname);
+      restoreLogger.log_error("Error: Expected index %s to belong to database sys.",
+                              index_qualified_name);
+      return false;
+    }
+    if(strcmp(index_schema_name.c_str(), "def") != 0)
+    {
+      restoreLogger.log_error("Error: Expected index %s to belong to schema def.",
+                              index_qualified_name);
+      return false;
+    }
+    if(strcmp(table_schema_name.c_str(), "def") != 0)
+    {
+      restoreLogger.log_error("Error: Expected table %s to belong to schema def.",
+                              table_qualified_name);
+      return false;
+    }
+    check_rewrite_database(table_db_name);
+    m_ndb->setDatabaseName(table_db_name.c_str());
+    m_ndb->setSchemaName(table_schema_name.c_str());
+    NdbDictionary::Dictionary* dict = m_ndb->getDictionary();
+    const NdbDictionary::Index* indexTab = dict->getIndex(index_name.c_str(), table_name.c_str());
+    bool index_exists_in_db = indexTab != 0;
+    // End of finding out whether index exists in database
+
+    // If we are restoring data into a database where a unique index exists, we
+    // might have a problem. We have already checked that we are restoring data.
+    if(index_exists_in_db)
+    {
       if(ga_allow_unique_indexes)
       {
-        restoreLogger.log_error( "WARNING: Table %s contains unique index %s."
-             "This can cause ndb_restore failures with duplicate key errors "
-             "while restoring data. To avoid duplicate key errors, use "
-             "--disable-indexes before restoring data and --rebuild-indexes "
-             "after data is restored.",
-             tmptab.m_primaryTable.c_str(), indexname.c_str());
+        restoreLogger.log_error( "WARNING: Table %s.%s contains unique index "
+            "%s. This can cause ndb_restore to fail with duplicate key errors "
+            "while restoring data. To avoid duplicate key errors, use "
+            "--disable-indexes before or when restoring data and "
+            "--rebuild-indexes after or when restoring data. Will continue due "
+            "to --allow-unique-indexes being set.",
+            table_db_name.c_str(), table_name.c_str(), index_name.c_str());
       }
       else
       {
-        restoreLogger.log_error( "ERROR: Refusing to restore because table %s "
-             "contains unique index %s. Use --disable-indexes before "
-             "restoring data and --rebuild-indexes after data is restored. "
-             "Optionally, and with risk of causing duplicate key errors while "
-             "restoring, you can use --allow-unique-indexes instead.",
-             tmptab.m_primaryTable.c_str(), indexname.c_str());
+        restoreLogger.log_error( "ERROR: Refusing to restore because table "
+            "%s.%s contains unique index %s. Use --disable-indexes before or "
+            "when restoring data and --rebuild-indexes after or when restoring "
+            "data. Optionally, and with risk of causing duplicate key errors "
+            "while restoring, you can use --allow-unique-indexes instead.",
+            table_db_name.c_str(), table_name.c_str(), index_name.c_str());
         return false;
       }
     }
