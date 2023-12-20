@@ -2469,7 +2469,9 @@ int do_restore(RestoreThreadData *thrdata)
           {
             if (!g_consumers[j]->table_compatible_check(tableS))
             {
-              restoreLogger.log_error("Restore: Failed to restore data, %s table structure incompatible with backup's ... Exiting ", tableS.getTableName());
+              // table_compatible_check has already called restoreLogger.log_error with a more detailed error.
+              restoreLogger.log_error("Restore: Failure or refusal when checking table %s (see above for details) ... Exiting", tableS.getTableName());
+
               return NdbToolsProgramExitCode::FAILED;
             } 
             if (tableS.m_staging &&
