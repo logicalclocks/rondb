@@ -7818,8 +7818,7 @@ run_job_buffers(thr_data *selfptr,
 
       if (signal_count - signal_count_since_last_zero_time_queue >
           (MAX_SIGNALS_EXECUTED_BEFORE_ZERO_TIME_QUEUE_SCAN -
-           MAX_SIGNALS_PER_JB) &&
-           selfptr->m_is_recv_thread == false)
+           MAX_SIGNALS_PER_JB))
       {
         /**
          * Each execution of execute_signals can at most execute 75 signals
