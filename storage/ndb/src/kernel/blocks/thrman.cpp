@@ -2546,8 +2546,8 @@ Thrman::update_query_distribution(Signal *signal)
   /* Combined LDM+Query threads treated as Query threads */
   Int32 diff_ldm_tc = average_cpu_load_ldm - average_cpu_load_tc;
   Int32 diff_ldm_recv = average_cpu_load_ldm - average_cpu_load_recv;
-  Int32 min_tc_diff = 0;
-  Int32 min_recv_diff = 10;
+  Int32 min_tc_diff = getTcDecrease();
+  Int32 min_recv_diff = getRecvDecrease();
 
   for (Int32 i = 0; i < num_distr_threads; i++)
   {

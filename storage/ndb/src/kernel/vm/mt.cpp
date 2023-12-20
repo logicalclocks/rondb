@@ -159,6 +159,10 @@ static constexpr Uint32 MIN_SEND_WAIT_DELAY = 8;
 static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 g_first_receiver_thread_no = 0;
+
+static Int32 g_tc_decrease = 0;
+static Int32 g_recv_decrease = 10;
+
 static Uint32 g_max_signals_per_run_receive = MAX_SIGNALS_PER_JB_RECEIVE;
 static Uint32 g_extend_send_delay = MIN_SEND_WAIT_DELAY;
 static Uint32 g_max_num_extended_delay = MAX_EXTEND_DELAY;
@@ -9423,6 +9427,45 @@ mt_endChangeNeighbourNode()
   {
     g_send_threads->endChangeNeighbourNode();
   }
+}
+
+Int32
+mt_getTcDecrease()
+{
+  return g_tc_decrease;
+}
+
+Int32 mt_getRecvDecrease()
+{
+  return g_recv_decrease;
+}
+
+void
+mt_setTcQueryThreadDistance(Int32 query_thread_tc)
+{
+  if (query_thread_tc < 0)
+  {
+    query_thread_tc = -query_thread_tc;
+  }
+  if (query_thread_tc > 80)
+  {
+    query_thread_tc = 80;
+  }
+  g_tc_decrease = query_thread_tc;
+}
+
+void
+mt_setRecvQueryThreadDistance(Int32 query_thread_recv)
+{
+  if (query_thread_recv < 0)
+  {
+    query_thread_recv = -query_thread_recv;
+  }
+  if (query_thread_recv > 80)
+  {
+    query_thread_recv = 80;
+  }
+  g_recv_decrease = query_thread_recv;
 }
 
 void

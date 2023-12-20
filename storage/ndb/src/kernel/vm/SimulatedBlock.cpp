@@ -750,6 +750,42 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 #endif
 }
 
+Int32
+SimulatedBlock::getTcDecrease()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getTcDecrease();
+#else
+  return 0;
+#endif
+}
+
+Int32
+SimulatedBlock::getRecvDecrease()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getRecvDecrease();
+#else
+  return 0;
+#endif
+}
+
+void
+SimulatedBlock::setTcQueryThreadDistance(Int32 query_thread_tc)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setTcQueryThreadDistance(query_thread_tc);
+#endif
+}
+
+void
+SimulatedBlock::setRecvQueryThreadDistance(Int32 query_thread_recv)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setRecvQueryThreadDistance(query_thread_recv);
+#endif
+}
+
 void
 SimulatedBlock::setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive)
 {

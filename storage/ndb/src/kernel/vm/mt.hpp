@@ -100,6 +100,12 @@ void mt_startChangeNeighbourNode();
 void mt_setNeighbourNode(NodeId node);
 void mt_endChangeNeighbourNode();
 void mt_setWakeupThread(Uint32 self, Uint32 wakeup_instance);
+
+Int32 mt_getTcDecrease();
+Int32 mt_getRecvDecrease();
+void mt_setTcQueryThreadDistance(Int32);
+void mt_setRecvQueryThreadDistance(Int32);
+
 void mt_setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive);
 void mt_setConfMaxSignalsBeforeFlushOther(Uint32);
 void mt_setConfMaxSignalsBeforeFlushTc(Uint32);

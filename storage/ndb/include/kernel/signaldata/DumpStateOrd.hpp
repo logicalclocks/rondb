@@ -107,6 +107,8 @@ public:
     CmvmiSetMaxSignalsBeforeFlushTc = 103015,
     CmvmiSetMaxSignalsBeforeFlushReceiver = 103016,
     CmvmiSetMaxSignalsPerJBBReceive = 103017,
+    CmvmiSetTcQueryThreadDistance = 103018,
+    CmvmiSetRecvQueryThreadDistance = 103019,
 
     _CMVMIMax = 103099,
 
