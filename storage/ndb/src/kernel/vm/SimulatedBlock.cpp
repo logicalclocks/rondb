@@ -751,6 +751,14 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 }
 
 void
+SimulatedBlock::setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsPerJBBReceive(max_signals_per_jbb_receive);
+#endif
+}
+
+void
 SimulatedBlock::setConfMaxSignalsBeforeWakeupOther(Uint32 max_signals_before_wakeup_other)
 {
 #ifdef NDBD_MULTITHREADED

@@ -751,6 +751,7 @@ protected:
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
   void setOverloadStatus(OverloadStatus new_status);
+  void setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive);
   void setConfMaxSignalsBeforeWakeupOther(Uint32);
   void setConfMaxSignalsBeforeWakeupTc(Uint32);
   void setConfMaxSignalsBeforeWakeupReceiver(Uint32);

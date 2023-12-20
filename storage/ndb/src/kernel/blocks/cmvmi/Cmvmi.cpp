@@ -1857,6 +1857,17 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
           Uint32 val = signal->theData[1];
           setConfMaxSignalsBeforeFlushReceiver(val);
         }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsPerJBBReceive)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsPerJBBReceive(val);
+        }
       }
     }
     else if (check_block(THRMAN, val))

@@ -106,6 +106,7 @@ public:
     CmvmiSetMaxSignalsBeforeFlushOther = 103014,
     CmvmiSetMaxSignalsBeforeFlushTc = 103015,
     CmvmiSetMaxSignalsBeforeFlushReceiver = 103016,
+    CmvmiSetMaxSignalsPerJBBReceive = 103017,
 
     _CMVMIMax = 103099,
 
