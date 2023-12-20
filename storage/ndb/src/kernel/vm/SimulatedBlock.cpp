@@ -751,6 +751,54 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 }
 
 void
+SimulatedBlock::setConfMaxSignalsBeforeWakeupOther(Uint32 max_signals_before_wakeup_other)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeWakeupOther(max_signals_before_wakeup_other);
+#endif
+}
+
+void
+SimulatedBlock::setConfMaxSignalsBeforeWakeupTc(Uint32 max_signals_before_wakeup_tc)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeWakeupTc(max_signals_before_wakeup_tc);
+#endif
+}
+
+void
+SimulatedBlock::setConfMaxSignalsBeforeWakeupReceiver(Uint32 max_signals_before_wakeup_receiver)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeWakeupReceiver(max_signals_before_wakeup_receiver);
+#endif
+}
+
+void
+SimulatedBlock::setConfMaxSignalsBeforeFlushOther(Uint32 max_signals_before_flush_other)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeFlushOther(max_signals_before_flush_other);
+#endif
+}
+
+void
+SimulatedBlock::setConfMaxSignalsBeforeFlushTc(Uint32 max_signals_before_flush_tc)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeFlushTc(max_signals_before_flush_tc);
+#endif
+}
+
+void
+SimulatedBlock::setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setConfMaxSignalsBeforeFlushReceiver(max_signals_before_flush_receiver);
+#endif
+}
+
+void
 SimulatedBlock::setMinSendDelay(Uint32 min_send_delay)
 {
 #ifdef NDBD_MULTITHREADED

@@ -141,10 +141,13 @@ static constexpr Uint32 MAX_SIGNALS_PER_JB = 75;
 /**
  * Max signals written to other thread before calling wakeup_pending_signals
  */
-static constexpr Uint32 MAX_SIGNALS_BEFORE_WAKEUP = 128;
+static constexpr Uint32 MAX_SIGNALS_BEFORE_WAKEUP_OTHER = 128;
+static constexpr Uint32 MAX_SIGNALS_BEFORE_WAKEUP_TC = 128;
+static constexpr Uint32 MAX_SIGNALS_BEFORE_WAKEUP_RECEIVER = 128;
 
 /* Max signals written to other thread before calling flush_local_signals */
 static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_RECEIVER = 2;
+static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_TC = 5;
 static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_OTHER = 20;
 
 static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
@@ -1169,14 +1172,14 @@ struct alignas(NDB_CL) thr_job_queue
 
   /**
    * Number of signals inserted by all producers into this 'queue' since
-   * last wakeup() of the consumer. When MAX_SIGNALS_BEFORE_WAKEUP
+   * last wakeup() of the consumer. When m_max_signals_before_wakeup
    * limit is reached, the current thread do the wakeup, also on behalf
    * of the other threads sending on the same 'queue'. After such a
    * 'wakeup', the m_pending_signals count is cleared.
    *
    * In addition each thread keep track of which nodes it has sent to.
    * Before it can 'yield', it has to wakeup all such threads potentially
-   * having pending signals, even if MAX_SIGNALS_BEFORE_WAKEUP had
+   * having pending signals, even if m_max_signals_before_wakeup had
    * not been reached yet. (thr_data::m_wake_threads_mask)
    */
   unsigned m_pending_signals;
@@ -1288,6 +1291,19 @@ is_tc_thread(unsigned thr_no)
   if (globalData.ndbMtTcThreads == 0)
   {
     num_tc_threads = globalData.ndbMtReceiveThreads;
+  }
+  unsigned tc_base = globalData.ndbMtLqhThreads;
+  return thr_no >= tc_base &&
+         thr_no <  tc_base + num_tc_threads;
+}
+
+static bool
+is_tc_only_thread(unsigned thr_no)
+{
+  Uint32 num_tc_threads = globalData.ndbMtTcThreads;
+  if (globalData.ndbMtTcThreads == 0)
+  {
+    return false;
   }
   unsigned tc_base = globalData.ndbMtLqhThreads;
   return thr_no >= tc_base &&
@@ -1536,17 +1552,20 @@ struct alignas(NDB_CL) thr_data
   unsigned m_is_recv_thread;
 
   /**
+   * Max signals sent to other threads before we flush
+   */
+  unsigned m_max_signals_before_flush;
+
+  /**
+   * Max signals sent to other thread before we wake it up
+   */
+  unsigned m_max_signals_before_wakeup;
+
+  /**
    * A pointer to the TransporterReceiveHandle for the receive threads.
    * A nullptr for all other threads.
    */
   TransporterReceiveHandle *m_recvdata;
-
-  /**
-   * JBB resume point: We might return from run_job_buffers without executing
-   * signals from all the JBB buffers.
-   * This variable keeps track of where to resume execution from in next 'run'.
-   */
-  unsigned m_next_jbb_no;
 
   /**
    * Spin time of thread after completing all its work (in microseconds).
@@ -1579,9 +1598,16 @@ struct alignas(NDB_CL) thr_data
   unsigned m_thr_index;
 
   /**
+   * JBB resume point: We might return from run_job_buffers without executing
+   * signals from all the JBB buffers.
+   * This variable keeps track of where to resume execution from in next 'run'.
+   */
+  alignas(NDB_CL) unsigned m_next_jbb_no;
+
+  /**
    * max signals to execute per JBB buffer
    */
-  alignas(NDB_CL) unsigned m_max_signals_per_jb;
+  unsigned m_max_signals_per_jb;
 
   /**
    * Extra JBB signal execute quota allowed to be used to
@@ -8553,6 +8579,8 @@ mt_receiver_thread_main(void *thr_arg)
 
   init_thread(selfptr);
   selfptr->m_is_recv_thread = true;
+  selfptr->m_max_signals_before_flush = MAX_SIGNALS_BEFORE_FLUSH_RECEIVER;
+  selfptr->m_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP_RECEIVER;
   signal = aligned_signal(signal_buf, thr_no);
   update_rt_config(selfptr, real_time, ReceiveThread);
   update_spin_config(selfptr, min_spin_timer_us);
@@ -8970,6 +8998,17 @@ mt_job_thread_main(void *thr_arg)
   unsigned thr_no = selfptr->m_thr_no;
   signal = aligned_signal(signal_buf, thr_no);
 
+  if (is_tc_only_thread(thr_no))
+  {
+    selfptr->m_max_signals_before_flush = MAX_SIGNALS_BEFORE_FLUSH_TC;
+    selfptr->m_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP_TC;
+  }
+  else
+  {
+    selfptr->m_max_signals_before_flush = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+    selfptr->m_max_signals_before_wakeup = MAX_SIGNALS_BEFORE_WAKEUP_OTHER;
+  }
+
   /* Avoid false watchdog alarms caused by race condition. */
   watchDogCounter = 21;
 
@@ -9373,6 +9412,114 @@ mt_endChangeNeighbourNode()
 }
 
 void
+mt_setConfMaxSignalsBeforeWakeupOther(Uint32 max_signals_before_wakeup_other)
+{
+  if (max_signals_before_wakeup_other > MAX_SIGNALS_BEFORE_WAKEUP_OTHER)
+  {
+    max_signals_before_wakeup_other = MAX_SIGNALS_BEFORE_WAKEUP_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (!(is_tc_only_thread(thr_no) || is_recv_thread(thr_no)))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_wakeup = max_signals_before_wakeup_other;
+    }
+  }
+}
+ 
+void
+mt_setConfMaxSignalsBeforeWakeupTc(Uint32 max_signals_before_wakeup_tc)
+{
+  if (max_signals_before_wakeup_tc > MAX_SIGNALS_BEFORE_WAKEUP_OTHER)
+  {
+    max_signals_before_wakeup_tc = MAX_SIGNALS_BEFORE_WAKEUP_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (is_tc_only_thread(thr_no))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_wakeup = max_signals_before_wakeup_tc;
+    }
+  }
+}
+ 
+void
+mt_setConfMaxSignalsBeforeWakeupReceiver(Uint32 max_signals_before_wakeup_receiver)
+{
+  if (max_signals_before_wakeup_receiver > MAX_SIGNALS_BEFORE_WAKEUP_OTHER)
+  {
+    max_signals_before_wakeup_receiver = MAX_SIGNALS_BEFORE_WAKEUP_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (is_recv_thread(thr_no))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_wakeup = max_signals_before_wakeup_receiver;
+    }
+  }
+}
+ 
+void
+mt_setConfMaxSignalsBeforeFlushOther(Uint32 max_signals_before_flush_other)
+{
+  if (max_signals_before_flush_other > MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+  {
+    max_signals_before_flush_other = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (!(is_tc_only_thread(thr_no) || is_recv_thread(thr_no)))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_flush = max_signals_before_flush_other;
+    }
+  }
+}
+ 
+void
+mt_setConfMaxSignalsBeforeFlushTc(Uint32 max_signals_before_flush_tc)
+{
+  if (max_signals_before_flush_tc > MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+  {
+    max_signals_before_flush_tc = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (is_tc_only_thread(thr_no))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_flush = max_signals_before_flush_tc;
+    }
+  }
+}
+ 
+void
+mt_setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver)
+{
+  if (max_signals_before_flush_receiver > MAX_SIGNALS_BEFORE_FLUSH_OTHER)
+  {
+    max_signals_before_flush_receiver = MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  }
+  struct thr_repository* rep = g_thr_repository;
+  for (Uint32 thr_no = 0; thr_no < globalData.ndbMtQueryWorkers; thr_no++)
+  {
+    if (is_recv_thread(thr_no))
+    {
+      struct thr_data *selfptr = &rep->m_thread[thr_no];
+      selfptr->m_max_signals_before_flush = max_signals_before_flush_receiver;
+    }
+  }
+}
+
+void
 mt_setMinSendDelay(Uint32 min_send_delay)
 {
   g_min_send_delay = min_send_delay;
@@ -9766,7 +9913,7 @@ flush_local_signals(struct thr_data *selfptr,
   if (dst != self)
   {
     q->m_pending_signals += num_signals;
-    if (q->m_pending_signals >= MAX_SIGNALS_BEFORE_WAKEUP)
+    if (q->m_pending_signals >= selfptr->m_max_signals_before_wakeup)
     {
       // This thread will wakeup 'dst' now, restart counting of 'pending'
       q->m_pending_signals = 0;

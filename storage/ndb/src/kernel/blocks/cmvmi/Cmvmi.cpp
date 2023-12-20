@@ -1791,6 +1791,72 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
           }
           setMaxSendDelay(val);
         }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeWakeupOther)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeWakeupOther(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeWakeupTc)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeWakeupTc(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeWakeupReceiver)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeWakeupReceiver(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushOther)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushOther(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushTc)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushTc(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushReceiver)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushReceiver(val);
+        }
       }
     }
     else if (check_block(THRMAN, val))

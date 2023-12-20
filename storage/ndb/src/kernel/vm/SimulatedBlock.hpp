@@ -751,6 +751,12 @@ protected:
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
   void setOverloadStatus(OverloadStatus new_status);
+  void setConfMaxSignalsBeforeWakeupOther(Uint32);
+  void setConfMaxSignalsBeforeWakeupTc(Uint32);
+  void setConfMaxSignalsBeforeWakeupReceiver(Uint32);
+  void setConfMaxSignalsBeforeFlushOther(Uint32);
+  void setConfMaxSignalsBeforeFlushTc(Uint32);
+  void setConfMaxSignalsBeforeFlushReceiver(Uint32);
   void setMaxNumExtendedDelay(Uint32);
   void setExtendDelay(Uint32);
   void setMaxSendDelay(Uint32 max_send_delay);

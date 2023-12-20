@@ -100,6 +100,12 @@ public:
     CmvmiSetMaxSendBufferSizeDelay = 103008, /* Deprecated */
     CmvmiSetMaxNumExtendedDelay = 103009,
     CmvmiSetExtendDelay = 103010,
+    CmvmiSetMaxSignalsBeforeWakeupOther = 103011,
+    CmvmiSetMaxSignalsBeforeWakeupTc = 103012,
+    CmvmiSetMaxSignalsBeforeWakeupReceiver = 103013,
+    CmvmiSetMaxSignalsBeforeFlushOther = 103014,
+    CmvmiSetMaxSignalsBeforeFlushTc = 103015,
+    CmvmiSetMaxSignalsBeforeFlushReceiver = 103016,
 
     _CMVMIMax = 103099,
 
