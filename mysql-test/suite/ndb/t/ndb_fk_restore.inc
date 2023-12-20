@@ -51,8 +51,8 @@ if (!$disable_indexes2) {
 -- exec $NDB_RESTORE --verbose=255 -b $the_backup_id -n 1 -m --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
 
 -- echo # restore data
--- exec $NDB_RESTORE --verbose=255 -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
--- exec $NDB_RESTORE --verbose=255 -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+-- exec $NDB_RESTORE --verbose=255 -b $the_backup_id -n 1 -r --allow-unique-indexes $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+-- exec $NDB_RESTORE --verbose=255 -b $the_backup_id -n 2 -r --allow-unique-indexes $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
 
 }
 

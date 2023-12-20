@@ -3,8 +3,8 @@
 let $NDB_SAVED_BACKUPS=$MYSQL_TEST_DIR/suite/ndb/backups;
 
 # snapshotend with redo log from little endian system
---exec $NDB_RESTORE -b 1 -n 1 -m $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-1 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b 1 -n 1 -p 1 -r $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-1 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 1 -n 1 -m -D $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-1 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 1 -n 1 -p 1 -r -R $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-1 >> $NDB_TOOLS_OUTPUT
 
 select * from t0 order by id;
 select * from t1 order by val;
@@ -25,8 +25,8 @@ drop tables t0,t1,t2,t3,t4,t5,t6,t7,t8,t9;
 flush tables;
 
 # snapshotstart with undo log from little endian system
---exec $NDB_RESTORE -b 2 -n 1 -m $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-2 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b 2 -n 1 -p 1 -r $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 2 -n 1 -m -D $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 2 -n 1 -p 1 -r -R $NDB_SAVED_BACKUPS/encrypted_le/BACKUP-2 >> $NDB_TOOLS_OUTPUT
 
 select * from t0 order by id;
 select * from t1 order by val;
@@ -43,8 +43,8 @@ drop tables t0,t1,t2,t3,t4,t5,t6,t7,t8,t9;
 flush tables;
 
 # snapshotend with redo log from big endian system
---exec $NDB_RESTORE -b 1 -n 1 -m $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-1 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b 1 -n 1 -p 1 -r $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-1 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 1 -n 1 -m -D $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-1 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 1 -n 1 -p 1 -r -R $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-1 >> $NDB_TOOLS_OUTPUT
 
 select * from t0 order by id;
 select * from t1 order by val;
@@ -65,8 +65,8 @@ drop tables t0,t1,t2,t3,t4,t5,t6,t7,t8,t9;
 flush tables;
 
 # snapshotstart with undo log from big endian system
---exec $NDB_RESTORE -b 2 -n 1 -m $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-2 >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b 2 -n 1 -p 1 -r $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 2 -n 1 -m -D $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b 2 -n 1 -p 1 -r -R $NDB_SAVED_BACKUPS/encrypted_be/BACKUP-2 >> $NDB_TOOLS_OUTPUT
 
 select * from t0 order by id;
 select * from t1 order by val;
