@@ -215,7 +215,7 @@ drop table test.t1;
 
 --let $dump_file= $MYSQLTEST_VARDIR/tmp/restore_out.txt
 
---echo Test ndb_restore of backup containing unique index, should warn only for data restore
+--echo Test ndb_restore of backup containing unique index, should warn only for data restore into a database with existing indexes
 
 --echo # print metadata+data+log : should not warn
 --exec $NDB_RESTORE -b $the_backup_id -n 1 --print $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
@@ -227,10 +227,6 @@ drop table test.t1;
 
 --echo # metadata restore : should not warn
 --exec $NDB_RESTORE -b $the_backup_id -n 1 -m $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
---source suite/ndb/include/ndb_restore_check_warn.inc
-
---echo # disable-indexes : should not warn
---exec $NDB_RESTORE -b $the_backup_id -n 1 --disable-indexes $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
 --source suite/ndb/include/ndb_restore_check_warn.inc
 
 --echo # print data : should not warn
@@ -250,6 +246,14 @@ drop table test.t1;
 --source suite/ndb/include/ndb_restore_check_warn.inc
 
 --echo # restore data : should warn since unique indexes to be restored
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --allow-unique-indexes $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
+--source suite/ndb/include/ndb_restore_check_warn.inc
+
+--echo # disable-indexes : should not warn
+--exec $NDB_RESTORE -b $the_backup_id -n 1 --disable-indexes $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
+--source suite/ndb/include/ndb_restore_check_warn.inc
+
+--echo # restore data : should not warn since the unique indexes to be restored have been disabled
 --exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
 --source suite/ndb/include/ndb_restore_check_warn.inc
 
@@ -259,6 +263,10 @@ drop table test.t1;
 
 --echo # rebuild-indexes : should not warn
 --exec $NDB_RESTORE -b $the_backup_id -n 1 --rebuild-indexes $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
+--source suite/ndb/include/ndb_restore_check_warn.inc
+
+--echo # restore data : should warn since unique indexes to be restored have been rebuilt
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --allow-unique-indexes $NDB_BACKUPS-$the_backup_id > $dump_file 2>&1
 --source suite/ndb/include/ndb_restore_check_warn.inc
 
 --remove_file $dump_file
