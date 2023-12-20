@@ -2406,6 +2406,8 @@ BackupRestore::check_blobs(TableS & tableS)
   return true;
 }
 
+// BackupRestore::table_compatible_check will always call
+// restoreLogger.log_error before returning false.
 bool
 BackupRestore::table_compatible_check(TableS & tableS)
 {
