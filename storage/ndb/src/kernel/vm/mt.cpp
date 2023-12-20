@@ -3801,13 +3801,14 @@ check_yield(thr_data *selfptr,
   assert(min_spin_timer_us > 0);
   do
   {
-    for (Uint32 i = 0; i < 50; i++)
+    for (Uint32 i = 0; i < 30; i++)
     {
       /**
        * During around 50 us we only check for JBA and JBB
        * queues to not be empty. This happens when another thread or
        * the receive thread sends a signal to the thread.
        */
+      NdbSpin();
       NdbSpin();
       NdbSpin();
       if (!check_queues_empty(selfptr))
@@ -3908,13 +3909,14 @@ check_recv_yield(thr_data *selfptr,
   assert(min_spin_timer_us > 0);
   do
   {
-    for (Uint32 i = 0; i < 60; i++)
+    for (Uint32 i = 0; i < 40; i++)
     {
       /**
        * During around 50 us we only check for JBA and JBB
        * queues to not be empty. This happens when another thread or
        * the receive thread sends a signal to the thread.
        */
+      NdbSpin();
       NdbSpin();
       NdbSpin();
       if ((!check_queues_empty(selfptr)) ||
