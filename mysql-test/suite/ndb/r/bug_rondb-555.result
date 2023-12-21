@@ -1,0 +1,86 @@
+Create table t1 with a unique index, and table t2 without.
+use test;
+create table t1 (
+id int primary key,
+val1 int unique) engine=ndb;
+create table t2 (
+id int primary key,
+val1 int) engine=ndb;
+insert into t1 values
+(1, 6),
+(3, 4),
+(2, 5);
+insert into t2 values
+(8, 11),
+(7, 12),
+(9, 10);
+Original database
+show create table t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `val1` int DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `val1` (`val1`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+select * from t1 order by id;
+id	val1
+1	6
+2	5
+3	4
+show create table t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `id` int NOT NULL,
+  `val1` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+select * from t2 order by id;
+id	val1
+7	12
+8	11
+9	10
+Backing up data
+Single-invocation per node
+- Restored database matches original
+Single-invocation per node, unique index present during restore
+- Restored database matches original
+Single-invocation per node, with -D or --disable-indexes at different positions on the cmd line
+- Restored database matches original
+- Restored database matches original
+Single-invocation per node, with -R at different positions on the cmd line
+- Restored database matches original
+- Restored database matches original
+We cannot show a table definition while an index is disabled
+show create table t1;
+ERROR HY000: Got error 4243 'Index not found' from NDBCLUSTER
+- Restored database matches original
+Even without unique indexes, disabling indexes affects index PRIMARY. We also cannot rebuild an index that isn't restored (only table t2)
+show create table t2;
+ERROR HY000: Got error 4243 'Index not found' from NDBCLUSTER
+- Table t2 matches original
+Fail restore when not handling unique index
+Restore data without indexes (only table t2)
+- Table t2 matches original
+Metadata restore, disable indexes, and rebuild indexes in separate invocations
+- Restored database matches original
+Disable indexes during metadata restore
+- Restored database matches original
+Disable indexes only during first data restore
+- Restored database matches original
+Disable indexes during all data restores
+- Restored database matches original
+Disable indexes during metadata restore and first data restores
+- Restored database matches original
+Disable indexes during metadata and data restores
+- Restored database matches original
+Rebuild indexes during last data restore
+- Restored database matches original
+Fail on trying to rebuild indexes twice, but succeed if disabling indexes in between
+- Restored database matches original
+Restore one table at a time
+- Restored database matches original
+All metadata first, then data for one table at a time
+- Restored database matches original
+Restore data twice
+- Restored database matches original

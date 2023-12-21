@@ -1,0 +1,216 @@
+-- source include/have_ndb.inc
+-- source suite/ndb/include/backup_restore_setup.inc
+
+--echo Create table t1 with a unique index, and table t2 without.
+use test;
+
+create table t1 (
+  id int primary key,
+  val1 int unique) engine=ndb;
+
+create table t2 (
+  id int primary key,
+  val1 int) engine=ndb;
+
+insert into t1 values
+        (1, 6),
+        (3, 4),
+        (2, 5);
+
+insert into t2 values
+        (8, 11),
+        (7, 12),
+        (9, 10);
+
+# Save table definitions and data to temporary text files, to be used for comparisons
+--let $t1m= $MYSQL_TMP_DIR/t1m.sql
+--output $t1m
+show create table t1;
+--let $t1d= $MYSQL_TMP_DIR/t1d.txt
+--output $t1d
+select * from t1 order by id;
+--let $t2m= $MYSQL_TMP_DIR/t2m.sql
+--output $t2m
+show create table t2;
+--let $t2d= $MYSQL_TMP_DIR/t2d.txt
+--output $t2d
+select * from t2 order by id;
+
+# Temporary files to compare to
+--let $t1m_compare= $MYSQL_TMP_DIR/t1m_compare.sql
+--let $t1d_compare= $MYSQL_TMP_DIR/t1d_compare.txt
+--let $t2m_compare= $MYSQL_TMP_DIR/t2m_compare.sql
+--let $t2d_compare= $MYSQL_TMP_DIR/t2d_compare.txt
+
+--echo Original database
+--cat_file $t1m
+--cat_file $t1d
+--cat_file $t2m
+--cat_file $t2d
+
+--echo Backing up data
+--source include/ndb_backup.inc
+disable_query_log; drop table t1; drop table t2; enable_query_log;
+
+--let $restore= $NDB_RESTORE -b $the_backup_id
+--let $backup= $NDB_BACKUPS-$the_backup_id
+--let $trash= $NDB_TOOLS_OUTPUT
+--let $t2_only= 0
+
+# Test cases
+
+--echo Single-invocation per node
+--exec $restore -n 1 -m -D -r    $backup >> $trash
+--exec $restore -n 2       -r -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Single-invocation per node, unique index present during restore
+--exec $restore -n 1 -m    -r    --allow-unique-indexes $backup >> $trash
+--exec $restore -n 2       -r    --allow-unique-indexes $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Single-invocation per node, with -D or --disable-indexes at different positions on the cmd line
+--exec $restore -D                -n 1 -m    -r    $backup >> $trash
+--exec $restore --disable-indexes -n 2       -r -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+--exec $restore -n 1 -m    -r    -D                $backup >> $trash
+--exec $restore -n 2       -r -R --disable-indexes $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Single-invocation per node, with -R at different positions on the cmd line
+--exec $restore    -n 1 -m -r -D $backup >> $trash
+--exec $restore -R -n 2    -r    $backup >> $trash
+--source bug_rondb-555_helper.inc
+--exec $restore -n 1 -m -D -r    $backup >> $trash
+--exec $restore -n 2       -r -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo We cannot show a table definition while an index is disabled
+--exec $restore -n 1 -m -D -r    $backup >> $trash
+--exec $restore -n 2       -r    $backup >> $trash
+--error 1296
+show create table t1;
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Even without unique indexes, disabling indexes affects index PRIMARY. We also cannot rebuild an index that isn't restored (only table t2)
+--exec $restore -n 1 -m -D -r    $backup --include-tables test.t2 >> $trash
+--exec $restore -n 2       -r    $backup --include-tables test.t2 >> $trash
+--error 1296
+show create table t2;
+--error 1
+--exec $restore -n 1          -R $backup >> $trash
+--exec $restore -n 1          -R $backup --include-tables test.t2 >> $trash
+--let $t2_only= 1
+--source bug_rondb-555_helper.inc
+
+--echo Fail restore when not handling unique index
+--error 1
+--exec $restore -n 1 -m -r $backup >> $trash
+disable_query_log; drop table t1; drop table t2; enable_query_log;
+
+--echo Restore data without indexes (only table t2)
+--exec $restore -n 1 -m    -r    $backup --include-tables test.t2 >> $trash
+--exec $restore -n 2       -r    $backup --include-tables test.t2 >> $trash
+--let $t2_only= 1
+--source bug_rondb-555_helper.inc
+
+--echo Metadata restore, disable indexes, and rebuild indexes in separate invocations
+--exec $restore -n 1 -m          $backup >> $trash
+--exec $restore -n 1    -D       $backup >> $trash
+--exec $restore -n 1       -r    $backup >> $trash
+--exec $restore -n 2       -r    $backup >> $trash
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Disable indexes during metadata restore
+--exec $restore -n 1 -m -D       $backup >> $trash
+--exec $restore -n 1       -r    $backup >> $trash
+--exec $restore -n 2       -r    $backup >> $trash
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+# This test case also tests RONDB-562. It is included here since RONDB-555 makes it a lot easier to reproduce the problem.
+--echo Disable indexes only during first data restore
+--exec $restore -n 1 -m          $backup >> $trash
+--exec $restore -n 1    -D -r    $backup >> $trash
+--exec $restore -n 2       -r    $backup >> $trash
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Disable indexes during all data restores
+--exec $restore -n 1 -m          $backup >> $trash
+--exec $restore -n 1    -D -r    $backup >> $trash
+--exec $restore -n 2    -D -r    $backup >> $trash
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Disable indexes during metadata restore and first data restores
+--exec $restore -n 1 -m -D       $backup >> $trash
+--exec $restore -n 1    -D -r    $backup >> $trash
+--exec $restore -n 2       -r    $backup >> $trash
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Disable indexes during metadata and data restores
+--exec $restore -n 1 -m -D       $backup >> $trash
+--exec $restore -n 1    -D -r    $backup >> $trash
+--exec $restore -n 2    -D -r    $backup >> $trash
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Rebuild indexes during last data restore
+--exec $restore -n 1 -m -D       $backup >> $trash
+--exec $restore -n 1       -r    $backup >> $trash
+--exec $restore -n 2       -r -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Fail on trying to rebuild indexes twice, but succeed if disabling indexes in between
+--exec $restore -n 1 -m -D       $backup >> $trash
+--exec $restore -n 1       -r -R $backup >> $trash
+--error 1
+--exec $restore -n 2       -r -R $backup >> $trash
+--exec $restore -n 2    -D -r -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Restore one table at a time
+# Make sure we can handle finding the unique index on t1 present in both backup
+# and database, while restoring t2 without index handling.
+--exec $restore -n 1 -m -D -r    --include-tables test.t1 $backup >> $trash
+--exec $restore -n 2       -r -R --include-tables test.t1 $backup >> $trash
+--exec $restore -n 1 -m    -r    --include-tables test.t2 $backup >> $trash
+--exec $restore -n 2       -r    --include-tables test.t2 $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo All metadata first, then data for one table at a time
+--exec $restore -n 1 -m          $backup >> $trash
+--error 1
+--exec $restore -n 1       -r    --include-tables test.t1 $backup >> $trash
+--exec $restore -n 1    -D -r    --include-tables test.t1 $backup >> $trash
+--exec $restore -n 2       -r -R --include-tables test.t1 $backup >> $trash
+--error 1
+--exec $restore -n 1       -r    --include-tables test.t1 $backup >> $trash
+--exec $restore -n 1       -r    --include-tables test.t2 $backup >> $trash
+--exec $restore -n 2       -r    --include-tables test.t2 $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+--echo Restore data twice
+--exec $restore -n 1 -m -D -r    $backup >> $trash
+--exec $restore -n 2       -r    $backup >> $trash
+--exec $restore -n 1       -r    $backup >> $trash
+--exec $restore -n 2       -r    $backup >> $trash
+--exec $restore -n 1          -R $backup >> $trash
+--source bug_rondb-555_helper.inc
+
+# Cleanup
+
+--remove_file $t1m
+--remove_file $t1d
+--remove_file $t2m
+--remove_file $t2d
+--remove_file $t1m_compare
+--remove_file $t1d_compare
+--remove_file $t2m_compare
+--remove_file $t2d_compare
+--remove_file $trash
+--source suite/ndb/include/backup_restore_cleanup.inc
