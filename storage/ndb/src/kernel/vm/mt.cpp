@@ -2409,6 +2409,7 @@ public:
    */
   bool assist_send_thread(Uint32 max_num_trps,
                           Uint32 thr_no,
+                          bool high_load,
                           NDB_TICKS now,
                           Uint32 &watchdog_counter,
                struct thr_send_thread_instance *send_instance,
@@ -3985,6 +3986,7 @@ check_recv_yield(thr_data *selfptr,
 bool
 thr_send_threads::assist_send_thread(Uint32 max_num_trps,
                                      Uint32 thr_no,
+                                     bool high_load,
                                      NDB_TICKS now,
                                      Uint32 &watchdog_counter,
                    struct thr_send_thread_instance *send_instance,
@@ -4002,24 +4004,27 @@ thr_send_threads::assist_send_thread(Uint32 max_num_trps,
     NdbMutex_Unlock(send_instance->send_thread_mutex);
     return false;
   }
-  else if (!send_instance->m_awake)
+  else if (high_load)
   {
-    /**
-     * The send thread is not awake, so obviously not overloaded,
-     * we can continue our work, no need to assist.
-     */
-    wakeup(&(send_instance->m_waiter_struct));
-    NdbMutex_Unlock(send_instance->send_thread_mutex);
-    return false;
-  }
-  else if (send_instance->m_num_trps_ready <= 2)
-  {
-    /**
-     * The send thread is awake and has only 1-2 transporters to
-     * attend to, no need to assist the send thread in this case.
-     */
-    NdbMutex_Unlock(send_instance->send_thread_mutex);
-    return false;
+    if (!send_instance->m_awake)
+    {
+      /**
+       * The send thread is not awake, so obviously not overloaded,
+       * we can continue our work, no need to assist.
+       */
+      wakeup(&(send_instance->m_waiter_struct));
+      NdbMutex_Unlock(send_instance->send_thread_mutex);
+      return false;
+    }
+    else if (send_instance->m_num_trps_ready <= 2)
+    {
+      /**
+       * The send thread is awake and has only 1-2 transporters to
+       * attend to, no need to assist the send thread in this case.
+       */
+      NdbMutex_Unlock(send_instance->send_thread_mutex);
+      return false;
+    }
   }
   while (globalData.theRestartFlag != perform_stop &&
          loop < max_num_trps &&
@@ -6567,9 +6572,11 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        * some work to do or until the send queue is empty.
        */
       Uint32 num_trps_to_send_to = 1;
+      bool high_load = (selfptr->m_overload_status >= HIGH_LOAD_CONST);
       pending_send = g_send_threads->assist_send_thread(
                                          num_trps_to_send_to,
                                          selfptr->m_thr_no,
+                                         high_load,
                                          now,
                                          selfptr->m_watchdog_counter,
                                          selfptr->m_send_instance,
@@ -6661,6 +6668,7 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
         pending_send = g_send_threads->assist_send_thread(
                                            num_trps_to_send_to,
                                            selfptr->m_thr_no,
+                                           true,
                                            now,
                                            selfptr->m_watchdog_counter,
                                            selfptr->m_send_instance,
