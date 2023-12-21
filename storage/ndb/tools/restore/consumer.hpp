@@ -193,14 +193,17 @@ public:
   Uint32 m_part_id;
   int m_result;
   bool m_restore_meta;
+  bool m_disable_indexes;
   NdbThread *m_thread;
   Vector<BackupConsumer*> m_consumers;
   RestoreThreadData(Uint32 part_id)
-                    : m_part_id(part_id), m_result(0), m_restore_meta(false),
+                    : m_part_id(part_id), m_result(0),
+                      m_restore_meta(false), m_disable_indexes(false),
                       m_thread(NULL) {}
   CyclicBarrier *m_barrier;
   RestoreThreadData(Uint32 partId, CyclicBarrier *barrier): m_part_id(partId),
-     m_result(0), m_restore_meta(false), m_thread(NULL), m_barrier(barrier) {}
+     m_result(0), m_restore_meta(false), m_disable_indexes(false),
+     m_thread(NULL), m_barrier(barrier) {}
   ~RestoreThreadData() {}
 };
 
