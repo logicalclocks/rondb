@@ -6002,15 +6002,19 @@ SimulatedBlock::print_debug_sched_stats(DistributionHandler * const handle)
   deb_count = 0;
   g_eventLogger->info("LQHKEYREQ LQH: %llu"
                       ", LQHKEYREQ QT: %llu"
+                      ", LQHKEYREQ low_load: %llu"
                       ", LQHKEYREQ RR: %llu",
     handle->m_lqhkeyreq_lqh,
     handle->m_lqhkeyreq_qt,
+    handle->m_lqhkeyreq_low_load,
     handle->m_lqhkeyreq_rr);
   g_eventLogger->info("SCAN_FRAGREQ LQH: %llu"
                       ", SCAN_FRAGREQ QT: %llu"
+                      ", SCAN_FRAGREQ low_load: %llu"
                       ", SCAN_FRAGREQ RR: %llu",
     handle->m_scan_fragreq_lqh,
     handle->m_scan_fragreq_qt,
+    handle->m_scan_fragreq_low_load,
     handle->m_scan_fragreq_rr);
   g_eventLogger->info("LQHKEYREQ QT instances %u %u %u %u %u %u %u %u"
                       " %u %u %u %u %u %u %u %u",
@@ -6034,9 +6038,11 @@ SimulatedBlock::print_debug_sched_stats(DistributionHandler * const handle)
     handle->m_scan_fragreq_qt_count[15], handle->m_scan_fragreq_qt_count[16]);
   handle->m_lqhkeyreq_lqh = 0;
   handle->m_lqhkeyreq_qt = 0;
+  handle->m_lqhkeyreq_low_load = 0;
   handle->m_lqhkeyreq_rr = 0;
   handle->m_scan_fragreq_lqh = 0;
   handle->m_scan_fragreq_qt = 0;
+  handle->m_scan_fragreq_low_load = 0;
   handle->m_scan_fragreq_rr = 0;
   for (Uint32 i = 0;
        i < MAX_NDBMT_QUERY_WORKERS;
@@ -6237,6 +6243,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
                                  getOwnNodeId());
 #ifdef DEBUG_SCHED_STATS
         handle->m_lqhkeyreq_lqh++;
+        handle->m_lqhkeyreq_low_load++;
         handle->m_lqhkeyreq_qt_count[ldm_instance_no]++;
 #endif
         return ref;
@@ -6450,8 +6457,9 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
                                  ldm_instance_no,
                                  getOwnNodeId());
 #ifdef DEBUG_SCHED_STATS
-        handle->m_lqhkeyreq_lqh++;
-        handle->m_lqhkeyreq_qt_count[ldm_instance_no]++;
+        handle->m_scan_fragreq_lqh++;
+        handle->m_scan_fragreq_low_load++;
+        handle->m_scan_fragreq_qt_count[ldm_instance_no]++;
 #endif
         return ref;
       }

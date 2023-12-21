@@ -1804,7 +1804,7 @@ public:
   bool use_ipv4_socket(Uint32 node_id);
 
 /* Needs to be defined in mt.hpp as well to work */
-//#define DEBUG_SCHED_STATS 1
+#define DEBUG_SCHED_STATS 1
 
 #define AVERAGE_SIGNAL_SIZE 16
 #define MIN_QUERY_INSTANCES_PER_RR_GROUP 4
@@ -1893,9 +1893,11 @@ public:
     struct QueryThreadState
       m_query_state[MAX_NDBMT_QUERY_WORKERS];
 #ifdef DEBUG_SCHED_STATS
+    Uint64 m_lqhkeyreq_low_load;
     Uint64 m_lqhkeyreq_lqh;
     Uint64 m_lqhkeyreq_qt;
     Uint64 m_lqhkeyreq_rr;
+    Uint64 m_scan_fragreq_low_load;
     Uint64 m_scan_fragreq_lqh;
     Uint64 m_scan_fragreq_qt;
     Uint64 m_scan_fragreq_rr;

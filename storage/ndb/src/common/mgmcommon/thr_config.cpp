@@ -682,7 +682,7 @@ THRConfig::do_parse_auto(unsigned realtime,
       require(next_cpu_id != Uint32(RNIL));
       m_threads[thread_type][inx].m_bind_no = next_cpu_id;
       m_threads[thread_type][inx].m_bind_type = T_Thread::B_CPU_BIND;
-      m_threads[thread_type][inx].m_core_bind = true;
+      m_threads[thread_type][inx].m_core_bind = false;
 
       Uint32 core_cpu_ids[MAX_NUM_CPUS];
       Uint32 num_core_cpus = 0;

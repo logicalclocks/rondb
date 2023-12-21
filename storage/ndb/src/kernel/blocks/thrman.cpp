@@ -48,11 +48,12 @@ static bool g_freeze_wakeup = 0;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SPIN 1
-//#define DEBUG_SCHED_WEIGHTS 1
 //#define HIGH_DEBUG_CPU_USAGE 1
 //#define DEBUG_CPU_USAGE 1
 //#define DEBUG_OVERLOAD_STATUS 1
 #endif
+#define DEBUG_SCHED_WEIGHTS 1
+#define DEBUG_SEND_DELAY 1 
 
 #ifdef DEBUG_OVERLOAD_STATUS
 #define DEB_OVERLOAD_STATUS(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -1250,6 +1251,14 @@ Thrman::handle_send_delay()
   {
     min_send_delay = m_high_send_delay;
   }
+#ifdef DEBUG_SEND_DELAY
+  if (m_current_send_delay != min_send_delay)
+  {
+    g_eventLogger->info("(%u) min_send_delay set to %u",
+                        instance(),
+                        min_send_delay);
+  }
+#endif
   m_current_send_delay = min_send_delay;
   setMinSendDelay(min_send_delay);
 }
