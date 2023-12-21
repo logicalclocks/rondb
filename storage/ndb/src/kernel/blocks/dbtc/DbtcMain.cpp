@@ -1547,7 +1547,7 @@ void Dbtc::execSTTOR(Signal* signal)
       DEB_RR_INIT(("(%u) RR Groups inited", instance()));
     }
     fill_distr_references(&m_distribution_handle);
-    calculate_distribution_signal(&m_distribution_handle);
+    calculate_distribution_signal(&m_distribution_handle, 1);
     if (first_instance)
     {
       print_static_distr_info(&m_distribution_handle);
@@ -26475,6 +26475,7 @@ Dbtc::execUPD_QUERY_DIST_ORD(Signal *signal)
    * distribution of the signals received in distribute_signal.
    */
   jam();
+  Uint32 low_load = signal->theData[0];
   DistributionHandler *dist_handle = &m_distribution_handle;
   ndbrequire(signal->getNoOfSections() == 1);
   SegmentedSectionPtr ptr;
@@ -26485,7 +26486,7 @@ Dbtc::execUPD_QUERY_DIST_ORD(Signal *signal)
   memset(dist_handle->m_weights, 0, sizeof(dist_handle->m_weights));
   copy(dist_handle->m_weights, ptr);
   releaseSections(handle);
-  calculate_distribution_signal(dist_handle);
+  calculate_distribution_signal(dist_handle, low_load);
 #ifdef DEBUG_SCHED_STATS
   if (instance() == 1)
   {

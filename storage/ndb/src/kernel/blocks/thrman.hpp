@@ -440,7 +440,7 @@ private:
   void send_measure_to_rep_thrman(Signal*, MeasurementRecordPtr);
   void update_query_distribution(Signal*);
   void initial_query_distribution(Signal*);
-  void send_query_distribution(Uint32*, Signal*);
+  void send_query_distribution(Uint32*, Signal*, bool);
   void adjust_weights(Uint32*);
 
   struct ThrLoad

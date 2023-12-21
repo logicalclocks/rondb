@@ -1884,6 +1884,7 @@ public:
     friend class SimulatedBlock;
   public:
 
+    Uint32 m_low_load;
     Uint32 m_weights[MAX_DISTR_THREADS];
     struct NextRoundInfo m_next_round[MAX_DISTR_THREADS];
     Uint32 m_distr_references[MAX_DISTR_THREADS];
@@ -1910,9 +1911,27 @@ public:
    * 50ms have passed and it is time to update the DistributionInfo and
    * RoundRobinInfo to reflect the current CPU load in the node.
    */
-  void calculate_distribution_signal(DistributionHandler *handle)
+  void calculate_distribution_signal(DistributionHandler *handle, Uint32 low_load)
   {
     Uint32 num_query_instances = getNumQueryInstances();
+    if (low_load)
+    {
+      for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
+      {
+        get_load_indicators(handle, rr_group);
+      }
+      for (Uint32 i = 0; i < num_query_instances; i++)
+      {
+        struct QueryThreadState *q_state =
+          &handle->m_query_state[i];
+        Uint32 load_indicator = q_state->m_load_indicator;
+        if (load_indicator > 1)
+        {
+          low_load = 0;
+        }
+      }
+      handle->m_low_load = low_load;
+    }
     jam();
     jamLine(m_num_rr_groups);
     ndbrequire(m_inited_rr_groups);
@@ -2151,7 +2170,8 @@ public:
                      MAX_DISTR_THREADS);
   }
   void distribute_new_weights(DistributionHandler *handle,
-                              RoundRobinInfo *rr_info)
+                              RoundRobinInfo *rr_info,
+                              bool initial = false)
   {
     Uint32 in_rr_group = rr_info->m_rr_group_inx;
     Uint32 total_weight = 0;
@@ -2171,7 +2191,7 @@ public:
       q_state->m_weight = weight;
       jamDataDebug(weight);
       Uint32 current_stolen = 0;
-      if (old_current_stolen > old_weight)
+      if (old_current_stolen > old_weight && !initial)
       {
         current_stolen = old_current_stolen - old_weight;
         if (current_stolen > weight)

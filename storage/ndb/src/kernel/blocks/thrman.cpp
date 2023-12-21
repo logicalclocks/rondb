@@ -2253,10 +2253,10 @@ Thrman::initial_query_distribution(Signal *signal)
     else
     {
       /* Minimize use of TC and recv threads at low load as query threads */
-      m_curr_weights[i] = 1;
+      m_curr_weights[i] = 0;
     }
   }
-  send_query_distribution(&m_curr_weights[0], signal);
+  send_query_distribution(&m_curr_weights[0], signal, true);
 }
 
 static Int32 get_change_percent(Int32 diff)
@@ -2634,7 +2634,7 @@ Thrman::update_query_distribution(Signal *signal)
     weighted_cpu_load[15]));
   adjust_weights(&m_curr_weights[0]);
   check_weights();
-  send_query_distribution(&m_curr_weights[0], signal);
+  send_query_distribution(&m_curr_weights[0], signal, false);
 }
 
 void
@@ -2658,6 +2658,7 @@ Thrman::adjust_weights(Uint32 *weights)
    * to handle a few signals before a new call is made.
    */
   Uint32 num_distr_threads = getNumQueryInstances();
+  Uint32 num_ldm_threads = getNumLDMInstances();
   for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
   {
     Uint32 max_weight = 1;
@@ -2679,7 +2680,11 @@ Thrman::adjust_weights(Uint32 *weights)
       if (m_rr_group[thr_no] == rr_group)
       {
         weights[thr_no] *= mult_weight;
-        if (weights[thr_no] == 0)
+        if (thr_no >= num_ldm_threads)
+        {
+          weights[thr_no] = 0;
+        }
+        else if (weights[thr_no] == 0)
         {
           /**
            * Combined LDM+Query must allow for use of all LDM+Query threads.
@@ -2694,7 +2699,7 @@ Thrman::adjust_weights(Uint32 *weights)
 }
 
 void
-Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
+Thrman::send_query_distribution(Uint32 *weights, Signal *signal, bool low_load)
 {
   Uint32 num_distr_threads = getNumQueryInstances();
   BlockReference ref;
@@ -2710,7 +2715,7 @@ Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
   for (Uint32 i = 0; i < num_recv_threads; i++)
   {
     ref = numberToRef(TRPMAN, i + 1, getOwnNodeId());
-    signal->theData[0] = 0;
+    signal->theData[0] = low_load;
     LinearSectionPtr lsptr[3];
     lsptr[0].p = weights;
     lsptr[0].sz = num_distr_threads;
@@ -2720,7 +2725,7 @@ Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
   for (Uint32 i = 0; i < num_tc_instances; i++)
   {
     ref = numberToRef(DBTC, i + 1, getOwnNodeId());
-    signal->theData[0] = 0;
+    signal->theData[0] = low_load;
     LinearSectionPtr lsptr[3];
     lsptr[0].p = weights;
     lsptr[0].sz = num_distr_threads;

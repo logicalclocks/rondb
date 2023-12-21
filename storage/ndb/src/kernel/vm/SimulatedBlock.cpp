@@ -6219,6 +6219,29 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
   ndbassert(num_ldm_instances >= ldm_instance_no);
 #endif
   {
+    if (handle->m_low_load)
+    {
+      struct QueryThreadState *q_state =
+        &handle->m_query_state[ldm_instance_no - 1];
+      Uint32 load_indicator = q_state->m_load_indicator;
+      if (unlikely(load_indicator > 1))
+      {
+        jam();
+        distribute_new_weights(handle, rr_info, true);
+        handle->m_low_load = 0;
+      }
+      else
+      {
+        Uint32 ref = numberToRef(DBLQH,
+                                 ldm_instance_no,
+                                 getOwnNodeId());
+#ifdef DEBUG_SCHED_STATS
+        handle->m_lqhkeyreq_lqh++;
+        handle->m_lqhkeyreq_qt_count[ldm_instance_no]++;
+#endif
+        return ref;
+      }
+    }
     Uint32 query_counter = rr_info->m_query_counter;
     Uint32 query_instance_no = ldm_instance_no;
     Uint32 block_instance_no = ldm_instance_no;
@@ -6410,6 +6433,29 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
   ndbassert(num_ldm_instances >= ldm_instance_no);
 #endif
   {
+    if (handle->m_low_load)
+    {
+      struct QueryThreadState *q_state =
+        &handle->m_query_state[ldm_instance_no - 1];
+      Uint32 load_indicator = q_state->m_load_indicator;
+      if (unlikely(load_indicator > 1))
+      {
+        jam();
+        distribute_new_weights(handle, rr_info, true);
+        handle->m_low_load = 0;
+      }
+      else
+      {
+        Uint32 ref = numberToRef(DBLQH,
+                                 ldm_instance_no,
+                                 getOwnNodeId());
+#ifdef DEBUG_SCHED_STATS
+        handle->m_lqhkeyreq_lqh++;
+        handle->m_lqhkeyreq_qt_count[ldm_instance_no]++;
+#endif
+        return ref;
+      }
+    }
     Uint32 query_instance_no = ldm_instance_no;
     Uint32 block_instance_no = ldm_instance_no;
     Uint32 query_counter = rr_info->m_query_counter;
