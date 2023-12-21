@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1170,10 +1170,8 @@ bool create_consumers(RestoreThreadData *data)
     restore->m_restore = true;
   }
 
-  if (_restore_meta)
-  {
-    // ndb_restore has been requested to perform some metadata work
-    // like restore-meta or disable-indexes. To avoid 'object already exists'
+    // When ndb_restore has been requested to perform some metadata work
+    // like restore-meta or disable-indexes, to avoid 'object already exists'
     // errors, only restore-thread 1 will do the actual metadata-restore work.
     // So flags like restore_meta, restore_epoch and disable_indexes are set
     // only on thread 1 to indicate that it must perform this restore work.
@@ -1187,6 +1185,10 @@ bool create_consumers(RestoreThreadData *data)
     // m_metadata_work_requested = 1 and m_restore_meta = 0, the thread will
     // do only the init work, and skip the ndbapi function calls to create or
     // delete the metadata objects.
+
+  if (_restore_meta)
+  {
+    // --restore-meta is set.
     restore->m_metadata_work_requested = true;
     if (data->m_part_id == 1)
     {
@@ -1223,6 +1225,7 @@ bool create_consumers(RestoreThreadData *data)
 
   if (ga_restore_epoch)
   {
+    // --restore-epoch is set. See comment by _restore_meta above.
     restore->m_restore_epoch_requested = true;
     if (data->m_part_id == 1)
       restore->m_restore_epoch = true;
@@ -1230,13 +1233,18 @@ bool create_consumers(RestoreThreadData *data)
 
   if (ga_disable_indexes)
   {
+    // --disable-indexes is set. See comment by _restore_meta above.
     restore->m_metadata_work_requested = true;
     if (data->m_part_id == 1)
+    {
       restore->m_disable_indexes = true;
+      data->m_disable_indexes = true;
+    }
   }
 
   if (ga_rebuild_indexes)
   {
+    // --rebuild-indexes is set. See comment by _restore_meta above.
     restore->m_metadata_work_requested = true;
     if (data->m_part_id == 1)
       restore->m_rebuild_indexes = true;
@@ -2401,10 +2409,10 @@ int do_restore(RestoreThreadData *thrdata)
     return NdbToolsProgramExitCode::FAILED;
   }
 
-  if (!thrdata->m_restore_meta)
+  if (!(thrdata->m_restore_meta || thrdata->m_disable_indexes))
   {
     /**
-     * Only thread 1 is allowed to restore metadata objects. restore_meta
+     * Only thread 1 is allowed to restore metadata objects. m_restore_meta
      * flag is set to true on thread 1, which causes consumer-restore to
      * actually restore the metadata objects,
      * e.g. g_consumer->object(tablespace) restores the tablespace
@@ -2421,6 +2429,21 @@ int do_restore(RestoreThreadData *thrdata)
      * thread 1 arrives at barrier. When thread 1 completes metadata restore,
      * it arrives at barrier, opening barrier and allowing all threads to
      * proceed to next restore-phase.
+     *
+     * Since it's possible to set --disable-indexes without setting
+     * --restore-meta, we need to check for this flag as well, so that other
+     * threads wait while thread 1 changes the schema, even if those changes are
+     * only to drop indexes.
+     *
+     * Note that there is an if block below with the opposite condition:
+     *     `if (thrdata->m_restore_meta || thrdata->m_disable_indexes)`
+     * The two blocks represent the same sync point. We have two possible cases:
+     * 1) at least one of --restore-meta and --disable-indexes is set. Thread 1
+     *    will only enter the second if block. The other threads will only enter
+     *    this block, thereby waiting until thread 1 arrives at the second block.
+     * 2) Neither --restore-meta nor --disable-indexes is set. The above
+     *    condition evaluates to true in all threads, so all threads sync up at
+     *    this point before continuing. No thread will wait at the second block.
      */
     if (!thrdata->m_barrier->wait())
     {
@@ -2565,9 +2588,11 @@ int do_restore(RestoreThreadData *thrdata)
     return NdbToolsProgramExitCode::FAILED;
   }
 
-  if (thrdata->m_restore_meta)
+  if (thrdata->m_restore_meta || thrdata->m_disable_indexes)
   {
     // thread 1 arrives at barrier -> barrier opens -> all threads continue
+    // For more detailed explanation, see comment before the previous call above
+    // to m_barrier->wait()
     if (!thrdata->m_barrier->wait())
     {
       ga_error_thread = thrdata->m_part_id;
