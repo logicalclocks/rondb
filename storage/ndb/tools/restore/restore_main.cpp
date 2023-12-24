@@ -1099,9 +1099,11 @@ bool create_consumers(RestoreThreadData *data)
 
   if (ga_rebuild_indexes)
   {
-    // --rebuild-indexes is set. See comment by _restore_meta above.
+    // --rebuild-indexes is set. See comment by _restore_meta above. Also, note
+    // that rebuilding indexes is done on the last thread rather than the first.
+    // See comment in do_restore() for details.
     restore->m_metadata_work_requested = true;
-    if (data->m_part_id == 1)
+    if (data->m_part_id == (Uint32)ga_part_count)
       restore->m_rebuild_indexes = true;
   }
 
@@ -2444,7 +2446,7 @@ int do_restore(RestoreThreadData *thrdata)
     } 
     if (!ga_disable_indexes && !ga_rebuild_indexes)
     {
-      if (!g_consumers[i]->endOfTablesFK())
+      if (!g_consumers[i]->endOfTablesFK(false))
       {
         restoreLogger.log_error("Restore: Failed while closing tables FKs");
         return NdbToolsProgramExitCode::FAILED;
@@ -2854,7 +2856,12 @@ int do_restore(RestoreThreadData *thrdata)
      * Index rebuild should not be allowed to start until all threads have
      * finished restoring data and epoch values are sorted out.
      * Wait until all threads have arrived at barrier, then allow all
-     * threads to continue. Thread 1 will then rebuild indices, while all
+     * threads to continue. For multi-threaded restore, this ensures that all
+     * data is restored before index rebuild starts. For single-threaded
+     * restore, it does not, since the backup parts will execute serially with
+     * ineffective barriers, starting with number 1. In order to ensure data
+     * restore finishes before index rebuild starts even with single-threaded
+     * restore, we use the thread with highest id to rebuild indices, while all
      * other threads do nothing.
      */
     if (!thrdata->m_barrier->wait())
@@ -2882,7 +2889,7 @@ int do_restore(RestoreThreadData *thrdata)
     }
     for (Uint32 j = 0; j < g_consumers.size(); j++)
     {
-      if (!g_consumers[j]->endOfTablesFK())
+      if (!g_consumers[j]->endOfTablesFK(true))
       {
         return NdbToolsProgramExitCode::FAILED;
       }
