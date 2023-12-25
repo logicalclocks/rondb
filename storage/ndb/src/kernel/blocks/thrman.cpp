@@ -2689,15 +2689,21 @@ Thrman::adjust_weights(Uint32 *weights)
       if (m_rr_group[thr_no] == rr_group)
       {
         weights[thr_no] *= mult_weight;
-        if (weights[thr_no] == 0)
-        {
-          /**
-           * Combined LDM+Query must allow for use of all LDM+Query threads.
-           * Otherwise we would disable the use of load indicators to monitor
-           * the load at shorter timespans.
-           */
-          weights[thr_no] = 1;
-        }
+      }
+    }
+  }
+  for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
+  {
+    if (m_rr_group[thr_no] == rr_group)
+    {
+      if (weights[thr_no] == 0)
+      {
+        /**
+         * Combined LDM+Query must allow for use of all LDM+Query threads.
+         * Otherwise we would disable the use of load indicators to monitor
+         * the load at shorter timespans.
+         */
+        weights[thr_no] = 1;
       }
     }
   }
