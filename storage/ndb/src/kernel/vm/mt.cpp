@@ -6521,6 +6521,7 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
 
   if (count == 0)
   {
+    unsigned thr_no = selfptr->m_thr_no;
     if (!must_send && globalData.ndbMtMainThreads > 0)
     {
       /**
@@ -6528,10 +6529,10 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        * is set. Main and rep threads are woken up regularly to assist send
        * threads and are special helpers to send threads.
        */
-      unsigned thr_no = selfptr->m_thr_no;
       must_send = (is_main_thread(thr_no) || is_rep_thread(thr_no));
     }
     if (must_send && assist_send && g_send_threads &&
+        (!is_recv_thread(thr_no) || globalData.ndbMtLqhThreads == 0) &&
         (selfptr->m_nosend_tmp == 0))
     {
       /**
@@ -8700,7 +8701,7 @@ mt_receiver_thread_main(void *thr_arg)
     {
       watchDogCounter = 6;
       flush_all_local_signals_and_wakeup(selfptr);
-      pending_send = do_send(selfptr, false, true);
+      pending_send = do_send(selfptr, true, true);
       send_sum = 0;
     }
     watchDogCounter = 7;
