@@ -2689,11 +2689,7 @@ Thrman::adjust_weights(Uint32 *weights)
       if (m_rr_group[thr_no] == rr_group)
       {
         weights[thr_no] *= mult_weight;
-        if (thr_no >= num_ldm_threads)
-        {
-          weights[thr_no] = 0;
-        }
-        else if (weights[thr_no] == 0)
+        if (thr_no < num_ldm_threads && weights[thr_no] == 0)
         {
           /**
            * Combined LDM+Query must allow for use of all LDM+Query threads.
