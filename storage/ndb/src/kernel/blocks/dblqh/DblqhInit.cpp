@@ -911,7 +911,7 @@ Dblqh::~Dblqh()
   }
   NdbMutex_Deinit(&alloc_operation_mutex);
   NdbMutex_Deinit(&c_scanTakeOverMutex);
-  NdbMutex_Destroy(&m_read_redo_log_data_mutex);
+  NdbMutex_Deinit(&m_read_redo_log_data_mutex);
   deinit_restart_synch();
   if (!m_is_query_block)
   {
