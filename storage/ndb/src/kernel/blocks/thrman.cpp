@@ -51,9 +51,9 @@ static bool g_freeze_wakeup = 0;
 //#define HIGH_DEBUG_CPU_USAGE 1
 //#define DEBUG_CPU_USAGE 1
 //#define DEBUG_OVERLOAD_STATUS 1
+//#define DEBUG_SCHED_WEIGHTS 1
+//#define DEBUG_SEND_DELAY 1 
 #endif
-#define DEBUG_SCHED_WEIGHTS 1
-#define DEBUG_SEND_DELAY 1 
 
 #ifdef DEBUG_OVERLOAD_STATUS
 #define DEB_OVERLOAD_STATUS(arglist) do { g_eventLogger->info arglist ; } while (0)
