@@ -2303,10 +2303,18 @@ static Int32 get_change_percent(Int32 diff)
   {
     return +5;
   }
-  else if (diff < +5)
+  else if (diff <= -2)
+  {
+    return +2;
+  }
+  else if (diff <= +2)
   {
     /* No major difference, only act on individual differences */
     return 0;
+  }
+  else if (diff <= +5)
+  {
+    return -2;
   }
   else if (diff <= +10)
   {
@@ -2375,7 +2383,7 @@ static Uint32 apply_change_query(Int32 change,
   }
   if (max_change == 1)
   {
-    if (abs_change >= 5)
+    if (abs_change >= 2)
     {
       desired_change = 1;
     }
@@ -2386,7 +2394,7 @@ static Uint32 apply_change_query(Int32 change,
     {
       desired_change = 2;
     }
-    else if (abs_change >= 5)
+    else if (abs_change >= 2)
     {
       desired_change = 1;
     }
@@ -2405,7 +2413,6 @@ static Uint32 apply_change_query(Int32 change,
     new_weight = MAX_DISTRIBUTION_WEIGHT;
   }
   return Uint32(new_weight);
-
 }
 
 void Thrman::check_weights()
@@ -2497,8 +2504,8 @@ Thrman::update_query_distribution(Signal *signal)
   Int32 average_cpu_load_tc = 0;
   Int32 average_cpu_load_recv = 0;
   Int32 average_cpu_load = sum_cpu_load / num_distr_threads;
-  if (average_cpu_load < 30 &&
-      max_load < 40)
+  if (average_cpu_load < 35 &&
+      max_load < 50)
   {
     /**
      * No high average load on LDM threads and no threads in critical
@@ -2590,7 +2597,7 @@ Thrman::update_query_distribution(Signal *signal)
          * large enough. Keep it unless the difference is more than 10
          * percent higher than the goal difference.
          */
-        if (diff_ldm_tc > (min_tc_diff + 3))
+        if (diff_ldm_tc > (min_tc_diff + 2))
         {
           /**
            * Increase the load by increasing the cpu_change in positive
@@ -2611,7 +2618,7 @@ Thrman::update_query_distribution(Signal *signal)
       /* Same handling as Tc threads, but instead using min_recv_diff */
       if (diff_ldm_recv > min_recv_diff)
       {
-        if (diff_ldm_recv > (min_recv_diff + 3))
+        if (diff_ldm_recv > (min_recv_diff + 2))
         {
           change = -8;
         }
@@ -2667,7 +2674,6 @@ Thrman::adjust_weights(Uint32 *weights)
    * to handle a few signals before a new call is made.
    */
   Uint32 num_distr_threads = getNumQueryInstances();
-  Uint32 num_ldm_threads = getNumLDMInstances();
   for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
   {
     Uint32 max_weight = 1;
