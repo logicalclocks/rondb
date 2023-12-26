@@ -1024,21 +1024,22 @@ bool create_consumers(RestoreThreadData *data)
     restore->m_restore = true;
   }
 
-    // When ndb_restore has been requested to perform some metadata work
-    // like restore-meta or disable-indexes, to avoid 'object already exists'
-    // errors, only restore-thread 1 will do the actual metadata-restore work.
-    // So flags like restore_meta, restore_epoch and disable_indexes are set
-    // only on thread 1 to indicate that it must perform this restore work.
-    // While restoring metadata, some init work is done, like creating an Ndb
-    // object, setting up callbacks, and loading info about all the tables into
-    // the BackupConsumer.
-    // The remaining threads also need this init work to be done, since later
-    // phases of ndb_restore rely upon it, e.g. --restore-data needs the table
-    // info. So an additional flag m_metadata_work_requested is set for all
-    // the restore-threads to indicate that the init work must be done. If
-    // m_metadata_work_requested = 1 and m_restore_meta = 0, the thread will
-    // do only the init work, and skip the ndbapi function calls to create or
-    // delete the metadata objects.
+  /*
+    When ndb_restore has been requested to perform some metadata work like
+    --restore-meta or --disable-indexes, to avoid 'object already exists'
+    errors, only restore-thread 1 will do the actual metadata-restore work. So
+    flags like m_restore_meta, m_restore_epoch and m_disable_indexes are set
+    only on thread 1 to indicate that it must perform this restore work. While
+    restoring metadata, some init work is done, like creating an Ndb object,
+    setting up callbacks, and loading info about all the tables into the
+    BackupConsumer. The remaining threads also need this init work to be done,
+    since later phases of ndb_restore rely upon it, e.g. --restore-data needs
+    the table info. So an additional flag m_metadata_work_requested is set for
+    all the restore-threads to indicate that the init work must be done. If
+    m_metadata_work_requested = 1 and m_restore_meta = 0, the thread will do
+    only the init work, and skip the ndbapi function calls to create or delete
+    the metadata objects.
+   */
 
   if (_restore_meta)
   {
