@@ -240,9 +240,10 @@ trp_client::complete_poll()
 int
 trp_client::do_forceSend(bool forceSend)
 {
+  (void)forceSend;
   flush_send_buffers();
 
-  if (forceSend)
+  if (m_facade->m_use_poll_waiters < 16)
   {
     m_facade->try_send_all(m_flushed_nodes_mask);
   }

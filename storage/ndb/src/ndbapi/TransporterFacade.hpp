@@ -608,6 +608,10 @@ private:
    * of sending to these nodes.
    */
   NodeBitmask m_has_data_nodes;
+
+  /* Calculate max poll waiters */
+  volatile Uint32 m_max_poll_waiters;
+  Uint32 m_use_poll_waiters;
 };
 
 inline
