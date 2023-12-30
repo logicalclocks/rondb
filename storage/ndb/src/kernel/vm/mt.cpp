@@ -2693,7 +2693,7 @@ thr_send_threads::thr_send_threads()
     m_trp_state[i].m_neighbour_trp = false;
     m_trp_state[i].m_in_list_no_neighbour = false;
     m_trp_state[i].m_overload_counter = 0;
-    NdbTick_Invalidate(&m_trp_state[i].m_inserted_time);
+    m_trp_state[i].m_inserted_time = NdbTick_getCurrentTicks();
   }
   for (Uint32 i = 0; i < NDB_ARRAY_SIZE(m_send_threads); i++)
   {
