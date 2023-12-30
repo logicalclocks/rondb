@@ -5,6 +5,7 @@
 # Don't run in asan builds
 --source include/not_asan.inc
 --source include/have_ndb.inc
+--source include/not_parallel.inc
 
 --source suite/rdrs/include/have_rdrs.inc
 
