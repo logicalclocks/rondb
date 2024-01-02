@@ -7547,7 +7547,7 @@ loop:
     {
       jam();
       Buffer_page* new_first_page = nullptr;
-      new_first_page = c_page_pool.getPtr(ref);
+      new_first_page = c_page_pool.getPtr(m_first_free_page);
       new_first_page->m_prev_page = RNIL;
     }
     if (ptr.p->m_free == 0)
@@ -7579,6 +7579,7 @@ loop:
     if (count == 0)
     {
       jam();
+      c_page_chunk_pool.release(ptr);
       return RNIL;
     }
 
@@ -7639,7 +7640,13 @@ Suma::insert_chunk_pages(Ptr<Page_chunk> ptr)
       page->m_next_page = prev_first_free;
     }
   }
-  page->m_next_page = RNIL;
+  if (prev_first_free != RNIL)
+  {
+    jam();
+    ndbassert(page->m_prev_page == RNIL);
+    page = c_page_pool.getPtr(prev_first_free);
+    page->m_prev_page = ref;
+  }
 }
 
 void
@@ -7667,6 +7674,8 @@ Suma::release_chunk_pages(Ptr<Page_chunk> ptr)
       next_page = c_page_pool.getPtr(page->m_next_page);
       next_page->m_prev_page = page->m_prev_page;
     }
+    page->m_prev_page = RNIL;
+    page->m_next_page = RNIL;
   }
   c_free_page_chunks.addFirst(ptr);
 }
