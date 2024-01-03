@@ -117,8 +117,8 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_TCGETOPSIZE
 //#define DEBUG_ACTIVE_NODES 1
 //#define DEBUG_NODE_STATUS 1
-#define DEBUG_USED_LOG_PARTS 1
 #endif
+#define DEBUG_USED_LOG_PARTS 1
 
 #ifdef DEBUG_USED_LOG_PARTS
 #define DEB_USED_LOG_PARTS(arglist) do { g_eventLogger->info arglist ; } while (0)

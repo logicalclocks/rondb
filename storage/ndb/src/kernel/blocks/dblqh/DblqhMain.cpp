@@ -127,7 +127,6 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_EXTRA_LCP 1
 //#define DEBUG_LCP 1
-#define DEBUG_NEW_FRAG 1
 //#define DEBUG_LCP_RESTORE
 //#define DEBUG_COPY 1
 //#define DEBUG_GCP 1
@@ -150,6 +149,7 @@
 //#define DEBUG_PARALLEL_COPY 1
 //#define DEBUG_HASH 1
 #endif
+#define DEBUG_NEW_FRAG 1
 
 #ifdef DEBUG_NEW_FRAG
 #define DEB_NEW_FRAG(arglist) do { g_eventLogger->info arglist ; } while (0)

@@ -51,9 +51,9 @@ static bool g_freeze_wakeup = 0;
 //#define HIGH_DEBUG_CPU_USAGE 1
 //#define DEBUG_CPU_USAGE 1
 //#define DEBUG_OVERLOAD_STATUS 1
-//#define DEBUG_SCHED_WEIGHTS 1
 //#define DEBUG_SEND_DELAY 1 
 #endif
+#define DEBUG_SCHED_WEIGHTS 1
 
 #ifdef DEBUG_OVERLOAD_STATUS
 #define DEB_OVERLOAD_STATUS(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -2641,13 +2641,14 @@ Thrman::update_query_distribution(Signal *signal)
                                            m_curr_weights[i]);
   }
   DEB_SCHED_WEIGHTS(("LDM/QT CPU load stats: %u %u %u %u %u %u %u %u"
-                     " %u %u %u %u %u %u %u %u",
+                     " %u %u %u %u %u %u %u %u %u %u %u %u",
     weighted_cpu_load[0], weighted_cpu_load[1], weighted_cpu_load[2],
     weighted_cpu_load[3], weighted_cpu_load[4], weighted_cpu_load[5],
     weighted_cpu_load[6], weighted_cpu_load[7], weighted_cpu_load[8],
     weighted_cpu_load[9], weighted_cpu_load[10], weighted_cpu_load[11],
     weighted_cpu_load[12], weighted_cpu_load[13], weighted_cpu_load[14],
-    weighted_cpu_load[15]));
+    weighted_cpu_load[15], weighted_cpu_load[16], weighted_cpu_load[18],
+    weighted_cpu_load[19]));
   adjust_weights(&m_curr_weights[0]);
   check_weights();
   send_query_distribution(&m_curr_weights[0], signal, false);
@@ -2719,11 +2720,12 @@ Thrman::send_query_distribution(Uint32 *weights, Signal *signal, bool low_load)
   BlockReference ref;
 
   DEB_SCHED_WEIGHTS(("LDM/QT weights: %u %u %u %u %u %u %u %u"
-                     " %u %u %u %u %u %u %u %u",
+                     " %u %u %u %u %u %u %u %u %u %u %u %u",
                      weights[0], weights[1], weights[2], weights[3],
                      weights[4], weights[5], weights[6], weights[7],
                      weights[8], weights[9], weights[10], weights[11],
-                     weights[12], weights[13], weights[14], weights[15]));
+                     weights[12], weights[13], weights[14], weights[15],
+                     weights[16], weights[17], weights[18], weights[19]));
   ndbrequire(isNdbMtLqh());
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
   for (Uint32 i = 0; i < num_recv_threads; i++)
