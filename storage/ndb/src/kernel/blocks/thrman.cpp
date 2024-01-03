@@ -2422,12 +2422,12 @@ static Uint32 apply_change_query(Int32 change,
   return Uint32(new_weight);
 }
 
-void Thrman::check_weights()
+void Thrman::check_weights(Uint32 *weights)
 {
   Uint32 num_distr_threads = getNumQueryInstances();
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
-    ndbrequire(m_curr_weights[i] <= MAX_DISTRIBUTION_WEIGHT);
+    ndbrequire(weights[i] <= MAX_DISTRIBUTION_WEIGHT);
   }
 }
 
@@ -2435,7 +2435,7 @@ void
 Thrman::update_query_distribution(Signal *signal)
 {
   Int32 max_load = 0;
-  check_weights();
+  check_weights(&m_curr_weights[0]);
 
   Int32 num_ldm_threads = (Int32)globalData.ndbMtLqhThreads;
   Int32 num_tc_threads = (Int32)globalData.ndbMtTcThreads;
@@ -2648,7 +2648,7 @@ Thrman::update_query_distribution(Signal *signal)
                                            m_curr_weights[i]);
   }
   DEB_SCHED_WEIGHTS(("LDM/QT CPU load stats: %u %u %u %u %u %u %u %u"
-                     " %u %u %u %u %u %u %u %u %u %u %u %u",
+                     " %u %u %u %u %u %u %u %u %u %u %u",
     weighted_cpu_load[0], weighted_cpu_load[1], weighted_cpu_load[2],
     weighted_cpu_load[3], weighted_cpu_load[4], weighted_cpu_load[5],
     weighted_cpu_load[6], weighted_cpu_load[7], weighted_cpu_load[8],
@@ -2656,9 +2656,11 @@ Thrman::update_query_distribution(Signal *signal)
     weighted_cpu_load[12], weighted_cpu_load[13], weighted_cpu_load[14],
     weighted_cpu_load[15], weighted_cpu_load[16], weighted_cpu_load[18],
     weighted_cpu_load[19]));
-  adjust_weights(&m_curr_weights[0]);
-  check_weights();
-  send_query_distribution(&m_curr_weights[0], signal, false);
+  Uint32 weights[MAX_DISTR_THREADS];
+  memcpy(&weights[0], &m_curr_weights[0], num_distr_threads * 4);
+  adjust_weights(&weights[0]);
+  check_weights(&weights[0]);
+  send_query_distribution(&weights[0], signal, false);
 }
 
 void

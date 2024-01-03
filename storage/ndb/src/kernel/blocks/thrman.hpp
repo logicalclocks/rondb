@@ -105,7 +105,7 @@ private:
   static const Uint32 ZCONTINUEB_CHECK_SPINTIME = 4;
   static const Uint32 ZCONTINUEB_MEASURE_CPU_DATA = 5;
   static const Uint32 ZUPDATE_QUERY_DISTRIBUTION = 6;
-  void check_weights();
+  void check_weights(Uint32*);
 
   static const Uint32 default_cpu_load = 95;
 
