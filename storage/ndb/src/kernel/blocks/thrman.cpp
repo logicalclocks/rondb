@@ -49,11 +49,12 @@ static bool g_freeze_wakeup = 0;
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SPIN 1
 //#define HIGH_DEBUG_CPU_USAGE 1
-//#define DEBUG_CPU_USAGE 1
 //#define DEBUG_OVERLOAD_STATUS 1
 //#define DEBUG_SEND_DELAY 1 
 #endif
+#define DEBUG_CPU_USAGE 1
 #define DEBUG_SCHED_WEIGHTS 1
+#define DEBUG_CPUSTAT 1
 
 #ifdef DEBUG_OVERLOAD_STATUS
 #define DEB_OVERLOAD_STATUS(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -71,6 +72,12 @@ static bool g_freeze_wakeup = 0;
 #define DEB_SCHED_WEIGHTS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_SCHED_WEIGHTS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_CPUSTAT
+#define DEB_CPUSTAT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CPUSTAT(arglist) do { } while (0)
 #endif
 
 extern EventLogger * g_eventLogger;
@@ -2974,6 +2981,9 @@ Thrman::measure_cpu_usage(Signal *signal)
       jam();
       m_current_cpu_usage = 0;
     }
+    DEB_CPUSTAT(("(%u)Current CPU usage is %u percent",
+                 instance(),
+                 m_current_cpu_usage));
     if (m_current_cpu_usage >= 40)
     {
       DEB_SPIN(("(%u)Current CPU usage is %u percent",
