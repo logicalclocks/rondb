@@ -127,6 +127,7 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_EXTRA_LCP 1
 //#define DEBUG_LCP 1
+#define DEBUG_NEW_FRAG 1
 //#define DEBUG_LCP_RESTORE
 //#define DEBUG_COPY 1
 //#define DEBUG_GCP 1
@@ -148,6 +149,12 @@
 //#define DEBUG_PARALLEL_COPY_EXTRA 1
 //#define DEBUG_PARALLEL_COPY 1
 //#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_NEW_FRAG
+#define DEB_NEW_FRAG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_NEW_FRAG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -3353,6 +3360,12 @@ void Dblqh::execLQHFRAGREQ(Signal* signal)
                          logPartPtrP->logPartNo,
                          logPartPtrP->logPartNo,
                          logPartPtrP->ptrI));
+    DEB_NEW_FRAG(("(%u) tab(%u,%u), instKey: %u, logPart: %u",
+                  instance(),
+                  tabptr.i,
+                  req->fragId,
+                  fragptr.p->lqhInstanceKey,
+                  req->logPartId));
   }
 
   /* Init per-frag op counters */

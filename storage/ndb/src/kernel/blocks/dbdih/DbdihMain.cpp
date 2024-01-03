@@ -117,6 +117,13 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_TCGETOPSIZE
 //#define DEBUG_ACTIVE_NODES 1
 //#define DEBUG_NODE_STATUS 1
+#define DEBUG_USED_LOG_PARTS 1
+#endif
+
+#ifdef DEBUG_USED_LOG_PARTS
+#define DEB_USED_LOG_PARTS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_USED_LOG_PARTS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_NODE_STATUS
@@ -13026,6 +13033,9 @@ Dbdih::find_min_used_log_part()
     }
     NGPtr.p->m_new_next_log_part = min_used_log_part;
     NGPtr.p->m_round_robin_count = 0;
+    DEB_USED_LOG_PARTS(("NG(%u): new min used log_part: %u",
+                        NGPtr.i,
+                        NGPtr.p->m_new_next_log_part));
   }
 }
 
@@ -14843,7 +14853,17 @@ void Dbdih::execDIADDTABREQ(Signal* signal)
     fragPtr.p->m_inc_used_log_parts = true;
     fragPtr.p->preferredPrimary = fragments[index];
     getNodeGroupPtr(fragPtr.p->preferredPrimary, NGPtr);
-    NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+    if (tabPtr.p->primaryTableId == RNIL)
+    {
+      NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+      DEB_USED_LOG_PARTS(("T: NG(%u): tab(%u,%u) used log_part: %u"
+                          ", m_used_log_parts[]: %u",
+                         NGPtr.i,
+                         tabPtr.i,
+                         fragId,
+                         fragPtr.p->m_log_part_id,
+                         NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]));
+    }
     fragPtr.p->partition_id = fragId % tabPtr.p->partitionCount;
     inc_ng_refcount(NGPtr.i);
     
@@ -15028,7 +15048,17 @@ Dbdih::sendAddFragreq(Signal* signal,
       fragPtr.p->m_inc_used_log_parts = true;
       ndbrequire(fragPtr.p->m_log_part_id < MAX_INSTANCE_KEYS);
       getNodeGroupPtr(getOwnNodeId(), NGPtr);
-      NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+      if (tabPtr.p->primaryTableId == RNIL)
+      {
+        NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+        DEB_USED_LOG_PARTS(("F: NG(%u): tab(%u,%u) used log_part: %u"
+                            ", m_used_log_parts[]: %u",
+                            NGPtr.i,
+                            tabPtr.i,
+                            fragId,
+                            fragPtr.p->m_log_part_id,
+                       NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]));
+      }
     }
     if (connectPtr.p->connectState != ConnectRecord::ALTER_TABLE)
     {
@@ -15309,7 +15339,17 @@ Dbdih::execDROP_TAB_REQ(Signal* signal)
         fragPtr.p->m_inc_used_log_parts = false;
         ndbrequire(fragPtr.p->m_log_part_id < MAX_INSTANCE_KEYS);
         getNodeGroupPtr(fragPtr.p->preferredPrimary, NGPtr);
-        NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]--;
+        if (tabPtr.p->primaryTableId == RNIL)
+        {
+          NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]--;
+          DEB_USED_LOG_PARTS(("D: NG(%u): tab(%u,%u) used log_part: %u"
+                              ", m_used_log_parts[]: %u",
+                              NGPtr.i,
+                              tabPtr.i,
+                              fragNo,
+                              fragPtr.p->m_log_part_id,
+                       NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]));
+        }
       }
     }
   }
@@ -15797,7 +15837,17 @@ Dbdih::add_fragments_to_table(Signal *signal,
     {
       NodeGroupRecordPtr NGPtr;
       getNodeGroupPtr(fragPtr.p->preferredPrimary, NGPtr);
-      NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+      if (tabPtr.p->primaryTableId == RNIL)
+      {
+        NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+        DEB_USED_LOG_PARTS(("AF: NG(%u): tab(%u,%u) used log_part: %u"
+                            ", m_used_log_parts[]: %u",
+                            NGPtr.i,
+                            tabPtr.i,
+                            fragId,
+                            fragPtr.p->m_log_part_id,
+                       NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]));
+      }
       inc_ng_refcount(NGPtr.i);
     }
 
@@ -26773,7 +26823,17 @@ void Dbdih::readFragment(RWFragment* rf, FragmentstorePtr fragPtr)
   fragPtr.p->m_inc_used_log_parts = true;
   NodeGroupRecordPtr NGPtr;
   getNodeGroupPtr(fragPtr.p->preferredPrimary, NGPtr);
-  NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+  if (rf->rwfTabPtr.p->primaryTableId == RNIL)
+  {
+    NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]++;
+    DEB_USED_LOG_PARTS(("RF: NG(%u): tab(%u,%u) used log_part: %u"
+                        ", m_used_log_parts[]: %u",
+                        NGPtr.i,
+                        rf->rwfTabPtr.i,
+                        fragPtr.p->fragId,
+                        fragPtr.p->m_log_part_id,
+                        NGPtr.p->m_used_log_parts[fragPtr.p->m_log_part_id]));
+  }
   inc_ng_refcount(NGPtr.i);
 }//Dbdih::readFragment()
 
