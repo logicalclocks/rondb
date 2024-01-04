@@ -192,7 +192,39 @@ THRConfig::add(T_Type t, unsigned realtime, unsigned spintime)
     spintime = 9000;
   tmp.m_spintime = spintime;
   tmp.m_core_bind = false;
+  tmp.m_rr_group = 0;
   m_threads[t].push_back(tmp);
+}
+
+Uint32
+THRConfig::getRRGroups(Uint32 thr_no,
+                       Uint32 num_ldm_threads,
+                       Uint32 num_tc_threads,
+                       Uint32 num_recv_threads,
+                       Uint32 num_main_threads)
+{
+  if (thr_no < num_ldm_threads)
+  {
+    return m_threads[T_LDM][thr_no].m_rr_group;
+  }
+  else if (thr_no < (num_ldm_threads + num_tc_threads))
+  {
+    Uint32 inx = thr_no - num_ldm_threads;
+    return m_threads[T_TC][inx].m_rr_group;
+  }
+  else if (thr_no < (num_ldm_threads + num_tc_threads + num_recv_threads))
+  {
+    Uint32 inx = thr_no - (num_ldm_threads + num_tc_threads);
+    return m_threads[T_RECV][inx].m_rr_group;
+  }
+  else if (thr_no == (num_ldm_threads + num_tc_threads + num_recv_threads))
+  {
+    require(num_main_threads >= 1);
+    return m_threads[T_MAIN][0].m_rr_group;
+  }
+  require(num_main_threads == 2);
+  require(thr_no == (num_ldm_threads + num_tc_threads + num_recv_threads + 1));
+  return m_threads[T_REP][0].m_rr_group;
 }
 
 static
@@ -509,7 +541,6 @@ THRConfig::do_parse_auto(unsigned realtime,
                          unsigned spintime,
                          unsigned num_cpus,
                          unsigned &num_rr_groups,
-                         unsigned max_threads,
                          bool use_tc_threads,
                          bool use_ldm_threads)
 {
@@ -627,18 +658,24 @@ THRConfig::do_parse_auto(unsigned realtime,
      * L3 cache the CPUs belong to.
      */
     num_rr_groups =
-      Ndb_CreateCPUMap(num_query_instances, max_threads);
+      Ndb_CreateCPUMap(num_query_instances);
     Uint32 count_ldm_threads = ldm_threads;
     Uint32 count_tc_threads = tc_threads;
-    Uint32 count_recv_threads = recv_threads;
     Uint32 count_main_threads = main_threads;
     Uint32 count_rep_threads = rep_threads;
+    Uint32 count_recv_threads = recv_threads;
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
-    Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
+    Uint32 rr_group = 0;
+    Uint32 next_cpu_id = Ndb_GetFirstCPUInMap(rr_group);
     for (Uint32 i = 0; i < num_cpus; i++)
     {
-      Uint32 thread_type;
-      Uint32 inx = 0;
+      Uint32 thread_type = T_SEND; // T_SEND silences compiler
+      Uint32 inx = RNIL;
+      Uint32 odd = (i & 1) == 1;
+      if (i != 0)
+      {
+        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id, rr_group);
+      }
       if (count_ldm_threads > 0)
       {
         thread_type = T_LDM;
@@ -647,42 +684,83 @@ THRConfig::do_parse_auto(unsigned realtime,
       }
       else
       {
-        if (count_recv_threads > 0)
+        /**
+         * We want to balance the CPU load on the non-LDM CPU cores and
+         * similarly we want to achieve a balanced load on the Round Robin
+         * groups.
+         *
+         * To achieve this we ensure that if a LDM thread shares a CPU core
+         * with another non-LDM thread it will be a TC thread.
+         *
+         * We ensure that the main and rep thread is on different CPU cores
+         * and also on different Round Robin groups if there is more than
+         * one Round Robin group.
+         *
+         * For the rest we mix a TC thread and a receive thread in each CPU
+         * core and thus we should have a fairly good balance also on
+         * Round Robin groups.
+         */
+        if (odd)
         {
-          thread_type = T_RECV;
-          count_recv_threads--;
-          inx = count_recv_threads;
+          if (count_main_threads > 0)
+          {
+            thread_type = T_MAIN;
+            count_main_threads--;
+            inx = count_main_threads;
+          }
+          else if (count_rep_threads > 0)
+          {
+            thread_type = T_REP;
+            count_rep_threads--;
+            inx = count_rep_threads;
+          }
+          else if (count_tc_threads > 0)
+          {
+            thread_type = T_TC;
+            count_tc_threads--;
+            inx = count_tc_threads;
+          }
+          else if (count_recv_threads > 0)
+          {
+            thread_type = T_RECV;
+            count_recv_threads--;
+            inx = count_recv_threads;
+          }
+          else
+          {
+            /* Send thread handled in non-odd part */
+            odd = false;
+          }
         }
-        else if (count_tc_threads > 0)
+        if (!odd)
         {
-          thread_type = T_TC;
-          count_tc_threads--;
-          inx = count_tc_threads;
-        }
-        else if (count_main_threads > 0)
-        {
-          thread_type = T_MAIN;
-          count_main_threads--;
-          inx = count_main_threads;
-        }
-        else if (count_rep_threads > 0)
-        {
-          thread_type = T_REP;
-          count_rep_threads--;
-          inx = count_rep_threads;
-        }
-        else
-        {
-          require(send_threads > 0);
-          thread_type = T_SEND;
-          send_threads--;
-          inx = send_threads;
+          if (count_recv_threads > 0)
+          {
+            thread_type = T_RECV;
+            count_recv_threads--;
+            inx = count_recv_threads;
+          }
+          else if (count_tc_threads > 0)
+          {
+            thread_type = T_TC;
+            count_tc_threads--;
+            inx = count_tc_threads;
+          }
+          else
+          {
+            require(send_threads > 0);
+            thread_type = T_SEND;
+            send_threads--;
+            inx = send_threads;
+          }
         }
       }
+      require(inx != RNIL);
       require(next_cpu_id != Uint32(RNIL));
       m_threads[thread_type][inx].m_bind_no = next_cpu_id;
       m_threads[thread_type][inx].m_bind_type = T_Thread::B_CPU_BIND;
       m_threads[thread_type][inx].m_core_bind = false;
+      m_threads[thread_type][inx].m_rr_group = rr_group;
 
       Uint32 core_cpu_ids[MAX_NUM_CPUS];
       Uint32 num_core_cpus = 0;
@@ -695,7 +773,6 @@ THRConfig::do_parse_auto(unsigned realtime,
         Uint32 neighbour_cpu = core_cpu_ids[1];
         m_threads[thread_type][inx].m_shared_cpu_id = neighbour_cpu;
       }
-      next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
     /**
      * This code is used to discover where we have the shared

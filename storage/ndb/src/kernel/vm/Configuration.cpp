@@ -1713,7 +1713,6 @@ Configuration::setupConfiguration()
                                  _schedulerSpinTimer,
                                  num_cpus,
                                  globalData.ndbRRGroups,
-                                 MAX_DISTR_THREADS,
                                  use_tc_threads,
                                  use_ldm_threads);
     }
@@ -1902,6 +1901,20 @@ Configuration::setupConfiguration()
   calcSizeAlt(cf);
   set_not_active_nodes();
   DBUG_VOID_RETURN;
+}
+
+Uint32
+Configuration::getRRGroups(Uint32 thr_no,
+                           Uint32 num_ldm_threads,
+                           Uint32 num_tc_threads,
+                           Uint32 num_recv_threads,
+                           Uint32 num_main_threads)
+{
+  return m_thr_config.getRRGroups(thr_no,
+                                  num_ldm_threads,
+                                  num_tc_threads,
+                                  num_recv_threads,
+                                  num_main_threads);
 }
 
 void

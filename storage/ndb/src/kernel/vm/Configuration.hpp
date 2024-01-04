@@ -242,6 +242,11 @@ public:
                      Uint32 & noOfDBNodes,
                      Uint32 & noOfAPINodes,
                      Uint32 & noOfMGMNodes);
+  Uint32 getRRGroups(Uint32 thr_no,
+                     Uint32 num_ldm_threads,
+                     Uint32 num_tc_threads,
+                     Uint32 num_recv_threads,
+                     Uint32 num_main_threads);
 };
 
 inline

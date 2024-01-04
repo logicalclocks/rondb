@@ -47,6 +47,7 @@ struct ndb_cpuinfo_data
   Uint32 group_index;
 #endif
   Uint32 cpu_capacity;
+  Uint32 rr_group;
 };
 
 struct ndb_cpudata
@@ -149,13 +150,13 @@ extern "C"
    * Round Robin groups of LDM groups that are contained in the same
    * virtual L3 cache groups.
    */
-  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances, Uint32 max_threads);
-  void Ndb_InitRRGroups(Uint32 *rr_group,
+  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances);
+  bool Ndb_InitRRGroups(Uint32 *rr_group,
                         Uint32 num_rr_groups,
                         Uint32 num_query_instances,
                         Uint32 max_threads);
-  Uint32 Ndb_GetFirstCPUInMap();
-  Uint32 Ndb_GetNextCPUInMap(Uint32 cpu_id);
+  Uint32 Ndb_GetFirstCPUInMap(Uint32 & rr_group);
+  Uint32 Ndb_GetNextCPUInMap(Uint32 cpu_id, Uint32 & rr_group);
 
   Uint32 Ndb_GetRRGroups(Uint32 query_instances);
 

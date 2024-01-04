@@ -69,7 +69,6 @@ public:
                     unsigned spintime,
                     unsigned num_cpus,
                     unsigned &num_rr_groups,
-                    unsigned max_threads,
                     bool use_tc_threads,
                     bool use_ldm_threads);
   int do_parse_thrconfig(const char * ThreadConfig,
@@ -116,6 +115,7 @@ protected:
     unsigned m_realtime; //0 = no realtime, 1 = realtime
     unsigned m_spintime; //0 = no spinning, > 0 spintime in microseconds
     unsigned m_nosend; //0 = assist send thread, 1 = cannot assist send thread
+    unsigned m_rr_group; // Round Robin group of this thread
     bool m_core_bind; // Bind to all CPUs in CPU core
   };
   bool m_classic;
@@ -158,6 +158,12 @@ protected:
   static const char * getEntryName(Uint32 type);
 
 public:
+  Uint32 getRRGroups(Uint32 thr_no,
+                     Uint32 num_ldm_threads,
+                     Uint32 num_tc_threads,
+                     Uint32 num_recv_threads,
+                     Uint32 num_main_threads);
+
   struct Entries
   {
     unsigned m_type;

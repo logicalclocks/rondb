@@ -2166,10 +2166,33 @@ public:
 
     m_num_rr_groups = num_rr_groups;
     m_num_distribution_threads = num_distr_threads;
-    Ndb_InitRRGroups(&m_rr_group[0],
-                     num_rr_groups,
-                     num_query_instances,
-                     MAX_DISTR_THREADS);
+    if (!Ndb_InitRRGroups(&m_rr_group[0],
+                          num_rr_groups,
+                          num_query_instances,
+                          MAX_DISTR_THREADS))
+    {
+      /**
+       * In larger setups where we have 2 main threads and at least 2 Round
+       * Robin groups we need to ensure that the main and rep thread ends
+       * up in different Round Robin groups. Otherwise the consequence is
+       * that the Round Robin Group that have the main and rep thread is
+       * having more CPU resources than the other Round Robin groups.
+       *
+       * Having more than 2 Round Robin groups will still have some
+       * imbalance that at some point needs to be more balanced, probably
+       * by reintroducing query threads or some other means.
+       */
+      for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
+      {
+        m_rr_group[thr_no] =
+          globalEmulatorData.theConfiguration->getRRGroups(
+            thr_no,
+            globalData.ndbMtLqhThreads,
+            globalData.ndbMtTcThreads,
+            globalData.ndbMtReceiveThreads,
+            globalData.ndbMtMainThreads);
+      }
+    }
   }
   void distribute_new_weights(DistributionHandler *handle,
                               RoundRobinInfo *rr_info,
