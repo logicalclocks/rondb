@@ -441,6 +441,7 @@ private:
   void update_query_distribution(Signal*);
   void initial_query_distribution(Signal*);
   void send_query_distribution(Uint32*, Signal*, bool);
+  void adjust_stored_weights(Uint32*);
   void adjust_weights(Uint32*);
 
   struct ThrLoad

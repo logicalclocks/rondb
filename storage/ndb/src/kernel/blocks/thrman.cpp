@@ -2390,14 +2390,14 @@ static Uint32 apply_change_query(Int32 change,
   }
   if (max_change == 1)
   {
-    if (abs_change >= 2)
+    if (abs_change >= 3)
     {
       desired_change = 1;
     }
   }
   else
   {
-    if (abs_change >= 20)
+    if (abs_change >= 8)
     {
       desired_change = 2;
     }
@@ -2411,9 +2411,9 @@ static Uint32 apply_change_query(Int32 change,
     desired_change *= Int32(-1);
   }
   Int32 new_weight = Int32(in_weight) + desired_change;
-  if (new_weight < 0)
+  if (new_weight <= 0)
   {
-    new_weight = 0;
+    new_weight = 1;
   }
   else if (new_weight > MAX_DISTRIBUTION_WEIGHT)
   {
@@ -2441,28 +2441,66 @@ Thrman::update_query_distribution(Signal *signal)
   Int32 num_tc_threads = (Int32)globalData.ndbMtTcThreads;
   Int32 num_recv_threads = (Int32)globalData.ndbMtReceiveThreads;
   Int32 num_main_threads = (Int32)globalData.ndbMtMainThreads;
+  Int32 num_distr_threads = (Int32)getNumQueryInstances();
 
   /**
    * This function takes the CPU load information from the last
    * 100 milliseconds and use this information to calculate the
    * weights to be used by DBTC, DBSPJ and the receive threads
    * when mapping virtual blocks to LDM and query thread instances.
+   *
+   * It calculates the values per Round Robin Group since we will
+   * only assist LDM threads in the same Round Robin group.
+   * Thus each Round Robin group must move its weights independent
+   * of all other threads in other Round Robin groups.
+   *
+   * It is a bit tricky to ensure that the weights are centered
+   * around half of the max distribution weight. If we multiply
+   * that could cause high weights to get more weight than they
+   * deserve and get so regularly. This could cause a thread to
+   * be constantly overloaded.
+   *
+   * To avoid this we only move weights closer to the middle if
+   * they are all very close and we only move them one step at
+   * a time.
    */
-  Int32 num_distr_threads = (Int32)getNumQueryInstances();
-  Int32 sum_cpu_load = 0;
-  Int32 sum_send_load = 0;
-  Int32 sum_cpu_load_ldm = 0;
-  Int32 sum_send_load_ldm = 0;
-  Int32 sum_cpu_load_tc = 0;
-  Int32 sum_send_load_tc = 0;
-  Int32 sum_cpu_load_recv = 0;
-  Int32 sum_send_load_recv = 0;
+  Int32 tot_sum_cpu_load = 0;
+
+  Int32 sum_cpu_load[MAX_RR_GROUPS];
+  Int32 sum_send_load[MAX_RR_GROUPS];
+  Int32 sum_cpu_load_ldm[MAX_RR_GROUPS];
+  Int32 sum_send_load_ldm[MAX_RR_GROUPS];
+  Int32 sum_cpu_load_tc[MAX_RR_GROUPS];
+  Int32 sum_send_load_tc[MAX_RR_GROUPS];
+  Int32 sum_cpu_load_recv[MAX_RR_GROUPS];
+  Int32 sum_send_load_recv[MAX_RR_GROUPS];
+  Uint32 num_cpu_rr_group[MAX_RR_GROUPS];
+  Uint32 num_cpu_rr_group_ldm[MAX_RR_GROUPS];
+  Uint32 num_cpu_rr_group_tc[MAX_RR_GROUPS];
+  Uint32 num_cpu_rr_group_recv[MAX_RR_GROUPS];
+
   Int32 weighted_cpu_load[MAX_DISTR_THREADS];
+  for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
+  {
+    sum_cpu_load[rr_group] = 0;
+    sum_send_load[rr_group] = 0;
+    sum_cpu_load_ldm[rr_group] = 0;
+    sum_send_load_ldm[rr_group] = 0;
+    sum_cpu_load_tc[rr_group] = 0;
+    sum_send_load_tc[rr_group] = 0;
+    sum_cpu_load_recv[rr_group] = 0;
+    sum_send_load_recv[rr_group] = 0;
+    num_cpu_rr_group[rr_group] = 0;
+    num_cpu_rr_group_ldm[rr_group] = 0;
+    num_cpu_rr_group_tc[rr_group] = 0;
+    num_cpu_rr_group_recv[rr_group] = 0;
+  }
 
   if (num_ldm_threads == 0)
   {
     num_recv_threads += num_main_threads;
     num_main_threads = 0;
+    ndbassert(num_tc_threads == 0);
   }
   /**
    * Count sum of CPU load in LDM and Query threads
@@ -2472,6 +2510,7 @@ Thrman::update_query_distribution(Signal *signal)
    */
   for (Int32 i = 0; i < num_distr_threads; i++)
   {
+    Uint32 rr_group = m_rr_group[i];
     Int32 cpu_load = (Int32)
       calculate_weighted_load(m_thr_load[i][0].m_cpu_load,
                               m_thr_load[i][1].m_cpu_load);
@@ -2479,23 +2518,28 @@ Thrman::update_query_distribution(Signal *signal)
     Int32 send_load = (Int32)
       calculate_weighted_load(m_thr_load[i][0].m_send_load,
                               m_thr_load[i][1].m_send_load);
-    sum_cpu_load += cpu_load;
-    sum_send_load += send_load;
+    tot_sum_cpu_load += cpu_load;
+    sum_cpu_load[rr_group] += cpu_load;
+    sum_send_load[rr_group] += send_load;
+    num_cpu_rr_group[rr_group]++;
     max_load = MAX(cpu_load + send_load, max_load);
     if (i < num_ldm_threads)
     {
-      sum_cpu_load_ldm += cpu_load;
-      sum_send_load_ldm += send_load;
+      sum_cpu_load_ldm[rr_group] += cpu_load;
+      sum_send_load_ldm[rr_group] += send_load;
+      num_cpu_rr_group_ldm[rr_group]++;
     }
     else if (i < (num_ldm_threads + num_tc_threads))
     {
-      sum_cpu_load_tc += cpu_load;
-      sum_send_load_tc += send_load;
+      sum_cpu_load_tc[rr_group] += cpu_load;
+      sum_send_load_tc[rr_group] += send_load;
+      num_cpu_rr_group_tc[rr_group]++;
     }
     else if (i < (num_ldm_threads + num_tc_threads + num_recv_threads))
     {
-      sum_cpu_load_recv += cpu_load;
-      sum_send_load_recv += send_load;
+      sum_cpu_load_recv[rr_group] += cpu_load;
+      sum_send_load_recv[rr_group] += send_load;
+      num_cpu_rr_group_recv[rr_group]++;
     }
     else
     {
@@ -2507,10 +2551,7 @@ Thrman::update_query_distribution(Signal *signal)
     }
   }
   /* Calculate average and max CPU load on Query and LDM threads */
-  Int32 average_cpu_load_ldm = 0;
-  Int32 average_cpu_load_tc = 0;
-  Int32 average_cpu_load_recv = 0;
-  Int32 average_cpu_load = sum_cpu_load / num_distr_threads;
+  Int32 average_cpu_load = tot_sum_cpu_load / num_distr_threads;
   if (average_cpu_load < 35 &&
       max_load < 50)
   {
@@ -2523,18 +2564,41 @@ Thrman::update_query_distribution(Signal *signal)
     initial_query_distribution(signal);
     return;
   }
-  if (num_ldm_threads > 0)
+  Int32 average_cpu_load_ldm[MAX_RR_GROUPS];
+  Int32 average_cpu_load_tc[MAX_RR_GROUPS];
+  Int32 average_cpu_load_recv[MAX_RR_GROUPS];
+  for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
   {
-    average_cpu_load_ldm =
-      sum_cpu_load_ldm / num_ldm_threads;
+    if (num_cpu_rr_group_ldm[rr_group] > 0)
+    {
+      average_cpu_load_ldm[rr_group] =
+        sum_cpu_load_ldm[rr_group] / num_cpu_rr_group_ldm[rr_group];
+    }
+    else
+    {
+      average_cpu_load_ldm[rr_group] = 0;
+    }
+    if (num_cpu_rr_group_tc[rr_group] > 0)
+    {
+      average_cpu_load_tc[rr_group] =
+        sum_cpu_load_tc[rr_group] / num_cpu_rr_group_tc[rr_group];
+    }
+    else
+    {
+      average_cpu_load_tc[rr_group] = 0;
+    }
+    if (num_cpu_rr_group_recv[rr_group] > 0)
+    {
+      average_cpu_load_recv[rr_group] =
+        sum_cpu_load_recv[rr_group] / num_cpu_rr_group_recv[rr_group];
+    }
+    else
+    {
+      average_cpu_load_recv[rr_group] = 0;
+    }
   }
-  if (num_tc_threads > 0)
-  {
-    average_cpu_load_tc = sum_cpu_load_tc / num_tc_threads;
-  }
-  average_cpu_load_recv = sum_cpu_load_recv / num_recv_threads;
 
-  Uint32 average_weight;
+  bool move_weights_down[MAX_RR_GROUPS];
   {
     /**
      * We first check if we primarily should move weights up or
@@ -2546,14 +2610,29 @@ Thrman::update_query_distribution(Signal *signal)
      * only in the opposite direction and up to 2 steps in the
      * desired direction.
      */
-    Uint32 sum_weights = 0;
+    Uint32 sum_weight[MAX_RR_GROUPS];
+    Uint32 average_weight[MAX_RR_GROUPS];
+    for (Uint32 i = 0; i < m_num_rr_groups; i++)
+    {
+      sum_weight[i] = 0;
+      average_weight[i] = 0;
+    }
     for (Int32 i = 0; i < num_distr_threads; i++)
     {
-      sum_weights += m_curr_weights[i];
+      Uint32 rr_group = m_rr_group[i];
+      sum_weight[rr_group] += m_curr_weights[i];
     }
-    average_weight = sum_weights / num_distr_threads;
+    for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
+    {
+      if (num_cpu_rr_group[rr_group] > 0)
+      {
+        average_weight[rr_group] =
+          sum_weight[rr_group] / num_cpu_rr_group[rr_group];
+      }
+      move_weights_down[rr_group] =
+        (average_weight[rr_group] < (MAX_DISTRIBUTION_WEIGHT / 2));
+    }
   }
-  bool move_weights_down = (average_weight < (MAX_DISTRIBUTION_WEIGHT / 2));
 
   /**
    * Now for each thread try to move the weight such that it moves towards
@@ -2567,13 +2646,21 @@ Thrman::update_query_distribution(Signal *signal)
    * query thread CPUs.
    */
   /* Combined LDM+Query threads treated as Query threads */
-  Int32 diff_ldm_tc = average_cpu_load_ldm - average_cpu_load_tc;
-  Int32 diff_ldm_recv = average_cpu_load_ldm - average_cpu_load_recv;
+  Int32 diff_ldm_tc[MAX_RR_GROUPS];
+  Int32 diff_ldm_recv[MAX_RR_GROUPS];
+  for (Uint32 rr_group; rr_group < m_num_rr_groups; rr_group++)
+  {
+    diff_ldm_tc[rr_group] =
+      average_cpu_load_ldm[rr_group] - average_cpu_load_tc[rr_group];
+    diff_ldm_recv[rr_group] =
+      average_cpu_load_ldm[rr_group] - average_cpu_load_recv[rr_group];
+  }
   Int32 min_tc_diff = getTcDecrease();
   Int32 min_recv_diff = getRecvDecrease();
 
   for (Int32 i = 0; i < num_distr_threads; i++)
   {
+    Uint32 rr_group = m_rr_group[i];
     Int32 cpu_load = (Int32)weighted_cpu_load[i];
     Int32 cpu_change = 0;
     Int32 change = 0;
@@ -2588,7 +2675,7 @@ Thrman::update_query_distribution(Signal *signal)
        * LDM thread load isn't changed, we simply try to keep them at
        * current load.
        */
-      cpu_change = cpu_load - average_cpu_load_ldm;
+      cpu_change = cpu_load - average_cpu_load_ldm[rr_group];
     }
     else if (i < (num_ldm_threads + num_tc_threads))
     {
@@ -2597,14 +2684,14 @@ Thrman::update_query_distribution(Signal *signal)
        * We try to change the cpu_change such that we have a lower load
        * in TC threads according to the value calculated in min_tc_diff.
        */
-      if (diff_ldm_tc > min_tc_diff)
+      if (diff_ldm_tc[rr_group] > min_tc_diff)
       {
         /**
          * The diff between TC thread load and LDM thread load is already
          * large enough. Keep it unless the difference is more than 10
          * percent higher than the goal difference.
          */
-        if (diff_ldm_tc > (min_tc_diff + 2))
+        if (diff_ldm_tc[rr_group] > (min_tc_diff + 2))
         {
           /**
            * Increase the load by increasing the cpu_change in positive
@@ -2617,15 +2704,15 @@ Thrman::update_query_distribution(Signal *signal)
       {
         change = +6;
       }
-      cpu_change = cpu_load - average_cpu_load_tc;
+      cpu_change = cpu_load - average_cpu_load_tc[rr_group];
       cpu_change += change;
     }
     else if (i < (num_ldm_threads + num_tc_threads + num_recv_threads))
     {
       /* Same handling as Tc threads, but instead using min_recv_diff */
-      if (diff_ldm_recv > min_recv_diff)
+      if (diff_ldm_recv[rr_group] > min_recv_diff)
       {
-        if (diff_ldm_recv > (min_recv_diff + 2))
+        if (diff_ldm_recv[rr_group] > (min_recv_diff + 2))
         {
           change = -8;
         }
@@ -2634,7 +2721,7 @@ Thrman::update_query_distribution(Signal *signal)
       {
         change = +6;
       }
-      cpu_change = cpu_load - average_cpu_load_recv;
+      cpu_change = cpu_load - average_cpu_load_recv[rr_group];
       cpu_change += change;
     }
     else
@@ -2645,14 +2732,14 @@ Thrman::update_query_distribution(Signal *signal)
     Int32 loc_change = get_change_percent(cpu_change);
     Uint32 before_weight = m_curr_weights[i];
     m_curr_weights[i] = apply_change_query(loc_change,
-                                           move_weights_down,
+                                           move_weights_down[rr_group],
                                            m_curr_weights[i]);
     DEB_SCHED_WEIGHTS(("(%u) before: %u, after: %u, loc_change: %d, move: %u",
                        i,
                        before_weight,
                        m_curr_weights[i],
                        loc_change,
-                       move_weights_down));
+                       move_weights_down[rr_group]));
   }
   DEB_SCHED_WEIGHTS(("LDM/QT CPU load stats: %u %u %u %u %u %u %u %u"
                      " %u %u %u %u %u %u %u %u %u %u %u",
@@ -2673,10 +2760,60 @@ Thrman::update_query_distribution(Signal *signal)
                      weights[8], weights[9], weights[10], weights[11],
                      weights[12], weights[13], weights[14], weights[15],
                      weights[16], weights[17], weights[18], weights[19]));
+  adjust_stored_weights(&weights[0]);
+  memcpy(&m_curr_weights[0], &weights[0], num_distr_threads * 4);
+  DEB_SCHED_WEIGHTS(("LDM/QT weights after adjust: %u %u %u %u %u %u %u %u"
+                     " %u %u %u %u %u %u %u %u %u %u %u %u",
+                     weights[0], weights[1], weights[2], weights[3],
+                     weights[4], weights[5], weights[6], weights[7],
+                     weights[8], weights[9], weights[10], weights[11],
+                     weights[12], weights[13], weights[14], weights[15],
+                     weights[16], weights[17], weights[18], weights[19]));
 
   adjust_weights(&weights[0]);
   check_weights(&weights[0]);
   send_query_distribution(&weights[0], signal, false);
+}
+
+void
+Thrman::adjust_stored_weights(Uint32 *weights)
+{
+  Uint32 num_distr_threads = getNumQueryInstances();
+  for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
+  {
+    Uint32 max_weight = 1;
+    Uint32 min_weight = MAX_DISTRIBUTION_WEIGHT;
+    for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
+    {
+      if (m_rr_group[thr_no] == rr_group)
+      {
+        max_weight = std::max(max_weight, weights[thr_no]);
+        min_weight = std::min(min_weight, weights[thr_no]);
+      }
+    }
+    if (max_weight > (min_weight + 2))
+      continue;
+    if (max_weight <= (MAX_DISTRIBUTION_WEIGHT / 2))
+    {
+      for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
+      {
+        if (m_rr_group[thr_no] == rr_group)
+        {
+          weights[thr_no]++;
+        }
+      }
+    }
+    else if (max_weight >= ((4 * MAX_DISTRIBUTION_WEIGHT) / 6))
+    {
+      for (Uint32 thr_no = 0; thr_no < num_distr_threads; thr_no++)
+      {
+        if (m_rr_group[thr_no] == rr_group)
+        {
+          weights[thr_no]--;
+        }
+      }
+    }
+  }
 }
 
 void
