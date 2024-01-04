@@ -2467,13 +2467,9 @@ Thrman::update_query_distribution(Signal *signal)
   Int32 tot_sum_cpu_load = 0;
 
   Int32 sum_cpu_load[MAX_RR_GROUPS];
-  Int32 sum_send_load[MAX_RR_GROUPS];
   Int32 sum_cpu_load_ldm[MAX_RR_GROUPS];
-  Int32 sum_send_load_ldm[MAX_RR_GROUPS];
   Int32 sum_cpu_load_tc[MAX_RR_GROUPS];
-  Int32 sum_send_load_tc[MAX_RR_GROUPS];
   Int32 sum_cpu_load_recv[MAX_RR_GROUPS];
-  Int32 sum_send_load_recv[MAX_RR_GROUPS];
   Uint32 num_cpu_rr_group[MAX_RR_GROUPS];
   Uint32 num_cpu_rr_group_ldm[MAX_RR_GROUPS];
   Uint32 num_cpu_rr_group_tc[MAX_RR_GROUPS];
@@ -2483,13 +2479,9 @@ Thrman::update_query_distribution(Signal *signal)
   for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
   {
     sum_cpu_load[rr_group] = 0;
-    sum_send_load[rr_group] = 0;
     sum_cpu_load_ldm[rr_group] = 0;
-    sum_send_load_ldm[rr_group] = 0;
     sum_cpu_load_tc[rr_group] = 0;
-    sum_send_load_tc[rr_group] = 0;
     sum_cpu_load_recv[rr_group] = 0;
-    sum_send_load_recv[rr_group] = 0;
     num_cpu_rr_group[rr_group] = 0;
     num_cpu_rr_group_ldm[rr_group] = 0;
     num_cpu_rr_group_tc[rr_group] = 0;
@@ -2514,31 +2506,28 @@ Thrman::update_query_distribution(Signal *signal)
     Int32 cpu_load = (Int32)
       calculate_weighted_load(m_thr_load[i][0].m_cpu_load,
                               m_thr_load[i][1].m_cpu_load);
-    weighted_cpu_load[i] = cpu_load;
     Int32 send_load = (Int32)
       calculate_weighted_load(m_thr_load[i][0].m_send_load,
                               m_thr_load[i][1].m_send_load);
+    cpu_load += send_load;
+    weighted_cpu_load[i] = cpu_load;
     tot_sum_cpu_load += cpu_load;
     sum_cpu_load[rr_group] += cpu_load;
-    sum_send_load[rr_group] += send_load;
     num_cpu_rr_group[rr_group]++;
-    max_load = MAX(cpu_load + send_load, max_load);
+    max_load = MAX(cpu_load, max_load);
     if (i < num_ldm_threads)
     {
       sum_cpu_load_ldm[rr_group] += cpu_load;
-      sum_send_load_ldm[rr_group] += send_load;
       num_cpu_rr_group_ldm[rr_group]++;
     }
     else if (i < (num_ldm_threads + num_tc_threads))
     {
       sum_cpu_load_tc[rr_group] += cpu_load;
-      sum_send_load_tc[rr_group] += send_load;
       num_cpu_rr_group_tc[rr_group]++;
     }
     else if (i < (num_ldm_threads + num_tc_threads + num_recv_threads))
     {
       sum_cpu_load_recv[rr_group] += cpu_load;
-      sum_send_load_recv[rr_group] += send_load;
       num_cpu_rr_group_recv[rr_group]++;
     }
     else
@@ -2551,8 +2540,8 @@ Thrman::update_query_distribution(Signal *signal)
     }
   }
   /* Calculate average and max CPU load on Query and LDM threads */
-  Int32 average_cpu_load = tot_sum_cpu_load / num_distr_threads;
-  if (average_cpu_load < 35 &&
+  Int32 average_load = tot_sum_cpu_load / num_distr_threads;
+  if (average_load < 35 &&
       max_load < 50)
   {
     /**
@@ -2564,11 +2553,21 @@ Thrman::update_query_distribution(Signal *signal)
     initial_query_distribution(signal);
     return;
   }
+  Int32 average_cpu_load[MAX_RR_GROUPS];
   Int32 average_cpu_load_ldm[MAX_RR_GROUPS];
   Int32 average_cpu_load_tc[MAX_RR_GROUPS];
   Int32 average_cpu_load_recv[MAX_RR_GROUPS];
   for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
   {
+    if (num_cpu_rr_group[rr_group] > 0)
+    {
+      average_cpu_load[rr_group] =
+        sum_cpu_load[rr_group] / num_cpu_rr_group[rr_group];
+    }
+    else
+    {
+      average_cpu_load_ldm[rr_group] = 0;
+    }
     if (num_cpu_rr_group_ldm[rr_group] > 0)
     {
       average_cpu_load_ldm[rr_group] =
@@ -2667,7 +2666,7 @@ Thrman::update_query_distribution(Signal *signal)
     if (num_ldm_threads == 0)
     {
       /* All threads are receive thread */
-      cpu_change = cpu_load - average_cpu_load;
+      cpu_change = cpu_load - average_cpu_load[rr_group];
     }
     else if (i < num_ldm_threads)
     {
@@ -2727,7 +2726,7 @@ Thrman::update_query_distribution(Signal *signal)
     else
     {
       /* Main thread treated as average threads */
-      cpu_change = cpu_load - average_cpu_load;
+      cpu_change = cpu_load - average_cpu_load[rr_group];
     }
     Int32 loc_change = get_change_percent(cpu_change);
     Uint32 before_weight = m_curr_weights[i];
