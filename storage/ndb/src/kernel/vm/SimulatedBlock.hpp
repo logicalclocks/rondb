@@ -2193,6 +2193,43 @@ public:
             globalData.ndbMtMainThreads);
       }
     }
+    for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
+    {
+      if (thr_no < globalData.ndbMtLqhThreads)
+      {
+        g_eventLogger->info("LDM Thread %u is part of Round Robin Group %u",
+                            thr_no, m_rr_group[thr_no]);
+      }
+      else if (thr_no <
+               (globalData.ndbMtLqhThreads + globalData.ndbMtTcThreads))
+      {
+        g_eventLogger->info("TC Thread %u is part of Round Robin Group %u",
+                            thr_no - globalData.ndbMtLqhThreads,
+                            m_rr_group[thr_no]);
+      }
+      else if (thr_no < (globalData.ndbMtLqhThreads +
+                         globalData.ndbMtTcThreads +
+                         globalData.ndbMtReceiveThreads))
+      {
+        g_eventLogger->info("recv Thread %u is part of Round Robin Group %u",
+                            thr_no -
+                            (globalData.ndbMtLqhThreads +
+                             globalData.ndbMtTcThreads),
+                            m_rr_group[thr_no]);
+      }
+      else if (thr_no == (globalData.ndbMtLqhThreads +
+                          globalData.ndbMtTcThreads +
+                          globalData.ndbMtReceiveThreads))
+      {
+        g_eventLogger->info("main Thread is part of Round Robin Group %u",
+                            m_rr_group[thr_no]);
+      }
+      else
+      {
+        g_eventLogger->info("rep Thread is part of Round Robin Group %u",
+                            m_rr_group[thr_no]);
+      }
+    }
   }
   void distribute_new_weights(DistributionHandler *handle,
                               RoundRobinInfo *rr_info,

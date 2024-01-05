@@ -5956,15 +5956,6 @@ void
 SimulatedBlock::print_static_distr_info(DistributionHandler * const handle)
 {
   Uint32 num_query_instances = getNumQueryInstances();
-  Uint32 num_ldm_instances = getNumLDMInstances();
-  /* Print the LDM groups */
-  for (Uint32 ldm = 0; ldm < num_ldm_instances; ldm++)
-  {
-    g_eventLogger->info("LDM Group %u contains LDM thread %u",
-                        ldm, ldm + 1);
-    g_eventLogger->info("LDM Thread %u contains Query Worker",
-                        ldm + 1);
-  }
   /* Print the Round Robin groups */
   Uint32 found_query = 0;
   Uint32 num_rr_groups = m_num_rr_groups;
@@ -5976,8 +5967,7 @@ SimulatedBlock::print_static_distr_info(DistributionHandler * const handle)
       {
         found_query++;
         /* LDM contained in this Round Robin group */
-        g_eventLogger->info("LDM Group %u contained in Round Robin group %u"
-                            ", RR groups only use query threads",
+        g_eventLogger->info("Thread %u contained in Round Robin group %u",
                             query, rr_group);
       }
     }

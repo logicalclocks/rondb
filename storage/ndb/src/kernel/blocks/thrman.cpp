@@ -2540,8 +2540,8 @@ Thrman::update_query_distribution(Signal *signal)
     }
   }
   /* Calculate average and max CPU load on Query and LDM threads */
-  Int32 average_load = tot_sum_cpu_load / num_distr_threads;
-  if (average_load < 35 &&
+  Int32 average = tot_sum_cpu_load / num_distr_threads;
+  if (average < 40 &&
       max_load < 50)
   {
     /**
@@ -2663,10 +2663,12 @@ Thrman::update_query_distribution(Signal *signal)
     Int32 cpu_load = (Int32)weighted_cpu_load[i];
     Int32 cpu_change = 0;
     Int32 change = 0;
+    Uint32 average_load = 0;
     if (num_ldm_threads == 0)
     {
       /* All threads are receive thread */
-      cpu_change = cpu_load - average_cpu_load[rr_group];
+      average_load = average_cpu_load[rr_group];
+      cpu_change = cpu_load - average_load;
     }
     else if (i < num_ldm_threads)
     {
@@ -2674,7 +2676,8 @@ Thrman::update_query_distribution(Signal *signal)
        * LDM thread load isn't changed, we simply try to keep them at
        * current load.
        */
-      cpu_change = cpu_load - average_cpu_load_ldm[rr_group];
+      average_load = average_cpu_load_ldm[rr_group];
+      cpu_change = cpu_load - average_load;
     }
     else if (i < (num_ldm_threads + num_tc_threads))
     {
@@ -2703,7 +2706,8 @@ Thrman::update_query_distribution(Signal *signal)
       {
         change = +6;
       }
-      cpu_change = cpu_load - average_cpu_load_tc[rr_group];
+      average_load = average_cpu_load_tc[rr_group];
+      cpu_change = cpu_load - average_load;
       cpu_change += change;
     }
     else if (i < (num_ldm_threads + num_tc_threads + num_recv_threads))
@@ -2720,23 +2724,28 @@ Thrman::update_query_distribution(Signal *signal)
       {
         change = +6;
       }
-      cpu_change = cpu_load - average_cpu_load_recv[rr_group];
+      average_load = average_cpu_load_recv[rr_group];
+      cpu_change = cpu_load - average_load;
       cpu_change += change;
     }
     else
     {
       /* Main thread treated as average threads */
-      cpu_change = cpu_load - average_cpu_load[rr_group];
+      average_load = average_cpu_load[rr_group];
+      cpu_change = cpu_load - average_load;
     }
     Int32 loc_change = get_change_percent(cpu_change);
     Uint32 before_weight = m_curr_weights[i];
     m_curr_weights[i] = apply_change_query(loc_change,
                                            move_weights_down[rr_group],
                                            m_curr_weights[i]);
-    DEB_SCHED_WEIGHTS(("(%u) before: %u, after: %u, loc_change: %d, move: %u",
+    DEB_SCHED_WEIGHTS(("(%u) before: %u, after: %u, cpu_change: %u, average_load: %u"
+                       ", loc_change: %d, move: %u",
                        i,
                        before_weight,
                        m_curr_weights[i],
+                       cpu_change,
+                       average_load,
                        loc_change,
                        move_weights_down[rr_group]));
   }
