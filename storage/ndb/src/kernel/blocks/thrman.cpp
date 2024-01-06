@@ -2739,7 +2739,7 @@ Thrman::update_query_distribution(Signal *signal)
     m_curr_weights[i] = apply_change_query(loc_change,
                                            move_weights_down[rr_group],
                                            m_curr_weights[i]);
-    DEB_SCHED_WEIGHTS(("(%u) before: %u, after: %u, cpu_change: %u, average_load: %u"
+    DEB_SCHED_WEIGHTS(("(%u) before: %u, after: %u, cpu_change: %d, average_load: %u"
                        ", loc_change: %d, move: %u",
                        i,
                        before_weight,

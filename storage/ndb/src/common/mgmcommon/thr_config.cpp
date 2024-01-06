@@ -399,25 +399,25 @@ THRConfig::compute_automatic_thread_config(
     { 2, 0, 0, 0, 0, 1, 3 }, // 4-5 CPUs
     { 3, 0, 0, 0, 0, 1, 5 }, // 6-7 CPUs
     { 4, 0, 0, 4, 2, 1, 1 }, // 8-9 CPUs
-    { 5, 1, 0, 5, 2, 1, 1 }, // 10-11 CPUs
+    { 5, 1, 0, 4, 3, 1, 1 }, // 10-11 CPUs
     { 6, 1, 0, 6, 3, 1, 1 }, // 12-13 CPUs
-    { 7, 1, 0, 7, 3, 1, 2 }, // 14-15 CPUs
+    { 7, 1, 0, 6, 4, 1, 2 }, // 14-15 CPUs
     { 8, 1, 0, 8, 4, 1, 2 }, // 16-17 CPUs
     { 9, 1, 1, 8, 4, 1, 3 }, // 18-19 CPUs
-    { 10, 1, 1, 9, 5, 1, 3 }, // 20-21 CPUs
+    { 10, 1, 1, 8, 5, 2, 3 }, // 20-21 CPUs
     { 11, 1, 1, 10, 5, 2, 3 }, // 22-23 CPUs
-    { 12, 1, 1, 11, 6, 2, 3 }, // 24-25 CPUs
+    { 12, 1, 1, 10, 6, 2, 4 }, // 24-25 CPUs
     { 13, 1, 1, 12, 6, 2, 4 }, // 26-27 CPUs
-    { 14, 1, 1, 13, 7, 2, 4 }, // 28-29 CPUs
-    { 15, 1, 1, 15, 7, 2, 4 }, // 30-31 CPUs
+    { 14, 1, 1, 12, 8, 2, 4 }, // 28-29 CPUs
+    { 15, 1, 1, 14, 8, 2, 4 }, // 30-31 CPUs
     { 16, 1, 1, 16, 8, 2, 4 }, // 32-33 CPUs
-    { 17, 1, 1, 17, 8, 2, 5 }, // 34-35 CPUs
+    { 17, 1, 1, 16, 9, 2, 5 }, // 34-35 CPUs
     { 18, 1, 1, 18, 9, 2, 5 }, // 36-37 CPUs
-    { 19, 1, 1, 19, 9, 3, 5 }, // 38-39 CPUs
+    { 19, 1, 1, 18, 10, 3, 5 }, // 38-39 CPUs
     { 20, 1, 1, 20, 10, 3, 5 }, // 40-41 CPUs
-    { 21, 1, 1, 21, 10, 3, 6 }, // 42-43 CPUs
+    { 21, 1, 1, 20, 11, 3, 6 }, // 42-43 CPUs
     { 21, 1, 1, 22, 11, 3, 6 }, // 44-45 CPUs
-    { 21, 1, 1, 23, 12, 3, 6 }, // 46-47 CPUs
+    { 21, 1, 1, 22, 12, 4, 6 }, // 46-47 CPUs
     { 22, 1, 1, 24, 12, 4, 6 }, // 48
   };
   Uint32 cpu_cnt;
@@ -506,6 +506,12 @@ THRConfig::compute_automatic_thread_config(
     Uint32 rem_threads = cpu_cnt -
       (ldm_threads + 2 + tc_threads + recv_threads + send_threads);
     ldm_threads += rem_threads;
+    if ((ldm_threads & 1) == 1)
+    {
+      /* Balanced Round Robin groups */
+      ldm_threads--;
+      tc_threads++;
+    }
   }
   else
   {
@@ -518,7 +524,7 @@ THRConfig::compute_automatic_thread_config(
     recv_threads = table[used_map_id].recv_threads;
     if (cpu_cnt % 2 != 0)
     {
-      ldm_threads++;
+      tc_threads++;
     }
   }
 }
@@ -656,6 +662,16 @@ THRConfig::do_parse_auto(unsigned realtime,
      * on a CPU with a single CPU per core it won't matter so much how
      * we distribute threads inside L3 caches, it only matters which
      * L3 cache the CPUs belong to.
+     *
+     * We also need to ensure that we have a balance between Round Robin
+     * groups. Thus for example if we have 2 Round Robin groups and 10
+     * LDM threads, then it is important that we have 5 LDM threads in
+     * each Round Robin groups. This means that some LDM threads might
+     * need to be mixed with some main and rep threads and other threads.
+     * This only applies when we use automatic thread configuration without
+     * setting NumCPUs. When setting NumCPUs we simply spread on Round
+     * Robin groups in an even fashion since there is no knowledge of
+     * which L3 cache a Round Robin group belongs to.
      */
     num_rr_groups =
       Ndb_CreateCPUMap(num_query_instances);
@@ -667,6 +683,19 @@ THRConfig::do_parse_auto(unsigned realtime,
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 rr_group = 0;
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap(rr_group);
+
+    /**
+     * Calculate the number of LDM threads that will share CPU core with
+     * another LDM thread and how many will share with other threads to
+     * ensure balanced usage of Round Robin groups.
+     */
+    Uint32 num_ldms_per_rr_group = ldm_threads / num_rr_groups;
+    Uint32 odd_ldms_per_rr_group = num_ldms_per_rr_group & 1;
+    Uint32 num_only_ldm_groups =
+      num_ldms_per_rr_group - odd_ldms_per_rr_group;
+    Uint32 num_only_ldms_in_group = 2 * num_only_ldm_groups;
+    assert(num_only_ldms_in_group <= count_ldm_threads);
+
     for (Uint32 i = 0; i < num_cpus; i++)
     {
       Uint32 thread_type = T_SEND; // T_SEND silences compiler
@@ -676,10 +705,11 @@ THRConfig::do_parse_auto(unsigned realtime,
       {
         next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id, rr_group);
       }
-      if (count_ldm_threads > 0)
+      if (num_only_ldms_in_group > 0)
       {
         thread_type = T_LDM;
         count_ldm_threads--;
+        num_only_ldms_in_group--;
         inx = count_ldm_threads;
       }
       else
@@ -734,7 +764,13 @@ THRConfig::do_parse_auto(unsigned realtime,
         }
         if (!odd)
         {
-          if (count_recv_threads > 0)
+          if (count_ldm_threads > 0)
+          {
+            thread_type = T_LDM;
+            count_ldm_threads--;
+            inx = count_ldm_threads;
+          }
+          else if (count_recv_threads > 0)
           {
             thread_type = T_RECV;
             count_recv_threads--;
