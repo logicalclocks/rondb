@@ -16,11 +16,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
-#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
-#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOGGER_HPP_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOGGER_HPP_
+
+#include "rdrs_dal.h"
 
 #include <string>
-#include "src/rdrs-dal.h"
 
 #define PanicLevel 0
 #define FatalLevel 1
@@ -31,12 +32,10 @@
 #define TraceLevel 6
 
 // FIXME TODO  Make small function inline and pass log level from go layer  JIRA RONDB-287
-
+namespace RDRSLogger {
 void log(const int level, const char *msg);
 
 void setLogCallBackFns(const Callbacks cbs);
-
-void log(const int level, const char *msg);
 
 void LOG_PANIC(const char *msg);
 
@@ -63,5 +62,6 @@ void LOG_DEBUG(const char *msg);
 void LOG_DEBUG(const std::string msg);
 
 void LOG_TRACE(char *msg);
+}  // namespace RDRSLogger
 
-#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOGGER_HPP_

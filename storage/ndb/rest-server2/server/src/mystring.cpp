@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,7 +17,8 @@
  * USA.
  */
 
-#include "src/mystring.hpp"
+#include "mystring.hpp"
+
 #include <ndb_types.h>
 #include <stdint.h>
 #include <cstring>
@@ -82,8 +83,8 @@ std::string escape_string(const std::string &s) noexcept {
   std::size_t pos = 0;
 
   for (size_t i = 0; i < s.size(); i++) {
-    const char c  = s[i];
-    Int8 ci = (Int8)c;
+    const char c = s[i];
+    Int8 ci      = (Int8)c;
     switch (ci) {
     // quotation mark (0x22)
     case '"': {
@@ -149,6 +150,60 @@ std::string escape_string(const std::string &s) noexcept {
       }
       break;
     }
+    }
+  }
+
+  return result;
+}
+
+std::string unescape_string(const std::string &s) noexcept {
+  std::string result;
+  result.reserve(s.size());
+
+  for (size_t i = 0; i < s.size(); ++i) {
+    char c = s[i];
+
+    if (c == '\\' && i + 1 < s.size()) {
+      char next = s[i + 1];
+      switch (next) {
+      case '"':
+        result += '"';
+        break;
+      case '\\':
+        result += '\\';
+        break;
+      case 'b':
+        result += '\b';
+        break;
+      case 'f':
+        result += '\f';
+        break;
+      case 'n':
+        result += '\n';
+        break;
+      case 'r':
+        result += '\r';
+        break;
+      case 't':
+        result += '\t';
+        break;
+      case 'u': {
+        if (i + 5 < s.size()) {
+          // Convert the next 4 characters after "\u" from hex to char
+          std::string hex = s.substr(i + 2, 4);
+          int ch;
+          sscanf(hex.c_str(), "%x", &ch);
+          result += static_cast<char>(ch);
+          i += 4;  // Skip over the hex digits
+        }
+        break;
+      }
+      default:
+        result += next;
+      }
+      i++;  // Skip the next character as it's part of an escape sequence
+    } else {
+      result += c;
     }
   }
 

@@ -17,10 +17,11 @@
  * USA.
  */
 
-#include "src/rdrs_rondb_connection_pool.hpp"
+#include "rdrs_rondb_connection_pool.hpp"
 #include "ndb_global.h"
-#include "src/error-strings.h"
-#include "src/status.hpp"
+#include "error_strings.h"
+#include "status.hpp"
+
 #include <util/require.h>
 
 RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
@@ -32,7 +33,7 @@ RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
   delete metadataConnection;
   dataConnection     = nullptr;
   metadataConnection = nullptr;
-  is_shutdown = true;
+  is_shutdown        = true;
   ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
 }
 

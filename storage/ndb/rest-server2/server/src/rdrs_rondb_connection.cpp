@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022, 2023 Hopsworks AB
+ * Copyright (C) 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,7 +17,11 @@
  * USA.
  */
 
-#include "src/rdrs_rondb_connection.hpp"
+#include "rdrs_rondb_connection.hpp"
+#include "status.hpp"
+#include "error_strings.h"
+#include "logger.hpp"
+
 #include <cstddef>
 #include <cstring>
 #include <iostream>
@@ -26,11 +30,6 @@
 #include <NdbThread.h>
 #include <ndb_global.h>
 #include <util/require.h>
-#include "src/status.hpp"
-#include "src/error-strings.h"
-#include "src/logger.hpp"
-#include <util/require.h>
-
 
 //--------------------------------------------------------------------------------------------------
 
@@ -47,7 +46,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *
   stats.ndb_objects_deleted         = 0;
   stats.is_reconnection_in_progress = false;
   stats.is_shutdown                 = false;
-  stats.is_shutting_down             = false;
+  stats.is_shutting_down            = false;
   stats.connection_state            = DISCONNECTED;
 
   size_t connection_string_len = strlen(connection_string);
@@ -70,7 +69,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *
 
 RS_Status RDRSRonDBConnection::Connect() {
 
-  LOG_INFO(std::string("Connecting to ") + connection_string);
+  RDRSLogger::LOG_INFO(std::string("Connecting to ") + connection_string);
 
   {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
@@ -104,7 +103,7 @@ RS_Status RDRSRonDBConnection::Connect() {
     stats.connection_state = CONNECTED;
   }
 
-  LOG_INFO("RonDB connection and object pool initialized");
+  RDRSLogger::LOG_INFO("RonDB connection and object pool initialized");
   return RS_OK;
 }
 
@@ -129,7 +128,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     }
 
     if (is_shutdown) {
-      LOG_ERROR(ERROR_034);
+      RDRSLogger::LOG_ERROR(ERROR_034);
       return RS_SERVER_ERROR(ERROR_034);
     }
 
@@ -137,12 +136,13 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
       if (!reconnection_in_progress) {
         // If previous reconnection attempts have failed then
         // restart the reconnection process
-        LOG_DEBUG("GetNdbObject triggered reconnection");
+        RDRSLogger::LOG_DEBUG("GetNdbObject triggered reconnection");
         Reconnect();
       }
 
-      LOG_WARN(ERROR_033 + std::string(" Connection State: ") + std::to_string(connection_state) +
-               std::string(" Reconnection State: ") + std::to_string(reconnection_in_progress));
+      RDRSLogger::LOG_WARN(ERROR_033 + std::string(" Connection State: ") +
+                           std::to_string(connection_state) + std::string(" Reconnection State: ") +
+                           std::to_string(reconnection_in_progress));
       return RS_SERVER_ERROR(ERROR_033);
     }
   }
@@ -185,7 +185,7 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *stat
     // Classification.UnknownResultError is the classification
     // for loss of connectivity to the cluster
     if (status->classification == NdbError::UnknownResultError) {
-      LOG_ERROR("Detected connection loss. Triggering reconnection.");
+      RDRSLogger::LOG_ERROR("Detected connection loss. Triggering reconnection.");
       Reconnect();
     }
   }
@@ -209,7 +209,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   Int64 startTime   = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   Int64 timeElapsed = 0;
 
-  if (end) { // we are shutting down for good
+  if (end) {  // we are shutting down for good
     std::lock_guard<std::mutex> guard(connectionInfoMutex);
     stats.is_shutting_down = true;
   }
@@ -226,8 +226,8 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     }
 
     if (expectedSize != sizeGot) {
-      LOG_WARN("Waiting to all NDB objects to return before shutdown. Expected Size: " +
-               std::to_string(expectedSize) + " Have: " + std::to_string(sizeGot));
+      RDRSLogger::LOG_WARN("Waiting to all NDB objects to return before shutdown. Expected Size: " +
+                           std::to_string(expectedSize) + " Have: " + std::to_string(sizeGot));
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
     } else {
       allNDBObjectsCountedFor = true;
@@ -238,13 +238,13 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   } while (timeElapsed < 120 * 1000);
 
   if (!allNDBObjectsCountedFor) {
-    LOG_ERROR("Timedout waiting for all NDB objects.");
+    RDRSLogger::LOG_ERROR("Timedout waiting for all NDB objects.");
   } else {
-    LOG_INFO("All NDB objects are accounted for. Total objects: " +
-             std::to_string(stats.ndb_objects_created));
+    RDRSLogger::LOG_INFO("All NDB objects are accounted for. Total objects: " +
+                         std::to_string(stats.ndb_objects_created));
   }
 
-  LOG_INFO("Shutting down RonDB connection and NDB object pool");
+  RDRSLogger::LOG_INFO("Shutting down RonDB connection and NDB object pool");
 
   {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
@@ -274,10 +274,10 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     std::lock_guard<std::mutex> guard(connectionMutex);
     // delete connection
     try {
-      LOG_DEBUG("delete ndbconnection");
+      RDRSLogger::LOG_DEBUG("delete ndbconnection");
       delete ndbConnection;
     } catch (...) {
-      LOG_WARN("Exception in Shutdown");
+      RDRSLogger::LOG_WARN("Exception in Shutdown");
     }
     ndbConnection = nullptr;
   }
@@ -286,7 +286,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
     std::lock_guard<std::mutex> guard(connectionMutex);
     if (end) {
-      stats.is_shutdown     = true;
+      stats.is_shutdown      = true;
       stats.is_shutting_down = false;
       free(connection_string);
       free(node_ids);
@@ -296,7 +296,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
       }
     }
 
-    LOG_INFO("RonDB connection and NDB object pool shutdown");
+    RDRSLogger::LOG_INFO("RonDB connection and NDB object pool shutdown");
     return RS_OK;
   }
 }
@@ -337,7 +337,7 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
 //--------------------------------------------------------------------------------------------------
 
 static void *reconnect_thread_wrapper(void *arg) {
-  LOG_INFO("Reconnection thread has started running.");
+  RDRSLogger::LOG_INFO("Reconnection thread has started running.");
   RDRSRonDBConnection *rdrsRonDBConnection = (RDRSRonDBConnection *)arg;
   rdrsRonDBConnection->ReconnectHandler();
   return NULL;
@@ -352,7 +352,8 @@ RS_Status RDRSRonDBConnection::Reconnect() {
   std::lock_guard<std::mutex> guard(connectionMutex);
 
   if (stats.is_reconnection_in_progress) {
-    LOG_INFO("Ignoring RonDB reconnection request. A reconnection request is already in progress");
+    RDRSLogger::LOG_INFO(
+        "Ignoring RonDB reconnection request. A reconnection request is already in progress");
     return RS_SERVER_ERROR(ERROR_036);
   }
 
@@ -368,11 +369,10 @@ RS_Status RDRSRonDBConnection::Reconnect() {
                                         "reconnection_thread", NDB_THREAD_PRIO_MEAN);
 
   if (reconnectionThread == nullptr) {
-    LOG_PANIC("Failed to start reconnection thread");
+    RDRSLogger::LOG_PANIC("Failed to start reconnection thread");
   }
 
   return RS_OK;
 }
 
 //--------------------------------------------------------------------------------------------------
-

@@ -17,12 +17,14 @@
  * USA.
  */
 
+#include "logger.hpp"
+
 #include <string.h>
 #include <iostream>
-#include "src/logger.hpp"
 
 Callbacks my_cb_fns;
 
+namespace RDRSLogger {
 void setLogCallBackFns(const Callbacks cbs) {
   my_cb_fns.logger = cbs.logger;
 }
@@ -90,3 +92,4 @@ void LOG_DEBUG(const std::string msg) {
 void LOG_TRACE(char *msg) {
   log(TraceLevel, msg);
 }
+}  // namespace RDRSLogger

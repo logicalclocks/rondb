@@ -138,7 +138,7 @@ The body here is a list of arbitrary pk-reads under the key *operations*:
             "column": "id1",
             "value": 1
           }
-        ],
+        ]
       },
     },
   ]
@@ -151,27 +151,29 @@ Additional parameters:
 **Response**
 
 ```json
-[
-  {
-    "code": 200,
-    "body": {
-      "operationId": "1",
-      "data": {
-        "col0": 0,
-        "col1": 0
+{
+  "result": [
+    {
+      "code": 200,
+      "body": {
+        "operationId": "1",
+        "data": {
+          "col0": 0,
+          "col1": 0
+        }
+      }
+    },
+    {
+      "code": 200,
+      "body": {
+        "data": {
+          "col0": 1,
+          "col1": 1
+        }
       }
     }
-  },
-  {
-    "code": 200,
-    "body": {
-      "data": {
-        "col0": 1,
-        "col1": 1
-      }
-    }
-  }
-]
+  ]
+}
 ```
 
 ## Security

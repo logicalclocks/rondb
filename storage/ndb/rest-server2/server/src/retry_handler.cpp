@@ -17,7 +17,7 @@
  * USA.
  */
 
-#include "src/retry_handler.hpp"
+#include "retry_handler.hpp"
 
 Uint32 DATA_CONN_OP_RETRY_COUNT               = 3;
 Uint32 DATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS = 500;

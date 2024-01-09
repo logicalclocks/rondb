@@ -17,11 +17,11 @@
  * USA.
  */
 
-#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_POOL_
-#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_POOL_
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_POOL_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_POOL_
 
-#include "src/rdrs-dal.h"
-#include "src/rdrs_rondb_connection.hpp"
+#include "rdrs_dal.h"
+#include "rdrs_rondb_connection.hpp"
 
 class RDRSRonDBConnectionPool {
  private:
@@ -29,10 +29,8 @@ class RDRSRonDBConnectionPool {
   RDRSRonDBConnection *metadataConnection;
   bool is_shutdown = true;
 
-
-
   /**
-   * @brief Checks that the connections are initialized and 
+   * @brief Checks that the connections are initialized and
    * shutdown has not been called
    *
    * @return RS_Status A struct representing the status of the operation:
@@ -151,4 +149,4 @@ class RDRSRonDBConnectionPool {
   RonDB_Stats GetStats();
 };
 
-#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_POOL_
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_POOL_

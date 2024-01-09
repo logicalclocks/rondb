@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,13 +17,14 @@
  * USA.
  */
 
-#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
-#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_
+
+#include "rdrs_dal.h"
 
 #include <list>
 #include <mutex>
 #include <NdbApi.hpp>
-#include "src/rdrs-dal.h"
 
 class RDRSRonDBConnection {
 
@@ -116,5 +117,4 @@ class RDRSRonDBConnection {
    */
   RS_Status Shutdown(bool end);
 };
-#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
-
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_

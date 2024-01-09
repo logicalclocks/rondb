@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,14 +17,15 @@
  * USA.
  */
 
-#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_STATUS_HPP_
-#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_STATUS_HPP_
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_STATUS_HPP_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_STATUS_HPP_
+
+#include "rdrs_dal.h"
 
 #include <cstring>
 #include <string>
 #include <iostream>
 #include <NdbApi.hpp>
-#include "src/rdrs-dal.h"
 
 /**
  * create an object of RS_Status.
@@ -77,4 +78,4 @@ inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error, std::string msg,
 #define RS_RONDB_SERVER_ERROR(ndberror, msg)                                                       \
   __RS_ERROR_RONDB(ndberror, msg, __LINE__, __MYFILENAME__)
 
-#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_STATUS_HPP_
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_STATUS_HPP_

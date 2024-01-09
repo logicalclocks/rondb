@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,8 +17,8 @@
  * USA.
  */
 
-#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_MYSTRING_HPP_
-#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_MYSTRING_HPP_
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_MYSTRING_HPP_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_MYSTRING_HPP_
 
 #include <string>
 /*!
@@ -31,4 +31,6 @@ std::size_t extra_space(const std::string &s) noexcept;
 
 std::string escape_string(const std::string &s) noexcept;
 
-#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_MYSTRING_HPP_
+std::string unescape_string(const std::string &s) noexcept;
+
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_MYSTRING_HPP_
