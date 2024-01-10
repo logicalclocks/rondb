@@ -212,7 +212,7 @@ private:
   static Uint64 get_total_memory(
                   const ndb_mgm_configuration_iterator *p,
                   bool & total_memory_set);
-  Uint64 get_schema_memory(ndb_mgm_configuration_iterator *p);
+  void get_schema_memory(ndb_mgm_configuration_iterator *p, Uint64&);
   Uint64 get_backup_schema_memory(ndb_mgm_configuration_iterator *p);
   Uint64 get_replication_memory(ndb_mgm_configuration_iterator *p);
   static Uint64 get_and_set_transaction_memory(

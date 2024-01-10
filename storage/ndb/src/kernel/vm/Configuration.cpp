@@ -502,18 +502,11 @@ Configuration::get_num_nodes(Uint32 &noOfNodes,
   noOfNodes = nodeNo;
 }
 
-Uint64
-Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p)
+void
+Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
+                                 Uint64 & ret_table_mem)
 {
   Uint64 schema_memory = 0;
-  ndb_mgm_get_int64_parameter(p,
-                              CFG_DB_SCHEMA_MEM,
-                              &schema_memory);
-  if (schema_memory != 0)
-  {
-    globalData.theSchemaMemory = schema_memory;
-    return schema_memory;
-  }
   Uint32 num_replicas = 2;
   ndb_mgm_get_int_parameter(p, CFG_DB_NO_REPLICAS, &num_replicas);
   Uint32 num_fragments = 0;
@@ -813,10 +806,21 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p)
 
   DEB_AUTOMATIC_MEMORY(("Fragment map size %llu MBytes", map_size / MBYTE64));
 
-  schema_memory = schema_mem_block - table_mem;
-  schema_memory += map_size;
-  globalData.theSchemaMemory = schema_memory;
-  return schema_mem_block + map_size;
+  ret_table_mem = table_mem;
+  Uint64 config_schema_memory = 0;
+  ndb_mgm_get_int64_parameter(p,
+                              CFG_DB_SCHEMA_MEM,
+                              &config_schema_memory);
+  if (config_schema_memory != 0)
+  {
+    globalData.theSchemaMemory = config_schema_memory;
+  }
+  else
+  {
+    schema_memory = schema_mem_block - table_mem;
+    schema_memory += map_size;
+    globalData.theSchemaMemory = schema_memory;
+  }
 }
 
 Uint64
@@ -1321,11 +1325,13 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
                          " available memory");
     return false;
   }
-  Uint64 schema_memory = get_schema_memory(p);
+  Uint64 table_memory = 0;
+  get_schema_memory(p, table_memory);
+  Uint64 compute_schema_memory = globalData.theSchemaMemory;
+  Uint64 schema_memory = compute_schema_memory / 4;
 
   Uint64 compute_backup_schema_memory = get_backup_schema_memory(p);
   Uint64 backup_schema_memory = compute_backup_schema_memory / 4;
-  Uint64 extra_shared_global_memory = compute_backup_schema_memory / 4;
   
   Uint64 replication_memory = get_replication_memory(p);
   Uint64 transaction_memory =
@@ -1336,19 +1342,24 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   Uint64 compute_job_buffer =
     compute_jb_pages(&globalEmulatorData) * GLOBAL_PAGE_SIZE;
   Uint64 job_buffer = compute_job_buffer / 4;
-  extra_shared_global_memory += compute_job_buffer / 4;
   Uint64 static_overhead = compute_static_overhead();
   Uint64 os_overhead = 0;
   if (!total_memory_set)
   {
     os_overhead = compute_os_overhead(total_memory, p);
   }
-  Uint64 send_buffer = get_send_buffer(p);
+  Uint64 compute_send_buffer = get_send_buffer(p);
+  Uint64 send_buffer = compute_send_buffer / 2;
   Uint64 backup_page_memory = compute_backup_page_memory(p);
   Uint64 restore_memory = compute_restore_memory();
   Uint64 pack_memory = compute_pack_memory();
   Uint64 fs_memory = compute_fs_memory();
   Uint64 shared_global_memory = get_and_set_shared_global_memory(p);
+  Uint64 extra_shared_global_memory = 0;
+  extra_shared_global_memory += (compute_backup_schema_memory / 4);
+  extra_shared_global_memory += compute_schema_memory / 4;
+  extra_shared_global_memory += (compute_job_buffer / 4);
+  extra_shared_global_memory += (compute_send_buffer / 2);
   shared_global_memory += extra_shared_global_memory;
   Uint64 used_memory =
     schema_memory +
@@ -1366,7 +1377,8 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
     restore_memory +
     pack_memory +
     fs_memory +
-    shared_global_memory;
+    shared_global_memory +
+    table_memory;
   g_eventLogger->info("SchemaMemory is %llu MBytes", schema_memory / MBYTE64);
   g_eventLogger->info("BackupSchemaMemory is %llu MBytes",
                       backup_schema_memory / MBYTE64);
@@ -1377,22 +1389,24 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   g_eventLogger->info("Redo log buffer size total are %llu MBytes",
                       redo_buffer / MBYTE64);
   g_eventLogger->info("Undo log buffer is %llu MBytes", undo_buffer / MBYTE64);
-  g_eventLogger->info("LongMessageBuffer is %llu MBytes",
+  g_eventLogger->info("LongMessageBuffer is %llu MBytes, (not in Global Memory)",
                       long_message_buffer / MBYTE64);
   g_eventLogger->info("Send buffer sizes are %llu MBytes",
                       send_buffer / MBYTE64);
   g_eventLogger->info("Job buffer sizes are %llu MBytes",
                       job_buffer / MBYTE64);
-  g_eventLogger->info("Static overhead is %llu MBytes",
+  g_eventLogger->info("Static overhead is %llu MBytes, (not in Global Memory)",
                       static_overhead / MBYTE64);
   g_eventLogger->info("OS overhead is %llu MBytes", os_overhead / MBYTE64);
-  g_eventLogger->info("Backup Page memory is %llu MBytes",
+  g_eventLogger->info("Backup Page memory is %llu MBytes, (not in Global Memory)",
                       backup_page_memory / MBYTE64);
   g_eventLogger->info("Restore memory is %llu MBytes",
                       restore_memory / MBYTE64);
   g_eventLogger->info("Packed signal memory is %llu MBytes",
                       pack_memory / MBYTE64);
   g_eventLogger->info("NDBFS memory is %llu MBytes", fs_memory / MBYTE64);
+  g_eventLogger->info("Table memory is %llu MBytes, (not in Global Memory)",
+                      table_memory / MBYTE64);
   g_eventLogger->info("SharedGlobalMemory is %llu MBytes",
                       shared_global_memory / MBYTE64);
   g_eventLogger->info("Total memory is %llu MBytes", total_memory / MBYTE64);
@@ -2328,8 +2342,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
       noOfLocalOperations= (11 * noOfOperations) / 10;
   }
 
-  const Uint32 noOfTCLocalScanRecords = DO_DIV(noOfLocalScanRecords,
-                                               tcInstances);
   const Uint32 noOfTCScanRecords = noOfScanRecords;
 
   // ReservedXXX defaults to 25% of MaxNoOfXXX
@@ -2358,11 +2370,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
      * non-reserved operation records, so we ensure that we use a
      * large portion of the memory for reserved operation records.
      */
-#if (defined(VM_TRACE)) || (defined(ERROR_INSERT))
-    reservedOperations = 1000 * ldmInstances;
-#else
-    reservedOperations = 100000 * ldmInstances;
-#endif
+    reservedOperations = 2000 * ldmInstances;
   }
   if (reservedTransactions == 0)
   {
@@ -2446,6 +2454,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
             (reservedOperations / ldmInstances) + EXTRA_LOCAL_OPERATIONS +
             (reservedLocalScanRecords / ldmInstances) +
             NODE_RECOVERY_SCAN_OP_RECORDS;
+    ldm_reserved_operations = MAX(ldm_reserved_operations, noOfLocalOperations);
     ldm_reserved_operations = MIN(ldm_reserved_operations, UINT28_MAX);
     cfg.put(CFG_LDM_RESERVED_OPERATIONS, ldm_reserved_operations);
 
@@ -2514,65 +2523,50 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
     }
 
-    cfg.put(CFG_TC_TARGET_FRAG_LOCATION, Uint32(0));
     cfg.put(CFG_TC_MAX_FRAG_LOCATION, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_FRAG_LOCATION, Uint32(0));
 
-    cfg.put(CFG_TC_TARGET_SCAN_FRAGMENT, noOfTCLocalScanRecords);
     cfg.put(CFG_TC_MAX_SCAN_FRAGMENT, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_SCAN_FRAGMENT, reservedLocalScanRecords / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_SCAN_RECORD, noOfTCScanRecords);
     cfg.put(CFG_TC_MAX_SCAN_RECORD, noOfTCScanRecords);
     cfg.put(CFG_TC_RESERVED_SCAN_RECORD, reservedScanRecords / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_CONNECT_RECORD, noOfOperations + 16 + noOfTransactions);
     cfg.put(CFG_TC_MAX_CONNECT_RECORD, UINT32_MAX);
-    cfg.put(CFG_TC_RESERVED_CONNECT_RECORD, reservedOperations);
+    cfg.put(CFG_TC_RESERVED_CONNECT_RECORD, reservedOperations / ldmInstances);
 
     const Uint32 takeOverOperations = noOfOperations +
                                       EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION;
-    cfg.put(CFG_TC_TARGET_TO_CONNECT_RECORD, takeOverOperations);
     cfg.put(CFG_TC_MAX_TO_CONNECT_RECORD, takeOverOperations);
     cfg.put(CFG_TC_RESERVED_TO_CONNECT_RECORD, takeOverOperations);
 
-    cfg.put(CFG_TC_TARGET_COMMIT_ACK_MARKER, noOfTransactions);
     cfg.put(CFG_TC_MAX_COMMIT_ACK_MARKER, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_COMMIT_ACK_MARKER, reservedTransactions / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_TO_COMMIT_ACK_MARKER, Uint32(0));
     cfg.put(CFG_TC_MAX_TO_COMMIT_ACK_MARKER, Uint32(0));
     cfg.put(CFG_TC_RESERVED_TO_COMMIT_ACK_MARKER, Uint32(0));
 
-    cfg.put(CFG_TC_TARGET_INDEX_OPERATION, noOfIndexOperations);
     cfg.put(CFG_TC_MAX_INDEX_OPERATION, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_INDEX_OPERATION, reservedIndexOperations / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_API_CONNECT_RECORD, noOfTransactions);
     cfg.put(CFG_TC_MAX_API_CONNECT_RECORD, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_API_CONNECT_RECORD, reservedTransactions / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_TO_API_CONNECT_RECORD, reservedTransactions);
     cfg.put(CFG_TC_MAX_TO_API_CONNECT_RECORD, noOfTransactions);
     cfg.put(CFG_TC_RESERVED_TO_API_CONNECT_RECORD, reservedTransactions / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_CACHE_RECORD, noOfTransactions);
     cfg.put(CFG_TC_MAX_CACHE_RECORD, noOfTransactions);
     cfg.put(CFG_TC_RESERVED_CACHE_RECORD, reservedTransactions / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_FIRED_TRIGGER_DATA, noOfTriggerOperations);
     cfg.put(CFG_TC_MAX_FIRED_TRIGGER_DATA, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_FIRED_TRIGGER_DATA, reservedTriggerOperations / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_ATTRIBUTE_BUFFER, transactionBufferBytes);
     cfg.put(CFG_TC_MAX_ATTRIBUTE_BUFFER, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_ATTRIBUTE_BUFFER, reservedTransactionBufferBytes / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_COMMIT_ACK_MARKER_BUFFER, 2 * noOfTransactions);
     cfg.put(CFG_TC_MAX_COMMIT_ACK_MARKER_BUFFER, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_COMMIT_ACK_MARKER_BUFFER, 2 * reservedTransactions / tcInstances);
 
-    cfg.put(CFG_TC_TARGET_TO_COMMIT_ACK_MARKER_BUFFER, Uint32(0));
     cfg.put(CFG_TC_MAX_TO_COMMIT_ACK_MARKER_BUFFER, Uint32(0));
     cfg.put(CFG_TC_RESERVED_TO_COMMIT_ACK_MARKER_BUFFER, Uint32(0));
 
