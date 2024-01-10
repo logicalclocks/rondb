@@ -180,10 +180,29 @@ class Resource_limits
 
   /**
     Keep 10% of unreserved shared memory only for high priority resource
-    groups.
+    groups. Keep 4% for ultra high priority requests. Up to 90% of the
+    shared global memory also low priority requests will be accepted.
 
-    High priority of a resource group is indicated by setting the minimal
-    reserved to zero (Resource_limit::m_min == 0).
+    Ultra high memory are:
+      - Backup Schema Memory
+      - Disk records
+      - Job buffer
+      - Send buffers
+
+    The following memories gets a reserved area and never use shared global
+    memory:
+      - Data memory
+      - Disk page buffer memory
+      - File buffers
+
+    High prio memory are:
+      - Transaction Memory
+      - Replication Memory
+
+    Low prio memory are:
+      - Schema Transaction Memory
+      - Query Memory
+      - Schema Memory
   */
   static const Uint32 ULTRA_PRIO_FREE_PCT = 4;
   static const Uint32 HIGH_PRIO_FREE_PCT = 10;

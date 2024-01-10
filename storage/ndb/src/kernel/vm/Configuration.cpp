@@ -905,7 +905,7 @@ Configuration::get_replication_memory(ndb_mgm_configuration_iterator *p)
   Uint64 num_ldm_threads = Uint64(globalData.ndbMtLqhWorkers);
 
   Uint64 suma_buffer_mem =
-          Uint64(48) * MBYTE64 * num_ldm_threads;
+          Uint64(8) * MBYTE64 * num_ldm_threads;
 
   globalData.theReplicationMemory = suma_buffer_mem;
   return suma_buffer_mem;

@@ -296,9 +296,7 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
    * We can increase the number of page chunks if the user
    * has setup a very large ReplicationMemory.
    */
-  Uint64 ReplicationMemory = 0;
-  ndb_mgm_get_int64_parameter(p, CFG_DB_REPLICATION_MEM,
-                              &ReplicationMemory);
+  Uint64 ReplicationMemory = globalData.theReplicationMemory;
   ReplicationMemory /= (Uint64(32768) * Uint64(32));
   Uint32 rep_mb = Uint32(ReplicationMemory);
   /**

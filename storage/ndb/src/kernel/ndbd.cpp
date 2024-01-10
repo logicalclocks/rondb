@@ -460,11 +460,11 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
                       " until 90%% used");
 
   /**
-   * We add 32 MByte for replication memory, but this memory will get memory
-   * from SharedGlobalMemory and the resources using this memory up to 90%
-   * of the memory limit. So no concern that it is small for now.
-   * Mostly not set to 0 for small installations that might not take height
-   * for this memory.
+   * Replication Memory will use the configured amount of memory as reserved
+   * memory, it can still grow to use a major part of shared global memory.
+   * It is limited to using a maximum of 30% of the shared global memory
+   * and will not allocate from it when use of shared global memory reached
+   * more than 90%.
    */
   Uint64 ReplicationMemory = globalData.theReplicationMemory;
   Uint32 replication_memory = Uint32(ReplicationMemory / Uint64(32768));
@@ -473,10 +473,11 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   {
     Resource_limit rl;
     Uint32 shared_pages_part = (shared_pages / 10) * 3;
+    rl.m_min = replication_memory;
     rl.m_max = replication_memory + shared_pages_part;
     rl.m_max_high_prio = replication_memory + shared_pages_part;
     rl.m_resource_id = RG_REPLICATION_MEMORY;
-    // Cannot use last piece of memory
+    // Cannot use last piece of memory, reserved for ULTRA_HIGH_PRIO_MEMORY
     rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
