@@ -1,6 +1,0 @@
-go 1.23
-
-use (
-	./storage/ndb/rest-server/rest-api-server
-	./storage/ndb/rest-server2
-)
