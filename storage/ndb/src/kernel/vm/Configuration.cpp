@@ -1333,8 +1333,10 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   Uint64 redo_buffer = get_and_set_redo_buffer(p);
   Uint64 undo_buffer = get_and_set_undo_buffer(p);
   Uint64 long_message_buffer = get_and_set_long_message_buffer(p);
-  Uint64 job_buffer = compute_jb_pages(&globalEmulatorData) * 
-                      GLOBAL_PAGE_SIZE;
+  Uint64 compute_job_buffer =
+    compute_jb_pages(&globalEmulatorData) * GLOBAL_PAGE_SIZE;
+  Uint64 job_buffer = compute_job_buffer / 4;
+  Uint64 extra_shared_global_memory = compute_job_buffer / 4;
   Uint64 static_overhead = compute_static_overhead();
   Uint64 os_overhead = 0;
   if (!total_memory_set)
@@ -1347,6 +1349,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   Uint64 pack_memory = compute_pack_memory();
   Uint64 fs_memory = compute_fs_memory();
   Uint64 shared_global_memory = get_and_set_shared_global_memory(p);
+  shared_global_memory += extra_shared_global_memory;
   Uint64 used_memory =
     schema_memory +
     backup_schema_memory +

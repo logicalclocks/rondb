@@ -307,12 +307,12 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   {
     require(globalData.isNdbMt);
     Resource_limit rl;
-    shared_pages += (jbpages / 2);
-    rl.m_min = jbpages / 2;
+    shared_pages += (jbpages / 4);
+    rl.m_min = jbpages / 4;
     rl.m_max = jbpages;
     rl.m_max_high_prio = jbpages;
     rl.m_resource_id = RG_JOBBUFFER;
-    // Can use last piece of memory
+    // Can use last piece of memory, even ultra high prio part
     rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
     g_eventLogger->info("Job buffers use up to %u MB", jbpages/32);
