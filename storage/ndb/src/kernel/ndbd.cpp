@@ -505,7 +505,8 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   Uint32 backup_schema_memory = Uint32(BackupSchemaMemory / Uint64(32768));
   {
     Resource_limit rl;
-    rl.m_min = backup_schema_memory;
+    shared_pages += (backup_schema_memory / 4);
+    rl.m_min = backup_schema_memory / 4;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
     rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
     rl.m_resource_id = RG_BACKUP_SCHEMA_MEMORY;

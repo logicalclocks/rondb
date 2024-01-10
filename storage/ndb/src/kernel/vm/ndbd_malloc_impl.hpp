@@ -193,7 +193,8 @@ class Resource_limits
     memory:
       - Data memory
       - Disk page buffer memory
-      - File buffers
+      - File buffers (REDO buffers)
+      - Undo log buffer
 
     High prio memory are:
       - Transaction Memory
