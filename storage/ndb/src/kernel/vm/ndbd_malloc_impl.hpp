@@ -158,7 +158,7 @@ class Resource_limits
 
     Ultra prio free limit is memory reserved for things that are
     of survival necessity. This includes allocations for job buffer,
-    send buffers, backup meta memory and some other minor things.
+    send buffers, and some other minor things.
 
     Most other memory resources are in the category of prioritized, but
     can survive a memory request failure.
@@ -166,10 +166,12 @@ class Resource_limits
     Finally we have low priority memory resources, this is mainly intended
     for complex SQL queries handled by SPJ.
 
-    Page allocations for low priority resource groups will be denied if number
-    of free pages are less than this number.
+    Page allocations for lower priority resource groups will be denied if
+    number of free pages are less than this number.
   */
-  Uint32 m_prio_free_limit;
+  Uint32 m_low_prio_free_limit;
+  Uint32 m_medium_prio_free_limit;
+  Uint32 m_high_prio_free_limit;
   Uint32 m_ultra_prio_free_limit;
 
   /**
@@ -183,7 +185,7 @@ class Resource_limits
     groups. Keep 4% for ultra high priority requests. Up to 90% of the
     shared global memory also low priority requests will be accepted.
 
-    Ultra high memory are:
+    Ultra high memory are (can use all shared memory):
       - Backup Schema Memory
       - Disk records
       - Job buffer
@@ -196,17 +198,21 @@ class Resource_limits
       - File buffers (REDO buffers)
       - Undo log buffer
 
-    High prio memory are:
+    High prio memory are (can use up to 96% of shared global memory):
       - Transaction Memory
       - Replication Memory
 
-    Low prio memory are:
-      - Schema Transaction Memory
-      - Query Memory
+    Medium prio memory are (can use up to 92% of shared global memory):
       - Schema Memory
+      - Schema Transaction Memory
+
+    Low prio memory are (can use up to 88% of shared global memory):
+      - Query Memory
   */
   static const Uint32 ULTRA_PRIO_FREE_PCT = 4;
-  static const Uint32 HIGH_PRIO_FREE_PCT = 10;
+  static const Uint32 VERY_HIGH_PRIO_FREE_PCT = 6;
+  static const Uint32 HIGH_PRIO_FREE_PCT = 8;
+  static const Uint32 LOW_PRIO_FREE_PCT = 12;
 
   void dec_in_use(Uint32 cnt);
   void dec_resource_in_use(Uint32 id, Uint32 cnt);
@@ -963,9 +969,9 @@ Uint32 Resource_limits::get_resource_free_shared(Uint32 id) const
   {
     return free_shared;
   }
-  else if (rl.m_prio_memory == Resource_limit::HIGH_PRIO_MEMORY)
+  if (rl.m_curr <= rl.m_max_high_prio)
   {
-    if (rl.m_curr <= rl.m_max_high_prio)
+    if (rl.m_prio_memory == Resource_limit::VERY_HIGH_PRIO_MEMORY)
     {
       if (free_shared > m_ultra_prio_free_limit)
       {
@@ -973,10 +979,26 @@ Uint32 Resource_limits::get_resource_free_shared(Uint32 id) const
       }
       return 0;
     }
-  }
-  if (free_shared >= m_prio_free_limit)
-  {
-    return (free_shared - m_prio_free_limit);
+    else if (rl.m_prio_memory == Resource_limit::HIGH_PRIO_MEMORY)
+    {
+      if (free_shared >= m_high_prio_free_limit)
+      {
+        return (free_shared - m_high_prio_free_limit);
+      }
+      return 0;
+    }
+    else if (rl.m_prio_memory == Resource_limit::MEDIUM_PRIO_MEMORY)
+    {
+      if (free_shared >= m_medium_prio_free_limit)
+      {
+        return (free_shared - m_medium_prio_free_limit);
+      }
+      return 0;
+    }
+    if (free_shared >= m_low_prio_free_limit)
+    {
+      return (free_shared - m_low_prio_free_limit);
+    }
   }
   return 0;
 }
@@ -1165,11 +1187,20 @@ void Resource_limits::set_prio_free_limits(Uint32 res)
   ultra_prio_free_limit += 1;
   m_ultra_prio_free_limit = res + Uint32(ultra_prio_free_limit);
 
-  Uint64 low_prio_free_limit = shared * Uint64(HIGH_PRIO_FREE_PCT);
+  Uint64 high_prio_free_limit = shared * Uint64(VERY_HIGH_PRIO_FREE_PCT);
+  high_prio_free_limit /= 100;
+  high_prio_free_limit += 1;
+  m_high_prio_free_limit = Uint32(high_prio_free_limit);
+
+  Uint64 medium_prio_free_limit = shared * Uint64(HIGH_PRIO_FREE_PCT);
+  medium_prio_free_limit /= 100;
+  medium_prio_free_limit += 1;
+  m_medium_prio_free_limit = Uint32(medium_prio_free_limit);
+
+  Uint64 low_prio_free_limit = shared * Uint64(LOW_PRIO_FREE_PCT);
   low_prio_free_limit /= 100;
   low_prio_free_limit += 1;
-  m_prio_free_limit = Uint32(low_prio_free_limit) + m_ultra_prio_free_limit;
-
+  m_low_prio_free_limit = Uint32(low_prio_free_limit);
 }
 
 inline

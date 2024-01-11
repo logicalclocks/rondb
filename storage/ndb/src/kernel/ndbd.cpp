@@ -273,7 +273,6 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max = tupmem;
     rl.m_max_high_prio = tupmem;
     rl.m_resource_id = RG_DATAMEM;
-    // Cannot use last piece of memory
     rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
 
@@ -319,7 +318,6 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   rl.m_max = filepages;
   rl.m_max_high_prio = filepages;
   rl.m_resource_id = RG_FILE_BUFFERS;
-  // Cannot use last piece of memory
   rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
   ed.m_mem_manager->set_resource_limit(rl);
   g_eventLogger->info("RedoLogBuffer uses %u MB", filepages/32);
@@ -403,7 +401,6 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max = pgman_pages;
     rl.m_max_high_prio = pgman_pages;
     rl.m_resource_id = RG_DISK_PAGE_BUFFER;  // Add to RG_DISK_PAGE_BUFFER
-    // Cannot use last piece of memory
     rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
@@ -422,7 +419,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
      * not allow creation of new schema objects.
      */
     // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("SchemaTransactionMemory uses 4 MB");
@@ -447,8 +444,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
     rl.m_max_high_prio = transmem + shared_pages_part;
     rl.m_resource_id = RG_TRANSACTION_MEMORY;
-    // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::MEDIUM_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
     if (globalData.theUndoBuffer == 0)
     {
@@ -501,7 +497,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max_high_prio = replication_memory + shared_pages_part;
     rl.m_resource_id = RG_REPLICATION_MEMORY;
     // Cannot use last piece of memory, reserved for ULTRA_HIGH_PRIO_MEMORY
-    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::VERY_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("MaxBufferedEpochBytes can use memory from"
@@ -520,7 +516,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max_high_prio = schema_memory_max;
     rl.m_resource_id = RG_SCHEMA_MEMORY;
     // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("Adding %u MByte for schema memory",
@@ -536,7 +532,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
     rl.m_resource_id = RG_BACKUP_SCHEMA_MEMORY;
     // Can use last piece of memory
-    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::VERY_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("Adding %u MByte for backup schema memory",
@@ -599,8 +595,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   {
     ed.m_mem_manager->map(watchCounter, memlock); // Map all
   }
-  Uint32 ultra_prio_free_limit = (jbpages / 2) + (sbpages / 2);
-  ed.m_mem_manager->set_prio_free_limits(ultra_prio_free_limit);
+  ed.m_mem_manager->set_prio_free_limits(0);
   ed.m_mem_manager->lock();
   ed.m_mem_manager->check();
   ed.m_mem_manager->unlock();
