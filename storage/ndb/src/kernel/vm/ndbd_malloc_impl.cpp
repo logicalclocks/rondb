@@ -484,7 +484,8 @@ Resource_limits::Resource_limits()
   m_in_use = 0;
   m_max_page = 0;
   // By default allow no low prio usage of shared
-  m_prio_free_limit = UINT32_MAX;
+  m_low_prio_free_limit = UINT32_MAX;
+  m_medium_prio_free_limit = UINT32_MAX;
   m_ultra_prio_free_limit = 0;
   memset(m_limit, 0, sizeof(m_limit));
 }
@@ -3153,7 +3154,8 @@ lc_mempool_long_lived_pool_malloc(size_t size_in_words,
         glob_long_mempool_backend.lc_malloc_backend(MEMORY_SEGMENT_SIZE,
                                                     pool_id,
                                                     &i_val);
-      new_mem_area_ptr->m_i_val = i_val;
+      if (new_mem_area_ptr != nullptr)
+        new_mem_area_ptr->m_i_val = i_val;
     }
     if (new_mem_area_ptr != nullptr)
     {

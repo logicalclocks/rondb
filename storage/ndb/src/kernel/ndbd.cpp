@@ -236,11 +236,33 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   }
 
   Uint64 shared_mem = globalData.theSharedGlobalMemory;
-  Uint32 shared_pages = Uint32(shared_mem /= GLOBAL_PAGE_SIZE);
+  Uint32 shared_pages = Uint32(shared_mem /=Uint64(GLOBAL_PAGE_SIZE));
+
+  Uint64 BackupSchemaMemory = globalData.theBackupSchemaMemory;
+  Uint32 backup_schema_memory =
+    Uint32(BackupSchemaMemory / Uint64(GLOBAL_PAGE_SIZE));
+  shared_pages += (backup_schema_memory / 4);
+
+  Uint32 jbpages = compute_jb_pages(&ed);
+  shared_pages += (jbpages / 4);
+
+  Uint64 SchemaMemory = globalData.theSchemaMemory;
+  Uint32 schema_memory =
+    Uint32(SchemaMemory / Uint64(GLOBAL_PAGE_SIZE));
+  Uint32 extra_shared_pages_from_schema_mem = schema_memory / 4;
+  shared_pages += extra_shared_pages_from_schema_mem;
+
+  {
+    Uint64 mem = Configuration::get_send_buffer(p);
+    Uint32 sbpages =
+      Uint32((mem + Uint64(GLOBAL_PAGE_SIZE - 1)) / Uint64(GLOBAL_PAGE_SIZE));
+    shared_pages += (sbpages / 2);
+  }
 
   g_eventLogger->info("SharedGlobalMemory set to %u MB", shared_pages/32);
+
   Uint64 dataMem = globalData.theDataMemory;
-  Uint32 tupmem= (Uint32)(dataMem / 32768);
+  Uint32 tupmem= (Uint32)(dataMem / Uint64(GLOBAL_PAGE_SIZE));
 
   Uint32 lqhInstances = globalData.ndbMtLqhWorkers;
 
@@ -251,7 +273,6 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max = tupmem;
     rl.m_max_high_prio = tupmem;
     rl.m_resource_id = RG_DATAMEM;
-    // Cannot use last piece of memory
     rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
 
@@ -297,22 +318,20 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   rl.m_max = filepages;
   rl.m_max_high_prio = filepages;
   rl.m_resource_id = RG_FILE_BUFFERS;
-  // Cannot use last piece of memory
   rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
   ed.m_mem_manager->set_resource_limit(rl);
   g_eventLogger->info("RedoLogBuffer uses %u MB", filepages/32);
 
-  Uint32 jbpages = compute_jb_pages(&ed);
+  Uint32 reserved_jb_pages = jbpages / 4;
   if (jbpages)
   {
     require(globalData.isNdbMt);
     Resource_limit rl;
-    shared_pages += (jbpages / 2);
-    rl.m_min = jbpages / 2;
+    rl.m_min = reserved_jb_pages;
     rl.m_max = jbpages;
     rl.m_max_high_prio = jbpages;
     rl.m_resource_id = RG_JOBBUFFER;
-    // Can use last piece of memory
+    // Can use last piece of memory, even ultra high prio part
     rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
     g_eventLogger->info("Job buffers use up to %u MB", jbpages/32);
@@ -324,6 +343,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   }
 
   Uint32 sbpages = 0;
+  Uint32 reserved_sb_pages = 0;
   require(globalData.isNdbMt);
   {
     /**
@@ -334,10 +354,10 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
      */
     Uint64 mem = Configuration::get_send_buffer(p);
     sbpages = Uint32((mem + GLOBAL_PAGE_SIZE - 1) / GLOBAL_PAGE_SIZE);
-    shared_pages += (sbpages / 2);
 
     Resource_limit rl;
-    rl.m_min = sbpages / 2;
+    reserved_sb_pages = sbpages / 2;
+    rl.m_min = reserved_sb_pages;
     /**
      * allow over allocation (from SharedGlobalMemory) of up to 50% of
      *   totally allocated SendBuffer, at most 25% of SharedGlobalMemory.
@@ -381,7 +401,6 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max = pgman_pages;
     rl.m_max_high_prio = pgman_pages;
     rl.m_resource_id = RG_DISK_PAGE_BUFFER;  // Add to RG_DISK_PAGE_BUFFER
-    // Cannot use last piece of memory
     rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
@@ -400,13 +419,13 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
      * not allow creation of new schema objects.
      */
     // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("SchemaTransactionMemory uses 4 MB");
 
   Uint64 TransactionMemory = globalData.theTransactionMemory;
-  Uint32 transmem = Uint32(TransactionMemory / Uint64(32768));
+  Uint32 transmem = Uint32(TransactionMemory / Uint64(GLOBAL_PAGE_SIZE));
   g_eventLogger->info("TransactionMemory set to %u MB", transmem/32);
 
   if (globalData.theUndoBuffer != 0)
@@ -425,8 +444,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
     rl.m_max_high_prio = transmem + shared_pages_part;
     rl.m_resource_id = RG_TRANSACTION_MEMORY;
-    // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::MEDIUM_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
     if (globalData.theUndoBuffer == 0)
     {
@@ -460,60 +478,65 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
                       " until 90%% used");
 
   /**
-   * We add 32 MByte for replication memory, but this memory will get memory
-   * from SharedGlobalMemory and the resources using this memory up to 90%
-   * of the memory limit. So no concern that it is small for now.
-   * Mostly not set to 0 for small installations that might not take height
-   * for this memory.
+   * Replication Memory will use the configured amount of memory as reserved
+   * memory, it can still grow to use a major part of shared global memory.
+   * It is limited to using a maximum of 30% of the shared global memory
+   * and will not allocate from it when use of shared global memory reached
+   * more than 90%.
    */
   Uint64 ReplicationMemory = globalData.theReplicationMemory;
-  Uint32 replication_memory = Uint32(ReplicationMemory / Uint64(32768));
+  Uint32 replication_memory =
+    Uint32(ReplicationMemory / Uint64(GLOBAL_PAGE_SIZE));
   Uint32 rep_mb = replication_memory / 32;
   g_eventLogger->info("Adding %u MByte for replication memory", rep_mb);
   {
     Resource_limit rl;
     Uint32 shared_pages_part = (shared_pages / 10) * 3;
+    rl.m_min = replication_memory;
     rl.m_max = replication_memory + shared_pages_part;
     rl.m_max_high_prio = replication_memory + shared_pages_part;
     rl.m_resource_id = RG_REPLICATION_MEMORY;
-    // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
+    // Cannot use last piece of memory, reserved for ULTRA_HIGH_PRIO_MEMORY
+    rl.m_prio_memory = Resource_limit::VERY_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("MaxBufferedEpochBytes can use memory from"
                       " SharedGlobalMemory until 90%% used");
 
-  Uint64 SchemaMemory = globalData.theSchemaMemory;
-  Uint32 schema_memory = Uint32(SchemaMemory / Uint64(32768));
+  Uint32 reserved_schema_memory = schema_memory / 4;
   {
     Resource_limit rl;
     Uint32 shared_pages_part = (shared_pages / 10) * 2;
-    rl.m_min = schema_memory;
-    rl.m_max = schema_memory + shared_pages_part;
-    rl.m_max_high_prio = schema_memory + shared_pages_part;
+    shared_pages_part += extra_shared_pages_from_schema_mem;
+    Uint32 schema_memory_max = reserved_schema_memory + shared_pages_part;
+    if (schema_memory_max < schema_memory)
+      schema_memory_max = schema_memory;
+    rl.m_min = reserved_schema_memory;
+    rl.m_max = schema_memory_max;
+    rl.m_max_high_prio = schema_memory_max;
     rl.m_resource_id = RG_SCHEMA_MEMORY;
     // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
-  g_eventLogger->info("Adding %u MByte for schema memory", schema_memory/32);
+  g_eventLogger->info("Adding %u MByte for schema memory",
+                      reserved_schema_memory/32);
   g_eventLogger->info("SchemaMemory can expand and use"
                       " SharedGlobalMemory if required");
 
-  Uint64 BackupSchemaMemory = globalData.theBackupSchemaMemory;
-  Uint32 backup_schema_memory = Uint32(BackupSchemaMemory / Uint64(32768));
+  Uint32 reserved_backup_schema_memory = backup_schema_memory / 4;
   {
     Resource_limit rl;
-    rl.m_min = backup_schema_memory;
+    rl.m_min = reserved_backup_schema_memory;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
     rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
     rl.m_resource_id = RG_BACKUP_SCHEMA_MEMORY;
     // Can use last piece of memory
-    rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::VERY_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("Adding %u MByte for backup schema memory",
-                      backup_schema_memory/32);
+                      reserved_backup_schema_memory/32);
   g_eventLogger->info("BackupSchemaMemory can expand and use"
                       " SharedGlobalMemory if required");
   {
@@ -527,23 +550,28 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     ed.m_mem_manager->set_resource_limit(rl);
   }
 
-  Uint32 sum = shared_pages + tupmem + filepages + jbpages + sbpages +
-    pgman_pages + stpages + transmem + replication_memory + schema_memory +
-    backup_schema_memory;
+  Uint32 sum = shared_pages + tupmem + filepages + reserved_jb_pages +
+               reserved_sb_pages + pgman_pages + stpages + transmem +
+               replication_memory + reserved_schema_memory +
+               reserved_backup_schema_memory;
 
   /**
    * We allocate a bit of extra pages to handle map pages in the NDB memory
    * manager. We need 2 extra pages per 8 GByte of memory added and one more
    * page per chunk. We add the first chunk already here.
    */
-  Uint32 extra_chunk_pages = (2 * (sum / (32768 * 8))) + 3;
+  Uint32 extra_chunk_pages = (2 * (sum / (GLOBAL_PAGE_SIZE * 8))) + 3;
   sum += extra_chunk_pages;
+  Uint64 sum_mem_mb = Uint64(sum) * Uint64(GLOBAL_PAGE_SIZE) / MBYTE64;
 
-  g_eventLogger->info("Total sum of all pages is %u", sum);
+  g_eventLogger->info("Total sum of all pages in Global Memory is %u,"
+                      " %llu MBytes",
+                      sum, sum_mem_mb);
+
   if (!ed.m_mem_manager->init(watchCounter, sum, false))
   {
-    g_eventLogger->alert("Malloc (%lld bytes) for %s and others failed, exiting",
-                         Uint64(shared_mem + tupmem) * GLOBAL_PAGE_SIZE,
+    g_eventLogger->alert("Malloc (%llu bytes) for %s and others failed, exiting",
+                         Uint64(sum) * Uint64(GLOBAL_PAGE_SIZE),
                          "DataMemory");
     return -1;
   }
@@ -567,8 +595,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   {
     ed.m_mem_manager->map(watchCounter, memlock); // Map all
   }
-  Uint32 ultra_prio_free_limit = (jbpages / 2) + (sbpages / 2);
-  ed.m_mem_manager->set_prio_free_limits(ultra_prio_free_limit);
+  ed.m_mem_manager->set_prio_free_limits(0);
   ed.m_mem_manager->lock();
   ed.m_mem_manager->check();
   ed.m_mem_manager->unlock();
@@ -1054,7 +1081,7 @@ ndbd_run(bool foreground, int report_fd,
           p);
     Uint64 min_transmem_bytes = reserved_transmem_bytes +
       (globalData.ndbMtTcWorkers + globalData.ndbMtLqhWorkers)
-       * 128 * Uint64(32768);
+       * 128 * Uint64(GLOBAL_PAGE_SIZE);
     theConfig->setupMemoryConfiguration(min_transmem_bytes);
   }
 

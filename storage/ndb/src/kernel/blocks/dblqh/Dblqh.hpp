@@ -2801,6 +2801,8 @@ public:
     {
     }
     Uint64 fragmentptr;
+    Dbacc::Operationrec *accConnectPtrP;
+    Dbtup::Operationrec *tupConnectPtrP;
 #ifdef DEBUG_USAGE_COUNT
     Dblqh *m_prev_block;
     Dblqh *m_next_block;
@@ -2810,8 +2812,6 @@ public:
     UintR accConnectrec;
     UintR tupConnectrec;
     Uint32 nextTcConnectrec;
-    Dbacc::Operationrec *accConnectPtrP;
-    Dbtup::Operationrec *tupConnectPtrP;
     ConnectState connectState;
     Uint32 keyInfoIVal;
     Uint32 attrInfoIVal;

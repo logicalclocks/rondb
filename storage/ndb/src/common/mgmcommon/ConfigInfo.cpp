@@ -1869,7 +1869,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "0",
     STR_VALUE(MAX_INT_RNIL) },
   
-  { 
+  {
     CFG_DB_BACKUP_DATA_BUFFER_MEM,
     "BackupDataBufferSize",
     DB_TOKEN,
@@ -1881,7 +1881,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "512K",
     STR_VALUE(MAX_INT_RNIL) },
 
-  { 
+  {
     CFG_DB_BACKUP_LOG_BUFFER_MEM,
     "BackupLogBufferSize",
     DB_TOKEN,

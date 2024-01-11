@@ -144,8 +144,10 @@ struct Resource_limit
   enum PrioMemory
   {
     LOW_PRIO_MEMORY = 0,
-    HIGH_PRIO_MEMORY = 1,
-    ULTRA_HIGH_PRIO_MEMORY = 2
+    MEDIUM_PRIO_MEMORY = 1,
+    HIGH_PRIO_MEMORY = 2,
+    VERY_HIGH_PRIO_MEMORY = 2,
+    ULTRA_HIGH_PRIO_MEMORY = 3
   };
   PrioMemory m_prio_memory;
 };
