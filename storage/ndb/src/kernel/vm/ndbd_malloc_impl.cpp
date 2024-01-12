@@ -1947,6 +1947,19 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
 }
 
 void
+Ndbd_mem_manager::verify_page_allocated(Uint32 page_id)
+{
+  mt_mem_manager_lock();
+  Alloc_page * ptr = m_base_page;
+#ifdef NDBD_RANDOM_START_PAGE
+  page_id -= m_random_start_page_id;
+#endif
+  Uint32 ret = BitmaskImpl::get(BITMAP_WORDS, ptr->m_data, page_id);
+  mt_mem_manager_unlock();
+  require(ret == 0);
+}
+
+void
 Ndbd_mem_manager::release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked)
 {
   Uint32 idx = type & RG_MASK;

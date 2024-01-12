@@ -596,6 +596,8 @@ public:
   void release_page(Uint32 type, Uint32 i, bool locked = false);
   void release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked = false);
 
+  void verify_page_allocated(Uint32 page_id);
+
   /**
    * There are a number of cases where we might need to allocate pages
    * even beyond what the reserved and shared global memory allows for.

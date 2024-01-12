@@ -126,6 +126,13 @@
 //#define DEBUG_REP_MEM 1
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_FREE_PAGE 1
+//#define DEBUG_CHECK_PAGE_ALLOCATED 1
+#endif
+
+#ifdef DEBUG_CHECK_PAGE_ALLOCATED
+#define CHECK_PAGE(pageid) m_ctx.m_mm.verify_page_allocated(pageid)
+#else
+#define CHECK_PAGE(pageid)
 #endif
 
 #ifdef DEBUG_FREE_PAGE
@@ -5212,6 +5219,7 @@ Suma::execFIRE_TRIG_ORD_L(Signal* signal)
     return;
   }
 
+  CHECK_PAGE(pageId);
   Uint32 * ptr = reinterpret_cast<Uint32*>(c_page_pool.getPtr(pageId));
   while (len)
   {
