@@ -7831,6 +7831,7 @@ Suma::alloc_trigger_page_chunk(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
       c_trigger_page_chunk_pool,
       ldmTriggerPagePtr.p->m_trigger_page_free_chunks);
     loc_free.addFirst(triggerChunkPtr);
+    triggerChunkPtr.p->is_free = true;
   }
   return true;
 }
@@ -7854,6 +7855,7 @@ Suma::move_chunk_to_full(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
       ldmTriggerPagePtr.p->m_trigger_page_full_chunks);
     loc_full.addFirst(triggerChunkPtr);
   }
+  triggerChunkPtr.p->is_free = false;
 }
 
 void
@@ -7875,6 +7877,7 @@ Suma::move_chunk_to_free(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
       ldmTriggerPagePtr.p->m_trigger_page_free_chunks);
     loc_free.addLast(triggerChunkPtr);
   }
+  triggerChunkPtr.p->is_free = true;
 }
 
 void
@@ -7901,6 +7904,7 @@ Suma::find_trigger_pages(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
   if (page_count > 1)
   {
     Uint32 found = 1;
+    thrjam(jambuf);
     for (Uint32 i = first_free_page + 1;
          i < Trigger_page_chunk::PAGES_PER_CHUNK;
          i++)
@@ -7932,20 +7936,26 @@ Suma::find_trigger_pages(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
     else
     {
       thrjam(jambuf);
+      thrjamData(jambuf, triggerChunkPtr.i);
       move_chunk_to_full(ldmTriggerPagePtr, triggerChunkPtr);
       return RNIL;
     }
   }
   else
   {
-    thrjam(jambuf);
     triggerChunkPtr.p->m_page_id_allocated_bitmask.set(first_free_page, false);
   }
   if (triggerChunkPtr.p->m_page_id_allocated_bitmask.isclear())
   {
-    thrjamDebug(jambuf);
+    thrjam(jambuf);
     move_chunk_to_full(ldmTriggerPagePtr, triggerChunkPtr);
   }
+  else
+  {
+    thrjam(jambuf);
+  }
+  thrjamData(jambuf, triggerChunkPtr.i);
+  thrjamData(jambuf, first_free_page);
   return first_free_page + chunk_page_id;
 }
 
@@ -8048,11 +8058,19 @@ Suma::release_trigger_page(Uint32 ldm_instance,
   }
   Uint32 bit_count =
     triggerChunkPtr.p->m_page_id_allocated_bitmask.count();
+  jamData(triggerChunkPtr.i);
+  jamData(page_id_bit);
+  jamData(page_count);
+  if (triggerChunkPtr.p->is_free == false)
+  {
+    jam();
+    move_chunk_to_free(ldmTriggerPagePtr, triggerChunkPtr);
+  }
   if (bit_count == triggerChunkPtr.p->m_count)
   {
     if (ldmTriggerPagePtr.p->m_trigger_page_free_chunks.getCount() > 1)
     {
-      jamDebug();
+      jam();
       release_trigger_page_chunk(ldmTriggerPagePtr, triggerChunkPtr);
     }
     else
@@ -8062,11 +8080,6 @@ Suma::release_trigger_page(Uint32 ldm_instance,
                    triggerChunkPtr.i));
       jamDebug();
     }
-  }
-  else if (bit_count == 1)
-  {
-    jamDebug();
-    move_chunk_to_free(ldmTriggerPagePtr, triggerChunkPtr);
   }
   NdbMutex_Unlock(&ldmTriggerPagePtr.p->theMutex);
 }
