@@ -427,6 +427,7 @@ Suma::init_page_chunks()
   }
   for (Uint32 i = 0; i < 128; i++)
   {
+    CHECK_PAGE(page_id[i]);
     Buffer_page* page= c_page_pool.getPtr(page_id[i]);
     free_page(page_id[i], page, __LINE__);
   }
@@ -5504,6 +5505,7 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
       else
       {
         jam();
+        CHECK_PAGE(first_page_id);
         Buffer_page* first_page = c_page_pool.getPtr(first_page_id);
         page_id = first_page->m_next_page;
         first_page->m_next_page = RNIL;
@@ -5511,6 +5513,7 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
       while (page_id != RNIL)
       {
         jam();
+        CHECK_PAGE(page_id);
         Buffer_page* page = c_page_pool.getPtr(page_id);
         Uint32 next = page->m_next_page;
         free_page(page_id, page, __LINE__);
@@ -5829,6 +5832,7 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
 	  Page_pos pos= bucket->m_buffer_head;
 	  ndbrequire(pos.m_max_gci < gci);
 
+          CHECK_PAGE(pos.m_page_id);
 	  Buffer_page* page= c_page_pool.getPtr(pos.m_page_id);
           g_eventLogger->info("takeover %d", pos.m_page_id);
           page->m_max_gci_hi = (Uint32)(pos.m_max_gci >> 32);
@@ -7337,6 +7341,7 @@ Suma::get_buffer_ptr(Signal* signal,
   if (likely(pos.m_page_id != RNIL))
   {
     jam();
+    CHECK_PAGE(pos.m_page_id);
     page= c_page_pool.getPtr(pos.m_page_id);
     ptr= page->m_data + pos.m_page_pos;
   }
@@ -7411,7 +7416,8 @@ loop:
     pos.m_page_id = next;
     pos.m_page_pos = sz;
     pos.m_last_gci = gci;
-    
+ 
+    /* Already verified in seize_page */
     page= c_page_pool.getPtr(pos.m_page_id);
     page->m_next_page= RNIL;
     ptr= page->m_data;
@@ -7458,6 +7464,7 @@ Suma::out_of_buffer_release(Signal* signal, Uint32 buck)
 
   if(tail != RNIL)
   {
+    CHECK_PAGE(tail);
     Buffer_page* page= c_page_pool.getPtr(tail);
     bucket->m_buffer_tail = page->m_next_page;
     free_page(tail, page, __LINE__);
@@ -7539,6 +7546,7 @@ loop:
   {
     jam();
     Buffer_page* page = nullptr;
+    CHECK_PAGE(ref);
     page = c_page_pool.getPtr(ref);
     m_first_free_page = page->m_next_page;
     Uint32 chunk = page->m_page_chunk_ptr_i;
@@ -7553,6 +7561,7 @@ loop:
     {
       jam();
       Buffer_page* new_first_page = nullptr;
+      CHECK_PAGE(m_first_free_page);
       new_first_page = c_page_pool.getPtr(m_first_free_page);
       new_first_page->m_prev_page = RNIL;
     }
@@ -7626,6 +7635,7 @@ Suma::insert_chunk_pages(Ptr<Page_chunk> ptr)
   m_first_free_page = ref;
   for(Uint32 i = 0; i<count; i++)
   {
+    CHECK_PAGE(ref);
     page = c_page_pool.getPtr(ref);
     page->m_page_state= SUMA_SEQUENCE;
     page->m_page_chunk_ptr_i = ptr.i;
@@ -7649,6 +7659,7 @@ Suma::insert_chunk_pages(Ptr<Page_chunk> ptr)
   if (prev_first_free != RNIL)
   {
     jam();
+    /* Dead code for now */
     ndbassert(page->m_prev_page == RNIL);
     page = c_page_pool.getPtr(prev_first_free);
     page->m_prev_page = ref;
@@ -7662,10 +7673,12 @@ Suma::release_chunk_pages(Ptr<Page_chunk> ptr)
   for (Uint32 i = 0; i < ptr.p->m_free; i++)
   {
     Buffer_page *page;
+    CHECK_PAGE(ptr.p->m_page_id + i);
     page = c_page_pool.getPtr(ptr.p->m_page_id + i);
     if (page->m_prev_page != RNIL)
     {
       Buffer_page *prev_page;
+      CHECK_PAGE(page->m_prev_page);
       prev_page = c_page_pool.getPtr(page->m_prev_page);
       prev_page->m_next_page = page->m_next_page;
     }
@@ -7677,6 +7690,7 @@ Suma::release_chunk_pages(Ptr<Page_chunk> ptr)
     if (page->m_next_page != RNIL)
     {
       Buffer_page *next_page;
+      CHECK_PAGE(page->m_next_page);
       next_page = c_page_pool.getPtr(page->m_next_page);
       next_page->m_prev_page = page->m_prev_page;
     }
@@ -7741,6 +7755,7 @@ Suma::free_page(Uint32 page_id, Buffer_page* page, Uint32 line)
   {
     jam();
     Buffer_page *first_page;
+    CHECK_PAGE(m_first_free_page);
     first_page = c_page_pool.getPtr(m_first_free_page);
     first_page->m_prev_page = page_id;
   }
@@ -8146,6 +8161,7 @@ Suma::release_gci(Signal* signal, Uint32 buck, Uint64 gci)
   else
   {
     jam();
+    CHECK_PAGE(tail);
     Buffer_page* page= c_page_pool.getPtr(tail);
     Uint64 max_gci = page->m_max_gci_lo | (Uint64(page->m_max_gci_hi) << 32);
     Uint32 next_page = page->m_next_page;
@@ -8267,6 +8283,7 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
   Bucket* bucket = c_buckets + buck;
   Uint32 tail= bucket->m_buffer_tail;
 
+  CHECK_PAGE(tail);
   Buffer_page* page= c_page_pool.getPtr(tail);
   Uint64 max_gci = page->m_max_gci_lo | (Uint64(page->m_max_gci_hi) << 32);
   Uint32 next_page = page->m_next_page;
@@ -8434,6 +8451,7 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
         {
           jam();
           // Second half of data on next page.
+          CHECK_PAGE(next_page);
           Buffer_page* page= c_page_pool.getPtr(next_page);
           ndbrequire(page->m_words_used > 0);
           ptr2 = page->m_data;

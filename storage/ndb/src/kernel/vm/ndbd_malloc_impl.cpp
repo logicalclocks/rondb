@@ -1361,6 +1361,7 @@ Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
 					    start - 1);
     Uint32 sz = fd->m_size;
     Uint32 left = start - sz;
+    require(fd->m_list == (ndb_log2(sz) - 1));
     remove_free_list(zone, left, fd->m_list);
     cnt += sz;
     start = left;
@@ -1371,6 +1372,7 @@ Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
   {
     Free_page_data *fd = get_free_page_data(m_base_page+right, right);
     Uint32 sz = fd->m_size;
+    require(fd->m_list == (ndb_log2(sz) - 1));
     remove_free_list(zone, right, fd->m_list);
     cnt += sz;
   }
