@@ -33,7 +33,7 @@
 #include "my_alloc.h"
 
 static const char* _dbname = "TEST_DB";
-static int g_loops = 7;
+static int g_loops = 27;
 
 struct my_option my_long_options[] =
 {
@@ -594,8 +594,6 @@ testRanges(Uint32 bitmask_size)
     }
   }
 
-#define NDB_BM_SUPPORT_RANGE
-#ifdef NDB_BM_SUPPORT_RANGE
   for(Uint32 i = 0; i<1000; i++)
   {
     Uint32 sz32 = 10+rand() % 100;
@@ -649,8 +647,24 @@ testRanges(Uint32 bitmask_size)
 	BitmaskImpl::clear(sz32, check.getBase(), j);
     }
 
+    BitmaskImpl::clearRange(sz32, map.getBase(), start, stop - start + 1);
+    if (!BitmaskImpl::equal(sz32, map.getBase(), check.getBase()))
+    {
+      ndbout_c(" FAIL 2 sz: %d [ %d %d ]", sz, start, stop);
+      printf("check: ");
+      for(Uint32 j = 0; j<sz32; j++)
+	printf("%.8x ", check[j]);
+      printf("\n");
+
+      printf("map  : ");
+      for(Uint32 j = 0; j<sz32; j++)
+	printf("%.8x ", map[j]);
+      printf("\n");
+      return -1;
+    }
+
+
   }
-#endif
 
   return 0;
 }

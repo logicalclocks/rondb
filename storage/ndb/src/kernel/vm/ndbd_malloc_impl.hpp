@@ -735,7 +735,6 @@ private:
 
   void set(Uint32 first, Uint32 last);
   void clear(Uint32 first, Uint32 last);
-  void clear_and_set(Uint32 first, Uint32 last);
   Uint32 check(Uint32 first, Uint32 last);
 
   static Uint32 get_page_zone(Uint32 page);
@@ -1374,8 +1373,7 @@ Ndbd_mem_manager::set(Uint32 first, Uint32 last)
   last -= bmp;
   ptr += bmp;
 #endif
-  BitmaskImpl::set(BITMAP_WORDS, ptr->m_data, first);
-  BitmaskImpl::set(BITMAP_WORDS, ptr->m_data, last);
+  BitmaskImpl::setRange(BITMAP_WORDS, ptr->m_data, first, last - first + 1);
 }
 
 inline
@@ -1392,27 +1390,7 @@ Ndbd_mem_manager::clear(Uint32 first, Uint32 last)
   last -= bmp;
   ptr += bmp;
 #endif
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, first);
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, last);
-}
-
-inline
-void
-Ndbd_mem_manager::clear_and_set(Uint32 first, Uint32 last)
-{
-  Alloc_page * ptr = m_base_page;
-#if ((SPACE_PER_BMP_2LOG < 32) && (SIZEOF_CHARP == 4)) || (SIZEOF_CHARP == 8)
-  Uint32 bmp = first & ~((1 << BPP_2LOG) - 1);
-  assert((first >> BPP_2LOG) == (last >> BPP_2LOG));
-  assert(bmp < m_resource_limits.get_max_page());
-  
-  first -= bmp;
-  last -= bmp;
-  ptr += bmp;
-#endif
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, first);
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, last);
-  BitmaskImpl::set(BITMAP_WORDS, ptr->m_data, last+1);
+  BitmaskImpl::clearRange(BITMAP_WORDS, ptr->m_data, first, last - first + 1);
 }
 
 inline

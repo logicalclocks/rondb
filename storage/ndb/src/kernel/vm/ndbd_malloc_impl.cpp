@@ -1439,7 +1439,7 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
   bool first_down = false;
   bool second_up = false;
   /**
-   * Requests for larger sizes than 1 MByte will always try to allocate
+   * Requests for larger sizes than 2 MByte will always try to allocate
    * those consecutive if possible to avoid splitting up things like
    * REDO logs, malloc calls and so forth.
    */
@@ -1466,24 +1466,27 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
       {
         /**
          * We got more than requested for. Return the extra pages to the
-         * free list and clear the end points of the area we will allocate.
-         * Also set the left end point of the remaining things in the free
-         * list (only end points of free areas are set in the free bitmap).
+         * free list. Since all bits in bitmap are set, we need not do
+         * anything with the bitmap here.
+         *
+         * We set all bits in the bitmap, thus one can use the free bitmap
+         * to verify that a used page is not a free page and thus quickly
+         * find any use of pages that are in the free lists.
          */
         insert_free_list(zone, start + cnt, extra);
-        clear_and_set(start, start+cnt-1);
       }
       else
       {
         /**
          * We didn't get all we requested (== cnt), we did however get
-         * something (== sz). Clear the end points in this range in
-         * bitmap of free pages.
-         *
+         * something (== sz). We get all here.
          * We also get here when sz == cnt.
+         * Bitmap is handled for both paths and we have already removed
+         * the pages from the free lists.
          */
-        clear(start, start+sz-1);
+        ;
       }
+      clear(start, start+sz-1);
       * ret = start;
       assert(m_resource_limits.get_in_use() + cnt <=
              m_resource_limits.get_allocated());
