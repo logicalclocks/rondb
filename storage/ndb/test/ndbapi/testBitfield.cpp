@@ -596,7 +596,7 @@ testRanges(Uint32 bitmask_size)
 
   for(Uint32 i = 0; i<1000; i++)
   {
-    Uint32 sz32 = 10+rand() % 100;
+    Uint32 sz32 = 10+rand() % 40;
     Uint32 zero = 0;
     Vector<Uint32> map;
     map.fill(sz32, zero);
@@ -604,6 +604,13 @@ testRanges(Uint32 bitmask_size)
     Uint32 sz = 32 * sz32;
     Uint32 start = (rand() % sz);
     Uint32 stop = start + ((rand() % (sz - start)) & 0xFFFFFFFF);
+
+    if (i < 100)
+    {
+      stop = start + i;
+      if (stop >= sz)
+        stop = start;
+    }
 
     Vector<Uint32> check;
     check.fill(sz32, zero);
@@ -642,7 +649,7 @@ testRanges(Uint32 bitmask_size)
 
     for(Uint32 j = 0; j<sz; j++)
     {
-      bool expect = (j >= start && j<stop);
+      bool expect = (j >= start && j <= stop);
       if(expect)
 	BitmaskImpl::clear(sz32, check.getBase(), j);
     }

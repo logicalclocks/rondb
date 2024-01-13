@@ -1354,8 +1354,10 @@ Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
 {
   assert(start);
 
+#if 0
   fprintf(stderr, "Release %u pages in zone %u, starting at %u\n",
          cnt, zone, start);
+#endif
 
   Uint32 test = check(start-1, start+cnt);
   if (test & 1)
@@ -1390,8 +1392,10 @@ Ndbd_mem_manager::alloc(AllocZone zone,
                         Uint32 min)
 {
   const Uint32 save = * pages;
+#if 0
   fprintf(stderr, "Request %u pages (min = %u) from zone %u\n",
           save, min, zone);
+#endif
   for (Uint32 z = zone; ; z--)
   {
     alloc_impl(z, ret, pages, min);
@@ -1487,9 +1491,10 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
         * pages = sz;
         cnt = sz;
       }
+#if 0
       fprintf(stderr, "Allocate %u pages in zone %u, starting at %u\n",
               cnt, zone, start);
-
+#endif
 
       clear(start, start+cnt-1);
       * ret = start;
@@ -1596,8 +1601,10 @@ Ndbd_mem_manager::insert_free_list(Uint32 zone, Uint32 start, Uint32 size)
   Uint32 list = ndb_log2(size) - 1;
   Uint32 last = start + size - 1;
 
+#if 0
   fprintf(stderr, "Insert %u pages in zone %u in list %u from page %u\n",
           size, zone, list, start);
+#endif
 
   Uint32 head = m_buddy_lists[zone][list];
   Free_page_data* fd_first = get_free_page_data(m_base_page+start, 
@@ -1632,9 +1639,11 @@ Ndbd_mem_manager::remove_free_list(Uint32 zone, Uint32 start, Uint32 list)
   Uint32 next = fd->m_next;
   Uint32 prev = fd->m_prev;
   assert(fd->m_list == list);
-  
+
+#if 0
   fprintf(stderr, "Remove %u pages in zone %u from list %u first page %u\n",
           size, zone, list, start);
+#endif
 
   if (prev)
   {
@@ -1966,11 +1975,10 @@ void
 Ndbd_mem_manager::verify_page_allocated(Uint32 page_id)
 {
   mt_mem_manager_lock();
-  Alloc_page * ptr = m_base_page;
 #ifdef NDBD_RANDOM_START_PAGE
   page_id -= m_random_start_page_id;
 #endif
-  Uint32 ret = BitmaskImpl::get(BITMAP_WORDS, ptr->m_data, page_id);
+  Uint32 ret = get_bit(page_id);
   mt_mem_manager_unlock();
   require(ret == 0);
 }

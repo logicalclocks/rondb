@@ -318,24 +318,36 @@ BitmaskImpl::setRange(unsigned size [[maybe_unused]], Uint32 data[],
   Uint32 *end =  data + (last >> 5);
   assert(start <= last);
   assert(last < (size << 5));
-  
-  Uint32 tmp_word = ~(Uint32)0 << (start & 31);
 
-  if (ptr < end)
+  if (ptr == end)
   {
-    * ptr ++ |= tmp_word;
-    
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 last_part = (Uint64(1) << (last_offset + Uint64(1)));
+    Uint64 start_part = (Uint64(1) << start_offset);
+    Uint64 start_mask64 = last_part - start_part;
+    Uint32 start_mask = Uint32(start_mask64);
+    *ptr |= start_mask;
+    return;
+  }
+  else
+  {
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 start_part = (Uint64(1) << start_offset);
+    start_part -= 1;
+    Uint64 last_part = (Uint64(1) << (last_offset + 1));
+    last_part -= 1;
+    Uint32 start_mask = Uint32(start_part);
+    Uint32 last_mask = Uint32(last_part);
+    * ptr ++ |= ~start_mask;
     for(; ptr < end; )
     {
-      * ptr ++ = ~(Uint32)0;
+      * ptr ++ = 0xFFFFFFFF;
     }
-    
-    tmp_word = ~(Uint32)0;
+    *ptr |= last_mask;
+    return;
   }
-
-  tmp_word &= ~(~(Uint32)1 << (last & 31));
-  
-  * ptr |= tmp_word;
 }
 
 inline void
@@ -352,24 +364,36 @@ BitmaskImpl::clearRange(unsigned size [[maybe_unused]], Uint32 data[],
   Uint32 *end =  data + (last >> 5);
   assert(start <= last);
   assert(last < (size << 5));
-  
-  Uint32 tmp_word = ~(~(Uint32)0 << (start & 31));
 
-  if (ptr < end)
+  if (ptr == end)
   {
-    * ptr ++ &= tmp_word;
-    
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 last_part = (Uint64(1) << (last_offset + Uint64(1)));
+    Uint64 start_part = (Uint64(1) << start_offset);
+    Uint64 start_mask64 = last_part - start_part;
+    Uint32 start_mask = Uint32(start_mask64);
+    *ptr &= ~start_mask;
+    return;
+  }
+  else
+  {
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 start_part = (Uint64(1) << start_offset);
+    start_part -= 1;
+    Uint64 last_part = (Uint64(1) << (last_offset + 1));
+    last_part -= 1;
+    Uint32 start_mask = Uint32(start_part);
+    Uint32 last_mask = Uint32(last_part);
+    * ptr ++ &= start_mask;
     for(; ptr < end; )
     {
       * ptr ++ = 0;
     }
-    
-    tmp_word = 0;
+    *ptr &= ~last_mask;
+    return;
   }
-
-  tmp_word |= ~(Uint32)0 << (last & 31);
-  
-  * ptr &= tmp_word;
 }
 
 inline void 
