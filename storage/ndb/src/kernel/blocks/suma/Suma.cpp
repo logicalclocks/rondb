@@ -126,8 +126,8 @@
 //#define DEBUG_REP_MEM 1
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_FREE_PAGE 1
-//#define DEBUG_CHECK_PAGE_ALLOCATED 1
 #endif
+#define DEBUG_CHECK_PAGE_ALLOCATED 1
 
 #ifdef DEBUG_CHECK_PAGE_ALLOCATED
 #define CHECK_PAGE(pageid) m_ctx.m_mm.verify_page_allocated(pageid)
