@@ -5430,6 +5430,15 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
      (m_switchover_buckets.get(bucket) && (check_switchover(bucket, gci))))
   {
     jam();
+    /**
+     * We use 24 buckets and for some of those our data node is the active
+     * one. This means that we are responsible for sending the event to the
+     * NDB API subscribers. We do this immediately without buffering the
+     * signal. We also do this when we are in process of taking over this
+     * bucket afte a node failure.
+     *
+     * The bucket is choosen based on the hash value of the primary key.
+     */
     m_max_sent_gci = (gci > m_max_sent_gci ? gci : m_max_sent_gci);
     ndbrequire(lsptr[0].sz == trg->getNoOfPrimaryKeyWords());
     ndbrequire(lsptr[1].sz == trg->getNoOfBeforeValueWords());
@@ -5460,6 +5469,16 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
   else 
   {
     jam();
+    /**
+     * We are not the active handler of this bucket, some other node is
+     * responsible for sending this to the subscribing NDB API.
+     *
+     * We need to buffer the signal to enable that we can take over when
+     * a node fails and we become the new handler of this bucket.
+     *
+     * We are adding new pages to the head of the bucket, thus tail is
+     * the oldest page we have filled in.
+     */
     constexpr uint buffer_header_sz = 7;
     Uint32* dst1 = nullptr;
     Uint32* dst2 = nullptr;
@@ -5488,41 +5507,7 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
       memcpy(dst2, lsptr[1].p, lsptr[1].sz << 2);
       ndbrequire(b_trigBufferSize == lsptr[1].sz);
     }
-    else if (dst1 != nullptr &&
-             !m_out_of_buffer_release_ongoing)
-    {
-      jam();
-      // Revert first buffer allocation
-      Uint32 first_page_id = save_pos.m_page_id;
-
-      Uint32 page_id;
-      if (first_page_id == RNIL)
-      {
-        jam();
-        page_id = c_buckets[bucket].m_buffer_tail;
-        c_buckets[bucket].m_buffer_tail = RNIL;
-      }
-      else
-      {
-        jam();
-        CHECK_PAGE(first_page_id);
-        Buffer_page* first_page = c_page_pool.getPtr(first_page_id);
-        page_id = first_page->m_next_page;
-        first_page->m_next_page = RNIL;
-      }
-      while (page_id != RNIL)
-      {
-        jam();
-        CHECK_PAGE(page_id);
-        Buffer_page* page = c_page_pool.getPtr(page_id);
-        Uint32 next = page->m_next_page;
-        free_page(page_id, page, __LINE__);
-        page_id = next;
-      }
-      c_buckets[bucket].m_buffer_head = save_pos;
-    }
-    else if (dst1 != nullptr &&
-             m_out_of_buffer_release_ongoing)
+    else
     {
       DEB_FREE_PAGE(("Skipped releasing pages in FIRE_TRIG_ORD"
                      " due to out of buffer release ongoing"));
