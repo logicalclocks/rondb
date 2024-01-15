@@ -7554,22 +7554,17 @@ loop:
     ndbassert(ptr.p->m_free);
     page->m_next_page = RNIL;
     page->m_prev_page = RNIL;
-    ptr.p->m_free--;
     ndbrequire(m_total_pages_free > 0);
     m_total_pages_free--;
     if (m_first_free_page != RNIL)
     {
       jam();
-      Buffer_page* new_first_page = nullptr;
       CHECK_PAGE(m_first_free_page);
-      new_first_page = c_page_pool.getPtr(m_first_free_page);
+      Buffer_page* new_first_page = c_page_pool.getPtr(m_first_free_page);
       new_first_page->m_prev_page = RNIL;
     }
-    if (ptr.p->m_free == 0)
-    {
-      jam();
-      c_free_page_chunks.remove(ptr);
-    }
+    ndbrequire(ptr.p->m_in_free_chunk_list == false);
+    ptr.p->m_free--;
     DEB_FREE_PAGE(("Seize page from ptr.i: %u, now free: %u, page_id: %u"
                    " total free: %u",
                    ptr.i,
@@ -7601,7 +7596,7 @@ loop:
     ptr.p->m_size = count;
     ptr.p->m_free = count;
     ptr.p->m_page_id = ref;
-    c_free_page_chunks.addFirst(ptr);
+    ptr.p->m_in_free_chunk_list = false;
     DEB_FREE_PAGE(("ptr.i = %u, ptr.p->m_size = ptr.p->m_free = %u",
                    ptr.i,
                    count));
@@ -7611,6 +7606,8 @@ loop:
     jam();
     allocated_new_pages = false;
     c_free_page_chunks.remove(ptr);
+    ndbrequire(ptr.p->m_size == ptr.p->m_free);
+    ptr.p->m_in_free_chunk_list = false;
   }
   insert_chunk_pages(ptr);
   if (allocated_new_pages)
@@ -7697,6 +7694,7 @@ Suma::release_chunk_pages(Ptr<Page_chunk> ptr)
     page->m_prev_page = RNIL;
     page->m_next_page = RNIL;
   }
+  ptr.p->m_in_free_chunk_list = true;
   c_free_page_chunks.addFirst(ptr);
 }
 
@@ -7709,6 +7707,8 @@ Suma::release_chunk()
     jam();
     return;
   }
+  ndbrequire(ptr.p->m_in_free_chunk_list == true);
+  ndbrequire(ptr.p->m_free == ptr.p->m_size);
   ndbrequire(m_total_pages_allocated >= ptr.p->m_free);
   m_total_pages_allocated -= ptr.p->m_free;
 
