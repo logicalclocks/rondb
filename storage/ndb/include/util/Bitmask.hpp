@@ -67,10 +67,16 @@ public:
   static void set(unsigned size, Uint32 data[]);
 
   /**
-   * set <em>len</em> bist from <em>start</em>
+   * set <em>len</em> bits from <em>start</em>
    */
   static void setRange(unsigned size, Uint32 data[], unsigned start,
                        unsigned len);
+
+  /**
+   * clear <em>len</em> bits from <em>start</em>
+   */
+  static void clearRange(unsigned size, Uint32 data[], unsigned start,
+                         unsigned len);
 
   /**
    * assign - Set all bits in <em>dst</em> to corresponding in <em>src</em>
@@ -312,24 +318,82 @@ BitmaskImpl::setRange(unsigned size [[maybe_unused]], Uint32 data[],
   Uint32 *end =  data + (last >> 5);
   assert(start <= last);
   assert(last < (size << 5));
-  
-  Uint32 tmp_word = ~(Uint32)0 << (start & 31);
 
-  if (ptr < end)
+  if (ptr == end)
   {
-    * ptr ++ |= tmp_word;
-    
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 last_part = (Uint64(1) << (last_offset + Uint64(1)));
+    Uint64 start_part = (Uint64(1) << start_offset);
+    Uint64 start_mask64 = last_part - start_part;
+    Uint32 start_mask = Uint32(start_mask64);
+    *ptr |= start_mask;
+    return;
+  }
+  else
+  {
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 start_part = (Uint64(1) << start_offset);
+    start_part -= 1;
+    Uint64 last_part = (Uint64(1) << (last_offset + 1));
+    last_part -= 1;
+    Uint32 start_mask = Uint32(start_part);
+    Uint32 last_mask = Uint32(last_part);
+    * ptr ++ |= ~start_mask;
     for(; ptr < end; )
     {
-      * ptr ++ = ~(Uint32)0;
+      * ptr ++ = 0xFFFFFFFF;
     }
-    
-    tmp_word = ~(Uint32)0;
+    *ptr |= last_mask;
+    return;
+  }
+}
+
+inline void
+BitmaskImpl::clearRange(unsigned size [[maybe_unused]], Uint32 data[],
+                        unsigned start, unsigned len)
+{
+  if (len == 0)
+  {
+    return;
   }
 
-  tmp_word &= ~(~(Uint32)1 << (last & 31));
-  
-  * ptr |= tmp_word;
+  Uint32 last = start + len - 1;
+  Uint32 *ptr = data + (start >> 5);
+  Uint32 *end =  data + (last >> 5);
+  assert(start <= last);
+  assert(last < (size << 5));
+
+  if (ptr == end)
+  {
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 last_part = (Uint64(1) << (last_offset + Uint64(1)));
+    Uint64 start_part = (Uint64(1) << start_offset);
+    Uint64 start_mask64 = last_part - start_part;
+    Uint32 start_mask = Uint32(start_mask64);
+    *ptr &= ~start_mask;
+    return;
+  }
+  else
+  {
+    Uint64 start_offset = start & 31;
+    Uint64 last_offset = last & 31;
+    Uint64 start_part = (Uint64(1) << start_offset);
+    start_part -= 1;
+    Uint64 last_part = (Uint64(1) << (last_offset + 1));
+    last_part -= 1;
+    Uint32 start_mask = Uint32(start_part);
+    Uint32 last_mask = Uint32(last_part);
+    * ptr ++ &= start_mask;
+    for(; ptr < end; )
+    {
+      * ptr ++ = 0;
+    }
+    *ptr &= ~last_mask;
+    return;
+  }
 }
 
 inline void 
@@ -939,10 +1003,16 @@ public:
   void set();
 
   /**
-   * set - set a range of bits
+   * setRange - set a range of bits
    */
   static void setRange(Uint32 data[], Uint32 pos, Uint32 len);
   void setRange(Uint32 pos, Uint32 len);
+
+  /**
+   * clearRange - clear a range of bits
+   */
+  static void clearRange(Uint32 data[], Uint32 pos, Uint32 len);
+  void clearRange(Uint32 pos, Uint32 len);
 
   /**
    * clear - Clear bit n.
@@ -1199,12 +1269,26 @@ BitmaskPOD<size>::setRange(Uint32 data[], Uint32 pos, Uint32 len)
   BitmaskImpl::setRange(size, data, pos, len);
 }
 
+template <unsigned size>
+inline void
+BitmaskPOD<size>::clearRange(Uint32 data[], Uint32 pos, Uint32 len)
+{
+  BitmaskImpl::clearRange(size, data, pos, len);
+}
+
 
 template <unsigned size>
 inline void
 BitmaskPOD<size>::setRange(Uint32 pos, Uint32 len)
 {
   BitmaskPOD<size>::setRange(rep.data, pos, len);
+}
+
+template <unsigned size>
+inline void
+BitmaskPOD<size>::clearRange(Uint32 pos, Uint32 len)
+{
+  BitmaskPOD<size>::clearRange(rep.data, pos, len);
 }
 
 template <unsigned size>

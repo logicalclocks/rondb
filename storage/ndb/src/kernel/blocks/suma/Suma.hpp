@@ -877,6 +877,7 @@ private:
       Uint32 nextList;
     };
     Uint32 prevList;
+    bool is_free;
   };
   typedef ArrayPool<Trigger_page_chunk> Trigger_page_chunk_pool;
   typedef DLCFifoList<Trigger_page_chunk_pool> Trigger_page_chunk_fifo;

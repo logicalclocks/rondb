@@ -596,6 +596,8 @@ public:
   void release_page(Uint32 type, Uint32 i, bool locked = false);
   void release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked = false);
 
+  void verify_page_allocated(Uint32 page_id);
+
   /**
    * There are a number of cases where we might need to allocate pages
    * even beyond what the reserved and shared global memory allows for.
@@ -733,7 +735,7 @@ private:
 
   void set(Uint32 first, Uint32 last);
   void clear(Uint32 first, Uint32 last);
-  void clear_and_set(Uint32 first, Uint32 last);
+  Uint32 get_bit(Uint32 first);
   Uint32 check(Uint32 first, Uint32 last);
 
   static Uint32 get_page_zone(Uint32 page);
@@ -1372,8 +1374,11 @@ Ndbd_mem_manager::set(Uint32 first, Uint32 last)
   last -= bmp;
   ptr += bmp;
 #endif
-  BitmaskImpl::set(BITMAP_WORDS, ptr->m_data, first);
-  BitmaskImpl::set(BITMAP_WORDS, ptr->m_data, last);
+  BitmaskImpl::setRange(BITMAP_WORDS, ptr->m_data, first, last - first + 1);
+#if 0
+  for (Uint32 i = 0; i < (last - first + 1); i++)
+    require(BitmaskImpl::get(BITMAP_WORDS, ptr->m_data, first + i) == 1);
+#endif
 }
 
 inline
@@ -1390,27 +1395,27 @@ Ndbd_mem_manager::clear(Uint32 first, Uint32 last)
   last -= bmp;
   ptr += bmp;
 #endif
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, first);
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, last);
+  BitmaskImpl::clearRange(BITMAP_WORDS, ptr->m_data, first, last - first + 1);
+#if 0
+  for (Uint32 i = 0; i < (last - first + 1); i++)
+    require(BitmaskImpl::get(BITMAP_WORDS, ptr->m_data, first + i) == 0);
+#endif
+
 }
 
 inline
-void
-Ndbd_mem_manager::clear_and_set(Uint32 first, Uint32 last)
+Uint32
+Ndbd_mem_manager::get_bit(Uint32 first)
 {
   Alloc_page * ptr = m_base_page;
 #if ((SPACE_PER_BMP_2LOG < 32) && (SIZEOF_CHARP == 4)) || (SIZEOF_CHARP == 8)
   Uint32 bmp = first & ~((1 << BPP_2LOG) - 1);
-  assert((first >> BPP_2LOG) == (last >> BPP_2LOG));
   assert(bmp < m_resource_limits.get_max_page());
   
   first -= bmp;
-  last -= bmp;
   ptr += bmp;
 #endif
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, first);
-  BitmaskImpl::clear(BITMAP_WORDS, ptr->m_data, last);
-  BitmaskImpl::set(BITMAP_WORDS, ptr->m_data, last+1);
+  return BitmaskImpl::get(BITMAP_WORDS, ptr->m_data, first);
 }
 
 inline

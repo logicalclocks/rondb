@@ -1354,6 +1354,11 @@ Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
 {
   assert(start);
 
+#if 0
+  fprintf(stderr, "Release %u pages in zone %u, starting at %u\n",
+         cnt, zone, start);
+#endif
+
   Uint32 test = check(start-1, start+cnt);
   if (test & 1)
   {
@@ -1361,6 +1366,7 @@ Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
 					    start - 1);
     Uint32 sz = fd->m_size;
     Uint32 left = start - sz;
+    require(fd->m_list == (ndb_log2(sz) - 1));
     remove_free_list(zone, left, fd->m_list);
     cnt += sz;
     start = left;
@@ -1371,6 +1377,7 @@ Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
   {
     Free_page_data *fd = get_free_page_data(m_base_page+right, right);
     Uint32 sz = fd->m_size;
+    require(fd->m_list == (ndb_log2(sz) - 1));
     remove_free_list(zone, right, fd->m_list);
     cnt += sz;
   }
@@ -1385,13 +1392,20 @@ Ndbd_mem_manager::alloc(AllocZone zone,
                         Uint32 min)
 {
   const Uint32 save = * pages;
+#if 0
+  fprintf(stderr, "Request %u pages (min = %u) from zone %u\n",
+          save, min, zone);
+#endif
   for (Uint32 z = zone; ; z--)
   {
     alloc_impl(z, ret, pages, min);
     if (*pages)
     {
 #if defined VM_TRACE || defined ERROR_INSERT
-      memset(m_base_page + *ret, 0xF6, *pages * sizeof(m_base_page[0]));
+      Uint32 pages_allocated = *pages;
+      Uint32 start = *ret;
+      Alloc_page *start_page = &m_base_page[start];
+      memset((char*)start_page, 0xF6, pages_allocated * sizeof(m_base_page[0]));
 #endif
       return;
     }
@@ -1437,7 +1451,7 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
   bool first_down = false;
   bool second_up = false;
   /**
-   * Requests for larger sizes than 1 MByte will always try to allocate
+   * Requests for larger sizes than 2 MByte will always try to allocate
    * those consecutive if possible to avoid splitting up things like
    * REDO logs, malloc calls and so forth.
    */
@@ -1451,37 +1465,38 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
 /* ---------------------------------------------------------------- */
       Uint32 sz = remove_free_list(zone, start, i);
       Uint32 extra = sz - cnt;
-      if (sz >= cnt)
-      {
-        * pages = cnt;
-      }
-      else
-      {
-        assert(sz < cnt);
-        * pages = sz;
-      }
       if (sz > cnt)
       {
         /**
          * We got more than requested for. Return the extra pages to the
-         * free list and clear the end points of the area we will allocate.
-         * Also set the left end point of the remaining things in the free
-         * list (only end points of free areas are set in the free bitmap).
+         * free list. Since all bits in bitmap are set, we need not do
+         * anything with the bitmap here.
+         *
+         * We set all bits in the bitmap, thus one can use the free bitmap
+         * to verify that a used page is not a free page and thus quickly
+         * find any use of pages that are in the free lists.
          */
         insert_free_list(zone, start + cnt, extra);
-        clear_and_set(start, start+cnt-1);
+        * pages = cnt;
       }
       else
       {
         /**
          * We didn't get all we requested (== cnt), we did however get
-         * something (== sz). Clear the end points in this range in
-         * bitmap of free pages.
-         *
+         * something (== sz). We get all here.
          * We also get here when sz == cnt.
+         * Bitmap is handled for both paths and we have already removed
+         * the pages from the free lists.
          */
-        clear(start, start+sz-1);
+        * pages = sz;
+        cnt = sz;
       }
+#if 0
+      fprintf(stderr, "Allocate %u pages in zone %u, starting at %u\n",
+              cnt, zone, start);
+#endif
+
+      clear(start, start+cnt-1);
       * ret = start;
       assert(m_resource_limits.get_in_use() + cnt <=
              m_resource_limits.get_allocated());
@@ -1586,6 +1601,11 @@ Ndbd_mem_manager::insert_free_list(Uint32 zone, Uint32 start, Uint32 size)
   Uint32 list = ndb_log2(size) - 1;
   Uint32 last = start + size - 1;
 
+#if 0
+  fprintf(stderr, "Insert %u pages in zone %u in list %u from page %u\n",
+          size, zone, list, start);
+#endif
+
   Uint32 head = m_buddy_lists[zone][list];
   Free_page_data* fd_first = get_free_page_data(m_base_page+start, 
 						start);
@@ -1619,7 +1639,12 @@ Ndbd_mem_manager::remove_free_list(Uint32 zone, Uint32 start, Uint32 list)
   Uint32 next = fd->m_next;
   Uint32 prev = fd->m_prev;
   assert(fd->m_list == list);
-  
+
+#if 0
+  fprintf(stderr, "Remove %u pages in zone %u from list %u first page %u\n",
+          size, zone, list, start);
+#endif
+
   if (prev)
   {
     assert(m_buddy_lists[zone][list] != start);
@@ -1944,6 +1969,18 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
 #ifdef NDBD_RANDOM_START_PAGE
   *i += m_random_start_page_id;
 #endif
+}
+
+void
+Ndbd_mem_manager::verify_page_allocated(Uint32 page_id)
+{
+  mt_mem_manager_lock();
+#ifdef NDBD_RANDOM_START_PAGE
+  page_id -= m_random_start_page_id;
+#endif
+  Uint32 ret = get_bit(page_id);
+  mt_mem_manager_unlock();
+  require(ret == 0);
 }
 
 void
