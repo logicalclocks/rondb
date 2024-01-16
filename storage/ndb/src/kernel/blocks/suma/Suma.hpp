@@ -808,6 +808,7 @@ private:
     Uint32 m_page_id;
     Uint32 m_size;
     Uint32 m_free;
+    bool m_in_free_chunk_list;
     union {
       Uint32 nextPool;
       Uint32 nextList;
