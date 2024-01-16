@@ -172,7 +172,7 @@ ARG RELEASE_FINAL_CLUSTERJ
 ENV RELEASE_FINAL_CLUSTERJ_ARG=${RELEASE_FINAL_CLUSTERJ:+-f}
 
 ARG IS_PUBLIC_RELEASE
-ENV IS_PUBLIC_RELEASE_ARG=${IS_PUBLIC_RELEASE:+-f}
+ENV IS_PUBLIC_RELEASE_ARG=${IS_PUBLIC_RELEASE:+-p}
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src,readonly=false\
