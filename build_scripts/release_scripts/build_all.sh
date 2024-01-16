@@ -19,7 +19,7 @@ fi
 
 help() {
   cat <<EOF
-build-all.sh {-s path} {-b path} {-o path} {-j build_threads} {-r} {-d} {-f}
+build-all.sh {-s path} {-b path} {-o path} {-j build_threads} {-r} {-d} {-f} {-p}
 
 USAGE
 =====
@@ -38,6 +38,8 @@ build-all.sh {-s path} [-b path] {-o path} {-r}
 -r      Make release tarballs. Takes longer
 -f      Make final realse for clusterj artifacts with out -SNAPSHOT in the artifact name.
         By default clusterj artifacts are uploaded as a SNAPSHOT version
+-p      The release is public and it will be copied to /master on the repo server. 
+        Otherwise the tarball will be copied to /dev on the repo server.
 EOF
 }
 
@@ -67,6 +69,9 @@ while getopts ":n:s:b:o:j:rdf" opt; do
     ;;
   f)
     RELEASE_FINAL_CLUSTERJ=true
+    ;;
+  p)
+    IS_PUBLIC_RELEASE=true
     ;;
   d)
     DEPLOY=true
@@ -132,6 +137,8 @@ echo "Build Params:
   Output dir:               $OUTPUT_DIR_ABS
   Release:                  $RELEASE_BUILD
   Deploy:                   $DEPLOY
+  Release final clusterj    $RELEASE_FINAL_CLUSTERJ
+  Is public release         $IS_PUBLIC_RELEASE
   Number of build threads:  $CORES
   RonDB version:            $RONDB_VERSION"
 
@@ -186,5 +193,10 @@ if [ "$DEPLOY" = true ]; then
     CLUSTERJ_ARTIFACT_POSTFIX=""
   fi
 
-  $SRC_DIR_ABS/build_scripts/release_scripts/deploy.sh $RONDB_VERSION $TARBALL_NAME $OUTPUT_DIR_ABS $SRC_DIR_ABS/id_rsa "$CLUSTERJ_ARTIFACT_POSTFIX"
+  TARBALL_COPY_LOCATION="/opt/repository/dev/rondb"
+  if [ "$IS_PUBLIC_RELEASE" = true ]; then
+    TARBALL_COPY_LOCATION="/opt/repository/master"
+  fi
+
+  $SRC_DIR_ABS/build_scripts/release_scripts/deploy.sh $RONDB_VERSION $TARBALL_NAME $OUTPUT_DIR_ABS $SRC_DIR_ABS/id_rsa "$TARBALL_COPY_LOCATION" "$CLUSTERJ_ARTIFACT_POSTFIX"
 fi

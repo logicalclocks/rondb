@@ -6,7 +6,8 @@ RONDB_VERSION=$1
 TARBALL_NAME=$2
 OUTPUT_DIR_ABS=$3
 ABS_PATH_RSA_KEY=$4
-CLUSTERJ_ARTIFACT_POSTFIX=$5
+TARBALL_COPY_LOCATION=$5
+CLUSTERJ_ARTIFACT_POSTFIX=$6
 
 TAR_FILE="$TARBALL_NAME.tar.gz"
 
@@ -21,7 +22,7 @@ if [[ ! -f "$TAR_FILE_ABS" ]]; then
   exit 1
 fi
 
-DST="repo@repo.hops.works:/opt/repository/master/$TAR_FILE"
+DST="repo@repo.hops.works:$TARBALL_COPY_LOCATION/$TAR_FILE"
 echo "Copying: $TAR_FILE_ABS to $DST"
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $ABS_PATH_RSA_KEY $TAR_FILE_ABS $DST
 

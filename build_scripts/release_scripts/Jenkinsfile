@@ -5,10 +5,11 @@ pipeline {
         }
     }
     parameters{
-      choice(name: 'BRANCH', choices: ['22.10.1', '21.04'], description: 'RonDB branch to build.')
-      choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
+      string(name: 'BRANCH', defaultValue: '22.10.1', description: 'RonDB branch to build.')
+      choice(name: 'BUILD_CORES', choices: ['16', '1', '8', '24', '32'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
       booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs")
+      booleanParam(name: 'IS_PUBLIC_RELEASE', defaultValue: true, description: 'Public releases are copied to /master and non public releases are copied to /dev on the repo server.')
     }
     environment {
         HopsCECeds = credentials('HopsCE')
@@ -57,14 +58,19 @@ pipeline {
                 cat $RepoCeds > id_rsa
                 chmod 600 id_rsa
 
-                RELEASE_ARG=
+                RELEASE_TARBALL_ARG=
                 if [ "$RELEASE_BUILD" = true ]; then
-                  RELEASE_ARG="--build-arg RELEASE_TARBALL=1"
+                  RELEASE_TARBALL_ARG="--build-arg RELEASE_TARBALL=1"
                 fi
 
                 RELEASE_FINAL_CLUSTERJ_ARG=
                 if [ "$RELEASE_FINAL_CLUSTERJ" = true ]; then
                   RELEASE_FINAL_CLUSTERJ_ARG="--build-arg RELEASE_FINAL_CLUSTERJ=1"
+                fi
+
+                IS_PUBLIC_RELEASE_ARG=
+                if [ "$IS_PUBLIC_RELEASE" = true ]; then
+                  IS_PUBLIC_RELEASE_ARG="--build-arg IS_PUBLIC_RELEASE=1"
                 fi
 
                 DOCKER_FILE_NAME="Dockerfile.oraclelinux7"
@@ -81,7 +87,9 @@ pipeline {
                   --no-cache \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
                   --build-arg DEPLOY_TO_REPO=1 \
-                  $RELEASE_ARG $RELEASE_FINAL_CLUSTERJ_ARG
+                  $RELEASE_TARBALL_ARG \
+                  $RELEASE_FINAL_CLUSTERJ_ARG \
+                  $IS_PUBLIC_RELEASE_ARG
               '''
             }
         }
