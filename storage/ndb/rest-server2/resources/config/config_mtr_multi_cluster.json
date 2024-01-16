@@ -1,0 +1,58 @@
+{
+        "REST": {
+                "ServerPort": 54557
+        },
+        "GRPC": {
+                "ServerPort": 48457
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": 13000
+                        }
+                ]
+        },
+        "RonDBMetadataCluster": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": 13001
+                        }
+                ]
+        },
+        "Security": {
+                "TLS": {
+                        "EnableTLS": true,
+                        "RequireAndVerifyClientCert": true
+                }, 
+                "APIKey": {
+                        "UseHopsworksAPIKeys": true
+                }
+        },
+        "Log": {
+                "Level": "info"
+        },
+        "Testing": {
+                "MySQL": {
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": 13002
+                                }
+                        ],
+                        "User": "root",
+                        "Password": ""
+                },
+                "MySQLMetadataCluster": {
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": 13004
+                                }
+                        ],
+                        "User": "root",
+                        "Password": ""
+                }
+        }
+}
