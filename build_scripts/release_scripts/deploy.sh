@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -x
 
 RONDB_VERSION=$1
 TARBALL_NAME=$2

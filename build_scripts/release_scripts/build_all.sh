@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -x
 
 export SYSBENCH_VERSION="sysbench-0.4.12.19"
 export DBT2_VERSION="dbt2-0.37.50.21"
@@ -50,7 +51,7 @@ DEPLOY=false
 
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
-while getopts ":n:s:b:o:j:rdf" opt; do
+while getopts ":n:s:b:o:j:rdfp" opt; do
   case "$opt" in
   s)
     SRC_DIR=$OPTARG

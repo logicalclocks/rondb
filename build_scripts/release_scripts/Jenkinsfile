@@ -116,7 +116,11 @@ pipeline {
                  --build-arg BUILD_THREADS=$BUILD_CORES 
                  
                  RDRS_IMAGE_TAR_FILE="docker-image-rdrs-$RONDB_VERSION.tar.gz"
-                 RDRS_IMAGE_TAR_FILE_REMOTE_DST="repo@repo.hops.works:/opt/repository/master/$RDRS_IMAGE_TAR_FILE"
+                 RDRS_IMAGE_TAR_FILE_REMOTE_DST="repo@repo.hops.works:/opt/repository/dev/rondb/$RDRS_IMAGE_TAR_FILE"
+                 if [ "$IS_PUBLIC_RELEASE" = true ]; then
+                   RDRS_IMAGE_TAR_FILE_REMOTE_DST="repo@repo.hops.works:/opt/repository/master/$RDRS_IMAGE_TAR_FILE"
+                 fi
+
                  docker save  rdrs:$RONDB_VERSION | gzip > $RDRS_IMAGE_TAR_FILE
                  echo "Copying: $RDRS_IMAGE_TAR_FILE to $RDRS_IMAGE_TAR_FILE_REMOTE_DST"
                  scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ./id_rsa $RDRS_IMAGE_TAR_FILE $RDRS_IMAGE_TAR_FILE_REMOTE_DST
