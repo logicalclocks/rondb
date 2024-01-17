@@ -55,9 +55,7 @@ public:
     T_TC    = 6, /* TC+SPJ */
     T_SEND  = 7, /* No blocks */
     T_IXBLD = 8, /* File thread during offline index build */
-    T_QUERY = 9, /* Query threads */
-    T_RECOVER=10,/* Recover threads */
-    T_END  = 11
+    T_END  = 9
   };
 
   THRConfig();
@@ -67,18 +65,20 @@ public:
   int setLockExecuteThreadToCPU(const char * val);
   int setLockIoThreadsToCPU(unsigned val);
 
-  int do_parse(unsigned realtime,
-               unsigned spintime,
-               unsigned num_cpus,
-               unsigned &num_rr_groups);
-  int do_parse(const char * ThreadConfig,
-               unsigned realtime,
-               unsigned spintime);
-  int do_parse(unsigned MaxNoOfExecutionThreads,
-               unsigned __ndbmt_lqh_threads,
-               unsigned __ndbmt_classic,
-               unsigned realtime,
-               unsigned spintime);
+  int do_parse_auto(unsigned realtime,
+                    unsigned spintime,
+                    unsigned num_cpus,
+                    unsigned &num_rr_groups,
+                    bool use_tc_threads,
+                    bool use_ldm_threads);
+  int do_parse_thrconfig(const char * ThreadConfig,
+                         unsigned realtime,
+                         unsigned spintime);
+  int do_parse_classic(unsigned MaxNoOfExecutionThreads,
+                       unsigned __ndbmt_lqh_threads,
+                       unsigned __ndbmt_classic,
+                       unsigned realtime,
+                       unsigned spintime);
 
   const char * getConfigString();
 
@@ -115,6 +115,7 @@ protected:
     unsigned m_realtime; //0 = no realtime, 1 = realtime
     unsigned m_spintime; //0 = no spinning, > 0 spintime in microseconds
     unsigned m_nosend; //0 = assist send thread, 1 = cannot assist send thread
+    unsigned m_rr_group; // Round Robin group of this thread
     bool m_core_bind; // Bind to all CPUs in CPU core
   };
   bool m_classic;
@@ -144,11 +145,9 @@ protected:
   void bind_unbound(Vector<T_Thread> & vec, unsigned cpu);
 
   void compute_automatic_thread_config(
-    Uint32 num_cpus,
+    Uint32 & num_cpus,
     Uint32 & tc_threads,
     Uint32 & ldm_threads,
-    Uint32 & query_threads,
-    Uint32 & recover_threads,
     Uint32 & main_threads,
     Uint32 & rep_threads,
     Uint32 & send_threads,
@@ -159,6 +158,12 @@ protected:
   static const char * getEntryName(Uint32 type);
 
 public:
+  Uint32 getRRGroups(Uint32 thr_no,
+                     Uint32 num_ldm_threads,
+                     Uint32 num_tc_threads,
+                     Uint32 num_recv_threads,
+                     Uint32 num_main_threads);
+
   struct Entries
   {
     unsigned m_type;

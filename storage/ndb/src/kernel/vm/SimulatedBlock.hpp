@@ -582,9 +582,7 @@ protected:
   Uint32 getFirstReceiveThreadId()
   {
     return globalData.ndbMtLqhThreads +
-           globalData.ndbMtTcThreads +
-           globalData.ndbMtMainThreads +
-           globalData.ndbMtRecoverThreads;
+           globalData.ndbMtTcThreads;
   }
 
   static
@@ -753,12 +751,24 @@ protected:
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
   void setOverloadStatus(OverloadStatus new_status);
-  void setConfMaxSendDelay(Uint32 max_send_delay);
-  void setConfMinSendDelay(Uint32 min_send_delay);
+
+  Int32 getTcDecrease();
+  Int32 getRecvDecrease();
+  void setTcQueryThreadDistance(Int32);
+  void setRecvQueryThreadDistance(Int32);
+
+  void setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive);
+  void setConfMaxSignalsBeforeWakeupOther(Uint32);
+  void setConfMaxSignalsBeforeWakeupTc(Uint32);
+  void setConfMaxSignalsBeforeWakeupReceiver(Uint32);
+  void setConfMaxSignalsBeforeFlushOther(Uint32);
+  void setConfMaxSignalsBeforeFlushTc(Uint32);
+  void setConfMaxSignalsBeforeFlushReceiver(Uint32);
+  void setMaxNumExtendedDelay(Uint32);
+  void setExtendDelay(Uint32);
   void setMaxSendDelay(Uint32 max_send_delay);
   void setMinSendDelay(Uint32 min_send_delay);
-  void setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay);
-  bool is_recover_thread(Uint32 thr_no);
+  Uint32 getMaxSendDelay();
   void setWakeupThread(Uint32 wakeup_instance);
   void setNodeOverloadStatus(OverloadStatus new_status);
   void setSendNodeOverloadStatus(OverloadStatus new_status);
@@ -786,8 +796,8 @@ protected:
   Uint32 getNumSendThreads();
   Uint32 getNumThreads();
   Uint32 getMainThrmanInstance();
-  const char * getThreadName();
-  const char * getThreadDescription();
+  void getThreadName(char *name);
+  void getThreadDescription(char *desc);
   void flush_send_buffers();
   void insert_activate_trp(TrpId trp_id);
   void set_watchdog_counter();
@@ -1804,13 +1814,13 @@ public:
 #define NUM_LQHKEYREQ_COUNTS 4
 #define NUM_SCAN_FRAGREQ_COUNTS 1
 #define MAX_LDM_THREAD_GROUPS_PER_RR_GROUP 8
-#define MAX_RR_GROUPS ((MAX_NDBMT_QUERY_THREADS + \
+#define MAX_RR_GROUPS ((MAX_NDBMT_QUERY_WORKERS + \
                         (MIN_QUERY_INSTANCES_PER_RR_GROUP - 1)) /  \
                       MIN_QUERY_INSTANCES_PER_RR_GROUP)
 #define MAX_DISTRIBUTION_WEIGHT 16
 #define MAX_NUM_DISTR_SIGNAL \
           (MAX_DISTRIBUTION_WEIGHT * MAX_QUERY_INSTANCES_PER_RR_GROUP)
-#define MAX_DISTR_THREADS (MAX_NDBMT_LQH_THREADS)
+#define MAX_DISTR_THREADS (MAX_NDBMT_QUERY_WORKERS)
 public:
   struct RoundRobinInfo
   {
@@ -1826,6 +1836,7 @@ public:
      * next two for table scans and range scans.
      */
     Uint32 m_load_indicator_counter;
+    Uint32 m_query_counter;
 
     Uint32 m_total_weight;
     Uint32 m_used_weight;
@@ -1852,7 +1863,6 @@ public:
   static Uint32 m_num_scan_fragreq_counts;
   static Uint32 m_rr_load_refresh_count;
   static Uint32 m_num_rr_groups;
-  static Uint32 m_num_query_thread_per_ldm;
   static Uint32 m_num_distribution_threads;
   static bool m_inited_rr_groups;
   struct NextRoundInfo
@@ -1874,92 +1884,60 @@ public:
     friend class SimulatedBlock;
   public:
 
+    Uint32 m_low_load;
     Uint32 m_weights[MAX_DISTR_THREADS];
     struct NextRoundInfo m_next_round[MAX_DISTR_THREADS];
     Uint32 m_distr_references[MAX_DISTR_THREADS];
 
     struct RoundRobinInfo m_rr_info[MAX_RR_GROUPS];
     struct QueryThreadState
-      m_query_state[MAX_NDBMT_QUERY_THREADS + MAX_NDBMT_LQH_THREADS];
+      m_query_state[MAX_NDBMT_QUERY_WORKERS];
 #ifdef DEBUG_SCHED_STATS
+    Uint64 m_lqhkeyreq_low_load;
     Uint64 m_lqhkeyreq_lqh;
     Uint64 m_lqhkeyreq_qt;
     Uint64 m_lqhkeyreq_rr;
+    Uint64 m_scan_fragreq_low_load;
     Uint64 m_scan_fragreq_lqh;
     Uint64 m_scan_fragreq_qt;
     Uint64 m_scan_fragreq_rr;
-    Uint32 m_lqhkeyreq_qt_count[MAX_NDBMT_LQH_THREADS];
-    Uint32 m_scan_fragreq_qt_count[MAX_NDBMT_LQH_THREADS];
+    Uint32 m_lqhkeyreq_qt_count[MAX_NDBMT_QUERY_WORKERS];
+    Uint32 m_scan_fragreq_qt_count[MAX_NDBMT_QUERY_WORKERS];
 #endif
   };
   void print_static_distr_info(DistributionHandler *handle);
   void print_debug_sched_stats(DistributionHandler * const);
   void get_load_indicators(DistributionHandler * const, Uint32);
 
-  void adjust_weights(DistributionHandler *handle)
-  {
-    /**
-     * This function ensures that no RR Group will have so small
-     * weights that they cannot handle any requests at all in a
-     * call to distribute_new_heights.
-     *
-     * In principle all threads could have overallocated up to
-     * 20 - 1 in scan requests. 20 = 5 * LOAD_SCAN_FRAGREQ where
-     * 5 is the maximum load indicator and -1 comes from that
-     * it cannot be used if there isn't at least one weight left
-     * to steal.
-     *
-     * This means we must ensure that at least one thread will have
-     * a weight of at least 5 since the weights are multiplied by
-     * LOAD_SCAN_FRAGREQ. We actually ensure that the largest one
-     * is even bigger than 8 since we also want each distribute call
-     * to handle a few signals before a new call is made.
-     */
-    if (globalData.ndbMtQueryWorkers == 0)
-      return;
-    Uint32 num_ldm_instances = getNumLDMInstances();
-    for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
-    {
-      Uint32 max_weight = 0;
-      for (Uint32 thr_no = 0; thr_no < num_ldm_instances; thr_no++)
-      {
-        if (m_rr_group[thr_no] == rr_group)
-        {
-          max_weight = MAX(max_weight, handle->m_weights[thr_no]);
-        }
-      }
-      if (max_weight > (MAX_DISTRIBUTION_WEIGHT / 2))
-        continue;
-      Uint32 mult_weight = MAX_DISTRIBUTION_WEIGHT / max_weight;
-      jamDebug();
-      jamDataDebug(rr_group);
-      jamDataDebug(mult_weight);
-      for (Uint32 thr_no = 0; thr_no < num_ldm_instances; thr_no++)
-      {
-        if (m_rr_group[thr_no] == rr_group)
-        {
-          handle->m_weights[thr_no] *= mult_weight;
-        }
-      }
-    }
-  }
   /**
-   * 100ms have passed and it is time to update the DistributionInfo and
+   * 50ms have passed and it is time to update the DistributionInfo and
    * RoundRobinInfo to reflect the current CPU load in the node.
    */
-  void calculate_distribution_signal(DistributionHandler *handle)
+  void calculate_distribution_signal(DistributionHandler *handle, Uint32 low_load)
   {
-    Uint32 num_ldm_instances = getNumLDMInstances();
-    if (globalData.ndbMtQueryWorkers == 0)
+    Uint32 num_query_instances = getNumQueryInstances();
+    if (low_load)
     {
-      jam();
-      return;
+      for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
+      {
+        get_load_indicators(handle, rr_group);
+      }
+      for (Uint32 i = 0; i < num_query_instances; i++)
+      {
+        struct QueryThreadState *q_state =
+          &handle->m_query_state[i];
+        Uint32 load_indicator = q_state->m_load_indicator;
+        if (load_indicator > 1)
+        {
+          low_load = 0;
+        }
+      }
+      handle->m_low_load = low_load;
     }
     jam();
     jamLine(m_num_rr_groups);
     ndbrequire(m_inited_rr_groups);
     ndbrequire(m_num_distribution_threads);
-    adjust_weights(handle);
     for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
     {
       jam();
@@ -2013,11 +1991,9 @@ public:
          * in addition they will not read them. We still have to be careful
          * with data placement to avoid false CPU cache sharing.
          */
-        if ((thr_no < num_ldm_instances &&
-             globalData.ndbMtQueryWorkers == 0) ||
-            m_rr_group[thr_no] != rr_group)
+        if (m_rr_group[thr_no] != rr_group)
         {
-          /* LDM-only threads ignored and threads from other RR groups */
+          /* Ignore threads from other RR groups */
           handle->m_next_round[thr_no].m_next_pos = Uint32(~0);
         }
         else
@@ -2031,8 +2007,8 @@ public:
       calculate_rr_distribution(handle, rr_info);
     }
     jam();
-    jamLine(num_ldm_instances);
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
+    jamLine(num_query_instances);
+    for (Uint32 i = 0; i < num_query_instances; i++)
     {
       struct QueryThreadState *q_state = &handle->m_query_state[i];
       q_state->m_current_weight = handle->m_weights[i];
@@ -2072,6 +2048,12 @@ public:
      * initialisation of new weights.
      */
     ndbrequire(dist_pos);
+    jamDebug();
+    jamDataDebug(dist_pos);
+    if (dist_pos < rr_info->m_lqhkeyreq_distr_signal_index)
+    {
+      rr_info->m_lqhkeyreq_distr_signal_index = 0;
+    }
     rr_info->m_distribution_signal_size = dist_pos;
     rr_info->m_lqhkeyreq_to_same_thread = NUM_LQHKEYREQ_COUNTS;
     rr_info->m_scan_fragreq_to_same_thread = NUM_SCAN_FRAGREQ_COUNTS;
@@ -2170,52 +2152,94 @@ public:
      * Given that thread configuration is performed before this step,
      * and this includes also CPU locking, the thread configuration
      * will assume that this simple algorithm is used here to decide
-     * on the Round Robin groups. Thus this modules have an implicit
+     * on the Round Robin groups. Thus these modules have an implicit
      * relationship to each other that must be maintained.
      *
      * The only output of the thread configuration is
      * globalData.ndbMtLqhWorkers
-     * globalData.ndbQueryThreads
      * globalData.ndbQueryWorkers
      * globalData.ndbRRGroups
-     * globalData.QueryThreadsPerLdm
      */
-    Uint32 num_ldm_instances = globalData.ndbMtLqhWorkers;
+    Uint32 num_query_instances = globalData.ndbMtQueryWorkers;
     Uint32 num_rr_groups = globalData.ndbRRGroups;
-    Uint32 num_query_thread_per_ldm = globalData.QueryThreadsPerLdm;
-    Uint32 num_distr_threads = num_ldm_instances;
+    Uint32 num_distr_threads = num_query_instances;
 
-    m_num_query_thread_per_ldm = num_query_thread_per_ldm;
     m_num_rr_groups = num_rr_groups;
     m_num_distribution_threads = num_distr_threads;
-    Uint32 rr_group = 0;
-    for (Uint32 i = 0; i < MAX_DISTR_THREADS; i++)
+    if (!Ndb_InitRRGroups(&m_rr_group[0],
+                          num_rr_groups,
+                          num_query_instances,
+                          MAX_DISTR_THREADS))
     {
-      m_rr_group[i] = 0xFFFFFFFF; //Ensure group not valid as init value
-    }
-    if (num_query_thread_per_ldm == 0)
-    {
-      return;
-    }
-    ndbrequire(num_query_thread_per_ldm == 1);
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
-    {
-      m_rr_group[i] = rr_group;
-      rr_group++;
-      if (rr_group == num_rr_groups)
+      /**
+       * In larger setups where we have 2 main threads and at least 2 Round
+       * Robin groups we need to ensure that the main and rep thread ends
+       * up in different Round Robin groups. Otherwise the consequence is
+       * that the Round Robin Group that have the main and rep thread is
+       * having more CPU resources than the other Round Robin groups.
+       *
+       * Having more than 2 Round Robin groups will still have some
+       * imbalance that at some point needs to be more balanced, probably
+       * by reintroducing query threads or some other means.
+       */
+      for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
       {
-        rr_group = 0;
+        m_rr_group[thr_no] =
+          globalEmulatorData.theConfiguration->getRRGroups(
+            thr_no,
+            globalData.ndbMtLqhThreads,
+            globalData.ndbMtTcThreads,
+            globalData.ndbMtReceiveThreads,
+            globalData.ndbMtMainThreads);
+      }
+    }
+    for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
+    {
+      if (thr_no < globalData.ndbMtLqhThreads)
+      {
+        g_eventLogger->info("LDM Thread %u is part of Round Robin Group %u",
+                            thr_no, m_rr_group[thr_no]);
+      }
+      else if (thr_no <
+               (globalData.ndbMtLqhThreads + globalData.ndbMtTcThreads))
+      {
+        g_eventLogger->info("TC Thread %u is part of Round Robin Group %u",
+                            thr_no - globalData.ndbMtLqhThreads,
+                            m_rr_group[thr_no]);
+      }
+      else if (thr_no < (globalData.ndbMtLqhThreads +
+                         globalData.ndbMtTcThreads +
+                         globalData.ndbMtReceiveThreads))
+      {
+        g_eventLogger->info("recv Thread %u is part of Round Robin Group %u",
+                            thr_no -
+                            (globalData.ndbMtLqhThreads +
+                             globalData.ndbMtTcThreads),
+                            m_rr_group[thr_no]);
+      }
+      else if (thr_no == (globalData.ndbMtLqhThreads +
+                          globalData.ndbMtTcThreads +
+                          globalData.ndbMtReceiveThreads))
+      {
+        g_eventLogger->info("main Thread is part of Round Robin Group %u",
+                            m_rr_group[thr_no]);
+      }
+      else
+      {
+        g_eventLogger->info("rep Thread is part of Round Robin Group %u",
+                            m_rr_group[thr_no]);
       }
     }
   }
   void distribute_new_weights(DistributionHandler *handle,
-                              RoundRobinInfo *rr_info)
+                              RoundRobinInfo *rr_info,
+                              bool initial = false)
   {
     Uint32 in_rr_group = rr_info->m_rr_group_inx;
     Uint32 total_weight = 0;
     Uint32 used_weight = 0;
-    Uint32 num_ldm_instances = getNumLDMInstances();
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
+    Uint32 num_query_instances = getNumQueryInstances();
+    for (Uint32 i = 0; i < num_query_instances; i++)
     {
       Uint32 rr_group = m_rr_group[i];
       if (rr_group != in_rr_group)
@@ -2229,7 +2253,7 @@ public:
       q_state->m_weight = weight;
       jamDataDebug(weight);
       Uint32 current_stolen = 0;
-      if (old_current_stolen > old_weight)
+      if (old_current_stolen > old_weight && !initial)
       {
         current_stolen = old_current_stolen - old_weight;
         if (current_stolen > weight)
@@ -2259,12 +2283,7 @@ public:
   }
   void fill_distr_references(DistributionHandler *handle)
   {
-    if (globalData.ndbMtQueryWorkers == 0)
-    {
-      jam();
-      return;
-    }
-    Uint32 num_ldm_instances = getNumLDMInstances();
+    Uint32 num_query_instances = getNumQueryInstances();
 
     memset(handle, 0, sizeof(*handle));
 
@@ -2285,7 +2304,7 @@ public:
      * So these two arrays contain the same information, but accessed
      * in different ways.
      */
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
+    for (Uint32 i = 0; i < num_query_instances; i++)
     {
       handle->m_weights[i] = 8;
       handle->m_distr_references[i] =
@@ -2298,7 +2317,7 @@ public:
       q_state->m_max_scan_fragreq_count = 0;
       q_state->m_current_stolen = 0;
     }
-    ndbrequire(num_ldm_instances <= MAX_DISTR_THREADS);
+    ndbrequire(num_query_instances <= MAX_DISTR_THREADS);
     /**
      * m_rr_info initialised to all 0s by above memset which is ok.
      * One consequence of this is that m_total_weight is set to 0,
@@ -2331,16 +2350,11 @@ public:
    */
   Uint32 getFirstLDMThreadInstance()
   {
-    if (unlikely(globalData.ndbMtLqhThreads == 0))
-    {
-      return globalData.ndbMtMainThreads +
-             globalData.ndbMtTcThreads;
-    }
-    else
-    {
-      /* Adjust for proxy instance with + 1 */
-      return globalData.ndbMtMainThreads + 1;
-    }
+    return 1;
+  }
+  Uint32 getNumQueryInstances()
+  {
+    return globalData.ndbMtQueryWorkers;
   }
   Uint32 getNumLDMInstances()
   {
@@ -2349,13 +2363,6 @@ public:
   Uint32 getNumTCInstances()
   {
     return globalData.ndbMtTcWorkers;
-  }
-  void query_thread_memory_barrier()
-  {
-    if (globalData.ndbMtQueryWorkers > 0)
-    {
-      mb();
-    }
   }
   static Uint32 get_shared_ldm_instance(Uint32 instance)
   {

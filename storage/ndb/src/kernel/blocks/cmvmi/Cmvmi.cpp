@@ -1746,6 +1746,36 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
                      signal->length(), JBB, ptr, num_secs);
           delete[] sec_alloc;
         }
+        else if (val == DumpStateOrd::CmvmiSetExtendDelay)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          if (val > 30)
+          {
+            val = 30;
+          }
+          setExtendDelay(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxNumExtendedDelay)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          if (val > 10)
+          {
+            val = 10;
+          }
+          setMaxNumExtendedDelay(val);
+        }
         else if (val == DumpStateOrd::CmvmiSetMaxSendDelay)
         {
           jam();
@@ -1755,9 +1785,13 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             return;
           }
           Uint32 val = signal->theData[1];
-          setConfMaxSendDelay(val);
+          if (val > 300)
+          {
+            val = 300;
+          }
+          setMaxSendDelay(val);
         }
-        else if (val == DumpStateOrd::CmvmiSetMinSendDelay)
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeWakeupOther)
         {
           jam();
           if (signal->length() != 2)
@@ -1766,9 +1800,9 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             return;
           }
           Uint32 val = signal->theData[1];
-          setConfMinSendDelay(val);
+          setConfMaxSignalsBeforeWakeupOther(val);
         }
-        else if (val == DumpStateOrd::CmvmiSetMaxSendBufferSizeDelay)
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeWakeupTc)
         {
           jam();
           if (signal->length() != 2)
@@ -1777,7 +1811,84 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
             return;
           }
           Uint32 val = signal->theData[1];
-          setMaxSendBufferSizeDelay(val);
+          setConfMaxSignalsBeforeWakeupTc(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeWakeupReceiver)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeWakeupReceiver(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushOther)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushOther(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushTc)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushTc(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsBeforeFlushReceiver)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsBeforeFlushReceiver(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetMaxSignalsPerJBBReceive)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setConfMaxSignalsPerJBBReceive(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetTcQueryThreadDistance)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setTcQueryThreadDistance(val);
+        }
+        else if (val == DumpStateOrd::CmvmiSetRecvQueryThreadDistance)
+        {
+          jam();
+          if (signal->length() != 2)
+          {
+            jam();
+            return;
+          }
+          Uint32 val = signal->theData[1];
+          setRecvQueryThreadDistance(val);
         }
       }
     }

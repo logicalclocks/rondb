@@ -223,9 +223,7 @@ Dbtup::update_pages_allocated(int retNo)
   {
     lqh_block = c_lqh;
     tup_block = this;
-    if (!c_lqh->is_restore_phase_done() &&
-        (globalData.ndbMtRecoverThreads +
-         globalData.ndbMtQueryThreads) > 0)
+    if (!c_lqh->is_restore_phase_done())
     {
       lock_flag = true;
     }

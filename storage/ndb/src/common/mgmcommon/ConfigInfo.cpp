@@ -747,12 +747,12 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "MaxSendDelay",
     DB_TOKEN,
     "Max number of microseconds to delay sending in ndbmtd",
-    ConfigInfo::CI_DEPRECATED,
+    ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
+    "125",
     "0",
-    "0",
-    "11000" },
+    "1000" },
 
   {
     CFG_DB_SCHED_SPIN_TIME,
@@ -2125,6 +2125,32 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "0",
     "0",
     STR_VALUE(MAX_USED_NUM_CPUS)
+  },
+
+  {
+    CFG_DB_USE_TC_THREADS,
+    "UseTcThreads",
+    DB_TOKEN,
+    "Use TC threads in automatic thread configuration",
+    ConfigInfo::CI_USED,
+    CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true"
+  },
+
+  {
+    CFG_DB_USE_LDM_THREADS,
+    "UseLdmThreads",
+    DB_TOKEN,
+    "Use LDM threads in automatic thread configuration",
+    ConfigInfo::CI_USED,
+    CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true"
   },
 
   {
@@ -6073,7 +6099,7 @@ checkThreadConfig(InitConfigFileParser::Context & ctx, const char * unused)
   }
   else if (ctx.m_currentSection->get("ThreadConfig", &thrconfig))
   {
-    int ret = tmp.do_parse(thrconfig, realtimeScheduler, spinTimer);
+    int ret = tmp.do_parse_thrconfig(thrconfig, realtimeScheduler, spinTimer);
     if (ret)
     {
       ctx.reportError("Unable to parse ThreadConfig: %s",
@@ -6098,7 +6124,7 @@ checkThreadConfig(InitConfigFileParser::Context & ctx, const char * unused)
   }
   else if (maxExecuteThreads || lqhThreads || classic)
   {
-    int ret = tmp.do_parse(
+    int ret = tmp.do_parse_classic(
         maxExecuteThreads, lqhThreads, classic, realtimeScheduler, spinTimer);
     if (ret)
     {

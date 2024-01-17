@@ -1300,6 +1300,9 @@ Backup::reset_lcp_timing_factors()
   }
 }
 
+static constexpr Uint32 LOW_REDO_USAGE = 8;
+static constexpr Uint32 MEDIUM_REDO_USAGE = 17;
+
 void
 Backup::set_proposed_disk_write_speed(Uint64 current_redo_speed_per_sec,
                                       Uint64 mean_redo_speed_per_sec,
@@ -1366,9 +1369,23 @@ Backup::set_proposed_disk_write_speed(Uint64 current_redo_speed_per_sec,
    *    speed, thus it can take a while before it affects the actual
    *    disk write speed since this is changed by an adaptive change
    *    algorithm.
+   *
+   * We only perform this increase when the REDO log is a bit used, thus
+   * ensuring a much smoother operation in most normal situations.
    */
-  m_proposed_disk_write_speed *= Uint64(125);
-  m_proposed_disk_write_speed /= Uint64(100);
+  if (m_redo_percentage >= LOW_REDO_USAGE)
+  {
+    if (m_redo_percentage >= MEDIUM_REDO_USAGE)
+    {
+      m_proposed_disk_write_speed *= Uint64(125);
+      m_proposed_disk_write_speed /= Uint64(100);
+    }
+    else
+    {
+      m_proposed_disk_write_speed *= Uint64(110);
+      m_proposed_disk_write_speed /= Uint64(100);
+    }
+  }
 
   Int64 lag = m_lcp_lag[0] + m_lcp_lag[1];
   Int64 lag_per_sec = 0;
@@ -1401,7 +1418,7 @@ Backup::set_proposed_disk_write_speed(Uint64 current_redo_speed_per_sec,
   {
     jam();
     /**
-     * Add another 15% to proposed speed if we are at low
+     * Add another 10% to proposed speed if we are at low
      * alert level.
      */
     m_proposed_disk_write_speed *= Uint64(110);
@@ -1468,7 +1485,18 @@ Backup::set_proposed_disk_write_speed(Uint64 current_redo_speed_per_sec,
     percentage_increase /= (m_proposed_disk_write_speed + 1);
     DEB_LCP_LAG(("(%u)Lag per second is %lld, percent_increase: %llu",
                  instance(), lag_per_sec, percentage_increase));
-    Uint64 max_percentage_increase = Uint64(25);
+    Uint64 max_percentage_increase = Uint64(0);
+    if (m_redo_percentage >= LOW_REDO_USAGE)
+    {
+      if (m_redo_percentage >= MEDIUM_REDO_USAGE)
+      {
+        max_percentage_increase = Uint64(25);
+      }
+      else
+      {
+        max_percentage_increase = Uint64(10);
+      }
+    }
     if (m_last_lcp_dd_percentage > 85)
     {
       jam();

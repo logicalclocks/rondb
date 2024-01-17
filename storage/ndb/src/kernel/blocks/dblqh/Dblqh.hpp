@@ -521,7 +521,7 @@ public:
     Uint32 prevList;
   };
   typedef Ptr<CopyFragRecord> CopyFragRecordPtr;
-#define ZCOPYFRAGREC_FILE_SIZE MAX_NDBMT_LQH_THREADS
+#define ZCOPYFRAGREC_FILE_SIZE MAX_NDBMT_LQH_WORKERS
   typedef ArrayPool<CopyFragRecord> CopyFragRecord_pool;
   typedef DLFifoList<CopyFragRecord_pool> CopyFragRecord_fifo;
 
@@ -1302,10 +1302,10 @@ public:
   typedef Ptr<GcpRecord> GcpRecordPtr;
 
   struct HostRecord {
-    Bitmask<(MAX_NDBMT_LQH_THREADS+1+31)/32> lqh_pack_mask;
-    Bitmask<(MAX_NDBMT_TC_THREADS+1+31)/32> tc_pack_mask;
-    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_THREADS+1];
-    struct PackedWordsContainer tc_pack[MAX_NDBMT_TC_THREADS+1];
+    Bitmask<(MAX_NDBMT_LQH_WORKERS+1+31)/32> lqh_pack_mask;
+    Bitmask<(MAX_NDBMT_TC_WORKERS+1+31)/32> tc_pack_mask;
+    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_WORKERS+1];
+    struct PackedWordsContainer tc_pack[MAX_NDBMT_TC_WORKERS+1];
     Uint8 inPackedList;
     Uint8 nodestatus;
   };
@@ -5202,31 +5202,23 @@ public:
 #endif
   void lock_alloc_operation()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Lock(&alloc_operation_mutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Lock(&alloc_operation_mutex);
   }
   void unlock_alloc_operation()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Unlock(&alloc_operation_mutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Unlock(&alloc_operation_mutex);
   }
   void lock_take_over_hash()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Lock(&c_scanTakeOverMutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Lock(&c_scanTakeOverMutex);
   }
   void unlock_take_over_hash()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Unlock(&c_scanTakeOverMutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Unlock(&c_scanTakeOverMutex);
   }
   Uint32 m_first_qt_thr_no;
   Uint32 m_num_qt_our_rr_group;
@@ -5621,68 +5613,57 @@ Dblqh::is_exclusive_condition_ready(Fragrecord *fragPtrP)
 inline void
 Dblqh::upgrade_to_write_key_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_write_key_frag_access(fragptr.p);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_write_key_frag_access(fragptr.p);
 }
 
 inline void
 Dblqh::upgrade_to_exclusive_frag_access_no_return()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_exclusive_frag_access(fragptr.p);
-    m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_exclusive_frag_access(fragptr.p);
+  m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
 }
 
 inline void
 Dblqh::upgrade_to_exclusive_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_exclusive_frag_access(fragptr.p);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_exclusive_frag_access(fragptr.p);
 }
 
 inline void
 Dblqh::upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_exclusive_frag_access(fragPtrP);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_exclusive_frag_access(fragPtrP);
 }
 
 inline void
 Dblqh::downgrade_from_exclusive_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_downgrade_from_exclusive_frag_access(fragptr.p);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_downgrade_from_exclusive_frag_access(fragptr.p);
 }
 
 inline void
 Dblqh::downgrade_from_exclusive_frag_access(Fragrecord *fragPtrP)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_downgrade_from_exclusive_frag_access(fragPtrP);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_downgrade_from_exclusive_frag_access(fragPtrP);
 }
 
 inline void
 Dblqh::acquire_frag_commit_access_write_key()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   {
     Fragrecord *fragPtrP = fragptr.p;
     if (m_fragment_lock_status == FRAGMENT_UNLOCKED)
@@ -5717,7 +5698,8 @@ Dblqh::acquire_frag_commit_access_write_key()
 inline void
 Dblqh::acquire_frag_commit_access_exclusive()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   {
     jamDebug();
     Fragrecord *fragPtrP = fragptr.p;
@@ -5736,17 +5718,16 @@ inline void
 Dblqh::acquire_frag_abort_access(Fragrecord *fragPtrP,
                                   TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_acquire_frag_abort_access(fragPtrP, regTcPtr);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_acquire_frag_abort_access(fragPtrP, regTcPtr);
 }
 
 inline void
 Dblqh::acquire_frag_prepare_key_access(Fragrecord *fragPtrP,
                                        TcConnectionrec *regTcPtr)
 {
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   if (is_write_key_frag_access(regTcPtr))
   {
     /**
@@ -5777,6 +5758,7 @@ Dblqh::acquire_frag_prepare_key_access(Fragrecord *fragPtrP,
   }
   else
   {
+    jamDebug();
     handle_acquire_read_key_frag_access(fragPtrP, false, true);
     m_fragment_lock_status = FRAGMENT_LOCKED_IN_READ_KEY_MODE;
   }
@@ -5786,7 +5768,7 @@ inline void
 Dblqh::acquire_frag_scan_access(Fragrecord *fragPtrP,
                                        TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   {
     if (m_fragment_lock_status == FRAGMENT_UNLOCKED)
     {
@@ -5803,11 +5785,9 @@ inline void
 Dblqh::acquire_frag_scan_access_new(Fragrecord *fragPtrP,
                                     TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_acquire_scan_frag_access(fragPtrP);
-  }
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  jamDebug();
+  handle_acquire_scan_frag_access(fragPtrP);
 }
 
 inline void

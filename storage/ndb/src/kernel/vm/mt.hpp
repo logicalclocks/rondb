@@ -48,10 +48,7 @@
   messages directed to other nodes and contains no blocks and
   executes thus no signals.
 */
-#define MAX_BLOCK_THREADS (MAX_MAIN_THREADS +       \
-                           MAX_NDBMT_LQH_THREADS +  \
-                           MAX_NDBMT_TC_THREADS +   \
-                           MAX_NDBMT_RECEIVE_THREADS)
+#define MAX_BLOCK_THREADS (NDBMT_MAX_BLOCK_INSTANCES)
 
 /**
  * The worst case is the single thread instance running the receive thread,
@@ -103,12 +100,24 @@ void mt_startChangeNeighbourNode();
 void mt_setNeighbourNode(NodeId node);
 void mt_endChangeNeighbourNode();
 void mt_setWakeupThread(Uint32 self, Uint32 wakeup_instance);
-void mt_setConfMaxSendDelay(Uint32 max_send_delay);
-void mt_setConfMinSendDelay(Uint32 min_send_delay);
+
+Int32 mt_getTcDecrease();
+Int32 mt_getRecvDecrease();
+void mt_setTcQueryThreadDistance(Int32);
+void mt_setRecvQueryThreadDistance(Int32);
+
+void mt_setConfMaxSignalsPerJBBReceive(Uint32 max_signals_per_jbb_receive);
+void mt_setConfMaxSignalsBeforeFlushOther(Uint32);
+void mt_setConfMaxSignalsBeforeFlushTc(Uint32);
+void mt_setConfMaxSignalsBeforeFlushReceiver(Uint32);
+void mt_setConfMaxSignalsBeforeWakeupOther(Uint32);
+void mt_setConfMaxSignalsBeforeWakeupTc(Uint32);
+void mt_setConfMaxSignalsBeforeWakeupReceiver(Uint32);
+void mt_setMaxNumExtendedDelay(Uint32);
+void mt_setExtendDelay(Uint32);
+Uint32 mt_getMaxSendDelay(void);
 void mt_setMaxSendDelay(Uint32 max_send_delay);
 void mt_setMinSendDelay(Uint32 min_send_delay);
-void mt_setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay);
-bool mt_is_recover_thread(Uint32 thr_no);
 void mt_setOverloadStatus(Uint32 self,
                          OverloadStatus new_status);
 void mt_setNodeOverloadStatus(Uint32 self,
@@ -125,8 +134,8 @@ void mt_setSpintime(Uint32 self, Uint32 new_spintime);
 Uint32 mt_getWakeupLatency(void);
 void mt_setWakeupLatency(Uint32);
 
-const char *mt_getThreadName(Uint32 self);
-const char *mt_getThreadDescription(Uint32 self);
+void mt_getThreadName(Uint32 self, char *name);
+void mt_getThreadDescription(Uint32 self, char *desc);
 void mt_getSendPerformanceTimers(Uint32 send_instance,
                                  Uint64 & exec_time,
                                  Uint64 & sleep_time,
@@ -146,6 +155,7 @@ bool mt_is_recv_thread_for_new_trp(Uint32 self,
                                    NodeId node_id,
                                    TrpId trp_id);
 Uint32 mt_getMainThrmanInstance();
+Uint32 mt_getRepThrmanInstance();
 
 SendStatus mt_send_remote(Uint32 self, const SignalHeader *sh, Uint8 prio,
                           const Uint32 *data, NodeId nodeId,
