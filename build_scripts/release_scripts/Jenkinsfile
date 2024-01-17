@@ -101,7 +101,7 @@ pipeline {
               sh '''
 
                 if [ "$BUILD_RDRS_DOCKER_IMAGE" = false ]; then
-                  return
+                  exit 0
                 fi
 
                 echo "Building RDRS Image"
