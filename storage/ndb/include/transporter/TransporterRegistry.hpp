@@ -559,6 +559,7 @@ public:
   Transporter* get_transporter(TrpId id) const;
   NodeId get_node_id_trp(TrpId id) const;
   Transporter* get_node_transporter(NodeId nodeId) const;
+  TrpId get_send_transporter_id(NodeId nodeId, BlockNumber bno);
   bool is_shm_transporter(NodeId nodeId);
   bool use_only_ipv4(NodeId nodeId)
   {
@@ -761,6 +762,8 @@ public:
     return pollReceive(timeOutMillis, * receiveHandle);
   }
 
+  Uint32 getSendBufferSize(Uint32 nodeId);
+
   inline Uint32 performReceive() {
     assert(receiveHandle != 0);
     return performReceive(* receiveHandle,
@@ -939,6 +942,7 @@ TransporterRegistry::backoff_update_and_check_time_for_connect(NodeId nodeId)
  * the number of threads used (this is 0 except for ndbmtd).
  */
 void calculate_send_buffer_level(Uint64 node_send_buffer_size,
+                                 Uint64 max_node_send_buffer_size,
                                  Uint64 total_send_buffer_size,
                                  Uint64 total_used_send_buffer_size,
                                  Uint32 num_threads,

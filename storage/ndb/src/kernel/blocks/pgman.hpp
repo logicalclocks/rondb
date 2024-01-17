@@ -510,6 +510,7 @@ private:
   bool get_first_ordered_fragment(FragmentRecordPtr&);
   bool get_next_ordered_fragment(FragmentRecordPtr&);
   Uint32 get_ordered_list_from_table_id(Uint32 table_id);
+  Uint32 m_table_divisor;
 
   DL64HashTable<FragmentRecord_pool, FragmentRecord> m_fragmentRecordHash;
 

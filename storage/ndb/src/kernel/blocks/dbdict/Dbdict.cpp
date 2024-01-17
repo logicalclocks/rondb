@@ -1377,7 +1377,7 @@ Dbdict::execCREATE_FRAGMENTATION_REQ(Signal* signal)
   }
 
   XSchemaFile * xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
-  SchemaFile::TableEntry * te = getTableEntry(xsf, req->primaryTableId);
+  const SchemaFile::TableEntry * te = getTableEntry(xsf, req->primaryTableId);
   if (te->m_tableState != SchemaFile::SF_CREATE)
   {
     jam();
@@ -1893,131 +1893,6 @@ void Dbdict::closeReadTableConf(Signal* signal,
 /* ---------------------------------------------------------------- */
 NdbOut& operator<<(NdbOut& out, const SchemaFile::TableEntry entry);
 
-void
-Dbdict::updateSchemaState(Signal* signal, Uint32 tableId,
-			  SchemaFile::TableEntry* te, Callback* callback,
-                          bool savetodisk, bool dicttrans)
-{
-  jam();
-  XSchemaFile * xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
-  SchemaFile::TableEntry * tableEntry = getTableEntry(xsf, tableId);
-
-  if (!dicttrans) {
-    /*
-     * Old code may not zero transId, leaving the entry not visible
-     * to tabinfo request (old code may also skip updateSchemaState).
-   */
-    te->m_transId = 0;
-  }
-
-  D("updateSchemaState" << V(tableId));
-  D("old:" << *tableEntry);
-  D("new:" << *te);
-
-#ifndef TODO
-  * tableEntry = * te;
-  computeChecksum(xsf, tableId / NDB_SF_PAGE_ENTRIES);
-#else
-  SchemaFile::TableState newState =
-    (SchemaFile::TableState)te->m_tableState;
-  SchemaFile::TableState oldState =
-    (SchemaFile::TableState)tableEntry->m_tableState;
-
-  Uint32 newVersion = te->m_tableVersion;
-  Uint32 oldVersion = tableEntry->m_tableVersion;
-
-  bool ok = false;
-  switch (newState){
-  case SchemaFile::CREATE_PARSED:
-    jam();
-    ok = true;
-    ndbrequire(create_obj_inc_schema_version(oldVersion) == newVersion);
-    ndbrequire(oldState == SchemaFile::INIT ||
-               oldState == SchemaFile::DROP_TABLE_COMMITTED);
-    break;
-  case SchemaFile::DROP_PARSED:
-    ok = true;
-    break;
-  case SchemaFile::ALTER_PARSED:
-    // wl3600_todo
-    ok = true;
-    break;
-  case SchemaFile::ADD_STARTED:
-    jam();
-    ok = true;
-    if (dicttrans) {
-      ndbrequire(oldVersion == newVersion);
-      ndbrequire(oldState == SchemaFile::CREATE_PARSED);
-      break;
-    }
-    ndbrequire(create_obj_inc_schema_version(oldVersion) == newVersion);
-    ndbrequire(oldState == SchemaFile::INIT ||
-	       oldState == SchemaFile::DROP_TABLE_COMMITTED);
-    break;
-  case SchemaFile::TABLE_ADD_COMMITTED:
-    jam();
-    ok = true;
-    ndbrequire(newVersion == oldVersion);
-    ndbrequire(oldState == SchemaFile::ADD_STARTED ||
-	       oldState == SchemaFile::DROP_TABLE_STARTED);
-    break;
-  case SchemaFile::ALTER_TABLE_COMMITTED:
-    jam();
-    ok = true;
-    ndbrequire(alter_obj_inc_schema_version(oldVersion) == newVersion);
-    ndbrequire(oldState == SchemaFile::TABLE_ADD_COMMITTED ||
-	       oldState == SchemaFile::ALTER_TABLE_COMMITTED);
-    break;
-  case SchemaFile::DROP_TABLE_STARTED:
-    jam();
-  case SchemaFile::DROP_TABLE_COMMITTED:
-    jam();
-    ok = true;
-    break;
-  case SchemaFile::TEMPORARY_TABLE_COMMITTED:
-    jam();
-    ndbrequire(oldState == SchemaFile::ADD_STARTED ||
-               oldState == SchemaFile::TEMPORARY_TABLE_COMMITTED);
-    ok = true;
-    break;
-  case SchemaFile::INIT:
-    jam();
-    ok = true;
-    if (dicttrans) {
-      ndbrequire((oldState == SchemaFile::CREATE_PARSED));
-      break;
-    }
-    ndbrequire((oldState == SchemaFile::ADD_STARTED));
-  }//if
-  ndbrequire(ok);
-
-  * tableEntry = * te;
-  computeChecksum(xsf, tableId / NDB_SF_PAGE_ENTRIES);
-
-  if (savetodisk)
-  {
-    ndbrequire(c_writeSchemaRecord.inUse == false);
-    c_writeSchemaRecord.inUse = true;
-
-    c_writeSchemaRecord.pageId = c_schemaRecord.schemaPage;
-    c_writeSchemaRecord.newFile = false;
-    c_writeSchemaRecord.firstPage = tableId / NDB_SF_PAGE_ENTRIES;
-    c_writeSchemaRecord.noOfPages = 1;
-    c_writeSchemaRecord.m_callback = * callback;
-
-    startWriteSchemaFile(signal);
-  }
-  else
-  {
-    jam();
-    if (callback != 0) {
-      jam();
-      execute(signal, *callback, 0);
-    }
-  }
-#endif
-}
-
 void Dbdict::startWriteSchemaFile(Signal* signal)
 {
   FsConnectRecordPtr fsPtr;
@@ -2075,9 +1950,9 @@ void Dbdict::writeSchemaFile(Signal* signal, Uint32 filePtr, Uint32 fsConPtr)
 
   // check write record
   WriteSchemaRecord & wr = c_writeSchemaRecord;
-  ndbrequire(wr.pageId == (wr.pageId != 0) * NDB_SF_MAX_PAGES);
+  ndbrequire(wr.pageId == (wr.pageId != 0) * m_ndb_sf_max_pages);
   ndbrequire(wr.noOfPages != 0);
-  ndbrequire(wr.firstPage + wr.noOfPages <= NDB_SF_MAX_PAGES);
+  ndbrequire(wr.firstPage + wr.noOfPages <= m_ndb_sf_max_pages);
 
   fsRWReq->filePointer = filePtr;
   fsRWReq->userReference = reference();
@@ -2154,9 +2029,9 @@ void Dbdict::readSchemaFile(Signal* signal, Uint32 filePtr, Uint32 fsConPtr)
 
   // check read record
   ReadSchemaRecord & rr = c_readSchemaRecord;
-  ndbrequire(rr.pageId == (rr.pageId != 0) * NDB_SF_MAX_PAGES);
+  ndbrequire(rr.pageId == (rr.pageId != 0) * m_ndb_sf_max_pages);
   ndbrequire(rr.noOfPages != 0);
-  ndbrequire(rr.firstPage + rr.noOfPages <= NDB_SF_MAX_PAGES);
+  ndbrequire(rr.firstPage + rr.noOfPages <= m_ndb_sf_max_pages);
 
   fsRWReq->filePointer = filePtr;
   fsRWReq->userReference = reference();
@@ -2195,17 +2070,30 @@ void Dbdict::readSchemaConf(Signal* signal,
     ndbrequire(rr.firstPage == 0);
     SchemaFile * sf = &xsf->schemaPage[0];
     Uint32 noOfPages;
-    if (sf->NdbVersion < NDB_SF_VERSION_5_0_6) {
-      jam();
-      const Uint32 pageSize_old = 32 * 1024;
-      noOfPages = pageSize_old / NDB_SF_PAGE_SIZE - 1;
-    } else {
-      noOfPages = sf->FileSize / NDB_SF_PAGE_SIZE - 1;
-    }
-    rr.schemaReadState = ReadSchemaRecord::INITIAL_READ;
+    noOfPages = sf->FileSize / NDB_SF_PAGE_SIZE - 1;
     if (noOfPages != 0) {
       rr.firstPage = 1;
       rr.noOfPages = noOfPages;
+      if ((noOfPages + 1) > m_ndb_sf_max_pages)
+      {
+        char reason_msg[256];
+        BaseString::snprintf(reason_msg, sizeof(reason_msg),
+          "Trying to start with less schema objects than exists"
+          " in schema file, started with %u pages and required"
+          " %u pages, increase MaxNoOfSchemaObjects to at least"
+          " %u",
+          m_ndb_sf_max_pages,
+          (noOfPages + 1),
+          (noOfPages + 1) * NDB_SF_PAGE_ENTRIES);
+        if (!crashInd)
+        {
+          infoEvent("primary %s, trying backup", reason_msg);
+          readSchemaRef(signal, fsPtr);
+          return;
+        }
+        progError(__LINE__, NDBD_EXIT_SR_SCHEMAFILE, reason_msg);
+      }
+      rr.schemaReadState = ReadSchemaRecord::INITIAL_READ;
       readSchemaFile(signal, fsPtr.p->filePtr, fsPtr.i);
       return;
     }
@@ -2213,26 +2101,6 @@ void Dbdict::readSchemaConf(Signal* signal,
 
   SchemaFile * sf0 = &xsf->schemaPage[0];
   xsf->noOfPages = sf0->FileSize / NDB_SF_PAGE_SIZE;
-
-  if (sf0->NdbVersion < NDB_SF_VERSION_5_0_6 &&
-      ! convertSchemaFileTo_5_0_6(xsf)) {
-    jam();
-    ndbrequire(! crashInd);
-    ndbrequire(fsPtr.p->fsState == FsConnectRecord::READ_SCHEMA1);
-    readSchemaRef(signal, fsPtr);
-    return;
-  }
-
-  if (sf0->NdbVersion < NDB_MAKE_VERSION(6,4,0) &&
-      ! convertSchemaFileTo_6_4(xsf))
-  {
-    jam();
-    ndbrequire(! crashInd);
-    ndbrequire(fsPtr.p->fsState == FsConnectRecord::READ_SCHEMA1);
-    readSchemaRef(signal, fsPtr);
-    return;
-  }
-
 
   for (Uint32 n = 0; n < xsf->noOfPages; n++) {
     SchemaFile * sf = &xsf->schemaPage[n];
@@ -2322,6 +2190,9 @@ void Dbdict::closeReadSchemaConf(Signal* signal,
       c_writeSchemaRecord.m_callback.m_callbackFunction =
         safe_cast(&Dbdict::initSchemaFile_conf);
 
+      m_first_updated_table_entry = RNIL;
+      m_last_updated_table_entry = RNIL;
+
       startWriteSchemaFile(signal);
     }
     break;
@@ -2330,100 +2201,6 @@ void Dbdict::closeReadSchemaConf(Signal* signal,
     ndbabort();
   }//switch
 }//Dbdict::closeReadSchemaConf()
-
-bool
-Dbdict::convertSchemaFileTo_5_0_6(XSchemaFile * xsf)
-{
-  const Uint32 pageSize_old = 32 * 1024;
-  union {
-    Uint32 page_old[pageSize_old >> 2];
-    SchemaFile _SchemaFile;
-  };
-  (void)_SchemaFile;
-  SchemaFile * sf_old = (SchemaFile *)page_old;
-
-  if (xsf->noOfPages * NDB_SF_PAGE_SIZE != pageSize_old)
-    return false;
-  SchemaFile * sf0 = &xsf->schemaPage[0];
-  memcpy(sf_old, sf0, pageSize_old);
-
-  // init max number new pages needed
-  xsf->noOfPages = (sf_old->NoOfTableEntries + NDB_SF_PAGE_ENTRIES - 1) /
-                   NDB_SF_PAGE_ENTRIES;
-  initSchemaFile(xsf, 0, xsf->noOfPages, true);
-
-  Uint32 noOfPages = 1;
-  Uint32 n, i, j;
-  for (n = 0; n < xsf->noOfPages; n++) {
-    jam();
-    for (i = 0; i < NDB_SF_PAGE_ENTRIES; i++) {
-      j = n * NDB_SF_PAGE_ENTRIES + i;
-      if (j >= sf_old->NoOfTableEntries)
-        continue;
-      const SchemaFile::TableEntry_old & te_old = sf_old->TableEntries_old[j];
-      if (te_old.m_tableState == SchemaFile::SF_UNUSED ||
-          te_old.m_noOfPages == 0)
-        continue;
-      SchemaFile * sf = &xsf->schemaPage[n];
-      SchemaFile::TableEntry & te = sf->TableEntries[i];
-      te.m_tableState = te_old.m_tableState;
-      te.m_tableVersion = te_old.m_tableVersion;
-      te.m_tableType = te_old.m_tableType;
-      te.m_info_words = te_old.m_noOfPages * ZSIZE_OF_PAGES_IN_WORDS -
-                        ZPAGE_HEADER_SIZE;
-      te.m_gcp = te_old.m_gcp;
-      if (noOfPages < n)
-        noOfPages = n;
-    }
-  }
-  xsf->noOfPages = noOfPages;
-  initSchemaFile(xsf, 0, xsf->noOfPages, false);
-
-  return true;
-}
-
-bool
-Dbdict::convertSchemaFileTo_6_4(XSchemaFile * xsf)
-{
-  for (Uint32 i = 0; i < xsf->noOfPages; i++)
-  {
-    xsf->schemaPage[i].NdbVersion = NDB_VERSION_D;
-    for (Uint32 j = 0; j < NDB_SF_PAGE_ENTRIES; j++)
-    {
-      Uint32 n = i * NDB_SF_PAGE_ENTRIES + j;
-      SchemaFile::TableEntry * transEntry = getTableEntry(xsf, n);
-
-      switch(SchemaFile::Old::TableState(transEntry->m_tableState)) {
-      case SchemaFile::Old::INIT:
-        transEntry->m_tableState = SchemaFile::SF_UNUSED;
-        break;
-      case SchemaFile::Old::ADD_STARTED:
-        transEntry->m_tableState = SchemaFile::SF_UNUSED;
-        break;
-      case SchemaFile::Old::TABLE_ADD_COMMITTED:
-        transEntry->m_tableState = SchemaFile::SF_IN_USE;
-        break;
-      case SchemaFile::Old::DROP_TABLE_STARTED:
-        transEntry->m_tableState = SchemaFile::SF_UNUSED;
-        break;
-      case SchemaFile::Old::DROP_TABLE_COMMITTED:
-        transEntry->m_tableState = SchemaFile::SF_UNUSED;
-        break;
-      case SchemaFile::Old::ALTER_TABLE_COMMITTED:
-        transEntry->m_tableState = SchemaFile::SF_IN_USE;
-        break;
-      case SchemaFile::Old::TEMPORARY_TABLE_COMMITTED:
-        transEntry->m_tableState = SchemaFile::SF_IN_USE;
-        break;
-      default:
-        transEntry->m_tableState = SchemaFile::SF_UNUSED;
-        break;
-      }
-    }
-    computeChecksum(xsf, i);
-  }
-  return true;
-}
 
 /* **************************************************************** */
 /* ---------------------------------------------------------------- */
@@ -2874,7 +2651,7 @@ void Dbdict::initPageRecords()
   c_retrieveRecord.retrievePage =  ZMAX_PAGES_OF_TABLE_DEFINITION;
   ndbrequire(ZNUMBER_OF_PAGES >= (ZMAX_PAGES_OF_TABLE_DEFINITION + 1));
   c_schemaRecord.schemaPage = 0;
-  c_schemaRecord.oldSchemaPage = NDB_SF_MAX_PAGES;
+  c_schemaRecord.oldSchemaPage = m_ndb_sf_max_pages;
 }//Dbdict::initPageRecords()
 
 void Dbdict::initialiseTableRecord(TableRecordPtr tablePtr, Uint32 tableId)
@@ -3105,7 +2882,7 @@ Dbdict::check_write_obj(Uint32 objId, Uint32 transId,
   if (objId < (NDB_SF_PAGE_ENTRIES * xsf->noOfPages))
   {
     jam();
-    SchemaFile::TableEntry* te = getTableEntry(xsf, objId);
+    const SchemaFile::TableEntry* te = getTableEntry(xsf, objId);
     D("check_write_obj" << V(op) << V(*te) << V(transId));
 
     if (te->m_tableState == SchemaFile::SF_UNUSED)
@@ -3176,6 +2953,8 @@ void Dbdict::execSTTOR(Signal* signal)
     ndbrequireErr(p != 0, NDBD_EXIT_INVALID_CONFIG);
     cnoReplicas = 1;
     ndb_mgm_get_int_parameter(p, CFG_DB_NO_REPLICAS, &cnoReplicas);
+    m_first_updated_table_entry = RNIL;
+    m_last_updated_table_entry = RNIL;
     break;
   }
   case 3:
@@ -3234,8 +3013,13 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
     m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
-  Uint32 attributesize;
+  Uint32 max_schema_objects = OLD_NDB_MAX_TABLES;
+  ndb_mgm_get_int_parameter(p, CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
+                            &max_schema_objects);
+  m_max_schema_objects = max_schema_objects;
+
   c_maxNoOfTriggers = globalData.theMaxNoOfTriggers;
+  Uint32 attributesize;
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_ATTRIBUTE,&attributesize));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE, &c_noOfMetaTables));
   c_indexStatAutoCreate = 0;
@@ -3268,7 +3052,18 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
   c_fsConnectRecordPool.setSize(ZFS_CONNECT_SIZE);
   c_nodes.setSize(MAX_NDB_NODES);
   c_pageRecordArray.setSize(ZNUMBER_OF_PAGES);
-  c_schemaPageRecordArray.setSize(2 * NDB_SF_MAX_PAGES);
+
+  Uint32 num_schema_pages = 2 * OLD_NDB_SF_MAX_PAGES;
+  m_ndb_sf_max_pages = OLD_NDB_SF_MAX_PAGES;
+  if (m_max_schema_objects > OLD_NDB_MAX_TABLES)
+  {
+    num_schema_pages =
+      (m_max_schema_objects + NDB_SF_PAGE_ENTRIES - 1) /
+       NDB_SF_PAGE_ENTRIES;
+    m_ndb_sf_max_pages = num_schema_pages;
+    num_schema_pages *= 2;
+  }
+  c_schemaPageRecordArray.setSize(num_schema_pages);
   g_key_descriptor_pool.setSize(c_noOfMetaTables);
 
   c_attributeRecordPool.init(
@@ -3387,16 +3182,16 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
 
   // Initialize schema file copies
   c_schemaFile[0].schemaPage =
-    (SchemaFile*)c_schemaPageRecordArray.getPtr(0 * NDB_SF_MAX_PAGES);
+    (SchemaFile*)c_schemaPageRecordArray.getPtr(0 * m_ndb_sf_max_pages);
   c_schemaFile[0].noOfPages = 0;
   c_schemaFile[1].schemaPage =
-    (SchemaFile*)c_schemaPageRecordArray.getPtr(1 * NDB_SF_MAX_PAGES);
+    (SchemaFile*)c_schemaPageRecordArray.getPtr(1 * m_ndb_sf_max_pages);
   c_schemaFile[1].noOfPages = 0;
 
   // Initialize BAT for interface to file system
   NewVARIABLE* bat = allocateBat(2);
   bat[0].WA = &c_schemaPageRecordArray.getPtr(0)->word[0];
-  bat[0].nrr = 2 * NDB_SF_MAX_PAGES;
+  bat[0].nrr = 2 * m_ndb_sf_max_pages;
   bat[0].ClusterSize = NDB_SF_PAGE_SIZE;
   bat[0].bits.q = NDB_SF_PAGE_SIZE_IN_WORDS_LOG2;
   bat[0].bits.v = 5;  // 32 bits per element
@@ -3582,6 +3377,9 @@ void Dbdict::initSchemaFile(Signal* signal)
     c_writeSchemaRecord.m_callback.m_callbackFunction =
       safe_cast(&Dbdict::initSchemaFile_conf);
 
+    m_first_updated_table_entry = RNIL;
+    m_last_updated_table_entry = RNIL;
+
     startWriteSchemaFile(signal);
   } else if (c_systemRestart || c_nodeRestart) {
     jam();
@@ -3590,6 +3388,9 @@ void Dbdict::initSchemaFile(Signal* signal)
     c_readSchemaRecord.firstPage = 0;
     c_readSchemaRecord.noOfPages = 1;
     c_readSchemaRecord.schemaReadState = ReadSchemaRecord::INITIAL_READ_HEAD;
+
+    m_first_updated_table_entry = RNIL;
+    m_last_updated_table_entry = RNIL;
     startReadSchemaFile(signal);
   } else {
     ndbabort();
@@ -4528,19 +4329,6 @@ void Dbdict::execSCHEMA_INFO(Signal* signal)
   copy((Uint32*)&xsf->schemaPage[0], schemaDataPtr);
   releaseSections(handle);
 
-  SchemaFile * sf0 = &xsf->schemaPage[0];
-  if (sf0->NdbVersion < NDB_SF_VERSION_5_0_6) {
-    bool ok = convertSchemaFileTo_5_0_6(xsf);
-    ndbrequire(ok);
-  }
-
-  if (sf0->NdbVersion < NDB_MAKE_VERSION(6,4,0))
-  {
-    jam();
-    bool ok = convertSchemaFileTo_6_4(xsf);
-    ndbrequire(ok);
-  }
-
   validateChecksum(xsf);
 
   XSchemaFile * ownxsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
@@ -4723,8 +4511,11 @@ void Dbdict::checkSchemaStatus(Signal* signal)
     jam();
 
     Uint32 tableId = c_restartRecord.activeTable;
-    SchemaFile::TableEntry *masterEntry = getTableEntry(masterxsf, tableId);
-    SchemaFile::TableEntry *ownEntry = getTableEntry(ownxsf, tableId);
+    // Only called during restarts
+    SchemaFile::TableEntry *masterEntry = getTableEntry(masterxsf,
+                                                        tableId);
+    SchemaFile::TableEntry *ownEntry = getTableEntry(ownxsf,
+                                                     tableId);
     SchemaFile::EntryState masterState =
       (SchemaFile::EntryState)masterEntry->m_tableState;
     SchemaFile::EntryState ownState =
@@ -4855,6 +4646,7 @@ Dbdict::checkPendingSchemaTrans(XSchemaFile* xsf)
 {
   for (Uint32 i = 0; i < xsf->noOfPages * NDB_SF_PAGE_ENTRIES; i++)
   {
+    // Only called during restarts
     SchemaFile::TableEntry * transEntry = getTableEntry(xsf, i);
 
     if (transEntry->m_tableType == DictTabInfo::SchemaTransaction &&
@@ -5183,6 +4975,9 @@ Dbdict::restartNextPass(Signal* signal)
 
     for(Uint32 i = 0; i<xsf->noOfPages; i++)
       computeChecksum(xsf, i);
+
+    m_first_updated_table_entry = RNIL;
+    m_last_updated_table_entry = RNIL;
 
     startWriteSchemaFile(signal);
   }
@@ -10075,7 +9870,7 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
      *   choose a state that will be automatically cleaned in case we crash
      */
     SchemaFile::TableEntry *
-      objEntry = getTableEntry(alterTabPtr.p->m_newTable_realObjectId);
+      objEntry = getTableEntry(alterTabPtr.p->m_newTable_realObjectId, true);
     objEntry->m_tableType = DictTabInfo::SchemaTransaction;
     objEntry->m_tableState = SchemaFile::SF_STARTED;
     objEntry->m_transId = trans_ptr.p->m_transId + 1;
@@ -12220,7 +12015,7 @@ Dbdict::alterTable_fromCommitComplete(Signal* signal,
   {
     // Remark object as free
     SchemaFile::TableEntry *
-      objEntry = getTableEntry(alterTabPtr.p->m_newTable_realObjectId);
+      objEntry = getTableEntry(alterTabPtr.p->m_newTable_realObjectId, true);
     objEntry->m_tableType = DictTabInfo::UndefTableType;
     objEntry->m_tableState = SchemaFile::SF_UNUSED;
     objEntry->m_transId = 0;
@@ -12318,7 +12113,7 @@ Dbdict::alterTable_abortParse(Signal* signal, SchemaOpPtr op_ptr)
     {
       // Remark object as free
       SchemaFile::TableEntry *
-        objEntry = getTableEntry(alterTabPtr.p->m_newTable_realObjectId);
+        objEntry = getTableEntry(alterTabPtr.p->m_newTable_realObjectId, true);
       objEntry->m_tableType = DictTabInfo::UndefTableType;
       objEntry->m_tableState = SchemaFile::SF_UNUSED;
       objEntry->m_transId = 0;
@@ -23845,9 +23640,6 @@ Dbdict::initSchemaFile(XSchemaFile * xsf, Uint32 firstPage, Uint32 lastPage,
       std::memset(sf, 0, NDB_SF_PAGE_SIZE);
 
     Uint32 ndb_version = NDB_VERSION;
-    if (ndb_version < NDB_SF_VERSION_5_0_6)
-      ndb_version = NDB_SF_VERSION_5_0_6;
-
     memcpy(sf->Magic, NDB_SF_MAGIC, sizeof(sf->Magic));
     sf->ByteOrder = 0x12345678;
     sf->NdbVersion =  ndb_version;
@@ -23863,7 +23655,7 @@ Dbdict::initSchemaFile(XSchemaFile * xsf, Uint32 firstPage, Uint32 lastPage,
 void
 Dbdict::resizeSchemaFile(XSchemaFile * xsf, Uint32 noOfPages)
 {
-  ndbrequire(noOfPages <= NDB_SF_MAX_PAGES);
+  ndbrequire(noOfPages <= m_ndb_sf_max_pages);
   if (xsf->noOfPages < noOfPages) {
     jam();
     Uint32 firstPage = xsf->noOfPages;
@@ -23871,14 +23663,21 @@ Dbdict::resizeSchemaFile(XSchemaFile * xsf, Uint32 noOfPages)
     initSchemaFile(xsf, 0, firstPage, false);
     initSchemaFile(xsf, firstPage, xsf->noOfPages, true);
   }
-  if (xsf->noOfPages > noOfPages) {
+  else
+  {
     jam();
-    Uint32 tableId = noOfPages * NDB_SF_PAGE_ENTRIES;
+    Uint32 tableId = c_noOfMetaTables;
     while (tableId < xsf->noOfPages * NDB_SF_PAGE_ENTRIES) {
       SchemaFile::TableEntry * te = getTableEntry(xsf, tableId);
       if (te->m_tableState != SchemaFile::SF_UNUSED)
       {
-        ndbabort();
+        char reason_msg[256];
+        BaseString::snprintf(reason_msg, sizeof(reason_msg),
+          "Trying to start with less table objects than exists"
+          " in schema file, started with %u table objects"
+          ", increase MaxNoOfTables",
+          c_noOfMetaTables);
+        progError(__LINE__, NDBD_EXIT_SR_SCHEMAFILE, reason_msg);
       }
       tableId++;
     }
@@ -23939,18 +23738,37 @@ Dbdict::computeChecksum(const Uint32 * src, Uint32 len){
 }
 
 SchemaFile::TableEntry *
-Dbdict::getTableEntry(Uint32 tableId)
+Dbdict::getTableEntry(Uint32 tableId, bool forUpdate)
 {
-  return getTableEntry(&c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE], tableId);
+  return getTableEntry(&c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE],
+                       tableId,
+                       forUpdate);
 }
 
 SchemaFile::TableEntry *
-Dbdict::getTableEntry(XSchemaFile * xsf, Uint32 tableId)
+Dbdict::getTableEntry(XSchemaFile * xsf, Uint32 tableId, bool forUpdate)
 {
   Uint32 n = tableId / NDB_SF_PAGE_ENTRIES;
   Uint32 i = tableId % NDB_SF_PAGE_ENTRIES;
   ndbrequire(n < xsf->noOfPages);
 
+  if (forUpdate)
+  {
+    XSchemaFile * check_xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
+    ndbrequire(xsf == check_xsf);
+    if (m_first_updated_table_entry == RNIL)
+    {
+      m_first_updated_table_entry = tableId;
+      m_last_updated_table_entry = tableId;
+    }
+    else
+    {
+      m_first_updated_table_entry =
+        std::min(m_first_updated_table_entry, tableId);
+      m_last_updated_table_entry =
+        std::max(m_last_updated_table_entry, tableId);
+    }
+  }
   SchemaFile * sf = &xsf->schemaPage[n];
   return &sf->TableEntries[i];
 }
@@ -25930,7 +25748,8 @@ Dbdict::dropFilegroup_prepare(Signal* signal, SchemaOpPtr op_ptr)
       DictObjectPtr objPtr;
       objPtr.i = filePtr.p->m_obj_ptr_i;
       ndbrequire(c_obj_pool.getValidPtr(objPtr));
-      SchemaFile::TableEntry * entry = getTableEntry(xsf, objPtr.p->m_id);
+      SchemaFile::TableEntry * entry =
+        getTableEntry(xsf, objPtr.p->m_id, true);
       entry->m_tableState = SchemaFile::SF_DROP;
       entry->m_transId = trans_ptr.p->m_transId;
     }
@@ -25969,7 +25788,8 @@ Dbdict::dropFilegroup_abortPrepare(Signal* signal, SchemaOpPtr op_ptr)
       DictObjectPtr objPtr;
       objPtr.i = filePtr.p->m_obj_ptr_i;
       ndbrequire(c_obj_pool.getValidPtr(objPtr));
-      SchemaFile::TableEntry * entry = getTableEntry(xsf, objPtr.p->m_id);
+      SchemaFile::TableEntry * entry = 
+        getTableEntry(xsf, objPtr.p->m_id, true);
       entry->m_tableState = SchemaFile::SF_IN_USE;
       entry->m_transId = 0;
     }
@@ -26014,7 +25834,8 @@ Dbdict::dropFilegroup_commit(Signal* signal, SchemaOpPtr op_ptr)
       DictObjectPtr objPtr;
       objPtr.i = filePtr.p->m_obj_ptr_i;
       ndbrequire(c_obj_pool.getValidPtr(objPtr));
-      SchemaFile::TableEntry * entry = getTableEntry(xsf, objPtr.p->m_id);
+      SchemaFile::TableEntry * entry =
+        getTableEntry(xsf, objPtr.p->m_id, true);
       entry->m_tableState = SchemaFile::SF_UNUSED;
       entry->m_transId = 0;
 
@@ -33034,12 +32855,26 @@ Dbdict::slave_run_flush(Signal *signal,
 #endif
 
   XSchemaFile * xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
+  Uint32 start_page_id =  m_first_updated_table_entry / NDB_SF_PAGE_ENTRIES;
+  Uint32 end_page_id = m_last_updated_table_entry / NDB_SF_PAGE_ENTRIES;
+  Uint32 num_pages = (end_page_id - start_page_id) + 1;
+  if (m_first_updated_table_entry == RNIL)
+  {
+    jam();
+    ndbassert(false);
+    start_page_id = 0;
+    end_page_id = c_schemaRecord.schemaPage;
+    num_pages = xsf->noOfPages;
+  }
+  ndbrequire(start_page_id <= end_page_id);
+  ndbrequire(end_page_id <= xsf->noOfPages);
+
   ndbrequire(c_writeSchemaRecord.inUse == false);
   c_writeSchemaRecord.inUse = true;
   c_writeSchemaRecord.pageId = c_schemaRecord.schemaPage;
   c_writeSchemaRecord.newFile = false;
-  c_writeSchemaRecord.firstPage = 0;
-  c_writeSchemaRecord.noOfPages = xsf->noOfPages;
+  c_writeSchemaRecord.firstPage = start_page_id;
+  c_writeSchemaRecord.noOfPages = num_pages;
 
   c_writeSchemaRecord.m_callback.m_callbackData = trans_ptr.p->trans_key;
   c_writeSchemaRecord.m_callback.m_callbackFunction =
@@ -33047,6 +32882,9 @@ Dbdict::slave_run_flush(Signal *signal,
 
   for(Uint32 i = 0; i<xsf->noOfPages; i++)
     computeChecksum(xsf, i);
+
+  m_first_updated_table_entry = RNIL;
+  m_last_updated_table_entry = RNIL;
 
   startWriteSchemaFile(signal);
 }
@@ -33275,7 +33113,7 @@ Dbdict::trans_log(SchemaTransPtr trans_ptr)
 {
   Uint32 objectId = trans_ptr.p->m_obj_id;
   XSchemaFile * xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
-  SchemaFile::TableEntry * entry = getTableEntry(xsf, objectId);
+  SchemaFile::TableEntry * entry = getTableEntry(xsf, objectId, true);
 
   jam();
   jamLine(trans_ptr.p->m_state);
@@ -33337,7 +33175,7 @@ Dbdict::trans_log_schema_op(SchemaOpPtr op_ptr,
   jam();
 
   XSchemaFile * xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
-  SchemaFile::TableEntry * oldEntry = getTableEntry(xsf, objectId);
+  SchemaFile::TableEntry * oldEntry = getTableEntry(xsf, objectId, true);
   D("trans_log_schema_op obj id = " << objectId << " "
     << V(*oldEntry) << V(*newEntry));
 
@@ -33400,7 +33238,7 @@ Dbdict::trans_log_schema_op_abort(SchemaOpPtr op_ptr)
     jam();
     op_ptr.p->m_orig_entry_id = RNIL;
     XSchemaFile * xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
-    SchemaFile::TableEntry * entry = getTableEntry(xsf, objectId);
+    SchemaFile::TableEntry * entry = getTableEntry(xsf, objectId, true);
     * entry = op_ptr.p->m_orig_entry;
     D("trans_log_schema_op_abort obj id = " << objectId << " " << V(*entry));
   }
@@ -33415,7 +33253,7 @@ Dbdict::trans_log_schema_op_complete(SchemaOpPtr op_ptr)
     jam();
     op_ptr.p->m_orig_entry_id = RNIL;
     XSchemaFile * xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
-    SchemaFile::TableEntry * entry = getTableEntry(xsf, objectId);
+    SchemaFile::TableEntry * entry = getTableEntry(xsf, objectId, true);
     switch((SchemaFile::EntryState)entry->m_tableState){
     case SchemaFile::SF_CREATE:
       jam();

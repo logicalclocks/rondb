@@ -62,7 +62,7 @@ public:
     return bytes_received;
   }
 
-  Transporter* get_send_transporter(Uint32 recBlock, Uint32 /*sendBlock*/) override
+  Transporter* get_send_transporter(Uint32 recBlock) override
   {
     /**
      * We hash on receiver instance to avoid any risk of changed signal order

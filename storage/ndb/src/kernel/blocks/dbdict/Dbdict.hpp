@@ -655,6 +655,8 @@ public:
     Uint32 word[NDB_SF_PAGE_SIZE_IN_WORDS];
   };
 
+  Uint32 m_max_schema_objects;
+  Uint32 m_ndb_sf_max_pages;
   CArray<SchemaPageRecord> c_schemaPageRecordArray;
 
   unsigned g_trace;
@@ -1658,10 +1660,15 @@ private:
   void modifySchemaFileAtRestart(XSchemaFile * xsf);
   void computeChecksum(XSchemaFile *, Uint32 pageNo);
   bool validateChecksum(const XSchemaFile *);
-  SchemaFile::TableEntry * getTableEntry(Uint32 tableId);
-  SchemaFile::TableEntry * getTableEntry(XSchemaFile *, Uint32 tableId);
+  SchemaFile::TableEntry * getTableEntry(Uint32 tableId,
+                                         bool forUpdate = false);
+  SchemaFile::TableEntry * getTableEntry(XSchemaFile *,
+                                         Uint32 tableId,
+                                         bool forUpdate = false);
   const SchemaFile::TableEntry * getTableEntry(const XSchemaFile*, Uint32);
 
+  Uint32 m_first_updated_table_entry;
+  Uint32 m_last_updated_table_entry;
   Uint32 computeChecksum(const Uint32 * src, Uint32 len);
 
   void doGET_TABINFOREQ(Signal* signal);
@@ -4515,9 +4522,6 @@ private:
   /* ------------------------------------------------------------ */
   // Read/Write Schema and Table files
   /* ------------------------------------------------------------ */
-  void updateSchemaState(Signal* signal, Uint32 tableId,
-			 SchemaFile::TableEntry*, Callback*,
-                         bool savetodisk = 1, bool dicttrans = 0);
   void startWriteSchemaFile(Signal* signal);
   void openSchemaFile(Signal* signal,
                       Uint32 fileNo,
@@ -4567,8 +4571,6 @@ private:
   void readSchemaRef(Signal* signal, FsConnectRecordPtr fsPtr);
   void closeReadSchemaConf(Signal* signal,
                            FsConnectRecordPtr fsPtr);
-  bool convertSchemaFileTo_5_0_6(XSchemaFile*);
-  bool convertSchemaFileTo_6_4(XSchemaFile*);
 
   /* ------------------------------------------------------------ */
   // Get table definitions

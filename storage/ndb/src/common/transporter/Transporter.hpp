@@ -114,13 +114,11 @@ public:
    * have multiple transporters to send for one node connection.
    * In this case theNodeIdTransporters points to a Multi_Transporter
    * object that has implemented a hash algorithm for
-   * get_send_transporter based on sending thread and receiving
-   * thread.
+   * get_send_transporter based on receiving thread.
    */
-  virtual Transporter* get_send_transporter(Uint32 recBlock, Uint32 sendBlock)
+  virtual Transporter* get_send_transporter(Uint32 recBlock)
   {
     (void)recBlock;
-    (void)sendBlock;
     return this;
   }
 

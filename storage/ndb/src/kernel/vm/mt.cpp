@@ -175,6 +175,7 @@ static Uint32 glob_wakeup_latency = 25;
 static Uint32 glob_num_job_buffers_per_thread = 0;
 static bool glob_use_write_lock_mutex = true;
 static Uint32 glob_num_writers_per_job_buffers = 0;
+static Uint32 glob_max_send_buffer_size[MAX_NODES];
 /**
  * Ensure that the above variables that are read-only after startup are
  * not sharing CPU cache line with anything else that is updated.
@@ -6863,14 +6864,14 @@ mt_send_handle::getWritePtr(NodeId nodeId,
 }
 
 void
-mt_getSendBufferLevel(Uint32 self, NodeId id, SB_LevelType &level)
+mt_getSendBufferLevel(Uint32 self,
+                      NodeId id,
+                      BlockNumber bno,
+                      SB_LevelType &level)
 {
   Resource_limit rl;
   const Uint32 page_size = thr_send_page::PGSIZE;
   thr_repository *rep = g_thr_repository;
-  thr_repository::send_buffer *sb = &rep->m_send_buffers[id];
-  const Uint64 current_trp_send_buffer_size =
-    sb->m_buffered_size + sb->m_sending_size;
 
   /* Memory barrier to get a fresher value for rl.m_curr */
   mb();
@@ -6892,12 +6893,19 @@ mt_getSendBufferLevel(Uint32 self, NodeId id, SB_LevelType &level)
       current_send_buffer_size = (rl.m_min + avail_shared) * page_size;
     }
   }
+  TrpId trp_id =
+    globalTransporterRegistry.get_send_transporter_id(id, bno);
+  thr_repository::send_buffer *sb = &rep->m_send_buffers[trp_id];
+  const Uint64 current_trp_send_buffer_size =
+    sb->m_buffered_size + sb->m_sending_size;
+  Uint64 max_node_send_buffer_size =
+    (Uint64)glob_max_send_buffer_size[id];
   calculate_send_buffer_level(current_trp_send_buffer_size,
+                              max_node_send_buffer_size,
                               current_send_buffer_size,
                               current_used_send_buffer_size,
                               glob_num_threads,
                               level);
-  return;
 }
 
 void
@@ -10762,6 +10770,11 @@ rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
   }
 
   std::memset(rep->m_thread_send_buffers, 0, sizeof(rep->m_thread_send_buffers));
+  for (Uint32 node_id = 0; node_id < MAX_NODES; node_id++)
+  {
+    glob_max_send_buffer_size[node_id] =
+      globalTransporterRegistry.getSendBufferSize(node_id);
+  }
 }
 
 

@@ -562,6 +562,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     STR_VALUE(MAX_INT_RNIL) },
   
   {
+    CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
+    "MaxNoOfSchemaObjects",
+    DB_TOKEN,
+    "Max number of schema objects stored in the schema file",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    STR_VALUE(OLD_NDB_MAX_TABLES),
+    STR_VALUE(OLD_NDB_MAX_TABLES),
+    STR_VALUE(MAX_INT_RNIL) },
+
+  {
     CFG_DB_NO_TABLES,
     "MaxNoOfTables",
     DB_TOKEN,
@@ -571,7 +583,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT,
     "0",
     "8",
-    STR_VALUE(NDB_MAX_TABLES) },
+    STR_VALUE(1000000000) },
   
   {
     CFG_DB_NO_ORDERED_INDEXES,
@@ -583,7 +595,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT,
     "0",
     "0",
-    STR_VALUE(MAX_INT_RNIL) },
+    STR_VALUE(1000000000) },
 
   {
     CFG_DB_NO_UNIQUE_HASH_INDEXES,
@@ -595,7 +607,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT,
     "0",
     "0",
-    STR_VALUE(MAX_INT_RNIL) },
+    STR_VALUE(1000000000) },
 
   {
     CFG_DB_NO_INDEX_OPS,
@@ -4331,7 +4343,8 @@ ConfigInfo::ConfigInfo()
     const ParamInfo & param = m_ParamInfo[i];
     Uint64 default_uint64;
     bool   default_bool;
-    
+
+
     // Create new section if it did not exist
     if (!m_info.getCopy(param._section, &section)) {
       Properties newsection(true);

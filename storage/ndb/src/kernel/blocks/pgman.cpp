@@ -346,6 +346,15 @@ Pgman::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_DD_LATENCY, &max_dd_latency);
   m_max_dd_latency_ms = max_dd_latency;
 
+  Uint32 numMetaTables = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE, &numMetaTables);
+  m_table_divisor = OLD_NDB_MAX_TABLES / NUM_ORDERED_LISTS;
+  if (numMetaTables > OLD_NDB_MAX_TABLES)
+  {
+    m_table_divisor =
+      (numMetaTables + (NUM_ORDERED_LISTS - 1)) / NUM_ORDERED_LISTS;
+  }
+
   Uint32 dd_using_same_disk = 1;
   ndb_mgm_get_int_parameter(p,
                             CFG_DB_DD_USING_SAME_DISK,
@@ -6132,8 +6141,7 @@ Pgman::get_first_ordered_fragment(FragmentRecordPtr & fragPtr)
 Uint32
 Pgman::get_ordered_list_from_table_id(Uint32 table_id)
 {
-  Uint32 divisor = NDB_MAX_TABLES / NUM_ORDERED_LISTS;
-  Uint32 list = table_id / divisor;
+  Uint32 list = table_id / m_table_divisor;
   return list;
 }
 

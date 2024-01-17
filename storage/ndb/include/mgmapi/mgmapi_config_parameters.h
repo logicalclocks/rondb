@@ -271,6 +271,8 @@
 #define CFG_DB_ENCRYPTED_FILE_SYSTEM  680
 
 /* Start RonDB only configuration parameters */
+#define CFG_DB_MAX_NUM_SCHEMA_OBJECTS 688
+
 #define CFG_DB_USE_TC_THREADS         689
 #define CFG_DB_USE_LDM_THREADS        690
 

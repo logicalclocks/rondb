@@ -1312,8 +1312,7 @@ TransporterRegistry::prepareSend_getTransporter(
   }
   assert(!node_trp->isPartOfMultiTransporter());
   Transporter *t;
-  t = node_trp->get_send_transporter(signalHeader->theReceiversBlockNumber,
-                                     signalHeader->theSendersBlockRef);
+  t = node_trp->get_send_transporter(signalHeader->theReceiversBlockNumber);
   assert(!t->isMultiTransporter());
   require(t->get_transporter_active());
   trp_id = t->getTransporterIndex();
@@ -4175,6 +4174,20 @@ TransporterRegistry::get_transporter(TrpId trp_id) const
   return allTransporters[trp_id];
 }
 
+TrpId
+TransporterRegistry::get_send_transporter_id(NodeId nodeId, BlockNumber bno)
+{
+  Transporter* node_trp = get_node_transporter(nodeId);
+  if (node_trp == nullptr)
+  {
+    fprintf(stderr, "get_node_transporter(%u) failed, bno: %u",
+      nodeId, bno);
+  }
+  require(node_trp != nullptr);
+  Transporter *send_trp = node_trp->get_send_transporter(bno);
+  return send_trp->getTransporterIndex();
+}
+
 Transporter*
 TransporterRegistry::get_node_transporter(NodeId nodeId) const
 {
@@ -4575,6 +4588,7 @@ TransporterRegistry::set_active_node(Uint32 node_id,
  */
 void
 calculate_send_buffer_level(Uint64 node_send_buffer_size,
+                            Uint64 max_node_send_buffer_size,
                             Uint64 total_send_buffer_size,
                             Uint64 total_used_send_buffer_size,
                             Uint32 /*num_threads*/,
@@ -4583,62 +4597,53 @@ calculate_send_buffer_level(Uint64 node_send_buffer_size,
   Uint64 percentage =
     (total_used_send_buffer_size * 100) / total_send_buffer_size;
 
-  if (percentage < 90)
-  {
-    ;
-  }
-  else if (percentage < 95)
-  {
-    node_send_buffer_size *= 2;
-  }
-  else if (percentage < 97)
-  {
-    node_send_buffer_size *= 4;
-  }
-  else if (percentage < 98)
-  {
-    node_send_buffer_size *= 8;
-  }
-  else if (percentage < 99)
-  {
-    node_send_buffer_size *= 16;
-  }
-  else
+  require(max_node_send_buffer_size > 0);
+  Uint64 node_percentage =
+    (node_send_buffer_size * 100) / max_node_send_buffer_size;
+  if (percentage > 100)
   {
     level = SB_CRITICAL_LEVEL;
     return;
   }
-  
-  if (node_send_buffer_size < 128 * 1024)
+  if (node_percentage < 40 &&
+      node_send_buffer_size < (1024 * 1024))
   {
     level = SB_NO_RISK_LEVEL;
-    return;
   }
-  else if (node_send_buffer_size < 256 * 1024)
+  else if (node_percentage < 60 &&
+           node_send_buffer_size < (1536 * 1024))
   {
     level = SB_LOW_LEVEL;
-    return;
   }
-  else if (node_send_buffer_size < 384 * 1024)
+  else if (node_percentage < 75 &&
+           node_send_buffer_size < (2048 * 1024))
   {
     level = SB_MEDIUM_LEVEL;
-    return;
   }
-  else if (node_send_buffer_size < 1024 * 1024)
+  else if (node_percentage < 83 &&
+           node_send_buffer_size < (3584 * 1024))
   {
     level = SB_HIGH_LEVEL;
-    return;
   }
-  else if (node_send_buffer_size < 2 * 1024 * 1024)
+  else if (node_percentage < 90 &&
+           node_send_buffer_size < (7168 * 1024))
   {
     level = SB_RISK_LEVEL;
-    return;
   }
   else
   {
     level = SB_CRITICAL_LEVEL;
-    return;
   }
+  return;
+}
+
+Uint32
+TransporterRegistry::getSendBufferSize(Uint32 nodeId)
+{
+  Transporter* t = theNodeIdTransporters[nodeId];
+  if (t != nullptr)
+    return t->m_max_send_buffer;
+  return 0;
 }
 
 template class Vector<TransporterRegistry::Transporter_interface>;

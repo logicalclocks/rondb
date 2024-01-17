@@ -43,10 +43,7 @@
 #define NDB_SF_PAGE_ENTRIES             127
 
 // 160 pages = 20320 objects
-#define NDB_SF_MAX_PAGES                160
-
-// versions where format changed
-#define NDB_SF_VERSION_5_0_6            MAKE_VERSION(5, 0, 6)
+#define OLD_NDB_SF_MAX_PAGES                160
 
 // One page in schema file.
 struct SchemaFile {
