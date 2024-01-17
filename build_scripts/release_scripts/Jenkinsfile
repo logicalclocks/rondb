@@ -9,8 +9,8 @@ pipeline {
       string(name: 'BRANCH', defaultValue: '22.10.1', description: 'RonDB branch to build.')
       choice(name: 'DOCKER_BASE_IMAGE', choices: ['oraclelinux8', 'oraclelinux7', 'oraclelinux9', 'ubuntu22'],  description: 'Base image for docker build container')
       choice(name: 'BUILD_CORES', choices: ['16', '1', '8', '24', '32'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
-      booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
-      booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs")
+      booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build.')
+      booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs. NOTE: for non public releases cluster is not uploaded.")
       booleanParam(name: 'IS_PUBLIC_RELEASE', defaultValue: true, description: 'Public releases are copied to /master and non public releases are copied to /dev on the repo server.')
       booleanParam(name: 'BUILD_RDRS_DOCKER_IMAGE', defaultValue: true, description: 'Enable/disable building RDRS docker image')
 

@@ -1,14 +1,13 @@
 #!/bin/bash
 
 set -e
-set -x
 
 RONDB_VERSION=$1
 TARBALL_NAME=$2
 OUTPUT_DIR_ABS=$3
 ABS_PATH_RSA_KEY=$4
 TARBALL_COPY_LOCATION=$5
-CLUSTERJ_ARTIFACT_POSTFIX=$6
+CLUSTERJ_VERSION=$6
 
 TAR_FILE="$TARBALL_NAME.tar.gz"
 
@@ -34,6 +33,11 @@ if [ "$CPU_ARCH" != "x86_64" ]; then
   exit 0
 fi
 
+if [ -z "$CLUSTERJ_VERSION" ]; then
+  echo "Skip deploying clusterj"
+  exit 0
+fi
+
 echo "Extracting ClusterJ JAR file from tarball again"
 JAR_FILE="$TARBALL_NAME/share/java/clusterj-$RONDB_VERSION.jar"
 tar xf $TAR_FILE_ABS $JAR_FILE
@@ -43,14 +47,14 @@ if [[ ! -f "$JAR_FILE" ]]; then
 fi
 
 mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
-  -Dversion=$RONDB_VERSION$CLUSTERJ_ARTIFACT_POSTFIX -Dpackaging=jar -DrepositoryId=Hops \
+  -Dversion=$CLUSTERJ_VERSION -Dpackaging=jar -DrepositoryId=Hops \
   -Durl=https://archiva.hops.works/repository/Hops \
   -DJenkinsHops.RepoID=Hops \
   -DJenkinsHops.User=$CE_USER \
   -DJenkinsHops.Password=$CE_PASS
 
 mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
-  -Dversion=$RONDB_VERSION$CLUSTERJ_ARTIFACT_POSTFIX -Dpackaging=jar -DrepositoryId=HopsEE \
+  -Dversion=$CLUSTERJ_VERSION -Dpackaging=jar -DrepositoryId=HopsEE \
   -Durl=https://nexus.hops.works/repository/hops-artifacts \
   -DJenkinsHops.RepoID=HopsEE \
   -DJenkinsHops.User=$EE_USER \

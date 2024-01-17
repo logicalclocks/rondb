@@ -1,7 +1,6 @@
 #!/bin/bash
 
 set -e
-set -x
 
 export SYSBENCH_VERSION="sysbench-0.4.12.19"
 export DBT2_VERSION="dbt2-0.37.50.21"
@@ -189,15 +188,21 @@ if [ "$DEPLOY" = true ]; then
   echo "_____________ DEPLOYING TARBALL _____________"
   cd $TEMP_BUILD_DIR_ABS
 
-  CLUSTERJ_ARTIFACT_POSTFIX="-SNAPSHOT"
-  if [ "$RELEASE_FINAL_CLUSTERJ" = true ]; then
-    CLUSTERJ_ARTIFACT_POSTFIX=""
-  fi
-
   TARBALL_COPY_LOCATION="/opt/repository/dev/rondb"
   if [ "$IS_PUBLIC_RELEASE" = true ]; then
     TARBALL_COPY_LOCATION="/opt/repository/master"
-  fi
 
-  $SRC_DIR_ABS/build_scripts/release_scripts/deploy.sh $RONDB_VERSION $TARBALL_NAME $OUTPUT_DIR_ABS $SRC_DIR_ABS/id_rsa "$TARBALL_COPY_LOCATION" "$CLUSTERJ_ARTIFACT_POSTFIX"
+    if [ "$RELEASE_FINAL_CLUSTERJ" = true ]; then
+      CLUSTERJ_VERSION="$RONDB_VERSION"
+    else
+      CLUSTERJ_VERSION="$RONDB_VERSION-SNAPSHOT"
+    fi
+
+  else
+    echo "Not a public release. Skip deploying clusterj."
+    CLUSTERJ_VERSION=""
+  fi
+  
+
+  $SRC_DIR_ABS/build_scripts/release_scripts/deploy.sh $RONDB_VERSION $TARBALL_NAME $OUTPUT_DIR_ABS $SRC_DIR_ABS/id_rsa "$TARBALL_COPY_LOCATION" "$CLUSTERJ_VERSION"
 fi
