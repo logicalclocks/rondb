@@ -5,11 +5,13 @@ pipeline {
         }
     }
     parameters{
+      string(name: 'REPOSITORY_URL', defaultValue: 'https://github.com/logicalclocks/rondb', description: 'RonDB repository URL')
       string(name: 'BRANCH', defaultValue: '22.10.1', description: 'RonDB branch to build.')
       choice(name: 'BUILD_CORES', choices: ['16', '1', '8', '24', '32'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
       booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs")
       booleanParam(name: 'IS_PUBLIC_RELEASE', defaultValue: true, description: 'Public releases are copied to /master and non public releases are copied to /dev on the repo server.')
+      booleanParam(name: 'BUILD_RDRS_DOCKER_IMAGE', defaultValue: true, description: 'Enable/disable building RDRS docker image')
     }
     environment {
         HopsCECeds = credentials('HopsCE')
@@ -34,7 +36,7 @@ pipeline {
               sh '''
                 echo "Cloning RonDB Branch ${BRANCH}"  
                 cd ${WORKSPACE}
-                git clone --depth=1 --branch ${BRANCH} https://github.com/logicalclocks/rondb
+                git clone --depth=1 --branch ${BRANCH} ${REPOSITORY_URL}
               '''
             }
         }
@@ -97,6 +99,10 @@ pipeline {
             steps {
 
               sh '''
+
+                if [ "$BUILD_RDRS_DOCKER_IMAGE" = false ]; then
+                  return
+                fi
 
                 echo "Building RDRS Image"
 
