@@ -5,10 +5,15 @@ pipeline {
         }
     }
     parameters{
-      choice(name: 'BRANCH', choices: ['22.10.1', '21.04'], description: 'RonDB branch to build.')
-      choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
-      booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
-      booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs")
+      string(name: 'REPOSITORY_URL', defaultValue: 'https://github.com/logicalclocks/rondb', description: 'RonDB repository URL')
+      string(name: 'BRANCH', defaultValue: '22.10.1', description: 'RonDB branch to build.')
+      choice(name: 'DOCKER_BASE_IMAGE', choices: ['oraclelinux8', 'oraclelinux7', 'oraclelinux9', 'ubuntu22'],  description: 'Base image for docker build container')
+      choice(name: 'BUILD_CORES', choices: ['16', '1', '8', '24', '32'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
+      booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build.')
+      booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs. NOTE: for non public releases cluster is not uploaded.")
+      booleanParam(name: 'IS_PUBLIC_RELEASE', defaultValue: true, description: 'Public releases are copied to /master and non public releases are copied to /dev on the repo server.')
+      booleanParam(name: 'BUILD_RDRS_DOCKER_IMAGE', defaultValue: true, description: 'Enable/disable building RDRS docker image')
+
     }
     environment {
         HopsCECeds = credentials('HopsCE')
@@ -33,7 +38,7 @@ pipeline {
               sh '''
                 echo "Cloning RonDB Branch ${BRANCH}"  
                 cd ${WORKSPACE}
-                git clone --depth=1 --branch ${BRANCH} https://github.com/logicalclocks/rondb
+                git clone --depth=1 --branch ${BRANCH} ${REPOSITORY_URL}
               '''
             }
         }
@@ -57,9 +62,9 @@ pipeline {
                 cat $RepoCeds > id_rsa
                 chmod 600 id_rsa
 
-                RELEASE_ARG=
+                RELEASE_TARBALL_ARG=
                 if [ "$RELEASE_BUILD" = true ]; then
-                  RELEASE_ARG="--build-arg RELEASE_TARBALL=1"
+                  RELEASE_TARBALL_ARG="--build-arg RELEASE_TARBALL=1"
                 fi
 
                 RELEASE_FINAL_CLUSTERJ_ARG=
@@ -67,10 +72,13 @@ pipeline {
                   RELEASE_FINAL_CLUSTERJ_ARG="--build-arg RELEASE_FINAL_CLUSTERJ=1"
                 fi
 
-                DOCKER_FILE_NAME="Dockerfile.oraclelinux7"
-                if [ "$BRANCH" = "22.10.1" ]; then
-                  DOCKER_FILE_NAME="Dockerfile.oraclelinux8"
+                IS_PUBLIC_RELEASE_ARG=
+                if [ "$IS_PUBLIC_RELEASE" = true ]; then
+                  IS_PUBLIC_RELEASE_ARG="--build-arg IS_PUBLIC_RELEASE=1"
                 fi
+
+                DOCKER_FILE_NAME="Dockerfile.${DOCKER_BASE_IMAGE}"
+                echo "Using Dockerfile ${DOCKER_FILE_NAME}"
 
                 export DOCKER_CLI_EXPERIMENTAL=enabled
                 export BUILDKIT_PROGRESS=plain
@@ -81,7 +89,9 @@ pipeline {
                   --no-cache \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
                   --build-arg DEPLOY_TO_REPO=1 \
-                  $RELEASE_ARG $RELEASE_FINAL_CLUSTERJ_ARG
+                  $RELEASE_TARBALL_ARG \
+                  $RELEASE_FINAL_CLUSTERJ_ARG \
+                  $IS_PUBLIC_RELEASE_ARG
               '''
             }
         }
@@ -90,16 +100,18 @@ pipeline {
 
               sh '''
 
+                if [ "$BUILD_RDRS_DOCKER_IMAGE" = false ]; then
+                  exit 0
+                fi
+
                 echo "Building RDRS Image"
 
                 cd ${WORKSPACE}/rondb
                 source ./MYSQL_VERSION
                 RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
 
-                DOCKER_FILE_NAME="Dockerfile.oraclelinux7"
-                if [ "$BRANCH" = "22.10.1" ]; then
-                  DOCKER_FILE_NAME="Dockerfile.oraclelinux8"
-                fi
+                DOCKER_FILE_NAME="Dockerfile.${DOCKER_BASE_IMAGE}"
+                echo "Using Dockerfile ${DOCKER_FILE_NAME}"
 
                  DOCKER_BUILDKIT=1 docker buildx build . \
                  -f $DOCKER_FILE_NAME \
@@ -108,7 +120,11 @@ pipeline {
                  --build-arg BUILD_THREADS=$BUILD_CORES 
                  
                  RDRS_IMAGE_TAR_FILE="docker-image-rdrs-$RONDB_VERSION.tar.gz"
-                 RDRS_IMAGE_TAR_FILE_REMOTE_DST="repo@repo.hops.works:/opt/repository/master/$RDRS_IMAGE_TAR_FILE"
+                 RDRS_IMAGE_TAR_FILE_REMOTE_DST="repo@repo.hops.works:/opt/repository/dev/rondb/$RDRS_IMAGE_TAR_FILE"
+                 if [ "$IS_PUBLIC_RELEASE" = true ]; then
+                   RDRS_IMAGE_TAR_FILE_REMOTE_DST="repo@repo.hops.works:/opt/repository/master/$RDRS_IMAGE_TAR_FILE"
+                 fi
+
                  docker save  rdrs:$RONDB_VERSION | gzip > $RDRS_IMAGE_TAR_FILE
                  echo "Copying: $RDRS_IMAGE_TAR_FILE to $RDRS_IMAGE_TAR_FILE_REMOTE_DST"
                  scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ./id_rsa $RDRS_IMAGE_TAR_FILE $RDRS_IMAGE_TAR_FILE_REMOTE_DST

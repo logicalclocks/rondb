@@ -6,7 +6,8 @@ RONDB_VERSION=$1
 TARBALL_NAME=$2
 OUTPUT_DIR_ABS=$3
 ABS_PATH_RSA_KEY=$4
-CLUSTERJ_ARTIFACT_POSTFIX=$5
+TARBALL_COPY_LOCATION=$5
+CLUSTERJ_VERSION=$6
 
 TAR_FILE="$TARBALL_NAME.tar.gz"
 
@@ -21,7 +22,7 @@ if [[ ! -f "$TAR_FILE_ABS" ]]; then
   exit 1
 fi
 
-DST="repo@repo.hops.works:/opt/repository/master/$TAR_FILE"
+DST="repo@repo.hops.works:$TARBALL_COPY_LOCATION/$TAR_FILE"
 echo "Copying: $TAR_FILE_ABS to $DST"
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $ABS_PATH_RSA_KEY $TAR_FILE_ABS $DST
 
@@ -29,6 +30,11 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $ABS_PATH_RSA
 CPU_ARCH=$(uname -m)
 if [ "$CPU_ARCH" != "x86_64" ]; then
   echo "We're not on x86_64 here; Only Java files left to deploy and they are platform independent; Skipping them"
+  exit 0
+fi
+
+if [ -z "$CLUSTERJ_VERSION" ]; then
+  echo "Skip deploying clusterj"
   exit 0
 fi
 
@@ -41,14 +47,14 @@ if [[ ! -f "$JAR_FILE" ]]; then
 fi
 
 mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
-  -Dversion=$RONDB_VERSION$CLUSTERJ_ARTIFACT_POSTFIX -Dpackaging=jar -DrepositoryId=Hops \
+  -Dversion=$CLUSTERJ_VERSION -Dpackaging=jar -DrepositoryId=Hops \
   -Durl=https://archiva.hops.works/repository/Hops \
   -DJenkinsHops.RepoID=Hops \
   -DJenkinsHops.User=$CE_USER \
   -DJenkinsHops.Password=$CE_PASS
 
 mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
-  -Dversion=$RONDB_VERSION$CLUSTERJ_ARTIFACT_POSTFIX -Dpackaging=jar -DrepositoryId=HopsEE \
+  -Dversion=$CLUSTERJ_VERSION -Dpackaging=jar -DrepositoryId=HopsEE \
   -Durl=https://nexus.hops.works/repository/hops-artifacts \
   -DJenkinsHops.RepoID=HopsEE \
   -DJenkinsHops.User=$EE_USER \
