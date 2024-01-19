@@ -1,0 +1,28 @@
+{
+        "Internal": {
+                "APIVersion": "0.1.0"
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": 1186
+                        }
+                ]
+        },
+        "Security": {
+                "TLS": {
+                        "EnableTLS": false,
+                        "RequireAndVerifyClientCert": false,
+                        "CertificateFile": "",
+                        "PrivateKeyFile": "",
+                        "RootCACertFile": ""
+                }, 
+                "APIKey": {
+                        "UseHopsworksAPIKeys": false
+                }
+        },
+        "Log": {
+                "Level": "info"
+        }
+}
