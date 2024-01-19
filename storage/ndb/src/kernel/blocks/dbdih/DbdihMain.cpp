@@ -27986,9 +27986,10 @@ Dbdih::execDUMP_STATE_ORD(Signal* signal)
   if (arg == DumpStateOrd::SchemaResourceSnapshot)
   {
     g_eventLogger->info("SchemaResourceSnapshot: remainingfrags: %u"
-                        ", free replicas: %u",
+                        ", free replicas: %u, total replica records: %u",
                         cremainingfrags,
-                        cnoFreeReplicaRec);
+                        cnoFreeReplicaRec,
+                        creplicaFileSize);
     RSS_OP_SNAPSHOT_SAVE(cremainingfrags);
     RSS_OP_SNAPSHOT_SAVE(cnoFreeReplicaRec);
 
