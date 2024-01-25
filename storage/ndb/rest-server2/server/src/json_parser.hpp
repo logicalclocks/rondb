@@ -20,15 +20,41 @@
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_JSON_PARSER_HPP_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_JSON_PARSER_HPP_
 
-#define SIMDJSON_VERBOSE_LOGGING 0
-
+#include "src/config_structs.hpp"
+#include "constants.hpp"
 #include "pk_data_structs.hpp"
 
+#define SIMDJSON_VERBOSE_LOGGING 0
 #include <simdjson.h>
 
-namespace json_parser {
-RS_Status parse(std::string_view &, PKReadParams &);
-RS_Status batch_parse(std::string_view &, std::vector<PKReadParams> &);
-}  // namespace json_parser
+class JSONParser {
+ private:
+  /*
+                A parser may have at most one document open at a time
+                By design, you should only have one document instance per JSON document.
+                For best performance, a parser instance should be reused over several files:
+                otherwise you will needlessly reallocate memory, an expensive process.
+                If you need to have several documents active at once,
+                you should have several parser instances.
+  */
+  simdjson::ondemand::parser parser[DEFAULT_NUM_THREADS + 1];
+  simdjson::ondemand::document doc[DEFAULT_NUM_THREADS + 1];
+  /*
+                We initialize and pre-allocate Internal.batchMaxSize number of char* string buffers
+                for each thread, which we could reuse when passing to parser.iterate().
+  */
+  std::unique_ptr<char[]> buffers[DEFAULT_NUM_THREADS + 1];
+
+ public:
+  JSONParser();
+  std::unique_ptr<char[]> &get_buffer(size_t threadId) {
+    return buffers[threadId];
+  }
+  RS_Status pk_parse(size_t, simdjson::padded_string_view, PKReadParams &);
+  RS_Status batch_parse(size_t, simdjson::padded_string_view, std::vector<PKReadParams> &);
+  RS_Status config_parse(size_t, simdjson::padded_string_view, AllConfigs &);
+};
+
+extern JSONParser jsonParser;
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_JSON_PARSER_HPP_

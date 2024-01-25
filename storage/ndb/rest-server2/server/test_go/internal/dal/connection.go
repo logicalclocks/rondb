@@ -19,7 +19,7 @@ package dal
 
 /*
  #include <stdlib.h>
- #include "./../../server/src/rdrs_dal.h"
+ #include "./../../../src/rdrs_dal.h"
 */
 import "C"
 import (

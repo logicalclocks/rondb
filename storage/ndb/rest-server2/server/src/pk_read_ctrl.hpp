@@ -21,6 +21,8 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_READ_CTRL_HPP_
 
 #include "rdrs_dal.h"
+#include "constants.hpp"
+#include "src/base_ctrl.hpp"
 
 #include <drogon/drogon.h>
 #include <drogon/HttpSimpleController.h>
@@ -28,12 +30,8 @@
 class PKReadCtrl : public drogon::HttpController<PKReadCtrl> {
  public:
   METHOD_LIST_BEGIN
-  ADD_METHOD_TO(PKReadCtrl::ping, "/0.1.0/ping", drogon::Get);
-  ADD_METHOD_TO(PKReadCtrl::pkRead, "/0.1.0/{db}/{table}/pk-read", drogon::Post);
+  ADD_METHOD_TO(PKReadCtrl::pkRead, PKREAD_PATH, drogon::Post);
   METHOD_LIST_END
-
-  static void ping(const drogon::HttpRequestPtr &req,
-                   std::function<void(const drogon::HttpResponsePtr &)> &&callback);
 
   static void pkRead(const drogon::HttpRequestPtr &req,
                      std::function<void(const drogon::HttpResponsePtr &)> &&callback,

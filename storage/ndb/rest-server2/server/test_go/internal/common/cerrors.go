@@ -18,7 +18,7 @@
 package common
 
 /*
-#include "./../../server/src/error_strings.h"
+#include "./../../../src/error_strings.h"
 */
 import "C"
 

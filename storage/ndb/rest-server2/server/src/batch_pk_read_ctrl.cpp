@@ -22,33 +22,34 @@
 #include "encoding.hpp"
 #include "rdrs_dal_ext.hpp"
 #include "pk_data_structs.hpp"
+#include "src/constants.hpp"
 
 #include <drogon/HttpTypes.h>
 #include <iostream>
-
-void BatchPKReadCtrl::ping(const drogon::HttpRequestPtr & /*req*/,
-                           std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
-  auto resp = drogon::HttpResponse::newHttpResponse();
-  resp->setBody("Hello, World!");
-  resp->setStatusCode(drogon::HttpStatusCode::k200OK);
-  callback(resp);
-}
+#include <simdjson.h>
 
 void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
                                   std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
-  std::string_view reqBody = std::string_view(req->getBody().data());
-  auto resp                = drogon::HttpResponse::newHttpResponse();
-  // std::cout << reqBody << std::endl;
-  std::vector<PKReadParams> reqStructs;
-
-  RS_Status status = json_parser::batch_parse(reqBody, reqStructs);
-  if (reqStructs.size() > globalConfig.internal.batchMaxSize) {
-    resp->setBody("Batch size exceeds maximum allowed size: " +
-                  std::to_string(globalConfig.internal.batchMaxSize));
+  size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
+  if (currentThreadIndex >= globalConfigs.rest.numThreads) {
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setBody("Too many threads");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
+  // Store it to the first string buffer
+  const char *json_str = req->getBody().data();
+  size_t length        = req->getBody().length();
+  strcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str);
+  auto resp = drogon::HttpResponse::newHttpResponse();
+  std::vector<PKReadParams> reqStructs;
+
+  RS_Status status = jsonParser.batch_parse(
+      currentThreadIndex,
+      simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
+                                   REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING),
+      reqStructs);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
@@ -57,8 +58,15 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
     return;
   }
 
+  if (reqStructs.size() > globalConfigs.internal.batchMaxSize) {
+    resp->setBody("Batch size exceeds maximum allowed size: " +
+                  std::to_string(globalConfigs.internal.batchMaxSize));
+    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+    callback(resp);
+    return;
+  }
+
   for (auto reqStruct : reqStructs) {
-    std::cout << reqStruct.to_string() << std::endl;
     status = reqStruct.validate();
     if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));
@@ -71,14 +79,13 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     auto noOps = reqStructs.size();
     RS_BufferArrayManager reqBuffsManager =
-        RS_BufferArrayManager(noOps, globalConfig.internal.bufferSize);
+        RS_BufferArrayManager(noOps, globalConfigs.internal.reqBufferSize);
     RS_BufferArrayManager respBuffsManager =
-        RS_BufferArrayManager(noOps, globalConfig.internal.bufferSize);
+        RS_BufferArrayManager(noOps, globalConfigs.internal.respBufferSize);
     RS_Buffer *reqBuffs  = reqBuffsManager.getBufferArray();
     RS_Buffer *respBuffs = respBuffsManager.getBufferArray();
 
     for (unsigned long i = 0; i < noOps; i++) {
-      // std::cout << reqStructs[i].to_string() << std::endl;
       status = create_native_request(reqStructs[i], reqBuffs[i].buffer, respBuffs[i].buffer);
       if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
         resp->setBody(std::string(status.message));
@@ -110,7 +117,6 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
       }
 
       std::string json = PKReadResponseJSON::batch_to_string(responses);
-      // std::cout << json << std::endl;
       resp->setBody(json);
     }
     callback(resp);

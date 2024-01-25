@@ -25,7 +25,7 @@ SERVER_BIN="rdrs2"
 OUTPUT_DIR?=./bin/server/${SERVER_BIN}
 
 # RonDB build dir that contains libs needed for the API serer
-RDRS_LIB_DIR?=$(PWD)/../../../build/library_output_directory
+RDRS_LIB_DIR?=$(PWD)/../../../../../build/library_output_directory
 
 # Configuration to use for testing
 # testing using mtr: $(PWD)/resources/config/config_mtr.json
@@ -42,7 +42,7 @@ COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
 #CGO_LDFLAGS
-MY_CGO_LDFLAGS?="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib -Wl,-rpath,${RDRS_LIB_DIR} -lrdrclient"
+MY_CGO_LDFLAGS?="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib -Wl,-rpath,${RDRS_LIB_DIR} -lrdrs2_shared"
 
 all: rdrs2
 

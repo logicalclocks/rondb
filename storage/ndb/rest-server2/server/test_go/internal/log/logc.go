@@ -21,7 +21,7 @@ package log
 #cgo CFLAGS: -g -Wall
 #include <stdlib.h>
 #include <stdbool.h>
-#include "./../../server/src/rdrs_dal.h"
+#include "./../../../src/rdrs_dal.h"
 extern void loggerCToGo(RS_LOG_MSG log);
 */
 import "C"

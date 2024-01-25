@@ -22,28 +22,38 @@
 #include "json_parser.hpp"
 #include "encoding.hpp"
 #include "rdrs_dal_ext.hpp"
+#include "src/config_structs.hpp"
+#include "src/constants.hpp"
 
+#include <cstring>
 #include <drogon/HttpTypes.h>
-
-void PKReadCtrl::ping(const drogon::HttpRequestPtr & /*req*/,
-                      std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
-  auto resp = drogon::HttpResponse::newHttpResponse();
-  resp->setBody("Hello, World!");
-  resp->setStatusCode(drogon::HttpStatusCode::k200OK);
-  callback(resp);
-}
+#include <simdjson.h>
 
 void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                         std::function<void(const drogon::HttpResponsePtr &)> &&callback,
                         const std::string &db, const std::string &table) {
-  std::string_view reqBody = std::string_view(req->getBody().data());
-  PKReadParams reqStruct;
-  reqStruct.method     = "POST";
-  reqStruct.path.db    = db;
-  reqStruct.path.table = table;
+  size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
+  if (currentThreadIndex >= globalConfigs.rest.numThreads) {
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setBody("Too many threads");
+    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+    callback(resp);
+    return;
+  }
 
-  RS_Status status = json_parser::parse(reqBody, reqStruct);
-  auto resp        = drogon::HttpResponse::newHttpResponse();
+  // Store it to the first string buffer
+  const char *json_str = req->getBody().data();
+  size_t length        = req->getBody().length();
+  strcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str);
+
+  PKReadParams reqStruct(db, table);
+
+  RS_Status status = jsonParser.pk_parse(
+      currentThreadIndex,
+      simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
+                                   REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING),
+      reqStruct);
+  auto resp = drogon::HttpResponse::newHttpResponse();
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
@@ -61,8 +71,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
-    RS_BufferManager reqBuffManager  = RS_BufferManager(globalConfig.internal.bufferSize);
-    RS_BufferManager respBuffManager = RS_BufferManager(globalConfig.internal.bufferSize);
+    RS_BufferManager reqBuffManager  = RS_BufferManager(globalConfigs.internal.reqBufferSize);
+    RS_BufferManager respBuffManager = RS_BufferManager(globalConfigs.internal.respBufferSize);
     RS_Buffer *reqBuff               = reqBuffManager.getBuffer();
     RS_Buffer *respBuff              = respBuffManager.getBuffer();
 

@@ -20,9 +20,9 @@ package dal
 
 /*
  #include <stdlib.h>
- #include "./../../server/src/rdrs_dal.h"
- #include "./../../server/src/rdrs_const.h"
- #include "./../../server/src/feature_store/feature_store.h"
+ #include "./../../../src/rdrs_dal.h"
+ #include "./../../../src/rdrs_const.h"
+ #include "./../../../src/feature_store/feature_store.h"
 */
 import "C"
 import (

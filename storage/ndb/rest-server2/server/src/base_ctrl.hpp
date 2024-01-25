@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,24 +17,22 @@
  * USA.
  */
 
-#include "log.hpp"
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_BASE_CTRL_HPP_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_BASE_CTRL_HPP_
 
-#include <sstream>
+#include "rdrs_dal.h"
+#include "constants.hpp"
 
-LogConfig::LogConfig() {
-  this->level      = "warn";
-  this->filePath   = "";
-  this->maxSizeMb  = 100;
-  this->maxBackups = 10;
-  this->maxAge     = 30;
-}
+#include <drogon/drogon.h>
+#include <drogon/HttpSimpleController.h>
 
-RS_Status LogConfig::validate() {
-  return RS_Status();
-}
+class BaseCtrl : public drogon::HttpController<BaseCtrl> {
+ public:
+  METHOD_LIST_BEGIN
+  ADD_METHOD_TO(BaseCtrl::ping, PING_PATH, drogon::Get);
+  METHOD_LIST_END
+  static void ping(const drogon::HttpRequestPtr &req,
+                   std::function<void(const drogon::HttpResponsePtr &)> &&callback);
+};
 
-std::string LogConfig::string() {
-  std::stringstream ss;
-  ss << "level: " << this->level;
-  return ss.str();
-}
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_BASE_CTRL_HPP_

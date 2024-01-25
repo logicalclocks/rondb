@@ -54,7 +54,7 @@ func newWithDefaults() AllConfigs {
 			OperationIDMaxSize:  256,
 		},
 		GRPC: GRPC{
-			Enable:     true,
+			Enable:     false,
 			ServerIP:   "0.0.0.0",
 			ServerPort: 4406,
 		},

@@ -21,10 +21,10 @@ package dal
 /*
  #cgo CFLAGS: -g -Wall
  #include <stdlib.h>
- #include "./../../server/src/rdrs_dal.h"
- #include "./../../server/src/rdrs_hopsworks_dal.h"
- #include "./../../server/src/rdrs_const.h"
- #include "./../../server/src/error_strings.h"
+ #include "./../../../src/rdrs_dal.h"
+ #include "./../../../src/rdrs_hopsworks_dal.h"
+ #include "./../../../src/rdrs_const.h"
+ #include "./../../../src/error_strings.h"
 */
 import "C"
 import (

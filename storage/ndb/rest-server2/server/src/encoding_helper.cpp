@@ -36,9 +36,7 @@ EN_Status copy_str_to_buffer(const std::vector<char> &src, void *dst, uint32_t o
 
   uint32_t src_length = static_cast<uint32_t>(src.size());
 
-  for (uint32_t i = offset, j = 0; i < offset + src_length; ++i, ++j) {
-    static_cast<char *>(dst)[i] = src[j];
-  }
+  memcpy(static_cast<char *>(dst) + offset, src.data(), src_length);
 
   static_cast<char *>(dst)[offset + src_length] = 0x00;
 
@@ -74,9 +72,7 @@ EN_Status copy_ndb_str_to_buffer(std::vector<char> &src, void *dst, uint32_t off
   static_cast<char *>(dst)[offset + 1] = 0;
   offset += 2;
 
-  for (uint32_t i = offset, j = 0; i < offset + src_length; ++i, ++j) {
-    static_cast<char *>(dst)[i] = src[j];
-  }
+  memcpy(static_cast<char *>(dst) + offset, src.data(), src_length);
 
   static_cast<char *>(dst)[offset + src_length] = 0x00;
 
@@ -152,8 +148,7 @@ void printReqBuffer(const RS_Buffer *reqBuff) {
   uint32_t pkColsIdx = ((uint32_t *)reqData)[6];
   std::cout << "PK Cols Count: " << std::hex << "0x"
             << *((uint32_t *)((uintptr_t)reqData + pkColsIdx)) << std::endl;
-  for (uint32_t i = 0;
-       i < *reinterpret_cast<uint32_t *>(reinterpret_cast<uintptr_t>(reqData) + pkColsIdx); i++) {
+  for (uint32_t i = 0; i < *reinterpret_cast<uint32_t *>(reqData + pkColsIdx); i++) {
     int step = (i + 1) * ADDRESS_SIZE;
     std::cout << "KV pair " << i << " Idx: " << std::hex << "0x"
               << *((uint32_t *)((uintptr_t)reqData + pkColsIdx + step)) << std::endl;

@@ -17,8 +17,8 @@
 package api
 
 /*
-#include "./../../server/src/rdrs_const.h"
-#include "./../../server/src/rdrs_dal.h"
+#include "./../../../src/rdrs_const.h"
+#include "./../../../src/rdrs_dal.h"
 */
 import "C"
 import (

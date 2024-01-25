@@ -78,7 +78,7 @@ RS_Status validate_db_identifier(const std::string &identifier) {
 }
 
 RS_Status validate_operation_id(const std::string &opId) {
-  uint32_t operationIdMaxSize = AllConfigs::getAll().internal.operationIdMaxSize;
+  uint32_t operationIdMaxSize = AllConfigs::get_all().internal.operationIdMaxSize;
   if (static_cast<uint32_t>(opId.length()) > operationIdMaxSize) {
     return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                      ERROR_CODE_INVALID_IDENTIFIER_LENGTH,
@@ -129,6 +129,36 @@ RS_Status PKReadFilter::validate() {
                      ERROR_CODE_NULL_FILTER_COLUMN_VALUE, ERROR_048);
 
   return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
+}
+
+PKReadPath::PKReadPath() : db(), table() {
+}
+
+PKReadPath::PKReadPath(const std::string &db, const std::string &table) : db(db), table(table) {
+}
+
+PKReadParams::PKReadParams() : method(POST), path(), filters(), readColumns(), operationId() {
+}
+
+PKReadParams::PKReadParams(const std::string &method)
+    : method(method), path(), filters(), readColumns(), operationId() {
+}
+
+PKReadParams::PKReadParams(PKReadPath &path)
+    : method(POST), path(path), filters(), readColumns(), operationId() {
+}
+
+PKReadParams::PKReadParams(const std::string &method, PKReadPath &path)
+    : method(method), path(path), filters(), readColumns(), operationId() {
+}
+
+PKReadParams::PKReadParams(const std::string &db, const std::string &table)
+    : method(POST), path(db, table), filters(), readColumns(), operationId() {
+}
+
+PKReadParams::PKReadParams(const std::string &method, const std::string &db,
+                           const std::string &table)
+    : method(method), path(db, table), filters(), readColumns(), operationId() {
 }
 
 std::string PKReadParams::to_string() {

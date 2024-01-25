@@ -69,3 +69,12 @@ target_link_libraries(${PROJECT_NAME} base64 Jsoncpp_lib Drogon::Drogon Trantor:
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME} 
    DESTINATION ${INSTALL_BINDIR} COMPONENT Development
    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+
+add_library(rdrs2_shared SHARED ${SRC})
+
+set_target_properties(rdrs2_shared PROPERTIES
+    OUTPUT_NAME "rdrs2_shared"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/library_output_directory"
+)
+
+target_link_libraries(rdrs2_shared base64 Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)

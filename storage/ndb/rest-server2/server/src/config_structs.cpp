@@ -18,25 +18,58 @@
  */
 
 #include "config_structs.hpp"
+#include "json_parser.hpp"
+#include "constants.hpp"
+#include "mysql_com.h"
 
+#include <cstdlib>
+#include <drogon/HttpAppFramework.h>
 #include <drogon/HttpTypes.h>
 #include <mutex>
+#include <simdjson.h>
+#include <sstream>
+#include <string_view>
 #include <utility>
+#include <fstream>
 
-AllConfigs globalConfig;
-std::mutex globalConfigMutex;
+AllConfigs globalConfigs;
+std::mutex globalConfigsMutex;
 
 Internal::Internal()
-    : bufferSize(BUFFER_SIZE), preAllocatedBuffers(32), batchMaxSize(MAX_SIZE),
-      operationIdMaxSize(MAX_SIZE) {
+    : reqBufferSize(REQ_BUFFER_SIZE), respBufferSize(RESP_BUFFER_SIZE), preAllocatedBuffers(32),
+      batchMaxSize(MAX_SIZE), operationIdMaxSize(MAX_SIZE) {
 }
 
-GRPC::GRPC() : enable(false), serverIP("0.0.0.0"), serverPort(DEFAULT_GRPC_PORT) {
+RS_Status Internal::validate() {
+  return RS_Status();
+}
+
+GRPC::GRPC() : enable(false), serverIP(DEFAULT_ROUTE), serverPort(DEFAULT_GRPC_PORT) {
+}
+
+RS_Status GRPC::validate() {
+  return RS_Status();
 }
 
 REST::REST()
-    : enable(true), serverIP("0.0.0.0"), serverPort(DEFAULT_REST_PORT),
+    : enable(true), serverIP(DEFAULT_ROUTE), serverPort(DEFAULT_REST_PORT),
       numThreads(DEFAULT_NUM_THREADS) {
+}
+
+RS_Status REST::validate() {
+  return RS_Status();
+}
+
+std::string REST::string() {
+  std::stringstream ss;
+  ss << "enable: " << enable << ", serverIP: " << serverIP << ", serverPort: " << serverPort;
+  return ss.str();
+}
+
+std::string Mgmd::string() {
+  std::stringstream ss;
+  ss << "IP: " << IP << ", port: " << port;
+  return ss.str();
 }
 
 RonDB::RonDB()
@@ -44,45 +77,6 @@ RonDB::RonDB()
       connectionRetryDelayInSec(CONNECTION_RETRY_DELAY),
       opRetryOnTransientErrorsCount(OP_RETRY_TRANSIENT_ERRORS_COUNT),
       opRetryInitialDelayInMS(OP_RETRY_INITIAL_DELAY), opRetryJitterInMS(OP_RETRY_JITTER) {
-}
-
-TestParameters::TestParameters() {
-}
-
-Mgmd::Mgmd() : IP("localhost"), port(MGMD_DEFAULT_PORT) {
-}
-
-TLS::TLS() : enableTLS(false), requireAndVerifyClientCert(false) {
-}
-
-APIKey::APIKey()
-    : useHopsworksAPIKeys(true), cacheRefreshIntervalMS(CACHE_REFRESH_INTERVAL_MS),
-      cacheUnusedEntriesEvictionMS(CACHE_UNUSED_ENTRIES_EVICTION_MS),
-      cacheRefreshIntervalJitterMS(CACHE_REFRESH_INTERVAL_JITTER_MS) {
-}
-
-Security::Security() : tls(TLS()), apiKey(APIKey()) {
-}
-
-Testing::Testing() : mySQL(MySQL()), mySQLMetadataCluster(MySQL()) {
-}
-
-MySQL::MySQL() : servers({MySQLServer()}), user("root") {
-}
-
-MySQLServer::MySQLServer() : IP("localhost"), port(DEFAULT_MYSQL_PORT) {
-}
-
-RS_Status Mgmd::validate() const {
-  if (IP.empty()) {
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "the Management server IP cannot be empty");
-  }
-  if (port == 0) {
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "the Management server port cannot be empty");
-  }
-  return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
 }
 
 RS_Status RonDB::validate() {
@@ -119,6 +113,125 @@ RS_Status RonDB::validate() {
   return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
 }
 
+std::string RonDB::string() {
+  std::stringstream ss;
+  ss << "Mgmds: " << std::endl;
+  for (auto &server : Mgmds) {
+    ss << server.string() << std::endl;
+  }
+  return ss.str();
+}
+
+TestParameters::TestParameters() {
+}
+
+RS_Status TestParameters::validate() {
+  return RS_Status();
+}
+
+Mgmd::Mgmd() : IP(LOCALHOST), port(MGMD_DEFAULT_PORT) {
+}
+
+RS_Status Mgmd::validate() const {
+  if (IP.empty()) {
+    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                     "the Management server IP cannot be empty");
+  }
+  if (port == 0) {
+    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                     "the Management server port cannot be empty");
+  }
+  return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
+}
+
+TLS::TLS() : enableTLS(false), requireAndVerifyClientCert(false) {
+}
+
+RS_Status TLS::validate() {
+  return RS_Status();
+}
+
+std::string TLS::string() {
+  std::stringstream ss;
+  ss << "enableTLS: " << enableTLS
+     << ", requireAndVerifyClientCert: " << requireAndVerifyClientCert;
+  return ss.str();
+}
+
+APIKey::APIKey()
+    : useHopsworksAPIKeys(true), cacheRefreshIntervalMS(CACHE_REFRESH_INTERVAL_MS),
+      cacheUnusedEntriesEvictionMS(CACHE_UNUSED_ENTRIES_EVICTION_MS),
+      cacheRefreshIntervalJitterMS(CACHE_REFRESH_INTERVAL_JITTER_MS) {
+}
+
+RS_Status APIKey::validate() {
+  return RS_Status();
+}
+
+std::string APIKey::string() {
+  std::stringstream ss;
+  ss << "useHopsworksAPIKeys: " << useHopsworksAPIKeys;
+  return ss.str();
+}
+
+Security::Security() : tls(TLS()), apiKey(APIKey()) {
+}
+
+RS_Status Security::validate() {
+  return RS_Status();
+}
+
+std::string Security::string() {
+  std::stringstream ss;
+  ss << "TLS: " << tls.string() << std::endl;
+  ss << "APIKey: " << apiKey.string() << std::endl;
+  return ss.str();
+}
+
+Testing::Testing() : mySQL(MySQL()), mySQLMetadataCluster(MySQL()) {
+}
+
+RS_Status Testing::validate() {
+  return RS_Status();
+}
+
+std::string Testing::string() {
+  std::stringstream ss;
+  ss << "MySQL: " << mySQL.string() << std::endl;
+  return ss.str();
+}
+
+MySQL::MySQL() : servers({MySQLServer()}), user(ROOT) {
+}
+
+RS_Status MySQL::validate() {
+  return RS_Status();
+}
+
+std::string MySQL::string() {
+  std::stringstream ss;
+  ss << "servers: " << std::endl;
+  for (auto &server : servers) {
+    ss << server.string() << std::endl;
+  }
+  ss << "user: " << user << std::endl;
+  ss << "password: " << password << std::endl;
+  return ss.str();
+}
+
+MySQLServer::MySQLServer() : IP(LOCALHOST), port(DEFAULT_MYSQL_PORT) {
+}
+
+std::string MySQLServer::string() {
+  std::stringstream ss;
+  ss << "IP: " << IP << ", port: " << port;
+  return ss.str();
+}
+
+RS_Status MySQLServer::validate() {
+  return RS_Status();
+}
+
 std::string RonDB::generate_Mgmd_connect_string() {
   Mgmd mgmd = Mgmds[0];
   return mgmd.IP + ":" + std::to_string(mgmd.port);
@@ -136,16 +249,118 @@ AllConfigs::AllConfigs() {
   testing              = Testing();
 }
 
-AllConfigs AllConfigs::getAll() {
-  return globalConfig;
+AllConfigs AllConfigs::get_all() {
+  return globalConfigs;
 }
 
-void AllConfigs::setAll(AllConfigs allConfigs) {
-  std::lock_guard<std::mutex> lock(globalConfigMutex);
-  globalConfig = std::move(allConfigs);
+RS_Status AllConfigs::validate() {
+  RS_Status status;
+  status = internal.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  status = rest.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  status = grpc.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  status = ronDB.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  status = ronDbMetaDataCluster.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  status = security.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  status = log.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  status = testing.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+
+  return RS_Status();
 }
 
-void AllConfigs::setToDefaults() {
-  std::lock_guard<std::mutex> lock(globalConfigMutex);
-  globalConfig = AllConfigs();
+RS_Status AllConfigs::set_all(AllConfigs newConfigs) {
+  std::lock_guard<std::mutex> lock(globalConfigsMutex);
+  RS_Status status = newConfigs.validate();
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+  globalConfigs = newConfigs;
+  return status;
+}
+
+RS_Status AllConfigs::set_to_defaults() {
+  AllConfigs newConfigs = AllConfigs();
+  return set_all(newConfigs);
+}
+
+RS_Status AllConfigs::set_from_file_if_exists(const std::string &configFile) {
+  if (configFile.empty()) {
+    return set_to_defaults();
+  }
+  return set_from_file(configFile);
+}
+
+RS_Status AllConfigs::set_from_file(const std::string &configFile) {
+  size_t currentThreadIndex = DEFAULT_NUM_THREADS;
+  AllConfigs newConfigs;
+  // Read config file
+  std::ifstream file(configFile);
+  if (!file) {
+    return RS_Status(
+        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+        ("failed reading config file; error: " + std::string(strerror(errno))).c_str());
+  }
+  std::string configStr((std::istreambuf_iterator<char>(file)), {});
+
+  // Store it to the first string buffer
+  const char *json_str = configStr.c_str();
+  size_t length        = configStr.length();
+  strcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str);
+  file.close();
+
+  // Parse config file
+  RS_Status status = jsonParser.config_parse(
+      currentThreadIndex,
+      simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
+                                   REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING),
+      newConfigs);
+
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    return status;
+  }
+
+  return set_all(newConfigs);
+}
+
+RS_Status AllConfigs::init() {
+  std::string configFile;
+  const char *env_val = std::getenv(CONFIG_FILE_PATH);
+  if (env_val != nullptr) {
+    configFile = env_val;
+  }
+  return set_from_file_if_exists(configFile);
+}
+
+std::string AllConfigs::string() {
+  std::lock_guard<std::mutex> lock(globalConfigsMutex);
+  std::stringstream ss;
+  ss << "REST: " << rest.string() << std::endl;
+  ss << "RonDB: " << ronDB.string() << std::endl;
+  ss << "Security: " << security.string() << std::endl;
+  ss << "Log: " << log.string() << std::endl;
+  ss << "Testing: " << testing.string() << std::endl;
+  return ss.str();
 }

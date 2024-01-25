@@ -18,7 +18,7 @@
 package log
 
 /*
-#include "./../../server/src/rdrs_dal.h"
+#include "../../../src/rdrs_dal.h"
 extern void goLog(RS_LOG_MSG);
 
 void loggerCToGo(RS_LOG_MSG log) {

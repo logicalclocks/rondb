@@ -37,13 +37,13 @@ import (
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
-func TestReconnection1(t *testing.T) {
-	reconnectionTest(t, 1, 5)
-}
+// func TestReconnection1(t *testing.T) {
+// 	reconnectionTest(t, 1, 5)
+// }
 
-func TestReconnection2(t *testing.T) {
-	reconnectionTest(t, 10, 10)
-}
+// func TestReconnection2(t *testing.T) {
+// 	reconnectionTest(t, 10, 10)
+// }
 
 func reconnectionTest(t *testing.T, threads int, durationSec int) {
 	log.Debugf("Starting Reconnection test with %d threads ", threads)

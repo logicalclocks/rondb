@@ -18,6 +18,7 @@
  */
 
 #include "encoding.hpp"
+#include "src/constants.hpp"
 #include "src/rdrs_dal_ext.hpp"
 #include <cstring>
 
@@ -28,7 +29,8 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
 
   uint32_t dbOffset = head;
 
-  EN_Status status = copy_str_to_buffer(string_to_byte_array(pkReadParams.path.db), reqBuff, head);
+  EN_Status status = copy_str_to_buffer(
+      std::vector<char>(pkReadParams.path.db.begin(), pkReadParams.path.db.end()), reqBuff, head);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     head = status.retValue;
@@ -38,7 +40,9 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
 
   uint32_t tableOffset = head;
 
-  status = copy_str_to_buffer(string_to_byte_array(pkReadParams.path.table), reqBuff, head);
+  status = copy_str_to_buffer(
+      std::vector<char>(pkReadParams.path.table.begin(), pkReadParams.path.table.end()), reqBuff,
+      head);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     head = status.retValue;
@@ -66,7 +70,8 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
 
     uint32_t keyOffset = head;
 
-    status = copy_str_to_buffer(string_to_byte_array(filter.column), reqBuff, head);
+    status = copy_str_to_buffer(std::vector<char>(filter.column.begin(), filter.column.end()),
+                                reqBuff, head);
 
     if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
       head = status.retValue;
@@ -121,7 +126,8 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
       head += ADDRESS_SIZE;
 
       // col name
-      status = copy_str_to_buffer(string_to_byte_array(col.column), reqBuff, head);
+      status = copy_str_to_buffer(std::vector<char>(col.column.begin(), col.column.end()), reqBuff,
+                                  head);
 
       if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
         head = status.retValue;
@@ -136,7 +142,9 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
   if (!pkReadParams.operationId.empty()) {
     op_id_offset = head;
 
-    status = copy_str_to_buffer(string_to_byte_array(pkReadParams.operationId), reqBuff, head);
+    status = copy_str_to_buffer(
+        std::vector<char>(pkReadParams.operationId.begin(), pkReadParams.operationId.end()),
+        reqBuff, head);
 
     if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
       head = status.retValue;
@@ -147,9 +155,9 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
 
   // request buffer header
   buf[PK_REQ_OP_TYPE_IDX]   = (uint32_t)(RDRS_PK_REQ_ID);
-  buf[PK_REQ_CAPACITY_IDX]  = (uint32_t)(5 * 1024 * 1024);
+  buf[PK_REQ_CAPACITY_IDX]  = (uint32_t)(RESP_BUFFER_SIZE);
   buf[PK_REQ_LENGTH_IDX]    = (uint32_t)(head);
-  buf[PK_REQ_FLAGS_IDX]     = (uint32_t)(0);  // TODO fill in. is_grpc, is_http ...
+  buf[PK_REQ_FLAGS_IDX]     = (uint32_t)(0);  // FIXME TODO fill in. is_grpc, is_http ...
   buf[PK_REQ_DB_IDX]        = (uint32_t)(dbOffset);
   buf[PK_REQ_TABLE_IDX]     = (uint32_t)(tableOffset);
   buf[PK_REQ_PK_COLS_IDX]   = (uint32_t)(pkOffset);
@@ -217,7 +225,7 @@ RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) 
         std::string value = std::string((char *)(reinterpret_cast<uintptr_t>(respBuff) + valueAdd));
 
         std::string quotedValue = quote_if_string(dataType, value);
-        response.setColumnData(name, string_to_byte_array(quotedValue));
+        response.setColumnData(name, std::vector<char>(quotedValue.begin(), quotedValue.end()));
       } else {
         response.setColumnData(name, std::vector<char>());
       }
