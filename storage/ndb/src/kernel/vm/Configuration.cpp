@@ -513,6 +513,16 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
   ndb_mgm_get_int_parameter(p, CFG_LQH_FRAG, &num_fragments);
   Uint32 num_tot_fragments = 0;
   ndb_mgm_get_int_parameter(p, CFG_DIH_FRAG_CONNECT, &num_tot_fragments);
+
+  Uint32 noOfNodes = 0;
+  Uint32 noOfDBNodes = 0;
+  Uint32 noOfAPINodes = 0;
+  Uint32 noOfMGMNodes = 0;
+  get_num_nodes(noOfNodes,
+                noOfDBNodes,
+                noOfAPINodes,
+                noOfMGMNodes);
+
   Uint32 num_triggers = globalData.theMaxNoOfTriggers;
   Uint32 num_attributes = globalData.theMaxNoOfAttributes;
   Uint32 num_tables = globalData.theMaxNoOfTables;
@@ -528,7 +538,10 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
                              Uint64(num_ordered_indexes) +
                              Uint64(num_unique_hash_indexes);
   Uint64 num_replica_records =
-    num_table_objects * (partitions_per_node + 1) * num_replicas;
+    num_table_objects *
+    partitions_per_node *
+    num_replicas *
+    noOfDBNodes;
   Uint64 num_ldm_threads = Uint64(globalData.ndbMtLqhWorkers);
   Uint64 num_tc_threads = Uint64(globalData.ndbMtTcWorkers);
 
@@ -814,12 +827,14 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
   if (config_schema_memory != 0)
   {
     globalData.theSchemaMemory = config_schema_memory;
+    globalData.theExtraSchemaMemory = 0;
   }
   else
   {
     schema_memory = schema_mem_block - table_mem;
     schema_memory += map_size;
-    globalData.theSchemaMemory = schema_memory;
+    globalData.theSchemaMemory = schema_memory / 4;
+    globalData.theExtraSchemaMemory = schema_memory / 4;
   }
 }
 
@@ -1322,8 +1337,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   }
   Uint64 table_memory = 0;
   get_schema_memory(p, table_memory);
-  Uint64 compute_schema_memory = globalData.theSchemaMemory;
-  Uint64 schema_memory = compute_schema_memory / 4;
+  Uint64 schema_memory = globalData.theSchemaMemory;
 
   Uint64 compute_backup_schema_memory = get_backup_schema_memory(p);
   Uint64 backup_schema_memory = compute_backup_schema_memory / 4;
@@ -1352,7 +1366,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   Uint64 shared_global_memory = get_and_set_shared_global_memory(p);
   Uint64 extra_shared_global_memory = 0;
   extra_shared_global_memory += (compute_backup_schema_memory / 4);
-  extra_shared_global_memory += compute_schema_memory / 4;
+  extra_shared_global_memory += globalData.theExtraSchemaMemory;
   extra_shared_global_memory += (compute_job_buffer / 4);
   extra_shared_global_memory += (compute_send_buffer / 2);
   shared_global_memory += extra_shared_global_memory;
@@ -2393,9 +2407,12 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
       automaticThreadConfig == 1)
   {
     numFragmentsPerNodePerLdm =
-      (partitionsPerNode + 1) * noOfMetaTables * noOfReplicas / ldmInstances;
-    noFragPerTable= (noOfDBNodes * (partitionsPerNode + 1));
-    numReplicas = noOfMetaTables * (partitionsPerNode + 1) * noOfReplicas;
+      partitionsPerNode * noOfMetaTables * noOfReplicas / ldmInstances;
+    noFragPerTable= (noOfDBNodes * partitionsPerNode);
+    numReplicas = noOfMetaTables *
+                  partitionsPerNode *
+                  noOfReplicas *
+                  noOfDBNodes;
   }
   else
   {
