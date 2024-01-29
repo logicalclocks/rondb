@@ -1,0 +1,70 @@
+--source include/have_ndb.inc
+
+echo "Create 3000 tables with 11 indexes each";
+
+#--disable_result_log
+let $loops = 3000;
+
+while ($loops)
+{
+  eval CREATE TABLE t$loops (a int not null,
+                             b int,
+                             c int,
+                             d int,
+                             e int,
+                             f int,
+                             g int,
+                             h int,
+                             i int,
+                             j int,
+                             k int,
+                             INDEX b_index(b),
+                             INDEX c_index(c),
+                             INDEX d_index(d),
+                             INDEX e_index(e),
+                             INDEX f_index(f),
+                             INDEX g_index(g),
+                             INDEX h_index(h),
+                             INDEX i_index(i),
+                             INDEX j_index(j),
+                             INDEX k_index(k),
+                             PRIMARY KEY (a)) engine ndb;
+  eval INSERT INTO t$loops values (1,2,3,4,5,6,7,8,9,10,11);
+  dec $loops;
+}
+#--enable_result_log
+echo "Restart node 2";
+#
+# Restart node 2
+#
+--exec $NDB_MGM -e "2 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=1 --not-started > /dev/null
+--exec $NDB_MGM -e "2 START"
+--exec $NDB_WAITER --timeout 3600 > /dev/null
+#
+# Restart node 1 --initial
+#
+echo "Restart node 1 with initial flag";
+--exec $NDB_MGM -e "1 RESTART -n -I"
+--exec $NDB_WAITER --nowait-nodes=2 --not-started  > /dev/null
+--exec $NDB_MGM -e "1 START"
+--exec $NDB_WAITER --timeout 3600 > /dev/null
+#
+# Restart all
+#
+echo "Cluster Restart";
+--exec $NDB_MGM -e "ALL RESTART -N"
+--exec $NDB_WAITER --not-started > /dev/null
+--exec $NDB_MGM -e "ALL START"
+--exec $NDB_WAITER --timeout 3600 > /dev/null
+#
+# Drop all tables
+#
+echo "Drop 3000 tables";
+#--disable_result_log
+let $loops = 3000;
+while ($loops)
+{
+  eval DROP TABLE t$loops;
+  dec $loops;
+}

@@ -1,0 +1,11 @@
+!include ../my.cnf
+
+[cluster_config]
+TimeBetweenGlobalCheckpoints= 20
+AutomaticMemoryConfig=1
+TotalMemoryConfig=10G
+SchemaMemory=2G
+DataMemory=2G
+MaxNoOfSchemaObjects=200000
+MaxNoOfTables=20000
+MaxNoOfOrderedIndexes=20000
