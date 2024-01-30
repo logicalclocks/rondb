@@ -2003,6 +2003,7 @@ void Dbdict::closeWriteSchemaConf(Signal* signal,
   c_fsConnectRecordPool.release(fsPtr);
 
   c_writeSchemaRecord.inUse = false;
+  D("startWriteSchemaFile done");
   execute(signal, c_writeSchemaRecord.m_callback, 0);
   return;
 }//Dbdict::closeWriteSchemaConf()
@@ -2193,6 +2194,7 @@ void Dbdict::closeReadSchemaConf(Signal* signal,
       m_first_updated_table_entry = RNIL;
       m_last_updated_table_entry = RNIL;
 
+      D("startWriteSchemaFile: INITIAL_READ");
       startWriteSchemaFile(signal);
     }
     break;
@@ -2838,7 +2840,7 @@ Dbdict::check_read_obj(Uint32 objId, Uint32 transId)
 Uint32
 Dbdict::check_read_obj(SchemaFile::TableEntry* te, Uint32 transId)
 {
-  D("check_read_obj" << V(*te) << V(transId));
+  //D("check_read_obj" << V(*te) << V(transId));
 
   if (te->m_tableState == SchemaFile::SF_UNUSED)
   {
@@ -3380,6 +3382,7 @@ void Dbdict::initSchemaFile(Signal* signal)
     m_first_updated_table_entry = RNIL;
     m_last_updated_table_entry = RNIL;
 
+    D("startWriteSchemaFile: INITIAL_START");
     startWriteSchemaFile(signal);
   } else if (c_systemRestart || c_nodeRestart) {
     jam();
@@ -4979,6 +4982,7 @@ Dbdict::restartNextPass(Signal* signal)
     m_first_updated_table_entry = RNIL;
     m_last_updated_table_entry = RNIL;
 
+    D("startWriteSchemaFile: RESTART");
     startWriteSchemaFile(signal);
   }
 }
@@ -30574,6 +30578,7 @@ Dbdict::execSCHEMA_TRANS_IMPL_REF(Signal* signal)
 void
 Dbdict::trans_recv_reply(Signal* signal, SchemaTransPtr trans_ptr)
 {
+  D("trans_recv_reply: " << trans_ptr.p->m_state);
   switch(trans_ptr.p->m_state){
   case SchemaTrans::TS_INITIAL:
     ndbabort();
@@ -31643,7 +31648,8 @@ Dbdict::trans_commit_first(Signal* signal, SchemaTransPtr trans_ptr)
     jam();
     trans_commit_mutex_locked(signal, trans_ptr.i, 0);
   }
-  else if (trans_ptr.p->m_wait_gcp_on_commit)
+  else if (trans_ptr.p->m_wait_gcp_on_commit &&
+           getNodeState().getStarted())
   {
     jam();
 
@@ -31660,7 +31666,7 @@ Dbdict::trans_commit_first(Signal* signal, SchemaTransPtr trans_ptr)
     signal->theData[1] = trans_ptr.i;
     signal->theData[2] = gci_hi;
     signal->theData[3] = gci_lo;
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 4);
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1, 4);
 
     signal->theData[0] = 6099;
     sendSignal(DBDIH_REF, GSN_DUMP_STATE_ORD, signal, 1, JBB);
@@ -31712,7 +31718,7 @@ Dbdict::trans_commit_wait_gci(Signal* signal)
     signal->theData[1] = trans_ptr.i;
     signal->theData[2] = gci_hi;
     signal->theData[3] = gci_lo;
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 4);
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1, 4);
     return;
   }
 
@@ -31745,6 +31751,7 @@ Dbdict::trans_commit_mutex_locked(Signal* signal,
     first = list.first(op_ptr);
   }
 
+  D("trans_commit_mutex_locked");
   if (first)
   {
     jam();
@@ -31918,6 +31925,7 @@ Dbdict::trans_commit_recv_reply(Signal* signal, SchemaTransPtr trans_ptr)
     next = list.next(op_ptr);
   }
 
+  D("trans_commit_recv_reply");
   if (next)
   {
     jam();
@@ -31947,6 +31955,7 @@ Dbdict::trans_commit_done(Signal* signal, SchemaTransPtr trans_ptr)
   g_eventLogger->info("trans_commit_done");
 #endif
 
+  D("trans_commit_done");
   Mutex mutex(signal, c_mutexMgr, trans_ptr.p->m_commit_mutex);
   Callback c = { safe_cast(&Dbdict::trans_commit_mutex_unlocked), trans_ptr.i };
   mutex.unlock(c);
@@ -32293,6 +32302,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
   ErrorInfo error;
 
   jam();
+  D("trans_recover");
 #if defined VM_TRACE || defined MARTIN
   g_eventLogger->info("Dbdict::trans_recover trans %u, state %u",
                       trans_ptr.p->trans_key, trans_ptr.p->m_state);
@@ -32885,7 +32895,7 @@ Dbdict::slave_run_flush(Signal *signal,
 
   m_first_updated_table_entry = RNIL;
   m_last_updated_table_entry = RNIL;
-
+  D("startWriteSchemaFile: slave_run_flush");
   startWriteSchemaFile(signal);
 }
 
@@ -33069,6 +33079,7 @@ Dbdict::sendTransConf(Signal* signal, SchemaTransPtr trans_ptr)
     return;
   }
 
+  D("Send SCHEMA_TRANS_IMPL_CONF to " << refToNode(masterRef));
   sendSignal(masterRef, GSN_SCHEMA_TRANS_IMPL_CONF, signal,
              SchemaTransImplConf::SignalLength, JBB);
 }
@@ -33328,7 +33339,7 @@ Dbdict::sendTransClientReply(Signal* signal, SchemaTransPtr trans_ptr)
   if (trans_ptr.p->m_clientState == TransClient::EndReq) {
     if (!hasError(trans_ptr.p->m_error)) {
       jam();
-      D("SCHEMA_TRANS_END_CONF");
+      D("Send SCHEMA_TRANS_END_CONF to " << refToNode(receiverRef));
       SchemaTransEndConf* conf =
         (SchemaTransEndConf*)signal->getDataPtrSend();
       conf->senderRef = reference();
@@ -34651,7 +34662,7 @@ Dbdict::ErrorInfo::print(EventLogger *logger) const
       errorObjectName);
 }
 
-#if defined VM_TRACE
+#if defined (VM_TRACE)
 
 // DictObject
 
@@ -34764,7 +34775,7 @@ Dbdict::TxHandle::print(NdbOut& out) const
 void
 Dbdict::check_consistency()
 {
-  D("check_consistency");
+  //D("check_consistency");
 
 #if 0
   // schema file entries // mis-named "tables"
@@ -34837,7 +34848,7 @@ Dbdict::check_consistency_entry(TableRecordPtr tablePtr)
 void
 Dbdict::check_consistency_table(TableRecordPtr tablePtr)
 {
-  D("table " << copyRope<SZ>(tablePtr.p->tableName));
+  //D("table " << copyRope<SZ>(tablePtr.p->tableName));
 
   switch (tablePtr.p->tableType) {
   case DictTabInfo::SystemTable: // should just be "Table"
@@ -34868,7 +34879,7 @@ Dbdict::check_consistency_table(TableRecordPtr tablePtr)
 void
 Dbdict::check_consistency_index(TableRecordPtr indexPtr)
 {
-  D("index " << copyRope<SZ>(indexPtr.p->tableName));
+  //D("index " << copyRope<SZ>(indexPtr.p->tableName));
   ndbrequire(indexPtr.p->tableId == indexPtr.i);
 
   switch (indexPtr.p->indexState) { // these states are non-sense
@@ -34923,9 +34934,9 @@ Dbdict::check_consistency_index(TableRecordPtr indexPtr)
 void
 Dbdict::check_consistency_trigger(TriggerRecordPtr triggerPtr)
 {
-  D("trigger for table " << triggerPtr.p->tableId << " index = " <<
-    triggerPtr.p->indexId << " name " <<
-    copyRope<SZ>(triggerPtr.p->triggerName));
+  //D("trigger for table " << triggerPtr.p->tableId << " index = " <<
+  //  triggerPtr.p->indexId << " name " <<
+  //  copyRope<SZ>(triggerPtr.p->triggerName));
 
   if (! (triggerPtr.p->triggerState == TriggerRecord::TS_FAKE_UPGRADE))
   {

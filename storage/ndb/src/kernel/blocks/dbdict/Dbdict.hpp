@@ -798,7 +798,7 @@ public:
       return false;
     }
 
-#if defined VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -1744,7 +1744,7 @@ private:
     return ok;
   }
 
-#if defined VM_TRACE
+#if defined(VM_TRACE)
   template <Uint32 sz>
   inline const char*
   copyRope(const LcRopeHandle& rh)

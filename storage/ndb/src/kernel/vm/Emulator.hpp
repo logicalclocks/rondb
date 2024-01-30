@@ -44,7 +44,7 @@ extern class  FastScheduler       globalScheduler;
 extern class  TransporterRegistry globalTransporterRegistry;
 extern struct GlobalData          globalData;
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
 extern class SignalLoggerManager globalSignalLoggers;
 #endif
 

@@ -87,7 +87,10 @@ struct CHARSET_INFO;
  */
 //#define UNPACKED_COMMIT_SIGNALS 1
 
-#if defined VM_TRACE
+#define VM_TRACE_TIME_OUT 1
+//#define VM_TRACE_TIME 1
+
+#if defined (VM_TRACE)
 #define D(x) \
   do { \
     char buf[200]; \
@@ -1739,7 +1742,7 @@ public:
   void enable_global_variables();
 #endif
 
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 public:
   FileOutputStream debugOutFile;
   NdbOut debugOut;
@@ -2388,7 +2391,7 @@ protected:
 };
 
 // outside blocks e.g. within a struct
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 #define DEBUG_OUT_DEFINES(blockNo) \
 static SimulatedBlock* debugOutBlock() \
   { return globalData.getBlock(blockNo); } \

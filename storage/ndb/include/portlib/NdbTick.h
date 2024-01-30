@@ -121,6 +121,7 @@ NdbTick_Elapsed(NDB_TICKS start, NDB_TICKS end);
  * a bug.
  */
 static Uint64 NdbTick_CurrentMillisecond(void);
+static Uint64 NdbTick_CurrentMicrosecond(void);
 
 
 class NdbDuration {
@@ -140,6 +141,9 @@ private:
 
   friend Uint64
     NdbTick_CurrentMillisecond(void);
+
+  friend Uint64
+    NdbTick_CurrentMicrosecond(void);
 
   friend const NDB_TICKS
     NdbTick_AddMilliseconds(NDB_TICKS ticks, Uint64 ms);
@@ -208,10 +212,20 @@ static inline Uint64
 NdbTick_CurrentMillisecond(void)
 {
   const Uint64 ticks = NdbTick_getCurrentTicks().t;
-  if (ticks < (UINT_MAX64 / 1000))
-    return ((ticks*1000) / NdbDuration::tick_frequency); // Best precision
+  if (ticks < (UINT_MAX64 / Uint64(1000)))
+    return ((ticks*Uint64(1000)) / NdbDuration::tick_frequency); // Best precision
   else
-    return (ticks / (NdbDuration::tick_frequency/1000)); // Avoids overflow,
+    return (ticks / (NdbDuration::tick_frequency/Uint64(1000))); // Avoids overflow,
+}
+
+static inline Uint64
+NdbTick_CurrentMicrosecond(void)
+{
+  const Uint64 ticks = NdbTick_getCurrentTicks().t;
+  if (ticks < (UINT_MAX64 / Uint64(1000000)))
+    return ((ticks*Uint64(1000000)) / NdbDuration::tick_frequency); // Best precision
+  else
+    return (ticks / (NdbDuration::tick_frequency/Uint64(1000000))); // Avoids overflow,
 }
 
 /******************************************************

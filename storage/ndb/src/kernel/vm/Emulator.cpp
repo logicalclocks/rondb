@@ -66,7 +66,7 @@ EmulatedJamBuffer theEmulatedJamBuffer;
    FastScheduler globalScheduler;
    extern TransporterRegistry globalTransporterRegistry;
 
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
    SignalLoggerManager globalSignalLoggers;
 #endif
 

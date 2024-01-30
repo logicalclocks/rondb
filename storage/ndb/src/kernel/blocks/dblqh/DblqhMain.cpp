@@ -28984,7 +28984,8 @@ void Dblqh::execSTART_FRAGREQ(Signal* signal)
   Uint32 fragId = startFragReq->fragId;
 
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-  if (!getFragmentrec(fragId)) {
+  if (!getFragmentrec(fragId))
+  {
     startFragRefLab(signal);
     return;
   }//if
@@ -29015,7 +29016,7 @@ void Dblqh::execSTART_FRAGREQ(Signal* signal)
   /**
    * Always printSTART_FRAG_REQ (for debugging) if ERROR_INSERT is set
    */
-  doprint = true;
+  doprint = false;
 #endif
 #ifdef DEBUG_LCP
   doprint = true;

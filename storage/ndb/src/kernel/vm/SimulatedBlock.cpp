@@ -102,7 +102,7 @@ SimulatedBlock::SimulatedBlock(BlockNumber blockNumber,
 #ifdef VM_TRACE_TIME
     ,m_currentGsn(0)
 #endif
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
     ,debugOutFile(globalSignalLoggers.getOutputStream())
     ,debugOut(debugOutFile)
 #endif
@@ -5436,7 +5436,7 @@ SimulatedBlock::execLOCAL_ROUTE_ORD(Signal* signal)
 }
 
 
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 bool
 SimulatedBlock::debugOutOn()
 {
@@ -5460,12 +5460,12 @@ SimulatedBlock::debugOutTag(char *buf, int line)
     sprintf(instancebuf, "/%u", instance());
   sprintf(linebuf, " %d", line);
   timebuf[0] = 0;
-#ifdef VM_TRACE_TIME
+#ifdef VM_TRACE_TIME_OUT
   {
-    Uint64 t = NdbTick_CurrentMillisecond();
-    uint s = (t / 1000) % 3600;
-    uint ms = t % 1000;
-    sprintf(timebuf, " - %u.%03u -", s, ms);
+    Uint64 t = NdbTick_CurrentMicrosecond();
+    Uint64 s = (t / Uint64(1000000)) % Uint64(3600);
+    Uint64 ms = t % Uint64(1000000);
+    sprintf(timebuf, " - %llu.%06llu -", s, ms);
   }
 #endif
   sprintf(buf, "%s%s%s%s ", blockbuf, instancebuf, linebuf, timebuf);
