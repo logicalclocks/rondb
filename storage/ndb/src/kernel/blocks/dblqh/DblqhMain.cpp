@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28984,7 +28984,8 @@ void Dblqh::execSTART_FRAGREQ(Signal* signal)
   Uint32 fragId = startFragReq->fragId;
 
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-  if (!getFragmentrec(fragId)) {
+  if (!getFragmentrec(fragId))
+  {
     startFragRefLab(signal);
     return;
   }//if
@@ -29015,7 +29016,7 @@ void Dblqh::execSTART_FRAGREQ(Signal* signal)
   /**
    * Always printSTART_FRAG_REQ (for debugging) if ERROR_INSERT is set
    */
-  doprint = true;
+  doprint = false;
 #endif
 #ifdef DEBUG_LCP
   doprint = true;

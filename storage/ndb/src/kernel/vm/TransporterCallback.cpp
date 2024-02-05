@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -906,6 +906,7 @@ TransporterCallbackKernelNonMT::getSendBufferLevel(NodeId nodeId,
                                               1);
   SendBuffer *b = m_send_buffers + trp_ids;
   calculate_send_buffer_level(b->m_used_bytes,
+                              0, // Fake since never used
                               m_tot_send_buffer_memory,
                               m_tot_used_buffer_memory,
                               0,

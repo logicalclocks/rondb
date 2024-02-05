@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -185,7 +185,7 @@ Dbtux::execDUMP_STATE_ORD(Signal* signal)
   }
 #endif
 
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#if defined(VM_TRACE)|| defined(ERROR_INSERT)
   if (signal->theData[0] == DumpStateOrd::SchemaResourceSnapshot)
   {
     RSS_AP_SNAPSHOT_SAVE(c_indexPool);
@@ -225,7 +225,7 @@ Dbtux::execDUMP_STATE_ORD(Signal* signal)
 #endif
 }
 
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 
 void
 Dbtux::printTree(Signal* signal, Frag& frag, NdbOut& out)

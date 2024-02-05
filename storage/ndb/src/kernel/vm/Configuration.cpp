@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -568,7 +568,8 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
   Uint64 dict_table_mem =
     Dbdict::getTableRecordSize() * num_table_objects;
   Uint64 dict_obj_mem =
-    (Dbdict::getDictObjectRecordSize() + 8) * (num_table_objects + num_triggers);
+    (Dbdict::getDictObjectRecordSize() + 8) *
+    (num_table_objects + num_triggers);
   Uint64 dict_key_descriptor_mem =
     sizeof(struct KeyDescriptor) * num_table_objects;
 
@@ -2127,6 +2128,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   unsigned int partitionsPerNode = 2;
   unsigned int automaticThreadConfig = 1;
   unsigned int automaticMemoryConfig = 1;
+  unsigned int max_schema_objects = OLD_NDB_MAX_TABLES;
 
   m_logLevel = new LogLevel();
   if (!m_logLevel)
@@ -2141,6 +2143,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     { CFG_DB_NO_LOCAL_SCANS, &noOfLocalScanRecords, true },
     { CFG_DB_RESERVED_LOCAL_SCANS, &reservedLocalScanRecords, true },
     { CFG_DB_BATCH_SIZE, &noBatchSize, false },
+    { CFG_DB_MAX_NUM_SCHEMA_OBJECTS, &max_schema_objects, false },
     { CFG_DB_NO_TABLES, &noOfTables, false },
     { CFG_DB_NO_ORDERED_INDEXES, &noOfOrderedIndexes, false },
     { CFG_DB_NO_UNIQUE_HASH_INDEXES, &noOfUniqueHashIndexes, false },
@@ -2272,6 +2275,24 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     g_eventLogger->info("MaxNoOfTriggers set to %u", noOfTriggers);
   }
 
+  
+  if (max_schema_objects < noOfMetaTables)
+  {
+    char reason_msg[256];
+    const char *msg = "Schema File Error";
+    BaseString::snprintf(reason_msg, sizeof(reason_msg),
+      "Trying to start with less schema objects than table objects"
+      ", started with %u table objects and a maximum of %u"
+      " schema objects in schema file, increase"
+      " MaxNoOfSchemaObjects",
+      noOfMetaTables,
+      max_schema_objects);
+    ERROR_SET(fatal,
+              NDBD_EXIT_SR_SCHEMAFILE,
+              msg,
+              reason_msg);
+  }
+
   /**
    * Do size calculations
    */
@@ -2284,9 +2305,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   cfg.put(CFG_TUP_NO_TRIGGERS, noOfTriggers + 3 * noOfMetaTables);
 
   Uint32 noOfMetaTablesDict= noOfMetaTables;
-  if (noOfMetaTablesDict > NDB_MAX_TABLES)
-    noOfMetaTablesDict= NDB_MAX_TABLES;
-
   {
     /**
      * Dict Size Alt values

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,7 +44,7 @@ extern class  FastScheduler       globalScheduler;
 extern class  TransporterRegistry globalTransporterRegistry;
 extern struct GlobalData          globalData;
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
 extern class SignalLoggerManager globalSignalLoggers;
 #endif
 

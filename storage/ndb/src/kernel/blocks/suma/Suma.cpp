@@ -5484,7 +5484,6 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
     Uint32* dst2 = nullptr;
     Uint32 sz1 = f_trigBufferSize + buffer_header_sz;
     Uint32 sz2 = b_trigBufferSize;
-    Page_pos save_pos= c_buckets[bucket].m_buffer_head;
 
     static_assert(1 + Buffer_page::GCI_SZ32 + buffer_header_sz + SUMA_BUF_SZ
                     <= Buffer_page::DATA_WORDS);

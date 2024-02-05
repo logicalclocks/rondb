@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -62,7 +63,7 @@ public:
     return bytes_received;
   }
 
-  Transporter* get_send_transporter(Uint32 recBlock, Uint32 /*sendBlock*/) override
+  Transporter* get_send_transporter(Uint32 recBlock) override
   {
     /**
      * We hash on receiver instance to avoid any risk of changed signal order

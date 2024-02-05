@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -101,7 +101,7 @@
  **/
 #define MAX_TUPLES_PER_PAGE 8191
 #define MAX_TUPLES_BITS 13 		/* 13 bits = 8191 tuples per page */
-#define NDB_MAX_TABLES 20320                /* SchemaFile.hpp */
+#define OLD_NDB_MAX_TABLES 20320        /* SchemaFile.hpp */
 #define MAX_TAB_NAME_SIZE 128
 #define MAX_ATTR_NAME_SIZE NAME_LEN       /* From mysql_com.h */
 #define MAX_ATTR_DEFAULT_VALUE_SIZE ((MAX_TUPLE_SIZE_IN_WORDS + 1) * 4)  //Add 1 word for AttributeHeader

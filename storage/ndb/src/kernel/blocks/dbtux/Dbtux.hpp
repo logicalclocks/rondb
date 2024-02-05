@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -57,7 +57,7 @@
 #include <signaldata/IndexStatSignal.hpp>
 
 // debug
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
 #include <NdbOut.hpp>
 #include <OutputStream.hpp>
 #endif
@@ -112,7 +112,7 @@ private:
   static constexpr Uint32 ScanBoundSegmentSize = 7;
   static constexpr Uint32 MaxAccLockOps = MAX_PARALLEL_OP_PER_SCAN;
   static constexpr Uint32 MaxTreeDepth = 32;    // strict
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   // for TuxCtx::c_debugBuffer
   static constexpr Uint32 DebugBufferBytes = (MaxAttrDataSize << 2);
 #endif
@@ -883,7 +883,7 @@ private:
    * DbtuxDebug.cpp
    */
   void execDUMP_STATE_ORD(Signal* signal);
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   struct PrintPar {
     char m_path[100];           // LR prefix
     unsigned m_side;            // expected side
@@ -978,7 +978,7 @@ private:
     // buffer for xfrm-ed PK and for temporary use
     Uint32* c_boundBuffer;
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     char* c_debugBuffer;
 #endif
     // function for clearing context
@@ -1651,7 +1651,7 @@ Dbtux::StatMon::StatMon() :
 
 // parameters for methods
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
 inline
 Dbtux::PrintPar::PrintPar() :
   // caller fills in
@@ -1761,7 +1761,7 @@ Dbtux::cmpSearchKey(TuxCtx& ctx,
   // compare cnt attributes from each
   Uint32 num_eq;
   int ret = searchKey.cmp(entryKey, cnt, num_eq);
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   if (debugFlags & DebugMaint) {
     tuxDebugOut << "cmpSearchKey: ret:" << ret;
     tuxDebugOut << " search:" << searchKey.print(ctx.c_debugBuffer, DebugBufferBytes);
@@ -1778,7 +1778,7 @@ Dbtux::cmpSearchBound(TuxCtx& ctx, const KeyBoundC& searchBound, const KeyDataC&
   // compare cnt attributes from each
   Uint32 num_eq;
   int ret = searchBound.cmp(entryKey, cnt, num_eq);
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   if (debugFlags & DebugScan) {
     tuxDebugOut << "cmpSearchBound: res:" << ret;
     tuxDebugOut << " search:" << searchBound.print(ctx.c_debugBuffer, DebugBufferBytes);

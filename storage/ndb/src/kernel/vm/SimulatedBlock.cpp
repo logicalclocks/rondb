@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -60,6 +60,7 @@
 #include <DebuggerNames.hpp>
 #include "LongSignal.hpp"
 #include "transporter/TransporterCallback.hpp"
+#include <NdbTick.h>
 
 #include <Properties.hpp>
 #include "Configuration.hpp"
@@ -101,7 +102,7 @@ SimulatedBlock::SimulatedBlock(BlockNumber blockNumber,
 #ifdef VM_TRACE_TIME
     ,m_currentGsn(0)
 #endif
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
     ,debugOutFile(globalSignalLoggers.getOutputStream())
     ,debugOut(debugOutFile)
 #endif
@@ -668,11 +669,14 @@ SimulatedBlock::getExecThreadSignalId(Uint32 thr_no, Uint32 sender_thr_no)
 }
 
 void
-SimulatedBlock::getSendBufferLevel(NodeId node, SB_LevelType &level)
+SimulatedBlock::getSendBufferLevel(NodeId node,
+                                   BlockNumber bno,
+                                   SB_LevelType &level)
 {
 #ifdef NDBD_MULTITHREADED
-  mt_getSendBufferLevel(m_threadId, node, level);
+  mt_getSendBufferLevel(m_threadId, node, bno, level);
 #else
+  (void)bno;
   getNonMTTransporterSendHandle()->getSendBufferLevel(node, level);
 #endif
 }
@@ -2812,6 +2816,108 @@ SimulatedBlock::execSIGNAL_DROPPED_REP(Signal * signal){
 			     NST_ErrorHandler);
 }
 
+bool
+SimulatedBlock::ok_to_send_fragmented(FragmentSendInfo *fragSendInfo)
+{
+  NodeReceiverGroup rg = fragSendInfo->m_nodeReceiverGroup;
+  if (NdbTick_IsValid(fragSendInfo->m_stall_time))
+  {
+    jamDebug();
+    /* We have been stalled, check if stall time has been reached */
+    NDB_TICKS now = NdbTick_getCurrentTicks();
+    Uint32 current_stall_time =
+      NdbTick_Elapsed(fragSendInfo->m_stall_time, now).milliSec();
+    if (current_stall_time < fragSendInfo->m_wait_time)
+    {
+      jamDebug();
+      return false;
+    }
+    /* Send at least one signal after timeout */
+    NdbTick_Invalidate(&fragSendInfo->m_stall_time);
+    fragSendInfo->m_wait_time = 0;
+    return true;
+  }
+  if (fragSendInfo->m_free_to_send > 0)
+  {
+    fragSendInfo->m_free_to_send--;
+    return true;
+  }
+  jamDebug();
+  SB_LevelType level = SB_NO_RISK_LEVEL;
+  if (rg.m_num_nodes == 1)
+  {
+    jamDebug();
+    /* Check send buffer level */
+    if (rg.m_node == getOwnNodeId())
+    {
+      jamDebug();
+      return true;
+    }
+    jamDataDebug(rg.m_node);
+    getSendBufferLevel(rg.m_node, rg.m_block, level);
+  }
+  else
+  {
+    Uint32 recNode = 0;
+    require(rg.m_num_nodes == 2);
+    while(!rg.m_nodes.isclear())
+    {
+      SB_LevelType loop_level;
+      recNode = rg.m_nodes.find(recNode + 1);
+      rg.m_nodes.clear(recNode);
+      if (recNode != getOwnNodeId())
+      {
+        jamDebug();
+        jamDataDebug(recNode);
+        getSendBufferLevel(recNode, rg.m_block, loop_level);
+        level = MAX(level, loop_level);
+      }
+      else
+      {
+        jamDebug();
+        jamDataDebug(recNode);
+      }
+    }
+  }
+  if (level == SB_NO_RISK_LEVEL)
+  {
+    jamDebug();
+    /**
+     * Only check once per 16 signals if no risk level has been
+     * reached yet.
+     */
+    fragSendInfo->m_free_to_send = 16;
+    return true;
+  }
+  else
+  {
+    jamDebug();
+    NDB_TICKS now = NdbTick_getCurrentTicks();
+    fragSendInfo->m_stall_time = now;
+    if (level == SB_LOW_LEVEL)
+    {
+      fragSendInfo->m_wait_time = 1;
+    }
+    else if (level == SB_MEDIUM_LEVEL)
+    {
+      fragSendInfo->m_wait_time = 2;
+    }
+    else if (level == SB_HIGH_LEVEL)
+    {
+      fragSendInfo->m_wait_time = 3;
+    }
+    else if (level == SB_RISK_LEVEL)
+    {
+      fragSendInfo->m_wait_time = 5;
+    }
+    else
+    {
+      fragSendInfo->m_wait_time = 10;
+    }
+    return false;
+  }
+}
+
 void
 SimulatedBlock::execCONTINUE_FRAGMENTED(Signal * signal){
   jamEntry();
@@ -2825,14 +2931,20 @@ SimulatedBlock::execCONTINUE_FRAGMENTED(Signal * signal){
   {
     jam();
     Ptr<FragmentSendInfo> fragPtr;
-    
+
     c_segmentedFragmentSendList.first(fragPtr);  
     for(; !fragPtr.isNull();){
       jam();
       Ptr<FragmentSendInfo> copyPtr = fragPtr;
+
       c_segmentedFragmentSendList.next(fragPtr);
-      
-      sendNextSegmentedFragment(signal, * copyPtr.p);
+
+      if (ok_to_send_fragmented(copyPtr.p))
+      {
+        jamDebug();
+        sendNextSegmentedFragment(signal, * copyPtr.p);
+      }
+
       if(copyPtr.p->m_status == FragmentSendInfo::SendComplete){
         jam();
         if(copyPtr.p->m_callback.m_callbackFunction != 0) {
@@ -2849,7 +2961,11 @@ SimulatedBlock::execCONTINUE_FRAGMENTED(Signal * signal){
       Ptr<FragmentSendInfo> copyPtr = fragPtr;
       c_linearFragmentSendList.next(fragPtr);
       
-      sendNextLinearFragment(signal, * copyPtr.p);
+      if (ok_to_send_fragmented(copyPtr.p))
+      {
+        jamDebug();
+        sendNextLinearFragment(signal, * copyPtr.p);
+      }
       if(copyPtr.p->m_status == FragmentSendInfo::SendComplete){
         jam();
         if(copyPtr.p->m_callback.m_callbackFunction != 0) {
@@ -2869,7 +2985,11 @@ SimulatedBlock::execCONTINUE_FRAGMENTED(Signal * signal){
     
     sig->type = ContinueFragmented::CONTINUE_SENDING;
     sig->line = __LINE__;
-    sendSignal(reference(), GSN_CONTINUE_FRAGMENTED, signal, 2, JBB);
+    sendSignal(reference(),
+               GSN_CONTINUE_FRAGMENTED,
+               signal,
+               ContinueFragmented::SignalLengthSending,
+               JBB);
     break;
   }
   case ContinueFragmented::CONTINUE_CLEANUP:
@@ -3755,6 +3875,9 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
   /**
    * Setup info object
    */
+  NdbTick_Invalidate(&info.m_stall_time);
+  info.m_wait_time = 0;
+  info.m_free_to_send = 0;
   info.m_status = FragmentSendInfo::SendNotComplete;
   info.m_prio = (Uint8)jbuf;
   info.m_gsn = gsn;
@@ -4131,6 +4254,9 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
   /**
    * Setup info object
    */
+  NdbTick_Invalidate(&info.m_stall_time);
+  info.m_wait_time = 0;
+  info.m_free_to_send = 0;
   info.m_status = FragmentSendInfo::SendNotComplete;
   info.m_prio = (Uint8)jbuf;
   info.m_gsn = gsn;
@@ -4359,7 +4485,11 @@ SimulatedBlock::sendFragmentedSignal(BlockReference ref,
     ContinueFragmented * sig = (ContinueFragmented*)signal->getDataPtrSend();
     sig->type = ContinueFragmented::CONTINUE_SENDING;
     sig->line = __LINE__;
-    sendSignal(reference(), GSN_CONTINUE_FRAGMENTED, signal, 2, JBB);
+    sendSignal(reference(),
+               GSN_CONTINUE_FRAGMENTED,
+               signal,
+               ContinueFragmented::SignalLengthSending,
+               JBB);
   }
 }
 
@@ -4403,7 +4533,11 @@ SimulatedBlock::sendFragmentedSignal(NodeReceiverGroup rg,
     ContinueFragmented * sig = (ContinueFragmented*)signal->getDataPtrSend();
     sig->type = ContinueFragmented::CONTINUE_SENDING;
     sig->line = __LINE__;
-    sendSignal(reference(), GSN_CONTINUE_FRAGMENTED, signal, 2, JBB);
+    sendSignal(reference(),
+               GSN_CONTINUE_FRAGMENTED,
+               signal,
+               ContinueFragmented::SignalLengthSending,
+               JBB);
   }
 }
 
@@ -4455,7 +4589,11 @@ SimulatedBlock::sendFragmentedSignal(BlockReference ref,
     ContinueFragmented * sig = (ContinueFragmented*)signal->getDataPtrSend();
     sig->type = ContinueFragmented::CONTINUE_SENDING;
     sig->line = __LINE__;
-    sendSignal(reference(), GSN_CONTINUE_FRAGMENTED, signal, 2, JBB);
+    sendSignal(reference(),
+               GSN_CONTINUE_FRAGMENTED,
+               signal,
+               ContinueFragmented::SignalLengthSending,
+               JBB);
   }
 }
 
@@ -4500,7 +4638,11 @@ SimulatedBlock::sendFragmentedSignal(NodeReceiverGroup rg,
     ContinueFragmented * sig = (ContinueFragmented*)signal->getDataPtrSend();
     sig->type = ContinueFragmented::CONTINUE_SENDING;
     sig->line = __LINE__;
-    sendSignal(reference(), GSN_CONTINUE_FRAGMENTED, signal, 2, JBB);
+    sendSignal(reference(),
+               GSN_CONTINUE_FRAGMENTED,
+               signal,
+               ContinueFragmented::SignalLengthSending,
+               JBB);
   }
 }
 
@@ -5294,7 +5436,7 @@ SimulatedBlock::execLOCAL_ROUTE_ORD(Signal* signal)
 }
 
 
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 bool
 SimulatedBlock::debugOutOn()
 {
@@ -5318,12 +5460,12 @@ SimulatedBlock::debugOutTag(char *buf, int line)
     sprintf(instancebuf, "/%u", instance());
   sprintf(linebuf, " %d", line);
   timebuf[0] = 0;
-#ifdef VM_TRACE_TIME
+#ifdef VM_TRACE_TIME_OUT
   {
-    Uint64 t = NdbTick_CurrentMillisecond();
-    uint s = (t / 1000) % 3600;
-    uint ms = t % 1000;
-    sprintf(timebuf, " - %u.%03u -", s, ms);
+    Uint64 t = NdbTick_CurrentMicrosecond();
+    Uint64 s = (t / Uint64(1000000)) % Uint64(3600);
+    Uint64 ms = t % Uint64(1000000);
+    sprintf(timebuf, " - %llu.%06llu -", s, ms);
   }
 #endif
   sprintf(buf, "%s%s%s%s ", blockbuf, instancebuf, linebuf, timebuf);

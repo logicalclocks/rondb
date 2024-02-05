@@ -1,5 +1,5 @@
 /* Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -771,7 +771,7 @@ Lgman::client_lock(BlockNumber block_no, int line, SimulatedBlock *block)
 {
   if (isNdbMtLqh()) {
     jamBlock(block);
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
     Uint32 bno = blockToMain(block_no);
     Uint32 ino = blockToInstance(block_no);
 #endif
@@ -787,7 +787,7 @@ Lgman::client_unlock(BlockNumber block_no, int line, SimulatedBlock *block)
 {
   if (isNdbMtLqh()) {
     jamBlock(block);
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
     Uint32 bno = blockToMain(block_no);
     Uint32 ino = blockToInstance(block_no);
 #endif
@@ -2568,7 +2568,7 @@ Logfile_client::Logfile_client(SimulatedBlock* block,
 
 Logfile_client::~Logfile_client()
 {
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
   Uint32 bno = blockToMain(m_block);
   Uint32 ino = blockToInstance(m_block);
 #endif

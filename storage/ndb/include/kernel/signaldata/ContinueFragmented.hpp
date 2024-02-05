@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,6 +48,7 @@ private:
   };
   
   static constexpr Uint32 CONTINUE_CLEANUP_FIXED_WORDS = 5;
+  static constexpr Uint32 SignalLengthSending = 2;
 
   enum {
     RES_FRAGSEND = 0, /* Fragmented send lists */
@@ -58,7 +60,8 @@ private:
   
   union
   {
-    Uint32 line;  /* For CONTINUE_SENDING */
+    Uint32 line;         /* For CONTINUE_SENDING */
+
     struct        /* For CONTINUE_CLEANUP */
     {
       Uint32 failedNodeId;

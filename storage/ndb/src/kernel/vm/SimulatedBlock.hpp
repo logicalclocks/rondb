@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -87,7 +87,10 @@ struct CHARSET_INFO;
  */
 //#define UNPACKED_COMMIT_SIGNALS 1
 
-#if defined VM_TRACE
+//#define VM_TRACE_TIME_OUT 1
+//#define VM_TRACE_TIME 1
+
+#if defined (VM_TRACE)
 #define D(x) \
   do { \
     char buf[200]; \
@@ -747,7 +750,9 @@ protected:
    * Finally also the ability to query for send thread information.
    */
   Uint32 map_api_node_to_recv_instance(NodeId);
-  void getSendBufferLevel(NodeId node, SB_LevelType &level);
+  void getSendBufferLevel(NodeId node,
+                          BlockNumber bno,
+                          SB_LevelType &level);
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
   void setOverloadStatus(OverloadStatus new_status);
@@ -1228,6 +1233,9 @@ protected:
     Uint16 m_gsn;
     Uint16 m_messageSize; // Size of each fragment
     Uint32 m_fragmentId;
+    NDB_TICKS m_stall_time;
+    Uint32 m_wait_time;
+    Uint32 m_free_to_send;
     union {
       // Similar to Ptr<SectionSegment> but a POD, as needed in a union.
       struct {
@@ -1560,6 +1568,7 @@ protected:
   void execAPI_START_REP(Signal* signal);
   void execNODE_START_REP(Signal* signal);
   void execLOCAL_ROUTE_ORD(Signal*);
+  bool ok_to_send_fragmented(FragmentSendInfo*);
 public:
   void execSEND_PACKED(Signal* signal);
 private:
@@ -1733,7 +1742,7 @@ public:
   void enable_global_variables();
 #endif
 
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 public:
   FileOutputStream debugOutFile;
   NdbOut debugOut;
@@ -2382,7 +2391,7 @@ protected:
 };
 
 // outside blocks e.g. within a struct
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 #define DEBUG_OUT_DEFINES(blockNo) \
 static SimulatedBlock* debugOutBlock() \
   { return globalData.getBlock(blockNo); } \

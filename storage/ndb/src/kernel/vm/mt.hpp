@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -89,7 +89,10 @@ void mt_execSTOP_FOR_CRASH();
 Uint32 mt_get_thread_signal_id(Uint32 thr_no);
 Uint32 mt_get_exec_thread_signal_id(Uint32 thr_no, Uint32 sender_thr_no);
 Uint32 mt_map_api_node_to_recv_instance(NodeId);
-void mt_getSendBufferLevel(Uint32 self, NodeId node, SB_LevelType &level);
+void mt_getSendBufferLevel(Uint32 self,
+                           NodeId node,
+                           BlockNumber bno,
+                           SB_LevelType &level);
 Uint32 mt_getEstimatedJobBufferLevel(Uint32 self);
 bool mt_isEstimatedJobBufferLevelChanged(Uint32 self);
 NDB_TICKS mt_getHighResTimer(Uint32 self);
