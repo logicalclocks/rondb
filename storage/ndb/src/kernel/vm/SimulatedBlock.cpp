@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2827,7 +2827,7 @@ SimulatedBlock::ok_to_send_fragmented(FragmentSendInfo *fragSendInfo)
     NDB_TICKS now = NdbTick_getCurrentTicks();
     Uint32 current_stall_time =
       NdbTick_Elapsed(fragSendInfo->m_stall_time, now).milliSec();
-    if (current_stall_time >= fragSendInfo->m_wait_time)
+    if (current_stall_time < fragSendInfo->m_wait_time)
     {
       jamDebug();
       return false;
@@ -2896,23 +2896,23 @@ SimulatedBlock::ok_to_send_fragmented(FragmentSendInfo *fragSendInfo)
     fragSendInfo->m_stall_time = now;
     if (level == SB_LOW_LEVEL)
     {
-      fragSendInfo->m_wait_time = 2;
+      fragSendInfo->m_wait_time = 1;
     }
     else if (level == SB_MEDIUM_LEVEL)
     {
-      fragSendInfo->m_wait_time = 3;
+      fragSendInfo->m_wait_time = 2;
     }
     else if (level == SB_HIGH_LEVEL)
     {
-      fragSendInfo->m_wait_time = 4;
+      fragSendInfo->m_wait_time = 3;
     }
     else if (level == SB_RISK_LEVEL)
     {
-      fragSendInfo->m_wait_time = 7;
+      fragSendInfo->m_wait_time = 5;
     }
     else
     {
-      fragSendInfo->m_wait_time = 15;
+      fragSendInfo->m_wait_time = 10;
     }
     return false;
   }

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -941,7 +941,7 @@ TransporterRegistry::backoff_update_and_check_time_for_connect(NodeId nodeId)
  * buffer used for all nodes. There is also a thread parameter that specifies
  * the number of threads used (this is 0 except for ndbmtd).
  */
-void calculate_send_buffer_level(Uint64 node_send_buffer_size,
+void calculate_send_buffer_level(Uint64 trp_send_buffer_size,
                                  Uint64 max_node_send_buffer_size,
                                  Uint64 total_send_buffer_size,
                                  Uint64 total_used_send_buffer_size,
