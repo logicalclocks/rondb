@@ -980,4 +980,14 @@ ndbd_start_backup_nowait_reply(Uint32 x)
   }
   return 1;
 }
+
+#define NDBD_PUSHDOWN_AGGREGATION NDB_MAKE_VERSION(22, 10, 4)
+static
+inline
+bool
+ndbd_pushdown_aggregation_supported(Uint32 v)
+{
+  return v >= NDBD_PUSHDOWN_AGGREGATION;
+}
+
 #endif

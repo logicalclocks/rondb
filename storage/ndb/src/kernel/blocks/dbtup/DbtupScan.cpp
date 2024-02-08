@@ -33,6 +33,7 @@
 #include <portlib/ndb_prefetch.h>
 #include <util/rondb_hash.hpp>
 #include "../dblqh/Dblqh.hpp"
+#include "AggInterpreter.hpp"
 
 #define JAM_FILE_ID 408
 
@@ -141,7 +142,7 @@ Dbtup::prepare_scan_ctx(Uint32 scanPtrI)
 void
 Dbtup::execACC_SCANREQ(Signal* signal)
 {
-  jamEntry();
+  jamEntry(); // ZHAO 12
   const AccScanReq reqCopy = *(const AccScanReq*)signal->getDataPtr();
   const AccScanReq* const req = &reqCopy;
   ScanOpPtr scanPtr;
@@ -184,7 +185,7 @@ Dbtup::execACC_SCANREQ(Signal* signal)
         jam();
         break;
       }
-      jam();
+      jam(); // ZHAO 13
     }
 
     if (!AccScanReq::getNoDiskScanFlag(req->requestInfo)
@@ -246,7 +247,7 @@ Dbtup::execACC_SCANREQ(Signal* signal)
     }
     else
     {
-      jam();
+      jam(); // ZHAO 14
       scanPtr.p->m_endPage = RNIL;
     }
 
@@ -270,6 +271,7 @@ Dbtup::execACC_SCANREQ(Signal* signal)
     scan.m_transId2 = req->transId2;
     scan.m_savePointId = req->savePointId;
     scan.m_accLockOp = RNIL;
+    scan.m_aggregation = AccScanReq::getAggregationFlag(req->requestInfo);
     scan.m_last_seen = __LINE__;
 
     // conf
@@ -288,7 +290,7 @@ Dbtup::execACC_SCANREQ(Signal* signal)
 void
 Dbtup::execNEXT_SCANREQ(Signal* signal)
 {
-  jamEntryDebug();
+  jamEntryDebug(); // ZHAO 23
   const NextScanReq reqCopy = *(const NextScanReq*)signal->getDataPtr();
   const NextScanReq* const req = &reqCopy;
   ScanOpPtr scanPtr;
@@ -297,13 +299,13 @@ Dbtup::execNEXT_SCANREQ(Signal* signal)
   ScanOp& scan = *scanPtr.p;
   switch (req->scanFlag) {
   case NextScanReq::ZSCAN_NEXT:
-    jam();
+    jam(); // ZHAO 24
     break;
   case NextScanReq::ZSCAN_COMMIT:
     jam();
     [[fallthrough]];
   case NextScanReq::ZSCAN_NEXT_COMMIT:
-    jam();
+    jam(); // ZHAO next
     if ((scan.m_bits & ScanOp::SCAN_LOCK) != 0)
     {
       jam();
@@ -371,14 +373,14 @@ Dbtup::execNEXT_SCANREQ(Signal* signal)
   AccCheckScan* checkReq = (AccCheckScan*)signal->getDataPtrSend();
   checkReq->accPtr = scanPtr.i;
   checkReq->checkLcpStop = AccCheckScan::ZNOT_CHECK_LCP_STOP;
-  execACC_CHECK_SCAN(signal);
-  jamEntryDebug();
+  execACC_CHECK_SCAN(signal); // ZHAO 25
+  jamEntryDebug(); // ZHAO 54
 }
 
 void
 Dbtup::execACC_CHECK_SCAN(Signal* signal)
 {
-  jamEntryDebug();
+  jamEntryDebug(); // ZHAO 25
   const AccCheckScan reqCopy = *(const AccCheckScan*)signal->getDataPtr();
   const AccCheckScan* const req = &reqCopy;
   ScanOpPtr scanPtr;
@@ -504,22 +506,22 @@ Dbtup::execACC_CHECK_SCAN(Signal* signal)
       release_c_free_scan_lock();
       return;
     }
-    jam();
+    jam(); // ZHAO 26
     scanFirst(signal, scanPtr);
   }
   if (scan.m_state == ScanOp::Next)
   {
-    jam();
-    bool immediate = scanNext(signal, scanPtr);
+    jam(); // ZHAO 27
+    bool immediate = scanNext(signal, scanPtr); // ZHAO 28
     if (! immediate) {
       jam();
       // time-slicing via TUP or PGMAN
       release_c_free_scan_lock();
       return;
     }
-    jam();
+    jam(); // ZHAO 33
   }
-  scanReply(signal, scanPtr);
+  scanReply(signal, scanPtr); // ZHAO 34
 }
 
 void
@@ -678,7 +680,7 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
   if (scan.m_state == ScanOp::Locked)
   {
     // we have lock or do not need one
-    jamDebug();
+    jamDebug(); // ZHAO 34
     // conf signal
     NextScanConf* const conf = (NextScanConf*)signal->getDataPtrSend();
     conf->scanPtr = scan.m_userPtr;
@@ -707,14 +709,14 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
     // next time look for next entry
     scan.m_state = ScanOp::Next;
     prepare_scanTUPKEYREQ(pos.m_key_mm.m_page_no,
-                          pos.m_key_mm.m_page_idx);
+                          pos.m_key_mm.m_page_idx); // ZHAO 35
     /**
      * Running the lock code takes some extra execution time, one could
      * have this effect the number of tuples to read in one time slot.
      * We decided to ignore this here.
      */
     signal->setLength(NextScanConf::SignalLengthNoGCI);
-    c_lqh->exec_next_scan_conf(signal);
+    c_lqh->exec_next_scan_conf(signal); // ZHAO 36
     return;
   }
   if (scan.m_state == ScanOp::Last)
@@ -1897,7 +1899,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
 
   switch(pos.m_get){
   case ScanPos::Get_next_tuple:
-    jam();
+    jam(); // ZHAO next
     key.m_page_idx += size;
     pos.m_get = ScanPos::Get_page;
     pos.m_realpid_mm = RNIL;
@@ -1928,7 +1930,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
       continue;
     case ScanPos::Get_page:
       // get real page
-      jam();
+      jam(); // ZHAO next
       {
         if (! (bits & ScanOp::SCAN_DD))
           pos.m_get = ScanPos::Get_page_mm;
@@ -2113,7 +2115,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
               pos.m_get = ScanPos::Get_next_page_mm;
               break; // incr loop count
             }
-            jam();
+            jam(); // ZHAO 28
           }
         }
         else
@@ -2390,7 +2392,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
       [[fallthrough]];
     case ScanPos::Get_tuple:
       // get fixed size tuple
-      jamDebug();
+      jamDebug(); // ZHAO 29
       if ((bits & ScanOp::SCAN_VS) == 0)
       {
         Fix_page* page = (Fix_page*)pos.m_page;
@@ -2438,7 +2440,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
                      ((bits & ScanOp::SCAN_LCP) &&
                       !pos.m_lcp_scan_changed_rows_page)))
           {
-            jamDebug();
+            jamDebug(); // ZHAO 30
             /**
              * We come here for normal full table scans and also for LCP
              * scans where we scan ALL ROWS pages.
@@ -2492,7 +2494,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
                    ((bits & ScanOp::SCAN_LCP) &&
                     (thbits & Tuple_header::ALLOC))))
 	    {
-              jam();
+              jam(); // ZHAO 31
               scan.m_last_seen = __LINE__;
               goto found_tuple;
 	    }
@@ -2716,7 +2718,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
       break; // incr loop count
   found_tuple:
       // found possible tuple to return
-      jam();
+      jam(); // ZHAO 32
       {
         // caller has already set pos.m_get to next tuple
         if (likely(! (bits & ScanOp::SCAN_LCP &&
@@ -3575,8 +3577,7 @@ Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId)
   scanPtr.p->m_tableId = RNIL;
 }
 
-void
-Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
+void Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
 {
   FragrecordPtr fragPtr;
   fragPtr.i = scanPtr.p->m_fragPtrI;

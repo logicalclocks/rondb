@@ -29,6 +29,8 @@
 #include <RefConvert.hpp>
 #include <ndb_limits.h>
 #include <pc.hpp>
+#include "AggInterpreter.hpp"
+#include "include/my_byteorder.h"
 
 #define JAM_FILE_ID 406
 
@@ -42,7 +44,7 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
 {
   OperationrecPtr regOperPtr;
   TablerecPtr regTabPtr;
-  jamEntryDebug();
+  jamEntryDebug(); // ZHAO 17
   regOperPtr.i = signal->theData[0];
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   regTabPtr.i = signal->theData[1];
@@ -65,7 +67,7 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
   switch (requestInfo) {
   case ZSCAN_PROCEDURE:
   {
-    jamDebug();
+    jamDebug(); // ZHAO 18
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     storedProcCountNonAPI(apiBlockref, +1);
 #endif
@@ -74,7 +76,6 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
     handle.m_ptr[0].i = signal->theData[6];
     handle.m_cnt = 1;
     getSections(handle.m_cnt, handle.m_ptr);
-
     scanProcedure(signal,
                   regOperPtr.p,
                   storedPtr,

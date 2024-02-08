@@ -837,6 +837,10 @@ ErrorBundle ErrorCodes[] = {
   { 4557, DMEC, AE, "Column types must be identical when comparing two columns" },
   { 4558, DMEC, AE, "Pending Blob operations must be executed before this call" },
   { 4559, DMEC, AE, "Failed to transfer KeyInfo to AttrInfo for InterpretedWrite" },
+  /* pushdown aggregation API */
+  { 4560, DMEC, AE, "NdbAggregator::Finalize() not called" },
+  { 4561, DMEC, AE, "Pushdown aggregation needs to work with LM_CommittedRead" },
+  { 4562, DMEC, AE, "Pushdown aggregation can only work with version >= 22.10.4" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },

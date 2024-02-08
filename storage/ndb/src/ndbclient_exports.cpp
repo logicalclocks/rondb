@@ -65,6 +65,7 @@ _ndbclient_exports(void)
   myRandom48Init(0);
   ndb_rand();
   (void)NdbDir::chdir("");
+  NdbAggregator aggregator(nullptr);
   /*
    * The below calls will export symbols for BitmaskImpl::getFieldImpl and
    * BitmaskImpl::setFieldImpl.

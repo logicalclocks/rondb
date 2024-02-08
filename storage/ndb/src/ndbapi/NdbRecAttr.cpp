@@ -29,6 +29,7 @@
 #include <NdbBlob.hpp>
 #include "NdbDictionaryImpl.hpp"
 #include <NdbTCP.h>
+#include "AttributeHeader.hpp"
 
 NdbRecAttr::NdbRecAttr(Ndb*)
 {
@@ -50,14 +51,24 @@ NdbRecAttr::setup(const class NdbDictionary::Column* col, char* aValue)
 int
 NdbRecAttr::setup(const NdbColumnImpl* anAttrInfo, char* aValue)
 {
-  Uint32 tAttrSize = anAttrInfo->m_attrSize;
-  Uint32 tArraySize = anAttrInfo->m_arraySize;
-  Uint32 tAttrByteSize = tAttrSize * tArraySize;
-  
-  m_column = anAttrInfo;
+  Uint32 tAttrByteSize = 0;
+  if (anAttrInfo != nullptr) {
+    Uint32 tAttrSize = anAttrInfo->m_attrSize;
+    Uint32 tArraySize = anAttrInfo->m_arraySize;
+    tAttrByteSize = tAttrSize * tArraySize;
 
-  theAttrId = anAttrInfo->m_attrId;
-  m_size_in_bytes = -1; // UNDEFINED
+    m_column = anAttrInfo;
+
+    theAttrId = anAttrInfo->m_attrId;
+    m_size_in_bytes = -1; // UNDEFINED
+  } else {
+    // Moz
+    // Aggregation
+    tAttrByteSize = MAX_AGG_RESULT_BATCH_BYTES;
+    m_column = nullptr;
+    theAttrId = AttributeHeader::AGG_RESULT;
+    m_size_in_bytes = -1;
+  }
 
   return setup(tAttrByteSize, aValue);
 }
