@@ -101,6 +101,9 @@ public:
   static constexpr Uint32 INDEX_STAT_KEY = 0xFFD0;
   static constexpr Uint32 INDEX_STAT_VALUE = 0xFFD1;
 
+  // Aggregation result "columns"
+  static constexpr Uint32 AGG_RESULT = 0xFF00;
+
   // NOTE: in 5.1 ctors and init take size in bytes
 
   /** Initialize AttributeHeader at location aHeaderPtr */

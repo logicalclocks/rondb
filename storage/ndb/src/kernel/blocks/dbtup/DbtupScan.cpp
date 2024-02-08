@@ -33,6 +33,7 @@
 #include <portlib/ndb_prefetch.h>
 #include <util/rondb_hash.hpp>
 #include "../dblqh/Dblqh.hpp"
+#include "AggInterpreter.hpp"
 
 #define JAM_FILE_ID 408
 
@@ -270,6 +271,7 @@ Dbtup::execACC_SCANREQ(Signal* signal)
     scan.m_transId2 = req->transId2;
     scan.m_savePointId = req->savePointId;
     scan.m_accLockOp = RNIL;
+    scan.m_aggregation = AccScanReq::getAggregationFlag(req->requestInfo);
     scan.m_last_seen = __LINE__;
 
     // conf
@@ -3575,8 +3577,7 @@ Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId)
   scanPtr.p->m_tableId = RNIL;
 }
 
-void
-Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
+void Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
 {
   FragrecordPtr fragPtr;
   fragPtr.i = scanPtr.p->m_fragPtrI;

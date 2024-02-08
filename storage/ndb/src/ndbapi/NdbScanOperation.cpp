@@ -58,6 +58,7 @@ NdbScanOperation::NdbScanOperation(Ndb* aNdb, NdbOperation::Type aType) :
   m_scanFinalisedOk= false;
   m_readTuplesCalled= false;
   m_interpretedCodeOldApi= nullptr;
+  m_aggregation_code = nullptr;
 }
 
 NdbScanOperation::~NdbScanOperation()
@@ -240,6 +241,19 @@ NdbScanOperation::addInterpretedCode()
   return res;
 }
 
+int NdbScanOperation::addAggregationCode() {
+  if (!ndbd_pushdown_aggregation_supported(
+          theNdbCon->getNdb()->getMinDbNodeVersion())) {
+    setErrorCode(4562);
+    return -1;
+  }
+  const NdbAggregator* code = m_aggregation_code;
+  int res = insertATTRINFOData_NdbRecord((const char*)code->buffer(),
+                                          code->instructions_length() << 2);
+  theAggregationSize = code->instructions_length();
+  return res;
+}
+
 /* Method for handling scanoptions passed into 
  * NdbTransaction::scanTable or scanIndex
  */
@@ -345,6 +359,7 @@ NdbScanOperation::handleScanOptions(const ScanOptions *options)
     }
     m_interpreted_code= options->interpretedCode;
   }
+
 
   /* User's operation 'tag' data. */
   if (options->optionsPresent & ScanOptions::SO_CUSTOMDATA)
@@ -505,6 +520,15 @@ NdbScanOperation::scanImpl(const NdbScanOperation::ScanOptions *options,
   {
     if (addInterpretedCode() == -1)
       return -1;
+  }
+
+  /* Add aggregation code words to ATTRINFO signal
+   * chain as necessary
+   */
+  if (m_aggregation_code != nullptr) {
+    if (addAggregationCode() == -1) {
+      return -1;
+    }
   }
   
   /* Scan is now fully defined, so let's start preparing
@@ -1448,7 +1472,12 @@ NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
     setErrorCodeAbort(4000);
     return -1;
   }//if
-  
+
+  if (m_aggregation_code != nullptr && lm != LM_CommittedRead) {
+    setErrorCodeAbort(4561);
+    return -1;
+  }
+
   theSCAN_TABREQ->setSignal(GSN_SCAN_TABREQ, refToBlock(theNdbCon->m_tcRef));
   ScanTabReq * req = CAST_PTR(ScanTabReq, theSCAN_TABREQ->getDataPtrSend());
   req->apiConnectPtr = theNdbCon->theTCConPtr;
@@ -1539,6 +1568,62 @@ NdbScanOperation::freeInterpretedCodeOldApi()
   }
 }
 
+int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
+{
+  if (theStatus == NdbOperation::UseNdbRecord)
+  {
+    setErrorCodeAbort(4284); // Cannot mix NdbRecAttr and NdbRecord methods...
+    return -1;
+  }
+
+  if (code == nullptr || !code->finalized())
+  {
+    setErrorCodeAbort(4560); //  NdbAggregatior::Finalise() not called.
+    return -1;
+  }
+
+  m_aggregation_code = const_cast<NdbAggregator*>(code);
+
+  if (code->disk_columns()) {
+    m_flags &= ~Uint8(OF_NO_DISK);
+  }
+
+  return 0;
+}
+
+int NdbScanOperation::DoAggregation() {
+
+  if (m_aggregation_code == nullptr ||
+      !m_aggregation_code->finalized())
+  {
+    setErrorCodeAbort(4560); //  NdbAggregatior::Finalise() not called.
+    return -1;
+  }
+
+  NdbRecAttr* myRecAttr;
+  Uint32 col = 0xFF00;
+  myRecAttr = getValue(col);
+  if (myRecAttr == nullptr) {
+    return -1;
+  }
+
+  if (m_transConnection->execute(NdbTransaction::NoCommit) != 0) {
+    return -1;
+  }
+
+  int check = -1;
+  while ((check = nextResult(true)) == 0) {
+    // TODO (Zhao) handle return value;
+    if (!m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
+      return -1;
+    }
+  }
+  if (check < 0) {
+    return check;
+  }
+  m_aggregation_code->PrepareResults();
+  return 0;
+}
 
 void
 NdbScanOperation::setReadLockMode(LockMode lockMode)
@@ -2371,6 +2456,11 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
 
   /* Set distribution key info if required */
   ScanTabReq::setDistributionKeyFlag(reqInfo, theDistrKeyIndicator_);
+
+  /* Set aggregation information */
+  if (m_aggregation_code != nullptr) {
+    ScanTabReq::setAggregation(reqInfo, 1);
+  }
   req->requestInfo = reqInfo;
   req->distributionKey= theDistributionKey;
   theSCAN_TABREQ->setLength(ScanTabReq::StaticLength + theDistrKeyIndicator_);
@@ -2413,6 +2503,13 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   /* Calculate row buffer size, align it for (hopefully) improved memory access.  */
   Uint32 full_rowsize= NdbReceiver::ndbrecord_rowsize(m_attribute_record,
                                                  m_read_range_no);
+
+  if (m_aggregation_code != nullptr) {
+    // In aggregation mode, we redefine the batch
+    batch_size = 1;
+    batch_byte_size = DEF_AGG_RESULT_BATCH_BYTES;
+    bufsize = MAX_AGG_RESULT_BATCH_BYTES;
+  }
 
   /**
    * Allocate total buffers for all fragments in one big chunk. 
@@ -3070,8 +3167,12 @@ NdbScanOperation::getValue_NdbRecAttr_scan(const NdbColumnImpl* attrInfo,
     }
   }
   else {
-    /* Attribute name or id not found in the table */
-    setErrorCodeAbort(4004);
+    if (m_aggregation_code != nullptr) {
+      recAttr = theReceiver.getValue(nullptr, aValue);
+    } else {
+      /* Attribute name or id not found in the table */
+      setErrorCodeAbort(4004);
+    }
   }
 
   return recAttr;

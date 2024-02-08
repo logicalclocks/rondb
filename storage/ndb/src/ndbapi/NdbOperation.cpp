@@ -332,6 +332,9 @@ NdbOperation::getValue(const char* anAttrName, char* aValue)
 NdbRecAttr*
 NdbOperation::getValue(Uint32 anAttrId, char* aValue)
 {
+  if (anAttrId == AttributeHeader::AGG_RESULT) {
+    return getValue_impl(nullptr, aValue);
+  }
   return getValue_impl(m_currentTable->getColumn(anAttrId), aValue);
 }
 

@@ -88,6 +88,9 @@ private:
 
   static Uint32 getCopyFragScanFlag(const Uint32 & requestInfo);
   static void setCopyFragScanFlag(Uint32 & requestInfo, Uint32 nr);
+
+  static Uint32 getAggregationFlag(const Uint32 & requestInfo);
+  static void setAggregationFlag(Uint32 & requestInfo, Uint32 nr);
 };
 
 /**
@@ -101,6 +104,7 @@ private:
  * c = LCP scan              - 1  Bit 9
  * s = Statistics scan       - 1  Bit 4
  * f = Copy fragment scan    - 1  Bit 10
+ * g = Aggregation           - 1  Bit 1
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
@@ -115,6 +119,7 @@ private:
 #define AS_LCP_SCAN              (9)
 #define AS_STAT_SCAN             (4)
 #define AS_COPY_FRAG_SCAN        (10)
+#define AS_AGGREGATION           (11)
 
 inline 
 Uint32
@@ -218,6 +223,19 @@ void
 AccScanReq::setCopyFragScanFlag(UintR & requestInfo, UintR val){
   ASSERT_BOOL(val, "AccScanReq::setCopyFragScanFlag");
   requestInfo |= (val << AS_COPY_FRAG_SCAN);
+}
+
+inline
+Uint32
+AccScanReq::getAggregationFlag(const Uint32 & requestInfo){
+  return (requestInfo >> AS_AGGREGATION) & 1;
+}
+
+inline
+void
+AccScanReq::setAggregationFlag(UintR & requestInfo, UintR val){
+  ASSERT_BOOL(val, "AccScanReq::setAggregationFlag");
+  requestInfo |= (val << AS_AGGREGATION);
 }
 
 class AccScanConf {

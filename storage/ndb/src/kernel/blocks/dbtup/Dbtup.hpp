@@ -198,6 +198,21 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 
 #define ZTOO_MANY_BITS_ERROR 791
 
+/*
+ * Moz
+ * Aggregation interpreter errors start from 1860
+ */
+#define ZAGG_MATH_OVERFLOW 1860
+#define ZAGG_COL_TYPE_UNSUPPORTED 1861
+#define ZAGG_DECIMAL_PARSE_OVERFLOW 1862
+#define ZAGG_DECIMAL_PARSE_ERROR 1863
+#define ZAGG_DECIMAL_CONV_OVERFLOW 1864
+#define ZAGG_DECIMAL_CONV_ERROR 1865
+#define ZAGG_LOAD_COL_WRONG_TYPE 1866
+#define ZAGG_LOAD_CONST_WRONG_TYPE 1867
+#define ZAGG_WRONG_OPERATION 1868
+#define ZAGG_OTHER_ERROR 1869
+
           /* SOME WORD POSITIONS OF FIELDS IN SOME HEADERS */
 
 #define ZTH_MM_FREE 3                     /* PAGE STATE, TUPLE HEADER PAGE WITH FREE AREA      */
@@ -251,10 +266,12 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 #endif
 
 class Dbtux;
+class AggInterpreter;
 
 class Dbtup: public SimulatedBlock {
 friend class DbtupProxy;
 friend class Suma;
+friend class AggInterpreter;
 public:
 struct KeyReqStruct;
 friend struct KeyReqStruct; // CC
@@ -477,7 +494,8 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
       m_transId1(0),
       m_transId2(0),
       m_savePointId(0),
-      m_accLockOp(RNIL)
+      m_accLockOp(RNIL),
+      m_aggregation(0)
     {}
 
     enum State {
@@ -534,6 +552,9 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     Uint32 nextList;
     };
     Uint32 prevList;
+
+    // Aggregation
+    Uint32 m_aggregation;
   };
   static constexpr Uint32 DBTUP_SCAN_OPERATION_TRANSIENT_POOL_INDEX = 3;
   typedef Ptr<ScanOp> ScanOpPtr;
@@ -2115,6 +2136,12 @@ struct KeyReqStruct {
   Uint16 var_pos_array[2][2*MAX_ATTRIBUTES_IN_TABLE + 1];
   OperationrecPtr prevOpPtr;
   Dblqh *m_lqh;
+
+  Uint32 scan_op_i;
+  void* scan_rec;
+  Uint32 agg_curr_batch_size_rows;
+  Uint32 agg_curr_batch_size_bytes;
+  Uint32 agg_n_res_recs;
 };
 
   friend struct Undo_buffer;
@@ -2802,6 +2829,9 @@ private:
                         KeyReqStruct *req_struct,
                         Uint32 TnoOfData);
 
+  void SendAggregationResult(Signal* signal, Uint32 res_len,
+                             BlockReference api_blockref);
+
 //------------------------------------------------------------------
 //------------------------------------------------------------------
   int sendLogAttrinfo(Signal* signal,
@@ -3265,11 +3295,14 @@ private:
 			 Uint32 resultRef, Uint32 resultData, Uint32 routeRef);
 public:
   Uint32 copyAttrinfo(Uint32 storedProcId,
-                      bool interpretedFlag);
+                      bool interpretedFlag,
+                      void* scan_rec = nullptr);
   void copyAttrinfo(Uint32 expectedLen,
                     Uint32 attrInfoIVal);
 
   void nextAttrInfoParam(Uint32 storedProcId);
+
+  void SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
   /**
    * Used by Restore...
    */

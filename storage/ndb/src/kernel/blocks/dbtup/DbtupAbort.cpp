@@ -545,6 +545,50 @@ int Dbtup::TUPKEY_abort(KeyReqStruct * req_struct, int error_type)
     jam();
     terrorCode = ZUNSUPPORTED_BRANCH;
     break;
+  /*
+   * Moz
+   * Aggregation errors start from here
+   */
+  case ZAGG_MATH_OVERFLOW:
+    jam();
+    terrorCode = ZAGG_MATH_OVERFLOW;
+    break;
+  case ZAGG_COL_TYPE_UNSUPPORTED:
+    jam();
+    terrorCode = ZAGG_COL_TYPE_UNSUPPORTED;
+    break;
+  case ZAGG_DECIMAL_PARSE_OVERFLOW:
+    jam();
+    terrorCode = ZAGG_DECIMAL_PARSE_OVERFLOW;
+    break;
+  case ZAGG_DECIMAL_PARSE_ERROR:
+    jam();
+    terrorCode = ZAGG_DECIMAL_PARSE_ERROR;
+    break;
+  case ZAGG_DECIMAL_CONV_OVERFLOW:
+    jam();
+    terrorCode = ZAGG_DECIMAL_CONV_OVERFLOW;
+    break;
+  case ZAGG_DECIMAL_CONV_ERROR:
+    jam();
+    terrorCode = ZAGG_DECIMAL_CONV_ERROR;
+    break;
+  case ZAGG_LOAD_COL_WRONG_TYPE:
+    jam();
+    terrorCode = ZAGG_LOAD_COL_WRONG_TYPE;
+    break;
+  case ZAGG_LOAD_CONST_WRONG_TYPE:
+    jam();
+    terrorCode = ZAGG_LOAD_CONST_WRONG_TYPE;
+    break;
+  case ZAGG_WRONG_OPERATION:
+    jam();
+    terrorCode = ZAGG_WRONG_OPERATION;
+    break;
+  case ZAGG_OTHER_ERROR:
+    jam();
+    terrorCode = ZAGG_OTHER_ERROR;
+    break;
   default:
     ndbabort();
   }//switch
