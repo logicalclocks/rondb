@@ -393,6 +393,7 @@ Dbtux::execACC_SCANREQ(Signal* signal)
       AccScanReq::getReadCommittedFlag(req->requestInfo);
     scanPtr.p->m_lockMode = AccScanReq::getLockMode(req->requestInfo);
     scanPtr.p->m_descending = AccScanReq::getDescendingFlag(req->requestInfo);
+    scanPtr.p->m_aggregation = AccScanReq::getAggregationFlag(req->requestInfo);
     c_ctx.scanPtr = scanPtr;
 
     /*

@@ -134,6 +134,9 @@ public:
 
   static void setQueryThreadFlag(Uint32 & requestInfo, Uint32 val);
   static Uint32 getQueryThreadFlag(const Uint32 requestInfo);
+
+  static void setAggregationFlag(Uint32 & requestInfo, Uint32 val);
+  static Uint32 getAggregationFlag(const Uint32 & requestInfo);
 };
 
 /*
@@ -332,11 +335,12 @@ public:
  * m = Multi fragment scan   - 1  Bit 20
  * f = First match flag      - 1  Bit 21
  * q = Query thread flag     - 1  Bit 22
+ * g = Aggregation flag      - 1  Bit 23
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  *  rrcdlxhkrztppppaaaaaaaaaaaaaaaa   Short variant ( < 6.4.0)
- *  rrcdlxhkrztppppCsaim              Long variant (6.4.0 +)
+ *  rrcdlxhkrztppppCsaim  g           Long variant (6.4.0 +)
  */
 #define SF_LOCK_MODE_SHIFT   (5)
 #define SF_LOCK_MODE_MASK    (1)
@@ -367,6 +371,7 @@ public:
 #define SF_MULTI_FRAG_SHIFT  (20)
 #define SF_FIRST_MATCH_SHIFT (21)
 #define SF_QUERY_THREAD_SHIFT  (22)
+#define SF_AGGREGATION_SHIFT (23)
 
 inline 
 Uint32
@@ -610,6 +615,20 @@ inline
 Uint32
 ScanFragReq::getStatScanFlag(const Uint32 & requestInfo){
   return (requestInfo >> SF_STAT_SCAN_SHIFT) & 1;
+}
+
+inline
+void
+ScanFragReq::setAggregationFlag(Uint32 & requestInfo, UintR val){
+  ASSERT_BOOL(val, "ScanFragReq::setAggregationFlag");
+  requestInfo= (requestInfo & ~(1 << SF_AGGREGATION_SHIFT)) |
+               (val << SF_AGGREGATION_SHIFT);
+}
+
+inline
+Uint32
+ScanFragReq::getAggregationFlag(const Uint32 & requestInfo){
+  return (requestInfo >> SF_AGGREGATION_SHIFT) & 1;
 }
 
 inline

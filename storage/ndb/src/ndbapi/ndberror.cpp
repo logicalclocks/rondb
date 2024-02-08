@@ -472,6 +472,17 @@ ErrorBundle ErrorCodes[] = {
   { 325,  DMEC, AE, "Invalid node(s) specified for new nodegroup, node ID invalid or undefined" },
   { 326,  DMEC, AE, "Same node(s) specified for new nodegroup" },
   { 417,  DMEC, AE, "Bad operation reference - double unlock" },
+  // Moz pushdown aggregation errors
+  { 860,  DMEC, AE, "arithmetic operation results overflow, check error log on data node for more details" },
+  { 861,  DMEC, AE, "Unsupported column type, check error log on data node for more details" },
+  { 862,  DMEC, AE, "Overflow while parsing decimal column, check error log on data node for more details" },
+  { 863,  DMEC, AE, "Error while parsing decimal column, check error log on data node for more details" },
+  { 864,  DMEC, AE, "Overflow while converting decimal column, check error log on data node for more details" },
+  { 865,  DMEC, AE, "Error while converting decimal column, check error log on data node for more details" },
+  { 866,  DMEC, AE, "Invalid column type in LoadColumn, check error log on data node for more details" },
+  { 867,  DMEC, AE, "Invalid const type in LoadConst, check error log on data node for more details" },
+  { 868,  DMEC, AE, "Invalid Operation in aggregation interpreter, check error log on data node for more details" },
+  { 869,  DMEC, AE, "Error in aggregation interpreter, check error log on data node for more details" },
 
   /** 
    * Scan application errors
@@ -837,6 +848,10 @@ ErrorBundle ErrorCodes[] = {
   { 4557, DMEC, AE, "Column types must be identical when comparing two columns" },
   { 4558, DMEC, AE, "Pending Blob operations must be executed before this call" },
   { 4559, DMEC, AE, "Failed to transfer KeyInfo to AttrInfo for InterpretedWrite" },
+  /* pushdown aggregation API */
+  { 4560, DMEC, AE, "NdbAggregator::Finalize() not called" },
+  { 4561, DMEC, AE, "Pushdown aggregation needs to work with LM_CommittedRead" },
+  { 4562, DMEC, AE, "Pushdown aggregation can only work with version >= 22.10.4" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },

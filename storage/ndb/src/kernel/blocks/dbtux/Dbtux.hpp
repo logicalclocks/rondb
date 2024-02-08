@@ -425,6 +425,9 @@ private:
     Uint32 nextList;
     };
     Uint32 prevList;
+
+    // Aggregation
+    Uint32 m_aggregation;
     ScanOp();
   };
   static constexpr Uint32 DBTUX_SCAN_OPERATION_TRANSIENT_POOL_INDEX = 0;

@@ -70,6 +70,14 @@ class FsReadWriteReq;
 #undef DEBUG_USAGE_COUNT
 //#define DEBUG_USAGE_COUNT 1
 
+/*
+ * Moz
+ * Turn on the MOZ_AGG_DEBUG
+ * to trace lqh behaviors on partition 0
+ */
+#undef MOZ_AGG_DEBUG
+// #define MOZ_AGG_DEBUG 1
+
 #ifdef DBLQH_C
 // Constants
 /* ------------------------------------------------------------------------- */
@@ -470,6 +478,7 @@ class FsReadWriteReq;
  */
 
 
+class AggInterpreter;
 class Dblqh 
   : public SimulatedBlock
 {
@@ -580,7 +589,6 @@ public:
     Uint32 defValSectionI;
   };
   typedef Ptr<AddFragRecord> AddFragRecordPtr;
-  
   struct ScanRecord {
     static constexpr Uint32 TYPE_ID = RT_DBLQH_SCAN_RECORD;
     Uint32 m_magic;
@@ -597,13 +605,15 @@ public:
       scanType(ST_IDLE),
       m_takeOverRefCount(0),
       m_reserved(0),
-      m_send_early_hbrep(0)
+      m_send_early_hbrep(0),
+      m_aggregation(0),
+      m_agg_curr_batch_size_rows(0),
+      m_agg_curr_batch_size_bytes(0),
+      m_agg_n_res_recs(0),
+      m_agg_interpreter(nullptr)
     {
     }
-
-    ~ScanRecord()
-    {
-    }
+    ~ScanRecord();
 
     Uint64 fragPtrI;
     enum ScanState {
@@ -655,7 +665,7 @@ public:
 
     Uint32 m_exec_direct_batch_size_words;
 
-    bool check_scan_batch_completed() const;
+    bool check_scan_batch_completed(bool print=false) const;
     
     UintR copyPtr;
     union {
@@ -720,6 +730,22 @@ public:
     Uint8 prioAFlag;
     Uint8 m_first_match_flag;
     Uint8 m_send_early_hbrep;
+    // Aggregation
+    Uint8 m_aggregation;
+    Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
+                                       // batch completed", which means either
+                                       // size of group map in aggregation
+                                       // interpreter reached limitation or the
+                                       // scan process on this fragment done, so
+                                       // it's going to send aggregation results
+                                       // to API
+    Uint32 m_agg_curr_batch_size_bytes; // [0, non-0], same as up.
+    Uint32 m_agg_n_res_recs; // [0, non-0], non-0 indicates that some aggregation
+                             // results are cached in the interpreter which hasn't
+                             // been send to the API. We use this variable to make sure
+                             // that we won't send a scanfragconf with 0 completed_ops
+                             // to the TC, which could cause incorrect aggregation result.
+    AggInterpreter* m_agg_interpreter;
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2887,6 +2913,7 @@ public:
     Uint8 nextSeqNoReplica;
     Uint8 opSimple;
     Uint8 opExec;
+    Uint8 opAgg;
     Uint8 operation;
     Uint8 m_reorg;
     Uint8 reclenAiLqhkey;
@@ -3339,7 +3366,7 @@ private:
                               SimulatedBlock* block,
                               ExecFunction f,
                               ScanRecord * const scanPtr,
-                              Uint32 clientPtrI);
+                              Uint32 clientPtrI, bool debug_print = false);
 
   void initCopyrec(Signal* signal);
   void initCopyTc(Signal* signal, Operation_t, TcConnectionrec*);
@@ -5342,8 +5369,43 @@ Dblqh::is_restore_phase_done()
 
 inline
 bool
-Dblqh::ScanRecord::check_scan_batch_completed() const
+Dblqh::ScanRecord::check_scan_batch_completed(bool print) const
 {
+  // Moz
+#ifndef MOZ_AGG_DEBUG
+  (void)print;
+#endif // !MOZ_AGG_DEBUG
+  // Don't break aggregation
+  if (m_aggregation == true) {
+    /*
+     * if m_agg_curr_batch_size_bytes != 0, means some aggregation
+     * results have been sent to API as a batch because of group hash
+     * is going to be full. so we return true here to make sure that we
+     * call sendScanFragConf to send GSN_SCAN_FRAGCONF to TC
+     */
+    if (m_agg_curr_batch_size_bytes) {
+      // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+      if (print) {
+        fprintf(stderr, "CHECK batch complete:true, rows[%u, %u], bytes[%u, %u], n_res_recs: %u\n",
+            m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
+            m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
+            m_agg_n_res_recs);
+      }
+#endif // MOZ_AGG_DEBUG
+      return true;
+    } else {
+#ifdef MOZ_AGG_DEBUG
+      if (print) {
+        fprintf(stderr, "CHECK batch complete:false, rows[%u, %u], bytes[%u, %u], n_res_recs: %u\n",
+            m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
+            m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
+            m_agg_n_res_recs);
+      }
+#endif // MOZ_AGG_DEBUG
+      return false;
+    }
+  }
   Uint32 max_rows = m_max_batch_size_rows;
   Uint32 max_bytes = m_max_batch_size_bytes;
 
