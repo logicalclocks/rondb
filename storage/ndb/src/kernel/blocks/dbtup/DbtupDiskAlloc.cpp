@@ -2001,6 +2001,7 @@ Dbtup::disk_page_free(Signal *signal,
   Uint64 lsn;
   if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
+    jamDebug();
     sz = 1;
     const Uint32 *src= ((Fix_page*)pagePtr.p)->get_ptr(page_idx, 0);
     if (!((*(src + 1)) < Tup_page::DATA_WORDS))
@@ -2121,7 +2122,8 @@ Dbtup::disk_page_free(Signal *signal,
                   used,
                   old_free,
                   new_free));
-  Int32 change = new_free - used;
+  Int32 change = ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0) ?
+                 1 : new_free - used;
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
