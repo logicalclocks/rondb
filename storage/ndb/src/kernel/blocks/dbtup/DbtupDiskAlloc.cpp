@@ -202,11 +202,15 @@ Dbtup::printPtr(EventLogger *logger, const char *msg, int idx,
       " m_extent_no: %u"
       " m_free_space: %u"
       " m_free_matrix_pos: %u"
-      " m_free_page_count: [",
+      " m_free_page_count: [%u,%u,%u,%u]",
       msg, idx, ptr.i, printLocal_Key(buf, MAX_LOG_MESSAGE_SIZE, ptr.p->m_key),
       ptr.p->m_first_page_no, ptr.p->m_empty_page_no, ptr.p->m_key.m_file_no,
       ptr.p->m_key.m_page_no, ptr.p->m_extent_no, ptr.p->m_free_space,
-      ptr.p->m_free_matrix_pos);
+      ptr.p->m_free_matrix_pos,
+      ptr.p->m_free_page_count[0],
+      ptr.p->m_free_page_count[1],
+      ptr.p->m_free_page_count[2],
+      ptr.p->m_free_page_count[3]);
 }
 
 void 
