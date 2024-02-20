@@ -719,10 +719,10 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
        * EXTENT_SEARCH_MATRIX_COLS - 1 is always 0, thus no need of
        * checking this. The result is given.
        */
-      for (Uint32 i = 0; i < EXTENT_SEARCH_MATRIX_COLS - 2; i++)
+      for (Uint32 i = 0; i < EXTENT_SEARCH_MATRIX_COLS - 1; i++)
       {
-	if(free >= m_page_free_bits_map[i])
-	  return i;
+        if (free >= m_page_free_bits_map[i])
+          return i;
       }
       return EXTENT_SEARCH_MATRIX_COLS - 1;
     }
