@@ -14,8 +14,7 @@ on:
 
 jobs:
   build-deploy:
-    # TODO: github.ref_name is 22.10.\d+ or 21.04.\d+
-    # if: github.repository == 'logicalclocks/rondb' && (github.ref_name == '22.10.1' || github.ref_name == '21.04.16')
+    # if: github.repository == 'logicalclocks/rondb'
     runs-on: macos-13-xlarge
 
     steps:
