@@ -1,0 +1,32 @@
+name: build-deploy
+
+on:
+  # Launch on manual trigger
+  workflow_dispatch:
+  # Launch on any push
+  push:
+
+jobs:
+  build-deploy:
+    # TODO: github.ref_name is 22.10.\d+ or 21.04.\d+
+    # if: github.repository == 'logicalclocks/rondb' && (github.ref_name == '22.10.1' || github.ref_name == '21.04.16')
+    runs-on: macos-13-xlarge
+
+    steps:
+      - name: Checkout main repo
+        uses: actions/checkout@v4
+
+      - name: Build with Docker
+        run: |  
+          export DOCKER_CLI_EXPERIMENTAL=enabled
+          export BUILDKIT_PROGRESS=plain
+
+          docker buildx build . \
+            -f Dockerfile.ubuntu22 \
+            --tag rondb-build-all:22.10.1 \
+            --target build-all \
+            --no-cache \
+            --build-arg BUILD_THREADS=$BUILD_CORES \
+            --build-arg RELEASE_TARBALL=1 # \
+            # --build-arg RELEASE_FINAL_CLUSTERJ=1 \
+            # --build-arg DEPLOY_TO_REPO=1 \
