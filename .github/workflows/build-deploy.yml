@@ -7,6 +7,10 @@ on:
     branches:
     - 22.10.[0-9]+
     - 21.04.[0-9]+
+  # TODO: Remove this once done with testing
+  pull_request:
+    # Not running on "closed" - that is taken care of by "push" (if merged)
+    types: [opened, synchronize, reopened]
 
 jobs:
   build-deploy:
