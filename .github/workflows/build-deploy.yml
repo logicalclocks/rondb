@@ -3,8 +3,10 @@ name: build-deploy
 on:
   # Launch on manual trigger
   workflow_dispatch:
-  # Launch on any push
   push:
+    branches:
+    - 22.10.[0-9]+
+    - 21.04.[0-9]+
 
 jobs:
   build-deploy:
