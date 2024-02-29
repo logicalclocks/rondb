@@ -15,7 +15,7 @@ on:
 jobs:
   build-deploy:
     # if: github.repository == 'logicalclocks/rondb'
-    runs-on: macos-13-xlarge
+    runs-on: macos-14-xlarge
 
     steps:
       - name: Checkout main repo
