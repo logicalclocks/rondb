@@ -10,6 +10,8 @@ if [[ -z "$TYPE" || -z "$SRC_DIR" || -z "$INSTALL_DIR" ]]; then
   exit 1
 fi
 
+CPU_ARCH=$(uname -m)
+
 ADDITIONAL_FLAGS=""
 
 # Enabling additional security checks in standard library functions to protect against buffer 
@@ -42,7 +44,9 @@ if test -f "$HARDENED_CC1"; then
 fi
 
 #-m64: This flag specifies that the code should be compiled for a 64-bit target platform.
-ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -m64"
+if [ "$CPU_ARCH" != "amd64" ]; then
+    ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -m64"
+fi
 
 # -mtune=generic: This flag tells the compiler to optimize code for a generic (i.e., 
 # not architecture-specific) target.
@@ -59,7 +63,9 @@ ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -fstack-clash-protection"
 
 # -fcf-protection: This flag adds control flow protection to protect against various
 # control flow attacks.
-ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -fcf-protection"
+if [ "$CPU_ARCH" != "amd64" ]; then
+    ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -fcf-protection"
+fi
 
 COMMON_OPTIONS=(
 "-DCMAKE_C_FLAGS='${CMAKE_C_FLAGS} ${ADDITIONAL_FLAGS}'" 
