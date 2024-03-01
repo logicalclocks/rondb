@@ -40,21 +40,20 @@ EOF
 #https://github.com/docker/buildx/issues/379
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     ulimit -n 1024000 && \ 
-    yum -y update \
-    && yum -y install \
+    yum -y update && \
+    yum -y install \
     wget make git which perl-core openldap-devel \
     bison krb5-server krb5-workstation krb5-devel \
     numactl numactl-libs numactl-devel \
     patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
     zlib-devel scl-utils oracle-softwarecollection-release-el7 \
-    vim pigz
+    vim pigz uuid-devel libudev-devel doxygen
 
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     ulimit -n 1024000 && \ 
     yum -y update \
     && yum-config-manager -y --enable "ol7_optional_latest" \
     && yum -y install devtoolset-11 maven
-
 
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
@@ -152,12 +151,6 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && make install \
     && cd ../.. \
     && rm -rf jsoncpp-$JSONCPP_VERSION $JSONCPP_VERSION.tar.gz
-
-RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
-    ulimit -n 1024000 && \ 
-    yum -y update \
-    && yum -y install \
-    uuid-devel libudev-devel doxygen
 
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all

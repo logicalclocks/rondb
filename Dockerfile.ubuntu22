@@ -27,7 +27,8 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     apt-get update && apt-get -y install wget pkg-config patchelf \
     libncurses5-dev default-jdk libudev-dev bison autoconf pigz \
     openssh-client maven libsasl2-dev libldap-dev libaio-dev \
-    git vim nano protobuf-compiler graphviz
+    git vim nano protobuf-compiler graphviz \
+    uuid-dev libudev-dev doxygen
 
 # RonDB 22.10 requires gcc/g++ 10
 # Ubuntu 22.04 comes with gcc/g++ 11.3 by default
@@ -136,12 +137,6 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && make install \
     && cd ../.. \
     && rm -rf jsoncpp-$JSONCPP_VERSION $JSONCPP_VERSION.tar.gz
-
-RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
-    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
-    apt-get update -y \
-    && apt-get install -y uuid-dev libudev-dev doxygen
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 
