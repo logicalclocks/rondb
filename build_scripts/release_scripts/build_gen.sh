@@ -11,6 +11,10 @@ if [[ -z "$TYPE" || -z "$SRC_DIR" || -z "$INSTALL_DIR" ]]; then
 fi
 
 CPU_ARCH=$(uname -m)
+IS_ARM=false
+if [[ "$CPU_ARCH" = "arm64" || "$CPU_ARCH" = "aarch64" ]]; then
+  IS_ARM=true
+fi
 
 ADDITIONAL_FLAGS=""
 
@@ -44,7 +48,7 @@ if test -f "$HARDENED_CC1"; then
 fi
 
 #-m64: This flag specifies that the code should be compiled for a 64-bit target platform.
-if [ "$CPU_ARCH" != "amd64" ]; then
+if [ "$IS_ARM" != true ]; then
     ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -m64"
 fi
 
@@ -63,7 +67,7 @@ ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -fstack-clash-protection"
 
 # -fcf-protection: This flag adds control flow protection to protect against various
 # control flow attacks.
-if [ "$CPU_ARCH" != "amd64" ]; then
+if [ "$IS_ARM" != true ]; then
     ADDITIONAL_FLAGS="${ADDITIONAL_FLAGS} -fcf-protection"
 fi
 
