@@ -47,7 +47,7 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     numactl numactl-libs numactl-devel \
     patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
     zlib-devel scl-utils oracle-softwarecollection-release-el7 \
-    vim pigz uuid-devel libudev-devel doxygen
+    vim pigz
 
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     ulimit -n 1024000 && \ 
@@ -151,6 +151,13 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && make install \
     && cd ../.. \
     && rm -rf jsoncpp-$JSONCPP_VERSION $JSONCPP_VERSION.tar.gz
+
+# Run this *after* installing jsoncpp
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
+    yum -y update \
+    && yum -y install \
+    uuid-devel libudev-devel doxygen
 
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
