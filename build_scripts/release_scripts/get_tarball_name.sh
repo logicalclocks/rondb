@@ -29,9 +29,9 @@ get_tarball_name() {
         STD_LIBRARY="unknown-os"
     fi
 
-    # x86_64    on Ubuntu, Oraclelinux7, Mac
-    # aarch64   on Ubuntu, Oraclelinux7
-    # amd64     on Mac
+    # x86_64 / amd64: on Ubuntu, Oraclelinux, Mac Intel
+    # aarch64   on Linux ARM
+    # arm64     on Mac M1
     CPU_ARCH=$(uname -m)
 
     if [ "$CPU_ARCH" == "amd64" -o "$CPU_ARCH" == "x86_64" ]; then
