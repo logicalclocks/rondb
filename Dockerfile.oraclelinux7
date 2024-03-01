@@ -137,7 +137,7 @@ COPY <<-"EOF" /root/.m2/settings.xml
 </settings>
 EOF
 
-# install updated jsoncpp
+# Install updated jsoncpp
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
     https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/$JSONCPP_VERSION.tar.gz \
