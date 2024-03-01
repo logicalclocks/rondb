@@ -42,35 +42,23 @@ gpgcheck=1
 enabled=1
 EOF
 
-RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
-    ulimit -n 1024000 && \ 
-    yum -y update
-
-RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
-    ulimit -n 1024000 && \ 
-    yum -y install gcc-toolset-12 maven rpcgen
-
-RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
-    ulimit -n 1024000 && \ 
-    yum -y install make wget git which perl-core zlib-devel scl-utils
-
-# Creating a cache dir for downloads to avoid redownloading
-ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
-RUN mkdir $DOWNLOADS_CACHE_DIR
-
 #https://github.com/docker/buildx/issues/379
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
     ulimit -n 1024000 && \ 
-    yum -y install openssl-devel openldap-devel
-
-RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
-    ulimit -n 1024000 && \ 
+    yum -y update && \
     yum -y install \
+    gcc-toolset-12 maven rpcgen \
+    make wget git which perl-core zlib-devel scl-utils \
+    openssl-devel openldap-devel \
     bison krb5-server krb5-workstation krb5-devel \
     numactl numactl-libs numactl-devel \
     uuid-devel libudev-devel doxygen \
     patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
     vim pigz hostname libtirpc-devel
+
+# Creating a cache dir for downloads to avoid redownloading
+ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
+RUN mkdir $DOWNLOADS_CACHE_DIR
 
 # Installing Boost
 ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
@@ -129,7 +117,7 @@ COPY <<-"EOF" /root/.m2/settings.xml
 </settings>
 EOF
 
-# install updated jsoncpp
+# Install updated jsoncpp
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
     https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/$JSONCPP_VERSION.tar.gz \

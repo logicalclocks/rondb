@@ -123,7 +123,7 @@ COPY <<-"EOF" /root/.m2/settings.xml
 </settings>
 EOF
 
-# install updated jsoncpp
+# Install updated jsoncpp
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
     https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/$JSONCPP_VERSION.tar.gz \
@@ -137,8 +137,8 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && cd ../.. \
     && rm -rf jsoncpp-$JSONCPP_VERSION $JSONCPP_VERSION.tar.gz
 
-RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+# Run this *after* installing jsoncpp
+RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update -y \
     && apt-get install -y uuid-dev libudev-dev doxygen
