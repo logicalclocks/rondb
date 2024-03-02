@@ -62,6 +62,7 @@
 
 #define JAM_FILE_ID 414
 
+typedef Bitmask<MAXNROFATTRIBUTESINWORDS> AttributeMask;
 
 #ifdef VM_TRACE
 inline const char* dbgmask(const Bitmask<MAXNROFATTRIBUTESINWORDS>& bm) {
@@ -1222,7 +1223,7 @@ struct TupTriggerData {
    * Attribute mask, defines what attributes are to be monitored
    * Can be seen as a compact representation of SQL column name list
    */
-  Bitmask<MAXNROFATTRIBUTESINWORDS> attributeMask;
+  AttributeMask attributeMask;
   
   /**
    * Next ptr (used in pool/list)
@@ -1283,8 +1284,14 @@ TupTriggerData_pool c_triggerPool;
       tuxCustomTriggers(triggerPool)
   {}
     
-    Bitmask<MAXNROFATTRIBUTESINWORDS> notNullAttributeMask;
-    Bitmask<MAXNROFATTRIBUTESINWORDS> blobAttributeMask;
+    AttributeMask notNullAttributeMask;
+    AttributeMask blobAttributeMask;
+    /*
+      Mask of primary key attributes, resp. 'all' and the subset
+      not being character data types. (No collation aware compare.)
+    */
+    AttributeMask allPkAttributeMask;
+    AttributeMask nonCharPkAttributeMask;
     
     /*
       Extra table descriptor for dynamic attributes, or RNIL if none.
@@ -2101,10 +2108,10 @@ struct KeyReqStruct {
   } m_var_data[2];
 
   /*
-   * A bit mask where a bit set means that the update or insert
-   * was updating this record.
+   * A bitmap where a set bit means that the operation has
+   * supplied a value for this column
    */
-  Bitmask<MAXNROFATTRIBUTESINWORDS> changeMask;
+  AttributeMask changeMask;
   Uint16 var_pos_array[2][2*MAX_ATTRIBUTES_IN_TABLE + 1];
   OperationrecPtr prevOpPtr;
   Dblqh *m_lqh;
@@ -3422,18 +3429,16 @@ private:
                        Uint32* beforeBuffer,
                        Uint32& noBeforeWords,
                        bool disk);
-  
+
   void sendTrigAttrInfo(Signal*        signal, 
                         Uint32*        data, 
                         Uint32         dataLen,
                         bool           executeDirect,
                         BlockReference receiverReference);
 
-  Uint32 setAttrIds(Bitmask<MAXNROFATTRIBUTESINWORDS>& attributeMask, 
+  Uint32 setAttrIds(const AttributeMask& attributeMask,
                     Uint32 noOfAttributes, 
                     Uint32* inBuffer);
-
-  bool primaryKey(Tablerec* const, Uint32);
 
   // these set terrorCode and return non-zero on error
 
@@ -3472,7 +3477,7 @@ private:
                         Tablerec* regTabPtr);
 
   void ndbmtd_buffer_suma_trigger(Signal* signal, Uint32 len,
-                                  LinearSectionPtr ptr[]);
+                                  LinearSectionPtr ptr[3]);
   void flush_ndbmtd_suma_buffer(Signal*);
 
   struct SumaTriggerBuffer
@@ -4078,7 +4083,7 @@ private:
 #endif
 
   void expand_tuple(KeyReqStruct*,
-                    Uint32 sizes[4],
+                    Uint32 sizes[2],
                     Tuple_header *org, 
 		    const Tablerec*,
                     bool disk,
@@ -4893,14 +4898,6 @@ Dbtup::copy_change_mask_info(const Tablerec* tablePtrP,
                           src_cols,  (dst_cols - src_cols));
   }
 }
-
-inline
-bool
-Dbtup::primaryKey(Tablerec* const regTabPtr, Uint32 attrId)
-{
-  Uint32 attrDescriptor = regTabPtr->tabDescriptor[(attrId * ZAD_SIZE)];
-  return (bool)AttributeDescriptor::getPrimaryKey(attrDescriptor);
-}//Dbtup::primaryKey()
 
 inline
 void

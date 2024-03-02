@@ -1847,6 +1847,8 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
   Uint32 dynamic_count[2];
   regTabPtr->blobAttributeMask.clear();
   regTabPtr->notNullAttributeMask.clear();
+  regTabPtr->allPkAttributeMask.clear();
+  regTabPtr->nonCharPkAttributeMask.clear();
   for (Uint32 i = 0; i < NO_DYNAMICS; ++i)
   {
     statvar_count[i] = 0;
@@ -1881,7 +1883,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
       jam();
       regTabPtr->blobAttributeMask.set(i);
     }
-    if(!AttributeDescriptor::getNullable(attrDescriptor))
+    if (!AttributeDescriptor::getNullable(attrDescriptor))
     {
       jam();
       regTabPtr->notNullAttributeMask.set(i);
@@ -1889,6 +1891,16 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
                   instance(),
                   tabPtr.i,
                   i));
+    }
+    if (AttributeDescriptor::getPrimaryKey(attrDescriptor))
+    {
+      jam();
+      regTabPtr->allPkAttributeMask.set(i);
+      if (!AttributeOffset::getCharsetFlag(attrDes2))
+      {
+        jam();
+        regTabPtr->nonCharPkAttributeMask.set(i);
+      }
     }
     if (!AttributeDescriptor::getDynamic(attrDescriptor))
     {
