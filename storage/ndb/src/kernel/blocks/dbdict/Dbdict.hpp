@@ -4759,6 +4759,7 @@ private:
 
   void sendSchemaComplete(Signal*, Uint32 callbackData, Uint32);
 
+  void map_fk_columns(Ptr<ForeignKeyRec>, Uint32*, Uint32*);
 public:
   void send_drop_file(Signal*, Uint32, Uint32, DropFileImplReq::RequestInfo);
   void send_drop_fg(Signal*, Uint32, Uint32, DropFilegroupImplReq::RequestInfo);
