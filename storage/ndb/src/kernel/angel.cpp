@@ -26,6 +26,7 @@
 #include <ndb_version.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 
 #include "angel.hpp"

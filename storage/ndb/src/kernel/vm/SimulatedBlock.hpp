@@ -806,10 +806,10 @@ protected:
   void flush_send_buffers();
   void insert_activate_trp(TrpId trp_id);
   void set_watchdog_counter();
-  void assign_recv_thread_new_trp(Uint32 trp_id);
+  void assign_recv_thread_new_trp(TrpId trp_id);
   void assign_multi_trps_to_send_threads();
-  bool epoll_add_trp(NodeId node_id, TrpId trp_id);
-  bool is_recv_thread_for_new_trp(NodeId node_id, TrpId trp_id);
+  bool epoll_add_trp(TrpId trp_id);
+  bool is_recv_thread_for_new_trp(TrpId trp_id);
 
   NDB_TICKS getHighResTimer() const 
   {

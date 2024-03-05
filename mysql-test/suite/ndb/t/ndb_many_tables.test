@@ -57,12 +57,14 @@ while ($loops)
 #--exec $NDB_WAITER --not-started > /dev/null
 --exec $NDB_MGM -e "ALL RESTART"
 --exec $NDB_WAITER --timeout 3600 > /dev/null
+# Wait for mysqld to reconnect
+--source include/ndb_not_readonly.inc
 #
 # Drop all tables
 #
 echo "Drop 300 tables";
 --disable_result_log
-let $loops = 30;
+let $loops = 300;
 while ($loops)
 {
   eval DROP TABLE t$loops;

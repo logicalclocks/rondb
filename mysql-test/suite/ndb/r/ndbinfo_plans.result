@@ -64,7 +64,7 @@ ndb$backup_id	1	20
 ndb$blocks	30	20
 ndb$columns	540	44
 ndb$config_nodes	34	28
-ndb$config_params	181	120
+ndb$config_params	182	120
 ndb$config_values	344	24
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
