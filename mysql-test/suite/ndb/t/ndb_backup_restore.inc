@@ -141,24 +141,25 @@ drop table t9;
 if (!$serialrestore)
 {
   --echo "Restoring metadata"
-  --exec $NDB_RESTORE -b $the_backup_id -n 1 -m $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+  --exec $NDB_RESTORE -b $the_backup_id -n 1 -m -D $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
 
   --echo "Restoring backup on node 1"
-  --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+  --exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
 
   --echo "Restoring backup on node 2"
-  --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+  --exec $NDB_RESTORE -b $the_backup_id -n 2 -r -R $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+
 }
 if ($serialrestore)
 {
   --echo "Restoring metadata"
-  --exec $NDB_RESTORE -b $the_backup_id -n 1 -m $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-1-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
+  --exec $NDB_RESTORE -b $the_backup_id -n 1 -m -D $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-1-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
 
   --echo "Restoring multithreaded backup parts serially on node 1"
   let $current_part = $backup_parts;
   while ($current_part)
   {
-    --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
+    --exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
     dec $current_part;
   }
 
@@ -166,9 +167,12 @@ if ($serialrestore)
   let $current_part = $backup_parts;
   while ($current_part)
   {
-    --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
+    --exec $NDB_RESTORE -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
     dec $current_part;
   }
+
+  --echo "Rebuilding indexes"
+  --exec $NDB_RESTORE -b $the_backup_id -n 1 -R $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-1-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
 }
 --echo "Print restored rows"
 use test;

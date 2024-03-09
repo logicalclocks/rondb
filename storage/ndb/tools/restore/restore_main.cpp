@@ -463,16 +463,16 @@ static struct my_option my_long_options[] =
     "Do not restore intermediate tables with #sql-prefixed names",
     &opt_exclude_intermediate_sql_tables, nullptr, nullptr,
     GET_BOOL, NO_ARG, 1, 0, 0, 0, 0, 0 },
-  { "disable-indexes", NDB_OPT_NOSHORT,
-    "Disable indexes and foreign keys",
+  { "disable-indexes", 'D',
+    "Disable unique indexes and foreign keys",
     &ga_disable_indexes, nullptr, nullptr,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
-  { "rebuild-indexes", NDB_OPT_NOSHORT,
-    "Rebuild indexes",
+  { "rebuild-indexes", 'R',
+    "Rebuild unique indexes and foreign keys",
     &ga_rebuild_indexes, nullptr, nullptr,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   { "continue-on-data-errors", NDB_OPT_NOSHORT,
-    "Continue after failing to restore data",
+    "Continue after failing to restore data (exit code will still be non-zero)",
     (uchar**) &ga_continue_on_data_errors,
     (uchar**) &ga_continue_on_data_errors, 0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
@@ -1024,23 +1024,26 @@ bool create_consumers(RestoreThreadData *data)
     restore->m_restore = true;
   }
 
+  /*
+    When ndb_restore has been requested to perform some metadata work like
+    --restore-meta or --disable-indexes, to avoid 'object already exists'
+    errors, only restore-thread 1 will do the actual metadata-restore work. So
+    flags like m_restore_meta, m_restore_epoch and m_disable_indexes are set
+    only on thread 1 to indicate that it must perform this restore work. While
+    restoring metadata, some init work is done, like creating an Ndb object,
+    setting up callbacks, and loading info about all the tables into the
+    BackupConsumer. The remaining threads also need this init work to be done,
+    since later phases of ndb_restore rely upon it, e.g. --restore-data needs
+    the table info. So an additional flag m_metadata_work_requested is set for
+    all the restore-threads to indicate that the init work must be done. If
+    m_metadata_work_requested = 1 and m_restore_meta = 0, the thread will do
+    only the init work, and skip the ndbapi function calls to create or delete
+    the metadata objects.
+   */
+
   if (_restore_meta)
   {
-    // ndb_restore has been requested to perform some metadata work
-    // like restore-meta or disable-indexes. To avoid 'object already exists'
-    // errors, only restore-thread 1 will do the actual metadata-restore work.
-    // So flags like restore_meta, restore_epoch and disable_indexes are set
-    // only on thread 1 to indicate that it must perform this restore work.
-    // While restoring metadata, some init work is done, like creating an Ndb
-    // object, setting up callbacks, and loading info about all the tables into
-    // the BackupConsumer.
-    // The remaining threads also need this init work to be done, since later
-    // phases of ndb_restore rely upon it, e.g. --restore-data needs the table
-    // info. So an additional flag m_metadata_work_requested is set for all
-    // the restore-threads to indicate that the init work must be done. If
-    // m_metadata_work_requested = 1 and m_restore_meta = 0, the thread will
-    // do only the init work, and skip the ndbapi function calls to create or
-    // delete the metadata objects.
+    // --restore-meta is set.
     restore->m_metadata_work_requested = true;
     if (data->m_part_id == 1)
     {
@@ -1077,6 +1080,7 @@ bool create_consumers(RestoreThreadData *data)
 
   if (ga_restore_epoch)
   {
+    // --restore-epoch is set. See comment by _restore_meta above.
     restore->m_restore_epoch_requested = true;
     if (data->m_part_id == 1)
       restore->m_restore_epoch = true;
@@ -1084,15 +1088,22 @@ bool create_consumers(RestoreThreadData *data)
 
   if (ga_disable_indexes)
   {
+    // --disable-indexes is set. See comment by _restore_meta above.
     restore->m_metadata_work_requested = true;
     if (data->m_part_id == 1)
+    {
       restore->m_disable_indexes = true;
+      data->m_disable_indexes = true;
+    }
   }
 
   if (ga_rebuild_indexes)
   {
+    // --rebuild-indexes is set. See comment by _restore_meta above. Also, note
+    // that rebuilding indexes is done on the last thread rather than the first.
+    // See comment in do_restore() for details.
     restore->m_metadata_work_requested = true;
-    if (data->m_part_id == 1)
+    if (data->m_part_id == (Uint32)ga_part_count)
       restore->m_rebuild_indexes = true;
   }
 
@@ -2260,10 +2271,10 @@ int do_restore(RestoreThreadData *thrdata)
     return NdbToolsProgramExitCode::FAILED;
   }
 
-  if (!thrdata->m_restore_meta)
+  if (!(thrdata->m_restore_meta || thrdata->m_disable_indexes))
   {
     /**
-     * Only thread 1 is allowed to restore metadata objects. restore_meta
+     * Only thread 1 is allowed to restore metadata objects. m_restore_meta
      * flag is set to true on thread 1, which causes consumer-restore to
      * actually restore the metadata objects,
      * e.g. g_consumer->object(tablespace) restores the tablespace
@@ -2280,6 +2291,21 @@ int do_restore(RestoreThreadData *thrdata)
      * thread 1 arrives at barrier. When thread 1 completes metadata restore,
      * it arrives at barrier, opening barrier and allowing all threads to
      * proceed to next restore-phase.
+     *
+     * Since it's possible to set --disable-indexes without setting
+     * --restore-meta, we need to check for this flag as well, so that other
+     * threads wait while thread 1 changes the schema, even if those changes are
+     * only to drop indexes.
+     *
+     * Note that there is an if block below with the opposite condition:
+     *     `if (thrdata->m_restore_meta || thrdata->m_disable_indexes)`
+     * The two blocks represent the same sync point. We have two possible cases:
+     * 1) at least one of --restore-meta and --disable-indexes is set. Thread 1
+     *    will only enter the second if block. The other threads will only enter
+     *    this block, thereby waiting until thread 1 arrives at the second block.
+     * 2) Neither --restore-meta nor --disable-indexes is set. The above
+     *    condition evaluates to true in all threads, so all threads sync up at
+     *    this point before continuing. No thread will wait at the second block.
      */
     if (!thrdata->m_barrier->wait())
     {
@@ -2420,7 +2446,7 @@ int do_restore(RestoreThreadData *thrdata)
     } 
     if (!ga_disable_indexes && !ga_rebuild_indexes)
     {
-      if (!g_consumers[i]->endOfTablesFK())
+      if (!g_consumers[i]->endOfTablesFK(false))
       {
         restoreLogger.log_error("Restore: Failed while closing tables FKs");
         return NdbToolsProgramExitCode::FAILED;
@@ -2434,9 +2460,11 @@ int do_restore(RestoreThreadData *thrdata)
     return NdbToolsProgramExitCode::FAILED;
   }
 
-  if (thrdata->m_restore_meta)
+  if (thrdata->m_restore_meta || thrdata->m_disable_indexes)
   {
     // thread 1 arrives at barrier -> barrier opens -> all threads continue
+    // For more detailed explanation, see comment before the previous call above
+    // to m_barrier->wait()
     if (!thrdata->m_barrier->wait())
     {
       ga_error_thread = thrdata->m_part_id;
@@ -2469,7 +2497,9 @@ int do_restore(RestoreThreadData *thrdata)
           {
             if (!g_consumers[j]->table_compatible_check(tableS))
             {
-              restoreLogger.log_error("Restore: Failed to restore data, %s table structure incompatible with backup's ... Exiting ", tableS.getTableName());
+              // table_compatible_check has already called restoreLogger.log_error with a more detailed error.
+              restoreLogger.log_error("Restore: Failure or refusal when checking table %s (see above for details) ... Exiting", tableS.getTableName());
+
               return NdbToolsProgramExitCode::FAILED;
             } 
             if (tableS.m_staging &&
@@ -2826,7 +2856,12 @@ int do_restore(RestoreThreadData *thrdata)
      * Index rebuild should not be allowed to start until all threads have
      * finished restoring data and epoch values are sorted out.
      * Wait until all threads have arrived at barrier, then allow all
-     * threads to continue. Thread 1 will then rebuild indices, while all
+     * threads to continue. For multi-threaded restore, this ensures that all
+     * data is restored before index rebuild starts. For single-threaded
+     * restore, it does not, since the backup parts will execute serially with
+     * ineffective barriers, starting with number 1. In order to ensure data
+     * restore finishes before index rebuild starts even with single-threaded
+     * restore, we use the thread with highest id to rebuild indices, while all
      * other threads do nothing.
      */
     if (!thrdata->m_barrier->wait())
@@ -2854,7 +2889,7 @@ int do_restore(RestoreThreadData *thrdata)
     }
     for (Uint32 j = 0; j < g_consumers.size(); j++)
     {
-      if (!g_consumers[j]->endOfTablesFK())
+      if (!g_consumers[j]->endOfTablesFK(true))
       {
         return NdbToolsProgramExitCode::FAILED;
       }

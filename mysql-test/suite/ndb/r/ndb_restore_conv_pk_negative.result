@@ -74,7 +74,7 @@ x varchar(20) not null,
 primary key(a,b,x)) engine=ndb;
 Run restore
 Expect error
-File contains row(s) matching pattern structure incompatible 
+File contains row(s) matching pattern Missing column(%) in backup is primary key or not nullable or defaulted in DB 
 drop table test.t1;
 Show that we cannot add an autoincrement pk from nowhere
 create table test.t1 (a varchar(20) not null, 
@@ -86,7 +86,7 @@ x int auto_increment not null,
 primary key(a,b,x)) engine=ndb;
 Run restore
 Expect error
-File contains row(s) matching pattern structure incompatible 
+File contains row(s) matching pattern Missing column(%) in backup is primary key or not nullable or defaulted in DB 
 drop table test.t1;
 Complete key change with nothing of old key remaining
 Will fail as the log apply lookup for update/delete

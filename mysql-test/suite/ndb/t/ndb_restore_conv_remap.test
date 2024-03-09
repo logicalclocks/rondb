@@ -245,9 +245,9 @@ having ct > 1;
 drop table idx_tbl, type1_1, type1_2, type2_1, type2_2;                      
 
 --echo Run normal restore for first set of content
---exec $NDB_RESTORE -b $first_backup_id -n 1 -m $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $first_backup_id -n 1 -r $NDB_BACKUPS-$first_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $first_backup_id -n 2 -r $NDB_BACKUPS-$first_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 1 -m --allow-unique-indexes $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 1 -r --allow-unique-indexes $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $first_backup_id -n 2 -r --allow-unique-indexes $NDB_BACKUPS-$first_backup_id >> $NDB_TOOLS_OUTPUT
 
 --source suite/ndb/include/ndb_sync_metadata.inc
 
@@ -266,8 +266,8 @@ drop table idx_tbl, type1_1, type1_2, type2_1, type2_2;
 --echo Remap args : $remap_args
 
 --echo Run offset restore for second set of content
---exec $NDB_RESTORE -b $second_backup_id -n 1 -r $remap_args $NDB_BACKUPS-$second_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
---exec $NDB_RESTORE -b $second_backup_id -n 2 -r $remap_args $NDB_BACKUPS-$second_backup_id --allow-unique-indexes >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 1 -r --allow-unique-indexes $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $second_backup_id -n 2 -r --allow-unique-indexes $remap_args $NDB_BACKUPS-$second_backup_id >> $NDB_TOOLS_OUTPUT
 
 --echo Combined dataset
 --echo -----------------

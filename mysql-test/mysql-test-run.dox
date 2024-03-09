@@ -6945,7 +6945,7 @@
 
       When assigning a literal string to a variable, no quoting is
       required even if the string contains spaces. If the string does
-      include quotation marks, they will be trated like any other
+      include quotation marks, they will be treated like any other
       characters and be included in the string value. This is
       important to be aware of when using the variable in an SQL
       statement.

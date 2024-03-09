@@ -2222,6 +2222,8 @@ BackupRestore::check_blobs(TableS & tableS)
   return true;
 }
 
+// BackupRestore::table_compatible_check will always call
+// restoreLogger.log_error before returning false.
 bool
 BackupRestore::table_compatible_check(TableS & tableS)
 {
@@ -2566,7 +2568,7 @@ BackupRestore::table_compatible_check(TableS & tableS)
            (col_in_kernel->getDefaultValue() == NULL)))
       {
         restoreLogger.log_error( "Missing column(%s.%s) in backup "
-            " is primary key or not nullable or defaulted in DB",
+            "is primary key or not nullable or defaulted in DB",
             tableS.m_dictTable->getName(), col_in_kernel->getName());
         return false;
       }
@@ -3261,7 +3263,7 @@ BackupRestore::fk(Uint32 type, const void * ptr)
   if (!m_restore_meta && !m_rebuild_indexes && !m_disable_indexes)
     return true;
 
-  // only record FKs, create in endOfTables()
+  // only record FKs, create in endOfTablesFK()
   switch (type){
   case DictTabInfo::ForeignKey:
   {
@@ -3462,10 +3464,27 @@ BackupRestore::endOfTables(){
 }
 
 bool
-BackupRestore::endOfTablesFK()
+BackupRestore::endOfTablesFK(bool at_rebuild)
 {
-  if (!m_restore_meta && !m_rebuild_indexes && !m_disable_indexes)
-    return true;
+  /*
+   * BackupConsumer::endOfTablesFK is called in two situations:
+   * 1) As part of metadata restore, before any data restore has begun, with
+   *    argument at_rebuild==false. Will only be called in this way if neither
+   *    --disable-indexes nor --rebuild-indexes is set. In this case,
+   *    we only want to create foreign keys on thread 1, and only if
+   *    --restore-meta is set. These two conditions are ensured by testing
+   *    m_restore_meta.
+   */
+  if (!at_rebuild && !m_restore_meta)
+      return true;
+  /*
+   * 2) At the end of the restore process, when no more data is to be restored,
+   *    with argument at_rebuild==true. Will only be called in this way if
+   *    --rebuild-indexes is set. In this case, we only want to create foreign
+   *    keys on the last thread. This is ensured by testing m_rebuild_indexes.
+ */
+  if (at_rebuild && !m_rebuild_indexes)
+      return true;
 
   NdbDictionary::Dictionary* dict = m_ndb->getDictionary();
   restoreLogger.log_info("Create foreign keys");

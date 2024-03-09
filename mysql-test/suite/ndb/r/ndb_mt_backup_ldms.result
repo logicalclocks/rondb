@@ -68,6 +68,7 @@ Restore data of PART-2-OF-4 on node 2
 Restore data of PART-1-OF-4 on node 2
 Restore data of PART-2-OF-2 on node 1
 Restore data of PART-1-OF-2 on node 1
+Rebuild indexes
 "Print restored rows"
 use test;
 select * from t0 order by id;
@@ -193,6 +194,7 @@ auto	string	vstring	tiny	short	medium	long_int	longlong	real_float	real_double	r
 Drop all tables
 Restore metadata using mt-restore
 Restore data using mt-restore of all backup parts
+Rebuild indexes
 "Print restored rows"
 use test;
 select * from t0 order by id;
