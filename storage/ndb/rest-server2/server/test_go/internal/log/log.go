@@ -56,7 +56,6 @@ func InitLogger(logConfig LogConfig) {
 		log.SetOutput(os.Stdout)
 	}
 
-	RegisterLogCallBack()
 }
 
 func SetLevel(levelStr string) {

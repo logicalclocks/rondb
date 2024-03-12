@@ -42,7 +42,7 @@ COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
 #CGO_LDFLAGS
-MY_CGO_LDFLAGS?="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib -Wl,-rpath,${RDRS_LIB_DIR} -lrdrs2_shared"
+MY_CGO_LDFLAGS?="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib -Wl,-rpath,${RDRS_LIB_DIR}"
 
 all: rdrs2
 

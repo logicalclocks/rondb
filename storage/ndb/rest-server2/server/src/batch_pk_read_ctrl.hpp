@@ -21,7 +21,7 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_BATCH_PK_READ_CTRL_HPP_
 
 #include "rdrs_dal.h"
-#include "src/base_ctrl.hpp"
+#include "base_ctrl.hpp"
 #include "constants.hpp"
 
 #include <drogon/drogon.h>

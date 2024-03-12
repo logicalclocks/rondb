@@ -65,28 +65,6 @@ if ($ndbclient_lib) {
   print $F "die Did not find ndbclient library\n";
 }
 
-#---------------------------- rdrs2_shared -----------------------------------------
-
-my $rdrs2_shared_lib = my_find_file($bindir,
-                                [ "library_output_directory",
-                                  "lib*/*",
-                                  "lib"
-                                ],
-                                [ "rdrs2_shared.dll",
-                                  "librdrs2_shared.so",
-                                  "librdrs2_shared.dylib"
-                                ],
-                                NOT_REQUIRED);
-
-if ($rdrs2_shared_lib) {
-   my $rdrs2_shared_lib_dir = dirname($rdrs2_shared_lib);
-   print $F "--let \$RDRS2_SHARED_LIB= $rdrs2_shared_lib_dir\n";
-   print $F "--echo Found RonDB REST server library\n"
-} else {
-  print $F "--let \$skip_test=1\n";
-  print $F "--let \$skip_reason=This test requires RonDB REST library\n";
-}
-
 #----------------------------- rdrs_string --------------------------------------
 
 my $rdrs_string_lib = my_find_file($bindir,
@@ -114,7 +92,7 @@ if ($rdrs_string_lib) {
 print $F "--let RDRS_CONFIG_FILE=$vardir/tmp/rdrs_config.json\n";
 print $F "--let RDRS_LIB_DIR=$bindir/library_output_directory\n";
 print $F "--let LD_LIBRARY_PATH=$bindir/library_output_directory\n";
-print $F "--let CGO_LDFLAGS=\"-g -O2 -L$bindir/lib -Wl,-rpath,$bindir/lib -lrdrs2_shared\"\n";
+print $F "--let CGO_LDFLAGS=\"-g -O2 -L$bindir/lib -Wl,-rpath,$bindir/lib\"\n";
 print $F "--let RDRS_SRC_DIR=$ENV{'MYSQL_BASEDIR'}/storage/ndb/rest-server2/server/test_go\n";
 print $F "--let RDRS_SERVER_DIR=$ENV{'MYSQL_BASEDIR'}//build/storage/ndb/rest-server2/server\n";
 

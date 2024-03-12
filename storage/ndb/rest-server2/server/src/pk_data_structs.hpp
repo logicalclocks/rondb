@@ -20,9 +20,7 @@
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
 
-#include "config_structs.hpp"
 #include "rdrs_dal.h"
-#include "src/constants.hpp"
 
 #include <drogon/HttpTypes.h>
 #include <string>

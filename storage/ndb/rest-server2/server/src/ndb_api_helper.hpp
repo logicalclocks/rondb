@@ -20,7 +20,8 @@
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_NDB_API_HELPER_H_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_NDB_API_HELPER_H_
 
-#include "src/rdrs_dal.h"
+#include "rdrs_dal.h"
+
 #include <NdbApi.hpp>
 
 RS_Status start_transaction(Ndb *ndb_object, NdbTransaction **tx);

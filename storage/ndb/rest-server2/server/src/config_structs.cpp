@@ -21,6 +21,7 @@
 #include "json_parser.hpp"
 #include "constants.hpp"
 #include "mysql_com.h"
+#include "rdrs_dal.hpp"
 
 #include <cstdlib>
 #include <drogon/HttpAppFramework.h>
@@ -41,14 +42,16 @@ Internal::Internal()
 }
 
 RS_Status Internal::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 GRPC::GRPC() : enable(false), serverIP(DEFAULT_ROUTE), serverPort(DEFAULT_GRPC_PORT) {
 }
 
 RS_Status GRPC::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 REST::REST()
@@ -57,7 +60,8 @@ REST::REST()
 }
 
 RS_Status REST::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 std::string REST::string() {
@@ -81,12 +85,14 @@ RonDB::RonDB()
 
 RS_Status RonDB::validate() {
   if (Mgmds.empty()) {
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "at least one Management server has to be defined");
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "at least one Management server has to be defined")
+        .status;
   }
   if (Mgmds.size() > 1) {
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "we do not support specifying more than one Management server yet");
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "we do not support specifying more than one Management server yet")
+        .status;
   }
   RS_Status status;
   for (const auto &server : Mgmds) {
@@ -97,20 +103,22 @@ RS_Status RonDB::validate() {
   }
 
   if (connectionPoolSize < 1 || connectionPoolSize > 1) {
-    return RS_Status(
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-        "wrong connection pool size. Currently only single RonDB connection is supported");
+    return CRS_Status(
+               static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+               "wrong connection pool size. Currently only single RonDB connection is supported")
+        .status;
   }
 
   if (!nodeIDs.empty() && nodeIDs.size() != connectionPoolSize) {
-    return RS_Status(
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-        "wrong number of NodeIDs. The number of node ids must match the connection pool size");
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "wrong number of NodeIDs. The number of node ids must match the connection "
+                      "pool size")
+        .status;
   }
   if (nodeIDs.empty()) {
     nodeIDs = {0};
   }
-  return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
+  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)).status;
 }
 
 std::string RonDB::string() {
@@ -126,7 +134,8 @@ TestParameters::TestParameters() {
 }
 
 RS_Status TestParameters::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 Mgmd::Mgmd() : IP(LOCALHOST), port(MGMD_DEFAULT_PORT) {
@@ -134,21 +143,24 @@ Mgmd::Mgmd() : IP(LOCALHOST), port(MGMD_DEFAULT_PORT) {
 
 RS_Status Mgmd::validate() const {
   if (IP.empty()) {
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "the Management server IP cannot be empty");
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "the Management server IP cannot be empty")
+        .status;
   }
   if (port == 0) {
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "the Management server port cannot be empty");
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "the Management server port cannot be empty")
+        .status;
   }
-  return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
+  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)).status;
 }
 
 TLS::TLS() : enableTLS(false), requireAndVerifyClientCert(false) {
 }
 
 RS_Status TLS::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 std::string TLS::string() {
@@ -165,7 +177,8 @@ APIKey::APIKey()
 }
 
 RS_Status APIKey::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 std::string APIKey::string() {
@@ -178,7 +191,8 @@ Security::Security() : tls(TLS()), apiKey(APIKey()) {
 }
 
 RS_Status Security::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 std::string Security::string() {
@@ -192,7 +206,8 @@ Testing::Testing() : mySQL(MySQL()), mySQLMetadataCluster(MySQL()) {
 }
 
 RS_Status Testing::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 std::string Testing::string() {
@@ -205,7 +220,8 @@ MySQL::MySQL() : servers({MySQLServer()}), user(ROOT) {
 }
 
 RS_Status MySQL::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 std::string MySQL::string() {
@@ -229,7 +245,8 @@ std::string MySQLServer::string() {
 }
 
 RS_Status MySQLServer::validate() {
-  return RS_Status();
+  // TODO Implement Me
+  return CRS_Status().status;
 }
 
 std::string RonDB::generate_Mgmd_connect_string() {
@@ -288,7 +305,7 @@ RS_Status AllConfigs::validate() {
     return status;
   }
 
-  return RS_Status();
+  return CRS_Status().status;
 }
 
 RS_Status AllConfigs::set_all(AllConfigs newConfigs) {
@@ -314,29 +331,21 @@ RS_Status AllConfigs::set_from_file_if_exists(const std::string &configFile) {
 }
 
 RS_Status AllConfigs::set_from_file(const std::string &configFile) {
-  size_t currentThreadIndex = DEFAULT_NUM_THREADS;
   AllConfigs newConfigs;
   // Read config file
   std::ifstream file(configFile);
   if (!file) {
-    return RS_Status(
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-        ("failed reading config file; error: " + std::string(strerror(errno))).c_str());
+    return CRS_Status(
+               static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+               ("failed reading config file; error: " + std::string(strerror(errno))).c_str())
+        .status;
   }
   std::string configStr((std::istreambuf_iterator<char>(file)), {});
-
-  // Store it to the first string buffer
-  const char *json_str = configStr.c_str();
-  size_t length        = configStr.length();
-  strcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str);
+  
   file.close();
 
   // Parse config file
-  RS_Status status = jsonParser.config_parse(
-      currentThreadIndex,
-      simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
-                                   REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING),
-      newConfigs);
+  RS_Status status = jsonParser.config_parse(configStr, newConfigs);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     return status;

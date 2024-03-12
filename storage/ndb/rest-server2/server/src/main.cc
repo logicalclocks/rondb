@@ -35,6 +35,7 @@
 
 int main() {
   JSONParser jsonParser = JSONParser();
+  
   /*
     Order:
     1. Read from ENV

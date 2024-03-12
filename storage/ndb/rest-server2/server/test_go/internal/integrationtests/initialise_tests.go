@@ -28,7 +28,6 @@ import (
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/log"
 	"hopsworks.ai/rdrs2/internal/metrics"
-	"hopsworks.ai/rdrs2/internal/security/apikey/hopsworkscache"
 
 	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/resources/testdbs"
@@ -96,15 +95,6 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 			return nil, fmt.Errorf("failed creating databases; error: %v", err)
 		}
 	}
-
-	//---------------------------- API KEY Cache ------------------------------
-	apiKeyCache := hopsworkscache.New()
-	cleanupFNs = append(cleanupFNs, func() {
-		cleanUpError := apiKeyCache.Cleanup()
-		if cleanUpError != nil {
-			log.Errorf("failed cleaning up api key cache; error: %v", cleanUpError)
-		}
-	})
 
 	//---------------------------- Prometheus metrics -------------------------
 	_, rdrsMetricsCleanup := metrics.NewRDRSMetrics()

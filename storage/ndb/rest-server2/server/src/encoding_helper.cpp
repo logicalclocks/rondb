@@ -18,27 +18,29 @@
  */
 
 #include "encoding_helper.hpp"
-#include "src/mystring.hpp"
-#include "src/rdrs_dal_ext.hpp"
-#include "src/logger.hpp"
+#include "mystring.hpp"
+#include "rdrs_dal.hpp"
+#include "buffer_manager.hpp"
+#include "logger.hpp"
 
 #include <cstring>
 #include <tuple>
 
-EN_Status copy_str_to_buffer(const std::vector<char> &src, void *dst, uint32_t offset) {
+EN_Status copy_str_to_buffer(const std::string &src, void *dst, uint32_t offset) {
   if (dst == nullptr) {
     EN_Status status{};
     status.http_code = static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest);
     status.retValue  = 0;
     strncpy(status.message, "Destination buffer pointer is null", EN_STATUS_MSG_LEN - 1);
     status.message[EN_STATUS_MSG_LEN - 1] = '\0';
+    return status;
   }
 
   uint32_t src_length = static_cast<uint32_t>(src.size());
 
-  memcpy(static_cast<char *>(dst) + offset, src.data(), src_length);
+  memcpy(static_cast<char *>(dst) + offset, src.c_str(), src_length);
 
-  static_cast<char *>(dst)[offset + src_length] = 0x00;
+  static_cast<char *>(dst)[offset + src_length] = '\0';
 
   return EN_Status(offset + src_length + 1);
 }
@@ -315,9 +317,9 @@ int encode_rune(std::vector<char> &p, uint32_t r) {
 RS_Status unquote(std::vector<char> &str, bool unescape) {
   // if string to be unquoted is too short
   if (str.size() < 2) {
-    RS_Status status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "invalid syntax: too short string");
-    return status;
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "invalid syntax: too short string")
+        .status;
   }
 
   char quote = str.front();
@@ -325,9 +327,9 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
 
   // if no matching quote
   if (end == str.end()) {
-    RS_Status status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "invalid syntax: no matching quote");
-    return status;
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "invalid syntax: no matching quote")
+        .status;
   }
 
   auto end_pos =
@@ -371,10 +373,10 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
         }
       } else {
         // Invalid UTF-8 or improper single character in single quotes
-        RS_Status status(
-            static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-            "invalid syntax: invalid UTF-8 or improper single character in single quotes");
-        return status;
+        return CRS_Status(
+                   static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                   "invalid syntax: invalid UTF-8 or improper single character in single quotes")
+            .status;
       }
     } else {
       // Handle quoted strings with escape sequences
@@ -387,14 +389,13 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
     break;
   }
   default: {
-    RS_Status status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                     "invalid syntax: unknown quote type");
-    return status;
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "invalid syntax: unknown quote type")
+        .status;
   }
   }
 
-  RS_Status status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
-  return status;
+  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)).status;
 }
 
 RS_Status Unquote(std::vector<char> &str) {

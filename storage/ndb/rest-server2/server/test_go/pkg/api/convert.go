@@ -19,9 +19,6 @@ package api
 
 import (
 	"encoding/json"
-
-	"hopsworks.ai/rdrs2/internal/dal"
-	"hopsworks.ai/rdrs2/internal/dal/heap"
 )
 
 // Converters for PK Read Request
@@ -196,53 +193,6 @@ func ConvertBatchOpResponse(responses *BatchResponseGRPC) *BatchResponseProto {
 		batchResponse.Responses = pkReadResponsesProto
 	}
 	return &batchResponse
-}
-
-func ConvertStatRequest(req *StatRequest) *StatRequestProto {
-	return &StatRequestProto{}
-}
-func ConvertStatRequestProto(reqProto *StatRequestProto) *StatRequest {
-	return &StatRequest{}
-}
-
-func ConvertStatResponse(resp *StatResponse) *StatResponseProto {
-	respProto := StatResponseProto{}
-	memStatsProto := MemoryStatsProto{}
-	rondbStatsProto := RonDBStatsProto{}
-
-	memStatsProto.AllocationsCount = &resp.MemoryStats.AllocationsCount
-	memStatsProto.DeallocationsCount = &resp.MemoryStats.DeallocationsCount
-	memStatsProto.BuffersCount = &resp.MemoryStats.BuffersCount
-	memStatsProto.FreeBuffers = &resp.MemoryStats.FreeBuffers
-
-	rondbStatsProto.NdbObjectsCreationCount = &resp.RonDBStats.NdbObjectsCreationCount
-	rondbStatsProto.NdbObjectsDeletionCount = &resp.RonDBStats.NdbObjectsDeletionCount
-	rondbStatsProto.NdbObjectsTotalCount = &resp.RonDBStats.NdbObjectsTotalCount
-	rondbStatsProto.NdbObjectsFreeCount = &resp.RonDBStats.NdbObjectsFreeCount
-
-	respProto.RonDBStats = &rondbStatsProto
-	respProto.MemoryStats = &memStatsProto
-	return &respProto
-}
-
-func ConvertStatResponseProto(resp *StatResponseProto) *StatResponse {
-	statResponse := StatResponse{}
-	memoryStats := heap.MemoryStats{}
-	ronDBStats := dal.RonDBStats{}
-
-	memoryStats.AllocationsCount = *resp.MemoryStats.AllocationsCount
-	memoryStats.DeallocationsCount = *resp.MemoryStats.DeallocationsCount
-	memoryStats.BuffersCount = *resp.MemoryStats.BuffersCount
-	memoryStats.FreeBuffers = *resp.MemoryStats.FreeBuffers
-
-	ronDBStats.NdbObjectsCreationCount = *resp.RonDBStats.NdbObjectsCreationCount
-	ronDBStats.NdbObjectsDeletionCount = *resp.RonDBStats.NdbObjectsDeletionCount
-	ronDBStats.NdbObjectsTotalCount = *resp.RonDBStats.NdbObjectsTotalCount
-	ronDBStats.NdbObjectsFreeCount = *resp.RonDBStats.NdbObjectsFreeCount
-
-	statResponse.MemoryStats = memoryStats
-	statResponse.RonDBStats = ronDBStats
-	return &statResponse
 }
 
 func ConvertHealthRequest(req *HealthRequest) *HealthRequestProto {
