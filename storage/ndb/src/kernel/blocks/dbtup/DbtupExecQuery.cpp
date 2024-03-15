@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,12 +51,19 @@
 #define TUP_NO_TUPLE_FOUND 626
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LCP 1
+//#define DEBUG_REORG 1
 //#define DEBUG_DELETE 1
 //#define DEBUG_DELETE_NR 1
 //#define DEBUG_LCP_LGMAN 1
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
+#endif
+
+#ifdef DEBUG_REORG
+#define DEB_REORG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_REORG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_ELEM_COUNT
@@ -5915,7 +5922,8 @@ Dbtup::handle_size_change_after_update(Signal *signal,
   Uint32 bits = m_base_header_bits;
   Uint32 copy_bits= req_struct->m_tuple_ptr->m_header_bits;
   
-  DEB_LCP(("size_change: tab(%u,%u), row_id(%u,%u), old: %u, new: %u",
+  DEB_LCP(("(%u)size_change: tab(%u,%u), row_id(%u,%u), old: %u, new: %u",
+          instance(),
           req_struct->fragPtrP->fragTableId,
           req_struct->fragPtrP->fragmentId,
           regOperPtr->m_tuple_location.m_page_no,
@@ -5987,6 +5995,15 @@ Dbtup::handle_size_change_after_update(Signal *signal,
         Uint32 new_size = sizes[2+DD];
         bool disk_alloc_flag = copy_bits & Tuple_header::DISK_ALLOC;
         bool disk_reorg_flag = bits & Tuple_header::DISK_REORG;
+        DEB_REORG(("(%u) free: %u, used: %u, new_size: %u, size[DD]: %u"
+                   ", alloc_flag: %u, reorg_flag: %u",
+                   instance(),
+                   free,
+                   used,
+                   new_size,
+                   sizes[DD],
+                   disk_alloc_flag,
+                   disk_reorg_flag));
         if (unlikely(disk_alloc_flag || disk_reorg_flag))
         {
           jamDebug();
@@ -6039,6 +6056,16 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           Int32 add = new_size - curr_size;
           jamDataDebug(new_size);
           jamDataDebug(curr_size);
+          DEB_REORG(("(%u) (file,page): (%u,%u), new_size: %u, curr_size: %u"
+                     ", add: %d, free: %u, used: %u",
+                     instance(),
+                     key.m_file_no,
+                     key.m_page_no,
+                     new_size,
+                     curr_size,
+                     add,
+                     free,
+                     used));
           if ((used + add) <= free)
           {
             jamDebug();
@@ -6162,6 +6189,16 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           jamDataDebug(new_size);
           jamDataDebug(curr_size);
           jamDataDebug(regOperPtr->m_uncommitted_used_space);
+          DEB_REORG(("(%u) key(%u,%u,%u), new_size: %u, curr_size: %u"
+                     ", add: %d, uncommitted_used_space: %u",
+                     instance(),
+                     key.m_file_no,
+                     key.m_page_no,
+                     key.m_page_idx,
+                     new_size,
+                     curr_size,
+                     add,
+                     regOperPtr->m_uncommitted_used_space));
           /**
            * curr_size is the size of the row before the transaction
            * started. new_size is the size after this operation is
@@ -6331,6 +6368,17 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             new_key.m_page_idx = new_size;
 	    void *ptr = (void*)req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
             memcpy(ptr, &new_key, sizeof(new_key));
+            DEB_REORG(("(%u) REORG set: tab(%u,%u), row(%u,%u), disk_key:"
+                       " (%u,%u), new_size: %u, undo_buffer_space: %u",
+                       instance(),
+                       req_struct->fragPtrP->fragTableId,
+                       req_struct->fragPtrP->fragmentId,
+                       regOperPtr->m_tuple_location.m_page_no,
+                       regOperPtr->m_tuple_location.m_page_idx,
+                       new_key.m_file_no,
+                       new_key.m_page_no,
+                       new_size,
+                       regOperPtr->m_undo_buffer_space));
           }
         }
       }

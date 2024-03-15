@@ -16386,7 +16386,6 @@ void Dblqh::lqhTransNextLab(Signal* signal,
       else
       {
 #if defined VM_TRACE || defined ERROR_INSERT
-        jam();
         ndbrequire(tcConnectptr.p->tcScanRec == RNIL);
 #endif
       }
@@ -16394,7 +16393,6 @@ void Dblqh::lqhTransNextLab(Signal* signal,
     else
     {
 #if defined VM_TRACE || defined ERROR_INSERT
-      jam();
       ndbrequire(tcConnectptr.p->tcScanRec == RNIL);
 #endif
     }
@@ -16432,7 +16430,6 @@ Dblqh::scanMarkers(Signal* signal,
   const Uint32 RT_BREAK = 128;
   for (Uint32 i = 0; i < RT_BREAK; i++)
   {
-    jam();
     CommitAckMarkerPtr commitAckMarkerPtr;
     bool found = getNextCommitAckMarker(commitAckMarkerPtrI,
                                         commitAckMarkerPtr,
@@ -16484,7 +16481,6 @@ Dblqh::scanMarkers(Signal* signal,
 		 signal, LqhTransConf::SignalLength, JBB);
       return;
     }
-    jam();
   }
   
   signal->theData[0] = ZSCAN_MARKERS;

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,6 +32,7 @@
 #define JAM_FILE_ID 426
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_REORG 1
 //#define DEBUG_UNDO_SPLIT 1
 //#define DEBUG_LCP 1
 //#define DEBUG_PGMAN_IO 1
@@ -43,6 +44,12 @@
 //#define DEBUG_UNDO_LCP 1
 //#define DEBUG_UNDO_ALLOC 1
 //#define DEBUG_FREE_SPACE 1
+#endif
+
+#ifdef DEBUG_REORG
+#define DEB_REORG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_REORG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_FREE_SPACE
@@ -2048,6 +2055,24 @@ Dbtup::disk_page_free(Signal *signal,
     Uint32 new_undo_len = size_len + (sz - 1);
     jamDataDebug(new_undo_len);
     jamDataDebug(undo_len);
+    DEB_REORG(("(%u)REORG: tab(%u,%u), row_id(%u,%u), key(%u,%u,%u)"
+               ", new_undo_len: %u, undo_len: %u, sz: %u, size_len: %u"
+               ", diskPagePtrI: %u, diskPageNo: %u",
+               instance(),
+               fragPtrP->fragTableId,
+               fragPtrP->fragmentId,
+               row_id->m_page_no,
+               row_id->m_page_idx,
+               key->m_file_no,
+               key->m_page_no,
+               key->m_page_idx,
+               new_undo_len,
+               undo_len,
+               sz,
+               size_len,
+               pagePtr.i,
+               ((Var_page*)pagePtr.p)->m_page_no));
+
     /**
      * We allocate 1 extra word per kByte, thus we should have at
      * least new_undo_len words, but at most new_undo_len + 32
