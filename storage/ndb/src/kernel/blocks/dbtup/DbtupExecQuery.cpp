@@ -6245,9 +6245,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             jamDebug();
             /**
              * The row will no longer fit in the original page. Thus we have
-             * to move the row to a new page. We set the DISK_REORG flag, this
-             * flag is only set in the Copy rows, it is never set in the
-             * actual stored tuple row.
+             * to move the row to a new page. We set the DISK_REORG flag.
              */
             jam();
             ndbrequire(add > 0);
