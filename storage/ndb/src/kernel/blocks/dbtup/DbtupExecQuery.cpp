@@ -687,6 +687,25 @@ Dbtup::load_diskpage(Signal* signal,
      */
     return -(TUP_NO_TUPLE_FOUND);
   }
+  if (ptr->m_operation_ptr_i != RNIL)
+  {
+    /**
+     * There is a previous operation, we need to get the flag
+     * m_load_extra_diskpage_on_commit from this operation
+     * before proceeding with below code.
+     *
+     * This is handled in prepareActiveOpList, but this flag
+     * is required to know whether to call load_extra_diskpage.
+     */
+    jam();
+    OperationrecPtr prevOpPtr;
+    prevOpPtr.i = ptr->m_operation_ptr_i;
+    regOperPtr->prevActiveOp = prevOpPtr.i;
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
+    regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit =
+      prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
+  }
+
   int res= 1;
   if (ptr->m_header_bits & Tuple_header::DISK_PART ||
       ptr->m_header_bits & Tuple_header::DISK_VAR_PART)
@@ -734,6 +753,7 @@ Dbtup::load_diskpage(Signal* signal,
        * We will request 2 pages and need to ensure that the first page
        * isn't paged out while we are paging in the second page.
        */
+      jamDebug();
       flags |= Page_cache_client::REF_REQ;
     }
     Page_cache_client pgman(this, c_pgman);
@@ -776,9 +796,13 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
+  OperationrecPtr prevOpPtr;
+  prevOpPtr.i = operPtr.p->prevActiveOp;
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
+
   PagePtr page_ptr;
-  ndbassert(!operPtr.p->m_copy_tuple_location.isNull());
-  Tuple_header *ptr = get_copy_tuple(&operPtr.p->m_copy_tuple_location);
+  ndbassert(!prevOpPtr.p->m_copy_tuple_location.isNull());
+  Tuple_header *ptr = get_copy_tuple(&prevOpPtr.p->m_copy_tuple_location);
   jamEntry();
   /**
    * We will never need an extra disk page if the first operation was an
@@ -797,7 +821,6 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
 
   Page_cache_client pgman(this, c_pgman);
   int res = pgman.get_page(signal, req, flags);
-  ndbrequire(res < 0);
   if (res > 0)
   {
     jam();
@@ -6004,6 +6027,8 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                    sizes[DD],
                    disk_alloc_flag,
                    disk_reorg_flag));
+        jamDataDebug(free);
+        jamDataDebug(used);
         if (unlikely(disk_alloc_flag || disk_reorg_flag))
         {
           jamDebug();
@@ -6043,9 +6068,15 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           if (disk_reorg_flag)
           {
             jamDebug();
+            /**
+             * We are not using diskPagePtr, need to recalculate
+             * some variables and set use_pagePtr to new disk page.
+             */
             used_pagePtr.i = regOperPtr->m_disk_extra_callback_page;
             used_pagePtr.p =
               (Page*)m_global_page_pool.getPtr(used_pagePtr.i);
+            used = used_pagePtr.p->uncommitted_used_space;
+            free = used_pagePtr.p->free_space;
           }
           else
           {
