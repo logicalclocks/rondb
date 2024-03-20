@@ -278,8 +278,6 @@ RS_Status PKROperation::CreateResponse() {
   }
 
   if (!found && !isBatch) {
-    std::cout << "No data found for operation: " << subOpTuples[0].pkRequest->OperationId()
-              << std::endl;
     return RS_CLIENT_404_ERROR();
   }
   return RS_OK;
@@ -436,42 +434,36 @@ void PKROperation::CloseTransaction() {
 RS_Status PKROperation::PerformOperation() {
   RS_Status status = Init();
   if (status.http_code != SUCCESS) {
-    std::cout << "Init failed" << std::endl;
     this->HandleNDBError(status);
     return status;
   }
 
   status = ValidateRequest();
   if (status.http_code != SUCCESS) {
-    std::cout << "ValidateRequest failed" << std::endl;
     this->HandleNDBError(status);
     return status;
   }
 
   status = SetupTransaction();
   if (status.http_code != SUCCESS) {
-    std::cout << "SetupTransaction failed" << std::endl;
     this->HandleNDBError(status);
     return status;
   }
 
   status = SetupReadOperation();
   if (status.http_code != SUCCESS) {
-    std::cout << "SetupReadOperation failed" << std::endl;
     this->HandleNDBError(status);
     return status;
   }
 
   status = Execute();
   if (status.http_code != SUCCESS) {
-    std::cout << "Execute failed" << std::endl;
     this->HandleNDBError(status);
     return status;
   }
 
   status = CreateResponse();
   if (status.http_code != SUCCESS) {
-    std::cout << "CreateResponse failed" << std::endl;
     this->HandleNDBError(status);
     return status;
   }

@@ -21,29 +21,48 @@
 #include "pk_data_structs.hpp"
 #include "json_parser.hpp"
 #include "encoding.hpp"
-#include "rdrs_dal_ext.hpp"
+#include "buffer_manager.hpp"
+#include "config_structs.hpp"
+#include "constants.hpp"
 
+#include <cstring>
 #include <drogon/HttpTypes.h>
-
-void PKReadCtrl::ping(const drogon::HttpRequestPtr & /*req*/,
-                      std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
-  auto resp = drogon::HttpResponse::newHttpResponse();
-  resp->setBody("Hello, World!");
-  resp->setStatusCode(drogon::HttpStatusCode::k200OK);
-  callback(resp);
-}
+#include <memory>
+#include <simdjson.h>
 
 void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                         std::function<void(const drogon::HttpResponsePtr &)> &&callback,
                         const std::string &db, const std::string &table) {
-  std::string_view reqBody = std::string_view(req->getBody().data());
-  PKReadParams reqStruct;
-  reqStruct.method     = "POST";
-  reqStruct.path.db    = db;
-  reqStruct.path.table = table;
+  size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
+  if (currentThreadIndex >= globalConfigs.rest.numThreads) {
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setBody("Too many threads");
+    resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+    callback(resp);
+    return;
+  }
 
-  RS_Status status = json_parser::parse(reqBody, reqStruct);
-  auto resp        = drogon::HttpResponse::newHttpResponse();
+  // Store it to the first string buffer
+  const char *json_str = req->getBody().data();
+  size_t length        = req->getBody().length();
+  if (length > REQ_BUFFER_SIZE) {
+    auto resp = drogon::HttpResponse::newHttpResponse();
+    resp->setBody("Request too large");
+    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+    callback(resp);
+    return;
+  }
+  
+  memcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str, length);
+
+  PKReadParams reqStruct(db, table);
+
+  RS_Status status = jsonParser.pk_parse(
+      currentThreadIndex,
+      simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
+                                   REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING),
+      reqStruct);
+  auto resp = drogon::HttpResponse::newHttpResponse();
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
@@ -61,25 +80,23 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
-    RS_BufferManager reqBuffManager  = RS_BufferManager(globalConfig.internal.bufferSize);
-    RS_BufferManager respBuffManager = RS_BufferManager(globalConfig.internal.bufferSize);
-    RS_Buffer *reqBuff               = reqBuffManager.getBuffer();
-    RS_Buffer *respBuff              = respBuffManager.getBuffer();
+    RS_Buffer reqBuff  = rsBufferArrayManager.get_req_buffer();
+    RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
 
-    status = create_native_request(reqStruct, reqBuff->buffer, respBuff->buffer);
+    status = create_native_request(reqStruct, reqBuff.buffer, respBuff.buffer);
     if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
       return;
     }
-    uintptr_t length_ptr = reinterpret_cast<uintptr_t>(reqBuff->buffer) +
+    uintptr_t length_ptr = reinterpret_cast<uintptr_t>(reqBuff.buffer) +
                            static_cast<uintptr_t>(PK_REQ_LENGTH_IDX * ADDRESS_SIZE);
     uint32_t *length_ptr_casted = reinterpret_cast<uint32_t *>(length_ptr);
-    reqBuff->size               = *length_ptr_casted;
+    reqBuff.size                = *length_ptr_casted;
 
     // pk_read
-    status = pk_read(reqBuff, respBuff);
+    status = pk_read(&reqBuff, &respBuff);
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
     if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK)
@@ -87,7 +104,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     else {
       resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
       // convert resp to json
-      char *respData = respBuff->buffer;
+      char *respData = respBuff.buffer;
 
       PKReadResponseJSON respJson;
       respJson.init();
@@ -96,5 +113,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       resp->setBody(respJson.to_string());
     }
     callback(resp);
+    rsBufferArrayManager.return_resp_buffer(respBuff);
+    rsBufferArrayManager.return_req_buffer(reqBuff);
   }
 }

@@ -21,6 +21,8 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_BATCH_PK_READ_CTRL_HPP_
 
 #include "rdrs_dal.h"
+#include "base_ctrl.hpp"
+#include "constants.hpp"
 
 #include <drogon/drogon.h>
 #include <drogon/HttpSimpleController.h>
@@ -28,12 +30,8 @@
 class BatchPKReadCtrl : public drogon::HttpController<BatchPKReadCtrl> {
  public:
   METHOD_LIST_BEGIN
-  ADD_METHOD_TO(BatchPKReadCtrl::ping, "/0.1.0/ping", drogon::Get);
-  ADD_METHOD_TO(BatchPKReadCtrl::batchPKRead, "/0.1.0/batch", drogon::Post);
+  ADD_METHOD_TO(BatchPKReadCtrl::batchPKRead, BATCH_PATH, drogon::Post);
   METHOD_LIST_END
-
-  static void ping(const drogon::HttpRequestPtr &req,
-                   std::function<void(const drogon::HttpResponsePtr &)> &&callback);
 
   static void batchPKRead(const drogon::HttpRequestPtr &req,
                           std::function<void(const drogon::HttpResponsePtr &)> &&callback);

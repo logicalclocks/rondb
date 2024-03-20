@@ -21,7 +21,7 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_CONNECTION_HPP_
 
 #include "config_structs.hpp"
-#include "src/logger.hpp"
+#include "logger.hpp"
 
 #include <string>
 #include <exception>

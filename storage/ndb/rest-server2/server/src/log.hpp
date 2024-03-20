@@ -20,9 +20,12 @@
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOG_HPP_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOG_HPP_
 
+#include "rdrs_dal.h"
+
 #include <string>
 
 class LogConfig {
+// TODO implement me
  public:
   std::string level;
   std::string filePath;
@@ -30,6 +33,8 @@ class LogConfig {
   int maxBackups;
   int maxAge;
   LogConfig();
+  RS_Status validate();
+  std::string string();
 };
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOG_HPP_

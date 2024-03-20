@@ -17,11 +17,12 @@
  * USA.
  */
 
-#include "src/ndb_api_helper.hpp"
+#include "ndb_api_helper.hpp"
+#include "error_strings.h"
+#include "status.hpp"
+
 #include <iostream>
 #include <string>
-#include "src/error_strings.h"
-#include "src/status.hpp"
 
 RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *table_str,
                        const NdbDictionary::Table **table_dict) {

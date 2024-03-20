@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,26 +17,14 @@
  * USA.
  */
 
-#include "log.hpp"
-#include "rdrs_dal.hpp"
+#include "base_ctrl.hpp"
 
-#include <sstream>
+#include <drogon/HttpTypes.h>
 
-LogConfig::LogConfig() {
-  this->level      = "warn";
-  this->filePath   = "";
-  this->maxSizeMb  = 100;
-  this->maxBackups = 10;
-  this->maxAge     = 30;
-}
-
-RS_Status LogConfig::validate() {
-  // TODO Implement Me
-  return CRS_Status().status;
-}
-
-std::string LogConfig::string() {
-  std::stringstream ss;
-  ss << "level: " << this->level;
-  return ss.str();
+void BaseCtrl::ping(const drogon::HttpRequestPtr & /*req*/,
+                    std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+  auto resp = drogon::HttpResponse::newHttpResponse();
+  resp->setBody("Hello, World!");
+  resp->setStatusCode(drogon::HttpStatusCode::k200OK);
+  callback(resp);
 }

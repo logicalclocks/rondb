@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,26 +17,6 @@
  * USA.
  */
 
-#include "log.hpp"
-#include "rdrs_dal.hpp"
+#include "buffer_manager.hpp"
 
-#include <sstream>
-
-LogConfig::LogConfig() {
-  this->level      = "warn";
-  this->filePath   = "";
-  this->maxSizeMb  = 100;
-  this->maxBackups = 10;
-  this->maxAge     = 30;
-}
-
-RS_Status LogConfig::validate() {
-  // TODO Implement Me
-  return CRS_Status().status;
-}
-
-std::string LogConfig::string() {
-  std::stringstream ss;
-  ss << "level: " << this->level;
-  return ss.str();
-}
+RS_BufferArrayManager rsBufferArrayManager = RS_BufferArrayManager();

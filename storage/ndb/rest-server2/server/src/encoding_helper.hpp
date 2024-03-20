@@ -22,7 +22,7 @@
 
 #include "pk_data_structs.hpp"
 #include "rdrs_const.h"
-#include "rdrs_dal_ext.hpp"
+#include "buffer_manager.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -38,7 +38,7 @@ RS_Status unquote(std::vector<char> &, bool);
 
 RS_Status Unquote(std::vector<char> &);
 
-EN_Status copy_str_to_buffer(const std::vector<char> &, void *, uint32_t);
+EN_Status copy_str_to_buffer(const std::string &, void *, uint32_t);
 
 EN_Status copy_ndb_str_to_buffer(std::vector<char> &, void *, uint32_t);
 

@@ -18,7 +18,10 @@
  */
 
 #include "encoding.hpp"
-#include "src/rdrs_dal_ext.hpp"
+#include "constants.hpp"
+#include "rdrs_dal.hpp"
+#include "buffer_manager.hpp"
+
 #include <cstring>
 
 RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void * /*respBuff*/) {
@@ -28,22 +31,22 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
 
   uint32_t dbOffset = head;
 
-  EN_Status status = copy_str_to_buffer(string_to_byte_array(pkReadParams.path.db), reqBuff, head);
+  EN_Status status = copy_str_to_buffer(pkReadParams.path.db, reqBuff, head);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     head = status.retValue;
   } else {
-    return RS_Status(status.http_code, status.message);
+    return CRS_Status(status.http_code, status.message).status;
   }
 
   uint32_t tableOffset = head;
 
-  status = copy_str_to_buffer(string_to_byte_array(pkReadParams.path.table), reqBuff, head);
+  status = copy_str_to_buffer(pkReadParams.path.table, reqBuff, head);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     head = status.retValue;
   } else {
-    return RS_Status(status.http_code, status.message);
+    return CRS_Status(status.http_code, status.message).status;
   }
 
   // PK Filters
@@ -66,12 +69,12 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
 
     uint32_t keyOffset = head;
 
-    status = copy_str_to_buffer(string_to_byte_array(filter.column), reqBuff, head);
+    status = copy_str_to_buffer(filter.column, reqBuff, head);
 
     if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
       head = status.retValue;
     } else {
-      return RS_Status(status.http_code, status.message);
+      return CRS_Status(status.http_code, status.message).status;
     }
 
     uint32_t value_offset = head;
@@ -81,7 +84,7 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
     if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
       head = status.retValue;
     } else {
-      return RS_Status(status.http_code, status.message);
+      return CRS_Status(status.http_code, status.message).status;
     }
 
     buf[kvi] = tupleOffset;
@@ -112,8 +115,9 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
       if (!col.returnType.empty()) {
         drt = data_return_type(col.returnType);
         if (drt == UINT32_MAX) {
-          return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                           "Invalid return type");
+          return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                            "Invalid return type")
+              .status;
         }
       }
 
@@ -121,12 +125,12 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
       head += ADDRESS_SIZE;
 
       // col name
-      status = copy_str_to_buffer(string_to_byte_array(col.column), reqBuff, head);
+      status = copy_str_to_buffer(col.column, reqBuff, head);
 
       if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
         head = status.retValue;
       } else {
-        return RS_Status(status.http_code, status.message);
+        return CRS_Status(status.http_code, status.message).status;
       }
     }
   }
@@ -136,27 +140,27 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
   if (!pkReadParams.operationId.empty()) {
     op_id_offset = head;
 
-    status = copy_str_to_buffer(string_to_byte_array(pkReadParams.operationId), reqBuff, head);
+    status = copy_str_to_buffer(pkReadParams.operationId, reqBuff, head);
 
     if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
       head = status.retValue;
     } else {
-      return RS_Status(status.http_code, status.message);
+      return CRS_Status(status.http_code, status.message).status;
     }
   }
 
   // request buffer header
   buf[PK_REQ_OP_TYPE_IDX]   = (uint32_t)(RDRS_PK_REQ_ID);
-  buf[PK_REQ_CAPACITY_IDX]  = (uint32_t)(5 * 1024 * 1024);
+  buf[PK_REQ_CAPACITY_IDX]  = (uint32_t)(RESP_BUFFER_SIZE);
   buf[PK_REQ_LENGTH_IDX]    = (uint32_t)(head);
-  buf[PK_REQ_FLAGS_IDX]     = (uint32_t)(0);  // TODO fill in. is_grpc, is_http ...
+  buf[PK_REQ_FLAGS_IDX]     = (uint32_t)(0);  // FIXME TODO fill in. is_grpc, is_http ...
   buf[PK_REQ_DB_IDX]        = (uint32_t)(dbOffset);
   buf[PK_REQ_TABLE_IDX]     = (uint32_t)(tableOffset);
   buf[PK_REQ_PK_COLS_IDX]   = (uint32_t)(pkOffset);
   buf[PK_REQ_READ_COLS_IDX] = (uint32_t)(readColsOffset);
   buf[PK_REQ_OP_ID_IDX]     = (uint32_t)(op_id_offset);
 
-  return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK), "OK");
+  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK), "OK").status;
 }
 
 RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) {
@@ -165,8 +169,9 @@ RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) 
   uint32_t responseType = buf[PK_RESP_OP_TYPE_IDX];
 
   if (responseType != RDRS_PK_RESP_ID)
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k500InternalServerError),
-                     "internal server error. Wrong response type");
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k500InternalServerError),
+                      "internal server error. Wrong response type")
+        .status;
 
   // some sanity checks
   uint32_t capacity   = buf[PK_RESP_CAPACITY_IDX];
@@ -176,8 +181,9 @@ RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) 
     std::string message = "internal server error. response buffer may be corrupt. ";
     message += "Buffer capacity: " + std::to_string(capacity) +
                ", data length: " + std::to_string(dataLength);
-    return RS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k500InternalServerError),
-                     message.c_str());
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k500InternalServerError),
+                      message.c_str())
+        .status;
   }
 
   uint32_t opIDX = buf[PK_RESP_OP_ID_IDX];
@@ -217,7 +223,7 @@ RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) 
         std::string value = std::string((char *)(reinterpret_cast<uintptr_t>(respBuff) + valueAdd));
 
         std::string quotedValue = quote_if_string(dataType, value);
-        response.setColumnData(name, string_to_byte_array(quotedValue));
+        response.setColumnData(name, std::vector<char>(quotedValue.begin(), quotedValue.end()));
       } else {
         response.setColumnData(name, std::vector<char>());
       }
@@ -230,5 +236,5 @@ RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) 
     uintptr_t messageIDXPtr = (uintptr_t)respBuff + (uintptr_t)messageIDX;
     message                 = std::string((char *)messageIDXPtr);
   }
-  return RS_Status(static_cast<HTTP_CODE>(status), message.c_str());
+  return CRS_Status(static_cast<HTTP_CODE>(status), message.c_str()).status;
 }

@@ -61,6 +61,7 @@ extern "C" {
 #define ERROR_035 "RonDB connection and object pool is not initialized."
 #define ERROR_036 "RonDB reconnection already in progress."
 #define ERROR_037 "Failed to read column."
+#ifdef __cplusplus
 constexpr char ERROR_038[]                          = "identifier is empty";
 constexpr int ERROR_CODE_EMPTY_IDENTIFIER           = 38;
 constexpr char ERROR_039[]                          = "identifier is too large";
@@ -115,6 +116,7 @@ constexpr char ERROR_063[]                    = "Field validation for 'RelativeU
 constexpr int ERROR_CODE_INVALID_RELATIVE_URL = 63;
 constexpr char ERROR_064[]                    = "Field validation for 'Body' failed";
 constexpr int ERROR_CODE_INVALID_BODY         = 64;
+#endif
 
 #ifdef __cplusplus
 }

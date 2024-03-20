@@ -20,7 +20,6 @@
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
 
-#include "config_structs.hpp"
 #include "rdrs_dal.h"
 
 #include <drogon/HttpTypes.h>
@@ -55,12 +54,20 @@ class PKReadReadColumn {
 
 class PKReadPath {
  public:
+  PKReadPath();
+  PKReadPath(const std::string &, const std::string &);
   std::string db;     // json:"db" uri:"db"  binding:"required,min=1,max=64"
   std::string table;  // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
 };
 
 class PKReadParams {
  public:
+  PKReadParams();
+  explicit PKReadParams(const std::string &);
+  explicit PKReadParams(PKReadPath &);
+  PKReadParams(const std::string &, PKReadPath &);
+  PKReadParams(const std::string &, const std::string &, const std::string &);
+  PKReadParams(const std::string &, const std::string &);
   std::string method;
   PKReadPath path;
   std::vector<PKReadFilter> filters;

@@ -19,7 +19,8 @@
 
 #include "logger.hpp"
 
-#include <string.h>
+#include <string>
+#include <cstring>
 #include <iostream>
 
 Callbacks my_cb_fns;
