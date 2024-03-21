@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,12 +51,19 @@
 #define TUP_NO_TUPLE_FOUND 626
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LCP 1
+//#define DEBUG_REORG 1
 //#define DEBUG_DELETE 1
 //#define DEBUG_DELETE_NR 1
 //#define DEBUG_LCP_LGMAN 1
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
+#endif
+
+#ifdef DEBUG_REORG
+#define DEB_REORG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_REORG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_ELEM_COUNT
@@ -680,6 +687,25 @@ Dbtup::load_diskpage(Signal* signal,
      */
     return -(TUP_NO_TUPLE_FOUND);
   }
+  if (ptr->m_operation_ptr_i != RNIL)
+  {
+    /**
+     * There is a previous operation, we need to get the flag
+     * m_load_extra_diskpage_on_commit from this operation
+     * before proceeding with below code.
+     *
+     * This is handled in prepareActiveOpList, but this flag
+     * is required to know whether to call load_extra_diskpage.
+     */
+    jam();
+    OperationrecPtr prevOpPtr;
+    prevOpPtr.i = ptr->m_operation_ptr_i;
+    regOperPtr->prevActiveOp = prevOpPtr.i;
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
+    regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit =
+      prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
+  }
+
   int res= 1;
   if (ptr->m_header_bits & Tuple_header::DISK_PART ||
       ptr->m_header_bits & Tuple_header::DISK_VAR_PART)
@@ -727,6 +753,7 @@ Dbtup::load_diskpage(Signal* signal,
        * We will request 2 pages and need to ensure that the first page
        * isn't paged out while we are paging in the second page.
        */
+      jamDebug();
       flags |= Page_cache_client::REF_REQ;
     }
     Page_cache_client pgman(this, c_pgman);
@@ -769,9 +796,13 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
+  OperationrecPtr prevOpPtr;
+  prevOpPtr.i = operPtr.p->prevActiveOp;
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
+
   PagePtr page_ptr;
-  ndbassert(!operPtr.p->m_copy_tuple_location.isNull());
-  Tuple_header *ptr = get_copy_tuple(&operPtr.p->m_copy_tuple_location);
+  ndbassert(!prevOpPtr.p->m_copy_tuple_location.isNull());
+  Tuple_header *ptr = get_copy_tuple(&prevOpPtr.p->m_copy_tuple_location);
   jamEntry();
   /**
    * We will never need an extra disk page if the first operation was an
@@ -790,7 +821,6 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
 
   Page_cache_client pgman(this, c_pgman);
   int res = pgman.get_page(signal, req, flags);
-  ndbrequire(res < 0);
   if (res > 0)
   {
     jam();
@@ -5915,7 +5945,8 @@ Dbtup::handle_size_change_after_update(Signal *signal,
   Uint32 bits = m_base_header_bits;
   Uint32 copy_bits= req_struct->m_tuple_ptr->m_header_bits;
   
-  DEB_LCP(("size_change: tab(%u,%u), row_id(%u,%u), old: %u, new: %u",
+  DEB_LCP(("(%u)size_change: tab(%u,%u), row_id(%u,%u), old: %u, new: %u",
+          instance(),
           req_struct->fragPtrP->fragTableId,
           req_struct->fragPtrP->fragmentId,
           regOperPtr->m_tuple_location.m_page_no,
@@ -5987,6 +6018,17 @@ Dbtup::handle_size_change_after_update(Signal *signal,
         Uint32 new_size = sizes[2+DD];
         bool disk_alloc_flag = copy_bits & Tuple_header::DISK_ALLOC;
         bool disk_reorg_flag = bits & Tuple_header::DISK_REORG;
+        DEB_REORG(("(%u) free: %u, used: %u, new_size: %u, size[DD]: %u"
+                   ", alloc_flag: %u, reorg_flag: %u",
+                   instance(),
+                   free,
+                   used,
+                   new_size,
+                   sizes[DD],
+                   disk_alloc_flag,
+                   disk_reorg_flag));
+        jamDataDebug(free);
+        jamDataDebug(used);
         if (unlikely(disk_alloc_flag || disk_reorg_flag))
         {
           jamDebug();
@@ -6026,9 +6068,15 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           if (disk_reorg_flag)
           {
             jamDebug();
+            /**
+             * We are not using diskPagePtr, need to recalculate
+             * some variables and set use_pagePtr to new disk page.
+             */
             used_pagePtr.i = regOperPtr->m_disk_extra_callback_page;
             used_pagePtr.p =
               (Page*)m_global_page_pool.getPtr(used_pagePtr.i);
+            used = used_pagePtr.p->uncommitted_used_space;
+            free = used_pagePtr.p->free_space;
           }
           else
           {
@@ -6039,6 +6087,16 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           Int32 add = new_size - curr_size;
           jamDataDebug(new_size);
           jamDataDebug(curr_size);
+          DEB_REORG(("(%u) (file,page): (%u,%u), new_size: %u, curr_size: %u"
+                     ", add: %d, free: %u, used: %u",
+                     instance(),
+                     key.m_file_no,
+                     key.m_page_no,
+                     new_size,
+                     curr_size,
+                     add,
+                     free,
+                     used));
           if ((used + add) <= free)
           {
             jamDebug();
@@ -6162,6 +6220,16 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           jamDataDebug(new_size);
           jamDataDebug(curr_size);
           jamDataDebug(regOperPtr->m_uncommitted_used_space);
+          DEB_REORG(("(%u) key(%u,%u,%u), new_size: %u, curr_size: %u"
+                     ", add: %d, uncommitted_used_space: %u",
+                     instance(),
+                     key.m_file_no,
+                     key.m_page_no,
+                     key.m_page_idx,
+                     new_size,
+                     curr_size,
+                     add,
+                     regOperPtr->m_uncommitted_used_space));
           /**
            * curr_size is the size of the row before the transaction
            * started. new_size is the size after this operation is
@@ -6208,9 +6276,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             jamDebug();
             /**
              * The row will no longer fit in the original page. Thus we have
-             * to move the row to a new page. We set the DISK_REORG flag, this
-             * flag is only set in the Copy rows, it is never set in the
-             * actual stored tuple row.
+             * to move the row to a new page. We set the DISK_REORG flag.
              */
             jam();
             ndbrequire(add > 0);
@@ -6331,6 +6397,17 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             new_key.m_page_idx = new_size;
 	    void *ptr = (void*)req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
             memcpy(ptr, &new_key, sizeof(new_key));
+            DEB_REORG(("(%u) REORG set: tab(%u,%u), row(%u,%u), disk_key:"
+                       " (%u,%u), new_size: %u, undo_buffer_space: %u",
+                       instance(),
+                       req_struct->fragPtrP->fragTableId,
+                       req_struct->fragPtrP->fragmentId,
+                       regOperPtr->m_tuple_location.m_page_no,
+                       regOperPtr->m_tuple_location.m_page_idx,
+                       new_key.m_file_no,
+                       new_key.m_page_no,
+                       new_size,
+                       regOperPtr->m_undo_buffer_space));
           }
         }
       }

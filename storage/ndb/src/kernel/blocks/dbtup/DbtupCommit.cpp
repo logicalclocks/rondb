@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,6 +38,7 @@
 
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_REORG 1
 //#define DEBUG_DISK 1
 //#define DEBUG_LCP 1
 //#define DEBUG_LCP_SKIP_DELETE_EXTRA 1
@@ -52,6 +53,12 @@
 //#define DEBUG_LCP_DEL 1
 //#define DEBUG_LCP_SKIP 1
 //#define DEBUG_LCP_SKIP_DELETE 1
+#endif
+
+#ifdef DEBUG_REORG
+#define DEB_REORG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_REORG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DISK
@@ -410,10 +417,7 @@ Dbtup::dealloc_tuple(Signal* signal,
       Tuple_header *copy= get_copy_tuple(&regOperPtr->m_copy_tuple_location);
       Local_key key;
       memcpy(&key, copy->get_disk_ref_ptr(regTabPtr), sizeof(key));
-      ndbrequire(regOperPtr->m_disk_extra_callback_page != RNIL);
-      Ptr<GlobalPage> pagePtr;
-      ndbrequire(m_global_page_pool.getPtr(pagePtr,
-                                regOperPtr->m_disk_extra_callback_page));
+      ndbrequire(regOperPtr->m_disk_extra_callback_page == pagePtr.i);
       PagePtr diskPagePtr((Tup_page*)pagePtr.p, pagePtr.i);
       ndbrequire(diskPagePtr.p->m_restart_seq == globalData.m_restart_seq);
       disk_page_abort_prealloc_callback_1(signal,
@@ -421,6 +425,13 @@ Dbtup::dealloc_tuple(Signal* signal,
                                           diskPagePtr,
                                           key.m_page_idx,
                                           0);
+      /**
+       * DISK_REORG means that disk_page_free must use the original page
+       * and NOT m_disk_extra_callback_page which is where pagePtr is
+       * currently pointing, so move it there.
+       */
+      ndbrequire(m_global_page_pool.getPtr(pagePtr,
+                                regOperPtr->m_disk_callback_page));
       bits &= (~Tuple_header::DISK_REORG);
     }
     else if (regOperPtr->m_uncommitted_used_space > 0)
@@ -429,9 +440,7 @@ Dbtup::dealloc_tuple(Signal* signal,
       Local_key key;
       memcpy(&key, ptr->get_disk_ref_ptr(regTabPtr), sizeof(key));
       ndbrequire(regOperPtr->m_disk_callback_page != RNIL);
-      Ptr<GlobalPage> pagePtr;
-      ndbrequire(m_global_page_pool.getPtr(pagePtr,
-                                regOperPtr->m_disk_callback_page));
+      ndbrequire(regOperPtr->m_disk_callback_page == pagePtr.i);
       PagePtr diskPagePtr((Tup_page*)pagePtr.p, pagePtr.i);
       Uint32 decrement = regOperPtr->m_uncommitted_used_space;
       ndbrequire(diskPagePtr.p->m_restart_seq == globalData.m_restart_seq);
@@ -825,8 +834,6 @@ Dbtup::commit_operation(Signal* signal,
   /**
    * Reference to old disk reference must be kept since it is used to
    * deallocate the disk row in case the state is DISK_REORG.
-   * If there is no disk reference, this will just copy part of the
-   * tuple header to a stack variable that isn't used.
    */
   Local_key old_disk_key;
   memcpy(&old_disk_key,
@@ -1006,9 +1013,12 @@ Dbtup::commit_operation(Signal* signal,
       Local_key rowid = regOperPtr->m_tuple_location;
       rowid.m_page_no = pagePtr.p->frag_page_id;
       jamDebug();
+      Ptr<GlobalPage> pagePtr;
+      ndbrequire(m_global_page_pool.getPtr(pagePtr,
+                                regOperPtr->m_disk_callback_page));
       PagePtr tmpptr;
-      tmpptr.i = diskPagePtr.i;
-      tmpptr.p = reinterpret_cast<Page*>(diskPagePtr.p);
+      tmpptr.i = pagePtr.i;
+      tmpptr.p = reinterpret_cast<Page*>(pagePtr.p);
       disk_page_free(signal,
                      regTabPtr,
                      regFragPtr, 
@@ -1048,11 +1058,6 @@ Dbtup::commit_operation(Signal* signal,
       }
 
       Uint32 alloc_size = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
-      Ptr<GlobalPage> pagePtr;
-      ndbrequire(m_global_page_pool.getPtr(pagePtr,
-                                regOperPtr->m_disk_extra_callback_page));
-      diskPagePtr.i = pagePtr.i;
-      diskPagePtr.p = (Tup_page*)pagePtr.p;
       disk_page_alloc(signal,
                       regTabPtr,
                       regFragPtr,
@@ -1547,6 +1552,9 @@ Dbtup::disk_page_commit_callback(Signal* signal,
     jam();
     regOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit = 0;
     regOperPtr.p->m_disk_callback_page = page_id;
+    DEB_REORG(("(%u) callback: m_disk_callback_page: %u",
+               instance(),
+               regOperPtr.p->m_disk_callback_page));
   }
   else
   {
@@ -1556,6 +1564,9 @@ Dbtup::disk_page_commit_callback(Signal* signal,
     ndbrequire(extra_data_disk_page == 1);
     regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
     regOperPtr.p->m_disk_extra_callback_page = page_id;
+    DEB_REORG(("(%u) callback: m_disk_extra_callback_page: %u",
+               instance(),
+               regOperPtr.p->m_disk_extra_callback_page));
   }
   ndbrequire(m_global_page_pool.getPtr(diskPagePtr, page_id));
   prepare_oper_ptr = regOperPtr;
@@ -1659,6 +1670,9 @@ int Dbtup::retrieve_data_page(Signal *signal,
     jam();
     regOperPtr.p->m_disk_callback_page = res;
     regOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit = 0;
+    DEB_REORG(("(%u) m_disk_callback_page: %u",
+               instance(),
+               regOperPtr.p->m_disk_callback_page));
   }
   else
   {
@@ -1668,6 +1682,9 @@ int Dbtup::retrieve_data_page(Signal *signal,
     ndbrequire(extra_data_disk_page == 1);
     regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
     regOperPtr.p->m_disk_extra_callback_page= res;
+    DEB_REORG(("(%u) m_disk_extra_callback_page: %u",
+               instance(),
+               regOperPtr.p->m_disk_extra_callback_page));
   }
 
   return res;
@@ -1691,7 +1708,6 @@ int Dbtup::retrieve_log_page(Signal *signal,
   cb.m_callbackData = regOperPtr.i;
   cb.m_callbackIndex = DISK_PAGE_LOG_BUFFER_CALLBACK;
   Uint32 sz = regOperPtr.p->m_undo_buffer_space;
-
   /**
    * We need to allocate space for both DELETE disk row part and
    * INSERT disk row part when the flag DISK_REORG is set. We also
@@ -1728,20 +1744,58 @@ int Dbtup::retrieve_log_page(Signal *signal,
        * fixed size of this log record and thus the m_undo_buffer_space should
        * only reflect the DELETE disk part.
        */
-      if (tuple_header->m_header_bits & Tuple_header::DISK_REORG)
-      {
-        jam();
-        Uint32 undo_insert_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
-        ndbrequire(regOperPtr.p->m_undo_buffer_space > undo_insert_len);
-        regOperPtr.p->m_undo_buffer_space -= undo_insert_len;
-      }
       Local_key key;
       memcpy(&key,
              tuple_header->get_disk_ref_ptr(regTabPtr),
              sizeof(Local_key));
-      Uint32 old_len = ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
+      Uint32 old_len;
+      if (tuple_header->m_header_bits & Tuple_header::DISK_REORG)
+      {
+        jam();
+        DEB_REORG(("(%u)REORG: tab(%u,%u), row_id(%u,%u), undo_buffer_space:"
+                   " %u, key(%u,%u,%u), high_index: %u"
+                   ", diskPagePtrI: %u, diskPageNo: %u",
+                   instance(),
+                   regFragPtr.p->fragTableId,
+                   regFragPtr.p->fragmentId,
+                   regOperPtr.p->m_tuple_location.m_page_no,
+                   regOperPtr.p->m_tuple_location.m_page_idx,
+                   sz,
+                   key.m_file_no,
+                   key.m_page_no,
+                   key.m_page_idx,
+                   ((Var_page*)diskPagePtr.p)->get_high_index(),
+                   diskPagePtr.i,
+                   ((Var_page*)diskPagePtr.p)->m_page_no));
+        /**
+         * In the DISK_REORG case the m_undo_buffer_space doesn't cover
+         * the call to disk_page_undo_alloc, this needs to be added here.
+         *
+         * When using DISK_REORG the diskPagePtr points to the new row
+         * page. However the old length is retrieved from the old row
+         * page. This page is pointed to by m_disk_callback_page.
+         */
+        sz += (sizeof(Dbtup::Disk_undo::Alloc) >> 2);
+        Ptr<GlobalPage> pagePtr;
+        ndbrequire(m_global_page_pool.getPtr(pagePtr,
+                     regOperPtr.p->m_disk_callback_page));
+        old_len = ((Var_page*)pagePtr.p)->get_entry_len(key.m_page_idx);
+      }
+      else
+      {
+        jamDebug();
+        jamDataDebug(key.m_page_idx);
+        old_len = ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
+      }
       Uint32 real_undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
                              (old_len - 1);
+      DEB_REORG(("(%u) page_idx: %u, old_len: %u, real_undo_len: %u"
+                 ", undo_buffer_space: %u",
+                 instance(),
+                 key.m_page_idx,
+                 old_len,
+                 real_undo_len,
+                 regOperPtr.p->m_undo_buffer_space));
       if (real_undo_len < regOperPtr.p->m_undo_buffer_space)
       {
         jam();
@@ -1751,7 +1805,9 @@ int Dbtup::retrieve_log_page(Signal *signal,
         sz -= decrement_size; // Need less log buffer space
         regOperPtr.p->m_undo_buffer_space = real_undo_len;
         {
-          Logfile_client lgman(this, c_lgman, regFragPtr.p->m_logfile_group_id);
+          Logfile_client lgman(this,
+                               c_lgman,
+                               regFragPtr.p->m_logfile_group_id);
           lgman.free_log_space(decrement_size, jamBuffer());
         }
       }

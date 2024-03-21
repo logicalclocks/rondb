@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -596,6 +596,10 @@ struct Tup_varsize_page
   Uint32 get_index_word(Uint32 page_idx) const {
     assert(page_idx < high_index);
     return * (m_data + (DATA_WORDS - page_idx));
+  }
+
+  Uint32 get_high_index() const {
+    return high_index;
   }
 
   /**
