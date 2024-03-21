@@ -50,6 +50,7 @@
 #define JAM_FILE_ID 441
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_CALLBACK_WORDS 1
 //#define DEBUG_LGMAN 1
 //#define DEBUG_LGMAN_EXTRA 1
 //#define DEBUG_LGMAN_SPLIT 1
@@ -57,6 +58,12 @@
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
 //#define DEBUG_UNDO_BUFFER 1
+#endif
+
+#ifdef DEBUG_CALLBACK_WORDS
+#define DEB_CALLBACK_WORDS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CALLBACK_WORDS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LGMAN
@@ -2964,6 +2971,9 @@ Logfile_client::get_log_buffer(Signal* signal,
     {
       jamBlock(m_client_block);
       ptr.p->m_callback_buffer_words = callback_buffer + sz;
+      DEB_CALLBACK_WORDS(("(%u)1: callback_buffer_words: %u",
+                          blockToInstance(m_block),
+                          ptr.p->m_callback_buffer_words));
       return 1;
     }
     
@@ -3294,6 +3304,8 @@ Lgman::process_log_buffer_waiters(Signal* signal, Ptr<Logfile_group> ptr)
     Uint32 block = waiter.p->m_block;
     CallbackPtr & callback = waiter.p->m_callback;
     ptr.p->m_callback_buffer_words += sz;
+    DEB_CALLBACK_WORDS(("2: callback_buffer_words: %u",
+                        ptr.p->m_callback_buffer_words));
     sendCallbackConf(signal, block, callback, logfile_group_id,
                      LgmanContinueB::PROCESS_LOG_BUFFER_WAITERS, 0);
 
@@ -4001,6 +4013,11 @@ Logfile_client::add_entry_complex(const Change* src,
     tot += src[i].len;
   }
   require(alloc_size >= tot);
+  DEB_CALLBACK_WORDS(("(%u)tot: %u, alloc_size: %u, remaining_page_space: %u",
+                      blockToInstance(m_block),
+                      tot,
+                      alloc_size,
+                      remaining_page_space));
   if (tot <= remaining_page_space ||
       remaining_page_space < (4 + 2 + 4))
   {
@@ -4035,6 +4052,9 @@ Logfile_client::add_entry_complex(const Change* src,
                    sz_first_part,
                    remaining_page_space));
   lg_ptr.p->m_callback_buffer_words = callback_buffer - alloc_size;
+  DEB_CALLBACK_WORDS(("(%u)3: callback_buffer_words: %u",
+                      blockToInstance(m_block),
+                      lg_ptr.p->m_callback_buffer_words));
   /**
    * This record is split into two records, thus we use a bit more header
    * space. For fixed size records we use an extra 5 byte header plus the
@@ -4234,6 +4254,11 @@ Logfile_client::add_entry_simple(const Change* src,
     m_lgman->validate_logfile_group(lg_ptr,
                                     (const char*)0,
                                     m_client_block->jamBuffer());
+    DEB_CALLBACK_WORDS(("(%u)callback_buffer: %u, alloc_size: %u, update: %u",
+                        blockToInstance(m_block),
+                        callback_buffer,
+                        alloc_size,
+                        update_callback_buffer_words));
     if (update_callback_buffer_words)
     {
       if (unlikely(! (alloc_size <= callback_buffer)))
@@ -4247,6 +4272,9 @@ Logfile_client::add_entry_simple(const Change* src,
        * the extra space.
        */
       lg_ptr.p->m_callback_buffer_words = callback_buffer - alloc_size;
+       DEB_CALLBACK_WORDS(("(%u)4: callback_buffer_words: %u",
+                           blockToInstance(m_block),
+                           lg_ptr.p->m_callback_buffer_words));
       lg_ptr.p->m_free_log_words += (alloc_size - tot);
       DEB_LGMAN(("Line(%u): free_log_words: %llu, change: %d",
                  __LINE__,
