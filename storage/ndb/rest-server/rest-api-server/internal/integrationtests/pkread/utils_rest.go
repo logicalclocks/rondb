@@ -35,8 +35,8 @@ func pkRESTTestWithClient(
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
 
-	httpCode, response := testclient.SendHttpRequest(
-		t,
+	httpCode, response := testclient.SendHttpRequestWithClient(
+		t, client,
 		config.PK_HTTP_VERB,
 		url,
 		string(body),

@@ -57,7 +57,7 @@ func BenchmarkSimple(b *testing.B) {
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
 		the gRPC server, depending on this flag.
 	*/
-	runAgainstGrpcServer := true
+	runAgainstGrpcServer := false
 
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
