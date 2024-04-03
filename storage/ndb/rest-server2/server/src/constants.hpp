@@ -72,6 +72,8 @@ constexpr const char *SERVERS                        = "Servers";
 constexpr const char *USER                           = "User";
 constexpr const char *ROOT_STR                       = "root";
 constexpr const char *PASSWORD                       = "Password";
+constexpr const char *API_KEY_NAME                   = "X-API-KEY";
+constexpr const char *API_KEY_NAME_LOWER_CASE        = "x-api-key";
 
 const int RESP_BUFFER_SIZE                 = 5 * 1024 * 1024;
 const int REQ_BUFFER_SIZE                  = 1024 * 1024;

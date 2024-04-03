@@ -22,6 +22,7 @@
 #include "json_parser.hpp"
 #include "encoding.hpp"
 #include "buffer_manager.hpp"
+#include "api_key.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
 
@@ -33,9 +34,9 @@
 void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                         std::function<void(const drogon::HttpResponsePtr &)> &&callback,
                         const std::string &db, const std::string &table) {
+  auto resp = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (currentThreadIndex >= globalConfigs.rest.numThreads) {
-    auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Too many threads");
     resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
     callback(resp);
@@ -62,7 +63,6 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
                                    REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING),
       reqStruct);
-  auto resp = drogon::HttpResponse::newHttpResponse();
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
@@ -71,6 +71,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     return;
   }
 
+  // Validate
   status = reqStruct.validate();
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
@@ -79,6 +80,19 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     return;
   }
 
+  // Authenticate
+  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
+    status       = authenticate(api_key, reqStruct);
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode(drogon::HttpStatusCode::k401Unauthorized);
+      callback(resp);
+      return;
+    }
+  }
+
+  // Execute
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     RS_Buffer reqBuff  = rsBufferArrayManager.get_req_buffer();
     RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();

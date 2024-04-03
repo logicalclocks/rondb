@@ -22,6 +22,7 @@
 #include "rdrs_dal.h"
 #include "json_parser.hpp"
 #include "pk_read_ctrl.hpp"
+#include "src/api_key.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -34,7 +35,8 @@
 #include <sstream>
 
 int main() {
-  JSONParser jsonParser = JSONParser();
+  jsonParser = JSONParser();
+  apiKeyCache = std::make_shared<Cache>();
   
   /*
     Order:
