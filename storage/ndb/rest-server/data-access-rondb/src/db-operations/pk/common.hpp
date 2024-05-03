@@ -24,6 +24,7 @@
 #include "src/rdrs-dal.h"
 #include <my_time.h>
 #include <memory>
+#include <list>
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
 
@@ -75,5 +76,12 @@ Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initialDelayInMS, Uint32 
  * Check error if unload schema is needed
  */
 bool UnloadSchema(RS_Status status);
+
+
+/**
+ * Handle NDB schema releated errors, such as, Invalid schema errors
+ * This unloads the tables schema from the NDB::Dictionary
+ */
+RS_Status HandleSchemaErrors(Ndb *ndbObject, RS_Status status, const std::list<std::tuple<std::string, std::string>> &tables);
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_HPP_
