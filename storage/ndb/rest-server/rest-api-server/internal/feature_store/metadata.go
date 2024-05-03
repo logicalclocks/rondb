@@ -32,6 +32,9 @@ import (
 	"hopsworks.ai/rdrs/internal/log"
 )
 
+var DefaultExpiration time.Duration = 15 * time.Minute
+var CleanupInterval time.Duration = 15 * time.Minute
+
 const ERROR_NOT_FOUND = "Not Found"
 
 type FeatureViewMetadata struct {
@@ -283,7 +286,7 @@ type FeatureViewMetaDataCache struct {
 }
 
 func NewFeatureViewMetaDataCache() *FeatureViewMetaDataCache {
-	var c = cache.New(15*time.Minute, 15*time.Minute)
+	var c = cache.New(DefaultExpiration, CleanupInterval)
 	return &FeatureViewMetaDataCache{*c}
 }
 

@@ -24,10 +24,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/linkedin/goavro/v2"
 	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/feature_store"
+	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
@@ -1181,5 +1184,36 @@ func Test_PassedFeatures_LabelShouldFail(t *testing.T) {
 		)
 		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
 		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FEATURE_NOT_EXIST.GetReason(), http.StatusBadRequest)
+	}
+}
+
+func Test_GetFeatureVector_Success_ComplexType_With_Schema_Change(t *testing.T) {
+
+	fsmetadata.DefaultExpiration = 1 * time.Second
+	fsmetadata.CleanupInterval = 1 * time.Second
+
+	doneCh := make(chan int)
+	stop := false
+	go work(t, &stop, doneCh)
+
+	time.Sleep(2 * time.Second)
+
+	log.Debug("Changing the schema for the test")
+	err := testutils.RunQueriesOnDataCluster(testdbs.HopsworksUpdateScheme)
+	if err != nil {
+		t.Fatalf("failed to change schema. Error: %v", err)
+	}
+	log.Debug("Changed the schema for the test")
+
+	time.Sleep(2 * time.Second)
+	stop = true
+
+	<-doneCh
+}
+
+func work(t *testing.T, stop *bool, done chan int) {
+	defer func() { done <- 1 }()
+	for !*stop {
+		Test_GetFeatureVector_Success_ComplexType(t)
 	}
 }

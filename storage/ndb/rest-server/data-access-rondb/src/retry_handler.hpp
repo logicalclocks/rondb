@@ -44,7 +44,8 @@ extern Uint32 METADATA_CONN_OP_RETRY_JITTER_IN_MS;
     }                                                                                              \
     usleep(ExponentialDelayWithJitter(orc, DATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS,                 \
           DATA_CONN_OP_RETRY_JITTER_IN_MS) *  1000);                                               \
-    LOG_DEBUG("Retrying failed data operation. Code: "+std::to_string(status.code));               \
+    LOG_DEBUG("Retrying failed metadata operation. Code: " + std::to_string(status.code) +         \
+        " MySQL Code: " + std::to_string(status.mysql_code) + " Message: "+status.message);        \
   } while (true);
 
 
@@ -59,8 +60,9 @@ extern Uint32 METADATA_CONN_OP_RETRY_JITTER_IN_MS;
     }                                                                                              \
     usleep(ExponentialDelayWithJitter(orc, METADATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS,             \
           METADATA_CONN_OP_RETRY_JITTER_IN_MS) *  1000);                                           \
-    LOG_DEBUG("Retrying failed metadata operation. Code: "+std::to_string(status.code));           \
-  } while (true);
+    LOG_DEBUG("Retrying failed metadata operation. Code: " + std::to_string(status.code) +         \
+        " MySQL Code: " + std::to_string(status.mysql_code) + " Message: "+status.message);        \
+  } while (true); 
 
 #endif  //STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RETRY_HANDLER_HPP_
 
