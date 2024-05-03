@@ -80,7 +80,7 @@ bool UnloadSchema(RS_Status status);
 
 /**
  * Handle NDB schema releated errors, such as, Invalid schema errors
- * This unloads the tables schema from the NDB::Dictionary
+ * This unloads the tables' schema from the NDB::Dictionary
  */
 RS_Status HandleSchemaErrors(Ndb *ndbObject, RS_Status status, const std::list<std::tuple<std::string, std::string>> &tables);
 
