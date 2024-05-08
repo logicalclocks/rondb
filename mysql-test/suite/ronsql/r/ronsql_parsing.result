@@ -1,0 +1,1513 @@
+===== Null byte at beginning =====
+Input contains null byte at position 0.
+Caught exception: Syntax error.
+===== Null byte in identifier =====
+Input contains null byte at position 8.
+Caught exception: Syntax error.
+===== Null byte at end =====
+Input contains null byte at position 17.
+Caught exception: Syntax error.
+===== Illegal UTF-8 byte =====
+Syntax error in SQL statement: Bytes 0xf8-0xff are illegal in UTF-8.
+> select aú from tbl;
+!         ^
+Caught exception: Syntax error.
+===== Illegal 0xc0 UTF-8 byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select aÀ from tbl;
+!         ^
+Caught exception: Syntax error.
+===== Illegal 0xc1 UTF-8 byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select aÁ from tbl;
+!         ^
+Caught exception: Syntax error.
+===== UTF-8 overlong 2-byte sequence =====
+Syntax error in SQL statement: Overlong UTF-8 encoding.
+> select aÁ¡ from tbl;
+!         ^
+Caught exception: Syntax error.
+===== UTF-8 overlong 3-byte sequence =====
+Syntax error in SQL statement: Overlong UTF-8 encoding.
+> select aàƒ¶ from tbl;
+!         ^
+Caught exception: Syntax error.
+===== Too high code point (U+123456) =====
+Syntax error in SQL statement: Unicode code points above U+10FFFF are invalid.
+> select `aô£‘–` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== Surrogate (U+dead) =====
+Syntax error in SQL statement: Unicode code points U+D800 -- U+DFFF are invalid, as they correspond to UTF-16 surrogate pairs.
+> select `aíº­` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== Non-BMP UTF-8 in identifier =====
+Syntax error in SQL statement: Unicode code points above U+FFFF are not allowed in MySQL identifiers.
+> select `að “—` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== Unimplemented keyword used as unquoted identifier =====
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> select zone from tbl;
+!        ^^^^
+Caught exception: Syntax error.
+===== Incomplete escape sequence in single-quoted string =====
+Syntax error in SQL statement: Incomplete escape sequence in single-quoted string
+> select a from tbl where 'hello\
+!                               ^
+Caught exception: Syntax error.
+===== Unexpected EOI in single-quoted string =====
+Syntax error in SQL statement: Unexpected end of input inside single-quoted string
+> select a from tbl where 'hello
+!                         ^^^^^^
+Caught exception: Syntax error.
+===== Illegal token =====
+Syntax error in SQL statement: Illegal token
+> select #a from tbl;
+!        ^
+Caught exception: Syntax error.
+===== EOI inside quoted identifier =====
+Syntax error in SQL statement: Unexpected end of input inside quoted identifier
+> select `a
+!        ^^
+Caught exception: Syntax error.
+===== EOI inside escaped identifier =====
+Syntax error in SQL statement: Unexpected end of input inside quoted identifier
+> select `bc``de
+!        ^^^^^^^
+Caught exception: Syntax error.
+===== UTF-8 2-byte sequence with illegal 2nd byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `aÃ` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== UTF-8 2-byte sequence at EOI with 2nd byte missing =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `a` from `tableÃ
+!                       ^
+Caught exception: Syntax error.
+===== UTF-8 3-byte sequence with illegal 2nd byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `aá` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== UTF-8 3-byte sequence with illegal 3rd byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `aáš` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== UTF-8 3-byte sequence at EOI with 2nd byte missing =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `a` from `tableá
+!                       ^
+Caught exception: Syntax error.
+===== UTF-8 3-byte sequence at EOI with 3rd byte missing =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `a` from `tableáš
+!                       ^
+Caught exception: Syntax error.
+===== UTF-8 4-byte sequence with illegal 2nd byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `að` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== UTF-8 4-byte sequence with illegal 3rd byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `að ` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== UTF-8 4-byte sequence with illegal 4th byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `að “` from tbl;
+!          ^
+Caught exception: Syntax error.
+===== UTF-8 4-byte sequence at EOI with 2nd byte missing =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `a` from `tableð
+!                       ^
+Caught exception: Syntax error.
+===== UTF-8 4-byte sequence at EOI with 3rd byte missing =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `a` from `tableð 
+!                       ^
+Caught exception: Syntax error.
+===== UTF-8 4-byte sequence at EOI with 4th byte missing =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select `a` from `tableð “
+!                       ^
+Caught exception: Syntax error.
+===== Rogue UTF-8 continuation byte =====
+Syntax error in SQL statement: Invalid UTF-8 encoding.
+> select a‰ from tbl;
+!         ^
+Caught exception: Syntax error.
+===== Empty input =====
+Syntax error in SQL statement: Empty input
+Caught exception: Syntax error.
+===== Invalid token at beginning =====
+Syntax error in SQL statement: Illegal token
+> select a from tbl;
+! ^
+Caught exception: Syntax error.
+===== Control character in unquoted identifier =====
+Syntax error in SQL statement: Illegal token
+> select a from tbl;
+!         ^
+Caught exception: Syntax error.
+===== Invalid token at end =====
+Syntax error in SQL statement: Illegal token
+> select a from tbl;
+!                   ^
+Caught exception: Syntax error.
+===== Unexpected end of input =====
+Syntax error in SQL statement: Unexpected end of input
+> select a from tbl
+!                  ^
+Caught exception: Syntax error.
+===== Unexpected at this point =====
+Syntax error in SQL statement: Unexpected at this point
+> select a `bcde` from tbl;
+!          ^^^^^^
+Caught exception: Syntax error.
+===== Unexpected before newline =====
+Syntax error in SQL statement: Unexpected at this point
+> select a `bcde`
+!          ^^^^^^
+> from tbl;
+Caught exception: Syntax error.
+===== Unexpected after newline =====
+Syntax error in SQL statement: Unexpected at this point
+> select a
+> `bcde` from tbl;
+! ^^^^^^
+Caught exception: Syntax error.
+===== Unexpected with ending newline =====
+Syntax error in SQL statement: Unexpected at this point
+> select a `bcde` from tbl;
+!          ^^^^^^
+Caught exception: Syntax error.
+===== Unexpected with newline at start =====
+Syntax error in SQL statement: Unexpected at this point
+> 
+> select a `bcde` from tbl;
+!          ^^^^^^
+Caught exception: Syntax error.
+===== Unexpected containing newline =====
+Syntax error in SQL statement: Unexpected at this point
+> select a `bc
+!          ^^^
+> de` from tbl;
+! ^^^
+Caught exception: Syntax error.
+===== Unexpected containing two newlines =====
+Syntax error in SQL statement: Unexpected at this point
+> select a `b
+!          ^^
+> cd
+! ^^
+> e` from tbl;
+! ^^
+Caught exception: Syntax error.
+===== Unexpected escaped identifier =====
+Syntax error in SQL statement: Unexpected at this point
+> select a `bc``de` from tbl;
+!          ^^^^^^^^
+Caught exception: Syntax error.
+===== Two escaped identifiers, 1st unexpected =====
+Syntax error in SQL statement: Unexpected at this point
+> select a `bc``de` from `fg``h``i`;
+!          ^^^^^^^^
+Caught exception: Syntax error.
+===== Two escaped identifiers, 2nd unexpected =====
+Syntax error in SQL statement: Unexpected at this point
+> select a, `bc``de` from tbl `fg``h``i`;
+!                             ^^^^^^^^^^
+Caught exception: Syntax error.
+===== Error marker alignment after 2-byte UTF-8 characters =====
+Syntax error in SQL statement: Unexpected at this point
+> select a
+>       ,rÃ¤ksmÃ¶rgÃ¥s rÃ¤ksmÃ¶rgÃ¥s
+!                   ^^^^^^^^^^
+> from tbl;
+Caught exception: Syntax error.
+===== Error marker alignment after 3-byte UTF-8 character =====
+Syntax error in SQL statement: Unexpected at this point
+> select a
+>       ,áš±ab áš±ab
+!            ^^^
+> from tbl;
+Caught exception: Syntax error.
+===== Incomplete escape sequence in single-quoted string =====
+Syntax error in SQL statement: Incomplete escape sequence in single-quoted string
+> select a from tbl where 'word\
+!                              ^
+Caught exception: Syntax error.
+===== Unexpected end of input inside single-quoted string =====
+Syntax error in SQL statement: Unexpected end of input inside single-quoted string
+> select a from tbl where 'word
+!                         ^^^^^
+Caught exception: Syntax error.
+===== date_add not supported in output =====
+Syntax error in SQL statement: Unexpected at this point
+> select date_add(col1, interval 1 day) from tbl;
+!        ^^^^^^^^
+Caught exception: Syntax error.
+===== Parser stack exhausted =====
+Caught exception: Parser stack exceeded its maximum depth.
+===== Too long unquoted identifier in column name =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;
+!        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long quoted identifier in column name =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;
+!        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long quoted identifier in column name, although characters < 64 =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÃ¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶` from tbl;
+!        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long unquoted alias =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a as aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;
+!             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long quoted alias =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a as `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;
+!             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long unquoted identifier in WHERE =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a from tbl where aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
+!                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long quoted identifier in WHERE =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a from tbl where `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
+!                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long unquoted identifier in GROUP BY =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a from tbl group by aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
+!                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long quoted identifier in GROUP BY =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a from tbl group by `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
+!                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long unquoted identifier in ORDER BY =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a from tbl ORDER BY aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
+!                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long quoted identifier in ORDER BY =====
+Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
+> select a from tbl ORDER BY `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
+!                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Too long unaliased select expression =====
+Syntax error in SQL statement: Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.
+> select max ((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))) from tbl;
+!        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Caught exception: Syntax error.
+===== Select a column that is not in group by clause =====
+Syntax error: SELECT expression refers to ungrouped column `b` outside of aggregate function.
+You can either add this column to the GROUP BY clause, or use it within an aggregate function e.g. Sum(`b`).
+Caught exception: Ungrouped column in non-aggregated SELECT expression.
+===== Non-aggregation query =====
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries.
+Caught exception: Not an aggregate query.
+===== Non-aggregation query with GROUP BY =====
+This query has no aggregate expression, so it is not an aggregate query.
+Currently, RonSQL only supports aggregate queries.
+Caught exception: Not an aggregate query.
+===== Simple =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`a`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== Arithmetics =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`count(b)`
+   = A0:Count(`b`)
+  Out_2:`min((b+c)/(d-e))`
+   = A1:Min(((`b` + `c`) / (`d` - `e`)))
+  Out_3:`max(d*e/f-b/c/f)`
+   = A2:Max((((`d` * `e`) / `f`) - ((`b` / `c`) / `f`)))
+  Out_4:`count(b/c/f+d*e/f*(b+c))`
+   = A3:Count((((`b` / `c`) / `f`) + (((`d` * `e`) / `f`) * (`b` + `c`))))
+FROM tbl
+GROUP BY
+  C0:`a`
+
+Aggregation program (23 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Count  A00  r00 A00:COUNT <- r00:`b`
+Load   r01  C02 r01 = C02:`c`
+Mov    r02  r00 r02 = r00:`b`
+Add    r00  r01 r00:`b` += r01:`c`
+Load   r03  C03 r03 = C03:`d`
+Load   r04  C04 r04 = C04:`e`
+Mov    r05  r03 r05 = r03:`d`
+Minus  r03  r04 r03:`d` -= r04:`e`
+Mov    r06  r00 r06 = r00:(`b` + `c`)
+Div    r00  r03 r00:(`b` + `c`) /= r03:(`d` - `e`)
+Min    A01  r00 A01:MIN <- r00:((`b` + `c`) / (`d` - `e`))
+Mul    r05  r04 r05:`d` *= r04:`e`
+Load   r00  C05 r00 = C05:`f`
+Div    r05  r00 r05:(`d` * `e`) /= r00:`f`
+Div    r02  r01 r02:`b` /= r01:`c`
+Div    r02  r00 r02:(`b` / `c`) /= r00:`f`
+Mov    r00  r05 r00 = r05:((`d` * `e`) / `f`)
+Minus  r05  r02 r05:((`d` * `e`) / `f`) -= r02:((`b` / `c`) / `f`)
+Max    A02  r05 A02:MAX <- r05:(((`d` * `e`) / `f`) - ((`b` / `c`) / `f`))
+Mul    r00  r06 r00:((`d` * `e`) / `f`) *= r06:(`b` + `c`)
+Add    r02  r00 r02:((`b` / `c`) / `f`) += r00:(((`d` * `e`) / `f`) * (`b` + `c`))
+Count  A03  r02 A03:COUNT <- r02:(((`b` / `c`) / `f`) + (((`d` * `e`) / `f`) * (`b` + `c`)))
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 28 instructions.
+
+===== Quoted ID =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`b`
+   = C1:`b`
+  Out_2:`c``c`
+   = C2:`c``c`
+  Out_3:`count(``d``)`
+   = A0:Count(`d`)
+  Out_4:`min((``e````e``+``f``)/(g-``h``))`
+   = A1:Min(((`e``e` + `f`) / (`g` - `h`)))
+FROM tbl
+GROUP BY
+  C0:`a`
+  C1:`b`
+  C2:`c``c`
+
+Aggregation program (10 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C03 r00 = C03:`d`
+Count  A00  r00 A00:COUNT <- r00:`d`
+Load   r00  C04 r00 = C04:`e``e`
+Load   r01  C05 r01 = C05:`f`
+Add    r00  r01 r00:`e``e` += r01:`f`
+Load   r01  C06 r01 = C06:`g`
+Load   r02  C07 r02 = C07:`h`
+Minus  r01  r02 r01:`g` -= r02:`h`
+Div    r00  r01 r00:(`e``e` + `f`) /= r01:(`g` - `h`)
+Min    A01  r00 A01:MIN <- r00:((`e``e` + `f`) / (`g` - `h`))
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 28 instructions.
+
+===== UTF-8 2-byte character in unquoted identifier =====
+Query parse tree:
+SELECT
+  Out_0:`aÃ¥`
+   = C0:`aÃ¥`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`aÃ¥`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== UTF-8 2-byte character in quoted identifier =====
+Query parse tree:
+SELECT
+  Out_0:`aÃ¥`
+   = C0:`aÃ¥`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`aÃ¥`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== UTF-8 3-byte character in unquoted identifier =====
+Query parse tree:
+SELECT
+  Out_0:`aáš±`
+   = C0:`aáš±`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`aáš±`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== UTF-8 3-byte character in quoted identifier =====
+Query parse tree:
+SELECT
+  Out_0:`aáš±`
+   = C0:`aáš±`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`aáš±`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== Control character in quoted identifier =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`a`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== Select and group by with different quotation =====
+Query parse tree:
+SELECT
+  Out_0:`aÃ¥`
+   = C0:`aÃ¥`
+  Out_1:`aáš±`
+   = C1:`aáš±`
+  Out_2:`bÃ¥`
+   = C2:`bÃ¥`
+  Out_3:`báš±`
+   = C3:`báš±`
+  Out_4:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`aÃ¥`
+  C1:`aáš±`
+  C2:`bÃ¥`
+  C3:`báš±`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C04 r00 = C04:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 28 instructions.
+
+===== has_item regression =====
+Query parse tree:
+SELECT
+  Out_0:`count(a+a+a+a+a+a+a+a+a+a+a+a+a+a+a+a+a)`
+   = A0:Count(((((((((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`))
+  Out_1:`max(d*e/f-b/c/f)`
+   = A1:Max((((`d` * `e`) / `f`) - ((`b` / `c`) / `f`)))
+  Out_2:`min((ee+f)/(g-h))`
+   = A2:Min(((`ee` + `f`) / (`g` - `h`)))
+FROM tbl
+
+Aggregation program (37 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C00 r00 = C00:`a`
+Mov    r01  r00 r01 = r00:`a`
+Add    r00  r00 r00:`a` += r00:`a`
+Add    r00  r01 r00:(`a` + `a`) += r01:`a`
+Add    r00  r01 r00:((`a` + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:(((`a` + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:((((`a` + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:(((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:(((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:(((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:(((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:((((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:(((((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:((((((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Add    r00  r01 r00:(((((((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) += r01:`a`
+Count  A00  r00 A00:COUNT <- r00:((((((((((((((((`a` + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`) + `a`)
+Load   r00  C01 r00 = C01:`d`
+Load   r01  C02 r01 = C02:`e`
+Mul    r00  r01 r00:`d` *= r01:`e`
+Load   r01  C03 r01 = C03:`f`
+Div    r00  r01 r00:(`d` * `e`) /= r01:`f`
+Load   r02  C04 r02 = C04:`b`
+Load   r03  C05 r03 = C05:`c`
+Div    r02  r03 r02:`b` /= r03:`c`
+Div    r02  r01 r02:(`b` / `c`) /= r01:`f`
+Minus  r00  r02 r00:((`d` * `e`) / `f`) -= r02:((`b` / `c`) / `f`)
+Max    A01  r00 A01:MAX <- r00:(((`d` * `e`) / `f`) - ((`b` / `c`) / `f`))
+Load   r00  C06 r00 = C06:`ee`
+Add    r00  r01 r00:`ee` += r01:`f`
+Load   r01  C07 r01 = C07:`g`
+Load   r02  C08 r02 = C08:`h`
+Minus  r01  r02 r01:`g` -= r02:`h`
+Div    r00  r01 r00:(`ee` + `f`) /= r01:(`g` - `h`)
+Min    A02  r00 A02:MIN <- r00:((`ee` + `f`) / (`g` - `h`))
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 18 instructions.
+
+===== Alias =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`c`
+   = C1:`b`
+  Out_2:`e``e`
+   = C2:`d`
+  Out_3:`g`
+   = C3:`f``f`
+  Out_4:`k`
+   = A0:Count((`h` + (`i` / `j``j`)))
+FROM tbl
+GROUP BY
+  C0:`a`
+  C1:`b`
+  C2:`d`
+  C7:`f`
+  C3:`f``f`
+
+Aggregation program (6 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C05 r00 = C05:`i`
+Load   r01  C06 r01 = C06:`j``j`
+Div    r00  r01 r00:`i` /= r01:`j``j`
+Load   r01  C04 r01 = C04:`h`
+Add    r01  r00 r01:`h` += r00:(`i` / `j``j`)
+Count  A00  r01 A00:COUNT <- r01:(`h` + (`i` / `j``j`))
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 29 instructions.
+
+===== Integer constants =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`sum(col2+543)`
+   = A0:Sum((`col2` + 543))
+  Out_2:`subtraction`
+   = A1:Max((`col3` - 792))
+FROM tbl
+GROUP BY
+  C0:`col1`
+
+Aggregation program (8 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`col2`
+LoadI  r01  I00 r01 = I00:543
+Add    r00  r01 r00:`col2` += r01:543
+Sum    A00  r00 A00:SUM <- r00:(`col2` + 543)
+Load   r00  C02 r00 = C02:`col3`
+LoadI  r01  I01 r01 = I01:792
+Minus  r00  r01 r00:`col3` -= r01:792
+Max    A01  r00 A01:MAX <- r00:(`col3` - 792)
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 18 instructions.
+
+===== Avg =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`sum(col2)`
+   = A0:Sum(`col2`)
+  Out_2:`max(col2)`
+   = A1:Max(`col2`)
+  Out_3:`avg(col2)`
+   = CLIENT-SIDE CALCULATION: A0:Sum(`col2`) / A2:Count(`col2`)
+  Out_4:`min(col2)`
+   = A3:Min(`col2`)
+  Out_5:`count(col2)`
+   = A2:Count(`col2`)
+  Out_6:`lastcol`
+   = C2:`col3`
+FROM tbl
+GROUP BY
+  C0:`col1`
+  C2:`col3`
+
+Aggregation program (5 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`col2`
+Sum    A00  r00 A00:SUM <- r00:`col2`
+Max    A01  r00 A01:MAX <- r00:`col2`
+Count  A02  r00 A02:COUNT <- r00:`col2`
+Min    A03  r00 A03:MIN <- r00:`col2`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 37 instructions.
+
+===== Count all =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`sum(col2)`
+   = A0:Sum(`col2`)
+  Out_2:`count(*)`
+   = A1:Count(1)
+  Out_3:`max(col2)`
+   = A2:Max(`col2`)
+  Out_4:`count(col2)`
+   = A3:Count(`col2`)
+  Out_5:`count_all`
+   = A1:Count(1)
+  Out_6:`min(col2)`
+   = A4:Min(`col2`)
+  Out_7:`lastcol`
+   = C2:`col3`
+FROM tbl
+GROUP BY
+  C0:`col1`
+  C2:`col3`
+
+Aggregation program (7 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`col2`
+Sum    A00  r00 A00:SUM <- r00:`col2`
+LoadI  r01  I00 r01 = I00:1
+Count  A01  r01 A01:COUNT <- r01:1
+Max    A02  r00 A02:MAX <- r00:`col2`
+Count  A03  r00 A03:COUNT <- r00:`col2`
+Min    A04  r00 A04:MIN <- r00:`col2`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 42 instructions.
+
+===== Condition =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`sum(col2)`
+   = A0:Sum(`col2`)
+  Out_2:`max(col3)`
+   = A1:Max(`col3`)
+  Out_3:`lastcol`
+   = C3:`col4`
+FROM tbl
+WHERE
+XOR
++- =
+|  +- `col2`
+|  \- +
+|     +- `col3`
+|     \- 5
+\- AND
+   +- !=
+   |  +- `col2`
+   |  \- `col4`
+   \- !
+      \- >=
+         +- `col2`
+         \- 57
+GROUP BY
+  C0:`col1`
+  C3:`col4`
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`col2`
+Sum    A00  r00 A00:SUM <- r00:`col2`
+Load   r00  C02 r00 = C02:`col3`
+Max    A01  r00 A01:MAX <- r00:`col3`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 23 instructions.
+
+===== Complex operator precedence =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+WHERE
+AND
++- OR
+|  +- OR
+|  |  +- `a`
+|  |  \- `a`
+|  \- XOR
+|     +- `a`
+|     \- AND
+|        +- AND
+|        |  +- `a`
+|        |  \- `a`
+|        \- NOT
+|           \- BITWISE-OR (|)
+|              +- IS
+|              |  +- !=
+|              |  |  +- !=
+|              |  |  |  +- <
+|              |  |  |  |  +- <=
+|              |  |  |  |  |  +- >
+|              |  |  |  |  |  |  +- >=
+|              |  |  |  |  |  |  |  +- =
+|              |  |  |  |  |  |  |  |  +- `a`
+|              |  |  |  |  |  |  |  |  \- `a`
+|              |  |  |  |  |  |  |  \- `a`
+|              |  |  |  |  |  |  \- `a`
+|              |  |  |  |  |  \- `a`
+|              |  |  |  |  \- `a`
+|              |  |  |  \- `a`
+|              |  |  \- `a`
+|              |  \- NULL
+|              \- &
+|                 +- `a`
+|                 \- >>
+|                    +- <<
+|                    |  +- `a`
+|                    |  \- `a`
+|                    \- -
+|                       +- +
+|                       |  +- `a`
+|                       |  \- `a`
+|                       \- %
+|                          +- /
+|                          |  +- *
+|                          |  |  +- `a`
+|                          |  |  \- `a`
+|                          |  \- `a`
+|                          \- ^
+|                             +- `a`
+|                             \- !
+|                                \- `a`
+\- OR
+   +- OR
+   |  +- XOR
+   |  |  +- AND
+   |  |  |  +- AND
+   |  |  |  |  +- =
+   |  |  |  |  |  +- >=
+   |  |  |  |  |  |  +- >
+   |  |  |  |  |  |  |  +- <=
+   |  |  |  |  |  |  |  |  +- <
+   |  |  |  |  |  |  |  |  |  +- !=
+   |  |  |  |  |  |  |  |  |  |  +- !=
+   |  |  |  |  |  |  |  |  |  |  |  +- IS
+   |  |  |  |  |  |  |  |  |  |  |  |  +- BITWISE-OR (|)
+   |  |  |  |  |  |  |  |  |  |  |  |  |  +- &
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- <<
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- >>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- +
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- -
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- *
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- /
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- %
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- ^
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- !
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  |  |  \- NOT NULL
+   |  |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  |  \- `a`
+   |  |  |  |  |  \- NOT
+   |  |  |  |  |     \- `a`
+   |  |  |  |  \- `a`
+   |  |  |  \- `a`
+   |  |  \- `a`
+   |  \- `a`
+   \- `a`
+GROUP BY
+  C0:`a`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== Single quoted strings =====
+Query parse tree:
+SELECT
+  Out_0:`col`
+   = C0:`col`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+WHERE
+IS
++- STRING: 0x00=<00>,0x27=',0x08=<08>,0x0a=<0A>,0x0d=<0D>,0x09=<09>,0x1a=<1A>,bs=\,bs_perc=\%,bs_ul=\_,Q=Q,7=7
+\- NOT NULL
+GROUP BY
+  C0:`col`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== Compound strings =====
+Query parse tree:
+SELECT
+  Out_0:`col`
+   = C0:`col`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+WHERE
+STRING: hello<20>world
+GROUP BY
+  C0:`col`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== date_add =====
+Query parse tree:
+SELECT
+  Out_0:`col`
+   = C0:`col`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+WHERE
+IS
++- DATE_ADD
+|  +- `col1`
+|  \- INTERVAL
+|     +- 1
+|     \- DAY
+\- NOT NULL
+GROUP BY
+  C0:`col`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== date_sub =====
+Query parse tree:
+SELECT
+  Out_0:`col`
+   = C0:`col`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+WHERE
+>
++- DATE_ADD
+|  +- STRING: 2024-05-06
+|  \- INTERVAL
+|     +- 23
+|     \- MICROSECOND
+\- `col2`
+GROUP BY
+  C0:`col`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== extract =====
+Query parse tree:
+SELECT
+  Out_0:`col`
+   = C0:`col`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+WHERE
+<=
++- EXTRACT
+|  +- YEAR
+|  \- STRING: 2024-05-06
+\- `col2`
+GROUP BY
+  C0:`col`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== order by =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`col1`
+ORDER BY
+  C0:`col1` ASC
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== group and order by 2 columns =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`col #2`
+   = C1:`col #2`
+  Out_2:`max(col3)`
+   = A0:Max(`col3`)
+FROM tbl
+GROUP BY
+  C0:`col1`
+  C1:`col #2`
+ORDER BY
+  C0:`col1` ASC
+  C1:`col #2` ASC
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C02 r00 = C02:`col3`
+Max    A00  r00 A00:MAX <- r00:`col3`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 18 instructions.
+
+===== order by ASC/DESC =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`col1`
+ORDER BY
+  C0:`col1` ASC
+  C2:`col2` ASC
+  C3:`col3` DESC
+  C4:`col4` ASC
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== Unimplemented keyword used as quoted identifier =====
+Query parse tree:
+SELECT
+  Out_0:`zone`
+   = C0:`zone`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`zone`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 13 instructions.
+
+===== Negation =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+  Out_2:`min(-543)`
+   = A1:Min(-543)
+  Out_3:`sum(col2+-543)`
+   = A2:Sum((`col2` + -543))
+  Out_4:`subtraction`
+   = A3:Max((`col3` - -792))
+  Out_5:`count(a---(b---1))`
+   = A4:Count((`a` - (0 - (0 - (`b` - 1)))))
+FROM tbl
+WHERE
+AND
++- AND
+|  +- <
+|  |  +- `col1`
+|  |  \- -45
+|  \- >
+|     +- `col2`
+|     \- NEGATION
+|        \- NEGATION
+|           \- NEGATION
+|              \- NEGATION
+|                 \- NEGATION
+|                    \- `col3`
+\- >
+   +- `col3`
+   \- 7
+GROUP BY
+  C0:`col1`
+
+Aggregation program (21 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+LoadI  r01  I02 r01 = I02:-543
+Min    A01  r01 A01:MIN <- r01:-543
+Load   r01  C02 r01 = C02:`col2`
+LoadI  r02  I03 r02 = I03:-543
+Add    r01  r02 r01:`col2` += r02:-543
+Sum    A02  r01 A02:SUM <- r01:(`col2` + -543)
+Load   r01  C03 r01 = C03:`col3`
+LoadI  r02  I05 r02 = I05:-792
+Minus  r01  r02 r01:`col3` -= r02:-792
+Max    A03  r01 A03:MAX <- r01:(`col3` - -792)
+LoadI  r01  I08 r01 = I08:1
+Minus  r00  r01 r00:`b` -= r01:1
+LoadI  r01  I01 r01 = I01:0
+Mov    r02  r01 r02 = r01:0
+Minus  r01  r00 r01:0 -= r00:(`b` - 1)
+Minus  r02  r01 r02:0 -= r01:(0 - (`b` - 1))
+Load   r00  C04 r00 = C04:`a`
+Minus  r00  r02 r00:`a` -= r02:(0 - (0 - (`b` - 1)))
+Count  A04  r00 A04:COUNT <- r00:(`a` - (0 - (0 - (`b` - 1))))
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 33 instructions.
+
+===== Almost too long unaliased select expression =====
+Query parse tree:
+SELECT
+  Out_0:`max((((((((((((((((((((((((((((((a))))))))))))))))))))))))))))))`
+   = A0:Max(`a`)
+FROM tbl
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C00 r00 = C00:`a`
+Max    A00  r00 A00:MAX <- r00:`a`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 8 instructions.
+
+===== Aliased expression that would be too long without alias =====
+Query parse tree:
+SELECT
+  Out_0:`max(a)`
+   = A0:Max(`a`)
+FROM tbl
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C00 r00 = C00:`a`
+Max    A00  r00 A00:MAX <- r00:`a`
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 8 instructions.
+
+===== Compiler test 1 =====
+Query parse tree:
+SELECT
+  Out_0:`max(apples)`
+   = A0:Max(`apples`)
+  Out_1:`sum(apples + oranges * kiwis)`
+   = A1:Sum((`apples` + (`oranges` * `kiwis`)))
+  Out_2:`min(apples - oranges * kiwis)`
+   = A2:Min((`apples` - (`oranges` * `kiwis`)))
+  Out_3:`sum(apples + oranges * kiwis)`
+   = A1:Sum((`apples` + (`oranges` * `kiwis`)))
+  Out_4:`min(apples - oranges * kiwis)`
+   = A2:Min((`apples` - (`oranges` * `kiwis`)))
+  Out_5:`count(apples + apples)`
+   = A3:Count((`apples` + `apples`))
+  Out_6:`count_of_seventeen_apples`
+   = A4:Count((`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))))))))))))))
+  Out_7:`min(apples + (apples + (apples + apples)))`
+   = A5:Min((`apples` + (`apples` + (`apples` + `apples`))))
+  Out_8:`max(((apples + apples) + apples) + apples)`
+   = A6:Max((((`apples` + `apples`) + `apples`) + `apples`))
+  Out_9:`count_of_seven_apples`
+   = A7:Count((`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))))
+  Out_10:`count(apples + (apples + apples))`
+   = A8:Count((`apples` + (`apples` + `apples`)))
+FROM tbl
+
+Aggregation program (51 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C00 r00 = C00:`apples`
+Max    A00  r00 A00:MAX <- r00:`apples`
+Load   r01  C01 r01 = C01:`oranges`
+Load   r02  C02 r02 = C02:`kiwis`
+Mul    r01  r02 r01:`oranges` *= r02:`kiwis`
+Mov    r02  r00 r02 = r00:`apples`
+Add    r00  r01 r00:`apples` += r01:(`oranges` * `kiwis`)
+Sum    A01  r00 A01:SUM <- r00:(`apples` + (`oranges` * `kiwis`))
+Mov    r00  r02 r00 = r02:`apples`
+Minus  r02  r01 r02:`apples` -= r01:(`oranges` * `kiwis`)
+Min    A02  r02 A02:MIN <- r02:(`apples` - (`oranges` * `kiwis`))
+Mov    r01  r00 r01 = r00:`apples`
+Add    r00  r00 r00:`apples` += r00:`apples`
+Count  A03  r00 A03:COUNT <- r00:(`apples` + `apples`)
+Mov    r02  r01 r02 = r01:`apples`
+Add    r01  r00 r01:`apples` += r00:(`apples` + `apples`)
+Mov    r03  r02 r03 = r02:`apples`
+Add    r02  r01 r02:`apples` += r01:(`apples` + (`apples` + `apples`))
+Mov    r04  r03 r04 = r03:`apples`
+Add    r03  r02 r03:`apples` += r02:(`apples` + (`apples` + (`apples` + `apples`)))
+Mov    r05  r04 r05 = r04:`apples`
+Add    r04  r03 r04:`apples` += r03:(`apples` + (`apples` + (`apples` + (`apples` + `apples`))))
+Mov    r03  r05 r03 = r05:`apples`
+Add    r05  r04 r05:`apples` += r04:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))
+Mov    r04  r03 r04 = r03:`apples`
+Add    r03  r05 r03:`apples` += r05:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))
+Mov    r06  r04 r06 = r04:`apples`
+Add    r04  r03 r04:`apples` += r03:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))))
+Mov    r03  r06 r03 = r06:`apples`
+Add    r06  r04 r06:`apples` += r04:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))))
+Mov    r04  r03 r04 = r03:`apples`
+Add    r03  r06 r03:`apples` += r06:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))))))
+Mov    r06  r04 r06 = r04:`apples`
+Add    r04  r03 r04:`apples` += r03:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))))))
+Mov    r03  r06 r03 = r06:`apples`
+Add    r06  r04 r06:`apples` += r04:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))))))))
+Mov    r04  r03 r04 = r03:`apples`
+Add    r03  r06 r03:`apples` += r06:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))))))))
+Mov    r06  r04 r06 = r04:`apples`
+Add    r04  r03 r04:`apples` += r03:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))))))))))
+Mov    r03  r06 r03 = r06:`apples`
+Add    r06  r04 r06:`apples` += r04:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))))))))))
+Mov    r04  r03 r04 = r03:`apples`
+Add    r03  r06 r03:`apples` += r06:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`)))))))))))))))
+Count  A04  r03 A04:COUNT <- r03:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))))))))))))
+Min    A05  r02 A05:MIN <- r02:(`apples` + (`apples` + (`apples` + `apples`)))
+Add    r00  r04 r00:(`apples` + `apples`) += r04:`apples`
+Add    r00  r04 r00:((`apples` + `apples`) + `apples`) += r04:`apples`
+Max    A06  r00 A06:MAX <- r00:(((`apples` + `apples`) + `apples`) + `apples`)
+Count  A07  r05 A07:COUNT <- r05:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))
+Count  A08  r01 A08:COUNT <- r01:(`apples` + (`apples` + `apples`))
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 56 instructions.
+
+===== Compiler test 2 =====
+Query parse tree:
+SELECT
+  Out_0:`sum(c + c)`
+   = A0:Sum((`c` + `c`))
+  Out_1:`sum(c - c)`
+   = A1:Sum((`c` - `c`))
+  Out_2:`sum((c + c) + (c + c))`
+   = A2:Sum(((`c` + `c`) + (`c` + `c`)))
+  Out_3:`sum((c + c) - (c + c))`
+   = A3:Sum(((`c` + `c`) - (`c` + `c`)))
+  Out_4:`sum((c + c) + c)`
+   = A4:Sum(((`c` + `c`) + `c`))
+  Out_5:`sum(c + (c + (c + (c + (c + (c + (c + (c + (c + (c + c))))))))))`
+   = A5:Sum((`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + `c`)))))))))))
+  Out_6:`sum((((((((((c + c) + c) + c) + c) + c) + c) + c) + c) + c) + c)`
+   = A6:Sum(((((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`))
+FROM tbl
+
+Aggregation program (44 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C00 r00 = C00:`c`
+Mov    r01  r00 r01 = r00:`c`
+Add    r00  r00 r00:`c` += r00:`c`
+Sum    A00  r00 A00:SUM <- r00:(`c` + `c`)
+Mov    r02  r01 r02 = r01:`c`
+Minus  r01  r01 r01:`c` -= r01:`c`
+Sum    A01  r01 A01:SUM <- r01:(`c` - `c`)
+Mov    r01  r00 r01 = r00:(`c` + `c`)
+Add    r00  r00 r00:(`c` + `c`) += r00:(`c` + `c`)
+Sum    A02  r00 A02:SUM <- r00:((`c` + `c`) + (`c` + `c`))
+Mov    r00  r01 r00 = r01:(`c` + `c`)
+Minus  r01  r01 r01:(`c` + `c`) -= r01:(`c` + `c`)
+Sum    A03  r01 A03:SUM <- r01:((`c` + `c`) - (`c` + `c`))
+Mov    r01  r00 r01 = r00:(`c` + `c`)
+Add    r00  r02 r00:(`c` + `c`) += r02:`c`
+Sum    A04  r00 A04:SUM <- r00:((`c` + `c`) + `c`)
+Mov    r03  r02 r03 = r02:`c`
+Add    r02  r01 r02:`c` += r01:(`c` + `c`)
+Mov    r01  r03 r01 = r03:`c`
+Add    r03  r02 r03:`c` += r02:(`c` + (`c` + `c`))
+Mov    r02  r01 r02 = r01:`c`
+Add    r01  r03 r01:`c` += r03:(`c` + (`c` + (`c` + `c`)))
+Mov    r03  r02 r03 = r02:`c`
+Add    r02  r01 r02:`c` += r01:(`c` + (`c` + (`c` + (`c` + `c`))))
+Mov    r01  r03 r01 = r03:`c`
+Add    r03  r02 r03:`c` += r02:(`c` + (`c` + (`c` + (`c` + (`c` + `c`)))))
+Mov    r02  r01 r02 = r01:`c`
+Add    r01  r03 r01:`c` += r03:(`c` + (`c` + (`c` + (`c` + (`c` + (`c` + `c`))))))
+Mov    r03  r02 r03 = r02:`c`
+Add    r02  r01 r02:`c` += r01:(`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + `c`)))))))
+Mov    r01  r03 r01 = r03:`c`
+Add    r03  r02 r03:`c` += r02:(`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + `c`))))))))
+Mov    r02  r01 r02 = r01:`c`
+Add    r01  r03 r01:`c` += r03:(`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + `c`)))))))))
+Sum    A05  r01 A05:SUM <- r01:(`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + (`c` + `c`))))))))))
+Add    r00  r02 r00:((`c` + `c`) + `c`) += r02:`c`
+Add    r00  r02 r00:(((`c` + `c`) + `c`) + `c`) += r02:`c`
+Add    r00  r02 r00:((((`c` + `c`) + `c`) + `c`) + `c`) += r02:`c`
+Add    r00  r02 r00:(((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) += r02:`c`
+Add    r00  r02 r00:((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) += r02:`c`
+Add    r00  r02 r00:(((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) += r02:`c`
+Add    r00  r02 r00:((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) += r02:`c`
+Add    r00  r02 r00:(((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) += r02:`c`
+Sum    A06  r00 A06:SUM <- r00:((((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`)
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 38 instructions.
+
+===== dbt3-1.10/queries/mysql/1_2.sql =====
+Query parse tree:
+SELECT
+  Out_0:`l_returnflag`
+   = C0:`l_returnflag`
+  Out_1:`l_linestatus`
+   = C1:`l_linestatus`
+  Out_2:`sum_qty`
+   = A0:Sum(`l_quantity`)
+  Out_3:`sum_base_price`
+   = A1:Sum(`l_extendedprice`)
+  Out_4:`sum_disc_price`
+   = A2:Sum((`l_extendedprice` * (1 - `l_discount`)))
+  Out_5:`sum_charge`
+   = A3:Sum(((`l_extendedprice` * (1 - `l_discount`)) * (1 + `l_tax`)))
+  Out_6:`avg_qty`
+   = CLIENT-SIDE CALCULATION: A0:Sum(`l_quantity`) / A4:Count(`l_quantity`)
+  Out_7:`avg_price`
+   = CLIENT-SIDE CALCULATION: A1:Sum(`l_extendedprice`) / A5:Count(`l_extendedprice`)
+  Out_8:`avg_disc`
+   = CLIENT-SIDE CALCULATION: A6:Sum(`l_discount`) / A7:Count(`l_discount`)
+  Out_9:`count_order`
+   = A8:Count(1)
+FROM lineitem
+WHERE
+<=
++- `l_shipdate`
+\- DATE_SUB
+   +- STRING: 1998-12-01
+   \- INTERVAL
+      +- STRING: 90
+      \- DAY
+GROUP BY
+  C0:`l_returnflag`
+  C1:`l_linestatus`
+ORDER BY
+  C0:`l_returnflag` ASC
+  C1:`l_linestatus` ASC
+
+Aggregation program (21 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C02 r00 = C02:`l_quantity`
+Sum    A00  r00 A00:SUM <- r00:`l_quantity`
+Load   r01  C03 r01 = C03:`l_extendedprice`
+Sum    A01  r01 A01:SUM <- r01:`l_extendedprice`
+LoadI  r02  I00 r02 = I00:1
+Load   r03  C04 r03 = C04:`l_discount`
+Mov    r04  r02 r04 = r02:1
+Minus  r02  r03 r02:1 -= r03:`l_discount`
+Mov    r05  r01 r05 = r01:`l_extendedprice`
+Mul    r01  r02 r01:`l_extendedprice` *= r02:(1 - `l_discount`)
+Sum    A02  r01 A02:SUM <- r01:(`l_extendedprice` * (1 - `l_discount`))
+Load   r02  C05 r02 = C05:`l_tax`
+Mov    r06  r04 r06 = r04:1
+Add    r04  r02 r04:1 += r02:`l_tax`
+Mul    r01  r04 r01:(`l_extendedprice` * (1 - `l_discount`)) *= r04:(1 + `l_tax`)
+Sum    A03  r01 A03:SUM <- r01:((`l_extendedprice` * (1 - `l_discount`)) * (1 + `l_tax`))
+Count  A04  r00 A04:COUNT <- r00:`l_quantity`
+Count  A05  r05 A05:COUNT <- r05:`l_extendedprice`
+Sum    A06  r03 A06:SUM <- r03:`l_discount`
+Count  A07  r03 A07:COUNT <- r03:`l_discount`
+Count  A08  r06 A08:COUNT <- r06:1
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the WHERE clause.)
+
+Output in UTF-8 encoded JSON format.
+The program for post-processing and output has 54 instructions.
+

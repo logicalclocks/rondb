@@ -1,0 +1,41 @@
+--source include/have_ndb.inc
+
+--echo Regression tests for bugs found during development of pushdown aggregation and
+--echo RonSQL.
+
+#todo: Fix and uncomment
+#--echo uint64/int64 overflow crashes data node and/or produces the wrong result
+## Rows with testcase=1 and testcase=2 produces wrong result.
+## Rows with testcase=3 crashes the data node.
+#CREATE TABLE tbl (
+#  testcase TINYINT UNSIGNED NOT NULL,
+#  uint64 BIGINT UNSIGNED NOT NULL,
+#  sint64 BIGINT NOT NULL) ENGINE=NDB;
+#INSERT INTO tbl VALUES
+#  (1, 18446744073709551615, 9223372036854775807),
+#  (1, 5, 5),
+#  (2, 18446744073709551615, -9223372036854775808),
+#  (2, 1, -1),
+#  (3, 18446744073709551615, 9223372036854775807),
+#  (3, 18446744073709551615, 9223372036854775807),
+#  (3, 18446744073709551615, 9223372036854775807),
+#  (3, 18446744073709551615, 9223372036854775807),
+#  (3, 18446744073709551615, 9223372036854775807),
+#  (3, 18446744073709551615, 9223372036854775807),
+#  (3, 18446744073709551615, 9223372036854775807),
+#  (3, 18446744073709551615, 9223372036854775807);
+#--let QUERY=SELECT testcase, sum(uint64), sum(sint64) FROM tbl GROUP BY testcase;
+#--source suite/ronsql/include/ronsql_compare.inc
+#DROP TABLE tbl;
+
+#todo: Fix and uncomment
+#--echo No GROUP BY crashes data node
+#CREATE TABLE tbl (a SMALLINT UNSIGNED NOT NULL) ENGINE=NDB;
+#INSERT INTO tbl VALUES (0), (1), (2), (3), (4), (5);
+## Without GROUP BY, with WHERE
+#--let $QUERY=SELECT sum(a) FROM tbl WHERE a < 5;
+#--source suite/ronsql/include/ronsql_compare.inc
+## Without GROUP BY, without WHERE
+#--let $QUERY=SELECT sum(a) FROM tbl;
+#--source suite/ronsql/include/ronsql_compare.inc
+#DROP TABLE tbl;

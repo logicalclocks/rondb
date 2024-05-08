@@ -1,0 +1,93 @@
+Create test table api_scan with 10000 rows
+First 10 lines of the generated data:
+62	87	-25488	27678	-9	14368690	-5156443	2056491719	35198683261851	153955376062173	-2431.85935263128	14321694289288.1	GROUPxxx_1
+25	232	-696	35126	0	7342339	-645631283	3959625637	-81093436690594	158622464368512	30931.3637833807	64361377174835.8	GROUPxxx_2
+-51	186	-29138	17954	-4	9491376	1525466897	928145908	55659443763003	150681773305363	-18764.1893696898	-75865114725894.8	GROUPxxx_3
+110	35	2914	34027	-4	5218053	-168766724	821361475	-67209766889128	46155135478948	2490.60136333665	-79331372908605.6	GROUPxxx_4
+47	72	-15698	689	3	6814801	-49397943	2319122333	-49533121518336	154861751100199	-10116.9427768911	21682249448904.3	GROUPxxx_1
+-65	237	-18719	53677	6	10301499	1386356935	2665406530	-45648471905512	113577727829132	-26021.4691116491	81527172075276.2	GROUPxxx_2
+124	9	15627	39053	-5	13970195	481226877	389011288	-43136682734857	107937331063324	-6943.07038765573	73329149579935.8	GROUPxxx_3
+-73	216	29702	62290	2	8465792	1039002131	2618515073	-68207348079599	174112630755381	-19083.427451053	-55025105836154.8	GROUPxxx_4
+23	94	-3329	20520	-1	413564	-1625990412	1502660954	-76513696523998	135707189874225	-7407.08339792973	-19930066891297.1	GROUPxxx_1
+-14	187	16421	59337	-3	143661	176630017	3926761210	-30754973783363	151889483432524	-19872.9704178818	57308558037406.4	GROUPxxx_2
+Number of rows in the table:
+select count(*) from api_scan;
+count(*)
+10000
+
+
+
+Table scan:
+== Query ==
+SELECT cchar as char_gr
+, sint24 as int_gr
+, sum(uint64+uint8)
+, min(cdouble) AS mindbl
+, max(uint24) as max24
+FROM api_scan
+WHERE sint8 = 66
+GROUP BY cchar
+, sint24;
+
+Number of output lines, including header: 40
+
+== Diff ==
+================================================================================
+
+
+
+Index scan:
+== Query ==
+SELECT cchar as char_gr
+, sint24 as int_gr
+, sum(uint64+uint8)
+, min(cdouble) AS mindbl
+, max(uint24) as max24
+FROM api_scan
+WHERE sint24 >= 6 AND sint24 < 8 AND sint8 = 66
+GROUP BY cchar
+, sint24;
+
+Number of output lines, including header: 4
+
+== Diff ==
+================================================================================
+
+
+
+Integer constants and arithmetics:
+== Query ==
+SELECT cchar as char_gr
+, sum(uint8 + 3)
+, min(sint8 - 2)
+, max(sint16 * 13 + 7)
+, sum(uint24 * 1000000 - sint24 * 1000 + sint16 * -1234)
+, max(sint16 * -sint8 * sint8)
+FROM api_scan
+GROUP BY cchar;
+
+Number of output lines, including header: 5
+
+== Diff ==
+================================================================================
+
+
+
+Constant expressions:
+== Query ==
+SELECT cchar as char_gr
+, max(1) as max_one
+, max(3 * 2)
+, max((45 + 3 * 17 - 3875) * -13 + ---7)
+FROM api_scan
+GROUP BY cchar;
+
+Number of output lines, including header: 5
+
+== Diff ==
+================================================================================
+
+
+
+Cleanup
+DROP TABLE api_scan;

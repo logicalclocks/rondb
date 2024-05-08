@@ -1,0 +1,87 @@
+--source include/have_ndb.inc
+
+--let RAND_SEED=42
+--let NUM_ROWS=10000
+--source suite/ronsql/include/ronsql_create_table_api_scan.inc
+
+DELIMITER |;
+--echo
+--echo
+--echo
+
+
+
+--echo Table scan:
+let $QUERY=
+SELECT cchar as char_gr
+     , sint24 as int_gr
+     , sum(uint64+uint8)
+     , min(cdouble) AS mindbl
+     , max(uint24) as max24
+FROM api_scan
+WHERE sint8 = 66
+GROUP BY cchar
+       , sint24;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo Index scan:
+let $QUERY=
+SELECT cchar as char_gr
+     , sint24 as int_gr
+     , sum(uint64+uint8)
+     , min(cdouble) AS mindbl
+     , max(uint24) as max24
+FROM api_scan
+WHERE sint24 >= 6 AND sint24 < 8 AND sint8 = 66
+GROUP BY cchar
+       , sint24;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo Integer constants and arithmetics:
+let $QUERY=
+SELECT cchar as char_gr
+     , sum(uint8 + 3)
+     , min(sint8 - 2)
+     , max(sint16 * 13 + 7)
+     , sum(uint24 * 1000000 - sint24 * 1000 + sint16 * -1234)
+     , max(sint16 * -sint8 * sint8)
+FROM api_scan
+GROUP BY cchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo Constant expressions:
+let $QUERY=
+SELECT cchar as char_gr
+     , max(1) as max_one
+     , max(3 * 2)
+     , max((45 + 3 * 17 - 3875) * -13 + ---7)
+FROM api_scan
+GROUP BY cchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+# --echo Division:
+# todo fix in NdbAggregator.
+# let $QUERY=
+# SELECT cchar as char_gr
+#      , max(14 / 3 + 18 / 5 * sint16)
+#      , sum(14 / 3 + 18 / 5 * cfloat + uint8)
+#      , max(sint8 + 3)
+#      , max((sint8 + 3) / sint8)
+# FROM api_scan
+# WHERE sint8 > 1
+# GROUP BY cchar;|
+# --source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo Cleanup
+DELIMITER ;|
+DROP TABLE api_scan;

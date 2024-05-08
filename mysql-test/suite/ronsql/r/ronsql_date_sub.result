@@ -1,0 +1,16 @@
+
+
+
+===== dbt3-1.10: queries/mysql/1_2.sql =====
+== Query ==
+
+
+Number of output lines, including header: 5
+
+== Diff ==
+================================================================================
+
+
+
+Cleanup
+DROP TABLE lineitem;

@@ -1,0 +1,85 @@
+--source include/have_ndb.inc
+
+--disable_query_log
+
+# Taken from dbt3-1.10: scripts/mysql/dbt3-mysql-create-tables
+CREATE TABLE lineitem (
+	l_orderkey INTEGER,
+	l_partkey INTEGER,
+	l_suppkey INTEGER,
+	l_linenumber INTEGER,
+	l_quantity DECIMAL(10,2),
+	l_extendedprice DECIMAL(10,2),
+	l_discount DECIMAL(10,2),
+	l_tax DECIMAL(10,2),
+	l_returnflag CHAR(1),
+	l_linestatus CHAR(1),
+	l_shipDATE DATE,
+	l_commitDATE DATE,
+	l_receiptDATE DATE,
+	l_shipinstruct CHAR(25),
+	l_shipmode CHAR(10),
+	l_comment VARCHAR(44)
+) ENGINE=NDB;
+
+# Taken from dbt3-1.10: scripts/mysql/dbt3-mysql-load-data
+ALTER TABLE lineitem ADD PRIMARY KEY (l_orderkey, l_linenumber);
+CREATE INDEX i_l_shipdate ON lineitem (l_shipdate);
+CREATE INDEX i_l_suppkey_partkey ON lineitem (l_partkey, l_suppkey);
+CREATE INDEX i_l_partkey ON lineitem (l_partkey);
+CREATE INDEX i_l_suppkey ON lineitem (l_suppkey);
+CREATE INDEX i_l_receiptdate ON lineitem (l_receiptdate);
+CREATE INDEX i_l_orderkey ON lineitem (l_orderkey);
+CREATE INDEX i_l_orderkey_quantity ON lineitem (l_orderkey, l_quantity);
+CREATE INDEX i_l_commitdate ON lineitem (l_commitdate);
+
+INSERT INTO lineitem VALUES
+  (1, 155190, 7706, 1, 17, 21168.23, 0.04, 0.02, 'N', 'O', '1996-03-13', '1996-02-12', '1996-03-22', 'Deliver in person', 'TRUCK',   'Heavy machine parts'),
+  (1,  67310, 7311, 2, 36, 45983.16, 0.09, 0.06, 'Y', 'O', '1997-04-12', '1996-02-28', '1996-04-20', 'Deliver in person', 'MAIL',    'Promotional items'),
+  (1,  63700, 3701, 3,  8, 13309.60, 0.10, 0.02, 'N', 'O', '2003-01-29', '1996-03-05', '1996-01-31', 'Leave on portch',   'REG AIR', 'Small machine parts'),
+  (1,  21340, 4633, 4, 28, 35288.64, 0.09, 0.06, 'Y', 'C', '1998-08-21', '1996-03-30', '1996-05-16', 'Leave on portch',   'SHIP',    'Replacement parts'),
+  (1,  24000, 1534, 5, 24, 28608.96, 0.10, 0.04, 'N', 'C', '1998-08-30', '1996-03-14', '1996-04-01', 'Leave on portch',   'SHIP',    'Replacement parts'),
+  (1,  15600, 7201, 6, 32, 38376.64, 0.07, 0.02, 'Y', 'C', '1998-09-08', '1996-01-29', '1996-02-22', 'Deliver in person', 'SHIP',    'Small machine parts'),
+  (1, 155190, 7706, 7, 38, 47866.62, 0.08, 0.05, 'N', 'C', '1998-09-13', '1996-03-30', '1996-05-22', 'Deliver in person', 'SHIP',    'Heavy machine parts');
+
+--enable_query_log
+--echo
+--echo
+--echo
+
+
+
+# Taken from dbt3-1.10: queries/mysql/1_2.sql, but corrected casing for l_shipDATE
+--echo ===== dbt3-1.10: queries/mysql/1_2.sql =====
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+select
+        l_returnflag,
+        l_linestatus,
+        sum(l_quantity) as sum_qty,
+        sum(l_extendedprice) as sum_base_price,
+        sum(l_extendedprice * (1 - l_discount)) as sum_disc_price,
+        sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) as sum_charge,
+        avg(l_quantity) as avg_qty,
+        avg(l_extendedprice) as avg_price,
+        avg(l_discount) as avg_disc,
+        count(*) as count_order
+from
+        lineitem
+where
+        l_shipDATE <= date_sub('1998-12-01', interval '90' day)
+group by
+        l_returnflag,
+        l_linestatus
+order by
+        l_returnflag,
+        l_linestatus;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+#todo:
+# - EXPLAIN and make sure it does and index scan
+# - Conform output format for aggregation over DECIMAL. Probably, we first need to remove convert-to-double shortcut in NdbAggregator.
+
+
+--echo Cleanup
+DROP TABLE lineitem;

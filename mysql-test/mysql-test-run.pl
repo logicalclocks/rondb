@@ -2,7 +2,7 @@
 # -*- cperl -*-
 
 # Copyright (c) 2004, 2024, Oracle and/or its affiliates.
-# Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -3272,6 +3272,7 @@ sub environment_setup {
       ndb_waiter
       ndbxfrm
       ndb_secretsfile_reader
+      ronsql_cli
     );
 
     foreach my $tool ( @ndb_tools)

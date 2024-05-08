@@ -1,0 +1,590 @@
+--source include/have_ndb.inc
+
+# mtr doesn't seem to support escape sequences. sh only supports octal escapes.
+# For the sake of readability, we use variables named after hexadecimal values.
+--let X05=`SELECT char(0x05)`
+--let X1B=`SELECT char(0x1b)`
+--let X7F=`SELECT char(0x7f)`
+--let X83=`SELECT char(0x83)`
+--let X89=`SELECT char(0x89)`
+--let X91=`SELECT char(0x91)`
+--let X93=`SELECT char(0x93)`
+--let X96=`SELECT char(0x96)`
+--let X97=`SELECT char(0x97)`
+--let X9A=`SELECT char(0x9a)`
+--let XA0=`SELECT char(0xa0)`
+--let XA1=`SELECT char(0xa1)`
+--let XA3=`SELECT char(0xa3)`
+--let XA5=`SELECT char(0xa5)`
+--let XAD=`SELECT char(0xad)`
+--let XB1=`SELECT char(0xb1)`
+--let XB6=`SELECT char(0xb6)`
+--let XBA=`SELECT char(0xba)`
+--let XC0=`SELECT char(0xc0)`
+--let XC1=`SELECT char(0xc1)`
+--let XC3=`SELECT char(0xc3)`
+--let XE0=`SELECT char(0xe0)`
+--let XE1=`SELECT char(0xe1)`
+--let XED=`SELECT char(0xed)`
+--let XF0=`SELECT char(0xf0)`
+--let XF4=`SELECT char(0xf4)`
+--let XFA=`SELECT char(0xfa)`
+
+--let PARSE_TEST=$RONSQL_CLI_EXE --query-output-format JSON_UTF8 --execution-mode=EXPLAIN_OVERRIDE 2>&1 -e
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--let REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE=perl -i -pe 'chomp if eof' $QUERY_FILE
+--let PARSE_TEST_QUERY_FILE=$RONSQL_CLI_EXE --query-output-format JSON_UTF8 --execution-mode=EXPLAIN_OVERRIDE 2>&1 --execute-file $QUERY_FILE
+--let REPLACE_CAPITAL_N_WITH_NULL_IN_QUERY_FILE=perl -i -pe 's/N/\0/g' $QUERY_FILE
+
+
+# Test errors
+
+--echo ===== Null byte at beginning =====
+--write_file $QUERY_FILE
+Nelect a from tbl;
+EOF
+--exec $REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE
+--exec $REPLACE_CAPITAL_N_WITH_NULL_IN_QUERY_FILE
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Null byte in identifier =====
+--write_file $QUERY_FILE
+select aN from tbl;
+EOF
+--exec $REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE
+--exec $REPLACE_CAPITAL_N_WITH_NULL_IN_QUERY_FILE
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Null byte at end =====
+--write_file $QUERY_FILE
+select a from tblN
+EOF
+--exec $REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE
+--exec $REPLACE_CAPITAL_N_WITH_NULL_IN_QUERY_FILE
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Illegal UTF-8 byte =====
+--error 1
+--exec $PARSE_TEST 'select a$XFA from tbl;'
+
+--echo ===== Illegal 0xc0 UTF-8 byte =====
+--error 1
+--exec $PARSE_TEST 'select a$XC0 from tbl;'
+
+--echo ===== Illegal 0xc1 UTF-8 byte =====
+--error 1
+--exec $PARSE_TEST 'select a$XC1 from tbl;'
+
+# a = U+0061 = 01100001 ≈ 11000001 10100001 = c1 a1
+--echo ===== UTF-8 overlong 2-byte sequence =====
+--error 1
+--exec $PARSE_TEST 'select a$XC1$XA1 from tbl;'
+
+# ö = U+00f6 = 11000011 10110110 ≈ 11100000 10000011 10110110 = e0 83 b6
+--echo ===== UTF-8 overlong 3-byte sequence =====
+--error 1
+--exec $PARSE_TEST 'select a$XE0$X83$XB6 from tbl;'
+
+# U+123456 = 11110100 10100011 10010001 10010110 = f4 a3 91 96
+--echo ===== Too high code point (U+123456) =====
+--error 1
+--exec $PARSE_TEST 'select `a$XF4$XA3$X91$X96` from tbl;'
+
+# U+dead = 11101101 10111010 10101101 = ed ba ad
+--echo ===== Surrogate (U+dead) =====
+--error 1
+--exec $PARSE_TEST 'select `a$XED$XBA$XAD` from tbl;'
+
+# U+ffff < U+204d7 = 𠓗 = 11110000 10100000 10010011 10010111 = f0 a0 93 97
+--echo ===== Non-BMP UTF-8 in identifier =====
+--error 1
+--exec $PARSE_TEST 'select `a$XF0$XA0$X93$X97` from tbl;'
+
+--echo ===== Unimplemented keyword used as unquoted identifier =====
+--error 1
+--exec $PARSE_TEST 'select zone from tbl;'
+
+--echo ===== Incomplete escape sequence in single-quoted string =====
+--write_file $QUERY_FILE
+select a from tbl where 'hello\
+EOF
+--exec $REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected EOI in single-quoted string =====
+--error 1
+--exec $PARSE_TEST "select a from tbl where 'hello"
+
+--echo ===== Illegal token =====
+--error 1
+--exec $PARSE_TEST 'select #a from tbl;'
+
+--echo ===== EOI inside quoted identifier =====
+--error 1
+--exec $PARSE_TEST 'select `a'
+
+--echo ===== EOI inside escaped identifier =====
+--error 1
+--exec $PARSE_TEST 'select `bc``de'
+
+# å = U+00e5 = 11000011 10100101 = c3 a5
+--echo ===== UTF-8 2-byte sequence with illegal 2nd byte =====
+--error 1
+--exec $PARSE_TEST 'select `a$XC3` from tbl;'
+
+--echo ===== UTF-8 2-byte sequence at EOI with 2nd byte missing =====
+--error 1
+--exec $PARSE_TEST 'select `a` from `table$XC3'
+
+# ᚱ = U+16b1 = 11100001 10011010 10110001 = e1 9a b1
+--echo ===== UTF-8 3-byte sequence with illegal 2nd byte =====
+--error 1
+--exec $PARSE_TEST 'select `a$XE1` from tbl;'
+
+--echo ===== UTF-8 3-byte sequence with illegal 3rd byte =====
+--error 1
+--exec $PARSE_TEST 'select `a$XE1$X9A` from tbl;'
+
+--echo ===== UTF-8 3-byte sequence at EOI with 2nd byte missing =====
+--error 1
+--exec $PARSE_TEST 'select `a` from `table$XE1'
+
+--echo ===== UTF-8 3-byte sequence at EOI with 3rd byte missing =====
+--error 1
+--exec $PARSE_TEST 'select `a` from `table$XE1$X9A'
+
+# 𠓗 = U+204d7 = 11110000 10100000 10010011 10010111 = f0 a0 93 97
+--echo ===== UTF-8 4-byte sequence with illegal 2nd byte =====
+--error 1
+--exec $PARSE_TEST 'select `a$XF0` from tbl;'
+
+--echo ===== UTF-8 4-byte sequence with illegal 3rd byte =====
+--error 1
+--exec $PARSE_TEST 'select `a$XF0$XA0` from tbl;'
+
+--echo ===== UTF-8 4-byte sequence with illegal 4th byte =====
+--error 1
+--exec $PARSE_TEST 'select `a$XF0$XA0$X93` from tbl;'
+
+--echo ===== UTF-8 4-byte sequence at EOI with 2nd byte missing =====
+--error 1
+--exec $PARSE_TEST 'select `a` from `table$XF0'
+
+--echo ===== UTF-8 4-byte sequence at EOI with 3rd byte missing =====
+--error 1
+--exec $PARSE_TEST 'select `a` from `table$XF0$XA0'
+
+--echo ===== UTF-8 4-byte sequence at EOI with 4th byte missing =====
+--error 1
+--exec $PARSE_TEST 'select `a` from `table$XF0$XA0$X93'
+
+--echo ===== Rogue UTF-8 continuation byte =====
+--error 1
+--exec $PARSE_TEST 'select a$X89 from tbl;'
+
+--echo ===== Empty input =====
+--error 1
+--exec $PARSE_TEST ''
+
+--echo ===== Invalid token at beginning =====
+--error 1
+--exec $PARSE_TEST '$X1B''select a from tbl;'
+
+--echo ===== Control character in unquoted identifier =====
+--error 1
+--exec $PARSE_TEST 'select a$X05 from tbl;'
+
+--echo ===== Invalid token at end =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl;$X7F'
+
+--echo ===== Unexpected end of input =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl'
+
+# todo If the above still works, add Unexpected end of input at newline
+
+--echo ===== Unexpected at this point =====
+--error 1
+--exec $PARSE_TEST 'select a `bcde` from tbl;'
+
+--echo ===== Unexpected before newline =====
+--write_file $QUERY_FILE
+select a `bcde`
+from tbl;
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected after newline =====
+--write_file $QUERY_FILE
+select a
+`bcde` from tbl;
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected with ending newline =====
+--write_file $QUERY_FILE
+select a `bcde` from tbl;
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected with newline at start =====
+--write_file $QUERY_FILE
+
+select a `bcde` from tbl;
+EOF
+--exec $REMOVE_LEADING_NEWLINE_IN_QUERY_FILE
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected containing newline =====
+--write_file $QUERY_FILE
+select a `bc
+de` from tbl;
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected containing two newlines =====
+--write_file $QUERY_FILE
+select a `b
+cd
+e` from tbl;
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected escaped identifier =====
+--error 1
+--exec $PARSE_TEST 'select a `bc``de` from tbl;'
+
+--echo ===== Two escaped identifiers, 1st unexpected =====
+--error 1
+--exec $PARSE_TEST 'select a `bc``de` from `fg``h``i`;'
+
+--echo ===== Two escaped identifiers, 2nd unexpected =====
+--error 1
+--exec $PARSE_TEST 'select a, `bc``de` from tbl `fg``h``i`;'
+
+--echo ===== Error marker alignment after 2-byte UTF-8 characters =====
+--write_file $QUERY_FILE
+select a
+      ,räksmörgås räksmörgås
+from tbl;
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Error marker alignment after 3-byte UTF-8 character =====
+--write_file $QUERY_FILE
+select a
+      ,ᚱab ᚱab
+from tbl;
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Incomplete escape sequence in single-quoted string =====
+--write_file $QUERY_FILE
+select a from tbl where 'word\
+EOF
+--exec $REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Unexpected end of input inside single-quoted string =====
+--write_file $QUERY_FILE
+select a from tbl where 'word
+EOF
+--exec $REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== date_add not supported in output =====
+--error 1
+--exec $PARSE_TEST 'select date_add(col1, interval 1 day) from tbl;'
+
+--echo ===== Parser stack exhausted =====
+--error 1
+-- exec $PARSE_TEST 'select col from tbl where (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((('
+
+--echo ===== Too long unquoted identifier in column name =====
+--error 1
+--exec $PARSE_TEST 'select aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;'
+
+--echo ===== Too long quoted identifier in column name =====
+--error 1
+--exec $PARSE_TEST 'select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;'
+
+--echo ===== Too long quoted identifier in column name, although characters < 64 =====
+--error 1
+--exec $PARSE_TEST 'select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaöööööööööö` from tbl;'
+
+--echo ===== Too long unquoted alias =====
+--error 1
+--exec $PARSE_TEST 'select a as aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;'
+
+--echo ===== Too long quoted alias =====
+--error 1
+--exec $PARSE_TEST 'select a as `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;'
+
+--echo ===== Too long unquoted identifier in WHERE =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl where aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;'
+
+--echo ===== Too long quoted identifier in WHERE =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl where `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;'
+
+--echo ===== Too long unquoted identifier in GROUP BY =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl group by aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;'
+
+--echo ===== Too long quoted identifier in GROUP BY =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl group by `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;'
+
+--echo ===== Too long unquoted identifier in ORDER BY =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl ORDER BY aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;'
+
+--echo ===== Too long quoted identifier in ORDER BY =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl ORDER BY `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;'
+
+--echo ===== Too long unaliased select expression =====
+--error 1
+--exec $PARSE_TEST 'select max ((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))) from tbl;'
+
+--echo ===== Select a column that is not in group by clause =====
+--error 1
+--exec $PARSE_TEST 'select a, b, max(c) from tbl group by a;'
+
+--echo ===== Non-aggregation query =====
+--error 1
+--exec $PARSE_TEST 'select a, b from tbl;'
+
+--echo ===== Non-aggregation query with GROUP BY =====
+--error 1
+--exec $PARSE_TEST 'select a from tbl group by a;'
+
+# Test successes
+
+--echo ===== Simple =====
+--exec $PARSE_TEST 'select a, max(b) from tbl group by a;'
+
+--echo ===== Arithmetics =====
+--exec $PARSE_TEST 'select a, count(b), min((b+c)/(d-e)), max(d*e/f-b/c/f), count(b/c/f+d*e/f*(b+c)) from tbl group by a;'
+
+--echo ===== Quoted ID =====
+--exec $PARSE_TEST 'select a, `b`, `c``c`, count(`d`), min((`e``e`+`f`)/(g-`h`)) from tbl group by a, b, `c``c`;'
+
+# å = U+00e5 = c3 a5
+--echo ===== UTF-8 2-byte character in unquoted identifier =====
+--exec $PARSE_TEST 'select a$XC3$XA5, max(b) from tbl group by a$XC3$XA5;'
+
+--echo ===== UTF-8 2-byte character in quoted identifier =====
+--exec $PARSE_TEST 'select `a$XC3$XA5`, max(b) from tbl group by `a$XC3$XA5`;'
+
+# ᚱ = U+16b1 = 11100001 10011010 10110001 = e1 9a b1
+--echo ===== UTF-8 3-byte character in unquoted identifier =====
+--exec $PARSE_TEST 'select a$XE1$X9A$XB1, max(b) from tbl group by a$XE1$X9A$XB1;'
+
+--echo ===== UTF-8 3-byte character in quoted identifier =====
+--exec $PARSE_TEST 'select `a$XE1$X9A$XB1`, max(b) from tbl group by `a$XE1$X9A$XB1`;'
+
+--echo ===== Control character in quoted identifier =====
+--exec $PARSE_TEST 'select `a$X05`, max(b) from tbl group by `a$X05`;'
+
+--echo ===== Select and group by with different quotation =====
+--exec $PARSE_TEST 'select a$XC3$XA5, a$XE1$X9A$XB1, `b$XC3$XA5`, `b$XE1$X9A$XB1`, max(b) from tbl group by `a$XC3$XA5`, `a$XE1$X9A$XB1`, b$XC3$XA5, b$XE1$X9A$XB1;'
+
+--echo ===== has_item regression =====
+--exec $PARSE_TEST 'select count(a+a+a+a+a+a+a+a+a+a+a+a+a+a+a+a+a), max(d*e/f-b/c/f), min((ee+f)/(g-h)) from tbl;'
+
+--echo ===== Alias =====
+--exec $PARSE_TEST 'select a, b as c, `d` as `e``e`, `f``f` as g, count(h+i/`j``j`) as k from tbl group by a, b, d, f, `f``f`;'
+
+--echo ===== Integer constants =====
+--exec $PARSE_TEST 'select col1, sum(col2+543), max(col3-792) as subtraction from tbl group by col1;'
+
+--echo ===== Avg =====
+--exec $PARSE_TEST 'select col1, sum(col2), max(col2), avg(col2), min(col2), count(col2), col3 as lastcol from tbl group by col1, col3;'
+
+--echo ===== Count all =====
+--exec $PARSE_TEST 'select col1, sum(col2), count(*), max(col2), count(col2), count(*) as count_all, min(col2), col3 as lastcol from tbl group by col1, col3;'
+
+--echo ===== Condition =====
+--exec $PARSE_TEST 'select col1, sum(col2), max(col3), col4 as lastcol from tbl where col2=col3+5 xor col2 <> col4 and !(col2 >= 57) group by col1, col4;'
+
+--echo ===== Complex operator precedence =====
+--write_file $QUERY_FILE
+select a, max(b)
+from tbl
+where (
+a or a || a xor a and a && not a = a >= a > a <= a < a != a <> a is null | a & a << a >> a + a - a * a / a % a ^ ! a
+) AND (
+! a ^ a % a / a * a - a + a >> a << a & a | a is not null <> a != a < a <= a > a >= a = not a && a and a xor a || a or a
+)
+group by a;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Single quoted strings =====
+--write_file $QUERY_FILE
+select col, max(b) from tbl where
+'0x00=\0,0x27=\',0x08=\b,0x0a=\n,0x0d=\r,0x09=\t,0x1a=\Z,bs=\\,bs_perc=\%,bs_ul=\_,Q=\Q,7=\7'
+is not null
+group by col;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Compound strings =====
+--write_file $QUERY_FILE
+select col, max(b) from tbl where 'hello'
+  ' world'
+group by col;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== date_add =====
+--exec $PARSE_TEST 'select col, max(b) from tbl where date_add(col1, interval 1 day) is not null group by col;'
+
+--echo ===== date_sub =====
+--write_file $QUERY_FILE
+select col, max(b)
+from tbl
+where date_add('2024-05-06', interval 23 microsecond) > col2
+group by col;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== extract =====
+--write_file $QUERY_FILE
+select col, max(b)
+from tbl
+where extract(year from '2024-05-06') <= col2
+group by col;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== order by =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1;'
+
+--echo ===== group and order by 2 columns =====
+--exec $PARSE_TEST 'select col1, `col #2`, max(col3) from tbl group by col1, `col #2` order by col1, `col #2`;'
+
+--echo ===== order by ASC/DESC =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1, col2 ASC, col3 DESC, col4;'
+
+--echo ===== Unimplemented keyword used as quoted identifier =====
+--exec $PARSE_TEST 'select `zone`, max(b) from tbl group by `zone`;'
+
+--echo ===== Negation =====
+--write_file $QUERY_FILE
+select col1, max(b)
+      ,min(-543)
+      ,sum(col2+-543)
+      ,max(col3--792) as subtraction
+      ,count(a---(b---1))
+from tbl
+where col1 < -45
+and col2 > -----col3
+and col3 > ----7
+group by col1;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Almost too long unaliased select expression =====
+--exec $PARSE_TEST 'select max((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))) from tbl;'
+
+--echo ===== Aliased expression that would be too long without alias =====
+--exec $PARSE_TEST 'select max ((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))) as `max(a)` from tbl;'
+
+--echo ===== Compiler test 1 =====
+--write_file $QUERY_FILE
+select max(apples)
+     , sum(apples + oranges * kiwis)
+     , min(apples - oranges * kiwis)
+     , sum(apples + oranges * kiwis)
+     , min(apples - oranges * kiwis)
+     , count(apples + apples)
+     , count(apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + (apples + apples))))))))))))))))
+       as count_of_seventeen_apples
+     , min(apples + (apples + (apples + apples)))
+     , max(((apples + apples) + apples) + apples)
+     , count(apples + (apples + (apples + (apples + (apples + (apples + apples))))))
+       as count_of_seven_apples
+     , count(apples + (apples + apples))
+from tbl;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Compiler test 2 =====
+--write_file $QUERY_FILE
+select sum(c + c)
+     , sum(c - c)
+     , sum((c + c) + (c + c))
+     , sum((c + c) - (c + c))
+     , sum((c + c) + c)
+     , sum(c + (c + (c + (c + (c + (c + (c + (c + (c + (c + c))))))))))
+     , sum((((((((((c + c) + c) + c) + c) + c) + c) + c) + c) + c) + c)
+from tbl;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== dbt3-1.10/queries/mysql/1_2.sql =====
+--write_file $QUERY_FILE
+select
+        l_returnflag,
+        l_linestatus,
+        sum(l_quantity) as sum_qty,
+        sum(l_extendedprice) as sum_base_price,
+        sum(l_extendedprice * (1 - l_discount)) as sum_disc_price,
+        sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) as sum_charge,
+        avg(l_quantity) as avg_qty,
+        avg(l_extendedprice) as avg_price,
+        avg(l_discount) as avg_disc,
+        count(*) as count_order
+from
+        lineitem
+where
+        l_shipdate <= date_sub('1998-12-01', interval '90' day)
+group by
+        l_returnflag,
+        l_linestatus
+order by
+        l_returnflag,
+        l_linestatus;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
