@@ -61,26 +61,28 @@ func (h *Handler) Validate(request interface{}) error {
 	if log.IsDebug() {
 		log.Debugf("Feature store request is %s", fsReq.String())
 	}
-	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.PrefixPrimaryKeyMap)
+	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.ValidPrimaryKeys)
 	if err1 != nil {
 		return err1.GetError()
 	}
-	err2 := ValidatePassedFeatures(fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup)
-	if err2 != nil {
-		return err2.GetError()
+	if fsReq.GetOptions().ValidatePassedFeatures {
+		err2 := ValidatePassedFeatures(fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup)
+		if err2 != nil {
+			return err2.GetError()
+		}
 	}
 	return nil
 
 }
 
-func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]string) *feature_store.RestErrorCode {
+func ValidatePrimaryKey(entries *map[string]*json.RawMessage, validPrimaryKeys *map[string]bool) *feature_store.RestErrorCode {
 	// Data type check of primary key will be delegated to rondb.
 	if len(*entries) == 0 {
 		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage("No entries found")
 	}
 
 	for featureName := range *entries {
-		_, ok := (*features)[featureName]
+		_, ok := (*validPrimaryKeys)[featureName]
 		if !ok {
 			return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("Provided primary key `%s` does not belong to the set of primary key.", featureName))
 		}
@@ -88,19 +90,21 @@ func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[stri
 	return nil
 }
 
-func ValidatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
+func ValidatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string][]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
 	if passedFeatures == nil {
 		return nil
 	}
 	for featureName, value := range *passedFeatures {
-		feature, ok := (*features)[featureName]
+		features, ok := (*features)[featureName]
 		if !ok {
 			return feature_store.FEATURE_NOT_EXIST.NewMessage(
 				fmt.Sprintf("Feature `%s` does not exist in the feature view or it is a label which cannot be a passed feature.", featureName))
 		}
-		err := ValidateFeatureType(value, feature.Type)
-		if err != nil {
-			return err
+		for _, feature := range features {
+			err := ValidateFeatureType(value, feature.Type)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -138,7 +142,7 @@ func mapFeatureTypeToJsonType(featureType string) string {
 	case "decimal":
 		return JSON_NUMBER
 	case "timestamp":
-		return JSON_NUMBER
+		return JSON_STRING
 	case "date":
 		return JSON_STRING
 	case "string":
@@ -243,18 +247,20 @@ func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErr
 
 func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest *api.MetadataRequest) *[]*api.FeatureMetadata {
 	featureMetadataArray := make([]*api.FeatureMetadata, metadata.NumOfFeatures)
-	for featureKey, featureMetadata := range metadata.PrefixFeaturesLookup {
-		if featureIndex, ok := metadata.FeatureIndexLookup[feature_store.GetFeatureIndexKeyByFeature(featureMetadata)]; ok {
-			featureMetadataResp := api.FeatureMetadata{}
-			if metaRequest.FeatureName {
-				var fk = featureKey
-				featureMetadataResp.Name = &fk
+	for featureKey, prefixFeaturesLookup := range metadata.PrefixFeaturesLookup {
+		for _, featureMetadata := range prefixFeaturesLookup {
+			if featureIndex, ok := metadata.FeatureIndexLookup[feature_store.GetFeatureIndexKeyByFeature(featureMetadata)]; ok {
+				featureMetadataResp := api.FeatureMetadata{}
+				if metaRequest.FeatureName {
+					var fk = featureKey
+					featureMetadataResp.Name = &fk
+				}
+				if metaRequest.FeatureType {
+					var ft = featureMetadata.Type
+					featureMetadataResp.Type = &ft
+				}
+				featureMetadataArray[featureIndex] = &featureMetadataResp
 			}
-			if metaRequest.FeatureType {
-				var ft = featureMetadata.Type
-				featureMetadataResp.Type = &ft
-			}
-			featureMetadataArray[featureIndex] = &featureMetadataResp
 		}
 	}
 	return &featureMetadataArray
@@ -275,10 +281,11 @@ func TranslateRonDbError(code int, err string) *feature_store.RestErrorCode {
 			fsError = feature_store.WRONG_DATA_TYPE
 		}
 
-	} else if strings.Contains(err, common.ERROR_013()) || // "Wrong number of primary-key columns."
-		strings.Contains(err, common.ERROR_014()) || // "Wrong primay-key column."
+	} else if strings.Contains(err, common.ERROR_014()) || // "Wrong primay-key column."
 		strings.Contains(err, common.ERROR_012()) { // "Column does not exist."
 		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err)
+	} else if strings.Contains(err, common.ERROR_013()) { // "Wrong number of primary-key columns."
+		fsError = nil // Missing entry can happen and users can fill up missing features by passed featues
 	} else {
 		if code == http.StatusBadRequest {
 			fsError = feature_store.READ_FROM_DB_FAIL_BAD_INPUT.NewMessage(err)
@@ -296,6 +303,12 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	for _, response := range *ronDbResult {
 		if *response.Code == http.StatusNotFound {
 			status = api.FEATURE_STATUS_MISSING
+		} else if *response.Code == http.StatusBadRequest {
+			if strings.Contains(*response.Message, common.ERROR_013()) { // "Wrong number of primary-key columns."
+				status = api.FEATURE_STATUS_MISSING // Missing entry can happen and users can fill up missing features by passed featues
+			} else {
+				status = api.FEATURE_STATUS_ERROR
+			}
 		} else if *response.Code != http.StatusOK {
 			status = api.FEATURE_STATUS_ERROR
 		}
@@ -318,23 +331,64 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		}
 	}
 	// Fill in primary key value from request into the vector
+	// If multiple matched entries are found, the priority of the entry follows the order in `GetBatchPkReadParams` 
+	// i.e required entry > entry with prefix > entry without prefix
+	// Reason why it has to loop all entries for each `*JoinKeyMap` is to make sure the value are filled in according to the priority.
+	// Otherwise the lower priority one can overwrite the previous assigned entry if the later entry exists only in the lower priority map.
+	// Check `Test_GetFeatureVector_TestCorrectPkValue*` for more detail.
 	for featureName, value := range *entries {
-		var indexKey string
-		// Get all join key linked to the provided feature name
-		if joinKeys, ok := featureView.JoinKeyMap[featureName]; ok {
-			for _, joinKey := range joinKeys {
-				// Check if the join key are valid feature
-				if _, ok := featureView.PrefixFeaturesLookup[joinKey]; ok {
-					indexKey = feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[joinKey])
-				}
+		// Get all join key linked to the provided feature name without prefix
+		if joinKeysWithoutPrefix, ok := featureView.JoinKeyMap[featureName]; ok {
+			if log.IsDebug() {
+				log.Debugf("Filled primary key by JoinKeyMap")
+			}
+			FillPrimaryKey(featureView, &featureValues, joinKeysWithoutPrefix, value)
+		}
+	}
+	for featureName, value := range *entries {
+		// Get all join key linked to the provided feature name with prefix.
+		// Entry with prefix is prioritised and the value overwrites the previous assignment if available.
+		if joinKeysWithPrefix, ok := featureView.PrefixJoinKeyMap[featureName]; ok {
+			if log.IsDebug() {
+				log.Debugf("Filled primary key by PrefixJoinKeyMap")
+			}
+			FillPrimaryKey(featureView, &featureValues, joinKeysWithPrefix, value)
+		}
+	}
+	for featureName, value := range *entries {
+		// Get all join key linked to the provided feature name with prefix.
+		// Entry in RequiredJoinKeyMap is prioritised and the value overwrites the previous assignment if available.
+		if joinKeysRequired, ok := featureView.RequiredJoinKeyMap[featureName]; ok {
+			if log.IsDebug() {
+				log.Debugf("Filled primary key by RequiredJoinKeyMap")
+			}
+			FillPrimaryKey(featureView, &featureValues, joinKeysRequired, value)
+		}
+	}
+	return &featureValues, status, err
+}
+
+func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValues *[]interface{}, joinKeys []string, value *json.RawMessage) {
+	var indexKey string
+	// Get all join key linked to the provided feature name
+	if log.IsDebug() {
+		log.Debugf("Join keys are: %s", strings.Join(joinKeys, ", "))
+	}
+	for _, joinKey := range joinKeys {
+		// Check if the join key are valid feature
+		if prefixFeaturesLookups, ok := featureView.PrefixFeaturesLookup[joinKey]; ok {
+			for _, prefixFeaturesLookup := range prefixFeaturesLookups {
+				indexKey = feature_store.GetFeatureIndexKeyByFeature(prefixFeaturesLookup)
 				// Get the index of the feature
 				if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
-					featureValues[index] = value
+					(*featureValues)[index] = value
+					if log.IsDebug() {
+						log.Debugf("Filled primary key %s with value %s", joinKey, *value)
+					}
 				}
 			}
 		}
 	}
-	return &featureValues, status, err
 }
 
 func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
@@ -371,6 +425,34 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 						log.Debugf("Add to filter: %s", pkCol)
 					}
 				}
+			} else if (*entries)[servingKey.Prefix + servingKey.FeatureName] != nil {
+				// Also Fallback and use feature name with prefix.
+				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.Prefix + servingKey.FeatureName]}
+				filters = append(filters, filter)
+				if log.IsDebug() {
+					var entryValue interface{}
+					err := json.Unmarshal(*(*entries)[servingKey.Prefix + servingKey.FeatureName], &entryValue)
+					if err == nil {
+						log.Debugf("Add to filter: %s=%v", pkCol, entryValue)
+					} else {
+						log.Debugf("Add to filter: %s", pkCol)
+					}
+				}
+			} else if (*entries)[servingKey.FeatureName] != nil {
+				// Fallback and use the raw feature name so as to be consistent with python client.
+				// Also add feature name with prefix.
+				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.FeatureName]}
+				filters = append(filters, filter)
+
+				if log.IsDebug() {
+					var entryValue interface{}
+					err := json.Unmarshal(*(*entries)[servingKey.FeatureName], &entryValue)
+					if err == nil {
+						log.Debugf("Add to filter: %s=%v", pkCol, entryValue)
+					} else {
+						log.Debugf("Add to filter: %s", pkCol)
+					}
+				}
 			}
 		}
 
@@ -387,13 +469,18 @@ func getPkReadResponseJSON(metadata feature_store.FeatureViewMetadata) *api.Batc
 	return &response
 }
 
-func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
+func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadataMap *map[string][]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
 	if passedFeatures != nil {
 		for featureName, passFeature := range *passedFeatures {
-			var feature = (*featureMetadata)[featureName]
-			var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
-			if index, ok := (*indexLookup)[lookupKey]; ok {
-				(*features)[index] = passFeature
+
+			var featureMetadatas = (*featureMetadataMap)[featureName]
+			for _, featureMetadata := range featureMetadatas {
+				if featureMetadata != nil {
+					var lookupKey = feature_store.GetFeatureIndexKeyByFeature(featureMetadata)
+					if index, ok := (*indexLookup)[lookupKey]; ok {
+						(*features)[index] = passFeature
+					}
+				}
 			}
 		}
 	}

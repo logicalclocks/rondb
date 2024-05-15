@@ -38,21 +38,25 @@ var CleanupInterval time.Duration = 15 * time.Minute
 const ERROR_NOT_FOUND = "Not Found"
 
 type FeatureViewMetadata struct {
-	FeatureStoreName     string
-	FeatureStoreId       int
-	FeatureViewName      string
-	FeatureViewId        int
-	FeatureViewVersion   int
-	PrefixFeaturesLookup map[string]*FeatureMetadata // key: prefix + fName, label are excluded
-	FeatureGroupFeatures []*FeatureGroupFeatures     // label are excluded
-	FeatureStoreNames    []*string                   // List of all feature store used by feature view including shared feature store
+	FeatureStoreName   string
+	FeatureStoreId     int
+	FeatureViewName    string
+	FeatureViewId      int
+	FeatureViewVersion int
+	// Feature view can be created with multiple features of the same name without prefix.
+	// Each prefix column can map to multiple features
+	PrefixFeaturesLookup map[string][]*FeatureMetadata // key: prefix + fName, label are excluded
+	FeatureGroupFeatures []*FeatureGroupFeatures       // label are excluded
+	FeatureStoreNames    []*string                     // List of all feature store used by feature view including shared feature store
 	NumOfFeatures        int
 	FeatureIndexLookup   map[string]int // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 	// serving key doc: https://hopsworks.atlassian.net/wiki/spaces/FST/pages/173342721/How+to+resolve+the+set+of+serving+key+in+get+feature+vector
-	PrimaryKeyMap       map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
-	PrefixPrimaryKeyMap map[string]string          // key: serving-key-prefix + fName, value: feature name in feature group. Used for pk validation.
-	JoinKeyMap          map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
-	ComplexFeatures     map[string]*AvroDecoder    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	PrimaryKeyMap    map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
+	ValidPrimaryKeys map[string]bool            // key: serving-key-prefix + fName, fName. Used for pk validation.
+	PrefixJoinKeyMap map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
+	JoinKeyMap       map[string][]string        // key: fName, value: list of feature which join on the key. Used for filling in pk value.
+	RequiredJoinKeyMap map[string][]string      // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
+	ComplexFeatures  map[string]*AvroDecoder    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 }
 
 type FeatureGroupFeatures struct {
@@ -113,19 +117,31 @@ func newFeatureViewMetadata(
 	features *[]*FeatureMetadata,
 	servingKeys *[]dal.ServingKey,
 ) (*FeatureViewMetadata, error) {
-	var prefixPrimaryKeyMap = make(map[string]string)
+	var ValidPrimaryKeysMap = make(map[string]bool)
 	var primaryKeyMap = make(map[string]*dal.ServingKey)
 	var fgPrimaryKeyMap = make(map[string][]*dal.ServingKey)
+	var prefixJoinKeyMap = make(map[string][]string)
 	var joinKeyMap = make(map[string][]string)
+	var requiredJoinKeyMap = make(map[string][]string)
+	var servingKeyMap = make(map[string]dal.ServingKey) // key: serving key prefix + fname
+
+	for _, key := range *servingKeys {
+		servingKeyMap[key.Prefix+key.FeatureName] = key
+	}
+
 	for _, key := range *servingKeys {
 		var prefixFeatureName = key.Prefix + key.FeatureName
-		prefixPrimaryKeyMap[prefixFeatureName] = key.FeatureName
+		ValidPrimaryKeysMap[prefixFeatureName] = true
+		ValidPrimaryKeysMap[key.FeatureName] = true
+
+		prefixJoinKeyMap[prefixFeatureName] = append(prefixJoinKeyMap[prefixFeatureName], prefixFeatureName)
+		joinKeyMap[key.FeatureName] = append(joinKeyMap[key.FeatureName], prefixFeatureName)
 
 		if key.Required {
-			joinKeyMap[prefixFeatureName] = append(joinKeyMap[prefixFeatureName], prefixFeatureName)
+			requiredJoinKeyMap[prefixFeatureName] = append(requiredJoinKeyMap[prefixFeatureName], prefixFeatureName)
 		} else {
 			if key.RequiredEntry != "" {
-				joinKeyMap[key.JoinOn] = append(joinKeyMap[key.JoinOn], prefixFeatureName)
+				requiredJoinKeyMap[key.JoinOn] = append(requiredJoinKeyMap[key.JoinOn], prefixFeatureName)
 			}
 		}
 		var newKey = key
@@ -134,14 +150,14 @@ func newFeatureViewMetadata(
 		fgPrimaryKeyMap[fgKey] = append(fgPrimaryKeyMap[fgKey], &newKey)
 	}
 
-	prefixColumns := make(map[string]*FeatureMetadata)
+	prefixColumns := make(map[string][]*FeatureMetadata)
 	fgFeatures := make(map[string][]*FeatureMetadata)
 	for _, feature := range *features {
 		if feature.Label {
 			continue
 		}
 		prefixFeatureName := feature.Prefix + feature.Name
-		prefixColumns[prefixFeatureName] = feature
+		prefixColumns[prefixFeatureName] = append(prefixColumns[prefixFeatureName], feature)
 		var featureKey = fmt.Sprintf("%d|%d", feature.JoinIndex, feature.FeatureGroupId)
 		fgFeatures[featureKey] = append(fgFeatures[featureKey], feature)
 	}
@@ -241,7 +257,9 @@ func newFeatureViewMetadata(
 	metadata.FeatureIndexLookup = featureIndex
 	metadata.FeatureStoreNames = fsNames
 	metadata.PrimaryKeyMap = primaryKeyMap
-	metadata.PrefixPrimaryKeyMap = prefixPrimaryKeyMap
+	metadata.ValidPrimaryKeys = ValidPrimaryKeysMap
+	metadata.PrefixJoinKeyMap = prefixJoinKeyMap
+	metadata.RequiredJoinKeyMap = requiredJoinKeyMap
 	metadata.JoinKeyMap = joinKeyMap
 	metadata.ComplexFeatures = complexFeatures
 	return &metadata, nil

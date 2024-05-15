@@ -79,6 +79,14 @@ func GetNSampleData(database string, table string, n int) ([][]interface{}, []st
 	if err1 != nil {
 		return nil, nil, nil, err1
 	}
+	if log.IsDebug() {
+		var colDebug []string
+		for i := range *valueBatch {
+			colDebug = append(colDebug, fmt.Sprintf("%s (type: %s)", (*valueBatch)[i], colTypes[i]))
+		}
+		log.Debugf("Sample data: %s", strings.Join(colDebug, ", "))
+
+	}
 	return *valueBatch, pks, columnName, nil
 }
 
@@ -241,6 +249,9 @@ func GetNSampleDataWithJoinAndKey(n int, database string, table string, rightDat
 	var valueBatch, err1 = fetchDataRows(query, colTypes)
 	if err1 != nil {
 		return nil, nil, nil, err1
+	}
+	if log.IsDebug() {
+		log.Debugf("Data columns: %s", strings.Join(cols, ", "))
 	}
 	return *valueBatch, pks, cols, nil
 }
@@ -510,4 +521,13 @@ func ConvertBinaryToJsonMessage(data interface{}) (*json.RawMessage, error) {
 	log.Debug(base64Str)
 	out := json.RawMessage([]byte(fmt.Sprintf(`"%s"`, base64Str)))
 	return &out, nil
+}
+
+func CopyRows(original [][]interface{}) [][]interface{} {
+	copied := make([][]interface{}, len(original))
+	for i, row := range original {
+		copied[i] = make([]interface{}, len(row))
+		copy(copied[i], row)
+	}
+	return copied
 }
