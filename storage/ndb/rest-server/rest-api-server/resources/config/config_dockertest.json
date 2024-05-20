@@ -30,7 +30,7 @@
                                         "Port": 3306
                                 }
                         ],
-                        "User": "mysql",
+                        "User": "hopsworks",
                         "Password": "Abc123?e"
                 }
         }

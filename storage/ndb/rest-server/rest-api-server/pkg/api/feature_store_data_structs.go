@@ -21,6 +21,12 @@ import (
 	"fmt"
 )
 
+func GetDefaultOptions() Options {
+	var defaultOptions = Options{}
+	defaultOptions.ValidatePassedFeatures = true
+	return defaultOptions
+}
+
 // Request of multiple feature vectors and optional metadata
 type BatchFeatureStoreRequest struct {
 	FeatureStoreName   *string                         `json:"featureStoreName" binding:"required"`
@@ -32,11 +38,30 @@ type BatchFeatureStoreRequest struct {
 	Entries            *[]*map[string]*json.RawMessage `json:"entries" binding:"required"`
 	// Client requested metadata
 	MetadataRequest    *MetadataRequest                `json:"metadataOptions"`
+	OptionsRequest     *OptionsRequest                 `json:"options"`
+}
+
+func (freq BatchFeatureStoreRequest) GetOptions() Options {
+	var defaultOptions = GetDefaultOptions()
+	if freq.OptionsRequest != nil {
+		if freq.OptionsRequest.ValidatePassedFeatures != nil {
+			defaultOptions.ValidatePassedFeatures = *freq.OptionsRequest.ValidatePassedFeatures
+		}
+	}
+	return defaultOptions
 }
 
 type MetadataRequest struct {
 	FeatureName bool `json:"featureName"`
 	FeatureType bool `json:"featureType"`
+}
+
+type OptionsRequest struct {
+	ValidatePassedFeatures *bool `json:"validatePassedFeatures"`
+}
+
+type Options struct {
+	ValidatePassedFeatures bool
 }
 
 func (freq BatchFeatureStoreRequest) String() string {
@@ -56,6 +81,17 @@ type FeatureStoreRequest struct {
 	PassedFeatures     *map[string]*json.RawMessage `json:"passedFeatures"`
 	Entries            *map[string]*json.RawMessage `json:"entries" binding:"required"`
 	MetadataRequest    *MetadataRequest             `json:"metadataOptions"`
+	OptionsRequest     *OptionsRequest              `json:"options"`
+}
+
+func (freq FeatureStoreRequest) GetOptions() Options {
+	var defaultOptions = GetDefaultOptions()
+	if freq.OptionsRequest != nil {
+		if freq.OptionsRequest.ValidatePassedFeatures != nil {
+			defaultOptions.ValidatePassedFeatures = *freq.OptionsRequest.ValidatePassedFeatures
+		}
+	}
+	return defaultOptions
 }
 
 func (freq FeatureStoreRequest) String() string {

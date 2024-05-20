@@ -71,12 +71,12 @@ func (h *Handler) Validate(request interface{}) error {
 func checkFeatureStatus(fsReq *api.BatchFeatureStoreRequest, metadata *feature_store.FeatureViewMetadata, status *[]api.FeatureStatus) int {
 	var cnt = make(map[int]bool)
 	for i, entry := range *fsReq.Entries {
-		if fshandler.ValidatePrimaryKey(entry, &metadata.PrefixPrimaryKeyMap) != nil {
+		if fshandler.ValidatePrimaryKey(entry, &metadata.ValidPrimaryKeys) != nil {
 			(*status)[i] = api.FEATURE_STATUS_ERROR
 			cnt[i] = true
 		}
 	}
-	if fsReq.PassedFeatures != nil {
+	if fsReq.PassedFeatures != nil && fsReq.GetOptions().ValidatePassedFeatures {
 		for i, passedFeature := range *fsReq.PassedFeatures {
 			if fshandler.ValidatePassedFeatures(passedFeature, &metadata.PrefixFeaturesLookup) != nil {
 				(*status)[i] = api.FEATURE_STATUS_ERROR
@@ -198,7 +198,7 @@ func getPkReadResponseJSON(numEntries int, metadata feature_store.FeatureViewMet
 	return &response
 }
 
-func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures *[]*map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int, status *[]api.FeatureStatus) {
+func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures *[]*map[string]*json.RawMessage, featureMetadata *map[string][]*feature_store.FeatureMetadata, indexLookup *map[string]int, status *[]api.FeatureStatus) {
 	if passedFeatures != nil && len(*passedFeatures) != 0 {
 		for i, feature := range *features {
 			if (*status)[i] != api.FEATURE_STATUS_ERROR {
