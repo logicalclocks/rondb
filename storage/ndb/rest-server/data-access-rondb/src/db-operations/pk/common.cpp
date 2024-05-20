@@ -963,7 +963,7 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
 
     // NOTE: we not allocating a tmp buffer to hold the data
     // Reusing the reponse buffer
-    char *tmpBuffer = static_cast<char*>(response->GetWritePointer());
+    char *tmpBuffer = static_cast<char *>(response->GetWritePointer());
 
     Uint64 chunk      = 0;
     Uint64 total_read = 0;
@@ -1005,10 +1005,10 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
                                        " Expected to read: " + std::to_string(length) +
                                        " bytes. Read: " + std::to_string(total_read));
     }
-    
-    return response->Append_char(colRec->ndbRec->getColumn()->getName(), static_cast<char*>(response->GetWritePointer()), length,
-                                   colRec->ndbRec->getColumn()->getCharset());
 
+    return response->Append_char(colRec->ndbRec->getColumn()->getName(),
+                                 static_cast<char *>(response->GetWritePointer()), length,
+                                 colRec->ndbRec->getColumn()->getCharset());
   }
   case NdbDictionary::Column::Bit: {
     //< Bit, length specifies no of bits
@@ -1214,4 +1214,33 @@ Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initialDelayInMS, Uint32 
     delay = expoDelay - randJitter;
   }
   return delay;
+}
+
+RS_Status HandleSchemaErrors(Ndb *ndbObject, RS_Status status,
+                             const std::list<std::tuple<std::string, std::string>> &tables) {
+  if (status.http_code != SUCCESS) {
+    if (UnloadSchema(status)) {
+      for (const std::tuple<std::string, std::string> &table_tup : tables) {
+        const char *db    = std::get<0>(table_tup).c_str();
+        const char *table = std::get<1>(table_tup).c_str();
+
+        ndbObject->setCatalogName(db);
+        NdbDictionary::Dictionary *dict = ndbObject->getDictionary();
+
+        // invalidate indexes
+        NdbDictionary::Dictionary::List indexes;
+        dict->listIndexes(indexes, table);
+        for (unsigned i = 0; i < indexes.count; i++) {
+          dict->invalidateIndex(indexes.elements[i].name, table);
+        }
+        
+        // invalidate table
+        dict->invalidateTable(table);
+        dict->removeCachedTable(table);
+        LOG_INFO("Unloading schema " + std::string(db) + "/" + std::string(table));
+      }
+    }
+  }
+
+  return RS_OK;
 }
