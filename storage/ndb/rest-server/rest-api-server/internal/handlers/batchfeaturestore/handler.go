@@ -113,7 +113,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		return err.GetStatus(), err.GetError()
 	}
 	var featureStatus = make([]api.FeatureStatus, len(*fsReq.Entries))
-	var detailedStatus [][]*api.DetailedStatus = nil
+	var detailedStatus [][]*api.DetailedStatus
 	if fsReq.GetOptions().IncludeDetailedStatus {
 		detailedStatus = make([][]*api.DetailedStatus, len(*fsReq.Entries))
 	}
@@ -139,7 +139,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 			var fsError = fshandler.TranslateRonDbError(code, ronDbErr.Error())
 			return fsError.GetStatus(), fsError.GetError()
 		}
-		features, err = getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus, &detailedStatus)
+		features, err = getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus, &detailedStatus, fsReq.GetOptions().IncludeDetailedStatus)
 		if err != nil {
 			return err.GetStatus(), err.GetError()
 		}
@@ -162,7 +162,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	return http.StatusOK, nil
 }
 
-func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus, detailedStatus *[][]*api.DetailedStatus) (*[][]interface{}, *feature_store.RestErrorCode) {
+func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus, detailedStatus *[][]*api.DetailedStatus, includeDetailedStatus bool) (*[][]interface{}, *feature_store.RestErrorCode) {
 	rondbResp := (*batchResponse).(*api.BatchResponseJSON)
 	ronDbBatchResult := make([][]*api.PKReadResponseWithCodeJSON, len(*batchStatus))
 	batchResult := make([][]interface{}, len(*batchStatus))
@@ -177,10 +177,10 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 	}
 	for i, ronDbResult := range ronDbBatchResult {
 		if len(ronDbResult) != 0 {
-			result, status, perEntryDetailedStatus, _ := fshandler.GetFeatureValues(&ronDbResult, (*entries)[i], featureView, detailedStatus != nil)
+			result, status, perEntryDetailedStatus, _ := fshandler.GetFeatureValues(&ronDbResult, (*entries)[i], featureView, includeDetailedStatus)
 			batchResult[i] = *result
 			(*batchStatus)[i] = status
-			if detailedStatus != nil {
+			if includeDetailedStatus {
 				(*detailedStatus)[i] = perEntryDetailedStatus
 			}
 		}
