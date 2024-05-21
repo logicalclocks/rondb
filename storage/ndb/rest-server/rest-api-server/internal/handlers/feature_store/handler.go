@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"hopsworks.ai/rdrs/internal/common"
@@ -222,9 +223,12 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	if fsError != nil {
 		return fsError.GetStatus(), fsError.GetError()
 	}
-	features, status, fsError := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata)
+	features, status, detailedStatus, fsError := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata, *fsReq.OptionsRequest.IncludeDetailedStatus)
 	if fsError != nil {
 		return fsError.GetStatus(), fsError.GetError()
+	}
+	if log.IsDebug() {
+		log.Debugf("Detailed Status : %s", detailedStatus)
 	}
 	fsResp := response.(*api.FeatureStoreResponse)
 	fsResp.Status = status
@@ -232,6 +236,9 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	fsResp.Features = *features
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *GetFeatureMetadata(metadata, fsReq.MetadataRequest)
+	}
+	if *fsReq.OptionsRequest.IncludeDetailedStatus {
+		fsResp.DetailedStatus = detailedStatus
 	}
 	return http.StatusOK, nil
 }
@@ -296,11 +303,25 @@ func TranslateRonDbError(code int, err string) *feature_store.RestErrorCode {
 	return fsError
 }
 
-func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) (*[]interface{}, api.FeatureStatus, *feature_store.RestErrorCode) {
+func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, includeDetailedStatus bool) (*[]interface{}, api.FeatureStatus, []*api.DetailedStatus, *feature_store.RestErrorCode) {
 	featureValues := make([]interface{}, featureView.NumOfFeatures)
 	var status = api.FEATURE_STATUS_COMPLETE
+	var arrDetailedStatus = make([]*api.DetailedStatus, 0, len(*ronDbResult))
 	var err *feature_store.RestErrorCode
 	for _, response := range *ronDbResult {
+		if includeDetailedStatus {
+			fgInt, err := strconv.Atoi(strings.Split(*response.Body.OperationID, "|")[1])
+			if err != nil {
+				log.Errorf("Failed to convert feature group id to int: %s", *response.Body.OperationID)
+				fgInt = -1
+			}
+			arrDetailedStatus = append(arrDetailedStatus, &api.DetailedStatus{
+				FeatureGroupId: fgInt,
+				HttpStatus:     *response.Code,
+				Message:        response.Message,
+				OperationId:    response.Body.OperationID,
+			})
+		}
 		if *response.Code == http.StatusNotFound {
 			status = api.FEATURE_STATUS_MISSING
 		} else if *response.Code == http.StatusBadRequest {
@@ -331,7 +352,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		}
 	}
 	// Fill in primary key value from request into the vector
-	// If multiple matched entries are found, the priority of the entry follows the order in `GetBatchPkReadParams` 
+	// If multiple matched entries are found, the priority of the entry follows the order in `GetBatchPkReadParams`
 	// i.e required entry > entry with prefix > entry without prefix
 	// Reason why it has to loop all entries for each `*JoinKeyMap` is to make sure the value are filled in according to the priority.
 	// Otherwise the lower priority one can overwrite the previous assigned entry if the later entry exists only in the lower priority map.
@@ -365,7 +386,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 			FillPrimaryKey(featureView, &featureValues, joinKeysRequired, value)
 		}
 	}
-	return &featureValues, status, err
+	return &featureValues, status, arrDetailedStatus, err
 }
 
 func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValues *[]interface{}, joinKeys []string, value *json.RawMessage) {
@@ -425,13 +446,13 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 						log.Debugf("Add to filter: %s", pkCol)
 					}
 				}
-			} else if (*entries)[servingKey.Prefix + servingKey.FeatureName] != nil {
+			} else if (*entries)[servingKey.Prefix+servingKey.FeatureName] != nil {
 				// Also Fallback and use feature name with prefix.
-				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.Prefix + servingKey.FeatureName]}
+				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.Prefix+servingKey.FeatureName]}
 				filters = append(filters, filter)
 				if log.IsDebug() {
 					var entryValue interface{}
-					err := json.Unmarshal(*(*entries)[servingKey.Prefix + servingKey.FeatureName], &entryValue)
+					err := json.Unmarshal(*(*entries)[servingKey.Prefix+servingKey.FeatureName], &entryValue)
 					if err == nil {
 						log.Debugf("Add to filter: %s=%v", pkCol, entryValue)
 					} else {
