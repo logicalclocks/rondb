@@ -137,12 +137,10 @@ const (
 )
 
 type DetailedStatus struct {
-	HttpStatus     int32     `json:"httpStatus"`
-	OperationId    *string   `json:"operationId"`
-	Message        *string   `json:"message"`
-	Table          *string   `json:"table"`
-	ServingKeys    []*string `json:"servingKeys"`
-	FeatureGroupId int       `json:"featureGroupId"`
+	HttpStatus     int32   `json:"httpStatus"`
+	OperationId    *string `json:"operationId"`
+	Message        *string `json:"message"`
+	FeatureGroupId int     `json:"featureGroupId"`
 }
 
 func (r *DetailedStatus) String() string {

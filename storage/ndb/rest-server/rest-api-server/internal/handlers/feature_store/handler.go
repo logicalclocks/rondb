@@ -223,7 +223,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	if fsError != nil {
 		return fsError.GetStatus(), fsError.GetError()
 	}
-	features, status, detailedStatus, fsError := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata, *fsReq.OptionsRequest.IncludeDetailedStatus)
+	features, status, detailedStatus, fsError := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata, fsReq.GetOptions().IncludeDetailedStatus)
 	if fsError != nil {
 		return fsError.GetStatus(), fsError.GetError()
 	}
@@ -237,7 +237,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
-	if *fsReq.OptionsRequest.IncludeDetailedStatus {
+	if fsReq.GetOptions().IncludeDetailedStatus {
 		fsResp.DetailedStatus = detailedStatus
 	}
 	return http.StatusOK, nil
