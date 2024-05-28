@@ -318,8 +318,6 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 			arrDetailedStatus = append(arrDetailedStatus, &api.DetailedStatus{
 				FeatureGroupId: fgInt,
 				HttpStatus:     *response.Code,
-				Message:        response.Message,
-				OperationId:    response.Body.OperationID,
 			})
 		}
 		if *response.Code == http.StatusNotFound {
