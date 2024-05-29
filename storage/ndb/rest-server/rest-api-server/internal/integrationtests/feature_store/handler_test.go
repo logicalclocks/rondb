@@ -1692,37 +1692,6 @@ func Test_PassedFeatures_LabelShouldFail(t *testing.T) {
 	}
 }
 
-func Test_GetFeatureVector_Success_ComplexType_With_Schema_Change(t *testing.T) {
-
-	fsmetadata.DefaultExpiration = 1 * time.Second
-	fsmetadata.CleanupInterval = 1 * time.Second
-
-	doneCh := make(chan int)
-	stop := false
-	go work(t, &stop, doneCh)
-
-	time.Sleep(2 * time.Second)
-
-	log.Debug("Changing the schema for the test")
-	err := testutils.RunQueriesOnDataCluster(testdbs.HopsworksUpdateScheme)
-	if err != nil {
-		t.Fatalf("failed to change schema. Error: %v", err)
-	}
-	log.Debug("Changed the schema for the test")
-
-	time.Sleep(2 * time.Second)
-	stop = true
-
-	<-doneCh
-}
-
-func work(t *testing.T, stop *bool, done chan int) {
-	defer func() { done <- 1 }()
-	for !*stop {
-		Test_GetFeatureVector_Success_ComplexType(t)
-	}
-}
-
 func Test_PassedFeatures_LabelShouldFail_NoValidation(t *testing.T) {
 	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
 	if err != nil {
@@ -1768,7 +1737,8 @@ func Test_IncludeDetailedStatus_SingleTable(t *testing.T) {
 		includeDetailedStatus := true
 		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
-		if fsResp.DetailedStatus != nil {
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		if fsResp.DetailedStatus == nil {
 			t.Fatalf("DetailedStatus should be set")
 		}
 		if len(fsResp.DetailedStatus) != 1 {
@@ -1784,7 +1754,7 @@ func Test_IncludeDetailedStatus_SingleTable(t *testing.T) {
 }
 
 func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
-	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "right_")
+	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -1801,7 +1771,8 @@ func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
 		includeDetailedStatus := true
 		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
-		if fsResp.DetailedStatus != nil {
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		if fsResp.DetailedStatus == nil {
 			t.Fatalf("DetailedStatus should be set")
 		}
 		if len(fsResp.DetailedStatus) != 2 {
@@ -1819,27 +1790,35 @@ func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
 }
 
 func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
-	rows, _, _, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "right_")
+	rows, _, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 	for _, row := range rows {
 		var fsReq = CreateFeatureStoreRequest(
 			testdbs.FSDB001,
-			"sample_1n2",
+			"sample_1n1_self",
 			1,
-			[]string{"id1"},
-			[]interface{}{row[0]},
+			[]string{"fg1_id1"},
+			[]interface{}{row[4]},
 			nil,
 			nil,
 		)
+		// Only features from right fg are not null because primary key of the right fg is provided
+		for j := range row {
+			if j < 4 {
+				row[j] = nil
+			}
+		}
 		includeDetailedStatus := true
 		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
+
+		ValidateResponseWithData(t, &row, &cols, fsResp)
 		if fsResp.Status != "MISSING" {
 			t.Fatalf("Status should be MISSING")
 		}
-		if fsResp.DetailedStatus != nil {
+		if fsResp.DetailedStatus == nil {
 			t.Fatalf("DetailedStatus should be set")
 		}
 		if len(fsResp.DetailedStatus) != 2 {
@@ -1849,7 +1828,7 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
 			if ds.FeatureGroupId == -1 {
 				t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
 			}
-			if (idx == 0 && ds.HttpStatus != http.StatusOK) || (idx == 1 && ds.HttpStatus != http.StatusBadRequest) {
+			if (idx == 1 && ds.HttpStatus != http.StatusOK) || (idx == 0 && ds.HttpStatus != http.StatusBadRequest) {
 				t.Fatalf("HttpStatus should be 200 or 400")
 			}
 		}
@@ -1859,10 +1838,10 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
 func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T) {
 	var fsReq = CreateFeatureStoreRequest(
 		testdbs.FSDB001,
-		"sample_1n2",
+		"sample_1n3",
 		1,
 		[]string{"id1"},
-		[]interface{}{"_invalid"},
+		[]interface{}{[]byte(`"99999"`)},
 		nil,
 		nil,
 	)
@@ -1872,7 +1851,7 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 	if fsResp.Status != "MISSING" {
 		t.Fatalf("Status should be MISSING")
 	}
-	if fsResp.DetailedStatus != nil {
+	if fsResp.DetailedStatus == nil {
 		t.Fatalf("DetailedStatus should be set")
 	}
 	if len(fsResp.DetailedStatus) != 2 {
@@ -1885,5 +1864,36 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 		if (idx == 0 && ds.HttpStatus != http.StatusNotFound) || (idx == 1 && ds.HttpStatus != http.StatusBadRequest) {
 			t.Fatalf("HttpStatus should be 404 or 400")
 		}
+	}
+}
+
+func Test_GetFeatureVector_Success_ComplexType_With_Schema_Change(t *testing.T) {
+
+	fsmetadata.DefaultExpiration = 1 * time.Second
+	fsmetadata.CleanupInterval = 1 * time.Second
+
+	doneCh := make(chan int)
+	stop := false
+	go work(t, &stop, doneCh)
+
+	time.Sleep(2 * time.Second)
+
+	log.Debug("Changing the schema for the test")
+	err := testutils.RunQueriesOnDataCluster(testdbs.HopsworksUpdateScheme)
+	if err != nil {
+		t.Fatalf("failed to change schema. Error: %v", err)
+	}
+	log.Debug("Changed the schema for the test")
+
+	time.Sleep(2 * time.Second)
+	stop = true
+
+	<-doneCh
+}
+
+func work(t *testing.T, stop *bool, done chan int) {
+	defer func() { done <- 1 }()
+	for !*stop {
+		Test_GetFeatureVector_Success_ComplexType(t)
 	}
 }

@@ -1232,7 +1232,6 @@ func Test_GetFeatureVector_IncompletePrimaryKey_Join_IncludePk(t *testing.T) {
 		nil,
 	)
 	for _, row := range rows {
-
 		// Only features from right fg are not null because primary key of the right fg is provided
 		for j := range row {
 			if j < 4 {
@@ -2225,13 +2224,13 @@ func Test_PassedFeatures_LabelShouldFail_NoValidation(t *testing.T) {
 }
 
 func Test_IncludeDetailedStatus_SingleTable(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetNSampleData(testdbs.FSDB002, fmt.Sprintf("%s_%d", "sample_2", 1), 5)
+	rows, pks, cols, err := fshelper.GetNSampleData(testdbs.FSDB001, "sample_1_1", 5)
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 	var fsReq = CreateFeatureStoreRequest(
-		testdbs.FSDB002,
-		"sample_2",
+		testdbs.FSDB001,
+		"sample_1",
 		1,
 		pks,
 		*GetPkValues(&rows, &pks, &cols),
@@ -2241,6 +2240,8 @@ func Test_IncludeDetailedStatus_SingleTable(t *testing.T) {
 	includeDetailedStatus := true
 	fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
 	if fsResp.DetailedStatus == nil {
 		t.Fatalf("Detailed status has been explicitly requested but not returned")
 	}
@@ -2258,12 +2259,12 @@ func Test_IncludeDetailedStatus_SingleTable(t *testing.T) {
 }
 
 func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB002, "sample_1_1", testdbs.FSDB002, "sample_2_1", "fg2_")
+	rows, pks, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 	var fsReq = CreateFeatureStoreRequest(
-		testdbs.FSDB002,
+		testdbs.FSDB001,
 		"sample_1n2",
 		1,
 		pks,
@@ -2274,12 +2275,14 @@ func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
 	includeDetailedStatus := true
 	fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
 	if fsResp.DetailedStatus == nil {
 		t.Fatalf("Detailed status has been explicitly requested but not returned")
 	}
 	for _, list_ds := range fsResp.DetailedStatus {
-		if len(list_ds) != 1 {
-			t.Fatalf("Detailed status should have only one entry")
+		if len(list_ds) != 2 {
+			t.Fatalf("Detailed status should have only two entry")
 		}
 		if list_ds[0].HttpStatus != http.StatusOK {
 			t.Fatalf("Detailed status should have http status %d", http.StatusOK)
@@ -2290,8 +2293,8 @@ func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
 	}
 }
 
-func Test_IncludeDetailedStatus_JoinTable_IncompletePrimaryKey(t *testing.T) {
-	rows, _, _, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
+func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
+	rows, _, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -2310,9 +2313,19 @@ func Test_IncludeDetailedStatus_JoinTable_IncompletePrimaryKey(t *testing.T) {
 		nil,
 		nil,
 	)
+	for _, row := range rows {
+		// Only features from right fg are not null because primary key of the right fg is provided
+		for j := range row {
+			if j < 4 {
+				row[j] = nil
+			}
+		}
+	}
 	includeDetailedStatus := true
 	fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
 	if fsResp.DetailedStatus == nil {
 		t.Fatalf("Detailed status has been explicitly requested but not returned")
 	}
@@ -2321,10 +2334,10 @@ func Test_IncludeDetailedStatus_JoinTable_IncompletePrimaryKey(t *testing.T) {
 			t.Fatalf("Detailed status should have two entries")
 		}
 		for idx, ds := range list_ds {
-			if idx == 0 && ds.HttpStatus != http.StatusOK {
+			if idx == 1 && ds.HttpStatus != http.StatusOK {
 				t.Fatalf("Detailed status should have http status %d", http.StatusOK)
 			}
-			if idx == 1 && ds.HttpStatus != http.StatusBadRequest {
+			if idx == 0 && ds.HttpStatus != http.StatusBadRequest {
 				t.Fatalf("Detailed status should have http status %d", http.StatusBadRequest)
 			}
 			if ds.FeatureGroupId == -1 {
@@ -2333,26 +2346,15 @@ func Test_IncludeDetailedStatus_JoinTable_IncompletePrimaryKey(t *testing.T) {
 		}
 
 	}
-
 }
 
-func Test_IncludeDetailedStatus_JoinTable_IncompletePrimaryKeyAndFailedRead(t *testing.T) {
-	rows, _, _, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
-	if err != nil {
-		t.Fatalf("Cannot get sample data with error %s ", err)
-	}
-	var pkValues = make([][]interface{}, 0)
-	for range rows {
-		// Primary key of right fg
-		pkValues = append(pkValues, []interface{}{"invalid_key_value"})
-	}
-
+func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T) {
 	var fsReq = CreateFeatureStoreRequest(
 		testdbs.FSDB001,
-		"sample_1n1_self",
+		"sample_1n3",
 		1,
-		[]string{"fg1_id1"},
-		pkValues,
+		[]string{"id1"},
+		[][]interface{}{{[]byte(`"99999"`)}, {[]byte(`"9999"`)}},
 		nil,
 		nil,
 	)
@@ -2368,7 +2370,7 @@ func Test_IncludeDetailedStatus_JoinTable_IncompletePrimaryKeyAndFailedRead(t *t
 		}
 		for idx, ds := range list_ds {
 			if idx == 0 && ds.HttpStatus != http.StatusNotFound {
-				t.Fatalf("Detailed status should have http status %d", http.StatusOK)
+				t.Fatalf("Detailed status should have http status %d", http.StatusNotFound)
 			}
 			if idx == 1 && ds.HttpStatus != http.StatusBadRequest {
 				t.Fatalf("Detailed status should have http status %d", http.StatusBadRequest)
