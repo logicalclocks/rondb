@@ -99,6 +99,9 @@ func Test_GetFeatureVector_Success(t *testing.T) {
 		)
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 		ValidateResponseWithData(t, &row, &cols, fsResp)
+		if fsResp.DetailedStatus != nil {
+			t.Fatalf("DetailedStatus should be nil as includeDetailedStatus defaults to false.")
+		}
 	}
 }
 
@@ -1467,7 +1470,7 @@ func Test_PassedFeatures_Success_AllTypes(t *testing.T) {
 		var passedFeatures = []interface{}{
 			row[0],                 // id1
 			row[1],                 // id2
-			[]byte(`"992"`),          // ts
+			[]byte(`"992"`),        // ts
 			[]byte(`993`),          // bigint
 			[]byte(`"994"`),        // string
 			[]byte(`"2022-01-01"`), // date
@@ -1689,6 +1692,181 @@ func Test_PassedFeatures_LabelShouldFail(t *testing.T) {
 	}
 }
 
+func Test_PassedFeatures_LabelShouldFail_NoValidation(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var exCols = make(map[string]bool)
+	exCols["data1"] = true
+	var fvName = "sample_1n2_label"
+	var fvVersion = 1
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			testdbs.FSDB001,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			[]string{"data1"},
+			[]interface{}{[]byte(`300`)},
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		var validatePassedFeatures = false
+		fsReq.OptionsRequest = &api.OptionsRequest{ValidatePassedFeatures: &validatePassedFeatures}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
+	}
+}
+
+func Test_IncludeDetailedStatus_SingleTable(t *testing.T) {
+	rows, pks, cols, err := GetSampleData(testdbs.FSDB001, "sample_1_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			testdbs.FSDB001,
+			"sample_1",
+			1,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		includeDetailedStatus := true
+		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		if fsResp.DetailedStatus == nil {
+			t.Fatalf("DetailedStatus should be set")
+		}
+		if len(fsResp.DetailedStatus) != 1 {
+			t.Fatalf("DetailedStatus should have a single element")
+		}
+		if fsResp.DetailedStatus[0].HttpStatus != http.StatusOK {
+			t.Fatalf("HttpStatus should be 200")
+		}
+		if fsResp.DetailedStatus[0].FeatureGroupId == -1 {
+			t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
+		}
+	}
+}
+
+func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			testdbs.FSDB001,
+			"sample_1n2",
+			1,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		includeDetailedStatus := true
+		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		if fsResp.DetailedStatus == nil {
+			t.Fatalf("DetailedStatus should be set")
+		}
+		if len(fsResp.DetailedStatus) != 2 {
+			t.Fatalf("DetailedStatus should have two elements")
+		}
+		for _, ds := range fsResp.DetailedStatus {
+			if ds.HttpStatus != http.StatusOK {
+				t.Fatalf("HttpStatus should be 200")
+			}
+			if ds.FeatureGroupId == -1 {
+				t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
+			}
+		}
+	}
+}
+
+func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
+	rows, _, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			testdbs.FSDB001,
+			"sample_1n1_self",
+			1,
+			[]string{"fg1_id1"},
+			[]interface{}{row[4]},
+			nil,
+			nil,
+		)
+		// Only features from right fg are not null because primary key of the right fg is provided
+		for j := range row {
+			if j < 4 {
+				row[j] = nil
+			}
+		}
+		includeDetailedStatus := true
+		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		if fsResp.Status != "MISSING" {
+			t.Fatalf("Status should be MISSING")
+		}
+		if fsResp.DetailedStatus == nil {
+			t.Fatalf("DetailedStatus should be set")
+		}
+		if len(fsResp.DetailedStatus) != 2 {
+			t.Fatalf("DetailedStatus should have two elements")
+		}
+		for idx, ds := range fsResp.DetailedStatus {
+			if ds.FeatureGroupId == -1 {
+				t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
+			}
+			if (idx == 1 && ds.HttpStatus != http.StatusOK) || (idx == 0 && ds.HttpStatus != http.StatusBadRequest) {
+				t.Fatalf("HttpStatus should be 200 or 400")
+			}
+		}
+	}
+}
+
+func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T) {
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n3",
+		1,
+		[]string{"id1"},
+		[]interface{}{[]byte(`"99999"`)},
+		nil,
+		nil,
+	)
+	includeDetailedStatus := true
+	fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	if fsResp.Status != "MISSING" {
+		t.Fatalf("Status should be MISSING")
+	}
+	if fsResp.DetailedStatus == nil {
+		t.Fatalf("DetailedStatus should be set")
+	}
+	if len(fsResp.DetailedStatus) != 2 {
+		t.Fatalf("DetailedStatus should have two elements")
+	}
+	for idx, ds := range fsResp.DetailedStatus {
+		if ds.FeatureGroupId == -1 {
+			t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
+		}
+		if (idx == 0 && ds.HttpStatus != http.StatusNotFound) || (idx == 1 && ds.HttpStatus != http.StatusBadRequest) {
+			t.Fatalf("HttpStatus should be 404 or 400")
+		}
+	}
+}
+
 func Test_GetFeatureVector_Success_ComplexType_With_Schema_Change(t *testing.T) {
 
 	fsmetadata.DefaultExpiration = 1 * time.Second
@@ -1717,32 +1895,5 @@ func work(t *testing.T, stop *bool, done chan int) {
 	defer func() { done <- 1 }()
 	for !*stop {
 		Test_GetFeatureVector_Success_ComplexType(t)
-	}
-}
-
-func Test_PassedFeatures_LabelShouldFail_NoValidation(t *testing.T) {
-	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
-	if err != nil {
-		t.Fatalf("Cannot get sample data with error %s ", err)
-	}
-	var exCols = make(map[string]bool)
-	exCols["data1"] = true
-	var fvName = "sample_1n2_label"
-	var fvVersion = 1
-	for _, row := range rows {
-		var fsReq = CreateFeatureStoreRequest(
-			testdbs.FSDB001,
-			fvName,
-			fvVersion,
-			pks,
-			*GetPkValues(&row, &pks, &cols),
-			[]string{"data1"},
-			[]interface{}{[]byte(`300`)},
-		)
-		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
-		var validatePassedFeatures = false
-		fsReq.OptionsRequest = &api.OptionsRequest{ValidatePassedFeatures: &validatePassedFeatures}
-		fsResp := GetFeatureStoreResponse(t, fsReq)
-		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
 	}
 }
