@@ -45,6 +45,8 @@ pipeline {
         stage("build") {
             steps {
               sh '''
+                set -e
+
                 echo "Building RonDB"
                 cd ${WORKSPACE}/rondb
 
@@ -104,6 +106,8 @@ pipeline {
                   exit 0
                 fi
 
+                set -e
+
                 echo "Building RDRS Image"
 
                 cd ${WORKSPACE}/rondb
@@ -113,7 +117,7 @@ pipeline {
                 DOCKER_FILE_NAME="Dockerfile.${DOCKER_BASE_IMAGE}"
                 echo "Using Dockerfile ${DOCKER_FILE_NAME}"
 
-                 DOCKER_BUILDKIT=1 docker buildx build . \
+                 DOCKER_BUILDKIT=1 docker buildx build --load . \
                  -f $DOCKER_FILE_NAME \
                  --tag rdrs:$RONDB_VERSION \
                  --target rdrs \
