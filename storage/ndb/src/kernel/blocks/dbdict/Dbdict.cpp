@@ -7711,7 +7711,9 @@ Dbdict::createTab_local(Signal* signal,
   req->noOfAttributes = tabPtr.p->noOfAttributes;
   req->extraRowAuthorBits = tabPtr.p->m_extra_row_author_bits;
   req->useVarSizedDiskData = 0;
-  req->hashFunctionFlag = 0;
+  req->hashFunctionFlag =
+      (Uint32)(((tabPtr.p->m_bits &
+                 TableRecord::TR_HashFunction) == 0) ? 0 : 1);
   sendSignal(DBLQH_REF, GSN_CREATE_TAB_REQ, signal,
              CreateTabReq::NewSignalLengthLDM, JBB);
 
