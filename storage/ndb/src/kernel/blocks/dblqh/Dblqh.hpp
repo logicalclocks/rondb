@@ -747,8 +747,8 @@ public:
 //#define DEBUG_FRAGMENT_LOCK 1
 #define LOCK_LINE_MASK 2047
 //#define LOCK_LINE_MASK 511
-#define LOCK_READ_SPIN_TIME 30
-#define LOCK_WRITE_SPIN_TIME 40
+#define LOCK_READ_SPIN_TIME 60
+#define LOCK_WRITE_SPIN_TIME 60
 #ifdef DEBUG_FRAGMENT_LOCK
 #define DEB_FRAGMENT_LOCK(frag) debug_fragment_lock(frag, __LINE__)
 #else
@@ -4875,24 +4875,28 @@ public:
   Uint32 m_scan_frag_access_cond_waits;
   Uint64 m_scan_frag_access_spinloops;
   Uint64 m_scan_frag_access_spintime;
+  Uint64 m_scan_frag_access_waittime;
 
   Uint32 m_read_key_frag_access;
   Uint32 m_read_key_frag_access_contended;
   Uint32 m_read_key_frag_access_cond_waits;
   Uint64 m_read_key_frag_access_spinloops;
   Uint64 m_read_key_frag_access_spintime;
+  Uint64 m_read_key_frag_access_waittime;
 
   Uint32 m_write_key_frag_access;
   Uint32 m_write_key_frag_access_contended;
   Uint32 m_write_key_frag_access_cond_waits;
   Uint64 m_write_key_frag_access_spinloops;
   Uint64 m_write_key_frag_access_spintime;
+  Uint64 m_write_key_frag_access_waittime;
 
   Uint32 m_exclusive_frag_access;
   Uint32 m_exclusive_frag_access_contended;
   Uint32 m_exclusive_frag_access_cond_waits;
   Uint64 m_exclusive_frag_access_spinloops;
   Uint64 m_exclusive_frag_access_spintime;
+  Uint64 m_exclusive_frag_access_waittime;
 
   Uint32 m_upgrade_frag_access;
 

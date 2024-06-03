@@ -148,8 +148,9 @@
 //#define DEBUG_PARALLEL_COPY_EXTRA 1
 //#define DEBUG_PARALLEL_COPY 1
 //#define DEBUG_HASH 1
+//#define DEBUG_NEW_FRAG 1
+//#define DEBUG_MUTEX_STATS 1
 #endif
-#define DEBUG_NEW_FRAG 1
 
 #ifdef DEBUG_NEW_FRAG
 #define DEB_NEW_FRAG(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -7745,7 +7746,6 @@ static inline Uint32 getProgramWordCount(SegmentedSectionPtr attrInfo)
  * DEBUG_MUTEX_STATS do we print it unconditionally, otherwise it is
  * printed only if activating debug printouts from command line.
  */
-//#define DEBUG_MUTEX_STATS 1
 #ifdef DEBUG_MUTEX_STATS
 #define DEB_PRINT_MUTEX_STATS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
@@ -7783,46 +7783,85 @@ Dblqh::send_connect_debug(Signal *signal)
 void
 Dblqh::print_fragment_mutex_stats(Signal *signal)
 {
+  if (m_scan_frag_access != 0 ||
+      m_scan_frag_access_contended != 0 ||
+      m_scan_frag_access_spintime != 0 ||
+      m_scan_frag_access_waittime != 0 ||
+      m_scan_frag_access_spinloops != 0 ||
+      m_scan_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]SCAN access: %u"
                          ", SCAN contention: %u"
-                         ", SCAN spintime: %llu"
+                         ", SCAN spintime: %llu us"
+                         ", SCAN waittime: %llu us"
                          ", SCAN spinloops: %llu"
                          ", SCAN cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
                          instance(),
                          m_scan_frag_access,
                          m_scan_frag_access_contended,
-                         m_scan_frag_access_spintime,
+                         m_scan_frag_access_spintime / Uint64(1000),
+                         m_scan_frag_access_waittime / Uint64(1000),
                          m_scan_frag_access_spinloops,
                          m_scan_frag_access_cond_waits));
+  }
+  if (m_read_key_frag_access != 0 ||
+      m_read_key_frag_access_contended != 0 ||
+      m_read_key_frag_access_spintime != 0 ||
+      m_read_key_frag_access_waittime != 0 ||
+      m_read_key_frag_access_spinloops != 0 ||
+      m_read_key_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]RKey access: %u"
                          ", RKey contention: %u"
-                         ", RKey spintime: %llu"
+                         ", RKey spintime: %llu us"
+                         ", RKey waittime: %llu us"
                          ", RKey spinloops: %llu"
                          ", RKey cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
                          instance(),
                          m_read_key_frag_access,
                          m_read_key_frag_access_contended,
-                         m_read_key_frag_access_spintime,
+                         m_read_key_frag_access_spintime / Uint64(1000),
+                         m_read_key_frag_access_waittime / Uint64(1000),
                          m_read_key_frag_access_spinloops,
                          m_read_key_frag_access_cond_waits));
+  }
+  if (m_write_key_frag_access != 0 ||
+      m_write_key_frag_access_contended != 0 ||
+      m_write_key_frag_access_spintime != 0 ||
+      m_write_key_frag_access_waittime != 0 ||
+      m_write_key_frag_access_spinloops != 0 ||
+      m_write_key_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]WKey access: %u"
                          ", WKey contention: %u"
-                         ", WKey spintime: %llu"
+                         ", WKey spintime: %llu us"
+                         ", WKey waittime: %llu us"
                          ", WKey spinloops: %llu"
                          ", WKey cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
                          instance(),
                          m_write_key_frag_access,
                          m_write_key_frag_access_contended,
-                         m_write_key_frag_access_spintime,
+                         m_write_key_frag_access_spintime / Uint64(1000),
+                         m_write_key_frag_access_waittime / Uint64(1000),
                          m_write_key_frag_access_spinloops,
                          m_write_key_frag_access_cond_waits));
+  }
+  if (m_exclusive_frag_access != 0 ||
+      m_exclusive_frag_access_contended != 0 ||
+      m_upgrade_frag_access != 0 ||
+      m_exclusive_frag_access_spintime != 0 ||
+      m_exclusive_frag_access_waittime != 0 ||
+      m_exclusive_frag_access_spinloops != 0 ||
+      m_exclusive_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]EXCL access: %u"
                          ", EXCL contention: %u"
                          ", UP->EXCL access: %u"
-                         ", EXCL spintime: %llu"
+                         ", EXCL spintime: %llu us"
+                         ", EXCL waittime: %llu us"
                          ", EXCL spinloops: %llu"
                          ", EXCL cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
@@ -7830,9 +7869,11 @@ Dblqh::print_fragment_mutex_stats(Signal *signal)
                          m_exclusive_frag_access,
                          m_exclusive_frag_access_contended,
                          m_upgrade_frag_access,
-                         m_exclusive_frag_access_spintime,
+                         m_exclusive_frag_access_spintime / Uint64(1000),
+                         m_exclusive_frag_access_waittime / Uint64(1000),
                          m_exclusive_frag_access_spinloops,
                          m_exclusive_frag_access_cond_waits));
+  }
   send_print_mutex_stats(signal);
 }
 
@@ -7842,21 +7883,25 @@ Dblqh::send_print_mutex_stats(Signal *signal)
   m_scan_frag_access = 0;
   m_scan_frag_access_contended = 0;
   m_scan_frag_access_spintime = 0;
+  m_scan_frag_access_waittime = 0;
   m_scan_frag_access_spinloops = 0;
   m_scan_frag_access_cond_waits = 0;
   m_read_key_frag_access = 0;
   m_read_key_frag_access_contended = 0;
   m_read_key_frag_access_spintime = 0;
+  m_read_key_frag_access_waittime = 0;
   m_read_key_frag_access_spinloops = 0;
   m_read_key_frag_access_cond_waits = 0;
   m_write_key_frag_access = 0;
   m_write_key_frag_access_contended = 0;
   m_write_key_frag_access_spintime = 0;
+  m_write_key_frag_access_waittime = 0;
   m_write_key_frag_access_spinloops = 0;
   m_write_key_frag_access_cond_waits = 0;
   m_exclusive_frag_access = 0;
   m_exclusive_frag_access_contended = 0;
   m_exclusive_frag_access_spintime = 0;
+  m_exclusive_frag_access_waittime = 0;
   m_exclusive_frag_access_spinloops = 0;
   m_exclusive_frag_access_cond_waits = 0;
   m_upgrade_frag_access = 0;
@@ -8190,29 +8235,35 @@ Dblqh::downgrade_exclusive_to_read_key(Fragrecord *fragPtrP)
 void
 Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP)
 {
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  bool first = true;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
   m_scan_frag_access++;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
+  m_fragment_lock_status = FRAGMENT_LOCKED_IN_SCAN_MODE;
   NdbMutex_Lock(&fragPtrP->frag_mutex);
-  DEB_FRAGMENT_LOCK(fragPtrP);
-  while (!is_scan_condition_ready(fragPtrP))
+  if (is_scan_condition_ready(fragPtrP))
   {
-    if (unlikely(!first))
-    {
-      goto scan_cond_wait;
-    }
-    m_scan_frag_access_contended++;
-#ifdef NDB_HAVE_CPU_PAUSE
+    fragPtrP->m_concurrent_scan_count++;
+    DEB_FRAGMENT_LOCK(fragPtrP);
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    m_fragment_lock_status = FRAGMENT_LOCKED_IN_SCAN_MODE;
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_scan_frag_access_contended++;
+  do
+  {
+#ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     /**
      * We wait a bit extra before moving into the spin loop.
@@ -8226,11 +8277,11 @@ Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP)
        * had to wait multiple times.
        */
       spin_loops++;
-      num_spins++;
       for (Uint32 i = 0; i < num_spins; i++)
       {
         NdbSpin();  // ~1us
       }
+      num_spins++;
       /**
        * Acquire mutex in a less active manner to ensure that
        * the waiters for exclusive access have a bit of
@@ -8240,18 +8291,20 @@ Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP)
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_scan_condition_ready(fragPtrP))
       {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_READ_SPIN_TIME)
       {
         break;
       }
     } while (true);
+    spin_time += elapsed;
     /**
-     * We have spun for more than 30 microseconds and still
+     * We have spun for more than 60 microseconds and still
      * haven't got access. We will go to sleep and wait to
      * be woken up instead.
      *
@@ -8265,27 +8318,30 @@ Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP)
       goto got_lock;
     }
 #endif
-scan_cond_wait:
     jam();
-    first = false;
     fragPtrP->m_cond_read_waiters++;
     m_scan_frag_access_cond_waits++;
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_read_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     jam();
     fragPtrP->m_cond_read_waiters--;
-  }
+  } while (!is_scan_condition_ready(fragPtrP));
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
   fragPtrP->m_concurrent_scan_count++;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
-  jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_SCAN_MODE;
-  m_scan_frag_access_spintime += elapsed;
+  m_scan_frag_access_spintime += spin_time;
+  m_scan_frag_access_waittime += wait_time;
   m_scan_frag_access_spinloops += spin_loops;
+  jam();
 }
 
 void
@@ -8293,15 +8349,6 @@ Dblqh::handle_acquire_read_key_frag_access(Fragrecord *fragPtrP,
                                            bool hold_lock,
                                            bool check_exclusive_waiters)
 {
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  bool first = true;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
   m_read_key_frag_access++;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
   if (!hold_lock)
@@ -8309,64 +8356,83 @@ Dblqh::handle_acquire_read_key_frag_access(Fragrecord *fragPtrP,
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
   }
-  while (!is_read_key_condition_ready(fragPtrP, check_exclusive_waiters))
+  if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters))
   {
-    if (unlikely(!first))
-    {
-      goto read_key_cond_wait;
-    }
-    m_read_key_frag_access_contended++;
-#ifdef NDB_HAVE_CPU_PAUSE
+    fragPtrP->m_concurrent_read_key_count++;
+    DEB_FRAGMENT_LOCK(fragPtrP);
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_read_key_frag_access_contended++;
+  do
+  {
+#ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     do
     {
       spin_loops++;
-      num_spins++;
       for (Uint32 i = 0; i < num_spins; i++)
       {
         NdbSpin();
       }
+      num_spins++;
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters))
       {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_READ_SPIN_TIME)
       {
         break;
       }
     } while (true);
+    spin_time += elapsed;
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters))
     {
       goto got_lock;
     }
 #endif
-read_key_cond_wait:
     jam();
-    first = false;
     fragPtrP->m_cond_read_waiters++;
     m_read_key_frag_access_cond_waits++;
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_read_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     fragPtrP->m_cond_read_waiters--;
     jam();
-  }
+  } while (!is_read_key_condition_ready(fragPtrP, check_exclusive_waiters));
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
   fragPtrP->m_concurrent_read_key_count++;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
-  jam();
-  m_read_key_frag_access_spintime += elapsed;
+  m_read_key_frag_access_spintime += spin_time;
+  m_read_key_frag_access_waittime += wait_time;
   m_read_key_frag_access_spinloops += spin_loops;
+  jam();
 }
 
 void
@@ -8374,15 +8440,6 @@ Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
                                             bool hold_lock)
 {
   m_write_key_frag_access++;
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
-  bool first = true;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
   if (!hold_lock)
   {
@@ -8393,37 +8450,56 @@ Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
    * Both write key and exclusive is restricted to happen from owning
    * LDM thread, thus cannot happen concurrently.
    */
-  while (!is_write_key_condition_ready(fragPtrP))
+  if (is_write_key_condition_ready(fragPtrP))
   {
-    if (unlikely(!first))
-    {
-      goto cond_write_key_wait;
-    }
-    m_write_key_frag_access_contended++;
+    fragPtrP->m_spin_write_key_waiters = 0;
+    fragPtrP->m_cond_write_key_waiters = 0;
+    ndbrequire(fragPtrP->m_write_key_locked == false);
+    fragPtrP->m_write_key_locked = true;
+    DEB_FRAGMENT_LOCK(fragPtrP);
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    m_fragment_lock_status = FRAGMENT_LOCKED_IN_WRITE_KEY_MODE;
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_write_key_frag_access_contended++;
+  do
+  {
     ndbrequire(fragPtrP->m_cond_write_key_waiters == 0);
     fragPtrP->m_cond_write_key_waiters = 1;
 #ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_spin_write_key_waiters == 0);
     fragPtrP->m_spin_write_key_waiters = 1;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     do
     {
-      num_spins++;
       spin_loops++;
       for (Uint32 i = 0; i < num_spins; i++)
       {
         NdbSpin();
       }
+      num_spins++;
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_write_key_condition_ready(fragPtrP))
       {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_WRITE_SPIN_TIME)
       {
         /**
@@ -8440,10 +8516,8 @@ Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
         break;
       }
     } while (true);
-#else
-    m_write_key_frag_access_contended++;
+    spin_time += elapsed;
 #endif
-cond_write_key_wait:
     /* Holding the mutex when arriving here. */
     jam();
     fragPtrP->m_spin_write_key_waiters = 0;
@@ -8451,9 +8525,12 @@ cond_write_key_wait:
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_write_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     jam();
-    first = false;
-  }
+  } while (!is_write_key_condition_ready(fragPtrP));
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
@@ -8463,10 +8540,11 @@ got_lock:
   fragPtrP->m_write_key_locked = true;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
-  jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_WRITE_KEY_MODE;
-  m_write_key_frag_access_spintime += elapsed;
+  m_write_key_frag_access_spintime += spin_time;
+  m_write_key_frag_access_waittime += wait_time;
   m_write_key_frag_access_spinloops += spin_loops;
+  jam();
 }
 
 void
@@ -8474,22 +8552,33 @@ Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
                                             bool hold_lock)
 {
   m_exclusive_frag_access++;
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
-  bool first = true;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
   if (!hold_lock)
   {
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
   }
-  while (!is_exclusive_condition_ready(fragPtrP))
+  if (is_exclusive_condition_ready(fragPtrP))
+  {
+    ndbrequire(fragPtrP->m_exclusive_locked == false);
+    fragPtrP->m_exclusive_locked = true;
+    fragPtrP->m_cond_exclusive_waiters = 0;
+    fragPtrP->m_spin_exclusive_waiters = 0;
+    DEB_FRAGMENT_LOCK(fragPtrP);
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    m_fragment_lock_status = FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE;
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_exclusive_frag_access_contended++;
+  do
   {
     /**
      * There are readers currently busy with the fragment. We need to
@@ -8503,18 +8592,16 @@ Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
      * We only perform spinning on platforms that actually support
      * spinning in some fashion.
      */
-    if (unlikely(!first))
-    {
-      goto cond_exclusive_wait;
-    }
-    m_exclusive_frag_access_contended++;
     ndbrequire(fragPtrP->m_cond_exclusive_waiters == 0);
     fragPtrP->m_cond_exclusive_waiters = 1;
 #ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_spin_exclusive_waiters == 0);
     fragPtrP->m_spin_exclusive_waiters = 1;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     do
     {
@@ -8525,20 +8612,21 @@ Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
        *
        * When we come here we will not hold the mutex.
        */
-      num_spins++;
       spin_loops++;
       for (Uint32 i = 0; i < num_spins; i++)
       {
         NdbSpin();  // ~1us
       }
+      num_spins++;
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_exclusive_condition_ready(fragPtrP))
       {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_WRITE_SPIN_TIME)
       {
         /**
@@ -8555,10 +8643,8 @@ Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
         break;
       }
     } while (true);
-#else
-    m_exclusive_frag_access_contended++;
+    spin_time += elapsed;
 #endif
-cond_exclusive_wait:
     /* Holding the mutex when arriving here. */
     jam();
     fragPtrP->m_spin_exclusive_waiters = 0;
@@ -8566,9 +8652,12 @@ cond_exclusive_wait:
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_write_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     jam();
-    first = false;
-  }
+  } while (!is_exclusive_condition_ready(fragPtrP));;
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
@@ -8580,7 +8669,8 @@ got_lock:
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
   jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE;
-  m_exclusive_frag_access_spintime += elapsed;
+  m_exclusive_frag_access_spintime += spin_time;
+  m_exclusive_frag_access_waittime += wait_time;
   m_exclusive_frag_access_spinloops += spin_loops;
 }
 
