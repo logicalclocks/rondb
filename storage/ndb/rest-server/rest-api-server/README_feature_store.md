@@ -308,26 +308,26 @@ options            | objects          | Optional. Map of option as key and boole
                 "COMPLETE"
         ],
         "detailedStatus": [
-                {
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 200,
-                },
-                {
+                }],
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 200,
-                },
-                {
+                }],
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 404,
-                },
-                {
+                }],
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 200,
-                },
-                {
+                }],
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 200,
-                }
+                }]
         ]
 }
 ```
@@ -370,18 +370,18 @@ note: Order of the returned features are the same as the order of entries in the
                 "MISSING"
         ],
         "detailedStatus": [
-                {
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 200,
-                },
-                {
+                }],
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 400,
-                },
-                {
+                }],
+                [{
                         "featureGroupId": 1,
                         "httpStatus": 404,
-                }
+                }]
         ]
 }
 ```
