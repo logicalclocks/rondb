@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -401,12 +401,12 @@ ErrorBundle ErrorCodes[] = {
   { 809,  DMEC, IE, "809" },
   { 812,  DMEC, IE, "812" },
   { 833,  DMEC, IE, "833" },
-  { 871,  DMEC, IE, "871" },
-  { 882,  DMEC, IE, "882" },
-  { 883,  DMEC, IE, "883" },
-  { 887,  DMEC, IE, "887" },
-  { 888,  DMEC, IE, "888" },
-  { 890,  DMEC, IE, "890" },
+  { 871,  DMEC, IE, "No such interpreter instruction" },
+  { 882,  DMEC, IE, "Inconsistent sizes of interpreter code sections" },
+  { 888,  DMEC, IE, "Trying to write from interpreter but not an UPDATE operation" },
+  { 890,  DMEC, IE, "Call error in interpreter" },
+  { 891,  DMEC, IE, "SHIFT operand error in interpreter" },
+  { 892,  DMEC, IE, "Unsupported branch type" },
   { 927,  DMEC, IE, "Flag set to not use disk columns, but still done" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
@@ -442,21 +442,30 @@ ErrorBundle ErrorCodes[] = {
   { 261,  DMEC, AE,
     "DML count in transaction exceeds config parameter MaxDMLOperationsPerTransaction/MaxNoOfConcurrentOperations" },
   { 763,  DMEC, AE, "DDL is not supported with mixed data-node versions" },
-  { 801,  DMEC, AE, "Dynamic fields in storage disk not supported by cluster" },
+  { 801,  DMEC, AE, "Dynamic fields in storage disk not supported by this table" },
   { 823,  DMEC, AE, "Too much attrinfo from application in tuple manager" },
   { 829,  DMEC, AE, "Corrupt data received for insert/update" },
   { 831,  DMEC, AE, "Too many nullable/bitfields in table definition" },
+  { 841,  DMEC, AE, "Trying to append to a fixed size column" },
+  { 842,  DMEC, AE, "Trying to write more into a column than its max size" },
+  { 843,  DMEC, AE, "Trying to append NULL to a column" },
+  { 844,  DMEC, AE, "Trying to load memory bigger than max row size" },
   { 851,  DMEC, AE, "Fixed-size column offset exceeded max. "
     "Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns"},
   { 850,  DMEC, AE, "Too long or too short default value"},
-  { 876,  DMEC, AE, "876" },
-  { 877,  DMEC, AE, "877" },
-  { 878,  DMEC, AE, "878" },
-  { 879,  DMEC, AE, "879" },
+  { 872,  DMEC, AE, "Inconsistent length of read program, missing EXIT instruction" },
+  { 875,  DMEC, AE, "Failed partial read instruction in interpreter, wrong position" },
+  { 876,  DMEC, AE, "Inconsistent size of interpreter instructions" },
+  { 877,  DMEC, AE, "Out of bounds memory address in interpreter instruction" },
+  { 878,  DMEC, AE, "Register with NULL value involved in arithmetic operation" },
+  { 879,  DMEC, AE, "Attribute id to read/write not existing" },
   { 880,  DMEC, AE, "Tried to read too much - too many getValue calls" },
+  { 883,  DMEC, AE, "Append to column from memory in interpreter failed" },
   { 884,  DMEC, AE, "Stack overflow in interpreter" },
   { 885,  DMEC, AE, "Stack underflow in interpreter" },
-  { 886,  DMEC, AE, "More than 65535 instructions executed in interpreter" },
+  { 886,  DMEC, AE, "More than 8000 instructions executed in interpreter" },
+  { 887,  DMEC, AE, "Division by zero error in interpreter" },
+  { 894,  DMEC, AE, "Varsize disk columns not supported" },
   { 897,  DMEC, AE, "Update attempt of primary key via ndbcluster internal api"
                     " (if this occurs via the MySQL server it is a bug,"
                     " please report)" },
@@ -837,6 +846,8 @@ ErrorBundle ErrorCodes[] = {
   { 4557, DMEC, AE, "Column types must be identical when comparing two columns" },
   { 4558, DMEC, AE, "Pending Blob operations must be executed before this call" },
   { 4559, DMEC, AE, "Failed to transfer KeyInfo to AttrInfo for InterpretedWrite" },
+  { 4560, DMEC, AE, "Incorrect combination of OperationOptions optionsPresent, extraGetFinalValue ptr and numExtraGetFinalValues" },
+  { 4561, DMEC, AE, "OO_GET_FINAL_VALUE only allowed in Update/Write operation" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },

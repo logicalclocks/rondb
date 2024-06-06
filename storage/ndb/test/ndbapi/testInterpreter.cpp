@@ -1,5 +1,6 @@
 /*
  Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+ Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -48,6 +49,13 @@
              y->getNdbError().message);            \
     pTrans->close();                               \
     return NDBT_FAILED; }
+
+#define CHK3(x) if (x != 0) {                  \
+    ndbout_c("Failed on line: %u.  Error %u",  \
+             __LINE__, x);                         \
+    pTrans->close();                               \
+    return NDBT_FAILED; }
+
 
 int runClearTable(NDBT_Context* ctx, NDBT_Step* step){
   int records = ctx->getNumRecords();
@@ -549,6 +557,547 @@ createPkIndex_Drop(NDBT_Context* ctx, NDBT_Step* step)
     }
   }
 
+  return NDBT_OK;
+}
+
+int
+runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
+{
+  const NdbDictionary::Table * pTab = ctx->getTab();
+  Ndb* pNdb = GETNDB(step);
+  NdbDictionary::Dictionary * dict = pNdb->getDictionary();
+
+  /**
+   * Get default record to use for Insert operation.
+   * Next get primary key index and the default record for
+   * this primary key. Next we get the 
+   */
+  const NdbRecord * pRowRecord = pTab->getDefaultRecord();
+  CHK_RET_FAILED(pRowRecord != 0, dict);
+
+  const Uint32 len = NdbDictionary::getRecordRowLength(pRowRecord);
+  Uint8 * pRow = new Uint8[len];
+  std::memset(pRow, 0, len);
+
+  HugoCalculator calc(* pTab);
+  calc.equalForRow(pRow, pRowRecord, 0);
+
+  for (Uint32 i = 0; i < 29; i++)
+  {
+    ndbout << "i = " << i << endl;
+    NdbTransaction* pTrans = pNdb->startTransaction();
+    CHK_RET_FAILED(pTrans != 0, pNdb);
+
+    Uint32 buffer[1024];
+    NdbInterpretedCode code(pTab, &buffer[0], 1024);
+    if (i == 0)
+    {
+      // Fail on non-initialised register
+      code.read_full(1, 0, 1);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 1)
+    {
+      // Fail on wrong memory offset
+      code.load_const_u16(0, 50000);
+      code.read_full(1, 0, 1);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 2)
+    {
+      // Fail on wrong memory offset (non-aligned)
+      code.load_const_u16(0, 29999);
+      code.read_full(1, 0, 1);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 3)
+    {
+      // Missing exit_ok
+      code.load_const_u16(0, 29992);
+      code.read_full(1, 0, 1);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 4)
+    {
+      // Successful read full
+      code.load_const_u16(0, 29992);
+      code.read_full(1, 0, 1);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 5)
+    {
+      // Non-initialised register
+      code.read_partial(1, 0, 0, 0, 0);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 6)
+    {
+      code.load_const_u16(0, 50000);
+      code.read_partial(1, 0, 0, 0, 0);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 7)
+    {
+      code.load_const_u16(0, 29999);
+      code.read_partial(1, 0, 0, 0, 0);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 8)
+    {
+      code.load_const_u16(0, 29992);
+      code.read_partial(12, 0, 0, 0, 0);
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 9)
+    {
+      code.load_const_u16(0, 8);
+      code.load_const_u16(1, 0);
+      code.load_const_u16(2, 2);
+      code.read_partial(12, 0, 1, 2, 3);
+      code.branch_eq_null(3, 0);
+      code.interpret_exit_ok();
+      code.def_label(0);
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 10)
+    {
+      code.load_const_u16(0, 29992);
+      code.load_const_u16(1, 40000);
+      code.load_const_u16(2, 10);
+      code.read_partial(12, 0, 1, 2, 0);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 11)
+    {
+      code.load_const_u16(0, 29992);
+      code.load_const_u16(1, 40000);
+      code.load_const_u16(2, 10);
+      code.read_partial(12, 0, 2, 1, 0);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 12)
+    {
+      code.load_const_u16(0, 1);
+      code.write_uint8_reg_to_mem_const(0, 0);
+      code.read_uint8_to_reg_const(1, 0);
+      code.branch_ne(1, 0, 0);
+      code.branch_ne_const(1, 1, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 13)
+    {
+      code.load_const_u16(0, 256);
+      code.write_uint16_reg_to_mem_const(0, 0);
+      code.read_uint16_to_reg_const(1, 0);
+      code.branch_ne(1, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 14)
+    {
+      code.load_const_u32(0, 0xFFFFFF);
+      code.write_uint32_reg_to_mem_const(0, 0);
+      code.read_uint32_to_reg_const(1, 0);
+      code.branch_ne(1, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 15)
+    {
+      code.load_const_u64(0, 0xFFFFFFFFFF);
+      code.write_int64_reg_to_mem_const(0, 0);
+      code.read_int64_to_reg_const(1, 0);
+      code.branch_ne(1, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 16)
+    {
+      code.load_const_u16(0, 10);
+      code.load_const_u16(1, 0);
+      code.write_uint8_reg_to_mem_reg(0, 1);
+      code.read_uint8_to_reg_reg(2, 1);
+      code.branch_ne(2, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 17)
+    {
+      code.load_const_u16(0, 256);
+      code.load_const_u16(1, 0);
+      code.write_uint16_reg_to_mem_reg(0, 1);
+      code.read_uint16_to_reg_reg(2, 1);
+      code.branch_ne(2, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 18)
+    {
+      code.load_const_u32(0, 0xFFFFFF);
+      code.load_const_u16(1, 0);
+      code.write_uint32_reg_to_mem_reg(0, 1);
+      code.read_uint32_to_reg_reg(2, 1);
+      code.branch_ne(2, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 19)
+    {
+      code.load_const_u64(0, 0xFFFFFFFFFF);
+      code.load_const_u16(1, 0);
+      code.write_int64_reg_to_mem_reg(0, 1);
+      code.read_int64_to_reg_reg(2, 1);
+      code.branch_ne(2, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 20)
+    {
+      code.load_const_u16(0, 2);
+      code.load_const_u16(1, 1);
+      code.add_reg(2, 1, 0);
+      code.branch_ne_const(2, 3, 0);
+      code.sub_reg(2, 2, 1);
+      code.branch_ne_const(2, 2, 0);
+      code.lshift_reg(2, 2, 1);
+      code.branch_ne_const(2, 4, 0);
+      code.rshift_reg(2, 2, 1);
+      code.branch_ne_const(2, 2, 0);
+      code.mul_reg(3, 2, 2);
+      code.branch_ne_const(3, 4, 0);
+      code.div_reg(3, 3, 3);
+      code.branch_ne_const(3, 1, 0);
+      code.load_const_u16(0, 0xF);
+      code.load_const_u16(1, 0xE);
+      code.and_reg(2, 0, 1);
+      code.branch_ne_const(2, 0xE, 0);
+      code.or_reg(2, 0, 1);
+      code.branch_ne_const(2, 0xF, 0);
+      code.xor_reg(2, 0, 1);
+      code.branch_ne_const(2, 0x1, 0);
+      code.mod_reg(2, 0, 1);
+      code.branch_ne_const(2, 0x1, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 21)
+    {
+      code.load_const_u16(0, 2);
+      code.load_const_u16(1, 1);
+      code.add_const_reg(2, 1, 2);
+      code.branch_ne_const(2, 3, 0);
+      code.sub_const_reg(2, 2, 1);
+      code.branch_ne_const(2, 2, 0);
+      code.lshift_const_reg(2, 2, 1);
+      code.branch_ne_const(2, 4, 0);
+      code.rshift_const_reg(2, 2, 1);
+      code.branch_ne_const(2, 2, 0);
+      code.mul_const_reg(3, 2, 2);
+      code.branch_ne_const(3, 4, 0);
+      code.div_const_reg(3, 3, 4);
+      code.branch_ne_const(3, 1, 0);
+      code.load_const_u16(0, 0xF);
+      code.load_const_u16(1, 0xE);
+      code.and_const_reg(2, 0, 0xE);
+      code.branch_ne_const(2, 0xE, 0);
+      code.or_const_reg(2, 0, 0xE);
+      code.branch_ne_const(2, 0xF, 0);
+      code.xor_const_reg(2, 0, 0xE);
+      code.branch_ne_const(2, 0x1, 0);
+      code.mod_const_reg(2, 0, 0xE);
+      code.branch_ne_const(2, 0x1, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 22)
+    {
+      code.load_const_u16(0, 2);
+      code.move_reg(2, 0);
+      code.branch_ne(2, 0, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 23)
+    {
+      code.load_const_u16(0, 1);
+      code.load_const_u64(1, 0xFFFFFFFFFFFFFFFE);
+      code.not_reg(0, 0);
+      code.branch_ne(0, 1, 0);
+      code.interpret_exit_ok();
+      code.def_label(0); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 24)
+    {
+      code.load_const_u16(0, 1);
+      code.branch_ge_const(0, 2, 6);
+      code.branch_ge_const(0, 1, 0);
+      code.interpret_exit_nok();
+      code.def_label(0); 
+      code.branch_gt_const(0, 1, 6);
+      code.branch_gt_const(0, 0, 1);
+      code.interpret_exit_nok();
+      code.def_label(1); 
+      code.branch_le_const(0, 0, 6);
+      code.branch_le_const(0, 1, 2);
+      code.interpret_exit_nok();
+      code.def_label(2); 
+      code.branch_lt_const(0, 1, 6);
+      code.branch_lt_const(0, 2, 3);
+      code.interpret_exit_nok();
+      code.def_label(3); 
+      code.branch_eq_const(0, 0, 6);
+      code.branch_eq_const(0, 1, 4);
+      code.interpret_exit_nok();
+      code.def_label(4); 
+      code.branch_ne_const(0, 1, 6);
+      code.branch_ne_const(0, 0, 5);
+      code.interpret_exit_nok();
+      code.def_label(5); 
+      code.interpret_exit_ok();
+      code.def_label(6); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 25)
+    {
+      code.load_const_u16(0, 1);
+      code.load_const_u16(1, 2);
+      code.branch_ge(0, 1, 6);
+      code.load_const_u16(1, 1);
+      code.branch_ge(0, 1, 0);
+      code.interpret_exit_nok();
+      code.def_label(0); 
+      code.load_const_u16(1, 1);
+      code.branch_gt(0, 1, 6);
+      code.load_const_u16(1, 0);
+      code.branch_gt(0, 1, 1);
+      code.interpret_exit_nok();
+      code.def_label(1); 
+      code.load_const_u16(1, 0);
+      code.branch_le(0, 1, 6);
+      code.load_const_u16(1, 1);
+      code.branch_le(0, 1, 2);
+      code.interpret_exit_nok();
+      code.def_label(2); 
+      code.load_const_u16(1, 1);
+      code.branch_lt(0, 1, 6);
+      code.load_const_u16(1, 2);
+      code.branch_lt(0, 1, 3);
+      code.interpret_exit_nok();
+      code.def_label(3); 
+      code.load_const_u32(1, 0);
+      code.branch_eq(0, 1, 6);
+      code.load_const_u16(1, 1);
+      code.branch_eq(0, 1, 4);
+      code.interpret_exit_nok();
+      code.def_label(4); 
+      code.load_const_u16(1, 1);
+      code.branch_ne(0, 1, 6);
+      code.load_const_u16(1, 0);
+      code.branch_ne(0, 1, 5);
+      code.interpret_exit_nok();
+      code.def_label(5); 
+      code.interpret_exit_ok();
+      code.def_label(6); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 26)
+    {
+      code.branch_ne_null(0, 2);
+      code.load_const_u16(0, 1);
+      code.branch_ne_null(0, 0);
+      code.interpret_exit_nok();
+      code.def_label(0); 
+      code.branch_eq_null(0, 2);
+      code.load_const_null(0);
+      code.branch_eq_null(0, 1);
+      code.interpret_exit_nok();
+      code.def_label(1); 
+      code.interpret_exit_ok();
+      code.def_label(2); 
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    else if (i == 27)
+    {
+      /* Use table T6 */
+      Uint32 mem = 0x12345602;
+      code.load_const_u16(0, 4);
+      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_u16(2, 0);
+      code.write_from_mem(14, 2, 1);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      if (ret_code == -1)
+      {
+        //ndbout_c("error: %d", code.m_error.code);
+      }
+      CHK3(ret_code);
+    }
+    else if (i == 28)
+    {
+      /* Use table T6 */
+      Uint32 mem = 0x789ABC02;
+      code.load_const_u16(0, 4);
+      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_u16(2, 0);
+      code.append_from_mem(14, 2, 1);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      if (ret_code == -1)
+      {
+        //ndbout_c("error: %d", code.m_error.code);
+      }
+      CHK3(ret_code);
+    }
+
+
+    NdbOperation::GetValueSpec getvals[1];
+    NdbOperation::OperationOptions opts;
+    std::memset(&opts, 0, sizeof(opts));
+    opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED;
+    opts.interpretedCode = &code;
+
+    if (i == 27 || i == 28)
+    {
+      getvals[0].column = pTab->getColumn(14);
+      getvals[0].appStorage = nullptr;
+      getvals[0].recAttr = nullptr;
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+      opts.extraGetFinalValues = getvals;
+      opts.numExtraGetFinalValues = 1;
+    }
+    const NdbOperation *pOp;
+    if (i <= 26)
+    {
+      pOp = pTrans->readTuple(pRowRecord, (char*)pRow,
+                              pRowRecord, (char*)pRow,
+                              NdbOperation::LM_Read,
+                              0,
+                              &opts,
+                              sizeof(opts));
+    }
+    else
+    {
+      unsigned char mask[60];
+      memset(&mask[0], 0, 60);
+      pOp = pTrans->updateTuple(pRowRecord, (char*)pRow,
+                                pRowRecord, (char*)pRow,
+                                (const unsigned char*)&mask[0],
+                                &opts,
+                                sizeof(opts));
+    }
+
+    CHK_RET_FAILED(pOp, pTrans);
+    int res = pTrans->execute(Commit, AbortOnError);
+
+    if (i == 27 || i == 28)
+    {
+      CHK_RET_FAILED(res == 0, pTrans);
+      NdbRecAttr *recAttr = getvals[0].recAttr;
+      Uint64 check;
+      if (i == 27)
+      {
+        check = 0x345602ULL;
+      }
+      else if (i == 28)
+      {
+        check = 0x9abc345604ULL;
+      }
+      else
+      {
+        check = 0;
+      }
+      ndbout_c("Length: %u, val: 0x%llx",
+               recAttr->get_size_in_bytes(),
+               recAttr->u_64_value());
+      check -= recAttr->u_64_value();
+      CHK3(Uint32(check));
+    }
+    else if (i == 0 || i == 5)
+    {
+      CHK_RET_FAILED(res == -1, pTrans);
+      CHK_RET_FAILED(pTrans->getNdbError().code == 878, pTrans);
+    }
+    else if (i == 1 || i == 2 || i == 6 || i == 7)
+    {
+      CHK_RET_FAILED(res == -1, pTrans);
+      CHK_RET_FAILED(pTrans->getNdbError().code == 877, pTrans);
+    }
+    else if (i == 3 || i == 8)
+    {
+      CHK_RET_FAILED(res == -1, pTrans);
+      CHK_RET_FAILED(pTrans->getNdbError().code == 876, pTrans);
+    }
+    else if (i == 4 || i == 9 || (i >= 12 && i <= 26))
+    {
+      CHK_RET_FAILED(res == 0, pTrans);
+    }
+    else if (i == 10 || i == 11)
+    {
+      CHK_RET_FAILED(res == -1, pTrans);
+      CHK_RET_FAILED(pTrans->getNdbError().code == 875, pTrans);
+    }
+    pNdb->closeTransaction(pTrans);
+  }
+  delete [] pRow;
   return NDBT_OK;
 }
 
@@ -1374,6 +1923,13 @@ TESTCASE("BranchNonZeroLabel", "Test branch labels with and_mask op\n")
 {
   INITIALIZER(runLoadTable);
   INITIALIZER(runTestBranchNonZeroLabel);
+  FINALIZER(runClearTable);
+}
+TESTCASE("NewInterpreterTest", "New interpreter tests\n")
+{
+  INITIALIZER(runLoadTable);
+  INITIALIZER(createPkIndex);
+  INITIALIZER(runNewInterpreterTest);
   FINALIZER(runClearTable);
 }
 #if 0

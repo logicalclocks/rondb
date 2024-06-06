@@ -1075,7 +1075,8 @@ public:
                  OO_NOT_QUEUABLE = 0x200,
                  OO_DEFERRED_CONSTAINTS = 0x400,
                  OO_DISABLE_FK   = 0x800,
-                 OO_NOWAIT       = 0x1000
+                 OO_NOWAIT       = 0x1000,
+                 OO_GET_FINAL_VALUE = 0x2000
     };
 
     /* An operation-specific abort option.
@@ -1087,6 +1088,10 @@ public:
     /* Extra column values to be read */
     GetValueSpec *extraGetValues;
     Uint32        numExtraGetValues;
+
+    /* Extra column values to be read */
+    GetValueSpec *extraGetFinalValues;
+    Uint32        numExtraGetFinalValues;
 
     /* Extra column values to be set  */
     const SetValueSpec *extraSetValues;
@@ -1335,6 +1340,8 @@ protected:
   virtual int equal_impl(const NdbColumnImpl*,const char* aValue);
   virtual NdbRecAttr* getValue_impl(const NdbColumnImpl*, char* aValue = 0);
   NdbRecAttr* getValue_NdbRecord(const NdbColumnImpl* tAttrInfo, char* aValue);
+  NdbRecAttr* getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                      char* aValue);
   int setValue(const NdbColumnImpl* anAttrObject, const char* aValue);
   NdbBlob* getBlobHandle(NdbTransaction* aCon, const NdbColumnImpl* anAttrObject);
   NdbBlob* getBlobHandle(NdbTransaction* aCon, const NdbColumnImpl* anAttrObject) const;

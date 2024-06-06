@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1400,8 +1401,6 @@ NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr,
     }
   }
 
-  /* Final read signal words */
-  // Not currently used in NdbRecord
 
   /* Subroutine section signal words */
   if (code)
@@ -1413,6 +1412,22 @@ NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr,
                                               attrinfo_section_sizes_ptr[0] +
                                               attrinfo_section_sizes_ptr[1]);
     attrinfo_section_sizes_ptr[2]= updateWords;
+
+     /* Final read signal words */
+    if (theReceiver.m_firstFinalRecAttr != nullptr)
+    {
+      const NdbRecAttr *ra = theReceiver.m_firstFinalRecAttr;
+      while (ra) {
+        res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
+        if (res) return res;
+          ra = ra->next();
+      }
+      Uint32 finalReadWords= theTotalCurrAI_Len - (AttrInfo::SectionSizeInfoLength + 
+                                                   attrinfo_section_sizes_ptr[0] +
+                                                   attrinfo_section_sizes_ptr[1] +
+                                                   attrinfo_section_sizes_ptr[2]);
+      attrinfo_section_sizes_ptr[3] = finalReadWords;
+    }
 
     /* Do we have any subroutines ? */
     if (code->m_number_of_subs > 0)

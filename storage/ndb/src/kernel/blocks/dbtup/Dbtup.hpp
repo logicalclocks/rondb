@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -159,20 +159,28 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 #define ZAI_INCONSISTENCY_ERROR 829
 #define ZNO_ILLEGAL_NULL_ATTR 839
 #define ZNOT_NULL_ATTR 840
+#define ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR 841
+#define ZWRITE_SIZE_TOO_BIG_ERROR 842
+#define ZAPPEND_NULL_ERROR 843
+#define ZLOAD_MEM_TOO_BIG_ERROR 844
 #define ZBAD_DEFAULT_VALUE_LEN 850
 #define ZNO_INSTRUCTION_ERROR 871
+#define ZREAD_LENGTH_ERROR 872
+#define ZPARTIAL_READ_ERROR 875
 #define ZOUTSIDE_OF_PROGRAM_ERROR 876
-#define ZSTORED_PROC_ID_ERROR 877
+#define ZMEMORY_OFFSET_ERROR 877
 #define ZREGISTER_INIT_ERROR 878
 #define ZATTRIBUTE_ID_ERROR 879
 #define ZTRY_TO_READ_TOO_MUCH_ERROR 880
 #define ZTOTAL_LEN_ERROR 882
-#define ZATTR_INTERPRETER_ERROR 883
+#define ZAPPEND_COLUMN_ERROR 883
 #define ZSTACK_OVERFLOW_ERROR 884
 #define ZSTACK_UNDERFLOW_ERROR 885
 #define ZTOO_MANY_INSTRUCTIONS_ERROR 886
+#define ZDIV_BY_ZERO_ERROR 887
 #define ZTRY_TO_UPDATE_ERROR 888
 #define ZCALL_ERROR 890
+#define ZSHIFT_OPERAND_ERROR 891
 #define ZUNSUPPORTED_BRANCH 892
 
 #define ZSTORED_TOO_MUCH_ATTRINFO_ERROR 874
@@ -2021,6 +2029,7 @@ struct KeyReqStruct {
   Uint32          out_buf_bits;
   Uint32          in_buf_index;
 
+  Uint32          partial_size;
 
   union {
     Uint32 in_buf_len;
@@ -2033,6 +2042,8 @@ struct KeyReqStruct {
   bool is_expanded;
   bool m_is_lcp;
   enum When m_when;
+
+  Uint32          start_partial_read_pos;
 
 #ifdef ERROR_INSERT
   Uint32 instance_num;
@@ -2937,18 +2948,31 @@ private:
 
 //------------------------------------------------------------------
 //------------------------------------------------------------------
+  static void handle_partial_read(KeyReqStruct*,
+                                  Uint32 *srcBytes,
+                                  Uint8 **srcPtr,
+                                  Uint32 max_read);
+
+  static bool handle_partial_write(KeyReqStruct *req_struct,
+                                   Uint32 arrayType,
+                                   Uint32 dataLen,
+                                   Uint32 max_var_size,
+                                   Uint8 *col_ptr,
+                                   const Uint8 *src,
+                                   Uint32 *size_in_bytes);
+
   static bool varsize_reader(Uint8* out_buffer,
                       KeyReqStruct *req_struct,
                       AttributeHeader* ah_out,
                       Uint64 attr_des,
-                      const void* src_ptr,
+                      void* src_ptr,
                       Uint32 vsize_in_bytes);
   
   static bool xfrm_reader(Uint8* out_buffer,
                    KeyReqStruct *req_struct,
                    AttributeHeader* ah_out,
                    Uint64 attr_des,
-                   const void* src_ptr,
+                   void* src_ptr,
                    Uint32 srcBytes);
 
   static bool bits_reader(Uint8* out_buffer,
@@ -4045,6 +4069,7 @@ private:
   Uint32 clogMemBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
+  Uint32 cheapMemory[ZATTR_BUFFER_SIZE + 16];
 
   /*
    * In executeTrigger()

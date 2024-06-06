@@ -495,6 +495,30 @@ NdbOperation::getValue_NdbRecord(const NdbColumnImpl* tAttrInfo, char* aValue)
   }
 }
 
+NdbRecAttr*
+NdbOperation::getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                      char* aValue)
+{
+  NdbRecAttr* tRecAttr;
+
+  if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK)
+  {
+    m_flags &= ~Uint8(OF_NO_DISK);
+  }
+
+  /*
+    For getValue with NdbRecord operations, we just allocate the NdbRecAttr,
+    the signal data will be constructed later.
+  */
+  if((tRecAttr = theReceiver.getFinalValue(tAttrInfo, aValue)) != nullptr) {
+    theErrorLine++;
+    return tRecAttr;
+  } else {
+    setErrorCodeAbort(4000);
+    return nullptr;
+  }
+}
+
 /*****************************************************************************
  * int setValue(AttrInfo* tAttrInfo, char* aValue, Uint32 len)
  *
@@ -1297,6 +1321,70 @@ NdbOperation::handleOperationOptions (const OperationType type,
       {
         return 4503;
         // GetValue not allowed in Insert operation
+      }
+      default :
+        return 4118;
+        // Parameter error in API call
+      }
+    }
+  }
+
+  if ((opts->optionsPresent & OperationOptions::OO_GET_FINAL_VALUE) &&
+      (opts->numExtraGetFinalValues > 0))
+  {
+    if (opts->extraGetFinalValues == nullptr)
+    {
+      // Incorrect combination of OperationOptions optionsPresent, 
+      // extraGet/SetValues ptr and numExtraGet/SetValues
+      return 4560;
+    }
+
+    // Only certain operation types allow extra GetFinalValues
+    // Only makes sense to use it in Updates and Writes
+    if (type == UpdateRequest ||
+        type == WriteRequest)
+    {
+      // Could be readTuple(), or lockCurrentTuple().
+      // We perform old-school NdbRecAttr reads on
+      // these values.
+      for (unsigned int i=0; i < opts->numExtraGetFinalValues; i++)
+      {
+        GetValueSpec *pvalSpec 
+          = &(opts->extraGetFinalValues[i]);
+
+        pvalSpec->recAttr=nullptr;
+
+        if (pvalSpec->column == nullptr)
+        {
+          // Column is NULL in Get/SetValueSpec structure
+          return 4295;
+        }
+
+        NdbRecAttr *pra=
+          op->getFinalValue_NdbRecord(
+            &NdbColumnImpl::getImpl(*pvalSpec->column),
+            (char *) pvalSpec->appStorage);
+        
+        if (pra == nullptr)
+        {
+          return -1;
+        }
+
+        pvalSpec->recAttr = pra;
+      }
+    }
+    else
+    {
+      // Bad operation type for GetValue
+      switch (type)
+      {
+      case InsertRequest :
+      case ReadRequest :
+      case DeleteRequest :
+      case ReadExclusive :
+      {
+        return 4561;
+        // GetFinalValue only allowed in Update/Write operation
       }
       default :
         return 4118;

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -434,103 +434,14 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
 /* **************************************************************** */
 int Dbtup::TUPKEY_abort(KeyReqStruct * req_struct, int error_type)
 {
-  switch(error_type) {
-  case 1:
-//tmupdate_alloc_error:
-    terrorCode= ZMEM_NOMEM_ERROR;
+  if (error_type != 39)
+  {
     jam();
-    break;
-
-  case 15:
-    jam();
-    terrorCode = ZREGISTER_INIT_ERROR;
-    break;
-
-  case 16:
-    jam();
-    terrorCode = ZTRY_TO_UPDATE_ERROR;
-    break;
-
-  case 17:
-    jam();
-    terrorCode = ZNO_ILLEGAL_NULL_ATTR;
-    break;
-
-  case 19:
-    jam();
-    terrorCode = ZTRY_TO_UPDATE_ERROR;
-    break;
-
-  case 20:
-    jam();
-    terrorCode = ZREGISTER_INIT_ERROR;
-    break;
-
-  case 22:
-    jam();
-    terrorCode = ZTOTAL_LEN_ERROR;
-    break;
-
-  case 23:
-    jam();
-    terrorCode = ZREGISTER_INIT_ERROR;
-    break;
-
-  case 24:
-    jam();
-    terrorCode = ZREGISTER_INIT_ERROR;
-    break;
-
-  case 26:
-    jam();
-    terrorCode = ZREGISTER_INIT_ERROR;
-    break;
-
-  case 27:
-    jam();
-    terrorCode = ZREGISTER_INIT_ERROR;
-    break;
-
-  case 28:
-    jam();
-    terrorCode = ZREGISTER_INIT_ERROR;
-    break;
-
-  case 29:
-    jam();
-    break;
-
-  case 30:
-    jam();
-    terrorCode = ZCALL_ERROR;
-    break;
-
-  case 31:
-    jam();
-    terrorCode = ZSTACK_OVERFLOW_ERROR;
-    break;
-
-  case 32:
-    jam();
-    terrorCode = ZSTACK_UNDERFLOW_ERROR;
-    break;
-
-  case 33:
-    jam();
-    terrorCode = ZNO_INSTRUCTION_ERROR;
-    break;
-
-  case 34:
-    jam();
-    terrorCode = ZOUTSIDE_OF_PROGRAM_ERROR;
-    break;
-
-  case 35:
-    jam();
-    terrorCode = ZTOO_MANY_INSTRUCTIONS_ERROR;
-    break;
-
-  case 39:
+    jamData(error_type);
+    terrorCode = error_type;
+  }
+  else
+  {
     if (get_trans_state(req_struct->operPtrP) == TRANS_TOO_MUCH_AI) {
       jam();
       terrorCode = ZTOO_MUCH_ATTRINFO_ERROR;
@@ -540,14 +451,7 @@ int Dbtup::TUPKEY_abort(KeyReqStruct * req_struct, int error_type)
     } else {
       ndbabort();
     }//if
-    break;
-  case 40:
-    jam();
-    terrorCode = ZUNSUPPORTED_BRANCH;
-    break;
-  default:
-    ndbabort();
-  }//switch
+  }
   tupkeyErrorLab(req_struct);
   return -1;
 }

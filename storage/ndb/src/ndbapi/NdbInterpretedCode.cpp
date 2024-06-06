@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2007, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -282,6 +283,321 @@ NdbInterpretedCode::sub_reg(Uint32 RegDest,
 }
 
 int
+NdbInterpretedCode::lshift_reg(Uint32 RegDest,
+                               Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::Lshift(RegDest % MaxReg, RegSource1 % MaxReg,
+                                  RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::rshift_reg(Uint32 RegDest,
+                               Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::Rshift(RegDest % MaxReg, RegSource1 % MaxReg,
+                                  RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::mul_reg(Uint32 RegDest,
+                            Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::Mul(RegDest % MaxReg, RegSource1 % MaxReg,
+                               RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::div_reg(Uint32 RegDest,
+                            Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::Div(RegDest % MaxReg, RegSource1 % MaxReg,
+                               RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::and_reg(Uint32 RegDest,
+                            Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::And(RegDest % MaxReg, RegSource1 % MaxReg,
+                               RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::or_reg(Uint32 RegDest,
+                           Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::Or(RegDest % MaxReg, RegSource1 % MaxReg,
+                              RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::xor_reg(Uint32 RegDest,
+                            Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::Xor(RegDest % MaxReg, RegSource1 % MaxReg,
+                               RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::mod_reg(Uint32 RegDest,
+                            Uint32 RegSource1, Uint32 RegSource2)
+{
+  return add1(Interpreter::Mod(RegDest % MaxReg, RegSource1 % MaxReg,
+                               RegSource2 % MaxReg));
+}
+
+int
+NdbInterpretedCode::not_reg(Uint32 RegDest,
+                            Uint32 RegSource1)
+{
+  return add1(Interpreter::Not(RegDest % MaxReg, RegSource1 % MaxReg));
+}
+
+int
+NdbInterpretedCode::move_reg(Uint32 RegDest,
+                             Uint32 RegSource)
+{
+  return add1(Interpreter::AddC(RegDest % MaxReg,
+                                RegSource % MaxReg,
+                                Uint16(0)));
+}
+
+int
+NdbInterpretedCode::add_const_reg(Uint32 RegDest, 
+                                  Uint32 RegSource1,
+                                  Uint16 Constant)
+{
+  return add1(Interpreter::AddC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                Constant));
+}
+
+int
+NdbInterpretedCode::sub_const_reg(Uint32 RegDest,
+                                  Uint32 RegSource1,
+                                  Uint16 Constant)
+{
+  return add1(Interpreter::SubC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                Constant));
+}
+
+int
+NdbInterpretedCode::lshift_const_reg(Uint32 RegDest,
+                                     Uint32 RegSource1,
+                                     Uint16 Constant)
+{
+  return add1(Interpreter::LshiftC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                   Constant));
+}
+
+int
+NdbInterpretedCode::rshift_const_reg(Uint32 RegDest,
+                                     Uint32 RegSource1,
+                                     Uint16 Constant)
+{
+  return add1(Interpreter::RshiftC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                   Constant));
+}
+
+int
+NdbInterpretedCode::mul_const_reg(Uint32 RegDest,
+                                  Uint32 RegSource1,
+                                  Uint16 Constant)
+{
+  return add1(Interpreter::MulC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                Constant));
+}
+
+int
+NdbInterpretedCode::div_const_reg(Uint32 RegDest,
+                                  Uint32 RegSource1,
+                                  Uint16 Constant)
+{
+  return add1(Interpreter::DivC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                Constant));
+}
+
+int
+NdbInterpretedCode::and_const_reg(Uint32 RegDest,
+                                  Uint32 RegSource1,
+                                  Uint16 Constant)
+{
+  return add1(Interpreter::AndC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                Constant));
+}
+
+int
+NdbInterpretedCode::or_const_reg(Uint32 RegDest,
+                                 Uint32 RegSource1,
+                                 Uint16 Constant)
+{
+  return add1(Interpreter::OrC(RegDest % MaxReg, RegSource1 % MaxReg,
+                               Constant));
+}
+
+int
+NdbInterpretedCode::xor_const_reg(Uint32 RegDest,
+                                  Uint32 RegSource1,
+                                  Uint16 Constant)
+{
+  return add1(Interpreter::XorC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                Constant));
+}
+
+int
+NdbInterpretedCode::mod_const_reg(Uint32 RegDest,
+                                  Uint32 RegSource1,
+                                  Uint16 Constant)
+{
+  return add1(Interpreter::ModC(RegDest % MaxReg, RegSource1 % MaxReg,
+                                Constant));
+}
+
+int
+NdbInterpretedCode::read_uint8_to_reg_const(Uint32 RegDest,
+                                            Uint32 Offset)
+{
+  return add1(Interpreter::ReadUint8FromMemIntoRegConst(
+              RegDest % MaxReg,
+              Offset));
+}
+
+int
+NdbInterpretedCode::read_uint16_to_reg_const(Uint32 RegDest,
+                                             Uint32 Offset)
+{
+  return add1(Interpreter::ReadUint16FromMemIntoRegConst(
+              RegDest % MaxReg,
+              Offset));
+}
+
+int
+NdbInterpretedCode::read_uint32_to_reg_const(Uint32 RegDest,
+                                             Uint32 Offset)
+{
+  return add1(Interpreter::ReadUint32FromMemIntoRegConst(
+              RegDest % MaxReg,
+              Offset));
+}
+
+int
+NdbInterpretedCode::read_int64_to_reg_const(Uint32 RegDest,
+                                            Uint32 Offset)
+{
+  return add1(Interpreter::ReadInt64FromMemIntoRegConst(
+              RegDest % MaxReg,
+              Offset));
+}
+
+int
+NdbInterpretedCode::read_uint8_to_reg_reg(Uint32 RegDest,
+                                          Uint32 RegOffset)
+{
+  return add1(Interpreter::ReadUint8FromMemIntoRegReg(
+              RegDest % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::read_uint16_to_reg_reg(Uint32 RegDest,
+                                           Uint32 RegOffset)
+{
+  return add1(Interpreter::ReadUint16FromMemIntoRegReg(
+              RegDest % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::read_uint32_to_reg_reg(Uint32 RegDest,
+                                           Uint32 RegOffset)
+{
+  return add1(Interpreter::ReadUint32FromMemIntoRegReg(
+              RegDest % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::read_int64_to_reg_reg(Uint32 RegDest,
+                                          Uint32 RegOffset)
+{
+  return add1(Interpreter::ReadInt64FromMemIntoRegReg(
+              RegDest % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::write_uint8_reg_to_mem_const(Uint32 RegSource,
+                                                 Uint16 Constant)
+{
+  return add1(Interpreter::WriteUint8RegIntoMemConst(
+              RegSource % MaxReg,
+              Constant));
+}
+
+int
+NdbInterpretedCode::write_uint16_reg_to_mem_const(Uint32 RegSource,
+                                                  Uint16 Constant)
+{
+  return add1(Interpreter::WriteUint16RegIntoMemConst(
+              RegSource % MaxReg,
+              Constant));
+}
+
+int
+NdbInterpretedCode::write_uint32_reg_to_mem_const(Uint32 RegSource,
+                                                  Uint16 Constant)
+{
+  return add1(Interpreter::WriteUint32RegIntoMemConst(
+              RegSource % MaxReg,
+              Constant));
+}
+
+int
+NdbInterpretedCode::write_int64_reg_to_mem_const(Uint32 RegSource,
+                                                 Uint16 Constant)
+{
+  return add1(Interpreter::WriteInt64RegIntoMemConst(
+              RegSource % MaxReg,
+              Constant));
+}
+
+
+int
+NdbInterpretedCode::write_uint8_reg_to_mem_reg(Uint32 RegSource,
+                                               Uint32 RegOffset)
+{
+  return add1(Interpreter::WriteUint8RegIntoMemReg(
+              RegSource % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::write_uint16_reg_to_mem_reg(Uint32 RegSource,
+                                                Uint32 RegOffset)
+{
+  return add1(Interpreter::WriteUint16RegIntoMemReg(
+              RegSource % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::write_uint32_reg_to_mem_reg(Uint32 RegSource,
+                                                Uint32 RegOffset)
+{
+  return add1(Interpreter::WriteUint32RegIntoMemReg(
+              RegSource % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::write_int64_reg_to_mem_reg(Uint32 RegSource,
+                                               Uint32 RegOffset)
+{
+  return add1(Interpreter::WriteInt64RegIntoMemReg(
+              RegSource % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
 NdbInterpretedCode::load_const_u32(Uint32 RegDest, Uint32 Constant)
 {
   return add2(Interpreter::LoadConst32(RegDest % MaxReg), Constant);
@@ -310,12 +626,149 @@ NdbInterpretedCode::load_const_u16(Uint32 RegDest, Uint32 Constant)
   return add1(Interpreter::LoadConst16((RegDest % MaxReg), Constant));
 }
 
+static inline
+void
+zero32(Uint8* dstPtr, const Uint32 len)
+{
+  Uint32 odd = len & 3;
+  if (odd != 0)
+  {
+    Uint32 aligned = len & ~3;
+    Uint8* dst = dstPtr+aligned;
+    switch(odd){     /* odd is: {1..3} */
+    case 1:
+      dst[1] = 0;
+      [[fallthrough]];
+    case 2:
+      dst[2] = 0;
+      [[fallthrough]];
+    default:         /* Known to be odd==3 */
+      dst[3] = 0;
+    }
+  }
+} 
+
+int
+NdbInterpretedCode::load_const_mem(Uint32 RegMemoryOffset,
+                                   Uint32 RegDestSize,
+                                   Uint16 ConstantSize,
+                                   Uint32 *const_memory)
+{
+  int ret_code;
+  zero32((Uint8*)const_memory, ConstantSize);
+  if ((ret_code = add1(Interpreter::LoadConstMem(
+       RegMemoryOffset % MaxReg,
+       RegDestSize % MaxReg,
+       ConstantSize))))
+  {
+    return ret_code;
+  }
+  Uint32 words = (ConstantSize + 3) / 4;
+  return addN(const_memory, words);
+}
+
 int
 NdbInterpretedCode::read_attr_impl(const NdbColumnImpl *c, Uint32 RegDest)
 {
   if (c->m_storageType == NDB_STORAGETYPE_DISK)
     m_flags|= UsesDisk;
   return add1(Interpreter::Read(c->m_attrId, RegDest % MaxReg));
+}
+
+int
+NdbInterpretedCode::read_partial_impl(const NdbColumnImpl *c,
+                                      Uint32 RegMemoryOffset,
+                                      Uint32 RegPos,
+                                      Uint32 RegSize,
+                                      Uint32 RegDest)
+{
+  if (c->m_storageType == NDB_STORAGETYPE_DISK)
+    m_flags|= UsesDisk;
+  return add1(Interpreter::ReadPartial(c->m_attrId,
+                                       RegMemoryOffset % MaxReg,
+                                       RegPos % MaxReg,
+                                       RegSize % MaxReg,
+                                       RegDest % MaxReg));
+}
+
+int
+NdbInterpretedCode::read_partial(Uint32 attrId,
+                                 Uint32 RegMemoryOffset,
+                                 Uint32 RegPos,
+                                 Uint32 RegSize,
+                                 Uint32 RegDest)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  const NdbColumnImpl *c= m_table_impl->getColumn(attrId);
+  if (unlikely(c == nullptr))
+    return error(BadAttributeId);
+  return read_partial_impl(c,
+                           RegMemoryOffset,
+                           RegPos,
+                           RegSize,
+                           RegDest);
+}
+
+int
+NdbInterpretedCode::read_partial(const NdbDictionary::Column *column,
+                                 Uint32 RegMemOffset,
+                                 Uint32 RegPos,
+                                 Uint32 RegSize,
+                                 Uint32 RegDest)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  // TODO : Check column is from the correct table
+  return read_partial_impl(&NdbColumnImpl::getImpl(*column),
+                           RegMemOffset,
+                           RegPos,
+                           RegSize,
+                           RegDest);
+}
+
+int
+NdbInterpretedCode::read_full_impl(const NdbColumnImpl *c,
+                                   Uint32 RegMemoryOffset,
+                                   Uint32 RegDest)
+{
+  if (c->m_storageType == NDB_STORAGETYPE_DISK)
+    m_flags|= UsesDisk;
+  return add1(Interpreter::ReadFull(c->m_attrId,
+                                    RegMemoryOffset % MaxReg,
+                                    RegDest % MaxReg));
+}
+
+int
+NdbInterpretedCode::read_full(Uint32 attrId,
+                              Uint32 RegMemoryOffset,
+                              Uint32 RegDest)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  const NdbColumnImpl *c= m_table_impl->getColumn(attrId);
+  if (unlikely(c == nullptr))
+    return error(BadAttributeId);
+  return read_full_impl(c,
+                        RegMemoryOffset % MaxReg,
+                        RegDest % MaxReg);
+}
+
+int
+NdbInterpretedCode::read_full(const NdbDictionary::Column *column,
+                              Uint32 RegMemOffset,
+                              Uint32 RegDest)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  // TODO : Check column is from the correct table
+  return read_full_impl(&NdbColumnImpl::getImpl(*column),
+                        RegMemOffset % MaxReg,
+                        RegDest % MaxReg);
 }
 
 int
@@ -327,7 +780,7 @@ NdbInterpretedCode::read_attr(Uint32 RegDest, Uint32 attrId)
   const NdbColumnImpl *c= m_table_impl->getColumn(attrId);
   if (unlikely(c == nullptr))
     return error(BadAttributeId);
-  return read_attr_impl(c, RegDest);
+  return read_attr_impl(c, RegDest % MaxReg);
 }
 
 int
@@ -338,7 +791,86 @@ NdbInterpretedCode::read_attr(Uint32 RegDest,
     /* NdbInterpretedCode instruction requires that table is set */
     return error(4538);
   // TODO : Check column is from the correct table
-  return read_attr_impl(&NdbColumnImpl::getImpl(*column), RegDest);
+  return read_attr_impl(&NdbColumnImpl::getImpl(*column),
+                        RegDest % MaxReg);
+}
+
+int
+NdbInterpretedCode::write_from_mem_impl(const NdbColumnImpl *c,
+                                        Uint32 RegMemOffset,
+                                        Uint32 RegSize)
+{
+  if (c->m_storageType == NDB_STORAGETYPE_DISK)
+    m_flags|= UsesDisk;
+  return add1(Interpreter::WriteFromMem(c->m_attrId,
+                                        RegMemOffset % MaxReg,
+                                        RegSize % MaxReg));
+}
+
+int
+NdbInterpretedCode::write_from_mem(Uint32 attrId,
+                                   Uint32 RegMemOffset,
+                                   Uint32 RegSize)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  const NdbColumnImpl *c= m_table_impl->getColumn(attrId);
+  if (unlikely(c == nullptr))
+    return error(BadAttributeId);
+  return write_from_mem_impl(c, RegMemOffset, RegSize);
+}
+
+int
+NdbInterpretedCode::write_from_mem(const NdbDictionary::Column *column,
+                                   Uint32 RegMemOffset,
+                                   Uint32 RegSize)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  // TODO : Check column is from the right table
+  return write_from_mem_impl(&NdbColumnImpl::getImpl(*column),
+                             RegMemOffset, RegSize);
+}
+
+int
+NdbInterpretedCode::append_from_mem_impl(const NdbColumnImpl *c,
+                                         Uint32 RegMemOffset,
+                                         Uint32 RegSize)
+{
+  if (c->m_storageType == NDB_STORAGETYPE_DISK)
+    m_flags|= UsesDisk;
+  return add1(Interpreter::AppendFromMem(c->m_attrId,
+                                         RegMemOffset % MaxReg,
+                                         RegSize % MaxReg));
+}
+
+int
+NdbInterpretedCode::append_from_mem(Uint32 attrId,
+                                    Uint32 RegMemOffset,
+                                    Uint32 RegSize)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  const NdbColumnImpl *c= m_table_impl->getColumn(attrId);
+  if (unlikely(c == nullptr))
+    return error(BadAttributeId);
+  return append_from_mem_impl(c, RegMemOffset, RegSize);
+}
+
+int
+NdbInterpretedCode::append_from_mem(const NdbDictionary::Column *column,
+                                    Uint32 RegMemOffset,
+                                    Uint32 RegSize)
+{
+  if (unlikely(m_table_impl == nullptr))
+    /* NdbInterpretedCode instruction requires that table is set */
+    return error(4538);
+  // TODO : Check column is from the right table
+  return append_from_mem_impl(&NdbColumnImpl::getImpl(*column),
+                              RegMemOffset, RegSize);
 }
 
 int
@@ -349,6 +881,7 @@ NdbInterpretedCode::write_attr_impl(const NdbColumnImpl *c, Uint32 RegSource)
   return add1(Interpreter::Write(c->m_attrId, RegSource % MaxReg));
 }
 
+
 int
 NdbInterpretedCode::write_attr(Uint32 attrId, Uint32 RegSource)
 {
@@ -358,7 +891,7 @@ NdbInterpretedCode::write_attr(Uint32 attrId, Uint32 RegSource)
   const NdbColumnImpl *c= m_table_impl->getColumn(attrId);
   if (unlikely(c == nullptr))
     return error(BadAttributeId);
-  return write_attr_impl(c, RegSource);
+  return write_attr_impl(c, RegSource % MaxReg);
 }
 
 int
@@ -369,7 +902,8 @@ NdbInterpretedCode::write_attr(const NdbDictionary::Column *column,
     /* NdbInterpretedCode instruction requires that table is set */
     return error(4538);
   // TODO : Check column is from the right table
-  return write_attr_impl(&NdbColumnImpl::getImpl(*column), RegSource);
+  return write_attr_impl(&NdbColumnImpl::getImpl(*column),
+                         RegSource % MaxReg);
 }
 
 int
@@ -418,7 +952,8 @@ int NdbInterpretedCode::branch_ge(Uint32 RegLvalue,
                                   Uint32 label)
 {
   Uint32 instr = Interpreter::Branch(Interpreter::BRANCH_GE_REG_REG,
-                                     RegRvalue, RegLvalue);
+                                     RegRvalue % MaxReg,
+                                     RegLvalue % MaxReg);
   return add_branch(instr, label);
 }
 
@@ -427,7 +962,8 @@ int NdbInterpretedCode::branch_gt(Uint32 RegLvalue,
                                   Uint32 label)
 {
   Uint32 instr = Interpreter::Branch(Interpreter::BRANCH_GT_REG_REG,
-                                     RegRvalue, RegLvalue);
+                                     RegRvalue % MaxReg,
+                                     RegLvalue % MaxReg);
   return add_branch(instr, label);
 }
 
@@ -436,7 +972,8 @@ int NdbInterpretedCode::branch_le(Uint32 RegLvalue,
                                   Uint32 label)
 {
   Uint32 instr = Interpreter::Branch(Interpreter::BRANCH_LE_REG_REG,
-                                     RegRvalue, RegLvalue);
+                                     RegRvalue % MaxReg,
+                                     RegLvalue % MaxReg);
   return add_branch(instr, label);
 }
 
@@ -445,7 +982,8 @@ int NdbInterpretedCode::branch_lt(Uint32 RegLvalue,
                                   Uint32 label)
 {
   Uint32 instr = Interpreter::Branch(Interpreter::BRANCH_LT_REG_REG,
-                                     RegRvalue, RegLvalue);
+                                     RegRvalue % MaxReg,
+                                     RegLvalue % MaxReg);
   return add_branch(instr, label);
 }
 
@@ -454,7 +992,8 @@ int NdbInterpretedCode::branch_eq(Uint32 RegLvalue,
                                   Uint32 label)
 {
   Uint32 instr = Interpreter::Branch(Interpreter::BRANCH_EQ_REG_REG,
-                                     RegLvalue, RegRvalue);
+                                     RegLvalue % MaxReg,
+                                     RegRvalue % MaxReg);
   return add_branch(instr, label);
 }
 
@@ -463,7 +1002,68 @@ int NdbInterpretedCode::branch_ne(Uint32 RegLvalue,
                                   Uint32 label)
 {
   Uint32 instr = Interpreter::Branch(Interpreter::BRANCH_NE_REG_REG,
-                                     RegLvalue, RegRvalue);
+                                     RegLvalue % MaxReg,
+                                     RegRvalue % MaxReg);
+  return add_branch(instr, label);
+}
+
+int NdbInterpretedCode::branch_ge_const(Uint32 RegLvalue,
+                                        Uint16 Constant,
+                                        Uint32 label)
+{
+  Uint32 instr = Interpreter::BranchConstant(Interpreter::BRANCH_GE_REG_REG,
+                                             RegLvalue % MaxReg,
+                                             Constant % MaxBranchConst);
+  return add_branch(instr, label);
+}
+
+int NdbInterpretedCode::branch_gt_const(Uint32 RegLvalue,
+                                        Uint16 Constant,
+                                        Uint32 label)
+{
+  Uint32 instr = Interpreter::BranchConstant(Interpreter::BRANCH_GT_REG_REG,
+                                             RegLvalue % MaxReg,
+                                             Constant % MaxBranchConst);
+  return add_branch(instr, label);
+}
+
+int NdbInterpretedCode::branch_le_const(Uint32 RegLvalue,
+                                        Uint16 Constant,
+                                        Uint32 label)
+{
+  Uint32 instr = Interpreter::BranchConstant(Interpreter::BRANCH_LE_REG_REG,
+                                             RegLvalue % MaxReg,
+                                             Constant % MaxBranchConst);
+  return add_branch(instr, label);
+}
+
+int NdbInterpretedCode::branch_lt_const(Uint32 RegLvalue,
+                                        Uint16 Constant,
+                                        Uint32 label)
+{
+  Uint32 instr = Interpreter::BranchConstant(Interpreter::BRANCH_LT_REG_REG,
+                                             RegLvalue % MaxReg,
+                                             Constant % MaxBranchConst);
+  return add_branch(instr, label);
+}
+
+int NdbInterpretedCode::branch_eq_const(Uint32 RegLvalue,
+                                        Uint16 Constant,
+                                        Uint32 label)
+{
+  Uint32 instr = Interpreter::BranchConstant(Interpreter::BRANCH_EQ_REG_REG,
+                                             RegLvalue % MaxReg,
+                                             Constant % MaxBranchConst);
+  return add_branch(instr, label);
+}
+
+int NdbInterpretedCode::branch_ne_const(Uint32 RegLvalue,
+                                        Uint16 Constant,
+                                        Uint32 label)
+{
+  Uint32 instr = Interpreter::BranchConstant(Interpreter::BRANCH_NE_REG_REG,
+                                             RegLvalue % MaxReg,
+                                             Constant % MaxBranchConst);
   return add_branch(instr, label);
 }
 
