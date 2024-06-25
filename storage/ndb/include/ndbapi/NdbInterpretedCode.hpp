@@ -382,6 +382,9 @@ public:
    * @param Constant to use as RHS of operator
    * @return 0 if successful, -1 otherwise
    */
+  int write_interpreter_output(Uint32 RegValue, Uint32 outputIndex);
+  int convert_size(Uint32 RegSizeDest, Uint32 RegOffset);
+  int write_size_mem(Uint32 RegSizeDest, Uint32 RegOffset);
   int read_uint8_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
   int read_uint16_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
   int read_uint32_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
@@ -892,6 +895,7 @@ private:
   friend class NdbQueryOptionsImpl;
 
   static const Uint32 MaxReg= 8;
+  static const Uint32 MaxOutputIndex = 32;
   static const Uint32 MaxBranchConst = 64;
   static const Uint32 MaxLabels= 65535;
   static const Uint32 MaxSubs=65535;

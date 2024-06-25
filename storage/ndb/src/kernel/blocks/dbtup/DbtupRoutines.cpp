@@ -3428,6 +3428,14 @@ Dbtup::read_pseudo(const Uint32 * inBuffer, Uint32 inPos,
     break;
   }
   default:
+    if (attrId >= AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST &&
+        attrId <= AttributeHeader::READ_INTERPRETER_OUTPUT_LAST)
+    {
+      Uint32 inx = attrId - AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST;
+      outBuffer[1] = c_interpreter_output[inx];
+      sz = 1;
+      break;
+    }
     return -ZATTRIBUTE_ID_ERROR;
   }
   

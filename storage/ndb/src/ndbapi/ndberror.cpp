@@ -401,6 +401,7 @@ ErrorBundle ErrorCodes[] = {
   { 809,  DMEC, IE, "809" },
   { 812,  DMEC, IE, "812" },
   { 833,  DMEC, IE, "833" },
+  { 846,  DMEC, IE, "846" },
   { 871,  DMEC, IE, "No such interpreter instruction" },
   { 882,  DMEC, IE, "Inconsistent sizes of interpreter code sections" },
   { 888,  DMEC, IE, "Trying to write from interpreter but not an UPDATE operation" },
@@ -450,6 +451,7 @@ ErrorBundle ErrorCodes[] = {
   { 842,  DMEC, AE, "Trying to write more into a column than its max size" },
   { 843,  DMEC, AE, "Trying to append NULL to a column" },
   { 844,  DMEC, AE, "Trying to load memory bigger than max row size" },
+  { 845,  DMEC, AE, "Trying to write a value bigger than 32 bit output register" },
   { 851,  DMEC, AE, "Fixed-size column offset exceeded max. "
     "Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns"},
   { 850,  DMEC, AE, "Too long or too short default value"},

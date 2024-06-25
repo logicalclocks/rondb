@@ -125,6 +125,7 @@ public:
   static constexpr Uint32 WRITE_ATTR_FROM_MEM = 57;
   static constexpr Uint32 APPEND_ATTR_FROM_MEM = 58;
   static constexpr Uint32 LOAD_CONST_MEM = 59;
+  static constexpr Uint32 CONVERT_SIZE = 60; // WriteSizeMem as well
 
   /**
    * Macros for creating code
@@ -176,6 +177,9 @@ public:
   static Uint32 XorC(Uint32 DstReg, Uint32 SrcReg1, Uint16 Constant);
   static Uint32 ModC(Uint32 DstReg, Uint32 SrcReg1, Uint16 Constant);
 
+  static Uint32 ConvertSize(Uint32 DstSizeReg, Uint32 RegOffset);
+  static Uint32 WriteSizeMem(Uint32 DstSizeReg, Uint32 RegOffset);
+  static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
   static Uint32 ReadUint8FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint16FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint32FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
@@ -573,6 +577,34 @@ Interpreter::ModC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
          (Dcoleg << 12) +
          (Constant << 16) +
          MOD_CONST_REG_TO_REG;
+}
+
+inline
+Uint32
+Interpreter::ConvertSize(Uint32 DstSizeReg, Uint32 RegOffset)
+{
+  return (RegOffset << 6) + (DstSizeReg << 9) + CONVERT_SIZE;
+}
+
+inline
+Uint32
+Interpreter::WriteSizeMem(Uint32 DstSizeReg, Uint32 RegOffset)
+{
+  return (RegOffset << 6) +
+         (DstSizeReg << 9) +
+         CONVERT_SIZE +
+         OVERFLOW_OPCODE;
+}
+
+inline
+Uint32
+Interpreter::WriteInterpreterOutput(Uint32 RegValue,
+                                    Uint32 OutputIndex)
+{
+  return (RegValue << 6) +
+         (OutputIndex << 16) +
+         LOAD_CONST_MEM +
+         OVERFLOW_OPCODE;
 }
 
 inline

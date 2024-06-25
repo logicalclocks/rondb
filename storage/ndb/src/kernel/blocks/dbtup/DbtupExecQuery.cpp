@@ -4657,6 +4657,102 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
+      case (Interpreter::LOAD_CONST_MEM + OVERFLOW_OPCODE):
+      {
+        /**
+         * Write content of a register to an output register.
+         * Can be read later with a read of a pseudo code.
+         */
+        Uint32 valueType= TregMemBuffer[theRegister];
+        Uint32 outputInx = theInstruction >> 16;
+	Int64 value = * (Int64*)(TregMemBuffer + theRegister + 2);
+        if (unlikely((valueType == NULL_INDICATOR)))
+        {
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("Reg %u NULL, LINE: %u", theRegister >> 2, __LINE__);
+#endif
+	  return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+        }
+        Int64 upper_value = value >> 32;
+        if (upper_value != 0)
+        {
+	  return TUPKEY_abort(req_struct, ZVALUE_OVERFLOW_OUTPUT_REGISTER);
+        }
+        if (unlikely(outputInx >= AttributeHeader::MaxInterpreterOutputIndex))
+        {
+	  return TUPKEY_abort(req_struct, ZOUTPUT_INDEX_ERROR);
+        }
+        Uint32 value32 = Uint32(value);
+        c_interpreter_output[outputInx] = value32;
+        break;
+      }
+      case Interpreter::CONVERT_SIZE:
+      {
+        /**
+         * theRegister contains the memory offset of the two bytes
+         * to be read.
+         * tDestRegister is the register that will have the size
+         * that is read and converted.
+         */
+        Uint32 offsetType= TregMemBuffer[theRegister];
+	Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+        Uint32 TdestRegister = Interpreter::getReg2(theInstruction) << 2;
+        if (unlikely((offsetType == NULL_INDICATOR)))
+        {
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("Reg %u NULL, LINE: %u", theRegister >> 2, __LINE__);
+#endif
+	  return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+        }
+        if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1) ||
+                    (memoryOffset < 0)))
+        {
+          jam();
+          return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+        }
+        Uint32 low_byte = TheapMemoryChar[memoryOffset];
+        Uint32 high_byte = TheapMemoryChar[memoryOffset + 1];
+        Uint32 size_read = low_byte + (256 * high_byte);
+	* (Int64*)(TregMemBuffer+TdestRegister+2)= (Int64)size_read;
+        break;
+      }
+      case (Interpreter::CONVERT_SIZE + OVERFLOW_OPCODE):
+      {
+        /**
+         * theRegister contains the memory offset of the two bytes
+         * to be written.
+         * tDestRegister is the register that will have the size
+         * that is read and converted.
+         */
+        Uint32 TsizeRegister = Interpreter::getReg2(theInstruction) << 2;
+        Uint32 offsetType= TregMemBuffer[theRegister];
+        Uint32 sizeType= TregMemBuffer[TsizeRegister];
+	Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+        if (unlikely((offsetType == NULL_INDICATOR) ||
+                     (sizeType == NULL_INDICATOR)))
+        {
+	  return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+        }
+        if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - 1) ||
+                    (memoryOffset < 0)))
+        {
+          jam();
+          return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+        }
+	Int64 size = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
+        if (unlikely(size <= 0 || size >= (MAX_TUPLE_SIZE_IN_WORDS * 4)))
+        {
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("Size %lld isn't ok, %u", Tsize, __LINE__);
+#endif
+          return TUPKEY_abort(req_struct, ZPARTIAL_READ_ERROR);
+        }
+        Uint32 low_byte = size & 255;
+        Uint32 high_byte = size >> 8;
+        TheapMemoryChar[memoryOffset] = low_byte;
+        TheapMemoryChar[memoryOffset + 1] = high_byte;
+        break;
+      }
       case Interpreter::READ_UINT8_MEM_TO_REG:
       {
         jamDebug();

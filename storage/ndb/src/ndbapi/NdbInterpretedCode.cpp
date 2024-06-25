@@ -453,6 +453,31 @@ NdbInterpretedCode::mod_const_reg(Uint32 RegDest,
 }
 
 int
+NdbInterpretedCode::write_interpreter_output(Uint32 RegValue,
+                                             Uint32 OutputIndex)
+{
+  return add1(Interpreter::WriteInterpreterOutput(
+              RegValue % MaxReg,
+              OutputIndex % MaxOutputIndex));
+}
+
+int
+NdbInterpretedCode::convert_size(Uint32 RegSizeDest, Uint32 RegOffset)
+{
+  return add1(Interpreter::ConvertSize(
+              RegSizeDest % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
+NdbInterpretedCode::write_size_mem(Uint32 RegSizeDest, Uint32 RegOffset)
+{
+  return add1(Interpreter::WriteSizeMem(
+              RegSizeDest % MaxReg,
+              RegOffset % MaxReg));
+}
+
+int
 NdbInterpretedCode::read_uint8_to_reg_const(Uint32 RegDest,
                                             Uint32 Offset)
 {
