@@ -102,9 +102,9 @@ public:
   static constexpr Uint32 INDEX_STAT_KEY = 0xFFD0;
   static constexpr Uint32 INDEX_STAT_VALUE = 0xFFD1;
 
-  static constexpr Uint32 READ_INTERPRETER_OUTPUT_FIRST = 0xFFA0;
+  static constexpr Uint32 READ_INTERPRETER_OUTPUT_FIRST = 0xFFB0;
   static constexpr Uint32 READ_INTERPRETER_OUTPUT_LAST = 0xFFBF;
-  static constexpr Uint32 MaxInterpreterOutputIndex = 32;
+  static constexpr Uint32 MaxInterpreterOutputIndex = 16;
 
   // NOTE: in 5.1 ctors and init take size in bytes
 

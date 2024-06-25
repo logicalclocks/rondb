@@ -582,7 +582,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
   HugoCalculator calc(* pTab);
   calc.equalForRow(pRow, pRowRecord, 0);
 
-  for (Uint32 i = 0; i < 29; i++)
+  for (Uint32 i = 0; i < 31; i++)
   {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
@@ -1007,9 +1007,108 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       }
       CHK3(ret_code);
     }
+    else if (i == 29)
+    {
+      /* Use table T6 */
+      Uint32 mem = 0x12340001;
+      code.load_const_u16(0, 4);
+      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_u16(2, 0);
+      code.write_from_mem(18, 2, 1);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      if (ret_code == -1)
+      {
+        //ndbout_c("error: %d", code.m_error.code);
+      }
+      CHK3(ret_code);
+    }
+    else if (i == 30)
+    {
+      /* Use table T6 */
+      Uint32 mem = 0x789A0001;
+      code.load_const_u16(0, 0);
+      code.load_const_u16(1, 2);
+      code.load_const_u16(3, 2);
+      /* Read length bytes from ATTR18 into pos 0+4 */
+      code.read_partial(18, 0, 0, 1, 2);
+      /* Register 2 has read length == 2 */
+      code.branch_ne(2, 3, 0);
+      code.load_const_u16(0, 4);
+      /* Convert size lengths to a number in offset 4 */
+      code.convert_size(4, 0);
+      code.load_const_u16(5, 1);
+      /* Verify length is 1 bytes not including length bytes */
+      code.branch_ne(4, 5, 0);
+      code.load_const_u16(0, 4);
+      /* Write 3 bytes into offset 4 */
+      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_u16(2, 0);
+      /**
+       * Append to ATTR18 using memory in offset 0, actually
+       * the appended data starts at position 4, the first 4
+       * bytes are used by the append instruction and will
+       * be overwritten.
+       */
+      code.append_from_mem(18, 2, 1);
+      code.load_const_u16(0, 0);
+      code.load_const_u16(1, 2);
+      /* Read the length bytes of the column after append */
+      code.read_partial(18, 0, 0, 1, 2);
+      code.load_const_u16(3, 2);
+      /* Verify read 2 bytes */
+      code.branch_ne(2, 3, 0);
+      code.load_const_u16(0, 4);
+      /* Convert length bytes in offset 4 to a size */
+      code.convert_size(4, 0);
+      code.load_const_u16(3, 2);
+      /* Verify new size is 2 bytes not including length bytes */
+      code.branch_ne(2, 3, 0);
+      /* Prepare output column reported back to NDB API */
+      code.write_interpreter_output(2, 0);
+      code.load_const_u16(0, 0);
+      /**
+       * Read full column into position 0+4, first 4 bytes are
+       * used by the interpreter and are overwritten.
+       */
+      code.read_full(18, 0, 1);
+      /* Calculate offset to append using copy instruction */
+      code.add_const_reg(2, 1, 4);
+      /* Copy data after end of data */
+      mem = 0x65;
+      code.load_const_mem(2, 1, 1, &mem);
+      code.load_const_u16(0, 4);
+      /* Read size of data exclusive of length bytes */
+      code.convert_size(4, 0);
+      /* Calculate new length exclusive of length bytes */
+      code.add_reg(3, 4, 1);
+      /* Write new length bytes */
+      code.write_size_mem(3, 0);
+      /* Calculate length inclusive of length bytes */
+      code.add_const_reg(4, 3, 2);
+      /* Write new column data */
+      code.write_from_mem(18, 0, 4);
+      code.load_const_u16(0, 0);
+      code.read_full(18, 0, 1);
+      code.load_const_u16(2, 5);
+      code.branch_ne(2, 1, 0);
+      code.load_const_u16(0, 4);
+      code.convert_size(4, 0);
+      code.load_const_u16(2, 3);
+      code.branch_ne(2, 4, 0);
+      code.interpret_exit_ok();
+      code.def_label(0);
+      code.interpret_exit_nok();
+      int ret_code = code.finalise();
+      if (ret_code == -1)
+      {
+        ndbout_c("error: %d", code.getNdbError().code);
+      }
+      CHK3(ret_code);
+    }
 
 
-    NdbOperation::GetValueSpec getvals[1];
+    NdbOperation::GetValueSpec getvals[2];
     NdbOperation::OperationOptions opts;
     std::memset(&opts, 0, sizeof(opts));
     opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED;
@@ -1024,6 +1123,28 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       opts.extraGetFinalValues = getvals;
       opts.numExtraGetFinalValues = 1;
     }
+    else if (i == 29)
+    {
+      getvals[0].column = pTab->getColumn(18);
+      getvals[0].appStorage = nullptr;
+      getvals[0].recAttr = nullptr;
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+      opts.extraGetFinalValues = getvals;
+      opts.numExtraGetFinalValues = 1;
+    }
+    else if (i == 30)
+    {
+      getvals[0].column = pTab->getColumn(18);
+      getvals[0].appStorage = nullptr;
+      getvals[0].recAttr = nullptr;
+      getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+      getvals[1].appStorage = nullptr;
+      getvals[1].recAttr = nullptr;
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+      opts.extraGetFinalValues = getvals;
+      opts.numExtraGetFinalValues = 2;
+    }
+
     const NdbOperation *pOp;
     if (i <= 26)
     {
@@ -1070,6 +1191,36 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
                recAttr->u_64_value());
       check -= recAttr->u_64_value();
       CHK3(Uint32(check));
+    }
+    else if (i == 29 || i == 30)
+    {
+      CHK_RET_FAILED(res == 0, pTrans);
+      NdbRecAttr *recAttr = getvals[0].recAttr;
+      Uint64 check;
+      if (i == 27)
+      {
+        check = 0x345602ULL;
+      }
+      else if (i == 28)
+      {
+        check = 0x9abc345604ULL;
+      }
+      else
+      {
+        check = 0;
+      }
+      ndbout_c("Length: %u, val: 0x%llx",
+               recAttr->get_size_in_bytes(),
+               recAttr->u_64_value());
+      check -= recAttr->u_64_value();
+      if (i == 30)
+      {
+        NdbRecAttr *recAttr = getvals[1].recAttr;
+        ndbout_c("Pseudo: Length: %u, val: 0x%x",
+                 recAttr->get_size_in_bytes(),
+                 recAttr->u_32_value());
+      }
+      //CHK3(Uint32(check));
     }
     else if (i == 0 || i == 5)
     {

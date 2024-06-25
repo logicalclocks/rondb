@@ -108,7 +108,7 @@
 #define DEB_LCP_LGMAN(arglist) do { } while (0)
 #endif
 
-//#define TRACE_INTERPRETER
+#define TRACE_INTERPRETER
 
 /* For debugging */
 static void
@@ -4592,7 +4592,10 @@ int Dbtup::interpreterNextLab(Signal* signal,
           * (Int64*)(TregMemBuffer+TdestRegister+2)= read_len;
           TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
 #ifdef TRACE_INTERPRETER
-          g_eventLogger->info("READ_PARTIAL_ATTR_TO_MEM: Len: %u", read_len);
+          g_eventLogger->info("READ_PARTIAL_ATTR_TO_MEM:"
+                              " Len: %u, offset: %u",
+                              read_len,
+                              memory_offset);
 #endif
         }
         break; 
@@ -4684,6 +4687,11 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         Uint32 value32 = Uint32(value);
         c_interpreter_output[outputInx] = value32;
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info("write_interpreter_output[%u] = %u",
+                            outputInx,
+                            value32);
+#endif
         break;
       }
       case Interpreter::CONVERT_SIZE:
@@ -4714,6 +4722,15 @@ int Dbtup::interpreterNextLab(Signal* signal,
         Uint32 high_byte = TheapMemoryChar[memoryOffset + 1];
         Uint32 size_read = low_byte + (256 * high_byte);
 	* (Int64*)(TregMemBuffer+TdestRegister+2)= (Int64)size_read;
+	TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info("convert_size: low_byte: %u, high_byte: %u,"
+                            " offset: %lld, size_read: %u",
+                            low_byte,
+                            high_byte,
+                            memoryOffset,
+                            size_read);
+#endif
         break;
       }
       case (Interpreter::CONVERT_SIZE + OVERFLOW_OPCODE):
@@ -4743,7 +4760,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         if (unlikely(size <= 0 || size >= (MAX_TUPLE_SIZE_IN_WORDS * 4)))
         {
 #ifdef TRACE_INTERPRETER
-          g_eventLogger->info("Size %lld isn't ok, %u", Tsize, __LINE__);
+          g_eventLogger->info("Size %lld isn't ok, %u", size, __LINE__);
 #endif
           return TUPKEY_abort(req_struct, ZPARTIAL_READ_ERROR);
         }
@@ -4751,6 +4768,13 @@ int Dbtup::interpreterNextLab(Signal* signal,
         Uint32 high_byte = size >> 8;
         TheapMemoryChar[memoryOffset] = low_byte;
         TheapMemoryChar[memoryOffset + 1] = high_byte;
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info("write_size_mem: low_byte: %u, high_byte: %u,"
+                            " offset: %lld",
+                            low_byte,
+                            high_byte,
+                            memoryOffset);
+#endif
         break;
       }
       case Interpreter::READ_UINT8_MEM_TO_REG:

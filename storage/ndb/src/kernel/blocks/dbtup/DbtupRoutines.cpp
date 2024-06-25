@@ -42,7 +42,7 @@
 
 #define JAM_FILE_ID 402
 
-//#define TRACE_INTERPRETER
+#define TRACE_INTERPRETER
 
 void
 Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
@@ -875,8 +875,12 @@ Dbtup::handle_partial_read(KeyReqStruct *req_struct,
     thrjamDebug(req_struct->jamBuffer);
     (*srcBytes) = req_struct->partial_size;
 #ifdef TRACE_INTERPRETER
-    g_eventLogger->info("2:handle_partial_read: srcBytes set to %u",
-                       (*srcBytes));
+    g_eventLogger->info("2:handle_partial_read: srcBytes set to %u"
+                        ", val[] = 0x%x,0x%x,0x%x",
+                       (*srcBytes),
+                       (*srcPtr)[0],
+                       (*srcPtr)[1],
+                       (*srcPtr)[2]);
 #endif
   }
   if (max_read != 0)
@@ -2676,8 +2680,13 @@ Dbtup::varsize_updater(Uint32* in_buffer,
         req_struct->in_buf_index= new_index;
         return true;
       }
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info("Line: %u, dataLen: %u, size_in_bytes: %u",
+                          dataLen,
+                          size_in_bytes,
+                          __LINE__);
+#endif
       thrjam(req_struct->jamBuffer);
-      assert(false);
       req_struct->errorCode = ZAI_INCONSISTENCY_ERROR;
       return false;
     }

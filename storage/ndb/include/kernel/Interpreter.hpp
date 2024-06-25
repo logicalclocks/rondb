@@ -593,7 +593,7 @@ Interpreter::WriteSizeMem(Uint32 DstSizeReg, Uint32 RegOffset)
   return (RegOffset << 6) +
          (DstSizeReg << 9) +
          CONVERT_SIZE +
-         OVERFLOW_OPCODE;
+         (1 << 15);
 }
 
 inline
@@ -604,7 +604,7 @@ Interpreter::WriteInterpreterOutput(Uint32 RegValue,
   return (RegValue << 6) +
          (OutputIndex << 16) +
          LOAD_CONST_MEM +
-         OVERFLOW_OPCODE;
+         (1 << 15);
 }
 
 inline
@@ -903,6 +903,7 @@ Interpreter::getInstructionPreProcessingInfo(Uint32 *op,
 
   case LOAD_CONST_NULL:
   case LOAD_CONST16:
+  case (LOAD_CONST_MEM + OVERFLOW_OPCODE):
     return op + 1;
   case LOAD_CONST32:
     return op + 2;
@@ -943,6 +944,8 @@ Interpreter::getInstructionPreProcessingInfo(Uint32 *op,
   case READ_PARTIAL_ATTR_TO_MEM:
   case READ_ATTR_TO_MEM:
 
+  case CONVERT_SIZE:
+  case (CONVERT_SIZE + OVERFLOW_OPCODE):
   case READ_UINT8_MEM_TO_REG:
   case READ_UINT16_MEM_TO_REG:
   case READ_UINT32_MEM_TO_REG:
