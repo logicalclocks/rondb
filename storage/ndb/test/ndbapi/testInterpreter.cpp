@@ -1086,6 +1086,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.write_size_mem(3, 0);
       /* Calculate length inclusive of length bytes */
       code.add_const_reg(4, 3, 2);
+      code.load_const_u16(0, 0);
       /* Write new column data */
       code.write_from_mem(18, 0, 4);
       code.load_const_u16(0, 0);

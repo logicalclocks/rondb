@@ -4394,6 +4394,13 @@ int Dbtup::interpreterNextLab(Signal* signal,
         Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
         Uint32 words = 1 + (Tsize + 3) / 4;
         memory_ptr[0] = ah.m_value;
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info("WRITE_ATTR_FROM_MEM: Tsize: %lld"
+                            ", words: %u, offset: %lld",
+                            Tsize,
+                            words,
+                            Toffset);
+#endif
         int TnoDataRW = updateAttributes(req_struct,
                                         memory_ptr,
                                         words);
