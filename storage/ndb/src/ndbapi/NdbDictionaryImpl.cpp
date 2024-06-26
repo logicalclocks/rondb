@@ -5749,10 +5749,16 @@ NdbDictInterface::create_index_obj_from_table(NdbIndexImpl** dst,
   NdbDictionary::Object::Type type = idx->m_type = tab->m_indexType;
   idx->m_logging = tab->m_logging;
   idx->m_temporary = tab->m_temporary;
+  // The hash function flag of an index must always match that of the primary
+  // table.
+  require(tab->m_use_new_hash_function == prim->m_use_new_hash_function);
   idx->m_use_new_hash_function = tab->m_use_new_hash_function;
-  DBUG_PRINT("info", ("create_index_obj_from_table %s, m_use_new_hash_function: %u",
+  DBUG_PRINT("info", ("create_index_obj_from_table id %d name %s, tab->m_use_new_hash_function: %u, idx->m_use_new_hash_function: %u, prim->m_use_new_hash_function: %u",
+                       tab->getTableId(),
                        tab->getName(),
-                       tab->m_use_new_hash_function));
+                       tab->m_use_new_hash_function,
+                       idx->m_use_new_hash_function,
+                       prim->m_use_new_hash_function));
 
   const Uint32 distKeys = prim->m_noOfDistributionKeys;
   Uint32 keyCount =
@@ -5851,6 +5857,20 @@ int
 NdbDictionaryImpl::createIndex(NdbIndexImpl &ix, NdbTableImpl &tab,
                                bool offline)
 {
+  // At this point, ix.m_use_new_hash_function is set if and only if the new
+  // hash function is supported. However, the correct value is always the one
+  // that matches the primary table.
+  if (ix.m_use_new_hash_function && !tab.m_use_new_hash_function)
+  {
+    // This can happen if the table was created with an earlier version.
+    ix.m_use_new_hash_function = false;
+  }
+  if (!ix.m_use_new_hash_function && tab.m_use_new_hash_function)
+  {
+    // This really should not happen, but let's do our best to fix it.
+    ix.m_use_new_hash_function = true;
+  }
+
   return m_receiver.createIndex(ix, tab, offline);
 }
 
