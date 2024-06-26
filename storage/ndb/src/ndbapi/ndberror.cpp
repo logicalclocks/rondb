@@ -452,6 +452,8 @@ ErrorBundle ErrorCodes[] = {
   { 843,  DMEC, AE, "Trying to append NULL to a column" },
   { 844,  DMEC, AE, "Trying to load memory bigger than max row size" },
   { 845,  DMEC, AE, "Trying to write a value bigger than 32 bit output register" },
+  { 847,  DMEC, AE, "Trying to use ANY_VALUE and not a DELETE operation" },
+  { 848,  DMEC, AE, "Overflow in log buffer, doesn't fit" },
   { 851,  DMEC, AE, "Fixed-size column offset exceeded max. "
     "Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns"},
   { 850,  DMEC, AE, "Too long or too short default value"},

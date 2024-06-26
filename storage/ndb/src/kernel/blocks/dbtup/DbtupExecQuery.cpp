@@ -2903,14 +2903,15 @@ int Dbtup::handleInsertReq(Signal* signal,
      * Send normal format AttrInfo back to LQH for
      * propagation
      */
-    req_struct->log_size = RfinalUpdateLen;
-    MEMCOPY_NO_WORDS(&clogMemBuffer[0],
-        &cinBuffer[offset],
-        RfinalUpdateLen);
-
+    ndbrequire(req_struct->log_size == 0);
+    if (unlikely(!writeLogMemory(req_struct,
+                                 (const char*)&cinBuffer[offset],
+                                 RfinalUpdateLen * 4)))
+    {
+      goto log_write_error;
+    }
     if (unlikely(sendLogAttrinfo(signal,
             req_struct,
-            RfinalUpdateLen,
             regOperPtr.p) != 0))
     {
       jam();
@@ -3253,6 +3254,11 @@ int Dbtup::handleInsertReq(Signal* signal,
   set_tuple_state(regOperPtr.p, TUPLE_PREPARED);
   return 0;
 
+log_write_error:
+  jam();
+  terrorCode = ZLOG_BUFFER_OVERFLOW_ERROR;
+  goto update_error;
+
 size_change_error:
   jam();
   terrorCode = ZMEM_NOMEM_ERROR;
@@ -3468,12 +3474,11 @@ int Dbtup::handleDeleteReq(Signal* signal,
       jam();
       return corruptedTupleDetected(req_struct, regTabPtr);
     }
-    Uint32 RlogSize;
     int ret= handleReadReq(signal, regOperPtr, regTabPtr, req_struct);
-    if (ret == 0 && (RlogSize= req_struct->log_size))
+    if (ret == 0 && (req_struct->log_size > 0))
     {
       jam();
-      sendLogAttrinfo(signal, req_struct, RlogSize, regOperPtr);
+      sendLogAttrinfo(signal, req_struct, regOperPtr);
     }
     return ret;
   }
@@ -3821,7 +3826,7 @@ int Dbtup::interpreterStartLab(Signal* signal,
    * interpreterCode, we will only copy one of them into the cinBuffer[].
    * Thus, 'RtotalLen + 5' may be '<' than RattrinbufLen.
    */
-  Uint32 RlogSize= req_struct->log_size= 0;
+  req_struct->log_size= 0;
   if (likely(((RtotalLen + 5) <= RattrinbufLen) &&
         (RattrinbufLen >= 5) &&
         (RtotalLen + 5 < ZATTR_BUFFER_SIZE)))
@@ -3877,21 +3882,21 @@ int Dbtup::interpreterStartLab(Signal* signal,
       // to and from registers.
       /* ---------------------------------------------------------------- */
       Uint32 RsubPC= RinstructionCounter + RexecRegionLen 
-        + RfinalUpdateLen + RfinalRLen;     
+        + RfinalUpdateLen + RfinalRLen;
+      req_struct->m_inside_interpreter = true;
       TnoDataRW= interpreterNextLab(signal,
           req_struct,
-          &clogMemBuffer[0],
           &cinBuffer[RinstructionCounter],
           RexecRegionLen,
           &cinBuffer[RsubPC],
           RsubLen,
           &coutBuffer[0],
           sizeof(coutBuffer) / 4);
+      req_struct->m_inside_interpreter = false;
       if (TnoDataRW != -1)
       {
         jamDebug();
         RinstructionCounter += RexecRegionLen;
-        RlogSize= TnoDataRW;
       }
       else
       {
@@ -3903,7 +3908,7 @@ int Dbtup::interpreterStartLab(Signal* signal,
       }
     }
 
-    if ((RlogSize > 0) ||
+    if ((req_struct->log_size > 0) ||
         (RfinalUpdateLen > 0))
     {
       jamDebug();
@@ -3940,11 +3945,14 @@ int Dbtup::interpreterStartLab(Signal* signal,
         if (TnoDataRW >= 0)
         {
           jamDebug();
-          MEMCOPY_NO_WORDS(&clogMemBuffer[RlogSize],
-              &cinBuffer[RinstructionCounter],
-              RfinalUpdateLen);
+          if (unlikely(!writeLogMemory(req_struct,
+                             (const char*)&cinBuffer[RinstructionCounter],
+                             RfinalUpdateLen * 4)))
+          {
+            jamDebug();
+            return TUPKEY_abort(req_struct, ZLOG_BUFFER_OVERFLOW_ERROR);
+          }
           RinstructionCounter += RfinalUpdateLen;
-          RlogSize += RfinalUpdateLen;
         }
         else
         {
@@ -4011,11 +4019,10 @@ int Dbtup::interpreterStartLab(Signal* signal,
      *    It adds the words directly to req_struct->log_size
      *    This is used for ANYVALUE and interpreted delete.
      */
-    req_struct->log_size+= RlogSize;
     sendReadAttrinfo(signal, req_struct, RattroutCounter);
-    if (RlogSize > 0)
+    if (req_struct->log_size > 0)
     {
-      return sendLogAttrinfo(signal, req_struct, RlogSize, regOperPtr);
+      return sendLogAttrinfo(signal, req_struct, regOperPtr);
     }
     return 0;
   }
@@ -4023,6 +4030,26 @@ int Dbtup::interpreterStartLab(Signal* signal,
   {
     return TUPKEY_abort(req_struct, ZTOTAL_LEN_ERROR);
   }
+}
+
+bool
+Dbtup::writeLogMemory(KeyReqStruct *req_struct,
+                      const char *input_ptr,
+                      Uint32 byte_size)
+{
+  Uint32 logSize = req_struct->log_size;
+  Uint32 words = (byte_size + 3) / 4;
+  if (unlikely((logSize + words) > MAX_LOG_RECORD_SIZE_WORDS))
+  {
+    return false;
+  }
+  Uint8 *current_log_ptr = (Uint8*)&clogMemBuffer[logSize];
+  memcpy(current_log_ptr,
+         input_ptr,
+         byte_size);
+  zero32(current_log_ptr, byte_size);
+  req_struct->log_size += words;
+  return true;
 }
 
 /* ---------------------------------------------------------------- */
@@ -4035,13 +4062,13 @@ int Dbtup::interpreterStartLab(Signal* signal,
 /* ---------------------------------------------------------------- */
 int Dbtup::sendLogAttrinfo(Signal* signal,
                            KeyReqStruct * req_struct,
-                           Uint32 TlogSize,
                            Operationrec *  const regOperPtr)
 {
   /* Copy from Log buffer to segmented section,
    * then attach to ATTRINFO and execute direct
    * to LQH
    */
+  Uint32 TlogSize = req_struct->log_size;
   ndbrequire( TlogSize > 0 );
   ndbassert(!m_is_query_block);
   Uint32 longSectionIVal= RNIL;
@@ -4133,7 +4160,6 @@ Dbtup::lookupInterpreterParameter(Uint32 paramNo,
 #define NOT_NULL_INDICATOR 1
 int Dbtup::interpreterNextLab(Signal* signal,
                               KeyReqStruct* req_struct,
-                              Uint32* logMemory,
                               Uint32* mainProgram,
                               Uint32 TmainProgLen,
                               Uint32* subroutineProg,
@@ -4146,7 +4172,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
   Uint32 TprogramCounter= 0;
   Uint32* TcurrentProgram= mainProgram;
   Uint32 TcurrentSize= TmainProgLen;
-  Uint32 TdataWritten= 0;
   Uint32 RstackPtr= 0;
   char *TheapMemoryChar;
   union {
@@ -4323,10 +4348,12 @@ int Dbtup::interpreterNextLab(Signal* signal,
               // Write the written data also into the log buffer so that it 
               // will be logged.
               /* --------------------------------------------------------- */
-              logMemory[TdataWritten + 0]= TdataForUpdate[0];
-              logMemory[TdataWritten + 1]= TdataForUpdate[1];
-              logMemory[TdataWritten + 2]= TdataForUpdate[2];
-              TdataWritten += Tlen;
+              if (writeLogMemory(req_struct,
+                                 (const char*)&TdataForUpdate[0],
+                                 Tlen * 4))
+              {
+                return TUPKEY_abort(req_struct, ZLOG_BUFFER_OVERFLOW_ERROR);
+              }
             }
             else
             {
@@ -4410,10 +4437,12 @@ int Dbtup::interpreterNextLab(Signal* signal,
            * Write the written data to the log memory for further
            * copying to the REDO log.
            */
-          memcpy(&logMemory[TdataWritten],
-                 memory_ptr,
-                 words << 2);
-          TdataWritten += words;
+          if (unlikely(!writeLogMemory(req_struct,
+                                       (const char*)memory_ptr,
+                                       words * 4)))
+          {
+            return TUPKEY_abort(req_struct, ZLOG_BUFFER_OVERFLOW_ERROR);
+          }
         }
         else
         {
@@ -4489,18 +4518,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         int TnoDataRW = updateAttributes(req_struct,
                                          memory_ptr,
                                          words);
-        if (TnoDataRW >= 0)
-        {
-          /**
-           * Write the written data to the log memory for further
-           * copying to the REDO log.
-           */
-          memcpy(&logMemory[TdataWritten],
-                 memory_ptr,
-                 words << 2);
-          TdataWritten += words;
-        }
-        else
+        if (TnoDataRW < 0)
         {
           terrorCode = Uint32(-TnoDataRW);
           tupkeyErrorLab(req_struct);
@@ -6267,22 +6285,23 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	}
 	break;
       }
-	
       case Interpreter::EXIT_OK:
+      {
 	jamDebug();
 #ifdef TRACE_INTERPRETER
         g_eventLogger->info(" - exit_ok");
 #endif
-	return TdataWritten;
-
+	return req_struct->log_size;
+      }
       case Interpreter::EXIT_OK_LAST:
+      {
 	jamDebug();
 #ifdef TRACE_INTERPRETER
         g_eventLogger->info(" - exit_ok_last");
 #endif
 	req_struct->last_row= true;
-	return TdataWritten;
-	
+	return req_struct->log_size;
+      }
       case Interpreter::EXIT_REFUSE:
       {
         /**

@@ -165,6 +165,8 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 #define ZLOAD_MEM_TOO_BIG_ERROR 844
 #define ZVALUE_OVERFLOW_OUTPUT_REGISTER 845
 #define ZOUTPUT_INDEX_ERROR 846
+#define ZANY_VALUE_OPERATION_ERROR 847
+#define ZLOG_BUFFER_OVERFLOW_ERROR 848
 #define ZBAD_DEFAULT_VALUE_LEN 850
 #define ZNO_INSTRUCTION_ERROR 871
 #define ZREAD_LENGTH_ERROR 872
@@ -1955,6 +1957,7 @@ struct KeyReqStruct {
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
     m_tuple_ptr = NULL;
+    m_inside_interpreter = false;
   }
 
   KeyReqStruct(EmulatedJamBuffer * _jamBuffer) :
@@ -1967,6 +1970,7 @@ struct KeyReqStruct {
     m_when = KRS_PREPARE;
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
+    m_inside_interpreter = false;
   }
 
   KeyReqStruct(Dbtup* tup) :
@@ -1979,6 +1983,8 @@ struct KeyReqStruct {
     m_when = KRS_PREPARE;
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
+    m_inside_interpreter = false;
+    m_dbtup_ptr = tup;
   }
 
   KeyReqStruct(Dbtup* tup, When when) :
@@ -1992,6 +1998,8 @@ struct KeyReqStruct {
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
     m_tuple_ptr = NULL;
+    m_inside_interpreter = false;
+    m_dbtup_ptr = tup;
   }
   
 /**
@@ -2019,6 +2027,7 @@ struct KeyReqStruct {
   Operationrec * operPtrP;
   EmulatedJamBuffer * jamBuffer;
   Tuple_header *m_tuple_ptr;
+  Dbtup *m_dbtup_ptr;
 
   /**
    * Variables often used in read of columns
@@ -2032,6 +2041,8 @@ struct KeyReqStruct {
   Uint32          in_buf_index;
 
   Uint32          partial_size;
+  /* Are we currently executing inside the interpreter? */
+  bool            m_inside_interpreter;
 
   union {
     Uint32 in_buf_len;
@@ -2795,7 +2806,6 @@ private:
   Uint32 brancher(Uint32, Uint32);
   int interpreterNextLab(Signal* signal,
                          KeyReqStruct *req_struct,
-                         Uint32* logMemory,
                          Uint32* mainProgram,
                          Uint32 TmainProgLen,
                          Uint32* subroutineProg,
@@ -2806,6 +2816,10 @@ private:
   const Uint32 * lookupInterpreterParameter(Uint32 paramNo,
                                             const Uint32 * subptr) const;
 
+  bool writeLogMemory(KeyReqStruct *req_struct,
+                      const char *input_ptr,
+                      Uint32 byte_size);
+                      
 // *****************************************************************
 // Signal Sending methods.
 // *****************************************************************
@@ -2819,7 +2833,6 @@ private:
 //------------------------------------------------------------------
   int sendLogAttrinfo(Signal* signal,
                       KeyReqStruct *req_struct,
-                      Uint32 TlogSize,
                       Operationrec * regOperPtr);
 
 //------------------------------------------------------------------
@@ -2956,6 +2969,8 @@ private:
                                   Uint32 max_read);
 
   static bool handle_partial_write(KeyReqStruct *req_struct,
+                                   Uint32 attrId,
+                                   Uint64 attrDes,
                                    Uint32 arrayType,
                                    Uint32 dataLen,
                                    Uint32 max_var_size,
