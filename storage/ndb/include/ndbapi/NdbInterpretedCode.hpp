@@ -1003,7 +1003,10 @@ private:
     BranchToBadLabel    = 4221,
     BadLength           = 4209,
     BadSubNumber        = 4227,
-    BadState            = 4231
+    BadState            = 4231,
+    BadRegister         = 4562,
+    BadOutputIndex      = 4563,
+    BadConstant         = 4564
   };
 
   int error(Uint32 code);
