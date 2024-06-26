@@ -478,6 +478,28 @@ NdbInterpretedCode::write_size_mem(Uint32 RegSizeDest, Uint32 RegOffset)
 }
 
 int
+NdbInterpretedCode::str_to_int64(Uint32 RegDestValue,
+                                 Uint32 RegOffset,
+                                 Uint32 RegSize)
+{
+  return add1(Interpreter::StrToInt64(
+              RegDestValue % MaxReg,
+              RegOffset % MaxReg,
+              RegSize %MaxReg));
+}
+
+int
+NdbInterpretedCode::int64_to_str(Uint32 RegDestSize,
+                                 Uint32 RegOffset,
+                                 Uint32 RegValue)
+{
+  return add1(Interpreter::Int64ToStr(
+              RegDestSize % MaxReg,
+              RegOffset % MaxReg,
+              RegValue %MaxReg));
+}
+
+int
 NdbInterpretedCode::read_uint8_to_reg_const(Uint32 RegDest,
                                             Uint32 Offset)
 {

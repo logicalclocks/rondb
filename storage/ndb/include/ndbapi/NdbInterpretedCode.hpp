@@ -413,6 +413,12 @@ public:
   int write_uint32_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
   int write_int64_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
 
+  /**
+   * Library functions
+   */
+  int str_to_int64(Uint32 RegDestValue, Uint32 RegOffset, Uint32 RegSize);
+  int int64_to_str(Uint32 RegDestSize, Uint32 RegOffset, Uint32 RegValue);
+
   /* Control flow 
    * ------------
    */

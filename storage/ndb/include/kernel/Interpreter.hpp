@@ -126,6 +126,13 @@ public:
   static constexpr Uint32 APPEND_ATTR_FROM_MEM = 58;
   static constexpr Uint32 LOAD_CONST_MEM = 59;
   static constexpr Uint32 CONVERT_SIZE = 60; // WriteSizeMem as well
+  static constexpr Uint32 SPECIAL_INSTR = 63;
+
+  /**
+   * Instructions using SPECIAL_INSTR
+   */
+  static constexpr Uint32 SPC_STR_TO_INT64 = 0;
+  static constexpr Uint32 SPC_INT64_TO_STR = 1;
 
   /**
    * Macros for creating code
@@ -179,6 +186,13 @@ public:
 
   static Uint32 ConvertSize(Uint32 DstSizeReg, Uint32 RegOffset);
   static Uint32 WriteSizeMem(Uint32 DstSizeReg, Uint32 RegOffset);
+  static Uint32 StrToInt64(Uint32 RegDestValue,
+                           Uint32 RegOffset,
+                           Uint32 RegSize);
+  static Uint32 Int64ToStr(Uint32 RegDestSize,
+                           Uint32 RegOffset,
+                           Uint32 RegValue);
+
   static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
   static Uint32 ReadUint8FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint16FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
@@ -204,6 +218,13 @@ public:
   static Uint32 Branch(Uint32 Inst, Uint32 Reg1, Uint32 Reg2);
   static Uint32 ExitOK();
   static Uint32 ExitLastOK();
+
+  static Uint32 StringToInt64(Uint32 RegDestValue,
+                              Uint32 RegOffset,
+                              Uint32 RegSize);
+  static Uint32 Int64ToString(Uint32 RegDestSize,
+                              Uint32 RegOffset,
+                              Uint32 RegValue);
 
   /**
    * Branch OP_ARG (Attr1 <op> <value arg>)
@@ -594,6 +615,32 @@ Interpreter::WriteSizeMem(Uint32 DstSizeReg, Uint32 RegOffset)
          (DstSizeReg << 9) +
          CONVERT_SIZE +
          (1 << 15);
+}
+
+inline
+Uint32
+Interpreter::StrToInt64(Uint32 RegDestValue,
+                        Uint32 RegOffset,
+                        Uint32 RegSize)
+{
+  return (RegOffset << 6) +
+         (RegSize << 9) +
+         (RegDestValue << 12) +
+         SPECIAL_INSTR +
+         (SPC_STR_TO_INT64 << 16);
+}
+
+inline
+Uint32
+Interpreter::Int64ToStr(Uint32 RegDestSize,
+                        Uint32 RegOffset,
+                        Uint32 RegValue)
+{
+  return (RegOffset << 6) +
+         (RegValue << 9) +
+         (RegDestSize << 12) +
+         SPECIAL_INSTR +
+         (SPC_INT64_TO_STR << 16);
 }
 
 inline

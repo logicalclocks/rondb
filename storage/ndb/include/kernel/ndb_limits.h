@@ -111,6 +111,8 @@
 #define MAX_KEY_SIZE_IN_WORDS 1023
 #define MAX_NULL_BITS 4096
 
+#define MAX_LONG_LONG_STRING 32
+
 /**
  * There is no real reason for a limit to the log records, but
  * normally one should not need more than the max record size

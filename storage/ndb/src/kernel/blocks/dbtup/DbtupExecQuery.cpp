@@ -5194,6 +5194,11 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Uint64 Tdest0= Tleft0 + Tright0;
           TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
           * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
+          if (unlikely((Tright0 >= 0 && LLONG_MAX - Tright0 < Tleft0) ||
+                       (Tright0 < 0 && LLONG_MIN - Tright0 > Tleft0)))
+          {
+            return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
+          }
         }
         else
         {
@@ -5216,6 +5221,11 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Uint64 Tdest0= Tleft0 + Tright0;
           TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
           * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
+          if (unlikely((Tright0 >= 0 && LLONG_MAX - Tright0 < Tleft0) ||
+                       (Tright0 < 0 && LLONG_MIN - Tright0 > Tleft0)))
+          {
+            return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
+          }
         }
         else
         {
@@ -5235,6 +5245,11 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Uint64 Tdest0= Tleft0 - Tright0;
           TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
           * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
+          if (unlikely((Tright0 >= 0 && LLONG_MIN + Tright0 > Tleft0) ||
+                       (Tright0 < 0 && LLONG_MAX + Tright0 < Tleft0)))
+          {
+            return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
+          }
         }
         else
         {
@@ -5257,6 +5272,11 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Int64 Tdest0= Tleft0 - Tright0;
           TregMemBuffer[TdestRegister]= NOT_NULL_INDICATOR;
           * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
+          if (unlikely((Tright0 >= 0 && LLONG_MIN + Tright0 > Tleft0) ||
+                       (Tright0 < 0 && LLONG_MAX + Tright0 < Tleft0)))
+          {
+            return TUPKEY_abort(req_struct, ZCALC_OVERFLOW_ERROR);
+          }
         }
         else
         {
@@ -6371,6 +6391,84 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	}
 	break;
 
+      case Interpreter::SPECIAL_INSTR:
+      {
+        Uint32 extended_instruction = theInstruction >> 16;
+        switch (extended_instruction)
+        {
+        case Interpreter::SPC_STR_TO_INT64:
+        {
+          Uint32 offsetType= TregMemBuffer[theRegister];
+          Uint32 sizeReg = Interpreter::getReg2(theInstruction) << 2;
+          Uint32 destValReg = Interpreter::getReg3(theInstruction) << 2;
+          Uint32 sizeType= TregMemBuffer[sizeReg];
+	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+	  Int64 size = * (Int64*)(TregMemBuffer + sizeReg + 2);
+          if (unlikely((offsetType == NULL_INDICATOR) ||
+                       (sizeType == NULL_INDICATOR)))
+          {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (unlikely(size > MAX_LONG_LONG_STRING))
+          {
+            return TUPKEY_abort(req_struct, ZLONG_LONG_STRING_TOO_LONG);
+          }
+          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - size) ||
+                       (memoryOffset < 0)))
+          {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          {
+            char *end_ptr = nullptr;
+            Int64 val = strtoll(&TheapMemoryChar[memoryOffset],
+                                &end_ptr,
+                                10);
+            if (unlikely(errno == ERANGE || end_ptr != nullptr))
+            {
+              return TUPKEY_abort(req_struct, ZINVALID_LONG_LONG_STRING);
+            }
+	    * (Int64*)(TregMemBuffer+destValReg + 2)= val;
+	    TregMemBuffer[destValReg] = NOT_NULL_INDICATOR;
+          }
+          break;
+        }
+        case Interpreter::SPC_INT64_TO_STR:
+        {
+          Uint32 offsetType= TregMemBuffer[theRegister];
+          Uint32 valueReg = Interpreter::getReg2(theInstruction) << 2;
+          Uint32 destSizeReg = Interpreter::getReg3(theInstruction) << 2;
+          Uint32 valueType= TregMemBuffer[valueReg];
+	  Int64 memOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+	  Int64 value = * (Int64*)(TregMemBuffer + valueReg + 2);
+          if (unlikely((offsetType == NULL_INDICATOR) ||
+                       (valueType == NULL_INDICATOR)))
+          {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (unlikely(memOffset > (MAX_HEAP_OFFSET - MAX_LONG_LONG_STRING) ||
+                       (memOffset < 0)))
+          {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          int size = snprintf(&TheapMemoryChar[memOffset],
+                              MAX_LONG_LONG_STRING,
+                              "%lld",
+                              value);
+          if (size <= 0)
+          {
+            return TUPKEY_abort(req_struct, ZCONVERT_LONG_LONG_TO_STRING_ERROR);
+          }
+	  * (Int64*)(TregMemBuffer+destSizeReg + 2)= size;
+	  TregMemBuffer[destSizeReg] = NOT_NULL_INDICATOR;
+          break;
+        }
+        default:
+        {
+	  return TUPKEY_abort(req_struct, ZNO_INSTRUCTION_ERROR);
+        }
+        }
+        break;
+      }
       default:
 	return TUPKEY_abort(req_struct, ZNO_INSTRUCTION_ERROR);
       }
