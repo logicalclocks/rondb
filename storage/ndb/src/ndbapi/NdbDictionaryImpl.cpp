@@ -5753,7 +5753,10 @@ NdbDictInterface::create_index_obj_from_table(NdbIndexImpl** dst,
   // table.
   require(tab->m_use_new_hash_function == prim->m_use_new_hash_function);
   idx->m_use_new_hash_function = tab->m_use_new_hash_function;
-  DBUG_PRINT("info", ("create_index_obj_from_table id %d name %s, tab->m_use_new_hash_function: %u, idx->m_use_new_hash_function: %u, prim->m_use_new_hash_function: %u",
+  DBUG_PRINT("info", ("create_index_obj_from_table id %d name %s, "
+                      "tab->m_use_new_hash_function: %u, "
+                      "idx->m_use_new_hash_function: %u, "
+                      "prim->m_use_new_hash_function: %u",
                        tab->getTableId(),
                        tab->getName(),
                        tab->m_use_new_hash_function,
@@ -5864,11 +5867,21 @@ NdbDictionaryImpl::createIndex(NdbIndexImpl &ix, NdbTableImpl &tab,
   {
     // This can happen if the table was created with an earlier version.
     ix.m_use_new_hash_function = false;
+    DBUG_PRINT("info", ("Setting m_use_new_hash_function to false on index %s, "
+                        "since it is false on the primary table %s.",
+                        ix.getIndexTable()->getName(),
+                        tab.getName()));
   }
   if (!ix.m_use_new_hash_function && tab.m_use_new_hash_function)
   {
     // This really should not happen, but let's do our best to fix it.
     ix.m_use_new_hash_function = true;
+    DBUG_PRINT("warning", ("Setting m_use_new_hash_function to true on index %s, "
+                           "since it is true on the primary table %s. "
+                           "This is UNEXPECTED, as it should already have been "
+                           "set if the new hash is supported by this version.",
+                           ix.getIndexTable()->getName(),
+                           tab.getName()));
   }
 
   return m_receiver.createIndex(ix, tab, offline);
