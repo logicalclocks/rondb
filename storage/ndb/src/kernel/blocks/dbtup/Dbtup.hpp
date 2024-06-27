@@ -1961,7 +1961,6 @@ struct KeyReqStruct {
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
     m_tuple_ptr = NULL;
-    m_inside_interpreter = false;
   }
 
   KeyReqStruct(EmulatedJamBuffer * _jamBuffer) :
@@ -1974,7 +1973,6 @@ struct KeyReqStruct {
     m_when = KRS_PREPARE;
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
-    m_inside_interpreter = false;
   }
 
   KeyReqStruct(Dbtup* tup) :
@@ -1987,7 +1985,6 @@ struct KeyReqStruct {
     m_when = KRS_PREPARE;
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
-    m_inside_interpreter = false;
     m_dbtup_ptr = tup;
   }
 
@@ -2002,7 +1999,6 @@ struct KeyReqStruct {
     m_deferred_constraints = true;
     m_disable_fk_checks = false;
     m_tuple_ptr = NULL;
-    m_inside_interpreter = false;
     m_dbtup_ptr = tup;
   }
   
@@ -2046,7 +2042,7 @@ struct KeyReqStruct {
 
   Uint32          partial_size;
   /* Are we currently executing inside the interpreter? */
-  bool            m_inside_interpreter;
+  bool            m_write_log_memory_in_update;
 
   union {
     Uint32 in_buf_len;

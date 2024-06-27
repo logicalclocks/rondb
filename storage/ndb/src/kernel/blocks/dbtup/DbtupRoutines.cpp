@@ -2131,12 +2131,41 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
          * Use Append, this can only be called from interpreter,
          * not allowed to be used as part of normal updates.
          */
-        if (unlikely(!req_struct->m_inside_interpreter))
+        thrjamDebug(req_struct->jamBuffer);
+        if (req_struct->m_write_log_memory_in_update == false)
         {
-          thrjam(req_struct->jamBuffer);
-          return -(int)ZAPPEND_COLUMN_ERROR;
+          thrjamDebug(req_struct->jamBuffer);
+          req_struct->m_write_log_memory_in_update = true;
+          Dbtup *tup = req_struct->m_dbtup_ptr;
+          bool succ = tup->writeLogMemory(req_struct,
+                                          (const char*)&inBuffer[0],
+                                          inBufLen * 4);
+          if (unlikely(!succ))
+          {
+            return -(int)ZLOG_BUFFER_OVERFLOW_ERROR;
+          }
         }
         req_struct->partial_size = 1;
+      }
+      else if (req_struct->m_write_log_memory_in_update == true)
+      {
+        /**
+         * We write to log memory every column written since
+         * if there is one partial write we cannot use the
+         * ATTRINFO as received. The REDO log must be idempotent.
+         * We record if we wrote a partial write and only send
+         * the log memory if we did as a minor optimisation.
+         */
+        Uint32 byte_size = ahIn.getByteSize();
+        Dbtup *tup = req_struct->m_dbtup_ptr;
+        bool succ = tup->writeLogMemory(req_struct,
+                            (const char*)&inBuffer[inBufIndex],
+                            byte_size + 4);
+        if (unlikely(!succ))
+        {
+          thrjam(req_struct->jamBuffer);
+          return -(int)ZLOG_BUFFER_OVERFLOW_ERROR;
+        }
       }
       UpdateFunction f= regTabPtr->updateFunctionArray[attributeId];
       thrjamLineDebug(req_struct->jamBuffer, attributeId);
@@ -2802,6 +2831,7 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
    * is idempotent, thus it can be applied any number of times and still
    * do the same result.
    */
+  require(req_struct->m_write_log_memory_in_update == true);
   AttributeHeader ah(attrId, (*size_in_bytes));
   Dbtup *tup = req_struct->m_dbtup_ptr;
   tup->writeLogMemory(req_struct,

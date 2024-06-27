@@ -2244,6 +2244,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
 
       store_extra_row_bits(attrId, regTabPtr, dst, /* default */ 0, false);
     }
+    req_struct->m_write_log_memory_in_update = false;
     int retValue = updateAttributes(req_struct,
         &cinBuffer[0],
         req_struct->attrinfo_len);
@@ -2251,6 +2252,20 @@ int Dbtup::handleUpdateReq(Signal* signal,
     {
       terrorCode = Uint32(-retValue);
       goto error;
+    }
+    if (unlikely(req_struct->m_write_log_memory_in_update == true))
+    {
+      /**
+       * Send logMemory back to LQH for propagation to REDO log
+       * and other replicas.
+       */
+      ndbrequire(req_struct->log_size == 0);
+      if (unlikely(sendLogAttrinfo(signal,
+                                   req_struct,
+                                   operPtrP) != 0))
+      {
+        return TUPKEY_abort(req_struct, ZLOG_BUFFER_OVERFLOW_ERROR);
+      }
     }
   }
   else
@@ -2856,6 +2871,7 @@ int Dbtup::handleInsertReq(Signal* signal,
     store_extra_row_bits(attrId, regTabPtr, tuple_ptr, /* default */ 0, false);
   }
 
+  req_struct->m_write_log_memory_in_update = true;
   if (!(is_refresh ||
         regTabPtr->m_default_value_location.isNull()))
   {
@@ -2898,25 +2914,6 @@ int Dbtup::handleInsertReq(Signal* signal,
       terrorCode = Uint32(-res);
       goto update_error;
     }
-
-    /**
-     * Send normal format AttrInfo back to LQH for
-     * propagation
-     */
-    ndbrequire(req_struct->log_size == 0);
-    if (unlikely(!writeLogMemory(req_struct,
-                                 (const char*)&cinBuffer[offset],
-                                 RfinalUpdateLen * 4)))
-    {
-      goto log_write_error;
-    }
-    if (unlikely(sendLogAttrinfo(signal,
-            req_struct,
-            regOperPtr.p) != 0))
-    {
-      jam();
-      goto update_error;
-    }
   }
   else
   {
@@ -2929,7 +2926,17 @@ int Dbtup::handleInsertReq(Signal* signal,
       goto update_error;
     }
   }
-
+  /**
+   * Send logMemory back to LQH for propagation to REDO log and replicas
+   */
+  ndbrequire(req_struct->log_size == 0);
+  if (unlikely(sendLogAttrinfo(signal,
+                               req_struct,
+                               regOperPtr.p) != 0))
+  {
+    jam();
+    goto update_error;
+  }
   if (ERROR_INSERTED(4017))
   {
     goto null_check_error;
@@ -3253,11 +3260,6 @@ int Dbtup::handleInsertReq(Signal* signal,
   }
   set_tuple_state(regOperPtr.p, TUPLE_PREPARED);
   return 0;
-
-log_write_error:
-  jam();
-  terrorCode = ZLOG_BUFFER_OVERFLOW_ERROR;
-  goto update_error;
 
 size_change_error:
   jam();
@@ -3827,6 +3829,7 @@ int Dbtup::interpreterStartLab(Signal* signal,
    * Thus, 'RtotalLen + 5' may be '<' than RattrinbufLen.
    */
   req_struct->log_size= 0;
+  req_struct->m_write_log_memory_in_update = true;
   if (likely(((RtotalLen + 5) <= RattrinbufLen) &&
         (RattrinbufLen >= 5) &&
         (RtotalLen + 5 < ZATTR_BUFFER_SIZE)))
@@ -3883,7 +3886,6 @@ int Dbtup::interpreterStartLab(Signal* signal,
       /* ---------------------------------------------------------------- */
       Uint32 RsubPC= RinstructionCounter + RexecRegionLen 
         + RfinalUpdateLen + RfinalRLen;
-      req_struct->m_inside_interpreter = true;
       TnoDataRW= interpreterNextLab(signal,
           req_struct,
           &cinBuffer[RinstructionCounter],
@@ -3892,7 +3894,6 @@ int Dbtup::interpreterStartLab(Signal* signal,
           RsubLen,
           &coutBuffer[0],
           sizeof(coutBuffer) / 4);
-      req_struct->m_inside_interpreter = false;
       if (TnoDataRW != -1)
       {
         jamDebug();
@@ -3945,13 +3946,6 @@ int Dbtup::interpreterStartLab(Signal* signal,
         if (TnoDataRW >= 0)
         {
           jamDebug();
-          if (unlikely(!writeLogMemory(req_struct,
-                             (const char*)&cinBuffer[RinstructionCounter],
-                             RfinalUpdateLen * 4)))
-          {
-            jamDebug();
-            return TUPKEY_abort(req_struct, ZLOG_BUFFER_OVERFLOW_ERROR);
-          }
           RinstructionCounter += RfinalUpdateLen;
         }
         else
@@ -4342,20 +4336,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
             int TnoDataRW= updateAttributes(req_struct,
               &TdataForUpdate[0],
               Tlen);
-            if (TnoDataRW >= 0)
-            {
-              /* --------------------------------------------------------- */
-              // Write the written data also into the log buffer so that it 
-              // will be logged.
-              /* --------------------------------------------------------- */
-              if (writeLogMemory(req_struct,
-                                 (const char*)&TdataForUpdate[0],
-                                 Tlen * 4))
-              {
-                return TUPKEY_abort(req_struct, ZLOG_BUFFER_OVERFLOW_ERROR);
-              }
-            }
-            else
+            if (TnoDataRW < 0)
             {
               terrorCode = Uint32(-TnoDataRW);
               tupkeyErrorLab(req_struct);
@@ -4431,20 +4412,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         int TnoDataRW = updateAttributes(req_struct,
                                         memory_ptr,
                                         words);
-        if (TnoDataRW >= 0)
-        {
-          /**
-           * Write the written data to the log memory for further
-           * copying to the REDO log.
-           */
-          if (unlikely(!writeLogMemory(req_struct,
-                                       (const char*)memory_ptr,
-                                       words * 4)))
-          {
-            return TUPKEY_abort(req_struct, ZLOG_BUFFER_OVERFLOW_ERROR);
-          }
-        }
-        else
+        if (TnoDataRW < 0)
         {
           terrorCode = Uint32(-TnoDataRW);
           tupkeyErrorLab(req_struct);
