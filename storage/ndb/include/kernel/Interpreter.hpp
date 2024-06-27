@@ -69,70 +69,126 @@ public:
   static constexpr Uint32 LOAD_CONST32 = 5;
   static constexpr Uint32 LOAD_CONST64 = 6;
   static constexpr Uint32 ADD_REG_REG = 7;
+  static constexpr Uint32 ADD_REG_CONST =
+                          ADD_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 SUB_REG_REG = 8;
+  static constexpr Uint32 SUB_REG_CONST =
+                          SUB_REG_REG + OVERFLOW_OPCODE;
+
   static constexpr Uint32 BRANCH = 9;
   static constexpr Uint32 BRANCH_REG_EQ_NULL = 10;
   static constexpr Uint32 BRANCH_REG_NE_NULL = 11;
   static constexpr Uint32 BRANCH_EQ_REG_REG = 12;
+  static constexpr Uint32 BRANCH_EQ_REG_CONST =
+                          BRANCH_EQ_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_NE_REG_REG = 13;
+  static constexpr Uint32 BRANCH_NE_REG_CONST =
+                          BRANCH_NE_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_LT_REG_REG = 14;
+  static constexpr Uint32 BRANCH_LT_REG_CONST =
+                          BRANCH_LT_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_LE_REG_REG = 15;
+  static constexpr Uint32 BRANCH_LE_REG_CONST =
+                          BRANCH_LE_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_GT_REG_REG = 16;
+  static constexpr Uint32 BRANCH_GT_REG_CONST =
+                          BRANCH_GT_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_GE_REG_REG = 17;
+  static constexpr Uint32 BRANCH_GE_REG_CONST =
+                          BRANCH_GE_REG_REG + OVERFLOW_OPCODE;
+
   static constexpr Uint32 EXIT_OK = 18;
   static constexpr Uint32 EXIT_REFUSE = 19;
   static constexpr Uint32 CALL = 20;
   static constexpr Uint32 RETURN = 21;
   static constexpr Uint32 EXIT_OK_LAST = 22;
   static constexpr Uint32 BRANCH_ATTR_OP_ARG = 23;
+  /* OVERFLOW_OPCODE used */
   static constexpr Uint32 BRANCH_ATTR_EQ_NULL = 24;
   static constexpr Uint32 BRANCH_ATTR_NE_NULL = 25;
   static constexpr Uint32 BRANCH_ATTR_OP_PARAM = 26;
+  /* OVERFLOW_OPCODE used */
   static constexpr Uint32 BRANCH_ATTR_OP_ATTR = 27;
+  /* OVERFLOW_OPCODE used */
 
   static constexpr Uint32 LSHIFT_REG_REG = 28;
+  static constexpr Uint32 LSHIFT_REG_CONST =
+                          LSHIFT_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 RSHIFT_REG_REG = 29;
+  static constexpr Uint32 RSHIFT_REG_CONST =
+                          RSHIFT_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 MUL_REG_REG = 30;
+  static constexpr Uint32 MUL_REG_CONST =
+                          MUL_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 DIV_REG_REG = 31;
+  static constexpr Uint32 DIV_REG_CONST =
+                          DIV_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 AND_REG_REG = 32;
+  static constexpr Uint32 AND_REG_CONST =
+                          AND_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 OR_REG_REG = 33;
+  static constexpr Uint32 OR_REG_CONST =
+                          OR_REG_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 XOR_REG_REG = 34;
-  static constexpr Uint32 NOT_REG_REG = 35;
-  static constexpr Uint32 MOD_REG_REG = 36;
+  static constexpr Uint32 XOR_REG_CONST =
+                          XOR_REG_REG + OVERFLOW_OPCODE;
 
-  static constexpr Uint32 ADD_CONST_REG_TO_REG = 37;
-  static constexpr Uint32 SUB_CONST_REG_TO_REG = 38;
-  static constexpr Uint32 LSHIFT_CONST_REG_TO_REG = 39;
-  static constexpr Uint32 RSHIFT_CONST_REG_TO_REG = 40;
-  static constexpr Uint32 MUL_CONST_REG_TO_REG = 41;
-  static constexpr Uint32 DIV_CONST_REG_TO_REG = 42;
-  static constexpr Uint32 AND_CONST_REG_TO_REG = 43;
-  static constexpr Uint32 OR_CONST_REG_TO_REG = 44;
-  static constexpr Uint32 XOR_CONST_REG_TO_REG = 45;
-  static constexpr Uint32 MOD_CONST_REG_TO_REG = 46;
+  static constexpr Uint32 MOD_REG_REG = 35;
+  static constexpr Uint32 MOD_REG_CONST =
+                          MOD_REG_REG + OVERFLOW_OPCODE;
+
+  static constexpr Uint32 NOT_REG_REG = 36;
+
+  /* 37-46 free */
+  static constexpr Uint32 STR_TO_INT64 = 37;
+  static constexpr Uint32 INT64_TO_STR =
+                          STR_TO_INT64 + OVERFLOW_OPCODE;
 
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
 
   static constexpr Uint32 READ_UINT8_MEM_TO_REG = 49;
+  static constexpr Uint32 READ_UINT8_REG_TO_REG =
+                          READ_UINT8_MEM_TO_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 READ_UINT16_MEM_TO_REG = 50;
+  static constexpr Uint32 READ_UINT16_REG_TO_REG =
+                          READ_UINT16_MEM_TO_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 READ_UINT32_MEM_TO_REG = 51;
+  static constexpr Uint32 READ_UINT32_REG_TO_REG =
+                          READ_UINT32_MEM_TO_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 READ_INT64_MEM_TO_REG = 52;
+  static constexpr Uint32 READ_INT64_REG_TO_REG =
+                          READ_INT64_MEM_TO_REG + OVERFLOW_OPCODE;
+
   static constexpr Uint32 WRITE_UINT8_REG_TO_MEM = 53;
+  static constexpr Uint32 WRITE_UINT8_REG_TO_REG =
+                          WRITE_UINT8_REG_TO_MEM + OVERFLOW_OPCODE;
   static constexpr Uint32 WRITE_UINT16_REG_TO_MEM = 54;
+  static constexpr Uint32 WRITE_UINT16_REG_TO_REG =
+                          WRITE_UINT16_REG_TO_MEM + OVERFLOW_OPCODE;
   static constexpr Uint32 WRITE_UINT32_REG_TO_MEM = 55;
+  static constexpr Uint32 WRITE_UINT32_REG_TO_REG =
+                          WRITE_UINT32_REG_TO_MEM + OVERFLOW_OPCODE;
   static constexpr Uint32 WRITE_INT64_REG_TO_MEM = 56;
+  static constexpr Uint32 WRITE_INT64_REG_TO_REG =
+                          WRITE_INT64_REG_TO_MEM + OVERFLOW_OPCODE;
+
   static constexpr Uint32 WRITE_ATTR_FROM_MEM = 57;
   static constexpr Uint32 APPEND_ATTR_FROM_MEM = 58;
+
   static constexpr Uint32 LOAD_CONST_MEM = 59;
-  static constexpr Uint32 CONVERT_SIZE = 60; // WriteSizeMem as well
+  static constexpr Uint32 WRITE_INTERPRETER_OUTPUT =
+                          LOAD_CONST_MEM + OVERFLOW_OPCODE;
+  static constexpr Uint32 CONVERT_SIZE = 60;
+  static constexpr Uint32 WRITE_SIZE_MEM =
+                          CONVERT_SIZE + OVERFLOW_OPCODE;
+  /* 61-62 free */
+
   static constexpr Uint32 SPECIAL_INSTR = 63;
 
   /**
    * Instructions using SPECIAL_INSTR
    */
-  static constexpr Uint32 SPC_STR_TO_INT64 = 0;
-  static constexpr Uint32 SPC_INT64_TO_STR = 1;
 
   /**
    * Macros for creating code
@@ -513,91 +569,111 @@ Interpreter::Not(Uint32 Dcoleg, Uint32 SrcReg1){
 inline
 Uint32
 Interpreter::AddC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* ADD_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         ADD_CONST_REG_TO_REG;
+         ADD_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::SubC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* SUB_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         SUB_CONST_REG_TO_REG;
+         SUB_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::LshiftC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* LSHIFT_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         LSHIFT_CONST_REG_TO_REG;
+         LSHIFT_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::RshiftC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* RSHIFT_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         RSHIFT_CONST_REG_TO_REG;
+         RSHIFT_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::MulC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* MUL_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         MUL_CONST_REG_TO_REG;
+         MUL_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::DivC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* DIV_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         DIV_CONST_REG_TO_REG;
+         DIV_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::AndC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* AND_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         AND_CONST_REG_TO_REG;
+         AND_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::OrC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* OR_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         OR_CONST_REG_TO_REG;
+         OR_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::XorC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* XOR_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         XOR_CONST_REG_TO_REG;
+         XOR_REG_REG +
+         (1 << 15);
 }
 
 inline
 Uint32
 Interpreter::ModC(Uint32 Dcoleg, Uint32 SrcReg1, Uint16 Constant){
+  /* MOD_REG_CONST */
   return (SrcReg1 << 6) +
          (Dcoleg << 12) +
          (Constant << 16) +
-         MOD_CONST_REG_TO_REG;
+         MOD_REG_REG +
+         (1 << 15);
 }
 
 inline
@@ -611,6 +687,7 @@ inline
 Uint32
 Interpreter::WriteSizeMem(Uint32 DstSizeReg, Uint32 RegOffset)
 {
+  /* WRITE_SIZE_MEM */
   return (RegOffset << 6) +
          (DstSizeReg << 9) +
          CONVERT_SIZE +
@@ -626,8 +703,7 @@ Interpreter::StrToInt64(Uint32 RegDestValue,
   return (RegOffset << 6) +
          (RegSize << 9) +
          (RegDestValue << 12) +
-         SPECIAL_INSTR +
-         (SPC_STR_TO_INT64 << 16);
+         STR_TO_INT64;
 }
 
 inline
@@ -636,11 +712,12 @@ Interpreter::Int64ToStr(Uint32 RegDestSize,
                         Uint32 RegOffset,
                         Uint32 RegValue)
 {
+  /* INT64_TO_STR */
   return (RegOffset << 6) +
          (RegValue << 9) +
          (RegDestSize << 12) +
-         SPECIAL_INSTR +
-         (SPC_INT64_TO_STR << 16);
+         STR_TO_INT64 +
+         (1 << 15);
 }
 
 inline
@@ -648,6 +725,7 @@ Uint32
 Interpreter::WriteInterpreterOutput(Uint32 RegValue,
                                     Uint32 OutputIndex)
 {
+  /* WRITE_INTERPRETER_OUTPUT */
   return (RegValue << 6) +
          (OutputIndex << 16) +
          LOAD_CONST_MEM +
@@ -681,6 +759,7 @@ Interpreter::ReadInt64FromMemIntoRegConst(Uint32 Dcoleg, Uint16 Constant){
 inline
 Uint32
 Interpreter::ReadUint8FromMemIntoRegReg(Uint32 Dcoleg, Uint32 RegOffset){
+  /* READ_UINT8_REG_TO_REG */
   return (Dcoleg << 9) +
          (RegOffset << 6) +
          (1 << 15) +
@@ -690,6 +769,7 @@ Interpreter::ReadUint8FromMemIntoRegReg(Uint32 Dcoleg, Uint32 RegOffset){
 inline
 Uint32
 Interpreter::ReadUint16FromMemIntoRegReg(Uint32 Dcoleg, Uint32 RegOffset){
+  /* READ_UINT16_REG_TO_REG */
   return (Dcoleg << 9) +
          (RegOffset << 6) +
          (1 << 15) +
@@ -699,6 +779,7 @@ Interpreter::ReadUint16FromMemIntoRegReg(Uint32 Dcoleg, Uint32 RegOffset){
 inline
 Uint32
 Interpreter::ReadUint32FromMemIntoRegReg(Uint32 Dcoleg, Uint32 RegOffset){
+  /* READ_UINT32_REG_TO_REG */
   return (Dcoleg << 9) +
          (RegOffset << 6) +
          (1 << 15) +
@@ -708,6 +789,7 @@ Interpreter::ReadUint32FromMemIntoRegReg(Uint32 Dcoleg, Uint32 RegOffset){
 inline
 Uint32
 Interpreter::ReadInt64FromMemIntoRegReg(Uint32 Dcoleg, Uint32 RegOffset){
+  /* READ_INT64_REG_TO_REG */
   return (Dcoleg << 9) +
          (RegOffset << 6) +
          (1 << 15) +
@@ -742,6 +824,7 @@ Interpreter::WriteInt64RegIntoMemConst(Uint32 SrcReg, Uint16 Constant){
 inline
 Uint32
 Interpreter::WriteUint8RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset){
+  /* WRITE_UINT8_REG_TO_REG */
   return (SrcReg << 6) +
          (RegOffset << 9) +
          (1 << 15) +
@@ -751,6 +834,7 @@ Interpreter::WriteUint8RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset){
 inline
 Uint32
 Interpreter::WriteUint16RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset){
+  /* WRITE_UINT16_REG_TO_REG */
   return (SrcReg << 6) +
          (RegOffset << 9) +
          (1 << 15) +
@@ -760,6 +844,7 @@ Interpreter::WriteUint16RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset){
 inline
 Uint32
 Interpreter::WriteUint32RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset){
+  /* WRITE_UINT32_REG_TO_REG */
   return (SrcReg << 6) +
          (RegOffset << 9) +
          (1 << 15) +
@@ -769,6 +854,7 @@ Interpreter::WriteUint32RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset){
 inline
 Uint32
 Interpreter::WriteInt64RegIntoMemReg(Uint32 SrcReg, Uint32 RegOffset){
+  /* WRITE_INT64_REG_TO_REG */
   return (SrcReg << 6) +
          (RegOffset << 9) +
          (1 << 15) +
@@ -785,6 +871,14 @@ Interpreter::Branch(Uint32 Inst, Uint32 Reg1, Uint32 Reg2){
 inline
 Uint32
 Interpreter::BranchConstant(Uint32 Inst, Uint32 Reg1, Uint16 Constant){
+  /**
+   * BRANCH_EQ_REG_CONST
+   * BRANCH_NE_REG_CONST
+   * BRANCH_LT_REG_CONST
+   * BRANCH_LE_REG_CONST
+   * BRANCH_GT_REG_CONST
+   * BRANCH_GE_REG_CONST
+   */
   return (Reg1 << 6) +
          (Constant << 9) +
          (1 << 15) +
@@ -950,7 +1044,7 @@ Interpreter::getInstructionPreProcessingInfo(Uint32 *op,
 
   case LOAD_CONST_NULL:
   case LOAD_CONST16:
-  case (LOAD_CONST_MEM + OVERFLOW_OPCODE):
+  case WRITE_INTERPRETER_OUTPUT:
     return op + 1;
   case LOAD_CONST32:
     return op + 2;
@@ -965,34 +1059,32 @@ Interpreter::getInstructionPreProcessingInfo(Uint32 *op,
   }
 
   case ADD_REG_REG:
+  case ADD_REG_CONST:
   case SUB_REG_REG:
+  case SUB_REG_CONST:
   case LSHIFT_REG_REG:
+  case LSHIFT_REG_CONST:
+  case RSHIFT_REG_CONST:
   case RSHIFT_REG_REG:
   case MUL_REG_REG:
+  case MUL_REG_CONST:
   case DIV_REG_REG:
+  case DIV_REG_CONST:
   case AND_REG_REG:
+  case AND_REG_CONST:
   case OR_REG_REG:
+  case OR_REG_CONST:
   case XOR_REG_REG:
-
+  case XOR_REG_CONST:
   case MOD_REG_REG:
+  case MOD_REG_CONST:
   case NOT_REG_REG:
-
-  case ADD_CONST_REG_TO_REG:
-  case SUB_CONST_REG_TO_REG:
-  case LSHIFT_CONST_REG_TO_REG:
-  case RSHIFT_CONST_REG_TO_REG:
-  case MUL_CONST_REG_TO_REG:
-  case DIV_CONST_REG_TO_REG:
-  case AND_CONST_REG_TO_REG:
-  case OR_CONST_REG_TO_REG:
-  case XOR_CONST_REG_TO_REG:
-  case MOD_CONST_REG_TO_REG:
 
   case READ_PARTIAL_ATTR_TO_MEM:
   case READ_ATTR_TO_MEM:
 
   case CONVERT_SIZE:
-  case (CONVERT_SIZE + OVERFLOW_OPCODE):
+  case WRITE_SIZE_MEM:
   case READ_UINT8_MEM_TO_REG:
   case READ_UINT16_MEM_TO_REG:
   case READ_UINT32_MEM_TO_REG:
@@ -1003,14 +1095,14 @@ Interpreter::getInstructionPreProcessingInfo(Uint32 *op,
   case WRITE_UINT32_REG_TO_MEM:
   case WRITE_INT64_REG_TO_MEM:
 
-  case (READ_UINT8_MEM_TO_REG + OVERFLOW_OPCODE):
-  case (READ_UINT16_MEM_TO_REG + OVERFLOW_OPCODE):
-  case (READ_UINT32_MEM_TO_REG + OVERFLOW_OPCODE):
-  case (READ_INT64_MEM_TO_REG + OVERFLOW_OPCODE):
-  case (WRITE_UINT8_REG_TO_MEM + OVERFLOW_OPCODE):
-  case (WRITE_UINT16_REG_TO_MEM + OVERFLOW_OPCODE):
-  case (WRITE_UINT32_REG_TO_MEM + OVERFLOW_OPCODE):
-  case (WRITE_INT64_REG_TO_MEM + OVERFLOW_OPCODE):
+  case READ_UINT8_REG_TO_REG:
+  case READ_UINT16_REG_TO_REG:
+  case READ_UINT32_REG_TO_REG:
+  case READ_INT64_REG_TO_REG:
+  case WRITE_UINT8_REG_TO_REG:
+  case WRITE_UINT16_REG_TO_REG:
+  case WRITE_UINT32_REG_TO_REG:
+  case WRITE_INT64_REG_TO_REG:
     return op + 1;
   case BRANCH:
   case BRANCH_REG_EQ_NULL:
@@ -1023,12 +1115,12 @@ Interpreter::getInstructionPreProcessingInfo(Uint32 *op,
   case BRANCH_GT_REG_REG:
   case BRANCH_GE_REG_REG:
 
-  case (BRANCH_EQ_REG_REG + OVERFLOW_OPCODE):
-  case (BRANCH_NE_REG_REG + OVERFLOW_OPCODE):
-  case (BRANCH_LT_REG_REG + OVERFLOW_OPCODE):
-  case (BRANCH_LE_REG_REG + OVERFLOW_OPCODE):
-  case (BRANCH_GT_REG_REG + OVERFLOW_OPCODE):
-  case (BRANCH_GE_REG_REG + OVERFLOW_OPCODE):
+  case BRANCH_EQ_REG_CONST:
+  case BRANCH_NE_REG_CONST:
+  case BRANCH_LT_REG_CONST:
+  case BRANCH_LE_REG_CONST:
+  case BRANCH_GT_REG_CONST:
+  case BRANCH_GE_REG_CONST:
     processing= LABEL_ADDRESS_REPLACEMENT;
     return op + 1;
   case BRANCH_ATTR_OP_ARG:
@@ -1062,12 +1154,19 @@ Interpreter::getInstructionPreProcessingInfo(Uint32 *op,
   case EXIT_OK_LAST:
   case EXIT_REFUSE:
     return op + 1;
+  case STR_TO_INT64:
+  case INT64_TO_STR:
+    return op + 1;
   case CALL:
     processing= SUB_ADDRESS_REPLACEMENT;
     return op + 1;
   case RETURN:
     return op + 1;
-
+  case SPECIAL_INSTR:
+  {
+    /* Prepared for future extensions of interpreter instructions */
+    return op + 1;
+  }
   default:
     return nullptr;
   }

@@ -4685,7 +4685,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case (Interpreter::LOAD_CONST_MEM + OVERFLOW_OPCODE):
+      case Interpreter::WRITE_INTERPRETER_OUTPUT:
       {
         /**
          * Write content of a register to an output register.
@@ -4758,7 +4758,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 #endif
         break;
       }
-      case (Interpreter::CONVERT_SIZE + OVERFLOW_OPCODE):
+      case Interpreter::WRITE_SIZE_MEM:
       {
         /**
          * theRegister contains the memory offset of the two bytes
@@ -4861,8 +4861,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	* (Int64*)(TregMemBuffer+theRegister+2)= value;
         break;
       }
-
-      case (Interpreter::READ_UINT8_MEM_TO_REG + OVERFLOW_OPCODE):
+      case Interpreter::READ_UINT8_REG_TO_REG:
       {
         jamDebug();
 	Uint32 memoryOffsetType= TregMemBuffer[theRegister];
@@ -4882,7 +4881,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	TregMemBuffer[destRegister]= NOT_NULL_INDICATOR;
         break;
       }
-      case (Interpreter::READ_UINT16_MEM_TO_REG + OVERFLOW_OPCODE):
+      case Interpreter::READ_UINT16_REG_TO_REG:
       {
         jamDebug();
 	Uint32 memoryOffsetType= TregMemBuffer[theRegister];
@@ -4903,7 +4902,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	TregMemBuffer[destRegister]= NOT_NULL_INDICATOR;
         break;
       }
-      case (Interpreter::READ_UINT32_MEM_TO_REG + OVERFLOW_OPCODE):
+      case Interpreter::READ_UINT32_REG_TO_REG:
       {
         jamDebug();
 	Uint32 memoryOffsetType= TregMemBuffer[theRegister];
@@ -4924,7 +4923,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	TregMemBuffer[destRegister]= NOT_NULL_INDICATOR;
         break;
       }
-      case (Interpreter::READ_INT64_MEM_TO_REG + OVERFLOW_OPCODE):
+      case Interpreter::READ_INT64_REG_TO_REG:
       {
         jamDebug();
 	Uint32 memoryOffsetType= TregMemBuffer[theRegister];
@@ -5020,8 +5019,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         memcpy(&TheapMemoryChar[memoryOffset], &Tvalue, 8);
         break;
       }
-
-      case (Interpreter::WRITE_UINT8_REG_TO_MEM + OVERFLOW_OPCODE):
+      case Interpreter::WRITE_UINT8_REG_TO_REG:
       {
         jamDebug();
         Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
@@ -5043,7 +5041,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         memcpy(&TheapMemoryChar[memoryOffset], &val, 1);
         break;
       }
-      case (Interpreter::WRITE_UINT16_REG_TO_MEM + OVERFLOW_OPCODE):
+      case Interpreter::WRITE_UINT16_REG_TO_REG:
       {
         jamDebug();
         Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
@@ -5065,7 +5063,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         memcpy(&TheapMemoryChar[memoryOffset], &val, 2);
         break;
       }
-      case (Interpreter::WRITE_UINT32_REG_TO_MEM + OVERFLOW_OPCODE):
+      case Interpreter::WRITE_UINT32_REG_TO_REG:
       {
         jamDebug();
         Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
@@ -5087,7 +5085,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         memcpy(&TheapMemoryChar[memoryOffset], &val, 4);
         break;
       }
-      case (Interpreter::WRITE_INT64_REG_TO_MEM + OVERFLOW_OPCODE):
+      case Interpreter::WRITE_INT64_REG_TO_REG:
       {
         jamDebug();
         Uint32 registerOffset = Interpreter::getReg2(theInstruction) << 2;
@@ -5182,7 +5180,73 @@ int Dbtup::interpreterNextLab(Signal* signal,
         TprogramCounter += words;
 	break;
       }
-      case Interpreter::ADD_CONST_REG_TO_REG:
+      case Interpreter::STR_TO_INT64:
+      {
+        Uint32 offsetType= TregMemBuffer[theRegister];
+        Uint32 sizeReg = Interpreter::getReg2(theInstruction) << 2;
+        Uint32 destValReg = Interpreter::getReg3(theInstruction) << 2;
+        Uint32 sizeType= TregMemBuffer[sizeReg];
+        Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+        Int64 size = * (Int64*)(TregMemBuffer + sizeReg + 2);
+        if (unlikely((offsetType == NULL_INDICATOR) ||
+                     (sizeType == NULL_INDICATOR)))
+        {
+          return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+        }
+        if (unlikely(size > MAX_LONG_LONG_STRING))
+        {
+          return TUPKEY_abort(req_struct, ZLONG_LONG_STRING_TOO_LONG);
+        }
+        if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - size) ||
+                     (memoryOffset < 0)))
+        {
+          return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+        }
+        {
+          char *end_ptr = nullptr;
+          Int64 val = strtoll(&TheapMemoryChar[memoryOffset],
+                              &end_ptr,
+                              10);
+          if (unlikely(errno == ERANGE || end_ptr != nullptr))
+          {
+            return TUPKEY_abort(req_struct, ZINVALID_LONG_LONG_STRING);
+          }
+          * (Int64*)(TregMemBuffer+destValReg + 2)= val;
+          TregMemBuffer[destValReg] = NOT_NULL_INDICATOR;
+        }
+        break;
+      }
+      case Interpreter::INT64_TO_STR:
+      {
+        Uint32 offsetType= TregMemBuffer[theRegister];
+        Uint32 valueReg = Interpreter::getReg2(theInstruction) << 2;
+        Uint32 destSizeReg = Interpreter::getReg3(theInstruction) << 2;
+        Uint32 valueType= TregMemBuffer[valueReg];
+        Int64 memOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+        Int64 value = * (Int64*)(TregMemBuffer + valueReg + 2);
+        if (unlikely((offsetType == NULL_INDICATOR) ||
+                     (valueType == NULL_INDICATOR)))
+        {
+          return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+        }
+        if (unlikely(memOffset > (MAX_HEAP_OFFSET - MAX_LONG_LONG_STRING) ||
+                     (memOffset < 0)))
+        {
+          return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+        }
+        int size = snprintf(&TheapMemoryChar[memOffset],
+                            MAX_LONG_LONG_STRING,
+                            "%lld",
+                            value);
+        if (size <= 0)
+        {
+          return TUPKEY_abort(req_struct, ZCONVERT_LONG_LONG_TO_STRING_ERROR);
+        }
+        * (Int64*)(TregMemBuffer+destSizeReg + 2)= size;
+        TregMemBuffer[destSizeReg] = NOT_NULL_INDICATOR;
+        break;
+      }
+      case Interpreter::ADD_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5233,7 +5297,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::SUB_CONST_REG_TO_REG:
+      case Interpreter::SUB_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5284,7 +5348,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::LSHIFT_CONST_REG_TO_REG:
+      case Interpreter::LSHIFT_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5338,7 +5402,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::RSHIFT_CONST_REG_TO_REG:
+      case Interpreter::RSHIFT_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5392,7 +5456,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::MUL_CONST_REG_TO_REG:
+      case Interpreter::MUL_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5432,7 +5496,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::DIV_CONST_REG_TO_REG:
+      case Interpreter::DIV_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5486,7 +5550,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::AND_CONST_REG_TO_REG:
+      case Interpreter::AND_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5526,7 +5590,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::OR_CONST_REG_TO_REG:
+      case Interpreter::OR_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5566,7 +5630,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::XOR_CONST_REG_TO_REG:
+      case Interpreter::XOR_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5606,7 +5670,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case Interpreter::MOD_CONST_REG_TO_REG:
+      case Interpreter::MOD_REG_CONST:
       {
 	jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5838,7 +5902,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
          }
          break;
        }
-      case (Interpreter::BRANCH_EQ_REG_REG + OVERFLOW_OPCODE):
+      case Interpreter::BRANCH_EQ_REG_CONST:
       {
         jamDebug();
         Uint32 TleftType= TregMemBuffer[theRegister];
@@ -5858,7 +5922,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case (Interpreter::BRANCH_NE_REG_REG + OVERFLOW_OPCODE):
+      case Interpreter::BRANCH_NE_REG_CONST:
       {
         Uint32 TleftType= TregMemBuffer[theRegister];
         Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
@@ -5877,7 +5941,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case (Interpreter::BRANCH_LT_REG_REG + OVERFLOW_OPCODE):
+      case Interpreter::BRANCH_LT_REG_CONST:
       {
         Uint32 TleftType= TregMemBuffer[theRegister];
         Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
@@ -5896,7 +5960,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case (Interpreter::BRANCH_LE_REG_REG + OVERFLOW_OPCODE):
+      case Interpreter::BRANCH_LE_REG_CONST:
       {
         Uint32 TleftType= TregMemBuffer[theRegister];
         Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
@@ -5915,7 +5979,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case (Interpreter::BRANCH_GT_REG_REG + OVERFLOW_OPCODE):
+      case Interpreter::BRANCH_GT_REG_CONST:
       {
         Uint32 TleftType= TregMemBuffer[theRegister];
         Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
@@ -5934,7 +5998,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
         }
         break;
       }
-      case (Interpreter::BRANCH_GE_REG_REG + OVERFLOW_OPCODE):
+      case Interpreter::BRANCH_GE_REG_CONST:
       {
         Uint32 TleftType= TregMemBuffer[theRegister];
         Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
@@ -6396,72 +6460,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
         Uint32 extended_instruction = theInstruction >> 16;
         switch (extended_instruction)
         {
-        case Interpreter::SPC_STR_TO_INT64:
-        {
-          Uint32 offsetType= TregMemBuffer[theRegister];
-          Uint32 sizeReg = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 destValReg = Interpreter::getReg3(theInstruction) << 2;
-          Uint32 sizeType= TregMemBuffer[sizeReg];
-	  Int64 memoryOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-	  Int64 size = * (Int64*)(TregMemBuffer + sizeReg + 2);
-          if (unlikely((offsetType == NULL_INDICATOR) ||
-                       (sizeType == NULL_INDICATOR)))
-          {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(size > MAX_LONG_LONG_STRING))
-          {
-            return TUPKEY_abort(req_struct, ZLONG_LONG_STRING_TOO_LONG);
-          }
-          if (unlikely(memoryOffset > (MAX_HEAP_OFFSET - size) ||
-                       (memoryOffset < 0)))
-          {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          {
-            char *end_ptr = nullptr;
-            Int64 val = strtoll(&TheapMemoryChar[memoryOffset],
-                                &end_ptr,
-                                10);
-            if (unlikely(errno == ERANGE || end_ptr != nullptr))
-            {
-              return TUPKEY_abort(req_struct, ZINVALID_LONG_LONG_STRING);
-            }
-	    * (Int64*)(TregMemBuffer+destValReg + 2)= val;
-	    TregMemBuffer[destValReg] = NOT_NULL_INDICATOR;
-          }
-          break;
-        }
-        case Interpreter::SPC_INT64_TO_STR:
-        {
-          Uint32 offsetType= TregMemBuffer[theRegister];
-          Uint32 valueReg = Interpreter::getReg2(theInstruction) << 2;
-          Uint32 destSizeReg = Interpreter::getReg3(theInstruction) << 2;
-          Uint32 valueType= TregMemBuffer[valueReg];
-	  Int64 memOffset = * (Int64*)(TregMemBuffer + theRegister + 2);
-	  Int64 value = * (Int64*)(TregMemBuffer + valueReg + 2);
-          if (unlikely((offsetType == NULL_INDICATOR) ||
-                       (valueType == NULL_INDICATOR)))
-          {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
-          if (unlikely(memOffset > (MAX_HEAP_OFFSET - MAX_LONG_LONG_STRING) ||
-                       (memOffset < 0)))
-          {
-            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
-          }
-          int size = snprintf(&TheapMemoryChar[memOffset],
-                              MAX_LONG_LONG_STRING,
-                              "%lld",
-                              value);
-          if (size <= 0)
-          {
-            return TUPKEY_abort(req_struct, ZCONVERT_LONG_LONG_TO_STRING_ERROR);
-          }
-	  * (Int64*)(TregMemBuffer+destSizeReg + 2)= size;
-	  TregMemBuffer[destSizeReg] = NOT_NULL_INDICATOR;
-          break;
-        }
         default:
         {
 	  return TUPKEY_abort(req_struct, ZNO_INSTRUCTION_ERROR);
