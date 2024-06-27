@@ -13523,15 +13523,12 @@ Dbdict::createIndex_parse(Signal* signal, bool master,
       jam();
       bits |= TableRecord::TR_UseVarSizedDiskData;
     }
+    DEB_HASH(("6: dict_tab(%u) HashFunctionFlag: %u",
+              impl_req->tableId, tableDesc.HashFunctionFlag));
     if (tableDesc.HashFunctionFlag)
     {
       jam();
       bits |= TableRecord::TR_HashFunction;
-      DEB_HASH(("6: dict_tab(%u) HashFunctionFlag: %u",
-                impl_req->tableId, 1));
-    } else {
-      DEB_HASH(("6: dict_tab(%u) HashFunctionFlag: %u",
-                impl_req->tableId, 0));
     }
     if (tableDesc.ReadBackupFlag)
     {
@@ -13569,6 +13566,28 @@ Dbdict::createIndex_parse(Signal* signal, bool master,
       setError(error, err, __LINE__);
       return;
     }
+  }
+
+  // Due to a bug, it is possible that some versions of ndbapi (for example
+  // RonDB 22.10.2) can send the wrong HashFunction flag when creating an index.
+  // Here, we detect and correct it. The hash function flag must always match
+  // that of the primary table, so we will always able to determine the correct
+  // value here.
+  if ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) == 0 &&
+      (bits & TableRecord::TR_HashFunction) != 0)
+  {
+    jam();
+    bits &= ~Uint32(TableRecord::TR_HashFunction);
+    DEB_HASH(("Removed HashFunctionFlag from index creation req (%u) since the primary table does not have it.",
+              impl_req->tableId));
+  }
+  if ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0 &&
+      (bits & TableRecord::TR_HashFunction) == 0)
+  {
+    jam();
+    bits |= TableRecord::TR_HashFunction;
+    DEB_HASH(("Added HashFunctionFlag to index creation req (%u) since the primary table has it.",
+              impl_req->tableId));
   }
 
   // check index type and set more properties
