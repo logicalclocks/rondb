@@ -859,6 +859,7 @@ ErrorBundle ErrorCodes[] = {
   { 4562, DMEC, AE, "Bad register, only register 0-7 exists" },
   { 4563, DMEC, AE, "Bad output index, only index 0-15 exists" },
   { 4564, DMEC, AE, "Bad constant, only 0-63 allowed in branch instructions" },
+  { 4565, DMEC, AE, "Bad label offset in branch instruction" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },

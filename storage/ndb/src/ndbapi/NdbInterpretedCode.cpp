@@ -2199,7 +2199,7 @@ NdbInterpretedCode::finalise()
       
       if (labelOffset >= m_instructions_length)
       {
-        m_error.code= 4517; // Bad label in branch instruction
+        m_error.code= 4565; // Bad label in branch instruction
         return -1;
       }
       
