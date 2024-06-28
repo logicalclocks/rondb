@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -332,7 +333,10 @@ private:
   int insert_open_bound(Uint32*& firstWordOfBound);
 
   int equal_impl(const NdbColumnImpl*, const char*) override;
-  NdbRecAttr* getValue_impl(const NdbColumnImpl*, char*) override;
+  NdbRecAttr* getValue_impl(const NdbColumnImpl*,
+                            char*,
+                            Uint32 aStartPos = 0,
+                            Uint32 aSize = 0) override;
 
   int getDistKeyFromRange(const NdbRecord* key_record,
                           const NdbRecord* result_record,

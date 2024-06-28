@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -109,6 +110,14 @@ public:
    * 
    */
   Uint32 get_size_in_bytes() const { return m_size_in_bytes; }
+
+  /**
+   * Get extra Attrinfo for partial reads
+   */
+  Uint32 getPartialReadAI() const
+  {
+    return (theStartPos + (m_size_in_bytes << 16));
+  }
 
   /** @} *********************************************************************/
   /** 
@@ -286,21 +295,37 @@ private:
   void next(NdbRecAttr* aRecAttr);
   NdbRecAttr* next();
 
-  int setup(const class NdbDictionary::Column* col, char* aValue);
-  int setup(const class NdbColumnImpl* anAttrInfo, char* aValue);
-  int setup(Uint32 byteSize, char* aValue);
                                 /* Set up attributes and buffers        */
+  int setup(const class NdbDictionary::Column* col,
+            char* aValue,
+            Uint32 aStartPos = 0,
+            Uint32 aSize = 0);
+  int setup(const class NdbColumnImpl* anAttrInfo,
+            char* aValue,
+            Uint32 aStartPos = 0,
+            Uint32 aSize = 0);
+  int setup(Uint32 byteSize, char* aValue);
 
-  Uint64        theStorage[4];  /* The data storage here if <= 32 bytes */
-  Uint64*       theStorageX;    /* The data storage here if >  32 bytes */
-  char*         theValue;       /* The data storage in the application  */
-  void*         theRef;         /* Pointer to one of above              */
+  const NdbDictionary::Column* m_column;
+
+  Uint64        theStorage[2];  /* The data storage here if <= 16 bytes */
+  Uint64*       theRef;         /* Pointer to the data in the attribute */
 
   NdbRecAttr*   theNext;        /* Next pointer                         */
+
   Uint32        theAttrId;      /* The attribute id                     */
-  
-  Int32 m_size_in_bytes;
-  const NdbDictionary::Column* m_column;
+  Int32         m_size_in_bytes;
+
+  Int32        theStartPos;    /* The starting position of the read    */
+
+  enum MemorySource
+  {
+    NOT_INITIALISED = 0,
+    INT_STORAGE = 1,
+    INT_MALLOC = 2,
+    EXT_MALLOC = 3
+  };
+  Uint32        theMemorySource;
 
   // not-NULL means skip length bytes and store their value here
   Uint16* m_getVarValue;
@@ -385,22 +410,31 @@ inline
 void
 NdbRecAttr::release()
 {
-  if (theStorageX != 0) {
-    delete [] theStorageX;
-    theStorageX = 0;
+  switch (theMemorySource)
+  {
+    case INT_MALLOC:
+    {
+      delete [] theRef;
+      theRef = nullptr;
+    }
+    default:
+      break;
   }
+  theMemorySource = NOT_INITIALISED;
 }
 
 inline
 void
 NdbRecAttr::init()
 {
-  theStorageX = 0;
-  theValue = 0;
-  theRef = 0;
-  theNext = 0;
+  m_column = nullptr;
+  theRef = nullptr;
+  theNext = nullptr;
+  m_getVarValue = nullptr;
+  m_size_in_bytes = 0;
+  theMemorySource = NOT_INITIALISED;
+  theStartPos = 0;
   theAttrId = 0xFFFF;
-  m_getVarValue = 0;
 }
 
 inline

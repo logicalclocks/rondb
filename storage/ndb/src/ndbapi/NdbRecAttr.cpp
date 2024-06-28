@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,7 +33,6 @@
 
 NdbRecAttr::NdbRecAttr(Ndb*)
 {
-  theStorageX = nullptr;
   init();
 }
 
@@ -42,61 +42,67 @@ NdbRecAttr::~NdbRecAttr()
 }
 
 int
-NdbRecAttr::setup(const class NdbDictionary::Column* col, char* aValue)
+NdbRecAttr::setup(const class NdbDictionary::Column* col,
+                  char* aValue,
+                  Uint32 aStartPos,
+                  Uint32 aSize)
 {
-  return setup(&(col->m_impl), aValue);
+  return setup(&(col->m_impl),
+               aValue,
+               aStartPos,
+               aSize);
 }
 
 int
-NdbRecAttr::setup(const NdbColumnImpl* anAttrInfo, char* aValue)
+NdbRecAttr::setup(const NdbColumnImpl* anAttrInfo,
+                  char* aValue,
+                  Uint32 aStartPos,
+                  Uint32 aSize)
 {
+  release();
   Uint32 tAttrSize = anAttrInfo->m_attrSize;
   Uint32 tArraySize = anAttrInfo->m_arraySize;
-  Uint32 tAttrByteSize = tAttrSize * tArraySize;
+  Uint32 byteSize = tAttrSize * tArraySize;
   
   m_column = anAttrInfo;
 
   theAttrId = anAttrInfo->m_attrId;
-  m_size_in_bytes = -1; // UNDEFINED
+  theStartPos = aStartPos;
+  m_size_in_bytes = aSize;
 
-  return setup(tAttrByteSize, aValue);
-}
-
-int 
-NdbRecAttr::setup(Uint32 byteSize, char* aValue)
-{
-  theValue = aValue;
   m_getVarValue = nullptr; // set in getVarValue() only
 
-  delete[] theStorageX;
-  theStorageX = nullptr;
-  
+  return setup(byteSize, aValue);
+}
+
+int
+NdbRecAttr::setup(Uint32 byteSize, char* aValue)
+{
   // Check if application provided pointer should be used
   // NOTE! Neither pointers alignment or length of attribute matters since
   // memcpy() will be used to copy received data there.
   if (aValue != nullptr) {
-    theRef = aValue;
+    theRef = (Uint64*)aValue;
+    theMemorySource = EXT_MALLOC;
     return 0;
   }
 
-  if (byteSize <= 32) {
+  if (byteSize <= 16) {
     theStorage[0] = 0;
     theStorage[1] = 0;
-    theStorage[2] = 0;
-    theStorage[3] = 0;
     theRef = theStorage;
+    theMemorySource = INT_STORAGE;
     return 0;
   }
   Uint32 tSize = (byteSize + 7) >> 3;
   Uint64* tRef = new Uint64[tSize];
   if (tRef != nullptr) {
-    for (Uint32 i = 0; i < tSize; i++) {
-      tRef[i] = 0;
-    }
-    theStorageX = tRef;
+    memset(tRef, 0, 8 * tSize);
     theRef = tRef;
+    theMemorySource = INT_MALLOC;
     return 0;
   }
+  init();
   errno= ENOMEM;
   return -1;
 }
@@ -113,22 +119,21 @@ NdbRecAttr::clone() const {
   ret->theAttrId = theAttrId;
   ret->m_size_in_bytes = m_size_in_bytes;
   ret->m_column = m_column;
+  ret->theStartPos = theStartPos;
   
   Uint32 n = m_size_in_bytes;
-  if(n <= 32){
-    ret->theRef = (char*)&ret->theStorage[0];
-    ret->theStorageX = nullptr;
-    ret->theValue = nullptr;
+  if(n <= 16){
+    ret->theRef = ret->theStorage;
+    ret->theMemorySource = INT_STORAGE;
   } else {
-    ret->theStorageX = new Uint64[((n + 7) >> 3)];
-    if (ret->theStorageX == nullptr)
+    ret->theRef = new Uint64[((n + 7) >> 3)];
+    if (ret->theRef == nullptr)
     {
       delete ret;
       errno = ENOMEM;
       return nullptr;
     }
-    ret->theRef = (char*)ret->theStorageX;    
-    ret->theValue = nullptr;
+    ret->theMemorySource = INT_MALLOC;
   }
   memcpy(ret->theRef, theRef, n);
   return ret;

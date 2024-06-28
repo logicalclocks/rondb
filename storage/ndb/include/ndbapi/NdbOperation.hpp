@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -384,13 +385,26 @@ public:
    *                    will be returned in this parameter.<br>
    *                    If NULL, then the attribute value will only
    *                    be stored in the returned NdbRecAttr object.
+   * @param aStartPos   When reading parts of a variable sized column
+   *                    one can specify the start position
+   * @param aSize       Read part and this specifies size to read
+   *
    * @return            An NdbRecAttr object to hold the value of
    *                    the attribute, or a NULL pointer
    *                    (indicating error).
    */
-  NdbRecAttr* getValue(const char* anAttrName, char* aValue = 0);
-  NdbRecAttr* getValue(Uint32 anAttrId, char* aValue = 0);
-  NdbRecAttr* getValue(const NdbDictionary::Column*, char* val = 0);
+  NdbRecAttr* getValue(const char* anAttrName,
+                       char* aValue = 0,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
+  NdbRecAttr* getValue(Uint32 anAttrId,
+                       char* aValue = 0,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
+  NdbRecAttr* getValue(const NdbDictionary::Column*,
+                       char* val = 0,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
 
   /**
    * Define an attribute to set or update in query.
@@ -1005,9 +1019,16 @@ public:
    */
   struct GetValueSpec
   {
+    GetValueSpec()
+    {
+      m_startPos = 0;
+      m_size = 0;
+    }
     const NdbDictionary::Column *column;
     void *appStorage;
     NdbRecAttr *recAttr;
+    Uint32 m_startPos;
+    Uint32 m_size;
   };
 
   /* Specification of an extra value to set
@@ -1338,10 +1359,18 @@ protected:
 ******************************************************************************/
 
   virtual int equal_impl(const NdbColumnImpl*,const char* aValue);
-  virtual NdbRecAttr* getValue_impl(const NdbColumnImpl*, char* aValue = 0);
-  NdbRecAttr* getValue_NdbRecord(const NdbColumnImpl* tAttrInfo, char* aValue);
+  virtual NdbRecAttr* getValue_impl(const NdbColumnImpl*,
+                                    char* aValue = 0,
+                                    Uint32 aStartPos = 0,
+                                    Uint32 aSize = 0);
+  NdbRecAttr* getValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                 char* aValue,
+                                 Uint32 aStartPos = 0,
+                                 Uint32 aSize = 0);
   NdbRecAttr* getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
-                                      char* aValue);
+                                      char* aValue,
+                                      Uint32 aStartPos = 0,
+                                      Uint32 aSize = 0);
   int setValue(const NdbColumnImpl* anAttrObject, const char* aValue);
   NdbBlob* getBlobHandle(NdbTransaction* aCon, const NdbColumnImpl* anAttrObject);
   NdbBlob* getBlobHandle(NdbTransaction* aCon, const NdbColumnImpl* anAttrObject) const;

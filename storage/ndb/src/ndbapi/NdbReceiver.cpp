@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -447,10 +448,16 @@ NdbReceiver::release()
 }
   
 NdbRecAttr *
-NdbReceiver::getValue(const NdbColumnImpl* tAttrInfo, char * user_dst_ptr)
+NdbReceiver::getValue(const NdbColumnImpl* tAttrInfo,
+                      char * user_dst_ptr,
+                      Uint32 aStartPos,
+                      Uint32 aSize)
 {
   NdbRecAttr* tRecAttr = m_ndb->getRecAttr();
-  if(tRecAttr && !tRecAttr->setup(tAttrInfo, user_dst_ptr)){
+  if (tRecAttr && !tRecAttr->setup(tAttrInfo,
+                                   user_dst_ptr,
+                                   aStartPos,
+                                   aSize)){
     if (m_firstRecAttr == nullptr)
       m_firstRecAttr = tRecAttr;
     else
@@ -466,10 +473,16 @@ NdbReceiver::getValue(const NdbColumnImpl* tAttrInfo, char * user_dst_ptr)
 }
 
 NdbRecAttr *
-NdbReceiver::getFinalValue(const NdbColumnImpl* tAttrInfo, char * user_dst_ptr)
+NdbReceiver::getFinalValue(const NdbColumnImpl* tAttrInfo,
+                           char * user_dst_ptr,
+                           Uint32 aStartPos,
+                           Uint32 aSize)
 {
   NdbRecAttr* tRecAttr = m_ndb->getRecAttr();
-  if(tRecAttr && !tRecAttr->setup(tAttrInfo, user_dst_ptr)){
+  if(tRecAttr && !tRecAttr->setup(tAttrInfo,
+                                  user_dst_ptr,
+                                  aStartPos,
+                                  aSize)){
     if (m_firstFinalRecAttr == nullptr)
       m_firstFinalRecAttr = tRecAttr;
     else

@@ -1113,7 +1113,12 @@ NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr,
     const NdbRecAttr *ra= theReceiver.m_firstRecAttr;
     while (ra)
     {
-      res= insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
+      res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
+      Uint32 extraAI = ra->getPartialReadAI();
+      if (unlikely(res == 0 && extraAI != 0))
+      {
+        res = insertATTRINFOData_NdbRecord((const char*)&extraAI, 4);
+      }
       if(res)
         return res;
       ra= ra->next();
@@ -1146,6 +1151,11 @@ NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr,
       const NdbRecAttr *ra = theReceiver.m_firstRecAttr;
       while (ra) {
         res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
+        Uint32 extraAI = ra->getPartialReadAI();
+        if (unlikely(res == 0 && extraAI != 0))
+        {
+          res = insertATTRINFOData_NdbRecord((const char*)&extraAI, 4);
+        }
         if (res) return res;
         ra = ra->next();
       }
@@ -1419,13 +1429,20 @@ NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr,
       const NdbRecAttr *ra = theReceiver.m_firstFinalRecAttr;
       while (ra) {
         res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
-        if (res) return res;
-          ra = ra->next();
+        Uint32 extraAI = ra->getPartialReadAI();
+        if (unlikely(res == 0 && extraAI != 0))
+        {
+          res = insertATTRINFOData_NdbRecord((const char*)&extraAI, 4);
+        }
+        if (res)
+          return res;
+        ra = ra->next();
       }
-      Uint32 finalReadWords= theTotalCurrAI_Len - (AttrInfo::SectionSizeInfoLength + 
-                                                   attrinfo_section_sizes_ptr[0] +
-                                                   attrinfo_section_sizes_ptr[1] +
-                                                   attrinfo_section_sizes_ptr[2]);
+      Uint32 finalReadWords= theTotalCurrAI_Len -
+        (AttrInfo::SectionSizeInfoLength + 
+         attrinfo_section_sizes_ptr[0] +
+         attrinfo_section_sizes_ptr[1] +
+         attrinfo_section_sizes_ptr[2]);
       attrinfo_section_sizes_ptr[3] = finalReadWords;
     }
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -280,7 +280,9 @@ NdbScanOperation::handleScanOptions(const ScanOptions *options)
        */
       NdbRecAttr *pra=
         getValue_NdbRecord_scan(&NdbColumnImpl::getImpl(*pvalSpec->column),
-                                (char *) pvalSpec->appStorage);
+                                (char *) pvalSpec->appStorage,
+                                pvalSpec->m_startPos,
+                                pvalSpec->m_size);
         
       if (pra == nullptr)
       {
@@ -3009,7 +3011,9 @@ NdbScanOperation::getBlobHandle(Uint32 anAttrId)
  */
 NdbRecAttr*
 NdbScanOperation::getValue_NdbRecord_scan(const NdbColumnImpl* attrInfo,
-                                          char* aValue)
+                                          char* aValue,
+                                          Uint32 aStartPos,
+                                          Uint32 aSize)
 {
   DBUG_ENTER("NdbScanOperation::getValue_NdbRecord_scan");
   int res;
@@ -3021,12 +3025,25 @@ NdbScanOperation::getValue_NdbRecord_scan(const NdbColumnImpl* attrInfo,
     m_flags &= ~Uint8(OF_NO_DISK);
   }
 
+  Uint32 extraAI = (aStartPos + (aSize << 16));
   res= insertATTRINFOHdr_NdbRecord(attrInfo->m_attrId, 0);
+  if (unlikely(res == 0 && extraAI != 0))
+  {
+    if (unlikely((attrInfo->getType() !=
+                  NdbDictionary::Column::Longvarbinary) &&
+                  attrInfo->getType() !=
+                  NdbDictionary::Column::Varbinary))
+    {
+      setErrorCodeAbort(4566);
+      DBUG_RETURN(nullptr);
+    }
+    res= insertATTRINFOData_NdbRecord((const char*)&extraAI, 4);
+  }
   if (res==-1)
     DBUG_RETURN(NULL);
 
   theInitialReadSize= theTotalCurrAI_Len - AttrInfo::SectionSizeInfoLength;
-  ra= theReceiver.getValue(attrInfo, aValue);
+  ra= theReceiver.getValue(attrInfo, aValue, aStartPos, aSize);
   if (!ra)
   {
     setErrorCodeAbort(4000);
@@ -3046,7 +3063,9 @@ NdbScanOperation::getValue_NdbRecord_scan(const NdbColumnImpl* attrInfo,
  */
 NdbRecAttr*
 NdbScanOperation::getValue_NdbRecAttr_scan(const NdbColumnImpl* attrInfo,
-                                           char* aValue)
+                                           char* aValue,
+                                           Uint32 aStartPos,
+                                           Uint32 aSize)
 {
   NdbRecAttr *recAttr= nullptr;
 
@@ -3060,7 +3079,10 @@ NdbScanOperation::getValue_NdbRecAttr_scan(const NdbColumnImpl* attrInfo,
       m_flags &= ~Uint8(OF_NO_DISK);
     }
   
-    recAttr = theReceiver.getValue(attrInfo, aValue);
+    recAttr = theReceiver.getValue(attrInfo,
+                                   aValue,
+                                   aStartPos,
+                                   aSize);
     
     if (recAttr != nullptr)
       theErrorLine++;
@@ -3078,12 +3100,21 @@ NdbScanOperation::getValue_NdbRecAttr_scan(const NdbColumnImpl* attrInfo,
 }
 
 NdbRecAttr*
-NdbScanOperation::getValue_impl(const NdbColumnImpl *attrInfo, char *aValue)
+NdbScanOperation::getValue_impl(const NdbColumnImpl *attrInfo,
+                                char *aValue,
+                                Uint32 aStartPos,
+                                Uint32 aSize)
 {
   if (theStatus == UseNdbRecord)
-    return getValue_NdbRecord_scan(attrInfo, aValue);
+    return getValue_NdbRecord_scan(attrInfo,
+                                   aValue,
+                                   aStartPos,
+                                   aSize);
   else
-    return getValue_NdbRecAttr_scan(attrInfo, aValue);
+    return getValue_NdbRecAttr_scan(attrInfo,
+                                    aValue,
+                                    aStartPos,
+                                    aSize);
 }
 
 NdbIndexScanOperation::NdbIndexScanOperation(Ndb* aNdb)
@@ -3120,15 +3151,19 @@ NdbIndexScanOperation::equal_impl(const NdbColumnImpl* anAttrObject,
 }
 
 NdbRecAttr*
-NdbIndexScanOperation::getValue_impl(const NdbColumnImpl* attrInfo, 
-                                     char* aValue){
+NdbIndexScanOperation::getValue_impl(const NdbColumnImpl* attrInfo,
+                                     char* aValue,
+                                     Uint32 aStartPos,
+                                     Uint32 aSize){
   /* Defer to ScanOperation implementation */
   // TODO : IndexScans always fetch PK columns via their key NdbRecord
   // If the user also requests them, we should avoid fetching them 
   // twice.
-  return NdbScanOperation::getValue_impl(attrInfo, aValue);
+  return NdbScanOperation::getValue_impl(attrInfo,
+                                         aValue,
+                                         aStartPos,
+                                         aSize);
 }
-
 
 /* Helper for setBound called via the old Api.  
  * Key bound information is stored in the operation for later

@@ -294,10 +294,18 @@ public:
    *                     the attribute, or a NULL pointer 
    *                     (indicating error).
    */
-  NdbRecAttr* getValue(const char* anAttrName, char* resultBuffer = nullptr);
-  NdbRecAttr* getValue(Uint32 anAttrId, char* resultBuffer = nullptr);
+  NdbRecAttr* getValue(const char* anAttrName,
+                       char* resultBuffer = nullptr,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
+  NdbRecAttr* getValue(Uint32 anAttrId,
+                       char* resultBuffer = nullptr,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
   NdbRecAttr* getValue(const NdbDictionary::Column* column, 
-		       char* resultBuffer = nullptr);
+		       char* resultBuffer = nullptr,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
 
   /**
    * Retrieval of entire or partial rows may also be specified. For partial

@@ -126,9 +126,14 @@ private:
   /**
    * At setup
    */
-  class NdbRecAttr * getValue(const class NdbColumnImpl*, char * user_dst_ptr);
+  class NdbRecAttr * getValue(const class NdbColumnImpl*,
+                              char * user_dst_ptr,
+                              Uint32 aStartPos = 0,
+                              Uint32 aSize = 0);
   class NdbRecAttr * getFinalValue(const class NdbColumnImpl*,
-                                   char * user_dst_ptr);
+                                   char * user_dst_ptr,
+                                   Uint32 aStartPos = 0,
+                                   Uint32 aSize = 0);
   void getValues(const NdbRecord*, char*);
   void prepareSend();
 

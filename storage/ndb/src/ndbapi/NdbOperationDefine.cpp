@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -410,7 +411,10 @@ NdbOperation::setReadLockMode(LockMode lockMode)
  * Remark:        Define an attribute to retrieve in query.
  *****************************************************************************/
 NdbRecAttr*
-NdbOperation::getValue_impl(const NdbColumnImpl* tAttrInfo, char* aValue)
+NdbOperation::getValue_impl(const NdbColumnImpl* tAttrInfo,
+                            char* aValue,
+                            Uint32 aStartPos,
+                            Uint32 aSize)
 {
   NdbRecAttr* tRecAttr;
   if ((tAttrInfo != nullptr) &&
@@ -422,7 +426,10 @@ NdbOperation::getValue_impl(const NdbColumnImpl* tAttrInfo, char* aValue)
     if (theStatus != GetValue) {
       if (theStatus == UseNdbRecord)
         /* This path for extra GetValues for NdbRecord */
-        return getValue_NdbRecord(tAttrInfo, aValue);
+        return getValue_NdbRecord(tAttrInfo,
+                                  aValue,
+                                  aStartPos,
+                                  aSize);
       if (theInterpretIndicator == 1) {
 	if (theStatus == FinalGetValue) {
 	  ; // Simply continue with getValue
@@ -446,9 +453,27 @@ NdbOperation::getValue_impl(const NdbColumnImpl* tAttrInfo, char* aValue)
       }//if
     }//if
     AttributeHeader ah(tAttrInfo->m_attrId, 0);
-    if (insertATTRINFO(ah.m_value) != -1) {	
-      // Insert Attribute Id into ATTRINFO part. 
-      
+    // Insert Attribute Id into ATTRINFO part. 
+    int ret_code = insertATTRINFO(ah.m_value);
+    if (unlikely(ret_code == 0 && (aStartPos != 0 || aSize != 0)))
+    {
+      /**
+       * Add position and size for partial read
+       * Currently only supported for varbinary and long varbinary
+       * objects.
+       */
+      if (unlikely((tAttrInfo->getType() !=
+                    NdbDictionary::Column::Longvarbinary) &&
+                    tAttrInfo->getType() !=
+                    NdbDictionary::Column::Varbinary))
+      {
+	setErrorCodeAbort(4566);
+	return nullptr;
+      }
+      ret_code = insertATTRINFO(aStartPos + (aSize << 16));
+    }
+    if (likely(ret_code == 0))
+    {
       /************************************************************************
        * Get a Receive Attribute object and link it into the operation object.
        ***********************************************************************/
@@ -473,9 +498,21 @@ NdbOperation::getValue_impl(const NdbColumnImpl* tAttrInfo, char* aValue)
 }
 
 NdbRecAttr*
-NdbOperation::getValue_NdbRecord(const NdbColumnImpl* tAttrInfo, char* aValue)
+NdbOperation::getValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                 char* aValue,
+                                 Uint32 aStartPos,
+                                 Uint32 aSize)
 {
   NdbRecAttr* tRecAttr;
+
+  if (unlikely((tAttrInfo->getType() !=
+                  NdbDictionary::Column::Longvarbinary) &&
+                tAttrInfo->getType() !=
+                  NdbDictionary::Column::Varbinary))
+  {
+    setErrorCodeAbort(4566);
+    return nullptr;
+  }
 
   if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK)
   {
@@ -486,7 +523,10 @@ NdbOperation::getValue_NdbRecord(const NdbColumnImpl* tAttrInfo, char* aValue)
     For getValue with NdbRecord operations, we just allocate the NdbRecAttr,
     the signal data will be constructed later.
   */
-  if((tRecAttr = theReceiver.getValue(tAttrInfo, aValue)) != nullptr) {
+  if((tRecAttr = theReceiver.getValue(tAttrInfo,
+                                      aValue,
+                                      aStartPos,
+                                      aSize)) != nullptr) {
     theErrorLine++;
     return tRecAttr;
   } else {
@@ -497,9 +537,20 @@ NdbOperation::getValue_NdbRecord(const NdbColumnImpl* tAttrInfo, char* aValue)
 
 NdbRecAttr*
 NdbOperation::getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
-                                      char* aValue)
+                                      char* aValue,
+                                      Uint32 aStartPos,
+                                      Uint32 aSize)
 {
   NdbRecAttr* tRecAttr;
+
+  if (unlikely((tAttrInfo->getType() !=
+                  NdbDictionary::Column::Longvarbinary) &&
+                tAttrInfo->getType() !=
+                  NdbDictionary::Column::Varbinary))
+  {
+    setErrorCodeAbort(4566);
+    return nullptr;
+  }
 
   if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK)
   {
@@ -510,7 +561,10 @@ NdbOperation::getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
     For getValue with NdbRecord operations, we just allocate the NdbRecAttr,
     the signal data will be constructed later.
   */
-  if((tRecAttr = theReceiver.getFinalValue(tAttrInfo, aValue)) != nullptr) {
+  if((tRecAttr = theReceiver.getFinalValue(tAttrInfo,
+                                           aValue,
+                                           aStartPos,
+                                           aSize)) != nullptr) {
     theErrorLine++;
     return tRecAttr;
   } else {

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -532,9 +532,18 @@ protected:
                    NdbOperation::Type aType = NdbOperation::TableScan);
   ~NdbScanOperation() override;
 
-  NdbRecAttr* getValue_impl(const NdbColumnImpl*, char* aValue = 0) override;
-  NdbRecAttr* getValue_NdbRecord_scan(const NdbColumnImpl*, char* aValue);
-  NdbRecAttr* getValue_NdbRecAttr_scan(const NdbColumnImpl*, char* aValue);
+  NdbRecAttr* getValue_impl(const NdbColumnImpl*,
+                            char* aValue = 0,
+                            Uint32 aStartPos = 0,
+                            Uint32 aSize = 0) override;
+  NdbRecAttr* getValue_NdbRecord_scan(const NdbColumnImpl*,
+                                      char* aValue,
+                                      Uint32 aStartPos = 0,
+                                      Uint32 aSize = 0);
+  NdbRecAttr* getValue_NdbRecAttr_scan(const NdbColumnImpl*,
+                                       char* aValue,
+                                       Uint32 aStartPos = 0,
+                                       Uint32 aSize = 0);
 
   int handleScanGetValuesOldApi();
   int addInterpretedCode();
