@@ -2929,7 +2929,7 @@ int Dbtup::handleInsertReq(Signal* signal,
   /**
    * Send logMemory back to LQH for propagation to REDO log and replicas
    */
-  ndbrequire(req_struct->log_size == 0);
+  ndbrequire(req_struct->log_size != 0);
   if (unlikely(sendLogAttrinfo(signal,
                                req_struct,
                                regOperPtr.p) != 0))

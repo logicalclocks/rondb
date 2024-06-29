@@ -6748,13 +6748,9 @@ void Dblqh::execTUP_ATTRINFO(Signal* signal)
   /* If we have stored ATTRINFO that we sent to TUP, 
    * free it now
    */
-  if (regTcPtr->attrInfoIVal != RNIL)
+  if (likely(regTcPtr->attrInfoIVal != RNIL))
   {
-    /* We should be expecting to receive attrInfo back */
-    ndbassert( !(regTcPtr->m_flags & 
-                 TcConnectionrec::OP_SAVEATTRINFO) );
     releaseSection( regTcPtr->attrInfoIVal );
-    regTcPtr->attrInfoIVal= RNIL;
   }
 
   /* Store reference to ATTRINFO from TUP */
