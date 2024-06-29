@@ -444,9 +444,13 @@ public:
    * @return               -1 if unsuccessful.
    */
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
-  int  setValue(const char* anAttrName, const char* aValue, Uint32 len);
+  int  setValue(const char* anAttrName,
+                const char* aValue,
+                Uint32 len);
 #endif
-  int  setValue(const char* anAttrName, const char* aValue);
+  int  setValue(const char* anAttrName,
+                const char* aValue,
+                bool append_flag = false);
   int  setValue(const char* anAttrName, Int32 aValue);
   int  setValue(const char* anAttrName, Uint32 aValue);
   int  setValue(const char* anAttrName, Int64 aValue);
@@ -459,9 +463,13 @@ public:
 #endif
 
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
-  int  setValue(Uint32 anAttrId, const char* aValue, Uint32 len);
+  int  setValue(Uint32 anAttrId,
+                const char* aValue,
+                Uint32 len);
 #endif
-  int  setValue(Uint32 anAttrId, const char* aValue);
+  int  setValue(Uint32 anAttrId,
+                const char* aValue,
+                bool append_flag = false);
   int  setValue(Uint32 anAttrId, Int32 aValue);
   int  setValue(Uint32 anAttrId, Uint32 aValue);
   int  setValue(Uint32 anAttrId, Int64 aValue);
@@ -1045,8 +1053,13 @@ public:
    */
   struct SetValueSpec
   {
+    SetValueSpec()
+    {
+      m_append_flag = false;
+    }
     const NdbDictionary::Column *column;
     const void * value;
+    bool m_append_flag;
   };
 
   /*
@@ -1371,7 +1384,9 @@ protected:
                                       char* aValue,
                                       Uint32 aStartPos = 0,
                                       Uint32 aSize = 0);
-  int setValue(const NdbColumnImpl* anAttrObject, const char* aValue);
+  int setValue(const NdbColumnImpl* anAttrObject,
+               const char* aValue,
+               bool append_flag = false);
   NdbBlob* getBlobHandle(NdbTransaction* aCon, const NdbColumnImpl* anAttrObject);
   NdbBlob* getBlobHandle(NdbTransaction* aCon, const NdbColumnImpl* anAttrObject) const;
   int incValue(const NdbColumnImpl* anAttrObject, Uint32 aValue);
@@ -1839,11 +1854,12 @@ NdbOperation::equal(Uint32 anAttrId, Uint64 aPar)
 
 inline
 int
-NdbOperation::setValue(const char* anAttrName, const char* aValue,
+NdbOperation::setValue(const char* anAttrName,
+                       const char* aValue,
                        Uint32 len)
 {
   (void)len;   // unused
-  return setValue(anAttrName, aValue);
+  return setValue(anAttrName, aValue, false);
 }
 
 inline
@@ -1890,11 +1906,12 @@ NdbOperation::setValue(const char* anAttrName, double aPar)
 
 inline
 int
-NdbOperation::setValue(Uint32 anAttrId, const char* aValue,
+NdbOperation::setValue(Uint32 anAttrId,
+                       const char* aValue,
                        Uint32 len)
 {
   (void)len;   // unused
-  return setValue(anAttrId, aValue);
+  return setValue(anAttrId, aValue, false);
 }
 
 inline

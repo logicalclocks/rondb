@@ -861,6 +861,8 @@ ErrorBundle ErrorCodes[] = {
   { 4564, DMEC, AE, "Bad constant, only 0-63 allowed in branch instructions" },
   { 4565, DMEC, AE, "Bad label offset in branch instruction" },
   { 4566, DMEC, AE, "Using partial read is only accessible for varbinary and longvarbinary columns" },
+  { 4566, DMEC, AE, "Using partial read is only accessible for varbinary and longvarbinary columns" },
+  { 4567, DMEC, AE, "Using append in setValue is only accessible for varbinary and longvarbinary columns" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },

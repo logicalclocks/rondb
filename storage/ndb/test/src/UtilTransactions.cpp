@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -346,10 +346,8 @@ UtilTransactions::addRowToInsert(Ndb* pNdb,
   // Set all attributes
   for (int a = 0; a < tab.getNoOfColumns(); a++){
     NdbRecAttr* r =  row.attributeStore(a);
-    int	 sz = r->get_size_in_bytes();
     if (pInsOp->setValue(tab.getColumn(a)->getName(),
-			 r->aRef(),
-			 sz) != 0) {
+			 r->aRef()) != 0) {
       NDB_ERR(pInsTrans->getNdbError());
       return NDBT_FAILED;
     }

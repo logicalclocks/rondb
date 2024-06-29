@@ -1376,7 +1376,13 @@ NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr,
         }       
 
         // Add ATTRINFO
-        res= insertATTRINFOHdr_NdbRecord(extraCol->getAttrId(), length);
+        AttributeHeader ah = AttributeHeader(extraCol->getAttrId(), length);
+        if (unlikely(m_extraSetValues[i].m_append_flag))
+        {
+          ah.setPartialReadWriteFlag();
+        }
+        Uint32 ah_u32 = ah.m_value;
+        res= insertATTRINFOData_NdbRecord((const char*)&ah_u32, 4);
         if(res)
           return res;
 

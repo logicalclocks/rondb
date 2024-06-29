@@ -586,7 +586,8 @@ NdbOperation::getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
 ******************************************************************************/
 int
 NdbOperation::setValue( const NdbColumnImpl* tAttrInfo, 
-			const char* aValuePassed)
+			const char* aValuePassed,
+                        bool append_flag)
 {
   DBUG_ENTER("NdbOperation::setValue");
   DBUG_PRINT("enter", ("col: %s  op:%d  val: %p",
@@ -736,6 +737,18 @@ NdbOperation::setValue( const NdbColumnImpl* tAttrInfo,
   // Excluding bits in last word
   const Uint32 sizeInWords = sizeInBytes / 4;          
   AttributeHeader ah(tAttrId, sizeInBytes);
+  if (unlikely(append_flag))
+  {
+    if (unlikely((tAttrInfo->getType() !=
+                  NdbDictionary::Column::Longvarbinary) &&
+                  tAttrInfo->getType() !=
+                  NdbDictionary::Column::Varbinary))
+    {
+      setErrorCodeAbort(4567);
+      DBUG_RETURN(-1);
+    }
+    ah.setPartialReadWriteFlag();
+  }
   insertATTRINFO( ah.m_value );
 
   /***********************************************************************
@@ -1356,7 +1369,9 @@ NdbOperation::handleOperationOptions (const OperationType type,
 
         NdbRecAttr *pra=
           op->getValue_NdbRecord(&NdbColumnImpl::getImpl(*pvalSpec->column),
-                                 (char *) pvalSpec->appStorage);
+                                 (char *) pvalSpec->appStorage,
+                                 pvalSpec->m_startPos,
+                                 pvalSpec->m_size);
         
         if (pra == nullptr)
         {
@@ -1417,7 +1432,9 @@ NdbOperation::handleOperationOptions (const OperationType type,
         NdbRecAttr *pra=
           op->getFinalValue_NdbRecord(
             &NdbColumnImpl::getImpl(*pvalSpec->column),
-            (char *) pvalSpec->appStorage);
+            (char *) pvalSpec->appStorage,
+            pvalSpec->m_startPos,
+            pvalSpec->m_size);
         
         if (pra == nullptr)
         {
@@ -1492,7 +1509,16 @@ NdbOperation::handleOperationOptions (const OperationType type,
         {
           // Invalid usage of blob attribute
           return 4264;
-        }          
+        }
+        if (unlikely(opts->extraSetValues[i].m_append_flag))
+        {
+          if (unlikely(colType != NdbDictionary::Column::Longvarbinary) &&
+                      (colType == NdbDictionary::Column::Varbinary))
+          {
+            // Usage of append only on Varbinary and Longvarbinary columns
+            return 4567;
+          }
+        }
       }
 
       // Store details of extra set values for later

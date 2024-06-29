@@ -396,7 +396,9 @@ NdbOperation::equal(Uint32 anAttrId, const char* aValuePassed)
 }
 
 int
-NdbOperation::setValue(const char* anAttrName, const char* aValuePassed)
+NdbOperation::setValue(const char* anAttrName,
+                       const char* aValuePassed,
+                       bool append_flag)
 {
   const NdbColumnImpl* col = m_currentTable->getColumn(anAttrName);
   if (col == nullptr)
@@ -406,13 +408,15 @@ NdbOperation::setValue(const char* anAttrName, const char* aValuePassed)
   }
   else
   {
-    return setValue(col, aValuePassed);
+    return setValue(col, aValuePassed, append_flag);
   }
 }
 
 
 int
-NdbOperation::setValue(Uint32 anAttrId, const char* aValuePassed)
+NdbOperation::setValue(Uint32 anAttrId,
+                       const char* aValuePassed,
+                       bool append_flag)
 {
   const NdbColumnImpl* col = m_currentTable->getColumn(anAttrId);
   if (col == nullptr)
@@ -422,7 +426,7 @@ NdbOperation::setValue(Uint32 anAttrId, const char* aValuePassed)
   }
   else
   {
-    return setValue(col, aValuePassed);
+    return setValue(col, aValuePassed, append_flag);
   }
 }
 
