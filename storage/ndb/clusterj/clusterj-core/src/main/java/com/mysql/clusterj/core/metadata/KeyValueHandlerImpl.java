@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -430,10 +431,22 @@ public class KeyValueHandlerImpl implements ValueHandler {
                 "get(int)", "KeyValueHandlerImpl"));
     }
 
+    public Object get_partial(int columnNumber, int startPos, int size) {
+        throw new ClusterJFatalInternalException(
+                local.message("ERR_Operation_Not_Supported",
+                "get_partial(int, int, int)", "KeyValueHandlerImpl"));
+    }
+
     public void set(int columnNumber, Object value) {
         throw new ClusterJFatalInternalException(
                 local.message("ERR_Operation_Not_Supported",
                 "set(int, Object)", "KeyValueHandlerImpl"));
+    }
+
+    public void append(int columnNumber, Object value) {
+        throw new ClusterJFatalInternalException(
+                local.message("ERR_Operation_Not_Supported",
+                "append(int, Object)", "KeyValueHandlerImpl"));
     }
 
     public void setProxy(Object proxy) {

@@ -24,6 +24,7 @@
 
 package testsuite.clusterj.model;
 
+import com.mysql.clusterj.DynamicObjectDelegate;
 import com.mysql.clusterj.annotation.Index;
 import com.mysql.clusterj.annotation.PersistenceCapable;
 import com.mysql.clusterj.annotation.PrimaryKey;
