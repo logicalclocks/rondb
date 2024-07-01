@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2926,7 +2926,7 @@ public:
     Uint8 m_committed_log_space;
     enum op_flags {
       OP_ISLONGREQ              = 0x1,
-      OP_SAVEATTRINFO           = 0x2,
+      OP_CODE_NOT_USED          = 0x2, //No longer used
       OP_SCANKEYINFOPOSSAVED    = 0x4,
       OP_DEFERRED_CONSTRAINTS   = 0x8,
       OP_NORMAL_PROTOCOL        = 0x10,

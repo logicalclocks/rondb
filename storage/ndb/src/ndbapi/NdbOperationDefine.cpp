@@ -505,13 +505,17 @@ NdbOperation::getValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
 {
   NdbRecAttr* tRecAttr;
 
-  if (unlikely((tAttrInfo->getType() !=
-                  NdbDictionary::Column::Longvarbinary) &&
-                tAttrInfo->getType() !=
-                  NdbDictionary::Column::Varbinary))
+  if ((aStartPos != 0) ||
+      (aSize != 0))
   {
-    setErrorCodeAbort(4566);
-    return nullptr;
+    if (unlikely((tAttrInfo->getType() !=
+                    NdbDictionary::Column::Longvarbinary) &&
+                  tAttrInfo->getType() !=
+                    NdbDictionary::Column::Varbinary))
+    {
+      setErrorCodeAbort(4566);
+      return nullptr;
+    }
   }
 
   if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK)
@@ -543,13 +547,17 @@ NdbOperation::getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
 {
   NdbRecAttr* tRecAttr;
 
-  if (unlikely((tAttrInfo->getType() !=
-                  NdbDictionary::Column::Longvarbinary) &&
-                tAttrInfo->getType() !=
-                  NdbDictionary::Column::Varbinary))
+  if ((aStartPos != 0) ||
+      (aSize != 0))
   {
-    setErrorCodeAbort(4566);
-    return nullptr;
+    if (unlikely((tAttrInfo->getType() !=
+                    NdbDictionary::Column::Longvarbinary) &&
+                  tAttrInfo->getType() !=
+                    NdbDictionary::Column::Varbinary))
+    {
+      setErrorCodeAbort(4566);
+      return nullptr;
+    }
   }
 
   if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK)

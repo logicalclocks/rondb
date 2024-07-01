@@ -108,7 +108,7 @@
 #define DEB_LCP_LGMAN(arglist) do { } while (0)
 #endif
 
-#define TRACE_INTERPRETER
+//#define TRACE_INTERPRETER
 
 /* For debugging */
 static void
@@ -164,6 +164,7 @@ void Dbtup::copyAttrinfo(Uint32 expectedLen,
 
   if (expectedLen > 0)
   {
+    jamDebug();
     ndbassert(attrInfoIVal != RNIL);
 
     /* Check length in section is as we expect */
@@ -2871,7 +2872,7 @@ int Dbtup::handleInsertReq(Signal* signal,
     store_extra_row_bits(attrId, regTabPtr, tuple_ptr, /* default */ 0, false);
   }
 
-  req_struct->m_write_log_memory_in_update = true;
+  req_struct->m_write_log_memory_in_update = false;
   if (!(is_refresh ||
         regTabPtr->m_default_value_location.isNull()))
   {
@@ -2892,6 +2893,12 @@ int Dbtup::handleInsertReq(Signal* signal,
       goto update_error;
     }
   }
+  else if (is_refresh)
+  {
+    jamDebug();
+    req_struct->m_write_log_memory_in_update = true;
+    req_struct->log_size = 0;
+  }
 
   if (unlikely(req_struct->interpreted_exec))
   {
@@ -2905,7 +2912,6 @@ int Dbtup::handleInsertReq(Signal* signal,
     //const Uint32 RsubLen= cinBuffer[4];
 
     const Uint32 offset = 5 + RinitReadLen + RexecRegionLen;
-    req_struct->log_size = 0;
 
     if (unlikely((res = updateAttributes(req_struct, &cinBuffer[offset],
               RfinalUpdateLen)) < 0))
@@ -2918,6 +2924,7 @@ int Dbtup::handleInsertReq(Signal* signal,
   else
   {
     /* Normal insert */
+    jamDebug();
     if (unlikely((res = updateAttributes(req_struct, &cinBuffer[0],
               req_struct->attrinfo_len)) < 0))
     {
@@ -2930,12 +2937,15 @@ int Dbtup::handleInsertReq(Signal* signal,
    * Send logMemory back to LQH for propagation to REDO log and replicas
    */
   ndbrequire(req_struct->log_size != 0);
-  if (unlikely(sendLogAttrinfo(signal,
-                               req_struct,
-                               regOperPtr.p) != 0))
+  if (unlikely(req_struct->m_write_log_memory_in_update))
   {
-    jam();
-    goto update_error;
+    if (unlikely(sendLogAttrinfo(signal,
+                                 req_struct,
+                                 regOperPtr.p) != 0))
+    {
+      jam();
+      goto update_error;
+    }
   }
   if (ERROR_INSERTED(4017))
   {
@@ -4063,6 +4073,8 @@ int Dbtup::sendLogAttrinfo(Signal* signal,
    * to LQH
    */
   Uint32 TlogSize = req_struct->log_size;
+  jamDebug();
+  jamDataDebug(TlogSize);
   ndbrequire( TlogSize > 0 );
   ndbassert(!m_is_query_block);
   Uint32 longSectionIVal= RNIL;

@@ -6750,6 +6750,7 @@ void Dblqh::execTUP_ATTRINFO(Signal* signal)
    */
   if (likely(regTcPtr->attrInfoIVal != RNIL))
   {
+    jamDebug();
     releaseSection( regTcPtr->attrInfoIVal );
   }
 
@@ -10082,30 +10083,13 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
    *     section and continues processing (logging, forwarding LQHKEYREQ
    *     to other replicas as necessary)
    *
+   * A special case is that all write operations (UPDATE, WRITE and INSERT)
+   * can write using append operations. Append cannot be logged directly
+   * and thus also in this case we will get a TUP_ATTRINFO signal sent to
+   * us that contains the new ATTRINFO. This means that we will always
+   * set currTupAiLen after receiving TUPKEYCONF.
    */
-  bool attrInfoToPropagate= 
-    (regTcPtr->totReclenAi != 0) &&
-    (regTcPtr->operation != ZREAD) &&
-    (regTcPtr->operation != ZDELETE) &&
-    (regTcPtr->operation != ZUNLOCK);
-  bool tupCanChangePropagatedAttrInfo= (regTcPtr->opExec == 1);
-  
-  bool saveAttrInfo= 
-    attrInfoToPropagate &&
-    (! tupCanChangePropagatedAttrInfo);
-  
-  if (saveAttrInfo)
-    regTcPtr->m_flags|= TcConnectionrec::OP_SAVEATTRINFO;
-  
   /* Handle any AttrInfo we received with the LQHKEYREQ */
-  if (regTcPtr->currReclenAi != 0)
-  {
-    /* Long LQHKEYREQ */
-    jamDebug();
-    regTcPtr->currTupAiLen= saveAttrInfo ?
-      regTcPtr->totReclenAi :
-      0;
-  }//if
   ndbassert(regTcPtr->totReclenAi == regTcPtr->currReclenAi);
   if (refToMain(regTcPtr->clientBlockref) != getRESTORE())
   {
@@ -11885,6 +11869,8 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
    * We are still responsible for releasing it, TUP is just
    * borrowing it
    */
+  jamDebug();
+  jamDataDebug(totReclenAi);
   if (totReclenAi > 0)
   {
     ndbassert(attrInfoIVal != RNIL );
@@ -12060,12 +12046,11 @@ void Dblqh::tupkeyConfLab(Signal* signal,
   }//if
 
   regTcPtr->totSendlenAi = writeLen;
+  regTcPtr->currTupAiLen = writeLen;
   /* We will propagate / log writeLen words
    * Check that that is how many we have available to 
    * propagate
    */
-  ndbassert(regTcPtr->totSendlenAi == regTcPtr->currTupAiLen);
-  
   if (unlikely(activeCreat == Fragrecord::AC_NR_COPY))
   {
     jam();
@@ -12837,8 +12822,7 @@ void Dblqh::packLqhkeyreqLab(Signal* signal,
          */
         if (regTcPtr->attrInfoIVal != RNIL)
         {
-          ndbassert(!( regTcPtr->m_flags & 
-                       TcConnectionrec::OP_SAVEATTRINFO));
+          jamDebug();
           releaseSection(regTcPtr->attrInfoIVal);
           regTcPtr->attrInfoIVal= RNIL;
         }
@@ -15866,14 +15850,14 @@ void Dblqh::continueAfterLogAbortWriteLab(
     }
     Uint32 block = refToMain(regTcPtr->clientBlockref);
     DEB_ABORT_TRANS(("(%u)LQHKEYREF: trans(H'%.8x,H'%.8x), tcOprec: %u"
-                     ", tcRef: %x, tcPtrIAcc: %u",
+                     ", tcRef: %x, tcPtrIAcc: %u, errorCode: %u",
                      instance(),
                      regTcPtr->transid[0],
                      regTcPtr->transid[1],
                      regTcPtr->tcOprec,
                      regTcPtr->clientBlockref,
-                     regTcPtr->accConnectrec));
-
+                     regTcPtr->accConnectrec,
+                     regTcPtr->errorCode));
     if (block != getRESTORE())
     {
       if (refToNode(regTcPtr->clientBlockref) != getOwnNodeId())
@@ -20422,10 +20406,7 @@ void Dblqh::initScanTc(const ScanFragReq* req,
   regTcPtr->operation = ZREAD;
   regTcPtr->opExec = 0;  // Default 'not interpret', set later if needed
   regTcPtr->abortState = TcConnectionrec::ABORT_IDLE;
-  // set TcConnectionrec::OP_SAVEATTRINFO so that a
-  // "old" scan (short signals) update currTupAiLen which is checked
-  // in scanAttrinfoLab
-  regTcPtr->m_flags = TcConnectionrec::OP_SAVEATTRINFO;
+  regTcPtr->m_flags = 0;
   regTcPtr->commitAckMarker = RNIL;
   regTcPtr->activeCreat = Fragrecord::AC_NORMAL;
 

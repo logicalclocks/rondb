@@ -116,7 +116,7 @@ public:
    */
   Uint32 getPartialReadAI() const
   {
-    return (theStartPos + (m_size_in_bytes << 16));
+    return (theStartPos + (theSize << 16));
   }
 
   /** @} *********************************************************************/
@@ -316,7 +316,8 @@ private:
   Uint32        theAttrId;      /* The attribute id                     */
   Int32         m_size_in_bytes;
 
-  Int32        theStartPos;    /* The starting position of the read    */
+  Uint16        theStartPos;    /* The starting position of the read    */
+  Uint16       theSize;
 
   enum MemorySource
   {

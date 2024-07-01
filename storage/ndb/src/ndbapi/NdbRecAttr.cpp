@@ -68,7 +68,8 @@ NdbRecAttr::setup(const NdbColumnImpl* anAttrInfo,
 
   theAttrId = anAttrInfo->m_attrId;
   theStartPos = aStartPos;
-  m_size_in_bytes = aSize;
+  theSize = aSize;
+  m_size_in_bytes = -1; //UNDEFINED
 
   m_getVarValue = nullptr; // set in getVarValue() only
 
@@ -120,13 +121,21 @@ NdbRecAttr::clone() const {
   ret->m_size_in_bytes = m_size_in_bytes;
   ret->m_column = m_column;
   ret->theStartPos = theStartPos;
+  ret->theSize = theSize;
   
   Uint32 n = m_size_in_bytes;
   if(n <= 16){
     ret->theRef = ret->theStorage;
     ret->theMemorySource = INT_STORAGE;
   } else {
-    ret->theRef = new Uint64[((n + 7) >> 3)];
+    if (Int32(n) != -1)
+    {
+      ret->theRef = new Uint64[((n + 7) >> 3)];
+    }
+    else
+    {
+      ret->theRef = nullptr;
+    }
     if (ret->theRef == nullptr)
     {
       delete ret;

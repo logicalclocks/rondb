@@ -42,7 +42,7 @@
 
 #define JAM_FILE_ID 402
 
-#define TRACE_INTERPRETER
+//#define TRACE_INTERPRETER
 
 void
 Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
@@ -513,6 +513,7 @@ int Dbtup::readKeyAttributes(KeyReqStruct *req_struct,
   inBufIndex= 0;
   req_struct->out_buf_index= 0;
   req_struct->out_buf_bits = 0;
+  req_struct->partial_size = 0;
   req_struct->max_read= 4*maxRead;
   req_struct->xfrm_flag= xfrm_hash;
   Uint8*outBuffer = (Uint8*)outBuf;
@@ -2134,12 +2135,34 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
         thrjamDebug(req_struct->jamBuffer);
         if (req_struct->m_write_log_memory_in_update == false)
         {
+          bool succ;
           thrjamDebug(req_struct->jamBuffer);
           req_struct->m_write_log_memory_in_update = true;
+          req_struct->log_size = 0;
           Dbtup *tup = req_struct->m_dbtup_ptr;
-          bool succ = tup->writeLogMemory(req_struct,
-                                          (const char*)&inBuffer[0],
-                                          inBufLen * 4);
+          if (regOperPtr->op_type == ZINSERT &&
+              !regTabPtr->m_default_value_location.isNull())
+          {
+            /**
+             * We have already executed updateAttributes for default
+             * values for normal Insert operations, Refresh operations
+             * log everything, so no need to bother about them.
+             */
+            thrjamDebug(req_struct->jamBuffer);
+            Uint32 default_values_len;
+            /* Get default values ptr + len for this table */
+            Uint32* default_values = get_default_ptr(regTabPtr,
+                                                     default_values_len);
+            ndbrequire(default_values_len != 0 &&
+                       default_values != NULL);
+            succ = tup->writeLogMemory(req_struct,
+                                       (const char*)default_values,
+                                       default_values_len * 4);
+          }
+
+          succ = tup->writeLogMemory(req_struct,
+                                     (const char*)&inBuffer[0],
+                                     inBufLen * 4);
           if (unlikely(!succ))
           {
             return -(int)ZLOG_BUFFER_OVERFLOW_ERROR;
@@ -2156,6 +2179,7 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
          * We record if we wrote a partial write and only send
          * the log memory if we did as a minor optimisation.
          */
+        thrjamDebug(req_struct->jamBuffer);
         Uint32 byte_size = ahIn.getByteSize();
         Dbtup *tup = req_struct->m_dbtup_ptr;
         bool succ = tup->writeLogMemory(req_struct,
@@ -2307,6 +2331,8 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
     else
     {
       thrjam(req_struct->jamBuffer);
+      thrjamDataDebug(req_struct->jamBuffer, attributeId);
+      thrjamDataDebug(req_struct->jamBuffer, req_struct->errorCode);
       return -(int)req_struct->errorCode;
     }
   }
