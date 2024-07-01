@@ -12467,9 +12467,12 @@ void Dbdih::execMASTER_LCPCONF(Signal* signal)
   CRASH_INSERTION(7180);
   
 #ifdef VM_TRACE
-  g_eventLogger->info("MASTER_LCPCONF from node %u", senderNodeId);
-  printMASTER_LCP_CONF(stdout, &signal->theData[0], signal->getLength(), 0);
-#endif  
+  g_eventLogger->info("MASTER_LCPCONF from node %u, state: %u,"
+                      " failedNode: %u",
+                      senderNodeId,
+                      lcpState,
+                      failedNodeId);
+#endif
 
   bool found = false;
   for(Uint32 i = 0; i<g_masterLCPTakeoverStateTransitionsRows; i++){

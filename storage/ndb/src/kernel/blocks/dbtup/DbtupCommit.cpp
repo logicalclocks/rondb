@@ -440,7 +440,6 @@ Dbtup::dealloc_tuple(Signal* signal,
       Local_key key;
       memcpy(&key, ptr->get_disk_ref_ptr(regTabPtr), sizeof(key));
       ndbrequire(regOperPtr->m_disk_callback_page != RNIL);
-      Ptr<GlobalPage> pagePtr;
       ndbrequire(regOperPtr->m_disk_callback_page == pagePtr.i);
       PagePtr diskPagePtr((Tup_page*)pagePtr.p, pagePtr.i);
       Uint32 decrement = regOperPtr->m_uncommitted_used_space;
