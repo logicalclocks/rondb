@@ -19,8 +19,9 @@ jobs:
     # TODO: Run on Github runner on armchair
     runs-on: ubuntu-latest
     env:
+      REPO_HOPSWORKS_HOSTNAME: repo.hops.works
       REPO_HOPSWORKS_USER: repo_upload
-      DEPLOY_CREDENTIALS: ${{ secrets.DEPLOY_CREDENTIALS }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
 
     steps:
       - uses: actions/checkout@v3
@@ -28,7 +29,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H $REPO_HOPSWORKS_HOSTNAME >> ~/.ssh/known_hosts
+
       - run: cat ./MYSQL_VERSION
+
       - name: Build RonDB Tarball
         run: |
           BUILD_CORES=$(nproc)
@@ -56,7 +65,7 @@ jobs:
           fi
           echo "Found tarball: $tarball"
 
-          host_user="$REPO_HOPSWORKS_USER@repo.hops.works"
+          host_user="$REPO_HOPSWORKS_USER@$REPO_HOPSWORKS_HOSTNAME"
           user_code_path="/opt/repository/dev/$REPO_HOPSWORKS_USER"
 
           echo "Copying $tarball to $host_user:$user_code_path/"
