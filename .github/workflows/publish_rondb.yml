@@ -19,7 +19,7 @@ jobs:
     # TODO: Run on Github runner on armchair
     runs-on: ubuntu-latest
     env:
-      REPO_HOPSWORKS_USER: upload-user
+      REPO_HOPSWORKS_USER: repo_upload
       DEPLOY_CREDENTIALS: ${{ secrets.DEPLOY_CREDENTIALS }}
 
     steps:
