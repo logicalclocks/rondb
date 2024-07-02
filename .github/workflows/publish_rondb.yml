@@ -6,6 +6,13 @@ on:
       - "22.10.[0-9]+"
       - "24.10.[0-9]+"
 
+# This is important because the jobs are expensive and we don't want to wait a lot of time.
+# This cancel-in-progress only works per branch,  if a previous commit launched a job, a
+# new one will cancel it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
 # TODO: Make workflow dispatch which creates git tags as well (?)
 #   workflow_dispatch:
 #     inputs:
