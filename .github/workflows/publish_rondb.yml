@@ -1,0 +1,63 @@
+name: Publish RonDB Tarball
+on:
+  push:
+    branches:
+      - "21.04.[0-9]+"
+      - "22.10.[0-9]+"
+      - "24.10.[0-9]+"
+
+# TODO: Make workflow dispatch which creates git tags as well (?)
+#   workflow_dispatch:
+#     inputs:
+#       run_test:
+#         description: 'Run test'
+#         required: false
+#         default: 'true'
+
+jobs:
+  publish-tarball:
+    # TODO: Run on Github runner on armchair
+    runs-on: ubuntu-latest
+    env:
+      REPO_HOPSWORKS_USER: upload-user
+      DEPLOY_CREDENTIALS: ${{ secrets.DEPLOY_CREDENTIALS }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - run: cat ./MYSQL_VERSION
+      - name: Build RonDB Tarball
+        run: |
+          BUILD_CORES=$(nproc)
+          docker buildx build . \
+            -f Dockerfile.oraclelinux8 \
+            --target get-package-all \
+            --output . \
+            --build-arg BUILD_THREADS=$BUILD_CORES \
+            --build-arg RELEASE_TARBALL=1
+
+          ls -l
+
+      - name: Upload RonDB Tarball
+        run: |
+          tarball=$(ls rondb-*.tar.gz 2>/dev/null)
+          count=$(echo "$tarball" | wc -w)
+
+          if [[ $count -eq 0 ]]; then
+            echo "No tarball found starting with 'rondb-'"
+            exit 1
+          elif [[ $count -gt 1 ]]; then
+            echo "Multiple tarballs found starting with 'rondb-':"
+            echo "$tarball"
+            exit 1
+          fi
+          echo "Found tarball: $tarball"
+
+          host_user="$REPO_HOPSWORKS_USER@repo.hops.works"
+          user_code_path="/opt/repository/dev/$REPO_HOPSWORKS_USER"
+
+          echo "Copying $tarball to $host_user:$user_code_path/"
+          scp ./$tarball $host_user:$user_code_path/
