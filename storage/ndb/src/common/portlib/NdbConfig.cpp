@@ -23,37 +23,33 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include "util/require.h"
-#include <ndb_global.h>
 #include <NdbConfig.h>
 #include <NdbEnv.h>
 #include <NdbHost.h>
+#include <ndb_global.h>
+#include "util/require.h"
 
 static const char *datadir_path= nullptr;
 static const char *pid_file_dir_path= nullptr;
 static char *glob_service_name= nullptr;
 
-const char *
-NdbConfig_get_path(int *_len)
-{
+const char *NdbConfig_get_path(int *_len) {
 #ifdef NDB_USE_GET_ENV
-  const char *path= NdbEnv_GetEnv("NDB_HOME", 0, 0);
+  const char *path = NdbEnv_GetEnv("NDB_HOME", 0, 0);
 #else
   const char *path = nullptr;
 #endif
-  int path_len= 0;
-  if (path)
-    path_len= (int)strlen(path);
+  int path_len = 0;
+  if (path) path_len = (int)strlen(path);
   if (path_len == 0 && datadir_path) {
-    path= datadir_path;
-    path_len= (int)strlen(path);
+    path = datadir_path;
+    path_len = (int)strlen(path);
   }
   if (path_len == 0) {
-    path= ".";
-    path_len= (int)strlen(path);
+    path = ".";
+    path_len = (int)strlen(path);
   }
-  if (_len)
-    *_len= path_len;
+  if (_len) *_len = path_len;
   return path;
 }
 
@@ -101,10 +97,7 @@ NdbConfig_AllocHomePath(int _len, bool pid_file)
   return buf;
 }
 
-void
-NdbConfig_SetPath(const char* path){
-  datadir_path= path;
-}
+void NdbConfig_SetPath(const char *path) { datadir_path = path; }
 
 void
 NdbConfig_SetPidfilePath(const char* path){
@@ -114,14 +107,14 @@ NdbConfig_SetPidfilePath(const char* path){
 char* 
 NdbConfig_NdbCfgName(int with_ndb_home){
   char *buf;
-  int len= 0;
+  int len = 0;
 
   if (with_ndb_home) {
     buf= NdbConfig_AllocHomePath(PATH_MAX, false);
     len= (int)strlen(buf);
   } else
-    buf= (char *)malloc(PATH_MAX);
-  snprintf(buf+len, PATH_MAX, "Ndb.cfg");
+    buf = (char *)malloc(PATH_MAX);
+  snprintf(buf + len, PATH_MAX, "Ndb.cfg");
   return buf;
 }
 
@@ -154,9 +147,8 @@ char *get_prefix_buf(int len, int node_id, bool pidfile)
   else if (node_id > 0)
     snprintf(tmp_buf, sizeof(tmp_buf), "ndb_%u", node_id);
   else
-    snprintf(tmp_buf, sizeof(tmp_buf), "ndb_pid%u",
-             NdbHost_GetProcessId());
-  tmp_buf[sizeof(tmp_buf)-1]= 0;
+    snprintf(tmp_buf, sizeof(tmp_buf), "ndb_pid%u", NdbHost_GetProcessId());
+  tmp_buf[sizeof(tmp_buf) - 1] = 0;
 
   buf= NdbConfig_AllocHomePath(len+(int)strlen(tmp_buf), pidfile);
   require(len > 0); // avoid buffer overflow

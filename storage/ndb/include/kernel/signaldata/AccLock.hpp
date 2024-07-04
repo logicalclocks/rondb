@@ -30,7 +30,6 @@
 
 #define JAM_FILE_ID 153
 
-
 /*
  * Lock or unlock tuple.  If lock request is queued, the reply is later
  * via ACCKEYCONF.
@@ -39,8 +38,9 @@ class AccLockReq {
   friend class Dbacc;
   friend class Dbtup;
   friend class Dbtux;
-  friend bool printACC_LOCKREQ(FILE *, const Uint32*, Uint32, Uint16);
-public:
+  friend bool printACC_LOCKREQ(FILE *, const Uint32 *, Uint32, Uint16);
+
+ public:
   enum RequestType {    // first byte
     LockShared = 1,
     LockExclusive = 2,
@@ -59,7 +59,8 @@ public:
   };
   static constexpr Uint32 LockSignalLength = 14;
   static constexpr Uint32 UndoSignalLength = 3;
-private:
+
+ private:
   Uint32 returnCode;
   Uint32 requestInfo;
   Uint32 accOpPtr;
@@ -75,7 +76,6 @@ private:
   Uint32 transId2;
   Uint32 isCopyFragScan;
 };
-
 
 #undef JAM_FILE_ID
 

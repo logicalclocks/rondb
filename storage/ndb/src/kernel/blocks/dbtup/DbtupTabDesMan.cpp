@@ -25,10 +25,10 @@
 
 #define DBTUP_C
 #define DBTUP_TAB_DES_MAN_CPP
-#include "Dbtup.hpp"
-#include <RefConvert.hpp>
 #include <ndb_limits.h>
+#include <RefConvert.hpp>
 #include <pc.hpp>
+#include "Dbtup.hpp"
 
 #define JAM_FILE_ID 412
 
@@ -55,15 +55,11 @@
  * divides itself up into free list chunks.
  */
 
-Uint32
-Dbtup::getTabDescrOffsets(Uint32 noOfAttrs,
-                          Uint32 noOfCharsets,
-                          Uint32 noOfKeyAttr,
-                          Uint32 extraColumns,
-                          Uint32* offset)
-{
+Uint32 Dbtup::getTabDescrOffsets(Uint32 noOfAttrs, Uint32 noOfCharsets,
+                                 Uint32 noOfKeyAttr, Uint32 extraColumns,
+                                 Uint32 *offset) {
   // belongs to configure.in
-  unsigned sizeOfPointer = sizeof(CHARSET_INFO*);
+  unsigned sizeOfPointer = sizeof(CHARSET_INFO *);
   ndbrequire((sizeOfPointer & 0x3) == 0);
   sizeOfPointer = (sizeOfPointer >> 2);
   // do in layout order and return offsets (see DbtupMeta.cpp)
@@ -81,9 +77,7 @@ Dbtup::getTabDescrOffsets(Uint32 noOfAttrs,
   return allocSize;
 }
 
-Uint32
-Dbtup::getDynTabDescrOffsets(Uint32 MaskSize, Uint32* offset)
-{
+Uint32 Dbtup::getDynTabDescrOffsets(Uint32 MaskSize, Uint32 *offset) {
   // do in layout order and return offsets (see DbtupMeta.cpp)
   offset[0] = 0;
   offset[1] = MaskSize;

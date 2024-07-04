@@ -30,7 +30,6 @@
 
 #define JAM_FILE_ID 206
 
-
 /**
  * FsConf - Common signal class for all CONF signals sent from Ndbfs
  * GSN_FSCLOSECONF, GSN_FSOPENCONF, GSN_FSWRITECONF, GSN_FSREADCONF,
@@ -65,19 +64,20 @@ class FsConf {
   /**
    * For printing
    */
-  friend bool printFSCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
+  friend bool printFSCONF(FILE *output, const Uint32 *theData, Uint32 len,
+                          Uint16 receiverBlockNo);
 
-public:
+ public:
   /**
    * Length of signal
    */
   /**
    *  FSOPENCONF: static const UintR SignalLength = 2; 
-   *  FSCLOSECONF, FSREADCONF, FSWRITECONF, FSSYNCCONF: static const UintR SignalLength = 2; 
+   *  FSCLOSECONF, FSREADCONF, FSWRITECONF, FSSYNCCONF: static const UintR
+   * SignalLength = 2;
    */
 
-private:
-
+ private:
   /**
    * DATA VARIABLES
    */

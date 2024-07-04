@@ -25,11 +25,8 @@
 
 #include <signaldata/FsReadWriteReq.hpp>
 
-bool printFSREADWRITEREQ(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 /*len*/,
-                         Uint16 /*receiverBlockNo*/)
-{
+bool printFSREADWRITEREQ(FILE *output, const Uint32 *theData, Uint32 /*len*/,
+                         Uint16 /*receiverBlockNo*/) {
   bool ret = true;
 
   const FsReadWriteReq *const sig = (const FsReadWriteReq *)theData;
@@ -45,35 +42,33 @@ bool printFSREADWRITEREQ(FILE *output,
     fprintf(output, "No sync,");
 
   fprintf(output, " Format=");
-  switch(sig->getFormatFlag(sig->operationFlag)){
-  case FsReadWriteReq::fsFormatListOfPairs:
-    fprintf(output, "List of pairs)\n");
-    break;
-  case FsReadWriteReq::fsFormatArrayOfPages:
-    fprintf(output, "Array of pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatListOfMemPages:
-    fprintf(output, "List of mem pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatGlobalPage:
-    fprintf(output, "List of global pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatSharedPage:
-    fprintf(output, "List of shared pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatMemAddress:
-    fprintf(output, "Memory offset and file offset)\n");
-    break;
-  default:
-    fprintf(output, "fsFormatMax not handled\n");
-    ret = false;
-    break;
+  switch (sig->getFormatFlag(sig->operationFlag)) {
+    case FsReadWriteReq::fsFormatListOfPairs:
+      fprintf(output, "List of pairs)\n");
+      break;
+    case FsReadWriteReq::fsFormatArrayOfPages:
+      fprintf(output, "Array of pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatListOfMemPages:
+      fprintf(output, "List of mem pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatGlobalPage:
+      fprintf(output, "List of global pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatSharedPage:
+      fprintf(output, "List of shared pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatMemAddress:
+      fprintf(output, "Memory offset and file offset)\n");
+      break;
+    default:
+      fprintf(output, "fsFormatMax not handled\n");
+      ret = false;
+      break;
   }
-    
-  fprintf(output, " varIndex: %d\n", 
-	  sig->varIndex);    
-  fprintf(output, " numberOfPages: %d\n", 
-	  sig->numberOfPages);
+
+  fprintf(output, " varIndex: %d\n", sig->varIndex);
+  fprintf(output, " numberOfPages: %d\n", sig->numberOfPages);
   fprintf(output, " PartialFlag: %d\n",
           sig->getPartialReadFlag(sig->operationFlag));
   if (sig->getFormatFlag(sig->operationFlag) !=

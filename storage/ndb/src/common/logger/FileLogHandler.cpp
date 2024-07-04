@@ -32,42 +32,29 @@
 //
 // PUBLIC
 //
-FileLogHandler::FileLogHandler(const char* aFileName, 
-			       int maxNoFiles, 
-			       long maxFileSize,
-			       unsigned int maxLogEntries) : 
-  LogHandler(),
+FileLogHandler::FileLogHandler(const char *aFileName, int maxNoFiles,
+                               long maxFileSize, unsigned int maxLogEntries)
+    : LogHandler(),
   m_maxNoFiles(maxNoFiles), 
   m_maxFileSize(maxFileSize),
-  m_maxLogEntries(maxLogEntries)
-{
+      m_maxLogEntries(maxLogEntries) {
   m_pLogFile = new File_class(aFileName, "a+");
 }
 
-FileLogHandler::~FileLogHandler()
-{
-  delete m_pLogFile;
-}
+FileLogHandler::~FileLogHandler() { delete m_pLogFile; }
 
-bool
-FileLogHandler::open()
-{
+bool FileLogHandler::open() {
   bool rc = true;
 
-  if (m_pLogFile->open())
-  {
-    if (isTimeForNewFile())
-    {
-      if (!createNewFile())
-      {
+  if (m_pLogFile->open()) {
+    if (isTimeForNewFile()) {
+      if (!createNewFile()) {
 	setErrorCode(errno);
         setErrorStr(strerror(errno));
 	rc = false; 
       }
     }
-  }
-  else
-  {
+  } else {
     setErrorCode(errno);
     setErrorStr(strerror(errno));
     rc = false;
@@ -76,18 +63,11 @@ FileLogHandler::open()
   return rc;
 }
 
-bool
-FileLogHandler::is_open()
-{
-  return m_pLogFile->is_open();
-}
+bool FileLogHandler::is_open() { return m_pLogFile->is_open(); }
 
-bool
-FileLogHandler::close()
-{
+bool FileLogHandler::close() {
   bool rc = true;
-  if (!m_pLogFile->close())
-  {
+  if (!m_pLogFile->close()) {
     setErrorCode(errno);
     setErrorStr(strerror(errno));
     rc = false;
@@ -96,23 +76,17 @@ FileLogHandler::close()
   return rc;
 }
 
-void 
-FileLogHandler::writeHeader(const char* pCategory, Logger::LoggerLevel level,
-                            time_t now)
-{
+void FileLogHandler::writeHeader(const char *pCategory,
+                                 Logger::LoggerLevel level, time_t now) {
   char str[MAX_HEADER_LENGTH];
   m_pLogFile->writeChar(getDefaultHeader(str, pCategory, level, now));
 }
 
-void 
-FileLogHandler::writeMessage(const char* pMsg)
-{
+void FileLogHandler::writeMessage(const char *pMsg) {
   m_pLogFile->writeChar(pMsg);
 }
 
-void 
-FileLogHandler::writeFooter()
-{
+void FileLogHandler::writeFooter() {
   static int callCount = 0;
   m_pLogFile->writeChar(getDefaultFooter());
   /**
@@ -123,10 +97,8 @@ FileLogHandler::writeFooter()
    */
   if (callCount % m_maxLogEntries != 0) // Check every m_maxLogEntries
   {
-    if (isTimeForNewFile())
-    {
-      if (!createNewFile())
-      {
+    if (isTimeForNewFile()) {
+      if (!createNewFile()) {
 	// Baby one more time...
 	createNewFile();
       }
@@ -138,63 +110,48 @@ FileLogHandler::writeFooter()
   m_pLogFile->flush();
 }
 
-
 //
 // PRIVATE
 //
 
-bool 
-FileLogHandler::isTimeForNewFile()
-{
+bool FileLogHandler::isTimeForNewFile() {
   return (m_pLogFile->size() >= m_maxFileSize); 
 }
 
-ndb_off_t FileLogHandler::getCurrentSize()
-{
-  return m_pLogFile->size();
-}
+ndb_off_t FileLogHandler::getCurrentSize() { return m_pLogFile->size(); }
 
-bool
-FileLogHandler::createNewFile()
-{
+bool FileLogHandler::createNewFile() {
   bool rc = true;	
   int fileNo = 1;
   char newName[PATH_MAX];
   time_t newMtime, preMtime = 0;
 
-  do
-  {
-    if (fileNo >= m_maxNoFiles)
-    {
+  do {
+    if (fileNo >= m_maxNoFiles) {
       fileNo = 1;
-      BaseString::snprintf(newName, sizeof(newName),
-		 "%s.%d", m_pLogFile->getName(), fileNo);
+      BaseString::snprintf(newName, sizeof(newName), "%s.%d",
+                           m_pLogFile->getName(), fileNo);
       break;
     }		
-    BaseString::snprintf(newName, sizeof(newName),
-	       "%s.%d", m_pLogFile->getName(), fileNo++); 
+    BaseString::snprintf(newName, sizeof(newName), "%s.%d",
+                         m_pLogFile->getName(), fileNo++);
     newMtime = File_class::mtime(newName);
-    if (newMtime < preMtime) 
-    {
+    if (newMtime < preMtime) {
       break;
-    }
-    else
-    {
+    } else {
       preMtime = newMtime;
     }
   } while (File_class::exists(newName));
   
   m_pLogFile->close();	
-  if (!File_class::rename(m_pLogFile->getName(), newName))
-  {		
+  if (!File_class::rename(m_pLogFile->getName(), newName)) {
     setErrorCode(errno);
     setErrorStr(strerror(errno));
     rc = false;
   }
 
   // Open again
-  if (!m_pLogFile->open())
-  {
+  if (!m_pLogFile->open()) {
     setErrorCode(errno);
     setErrorStr(strerror(errno));
     rc = false;
@@ -203,61 +160,47 @@ FileLogHandler::createNewFile()
   return rc;
 }
 
-bool
-FileLogHandler::setParam(const BaseString &param, const BaseString &value){
-  if(param == "filename")
-    return setFilename(value);
-  if(param == "maxsize")
-    return setMaxSize(value);
-  if(param == "maxfiles")
-    return setMaxFiles(value);
+bool FileLogHandler::setParam(const BaseString &param,
+                              const BaseString &value) {
+  if (param == "filename") return setFilename(value);
+  if (param == "maxsize") return setMaxSize(value);
+  if (param == "maxfiles") return setMaxFiles(value);
   setErrorStr("Invalid parameter");
   return false;
 }
 
-bool FileLogHandler::getParams(BaseString &config)
-{
+bool FileLogHandler::getParams(BaseString &config) {
   config.assfmt("FILE:filename=%s,maxsize=%llu,maxfiles=%u",
-                m_pLogFile->getName(),
-                (Uint64)m_maxFileSize,
-                m_maxNoFiles);
+                m_pLogFile->getName(), (Uint64)m_maxFileSize, m_maxNoFiles);
   return true;
 }
 
-bool
-FileLogHandler::setFilename(const BaseString &filename) {
+bool FileLogHandler::setFilename(const BaseString &filename) {
   close();
-  if(m_pLogFile)
-    delete m_pLogFile;
+  if (m_pLogFile) delete m_pLogFile;
   m_pLogFile = new File_class(filename.c_str(), "a+");
   return open();
 }
 
-bool
-FileLogHandler::setMaxSize(const BaseString &size) {
+bool FileLogHandler::setMaxSize(const BaseString &size) {
   char *end;
   long val = strtol(size.c_str(), &end, 0); /* XXX */
-  if(size.c_str() == end || val < 0)
-  {
+  if (size.c_str() == end || val < 0) {
     setErrorStr("Invalid file size");
     return false;
   }
-  if(end[0] == 'M')
-    val *= 1024*1024;
-  if(end[0] == 'k')
-    val *= 1024;
+  if (end[0] == 'M') val *= 1024 * 1024;
+  if (end[0] == 'k') val *= 1024;
 
   m_maxFileSize = val;
 
   return true;
 }
 
-bool
-FileLogHandler::setMaxFiles(const BaseString &files) {
+bool FileLogHandler::setMaxFiles(const BaseString &files) {
   char *end;
   long val = strtol(files.c_str(), &end, 0);
-  if(files.c_str() == end || val < 1)
-  {
+  if (files.c_str() == end || val < 1) {
     setErrorStr("Invalid maximum number of files");
     return false;
   }
@@ -266,10 +209,8 @@ FileLogHandler::setMaxFiles(const BaseString &files) {
   return true;
 }
 
-bool
-FileLogHandler::checkParams() {
-  if(m_pLogFile == nullptr)
-  {
+bool FileLogHandler::checkParams() {
+  if (m_pLogFile == nullptr) {
     setErrorStr("Log file cannot be null.");
     return false;
   }

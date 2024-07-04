@@ -30,14 +30,15 @@
 
 #define JAM_FILE_ID 47
 
-
 class BackupContinueB {
   /**
    * Sender(s)/Reciver(s)
    */
   friend class Backup;
-  friend bool printCONTINUEB_BACKUP(FILE * output, const Uint32 * theData, Uint32 len);
-private:
+  friend bool printCONTINUEB_BACKUP(FILE *output, const Uint32 *theData,
+                                    Uint32 len);
+
+ private:
   enum {
     START_FILE_THREAD = 0,
     BUFFER_UNDERFLOW  = 1,
@@ -53,7 +54,6 @@ private:
     ZSHRINK_TRANSIENT_POOLS = 11
   };
 };
-
 
 #undef JAM_FILE_ID
 

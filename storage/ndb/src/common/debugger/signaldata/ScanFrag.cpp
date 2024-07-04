@@ -24,16 +24,12 @@
 */
 
 #include <BlockNumbers.h>
-#include <signaldata/ScanTab.hpp>
 #include <signaldata/ScanFrag.hpp>
+#include <signaldata/ScanTab.hpp>
 
-bool printSCAN_FRAGREQ(FILE *output,
-                       const Uint32 *theData,
-                       Uint32 len,
-                       Uint16 /*receiverBlockNo*/)
-{
-  if (len < ScanFragReq::SignalLength)
-  {
+bool printSCAN_FRAGREQ(FILE *output, const Uint32 *theData, Uint32 len,
+                       Uint16 /*receiverBlockNo*/) {
+  if (len < ScanFragReq::SignalLength) {
     assert(false);
     return false;
   }
@@ -44,18 +40,12 @@ bool printSCAN_FRAGREQ(FILE *output,
   fprintf(output, " savePointId: %u\n", sig->savePointId);
 
   fprintf(output, " flags: ");
-  if (ScanFragReq::getLockMode(sig->requestInfo))
-    fprintf(output, "X");
-  if (ScanFragReq::getPrioAFlag(sig->requestInfo))
-    fprintf(output, "a");
-  if (ScanFragReq::getHoldLockFlag(sig->requestInfo))
-    fprintf(output, "h");
-  if (ScanFragReq::getKeyinfoFlag(sig->requestInfo))
-    fprintf(output, "k");
-  if (ScanFragReq::getReadCommittedFlag(sig->requestInfo))
-    fprintf(output, "d");
-  if (ScanFragReq::getRangeScanFlag(sig->requestInfo))
-    fprintf(output, "r");
+  if (ScanFragReq::getLockMode(sig->requestInfo)) fprintf(output, "X");
+  if (ScanFragReq::getPrioAFlag(sig->requestInfo)) fprintf(output, "a");
+  if (ScanFragReq::getHoldLockFlag(sig->requestInfo)) fprintf(output, "h");
+  if (ScanFragReq::getKeyinfoFlag(sig->requestInfo)) fprintf(output, "k");
+  if (ScanFragReq::getReadCommittedFlag(sig->requestInfo)) fprintf(output, "d");
+  if (ScanFragReq::getRangeScanFlag(sig->requestInfo)) fprintf(output, "r");
   if (ScanFragReq::getDescendingFlag(sig->requestInfo))
     fprintf(output, "(desc)");
   if (ScanFragReq::getTupScanFlag(sig->requestInfo))
@@ -76,8 +66,7 @@ bool printSCAN_FRAGREQ(FILE *output,
           ScanFragReq::getCorrFactorFlag(sig->requestInfo));
   fprintf(output, " mfrag: %u",
           ScanFragReq::getMultiFragFlag(sig->requestInfo));
-  fprintf(output, " stat: %u",
-          ScanFragReq::getStatScanFlag(sig->requestInfo));
+  fprintf(output, " stat: %u", ScanFragReq::getStatScanFlag(sig->requestInfo));
   fprintf(output, " ni: %u",
           ScanFragReq::getNotInterpretedFlag(sig->requestInfo));
   fprintf(output, "\n");
@@ -92,8 +81,7 @@ bool printSCAN_FRAGREQ(FILE *output,
   fprintf(output, " batch_size_rows: %u\n", sig->batch_size_rows);
   fprintf(output, " batch_size_bytes: %u\n", sig->batch_size_bytes);
 
-  if (ScanFragReq::getCorrFactorFlag(sig->requestInfo))
-  {
+  if (ScanFragReq::getCorrFactorFlag(sig->requestInfo)) {
     fprintf(output, " corrFactorLo: 0x%x\n", sig->variableData[0]);
     fprintf(output, " corrFactorHi: 0x%x\n", sig->variableData[1]);
   }
@@ -101,13 +89,10 @@ bool printSCAN_FRAGREQ(FILE *output,
   return true;
 }
 
-bool printSCAN_FRAGCONF(FILE *output,
-                        const Uint32 *theData,
-                        Uint32 len,
-                        Uint16 /*receiverBlockNo*/)
-{
-  const ScanFragConf * const sig =
-    reinterpret_cast<const ScanFragConf*>(theData);
+bool printSCAN_FRAGCONF(FILE *output, const Uint32 *theData, Uint32 len,
+                        Uint16 /*receiverBlockNo*/) {
+  const ScanFragConf *const sig =
+      reinterpret_cast<const ScanFragConf *>(theData);
   fprintf(output, " senderData: 0x%x\n", sig->senderData);
   fprintf(output, " completedOps: %u\n", sig->completedOps);
   fprintf(output, " fragmentCompleted: 0x%x\n", sig->fragmentCompleted);

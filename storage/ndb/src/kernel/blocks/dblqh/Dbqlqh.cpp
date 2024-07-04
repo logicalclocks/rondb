@@ -30,14 +30,10 @@
 
 #define JAM_FILE_ID 518
 
-Dbqlqh::Dbqlqh(Block_context& ctx,
-               Uint32 instanceNumber):
-  Dblqh(ctx, instanceNumber, DBQLQH)
-{
-}
+Dbqlqh::Dbqlqh(Block_context &ctx, Uint32 instanceNumber)
+    : Dblqh(ctx, instanceNumber, DBQLQH) {}
 
-Uint64 Dbqlqh::getTransactionMemoryNeed()
-{
+Uint64 Dbqlqh::getTransactionMemoryNeed() {
   Uint32 query_instance_count =
     globalData.ndbMtQueryWorkers +
     globalData.ndbMtRecoverThreads;
@@ -54,12 +50,9 @@ Uint64 Dbqlqh::getTransactionMemoryNeed()
   Uint32 lqh_commit_ack_markers = 1;
   Uint64 commit_ack_marker_byte_count = 0;
   commit_ack_marker_byte_count +=
-    CommitAckMarker_pool::getMemoryNeed(lqh_commit_ack_markers);
+      CommitAckMarker_pool::getMemoryNeed(lqh_commit_ack_markers);
   commit_ack_marker_byte_count *= query_instance_count;
   return (op_byte_count + scan_byte_count + commit_ack_marker_byte_count);
 }
 
-
-Dbqlqh::~Dbqlqh()
-{
-}
+Dbqlqh::~Dbqlqh() {}

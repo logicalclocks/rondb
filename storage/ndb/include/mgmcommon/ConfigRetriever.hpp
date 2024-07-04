@@ -26,21 +26,20 @@
 #ifndef ConfigRetriever_H
 #define ConfigRetriever_H
 
-#include <ndb_types.h>
 #include <mgmapi.h>
-#include "mgmcommon/NdbMgm.hpp"
+#include <ndb_types.h>
 #include <BaseString.hpp>
+#include "mgmcommon/NdbMgm.hpp"
 
 /**
  * @class ConfigRetriever
  * @brief Used by nodes (DB, MGM, API) to get their config from MGM server. 
  */
 class ConfigRetriever {
-public:
-  ConfigRetriever(const char * _connect_string, int force_nodeid,
-                  Uint32 version, ndb_mgm_node_type nodeType,
-		  const char * _bind_address = nullptr,
-                  int timeout_ms = 30000);
+ public:
+  ConfigRetriever(const char *_connect_string, int force_nodeid, Uint32 version,
+                  ndb_mgm_node_type nodeType,
+                  const char *_bind_address = nullptr, int timeout_ms = 30000);
   ~ConfigRetriever();
 
   int do_connect(int no_retries, int retry_delay_in_seconds, int verbose);
@@ -63,14 +62,14 @@ public:
   
   void resetError();
   int hasError();
-  const char * getErrorString();
+  const char *getErrorString();
 
   /**
    * @return Node id of this node (as stated in local config or connectString)
    */
   Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds);
-  Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds,
-                     int verbose, int& error);
+  Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds, int verbose,
+                     int &error);
 
   int setNodeId(Uint32 nodeid);
 
@@ -82,8 +81,8 @@ public:
   /**
    * Get config from file
    */
-  static ndb_mgm::config_ptr getConfig(const char * file, BaseString& err);
-  ndb_mgm::config_ptr getConfig(const char * file);
+  static ndb_mgm::config_ptr getConfig(const char *file, BaseString &err);
+  ndb_mgm::config_ptr getConfig(const char *file);
 
   /**
    * Verify config
@@ -95,19 +94,17 @@ public:
   const char *get_mgmd_host() const;
   const char *get_connectstring(char *buf, int buf_sz) const;
   NdbMgmHandle get_mgmHandle() const { return m_handle; }
-  NdbMgmHandle* get_mgmHandlePtr() { return &m_handle; }
-  void end_session(bool end) { m_end_session= end; }
+  NdbMgmHandle *get_mgmHandlePtr() { return &m_handle; }
+  void end_session(bool end) { m_end_session = end; }
 
   Uint32 get_configuration_nodeid() const;
-private:
+
+ private:
   BaseString errorString;
-  enum ErrorType {
-    CR_NO_ERROR = 0,
-    CR_ERROR = 1
-  };
+  enum ErrorType { CR_NO_ERROR = 0, CR_ERROR = 1 };
   ErrorType latestErrorType;
 
-  void setError(ErrorType, const char * errorMsg);
+  void setError(ErrorType, const char *errorMsg);
   void setError(ErrorType, BaseString err);
 
   bool m_end_session;
@@ -119,5 +116,3 @@ private:
 };
 
 #endif
-
-

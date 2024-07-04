@@ -26,13 +26,13 @@
 #ifndef EVENTLOGGER_H
 #define EVENTLOGGER_H
 
-#include <logger/Logger.hpp>
 #include <kernel/kernel_types.h>
 #include <kernel/LogLevel.hpp>
 #include <kernel/signaldata/EventReport.hpp>
+#include <logger/Logger.hpp>
 
 class EventLoggerBase {
-public:
+ public:
   EventLoggerBase() = default;
 
   /**
@@ -46,7 +46,7 @@ public:
    * threshold - is in range [0-15]
    * severity  - DEBUG to ALERT (Type of log message)
    */  
-  typedef void (* EventTextFunction)(char *,size_t,const Uint32*, Uint32 len);
+  typedef void (*EventTextFunction)(char *, size_t, const Uint32 *, Uint32 len);
 
   struct EventRepLogLevelMatrix {
     Ndb_logevent_type       eventType;
@@ -58,10 +58,8 @@ public:
 
   static const EventRepLogLevelMatrix matrix[];
   static const Uint32 matrixSize;
-  static int event_lookup(int eventType,
-			  LogLevel::EventCategory &cat,
-			  Uint32 &threshold, 
-			  Logger::LoggerLevel &severity,
+  static int event_lookup(int eventType, LogLevel::EventCategory &cat,
+                          Uint32 &threshold, Logger::LoggerLevel &severity,
 			  EventTextFunction &textF);
 };
 
@@ -99,9 +97,8 @@ public:
  * @see Logger
  * @version #@ $Id: EventLogger.hpp,v 1.3 2003/09/01 10:15:52 innpeno Exp $
  */
-class EventLogger : public EventLoggerBase, public Logger
-{
-public:
+class EventLogger : public EventLoggerBase, public Logger {
+ public:
   /**
    * Default constructor. Enables default log levels and 
    * sets the log category to 'EventLogger'.
@@ -125,9 +122,8 @@ public:
    * @param theData the event data.
    * @param nodeId the node id of event origin.
    */
-  virtual void log(int eventType, const Uint32* theData, Uint32 len,
-		   NodeId nodeId = 0,const class LogLevel * = nullptr);
-
+  virtual void log(int eventType, const Uint32 *theData, Uint32 len,
+                   NodeId nodeId = 0, const class LogLevel * = nullptr);
 
   /**
    * Returns the event text for the specified event report type.
@@ -137,21 +133,20 @@ public:
    * @param nodeId a node id.
    * @return the event report text.
    */
-  static const char* getText(char * dst, size_t dst_len,
-			     EventTextFunction textF,
-			     const Uint32* theData, Uint32 len, 
+  static const char *getText(char *dst, size_t dst_len, EventTextFunction textF,
+                             const Uint32 *theData, Uint32 len,
 			     NodeId nodeId = 0);
 
-private:
+ private:
   /** Prohibit */
-  EventLogger(const EventLogger&);
-  EventLogger operator = (const EventLogger&);
-  bool operator == (const EventLogger&);
+  EventLogger(const EventLogger &);
+  EventLogger operator=(const EventLogger &);
+  bool operator==(const EventLogger &);
 
   static constexpr Uint32 MAX_TEXT_LENGTH = 384;
 };
 
-extern EventLogger * g_eventLogger;
+extern EventLogger *g_eventLogger;
 
 extern void getRestartAction(Uint32 action, BaseString &str);
 

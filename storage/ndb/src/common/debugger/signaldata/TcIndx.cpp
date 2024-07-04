@@ -24,9 +24,9 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include <BlockNumbers.h>
 #include <signaldata/TcIndx.hpp>
 #include <signaldata/TcKeyReq.hpp>
-#include <BlockNumbers.h>
 
 bool printTCINDXREF(FILE* output,
                     const Uint32* theData,

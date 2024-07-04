@@ -26,28 +26,23 @@
 
 #include <signaldata/TrigAttrInfo.hpp>
 
-static
-const char *
-tatype(Uint32 i){
-  switch(i){
-  case TrigAttrInfo::PRIMARY_KEY:
-    return "PK";
-    break;
-  case TrigAttrInfo::BEFORE_VALUES:
-    return "BEFORE";
-    break;
-  case TrigAttrInfo::AFTER_VALUES:
-    return "AFTER";
-    break;
+static const char *tatype(Uint32 i) {
+  switch (i) {
+    case TrigAttrInfo::PRIMARY_KEY:
+      return "PK";
+      break;
+    case TrigAttrInfo::BEFORE_VALUES:
+      return "BEFORE";
+      break;
+    case TrigAttrInfo::AFTER_VALUES:
+      return "AFTER";
+      break;
   }
   return "UNKNOWN";
 }
 
-bool printTRIG_ATTRINFO(FILE *output,
-                        const Uint32 *theData,
-                        Uint32 len,
-                        Uint16 /*receiverBlockNo*/)
-{
+bool printTRIG_ATTRINFO(FILE *output, const Uint32 *theData, Uint32 len,
+                        Uint16 /*receiverBlockNo*/) {
   const TrigAttrInfo *const sig = (const TrigAttrInfo *)theData;
 
   fprintf(output, " TriggerId: %d Type: %s ConnectPtr: %x\n",

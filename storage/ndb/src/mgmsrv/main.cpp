@@ -26,32 +26,31 @@
 #include <ndb_global.h>
 #include <ndb_opts.h>
 
-#include "MgmtSrvr.hpp"
-#include "EventLogger.hpp"
 #include "Config.hpp"
+#include "EventLogger.hpp"
+#include "MgmtSrvr.hpp"
 #include "my_alloc.h"
 
-#include <version.h>
-#include <kernel_types.h>
-#include <portlib/ndb_daemon.h>
 #include <NdbConfig.h>
 #include <NdbSleep.h>
-#include <portlib/NdbDir.hpp>
-#include <ndb_version.h>
+#include <kernel_types.h>
 #include <mgmapi_config_parameters.h>
+#include <ndb_version.h>
+#include <portlib/ndb_daemon.h>
+#include <version.h>
 #include <NdbAutoPtr.hpp>
 #include <ndb_mgmclient.hpp>
+#include <portlib/NdbDir.hpp>
 
 #include <EventLogger.hpp>
 #include <LogBuffer.hpp>
 #include <OutputStream.hpp>
 
-
 #if defined VM_TRACE || defined ERROR_INSERT
 extern int g_errorInsert;
 #endif
 
-const char *load_default_groups[]= { "mysql_cluster","ndb_mgmd",0 };
+const char *load_default_groups[] = {"mysql_cluster", "ndb_mgmd", 0};
 
 // copied from mysql.cc to get readline
 extern "C" {
@@ -64,43 +63,40 @@ extern "C" int add_history(const char *command); /* From readline directory */
 #endif
 }
 
-static int 
-read_and_execute(Ndb_mgmclient* com, const char * prompt, int _try_reconnect) 
-{
+static int read_and_execute(Ndb_mgmclient *com, const char *prompt,
+                            int _try_reconnect) {
   static char *line_read = (char *)NULL;
 
   /* If the buffer has already been allocated, return the memory
      to the free pool. */
-  if (line_read)
-  {
-    free (line_read);
+  if (line_read) {
+    free(line_read);
     line_read = (char *)NULL;
   }
 #ifdef HAVE_READLINE
   /* Get a line from the user. */
-  line_read = readline (prompt);    
+  line_read = readline(prompt);
   /* If the line has any text in it, save it on the history. */
-  if (line_read && *line_read)
-    add_history (line_read);
+  if (line_read && *line_read) add_history(line_read);
 #else
   static char linebuffer[254];
   fputs(prompt, stdout);
-  linebuffer[sizeof(linebuffer)-1]=0;
-  line_read = fgets(linebuffer, sizeof(linebuffer)-1, stdin);
+  linebuffer[sizeof(linebuffer) - 1] = 0;
+  line_read = fgets(linebuffer, sizeof(linebuffer) - 1, stdin);
   if (line_read == linebuffer) {
-    char *q=linebuffer;
+    char *q = linebuffer;
     while (*q > 31) q++;
-    *q=0;
-    line_read= strdup(linebuffer);
+    *q = 0;
+    line_read = strdup(linebuffer);
   }
 #endif
-  return com->execute(line_read,_try_reconnect);
+  return com->execute(line_read, _try_reconnect);
 }
 
 /* Global variables */
-bool g_StopServer= false;
-bool g_RestartServer= false;
-static MgmtSrvr* mgm;
+bool g_StopServer = false;
+bool g_RestartServer = false;
+static MgmtSrvr *mgm;
 static MgmtSrvr::MgmtOpts opts;
 static const char* opt_logname = "MgmtSrvr";
 static const char* opt_service_name = 0;
@@ -182,22 +178,17 @@ static struct my_option my_long_options[] =
     &opt_nowait_nodes,nullptr, nullptr, GET_STR, REQUIRED_ARG,
     0, 0, 0, 0, 0, 0 },
 #if defined VM_TRACE || defined ERROR_INSERT
-  { "error-insert", NDB_OPT_NOSHORT,
-    "Start with error insert variable set",
-    &g_errorInsert, nullptr, nullptr, GET_INT, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
+    {"error-insert", NDB_OPT_NOSHORT, "Start with error insert variable set",
+     &g_errorInsert, nullptr, nullptr, GET_INT, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
 #endif
-  NdbStdOpt::end_of_options
-};
+    NdbStdOpt::end_of_options};
 
-static void short_usage_sub(void)
-{
+static void short_usage_sub(void) {
   ndb_short_usage_sub(NULL);
   ndb_service_print_options("ndb_mgmd");
 }
 
-static void mgmd_exit(int result)
-{
+static void mgmd_exit(int result) {
   g_eventLogger->close();
 
   ndb_end(opt_ndb_endinfo ? MY_CHECK_ERROR | MY_GIVE_INFO : 0);
@@ -206,8 +197,7 @@ static void mgmd_exit(int result)
 }
 
 #ifndef _WIN32
-static void mgmd_sigterm_handler(int signum)
-{
+static void mgmd_sigterm_handler(int signum) {
   g_eventLogger->info("Received SIGTERM. Performing stop.");
   fprintf(stderr, "\n*** Received SIGTERM. Performing stop. ***\n");
   if (opts.interactive) {
@@ -218,10 +208,9 @@ static void mgmd_sigterm_handler(int signum)
 }
 #endif
 
-struct ThdData
-{
-  FILE* f;
-  LogBuffer* logBuf;
+struct ThdData {
+  FILE *f;
+  LogBuffer *logBuf;
 };
 
 /**
@@ -230,29 +219,26 @@ struct ThdData
  * to the mgmd local log file.
  */
 
-void* async_local_log_func(void* args)
-{
-  ThdData* data = (ThdData*)args;
-  FILE* f = data->f;
-  LogBuffer* logBuf = data->logBuf;
+void *async_local_log_func(void *args) {
+  ThdData *data = (ThdData *)args;
+  FILE *f = data->f;
+  LogBuffer *logBuf = data->logBuf;
   const size_t get_bytes = 512;
   char buf[get_bytes + 1];
   size_t bytes;
   int part_bytes = 0, bytes_printed = 0;
 
-  while (!logBuf->is_stopped())
-  {
+  while (!logBuf->is_stopped()) {
     part_bytes = 0;
     bytes_printed = 0;
 
-    if((bytes = logBuf->get(buf, get_bytes)))
-    {
+    if ((bytes = logBuf->get(buf, get_bytes))) {
       fwrite(buf, bytes, 1, f);
       fflush(f);
     }
   }
 
-  while((bytes = logBuf->get(buf, get_bytes, 1)))// flush remaining logs
+  while ((bytes = logBuf->get(buf, get_bytes, 1)))  // flush remaining logs
   {
     fwrite(buf, bytes, 1, f);
     fflush(f);
@@ -260,8 +246,7 @@ void* async_local_log_func(void* args)
 
   // print lost count in the end, if any
   size_t lost_count = logBuf->getLostCount();
-  if(lost_count)
-  {
+  if (lost_count) {
     fprintf(f, LostMsgHandler::LOST_BYTES_FMT, lost_count);
     fflush(f);
   }
@@ -269,25 +254,22 @@ void* async_local_log_func(void* args)
   return NULL;
 }
 
-static void mgmd_run()
-{
-  LogBuffer* logBufLocalLog = new LogBuffer(32768); // 32kB
+static void mgmd_run() {
+  LogBuffer *logBufLocalLog = new LogBuffer(32768);  // 32kB
 
-  struct NdbThread* locallog_threadvar= NULL;
-  ThdData thread_args=
-  {
-    stdout,
-    logBufLocalLog,
+  struct NdbThread *locallog_threadvar = NULL;
+  ThdData thread_args = {
+      stdout,
+      logBufLocalLog,
   };
 
   // Create log thread which logs data to the mgmd local log.
-  locallog_threadvar = NdbThread_Create(async_local_log_func,
-                                        (void**)&thread_args,
-                                        0,
-                                        "async_local_log_thread",
-                                        NDB_THREAD_PRIO_MEAN);
+  locallog_threadvar =
+      NdbThread_Create(async_local_log_func, (void **)&thread_args, 0,
+                       "async_local_log_thread", NDB_THREAD_PRIO_MEAN);
 
-  BufferedOutputStream* ndbouts_bufferedoutputstream = new BufferedOutputStream(logBufLocalLog);
+  BufferedOutputStream *ndbouts_bufferedoutputstream =
+      new BufferedOutputStream(logBufLocalLog);
 
   // Make ndbout point to the BufferedOutputStream.
   NdbOut_ReInit(ndbouts_bufferedoutputstream, ndbouts_bufferedoutputstream);
@@ -299,16 +281,15 @@ static void mgmd_run()
   }
 
   if (opts.interactive) {
-    int port= mgm->getPort();
+    int port = mgm->getPort();
     BaseString con_str;
-    if(opts.bind_address)
+    if (opts.bind_address)
       con_str.appfmt("host=%s %d", opts.bind_address, port);
     else
       con_str.appfmt("localhost:%d", port);
     Ndb_mgmclient com(con_str.c_str(), "ndb_mgm> ", 1, 5);
-    while(!g_StopServer){
-      if (!read_and_execute(&com, "ndb_mgm> ", 1))
-        g_StopServer = true;
+    while (!g_StopServer) {
+      if (!read_and_execute(&com, "ndb_mgm> ", 1)) g_StopServer = true;
     }
   }
   else
@@ -316,8 +297,7 @@ static void mgmd_run()
     g_eventLogger->info("RonDB Management Server %s started",
                         NDB_VERSION_STRING);
 
-    while (!g_StopServer)
-      NdbSleep_MilliSleep(500);
+    while (!g_StopServer) NdbSleep_MilliSleep(500);
   }
 
   g_eventLogger->info("Shutting down server...");
@@ -326,16 +306,16 @@ static void mgmd_run()
   delete mgm;
   g_eventLogger->info("Shutdown complete");
 
-  if(g_RestartServer){
+  if (g_RestartServer) {
     g_eventLogger->info("Restarting server...");
-    g_RestartServer= g_StopServer= false;
+    g_RestartServer = g_StopServer = false;
   }
 
   /**
    * Stopping the log thread is done at the very end since the
    * node logs should be available until complete shutdown.
    */
-  void* dummy_return_status;
+  void *dummy_return_status;
   logBufLocalLog->stop();
   NdbThread_WaitFor(locallog_threadvar, &dummy_return_status);
   delete ndbouts_bufferedoutputstream;
@@ -345,8 +325,7 @@ static void mgmd_run()
 
 #include "../common/util/parse_mask.hpp"
 
-static int mgmd_main(int argc, char** argv)
-{
+static int mgmd_main(int argc, char **argv) {
   NDB_INIT(argv[0]);
   Ndb_opts ndb_opts(argc, argv, my_long_options, load_default_groups);
   ndb_opts.set_usage_funcs(short_usage_sub);
@@ -355,12 +334,11 @@ static int mgmd_main(int argc, char** argv)
 
   int ho_error;
 #ifndef NDEBUG
-  opt_debug= IF_WIN("d:t:i:F:o,c:\\ndb_mgmd.trace",
-                    "d:t:i:F:o,/tmp/ndb_mgmd.trace");
+  opt_debug =
+      IF_WIN("d:t:i:F:o,c:\\ndb_mgmd.trace", "d:t:i:F:o,/tmp/ndb_mgmd.trace");
 #endif
 
-  if ((ho_error=ndb_opts.handle_options()))
-    mgmd_exit(ho_error);
+  if ((ho_error = ndb_opts.handle_options())) mgmd_exit(ho_error);
 
   if (argc > 0) {
     std::string invalid_args;
@@ -377,14 +355,11 @@ static int mgmd_main(int argc, char** argv)
     opts.config_filename = nullptr;
   }
 
-  if (opts.interactive ||
-      opts.non_interactive ||
-      opts.print_full_config) {
-    opts.daemon= 0;
+  if (opts.interactive || opts.non_interactive || opts.print_full_config) {
+    opts.daemon = 0;
   }
 
-  if (opts.mycnf && opts.config_filename)
-  {
+  if (opts.mycnf && opts.config_filename) {
     fprintf(stderr, "ERROR: Both --mycnf and -f is not supported\n");
     mgmd_exit(1);
   }
@@ -415,14 +390,13 @@ static int mgmd_main(int argc, char** argv)
 
   /*validation is added to prevent user using
   wrong short option for --config-file.*/
-  if (opt_ndb_connectstring)
-  {
+  if (opt_ndb_connectstring) {
     // file path mostly starts with . or /
     if (strncmp(opt_ndb_connectstring, "/", 1) == 0 ||
-        strncmp(opt_ndb_connectstring, ".", 1) == 0)
-    {
-      fprintf(stderr, "ERROR: --ndb-connectstring can't start with '.' or"
-          " '/'\n");
+        strncmp(opt_ndb_connectstring, ".", 1) == 0) {
+      fprintf(stderr,
+              "ERROR: --ndb-connectstring can't start with '.' or"
+              " '/'\n");
       mgmd_exit(1);
     }
 
@@ -434,17 +408,13 @@ static int mgmd_main(int argc, char** argv)
     }
   }
 
-  if (opt_nowait_nodes)
-  {
+  if (opt_nowait_nodes) {
     int res = parse_mask(opt_nowait_nodes, opts.nowait_nodes);
-    if(res == -2 || (res > 0 && opts.nowait_nodes.get(0)))
-    {
+    if (res == -2 || (res > 0 && opts.nowait_nodes.get(0))) {
       fprintf(stderr, "ERROR: Invalid nodeid specified in nowait-nodes: '%s'\n",
               opt_nowait_nodes);
       mgmd_exit(1);
-    }
-    else if (res < 0)
-    {
+    } else if (res < 0) {
       fprintf(stderr, "ERROR: Unable to parse nowait-nodes argument: '%s'\n",
               opt_nowait_nodes);
       mgmd_exit(1);
@@ -458,13 +428,9 @@ static int mgmd_main(int argc, char** argv)
   if (opts.bind_address)
   {
     int len = strlen(opts.bind_address);
-    if ((opts.bind_address[0] == '[') &&
-        (opts.bind_address[len - 1] == ']'))
-    {
+    if ((opts.bind_address[0] == '[') && (opts.bind_address[len - 1] == ']')) {
       opts.bind_address = strdup(opts.bind_address + 1);
-    }
-    else
-    {
+    } else {
       opts.bind_address = strdup(opts.bind_address);
     }
   }
@@ -481,21 +447,20 @@ static int mgmd_main(int argc, char** argv)
 #endif
 
   if (opts.verbose)
-    g_eventLogger->enable(Logger::LL_ALL); // --verbose turns on everything
+    g_eventLogger->enable(Logger::LL_ALL);  // --verbose turns on everything
 
-  /**
-     Install signal handler for SIGPIPE
-     Done in TransporterFacade as well.. what about Configretriever?
-   */
+    /**
+       Install signal handler for SIGPIPE
+       Done in TransporterFacade as well.. what about Configretriever?
+     */
 #ifndef _WIN32
   signal(SIGPIPE, SIG_IGN);
   signal(SIGTERM, mgmd_sigterm_handler);
 #endif
 
-  while (!g_StopServer)
-  {
+  while (!g_StopServer) {
     NdbOut_Init();
-    mgm= new MgmtSrvr(opts);
+    mgm = new MgmtSrvr(opts);
     if (mgm == NULL) {
       g_eventLogger->critical("Out of memory, couldn't create MgmtSrvr");
       fprintf(stderr, "CRITICAL: Out of memory, couldn't create MgmtSrvr\n");
@@ -508,16 +473,14 @@ static int mgmd_main(int argc, char** argv)
       mgmd_exit(1);
     }
 
-    if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0)
-    {
+    if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0) {
       g_eventLogger->warning("Cannot change directory to '%s', error: %d",
                              NdbConfig_get_path(NULL), errno);
       // Ignore error
     }
 
-    if (opts.daemon)
-    {
-      NodeId localNodeId= mgm->getOwnNodeId();
+    if (opts.daemon) {
+      NodeId localNodeId = mgm->getOwnNodeId();
       if (localNodeId == 0) {
         g_eventLogger->error("Couldn't get own node id");
         fprintf(stderr, "ERROR: Couldn't get own node id\n");
@@ -525,10 +488,9 @@ static int mgmd_main(int argc, char** argv)
         mgmd_exit(1);
       }
 
-      char *lockfile= NdbConfig_PidFileName(localNodeId);
-      char *logfile=  NdbConfig_StdoutFileName(localNodeId);
-      if (ndb_daemonize(lockfile, logfile))
-      {
+      char *lockfile = NdbConfig_PidFileName(localNodeId);
+      char *logfile = NdbConfig_StdoutFileName(localNodeId);
+      if (ndb_daemonize(lockfile, logfile)) {
         g_eventLogger->error("Couldn't start as daemon, error: '%s'",
                              ndb_daemon_error);
         fprintf(stderr, "Couldn't start as daemon, error: '%s'\n",
@@ -544,7 +506,9 @@ static int mgmd_main(int argc, char** argv)
   return 0;
 }
 
+static void mgmd_stop(void) { g_StopServer = true; }
 
+<<<<<<< RonDB // RONDB-624 todo
 static void mgmd_stop(void)
 {
   g_StopServer= true;
@@ -555,4 +519,20 @@ int main(int argc, char** argv)
 {
   return ndb_daemon_init(argc, argv, mgmd_main, mgmd_stop,
                          "ndb_mgmd", "RonDB Management Server");
+||||||| Common ancestor
+static void mgmd_stop(void)
+{
+  g_StopServer= true;
+}
+
+
+int main(int argc, char** argv)
+{
+  return ndb_daemon_init(argc, argv, mgmd_main, mgmd_stop,
+                         "ndb_mgmd", "MySQL Cluster Management Server");
+=======
+int main(int argc, char **argv) {
+  return ndb_daemon_init(argc, argv, mgmd_main, mgmd_stop, "ndb_mgmd",
+                         "MySQL Cluster Management Server");
+>>>>>>> MySQL 8.0.36
 }

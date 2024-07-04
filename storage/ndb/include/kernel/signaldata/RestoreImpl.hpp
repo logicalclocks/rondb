@@ -30,9 +30,7 @@
 
 #define JAM_FILE_ID 214
 
-
-struct RestoreLcpReq 
-{
+struct RestoreLcpReq {
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 lcpNo;
@@ -48,16 +46,14 @@ struct RestoreLcpReq
   static constexpr Uint32 SignalLength = 11;
 };
 
-struct RestoreLcpRef
-{
+struct RestoreLcpRef {
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 errorCode;
   Uint32 extra[1];
   static constexpr Uint32 SignalLength = 3;
 
-  enum ErrorCode 
-  {
+  enum ErrorCode {
     OK = 0,
     NoFileRecord = 1,
     OutOfDataBuffer = 2,
@@ -66,8 +62,7 @@ struct RestoreLcpRef
   };
 };
 
-struct RestoreLcpConf 
-{
+struct RestoreLcpConf {
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 restoredLcpId;
@@ -80,14 +75,8 @@ struct RestoreLcpConf
 };
 
 struct RestoreContinueB {
-  
-  enum {
-    RESTORE_NEXT = 0, 
-    READ_FILE = 1,
-    CHECK_EXPAND_SHRINK = 2
-  };
+  enum { RESTORE_NEXT = 0, READ_FILE = 1, CHECK_EXPAND_SHRINK = 2 };
 };
-
 
 #undef JAM_FILE_ID
 

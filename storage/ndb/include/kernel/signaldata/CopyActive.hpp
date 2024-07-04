@@ -29,7 +29,6 @@
 
 #define JAM_FILE_ID 175
 
-
 class CopyActiveReq {
   /**
    * Sender(s)
@@ -46,14 +45,9 @@ class CopyActiveReq {
 public:
   static constexpr Uint32 SignalLength = 6;
 
-  enum Flags
-  {
-    CAR_NO_WAIT = 0x1
-    ,CAR_NO_LOGGING = 0x2
-    ,CAR_LOCAL_SEND = 0x4
-  };
+  enum Flags { CAR_NO_WAIT = 0x1, CAR_NO_LOGGING = 0x2, CAR_LOCAL_SEND = 0x4 };
 
-private:
+ private:
   Uint32 userPtr;
   Uint32 userRef;
   Uint32 tableId;
@@ -78,7 +72,7 @@ class CopyActiveConf {
 public:
   static constexpr Uint32 SignalLength = 5;
 
-private:
+ private:
   Uint32 userPtr;
   Uint32 startingNodeId;
   Uint32 tableId;
@@ -101,14 +95,13 @@ class CopyActiveRef {
 public:
   static constexpr Uint32 SignalLength = 5;
 
-private:
+ private:
   Uint32 userPtr;
   Uint32 startingNodeId;
   Uint32 tableId;
   Uint32 fragId;
   Uint32 errorCode;
 };
-
 
 #undef JAM_FILE_ID
 

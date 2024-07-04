@@ -25,31 +25,31 @@
 #define DBTUP_C
 
 #include "DbtupProxy.hpp"
-#include "Dbtup.hpp"
 #include <pgman.hpp>
 #include <signaldata/LgmanContinueB.hpp>
+#include "Dbtup.hpp"
 
 #include <EventLogger.hpp>
 
 #define JAM_FILE_ID 413
-
 
 #ifdef VM_TRACE
 //#define DEBUG_TUP_RESTART_ 1
 #endif
 
 #ifdef DEBUG_TUP_RESTART
-#define DEB_TUP_RESTART(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_TUP_RESTART(arglist) \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
 #else
-#define DEB_TUP_RESTART(arglist) do { } while (0)
+#define DEB_TUP_RESTART(arglist) \
+  do {                           \
+  } while (0)
 #endif
 
-DbtupProxy::DbtupProxy(Block_context& ctx) :
-  LocalProxy(DBTUP, ctx),
-  c_pgman(0),
-  c_tableRecSize(0),
-  c_tableRec(0)
-{
+DbtupProxy::DbtupProxy(Block_context &ctx)
+    : LocalProxy(DBTUP, ctx), c_pgman(0), c_tableRecSize(0), c_tableRec(0) {
   // GSN_CREATE_TAB_REQ
   addRecSignal(GSN_CREATE_TAB_REQ, &DbtupProxy::execCREATE_TAB_REQ);
   addRecSignal(GSN_DROP_TAB_REQ, &DbtupProxy::execDROP_TAB_REQ);
@@ -60,64 +60,53 @@ DbtupProxy::DbtupProxy(Block_context& ctx) :
   addRecSignal(GSN_BUILD_INDX_IMPL_REF, &DbtupProxy::execBUILD_INDX_IMPL_REF);
 }
 
-DbtupProxy::~DbtupProxy()
-{
-}
+DbtupProxy::~DbtupProxy() {}
 
-SimulatedBlock*
-DbtupProxy::newWorker(Uint32 instanceNo)
-{
+SimulatedBlock *DbtupProxy::newWorker(Uint32 instanceNo) {
   return new Dbtup(m_ctx, instanceNo);
 }
 
 // GSN_READ_CONFIG_REQ
-void
-DbtupProxy::callREAD_CONFIG_REQ(Signal* signal)
-{
+void DbtupProxy::callREAD_CONFIG_REQ(Signal *signal) {
   jam();
-  const ReadConfigReq* req = (const ReadConfigReq*)signal->getDataPtr();
+  const ReadConfigReq *req = (const ReadConfigReq *)signal->getDataPtr();
   ndbrequire(req->noOfParameters == 0);
 
-  const ndb_mgm_configuration_iterator * p = 
-    m_ctx.m_config.getOwnConfigIterator();
+  const ndb_mgm_configuration_iterator *p =
+      m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
-  
+
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUP_TABLE, &c_tableRecSize));
-  c_tableRec = (Uint32*)allocRecord("TableRec", sizeof(Uint32),
-                                    c_tableRecSize);
+  c_tableRec =
+      (Uint32 *)allocRecord("TableRec", sizeof(Uint32), c_tableRecSize);
   D("proxy:" << V(c_tableRecSize));
   Uint32 i;
-  for (i = 0; i < c_tableRecSize; i++)
-    c_tableRec[i] = 0;
+  for (i = 0; i < c_tableRecSize; i++) c_tableRec[i] = 0;
   backREAD_CONFIG_REQ(signal);
 }
 
 // GSN_STTOR
 
-void
-DbtupProxy::callSTTOR(Signal* signal)
-{
+void DbtupProxy::callSTTOR(Signal *signal) {
   jam();
   Uint32 startPhase = signal->theData[1];
   switch (startPhase) {
-  case 1:
-    jam();
-    c_pgman = (Pgman*)globalData.getBlock(PGMAN);
-    c_tsman = (Tsman*)globalData.getBlock(TSMAN);
-    ndbrequire(c_pgman != 0);
-    ndbrequire(c_tsman != 0);
-    break;
+    case 1:
+      jam();
+      c_pgman = (Pgman *)globalData.getBlock(PGMAN);
+      c_tsman = (Tsman *)globalData.getBlock(TSMAN);
+      ndbrequire(c_pgman != 0);
+      ndbrequire(c_tsman != 0);
+      break;
   }
   backSTTOR(signal);
 }
 
 // GSN_CREATE_TAB_REQ
 
-void
-DbtupProxy::execCREATE_TAB_REQ(Signal* signal)
-{
+void DbtupProxy::execCREATE_TAB_REQ(Signal *signal) {
   jam();
-  const CreateTabReq* req = (const CreateTabReq*)signal->getDataPtr();
+  const CreateTabReq *req = (const CreateTabReq *)signal->getDataPtr();
   const Uint32 tableId = req->tableId;
   const Uint32 create_table_schema_version = req->tableVersion & 0xFFFFFF;
   ndbrequire(tableId < c_tableRecSize);
@@ -128,11 +117,9 @@ DbtupProxy::execCREATE_TAB_REQ(Signal* signal)
   D("proxy: created table" << V(tableId));
 }
 
-void
-DbtupProxy::execDROP_TAB_REQ(Signal* signal)
-{
+void DbtupProxy::execDROP_TAB_REQ(Signal *signal) {
   jam();
-  const DropTabReq* req = (const DropTabReq*)signal->getDataPtr();
+  const DropTabReq *req = (const DropTabReq *)signal->getDataPtr();
   const Uint32 tableId = req->tableId;
   ndbrequire(tableId < c_tableRecSize);
   c_tableRec[tableId] = 0;
@@ -142,83 +129,70 @@ DbtupProxy::execDROP_TAB_REQ(Signal* signal)
 
 // GSN_BUILD_INDX_IMPL_REQ
 
-void
-DbtupProxy::execBUILD_INDX_IMPL_REQ(Signal* signal)
-{
+void DbtupProxy::execBUILD_INDX_IMPL_REQ(Signal *signal) {
   jam();
-  const BuildIndxImplReq* req = (const BuildIndxImplReq*)signal->getDataPtr();
-  Ss_BUILD_INDX_IMPL_REQ& ss = ssSeize<Ss_BUILD_INDX_IMPL_REQ>();
+  const BuildIndxImplReq *req = (const BuildIndxImplReq *)signal->getDataPtr();
+  Ss_BUILD_INDX_IMPL_REQ &ss = ssSeize<Ss_BUILD_INDX_IMPL_REQ>();
   ss.m_req = *req;
   ndbrequire(signal->getLength() == BuildIndxImplReq::SignalLength);
   sendREQ(signal, ss);
 }
 
-void
-DbtupProxy::sendBUILD_INDX_IMPL_REQ(Signal* signal, Uint32 ssId,
-                                    SectionHandle* handle)
-{
+void DbtupProxy::sendBUILD_INDX_IMPL_REQ(Signal *signal, Uint32 ssId,
+                                         SectionHandle *handle) {
   jam();
-  Ss_BUILD_INDX_IMPL_REQ& ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
+  Ss_BUILD_INDX_IMPL_REQ &ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
 
-  BuildIndxImplReq* req = (BuildIndxImplReq*)signal->getDataPtrSend();
+  BuildIndxImplReq *req = (BuildIndxImplReq *)signal->getDataPtrSend();
   *req = ss.m_req;
   req->senderRef = reference();
   req->senderData = ssId;
-  sendSignalNoRelease(workerRef(ss.m_worker), GSN_BUILD_INDX_IMPL_REQ,
-                      signal, BuildIndxImplReq::SignalLength, JBB, handle);
+  sendSignalNoRelease(workerRef(ss.m_worker), GSN_BUILD_INDX_IMPL_REQ, signal,
+                      BuildIndxImplReq::SignalLength, JBB, handle);
 }
 
-void
-DbtupProxy::execBUILD_INDX_IMPL_CONF(Signal* signal)
-{
+void DbtupProxy::execBUILD_INDX_IMPL_CONF(Signal *signal) {
   jam();
-  const BuildIndxImplConf* conf = (const BuildIndxImplConf*)signal->getDataPtr();
+  const BuildIndxImplConf *conf =
+      (const BuildIndxImplConf *)signal->getDataPtr();
   Uint32 ssId = conf->senderData;
-  Ss_BUILD_INDX_IMPL_REQ& ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
+  Ss_BUILD_INDX_IMPL_REQ &ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
   recvCONF(signal, ss);
 }
 
-void
-DbtupProxy::execBUILD_INDX_IMPL_REF(Signal* signal)
-{
+void DbtupProxy::execBUILD_INDX_IMPL_REF(Signal *signal) {
   jam();
-  const BuildIndxImplRef* ref = (const BuildIndxImplRef*)signal->getDataPtr();
+  const BuildIndxImplRef *ref = (const BuildIndxImplRef *)signal->getDataPtr();
   Uint32 ssId = ref->senderData;
-  Ss_BUILD_INDX_IMPL_REQ& ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
+  Ss_BUILD_INDX_IMPL_REQ &ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
   recvREF(signal, ss, ref->errorCode);
 }
 
-void
-DbtupProxy::sendBUILD_INDX_IMPL_CONF(Signal* signal, Uint32 ssId)
-{
+void DbtupProxy::sendBUILD_INDX_IMPL_CONF(Signal *signal, Uint32 ssId) {
   jam();
-  Ss_BUILD_INDX_IMPL_REQ& ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
+  Ss_BUILD_INDX_IMPL_REQ &ss = ssFind<Ss_BUILD_INDX_IMPL_REQ>(ssId);
   BlockReference dictRef = ss.m_req.senderRef;
 
-  if (!lastReply(ss))
-  {
+  if (!lastReply(ss)) {
     jam();
     return;
   }
 
-  if (ss.m_error == 0)
-  {
+  if (ss.m_error == 0) {
     jam();
-    BuildIndxImplConf* conf = (BuildIndxImplConf*)signal->getDataPtrSend();
+    BuildIndxImplConf *conf = (BuildIndxImplConf *)signal->getDataPtrSend();
     conf->senderRef = reference();
     conf->senderData = ss.m_req.senderData;
-    sendSignal(dictRef, GSN_BUILD_INDX_IMPL_CONF,
-               signal, BuildIndxImplConf::SignalLength, JBB);
-  }
-  else
-  {
+    sendSignal(dictRef, GSN_BUILD_INDX_IMPL_CONF, signal,
+               BuildIndxImplConf::SignalLength, JBB);
+  } else {
     jam();
-    BuildIndxImplRef* ref = (BuildIndxImplRef*)signal->getDataPtrSend();
+    BuildIndxImplRef *ref = (BuildIndxImplRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
     ref->senderData = ss.m_req.senderData;
     ref->errorCode = ss.m_error;
-    sendSignal(dictRef, GSN_BUILD_INDX_IMPL_REF,
-               signal, BuildIndxImplRef::SignalLength, JBB);
+    sendSignal(dictRef, GSN_BUILD_INDX_IMPL_REF, signal,
+               BuildIndxImplRef::SignalLength, JBB);
   }
 
   ssRelease<Ss_BUILD_INDX_IMPL_REQ>(ssId);
@@ -228,8 +202,7 @@ DbtupProxy::sendBUILD_INDX_IMPL_CONF(Signal* signal, Uint32 ssId)
 
 // LGMAN
 
-DbtupProxy::Proxy_undo::Proxy_undo()
-{
+DbtupProxy::Proxy_undo::Proxy_undo() {
   m_type = 0;
   m_len = 0;
   m_ptr = 0;
@@ -243,16 +216,15 @@ DbtupProxy::Proxy_undo::Proxy_undo()
   m_in_use = false;
 }
 
-void
-DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
-                              Uint32 type, const Uint32 * ptr, Uint32 len)
-{
-  Proxy_undo& undo = c_proxy_undo;
+void DbtupProxy::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
+                                   const Uint32 *ptr, Uint32 len) {
+  Proxy_undo &undo = c_proxy_undo;
   ndbrequire(!undo.m_in_use);
   new (&undo) Proxy_undo;
   undo.m_in_use = true;
 
-  D("proxy: disk_restart_undo" << V(type) << hex << V(ptr) << dec << V(len) << V(lsn));
+  D("proxy: disk_restart_undo" << V(type) << hex << V(ptr) << dec << V(len)
+                               << V(lsn));
   undo.m_type = type;
   undo.m_len = len;
   undo.m_ptr = ptr; /* Ptr to memory managed by lgman */
@@ -418,8 +390,8 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
        * We need the table id and fragment id to be able to map the
        * page id to the correct LDM instance.
        */
-      Tablespace_client tsman(signal, this, c_tsman,
-                              0, 0, 0, 0); //Ignored for this call
+      Tablespace_client tsman(signal, this, c_tsman, 0, 0, 0,
+                              0);  // Ignored for this call
       tsman.get_extent_info(undo.m_key);
       tableId = tsman.get_table_id();
       fragId = tsman.get_fragment_id();
@@ -427,8 +399,7 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
     }
 
     if (tableId >= c_tableRecSize ||
-        c_tableRec[tableId] != create_table_version)
-    {
+        c_tableRec[tableId] != create_table_version) {
       jam();
       /*
        * The timeslice via PGMAN/5 gives LGMAN a chance to overwrite the
@@ -466,7 +437,7 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
       req.m_page = undo.m_key;
       req.m_callback.m_callbackData = 0;
       req.m_callback.m_callbackFunction =
-        safe_cast(&DbtupProxy::disk_restart_undo_callback);
+          safe_cast(&DbtupProxy::disk_restart_undo_callback);
       int flags = Page_cache_client::UNDO_GET_REQ;
 
       int ret = pgman.get_page(signal, req, flags);
@@ -478,18 +449,16 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
       return;
     }
     DEB_TUP_RESTART(("DBTUP(0) create_table_version:%u c_tableRec:%u",
-                              create_table_version,
-                              c_tableRec[tableId]));
+                     create_table_version, c_tableRec[tableId]));
     undo.m_table_id = tableId;
     undo.m_fragment_id = fragId;
   }
   disk_restart_undo_finish(signal);
 }
 
-void
-DbtupProxy::disk_restart_undo_callback(Signal* signal, Uint32, Uint32 page_id)
-{
-  Proxy_undo& undo = c_proxy_undo;
+void DbtupProxy::disk_restart_undo_callback(Signal *signal, Uint32,
+                                            Uint32 page_id) {
+  Proxy_undo &undo = c_proxy_undo;
   undo.m_page_id = page_id;
 
   Ptr<GlobalPage> gptr;
@@ -498,12 +467,11 @@ DbtupProxy::disk_restart_undo_callback(Signal* signal, Uint32, Uint32 page_id)
   ndbrequire(undo.m_actions & Proxy_undo::ReadTupPage);
   {
     jam();
-    const Tup_page* page = (const Tup_page*)gptr.p;
-    const File_formats::Page_header& header = page->m_page_header;
+    const Tup_page *page = (const Tup_page *)gptr.p;
+    const File_formats::Page_header &header = page->m_page_header;
     const Uint32 page_type = header.m_page_type;
 
-    if (page_type == 0)
-    {
+    if (page_type == 0) {
       jam();
       /**
        * Page not written, no need to worry about UNDO log, nothing
@@ -519,13 +487,11 @@ DbtupProxy::disk_restart_undo_callback(Signal* signal, Uint32, Uint32 page_id)
     jam();
     undo.m_table_id = page->m_table_id;
     undo.m_fragment_id = page->m_fragment_id;
-    D("proxy: callback" << V(undo.m_table_id) <<
-                           V(undo.m_fragment_id) <<
-                           V(undo.m_create_table_version));
+    D("proxy: callback" << V(undo.m_table_id) << V(undo.m_fragment_id)
+                        << V(undo.m_create_table_version));
     const Uint32 tableId = undo.m_table_id;
     if (tableId >= c_tableRecSize ||
-        c_tableRec[tableId] != page->m_create_table_version)
-    {
+        c_tableRec[tableId] != page->m_create_table_version) {
       jam();
       /**
        * Also the table had invalid data, it have belonged to another
@@ -549,19 +515,14 @@ DbtupProxy::disk_restart_undo_callback(Signal* signal, Uint32, Uint32 page_id)
        * is not to be executed.
        */
       jam();
-      Tablespace_client tsman(signal,
-                              this,
-                              c_tsman,
-                              page->m_table_id,
-                              page->m_fragment_id,
-                              page->m_create_table_version,
-                              0); //Ignored for this call
+      Tablespace_client tsman(signal, this, c_tsman, page->m_table_id,
+                              page->m_fragment_id, page->m_create_table_version,
+                              0);  // Ignored for this call
       tsman.write_extent_info(undo.m_key);
     }
-    Uint64 page_lsn = (Uint64(header.m_page_lsn_hi) << 32)
-        + header.m_page_lsn_lo;
-    if (! (undo.m_lsn <= page_lsn))
-    {
+    Uint64 page_lsn =
+        (Uint64(header.m_page_lsn_hi) << 32) + header.m_page_lsn_lo;
+    if (!(undo.m_lsn <= page_lsn)) {
       /**
        * Page lsn shows that this UNDO log record was never applied. So
        * no need to execute UNDO log record.
@@ -576,19 +537,16 @@ DbtupProxy::disk_restart_undo_callback(Signal* signal, Uint32, Uint32 page_id)
   }
 }
 
-void
-DbtupProxy::disk_restart_undo_send_next(Signal *signal, Uint32 tup_instance)
-{
+void DbtupProxy::disk_restart_undo_send_next(Signal *signal,
+                                             Uint32 tup_instance) {
   signal->theData[0] = LgmanContinueB::EXECUTE_UNDO_RECORD;
   signal->theData[1] = 0; /* Not applied flag */
   signal->theData[2] = tup_instance;
   sendSignal(LGMAN_REF, GSN_CONTINUEB, signal, 3, JBB);
 }
 
-void
-DbtupProxy::disk_restart_undo_finish(Signal* signal)
-{
-  Proxy_undo& undo = c_proxy_undo;
+void DbtupProxy::disk_restart_undo_finish(Signal *signal) {
+  Proxy_undo &undo = c_proxy_undo;
   /**
    * The instance number of the tup instance the undo record is sent to.
    * 0 means the undo record is not sent to any LDM or it was sent to all.
@@ -597,10 +555,9 @@ DbtupProxy::disk_restart_undo_finish(Signal* signal)
 
   if (undo.m_actions & Proxy_undo::GetInstance) {
     jam();
-    Uint32 instanceNo = getInstanceNoCanFail(undo.m_table_id,
-                                             undo.m_fragment_id);
-    if (instanceNo == RNIL)
-    {
+    Uint32 instanceNo =
+        getInstanceNoCanFail(undo.m_table_id, undo.m_fragment_id);
+    if (instanceNo == RNIL) {
       jam();
       /**
        * Ignore this record since no table with this table id and
@@ -632,10 +589,7 @@ DbtupProxy::disk_restart_undo_finish(Signal* signal)
     ndbrequire(undo.m_instance_no != 0);
     Uint32 i = undo.m_instance_no - 1;
     DEB_TUP_RESTART(("DBTUP(0) SENDING lsn:%llu type:%u len:%u LDM:%u",
-                            undo.m_lsn,
-                            undo.m_type,
-                            undo.m_len,
-                            undo.m_instance_no));
+                     undo.m_lsn, undo.m_type, undo.m_len, undo.m_instance_no));
 
     disk_restart_undo_send(signal, i);
     tup_instance = undo.m_instance_no;
@@ -643,12 +597,10 @@ DbtupProxy::disk_restart_undo_finish(Signal* signal)
     jam();
     Uint32 i;
     for (i = 0; i < c_workers; i++) {
-      DEB_TUP_RESTART(("DBTUP(0) DbtupProxy SENDING lsn:%llu type:%u "
-          "len:%u LDM:%u",
-          undo.m_lsn,
-          undo.m_type,
-          undo.m_len,
-          i+1));
+      DEB_TUP_RESTART(
+          ("DBTUP(0) DbtupProxy SENDING lsn:%llu type:%u "
+           "len:%u LDM:%u",
+           undo.m_lsn, undo.m_type, undo.m_len, i + 1));
       disk_restart_undo_send(signal, i);
     }
   }
@@ -658,15 +610,13 @@ finish:
   undo.m_in_use = false;
 }
 
-void
-DbtupProxy::disk_restart_undo_send(Signal* signal, Uint32 i)
-{
+void DbtupProxy::disk_restart_undo_send(Signal *signal, Uint32 i) {
   /*
    * Send undo entry via long signal because:
    * 1) a method call would execute in another non-mutexed Pgman
    * 2) MT-LGMAN is planned, do not optimize (pass pointer) now
    */
-  Proxy_undo& undo = c_proxy_undo;
+  Proxy_undo &undo = c_proxy_undo;
 
   LinearSectionPtr ptr[3];
   ptr[0].p = (Uint32 *)undo.m_ptr;
@@ -695,22 +645,18 @@ DbtupProxy::disk_restart_alloc_extent(EmulatedJamBuffer *jamBuf,
   {
     thrjam(jamBuf);
     D("proxy: table dropped" << V(tableId));
-    DEB_TUP_RESTART(("disk_restart_alloc_extent failed on tab(%u,%u):%u,"
-                     " tableId missing",
-                     tableId,
-                     fragId,
-                     create_table_version));
+    DEB_TUP_RESTART(
+        ("disk_restart_alloc_extent failed on tab(%u,%u):%u,"
+         " tableId missing",
+         tableId, fragId, create_table_version));
     return -1;
   }
-  if (c_tableRec[tableId] != create_table_version)
-  {
+  if (c_tableRec[tableId] != create_table_version) {
     thrjam(jamBuf);
-    DEB_TUP_RESTART(("disk_restart_alloc_extent failed on tab(%u,%u):%u,"
-                     " expected create_table_version: %u",
-                     tableId,
-                     fragId,
-                     create_table_version,
-                     c_tableRec[tableId]));
+    DEB_TUP_RESTART(
+        ("disk_restart_alloc_extent failed on tab(%u,%u):%u,"
+         " expected create_table_version: %u",
+         tableId, fragId, create_table_version, c_tableRec[tableId]));
     return -1;
   }
 
@@ -719,8 +665,7 @@ DbtupProxy::disk_restart_alloc_extent(EmulatedJamBuffer *jamBuf,
   thrjamLine(jamBuf, Uint16(tableId));
   thrjamLine(jamBuf, Uint16(fragId));
   Uint32 instanceNo = getInstanceNoCanFail(tableId, fragId);
-  if (instanceNo == RNIL)
-  {
+  if (instanceNo == RNIL) {
     thrjam(jamBuf);
     DEB_TUP_RESTART(("disk_restart_alloc_extent failed, instanceNo = RNIL"));
     D("proxy: table either dropped, non-existent or fragment not existing"
@@ -740,15 +685,10 @@ DbtupProxy::disk_restart_alloc_extent(EmulatedJamBuffer *jamBuf,
                                           pages);
 }
 
-void
-DbtupProxy::disk_restart_page_bits(Uint32 tableId,
-                                   Uint32 fragId,
-                                   Uint32 create_table_version,
-                                   const Local_key* key,
-                                   Uint32 bits)
-{
-  ndbrequire(tableId < c_tableRecSize &&
-             c_tableRec[tableId] != 0 &&
+void DbtupProxy::disk_restart_page_bits(Uint32 tableId, Uint32 fragId,
+                                        Uint32 create_table_version,
+                                        const Local_key *key, Uint32 bits) {
+  ndbrequire(tableId < c_tableRecSize && c_tableRec[tableId] != 0 &&
              (create_table_version == 0 ||
               c_tableRec[tableId] == create_table_version));
 
@@ -761,12 +701,8 @@ DbtupProxy::disk_restart_page_bits(Uint32 tableId,
   Uint32 instanceNo = getInstance(tableId, fragId);
 
   Uint32 i = workerIndex(instanceNo);
-  Dbtup* dbtup = (Dbtup*)workerBlock(i);
-  dbtup->disk_restart_page_bits(jamBuffer(),
-                                tableId,
-                                fragId,
-                                create_table_version,
-                                key,
-                                bits);
+  Dbtup *dbtup = (Dbtup *)workerBlock(i);
+  dbtup->disk_restart_page_bits(jamBuffer(), tableId, fragId,
+                                create_table_version, key, bits);
 }
 BLOCK_FUNCTIONS(DbtupProxy)

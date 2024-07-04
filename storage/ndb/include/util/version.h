@@ -24,13 +24,12 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
 #ifndef VERSION_H
 #define VERSION_H
 #include <ndb_version.h>
 
 /* some backwards compatible macros */
-#define MAKE_VERSION(A,B,C) NDB_MAKE_VERSION(A,B,C)
+#define MAKE_VERSION(A, B, C) NDB_MAKE_VERSION(A, B, C)
 #define getMajor(a) ndbGetMajor(a)
 #define getMinor(a) ndbGetMinor(a)
 #define getBuild(a) ndbGetBuild(a)

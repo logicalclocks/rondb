@@ -23,10 +23,22 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+<<<<<<< RonDB // RONDB-624 todo
 #include <record_types.hpp>
 #include <ndbd_malloc.hpp>
 #include "util/require.h"
+||||||| Common ancestor
+#include "util/require.h"
+=======
+>>>>>>> MySQL 8.0.36
 #include "Rope.hpp"
+<<<<<<< RonDB // RONDB-624 todo
+||||||| Common ancestor
+#include "DataBuffer.hpp"
+=======
+#include "DataBuffer.hpp"
+#include "util/require.h"
+>>>>>>> MySQL 8.0.36
 
 #define JAM_FILE_ID 330
 
@@ -227,11 +239,11 @@ LcConstRope::equal(const LcConstRope& r2) const
 }
 
 /* Unit test
-*/
+ */
 
 #ifdef TEST_ROPE
 
-int main(int argc, char ** argv) {
+int main(int argc, char **argv) {
   ndb_init();
 
   init_lc_ndbd_memory_pool(12,
@@ -273,7 +285,7 @@ int main(int argc, char ** argv) {
   }
 
   /* Assign & copy a string that is exactly the size as a rope segment */
-  const char * str28 = "____V____X____V____X____VII";
+  const char *str28 = "____V____X____V____X____VII";
   char buf28[28];
   {
     LcLocalRope lr5(h5);
@@ -285,8 +297,8 @@ int main(int argc, char ** argv) {
   cr5.copy(buf28, sizeof(buf28));
 
   /* Test buffered-style reading from ConstRope
-  */
-  assert(! cr1.compare(a_string));
+   */
+  assert(!cr1.compare(a_string));
   Uint32 offset = 0;
   int nread = 0;
   printf(" --> START readBuffered TEST <--\n");

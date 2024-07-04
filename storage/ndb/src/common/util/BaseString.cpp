@@ -28,11 +28,9 @@
 #include <ndb_global.h>
 #include <BaseString.hpp>
 
-BaseString::BaseString()
-{
+BaseString::BaseString() {
     m_chr = new char[1];
-    if (m_chr == nullptr)
-    {
+  if (m_chr == nullptr) {
       errno = ENOMEM;
       m_len = 0;
       return;
@@ -41,18 +39,15 @@ BaseString::BaseString()
     m_len = 0;
 }
 
-BaseString::BaseString(const char* s)
-{
-    if (s == nullptr)
-    {
+BaseString::BaseString(const char *s) {
+  if (s == nullptr) {
       m_chr = nullptr;
       m_len = 0;
       return;
     }
     const size_t n = strlen(s);
     m_chr = new char[n + 1];
-    if (m_chr == nullptr)
-    {
+  if (m_chr == nullptr) {
       errno = ENOMEM;
       m_len = 0;
       return;
@@ -61,17 +56,14 @@ BaseString::BaseString(const char* s)
     m_len = (unsigned)n;
 }
 
-BaseString::BaseString(const char * s, size_t n)
-{
-  if (s == nullptr || n == 0)
-  {
+BaseString::BaseString(const char *s, size_t n) {
+  if (s == nullptr || n == 0) {
     m_chr = nullptr;
     m_len = 0;
     return;
   }
   m_chr = new char[n + 1];
-  if (m_chr == nullptr)
-  {
+  if (m_chr == nullptr) {
     errno = ENOMEM;
     m_len = 0;
     return;
@@ -81,19 +73,16 @@ BaseString::BaseString(const char * s, size_t n)
   m_len = (unsigned)n;
 }
 
-BaseString::BaseString(const BaseString& str)
-{
-    const char* const s = str.m_chr;
+BaseString::BaseString(const BaseString &str) {
+  const char *const s = str.m_chr;
     const size_t n = str.m_len;
-    if (s == nullptr)
-    {
+  if (s == nullptr) {
       m_chr = nullptr;
       m_len = 0;
       return;
     }
-    char* t = new char[n + 1];
-    if (t == nullptr)
-    {
+  char *t = new char[n + 1];
+  if (t == nullptr) {
       errno = ENOMEM;
       m_chr = nullptr;
       m_len = 0;
@@ -104,30 +93,20 @@ BaseString::BaseString(const BaseString& str)
     m_len = (unsigned)n;
 }
 
-BaseString::~BaseString()
-{
-    delete[] m_chr;
-}
+BaseString::~BaseString() { delete[] m_chr; }
 
-BaseString&
-BaseString::assign(const char* s)
-{
-    if (s == nullptr)
-    {
-      if (m_chr)
-        delete[] m_chr;
+BaseString &BaseString::assign(const char *s) {
+  if (s == nullptr) {
+    if (m_chr) delete[] m_chr;
       m_chr = nullptr;
       m_len = 0;
       return *this;
     }
     size_t n = strlen(s);
-    char* t = new char[n + 1];
-    if (t)
-    {
+  char *t = new char[n + 1];
+  if (t) {
       memcpy(t, s, n + 1);
-    }
-    else
-    {
+  } else {
       errno = ENOMEM;
       n = 0;
     }
@@ -138,20 +117,16 @@ BaseString::assign(const char* s)
     return *this;
 }
 
-BaseString& BaseString::assign(char c) { return assign(1, c); }
+BaseString &BaseString::assign(char c) { return assign(1, c); }
 
-BaseString& BaseString::assign(size_t n, char c)
-{
-  if (m_len != n)
-  {
-    if (n >= UINT_MAX)
-    {
+BaseString &BaseString::assign(size_t n, char c) {
+  if (m_len != n) {
+    if (n >= UINT_MAX) {
       errno = EINVAL;
       return *this;
     }
-    char* new_chr = new (std::nothrow) char[n + 1];
-    if (new_chr == nullptr)
-    {
+    char *new_chr = new (std::nothrow) char[n + 1];
+    if (new_chr == nullptr) {
       errno = ENOMEM;
       return *this;
     }
@@ -164,17 +139,12 @@ BaseString& BaseString::assign(size_t n, char c)
   return *this;
 }
 
-BaseString&
-BaseString::assign(const char* s, size_t n)
-{
-    char* t = new char[n + 1];
-    if (t)
-    {
+BaseString &BaseString::assign(const char *s, size_t n) {
+  char *t = new char[n + 1];
+  if (t) {
       memcpy(t, s, n);
       t[n] = 0;
-    }
-    else
-    {
+  } else {
       errno = ENOMEM;
       n = 0;
     }
@@ -184,29 +154,20 @@ BaseString::assign(const char* s, size_t n)
     return *this;
 }
 
-BaseString&
-BaseString::assign(const BaseString& str, size_t n)
-{
-    if (n > str.m_len)
-	n = str.m_len;
+BaseString &BaseString::assign(const BaseString &str, size_t n) {
+  if (n > str.m_len) n = str.m_len;
     return assign(str.m_chr, n);
 }
 
-BaseString&
-BaseString::append(const char* s)
-{
-    if (s == nullptr)
-      return *this;
+BaseString &BaseString::append(const char *s) {
+  if (s == nullptr) return *this;
 
     size_t n = strlen(s);
-    char* t = new char[m_len + n + 1];
-    if (t)
-    {
+  char *t = new char[m_len + n + 1];
+  if (t) {
       memcpy(t, m_chr, m_len);
       memcpy(t + m_len, s, n + 1);
-    }
-    else
-    {
+  } else {
       errno = ENOMEM;
       m_len = 0;
       n = 0;
@@ -217,21 +178,18 @@ BaseString::append(const char* s)
     return *this;
 }
 
-BaseString& BaseString::append(char c) { return append(1, c); }
+BaseString &BaseString::append(char c) { return append(1, c); }
 
-BaseString& BaseString::append(size_t n, char c)
-{
+BaseString &BaseString::append(size_t n, char c) {
   if (n == 0) return *this;
   unsigned old_len = m_len;
   const size_t new_len = old_len + n;
-  if (new_len >= UINT_MAX)
-  {
+  if (new_len >= UINT_MAX) {
     errno = EINVAL;
     return *this;
   }
-  char* new_chr = new (std::nothrow) char[new_len + 1];
-  if (new_chr == nullptr)
-  {
+  char *new_chr = new (std::nothrow) char[new_len + 1];
+  if (new_chr == nullptr) {
     errno = ENOMEM;
     return *this;
   }
@@ -245,26 +203,20 @@ BaseString& BaseString::append(size_t n, char c)
   return *this;
 }
 
-BaseString&
-BaseString::append(const BaseString& str)
-{
+BaseString &BaseString::append(const BaseString &str) {
     return append(str.m_chr);
 }
 
-BaseString&
-BaseString::append(const Vector<BaseString> &vector,
+BaseString &BaseString::append(const Vector<BaseString> &vector,
 		   const BaseString &separator) {
-    for(unsigned i=0;i<vector.size(); i++) {
+  for (unsigned i = 0; i < vector.size(); i++) {
 	append(vector[i]);
-	if(i<vector.size()-1)
-	    append(separator);
+    if (i < vector.size() - 1) append(separator);
     }
     return *this;
 }
 
-BaseString&
-BaseString::assfmt(const char *fmt, ...)
-{
+BaseString &BaseString::assfmt(const char *fmt, ...) {
     char buf[1];
     va_list ap;
     int l;
@@ -276,10 +228,9 @@ BaseString::assfmt(const char *fmt, ...)
     va_start(ap, fmt);
     l = std::vsnprintf(buf, sizeof(buf), fmt, ap) + 1;
     va_end(ap);
-    if(l > (int)m_len) {
+  if (l > (int)m_len) {
         char *t = new char[l];
-        if (t == nullptr)
-        {
+    if (t == nullptr) {
           errno = ENOMEM;
           return *this;
         }
@@ -294,9 +245,7 @@ BaseString::assfmt(const char *fmt, ...)
     return *this;
 }
 
-BaseString&
-BaseString::appfmt(const char *fmt, ...)
-{
+BaseString &BaseString::appfmt(const char *fmt, ...) {
     char buf[1];
     va_list ap;
     int l;
@@ -309,8 +258,7 @@ BaseString::appfmt(const char *fmt, ...)
     l = std::vsnprintf(buf, sizeof(buf), fmt, ap) + 1;
     va_end(ap);
     char *tmp = new char[l];
-    if (tmp == nullptr)
-    {
+  if (tmp == nullptr) {
       errno = ENOMEM;
       return *this;
     }
@@ -322,31 +270,25 @@ BaseString::appfmt(const char *fmt, ...)
     return *this;
 }
 
-BaseString&
-BaseString::operator=(const BaseString& str)
-{
+BaseString &BaseString::operator=(const BaseString &str) {
     if (this != &str) {
 	this->assign(str);
     }
     return *this;
 }
 
-int
-BaseString::split(Vector<BaseString> &v,
-		  const BaseString &separator,
+int BaseString::split(Vector<BaseString> &v, const BaseString &separator,
 		  int maxSize) const {
     char *str = strdup(m_chr);
     int i, start, len, num = 0;
     len = (int)strlen(str);
-    for(start = i = 0;
-	(i <= len) && ( (maxSize<0) || ((int)v.size()<=maxSize-1) );
-	i++) {
-	if(strchr(separator.c_str(), str[i]) || i == len) {
-	    if(maxSize < 0 || (int)v.size() < maxSize-1)
-		str[i] = '\0';
-	    v.push_back(BaseString(str+start));
+  for (start = i = 0;
+       (i <= len) && ((maxSize < 0) || ((int)v.size() <= maxSize - 1)); i++) {
+    if (strchr(separator.c_str(), str[i]) || i == len) {
+      if (maxSize < 0 || (int)v.size() < maxSize - 1) str[i] = '\0';
+      v.push_back(BaseString(str + start));
 	    num++;
-	    start = i+1;
+      start = i + 1;
 	}
     }
     free(str);
@@ -354,13 +296,9 @@ BaseString::split(Vector<BaseString> &v,
     return num;
 }
 
-bool
-BaseString::splitKeyValue(BaseString& key, BaseString& value) const
-{
-  for (Uint32 i = 0; i < length(); i++)
-  {
-    if (m_chr[i] == '=')
-    {
+bool BaseString::splitKeyValue(BaseString &key, BaseString &value) const {
+  for (Uint32 i = 0; i < length(); i++) {
+    if (m_chr[i] == '=') {
       if (i == 0)
         key = BaseString();
       else
@@ -373,32 +311,23 @@ BaseString::splitKeyValue(BaseString& key, BaseString& value) const
   return false;
 }
 
-int
-BaseString::splitWithQuotedStrings(Vector<BaseString> &v,
+int BaseString::splitWithQuotedStrings(Vector<BaseString> &v,
       const BaseString &separator,
-      int maxSize) const
-{
+                                       int maxSize) const {
   char *str = strdup(m_chr);
   int i, start, len, num = 0;
   len = (int)strlen(str);
-  const char* opening_quote = nullptr;
+  const char *opening_quote = nullptr;
 
-  for(start = i = 0;
-      (i <= len) && ((maxSize < 0) || ((int)v.size() <= maxSize - 1));
-      i++)
-  {
-    if (str[i] != '\0')
-    {
-      const char* curr_quote = strchr("'\"", str[i]);
-      if (curr_quote != nullptr)
-      {
-        if (opening_quote == nullptr)
-        {
+  for (start = i = 0;
+       (i <= len) && ((maxSize < 0) || ((int)v.size() <= maxSize - 1)); i++) {
+    if (str[i] != '\0') {
+      const char *curr_quote = strchr("'\"", str[i]);
+      if (curr_quote != nullptr) {
+        if (opening_quote == nullptr) {
           // Opening quote found, ignore separator till closing quote is found
           opening_quote = curr_quote;
-        }
-        else if (*opening_quote ==  *curr_quote)
-        {
+        } else if (*opening_quote == *curr_quote) {
           // Closing quote found, check for separator from now
           opening_quote = nullptr;
         }
@@ -406,13 +335,11 @@ BaseString::splitWithQuotedStrings(Vector<BaseString> &v,
       }
     }
     if ((strchr(separator.c_str(), str[i]) && (opening_quote == nullptr)) ||
-        (i == len))
-    {
-      if ((maxSize < 0) || ((int)v.size() < (maxSize - 1)))
-        str[i] = '\0';
-      v.push_back(BaseString(str+start));
+        (i == len)) {
+      if ((maxSize < 0) || ((int)v.size() < (maxSize - 1))) str[i] = '\0';
+      v.push_back(BaseString(str + start));
       num++;
-      start = i+1;
+      start = i + 1;
     }
   }
   free(str);
@@ -420,76 +347,55 @@ BaseString::splitWithQuotedStrings(Vector<BaseString> &v,
   return num;
 }
 
-ssize_t
-BaseString::indexOf(char c, size_t pos) const
-{
-  if (pos >= m_len)
-    return -1;
+ssize_t BaseString::indexOf(char c, size_t pos) const {
+  if (pos >= m_len) return -1;
 
   char *p = strchr(m_chr + pos, c);
-  if(p == nullptr)
-    return -1;
-  return (ssize_t)(p-m_chr);
+  if (p == nullptr) return -1;
+  return (ssize_t)(p - m_chr);
 }
 
-ssize_t
-BaseString::indexOf(const char * needle, size_t pos) const
-{
-  if (pos >= m_len)
-    return -1;
+ssize_t BaseString::indexOf(const char *needle, size_t pos) const {
+  if (pos >= m_len) return -1;
 
   char *p = strstr(m_chr + pos, needle);
-  if(p == nullptr)
-    return -1;
-  return (ssize_t)(p-m_chr);
+  if (p == nullptr) return -1;
+  return (ssize_t)(p - m_chr);
 }
 
-ssize_t
-BaseString::lastIndexOf(char c) const
-{
+ssize_t BaseString::lastIndexOf(char c) const {
   char *p;
   p = strrchr(m_chr, c);
-  if(p == nullptr)
-    return -1;
-  return (ssize_t)(p-m_chr);
+  if (p == nullptr) return -1;
+  return (ssize_t)(p - m_chr);
 }
 
-bool
-BaseString::starts_with(const BaseString& str) const
-{
+bool BaseString::starts_with(const BaseString &str) const {
   if (str.m_len > m_len) return false;
   return std::strncmp(m_chr, str.m_chr, str.m_len) == 0;
 }
 
-bool
-BaseString::starts_with(const char* str) const
-{
-  const char* p = m_chr;
-  const char* q = str;
-  while (*q != 0 && *p != 0 && *p == *q)
-  {
+bool BaseString::starts_with(const char *str) const {
+  const char *p = m_chr;
+  const char *q = str;
+  while (*q != 0 && *p != 0 && *p == *q) {
     p++;
     q++;
   }
   return *q == 0;
 }
 
-BaseString
-BaseString::substr(ssize_t start, ssize_t stop) const
-{
-  if(stop < 0)
-    stop = length();
-  ssize_t len = stop-start;
-  if(len <= 0)
-    return BaseString("");
+BaseString BaseString::substr(ssize_t start, ssize_t stop) const {
+  if (stop < 0) stop = length();
+  ssize_t len = stop - start;
+  if (len <= 0) return BaseString("");
   BaseString s;
-  s.assign(m_chr+start, len);
+  s.assign(m_chr + start, len);
   return s;
 }
 
-static bool
-iswhite(char c) {
-  switch(c) {
+static bool iswhite(char c) {
+  switch (c) {
   case ' ':
   case '\t':
     return true;
@@ -499,30 +405,24 @@ iswhite(char c) {
   /* NOTREACHED */
 }
 
-char **
-BaseString::argify(const char *argv0, const char *src) {
+char **BaseString::argify(const char *argv0, const char *src) {
     Vector<char *> vargv;
     
-    if(argv0 != nullptr)
-    {
+  if (argv0 != nullptr) {
       char *t = strdup(argv0);
-      if (t == nullptr)
-      {
+    if (t == nullptr) {
         errno = ENOMEM;
         return nullptr;
       }
-      if (vargv.push_back(t))
-      {
+    if (vargv.push_back(t)) {
         free(t);
         return nullptr;
       }
     }
     
-    char *tmp = new char[strlen(src)+1];
-    if (tmp == nullptr)
-    {
-      for(unsigned i = 0; i < vargv.size(); i++)
-        free(vargv[i]);
+  char *tmp = new char[strlen(src) + 1];
+  if (tmp == nullptr) {
+    for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
       errno = ENOMEM;
       return nullptr;
     }
@@ -535,30 +435,27 @@ BaseString::argify(const char *argv0, const char *src) {
      * to make it possible to give arguments containing whitespace.
      * The semantics of '"' and '\' match that of most Unix shells.
      */
-    while(src < end && *src) {
+  while (src < end && *src) {
 	/* Skip initial whitespace */
-	while(src < end && *src && iswhite(*src))
-	    src++;
+    while (src < end && *src && iswhite(*src)) src++;
 	
 	char *begin = dst;
-	while(src < end && *src) {
+    while (src < end && *src) {
 	    /* Handle '"' quotation */
-	    if(*src == '"') {
-		src++;
-		while(src < end && *src && *src != '"') {
-		    if(*src == '\\')
+      if (*src == '"') {
 			src++;
+        while (src < end && *src && *src != '"') {
+          if (*src == '\\') src++;
 		    *dst++ = *src++;
 		}
 		src++;
-		if(src >= end)
-		    goto end;
+        if (src >= end) goto end;
 	    }
 	    
 	    /* Handle '\' */
-	    if(*src == '\\')
+      if (*src == '\\')
 		src++;
-	    else if(iswhite(*src))
+      else if (iswhite(*src))
 		break;
 
 	    /* Actually copy characters */
@@ -571,31 +468,25 @@ BaseString::argify(const char *argv0, const char *src) {
 
         {
           char *t = strdup(begin);
-          if (t == nullptr)
-          {
+      if (t == nullptr) {
             delete[] tmp;
-            for(unsigned i = 0; i < vargv.size(); i++)
-              free(vargv[i]);
+        for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
             errno = ENOMEM;
             return nullptr;
           }
-          if (vargv.push_back(t))
-          {
+      if (vargv.push_back(t)) {
             free(t);
             delete[] tmp;
-            for(unsigned i = 0; i < vargv.size(); i++)
-              free(vargv[i]);
+        for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
             return nullptr;
           }
         }
     }
- end:
+end:
     
     delete[] tmp;
-    if (vargv.push_back(NULL))
-    {
-      for(unsigned i = 0; i < vargv.size(); i++)
-        free(vargv[i]);
+  if (vargv.push_back(NULL)) {
+    for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
       return nullptr;
     }
     
@@ -603,68 +494,59 @@ BaseString::argify(const char *argv0, const char *src) {
      * calling execv().
      */
     char **argv = (char **)malloc(sizeof(*argv) * (vargv.size()));
-    if(argv == nullptr)
-    {
-        for(unsigned i = 0; i < vargv.size(); i++)
-          free(vargv[i]);
+  if (argv == nullptr) {
+    for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
         errno = ENOMEM;
 	return nullptr;
     }
     
-    for(unsigned i = 0; i < vargv.size(); i++){
+  for (unsigned i = 0; i < vargv.size(); i++) {
 	argv[i] = vargv[i];
     }
     
     return argv;
 }
 
-BaseString&
-BaseString::trim(const char * delim){
+BaseString &BaseString::trim(const char *delim) {
     trim(m_chr, delim);
     m_len = (unsigned)strlen(m_chr);
-    return * this;
+  return *this;
 }
 
-char*
-BaseString::trim(char * str, const char * delim){
+char *BaseString::trim(char *str, const char *delim) {
     int len = (int)strlen(str) - 1;
-    for(; len > 0 && strchr(delim, str[len]); len--)
+  for (; len > 0 && strchr(delim, str[len]); len--)
       ;
 
     int pos = 0;
-    for(; pos <= len && strchr(delim, str[pos]); pos++)
+  for (; pos <= len && strchr(delim, str[pos]); pos++)
       ;
 
-    if(pos > len){
+  if (pos > len) {
 	str[0] = 0;
 	return nullptr;
     } else {
 	memmove(str, &str[pos], len - pos + 1);
-	str[len-pos+1] = 0;
+    str[len - pos + 1] = 0;
     }
     
     return str;
 }
 
-int
-BaseString::vsnprintf(char *str, size_t size, const char *format, va_list ap)
-{
-  return(std::vsnprintf(str, size, format, ap));
+int BaseString::vsnprintf(char *str, size_t size, const char *format,
+                          va_list ap) {
+  return (std::vsnprintf(str, size, format, ap));
 }
 
-int
-BaseString::snprintf(char *str, size_t size, const char *format, ...)
-{
+int BaseString::snprintf(char *str, size_t size, const char *format, ...) {
   va_list ap;
   va_start(ap, format);
-  int ret= std::vsnprintf(str, size, format, ap);
+  int ret = std::vsnprintf(str, size, format, ap);
   va_end(ap);
-  return(ret);
+  return (ret);
 }
 
-int
-BaseString::snappend(char *str, size_t size, const char *format, ...)
-{
+int BaseString::snappend(char *str, size_t size, const char *format, ...) {
   size_t n = strlen(str);
   if (n >= size - 1) return -1;
   va_list ap;
@@ -674,13 +556,10 @@ BaseString::snappend(char *str, size_t size, const char *format, ...)
   return (ret);
 }
 
-BaseString
-BaseString::getText(unsigned size, const Uint32 data[])
-{
+BaseString BaseString::getText(unsigned size, const Uint32 data[]) {
   BaseString to;
-  char * buf = (char*)malloc(32*size+1);
-  if (buf)
-  {
+  char *buf = (char *)malloc(32 * size + 1);
+  if (buf) {
     BitmaskImpl::getText(size, data, buf);
     to.append(buf);
     free(buf);
@@ -688,17 +567,13 @@ BaseString::getText(unsigned size, const Uint32 data[])
   return to;
 }
 
-BaseString
-BaseString::getPrettyText(unsigned size, const Uint32 data[])
-{
-  const char* delimiter = "";
+BaseString BaseString::getPrettyText(unsigned size, const Uint32 data[]) {
+  const char *delimiter = "";
   unsigned found = 0;
   const unsigned MAX_BITS = sizeof(Uint32) * 8 * size;
   BaseString to;
-  for (unsigned i = 0; i < MAX_BITS; i++)
-  {
-    if (BitmaskImpl::get(size, data, i))
-    {
+  for (unsigned i = 0; i < MAX_BITS; i++) {
+    if (BitmaskImpl::get(size, data, i)) {
       to.appfmt("%s%d", delimiter, i);
       found++;
       if (found < BitmaskImpl::count(size, data) - 1)
@@ -710,16 +585,12 @@ BaseString::getPrettyText(unsigned size, const Uint32 data[])
   return to;
 }
 
-BaseString
-BaseString::getPrettyTextShort(unsigned size, const Uint32 data[])
-{
-  const char* delimiter = "";
+BaseString BaseString::getPrettyTextShort(unsigned size, const Uint32 data[]) {
+  const char *delimiter = "";
   const unsigned MAX_BITS = sizeof(Uint32) * 8 * size;
   BaseString to;
-  for (unsigned i = 0; i < MAX_BITS; i++)
-  {
-    if (BitmaskImpl::get(size, data, i))
-    {
+  for (unsigned i = 0; i < MAX_BITS; i++) {
+    if (BitmaskImpl::get(size, data, i)) {
       to.appfmt("%s%d", delimiter, i);
       delimiter = ",";
     }
@@ -727,17 +598,14 @@ BaseString::getPrettyTextShort(unsigned size, const Uint32 data[])
   return to;
 }
 
-const void*
-BaseString_get_key(const void* key, size_t* key_length)
-{
-  const BaseString* str = (const BaseString*)key;
+const void *BaseString_get_key(const void *key, size_t *key_length) {
+  const BaseString *str = (const BaseString *)key;
   *key_length = str->length();
   return str->c_str();
 }
 
-size_t
-BaseString::hexdump(char * buf, size_t len, const Uint32 * wordbuf, size_t numwords)
-{
+size_t BaseString::hexdump(char *buf, size_t len, const Uint32 *wordbuf,
+                           size_t numwords) {
   /**
    * If not all words are printed end with "...\n".
    * Words are written as "H'11223344 ", 11 character each.
@@ -745,28 +613,24 @@ BaseString::hexdump(char * buf, size_t len, const Uint32 * wordbuf, size_t numwo
   size_t offset = 0;
   size_t words_to_dump = numwords;
   const size_t max_words_to_dump = (len - 5) / 11;
-  if (words_to_dump > max_words_to_dump)
-  {
+  if (words_to_dump > max_words_to_dump) {
     words_to_dump = max_words_to_dump;
   }
-  for (size_t i = 0 ; i < words_to_dump ; i ++ )
-  {
+  for (size_t i = 0; i < words_to_dump; i++) {
     // Write at most 6 words per line
     char sep = (i % 6 == 5) ? '\n' : ' ';
     assert(offset + 11 < len);
-    int n = BaseString::snprintf(buf + offset, len - offset, "H'%08x%c", wordbuf[i], sep);
+    int n = BaseString::snprintf(buf + offset, len - offset, "H'%08x%c",
+                                 wordbuf[i], sep);
     assert(n == 11);
     offset += n;
   }
-  if (words_to_dump < numwords)
-  {
+  if (words_to_dump < numwords) {
     assert(offset + 4 < len);
     int n = BaseString::snprintf(buf + offset, len - offset, "...\n");
     assert(n == 4);
     offset += n;
-  }
-  else
-  {
+  } else {
     assert(offset + 1 < len);
     int n = BaseString::snprintf(buf + offset, len - offset, "\n");
     assert(n == 1);
@@ -779,8 +643,7 @@ BaseString::hexdump(char * buf, size_t len, const Uint32 * wordbuf, size_t numwo
 
 #include <NdbTap.hpp>
 
-TAPTEST(BaseString)
-{
+TAPTEST(BaseString) {
     BaseString s("abc");
     BaseString t(s);
     s.assign("def");
@@ -831,10 +694,10 @@ TAPTEST(BaseString)
     }
 
     {
-	OK(BaseString("hamburger").substr(4,2) == "");
+    OK(BaseString("hamburger").substr(4, 2) == "");
 	OK(BaseString("hamburger").substr(3) == "burger");
-	OK(BaseString("hamburger").substr(4,8) == "urge");
-	OK(BaseString("smiles").substr(1,5) == "mile");
+    OK(BaseString("hamburger").substr(4, 8) == "urge");
+    OK(BaseString("smiles").substr(1, 5) == "mile");
 	OK(BaseString("012345").indexOf('2') == 2);
 	OK(BaseString("hej").indexOf('X') == -1);
     }
@@ -875,20 +738,23 @@ TAPTEST(BaseString)
     BaseString s3;
     BaseString s4("elf");
 
-    OK(s3.append((const char*)nullptr) == "");
-    OK(s4.append((const char*)nullptr) == "elf");
+  OK(s3.append((const char *)nullptr) == "");
+  OK(s4.append((const char *)nullptr) == "elf");
     OK(s4.append(s3) == "elf");
     OK(s4.append(s2) == "elf");
     OK(s4.append(s4) == "elfelf");
 
-    OK(s3.assign((const char*)nullptr).c_str() == nullptr);
-    OK(s4.assign((const char*)nullptr).c_str() == nullptr);
+  OK(s3.assign((const char *)nullptr).c_str() == nullptr);
+  OK(s4.assign((const char *)nullptr).c_str() == nullptr);
     OK(s4.assign(s4).c_str() == nullptr);
 
-    //tests for Bug #45733 Cluster with more than 4 storage node 
-    for(int i=0;i<20;i++) 
-    {
-#define BIG_ASSFMT_OK(X) do{u_int x=(X);OK(s2.assfmt("%*s",x,"Z").length() == x);}while(0)
+  // tests for Bug #45733 Cluster with more than 4 storage node
+  for (int i = 0; i < 20; i++) {
+#define BIG_ASSFMT_OK(X)                        \
+  do {                                          \
+    u_int x = (X);                              \
+    OK(s2.assfmt("%*s", x, "Z").length() == x); \
+  } while (0)
       BIG_ASSFMT_OK(8);
       BIG_ASSFMT_OK(511);
       BIG_ASSFMT_OK(512);
@@ -896,7 +762,7 @@ TAPTEST(BaseString)
       BIG_ASSFMT_OK(1023);
       BIG_ASSFMT_OK(1024);
       BIG_ASSFMT_OK(1025);
-      BIG_ASSFMT_OK(20*1024*1024);
+    BIG_ASSFMT_OK(20 * 1024 * 1024);
     }
 
     {

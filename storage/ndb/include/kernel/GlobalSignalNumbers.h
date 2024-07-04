@@ -36,7 +36,7 @@ const GlobalSignalNumber MAX_GSN = 912;
 
 struct GsnName {
   GlobalSignalNumber gsn;
-  const char * name;
+  const char *name;
 };
 
 extern const GsnName SignalNames[];
@@ -1020,7 +1020,6 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_DICT_TAKEOVER_REQ           765
 #define GSN_DICT_TAKEOVER_REF           766
 #define GSN_DICT_TAKEOVER_CONF          767
-
 
 /* DICT LOCK signals */
 #define GSN_DICT_LOCK_REQ               410

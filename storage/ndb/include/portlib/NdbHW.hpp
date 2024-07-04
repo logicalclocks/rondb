@@ -22,14 +22,12 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-
 #ifndef NDB_HW_H
 #define NDB_HW_H
 
 #include <ndb_global.h>
 
-struct ndb_cpuinfo_data
-{
+struct ndb_cpuinfo_data {
   Uint32 cpu_no;
   Uint32 online;
   Uint32 core_id;
@@ -49,8 +47,7 @@ struct ndb_cpuinfo_data
   Uint32 cpu_capacity;
 };
 
-struct ndb_cpudata
-{
+struct ndb_cpudata {
   Uint32 cpu_no;
   Uint32 online;
   Uint64 cs_user_us;
@@ -67,8 +64,7 @@ struct ndb_cpudata
   Uint64 cs_unknown2_us;
 };
 
-struct ndb_hwinfo
-{
+struct ndb_hwinfo {
   /**
    * Number of Processors, Cores and Sockets
    * MHz of CPU and Model name of CPU.

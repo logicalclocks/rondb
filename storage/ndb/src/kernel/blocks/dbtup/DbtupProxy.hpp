@@ -25,38 +25,37 @@
 #define NDB_DBTUP_PROXY
 
 #include <LocalProxy.hpp>
+#include <signaldata/BuildIndxImpl.hpp>
 #include <signaldata/CreateTab.hpp>
 #include <signaldata/DropTab.hpp>
-#include <signaldata/BuildIndxImpl.hpp>
 
 #define JAM_FILE_ID 403
 
-
 class DbtupProxy : public LocalProxy {
-public:
-  DbtupProxy(Block_context& ctx);
+ public:
+  DbtupProxy(Block_context &ctx);
   ~DbtupProxy() override;
   BLOCK_DEFINES(DbtupProxy);
 
-protected:
-  SimulatedBlock* newWorker(Uint32 instanceNo) override;
+ protected:
+  SimulatedBlock *newWorker(Uint32 instanceNo) override;
 
-  class Pgman* c_pgman; // PGMAN proxy
+  class Pgman *c_pgman;  // PGMAN proxy
   class Tsman *c_tsman;
 
   Uint32 c_tableRecSize;
-  Uint32* c_tableRec;    // bool => table exists
+  Uint32 *c_tableRec;  // bool => table exists
 
   // GSN_READ_CONFIG_REQ
-  void callREAD_CONFIG_REQ(Signal*) override;
+  void callREAD_CONFIG_REQ(Signal *) override;
 
   // GSN_STTOR
-  void callSTTOR(Signal*) override;
+  void callSTTOR(Signal *) override;
 
   // GSN_CREATE_TAB_REQ
-  void execCREATE_TAB_REQ(Signal*);
+  void execCREATE_TAB_REQ(Signal *);
   // GSN_DROP_TAB_REQ
-  void execDROP_TAB_REQ(Signal*);
+  void execDROP_TAB_REQ(Signal *);
 
   // GSN_BUILD_INDX_IMPL_REQ
   struct Ss_BUILD_INDX_IMPL_REQ : SsParallel {
@@ -66,16 +65,16 @@ protected:
       m_sendCONF = (SsFUNCREP)&DbtupProxy::sendBUILD_INDX_IMPL_CONF;
     }
     enum { poolSize = 1 };
-    static SsPool<Ss_BUILD_INDX_IMPL_REQ>& pool(LocalProxy* proxy) {
-      return ((DbtupProxy*)proxy)->c_ss_BUILD_INDX_IMPL_REQ;
+    static SsPool<Ss_BUILD_INDX_IMPL_REQ> &pool(LocalProxy *proxy) {
+      return ((DbtupProxy *)proxy)->c_ss_BUILD_INDX_IMPL_REQ;
     }
   };
   SsPool<Ss_BUILD_INDX_IMPL_REQ> c_ss_BUILD_INDX_IMPL_REQ;
-  void execBUILD_INDX_IMPL_REQ(Signal*);
-  void sendBUILD_INDX_IMPL_REQ(Signal*, Uint32 ssId, SectionHandle*);
-  void execBUILD_INDX_IMPL_CONF(Signal*);
-  void execBUILD_INDX_IMPL_REF(Signal*);
-  void sendBUILD_INDX_IMPL_CONF(Signal*, Uint32 ssId);
+  void execBUILD_INDX_IMPL_REQ(Signal *);
+  void sendBUILD_INDX_IMPL_REQ(Signal *, Uint32 ssId, SectionHandle *);
+  void execBUILD_INDX_IMPL_CONF(Signal *);
+  void execBUILD_INDX_IMPL_REF(Signal *);
+  void sendBUILD_INDX_IMPL_CONF(Signal *, Uint32 ssId);
 
   // client methods
   friend class Dbtup_client;
@@ -85,8 +84,8 @@ protected:
   struct Proxy_undo {
     Uint32 m_type;
     Uint32 m_len;
-    const Uint32* m_ptr;
-    Uint32 m_data[MAX_UNDO_DATA]; // copied from m_ptr at once
+    const Uint32 *m_ptr;
+    Uint32 m_data[MAX_UNDO_DATA];  // copied from m_ptr at once
     Uint64 m_lsn;
     // from undo entry and page
     Local_key m_key;
@@ -108,17 +107,17 @@ protected:
   };
   Proxy_undo c_proxy_undo;
 
-  void disk_restart_undo(Signal*, Uint64 lsn,
-                         Uint32 type, const Uint32 * ptr, Uint32 len);
+  void disk_restart_undo(Signal *, Uint64 lsn, Uint32 type, const Uint32 *ptr,
+                         Uint32 len);
 
   // next 3 are helper methods
-  void disk_restart_undo_callback(Signal*, Uint32, Uint32 page_id);
+  void disk_restart_undo_callback(Signal *, Uint32, Uint32 page_id);
 
-  void disk_restart_undo_finish(Signal*);
+  void disk_restart_undo_finish(Signal *);
 
-  void disk_restart_undo_send_next(Signal*, Uint32);
+  void disk_restart_undo_send_next(Signal *, Uint32);
 
-  void disk_restart_undo_send(Signal*, Uint32 i);
+  void disk_restart_undo_send(Signal *, Uint32 i);
 
   // TSMAN
 
@@ -135,7 +134,6 @@ protected:
 			      const Local_key* key,
                               Uint32 bits);
 };
-
 
 #undef JAM_FILE_ID
 

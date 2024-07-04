@@ -26,12 +26,11 @@
 #ifndef BUILD_INDX_HPP
 #define BUILD_INDX_HPP
 
-#include "SignalData.hpp"
 #include <NodeBitmask.hpp>
 #include <signaldata/DictTabInfo.hpp>
+#include "SignalData.hpp"
 
 #define JAM_FILE_ID 15
-
 
 struct BuildIndxReq {
   enum RequestType {
@@ -39,9 +38,7 @@ struct BuildIndxReq {
     SubOp = 2   // actual build of hash index
   };
 
-  enum RequestFlag {
-    RF_BUILD_OFFLINE = 1 << 8
-  };
+  enum RequestFlag { RF_BUILD_OFFLINE = 1 << 8 };
 
   static constexpr Uint32 SignalLength = 11;
   static constexpr Uint32 INDEX_COLUMNS = 0;
@@ -67,7 +64,9 @@ struct BuildIndxConf {
   static constexpr Uint32 SignalLength = 6;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 tableId;
   Uint32 indexId;
@@ -97,7 +96,9 @@ struct BuildIndxRef {
   static constexpr Uint32 SignalLength = 10;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 tableId;
   Uint32 indexId;

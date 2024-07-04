@@ -1,4 +1,4 @@
-/* 
+/*
    Copyright (c) 2007, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
@@ -28,23 +28,18 @@
 
 #define JAM_FILE_ID 164
 
-
-struct StartCopyReq
-{
-  enum Flags {
-    WAIT_LCP = 1
-  };
+struct StartCopyReq {
+  enum Flags { WAIT_LCP = 1 };
 
   Uint32 startingNodeId;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 flags;
-  
+
   static constexpr Uint32 SignalLength = 4;
 };
 
-struct StartCopyRef
-{
+struct StartCopyRef {
   static constexpr Uint32 SignalLength = 3;
 
   Uint32 senderRef;
@@ -52,8 +47,7 @@ struct StartCopyRef
   Uint32 errorCode;
 };
 
-struct StartCopyConf
-{
+struct StartCopyConf {
   Uint32 startingNodeId;
   Uint32 senderRef;
   Uint32 senderData;
@@ -61,8 +55,7 @@ struct StartCopyConf
   static constexpr Uint32 SignalLength = 3;
 };
 
-struct StartToReq 
-{
+struct StartToReq {
   static constexpr Uint32 SignalLength = 3;
 
   Uint32 senderData;
@@ -70,37 +63,33 @@ struct StartToReq
   Uint32 startingNodeId;
 };
 
-struct StartToRef 
-{
+struct StartToRef {
   static constexpr Uint32 SignalLength = 3;
-  
+
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 errorCode;
   Uint32 extra;
 };
 
-struct StartToConf 
-{
+struct StartToConf {
   static constexpr Uint32 SignalLength = 3;
-  
+
   Uint32 senderData;
   Uint32 sendingNodeId;
   Uint32 startingNodeId;
 };
 
-struct UpdateToReq 
-{
+struct UpdateToReq {
   static constexpr Uint32 SignalLength = 7;
 
-  enum RequestType 
-  {
-    BEFORE_STORED = 7
-    ,AFTER_STORED = 8
-    ,BEFORE_COMMIT_STORED = 9
-    ,AFTER_COMMIT_STORED = 10
+  enum RequestType {
+    BEFORE_STORED = 7,
+    AFTER_STORED = 8,
+    BEFORE_COMMIT_STORED = 9,
+    AFTER_COMMIT_STORED = 10
   };
-  
+
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 requestType;
@@ -110,28 +99,28 @@ struct UpdateToReq
   Uint32 fragmentNo;
 };
 
-struct UpdateToRef 
-{
+struct UpdateToRef {
   static constexpr Uint32 SignalLength = 4;
-  
+
   enum ErrorCode {
     CopyNodeInProgress = 1  // StartMe++
-    ,CopyFragInProgress = 2 // NG busy
-    ,UnknownRequest = 3
-    ,InvalidRequest = 4
-    ,UnknownTakeOver = 5
+    ,
+    CopyFragInProgress = 2  // NG busy
+    ,
+    UnknownRequest = 3,
+    InvalidRequest = 4,
+    UnknownTakeOver = 5
   };
-  
+
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 errorCode;
   Uint32 extra;
 };
 
-struct UpdateToConf 
-{
+struct UpdateToConf {
   static constexpr Uint32 SignalLength = 3;
-  
+
   Uint32 senderData;
   Uint32 sendingNodeId;
   Uint32 startingNodeId;
@@ -142,11 +131,7 @@ struct UpdateFragStateReq
   static constexpr Uint32 OldSignalLength = 9;
   static constexpr Uint32 SignalLength = 10;
 
-  enum ReplicaType {
-    STORED = 7,
-    COMMIT_STORED = 9,
-    START_LOGGING = 10
-  };
+  enum ReplicaType { STORED = 7, COMMIT_STORED = 9, START_LOGGING = 10 };
 
   Uint32 senderData;
   Uint32 senderRef;
@@ -160,10 +145,9 @@ struct UpdateFragStateReq
   Uint32 primaryNode;
 };
 
-struct UpdateFragStateConf 
-{
+struct UpdateFragStateConf {
   static constexpr Uint32 SignalLength = 6;
-  
+
   Uint32 senderData;
   Uint32 tableId;
   Uint32 fragId;
@@ -172,38 +156,34 @@ struct UpdateFragStateConf
   Uint32 failedNodeId;
 };
 
-struct EndToReq 
-{
+struct EndToReq {
   static constexpr Uint32 SignalLength = 4;
-  
+
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 startingNodeId;
-  Uint32 flags; 
+  Uint32 flags;
 };
 
-struct EndToRef
-{
+struct EndToRef {
   static constexpr Uint32 SignalLength = 4;
-  
+
   Uint32 senderData;
   Uint32 senderRef;
   Uint32 errorCode;
   Uint32 extra;
 };
 
-struct EndToConf 
-{
+struct EndToConf {
   static constexpr Uint32 SignalLength = 3;
-  
+
   Uint32 senderData;
   Uint32 sendingNodeId;
   Uint32 startingNodeId;
 };
 
-struct EndToRep
-{
-public:
+struct EndToRep {
+ public:
   static constexpr Uint32 SignalLength = 1;
 
   Uint32 nodeId;

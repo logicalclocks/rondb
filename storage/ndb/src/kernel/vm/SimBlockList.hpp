@@ -30,16 +30,14 @@
 
 #define JAM_FILE_ID 322
 
-
 struct EmulatorData;
 
-class SimBlockList 
-{
-public:
+class SimBlockList {
+ public:
   SimBlockList();
   ~SimBlockList();
-  
-  void load(EmulatorData&);
+
+  void load(EmulatorData &);
   void unload();
 
   Uint64 getTransactionMemoryNeed(
@@ -48,20 +46,15 @@ public:
     const ndb_mgm_configuration_iterator * mgm_cfg) const;
 private:
   int noOfBlocks;
-  SimulatedBlock** theList;
+  SimulatedBlock **theList;
 };
 
-inline
-SimBlockList::SimBlockList(){
+inline SimBlockList::SimBlockList() {
   noOfBlocks = 0;
-  theList    = 0;
+  theList = 0;
 }
 
-inline
-SimBlockList::~SimBlockList(){
-  unload();
-}
-
+inline SimBlockList::~SimBlockList() { unload(); }
 
 #undef JAM_FILE_ID
 

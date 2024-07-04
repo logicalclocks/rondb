@@ -30,7 +30,6 @@
 
 #define JAM_FILE_ID 5
 
-
 class AttributeDescriptor {
   friend class Dbdict;
   friend class Dbtc;
@@ -40,7 +39,7 @@ class AttributeDescriptor {
   friend class Dblqh;
   friend class SimulatedBlock;
 
-public:
+ public:
   static void setType(Uint32 &, Uint32 type);
   static void setSize(Uint32 &, Uint32 size);
   static void setArrayType(Uint32 &, Uint32 arrayType);
@@ -115,73 +114,51 @@ public:
 #define AD_ARRAY_SIZE_SHIFT  (16)
 #define AD_ARRAY_SIZE_MASK   (65535)
 
-inline
-void
-AttributeDescriptor::setType(Uint32 & desc, Uint32 type){
+inline void AttributeDescriptor::setType(Uint32 &desc, Uint32 type) {
   assert(type <= AD_TYPE_MASK);
   desc |= (type << AD_TYPE_SHIFT);
 }
 
-inline
-void
-AttributeDescriptor::setSize(Uint32 & desc, Uint32 size){
+inline void AttributeDescriptor::setSize(Uint32 &desc, Uint32 size) {
   assert(size <= AD_SIZE_MASK);
   desc |= (size << AD_SIZE_SHIFT);
 }
 
-inline
-void
-AttributeDescriptor::setArrayType(Uint32 & desc, Uint32 arrayType){
+inline void AttributeDescriptor::setArrayType(Uint32 &desc, Uint32 arrayType) {
   assert(arrayType <= AD_ARRAY_TYPE_MASK);
   desc |= (arrayType << AD_ARRAY_TYPE_SHIFT);
 }
 
-inline
-void
-AttributeDescriptor::clearArrayType(Uint32 & desc)
-{
+inline void AttributeDescriptor::clearArrayType(Uint32 &desc) {
   desc &= ~Uint32(AD_ARRAY_TYPE_MASK << AD_ARRAY_TYPE_SHIFT);
 }
 
-inline
-void
-AttributeDescriptor::setArraySize(Uint32 & desc, Uint32 arraySize){
+inline void AttributeDescriptor::setArraySize(Uint32 &desc, Uint32 arraySize) {
   assert(arraySize <= AD_ARRAY_SIZE_MASK);
   desc |= (arraySize << AD_ARRAY_SIZE_SHIFT);
 }
 
-inline
-void
-AttributeDescriptor::setNullable(Uint32 & desc, Uint32 nullable){
+inline void AttributeDescriptor::setNullable(Uint32 &desc, Uint32 nullable) {
   assert(nullable <= 1);
   desc |= (nullable << AD_NULLABLE_SHIFT);
 }
 
-inline
-void
-AttributeDescriptor::setDKey(Uint32 & desc, Uint32 dkey){
+inline void AttributeDescriptor::setDKey(Uint32 &desc, Uint32 dkey) {
   assert(dkey <= 1);
   desc |= (dkey << AD_DISTR_KEY_SHIFT);
 }
 
-inline
-void
-AttributeDescriptor::setPrimaryKey(Uint32 & desc, Uint32 dkey){
+inline void AttributeDescriptor::setPrimaryKey(Uint32 &desc, Uint32 dkey) {
   assert(dkey <= 1);
   desc |= (dkey << AD_PRIMARY_KEY);
 }
 
-inline
-void
-AttributeDescriptor::setDynamic(Uint32 & desc, Uint32 dynamic){
+inline void AttributeDescriptor::setDynamic(Uint32 &desc, Uint32 dynamic) {
   assert(dynamic <= 1);
   desc |= (dynamic << AD_DYNAMIC);
 }
 
-inline
-void
-AttributeDescriptor::setDiskBased(Uint32 & desc, Uint32 val)
-{
+inline void AttributeDescriptor::setDiskBased(Uint32 &desc, Uint32 val) {
   assert(val <= 1);
   desc &= (~(1 << AD_DISK_SHIFT));
   desc |= (val << AD_DISK_SHIFT);
@@ -190,79 +167,52 @@ AttributeDescriptor::setDiskBased(Uint32 & desc, Uint32 val)
 /**
  * Getters
  */
-inline
-Uint32
-AttributeDescriptor::getType(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getType(const Uint32 &desc) {
   return (desc >> AD_TYPE_SHIFT) & AD_TYPE_MASK;
 }
 
-inline
-Uint32
-AttributeDescriptor::getSize(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getSize(const Uint32 &desc) {
   return (desc >> AD_SIZE_SHIFT) & AD_SIZE_MASK;
 }
 
-inline
-Uint32
-AttributeDescriptor::getSizeInBytes(const Uint32 & desc){
-  return (getArraySize(desc) << getSize(desc))
-                             >> AD_SIZE_IN_BYTES_SHIFT;
+inline Uint32 AttributeDescriptor::getSizeInBytes(const Uint32 &desc) {
+  return (getArraySize(desc) << getSize(desc)) >> AD_SIZE_IN_BYTES_SHIFT;
 }
 
-inline
-Uint32
-AttributeDescriptor::getSizeInWords(const Uint32 & desc){
-  return ((getArraySize(desc) << getSize(desc)) 
-          + AD_SIZE_IN_WORDS_OFFSET) 
-                              >> AD_SIZE_IN_WORDS_SHIFT;
+inline Uint32 AttributeDescriptor::getSizeInWords(const Uint32 &desc) {
+  return ((getArraySize(desc) << getSize(desc)) + AD_SIZE_IN_WORDS_OFFSET) >>
+         AD_SIZE_IN_WORDS_SHIFT;
 }
 
-inline
-Uint32
-AttributeDescriptor::getArrayType(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getArrayType(const Uint32 &desc) {
   return (desc >> AD_ARRAY_TYPE_SHIFT) & AD_ARRAY_TYPE_MASK;
 }
 
-inline
-Uint32
-AttributeDescriptor::getArraySize(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getArraySize(const Uint32 &desc) {
   return (desc >> AD_ARRAY_SIZE_SHIFT) & AD_ARRAY_SIZE_MASK;
 }
 
-inline
-Uint32
-AttributeDescriptor::getNullable(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getNullable(const Uint32 &desc) {
   return (desc >> AD_NULLABLE_SHIFT) & 1;
 }
 
-inline
-Uint32
-AttributeDescriptor::getDKey(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getDKey(const Uint32 &desc) {
   return (desc >> AD_DISTR_KEY_SHIFT) & 1;
 }
 
-inline
-Uint32
-AttributeDescriptor::getPrimaryKey(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getPrimaryKey(const Uint32 &desc) {
   return (desc >> AD_PRIMARY_KEY) & 1;
 }
 
-inline
-Uint32
-AttributeDescriptor::getDynamic(const Uint32 & desc){
+inline Uint32 AttributeDescriptor::getDynamic(const Uint32 &desc) {
   return (desc >> AD_DYNAMIC) & 1;
 }
 
-inline
-Uint32
-AttributeDescriptor::getDiskBased(const Uint32 & desc)
-{
+inline Uint32 AttributeDescriptor::getDiskBased(const Uint32 &desc) {
   return (desc >> AD_DISK_SHIFT) & 1;
 }
 
-class NdbOut&
-operator<<(class NdbOut&, const AttributeDescriptor&);
-
+class NdbOut &operator<<(class NdbOut &, const AttributeDescriptor &);
 
 #undef JAM_FILE_ID
 

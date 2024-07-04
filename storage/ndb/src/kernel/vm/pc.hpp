@@ -26,21 +26,20 @@
 #ifndef PC_H
 #define PC_H
 
-
-#include "Emulator.hpp"
-#include <NdbOut.hpp>
-#include <ndb_limits.h>
 #include <NdbThread.h>
+#include <ndb_limits.h>
+#include <NdbOut.hpp>
+#include "Emulator.hpp"
 
 #define JAM_FILE_ID 282
 
 /* Jam buffer pointer. */
 struct EmulatedJamBuffer;
-extern thread_local EmulatedJamBuffer* NDB_THREAD_TLS_JAM;
+extern thread_local EmulatedJamBuffer *NDB_THREAD_TLS_JAM;
 
 /* Thread self pointer. */
 struct thr_data;
-extern thread_local thr_data* NDB_THREAD_TLS_THREAD;
+extern thread_local thr_data *NDB_THREAD_TLS_THREAD;
 
 #define qt_likely likely
 #define qt_unlikely unlikely
@@ -113,6 +112,7 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
  * Make an entry in the jamBuffer to record file number and up to 16 bits of
  * arbitrary data.
  */
+<<<<<<< RonDB // RONDB-624 todo
 #define _internal_thrjamData(jamBufferArg, data) \
   do { \
     EmulatedJamBuffer* const jamBuffer = jamBufferArg; \
@@ -176,6 +176,70 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 
 #define thrjam(buf) _internal_thrjamLinenumber(buf, __LINE__)
 #define thrjamEntry(buf) thrjam(buf)
+||||||| Common ancestor
+#define thrjamLine(jamBufferArg, line) \
+  do { \
+    EmulatedJamBuffer* const jamBuffer = jamBufferArg; \
+    Uint32 jamIndex = jamBuffer->theEmulatedJamIndex; \
+    jamBuffer->theEmulatedJam[jamIndex++] = JamEvent((JAM_FILE_ID), (line)); \
+    jamBuffer->theEmulatedJamIndex = jamIndex & JAM_MASK; \
+    /* Occasionally check that the jam buffer belongs to this thread.*/ \
+    assert((jamIndex & 3) != 0 || jamBuffer == NDB_THREAD_TLS_JAM);       \
+    /* Occasionally check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
+    assert((jamIndex & 0xff) != 0 ||                     \
+           JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
+  } while(0)
+
+#define jamBlockLine(block, line) thrjamLine(block->jamBuffer(), line)
+#define jamBlock(block) jamBlockLine((block), __LINE__)
+#define jamLine(line) jamBlockLine(this, (line))
+#define jam() jamLine(__LINE__)
+#define jamBlockEntryLine(block, line) \
+  thrjamEntryBlockLine(block->jamBuffer(), block->number(), line)
+#define jamEntryBlock(block) jamEntryBlockLine(block, __LINE__)
+#define jamEntryLine(line) jamBlockEntryLine(this, (line))
+#define jamEntry() jamEntryLine(__LINE__)
+
+#define jamNoBlockLine(line) \
+    thrjamLine(NDB_THREAD_TLS_JAM, line)
+#define jamNoBlock() jamNoBlockLine(__LINE__)
+
+#define thrjamEntryLine(buf, line) thrjamEntryBlockLine(buf, number(), line)
+
+#define thrjam(buf) thrjamLine(buf, __LINE__)
+#define thrjamEntry(buf) thrjamEntryLine(buf, __LINE__)
+=======
+#define thrjamLine(jamBufferArg, line)                                       \
+  do {                                                                       \
+    EmulatedJamBuffer *const jamBuffer = jamBufferArg;                       \
+    Uint32 jamIndex = jamBuffer->theEmulatedJamIndex;                        \
+    jamBuffer->theEmulatedJam[jamIndex++] = JamEvent((JAM_FILE_ID), (line)); \
+    jamBuffer->theEmulatedJamIndex = jamIndex & JAM_MASK;                    \
+    /* Occasionally check that the jam buffer belongs to this thread.*/      \
+    assert((jamIndex & 3) != 0 || jamBuffer == NDB_THREAD_TLS_JAM);          \
+    /* Occasionally check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
+    assert((jamIndex & 0xff) != 0 ||                                         \
+           JamEvent::verifyId((JAM_FILE_ID), __FILE__));                     \
+  } while (0)
+
+#define jamBlockLine(block, line) thrjamLine(block->jamBuffer(), line)
+#define jamBlock(block) jamBlockLine((block), __LINE__)
+#define jamLine(line) jamBlockLine(this, (line))
+#define jam() jamLine(__LINE__)
+#define jamBlockEntryLine(block, line) \
+  thrjamEntryBlockLine(block->jamBuffer(), block->number(), line)
+#define jamEntryBlock(block) jamEntryBlockLine(block, __LINE__)
+#define jamEntryLine(line) jamBlockEntryLine(this, (line))
+#define jamEntry() jamEntryLine(__LINE__)
+
+#define jamNoBlockLine(line) thrjamLine(NDB_THREAD_TLS_JAM, line)
+#define jamNoBlock() jamNoBlockLine(__LINE__)
+
+#define thrjamEntryLine(buf, line) thrjamEntryBlockLine(buf, number(), line)
+
+#define thrjam(buf) thrjamLine(buf, __LINE__)
+#define thrjamEntry(buf) thrjamEntryLine(buf, __LINE__)
+>>>>>>> MySQL 8.0.36
 
 #if defined VM_TRACE || defined ERROR_INSERT || defined EXTRA_JAM
 #define jamDebug() jam()
@@ -198,33 +262,39 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 #endif
 
 #ifndef NDB_OPT
-#define ptrCheck(ptr, limit, rec) if (ptr.i < (limit)) ptr.p = &rec[ptr.i]; else ptr.p = NULL
+#define ptrCheck(ptr, limit, rec) \
+  if (ptr.i < (limit))            \
+    ptr.p = &rec[ptr.i];          \
+  else                            \
+    ptr.p = NULL
 
 /**
- * Sets the p-value of a ptr-struct to be a pointer to record no i  
+ * Sets the p-value of a ptr-struct to be a pointer to record no i
  * (where i is the i-value of the ptr-struct)
  *
  * @param ptr    ptr-struct with a set i-value  (the p-value in this gets set)
  * @param limit  max no of records in rec
  * @param rec    pointer to first record in an array of records
  */
-#define ptrCheckGuardErr(ptr, limit, rec, error) {\
-  UintR TxxzLimit; \
-  TxxzLimit = (limit); \
-  UintR TxxxPtr; \
-  TxxxPtr = ptr.i; \
-  ptr.p = &rec[TxxxPtr]; \
-  if (TxxxPtr < (TxxzLimit)) { \
-    ; \
-  } else { \
-    progError(__LINE__, error, __FILE__); \
-  }}
+#define ptrCheckGuardErr(ptr, limit, rec, error) \
+  {                                              \
+    UintR TxxzLimit;                             \
+    TxxzLimit = (limit);                         \
+    UintR TxxxPtr;                               \
+    TxxxPtr = ptr.i;                             \
+    ptr.p = &rec[TxxxPtr];                       \
+    if (TxxxPtr < (TxxzLimit)) {                 \
+      ;                                          \
+    } else {                                     \
+      progError(__LINE__, error, __FILE__);      \
+    }                                            \
+  }
 #define ptrAss(ptr, rec) ptr.p = &rec[ptr.i]
 #define ptrNull(ptr) ptr.p = NULL
-#define ptrGuardErr(ptr, error) if (ptr.p == NULL) \
-    progError(__LINE__, error, __FILE__)
-#define arrGuardErr(ind, size, error) if ((ind) >= (size)) \
-    progError(__LINE__, error, __FILE__)
+#define ptrGuardErr(ptr, error) \
+  if (ptr.p == NULL) progError(__LINE__, error, __FILE__)
+#define arrGuardErr(ind, size, error) \
+  if ((ind) >= (size)) progError(__LINE__, error, __FILE__)
 #else
 #define ptrCheck(ptr, limit, rec) ptr.p = &rec[ptr.i]
 #define ptrCheckGuardErr(ptr, limit, rec, error) ptr.p = &rec[ptr.i]
@@ -243,23 +313,35 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 #ifdef ERROR_INSERT
 #define ERROR_INSERT_VARIABLE mutable UintR cerrorInsert, c_error_insert_extra
 #define ERROR_INSERTED(x) (unlikely(cerrorInsert == (x)))
-#define ERROR_INSERTED_CLEAR(x) (cerrorInsert == (x) ? (cerrorInsert = 0, true) : false)
+#define ERROR_INSERTED_CLEAR(x) \
+  (cerrorInsert == (x) ? (cerrorInsert = 0, true) : false)
 #define ERROR_INSERT_VALUE cerrorInsert
 #define ERROR_INSERT_EXTRA c_error_insert_extra
 #define SET_ERROR_INSERT_VALUE(x) cerrorInsert = x
-#define SET_ERROR_INSERT_VALUE2(x,y) cerrorInsert = x; c_error_insert_extra = y
+#define SET_ERROR_INSERT_VALUE2(x, y) \
+  cerrorInsert = x;                   \
+  c_error_insert_extra = y
 #define CLEAR_ERROR_INSERT_VALUE cerrorInsert = 0
 #define CLEAR_ERROR_INSERT_EXTRA c_error_insert_extra = 0
 #else
-#define ERROR_INSERT_VARIABLE typedef void * cerrorInsert // Will generate compiler error if used
+#define ERROR_INSERT_VARIABLE \
+  typedef void *cerrorInsert  // Will generate compiler error if used
 #define ERROR_INSERTED(x) false
 #define ERROR_INSERTED_CLEAR(x) false
 #define ERROR_INSERT_VALUE 0
 #define ERROR_INSERT_EXTRA Uint32(0)
-#define SET_ERROR_INSERT_VALUE(x) do { } while(0)
-#define SET_ERROR_INSERT_VALUE2(x,y) do { } while(0)
-#define CLEAR_ERROR_INSERT_VALUE do { } while(0)
-#define CLEAR_ERROR_INSERT_EXTRA do { } while(0)
+#define SET_ERROR_INSERT_VALUE(x) \
+  do {                            \
+  } while (0)
+#define SET_ERROR_INSERT_VALUE2(x, y) \
+  do {                                \
+  } while (0)
+#define CLEAR_ERROR_INSERT_VALUE \
+  do {                           \
+  } while (0)
+#define CLEAR_ERROR_INSERT_EXTRA \
+  do {                           \
+  } while (0)
 #endif
 
 #define DECLARE_DUMP0(BLOCK, CODE, DESC) if (arg == CODE)
@@ -293,16 +375,16 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 
 /* ------------------------------------------------------------------ */
 // We have these constants to ensure that we can easily change the
-// parallelism of node recovery and the amount of scan 
+// parallelism of node recovery and the amount of scan
 // operations needed for node recovery.
 /* ------------------------------------------------------------------ */
 #define ZMAX_PARALLEL_COPY_FRAGMENT_OPS 8
 #define DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT 6000
 #define MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT 48000
 #define MAGIC_CONSTANT 56
-#define NODE_RECOVERY_SCAN_OP_RECORDS \
-         (4 + ((4*MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT)/ \
-         ((MAGIC_CONSTANT + 2) * 5)))
+#define NODE_RECOVERY_SCAN_OP_RECORDS                  \
+  (4 + ((4 * MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT) / \
+        ((MAGIC_CONSTANT + 2) * 5)))
 
 #ifdef NO_CHECKPOINT
 #define NO_LCP
@@ -323,68 +405,66 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
  * - ndbassert  - Only used when compiling VM_TRACE
  * - ndbrequire - Always checked
  *
- * If a ndbassert/ndbrequire fails, the system will 
+ * If a ndbassert/ndbrequire fails, the system will
  * shutdown and generate an error log
  *
  *
  * NOTE these may only be used within blocks
  */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-#define ndbassert(check) \
-  if(likely(check)){ \
-  } else {     \
-    jamNoBlock(); \
+#define ndbassert(check)                                        \
+  if (likely(check)) {                                          \
+  } else {                                                      \
+    jamNoBlock();                                               \
     progError(__LINE__, NDBD_EXIT_NDBASSERT, __FILE__, #check); \
   }
 #else
-#define ndbassert(check) do { } while(0)
+#define ndbassert(check) \
+  do {                   \
+  } while (0)
 #endif
 
-#define ndbrequireErr(check, error) \
-  if(likely(check)){ \
-  } else {     \
-    jamNoBlock(); \
+#define ndbrequireErr(check, error)               \
+  if (likely(check)) {                            \
+  } else {                                        \
+    jamNoBlock();                                 \
     progError(__LINE__, error, __FILE__, #check); \
   }
 
-#define ndbrequire(check) \
-  ndbrequireErr(check, NDBD_EXIT_NDBREQUIRE)
+#define ndbrequire(check) ndbrequireErr(check, NDBD_EXIT_NDBREQUIRE)
 
-#define ndbabort() \
-  do { \
-    jamNoBlock(); \
+#define ndbabort()                                       \
+  do {                                                   \
+    jamNoBlock();                                        \
     progError(__LINE__, NDBD_EXIT_PRGERR, __FILE__, ""); \
   } while (false)
 
-#define CRASH_INSERTION(errorType) \
-  if (!ERROR_INSERTED((errorType))) { \
-  } else { \
-    jamNoBlock(); \
+#define CRASH_INSERTION(errorType)                         \
+  if (!ERROR_INSERTED((errorType))) {                      \
+  } else {                                                 \
+    jamNoBlock();                                          \
     progError(__LINE__, NDBD_EXIT_ERROR_INSERT, __FILE__); \
   }
 
-#define CRASH_INSERTION2(errorNum, condition) \
-  if (!(ERROR_INSERTED(errorNum) && condition)) { \
-  } else { \
-    jamNoBlock(); \
+#define CRASH_INSERTION2(errorNum, condition)              \
+  if (!(ERROR_INSERTED(errorNum) && condition)) {          \
+  } else {                                                 \
+    jamNoBlock();                                          \
     progError(__LINE__, NDBD_EXIT_ERROR_INSERT, __FILE__); \
   }
 
-#define CRASH_INSERTION3() \
-  { \
-    jamNoBlock(); \
+#define CRASH_INSERTION3()                                 \
+  {                                                        \
+    jamNoBlock();                                          \
     progError(__LINE__, NDBD_EXIT_ERROR_INSERT, __FILE__); \
   }
 #define MEMCOPY_PAGE(to, from, page_size_in_bytes) \
-  memcpy((void*)(to), (void*)(from), (size_t)(page_size_in_bytes));
+  memcpy((void *)(to), (void *)(from), (size_t)(page_size_in_bytes));
 #define MEMCOPY_NO_WORDS(to, from, no_of_words) \
-  memcpy((to), (void*)(from), (size_t)((no_of_words) << 2));
+  memcpy((to), (void *)(from), (size_t)((no_of_words) << 2));
 
 // Get the jam buffer for the current thread.
-inline EmulatedJamBuffer* getThrJamBuf()
-{
-  return NDB_THREAD_TLS_JAM;
-}
+inline EmulatedJamBuffer *getThrJamBuf() { return NDB_THREAD_TLS_JAM; }
 
 #undef JAM_FILE_ID
 

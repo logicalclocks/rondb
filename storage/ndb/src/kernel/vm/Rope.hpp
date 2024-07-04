@@ -69,10 +69,10 @@ public:
      Context is maintained in rope_offset.
      The caller must initialize rope_offset to 0 before the first read.
   */
-  int readBuffered(char* buf, Uint32 buf_size, Uint32 & rope_offset) const;
+  int readBuffered(char *buf, Uint32 buf_size, Uint32 &rope_offset) const;
 
-  int compare(const char * s) const { return compare(s, (Uint32)strlen(s) + 1);}
-  int compare(const char *, Uint32 len) const; 
+  int compare(const char *s) const { return compare(s, (Uint32)strlen(s) + 1); }
+  int compare(const char *, Uint32 len) const;
 
   bool equal(const LcConstRope& r2) const;
 
@@ -111,13 +111,33 @@ public:
   bool assign(const char * s, Uint32 l) { return assign(s, l, hash(s, l));}
   bool assign(const char *, Uint32 len, Uint32 hash);
 
-  bool appendBuffer(const char * buf, Uint32 len);
+  bool appendBuffer(const char *buf, Uint32 len);
 
   void erase();
-  
-  static Uint32 hash(const char * str, Uint32 len, Uint32 starter = 0);
+
+<<<<<<< RonDB // RONDB-624 todo
+private:
+||||||| Common ancestor
+  static Uint32 getSegmentSizeInBytes() { return RopeBase::getSegmentSizeInBytes();}
 
 private:
+  char * firstSegment(Ptr<Segment> &) const;
+  char * nextSegment(Ptr<Segment> &) const;
+
+private:
+=======
+  static Uint32 hash(const char *str, Uint32 len, Uint32 starter = 0);
+
+  static Uint32 getSegmentSizeInBytes() {
+    return RopeBase::getSegmentSizeInBytes();
+  }
+
+ private:
+  char *firstSegment(Ptr<Segment> &) const;
+  char *nextSegment(Ptr<Segment> &) const;
+
+ private:
+>>>>>>> MySQL 8.0.36
   Uint32 m_hash;
   Uint32 m_length;
   char *m_string;
@@ -136,6 +156,7 @@ LcLocalRope::empty() const {
   return m_length == 0;
 }
 
+<<<<<<< RonDB // RONDB-624 todo
 inline
 Uint32
 LcConstRope::size() const {
@@ -147,8 +168,29 @@ bool
 LcConstRope::empty() const {
   return m_length == 0;
 }
+||||||| Common ancestor
+inline
+Uint32
+ConstRope::size() const {
+  return m_length;
+}
 
+inline
+bool
+ConstRope::empty() const {
+  return m_length == 0;
+}
+=======
+inline Uint32 ConstRope::size() const { return m_length; }
+>>>>>>> MySQL 8.0.36
+
+<<<<<<< RonDB // RONDB-624 todo
+||||||| Common ancestor
+
+=======
+inline bool ConstRope::empty() const { return m_length == 0; }
+
+>>>>>>> MySQL 8.0.36
 #undef JAM_FILE_ID
 
 #endif
-

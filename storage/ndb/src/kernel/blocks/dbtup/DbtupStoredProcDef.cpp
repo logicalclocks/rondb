@@ -25,21 +25,19 @@
 
 #define DBTUP_C
 #define DBTUP_STORE_PROC_DEF_CPP
-#include "Dbtup.hpp"
-#include <RefConvert.hpp>
 #include <ndb_limits.h>
+#include <RefConvert.hpp>
 #include <pc.hpp>
+#include "Dbtup.hpp"
 
 #define JAM_FILE_ID 406
-
 
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* ------------ADD/DROP STORED PROCEDURE MODULE ------------------- */
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
-void Dbtup::execSTORED_PROCREQ(Signal* signal) 
-{
+void Dbtup::execSTORED_PROCREQ(Signal *signal) {
   OperationrecPtr regOperPtr;
   TablerecPtr regTabPtr;
   jamEntryDebug();
@@ -49,10 +47,10 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
 
   Uint32 requestInfo = signal->theData[3];
-  TransState trans_state= get_trans_state(regOperPtr.p);
+  TransState trans_state = get_trans_state(regOperPtr.p);
   ndbrequire(trans_state == TRANS_IDLE ||
              ((trans_state == TRANS_ERROR_WAIT_STORED_PROCREQ) &&
-             (requestInfo == ZSTORED_PROCEDURE_DELETE)));
+              (requestInfo == ZSTORED_PROCEDURE_DELETE)));
   ndbrequire(regTabPtr.p->tableStatus == DEFINED);
   /*
    * Also store count of procs called from non-API scans.
@@ -63,11 +61,10 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
   BlockReference apiBlockref = signal->theData[5];
 #endif
   switch (requestInfo) {
-  case ZSCAN_PROCEDURE:
-  {
-    jamDebug();
+    case ZSCAN_PROCEDURE: {
+      jamDebug();
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-    storedProcCountNonAPI(apiBlockref, +1);
+      storedProcCountNonAPI(apiBlockref, +1);
 #endif
     SectionHandle handle(this);
     StoredProcPtr storedPtr;
@@ -85,24 +82,23 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
   case ZCOPY_PROCEDURE:
     jamDebug();
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-    storedProcCountNonAPI(apiBlockref, +1);
+      storedProcCountNonAPI(apiBlockref, +1);
 #endif
-    copyProcedure(signal, regTabPtr, regOperPtr.p);
-    break;
-  case ZSTORED_PROCEDURE_DELETE:
-    jamDebug();
+      copyProcedure(signal, regTabPtr, regOperPtr.p);
+      break;
+    case ZSTORED_PROCEDURE_DELETE:
+      jamDebug();
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-    storedProcCountNonAPI(apiBlockref, -1);
+      storedProcCountNonAPI(apiBlockref, -1);
 #endif
-    deleteScanProcedure(signal, regOperPtr.p);
-    break;
-  default:
-    ndbabort();
-  }//switch
-}//Dbtup::execSTORED_PROCREQ()
+      deleteScanProcedure(signal, regOperPtr.p);
+      break;
+    default:
+      ndbabort();
+  }  // switch
+}  // Dbtup::execSTORED_PROCREQ()
 
-void Dbtup::storedProcCountNonAPI(BlockReference apiBlockref, int add_del)
-{
+void Dbtup::storedProcCountNonAPI(BlockReference apiBlockref, int add_del) {
   BlockNumber apiBlockno = refToBlock(apiBlockref);
   if (apiBlockno < MIN_API_BLOCK_NO) {
     ndbassert(blockToMain(apiBlockno) >= MIN_BLOCK_NO &&
@@ -120,14 +116,11 @@ void Dbtup::storedProcCountNonAPI(BlockReference apiBlockref, int add_del)
   }
 }
 
-void Dbtup::deleteScanProcedure(Signal* signal,
-                                Operationrec* regOperPtr) 
-{
+void Dbtup::deleteScanProcedure(Signal *signal, Operationrec *regOperPtr) {
   StoredProcPtr storedPtr;
   Uint32 storedProcId = signal->theData[4];
   storedPtr.i = storedProcId;
-  if (storedPtr.i != RNIL)
-  {
+  if (storedPtr.i != RNIL) {
     jam();
     ndbrequire(c_storedProcPool.getValidPtr(storedPtr));
     ndbrequire(storedPtr.p->storedCode != ZSTORED_PROCEDURE_FREE);
@@ -149,7 +142,7 @@ void Dbtup::deleteScanProcedure(Signal* signal,
   set_trans_state(regOperPtr, TRANS_IDLE);
   signal->theData[0] = 0; /* Success */
   signal->theData[1] = storedProcId;
-}//Dbtup::deleteScanProcedure()
+}  // Dbtup::deleteScanProcedure()
 
 void Dbtup::scanProcedure(Signal* signal,
                           Operationrec* regOperPtr,
@@ -160,8 +153,8 @@ void Dbtup::scanProcedure(Signal* signal,
   /* Seize a stored procedure record, and link the
    * stored procedure AttrInfo section from it
    */
-  ndbrequire( handle->m_cnt == 1 );
-  ndbrequire( handle->m_ptr[0].p->m_sz > 0 );
+  ndbrequire(handle->m_cnt == 1);
+  ndbrequire(handle->m_ptr[0].p->m_sz > 0);
 
   if (!isCopy)
   {
@@ -183,27 +176,24 @@ void Dbtup::scanProcedure(Signal* signal,
   storedPtr.p->storedParamNo = 0;
 
   set_trans_state(regOperPtr, TRANS_IDLE);
-  
-  if (lenAttrInfo >= ZATTR_BUFFER_SIZE) { // yes ">="
+
+  if (lenAttrInfo >= ZATTR_BUFFER_SIZE) {  // yes ">="
     jam();
     // send REF and change state
-    storedProcBufferSeizeErrorLab(signal, 
-                                  regOperPtr,
-                                  storedPtr.i,
+    storedProcBufferSeizeErrorLab(signal, regOperPtr, storedPtr.i,
                                   ZSTORED_TOO_MUCH_ATTRINFO_ERROR);
     return;
   }
 
   signal->theData[0] = 0; /* Success */
   signal->theData[1] = storedPtr.i;
-}//Dbtup::scanProcedure()
+}  // Dbtup::scanProcedure()
 
-void Dbtup::allocCopyProcedure()
-{
+void Dbtup::allocCopyProcedure() {
   /* We allocate some segments and initialise them with
    * Attribute Ids for the 'worst case' table.
    * At run time we can use prefixes of this data.
-   * 
+   *
    * TODO : Consider using read packed 'read all columns' word once
    * updatePacked supported.
    */
@@ -232,8 +222,7 @@ void Dbtup::allocCopyProcedure()
   }
 }
 
-void Dbtup::freeCopyProcedure()
-{
+void Dbtup::freeCopyProcedure() {
   /* Should only be called when shutting down node.
    */
   for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
@@ -272,22 +261,20 @@ void Dbtup::prepareCopyProcedure(Uint32 numAttrs,
   Uint32 extraAttrIds[EXTRA_COPY_PROC_WORDS];
   Uint32 extraReads = 0;
 
-  if (tableBits & Tablerec::TR_ExtraRowGCIBits)
-  {
-    AttributeHeader ah(AttributeHeader::ROW_GCI64,0);
+  if (tableBits & Tablerec::TR_ExtraRowGCIBits) {
+    AttributeHeader ah(AttributeHeader::ROW_GCI64, 0);
     extraAttrIds[extraReads++] = ah.m_value;
   }
-  if (tableBits & Tablerec::TR_ExtraRowAuthorBits)
-  {
-    AttributeHeader ah(AttributeHeader::ROW_AUTHOR,0);
+  if (tableBits & Tablerec::TR_ExtraRowAuthorBits) {
+    AttributeHeader ah(AttributeHeader::ROW_AUTHOR, 0);
     extraAttrIds[extraReads++] = ah.m_value;
   }
 
-  /* Modify section to represent relevant prefix 
+  /* Modify section to represent relevant prefix
    * of code by modifying size and lastSegment
    */
   Uint32 newSize = numAttrs + extraReads;
-  first.p->m_sz= newSize;
+  first.p->m_sz = newSize;
 
   if (extraReads)
   {
@@ -301,9 +288,9 @@ void Dbtup::prepareCopyProcedure(Uint32 numAttrs,
   while(newSize > SectionSegment::DataLength)
   {
     ndbrequire(g_sectionSegmentPool.getPtr(curr, curr.p->m_nextSegment));
-    newSize-= SectionSegment::DataLength;
+    newSize -= SectionSegment::DataLength;
   }
-  first.p->m_lastSegment= curr.i;
+  first.p->m_lastSegment = curr.i;
 }
 
 void Dbtup::releaseCopyProcedure(StoredProcPtr storedPtr)
@@ -338,18 +325,15 @@ void Dbtup::releaseCopyProcedure(StoredProcPtr storedPtr)
   storedPtr.p->lastSegment = RNIL;
   m_reserved_stored_proc_copy_frag.addFirst(storedPtr);
 }
-  
 
-void Dbtup::copyProcedure(Signal* signal,
-                          TablerecPtr regTabPtr,
-                          Operationrec* regOperPtr) 
-{
+void Dbtup::copyProcedure(Signal *signal, TablerecPtr regTabPtr,
+                          Operationrec *regOperPtr) {
   /* We create a stored procedure for the fragment copy scan
    * This is done by trimming a 'read all columns in order'
    * program to the correct length for this table and
    * using that to create the procedure
    * This assumes that there is only one fragment copy going
-   * on at any time, which is verified by checking 
+   * on at any time, which is verified by checking
    * cCopyLastSeg == RNIL before starting each copy
    *
    * If the table has extra per-row metainformation that
@@ -374,13 +358,12 @@ void Dbtup::copyProcedure(Signal* signal,
   Ptr<SectionSegment> first;
   ndbrequire(g_sectionSegmentPool.getPtr(first, storedPtr.p->storedProcIVal));
   signal->theData[2] = first.p->m_sz;
-}//Dbtup::copyProcedure()
+}  // Dbtup::copyProcedure()
 
-void Dbtup::storedProcBufferSeizeErrorLab(Signal* signal,
-                                          Operationrec* regOperPtr,
+void Dbtup::storedProcBufferSeizeErrorLab(Signal *signal,
+                                          Operationrec *regOperPtr,
                                           Uint32 storedProcPtr,
-                                          Uint32 errorCode)
-{
+                                          Uint32 errorCode) {
   regOperPtr->m_any_value = 0;
   set_trans_state(regOperPtr, TRANS_ERROR_WAIT_STORED_PROCREQ);
   signal->theData[0] = 1; /* Failure */

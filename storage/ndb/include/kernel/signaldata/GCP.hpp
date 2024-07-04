@@ -30,14 +30,12 @@
 
 #define JAM_FILE_ID 131
 
-
 /**
  * Sent as a distributed signal DIH-DIH.
  *
  * Also sent locally from DIH to SUMA.
  */
-struct GCPPrepare
-{
+struct GCPPrepare {
   static constexpr Uint32 SignalLength = 3;
 
   Uint32 nodeId;
@@ -109,12 +107,13 @@ class GCPSaveReq // Distr. DIH-LQH
   friend class Dblqh;
   friend class DblqhProxy;
 
-  friend bool printGCPSaveReq(FILE * output, const Uint32 * theData, 
-			      Uint32 len, Uint16 receiverBlockNo);
-public:
+  friend bool printGCPSaveReq(FILE *output, const Uint32 *theData, Uint32 len,
+                              Uint16 receiverBlockNo);
+
+ public:
   static constexpr Uint32 SignalLength = 3;
 
-private:
+ private:
   Uint32 dihBlockRef;
   Uint32 dihPtr;
   Uint32 gci;
@@ -133,9 +132,10 @@ class GCPSaveRef // Distr. LQH-DIH
    */
   friend class Dbdih;
   
-  friend bool printGCPSaveRef(FILE * output, const Uint32 * theData, 
-			      Uint32 len, Uint16 receiverBlockNo);
-public:
+  friend bool printGCPSaveRef(FILE *output, const Uint32 *theData, Uint32 len,
+                              Uint16 receiverBlockNo);
+
+ public:
   static constexpr Uint32 SignalLength = 4;
 
   enum ErrorCode {
@@ -144,7 +144,7 @@ public:
     NodeRestartInProgress = 3
   };
   
-private:
+ private:
   Uint32 dihPtr;
   Uint32 nodeId;
   Uint32 gci;
@@ -164,17 +164,17 @@ class GCPSaveConf // Distr. LQH-DIH
    */
   friend class Dbdih;
 
-  friend bool printGCPSaveConf(FILE * output, const Uint32 * theData, 
-			       Uint32 len, Uint16 receiverBlockNo);
-public:
+  friend bool printGCPSaveConf(FILE *output, const Uint32 *theData, Uint32 len,
+                               Uint16 receiverBlockNo);
+
+ public:
   static constexpr Uint32 SignalLength = 3;
 
-private:
+ private:
   Uint32 dihPtr;
   Uint32 nodeId;
   Uint32 gci;
 };
-
 
 #undef JAM_FILE_ID
 

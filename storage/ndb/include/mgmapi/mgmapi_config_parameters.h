@@ -344,7 +344,7 @@
 #define CFG_SHM_CHECKSUM              501
 #define CFG_SHM_KEY                   502
 #define CFG_SHM_BUFFER_MEM            503
-#define CFG_SHM_SIGNUM                504 //Deprecated
+#define CFG_SHM_SIGNUM 504  // Deprecated
 #define CFG_SHM_SPINTIME              505
 #define CFG_SHM_SEND_BUFFER_SIZE      506
 

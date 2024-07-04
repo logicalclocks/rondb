@@ -28,7 +28,6 @@
 
 #define JAM_FILE_ID 347
 
-
 /**
  * Resource groups
  */
@@ -37,47 +36,47 @@
  * Transaction memory == "operation records" needed to access/modify data in DB
  * Includes Undo buffer as well
  */
-#define RG_TRANSACTION_MEMORY   1
+#define RG_TRANSACTION_MEMORY 1
 
 /**
  * Records for disk data operations
  */
-#define RG_DISK_RECORDS         2
+#define RG_DISK_RECORDS 2
 
 /**
  * Records for data memory
  */
-#define RG_DATAMEM              3
+#define RG_DATAMEM 3
 
 /**
  * Records for job buffers
  */
-#define RG_JOBBUFFER            4
+#define RG_JOBBUFFER 4
 
 /**
  * Redo buffers
  */
-#define RG_FILE_BUFFERS         5
+#define RG_FILE_BUFFERS 5
 
 /**
  * Transporter buffers
  */
-#define RG_TRANSPORTER_BUFFERS  6
+#define RG_TRANSPORTER_BUFFERS 6
 
 /**
  * Disk page cache
  */
-#define RG_DISK_PAGE_BUFFER     7
+#define RG_DISK_PAGE_BUFFER 7
 
 /**
  * Query memory
  */
-#define RG_QUERY_MEMORY         8
+#define RG_QUERY_MEMORY 8
 
 /**
  * Schema transaction memory
  */
-#define RG_SCHEMA_TRANS_MEMORY  9
+#define RG_SCHEMA_TRANS_MEMORY 9
 
 /**
  * Schema memory
@@ -121,12 +120,12 @@
 #define RT_DBTC_INDEX_OPERATION    MAKE_TID(14, RG_TRANSACTION_MEMORY)
 #define RT_DBTC_API_CONNECT_RECORD MAKE_TID(15, RG_TRANSACTION_MEMORY)
 #define RT_DBTC_API_CONNECT_TIMERS MAKE_TID(16, RG_TRANSACTION_MEMORY)
-#define RT_DBTC_CACHE_RECORD       MAKE_TID(17, RG_TRANSACTION_MEMORY)
-#define RT_DBTC_GCP_RECORD         MAKE_TID(18, RG_TRANSACTION_MEMORY)
+#define RT_DBTC_CACHE_RECORD MAKE_TID(17, RG_TRANSACTION_MEMORY)
+#define RT_DBTC_GCP_RECORD MAKE_TID(18, RG_TRANSACTION_MEMORY)
 #define RT_DBTC_FIRED_TRIGGER_DATA MAKE_TID(19, RG_TRANSACTION_MEMORY)
-#define RT_DBTC_ATTRIBUTE_BUFFER   MAKE_TID(20, RG_TRANSACTION_MEMORY)
+#define RT_DBTC_ATTRIBUTE_BUFFER MAKE_TID(20, RG_TRANSACTION_MEMORY)
 #define RT_DBTC_COMMIT_ACK_MARKER_BUFFER MAKE_TID(21, RG_TRANSACTION_MEMORY)
-#define RT_DBLQH_TC_CONNECT        MAKE_TID(22, RG_TRANSACTION_MEMORY)
+#define RT_DBLQH_TC_CONNECT MAKE_TID(22, RG_TRANSACTION_MEMORY)
 #define RT_DBLQH_COMMIT_ACK_MARKER MAKE_TID(23, RG_TRANSACTION_MEMORY)
 #define RT_DBLQH_SCAN_RECORD       MAKE_TID(24, RG_TRANSACTION_MEMORY)
 #define RT_DBTUP_OPERATION         MAKE_TID(25, RG_TRANSACTION_MEMORY)

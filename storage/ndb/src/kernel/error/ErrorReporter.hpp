@@ -34,26 +34,18 @@
 
 #define JAM_FILE_ID 487
 
+class ErrorReporter {
+ public:
+  [[noreturn]] static void handleAssert(const char *message, const char *file,
+                                        int line, int ec = NDBD_EXIT_PRGERR);
 
-class ErrorReporter
-{
-public:
-  [[noreturn]] static void handleAssert(const char* message,
-                                        const char* file,
-                                        int line,
-                                        int ec = NDBD_EXIT_PRGERR);
-  
-  [[noreturn]] static void handleError(int faultID,
-                                       const char* problemData,
-                                       const char* objRef,
+  [[noreturn]] static void handleError(int faultID, const char *problemData,
+                                       const char *objRef,
                                        enum NdbShutdownType = NST_ErrorHandler);
-  
-  static void formatMessage(int thr_no,
-                            Uint32 num_threads, int faultID,
-			    const char* problemData,
-                            const char* objRef, 
-			    const char* theNameOfTheTraceFile,
-			    char* messptr);
+
+  static void formatMessage(int thr_no, Uint32 num_threads, int faultID,
+                            const char *problemData, const char *objRef,
+                            const char *theNameOfTheTraceFile, char *messptr);
 
   static int get_trace_no();
 
@@ -92,7 +84,6 @@ private:
    */
   static Uint32 startOfJamSignal(Uint32 endIndex);
 };
-
 
 #undef JAM_FILE_ID
 

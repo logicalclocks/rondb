@@ -24,9 +24,13 @@
 */
 
 #define DBTUX_GEN_CPP
-#include "util/require.h"
 #include "Dbtux.hpp"
+<<<<<<< RonDB // RONDB-624 todo
 #include "../dblqh/Dblqh.hpp"
+||||||| Common ancestor
+=======
+#include "util/require.h"
+>>>>>>> MySQL 8.0.36
 
 #include <signaldata/NodeStateSignalData.hpp>
 
@@ -46,32 +50,26 @@ Dbtux::Dbtux(Block_context& ctx,
   c_descPageList(c_descPagePool),
   c_descMaxPagesAllocated(0),
 #ifdef VM_TRACE
-  debugFile(0),
-  tuxDebugOut(*new NullOutputStream()),
-  debugFlags(0),
+      debugFile(0),
+      tuxDebugOut(*new NullOutputStream()),
+      debugFlags(0),
 #endif
-  c_internalStartPhase(0),
-  c_typeOfStart(NodeState::ST_ILLEGAL_TYPE),
-  c_indexStatAutoUpdate(false),
-  c_indexStatSaveSize(0),
-  c_indexStatSaveScale(0),
-  c_indexStatTriggerPct(0),
-  c_indexStatTriggerScale(0),
-  c_indexStatUpdateDelay(0)
-{
+      c_internalStartPhase(0),
+      c_typeOfStart(NodeState::ST_ILLEGAL_TYPE),
+      c_indexStatAutoUpdate(false),
+      c_indexStatSaveSize(0),
+      c_indexStatSaveScale(0),
+      c_indexStatTriggerPct(0),
+      c_indexStatTriggerScale(0),
+      c_indexStatUpdateDelay(0) {
   BLOCK_CONSTRUCTOR(Dbtux);
   // verify size assumptions (also when release-compiled)
-  ndbrequire(
-      (sizeof(TreeEnt) & 0x3) == 0 &&
-      (sizeof(TreeNode) & 0x3) == 0 &&
-      (sizeof(DescHead) & 0x3) == 0 &&
-      (sizeof(KeyType) & 0x3) == 0
-  );
+  ndbrequire((sizeof(TreeEnt) & 0x3) == 0 && (sizeof(TreeNode) & 0x3) == 0 &&
+             (sizeof(DescHead) & 0x3) == 0 && (sizeof(KeyType) & 0x3) == 0);
   /*
    * DbtuxGen.cpp
    */
-  if (blockNo == DBTUX)
-  {
+  if (blockNo == DBTUX) {
     addRecSignal(GSN_CONTINUEB, &Dbtux::execCONTINUEB);
     addRecSignal(GSN_STTOR, &Dbtux::execSTTOR);
     addRecSignal(GSN_READ_CONFIG_REQ, &Dbtux::execREAD_CONFIG_REQ, true);
@@ -143,19 +141,14 @@ Dbtux::Dbtux(Block_context& ctx,
   cnoOfAllocatedFragrec = 0;
   cnoOfMaxAllocatedFragrec = 0;
 
-  c_transient_pools[DBTUX_SCAN_OPERATION_TRANSIENT_POOL_INDEX] =
-    &c_scanOpPool;
-  c_transient_pools[DBTUX_SCAN_LOCK_TRANSIENT_POOL_INDEX] =
-    &c_scanLockPool;
-  c_transient_pools[DBTUX_SCAN_BOUND_TRANSIENT_POOL_INDEX] =
-    &c_scanBoundPool;
+  c_transient_pools[DBTUX_SCAN_OPERATION_TRANSIENT_POOL_INDEX] = &c_scanOpPool;
+  c_transient_pools[DBTUX_SCAN_LOCK_TRANSIENT_POOL_INDEX] = &c_scanLockPool;
+  c_transient_pools[DBTUX_SCAN_BOUND_TRANSIENT_POOL_INDEX] = &c_scanBoundPool;
   static_assert(c_transient_pool_count == 3);
   c_transient_pools_shrinking.clear();
 }
 
-Dbtux::~Dbtux()
-{
-}
+Dbtux::~Dbtux() {}
 
 Uint64 Dbtux::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
@@ -184,63 +177,51 @@ Uint64 Dbtux::getTransactionMemoryNeed(
   return (scan_op_byte_count + scan_lock_byte_count + scan_bound_byte_count);
 }
 
-void
-Dbtux::execCONTINUEB(Signal* signal)
-{
+void Dbtux::execCONTINUEB(Signal *signal) {
   jamEntry();
-  const Uint32* data = signal->getDataPtr();
+  const Uint32 *data = signal->getDataPtr();
   switch (data[0]) {
-  case TuxContinueB::ShrinkTransientPools:
-  {
-    jam();
-    Uint32 pool_index = signal->theData[1];
-    ndbassert(signal->getLength() == 2);
-    shrinkTransientPools(pool_index);
-    return;
-  }
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
+    case TuxContinueB::ShrinkTransientPools: {
+      jam();
+      Uint32 pool_index = signal->theData[1];
+      ndbassert(signal->getLength() == 2);
+      shrinkTransientPools(pool_index);
+      return;
+    }
+#if (defined(VM_TRACE) || defined(ERROR_INSERT)) && \
     defined(DO_TRANSIENT_POOL_STAT)
 
-  case TuxContinueB::TransientPoolStat:
-  {
-    for (Uint32 pool_index = 0;
-         pool_index < c_transient_pool_count;
-         pool_index++)
-    {
-      g_eventLogger->info(
-        "DBTUP %u: Transient slot pool %u %p: Entry size %u:"
-       " Free %u: Used %u: Used high %u: Size %u: For shrink %u",
-       instance(),
-       pool_index,
-       c_transient_pools[pool_index],
-       c_transient_pools[pool_index]->getEntrySize(),
-       c_transient_pools[pool_index]->getNoOfFree(),
-       c_transient_pools[pool_index]->getUsed(),
-       c_transient_pools[pool_index]->getUsedHi(),
-       c_transient_pools[pool_index]->getSize(),
-       c_transient_pools_shrinking.get(pool_index));
+    case TuxContinueB::TransientPoolStat: {
+      for (Uint32 pool_index = 0; pool_index < c_transient_pool_count;
+           pool_index++) {
+        g_eventLogger->info(
+            "DBTUP %u: Transient slot pool %u %p: Entry size %u:"
+            " Free %u: Used %u: Used high %u: Size %u: For shrink %u",
+            instance(), pool_index, c_transient_pools[pool_index],
+            c_transient_pools[pool_index]->getEntrySize(),
+            c_transient_pools[pool_index]->getNoOfFree(),
+            c_transient_pools[pool_index]->getUsed(),
+            c_transient_pools[pool_index]->getUsedHi(),
+            c_transient_pools[pool_index]->getSize(),
+            c_transient_pools_shrinking.get(pool_index));
+      }
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 5000, 1);
+      break;
     }
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 5000, 1);
-    break;
-  }
 #endif
-  case TuxContinueB::DropIndex: // currently unused
+    case TuxContinueB::DropIndex:  // currently unused
     {
       IndexPtr indexPtr;
       ndbrequire(c_indexPool.getPtr(indexPtr, data[1]));
       dropIndex(signal, indexPtr, data[2], data[3]);
-    }
-    break;
-  case TuxContinueB::StatMon:
-    {
+    } break;
+    case TuxContinueB::StatMon: {
       Uint32 id = data[1];
       ndbrequire(id == c_statMon.m_loopIndexId);
       statMonExecContinueB(signal);
-    }
-    break;
-  default:
-    ndbabort();
+    } break;
+    default:
+      ndbabort();
   }
 }
 
@@ -251,120 +232,106 @@ Dbtux::execCONTINUEB(Signal* signal)
  *
  *      SP      ISP     activities
  *      1       none
- *      2       1       
+ *      2       1
  *      3       2       recover metadata, activate indexes
  *      4       3       recover data
- *      5       4-6     
- *      6       skip    
- *      7       skip    
+ *      5       4-6
+ *      6       skip
+ *      7       skip
  *      8       7       build non-logged indexes on SR
  *
  * DBTUX catches type of start (IS, SR, NR, INR) at SP 3 and updates
  * internal start phase at SP 7.  These are used to prevent index
  * maintenance operations caused by redo log at SR.
  */
-void
-Dbtux::execSTTOR(Signal* signal)
-{
+void Dbtux::execSTTOR(Signal *signal) {
   jamEntry();
   Uint32 startPhase = signal->theData[1];
   switch (startPhase) {
-  case 1:
-    jam();
-    CLEAR_ERROR_INSERT_VALUE;
-    m_my_scan_instance = get_my_scan_instance();
-    if (m_is_query_block)
-    {
-      c_tup = (Dbtup*)globalData.getBlock(DBQTUP, instance());
-      ndbrequire(c_tup != 0);
-      c_lqh = (Dblqh*)globalData.getBlock(DBQLQH, instance());
-      ndbrequire(c_lqh != 0);
-      c_acc = (Dbacc*)globalData.getBlock(DBQACC, instance());
-      ndbrequire(c_acc != 0);
-    }
-    else
-    {
-      c_tup = (Dbtup*)globalData.getBlock(DBTUP, instance());
-      ndbrequire(c_tup != 0);
-      c_lqh = (Dblqh*)globalData.getBlock(DBLQH, instance());
-      ndbrequire(c_lqh != 0);
-      c_acc = (Dbacc*)globalData.getBlock(DBACC, instance());
-      ndbrequire(c_acc != 0);
-    }
-    c_signal_bug32040 = signal;
-    break;
-  case 3:
-    jam();
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
+    case 1:
+      jam();
+      CLEAR_ERROR_INSERT_VALUE;
+      m_my_scan_instance = get_my_scan_instance();
+      if (m_is_query_block) {
+        c_tup = (Dbtup *)globalData.getBlock(DBQTUP, instance());
+        ndbrequire(c_tup != 0);
+        c_lqh = (Dblqh *)globalData.getBlock(DBQLQH, instance());
+        ndbrequire(c_lqh != 0);
+        c_acc = (Dbacc *)globalData.getBlock(DBQACC, instance());
+        ndbrequire(c_acc != 0);
+      } else {
+        c_tup = (Dbtup *)globalData.getBlock(DBTUP, instance());
+        ndbrequire(c_tup != 0);
+        c_lqh = (Dblqh *)globalData.getBlock(DBLQH, instance());
+        ndbrequire(c_lqh != 0);
+        c_acc = (Dbacc *)globalData.getBlock(DBACC, instance());
+        ndbrequire(c_acc != 0);
+      }
+      c_signal_bug32040 = signal;
+      break;
+    case 3:
+      jam();
+#if (defined(VM_TRACE) || defined(ERROR_INSERT)) && \
     defined(DO_TRANSIENT_POOL_STAT)
-    /* Start reporting statistics for transient pools */
-    signal->theData[0] = TuxContinueB::TransientPoolStat;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
+      /* Start reporting statistics for transient pools */
+      signal->theData[0] = TuxContinueB::TransientPoolStat;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
 #endif
-    c_typeOfStart = signal->theData[7];
-    break;
-    return;
-  case 7:
-    c_internalStartPhase = 6;
-    /*
-     * config cannot yet be changed dynamically but we start the
-     * loop always anyway because the cost is minimal
-     */
-    c_statMon.m_loopIndexId = 0;
-    statMonSendContinueB(signal);
-    break;
-  default:
-    jam();
-    break;
+      c_typeOfStart = signal->theData[7];
+      break;
+      return;
+    case 7:
+      c_internalStartPhase = 6;
+      /*
+       * config cannot yet be changed dynamically but we start the
+       * loop always anyway because the cost is minimal
+       */
+      c_statMon.m_loopIndexId = 0;
+      statMonSendContinueB(signal);
+      break;
+    default:
+      jam();
+      break;
   }
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     jam();
-    signal->theData[0] = 0;       // garbage
-    signal->theData[1] = 0;       // garbage
-    signal->theData[2] = 0;       // garbage
+    signal->theData[0] = 0;  // garbage
+    signal->theData[1] = 0;  // garbage
+    signal->theData[2] = 0;  // garbage
     signal->theData[3] = 1;
-    signal->theData[4] = 3;       // for c_typeOfStart
+    signal->theData[4] = 3;  // for c_typeOfStart
     signal->theData[5] = 255;
     sendSignal(DBQTUX_REF, GSN_STTORRY, signal, 6, JBB);
-  }
-  else
-  {
+  } else {
     jam();
-    signal->theData[0] = 0;       // garbage
-    signal->theData[1] = 0;       // garbage
-    signal->theData[2] = 0;       // garbage
+    signal->theData[0] = 0;  // garbage
+    signal->theData[1] = 0;  // garbage
+    signal->theData[2] = 0;  // garbage
     signal->theData[3] = 1;
-    signal->theData[4] = 3;       // for c_typeOfStart
-    signal->theData[5] = 7;       // for c_internalStartPhase
+    signal->theData[4] = 3;  // for c_typeOfStart
+    signal->theData[5] = 7;  // for c_internalStartPhase
     signal->theData[6] = 255;
     BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : DBTUX_REF;
     sendSignal(cntrRef, GSN_STTORRY, signal, 7, JBB);
   }
 }
 
-void
-Dbtux::execNODE_STATE_REP(Signal* signal)
-{
+void Dbtux::execNODE_STATE_REP(Signal *signal) {
   /**
    * This is to handle TO during SR
    *   and STUPID tux looks at c_typeOfStart in TUX_MAINT_REQ
    */
-  NodeStateRep* rep = (NodeStateRep*)signal->getDataPtr();
-  if (rep->nodeState.startLevel == NodeState::SL_STARTING)
-  {
+  NodeStateRep *rep = (NodeStateRep *)signal->getDataPtr();
+  if (rep->nodeState.startLevel == NodeState::SL_STARTING) {
     c_typeOfStart = rep->nodeState.starting.restartType;
   }
   SimulatedBlock::execNODE_STATE_REP(signal);
 }
 
-void
-Dbtux::execREAD_CONFIG_REQ(Signal* signal)
-{
+void Dbtux::execREAD_CONFIG_REQ(Signal *signal) {
   jamEntry();
- 
-  const ReadConfigReq * req = (ReadConfigReq*)signal->getDataPtr();
+
+  const ReadConfigReq *req = (ReadConfigReq *)signal->getDataPtr();
   Uint32 ref = req->senderRef;
   Uint32 senderData = req->senderData;
   ndbrequire(req->noOfParameters == 0);
@@ -382,36 +349,30 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
 
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   {
-    void* tmp[] = {
-      &c_ctx.scanPtr,
-      &c_ctx.indexPtr,
-      &c_ctx.fragPtr,
-    }; 
-    init_global_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    void *tmp[] = {
+        &c_ctx.scanPtr,
+        &c_ctx.indexPtr,
+        &c_ctx.fragPtr,
+    };
+    init_global_ptrs(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
   {
-    void* tmp[] = {
-      &c_ctx.keyAttrs,
-      &c_ctx.tupIndexFragPtr,
-      &c_ctx.tupIndexTablePtr,
-      &c_ctx.tupRealFragPtr,
-      &c_ctx.tupRealTablePtr,
-    }; 
-    init_global_uint32_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    void *tmp[] = {
+        &c_ctx.keyAttrs,       &c_ctx.tupIndexFragPtr, &c_ctx.tupIndexTablePtr,
+        &c_ctx.tupRealFragPtr, &c_ctx.tupRealTablePtr,
+    };
+    init_global_uint32_ptrs(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
   {
-    void* tmp[] = {
-      &c_ctx.scanBoundCnt,
-      &c_ctx.descending,
-      &c_ctx.attrDataOffset,
-      &c_ctx.tuxFixHeaderSize,
-      &c_ctx.m_current_ent,
-    }; 
-    init_global_uint32(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    void *tmp[] = {
+        &c_ctx.scanBoundCnt,     &c_ctx.descending,    &c_ctx.attrDataOffset,
+        &c_ctx.tuxFixHeaderSize, &c_ctx.m_current_ent,
+    };
+    init_global_uint32(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
 #endif
-  const ndb_mgm_configuration_iterator * p = 
-    m_ctx.m_config.getOwnConfigIterator();
+  const ndb_mgm_configuration_iterator *p =
+      m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_INDEX, &nIndex));
@@ -420,20 +381,16 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_BATCH_SIZE, &nScanBatch));
 
   nStatAutoUpdate = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_AUTO_UPDATE,
-                            &nStatAutoUpdate);
+  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_AUTO_UPDATE, &nStatAutoUpdate);
 
   nStatSaveSize = 32768;
-  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_SAVE_SIZE,
-                            &nStatSaveSize);
+  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_SAVE_SIZE, &nStatSaveSize);
 
   nStatSaveScale = 100;
-  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_SAVE_SCALE,
-                            &nStatSaveScale);
+  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_SAVE_SCALE, &nStatSaveScale);
 
   nStatTriggerPct = 100;
-  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_TRIGGER_PCT,
-                            &nStatTriggerPct);
+  ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_TRIGGER_PCT, &nStatTriggerPct);
 
   nStatTriggerScale = 100;
   ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_TRIGGER_SCALE,
@@ -445,8 +402,7 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
 
   const Uint32 nStatOp = 16;
 
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     c_fragOpPool.setSize(0);
     c_indexPool.setSize(0);
   }
@@ -471,8 +427,7 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
     jam();
     refresh_watch_dog();
     IndexPtr indexPtr;
-    if (!c_indexPool.seize(indexPtr))
-    {
+    if (!c_indexPool.seize(indexPtr)) {
       jam();
       break;
     }
@@ -480,27 +435,21 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   }
   // allocate buffers
   c_ctx.jamBuffer = jamBuffer();
-  c_ctx.c_searchKey = (Uint32*)allocRecord("c_searchKey",
-                                           sizeof(Uint32),
-                                           MaxAttrDataSize);
-  c_ctx.c_nextKey = (Uint32*)allocRecord("c_nextKey",
-                                         sizeof(Uint32),
-                                         MaxAttrDataSize);
-  c_ctx.c_entryKey = (Uint32*)allocRecord("c_entryKey",
-                                          sizeof(Uint32),
-                                          MaxAttrDataSize);
+  c_ctx.c_searchKey =
+      (Uint32 *)allocRecord("c_searchKey", sizeof(Uint32), MaxAttrDataSize);
+  c_ctx.c_nextKey =
+      (Uint32 *)allocRecord("c_nextKey", sizeof(Uint32), MaxAttrDataSize);
+  c_ctx.c_entryKey =
+      (Uint32 *)allocRecord("c_entryKey", sizeof(Uint32), MaxAttrDataSize);
 
-  c_ctx.c_dataBuffer = (Uint32*)allocRecord("c_dataBuffer",
-                                            sizeof(Uint64),
-                                            (MaxXfrmDataSize + 1) >> 1);
-  c_ctx.c_boundBuffer = (Uint32*)allocRecord("c_boundBuffer",
-                                             sizeof(Uint64),
+  c_ctx.c_dataBuffer = (Uint32 *)allocRecord("c_dataBuffer", sizeof(Uint64),
                                              (MaxXfrmDataSize + 1) >> 1);
+  c_ctx.c_boundBuffer = (Uint32 *)allocRecord("c_boundBuffer", sizeof(Uint64),
+                                              (MaxXfrmDataSize + 1) >> 1);
 
 #ifdef VM_TRACE
-  c_ctx.c_debugBuffer = (char*)allocRecord("c_debugBuffer",
-                                           sizeof(char),
-                                           DebugBufferBytes);
+  c_ctx.c_debugBuffer =
+      (char *)allocRecord("c_debugBuffer", sizeof(char), DebugBufferBytes);
 #endif
 
   Pool_context pc;
@@ -512,53 +461,36 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   Uint32 reserveScanOpRecs = 0;
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_RESERVED_SCAN_RECORDS,
                                         &reserveScanOpRecs));
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     reserveScanOpRecs = 1;
   }
-  c_scanOpPool.init(
-    ScanOp::TYPE_ID,
-    pc,
-    reserveScanOpRecs,
-    UINT32_MAX);
-  while (c_scanOpPool.startup())
-  {
+  c_scanOpPool.init(ScanOp::TYPE_ID, pc, reserveScanOpRecs, UINT32_MAX);
+  while (c_scanOpPool.startup()) {
     refresh_watch_dog();
   }
 
 
   c_freeScanLock = RNIL;
   Uint32 reserveScanLockRecs = 1000;
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     reserveScanLockRecs = 1;
   }
-  c_scanLockPool.init(
-    ScanLock::TYPE_ID,
-    pc,
-    reserveScanLockRecs,
-    UINT32_MAX);
-  while (c_scanLockPool.startup())
-  {
+  c_scanLockPool.init(ScanLock::TYPE_ID, pc, reserveScanLockRecs, UINT32_MAX);
+  while (c_scanLockPool.startup()) {
     refresh_watch_dog();
   }
   const Uint32 nScanBoundWords = reserveScanOpRecs * ScanBoundSegmentSize * 4;
-  c_scanBoundPool.init(
-    RT_DBTUX_SCAN_BOUND,
-    pc,
-    nScanBoundWords,
-    UINT32_MAX);
-  while (c_scanBoundPool.startup())
-  {
+  c_scanBoundPool.init(RT_DBTUX_SCAN_BOUND, pc, nScanBoundWords, UINT32_MAX);
+  while (c_scanBoundPool.startup()) {
     refresh_watch_dog();
   }
 
   // ack
-  ReadConfigConf * conf = (ReadConfigConf*)signal->getDataPtrSend();
+  ReadConfigConf *conf = (ReadConfigConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = senderData;
-  sendSignal(ref, GSN_READ_CONFIG_CONF, signal, 
-	     ReadConfigConf::SignalLength, JBB);
+  sendSignal(ref, GSN_READ_CONFIG_CONF, signal, ReadConfigConf::SignalLength,
+             JBB);
 }
 
 // utils
@@ -566,17 +498,12 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
 /**
  * This method can be called from MT-build process.
  */
-void
-Dbtux::readKeyAttrs(TuxCtx& ctx,
-                    const Frag& frag,
-                    TreeEnt ent,
-                    KeyData& keyData,
-                    Uint32 count)
-{
-  const Index& index = *c_indexPool.getPtr(frag.m_indexId);
-  const DescHead& descHead = getDescHead(index);
-  const AttributeHeader* keyAttrs = getKeyAttrs(descHead);
-  Uint32* const outputBuffer = ctx.c_dataBuffer;
+void Dbtux::readKeyAttrs(TuxCtx &ctx, const Frag &frag, TreeEnt ent,
+                         KeyData &keyData, Uint32 count) {
+  const Index &index = *c_indexPool.getPtr(frag.m_indexId);
+  const DescHead &descHead = getDescHead(index);
+  const AttributeHeader *keyAttrs = getKeyAttrs(descHead);
+  Uint32 *const outputBuffer = ctx.c_dataBuffer;
 
 #ifdef VM_TRACE
   ndbrequire(&keyData.get_spec() == &index.m_keySpec);
@@ -592,14 +519,8 @@ Dbtux::readKeyAttrs(TuxCtx& ctx,
   const Uint32* keyAttrs32 = (const Uint32*)&keyAttrs[0];
 
   int ret;
-  ret = c_tup->tuxReadAttrs(ctx.jamBuffer,
-                            tableFragPtrI,
-                            pageId,
-                            pageOffset,
-                            tupVersion,
-                            keyAttrs32,
-                            count,
-                            outputBuffer);
+  ret = c_tup->tuxReadAttrs(ctx.jamBuffer, tableFragPtrI, pageId, pageOffset,
+                            tupVersion, keyAttrs32, count, outputBuffer);
   thrjamDebug(ctx.jamBuffer);
   ndbrequire(ret > 0);
   keyData.reset();
@@ -613,22 +534,17 @@ Dbtux::readKeyAttrs(TuxCtx& ctx,
   if (debugFlags & (DebugMaint | DebugScan)) {
     tuxDebugOut << "readKeyAttrs: ";
     tuxDebugOut << " ent:" << ent << " count:" << count;
-    tuxDebugOut << " data:" << keyData.print(ctx.c_debugBuffer,
-                                             DebugBufferBytes);
+    tuxDebugOut << " data:"
+                << keyData.print(ctx.c_debugBuffer, DebugBufferBytes);
     tuxDebugOut << endl;
   }
 #endif
 }
 
-void
-Dbtux::readKeyAttrs(TuxCtx& ctx,
-                    const Frag& frag,
-                    TreeEnt ent,
-                    Uint32 count,
-                    Uint32 *outputBuffer)
-{
+void Dbtux::readKeyAttrs(TuxCtx &ctx, const Frag &frag, TreeEnt ent,
+                         Uint32 count, Uint32 *outputBuffer) {
 #ifdef VM_TRACE
-  const Index& index = *c_indexPool.getPtr(frag.m_indexId);
+  const Index &index = *c_indexPool.getPtr(frag.m_indexId);
   ndbrequire(count <= index.m_numAttrs);
 #endif
 
@@ -636,54 +552,36 @@ Dbtux::readKeyAttrs(TuxCtx& ctx,
   const Uint32 pageId = tupLoc.getPageId();
   const Uint32 pageOffset = tupLoc.getPageOffset();
   const Uint32 tupVersion = ent.m_tupVersion;
-  const Uint32* keyAttrs32 = (const Uint32*)ctx.keyAttrs;
+  const Uint32 *keyAttrs32 = (const Uint32 *)ctx.keyAttrs;
 
   int ret;
-  ret = c_tup->tuxReadAttrsOpt(ctx.jamBuffer,
-                               ctx.tupRealFragPtr,
-                               ctx.tupRealTablePtr,
-                               pageId,
-                               pageOffset,
-                               tupVersion,
-                               keyAttrs32,
-                               count,
-                               outputBuffer);
+  ret = c_tup->tuxReadAttrsOpt(ctx.jamBuffer, ctx.tupRealFragPtr,
+                               ctx.tupRealTablePtr, pageId, pageOffset,
+                               tupVersion, keyAttrs32, count, outputBuffer);
   thrjamDebug(ctx.jamBuffer);
   ndbrequire(ret > 0);
 }
 
-void
-Dbtux::readTableHashKey(TreeEnt ent, Uint32* pkData, unsigned& pkSize)
-{
+void Dbtux::readTableHashKey(TreeEnt ent, Uint32 *pkData, unsigned &pkSize) {
   const TupLoc tupLoc = ent.m_tupLoc;
-  int ret = c_tup->tuxReadPk(c_ctx.tupRealFragPtr,
-                             c_ctx.tupRealTablePtr,
-                             tupLoc.getPageId(),
-                             tupLoc.getPageOffset(),
-                             pkData,
+  int ret = c_tup->tuxReadPk(c_ctx.tupRealFragPtr, c_ctx.tupRealTablePtr,
+                             tupLoc.getPageId(), tupLoc.getPageOffset(), pkData,
                              /*hash=*/true);
   jamEntry();
-  if (unlikely(ret <= 0))
-  {
-    Frag& frag = *c_ctx.fragPtr.p;
+  if (unlikely(ret <= 0)) {
+    Frag &frag = *c_ctx.fragPtr.p;
     Uint32 lkey1, lkey2;
     getTupAddr(ent, lkey1, lkey2);
     g_eventLogger->info("(%u) readTablePk error tab(%u,%u) row(%u,%u)",
-                        instance(),
-                        frag.m_tableId,
-                        frag.m_fragId,
-                        lkey1,
+                        instance(), frag.m_tableId, frag.m_fragId, lkey1,
                         lkey2);
     ndbrequire(ret > 0);
   }
   pkSize = ret;
 }
 
-void
-Dbtux::unpackBound(Uint32* const outputBuffer,
-                   const ScanBound& scanBound,
-                   KeyBoundC& searchBound)
-{
+void Dbtux::unpackBound(Uint32 *const outputBuffer, const ScanBound &scanBound,
+                        KeyBoundC &searchBound) {
   // there is no const version of LocalDataBuffer
   ScanBoundBuffer::Head head = scanBound.m_head;
   LocalScanBoundBuffer b(c_scanBoundPool, head);
@@ -696,10 +594,8 @@ Dbtux::unpackBound(Uint32* const outputBuffer,
     b.next(iter);
   }
   // set bound to the unpacked data buffer
-  KeyDataC& searchBoundData = searchBound.get_data();
-  searchBoundData.set_buf(outputBuffer,
-                          MaxAttrDataSize << 2,
-                          scanBound.m_cnt);
+  KeyDataC &searchBoundData = searchBound.get_data();
+  searchBoundData.set_buf(outputBuffer, MaxAttrDataSize << 2, scanBound.m_cnt);
   int ret = searchBound.finalize(scanBound.m_side);
   ndbrequire(ret == 0);
 }
@@ -723,13 +619,10 @@ Dbtux::findFrag(EmulatedJamBuffer* jamBuf,
   fragPtr.i = RNIL64;
 }
 
-void
-Dbtux::sendPoolShrink(const Uint32 pool_index)
-{
+void Dbtux::sendPoolShrink(const Uint32 pool_index) {
   const bool need_send = c_transient_pools_shrinking.get(pool_index) == 0;
   c_transient_pools_shrinking.set(pool_index);
-  if (need_send)
-  {
+  if (need_send) {
     Signal25 signal[1] = {};
     signal->theData[0] = TuxContinueB::ShrinkTransientPools;
     signal->theData[1] = pool_index;
@@ -737,17 +630,13 @@ Dbtux::sendPoolShrink(const Uint32 pool_index)
   }
 }
 
-void
-Dbtux::shrinkTransientPools(Uint32 pool_index)
-{
+void Dbtux::shrinkTransientPools(Uint32 pool_index) {
   ndbrequire(pool_index < c_transient_pool_count);
   ndbrequire(c_transient_pools_shrinking.get(pool_index));
   if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink())
   {
     sendPoolShrink(pool_index);
-  }
-  else
-  {
+  } else {
     c_transient_pools_shrinking.clear(pool_index);
   }
 }

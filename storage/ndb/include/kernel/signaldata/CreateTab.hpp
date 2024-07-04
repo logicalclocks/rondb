@@ -30,16 +30,13 @@
 
 #define JAM_FILE_ID 46
 
-
-struct CreateTabReq
-{
+struct CreateTabReq {
   static constexpr Uint32 SignalLength = 6;
   static constexpr Uint32 OldSignalLengthLDM = 6 + 11;
   static constexpr Uint32 SignalLengthLDM = 6 + 12;
   static constexpr Uint32 NewSignalLengthLDM = 6 + 13;
 
-  enum RequestType {
-  };
+  enum RequestType {};
 
   Uint32 senderRef;
   Uint32 senderData;
@@ -65,8 +62,8 @@ struct CreateTabReq
   Uint32 useVarSizedDiskData;
   Uint32 hashFunctionFlag;
 
-  SECTION( DICT_TAB_INFO = 0 );
-  SECTION( FRAGMENTATION = 1 );
+  SECTION(DICT_TAB_INFO = 0);
+  SECTION(FRAGMENTATION = 1);
 };
 
 struct CreateTabConf {
@@ -97,8 +94,7 @@ struct CreateTabRef {
  * TcSchVerReq is CreateTab but towards TC...
  *   should be removed in favor of CreateTab
  */
-struct TcSchVerReq
-{
+struct TcSchVerReq {
   Uint32 tableId;
   Uint32 tableVersion;
   Uint32 tableLogged;
@@ -115,13 +111,11 @@ struct TcSchVerReq
   static constexpr Uint32 SignalLength = 12;
 };
 
-struct TcSchVerConf
-{
+struct TcSchVerConf {
   Uint32 senderRef;
   Uint32 senderData;
   static constexpr Uint32 SignalLength = 2;
 };
-
 
 #undef JAM_FILE_ID
 

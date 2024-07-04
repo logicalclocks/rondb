@@ -37,7 +37,7 @@
  */
 void *ndbd_malloc(size_t size);
 bool ndbd_malloc_need_watchdog(size_t size);
-void *ndbd_malloc_watched(size_t size, volatile Uint32* watch_dog);
+void *ndbd_malloc_watched(size_t size, volatile Uint32 *watch_dog);
 void ndbd_free(void *p, size_t size);
 void ndbd_alloc_touch_mem(void * p, size_t sz, volatile Uint32 * watchCounter, bool make_readwritable);
 
@@ -226,4 +226,4 @@ void init_lc_ndbd_memory_pool(unsigned int num_pools,
 void stop_lc_ndbd_memory_pool();
 #undef JAM_FILE_ID
 
-#endif 
+#endif

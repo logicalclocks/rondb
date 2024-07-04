@@ -81,7 +81,6 @@
 
 #define NDB_TYPE_MAX                    34
 
-
 /*
  * Attribute array type.
  */
@@ -179,7 +178,6 @@
 #define NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_8    ~Uint32(11)
 #define NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_16    ~Uint32(12)
 
-#define NDB_DEFAULT_PARTITION_BALANCE \
-            NDB_PARTITION_BALANCE_FOR_RP_BY_LDM
+#define NDB_DEFAULT_PARTITION_BALANCE NDB_PARTITION_BALANCE_FOR_RP_BY_LDM
 
 #endif

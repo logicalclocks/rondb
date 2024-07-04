@@ -27,11 +27,11 @@
 #ifndef NDB_CONFIG_H
 #define NDB_CONFIG_H
 
-#ifdef	__cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
-const char* NdbConfig_get_path(int *len);
+const char *NdbConfig_get_path(int *len);
 void NdbConfig_SetPath(const char *path);
 void NdbConfig_SetPidfilePath(const char *path);
 char* NdbConfig_NdbCfgName(int with_ndb_home);

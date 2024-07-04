@@ -30,7 +30,6 @@
 
 #define JAM_FILE_ID 156
 
-
 /**
  * FsReadWriteReq - Common signal class for FSWRITEREQ and FSREADREQ
  *
@@ -68,19 +67,20 @@ class FsReadWriteReq {
   /**
    * For printing
    */
-  friend bool printFSREADWRITEREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
+  friend bool printFSREADWRITEREQ(FILE *output, const Uint32 *theData,
+                                  Uint32 len, Uint16 receiverBlockNo);
 
-public:
+ public:
   /**
  * Enum type for errorCode
  */
   enum NdbfsFormatType {
-    fsFormatListOfPairs=0,
-    fsFormatArrayOfPages=1,
-    fsFormatListOfMemPages=2,
-    fsFormatGlobalPage=3,
-    fsFormatSharedPage=4,
-    fsFormatMemAddress=5,
+    fsFormatListOfPairs = 0,
+    fsFormatArrayOfPages = 1,
+    fsFormatListOfMemPages = 2,
+    fsFormatGlobalPage = 3,
+    fsFormatSharedPage = 4,
+    fsFormatMemAddress = 5,
     fsFormatMax
   };
   
@@ -89,8 +89,7 @@ public:
    */
   static constexpr Uint32 FixedLength = 6;
 
-private:
-
+ private:
   /**
    * DATA VARIABLES
    */
@@ -101,10 +100,10 @@ private:
   UintR varIndex;             // DATA 4
   UintR numberOfPages;        // DATA 5  
 
-//-------------------------------------------------------------
-// Variable sized part. Those will contain 
-// info about memory/file pages to read/write
-//-------------------------------------------------------------  
+  //-------------------------------------------------------------
+  // Variable sized part. Those will contain
+  // info about memory/file pages to read/write
+  //-------------------------------------------------------------
   union { // DATA 6 - 21
     struct {
       Uint32 varIndex;   // In unit cluster size
@@ -134,14 +133,14 @@ private:
     } zeroPageIndicator;
   } data;
 
-  static Uint8 getSyncFlag(const UintR & opFlag);
-  static void setSyncFlag(UintR & opFlag, Uint8 flag);
+  static Uint8 getSyncFlag(const UintR &opFlag);
+  static void setSyncFlag(UintR &opFlag, Uint8 flag);
 
-  static NdbfsFormatType getFormatFlag(const UintR & opFlag);
-  static void setFormatFlag(UintR & opFlag, Uint8 flag);
+  static NdbfsFormatType getFormatFlag(const UintR &opFlag);
+  static void setFormatFlag(UintR &opFlag, Uint8 flag);
 
   static Uint32 getPartialReadFlag(UintR opFlag);
-  static void setPartialReadFlag(UintR & opFlag, Uint32 flag);
+  static void setPartialReadFlag(UintR &opFlag, Uint32 flag);
 };
 
 DECLARE_SIGNAL_SCOPE(GSN_FSREADREQ, Local);
@@ -165,53 +164,40 @@ DECLARE_SIGNAL_SCOPE(GSN_FSWRITEREQ, Local);
 
 #define PARTIAL_READ_SHIFT (5)
 
-inline
-Uint8
-FsReadWriteReq::getSyncFlag(const UintR & opFlag){
+inline Uint8 FsReadWriteReq::getSyncFlag(const UintR &opFlag) {
   return (Uint8)((opFlag >> SYNC_SHIFT) & SYNC_MASK);
 }
 
-inline
-FsReadWriteReq::NdbfsFormatType
-FsReadWriteReq::getFormatFlag(const UintR & opFlag){
+inline FsReadWriteReq::NdbfsFormatType FsReadWriteReq::getFormatFlag(
+    const UintR &opFlag) {
   return (NdbfsFormatType)(opFlag & FORMAT_MASK);
 }
 
-inline
-void 
-FsReadWriteReq::setSyncFlag(UintR & opFlag, Uint8 flag){
+inline void FsReadWriteReq::setSyncFlag(UintR &opFlag, Uint8 flag) {
   ASSERT_BOOL(flag, "FsReadWriteReq::setSyncFlag");
   opFlag |= (flag << SYNC_SHIFT);
 }
 
-inline
-void 
-FsReadWriteReq::setFormatFlag(UintR & opFlag, Uint8 flag){
+inline void FsReadWriteReq::setFormatFlag(UintR &opFlag, Uint8 flag) {
   ASSERT_MAX(flag, fsFormatMax, "FsReadWriteReq::setSyncFlag");
   opFlag |= flag;
 }
 
-inline
-void 
-FsReadWriteReq::setPartialReadFlag(UintR & opFlag, Uint32 flag){
+inline void FsReadWriteReq::setPartialReadFlag(UintR &opFlag, Uint32 flag) {
   ASSERT_BOOL(flag, "FsReadWriteReq::setSyncFlag");
   opFlag |= (flag << PARTIAL_READ_SHIFT);
 }
 
-inline
-Uint32
-FsReadWriteReq::getPartialReadFlag(UintR opFlag){
+inline Uint32 FsReadWriteReq::getPartialReadFlag(UintR opFlag) {
   return (opFlag >> PARTIAL_READ_SHIFT) & 1;
 }
 
-struct FsSuspendOrd
-{
+struct FsSuspendOrd {
   UintR filePointer;          // DATA 0
   Uint32 milliseconds;
 
   static constexpr Uint32 SignalLength = 2;
 };
-
 
 #undef JAM_FILE_ID
 

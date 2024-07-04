@@ -45,7 +45,6 @@
 #define MIN_API_FIXED_BLOCK_NO (API_CLUSTERMGR)
 #define MAX_API_FIXED_BLOCK_NO (MIN_API_FIXED_BLOCK_NO + NO_API_FIXED_BLOCKS)
 
-
 #define BACKUP      0xF4
 #define DBTC        0xF5
 #define DBDIH       0xF6
@@ -111,16 +110,35 @@ const BlockReference TRPMAN_REF   = numberToRef(TRPMAN, 0);
 
 static inline void __hide_warnings_unused_ref_vars(void) {
   // Hide annoying warnings about unused variables
-  (void)BACKUP_REF;  (void)DBTC_REF;    (void)DBDIH_REF;
-  (void)DBLQH_REF;   (void)DBACC_REF;   (void)DBTUP_REF;
-  (void)DBQLQH_REF;  (void)DBQACC_REF;  (void)DBQTUP_REF;
-  (void)DBDICT_REF;  (void)NDBCNTR_REF; (void)QMGR_REF;
-  (void)NDBFS_REF;   (void)CMVMI_REF;   (void)TRIX_REF;
-  (void)DBUTIL_REF;  (void)SUMA_REF;    (void)DBTUX_REF;
-  (void)TSMAN_REF;   (void)LGMAN_REF;   (void)PGMAN_REF;
-  (void)RESTORE_REF; (void)DBINFO_REF;  (void)DBSPJ_REF;
-  (void)THRMAN_REF;  (void)TRPMAN_REF;  (void)QRESTORE_REF;
-  (void)QBACKUP_REF; (void)DBQTUX_REF;
+  (void)BACKUP_REF;
+  (void)DBTC_REF;
+  (void)DBDIH_REF;
+  (void)DBLQH_REF;
+  (void)DBACC_REF;
+  (void)DBTUP_REF;
+  (void)DBQLQH_REF;
+  (void)DBQACC_REF;
+  (void)DBQTUP_REF;
+  (void)DBDICT_REF;
+  (void)NDBCNTR_REF;
+  (void)QMGR_REF;
+  (void)NDBFS_REF;
+  (void)CMVMI_REF;
+  (void)TRIX_REF;
+  (void)DBUTIL_REF;
+  (void)SUMA_REF;
+  (void)DBTUX_REF;
+  (void)TSMAN_REF;
+  (void)LGMAN_REF;
+  (void)PGMAN_REF;
+  (void)RESTORE_REF;
+  (void)DBINFO_REF;
+  (void)DBSPJ_REF;
+  (void)THRMAN_REF;
+  (void)TRPMAN_REF;
+  (void)QRESTORE_REF;
+  (void)QBACKUP_REF;
+  (void)DBQTUX_REF;
 }
 
 const BlockNumber MIN_BLOCK_NO = BACKUP;

@@ -449,11 +449,9 @@ int SimpleCpcClient::connect() {
 }
 
 int SimpleCpcClient::open_connection() {
-
   // Resolve server address
   ndb_sockaddr sa;
-  if (Ndb_getAddr(&sa, host))
-  {
+  if (Ndb_getAddr(&sa, host)) {
     close_connection();
     errno = ENOENT;
     return -1;
@@ -464,8 +462,7 @@ int SimpleCpcClient::open_connection() {
   cpc_sock = NdbSocket(ndb_socket_create(sa.get_address_family()));
   if (!cpc_sock.is_valid()) return -1;
 
-  if (sa.need_dual_stack())
-  {
+  if (sa.need_dual_stack()) {
     [[maybe_unused]] bool ok = ndb_socket_dual_stack(cpc_sock.ndb_socket(), 1);
   }
   return ndb_connect(cpc_sock.ndb_socket(), &sa);
@@ -488,9 +485,7 @@ int SimpleCpcClient::negotiate_client_protocol() {
   return 0;
 }
 
-void SimpleCpcClient::close_connection() {
-  cpc_sock.close();
-}
+void SimpleCpcClient::close_connection() { cpc_sock.close(); }
 
 int SimpleCpcClient::cpc_send(const char *cmd, const Properties &args) {
   SocketOutputStream cpc_out(cpc_sock);
@@ -564,15 +559,11 @@ SimpleCpcClient::Parser_t::ParserStatus SimpleCpcClient::cpc_recv(
   Parser_t parser(syntax, cpc_in);
   *reply = parser.parse(ctx, session);
 
-  if (user_value != NULL)
-  {
+  if (user_value != NULL) {
     if (ctx.m_status == Parser_t::Ok ||
-      ctx.m_status == Parser_t::CommandWithoutFunction)
-    {
+        ctx.m_status == Parser_t::CommandWithoutFunction) {
       *user_value = ctx.m_currentCmd->user_value;
-    }
-    else
-    {
+    } else {
       *user_value = NULL;
     }
   }
@@ -590,7 +581,7 @@ const Properties *SimpleCpcClient::cpc_call(const char *cmd,
   return ret;
 }
 
-SimpleCpcClient::ParserDummy::ParserDummy(const NdbSocket& sock)
+SimpleCpcClient::ParserDummy::ParserDummy(const NdbSocket &sock)
     : SocketServer::Session(sock) {}
 
 template class Vector<SimpleCpcClient::Process>;

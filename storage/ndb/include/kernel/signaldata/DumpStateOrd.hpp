@@ -30,7 +30,6 @@
 
 #define JAM_FILE_ID 137
 
-
 /**
  * DumpStateOrd is sent by the mgmtsrvr to CMVMI.
  * CMVMI the redirect the signal to all blocks.
@@ -62,7 +61,7 @@ class DumpStateOrd {
   friend class Dbdict;
   friend class Ndbfs;
 
-public:
+ public:
   enum DumpStateType {
     /* any dumps above this value should go to one block only */
     OneBlockOnly = 100000,
@@ -120,9 +119,9 @@ public:
     CommitAckMarkersSize = 14, // TC+LQH Dump free size in commitAckMarkerP
     CommitAckMarkersDump = 15, // TC+LQH Dump info in commitAckMarkerPool
     DihDumpNodeRestartInfo = 16, // 16 DIH Dump node restart info
-    DihDumpNodeStatusInfo = 17,// 17 DIH Dump node status info
-    DihPrintFragmentation = 18,// 18 DIH Print fragmentation
-    DihPrintOneFragmentation = 19,// 18 DIH Print info about one fragmentation
+    DihDumpNodeStatusInfo = 17,     // 17 DIH Dump node status info
+    DihPrintFragmentation = 18,     // 18 DIH Print fragmentation
+    DihPrintOneFragmentation = 19,  // 18 DIH Print info about one fragmentation
     // 19 NDBFS Fipple with O_SYNC, O_CREATE etc.
     // 20-24 BACKUP
     NdbcntrTestStopOnError = 25,
@@ -240,7 +239,7 @@ public:
     // 7010 DIH
     // 7011 DIH
     // 7012 DIH
-    DihDumpLCPState= 7013,
+    DihDumpLCPState = 7013,
     DihDumpLCPMasterTakeOver = 7014,    
     // 7015 DIH
     DihAllAllowNodeStart = 7016,
@@ -308,11 +307,10 @@ public:
 
     RestoreRates = 30000
   };
-public:
   
+ public:
   Uint32 args[25];          // Generic argument
 };
-
 
 #undef JAM_FILE_ID
 

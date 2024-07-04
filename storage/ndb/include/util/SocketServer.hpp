@@ -28,66 +28,66 @@
 
 #include "portlib/NdbMutex.h"
 #include "portlib/NdbThread.h"
-#include "portlib/ndb_socket_poller.h"
 #include "portlib/ndb_sockaddr.h"
+#include "portlib/ndb_socket_poller.h"
 #include "util/NdbSocket.h"
 
 #include <Vector.hpp>
 
-extern "C" void* sessionThread_C(void*);
-extern "C" void* socketServerThread_C(void*);
+extern "C" void *sessionThread_C(void *);
+extern "C" void *socketServerThread_C(void *);
 
 /**
  *  Socket Server
  */
 class SocketServer {
-public:
+ public:
   /**
-   * A Session 
+   * A Session
    */
   class Session {
-  public:
+   public:
     virtual ~Session() {}
-    virtual void runSession(){}
-    virtual void stopSession(){ m_stop = true; }
-  protected:
+    virtual void runSession() {}
+    virtual void stopSession() { m_stop = true; }
+
+   protected:
     friend class SocketServer;
-    friend void* sessionThread_C(void*);
-    Session(const NdbSocket& sock) :
-      m_stop(false),
-      m_refCount(0),
-      m_socket(sock),
-      m_thread_stopped(false)
-      {
-	DBUG_ENTER("SocketServer::Session");
-	DBUG_PRINT("enter",("NDB_SOCKET: %s",
-                            m_socket.to_string().c_str()));
-	DBUG_VOID_RETURN;
-      }
-    bool m_stop;    // Has the session been ordered to stop?
+    friend void *sessionThread_C(void *);
+    Session(const NdbSocket &sock)
+        : m_stop(false),
+          m_refCount(0),
+          m_socket(sock),
+          m_thread_stopped(false) {
+      DBUG_ENTER("SocketServer::Session");
+      DBUG_PRINT("enter", ("NDB_SOCKET: %s", m_socket.to_string().c_str()));
+      DBUG_VOID_RETURN;
+    }
+    bool m_stop;  // Has the session been ordered to stop?
     unsigned m_refCount;
-  private:
-    const NdbSocket& m_socket;
-    bool m_thread_stopped; // Has the session thread stopped?
+
+   private:
+    const NdbSocket &m_socket;
+    bool m_thread_stopped;  // Has the session thread stopped?
   };
-  
+
   /**
    * A service i.e. a session factory
    */
   class Service {
-  public:
+   public:
     Service() {}
-    virtual ~Service(){}
-    
+    virtual ~Service() {}
+
     /**
      * Returned Session will be ran in own thread
      *
      * To manage threads self, just return NULL
      */
-    virtual Session * newSession(NdbSocket&& theSock) = 0;
-    virtual void stopSessions(){}
+    virtual Session *newSession(NdbSocket &&theSock) = 0;
+    virtual void stopSessions() {}
   };
-  
+
   /**
    * Constructor / Destructor
    */
@@ -108,14 +108,14 @@ public:
    *   bind & listen
    * Returns false if no success
    */
-  bool setup(Service *, ndb_sockaddr* addr);
-  
+  bool setup(Service *, ndb_sockaddr *addr);
+
   /**
    * start/stop the server
    */
-  struct NdbThread* startServer();
+  struct NdbThread *startServer();
   void stopServer();
-  
+
   /**
    * stop sessions
    *
@@ -130,8 +130,8 @@ public:
    *
    */
   bool stopSessions(bool wait = false, unsigned wait_timeout = 0);
-  
-  void foreachSession(void (*f)(Session*, void*), void *data);
+
+  void foreachSession(void (*f)(Session *, void *), void *data);
   void checkSessions();
 
   void set_use_only_ipv4(bool use_only_ipv4)
@@ -141,12 +141,12 @@ public:
 
 private:
   struct SessionInstance {
-    Service * m_service;
-    Session * m_session;
-    NdbThread * m_thread;
+    Service *m_service;
+    Session *m_session;
+    NdbThread *m_thread;
   };
   struct ServiceInstance {
-    Service * m_service;
+    Service *m_service;
     ndb_socket_t m_socket;
   };
   NdbLockable m_session_mutex;
@@ -158,18 +158,18 @@ private:
   bool doAccept();
   void checkSessionsImpl();
   void startSession(SessionInstance &);
-  
+
   /**
    * Note, this thread is only used when running interactive
-   * 
+   *
    */
   bool m_use_only_ipv4;
   bool m_stopThread;
-  struct NdbThread * m_thread;
+  struct NdbThread *m_thread;
   NdbLockable m_threadLock;
   void doRun();
-  friend void* socketServerThread_C(void*);
-  friend void* sessionThread_C(void*);
+  friend void *socketServerThread_C(void *);
+  friend void *sessionThread_C(void *);
 };
 
 #endif
