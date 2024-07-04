@@ -244,16 +244,26 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
 
         // 3. construct agg_interpreter
 #ifdef MOZ_AGG_MALLOC
-        Uint32 allocPageRef = 0;
-        void* page_ptr = m_ctx.m_mm.alloc_page(RT_DBTUP_PAGE,
-                                        &allocPageRef,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_30,
-                                        true);
+        /*
+         * Use Ndbd_mem_manager
+         */
+        // Uint32 allocPageRef = 0;
+        // void* page_ptr = m_ctx.m_mm.alloc_page(RT_DBTUP_PAGE,
+        //                                 &allocPageRef,
+        //                                 Ndbd_mem_manager::NDB_ZONE_LE_30,
+        //                                 true);
+
+        void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_DATAMEM,
+                                             getThreadId(), false);
+        if (page_ptr == nullptr) {
+          g_eventLogger->error("Alloc mem for pushdown aggregation interpreter failed");
+        }
+        ndbrequire(page_ptr != nullptr);
         ndbrequire(page_ptr != nullptr);
         scan_rec_ptr->m_agg_interpreter =
           new(page_ptr) AggInterpreter(&cinBuffer[proc_start], proc_len, false,
-                              prepare_fragptr.p->fragmentId,
-                              &m_ctx.m_mm, page_ptr, allocPageRef);
+                              prepare_fragptr.p->fragmentId/*,
+                              &m_ctx.m_mm, page_ptr, allocPageRef*/);
 #else
         scan_rec_ptr->m_agg_interpreter =
           new AggInterpreter(&cinBuffer[proc_start], proc_len, false,

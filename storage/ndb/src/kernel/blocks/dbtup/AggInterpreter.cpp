@@ -1,8 +1,26 @@
 /*
  * Copyright [2024] <Copyright Hopsworks AB>
- *
- * Author: Zhao Song
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2.0,
+ * as published by the Free Software Foundation.
+
+ * This program is also distributed with certain software (including
+ * but not limited to OpenSSL) that is licensed under separate terms,
+ * as designated in a particular file or component or in included license
+ * documentation.  The authors of MySQL hereby grant you an additional
+ * permission to link the program and your derivative works with the
+ * separately licensed software that they have included with MySQL.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License, version 2.0, for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
+
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -11,6 +29,7 @@
 #include "signaldata/TransIdAI.hpp"
 #include "include/my_byteorder.h"
 #include "AggInterpreter.hpp"
+#include "InterpreterCommonOp.hpp"
 #include "decimal.h"
 #include "Dbtup.hpp"
 
@@ -164,632 +183,21 @@ static DataType AlignedType(DataType type) {
   return NDB_TYPE_UNDEFINED;
 }
 
-static bool TestIfSumOverflowsUint64(uint64_t arg1, uint64_t arg2) {
-  return ULLONG_MAX - arg1 < arg2;
-}
-
-static void SetRegisterNull(Register* reg) {
-  reg->is_null = true;
-  reg->value.val_int64 = 0;
-  reg->is_unsigned = false;
-}
-
-static void ResetRegister(Register* reg) {
-  reg->type = NDB_TYPE_UNDEFINED;
-  SetRegisterNull(reg);
-}
-
-static int32_t RegPlusReg(const Register& a, const Register& b, Register* res) {
-  assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT && b.type == NDB_TYPE_BIGINT);
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (a.is_null || b.is_null) {
-    // if either register a or b has a null value, the result
-    // will also be null
-    SetRegisterNull(res);
-    // Set the result type to be the resolved one
-    res->type = res_type;
-    // NULL
-    return 1;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    int64_t res_val = static_cast<uint64_t>(val0) + static_cast<uint64_t>(val1);
-    bool res_unsigned = false;
-
-    if (a.is_unsigned) {
-      if (b.is_unsigned || val1 >= 0) {
-        if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)val1)) {
-          // overflows;
-          return -1;
-        } else {
-          res_unsigned = true;
-        }
-      } else {
-        if ((uint64_t)val0 > (uint64_t)(LLONG_MAX)) {
-          res_unsigned = true;
-        }
-      }
-    } else {
-      if (b.is_unsigned) {
-        if (val0 >= 0) {
-          if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)val1)) {
-            // overflows;
-            return -1;
-          } else {
-            res_unsigned = true;
-          }
-        } else {
-          if ((uint64_t)val1 > (uint64_t)(LLONG_MAX)) {
-            res_unsigned = true;
-          }
-        }
-      } else {
-        if (val0 >= 0 && val1 >= 0) {
-          res_unsigned = true;
-        } else if (val0 < 0 && val1 < 0 && res_val >= 0) {
-          // overflow
-          return -1;
-        }
-      }
-    }
-
-    // Check if res_val is overflow
-    bool unsigned_flag = false;
-    if (res_type == NDB_TYPE_BIGINT) {
-      unsigned_flag = (a.is_unsigned | b.is_unsigned);
-    } else {
-      assert(res_type == NDB_TYPE_DOUBLE);
-      unsigned_flag = (a.is_unsigned & b.is_unsigned);
-    }
-    if ((unsigned_flag && !res_unsigned && res_val < 0) ||
-        (!unsigned_flag && res_unsigned &&
-         (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
-      // overload
-      return -1;
-    } else {
-      if (unsigned_flag) {
-        res->value.val_uint64 = res_val;
-      } else {
-        res->value.val_int64 = res_val;
-      }
-    }
-    res->is_unsigned = unsigned_flag;
-  } else {
-    double val0 = (a.type == NDB_TYPE_DOUBLE) ?
-                     a.value.val_double :
-                     ((a.is_unsigned == true) ?
-                       static_cast<double>(a.value.val_uint64) :
-                       static_cast<double>(a.value.val_int64));
-    double val1 = (b.type == NDB_TYPE_DOUBLE) ?
-                     b.value.val_double :
-                     ((b.is_unsigned == true) ?
-                       static_cast<double>(b.value.val_uint64) :
-                       static_cast<double>(b.value.val_int64));
-    double res_val = val0 + val1;
-    if (std::isfinite(res_val)) {
-      res->value.val_double = res_val;
-    } else {
-      // overflow
-      return -1;
-    }
-    res->is_unsigned = false;
-  }
-
-  res->type = res_type;
-
-  return 0;
-}
-
-static int32_t RegMinusReg(const Register& a, const Register& b,
-                           Register* res) {
-  assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT && b.type == NDB_TYPE_BIGINT);
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (a.is_null || b.is_null) {
-    // if either register a or b has a null value, the result
-    // will also be null
-    SetRegisterNull(res);
-    // Set the result type to be the resolved one
-    res->type = res_type;
-    // NULL
-    return 1;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    int64_t res_val = static_cast<uint64_t>(val0) - static_cast<uint64_t>(val1);
-    bool res_unsigned = false;
-
-    if (a.is_unsigned) {
-      if (b.is_unsigned) {
-        if (static_cast<uint64_t>(val0) < static_cast<uint64_t>(val1)) {
-          if (res_val >= 0) {
-            // overflow
-            return -1;
-          } else {
-            res_unsigned = true;
-          }
-        }
-      } else {
-        if (val1 >= 0) {
-          if (static_cast<uint64_t>(val0) > static_cast<uint64_t>(val1)) {
-            res_unsigned = true;
-          }
-        } else {
-          if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)-val1)) {
-            // overflow
-            return -1;
-          } else {
-            res_unsigned = true;
-          }
-        }
-      }
-    } else {
-      if (b.is_unsigned) {
-        if (static_cast<uint64_t>(val0) - LLONG_MIN <
-            static_cast<uint64_t>(val1)) {
-          // overflow
-          return -1;
-        } else {
-          if (val0 >= 0 && val1 < 0) {
-            res_unsigned = true;
-          } else if (val0 < 0 && val1 > 0 && res_val >= 0) {
-            // overflow
-            return -1;
-          }
-        }
-      }
-    }
-    // Check if res_val is overflow
-    bool unsigned_flag = false;
-    if (res_type == NDB_TYPE_BIGINT) {
-      unsigned_flag = (a.is_unsigned | b.is_unsigned);
-    } else {
-      assert(res_type == NDB_TYPE_DOUBLE);
-      unsigned_flag = (a.is_unsigned & b.is_unsigned);
-    }
-    if ((unsigned_flag && !res_unsigned && res_val < 0) ||
-        (!unsigned_flag && res_unsigned &&
-         (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
-      // overflow
-      return -1;
-    } else {
-      if (unsigned_flag) {
-        res->value.val_uint64 = res_val;
-      } else {
-        res->value.val_int64 = res_val;
-      }
-    }
-    res->is_unsigned = unsigned_flag;
-  } else {
-    assert(res_type == NDB_TYPE_DOUBLE);
-    double val0 = (a.type == NDB_TYPE_DOUBLE) ?
-                     a.value.val_double :
-                     ((a.is_unsigned == true) ?
-                       static_cast<double>(a.value.val_uint64) :
-                       static_cast<double>(a.value.val_int64));
-    double val1 = (b.type == NDB_TYPE_DOUBLE) ?
-                     b.value.val_double :
-                     ((b.is_unsigned == true) ?
-                       static_cast<double>(b.value.val_uint64) :
-                       static_cast<double>(b.value.val_int64));
-    double res_val = val0 - val1;
-    if (std::isfinite(res_val)) {
-      res->value.val_double = res_val;
-    } else {
-      // overflow
-      return -1;
-    }
-  }
-
-  res->type = res_type;
-  return 0;
-}
-
-static int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
-  assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT && b.type == NDB_TYPE_BIGINT);
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (a.is_null || b.is_null) {
-    // if either register a or b has a null value, the result
-    // will also be null
-    SetRegisterNull(res);
-    // Set the result type to be the resolved one
-    res->type = res_type;
-    // NULL
-    return 1;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    int64_t res_val;
-    uint64_t res_val0;
-    uint64_t res_val1;
-
-    if (val0 == 0 || val1 == 0) {
-      res->type = res_type;
-      return 0;
-    }
-
-    const bool a_negative = (!a.is_unsigned && val0 < 0);
-    const bool b_negative = (!b.is_unsigned && val1 < 0);
-    const bool res_unsigned = (a_negative == b_negative);
-
-    if (a_negative && val0 == INT_MIN64) {
-      if (val1 == 1) {
-        // Check if val0 is overflow
-        bool unsigned_flag = false;
-        if (res_type == NDB_TYPE_BIGINT) {
-          unsigned_flag = (a.is_unsigned | b.is_unsigned);
-        } else {
-          assert(res_type == NDB_TYPE_DOUBLE);
-          unsigned_flag = (a.is_unsigned & b.is_unsigned);
-        }
-        if ((unsigned_flag && !res_unsigned && val0 < 0) ||
-            (!unsigned_flag && res_unsigned &&
-             (uint64_t)val0 > (uint64_t)LLONG_MAX)) {
-          // overflow
-          return -1;
-        } else {
-          if (unsigned_flag) {
-            res->value.val_uint64 = val0;
-          } else {
-            res->value.val_int64 = val0;
-          }
-        }
-        res->is_unsigned = unsigned_flag;
-        res->type = res_type;
-        return 0;
-      }
-    }
-    if (b_negative && val1 == INT_MIN64) {
-      if (val0 == 1) {
-        // Check if val1 is overflow
-        bool unsigned_flag = false;
-        if (res_type == NDB_TYPE_BIGINT) {
-          unsigned_flag = (a.is_unsigned | b.is_unsigned);
-        } else {
-          assert(res_type == NDB_TYPE_DOUBLE);
-          unsigned_flag = (a.is_unsigned & b.is_unsigned);
-        }
-        if ((unsigned_flag && !res_unsigned && val1 < 0) ||
-            (!unsigned_flag && res_unsigned &&
-             (uint64_t)val1 > (uint64_t)LLONG_MAX)) {
-          // overflow
-          return -1;
-        } else {
-          if (unsigned_flag) {
-            res->value.val_uint64 = val1;
-          } else {
-            res->value.val_int64 = val1;
-          }
-        }
-        res->is_unsigned = unsigned_flag;
-        res->type = res_type;
-        return 0;
-      }
-    }
-
-    if (a_negative) {
-      val0 = -val0;
-    }
-    if (b_negative) {
-      val1 = -val1;
-    }
-
-    uint32_t a0 = 0xFFFFFFFFUL & val0;
-    uint32_t a1 = static_cast<uint64_t>(val0) >> 32;
-    uint32_t b0 = 0xFFFFFFFFUL & val1;
-    uint32_t b1 = static_cast<uint64_t>(val1) >> 32;
-
-    if (a1 && b1) {
-      // overflow
-      return -1;
-    }
-
-    res_val1 = static_cast<uint64_t>(a1) * b0 + static_cast<uint64_t>(a0) * b1;
-    if (res_val1 > 0xFFFFFFFFUL) {
-      // overflow
-      return -1;
-    }
-
-    res_val1 = res_val1 << 32;
-    res_val0 = static_cast<uint64_t>(a0) * b0;
-    if (TestIfSumOverflowsUint64(res_val1, res_val0)) {
-      // overflow
-      return -1;
-    } else {
-      res_val = res_val1 + res_val0;
-    }
-
-    if (a_negative != b_negative) {
-      if (static_cast<uint64_t>(res_val) > static_cast<uint64_t>(LLONG_MAX)) {
-        // overflow
-        return -1;
-      } else {
-        res_val = -res_val;
-      }
-    }
-
-    // Check if res_val is overflow
-    bool unsigned_flag = false;
-    if (res_type == NDB_TYPE_BIGINT) {
-      unsigned_flag = (a.is_unsigned | b.is_unsigned);
-    } else {
-      assert(res_type == NDB_TYPE_DOUBLE);
-      unsigned_flag = (a.is_unsigned & b.is_unsigned);
-    }
-    if ((unsigned_flag && !res_unsigned && res_val < 0) ||
-        (!unsigned_flag && res_unsigned &&
-         (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
-      // overflow
-      return -1;
-    } else {
-      if (unsigned_flag) {
-        res->value.val_uint64 = res_val;
-      } else {
-        res->value.val_int64 = res_val;
-      }
-    }
-    res->is_unsigned = unsigned_flag;
-  } else {
-    assert(res_type == NDB_TYPE_DOUBLE);
-    double val0 = (a.type == NDB_TYPE_DOUBLE) ?
-                     a.value.val_double :
-                     ((a.is_unsigned == true) ?
-                       static_cast<double>(a.value.val_uint64) :
-                       static_cast<double>(a.value.val_int64));
-    double val1 = (b.type == NDB_TYPE_DOUBLE) ?
-                     b.value.val_double :
-                     ((b.is_unsigned == true) ?
-                       static_cast<double>(b.value.val_uint64) :
-                       static_cast<double>(b.value.val_int64));
-    double res_val = val0 * val1;
-    if (std::isfinite(res_val)) {
-      res->value.val_double = res_val;
-    } else {
-      // overflow
-      return -1;
-    }
-  }
-  res->type = res_type;
-  return 0;
-}
-
-static int32_t RegDivReg(const Register& a, const Register& b, Register* res) {
-  assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT && b.type == NDB_TYPE_BIGINT);
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (a.is_null || b.is_null) {
-    // if either register a or b has a null value, the result
-    // will also be null
-    SetRegisterNull(res);
-    // Set the result type to be the resolved one
-    res->type = res_type;
-    // NULL
-    return 1;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    bool val0_negative, val1_negative, res_negative, res_unsigned;
-    uint64_t uval0, uval1, res_val;
-
-    val0_negative = !a.is_unsigned && val0 < 0;
-    val1_negative = !b.is_unsigned && val1 < 0;
-    res_negative = val0_negative != val1_negative;
-    res_unsigned = !res_negative;
-
-    if (val1 == 0) {
-      // Divide by zero
-      SetRegisterNull(res);
-      res->is_unsigned = res_unsigned;
-    } else {
-      uval0 = static_cast<uint64_t>(val0_negative &&
-          val0 != LLONG_MIN ? -val0 : val0);
-      uval1 = static_cast<uint64_t>(val1_negative &&
-          val1 != LLONG_MIN ? -val1 : val1);
-      res_val = uval0 / uval1;
-      if (res_negative) {
-        if (res_val > static_cast<uint64_t>(LLONG_MAX)) {
-          // overflow
-          return -1;
-        } else {
-          res_val = static_cast<uint64_t>(-static_cast<int64_t>(res_val));
-        }
-      }
-      // Check if res_val is overflow
-      bool unsigned_flag = false;
-      if (res_type == NDB_TYPE_BIGINT) {
-        unsigned_flag = (a.is_unsigned | b.is_unsigned);
-      } else {
-        assert(res_type == NDB_TYPE_DOUBLE);
-        unsigned_flag = (a.is_unsigned & b.is_unsigned);
-      }
-      if ((unsigned_flag && !res_unsigned && (int64_t)res_val < 0) ||
-          (!unsigned_flag && res_unsigned &&
-           (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
-        // overflow
-        return -1;
-      } else {
-        if (unsigned_flag) {
-          res->value.val_uint64 = res_val;
-        } else {
-          res->value.val_int64 = res_val;
-        }
-      }
-      res->is_unsigned = unsigned_flag;
-    }
-  } else {
-    assert(res_type == NDB_TYPE_DOUBLE);
-    double val0 = (a.type == NDB_TYPE_DOUBLE) ?
-                     a.value.val_double :
-                     ((a.is_unsigned == true) ?
-                       static_cast<double>(a.value.val_uint64) :
-                       static_cast<double>(a.value.val_int64));
-    double val1 = (b.type == NDB_TYPE_DOUBLE) ?
-                     b.value.val_double :
-                     ((b.is_unsigned == true) ?
-                       static_cast<double>(b.value.val_uint64) :
-                       static_cast<double>(b.value.val_int64));
-    if (val1 == 0) {
-      // Divided by zero
-      SetRegisterNull(res);
-    } else {
-      double res_val = val0 / val1;
-      if (std::isfinite(res_val)) {
-        res->value.val_double = res_val;
-      } else {
-        // overflow
-        return -1;
-      }
-    }
-  }
-  res->type = res_type;
-  if (res->is_null) {
-    return 1;
-  }
-  return 0;
-}
-
-static int32_t RegModReg(const Register& a, const Register& b, Register* res) {
-  assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
-
-  DataType res_type = NDB_TYPE_UNDEFINED;
-  if (a.type == NDB_TYPE_DOUBLE || b.type == NDB_TYPE_DOUBLE) {
-    res_type = NDB_TYPE_DOUBLE;
-  } else {
-    assert(a.type == NDB_TYPE_BIGINT && b.type == NDB_TYPE_BIGINT);
-    res_type = NDB_TYPE_BIGINT;
-  }
-
-  if (a.is_null || b.is_null) {
-    // if either register a or b has a null value, the result
-    // will also be null
-    SetRegisterNull(res);
-    // Set the result type to be the resolved one
-    res->type = res_type;
-    // NULL
-    return 1;
-  }
-
-  if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    bool val0_negative, val1_negative, res_unsigned;
-    uint64_t uval0, uval1, res_val;
-
-    val0_negative = !a.is_unsigned && val0 < 0;
-    val1_negative = !b.is_unsigned && val1 < 0;
-    res_unsigned = !val0_negative;
-
-    if (val1 == 0) {
-      // Divide by zero
-      SetRegisterNull(res);
-      res->is_unsigned = res_unsigned;
-    } else {
-      uval0 = static_cast<uint64_t>(val0_negative &&
-          val0 != LLONG_MIN ? -val0 : val0);
-      uval1 = static_cast<uint64_t>(val1_negative &&
-          val1 != LLONG_MIN ? -val1 : val1);
-      res_val = uval0 % uval1;
-      res_val = res_unsigned ? res_val : -res_val;
-
-      // Check if res_val is overflow
-      bool unsigned_flag = false;
-      if (res_type == NDB_TYPE_BIGINT) {
-        unsigned_flag = (a.is_unsigned | b.is_unsigned);
-      } else {
-        assert(res_type == NDB_TYPE_DOUBLE);
-        unsigned_flag = (a.is_unsigned & b.is_unsigned);
-      }
-      if ((unsigned_flag && !res_unsigned && (int64_t)res_val < 0) ||
-          (!unsigned_flag && res_unsigned &&
-           (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
-        return -1;
-      } else {
-        if (unsigned_flag) {
-          res->value.val_uint64 = res_val;
-        } else {
-          res->value.val_int64 = res_val;
-        }
-      }
-      res->is_unsigned = unsigned_flag;
-    }
-  } else {
-    assert(res_type == NDB_TYPE_DOUBLE);
-    double val0 = (a.type == NDB_TYPE_DOUBLE) ?
-                     a.value.val_double :
-                     ((a.is_unsigned == true) ?
-                       static_cast<double>(a.value.val_uint64) :
-                       static_cast<double>(a.value.val_int64));
-    double val1 = (b.type == NDB_TYPE_DOUBLE) ?
-                     b.value.val_double :
-                     ((b.is_unsigned == true) ?
-                       static_cast<double>(b.value.val_uint64) :
-                       static_cast<double>(b.value.val_int64));
-    if (val1 == 0) {
-      // Divided by zero
-      SetRegisterNull(res);
-    } else {
-      res->value.val_double = std::fmod(val0, val1);
-    }
-  }
-  res->type = res_type;
-  if (res->is_null) {
-    return 1;
-  }
-  return 0;
-}
-
-static void PrintValue(const AggResItem* res) {
+static void PrintValue(const AggResItem* res, char* log_buf) {
   if (res->type == NDB_TYPE_BIGINT) {
     if (res->is_unsigned) {
-      fprintf(stderr, "[%lu, %d, %d, %d]\n",
+      sprintf(log_buf + strlen(log_buf), "[%lu, %d, %d, %d]",
           res->value.val_uint64, res->type, res->is_unsigned, res->is_null);
     } else {
-      fprintf(stderr, "[%ld, %d, %d, %d]\n",
+      sprintf(log_buf + strlen(log_buf), "[%ld, %d, %d, %d]",
           res->value.val_int64, res->type, res->is_unsigned, res->is_null);
     }
   } else {
     assert(res->type == NDB_TYPE_DOUBLE);
-    fprintf(stderr, "[%lf, %d, %d, %d]\n",
+    sprintf(log_buf + strlen(log_buf), "[%lf, %d, %d, %d]",
         res->value.val_double, res->type, res->is_unsigned, res->is_null);
   }
+  g_eventLogger->info("%s", log_buf);
 }
 
 static int32_t Sum(const Register& a, AggResItem* res, bool print) {
@@ -798,8 +206,9 @@ static int32_t Sum(const Register& a, AggResItem* res, bool print) {
     // Agg result first initialized
     *res = a;
     if (print) {
-      fprintf(stderr, "Moz, Sum() init AggRes to ");
-      PrintValue(res);
+      char log_buf[128];
+      sprintf(log_buf, "Moz, Sum() init AggRes to ");
+      PrintValue(res, log_buf);
     }
     assert(res->type != NDB_TYPE_UNDEFINED);
     return 1;
@@ -911,8 +320,9 @@ static int32_t Sum(const Register& a, AggResItem* res, bool print) {
   res->is_null = false;
 
   if (print) {
-    fprintf(stderr, "Moz, Sum(), update AggRes to ");
-    PrintValue(res);
+    char log_buf[128];
+    sprintf(log_buf, "Moz, Sum(), update AggRes to ");
+    PrintValue(res, log_buf);
   }
   return 0;
 }
@@ -923,8 +333,9 @@ static int32_t Max(const Register& a, AggResItem* res, bool print) {
     // Agg result first initialized
     *res = a;
     if (print) {
-      fprintf(stderr, "Moz, Max(), init AggRes to ");
-      PrintValue(res);
+      char log_buf[128];
+      sprintf(log_buf, "Moz, Max(), init AggRes to ");
+      PrintValue(res, log_buf);
     }
     assert(res->type != NDB_TYPE_UNDEFINED);
     return 1;
@@ -981,8 +392,9 @@ static int32_t Max(const Register& a, AggResItem* res, bool print) {
   res->is_null = false;
 
   if (print) {
-    fprintf(stderr, "Moz, Max(), update AggRes to ");
-    PrintValue(res);
+    char log_buf[128];
+    sprintf(log_buf, "Moz, Max(), update AggRes to ");
+    PrintValue(res, log_buf);
   }
 
   return 0;
@@ -994,8 +406,9 @@ static int32_t Min(const Register& a, AggResItem* res, bool print) {
     // Agg result first initialized
     *res = a;
     if (print) {
-      fprintf(stderr, "Moz, Min(), init AggRes to ");
-      PrintValue(res);
+      char log_buf[128];
+      sprintf(log_buf, "Moz, Min(), init AggRes to ");
+      PrintValue(res, log_buf);
     }
     assert(res->type != NDB_TYPE_UNDEFINED);
     return 1;
@@ -1055,8 +468,9 @@ static int32_t Min(const Register& a, AggResItem* res, bool print) {
   res->is_null = false;
 
   if (print) {
-    fprintf(stderr, "Moz, Min(), update AggRes to ");
-    PrintValue(res);
+    char log_buf[128];
+    sprintf(log_buf, "Moz, Min(), update AggRes to ");
+    PrintValue(res, log_buf);
   }
 
   return 0;
@@ -1071,8 +485,9 @@ static int32_t Count(const Register& a, AggResItem* res, bool print) {
     res->is_unsigned = true;
     res->is_null = false;
     if (print) {
-      fprintf(stderr, "Moz, Count(), init AggRes to ");
-      PrintValue(res);
+      char log_buf[128];
+      sprintf(log_buf, "Moz, Count(), init AggRes to ");
+      PrintValue(res, log_buf);
     }
   }
 
@@ -1086,8 +501,9 @@ static int32_t Count(const Register& a, AggResItem* res, bool print) {
   res->value.val_uint64 += 1;
 
   if (print) {
-    fprintf(stderr, "Moz, Count(), update AggRes to ");
-    PrintValue(res);
+    char log_buf[128];
+    sprintf(log_buf, "Moz, Count(), update AggRes to ");
+    PrintValue(res, log_buf);
   }
 
   return 0;
@@ -1095,7 +511,7 @@ static int32_t Count(const Register& a, AggResItem* res, bool print) {
 
 /*
  * Success: RETURN 0
- * Failure: RETURN 860+ by aggregation interpreter
+ * Failure: RETURN 1860+ by aggregation interpreter
  *          Others returned by readAttributes
  */
 int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
@@ -1103,7 +519,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
   // assert(inited_);
   // assert(req_struct->read_length == 0);
   if (!inited_ || req_struct->read_length != 0) {
-    fprintf(stderr, "AggInterpreter::ProcessRec error, inited: %d, read_length: %u\n",
+    g_eventLogger->warning("AggInterpreter::ProcessRec error, inited: %d, read_length: %u",
             inited_, req_struct->read_length);
     return ZAGG_OTHER_ERROR;
   }
@@ -1119,7 +535,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
                     buf_ + buf_pos_, g_buf_len_ - buf_pos_);
       // assert(ret >= 0);
       if (ret < 0) {
-        fprintf(stderr, "read group by column error: %d\n", ret);
+        g_eventLogger->warning("read group by column error: %d", ret);
         return -ret;
       }
       header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
@@ -1133,8 +549,8 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
       header = reinterpret_cast<AttributeHeader*>(iter->first.ptr);
       agg_res_ptr = reinterpret_cast<AggResItem*>(iter->second.ptr);
       if (print_) {
-        fprintf(stderr, "Moz, Found GBHashEntry, id: %u, byte_size: %u, "
-            "data_size: %u, is_null: %u\n",
+        g_eventLogger->warning("Moz, Found GBHashEntry, id: %u, byte_size: %u, "
+            "data_size: %u, is_null: %u",
             header->getAttributeId(), header->getByteSize(),
             header->getDataSize(), header->isNULL());
       }
@@ -1217,62 +633,62 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
 
     switch (op) {
       case kOpPlus:
-        reg_index = (value & 0x0000F000) >> 12;
-        reg_index2 = (value & 0x00000F00) >> 8;
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
 
         ret = RegPlusReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         // assert(ret >= 0);
         if (ret < 0) {
-          printf("Overflow[PLUS], value is out of range\n");
+          g_eventLogger->warning("Overflow[PLUS], value is out of range");
           return ZAGG_MATH_OVERFLOW;
         }
         break;
       case kOpMinus:
-        reg_index = (value & 0x0000F000) >> 12;
-        reg_index2 = (value & 0x00000F00) >> 8;
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
 
         ret = RegMinusReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         // assert(ret >= 0);
         if (ret < 0) {
-          printf("Overflow[MINUS], value is out of range\n");
+          g_eventLogger->warning("Overflow[MINUS], value is out of range");
           return ZAGG_MATH_OVERFLOW;
         }
         break;
       case kOpMul:
-        reg_index = (value & 0x0000F000) >> 12;
-        reg_index2 = (value & 0x00000F00) >> 8;
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
 
         ret = RegMulReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         // assert(ret >= 0);
         if (ret < 0) {
-          printf("Overflow[MUL], value is out of range\n");
+          g_eventLogger->warning("Overflow[MUL], value is out of range");
           return ZAGG_MATH_OVERFLOW;
         }
         break;
       case kOpDiv:
-        reg_index = (value & 0x0000F000) >> 12;
-        reg_index2 = (value & 0x00000F00) >> 8;
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
 
         ret = RegDivReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         // assert(ret >= 0);
         if (ret < 0) {
-          printf("Overflow[DIV], value is out of range\n");
+          g_eventLogger->warning("Overflow[DIV], value is out of range");
           return ZAGG_MATH_OVERFLOW;
         }
         break;
       case kOpMod:
-        reg_index = (value & 0x0000F000) >> 12;
-        reg_index2 = (value & 0x00000F00) >> 8;
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
 
         ret = RegModReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         // assert(ret >= 0);
         if (ret < 0) {
-          printf("Overflow[MOD], value is out of range\n");
+          g_eventLogger->warning("Overflow[MOD], value is out of range");
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1286,7 +702,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
                   buf_ + buf_pos_, g_buf_len_ - buf_pos_);
         // assert(ret >= 0);
         if (ret < 0) {
-          fprintf(stderr, "read column error: %d\n", ret);
+          g_eventLogger->warning("read column error: %d", ret);
           return -ret;
         }
         header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
@@ -1297,7 +713,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
         assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
         // assert(TypeSupported(type));
         if (!TypeSupported(type)) {
-          fprintf(stderr, "Unsupported column type: %u\n", type);
+          g_eventLogger->warning("Unsupported column type: %u", type);
           return ZAGG_COL_TYPE_UNSUPPORTED;
         }
 
@@ -1307,7 +723,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
         registers_[reg_index].is_null = header->isNULL();
         if (registers_[reg_index].is_null) {
           // Column has a null value
-          // fprintf(stderr, "Moz-Intp: Load NULL, type: %u\n",
+          // g_eventLogger->info("Moz-Intp: Load NULL, type: %u",
           //     registers_[reg_index].type);
           registers_[reg_index].value.val_int64 = 0;
           break;
@@ -1316,74 +732,74 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
           case NDB_TYPE_TINYINT:
             registers_[reg_index].value.val_int64 =
                 *reinterpret_cast<int8_t*>(&buf_[buf_pos_ + 1]);
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_TINYINT %ld\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_TINYINT %ld",
             //     registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_SMALLINT:
             registers_[reg_index].value.val_int64 =
                 sint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_SMALLINT %ld\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_SMALLINT %ld",
             //     registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_MEDIUMINT:
             registers_[reg_index].value.val_int64 =
                 sint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_MEDIUM %ld\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_MEDIUM %ld",
             //     registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_INT:
             registers_[reg_index].value.val_int64 =
                 sint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_INT %ld\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_INT %ld",
             //     registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_BIGINT:
             registers_[reg_index].value.val_int64 =
                 sint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_BIGINT %ld\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_BIGINT %ld",
             //     registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_TINYUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 *reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_TINYUNSIGNED %lu\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_TINYUNSIGNED %lu",
             //     registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_SMALLUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_SMALLUNSIGNED %lu\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_SMALLUNSIGNED %lu",
             //     registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_MEDIUMUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_MEDIUMUNSIGNED %lu\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_MEDIUMUNSIGNED %lu",
             //     registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_UNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_UNSIGNED %lu\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_UNSIGNED %lu",
             //     registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_BIGUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_BIGUNSIGNED %lu\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_BIGUNSIGNED %lu",
             //     registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_FLOAT:
             registers_[reg_index].value.val_double =
                 floatget(reinterpret_cast<unsigned char*>(&buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_FLOAT %lf\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_FLOAT %lf",
             //     registers_[reg_index].value.val_double);
             break;
           case NDB_TYPE_DOUBLE:
             registers_[reg_index].value.val_double =
                 doubleget(reinterpret_cast<unsigned char*>(
                       &buf_[buf_pos_ + 1]));
-            // fprintf(stderr, "Moz-Intp: Load NDB_TYPE_DOUBLE %lf\n",
+            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DOUBLE %lf",
             //     registers_[reg_index].value.val_double);
             break;
           case NDB_TYPE_DECIMAL:
@@ -1401,12 +817,13 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
-              fprintf(stderr, "Error while parsing decimal: ");
+              char log_buf[128];
+              sprintf(log_buf, "Error while parsing decimal: ");
               for (uint32_t i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
-                fprintf(stderr, "%x ", *(dec_buf_ptr + i));
+                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              fprintf(stderr, "\n");
+              g_eventLogger->warning("%s", log_buf);
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_PARSE_OVERFLOW;
               } else {
@@ -1428,12 +845,13 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
-              fprintf(stderr, "Error while converting decimal: ");
+              char log_buf[128];
+              sprintf(log_buf, "Error while converting decimal: ");
               for (uint32_t i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
-                fprintf(stderr, "%x ", *(dec_buf_ptr + i));
+                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              fprintf(stderr, "\n");
+              g_eventLogger->warning("%s", log_buf);
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_CONV_OVERFLOW;
               } else {
@@ -1443,10 +861,10 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             assert(registers_[reg_index].is_unsigned == false);
             // if (frag_id_ == 0) {
             //   if (scale != 0) {
-            //     fprintf(stderr, "Moz-Intp: Load NDB_TYPE_DECIMAL[double] %lf\n",
+            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMAL[double] %lf",
             //         registers_[reg_index].value.val_double);
             //   } else {
-            //     fprintf(stderr, "Moz-Intp: Load NDB_TYPE_DECIMAL[int64] %ld\n",
+            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMAL[int64] %ld",
             //         registers_[reg_index].value.val_int64);
             //   }
             // }
@@ -1466,12 +884,13 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
-              fprintf(stderr, "Error while parsing decimal: ");
+              char log_buf[128];
+              sprintf(log_buf, "Error while parsing decimal: ");
               for (uint32_t i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
-                fprintf(stderr, "%x ", *(dec_buf_ptr + i));
+                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              fprintf(stderr, "\n");
+              g_eventLogger->warning("%s", log_buf);
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_PARSE_OVERFLOW;
               } else {
@@ -1495,12 +914,13 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
-              fprintf(stderr, "Error while converting decimal: ");
+              char log_buf[128];
+              sprintf(log_buf, "Error while converting decimal: ");
               for (uint32_t i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
-                fprintf(stderr, "%x ", *(dec_buf_ptr + i));
+                sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              fprintf(stderr, "\n");
+              g_eventLogger->warning("%s", log_buf);
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_CONV_OVERFLOW;
               } else {
@@ -1509,10 +929,10 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
             // if (frag_id_ == 0) {
             //   if (scale != 0) {
-            //     fprintf(stderr, "Moz-Intp: Load NDB_TYPE_DECIMALUNSIGNED[double] %lf\n",
+            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMALUNSIGNED[double] %lf",
             //         registers_[reg_index].value.val_double);
             //   } else {
-            //     fprintf(stderr, "Moz-Intp: Load NDB_TYPE_DECIMALUNSIGNED[uin64] %lu\n",
+            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMALUNSIGNED[uin64] %lu",
             //         registers_[reg_index].value.val_uint64);
             //   }
             // }
@@ -1536,21 +956,21 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
           case NDB_TYPE_BIGINT:
             registers_[reg_index].value.val_int64 =
                 sint8korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-            // fprintf(stderr, "Moz-Intp: LoadConst[%u] NDB_TYPE_BIGINT %ld\n",
+            // g_eventLogger->info("Moz-Intp: LoadConst[%u] NDB_TYPE_BIGINT %ld",
             //     reg_index, registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_BIGUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint8korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-            // fprintf(stderr, "Moz-Intp: LoadConst[%u] "
-            //                 "NDB_TYPE_BIGUNSIGNED %lu\n",
+            // g_eventLogger->info("Moz-Intp: LoadConst[%u] "
+            //                 "NDB_TYPE_BIGUNSIGNED %lu",
             //     reg_index, registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_DOUBLE:
             registers_[reg_index].value.val_double =
                 doubleget(reinterpret_cast<unsigned char*>(
                       &prog_[exec_pos]));
-            // fprintf(stderr, "Moz-Intp: LoadConst[%u] NDB_TYPE_DOUBLE %lf\n",
+            // g_eventLogger->info("Moz-Intp: LoadConst[%u] NDB_TYPE_DOUBLE %lf",
             //     reg_index, registers_[reg_index].value.val_double);
             break;
           default:
@@ -1560,8 +980,8 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
         exec_pos += 2;
         break;
       case kOpMov:
-        reg_index = (value & 0x0000F000) >> 12;
-        reg_index2 = (value & 0x00000F00) >> 8;
+        reg_index = (value >> 12 ) & 0x0F;
+        reg_index2 = (value >> 8 ) & 0x0F;
 
         registers_[reg_index] = registers_[reg_index2];
         break;
@@ -1572,7 +992,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = Sum(registers_[reg_index], &agg_res_ptr[agg_index], print_);
         // assert(ret >= 0);
         if (ret < 0) {
-          fprintf(stderr, "Overflow[SUM], value is out of range\n");
+          g_eventLogger->warning("Overflow[SUM], value is out of range");
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1611,74 +1031,78 @@ void AggInterpreter::Print() {
   // if (!print_) {
   //   return;
   // }
+  char log_buf[1024];
   if (n_gb_cols_) {
     if (gb_map_) {
-      fprintf(stderr, "Group by columns: [");
+      sprintf(log_buf, "Group by columns: [");
       for (uint32_t i = 0; i < n_gb_cols_; i++) {
         if (i != n_gb_cols_ - 1) {
-          fprintf(stderr, "%u ", gb_cols_[i] >> 16);
+          sprintf(log_buf + strlen(log_buf), "%u ", gb_cols_[i] >> 16);
         } else {
-          fprintf(stderr, "%u", gb_cols_[i] >> 16);
+          sprintf(log_buf + strlen(log_buf), "%u", gb_cols_[i] >> 16);
         }
       }
-      fprintf(stderr, "]\n");
-      fprintf(stderr, "Num of groups: %lu\n", gb_map_->size());
-      fprintf(stderr, "Aggregation results:\n");
+      sprintf(log_buf + strlen(log_buf), "]");
+      g_eventLogger->info("%s", log_buf);
+      log_buf[0] = '\0';
 
+      g_eventLogger->info("Num of groups: %lu, Aggregation results:",
+                          gb_map_->size());
       for (auto iter = gb_map_->begin(); iter != gb_map_->end(); iter++) {
         int pos = 0;
-        fprintf(stderr, "(");
+        sprintf(log_buf, "(");
         for (uint32_t i = 0; i < n_gb_cols_; i++) {
           if (i != n_gb_cols_ - 1) {
-            fprintf(stderr, "%u: %p, ", i, iter->first.ptr + pos);
+            sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter->first.ptr + pos);
           } else {
-            fprintf(stderr, "%u: %p): ", i, iter->first.ptr + pos);
+            sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter->first.ptr + pos);
           }
         }
 
         AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
         for (uint32_t i = 0; i < n_agg_results_; i++) {
-          fprintf(stderr, "(%u, %u, %u)", item[i].type,
+          sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
                   item[i].is_unsigned, item[i].is_null);
           if (item[i].is_null) {
-            fprintf(stderr, "[NULL]");
+            sprintf(log_buf + strlen(log_buf), "[NULL]");
           } else {
             switch (item[i].type) {
               case NDB_TYPE_BIGINT:
-                fprintf(stderr, "[%15ld]", item[i].value.val_int64);
+                sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
                 break;
               case NDB_TYPE_DOUBLE:
-                fprintf(stderr, "[%31.16f]", item[i].value.val_double);
+                sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
                 break;
               default:
                 assert(0);
             }
           }
         }
-        fprintf(stderr, "\n");
+        g_eventLogger->info("%s", log_buf);
       }
     }
   } else {
     AggResItem* item = agg_results_;
+    log_buf[0] = '\0';
     for (uint32_t i = 0; i < n_agg_results_; i++) {
-      fprintf(stderr, "(%u, %u, %u)", item[i].type,
+      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
               item[i].is_unsigned, item[i].is_null);
       if (item[i].is_null) {
-        fprintf(stderr, "[NULL]");
+        sprintf(log_buf + strlen(log_buf), "[NULL]");
       } else {
         switch (item[i].type) {
           case NDB_TYPE_BIGINT:
-            fprintf(stderr, "[%15ld]", item[i].value.val_int64);
+            sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
             break;
           case NDB_TYPE_DOUBLE:
-            fprintf(stderr, "[%31.16f]", item[i].value.val_double);
+            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
             break;
           default:
             assert(0);
         }
       }
     }
-    fprintf(stderr, "\n");
+    g_eventLogger->info("%s", log_buf);
   }
 }
 
@@ -1689,6 +1113,8 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
   assert(in1->n_agg_results_ == in2->n_agg_results_);
   auto iter1 = in1->gb_map_->begin();
   auto iter2 = in2->gb_map_->begin();
+  char log_buf[1024];
+  log_buf[0] = '\0';
 
   while (iter1 != in1->gb_map_->end() && iter2 != in2->gb_map_->end()) {
     uint32_t len1 = iter1->first.len;
@@ -1701,74 +1127,76 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
     int ret = memcmp(iter1->first.ptr, iter2->first.ptr, len1);
     if (ret < 0) {
       int pos = 0;
-      fprintf(stderr, "(");
+      sprintf(log_buf + strlen(log_buf), "(");
       for (uint32_t i = 0; i < in1->n_gb_cols_; i++) {
         if (i != in1->n_gb_cols_ - 1) {
-          fprintf(stderr, "%u: %p, ", i, iter1->first.ptr + pos);
+          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
         } else {
-          fprintf(stderr, "%u: %p): ", i, iter1->first.ptr + pos);
+          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
         }
       }
       AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
       for (uint32_t i = 0; i < in1->n_agg_results_; i++) {
-        fprintf(stderr, "(%u, %u, %u)", item[i].type,
+        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
             item[i].is_unsigned, item[i].is_null);
         if (item[i].is_null) {
-          fprintf(stderr, "[NULL]");
+          sprintf(log_buf + strlen(log_buf), "[NULL]");
         } else {
           switch (item[i].type) {
             case NDB_TYPE_BIGINT:
-              fprintf(stderr, "[%15ld]", item[i].value.val_int64);
+              sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
               break;
             case NDB_TYPE_DOUBLE:
-              fprintf(stderr, "[%31.16f]", item[i].value.val_double);
+              sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
               break;
             default:
               assert(0);
           }
         }
       }
-      fprintf(stderr, "\n");
+      g_eventLogger->info("%s", log_buf);
+      log_buf[0] = '\0';
       iter1++;
     } else if (ret > 0) {
       int pos = 0;
-      fprintf(stderr, "(");
+      sprintf(log_buf + strlen(log_buf), "(");
       for (uint32_t i = 0; i < in2->n_gb_cols_; i++) {
         if (i != in2->n_gb_cols_ - 1) {
-          fprintf(stderr, "%u: %p, ", i, iter2->first.ptr + pos);
+          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
         } else {
-          fprintf(stderr, "%u: %p): ", i, iter2->first.ptr + pos);
+          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter2->first.ptr + pos);
         }
       }
       AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
       for (uint32_t i = 0; i < in2->n_agg_results_; i++) {
-        fprintf(stderr, "(%u, %u, %u)", item[i].type,
+        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
             item[i].is_unsigned, item[i].is_null);
         if (item[i].is_null) {
-          fprintf(stderr, "[NULL]");
+          sprintf(log_buf + strlen(log_buf), "[NULL]");
         } else {
           switch (item[i].type) {
             case NDB_TYPE_BIGINT:
-              fprintf(stderr, "[%15ld]", item[i].value.val_int64);
+              sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
               break;
             case NDB_TYPE_DOUBLE:
-              fprintf(stderr, "[%31.16f]", item[i].value.val_double);
+              sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
               break;
             default:
               assert(0);
           }
         }
       }
-      fprintf(stderr, "\n");
+      g_eventLogger->info("%s", log_buf);
+      log_buf[0] = '\0';
       iter2++;
     } else {
       int pos = 0;
-      fprintf(stderr, "(");
+      sprintf(log_buf + strlen(log_buf), "(");
       for (uint32_t i = 0; i < in1->n_gb_cols_; i++) {
         if (i != in1->n_gb_cols_ - 1) {
-          fprintf(stderr, "%u: %p, ", i, iter1->first.ptr + pos);
+          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
         } else {
-          fprintf(stderr, "%u: %p): ", i, iter1->first.ptr + pos);
+          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
         }
       }
       AggResItem* item1 = reinterpret_cast<AggResItem*>(iter1->second.ptr);
@@ -1851,90 +1279,92 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
               break;
           }
         }
-        fprintf(stderr, "(%u, %u, %u)", result.type,
+        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", result.type,
             result.is_unsigned, result.is_null);
         if (result.is_null) {
-          fprintf(stderr, "[NULL]");
+          sprintf(log_buf + strlen(log_buf), "[NULL]");
         } else {
           switch (result.type) {
             case NDB_TYPE_BIGINT:
-              fprintf(stderr, "[%15ld]", result.value.val_int64);
+              sprintf(log_buf + strlen(log_buf), "[%15ld]", result.value.val_int64);
               break;
             case NDB_TYPE_DOUBLE:
-              fprintf(stderr, "[%31.16f]", result.value.val_double);
+              sprintf(log_buf + strlen(log_buf), "[%31.16f]", result.value.val_double);
               break;
             default:
               assert(0);
           }
         }
       }
-      fprintf(stderr, "\n");
+      g_eventLogger->info("%s", log_buf);
+      log_buf[0] = '\0';
       iter1++;
       iter2++;
     }
   }
   while (iter1 != in1->gb_map_->end()) {
     int pos = 0;
-    fprintf(stderr, "(");
+    sprintf(log_buf + strlen(log_buf), "(");
     for (uint32_t i = 0; i < in1->n_gb_cols_; i++) {
       if (i != in1->n_gb_cols_ - 1) {
-        fprintf(stderr, "%u: %p, ", i, iter1->first.ptr + pos);
+        sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
       } else {
-        fprintf(stderr, "%u: %p): ", i, iter1->first.ptr + pos);
+        sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
       }
     }
     AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
     for (uint32_t i = 0; i < in1->n_agg_results_; i++) {
-      fprintf(stderr, "(%u, %u, %u)", item[i].type,
+      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
           item[i].is_unsigned, item[i].is_null);
       if (item[i].is_null) {
-        fprintf(stderr, "[NULL]");
+        sprintf(log_buf + strlen(log_buf), "[NULL]");
       } else {
         switch (item[i].type) {
           case NDB_TYPE_BIGINT:
-            fprintf(stderr, "[%15ld]", item[i].value.val_int64);
+            sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
             break;
           case NDB_TYPE_DOUBLE:
-            fprintf(stderr, "[%31.16f]", item[i].value.val_double);
+            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
             break;
           default:
             assert(0);
         }
       }
     }
-    fprintf(stderr, "\n");
-    iter1++;
+    g_eventLogger->info("%s", log_buf);
+    log_buf[0] = '\0';
   }
   while (iter2 != in2->gb_map_->end()) {
     int pos = 0;
-    fprintf(stderr, "(");
+    sprintf(log_buf + strlen(log_buf), "(");
     for (uint32_t i = 0; i < in2->n_gb_cols_; i++) {
       if (i != in2->n_gb_cols_ - 1) {
-        fprintf(stderr, "%u: %p, ", i, iter2->first.ptr + pos);
+        sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
       } else {
-        fprintf(stderr, "%u: %p): ", i, iter2->first.ptr + pos);
+        sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter2->first.ptr + pos);
       }
     }
     AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
     for (uint32_t i = 0; i < in2->n_agg_results_; i++) {
-      fprintf(stderr, "(%u, %u, %u)", item[i].type,
+      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
           item[i].is_unsigned, item[i].is_null);
       if (item[i].is_null) {
-        fprintf(stderr, "[NULL]");
+        sprintf(log_buf + strlen(log_buf), "[NULL]");
       } else {
         switch (item[i].type) {
           case NDB_TYPE_BIGINT:
-            fprintf(stderr, "[%15ld]", item[i].value.val_int64);
+            sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
             break;
           case NDB_TYPE_DOUBLE:
-            fprintf(stderr, "[%31.16f]", item[i].value.val_double);
+            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
             break;
           default:
             assert(0);
         }
       }
     }
-    fprintf(stderr, "\n");
+    g_eventLogger->info("%s", log_buf);
+    log_buf[0] = '\0';
     iter2++;
   }
 }
@@ -2009,10 +1439,11 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     uint32_t n_gb_cols = data_buf[parse_pos] >> 16;
     uint32_t n_agg_results = data_buf[parse_pos++] & 0xFFFF;
     uint32_t n_res_items = data_buf[parse_pos++];
-    // fprintf(stderr, "Moz, GB cols: %u, AGG results: %u, RES items: %u\n",
+    // g_eventLogger->info("Moz, GB cols: %u, AGG results: %u, RES items: %u",
     //         n_gb_cols, n_agg_results, n_res_items);
 
     if (n_gb_cols) {
+      // char log_buf[128];
       for (uint32_t i = 0; i < n_res_items; i++) {
         uint32_t gb_cols_len = data_buf[parse_pos] >> 16;
         uint32_t agg_res_len = data_buf[parse_pos++] & 0xFFFF;
@@ -2021,7 +1452,7 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
         (void)agg_res_len;
         for (uint32_t j = 0; j < n_gb_cols; j++) {
           AttributeHeader ah(data_buf[parse_pos++]);
-          // fprintf(stderr,
+          // sprintf(log_buf,
           //     "[id: %u, sizeB: %u, sizeW: %u, gb_len: %u, "
           //     "res_len: %u, value: ",
           //     ah.getAttributeId(), ah.getByteSize(),
@@ -2029,29 +1460,29 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
           assert(ah.getDataPtr() != &data_buf[parse_pos]);
           // char* ptr = (char*)(&data_buf[parse_pos]);
           // for (uint32_t i = 0; i < ah.getByteSize(); i++) {
-          //   fprintf(stderr, " %x", ptr[i]);
+          //   sprintf(log_buf + strlen(log_buf), " %x", ptr[i]);
           // }
           parse_pos += ah.getDataSize();
-          // fprintf(stderr, "]");
+          // sprintf(log_buf + strlen(log_buf), "]");
         }
         for (uint32_t i = 0; i < n_agg_results; i++) {
           // AggResItem* ptr = (AggResItem*)(&data_buf[parse_pos]);
-          // fprintf(stderr, "(type: %u, is_unsigned: %u, is_null: %u, value: ",
+          // sprintf(log_buf + strlen(log_buf), "(type: %u, is_unsigned: %u, is_null: %u, value: ",
           //         ptr->type, ptr->is_unsigned, ptr->is_null);
           // switch (ptr->type) {
           //   case NDB_TYPE_BIGINT:
-          //     fprintf(stderr, "%15ld", ptr->value.val_int64);
+          //     sprintf(log_buf + strlen(log_buf), "%15ld", ptr->value.val_int64);
           //     break;
           //   case NDB_TYPE_DOUBLE:
-          //     fprintf(stderr, "%31.16f", ptr->value.val_double);
+          //     sprintf(log_buf + strlen(log_buf), "%31.16f", ptr->value.val_double);
           //     break;
           //   default:
           //     assert(0);
           // }
-          // fprintf(stderr, ")");
+          // sprintf(log_buf + strlen(log_buf), ")");
           parse_pos += (sizeof(AggResItem) >> 2);
         }
-        // fprintf(stderr, "\n");
+        // g_eventLogger->info("%s", log_buf);
       }
     } else {
       assert(n_gb_cols == 0);
@@ -2131,8 +1562,11 @@ void AggInterpreter::Destruct(AggInterpreter* ptr) {
   if (ptr == nullptr) {
     return;
   }
+  /*
   Ndbd_mem_manager* _mm = ptr->mm();
   uint32_t _page_ref = ptr->page_ref();
   _mm->release_page(RT_DBTUP_PAGE, _page_ref);
+  */
+  lc_ndbd_pool_free(ptr);
 }
 #endif // MOZ_AGG_MALLOC

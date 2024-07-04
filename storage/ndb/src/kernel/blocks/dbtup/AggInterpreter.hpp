@@ -1,8 +1,26 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
- *
- * Author: Zhao Song
+ * Copyright [2024] <Copyright Hopsworks AB>
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2.0,
+ * as published by the Free Software Foundation.
+
+ * This program is also distributed with certain software (including
+ * but not limited to OpenSSL) that is licensed under separate terms,
+ * as designated in a particular file or component or in included license
+ * documentation.  The authors of MySQL hereby grant you an additional
+ * permission to link the program and your derivative works with the
+ * separately licensed software that they have included with MySQL.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License, version 2.0, for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
+
 #ifndef AGGINTERPRETER_H_
 #define AGGINTERPRETER_H_
 
@@ -24,8 +42,8 @@
 class AggInterpreter {
  public:
 #ifdef MOZ_AGG_MALLOC
-  AggInterpreter(const uint32_t* prog, uint32_t prog_len, bool print, int64_t frag_id,
-                 Ndbd_mem_manager* mm, void* page_addr, uint32_t page_ref):
+  AggInterpreter(const uint32_t* prog, uint32_t prog_len, bool print, int64_t frag_id/*,
+                 Ndbd_mem_manager* mm, void* page_addr, uint32_t page_ref*/):
 #else
   AggInterpreter(const uint32_t* prog, uint32_t prog_len, bool print, int64_t frag_id):
 #endif // MOZ_AGG_MALLOC
@@ -46,9 +64,12 @@ class AggInterpreter {
       memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(uint32_t));
       memset(decimal_buf_, 0, sizeof(int32_t) * DECIMAL_BUFF_LENGTH);
 #ifdef MOZ_AGG_MALLOC
+      /* For using Ndbd_mem_manager*/
+      /*
       mm_ = mm;
       page_addr_ = page_addr;
       page_ref_ = page_ref;
+      */
       alloc_len_ = 0;
 #endif // MOZ_AGG_MALLOC
   }
@@ -94,12 +115,15 @@ class AggInterpreter {
   }
 #ifdef MOZ_AGG_MALLOC
   static void Destruct(AggInterpreter* ptr);
+  /* For using Ndbd_mem_manager*/
+  /*
   Ndbd_mem_manager* mm() {
     return mm_;
   }
   uint32_t page_ref() {
     return page_ref_;
   }
+  */
 #endif // MOZ_AGG_MALLOC
 
  private:
@@ -130,9 +154,12 @@ class AggInterpreter {
   int32_t decimal_buf_[DECIMAL_BUFF_LENGTH];
 
 #ifdef MOZ_AGG_MALLOC
+  /* For using Ndbd_mem_manager */
+  /*
   Ndbd_mem_manager* mm_;
   void* page_addr_;
   uint32_t page_ref_;
+  */
 
   uint32_t prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
   uint32_t gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];

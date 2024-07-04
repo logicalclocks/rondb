@@ -5387,7 +5387,7 @@ Dblqh::ScanRecord::check_scan_batch_completed(bool print) const
       // MOZ DEBUG PRINT
 #ifdef MOZ_AGG_DEBUG
       if (print) {
-        fprintf(stderr, "CHECK batch complete:true, rows[%u, %u], bytes[%u, %u], n_res_recs: %u\n",
+        g_eventLogger->info("CHECK batch complete:true, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
             m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
             m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
             m_agg_n_res_recs);
@@ -5397,7 +5397,7 @@ Dblqh::ScanRecord::check_scan_batch_completed(bool print) const
     } else {
 #ifdef MOZ_AGG_DEBUG
       if (print) {
-        fprintf(stderr, "CHECK batch complete:false, rows[%u, %u], bytes[%u, %u], n_res_recs: %u\n",
+        g_eventLogger->info("CHECK batch complete:false, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
             m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
             m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
             m_agg_n_res_recs);

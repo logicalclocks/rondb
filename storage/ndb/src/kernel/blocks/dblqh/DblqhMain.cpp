@@ -17605,7 +17605,7 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
   regFragptr.i = regTcPtr->fragmentptr;
   ndbrequire(c_fragment_pool.getPtr(regFragptr));
   if (regFragptr.p->fragId == 0) {
-    // fprintf(stderr, "MOZ %u : %u\n",
+    // g_eventLogger->info("MOZ %u : %u",
     //           scanPtr->scanReleaseCounter, scanPtr->m_curr_batch_size_rows);
   }
   }
@@ -17709,15 +17709,15 @@ void Dblqh::scanReleaseLocksLab(Signal* signal,
   {
     Uint32 tmp = 0;
     // Moz
-    if (scanPtr->m_aggregation) {
+    if (!scanPtr->m_aggregation) {
       tmp =
         get_acc_ptr_from_scan_record(scanPtr,
-                                     0,
+                                     scanPtr->scanReleaseCounter-1,
                                      false);
     } else {
       tmp =
         get_acc_ptr_from_scan_record(scanPtr,
-                                     scanPtr->scanReleaseCounter-1,
+                                     0,
                                      false);
     }
     const Uint32 sig1 = tmp;
@@ -19003,7 +19003,8 @@ void Dblqh::storedProcConfScanLab(Signal* signal,
                              block,
                              f,
                              scanPtr,
-                             tcConnectptr.p->clientConnectrec, print);
+                             tcConnectptr.p->clientConnectrec,
+                             print);
       return;
     }
     ndbassert(in_send_next_scan == 1);
@@ -19331,13 +19332,13 @@ void Dblqh::nextScanConfScanLab(Signal* signal,
     jamDebug();
     check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
     scanPtr->scan_check_lcp_stop = 0;
-    if (scanPtr->m_aggregation) {
+    if (!scanPtr->m_aggregation) {
       set_acc_ptr_in_scan_record(scanPtr,
-                                 0,
+                                 scanPtr->m_curr_batch_size_rows,
                                  accOpPtr);
     } else {
       set_acc_ptr_in_scan_record(scanPtr,
-                                 scanPtr->m_curr_batch_size_rows,
+                                 0,
                                  accOpPtr);
     }
 
@@ -19806,7 +19807,15 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     read_len += sendKeyinfo20(signal, scanPtr, regTcPtr);
   }//if
 
-  if (scanPtr->m_aggregation) {
+  if (!scanPtr->m_aggregation) {
+    /*
+     * Moz
+     * In aggregation mode, since we don't follow batch strategy 100%,
+     * in the situation which has small group, m_curr_batch_size_rows
+     * could be bigger than MAX_PARALLEL_OP_PER_SCAN
+     */
+    ndbrequire(scanPtr->m_curr_batch_size_rows < MAX_PARALLEL_OP_PER_SCAN);
+  } else {
     if (conf->agg_batch_size_bytes) {
       ndbrequire(conf->agg_batch_size_rows == 1);
       /*
@@ -19823,14 +19832,6 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     scanPtr->m_agg_curr_batch_size_bytes = conf->agg_batch_size_bytes;
     scanPtr->m_agg_curr_batch_size_rows = conf->agg_batch_size_rows;
     scanPtr->m_agg_n_res_recs = conf->agg_n_res_recs;
-  } else {
-    /*
-     * Moz
-     * In aggregation mode, since we don't follow batch strategy 100%,
-     * in the situation which has small group, m_curr_batch_size_rows
-     * could be bigger than MAX_PARALLEL_OP_PER_SCAN
-     */
-    ndbrequire(scanPtr->m_curr_batch_size_rows < MAX_PARALLEL_OP_PER_SCAN);
   }
   scanPtr->m_exec_direct_batch_size_words += read_len;
   scanPtr->m_curr_batch_size_bytes+= read_len * sizeof(Uint32);
@@ -20048,7 +20049,7 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
 #ifdef MOZ_AGG_DEBUG
     if (scanPtr->m_aggregation && scanPtr->m_agg_n_res_recs > 0 &&
         scanPtr->m_agg_interpreter->frag_id() == 0) {
-      fprintf(stderr, "Moz-SKIP send scanfragconf, scanPtr->m_agg_n_res_recs: %u\n",
+      g_eventLogger->info("Moz-SKIP send scanfragconf, scanPtr->m_agg_n_res_recs: %u",
               scanPtr->m_agg_n_res_recs);
     }
 #endif // MOZ_AGG_DEBUG
@@ -21006,7 +21007,8 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
                                    SimulatedBlock* block,
                                    ExecFunction f,
                                    ScanRecord * const scanPtr,
-                                   Uint32 clientPtrI, bool debug_print)
+                                   Uint32 clientPtrI,
+                                   bool debug_print)
 {
   (void)clientPtrI;
   /**
@@ -21149,8 +21151,8 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
         // MOZ DEBUG PRINT
 #ifdef MOZ_AGG_DEBUG
         if (debug_print) {
-        fprintf(stderr, "No-break, max_scan_direct_count: %u, scan_direct_count: %u, "
-            "tot_scan_direct_count: %u, tot_scan_limit: %u\n",
+          g_eventLogger->info("No-break, max_scan_direct_count: %u, scan_direct_count: %u, "
+            "tot_scan_direct_count: %u, tot_scan_limit: %u",
             max_scan_direct_count, scan_direct_count, tot_scan_direct_count, tot_scan_limit);
         }
 #endif // MOZ_AGG_DEBUG
@@ -21166,8 +21168,8 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
         // MOZ DEBUG PRINT
 #ifdef MOZ_AGG_DEBUG
         if (debug_print) {
-        fprintf(stderr, "Realtime-break, max_scan_direct_count: %u, scan_direct_count: %u, "
-            "tot_scan_direct_count: %u, tot_scan_limit: %u\n",
+          g_eventLogger->info("Realtime-break, max_scan_direct_count: %u, scan_direct_count: %u, "
+            "tot_scan_direct_count: %u, tot_scan_limit: %u",
             max_scan_direct_count, scan_direct_count, tot_scan_direct_count, tot_scan_limit);
         }
 #endif // MOZ_AGG_DEBUG
@@ -21232,7 +21234,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
     // MOZ DEBUG PRINT
 #ifdef MOZ_AGG_DEBUG
     if (debug_print) {
-    fprintf(stderr, "m_scan_direct_count: %u\n", m_scan_direct_count);
+      g_eventLogger->info("m_scan_direct_count: %u", m_scan_direct_count);
     }
 #endif // MOZ_AGG_DEBUG
     m_in_send_next_scan = 1;
@@ -21280,7 +21282,7 @@ void Dblqh::sendScanFragConf(Signal* signal,
     if (regFragptr.p->fragId == 0 && scanPtr->m_aggregation) {
       print = true;
       ndbrequire(regFragptr.p->fragId == scanPtr->m_agg_interpreter->frag_id());
-      fprintf(stderr, "MOZ sendScanFragConf, rows:[%u, %u], bytes: [%u, %u], n_res_recs: %u\n",
+      g_eventLogger->info("MOZ sendScanFragConf, rows:[%u, %u], bytes: [%u, %u], n_res_recs: %u",
                                     scanPtr->m_agg_curr_batch_size_rows,
                                     scanPtr->m_curr_batch_size_rows,
                                     scanPtr->m_agg_curr_batch_size_bytes,
@@ -21339,7 +21341,7 @@ void Dblqh::sendScanFragConf(Signal* signal,
      * 1. API quits while scanning. scanPtr->scanState == WAIT_CLOSE_SCAN
      * and scanPtr->m_agg_curr_batch_size_bytes maybe 0.
      */
-    assert(scanPtr->m_agg_curr_batch_size_bytes ||
+    ndbassert(scanPtr->m_agg_curr_batch_size_bytes ||
            scanPtr->scanState == ScanRecord::WAIT_CLOSE_SCAN);
   }
   const Uint32 completed_ops= tmp_completed_ops;
@@ -21378,7 +21380,7 @@ void Dblqh::sendScanFragConf(Signal* signal,
     // Moz DEBUG PRINT
 #ifdef MOZ_AGG_DEBUG
     if (print) {
-      fprintf(stderr, "reset rows: [%u, %u], bytes: [%u, %u], n_res_recs: %u\n",
+      g_eventLogger->info("reset rows: [%u, %u], bytes: [%u, %u], n_res_recs: %u",
                                   scanPtr->m_agg_curr_batch_size_rows,
                                   scanPtr->m_curr_batch_size_rows,
                                   scanPtr->m_agg_curr_batch_size_bytes,

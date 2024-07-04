@@ -427,10 +427,10 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
       const Uint32 primary_key = AttributeDescriptor::getPrimaryKey(TattrDesc1);
       const Uint32 dynamic = AttributeDescriptor::getDynamic(TattrDesc1);
       const Uint32 disk_based = AttributeDescriptor::getDiskBased(TattrDesc1);
-      fprintf(stderr, "Moz-AttributeDescriptor, attributeId: %u, type_id: %u, size: %u, "
+      g_eventLogger->info("Moz-AttributeDescriptor, attributeId: %u, type_id: %u, size: %u, "
              "size_in_bytes: %u, size_in_words: %u, array_type: %u, "
              "array_size: %u, nullable: %u, distri_key: %u, primary_key: %u "
-             "dynamic: %u, disk_based: %u\n",
+             "dynamic: %u, disk_based: %u",
              attributeId, type_id, size, size_in_bytes, size_in_words, array_type,
              array_size, nullable, distri_key, primary_key, dynamic, disk_based);
     }
@@ -462,8 +462,8 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
         if (/*req_struct->fragPtrP->fragTableId == 17 &&
             req_struct->fragPtrP->fragmentId == 1 && */
             true) {
-          fprintf(stderr, "Moz-AttributeHeader, attributeId: %u, byte_size: %u, "
-                  "data_size: %u, is_null: %u. 4B: %x %x %x %x.\n",
+          g_eventLogger->info("Moz-AttributeHeader, attributeId: %u, byte_size: %u, "
+                  "data_size: %u, is_null: %u. 4B: %x %x %x %x.",
               ahOut->getAttributeId(), ahOut->getByteSize(), ahOut->getDataSize(),
               ahOut->isNULL(),
               *((uint8_t*)ahOut->getDataPtr()),
@@ -472,51 +472,51 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
               *((uint8_t*)ahOut->getDataPtr() + 3));
           /* Example of print
           if (ahOut->isNULL()) {
-            fprintf(stderr, "VALUE: [NULL]\n");
+            g_eventLogger->info("VALUE: [NULL]");
           } else {
             int32_t tmp_val;
             uint32_t tmp_uval;
             switch (attributeId) {
               case 0:
-                fprintf(stderr, "VALUE: %d\n", *(int32*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %d", *(int32*)ahOut->getDataPtr());
                 break;
               case 1:
-                fprintf(stderr, "VALUE: %d\n", *(int8*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %d", *(int8*)ahOut->getDataPtr());
                 break;
               case 2:
-                fprintf(stderr, "VALUE: %d\n", *(int16*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %d", *(int16*)ahOut->getDataPtr());
                 break;
               case 3:
                 tmp_val = sint3korr((unsigned char*)ahOut->getDataPtr());
-                fprintf(stderr, "VALUE: %d\n", tmp_val);
+                g_eventLogger->info("VALUE: %d", tmp_val);
                 break;
               case 4:
-                fprintf(stderr, "VALUE: %ld\n", *(int64*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %ld", *(int64*)ahOut->getDataPtr());
                 break;
               case 5:
-                fprintf(stderr, "VALUE: %u\n", *(uint8*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %u", *(uint8*)ahOut->getDataPtr());
                 break;
               case 6:
-                fprintf(stderr, "VALUE: %u\n", *(uint16*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %u", *(uint16*)ahOut->getDataPtr());
                 break;
               case 7:
                 tmp_uval = uint3korr((unsigned char*)ahOut->getDataPtr());
-                fprintf(stderr, "VALUE: %u\n", tmp_uval);
+                g_eventLogger->info("VALUE: %u", tmp_uval);
                 break;
               case 8:
-                fprintf(stderr, "VALUE: %u\n", *(uint32*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %u", *(uint32*)ahOut->getDataPtr());
                 break;
               case 9:
-                fprintf(stderr, "VALUE: %lu\n", *(uint64*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %lu", *(uint64*)ahOut->getDataPtr());
                 break;
               case 10:
-                fprintf(stderr, "VALUE: %f\n", *(float*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %f", *(float*)ahOut->getDataPtr());
                 break;
               case 11:
-                fprintf(stderr, "VALUE: %lf\n", *(double*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %lf", *(double*)ahOut->getDataPtr());
                 break;
               case 12:
-                fprintf(stderr, "VALUE: %s\n", (char*)ahOut->getDataPtr());
+                g_eventLogger->info("VALUE: %s", (char*)ahOut->getDataPtr());
                 break;
               default:
                 break;

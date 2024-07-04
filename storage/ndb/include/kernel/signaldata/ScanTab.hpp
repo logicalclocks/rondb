@@ -162,6 +162,8 @@ private:
                                              in the future, release this restriction by removing
                                              the assert in both ScanTabReq::setAggregation() and
                                              ScanTabReq::getAggregation()
+
+                                             UPDATE: already uncommented those asserts
                                              **************************************************
  l = Lock mode             - 1  Bit 8
  h = Hold lock mode        - 1  Bit 10
@@ -245,7 +247,7 @@ ScanTabReq::getParallelism(const UintR & requestInfo){
 inline
 Uint8
 ScanTabReq::getAggregation(const UintR & requestInfo) {
-  assert((requestInfo & 0x7F) == 0);
+  // assert((requestInfo & 0x7F) == 0);
   return ((Uint8)((requestInfo >> SCAN_AGGREGATION_SHIFT) &
                   SCAN_AGGREGATION_MASK));
 }
@@ -317,7 +319,7 @@ ScanTabReq::setParallelism(UintR & requestInfo, Uint32 type){
 inline
 void
 ScanTabReq::setAggregation(UintR & requestInfo, Uint32 flag) {
-  assert((requestInfo & 0x7F) == 0);
+  // assert((requestInfo & 0x7F) == 0);
   requestInfo |= (flag << SCAN_AGGREGATION_SHIFT);
 }
 
