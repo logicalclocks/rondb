@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Starting up background churn to create
 concurrent binlogging activity
 create table background_noise (a int primary key, b varchar(100)) engine=ndb;
@@ -67,75 +68,24 @@ load data local infile 'suite/ndb/data/table_data10000.dat' into table t5 fields
 load data local infile 'suite/ndb/data/table_data10000.dat' into table t6 fields terminated by ' ' lines terminated by '\n' (id, @data) set dat = repeat(@data, 100), txt = repeat(@data,100);
 insert into t10 values (1,1,1), (2,2,2), (3,3,3), (4,4,4), (5,5,5), (6,6,6),(7,7,7), (8,8,8);
 "Table t1 Partition info"
+=======
+show variables like 'log_bin';
+Variable_name	Value
+log_bin	ON
+show variables like 'ndb_log_bin';
+Variable_name	Value
+ndb_log_bin	ON
+Test 1 : Show that reorg of table being Binlogged does not result 
+in any Binlog content
+create table t1 (a int primary key, b varchar(100), c int, unique(c)) engine=ndb;
+Insert 8192 rows
+Show t1 distribution prior to reorg
+>>>>>>> 20884deb4005bcd0b98f4a94f799489bb48136bf
 TABLE_INFO
 PartitionCount: 8
-"Table t2 Partition info"
-TABLE_INFO
-PartitionCount: 8
-"Table t5 Partition info"
-TABLE_INFO
-PartitionCount: 8
-"Table t6 Partition info"
-TABLE_INFO
-PartitionCount: 8
-"Table t6 blob dat Partition info"
-TABLE_INFO
-PartitionCount: 8
-"Table t6 blob txt Partition info"
-TABLE_INFO
-PartitionCount: 8
-select parent_fq_name, type, table_id, node_id, block_instance, fragment_num
-from ndbinfo.memory_per_fragment where parent_fq_name like '%t10%';
-parent_fq_name	type	table_id	node_id	block_instance	fragment_num
-test/def/t10	Ordered index	30	1	1	0
-test/def/t10	Ordered index	30	1	1	4
-test/def/t10	Ordered index	31	1	1	0
-test/def/t10	Ordered index	31	1	1	4
-test/def/t10	Unique hash index	32	1	1	0
-test/def/t10	Unique hash index	32	1	1	4
-test/def/t10	Ordered index	30	1	2	1
-test/def/t10	Ordered index	30	1	2	5
-test/def/t10	Ordered index	31	1	2	1
-test/def/t10	Ordered index	31	1	2	5
-test/def/t10	Unique hash index	32	1	2	1
-test/def/t10	Unique hash index	32	1	2	5
-test/def/t10	Ordered index	30	1	3	2
-test/def/t10	Ordered index	30	1	3	6
-test/def/t10	Ordered index	31	1	3	2
-test/def/t10	Ordered index	31	1	3	6
-test/def/t10	Unique hash index	32	1	3	2
-test/def/t10	Unique hash index	32	1	3	6
-test/def/t10	Ordered index	30	1	4	3
-test/def/t10	Ordered index	30	1	4	7
-test/def/t10	Ordered index	31	1	4	3
-test/def/t10	Ordered index	31	1	4	7
-test/def/t10	Unique hash index	32	1	4	3
-test/def/t10	Unique hash index	32	1	4	7
-test/def/t10	Ordered index	30	2	1	0
-test/def/t10	Ordered index	30	2	1	4
-test/def/t10	Ordered index	31	2	1	0
-test/def/t10	Ordered index	31	2	1	4
-test/def/t10	Unique hash index	32	2	1	0
-test/def/t10	Unique hash index	32	2	1	4
-test/def/t10	Ordered index	30	2	2	1
-test/def/t10	Ordered index	30	2	2	5
-test/def/t10	Ordered index	31	2	2	1
-test/def/t10	Ordered index	31	2	2	5
-test/def/t10	Unique hash index	32	2	2	1
-test/def/t10	Unique hash index	32	2	2	5
-test/def/t10	Ordered index	30	2	3	2
-test/def/t10	Ordered index	30	2	3	6
-test/def/t10	Ordered index	31	2	3	2
-test/def/t10	Ordered index	31	2	3	6
-test/def/t10	Unique hash index	32	2	3	2
-test/def/t10	Unique hash index	32	2	3	6
-test/def/t10	Ordered index	30	2	4	3
-test/def/t10	Ordered index	30	2	4	7
-test/def/t10	Ordered index	31	2	4	3
-test/def/t10	Ordered index	31	2	4	7
-test/def/t10	Unique hash index	32	2	4	3
-test/def/t10	Unique hash index	32	2	4	7
+Add new nodes
 Nodegroup 1 created
+<<<<<<< HEAD
 ndbd(s)
 id=1	LOCALHOST  (NDB_VERSION, Nodegroup: 0, *)
 id=2	LOCALHOST  (NDB_VERSION, Nodegroup: 0)
@@ -446,3 +396,61 @@ DROP LOGFILE GROUP lg_1 ENGINE NDB;
 Waiting for background noise to end
 DROP TABLE background_noise;
 DROP PROCEDURE busy;
+=======
+Show empty binlog prior to reorg
+reset master;
+select count(1), sum(inserts), sum(updates), sum(deletes) from mysql.ndb_binlog_index;
+count(1)	sum(inserts)	sum(updates)	sum(deletes)
+0	NULL	NULL	NULL
+Reorg table to use new nodes
+alter table t1 reorganize partition;
+Show t1 distribution after reorg
+TABLE_INFO
+PartitionCount: 16
+Show empty binlog after reorg
+select count(1), sum(inserts), sum(updates), sum(deletes) from mysql.ndb_binlog_index;
+count(1)	sum(inserts)	sum(updates)	sum(deletes)
+0	NULL	NULL	NULL
+Cleanup
+drop table t1;
+Drop Node Group 1 done
+Test 2 : Show that reorg of table with concurrent writes
+Results in Binlog content
+Create table including Blobs for interest
+create table test.t1 (a int auto_increment primary key,
+b text,
+c text,
+d int, unique(d)) engine=ndb;
+Load 100 rows first
+Show t1 distribution prior to reorg
+TABLE_INFO
+PartitionCount: 8
+Add new nodes
+Nodegroup 1 created
+reset master;
+Show empty binlog prior to test
+select count(1), sum(inserts), sum(updates), sum(deletes) from mysql.ndb_binlog_index;
+count(1)	sum(inserts)	sum(updates)	sum(deletes)
+0	NULL	NULL	NULL
+Request reorg starting in 2 seconds
+select sleep(2); alter table test.t1 reorganize partition;;
+Start I/U/D load on table
+Wait for reorg to complete
+sleep(2)
+0
+Show t1 distribution after reorg
+TABLE_INFO
+PartitionCount: 16
+Show Binlog content after reorg
+Expect to see content
+select count(epoch) > 100,  
+sum(inserts) > 1000, 
+sum(updates) > 1000, 
+sum(deletes) > 1000 
+from mysql.ndb_binlog_index;
+count(epoch) > 100	sum(inserts) > 1000	sum(updates) > 1000	sum(deletes) > 1000
+1	1	1	1
+cleanup
+drop table test.t1;
+Drop Node Group 1 done
+>>>>>>> 20884deb4005bcd0b98f4a94f799489bb48136bf

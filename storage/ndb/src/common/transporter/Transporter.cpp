@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -148,9 +148,7 @@ Transporter::Transporter(TransporterRegistry &t_reg,
     m_socket_client= nullptr;
   else
   {
-    m_socket_client= new SocketClient(new SocketAuthSimple("ndbd",
-                                                           "ndbd passwd"));
-
+    m_socket_client= new SocketClient(new SocketAuthSimple());
     m_socket_client->set_connect_timeout(m_timeOutMillis);
   }
 
@@ -187,8 +185,8 @@ bool Transporter::do_disconnect(int err, bool send_source)
     {
       DEB_MULTI_TRP(("Close trp_id %u in inactive mode, socket valid",
                      getTransporterIndex()));
+      // Communication inactive -> can close directly without a 'shutdown'
       theSocket.close();
-      theSocket.invalidate();
     }
     else
     {
@@ -226,7 +224,7 @@ Transporter::update_connect_state(bool connected)
 }
 
 bool
-Transporter::connect_server(NdbSocket & sockfd,
+Transporter::connect_server(NdbSocket&& sockfd,
                             BaseString& msg) {
   // all initial negotiation is done in TransporterRegistry::connect_server
   DBUG_ENTER("Transporter::connect_server");
@@ -241,7 +239,7 @@ Transporter::connect_server(NdbSocket & sockfd,
   // Cache the connect address
   ndb_socket_connect_address(sockfd.ndb_socket(), &m_connect_address);
 
-  if (!connect_server_impl(sockfd))
+  if (!connect_server_impl(std::move(sockfd)))
   {
     msg.assfmt("line: %u : connect_server_impl failed", __LINE__);
     DEBUG_FPRINTF((stderr, "connect_server_impl failed\n"));
@@ -264,12 +262,19 @@ Transporter::connect_server(NdbSocket & sockfd,
   DBUG_RETURN(true);
 }
 
+bool
+Transporter::connect_client_mgm(int port)
+{
+  require(!isPartOfMultiTransporter());
+  NdbSocket secureSocket =
+    m_transporter_registry.connect_ndb_mgmd(remoteHostName, port);
+  return connect_client(std::move(secureSocket));
+}
 
 bool
 Transporter::connect_client(bool multi_connection)
 {
   NdbSocket secureSocket;
-  ndb_socket_t sockfd;
   DBUG_ENTER("Transporter::connect_client");
 
   require(!isMultiTransporter());
@@ -299,12 +304,10 @@ Transporter::connect_client(bool multi_connection)
 
   if(isMgmConnection)
   {
-    require(!isPartOfMultiTransporter());
-    sockfd= m_transporter_registry.connect_ndb_mgmd(remoteHostName, port);
     DEBUG_FPRINTF((stderr, "connect_ndb_mgmd to host: %s on port: %d\n",
                    remoteHostName,
                    port));
-    secureSocket.init_from_new(sockfd);
+    return connect_client_mgm(port);
   }
   else
   {
@@ -353,14 +356,22 @@ Transporter::connect_client(bool multi_connection)
     DEBUG_FPRINTF((stderr, "m_socket_client->connect to %s\n",
                    remoteHostName));
 
-    m_socket_client->connect(secureSocket, remote_addr);
+    secureSocket = m_socket_client->connect(remote_addr);
+
+   /** Socket Authentication */
+    if(m_socket_client->authenticate(secureSocket) < SocketAuthSimple::AuthOk)
+    {
+      secureSocket.close();
+      DBUG_RETURN(false);
+    }
+
   }
 
-  DBUG_RETURN(connect_client(secureSocket));
+  DBUG_RETURN(connect_client(std::move(secureSocket)));
 }
 
 bool
-Transporter::connect_client(NdbSocket & socket)
+Transporter::connect_client(NdbSocket&& socket)
 {
   DBUG_ENTER("Transporter::connect_client(sockfd)");
 
@@ -368,6 +379,7 @@ Transporter::connect_client(NdbSocket & socket)
   {
     DBUG_PRINT("error", ("Already connected"));
     DEBUG_FPRINTF((stderr, "Already connected\n"));
+    socket.close();
     DBUG_RETURN(true);
   }
 
@@ -376,6 +388,7 @@ Transporter::connect_client(NdbSocket & socket)
     DBUG_PRINT("error", ("Socket %s is not valid",
                          socket.to_string().c_str()));
     DEBUG_FPRINTF((stderr, "Socket not valid\n"));
+    socket.close();
     DBUG_RETURN(false);
   }
 
@@ -413,6 +426,7 @@ Transporter::connect_client(NdbSocket & socket)
   if (helloLen < 0)
   {
     DBUG_PRINT("error", ("Failed to buffer hello %d", helloLen));
+    socket.close();
     DBUG_RETURN(false);
   }
   /**
@@ -433,7 +447,7 @@ Transporter::connect_client(NdbSocket & socket)
   DBUG_PRINT("info", ("Sending hello : %s", helloBuf));
   DEBUG_FPRINTF((stderr, "Sending hello : %s\n", helloBuf));
 
-  SecureSocketOutputStream s_output(socket);
+  SocketOutputStream s_output(socket);
   if (s_output.println("%s", helloBuf) < 0)
   {
     DBUG_PRINT("error", ("Send of 'hello' failed"));
@@ -444,7 +458,7 @@ Transporter::connect_client(NdbSocket & socket)
   // Read reply
   DBUG_PRINT("info", ("Reading reply"));
   char buf[256];
-  SecureSocketInputStream s_input(socket);
+  SocketInputStream s_input(socket);
   if (s_input.gets(buf, 256) == nullptr)
   {
     DBUG_PRINT("error", ("Failed to read reply"));
@@ -499,7 +513,7 @@ Transporter::connect_client(NdbSocket & socket)
   // Cache the connect address
   ndb_socket_connect_address(socket.ndb_socket(), &m_connect_address);
 
-  if (! connect_client_impl(socket))
+  if (! connect_client_impl(std::move(socket)))
   {
     DEBUG_FPRINTF((stderr, "connect_client_impl failed\n"));
     DBUG_RETURN(false);
@@ -532,6 +546,67 @@ Transporter::doDisconnect()
   update_connect_state(false);
   isServerCurr = isServer;
   disconnectImpl();
+}
+
+void
+Transporter::disconnectImpl()
+{
+  assert(theSocket.is_valid());
+  if(theSocket.is_valid())
+  {
+    DEB_MULTI_TRP(("Shutdown socket for trp %u", getTransporterIndex()));
+    if(theSocket.shutdown() < 0) {
+      // Do we care about shutdown failures? It might fail due to e.g.
+      // connection already terminated by other peer.
+      report_error(TE_ERROR_CLOSING_SOCKET);
+    }
+  }
+}
+
+/**
+ * releaseAfterDisconnect() is assumed to be called when TR has this
+ * Transporter in the DISCONNECTED state -> There are no other concurrent
+ * send/receive activity on it, thus held resources can be released without
+ * lock and concerns for thread safety.
+ *
+ * The exception is (unfortunately) when it 'isPartOfMultiTransporter'
+ * which 'forceUnsafeDisconnect()' on it - See further below.
+ */
+void
+Transporter::releaseAfterDisconnect()
+{
+  assert(!isConnected());
+  theSocket.close();
+}
+
+/**
+ * Bug#35750394 MultiTranporter should follow the DISCONNECT protocol:
+ *
+ * forceUnsafeDisconnect() Is only intended to be used when disconnecting
+ * a Transporter which 'isPartOfMultiTransporter'. The Multi_Transporter
+ * breaks the disconnect 'protocol' by disconnecting these Transporters
+ * directly from report_disconnect(), instead of just setting DISONNECTING
+ * state and let start_client_thread() -> doDisconnect(), and finally let
+ * report_disconnect() set DISCONNECTED state.
+ *
+ * It is intended as a temporary fix for this protocol breach.
+ * Longer term a refactoring effort is needed.
+ */
+void
+Transporter::forceUnsafeDisconnect()
+{
+  assert(isPartOfMultiTransporter());
+
+  if(m_connected)
+  {
+    update_connect_state(false);
+    disconnectImpl();
+  }
+
+  // Release of resources need locks as we not really DISCONNECTED.
+  get_callback_obj()->lock_transporter(m_transporter_index);
+  releaseAfterDisconnect();
+  get_callback_obj()->unlock_transporter(m_transporter_index);
 }
 
 void

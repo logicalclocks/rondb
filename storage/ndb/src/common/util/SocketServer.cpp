@@ -37,6 +37,7 @@
 #include <OwnProcessInfo.hpp>
 #include <EventLogger.hpp>
 #include "portlib/ndb_sockaddr.h"
+#include "util/NdbSocket.h"
 
 #if 0
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
@@ -226,8 +227,8 @@ SocketServer::doAccept()
     ServiceInstance & si = m_services[i];
     assert(m_services_poller.is_socket_equal(i, si.m_socket));
 
-    const ndb_socket_t childSock = ndb_accept(si.m_socket, nullptr);
-    if (!ndb_socket_valid(childSock))
+    NdbSocket childSock{ndb_accept(si.m_socket, nullptr)};
+    if (!childSock.is_valid())
     {
       DEBUG_FPRINTF((stderr,"NDB_SOCKET failed accept: %s\n",
                      ndb_socket_to_string(si.m_socket).c_str()));
@@ -239,7 +240,7 @@ SocketServer::doAccept()
 
     SessionInstance s;
     s.m_service = si.m_service;
-    s.m_session = si.m_service->newSession(childSock);
+    s.m_session = si.m_service->newSession(std::move(childSock));
     if (s.m_session != nullptr)
     {
       m_session_mutex.lock();
@@ -428,11 +429,6 @@ sessionThread_C(void* _sc){
 
   if(!si->m_stop)
     si->runSession();
-  else
-  {
-    ndb_socket_close(si->m_socket);
-    ndb_socket_invalidate(&si->m_socket);
-  }
 
   // Mark the thread as stopped to allow the
   // session resources to be released

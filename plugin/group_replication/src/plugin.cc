@@ -222,6 +222,11 @@ static void check_deprecated_variables() {
     push_deprecated_warn_no_replacement(
         thd, "group_replication_recovery_complete_at");
   }
+  if (ov.view_change_uuid_var != nullptr &&
+      strcmp(ov.view_change_uuid_var, "AUTOMATIC")) {
+    push_deprecated_warn_no_replacement(thd,
+                                        "group_replication_view_change_uuid");
+  }
 }
 
 static const char *get_ip_allowlist() {
@@ -943,6 +948,8 @@ int configure_group_member_manager() {
                   { local_version = 0x080015; };);
   DBUG_EXECUTE_IF("group_replication_version_8_0_28",
                   { local_version = 0x080028; };);
+  DBUG_EXECUTE_IF("group_replication_version_8_0_35",
+                  { local_version = 0x080035; };);
   Member_version local_member_plugin_version(local_version);
   DBUG_EXECUTE_IF("group_replication_force_member_uuid", {
     uuid = const_cast<char *>("cccccccc-cccc-cccc-cccc-cccccccccccc");
@@ -1072,6 +1079,10 @@ int configure_compatibility_manager() {
   DBUG_EXECUTE_IF("group_replication_legacy_election_version2", {
     Member_version higher_version(0x080015);
     compatibility_mgr->set_local_version(higher_version);
+  };);
+  DBUG_EXECUTE_IF("group_replication_version_8_0_35", {
+    Member_version version(0x080035);
+    compatibility_mgr->set_local_version(version);
   };);
 
   return 0;
@@ -5180,6 +5191,9 @@ static int check_view_change_uuid(MYSQL_THD thd, SYS_VAR *, void *save,
 
   char buff[NAME_CHAR_LEN];
   const char *str;
+
+  push_deprecated_warn_no_replacement(thd,
+                                      "group_replication_view_change_uuid");
 
   Checkable_rwlock::Guard g(*lv.plugin_running_lock,
                             Checkable_rwlock::TRY_READ_LOCK);

@@ -48,6 +48,7 @@
 #include <EventLogger.hpp>
 #include <memory>
 #include "portlib/ndb_sockaddr.h"
+#include "mgmcommon/NdbMgm.hpp"
 
 //#define MGMAPI_LOG
 #define MGM_CMD(name, fun, desc) \
@@ -87,7 +88,7 @@ class ParserDummy : private SocketServer::Session
 {
 public:
   ParserDummy(const NdbSocket & sock) :
-    SocketServer::Session(sock.ndb_socket()) {}
+    SocketServer::Session(sock) {}
 };
 
 typedef Parser<ParserDummy> Parser_t;
@@ -405,6 +406,7 @@ ndb_mgm_destroy_handle(NdbMgmHandle * handle)
   }
 #endif
   (*handle)->cfg.~LocalConfig();
+  (*handle)->socket.~NdbSocket();
   free((*handle)->m_name);
   free((*handle)->m_bindaddress);
   free(*handle);
@@ -492,8 +494,8 @@ ndb_mgm_call(NdbMgmHandle handle,
   DBUG_ENTER("ndb_mgm_call");
   DBUG_PRINT("enter",("handle->socket: %s, cmd: %s",
                       handle->socket.to_string().c_str(), cmd));
-  SecureSocketOutputStream out(handle->socket, handle->timeout);
-  SecureSocketInputStream in(handle->socket, handle->timeout);
+  SocketOutputStream out(handle->socket, handle->timeout);
+  SocketInputStream in(handle->socket, handle->timeout);
 
   out.println("%s", cmd);
 #ifdef MGMAPI_LOG
@@ -681,7 +683,6 @@ int ndb_mgm_is_connected(NdbMgmHandle handle)
     {
       handle->connected= 0;
       handle->socket.close();
-      handle->socket.invalidate();
     }
   }
   return handle->connected;
@@ -820,9 +821,9 @@ ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
    * Do connect
    */
   LocalConfig &cfg= handle->cfg;
-  ndb_socket_t sockfd;
+  NdbSocket sock;
   Uint32 i = Uint32(~0);
-  while (!ndb_socket_valid(sockfd))
+  while (!sock.is_valid())
   {
     Uint32 invalid_Address = 0;
     // do all the mgmt servers
@@ -930,11 +931,11 @@ ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
           DBUG_RETURN(-1);
         }
       }
-      sockfd = s.connect(addr);
-      if (ndb_socket_valid(sockfd))
+      sock = s.connect(addr);
+      if (sock.is_valid())
 	break;
     }
-    if (ndb_socket_valid(sockfd))
+    if (sock.is_valid())
       break;
 #ifndef NDEBUG
     {
@@ -991,7 +992,7 @@ ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
   }
   handle->cfg_i = i;
   
-  handle->socket.init_from_new(sockfd);
+  handle->socket = std::move(sock);
   handle->connected = 1;
 
   // Version of the connected ndb_mgmd is not yet known
@@ -1023,7 +1024,6 @@ int
 ndb_mgm_disconnect_quiet(NdbMgmHandle handle)
 {
   handle->socket.close();
-  handle->socket.invalidate();
   handle->connected = 0;
 
   return 0;
@@ -1307,8 +1307,8 @@ ndb_mgm_get_status2(NdbMgmHandle handle, const enum ndb_mgm_node_type types[])
     }
   }
   
-  SecureSocketOutputStream out(handle->socket, handle->timeout);
-  SecureSocketInputStream in(handle->socket, handle->timeout);
+  SocketOutputStream out(handle->socket, handle->timeout);
+  SocketInputStream in(handle->socket, handle->timeout);
 
   const char *get_status_str = "get status";
   out.println("%s", get_status_str);
@@ -1472,22 +1472,6 @@ ndb_mgm_get_status_node_count(ndb_mgm_cluster_state2 *cs)
   return cs->no_of_nodes;
 }
 
-void
-ndb_mgm_node_state2::init()
-{
-  node_id = 0;
-  node_type = NDB_MGM_NODE_TYPE_UNKNOWN;
-  node_status = NDB_MGM_NODE_STATUS_UNKNOWN;
-  start_phase = 0;
-  dynamic_id = 0;
-  node_group = 0;
-  version = 0;
-  connect_count = 0;
-  mysql_version = 0;
-  is_single_user = 0;
-  memset(connect_address, 0, sizeof(connect_address));
-}
-
 extern "C"
 struct ndb_mgm_cluster_state2 *
 ndb_mgm_get_status3(NdbMgmHandle handle, const enum ndb_mgm_node_type types[])
@@ -1541,8 +1525,8 @@ ndb_mgm_get_status3(NdbMgmHandle handle, const enum ndb_mgm_node_type types[])
     }
   }
 
-  SecureSocketOutputStream out(handle->socket, handle->timeout);
-  SecureSocketInputStream in(handle->socket, handle->timeout);
+  SocketOutputStream out(handle->socket, handle->timeout);
+  SocketInputStream in(handle->socket, handle->timeout);
 
   const char *get_status_str = "get status";
   out.println("%s", get_status_str);
@@ -2429,12 +2413,12 @@ ndb_mgm_set_loglevel_node(NdbMgmHandle handle, int nodeId,
   DBUG_RETURN(0);
 }
 
-int
+NdbSocket
 ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
-                              int parsable, ndb_socket_t* sock)
+                              int parsable)
 {
   DBUG_ENTER("ndb_mgm_listen_event_internal");
-  CHECK_HANDLE(handle, -1);
+  CHECK_HANDLE(handle, NdbSocket{});
   SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_listen_event");
   const ParserRow<ParserDummy> stat_reply[] = {
     MGM_CMD("listen event", nullptr, ""),
@@ -2459,7 +2443,7 @@ ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
                "Unable to lookup local address '%s:0', errno: %d, "
                "while trying to connect with connect string: '%s:%d'\n",
                bind_address, errno, hostname, port);
-      DBUG_RETURN(-1);
+      DBUG_RETURN(NdbSocket{});
     }
   }
   ndb_sockaddr addr;
@@ -2473,7 +2457,7 @@ ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
              "Unable to lookup remote address '%s:0', errno: %d, "
              "while trying to connect with connect string: '%s:%d'\n",
              hostname, errno, hostname, port);
-    DBUG_RETURN(-1);
+    DBUG_RETURN(NdbSocket{});
   }
   addr.set_port(port);
   SocketClient s;
@@ -2483,7 +2467,7 @@ ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
     fprintf(handle->errstream, "Unable to create socket");
     setError(handle, NDB_MGM_COULD_NOT_CONNECT_TO_SOCKET, __LINE__,
              "Unable to create socket");
-    DBUG_RETURN(-1);
+    DBUG_RETURN(NdbSocket{});
   }
   if (bind_address)
   {
@@ -2498,15 +2482,15 @@ ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
                "Unable to bind local address '%s:0' errno: %d, errno: %d, "
                "while trying to connect with connect string: '%s:%d'\n",
                bind_address, err, errno, hostname, port);
-      DBUG_RETURN(-1);
+      DBUG_RETURN(NdbSocket{});
     }
   }
-  const ndb_socket_t sockfd = s.connect(addr);
-  if (!ndb_socket_valid(sockfd))
+  NdbSocket sock = s.connect(addr);
+  if (!sock.is_valid())
   {
     setError(handle, NDB_MGM_COULD_NOT_CONNECT_TO_SOCKET, __LINE__,
 	     "Unable to connect to");
-    DBUG_RETURN(-2);
+    DBUG_RETURN(NdbSocket{});
   }
 
   Properties args;
@@ -2525,35 +2509,32 @@ ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
   }
 
   {
-    ndb_mgm_handle * tmp_handle = ndb_mgm_create_handle();
-    tmp_handle->socket.init_from_new(sockfd);
+    ndb_mgm::handle_ptr tmp_handle(ndb_mgm_create_handle());
+    tmp_handle->socket = std::move(sock);
 
     const Properties *reply;
-    reply = ndb_mgm_call(tmp_handle, stat_reply, "listen event", &args);
+    reply = ndb_mgm_call(tmp_handle.get(), stat_reply, "listen event", &args);
+    sock = std::move(tmp_handle->socket);
 
     if(reply == nullptr) {
-      ndb_socket_close(sockfd);
-      CHECK_REPLY(tmp_handle, reply, -1)
+      sock.close();
+      CHECK_REPLY(tmp_handle.get(), reply, NdbSocket{})
     } else {
       delete reply;
       tmp_handle->connected = 0;  // so that destroy_handle() doesn't close it.
     }
-
-    ndb_mgm_destroy_handle(&tmp_handle);
   }
 
-  *sock= sockfd;
-  DBUG_RETURN(1);
+  DBUG_RETURN(sock);
 }
 
 extern "C"
 socket_t
 ndb_mgm_listen_event(NdbMgmHandle handle, const int filter[])
 {
-  ndb_socket_t s;
-  if(ndb_mgm_listen_event_internal(handle,filter,0,&s)<0)
-    ndb_socket_invalidate(&s);
-  return ndb_socket_get_native(s);
+
+  NdbSocket sock = ndb_mgm_listen_event_internal(handle, filter, 0);
+  return sock.release_native_socket();
 }
 
 extern "C"
@@ -2860,7 +2841,7 @@ ndb_mgm_insert_error2(NdbMgmHandle handle, int nodeId,
 extern "C"
 int
 ndb_mgm_get_nodeid(NdbMgmHandle handle,
-                  int & nodeId)
+                  int * nodeId)
 {
   DBUG_ENTER("ndb_mgm_get_nodeid");
   CHECK_HANDLE(handle, -1);
@@ -2884,7 +2865,7 @@ ndb_mgm_get_nodeid(NdbMgmHandle handle,
     {
       Uint32 node_id;
       reply->get("nodeid", &node_id);
-      nodeId = node_id;
+      *nodeId = node_id;
       result = 0;
     }
     else
@@ -3682,8 +3663,8 @@ ndb_mgm_check_connection(NdbMgmHandle handle)
   DBUG_ENTER("ndb_mgm_check_connection");
   CHECK_HANDLE(handle, -1);
   CHECK_CONNECTED(handle, -1);
-  SecureSocketOutputStream out(handle->socket, handle->timeout);
-  SecureSocketInputStream in(handle->socket, handle->timeout);
+  SocketOutputStream out(handle->socket, handle->timeout);
+  SocketInputStream in(handle->socket, handle->timeout);
   char buf[32];
   if (out.println("check connection"))
     goto ndb_mgm_check_connection_error;
@@ -3798,43 +3779,37 @@ ndb_mgm_get_connection_int_parameter(NdbMgmHandle handle,
   DBUG_RETURN(res);
 }
 
-ndb_socket_t
+NdbSocket
 ndb_mgm_convert_to_transporter(NdbMgmHandle *handle)
 {
-  DBUG_ENTER("ndb_mgm_convert_to_transporter");
-  ndb_socket_t s;
-
   if(handle == nullptr)
   {
     SET_ERROR(*handle, NDB_MGM_ILLEGAL_SERVER_HANDLE, "");
-    ndb_socket_invalidate(&s);
-    DBUG_RETURN(s);
+    return {};
   }
 
   if ((*handle)->connected != 1)
   {
     SET_ERROR(*handle, NDB_MGM_SERVER_NOT_CONNECTED , "");
-    ndb_socket_invalidate(&s);
-    DBUG_RETURN(s);
+    return {};
   }
 
+  // MySQL 8.0.33 through 8.2.x do not allow a TLS socket to be upgraded to
+  // a transporter connection. Beginning with MySQL 8.3 this is not an error.
   if ((*handle)->socket.has_tls())
   {
     SET_ERROR(*handle, NDB_MGM_CANNOT_CONVERT_TO_TRANSPORTER, "");
-    ndb_socket_invalidate(&s);
-    DBUG_RETURN(s);
+    return {};
   }
 
-  (*handle)->connected= 0;   // we pretend we're disconnected
-  s= (*handle)->socket.ndb_socket();
-
+  NdbSocket s = std::move((*handle)->socket);
   SocketOutputStream s_output(s, (*handle)->timeout);
   s_output.println("transporter connect");
   s_output.println("%s", "");
 
+  (*handle)->connected= 0;   // The handle no longer owns the connection
   ndb_mgm_destroy_handle(handle); // set connected=0, so won't disconnect
-
-  DBUG_RETURN(s);
+  return s;
 }
 
 extern "C"
@@ -3909,12 +3884,12 @@ int ndb_mgm_end_session(NdbMgmHandle handle)
   CHECK_HANDLE(handle, -1);
   CHECK_CONNECTED(handle, -1);
 
-  SecureSocketOutputStream s_output(handle->socket, handle->timeout);
+  SocketOutputStream s_output(handle->socket, handle->timeout);
   const char *end_session_str = "end session";
   s_output.println("%s", end_session_str);
   s_output.println("%s", "");
 
-  SecureSocketInputStream in(handle->socket, handle->timeout);
+  SocketInputStream in(handle->socket, handle->timeout);
   char buf[32];
   in.gets(buf, sizeof(buf));
   CHECK_TIMEDOUT_RET(handle, in, s_output, -1, end_session_str);
@@ -4242,9 +4217,9 @@ int ndb_mgm_drop_nodegroup(NdbMgmHandle handle,
 }
 
 
-ndb_socket_t _ndb_mgm_get_socket(NdbMgmHandle h)
+const NdbSocket& _ndb_mgm_get_socket(NdbMgmHandle h)
 {
-  return h->socket.ndb_socket();
+  return h->socket;
 }
 
 
@@ -4280,17 +4255,6 @@ cmp_event(const void *_a, const void *_b)
   }
 
   return 0;
-}
-
-NdbLogEventHandle
-ndb_mgm_create_logevent_handle_same_socket(NdbMgmHandle mh);
-
-// Free memory allocated by 'ndb_mgm_create_logevent_handle_same_socket'
-// without closing the socket
-static void
-free_log_handle(NdbLogEventHandle log_handle)
-{
-  free(log_handle);
 }
 
 
@@ -4380,7 +4344,7 @@ ndb_mgm_dump_events(NdbMgmHandle handle, enum Ndb_logevent_type type,
     if (res == 0)
     {
       free(events);
-      free_log_handle(log_handle);
+      ndb_mgm_destroy_logevent_handle(&log_handle);
       SET_ERROR(handle, ETIMEDOUT,
                 "Time out talking to management server");
       DBUG_RETURN(NULL);
@@ -4388,7 +4352,7 @@ ndb_mgm_dump_events(NdbMgmHandle handle, enum Ndb_logevent_type type,
     if (res == -1)
     {
       free(events);
-      free_log_handle(log_handle);
+      ndb_mgm_destroy_logevent_handle(&log_handle);
       SET_ERROR(handle,
                 ndb_logevent_get_latest_error(log_handle),
                 ndb_logevent_get_latest_error_msg(log_handle));
@@ -4397,7 +4361,7 @@ ndb_mgm_dump_events(NdbMgmHandle handle, enum Ndb_logevent_type type,
 
     i++;
   }
-  free_log_handle(log_handle);
+  ndb_mgm_destroy_logevent_handle(&log_handle);
 
   // Successfully parsed the list of events, sort on nodeid and return them
   events->no_of_events= num_events;

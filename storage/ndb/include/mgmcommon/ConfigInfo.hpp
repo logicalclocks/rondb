@@ -25,6 +25,7 @@
 #ifndef ConfigInfo_H
 #define ConfigInfo_H
 
+#include <cassert>
 #include <kernel_types.h>
 #include <Properties.hpp>
 #include <ndb_limits.h>
@@ -40,6 +41,13 @@
  * @brief  Metainformation about ALL cluster configuration parameters 
  *
  * Use the getters to find out metainformation about parameters.
+ *
+ * Note that the static data member m_ParamInfo is dynamically initialized in
+ * debug build due to the asserts.
+ *
+ * This prohibits the use of static ConfigInfo objects since the initialization
+ * order is not determined and the constructor of ConfigInfo accesses
+ * m_ParamInfo.
  */
 class ConfigInfo {
 public:
@@ -127,6 +135,66 @@ public:
     const char*  _default;
     const char* _min;
     const char* _max;
+  public:
+    ParamInfo(Uint32 paramId, const char* fname, const char* section,
+              const char* description, Status status, Uint32 flags, Type type,
+              const char* default_, const char* min, const char* max):
+      _paramId(paramId),
+      _fname(fname),
+      _section(section),
+      _description(description),
+      _status(status),
+      _flags(flags),
+      _type(type),
+      _default(default_),
+      _min(min),
+      _max(max)
+    {
+      // If assert trigger, see special constructor for CI_SECTION below
+      assert(type != CI_SECTION);
+      // If assert trigger, see special constructor for CI_ENUM below
+      assert(type != CI_ENUM);
+    }
+    /*
+     * Constructor for CI_ENUM: _min must be a Typelib pointer and _max must
+     * not be provided (it is not used).
+     */
+    ParamInfo(Uint32 paramId, const char* fname, const char* section,
+              const char* description, Status status, Uint32 flags, Type type,
+              const char* default_, const Typelib* typelibptr):
+      _paramId(paramId),
+      _fname(fname),
+      _section(section),
+      _description(description),
+      _status(status),
+      _flags(flags),
+      _type(type),
+      _default(default_),
+      _min(reinterpret_cast<const char*>(typelibptr)),
+      _max(nullptr)
+    {
+      assert(type == CI_ENUM);
+    }
+    /*
+     * Constructor for CI_SECTION: _default must be a section type and _min
+     * and _max must not be provided (they are not used).
+     */
+    ParamInfo(Uint32 paramId, const char* fname, const char* section,
+              const char* description, Status status, Uint32 flags, Type type,
+              Uint32 section_type):
+      _paramId(paramId),
+      _fname(fname),
+      _section(section),
+      _description(description),
+      _status(status),
+      _flags(flags),
+      _type(type),
+      _default(reinterpret_cast<const char*>(UintPtr{section_type})),
+      _min(nullptr),
+      _max(nullptr)
+    {
+      assert(type == CI_SECTION);
+    }
   };
 
   /**
@@ -134,7 +202,10 @@ public:
    */
   static Uint32 getSectionType(const ParamInfo& p) {
     assert(p._type == CI_SECTION);
-    return Uint32(reinterpret_cast<UintPtr>(p._default));
+    const UintPtr v = reinterpret_cast<UintPtr>(p._default);
+    const Uint32 t = static_cast<Uint32>(v);
+    assert(v == t);
+    return t;
   }
 
   /**

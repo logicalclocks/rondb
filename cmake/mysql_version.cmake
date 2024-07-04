@@ -1,5 +1,5 @@
 # Copyright (c) 2009, 2023, Oracle and/or its affiliates.
-# Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -61,6 +61,17 @@ MACRO(GET_MYSQL_VERSION)
      NOT DEFINED MINOR_VERSION OR
      NOT DEFINED PATCH_VERSION)
     MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed.")
+  ENDIF()
+
+  MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_STABILITY" MYSQL_VERSION_STABILITY)
+
+  IF(NOT DEFINED MYSQL_VERSION_STABILITY)
+    MESSAGE(FATAL_ERROR "MYSQL_VERSION file cannot be parsed, missing version attributes.")
+  ENDIF()
+
+  IF(NOT MYSQL_VERSION_STABILITY STREQUAL "\"LTS\"" AND
+     NOT MYSQL_VERSION_STABILITY STREQUAL "\"INNOVATION\"")
+    MESSAGE(FATAL_ERROR "MYSQL_VERSION_STABILITY can be set to INNOVATION or LTS.")
   ENDIF()
 
   SET(VERSION

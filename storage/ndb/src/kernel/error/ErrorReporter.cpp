@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -265,7 +265,27 @@ ErrorReporter::handleError(int messageID,
 			   NdbShutdownType nst)
 {
   globalData.theStopFlag = true;
-  ndb_print_stacktrace();
+
+  /**
+   * Print the stack trace on stdout only for software errors.
+   * When the shutdown is provoked in a controlled way rather than a
+   * software crash stack trace is not printed.
+   *
+   * For the NDBD_EXIT_OS_SIGNAL_RECEIVED error code, although it is a
+   * software error (ndbd_exit_classification XIE), stack trace is not
+   * printed because it is already done in the Unix signal handler case.
+   */
+  if(ndbd_is_software_error(messageID))
+  {
+    if (nst != NST_ErrorHandlerSignal)
+    {
+      /**
+       * Show stack trace of thread hitting problem - already done in
+       * Unix signal handler case
+       */
+      ndb_print_stacktrace();
+    }
+  }
 
   if(messageID == NDBD_EXIT_ERROR_INSERT)
   {

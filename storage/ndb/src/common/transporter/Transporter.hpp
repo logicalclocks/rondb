@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -109,7 +109,7 @@ public:
   }
 
   /**
-   * In most cases we only use transporter per node connection.
+   * In most cases we use only one transporter per node connection.
    * But in cases where the transporter is heavily loaded we can
    * have multiple transporters to send for one node connection.
    * In this case theNodeIdTransporters points to a Multi_Transporter
@@ -117,10 +117,9 @@ public:
    * get_send_transporter based on sending thread and receiving
    * thread.
    */
-  virtual Transporter* get_send_transporter(Uint32 recBlock, Uint32 sendBlock)
+  virtual Transporter* get_send_transporter(Uint32 recBlock[[maybe_unused]],
+                                            Uint32 sendBlock[[maybe_unused]])
   {
-    (void)recBlock;
-    (void)sendBlock;
     return this;
   }
 
@@ -129,12 +128,9 @@ public:
    *    Use isConnected() to check status
    */
   virtual bool connect_client(bool);
-  bool connect_client(NdbSocket &);
-  bool connect_client(ndb_socket_t fd) {
-    NdbSocket socket(fd, NdbSocket::From::Existing);
-    return connect_client(socket);
-  }
-  bool connect_server(NdbSocket & socket, BaseString& errormsg);
+  bool connect_client(NdbSocket&&);
+  bool connect_client_mgm(int);
+  bool connect_server(NdbSocket&& socket, BaseString& errormsg);
 
   /**
    * Returns socket used (sockets are used for all transporters to ensure
@@ -147,6 +143,8 @@ public:
    * Blocking
    */
   void doDisconnect();
+
+  void forceUnsafeDisconnect();
 
   /**
    * Are we currently connected
@@ -256,15 +254,22 @@ protected:
    * Blocking, for max timeOut milli seconds
    *   Returns true if connect succeeded
    */
-  virtual bool connect_server_impl(NdbSocket &) = 0;
-  virtual bool connect_client_impl(NdbSocket &) = 0;
+  virtual bool connect_server_impl(NdbSocket&&) = 0;
+  virtual bool connect_client_impl(NdbSocket&&) = 0;
   virtual int pre_connect_options(ndb_socket_t) { return 0;}
   
   /**
-   * Blocking
+   * Disconnects the Transporter, possibly blocking.
+   * releaseAfterDisconnect() need to be called when
+   * DISCONNECTED state is confirmed.
    */
-  virtual void disconnectImpl() = 0;
-  
+  virtual void disconnectImpl();
+
+  /**
+   * Release any resources held by a DISCONNECTED Transporter.
+   */
+  virtual void releaseAfterDisconnect();
+
   /**
    * Remote host name/and address
    */
@@ -448,8 +453,7 @@ inline
 Uint32
 Transporter::fetch_send_iovec_data(struct iovec dst[], Uint32 cnt)
 {
-  return get_callback_obj()->get_bytes_to_send_iovec(remoteNodeId,
-                                                     m_transporter_index,
+  return get_callback_obj()->get_bytes_to_send_iovec(m_transporter_index,
                                                      dst,
                                                      cnt);
 }
@@ -458,8 +462,7 @@ inline
 void
 Transporter::iovec_data_sent(int nBytesSent)
 {
-  Uint32 used_bytes = get_callback_obj()->bytes_sent(remoteNodeId,
-                                                     m_transporter_index,
+  Uint32 used_bytes = get_callback_obj()->bytes_sent(m_transporter_index,
                                                      nBytesSent);
   update_status_overloaded(used_bytes);
 }

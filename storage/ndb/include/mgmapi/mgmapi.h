@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -324,8 +324,6 @@ extern "C" {
        INET6_ADDRSTRLEN
 #endif
     ];
-
-    void init();
   };
   
   /**
@@ -794,7 +792,7 @@ extern "C" {
    * @return Node state of cs at position i
    */
   struct ndb_mgm_node_state2 *
-  ndb_mgm_get_node_status(ndb_mgm_cluster_state2 *cs, int i);
+  ndb_mgm_get_node_status(struct ndb_mgm_cluster_state2 *cs, int i);
 
   /**
    * Get the number of nodes in a cluster state
@@ -803,7 +801,7 @@ extern "C" {
    * @return Number of nodes in the cluster state
    */
   int
-  ndb_mgm_get_status_node_count(ndb_mgm_cluster_state2 *cs);
+  ndb_mgm_get_status_node_count(struct ndb_mgm_cluster_state2 *cs);
 
   /**
    * Dump state
@@ -1042,7 +1040,7 @@ extern "C" {
    *
    * @note Request information about node id we are connected to
    */
-  int ndb_mgm_get_nodeid(NdbMgmHandle handle, int &nodeId);
+  int ndb_mgm_get_nodeid(NdbMgmHandle handle, int *nodeId);
 
   /**
    * Set hostname for a deactivated node

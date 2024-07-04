@@ -143,7 +143,6 @@
   easier to read and review your code.
 
   - @subpage GENERAL_DEVELOPMENT_GUIDELINES
-  - @subpage CPP_CODING_GUIDELINES_FOR_NDB_SE
   - @subpage DBUG_TAGS
 
 */
@@ -1131,6 +1130,7 @@ static PSI_mutex_key key_LOCK_rotate_binlog_master_key;
 static PSI_mutex_key key_LOCK_partial_revokes;
 static PSI_mutex_key key_LOCK_authentication_policy;
 static PSI_mutex_key key_LOCK_global_conn_mem_limit;
+static PSI_rwlock_key key_rwlock_LOCK_server_shutting_down;
 #endif /* HAVE_PSI_INTERFACE */
 
 /**
@@ -1621,6 +1621,14 @@ mysql_mutex_t LOCK_authentication_policy;
 
 mysql_mutex_t LOCK_global_conn_mem_limit;
 
+mysql_rwlock_t LOCK_server_shutting_down;
+
+/*
+  Variable is reverted during shutdown command just before server's
+  internals are disabled.
+*/
+bool server_shutting_down = false;
+
 bool mysqld_server_started = false;
 /**
   Set to true to signal at startup if the process must die.
@@ -1672,7 +1680,6 @@ bool binlog_expire_logs_seconds_supplied = false;
 /* Static variables */
 
 static bool opt_myisam_log;
-static int cleanup_done;
 static ulong opt_specialflag;
 char *opt_binlog_index_name;
 char *mysql_home_ptr, *pidfile_name_ptr;
@@ -2576,9 +2583,21 @@ static void free_connection_acceptors() {
 #endif
 }
 
+static bool set_server_shutting_down() {
+  /* Server shutting down already set. */
+  if (server_shutting_down) return true;
+
+  mysql_rwlock_wrlock(&LOCK_server_shutting_down);
+  server_shutting_down = true;
+  mysql_rwlock_unlock(&LOCK_server_shutting_down);
+
+  return false;
+}
+
 static void clean_up(bool print_message) {
   DBUG_PRINT("exit", ("clean_up"));
-  if (cleanup_done++) return; /* purecov: inspected */
+
+  if (set_server_shutting_down()) return;
 
   ha_pre_dd_shutdown();
   dd::shutdown();
@@ -2770,6 +2789,7 @@ static void clean_up_mutexes() {
   mysql_mutex_destroy(&LOCK_partial_revokes);
   mysql_mutex_destroy(&LOCK_authentication_policy);
   mysql_mutex_destroy(&LOCK_global_conn_mem_limit);
+  mysql_rwlock_destroy(&LOCK_server_shutting_down);
 }
 
 /****************************************************************************
@@ -3648,7 +3668,7 @@ extern "C" void *signal_hand(void *arg [[maybe_unused]]) {
           "thread.",
           errno);
 
-    if (error || cleanup_done) {
+    if (error || server_shutting_down) {
       my_thread_end();
       my_thread_exit(nullptr);  // Safety
       return nullptr;           // Avoid compiler warnings
@@ -5350,6 +5370,8 @@ static int init_thread_environment() {
                    MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_global_conn_mem_limit, &LOCK_global_conn_mem_limit,
                    MY_MUTEX_INIT_FAST);
+  mysql_rwlock_init(key_rwlock_LOCK_server_shutting_down,
+                    &LOCK_server_shutting_down);
   return 0;
 }
 
@@ -6227,7 +6249,6 @@ static int init_server_components() {
   assert((uint)global_system_variables.binlog_format <=
          array_elements(binlog_format_names) - 1);
 
-  opt_server_id_mask = ~ulong(0);
   opt_server_id_mask =
       (opt_server_id_bits == 32) ? ~ulong(0) : (1 << opt_server_id_bits) - 1;
   if (server_id != (server_id & opt_server_id_mask)) {
@@ -8930,8 +8951,9 @@ struct my_option my_long_options[] = {
      "log.",
      nullptr, nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0,
      nullptr},
-    {"character-set-client-handshake", 0,
-     "Don't ignore client side character set value sent during handshake.",
+    {"character-set-client-handshake", OPT_CHARACTER_SET_CLIENT_HANDSHAKE,
+     "Deprecated. Don't ignore client side character set value sent during "
+     "handshake.",
      &opt_character_set_client_handshake, &opt_character_set_client_handshake,
      nullptr, GET_BOOL, NO_ARG, 1, 0, 0, nullptr, 0, nullptr},
     {"character-set-filesystem", 0, "Set the filesystem character set.",
@@ -10109,7 +10131,7 @@ static int mysql_init_variables() {
   opt_tc_log_file = "tc.log";  // no hostname in tc_log file name !
   opt_myisam_log = false;
   mqh_used = false;
-  cleanup_done = 0;
+  server_shutting_down = false;
   server_id_supplied = false;
   test_flags = select_errors = ha_open_options = 0;
   atomic_replica_open_temp_tables = 0;
@@ -10387,6 +10409,10 @@ bool mysqld_get_one_option(int optid,
       binlog_format_used = true;
       LogErr(WARNING_LEVEL, ER_DEPRECATE_MSG_NO_REPLACEMENT, "binlog_format");
       break;
+    case OPT_BINLOG_TRANSACTION_DEPENDENCY_TRACKING:
+      push_deprecated_warn_no_replacement(
+          nullptr, "--binlog-transaction-dependency-tracking");
+      break;
     case OPT_BINLOG_MAX_FLUSH_QUEUE_TIME:
       push_deprecated_warn_no_replacement(nullptr,
                                           "--binlog_max_flush_queue_time");
@@ -10403,8 +10429,6 @@ bool mysqld_get_one_option(int optid,
     case OPT_SSL_CERT:
     case OPT_SSL_CA:
     case OPT_SSL_CAPATH:
-    case OPT_SSL_CIPHER:
-    case OPT_TLS_CIPHERSUITES:
     case OPT_SSL_CRL:
     case OPT_SSL_CRLPATH:
       /*
@@ -10412,6 +10436,14 @@ bool mysqld_get_one_option(int optid,
         One can disable SSL later by using --skip-ssl or --ssl=0.
       */
       opt_use_ssl = true;
+      break;
+    case OPT_TLS_CIPHERSUITES:
+      opt_use_ssl = true;
+      validate_ciphers("tls-ciphersuites", argument, TLS_version::TLSv13);
+      break;
+    case OPT_SSL_CIPHER:
+      opt_use_ssl = true;
+      validate_ciphers("ssl-cipher", argument, TLS_version::TLSv12);
       break;
     case OPT_TLS_VERSION:
       opt_use_ssl = true;
@@ -10437,8 +10469,6 @@ bool mysqld_get_one_option(int optid,
     case OPT_ADMIN_SSL_CERT:
     case OPT_ADMIN_SSL_CA:
     case OPT_ADMIN_SSL_CAPATH:
-    case OPT_ADMIN_SSL_CIPHER:
-    case OPT_ADMIN_TLS_CIPHERSUITES:
     case OPT_ADMIN_SSL_CRL:
     case OPT_ADMIN_SSL_CRLPATH:
       /*
@@ -10447,6 +10477,16 @@ bool mysqld_get_one_option(int optid,
       */
       g_admin_ssl_configured = true;
       opt_use_admin_ssl = true;
+      break;
+    case OPT_ADMIN_SSL_CIPHER:
+      g_admin_ssl_configured = true;
+      opt_use_admin_ssl = true;
+      validate_ciphers("admin-ssl-cipher", argument, TLS_version::TLSv12);
+      break;
+    case OPT_ADMIN_TLS_CIPHERSUITES:
+      g_admin_ssl_configured = true;
+      opt_use_admin_ssl = true;
+      validate_ciphers("admin-tls-ciphersuites", argument, TLS_version::TLSv13);
       break;
     case OPT_ADMIN_TLS_VERSION:
       g_admin_ssl_configured = true;
@@ -10882,6 +10922,17 @@ bool mysqld_get_one_option(int optid,
     case OPT_SYNC_RELAY_LOG_INFO:
       LogErr(WARNING_LEVEL, ER_DEPRECATE_MSG_NO_REPLACEMENT,
              "--sync-relay-log-info");
+      break;
+    case OPT_CHARACTER_SET_CLIENT_HANDSHAKE:
+      push_deprecated_warn_no_replacement(nullptr,
+                                          "--character-set-client-handshake");
+      break;
+    case 'n':
+      push_deprecated_warn_no_replacement(nullptr, "--new");
+      break;
+    case OPT_OLD_OPTION:
+      push_deprecated_warn_no_replacement(nullptr, "--old");
+      break;
   }
   return false;
 }
@@ -11231,10 +11282,10 @@ bool is_secure_file_path(const char *path) {
     if (strncmp(opt_secure_file_priv, buff2, opt_secure_file_priv_len))
       return false;
   } else {
-    if (files_charset_info->coll->strnncoll(
-            files_charset_info, (uchar *)buff2, strlen(buff2),
-            pointer_cast<const uchar *>(opt_secure_file_priv),
-            opt_secure_file_priv_len, true))
+    assert(opt_secure_file_priv_len < FN_REFLEN);
+    buff2[opt_secure_file_priv_len] = '\0';
+    if (files_charset_info->coll->strcasecmp(files_charset_info, buff2,
+                                             opt_secure_file_priv))
       return false;
   }
   return true;
@@ -11313,23 +11364,31 @@ static bool check_secure_file_priv_path() {
 
   case_insensitive_fs = (test_if_case_insensitive(datadir_buffer) == 1);
 
-  if (!case_insensitive_fs) {
-    if (!strncmp(datadir_buffer, opt_secure_file_priv,
-                 opt_datadir_len < opt_secure_file_priv_len
-                     ? opt_datadir_len
-                     : opt_secure_file_priv_len)) {
-      warn = true;
-      strcpy(whichdir, "Data directory");
+  auto check_path_overlap = [&](char *buffer, size_t len, const char *message) {
+    if (!case_insensitive_fs) {
+      if (!strncmp(buffer, opt_secure_file_priv,
+                   len < opt_secure_file_priv_len ? len
+                                                  : opt_secure_file_priv_len)) {
+        warn = true;
+        strcpy(whichdir, message);
+      }
+    } else {
+      char *longer_str = opt_datadir_len > opt_secure_file_priv_len
+                             ? buffer
+                             : const_cast<char *>(opt_secure_file_priv);
+      const size_t smaller_len = std::min(len, opt_secure_file_priv_len);
+      const char restore = longer_str[smaller_len];
+      longer_str[smaller_len] = '\0';
+      if (!files_charset_info->coll->strcasecmp(files_charset_info, buffer,
+                                                opt_secure_file_priv)) {
+        warn = true;
+        strcpy(whichdir, message);
+      }
+      longer_str[smaller_len] = restore;
     }
-  } else {
-    if (!files_charset_info->coll->strnncoll(
-            files_charset_info, (uchar *)datadir_buffer, opt_datadir_len,
-            pointer_cast<const uchar *>(opt_secure_file_priv),
-            opt_secure_file_priv_len, true)) {
-      warn = true;
-      strcpy(whichdir, "Data directory");
-    }
-  }
+  };
+
+  check_path_overlap(datadir_buffer, opt_datadir_len, "Data directory");
 
   /*
     Don't bother comparing --secure-file-priv with --plugin-dir
@@ -11340,23 +11399,7 @@ static bool check_secure_file_priv_path() {
     convert_dirname(plugindir_buffer, plugindir_buffer, NullS);
     opt_plugindir_len = strlen(plugindir_buffer);
 
-    if (!case_insensitive_fs) {
-      if (!strncmp(plugindir_buffer, opt_secure_file_priv,
-                   opt_plugindir_len < opt_secure_file_priv_len
-                       ? opt_plugindir_len
-                       : opt_secure_file_priv_len)) {
-        warn = true;
-        strcpy(whichdir, "Plugin directory");
-      }
-    } else {
-      if (!files_charset_info->coll->strnncoll(
-              files_charset_info, (uchar *)plugindir_buffer, opt_plugindir_len,
-              pointer_cast<const uchar *>(opt_secure_file_priv),
-              opt_secure_file_priv_len, true)) {
-        warn = true;
-        strcpy(whichdir, "Plugin directory");
-      }
-    }
+    check_path_overlap(plugindir_buffer, opt_plugindir_len, "Plugin directory");
   }
 
   if (warn)
@@ -11395,6 +11438,7 @@ static bool check_tmpdir_path_lengths(const MY_TMPDIR &tmpdir_list) {
   return result;
 }
 #endif
+
 static int fix_paths(void) {
   char buff[FN_REFLEN];
   bool secure_file_priv_nonempty = false;
@@ -11456,7 +11500,10 @@ static int fix_paths(void) {
     Convert the secure-file-priv option to system format, allowing
     a quick strcmp to check if read or write is in an allowed dir
   */
-  if (opt_initialize) opt_secure_file_priv = "";
+  bool force_priv_check = false;
+  DBUG_EXECUTE_IF("force_secure_file_priv_check", { force_priv_check = true; });
+
+  if (opt_initialize && !force_priv_check) opt_secure_file_priv = "";
   secure_file_priv_nonempty = opt_secure_file_priv[0] ? true : false;
 
   if (secure_file_priv_nonempty && strlen(opt_secure_file_priv) > FN_REFLEN) {
@@ -11896,6 +11943,7 @@ static PSI_rwlock_info all_server_rwlocks[]=
   { &key_rwlock_rpl_filter_lock, "rpl_filter_lock", 0, 0, PSI_DOCUMENT_ME},
   { &key_rwlock_channel_to_filter_lock, "channel_to_filter_lock", 0, 0, PSI_DOCUMENT_ME},
   { &key_rwlock_resource_group_mgr_map_lock, "Resource_group_mgr::m_map_rwlock", 0, 0, PSI_DOCUMENT_ME},
+  { &key_rwlock_LOCK_server_shutting_down, "server_shutting_down", 0, 0, "This lock protects server shutting down flag."},
 #ifdef _WIN32
   { &key_rwlock_LOCK_named_pipe_full_access_group, "LOCK_named_pipe_full_access_group", PSI_FLAG_SINGLETON, 0,
      "This lock protects named pipe security attributes, preventing their "

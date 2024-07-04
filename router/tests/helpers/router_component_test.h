@@ -72,6 +72,20 @@ class RouterComponentTest : public ProcessManager, public ::testing::Test {
    */
   static void sleep_for(std::chrono::milliseconds duration);
 
+  std::pair<uint16_t, std::unique_ptr<MySQLSession>> make_new_connection_ok(
+      uint16_t router_port, std::vector<uint16_t> expected_node_ports) {
+    std::unique_ptr<MySQLSession> session{std::make_unique<MySQLSession>()};
+    EXPECT_NO_THROW(session->connect("127.0.0.1", router_port, "username",
+                                     "password", "", ""));
+
+    auto result{session->query_one("select @@port")};
+    const auto port =
+        static_cast<uint16_t>(std::strtoul((*result)[0], nullptr, 10));
+    EXPECT_THAT(expected_node_ports, ::testing::Contains(port));
+
+    return std::make_pair(port, std::move(session));
+  }
+
   std::unique_ptr<MySQLSession> make_new_connection_ok(
       uint16_t router_port, uint16_t expected_node_port) {
     std::unique_ptr<MySQLSession> session{std::make_unique<MySQLSession>()};
@@ -146,12 +160,10 @@ class RouterComponentBootstrapTest : virtual public RouterComponentTest {
  public:
   using OutputResponder = ProcessWrapper::OutputResponder;
 
-  static void SetUpTestCase() { my_hostname = "dont.query.dns"; }
   static const OutputResponder kBootstrapOutputResponder;
 
  protected:
   TempDirectory bootstrap_dir;
-  static std::string my_hostname;
   std::string config_file;
 
   struct Config {
@@ -180,13 +192,15 @@ class RouterComponentBootstrapTest : virtual public RouterComponentTest {
 
   ProcessWrapper &launch_router_for_bootstrap(
       std::vector<std::string> params, int expected_exit_code = EXIT_SUCCESS,
-      const bool disable_rest = true,
+      const bool disable_rest = true, const bool add_report_host = true,
+      const bool catch_stderr = true,
       ProcessWrapper::OutputResponder output_responder =
           RouterComponentBootstrapTest::kBootstrapOutputResponder) {
     if (disable_rest) params.push_back("--disable-rest");
+    if (add_report_host) params.push_back("--report-host=dont.query.dns");
 
     return ProcessManager::launch_router(
-        params, expected_exit_code, /*catch_stderr=*/true, /*with_sudo=*/false,
+        params, expected_exit_code, catch_stderr, /*with_sudo=*/false,
         /*wait_for_notify_ready=*/std::chrono::seconds(-1), output_responder);
   }
 

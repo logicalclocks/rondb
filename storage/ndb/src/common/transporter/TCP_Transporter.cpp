@@ -183,13 +183,7 @@ TCP_Transporter::configure_derived(const TransporterConfiguration* conf)
 }
 
 TCP_Transporter::~TCP_Transporter() {
-  
-  // Disconnect
-  if (theSocket.is_valid())
-    doDisconnect();
-  
   // Delete receive buffer!!
-  assert(!isConnected());
   receiveBuffer.destroy();
 }
 
@@ -201,27 +195,25 @@ TCP_Transporter::resetBuffers()
   send_checksum_state.init();
 }
 
-bool TCP_Transporter::connect_server_impl(NdbSocket & socket)
+bool TCP_Transporter::connect_server_impl(NdbSocket&& socket)
 {
   DBUG_ENTER("TCP_Transpporter::connect_server_impl");
-  DBUG_RETURN(connect_common(socket));
+  DBUG_RETURN(connect_common(std::move(socket)));
 }
 
-bool TCP_Transporter::connect_client_impl(NdbSocket & socket)
+bool TCP_Transporter::connect_client_impl(NdbSocket&& socket)
 {
   DBUG_ENTER("TCP_Transpporter::connect_client_impl");
-  DBUG_RETURN(connect_common(socket));
+  DBUG_RETURN(connect_common(std::move(socket)));
 }
 
-bool TCP_Transporter::connect_common(NdbSocket & socket)
+bool TCP_Transporter::connect_common(NdbSocket&& socket)
 {
   setSocketOptions(socket.ndb_socket());
   socket.set_nonblocking(true);
 
-  get_callback_obj()->lock_transporter(remoteNodeId, m_transporter_index);
-  NdbSocket::transfer(theSocket, socket);
+  theSocket = std::move(socket);
   send_checksum_state.init();
-  get_callback_obj()->unlock_transporter(remoteNodeId, m_transporter_index);
 
   DBUG_PRINT("info", ("Successfully set-up TCP transporter to node %d",
               remoteNodeId));
@@ -394,19 +386,12 @@ TCP_Transporter::doSend(bool need_wakeup)
       }
     }
 
-    if (Uint32(nBytesSent) == remain)  //Completed this send
+    if (likely(Uint32(nBytesSent) == remain))  //Completed this send
     {
       sum_sent += nBytesSent;
       assert(sum >= sum_sent);
       remain = sum - sum_sent;
-      //g_eventLogger->info("Sent %d bytes on trp %u", nBytesSent, getTransporterIndex());
       break;
-    }
-    else if (nBytesSent == TLS_BUSY_TRY_AGAIN)
-    {
-      // TLS is doing protocol layer stuff. We need to keep polling and
-      // trying to send until it is done.
-      return true;
     }
     else if (nBytesSent > 0)           //Sent some, more pending
     {
@@ -434,9 +419,15 @@ TCP_Transporter::doSend(bool need_wakeup)
         iov[pos].iov_base = ((char*)(iov[pos].iov_base))+nBytesSent;
       }
     }
-    else                               //Send failed, terminate
+    else                               //Send failed, handle or disconnect?
     {
       const int err = ndb_socket_errno();
+
+      if (nBytesSent == TLS_BUSY_TRY_AGAIN)
+      {
+        // In case TLS was 'BUSY' TransporterRegistry will send-retry later.
+        break;
+      }
 
 #if defined DEBUG_TRANSPORTER
       g_eventLogger->error("Send Failure(disconnect==%d) to node = %d "
@@ -446,60 +437,15 @@ TCP_Transporter::doSend(bool need_wakeup)
                            remoteNodeId, nBytesSent, ndb_socket_errno(),
                            (char*)ndbstrerror(err));
 #endif
-      if (err == ENOMEM)
-      {
-        if (sum_sent != 0)
-        {
-          /**
-           * We've successfully sent something, so no need to stop the
-           * connection. Simply return as from a successful call that
-           * didn't succeed to send everything.
-           */
-          break;
-        }
-        /**
-         * ENOMEM means that the OS is out of memory buffers to handle
-         * the request. The manual on the OS calls says that one in this
-         * case should change the parameters, thus try to send less. One
-         * reason could be that the OS accessible memory is fragmented and
-         * it can find memory but not the size requested. If we fail with
-         * 2 kBytes there is no reason to proceed, the error is treated
-         * as a permanent error.
-         */
-        if (sum >= (IO_SIZE / 4))
-        {
-#ifdef VM_TRACE
-          g_eventLogger->info("send to node %u failed with ENOMEM",
-                              remoteNodeId);
-#endif
-          if (cnt > 1)
-          {
-            cnt = 1;
-            iov[0].iov_len = MIN(iov[0].iov_len, IO_SIZE);
-            continue;
-          }
-          else
-          {
-            if (iov[0].iov_len > IO_SIZE)
-            {
-              iov[0].iov_len = IO_SIZE;
-              continue;
-            }
-            else if (iov[0].iov_len >= (IO_SIZE / 2))
-            {
-              iov[0].iov_len /= 2;
-              continue;
-            }
-          }
-        }
-      }
       if ((DISCONNECT_ERRNO(err, nBytesSent)))
       {
+        remain = 0;                    //Will stop retries of this send.
         if (!do_disconnect(err, true)) //Initiate pending disconnect
         {
-          return true;
+          // We are 'DISCONNECTING' asynch -> We may still attempt more sends.
+          // -> The send buffers still need to be maintained with the 'sum_sent'
+          // Fall through to break the send loop below.
         }
-        remain = 0;
       }
       break;
     }
@@ -530,7 +476,6 @@ TCP_Transporter::shutdown()
     DEB_MULTI_TRP(("Close socket for trp %u",
                    getTransporterIndex()));
     theSocket.close();
-    theSocket.invalidate();
   }
   else
   {
@@ -557,7 +502,7 @@ TCP_Transporter::doReceive(TransporterReceiveHandle& recvdata)
 
       if(nBytesRead == TLS_BUSY_TRY_AGAIN) return TLS_BUSY_TRY_AGAIN;
 
-      if (nBytesRead > 0)
+      if (likely(nBytesRead > 0))
       {
         receiveBuffer.sizeOfData += nBytesRead;
         receiveBuffer.insertPtr  += nBytesRead;
@@ -621,44 +566,9 @@ TCP_Transporter::doReceive(TransporterReceiveHandle& recvdata)
           err,
           (char*)ndbstrerror(err));
 #endif
-        if (err == ENOMEM)
-        {
-          /**
-           * The OS had issues with the size, try with smaller sizes, but if
-           * not even sizes below 1 kB works then we will report it as a
-           * permanent error.
-           *
-           * At least in one version of Linux we have seen this error turn up
-           * even when lots of memory is available. One reason could be that
-           * memory in Linux kernel is too fragmented to be accessible and in
-           * one version of Linux it will return ENOMEM with the intention
-           * that the user should retry with a new set of parameters in the
-           * write call (meaning sending with a size that fits into one
-           * kernel page). This we start a resend with size set to 4 kByte,
-           * next try with 2 kByte and finally with 1 kByte. If even the
-           * attempt with 1 kByte fails, we will treat it as a permanent
-           * error.
-           */
-#ifdef VM_TRACE
-          g_eventLogger->info("recv from node %u failed with ENOMEM,"
-                              " size: %u",
-                              remoteNodeId,
-                              size);
-#endif
-          if (size > IO_SIZE)
-          {
-            size = IO_SIZE;
-            continue;
-          }
-          else if (size >= (IO_SIZE / 2))
-          {
-            size /= 2;
-            continue;
-          }
-        }
         if(DISCONNECT_ERRNO(err, nBytesRead))
         {
-	  if (!do_disconnect(err, false))
+          if (!do_disconnect(err, false))
           {
             return 0;
           }
@@ -674,19 +584,7 @@ TCP_Transporter::doReceive(TransporterReceiveHandle& recvdata)
 }
 
 void
-TCP_Transporter::disconnectImpl()
+TCP_Transporter::releaseAfterDisconnect()
 {
-  NdbSocket sock;
-
-  get_callback_obj()->lock_transporter(remoteNodeId, m_transporter_index);
-  NdbSocket::transfer(sock, theSocket);
-  get_callback_obj()->unlock_transporter(remoteNodeId, m_transporter_index);
-
-  if(sock.is_valid())
-  {
-    DEB_MULTI_TRP(("Disconnect socket for trp %u", getTransporterIndex()));
-    if(sock.close() < 0) {
-      report_error(TE_ERROR_CLOSING_SOCKET);
-    }
-  }
+  Transporter::releaseAfterDisconnect();
 }

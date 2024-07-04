@@ -1,5 +1,5 @@
 # Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-# Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -347,3 +347,5 @@ IF(WITH_RDRS)
   ADD_SUBDIRECTORY(rest-server)
   ADD_SUBDIRECTORY(rest-server2)
 ENDIF()
+## WiX support disabled for now
+# ADD_SUBDIRECTORY(wix)

@@ -1560,7 +1560,7 @@ runBug16772(NDBT_Context* ctx, NDBT_Step* step){
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int aliveNodeId = restarter.getRandomNotMasterNodeId(rand());
@@ -1621,7 +1621,7 @@ runBug18414(NDBT_Context* ctx, NDBT_Step* step){
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   Ndb* pNdb = GETNDB(step);
@@ -1692,7 +1692,7 @@ runBug18612(NDBT_Context* ctx, NDBT_Step* step){
   if (restarter.getMaxConcurrentNodeFailures() < 1)
   {
     g_err << "[SKIPPED] Configuration cannot handle 1 node failure." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   Uint32 cnt = restarter.getNumDbNodes();
@@ -1796,12 +1796,12 @@ runBug18612SR(NDBT_Context* ctx, NDBT_Step* step){
   if (restarter.getNumReplicas() < 2)
   {
     g_err << "[SKIPPED] Test requires 2 or more replicas." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
  if (restarter.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   Uint32 cnt = restarter.getNumDbNodes();
 
@@ -2031,7 +2031,7 @@ runBug29364(NDBT_Context* ctx, NDBT_Step* step)
   if (restarter.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int dump0[] = { 9000, 0 } ;
@@ -2079,7 +2079,7 @@ int runBug25364(NDBT_Context* ctx, NDBT_Step* step)
   if (restarter.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int val2[] = { DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1 };
@@ -2241,7 +2241,7 @@ int runBug25554(NDBT_Context* ctx, NDBT_Step* step)
   if (restarter.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   for (int i = 0; i<loops; i++)
@@ -2295,7 +2295,7 @@ int runBug25984(NDBT_Context* ctx, NDBT_Step* step)
   if (restarter.getNumDbNodes() < 4)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   pDict->dropTable(tab.getName());
@@ -2404,12 +2404,12 @@ runBug26457(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Test requires at least 2 node groups." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   if (res.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int loops = ctx->getNumLoops();
@@ -2721,7 +2721,7 @@ runBug27283(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   static const int errnos[] = { 7181, 7182, 0 };
@@ -2762,7 +2762,7 @@ runBug27466(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   for (Uint32 i = 0; i<(Uint32)loops; i++)
@@ -2814,7 +2814,7 @@ runBug28023(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   HugoTransactions hugoTrans(*ctx->getTab());
@@ -2879,7 +2879,7 @@ runBug28717(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 4)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int master = res.getMasterNodeId();
@@ -2993,7 +2993,7 @@ runGCP(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   if (res.getNumDbNodes() < 4)
@@ -3049,7 +3049,7 @@ runCommitAck(NDBT_Context* ctx, NDBT_Step* step)
   if (restarter.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int trans_type= -1;
@@ -3427,7 +3427,7 @@ runBug31525(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int nodes[2];
@@ -3502,7 +3502,7 @@ runBug31980(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   HugoOperations hugoOps (* ctx->getTab());
@@ -3554,7 +3554,7 @@ runBug32160(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int master = res.getMasterNodeId();
@@ -3600,7 +3600,7 @@ runBug32922(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   while (loops--)
@@ -3651,7 +3651,7 @@ runBug34216(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   if(restarter.waitClusterStarted() != 0){
@@ -3793,7 +3793,7 @@ runNF_commit(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   if(restarter.waitClusterStarted() != 0){
@@ -3859,7 +3859,7 @@ runBug34702(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   /* Account for 3 tests per loop */
@@ -3915,7 +3915,7 @@ runMNF(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2 || num_replicas < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes & replicas" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   Vector<int> part0; // One node per ng
@@ -4209,12 +4209,12 @@ runBug36199(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Test requires at least 2 node groups." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   if (res.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int master = res.getMasterNodeId();
@@ -4266,12 +4266,12 @@ runBug36246(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Test requires at least 2 node groups." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   if (res.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   HugoOperations hugoOps(*ctx->getTab());
@@ -4362,12 +4362,12 @@ runBug36247(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Test requires at least 2 node groups." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   if (res.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   Ndb* pNdb = GETNDB(step);
@@ -4468,12 +4468,12 @@ runBug36276(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 4)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Test requires at least 2 node groups." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int master = res.getMasterNodeId();
@@ -4520,12 +4520,12 @@ runBug36245(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Test requires at least 2 node groups." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   if (res.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   /**
@@ -4745,7 +4745,7 @@ runBug41295(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
 
@@ -4815,7 +4815,7 @@ runBug41469(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int loops = ctx->getNumLoops();
@@ -4855,13 +4855,13 @@ runBug42422(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Need at least 2 node groups to run the test" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   if (res.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int loops = ctx->getNumLoops();
@@ -4927,7 +4927,7 @@ runBug43224(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   
   int loops = ctx->getNumLoops();
@@ -4987,7 +4987,7 @@ runBug43888(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   
   int loops = ctx->getNumLoops();
@@ -5262,7 +5262,7 @@ runBug56044(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   for (int i = 0; i<loops; i++)
@@ -5298,7 +5298,7 @@ runBug57767(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int node0 = res.getNode(NdbRestarter::NS_RANDOM);
@@ -5334,7 +5334,7 @@ runBug57522(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 4)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   for (int i = 0; i<loops; i++)
@@ -5369,7 +5369,7 @@ runForceStopAndRestart(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() != 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires 2 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   Vector<int> group1;
@@ -5489,7 +5489,7 @@ runBug58453(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 4)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   Ndb* pNdb = GETNDB(step);
@@ -5565,7 +5565,7 @@ int runRestartToDynamicOrder(NDBT_Context* ctx, NDBT_Step* step)
   if (num_replicas != 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires 2 replicas" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   Vector<Uint32> currOrder;
@@ -5799,7 +5799,7 @@ int analyseDynamicOrder(NDBT_Context* ctx, NDBT_Step* step)
   if (num_replicas != 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires 2 replicas" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   /* TODO :
@@ -6053,7 +6053,7 @@ int runSplitLatency25PctFail(NDBT_Context* ctx, NDBT_Step* step)
   if (num_replicas != 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires 2 replicas" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   /*
@@ -6148,7 +6148,7 @@ int runIsolateMaster(NDBT_Context* ctx, NDBT_Step* step)
       the test would behave very differently. This case is not covered.
      */
     g_err << "At least four data nodes required to run test." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   const int masterId = restarter.getMasterNodeId();
@@ -6211,7 +6211,6 @@ int runIsolateMaster(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "Failed to connect to MGMD" << endl;
     return NDBT_FAILED;
-
   }
   
   if (!mgmd.subscribe_to_events())
@@ -6298,7 +6297,7 @@ runMasterFailSlowLCP(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumDbNodes() < 4)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int master = res.getMasterNodeId();
@@ -6613,7 +6612,7 @@ runLCPTakeOver(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 4 nodes" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   for (int i = 0; master_err[i] != 0; i++)
@@ -6690,12 +6689,12 @@ runBug16007980(NDBT_Context* ctx, NDBT_Step* step)
   if (res.getNumNodeGroups() < 2)
   {
     g_err << "[SKIPPED] Test requires at least 2 node groups." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   if (res.getMaxConcurrentNodeFailures() < 2)
   {
     g_err << "[SKIPPED] Configuration cannot handle 2 node failures." << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int loops = ctx->getNumLoops();
@@ -7624,7 +7623,7 @@ runNodeFailGCPOpen(NDBT_Context* ctx, NDBT_Step* step)
   {
     g_err << "[SKIPPED] Test skipped. Requires 2 replicas" << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int i = 0;
@@ -8969,7 +8968,7 @@ int runArbitrationWithApiNodeFailure(NDBT_Context* ctx, NDBT_Step* step)
   if (restarter.getNumDbNodes() != 2)
   {
     g_err << "[SKIPPED] Test skipped.  Needs 1 nodegroup" << endl;
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   /**
@@ -9391,7 +9390,7 @@ int run_PLCP_many_parts(NDBT_Context *ctx, NDBT_Step *step)
   if (nodeCount != 2)
   {
     g_err << "[SKIPPED] Test skipped.  Needs 2 nodes" << endl;
-    return NDBT_OK; /* Requires exact 2 nodes to run */
+    return NDBT_SKIPPED; /* Requires exact 2 nodes to run */
   }
   int node_1 = restarter.getDbNodeId(0);
   int node_2 = restarter.getDbNodeId(1);
@@ -9581,7 +9580,7 @@ int run_PLCP_I1(NDBT_Context *ctx, NDBT_Step *step)
   if (nodeCount < 2)
   {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
-    return NDBT_OK; /* Requires at least 2 nodes to run */
+    return NDBT_SKIPPED; /* Requires at least 2 nodes to run */
   }
   g_err << "Executing " << loops << " loops" << endl;
   while (++i <= loops && result != NDBT_FAILED)
@@ -10828,10 +10827,11 @@ int runDelayGCP_SAVEREQ(NDBT_Context* ctx, NDBT_Step* step)
   }
 
   int result = NDBT_OK;
+  unsigned int timeout = 240; // To suite many node/replica tests
   const int victim = restarter.getNode(NdbRestarter::NS_RANDOM);
   const Uint32 lcp_max_lag = ctx->getProperty("MaxLcpLag",
                                               Uint32(60));
-  const Uint32 clear_error_insert_seconds = 20;
+  const Uint32 clear_error_insert_seconds = 60;
 
   for (int scenario=1; scenario < 4; scenario++)
   {
@@ -10849,13 +10849,13 @@ int runDelayGCP_SAVEREQ(NDBT_Context* ctx, NDBT_Step* step)
                                        false, /* abort */
                                        false  /* force */) == 0);
       g_err << "Waiting until node " << victim << " stops" << endl;
-      restarter.waitNodesNoStart(&victim, 1);
+      restarter.waitNodesNoStart(&victim, 1, timeout);
       break;
     case 3:
       g_err << "Scenario 3 : Start node, block GCP, check no LCP stall" << endl;
       g_err << "Starting node " << victim << endl;
       CHECK2(restarter.startNodes(&victim, 1) == 0);
-      CHECK2(restarter.waitClusterStarted() == 0);
+      CHECK2(restarter.waitClusterStarted(timeout) == 0);
       break;
     default:
       abort();
@@ -10864,9 +10864,9 @@ int runDelayGCP_SAVEREQ(NDBT_Context* ctx, NDBT_Step* step)
     g_err << "Inserting err delaying GCP_SAVEREQ" << endl;
     CHECK2(restarter.insertErrorInAllNodes(7237) == 0);
 
-    g_err << "Sleeping for 3 * MaxLcpLag = " << 3*lcp_max_lag << " seconds."
+    g_err << "Sleeping for 3 * MaxLcpLag = " << 3 * lcp_max_lag << " seconds."
           << endl;
-    NdbSleep_SecSleep(3*lcp_max_lag);
+    NdbSleep_SecSleep(3 * lcp_max_lag);
 
     // Remove the error insertion and let the GCP and LCP to finish
     CHECK2(restarter.insertErrorInAllNodes(0) == 0);
@@ -10880,6 +10880,420 @@ int runDelayGCP_SAVEREQ(NDBT_Context* ctx, NDBT_Step* step)
   ctx->stopTest();
   return result;
 }
+
+/* Basic callback data + function */
+struct CallbackData
+{
+  int ready;
+  int result;
+};
+
+void
+asyncCallbackFn(int res, NdbTransaction* pCon, void* data)
+{
+  CallbackData* cbd = (CallbackData*) data;
+
+  if (res)
+  {
+    cbd->result = pCon->getNdbError().code;
+  }
+  else
+  {
+    cbd->result = 0;
+  }
+
+  /* todo : sync */
+  cbd->ready=1;
+}
+
+int runTestStallTimeout(NDBT_Context* ctx, NDBT_Step* step)
+{
+  /**
+   * Testing for fix of bug#22602898
+   *   NDB : CURIOUS STATE OF TC COMMIT_SENT / COMPLETE_SENT TIMEOUT HANDLING
+   *
+   * This fix removed the 'switch to serial commit/complete
+   * protocol due to transaction timeout behaviour.
+   * This is done as the serial commit/complete protocol further
+   * slows the system when a timeout is detected.
+   *
+   * This means that if we stall the normal parallel commit/complete
+   * signal handlers then commit/complete is stalled indefinitely,
+   * whereas before it would switch protocol and complete.
+   *
+   * This behavioural change is tested here.
+   */
+  Ndb* pNdb = GETNDB(step);
+  NdbRestarter restarter;
+
+  struct TestCase
+  {
+    const char* type;
+    NdbTransaction::ExecType execType;
+    int errorCode;
+    bool execOk;
+  };
+
+  TestCase testcases[] = {
+    {
+    "Stall in commit",       /* LQH execCOMMIT()    */
+    NdbTransaction::Commit,
+    5110,
+    false,                   /* Commit stall blocks API ack */
+    },{
+    "Stall in complete",     /* LQH execCOMPLETE()  */
+    NdbTransaction::Commit,
+    5111,
+    true                     /* Complete stall does not block
+                              * API ack (ReadPrimary) */
+    }
+  };
+
+  for (int stallPoint = 0; stallPoint < 2; stallPoint++)
+  {
+    HugoOperations hugoOps(*ctx->getTab());
+    TestCase& test = testcases[stallPoint];
+
+    ndbout_c("- *** Case : %s ***", test.type);
+
+    /* Prepare some update operations on a number of rows */
+    const Uint32 numUpdates = 10;
+    CHECK(hugoOps.startTransaction(pNdb) == 0,
+          "Start transaction failed");
+    CHECK(hugoOps.pkUpdateRecord(pNdb, 1, numUpdates) == 0,
+          "Define Updates failed");
+    CHECK(hugoOps.execute_NoCommit(pNdb) == 0,
+          "Execute NoCommit failed");
+
+    int errorCode = test.errorCode;
+    ndbout_c("  - Inserting error %u on all data nodes",
+             errorCode);
+    CHECK(restarter.
+          insertErrorInAllNodes(errorCode) == 0,
+          "Error insert failed");
+
+    ndbout_c("  - Sending commit with async api");
+
+    NdbTransaction* trans = hugoOps.getTransaction();
+    CallbackData cbd;
+    cbd.ready=0;
+    cbd.result=0;
+
+    trans->executeAsynchPrepare(test.execType,
+                                asyncCallbackFn,
+                                &cbd);
+    pNdb->sendPreparedTransactions();
+
+    CHECK(trans->getNdbError().code == 0,
+          "Async send failed");
+
+    const int waitTime=5;
+    ndbout_c("  - Waiting for up to %u seconds for result",
+             waitTime);
+
+    for (int i=0; i < waitTime; i++)
+    {
+      pNdb->pollNdb(1000);
+
+      if (cbd.ready)
+      {
+        break;
+      }
+    }
+
+    if (cbd.ready != test.execOk)
+    {
+      /* Mismatch with expectations */
+      ndbout_c("cbd.ready : %u  test.execOk : %u, failed.",
+               cbd.ready, test.execOk);
+      /* Clear error insert and wait for cleanup */
+      restarter.insertErrorInAllNodes(0);
+      pNdb->pollNdb(20000);
+      return NDBT_FAILED;
+    }
+
+    if (cbd.ready)
+    {
+      ndbout_c("  - Got a result : OK");
+    }
+    else
+    {
+      ndbout_c("  - No result after %u seconds : OK", waitTime);
+    }
+
+    ndbout_c("  - Check that we cannot perform a further update on the same rows");
+    {
+      HugoOperations hugoOps2(*ctx->getTab());
+
+      /* Prepare an update on the same rows from a different transaction */
+      CHECK(hugoOps2.startTransaction(pNdb) == 0,
+            "Start transaction failed");
+      CHECK(hugoOps2.pkUpdateRecord(pNdb, 1, 10) == 0,
+            "Define updates failed");
+
+      NdbTransaction* trans2 = hugoOps2.getTransaction();
+      CallbackData cbd2;
+      cbd2.ready = 0;
+      cbd2.result = 0;
+
+      /* This will block as the first transaction has not
+       * managed to commit/complete, and row locks
+       * are still held
+       */
+      trans2->executeAsynchPrepare(NdbTransaction::Commit,
+                                   asyncCallbackFn,
+                                   &cbd2);
+      pNdb->sendPreparedTransactions();
+
+      CHECK(trans2->getNdbError().code == 0,
+            "Async send2 failed");
+
+      ndbout_c("    - Waiting for up to %u seconds for result",
+               waitTime);
+
+      /* For commit + complete blocking, update will fail
+       * after TDDT.
+       */
+      for (int i=0; i < waitTime; i++)
+      {
+        pNdb->pollNdb(1000);
+
+        if (cbd2.ready)
+        {
+          /* Commit + Complete stalls */
+          break;
+        }
+      }
+
+      ndbout_c("    - Removing error insert");
+      restarter.insertErrorInAllNodes(0);
+
+      if (!cbd2.ready)
+      {
+        const int FurtherDelay = 5;
+        ndbout_c("    - Waited for %us with no result on second update",
+                 waitTime);
+        ndbout_c("    - Waiting for a further %us with no stall",
+                 FurtherDelay);
+        for (int i=0; i<FurtherDelay; i++)
+        {
+          pNdb->pollNdb(1000);
+
+          if (cbd2.ready)
+            break;
+        }
+
+        if (!cbd2.ready)
+        {
+          ndbout_c("No result at all - failed.");
+          pNdb->pollNdb(20000);
+          return NDBT_FAILED;
+        }
+      }
+      ndbout_c("    - Received response on second update");
+
+      ndbout_c("    - Checking that second update received timeout");
+
+      if (trans2->getNdbError().code != 266)
+      {
+        ndbout_c("Error, expected 266, but got %u %s",
+                 trans2->getNdbError().code,
+                 trans2->getNdbError().message);
+        return NDBT_FAILED;
+      }
+
+      CHECK(hugoOps2.closeTransaction(pNdb) == 0,
+            "Failed to close transaction");
+    }
+
+    ndbout_c("  - Waiting for result of first request");
+    const int FurtherDelay = 2;
+    pNdb->pollNdb(FurtherDelay * 1000);
+
+    if (!cbd.ready)
+    {
+      ndbout_c("No result on first request after %u seconds, failed",
+               waitTime + FurtherDelay);
+      pNdb->pollNdb(20000);
+      return NDBT_FAILED;
+    }
+
+    ndbout_c("  - Original request result : %u", cbd.result);
+    CHECK(cbd.result == 0, "Transaction failed");
+  }
+
+  return NDBT_OK;
+}
+
+int runTestStallTimeoutAndNF(NDBT_Context* ctx, NDBT_Step* step)
+{
+  /**
+   * Testing for fix of bug#22602898
+   *   NDB : CURIOUS STATE OF TC COMMIT_SENT / COMPLETE_SENT TIMEOUT HANDLING
+   *
+   * This fix removed the 'switch to serial commit/complete
+   * protocol due to transaction timeout behaviour.
+   * This is done as the serial commit/complete protocol further
+   * slows the system when a timeout is detected.
+   *
+   * However we still need the serial commit/complete protocol to
+   * handle node failures :
+   *  - Failure of participant
+   *    Surviving TC will switch protocol to commit/complete
+   *    the transaction remains
+   *  - Failure of TC
+   *    Master TC will gather transaction state, then commit/complete
+   *    the remains using a different (non stalled) protocol
+   */
+  Ndb* pNdb = GETNDB(step);
+  NdbRestarter restarter;
+
+  struct TestCase
+  {
+    const char* type;
+    NdbTransaction::ExecType execType;
+    int errorCode;
+  };
+
+  TestCase testcases[] = {
+    {"Stall in commit",   NdbTransaction::Commit,   5110, },
+    {"Stall in complete", NdbTransaction::Commit,   5111, }
+  };
+
+  const char* failTypes[] = {
+    "Participant failure",
+    "TC failure"
+  };
+
+  for (int failType = 0; failType < 2; failType++)
+  {
+    ndbout_c("Scenario : %s", failTypes[failType]);
+
+    for (int stallPoint = 0; stallPoint < 2; stallPoint++)
+    {
+      TestCase& test = testcases[stallPoint];
+
+      ndbout_c("  Stall case : %s", test.type);
+
+      HugoOperations hugoOps(*ctx->getTab());
+
+      /* Prepare a single update operation on a row,
+       * in a single transaction hinted for the row
+       */
+      int rowNum = ndb_rand() % ctx->getNumRecords();
+
+      ndbout_c("   - Preparing update on row %u", rowNum);
+
+      CHECK(hugoOps.startTransaction(pNdb, rowNum) == 0,
+            "Start transaction failed");
+      CHECK(hugoOps.pkUpdateRecord(pNdb, 1, 1) == 0,
+            "Define Update failed");
+      CHECK(hugoOps.execute_NoCommit(pNdb) == 0,
+            "Execute NoCommit failed");
+
+      NdbTransaction* trans = hugoOps.getTransaction();
+      int primaryNodeId = trans->getConnectedNodeId();
+      int participantNodeId = restarter.getRandomNodeSameNodeGroup(primaryNodeId,
+                                                                   ndb_rand());
+
+      ndbout_c("   - Performing error insert on primary node %u",
+               primaryNodeId);
+      CHECK(restarter.insertErrorInNode(primaryNodeId, test.errorCode) == 0,
+            "Failed to insertError");
+
+      ndbout_c("   - Executing commit/abort");
+      CallbackData cbd;
+      cbd.ready=0;
+      cbd.result=0;
+
+      trans->executeAsynchPrepare(test.execType,
+                                  asyncCallbackFn,
+                                  &cbd);
+      pNdb->sendPreparedTransactions();
+
+      CHECK(trans->getNdbError().code == 0,
+            "Async send failed");
+
+      const int waitTime = 5;
+      for (int i=0; i < waitTime; i++)
+      {
+        pNdb->pollNdb(1000);
+
+        if (cbd.ready)
+        {
+          break;
+        }
+      }
+
+      /* Transaction stalled now */
+
+      /* Next, restart a node */
+      /* For participant failure, restart non-TC node which should be
+       * backup -> TC knows trans outcome so will handle.
+       * For TC failure, restart TC node which will be taken over
+       * by master.  As backup was not stalled, it knows outcome
+       */
+      int nodeToRestart = (failType == 0)?
+        participantNodeId:
+        primaryNodeId;
+
+      ndbout_c("   - Transaction stalled, now restarting node %u",
+               nodeToRestart);
+
+      CHECK(restarter.restartOneDbNode(nodeToRestart,
+                                       false,
+                                       false,
+                                       true, /* abort */
+                                       false) == 0,
+            "Failed node restart");
+
+      CHECK(restarter.waitNodesStarted(&nodeToRestart, 1) == 0,
+            "Failed waiting for node to recover");
+
+      ndbout_c("   - Restart complete, now checking trans result");
+
+      // Now, wait for result to materialise and
+      // check it
+
+      for (int i=0; i < waitTime; i++)
+      {
+        pNdb->pollNdb(1000);
+
+        if (cbd.ready)
+        {
+          break;
+        }
+      }
+
+      if (!cbd.ready)
+      {
+        ndbout_c("Failed to get any result");
+        restarter.insertErrorInAllNodes(0);
+        return NDBT_FAILED;
+      }
+
+      CHECK(trans->getNdbError().code == 0, "Error on original request");
+
+      NdbTransaction::CommitStatusType cst = trans->commitStatus();
+
+      if (cst != NdbTransaction::Committed)
+      {
+        ndbout_c("ERROR : Bad commitstatus.  Expected %u, got %u",
+                 NdbTransaction::Committed,
+                 cst);
+        restarter.insertErrorInAllNodes(0);
+        return NDBT_FAILED;
+      }
+
+      ndbout_c("   - Result ok, clearing error insert");
+
+      restarter.insertErrorInAllNodes(0);
+    } /* stallpoint */
+  } /* failType */
+
+  return NDBT_OK;
+}
+
 
 NDBT_TESTSUITE(testNodeRestart);
 TESTCASE("NoLoad", 
@@ -11774,7 +12188,20 @@ TESTCASE("CheckGcpStopTimerDistributed",
   STEP(runDelayGCP_SAVEREQ);
   FINALIZER(runChangeDataNodeConfig);
 }
-
+TESTCASE("TransStallTimeout",
+         "")
+{
+  INITIALIZER(runLoadTable);
+  STEP(runTestStallTimeout);
+  FINALIZER(runClearTable);
+}
+TESTCASE("TransStallTimeoutNF",
+         "")
+{
+  INITIALIZER(runLoadTable);
+  STEP(runTestStallTimeoutAndNF);
+  FINALIZER(runClearTable);
+}
 NDBT_TESTSUITE_END(testNodeRestart)
 
 int main(int argc, const char** argv){

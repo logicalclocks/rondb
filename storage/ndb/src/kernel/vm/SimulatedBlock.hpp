@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -749,7 +749,7 @@ protected:
    * Finally also the ability to query for send thread information.
    */
   Uint32 map_api_node_to_recv_instance(NodeId);
-  void getSendBufferLevel(NodeId node, SB_LevelType &level);
+  //void getSendBufferLevel(TrpId trp_id, SB_LevelType &level);
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
   void setOverloadStatus(OverloadStatus new_status);
@@ -791,10 +791,10 @@ protected:
   void flush_send_buffers();
   void insert_activate_trp(TrpId trp_id);
   void set_watchdog_counter();
-  void assign_recv_thread_new_trp(Uint32 trp_id);
+  void assign_recv_thread_new_trp(TrpId trp_id);
   void assign_multi_trps_to_send_threads();
-  bool epoll_add_trp(NodeId node_id, TrpId trp_id);
-  bool is_recv_thread_for_new_trp(NodeId node_id, TrpId trp_id);
+  bool epoll_add_trp(TrpId trp_id);
+  bool is_recv_thread_for_new_trp(TrpId trp_id);
 
   NDB_TICKS getHighResTimer() const 
   {

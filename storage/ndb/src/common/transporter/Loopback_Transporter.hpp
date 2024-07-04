@@ -59,6 +59,9 @@ private:
    * @overload TCP_Transporter::disconnectImpl
    */
   void disconnectImpl() override;
+
+  void releaseAfterDisconnect() override;
+
 protected:
 
 private:

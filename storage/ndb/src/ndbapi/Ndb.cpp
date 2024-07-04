@@ -2238,20 +2238,25 @@ Ndb::pollEvents2(int aMillisecondNumber, Uint64 *highestQueuedEpoch)
   }
 
   /* Look for already available events without polling transporter. */
-  const int found = theEventBuffer->pollEvents(highestQueuedEpoch);
-  if (found)
-    return found;
+  int found = theEventBuffer->pollEvents(highestQueuedEpoch);
+  if (!found)
+  {
+    /**
+     * We need to poll the transporter, and possibly wait, to make sure
+     * that arrived events are delivered to their clients as soon as possible.
+     * ::trp_deliver_signal() will wakeup the client when event arrives.
+     */
+    PollGuard poll_guard(* theImpl);
+    poll_guard.wait_n_unlock(aMillisecondNumber, 0, WAIT_EVENT);
+    // PollGuard ends here
 
-  /**
-   * We need to poll the transporter, and possibly wait, to make sure
-   * that arrived events are delivered to their clients as soon as possible.
-   * ::trp_deliver_signal() will wakeup the client when event arrives.
-   */
-  PollGuard poll_guard(* theImpl);
-  poll_guard.wait_n_unlock(aMillisecondNumber, 0, WAIT_EVENT);
-  // PollGuard ends here
+    found = theEventBuffer->pollEvents(highestQueuedEpoch);
+  }
 
-  return theEventBuffer->pollEvents(highestQueuedEpoch);
+  if ((highestQueuedEpoch) && (isExpectingHigherQueuedEpochs() == false))
+    *highestQueuedEpoch = NDB_FAILURE_GCI;
+
+  return found;
 }
 
 bool
@@ -2372,12 +2377,27 @@ Ndb::getNextEventOpInEpoch2(Uint32* iter, Uint32* event_types)
 
 const NdbEventOperation*
 Ndb::getNextEventOpInEpoch3(Uint32* iter, Uint32* event_types,
-                           Uint32* cumulative_any_value)
+                            Uint32* cumulative_any_value)
 {
-  NdbEventOperationImpl* op =
-    theEventBuffer->getEpochEventOperations(iter, event_types, cumulative_any_value);
-  if (op != nullptr)
+  Uint32 zero = 0; // used as buffer
+  if (cumulative_any_value == nullptr) {
+    cumulative_any_value = &zero;
+  }
+  if (event_types == nullptr) {
+    event_types = &zero;
+  }
+  return getNextEventOpInEpoch4(iter, *event_types, *cumulative_any_value, zero);
+}
+
+const NdbEventOperation
+*Ndb::getNextEventOpInEpoch4(Uint32 *iter, Uint32 &event_types,
+                             Uint32 &cumulative_any_value,
+                             Uint32 &filtered_any_value) const {
+  NdbEventOperationImpl *op = theEventBuffer->getEpochEventOperations(
+      iter, event_types, cumulative_any_value, filtered_any_value);
+  if (op != nullptr) {
     return op->m_facade;
+  }
   return nullptr;
 }
 

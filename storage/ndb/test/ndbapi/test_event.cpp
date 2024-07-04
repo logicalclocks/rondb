@@ -1,6 +1,6 @@
 /*
  Copyright (c) 2003, 2023, Oracle and/or its affiliates.
- Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+ Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -24,6 +24,7 @@
 */
 
 #include "util/require.h"
+#include <ndb_opts.h>
 #include <NDBT_Test.hpp>
 #include <NDBT_ReturnCodes.h>
 #include <HugoTransactions.hpp>
@@ -2569,11 +2570,18 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
   Ndb * ndb= GETNDB(step);
   NdbRestarter restarter;
   const NdbDictionary::Table* pTab = ctx->getTab();
+  const bool usePollEvents2 = ((rand() % 2) == 0);
+  const char* method = (usePollEvents2?
+                        "PollEvents2":
+                        "PollEvents");
+
   NdbEventOperation *pOp= createEventOperation(ndb, *pTab);
   int result = NDBT_OK;
   int res = 0;
   bool connected = true;
   uint retries = 100;
+
+  ndbout_c("errorInjectStalling using %s", method);
 
   if (pOp == 0)
   {
@@ -2590,11 +2598,18 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
 
   for (int i=0; (i<10) && (curr_gci != NDB_FAILURE_GCI); i++)
   {
-    res = ndb->pollEvents(5000, &curr_gci) > 0;
+    if (usePollEvents2)
+    {
+      res = ndb->pollEvents2(5000, &curr_gci) > 0;
+    }
+    else
+    {
+      res = ndb->pollEvents(5000, &curr_gci) > 0;
+    }
 
     if (ndb->getNdbError().code != 0)
     {
-      g_err << "pollEvents failed:\n";
+      g_err << method << " failed: \n";
       g_err << ndb->getNdbError().code << " "
             << ndb->getNdbError().message << endl;
       result = NDBT_FAILED;
@@ -2604,7 +2619,7 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
 
   if (curr_gci != NDB_FAILURE_GCI)
   {
-    g_err << "pollEvents failed to detect cluster failure:\n";
+    g_err << method << " failed to detect cluster failure: \n";
     result = NDBT_FAILED;
     goto cleanup;
   } 
@@ -2685,11 +2700,18 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
   // Check that we receive events again
   for (int i=0; (i<10) && (curr_gci == NDB_FAILURE_GCI); i++)
   {
-    res = ndb->pollEvents(5000, &curr_gci) > 0;
+    if (usePollEvents2)
+    {
+      res = ndb->pollEvents(5000, &curr_gci) > 0;
+    }
+    else
+    {
+      res = ndb->pollEvents(5000, &curr_gci) > 0;
+    }
 
     if (ndb->getNdbError().code != 0)
     {
-      g_err << "pollEvents failed:\n";
+      g_err << method << " failed: \n";
       g_err << ndb->getNdbError().code << " "
             << ndb->getNdbError().message << endl;
       result = NDBT_FAILED;
@@ -2698,7 +2720,7 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
   }
   if (curr_gci == NDB_FAILURE_GCI)
   {
-    g_err << "pollEvents after restart failed res " << res << " curr_gci " << curr_gci << endl;
+    g_err << method << " after restart failed res " << res << " curr_gci " << curr_gci << endl;
     result =  NDBT_FAILED;
   }
 
@@ -3056,6 +3078,597 @@ runNFSubscribe(NDBT_Context* ctx, NDBT_Step* step)
   ctx->stopTest();
   return NDBT_OK;
 }
+
+/**
+ * None of the standard T* test tables has a character primary key.
+ * Thus we need to replace the test table with a table we
+ * create ourself for this test case:
+ */
+int
+createCharPKTable(NDBT_Context* ctx, NDBT_Step* step)
+{
+  const BaseString tabName(ctx->getTab()->getName());
+  NdbDictionary::Dictionary* dict = GETNDB(step)->getDictionary();
+  dict->dropTable(tabName.c_str());
+
+  NdbDictionary::Table newTab;
+  newTab.setName(tabName.c_str());
+
+  // Use a case insensitive charset:
+  CHARSET_INFO *charset = get_charset_by_name("latin1_general_ci", MYF(0));
+  CHK(charset != NULL, "Failed to locate Charset");
+
+  // Primary key is a char(3)
+  NdbDictionary::Column pk;
+  pk.setName("Key");
+  pk.setType(NdbDictionary::Column::Char);
+  pk.setCharset(charset);
+  pk.setLength(3);
+  pk.setNullable(false);
+  pk.setPrimaryKey(true);
+  newTab.addColumn(pk);
+
+  // Add columns COL_1 & COL_2
+  for (int i=1; i<=2; i++)
+  {
+    BaseString name;
+    NdbDictionary::Column col;
+    name.assfmt("COL_%d",i);
+    col.setName(name.c_str());
+    col.setType(NdbDictionary::Column::Unsigned);
+    col.setLength(1);
+    col.setNullable(false);
+    col.setPrimaryKey(false);
+    newTab.addColumn(col);
+  }
+
+  CHK(dict->createTable(newTab) == 0, "Table creation failed");
+  ctx->setTab(dict->getTable(tabName.c_str()));
+  return NDBT_OK;
+}
+
+int
+dropCharPKTable(NDBT_Context* ctx, NDBT_Step* step)
+{
+  const NdbDictionary::Table* pTab = ctx->getTab();
+  NdbDictionary::Dictionary* dict = GETNDB(step)->getDictionary();
+  dict->dropTable(pTab->getName());
+  return NDBT_OK;
+}
+
+static const char*
+getEventName(NdbDictionary::Event::TableEvent type)
+{
+  return (type == NdbDictionary::Event::TE_INSERT) ? "INSERT"
+       : (type == NdbDictionary::Event::TE_DELETE) ? "DELETE"
+       : (type == NdbDictionary::Event::TE_UPDATE) ? "UPDATE"
+       : "<unknown>";
+}
+
+static NdbDictionary::Event::TableEvent
+getAnEventType(Ndb* ndb)
+{
+  int retries = 5;
+  while (retries-- > 0)
+  {
+    if (ndb->pollEvents2(100) > 0)
+    {
+      NdbEventOperation *pOp;
+      if ((pOp= ndb->nextEvent2()) != NULL)
+      {
+	return pOp->getEventType2();
+      }
+    }
+  }
+  return NdbDictionary::Event::TE_EMPTY;
+}
+
+static int
+verifyEventType(Ndb* ndb,
+                NdbDictionary::Event::TableEvent expect_type)
+{
+  const NdbDictionary::Event::TableEvent type = getAnEventType(ndb);
+  if (type == NdbDictionary::Event::TE_EMPTY) {
+    ndbout_c("Received no events, expected %s-event", getEventName(expect_type));
+    return NDBT_FAILED;
+  } else if (type != expect_type) {
+    ndbout_c("Received %s-event, expected %s-event",
+	     getEventName(type), getEventName(expect_type));
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+static int verifyNoEvents(Ndb* ndb)
+{
+  const NdbDictionary::Event::TableEvent type = getAnEventType(ndb);
+  if (type != NdbDictionary::Event::TE_EMPTY) {
+    ndbout_c("Received %s-event, none expected", getEventName(type));
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+static int setTestValues(Ndb* ndb, const NdbDictionary::Table* table,
+			 NdbDictionary::Event::TableEvent expect_type
+			    = NdbDictionary::Event::TE_UPDATE)
+{
+  // Set original ['xyz', 1, 2] value, or reset after a test case changed it
+  NdbTransaction *pTrans = ndb->startTransaction();
+  NdbOperation *pOp = pTrans->getNdbOperation(table->getName());
+  CHK(pOp != NULL && pOp->writeTuple() == 0, "Failed to create update operation")
+  pOp->equal("Key", "xyz");
+  CHK(pOp->setValue("Key", "xyz") == 0, "Failed to setValue('xyz') for PK");
+  CHK(pOp->setValue("COL_1", 1) == 0, "Failed to setValue() for COL_1");
+  CHK(pOp->setValue("COL_2", 2) == 0, "Failed to setValue() for COL_2");
+  CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+  pTrans->close();
+
+  if (expect_type == NdbDictionary::Event::TE_EMPTY) {
+    CHK(verifyNoEvents(ndb) == NDBT_OK, "Didn't expect any events");
+  } else {
+    CHK(verifyEventType(ndb, expect_type) == NDBT_OK,
+        "Didn't receive the expected event type");
+  }
+  return NDBT_OK;
+}
+
+/**
+ * Test intend to test the trigger/event mechanism wrt primary key
+ * updates. Note:
+ *
+ *   - Two primary keys are considder 'equal' if they match according
+ *     to the collation comparison rules: E.g. 'xyz' and 'XYZ' are
+ *     equal in a case insensitive character set.
+ *
+ *   - The keys are 'identical' if they are represented by the same
+ *     binary value.
+ *
+ *   - The NDB API allows a PK value to be updated to another 'equal',
+ *     but binary different representation of the same key value.
+ *     -> Only the PK + updated attributes will be represented in the
+ *        UPDATE triggers BEFORE/AFTER values
+ *
+ *   - Non-equal updates to primary keys need to be performed as a
+ *     delete+insert. We will receive DELETE+INSERT triggers for such updates.
+ *     -> ALL attributes will be represented in the combined triggers
+ *        BEFORE/AFTER values - even if the same values are re-inserted.
+ *
+ * Note that an assignment is regarded as an 'update'. Thus, any
+ * value assigned to should be included in BEFORE/AFTER, even if the
+ * values are identical.
+ */
+int
+testPKUpdates(NDBT_Context* ctx, NDBT_Step* step)
+{
+  class exitGuard {
+  public:
+    exitGuard(Ndb *ndb, NdbEventOperation *event) : m_ndb(ndb), m_event(event){}
+    ~exitGuard() { release(); }
+    void release() {
+      if (m_event) m_ndb->dropEventOperation(m_event);
+      m_event = NULL;
+    }
+  private:
+    Ndb *const m_ndb;
+    NdbEventOperation *m_event;
+  };
+
+  Ndb* ndb = GETNDB(step);
+  const NdbDictionary::Table* table = ctx->getTab();
+
+  // Insert a single row used to test UPDATE-events below
+  NdbTransaction *pTrans;
+  NdbOperation *pOp;
+
+  // Initial insert of test row used throughout test
+  setTestValues(ndb, table, NdbDictionary::Event::TE_EMPTY);
+
+  for (int eventType=0; eventType < 2; eventType++) {
+    const bool allowEmptyUpdate = (eventType==0);
+
+    // Create the event for monitoring table changes.
+    char buf[1024];
+    sprintf(buf, "%s_EVENT", table->getName());
+    NdbEventOperation *pEvent = ndb->createEventOperation(buf);
+    CHK(pEvent != NULL, "Event operation creation failed");
+    pEvent->setAllowEmptyUpdate(allowEmptyUpdate);
+
+    // Automagically drop the event at return if some CHK's NDBT_FAILED
+    exitGuard dropAtReturnGuard(ndb, pEvent);
+
+    NdbRecAttr* recAttr[3];
+    NdbRecAttr* recAttrPre[3];
+    int n_columns = 3;
+    for (int i = 0; i < n_columns; i++) {
+      recAttr[i]    = pEvent->getValue(table->getColumn(i)->getName());
+      CHK(recAttr[i] != NULL, "Event operation getValue() failed");
+      recAttrPre[i] = pEvent->getPreValue(table->getColumn(i)->getName());
+      CHK(recAttrPre[i] != NULL, "Event operation getPreValue() failed");
+    }
+    CHK(pEvent->execute() == 0, "Event execution failed");
+
+    // Test using both writeTuple() and updateTuple().
+    // Both expected to behave the same (as an update)
+    for (int opType=0; opType<2; opType++) {
+      const bool writeTuple = (opType == 0);
+      if (writeTuple) {
+        ndbout << "Test using writeTuple";
+      } else {
+        ndbout << "Test using updateTuple";
+      }
+      if (allowEmptyUpdate) {
+        ndbout << ", allowEmptyUpdate";
+      }
+      ndbout << endl;
+
+      //////////////////
+      // Pre-fix test, to state the current behavior of tuple updates:
+      // setValue(PK, ...) to an 'equal' value should be allowed.
+      // Setting a completely different value should be catched when executing.
+      CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+      CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+      pOp = pTrans->getNdbOperation(table->getName());
+      CHK(pOp != NULL, "Failed to create operation");
+      if (writeTuple) {
+        CHK(pOp->writeTuple() == 0, "Failed to create write operation");
+      } else {
+        CHK(pOp->updateTuple() == 0, "Failed to create update operation");
+      }
+      CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+      CHK(pOp->setValue("Key", "xyz") == 0,
+          "Update of PK column to an identical value failed");
+      CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+      pTrans->close();
+      // Is an empty update which may be ignore:
+      if (allowEmptyUpdate) {
+        CHK(verifyEventType(ndb, NdbDictionary::Event::TE_UPDATE) == NDBT_OK,
+            "Didn't receive the expected UPDATE-event");
+      } else {
+        CHK(verifyNoEvents(ndb) == NDBT_OK, "Didn't expect any events");
+      }
+
+      // Update to unequal values should fail when executed on the data nodes.
+      // (Not as part of defining the setValue())
+      CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+      CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+      pOp = pTrans->getNdbOperation(table->getName());
+      CHK(pOp != NULL, "Failed to create operation");
+      if (writeTuple) {
+        CHK(pOp->writeTuple() == 0, "Failed to create write operation");
+      } else {
+        CHK(pOp->updateTuple() == 0, "Failed to create update operation");
+      }
+      CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+      CHK(pOp->setValue("Key", "XXX") == 0,
+          "Failed to set a changed PK value - not fail until execute");
+      CHK(pTrans->execute(Commit) != 0, "PK value changed, Execute expected to fail");
+      CHK(pTrans->getNdbError().code == 897, "Unexpected error code");
+      pTrans->close();
+      CHK(verifyNoEvents(ndb) == NDBT_OK, "Didn't expect any events");
+
+      // Update PK 'xyz' -> 'XYZ', ): an 'equal' value
+      CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+      CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+      pOp = pTrans->getNdbOperation(table->getName());
+      CHK(pOp != NULL, "Failed to create operation");
+      if (writeTuple) {
+        CHK(pOp->writeTuple() == 0, "Failed to create write operation");
+      } else {
+        CHK(pOp->updateTuple() == 0, "Failed to create update operation");
+      }
+      CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+      CHK(pOp->setValue("Key", "XYZ") == 0,
+	  "Update of PK column to an 'equal' value failed");
+      CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+      pTrans->close();
+      CHK(verifyEventType(ndb, NdbDictionary::Event::TE_UPDATE) == NDBT_OK,
+          "Didn't receive the expected UPDATE-event");
+
+      /////////////////
+      // Update non-PK columns, test that BEFORE-AFTER values of *only*
+      // the PK and updated COL_1-column is sent back in UPDATE-event
+      CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+      CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+      pOp = pTrans->getNdbOperation(table->getName());
+      CHK(pOp != NULL, "Failed to create operation");
+      if (writeTuple) {
+        CHK(pOp->writeTuple() == 0, "Failed to create write operation");
+      } else {
+        CHK(pOp->updateTuple() == 0, "Failed to create update operation");
+      }
+      CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+      CHK(pOp->setValue("COL_1", 0) == 0, "Failed to setValue() for COL_1");
+      CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+      pTrans->close();
+      CHK(verifyEventType(ndb, NdbDictionary::Event::TE_UPDATE) == NDBT_OK,
+        "Didn't receive the expected UPDATE-event");
+
+      // Verify PK1 value received and both BEFORE and AFTER being 'xyz'.
+      CHK(recAttrPre[0]->isNULL() == 0 && !memcmp(recAttrPre[0]->aRef(), "xyz", 3),
+          "Before PK-value was not 'xyz'");
+      CHK(recAttr[0]->isNULL() == 0 && !memcmp(recAttr[0]->aRef(), "xyz", 3),
+          "After PK-value was not 'xyz'");
+
+      // Only COL_1 value of non-PK's in before/after-values
+      // ... COL_2 didn't change and should be undefined!
+      CHK(recAttrPre[1]->isNULL() == 0 && recAttrPre[1]->int32_value() == 1 &&
+          recAttr[1]->isNULL() == 0  && recAttr[1]->int32_value() == 0,
+          "COL_1-value update '1->0' not reflected by UPDATE-event");
+      CHK(recAttrPre[2]->isNULL() == -1 && recAttr[2]->isNULL() == -1,
+          "COL_2-value should be 'UNDEFINED'");
+      CHK(verifyNoEvents(ndb) == NDBT_OK, "Expected only a single UPDATE-event");
+
+      //////////////
+      // Update PK to the equal value 'XYZ', and COL_1 1->0 as above.
+      // Still only the updated PK and COL_1 values should be present.
+      CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+      CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+      pOp = pTrans->getNdbOperation(table->getName());
+      CHK(pOp != NULL, "Failed to create operation");
+      if (writeTuple) {
+        CHK(pOp->writeTuple() == 0, "Failed to create write operation");
+      } else {
+        CHK(pOp->updateTuple() == 0, "Failed to create update operation");
+      }
+      CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+      CHK(pOp->setValue("Key", "XYZ") == 0,
+	  "Update of PK column to an 'equal' value failed");
+      CHK(pOp->setValue("COL_1", 0) == 0, "Failed to setValue() for COL_1");
+      CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+      pTrans->close();
+      CHK(verifyEventType(ndb, NdbDictionary::Event::TE_UPDATE) == NDBT_OK,
+          "Didn't receive the expected UPDATE-event");
+
+      // Verify PK value received and updated 'xyz' -> 'XYZ'
+      CHK(recAttrPre[0]->isNULL() == 0 && !memcmp(recAttrPre[0]->aRef(), "xyz", 3),
+          "Before PK-value was not 'xyz'");
+      CHK(recAttr[0]->isNULL() == 0 && !memcmp(recAttr[0]->aRef(), "XYZ", 3),
+          "After PK-value was not 'XYZ'");
+
+      // Only COL_1 value of non-PK's in before/after-values
+      // ... COL_2 didn't change and should be undefined!
+      CHK(recAttrPre[1]->isNULL() == 0 && recAttrPre[1]->int32_value() == 1 &&
+          recAttr[1]->isNULL() == 0  && recAttr[1]->int32_value() == 0,
+          "COL_1-value update '1->0' not reflected by UPDATE-event");
+      CHK(recAttrPre[2]->isNULL() == -1 && recAttr[2]->isNULL() == -1,
+          "COL_2-value should be 'UNDEFINED'");
+      CHK(verifyNoEvents(ndb) == NDBT_OK, "Expected only a single UPDATE-event");
+    } // for updateTuple and writeTuple()
+
+    ////////////////////////////////////
+    // Updates to PK values may also be executed as DELETE+INSERT
+    //   1. If there is a real change to an unequal value, then a
+    //      delete+insert is *required*
+    //   2. As an alternative to an update, if an identical or equal
+    //      PK value is re-inserted.
+    //
+    // In case of 1.) we will expect to see DELETE+INSERT triggers,
+    // while for 2.) an UPDATE trigger will be received.
+    // (With all attr-values in before/after-values, including the PK
+    //  before value)
+
+    //////////////
+    // An DELETE+INSERT 'Update' of PK to an 'equal' value.
+    // Identical values are re-inserted for COL's.
+    // (Could have been performed with an updateTuple() as well)
+    //
+    // Expect an UPDATE trigger with the *full* value sets.
+    CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+    CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->deleteTuple() == 0, "Failed to create delete operation")
+    CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->insertTuple() == 0, "Failed to create re-insert operation")
+    CHK(pOp->setValue("Key","XYZ") == 0, "Failed to INSERT('XYZ')");
+    CHK(pOp->setValue("COL_1", 1) == 0, "Failed to setValue() for COL_1");
+    CHK(pOp->setValue("COL_2", 2) == 0, "Failed to setValue() for COL_2");
+    CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+    pTrans->close();
+
+    // Verify that we receive an UPDATE events, containing all attribute values.
+    // Note that even if the same COL_* values are re-inserted, and as such
+    // not 'updated', we always need to send the full tuple values as part of
+    // the delete+insert 'protocol'.
+    CHK(verifyEventType(ndb, NdbDictionary::Event::TE_UPDATE) == NDBT_OK,
+        "Didn't receive the expected UPDATE-event");
+
+    // Verify that key change 'xyz' -> 'XYZ' is reflected
+    CHK(recAttrPre[0]->isNULL() == 0 && !memcmp(recAttrPre[0]->aRef(), "xyz", 3),
+        "Before PK-value was not 'xyz'");
+    CHK(recAttr[0]->isNULL() == 0 && !memcmp(recAttr[0]->aRef(), "XYZ", 3),
+        "After PK-value was not 'XYZ'");
+
+    // COL's values are present, even if they didn't change
+    CHK(recAttrPre[1]->isNULL() == 0 && recAttrPre[1]->int32_value() == 1,
+        "Before COL_1-value was not '1'");
+    CHK(recAttrPre[2]->isNULL() == 0 && recAttrPre[2]->int32_value() == 2,
+        "Before COL_2-value was not '2'");
+    CHK(recAttr[1]->isNULL() == 0 && recAttr[1]->int32_value() == 1,
+        "After COL_1-value was not '1'");
+    CHK(recAttr[2]->isNULL() == 0 && recAttr[2]->int32_value() == 2,
+        "After COL_2-value was not '2'");
+    CHK(verifyNoEvents(ndb) == NDBT_OK,
+        "Too many events, expected only an UPDATE");
+
+    ///////////////////////////////////////////////////
+    // A DELETE+INSERT 'PK-NOOP-update'-> the same 'xyz' PK-value is re-inserted.
+    // As both the PK and all COL_* values are assigned to, we expect to
+    // still see all attributes in the returned values, even if being identical.
+    CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+    CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->deleteTuple() == 0,
+        "Failed to create delete operation")
+    CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->insertTuple() == 0,
+        "Failed to create re-insert operation")
+    CHK(pOp->setValue("Key","xyz") == 0, "Failed to re-INSERT('xyz')");
+    CHK(pOp->setValue("COL_1", 1) == 0, "Failed to setValue() for COL_1");
+    CHK(pOp->setValue("COL_2", 2) == 0, "Failed to setValue() for COL_2");
+    CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+    pTrans->close();
+
+    // Note: we do not filter away identical re-inserted as NOOPs !!
+    CHK(verifyEventType(ndb, NdbDictionary::Event::TE_UPDATE) == NDBT_OK,
+        "Didn't receive the expected UPDATE-event");
+
+    // PK is always received, but shouldn't update:
+    CHK(recAttrPre[0]->isNULL() == 0 && !memcmp(recAttrPre[0]->aRef(), "xyz", 3),
+        "Before PK-value was not 'xyz'");
+    CHK(recAttr[0]->isNULL() == 0 && !memcmp(recAttr[0]->aRef(), "xyz", 3),
+        "After PK-value was not 'xyz'");
+
+    // COL's values are present, even if they didn't change
+    CHK(recAttrPre[1]->isNULL() == 0 && recAttrPre[1]->int32_value() == 1,
+        "Before COL_1-value was not '1'");
+    CHK(recAttrPre[2]->isNULL() == 0 && recAttrPre[2]->int32_value() == 2,
+        "Before COL_2-value was not '2'");
+    CHK(recAttr[1]->isNULL() == 0 && recAttr[1]->int32_value() == 1,
+        "After COL_1-value was not '1'");
+    CHK(recAttr[2]->isNULL() == 0 && recAttr[2]->int32_value() == 2,
+        "After COL_2-value was not '2'");
+
+    CHK(verifyNoEvents(ndb) == NDBT_OK,
+        "Too many events, expected only an UPDATE");
+
+    ///////////////////////////////////////////////////
+    // An DELETE+INSERT 'Update' of PK to an non-'equal' PK-value.
+    // Identical values are re-inserted for the COL's.
+    //
+    // Such PK-updates can not be represented with an update operation
+    // as an alternative ): Expect seperate DELETE+INSERT triggers with
+    // the full value sets.
+    CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+    CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->deleteTuple() == 0, "Failed to create delete operation")
+    CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->insertTuple() == 0, "Failed to create re-insert operation")
+    CHK(pOp->setValue("Key","XXX") == 0, "Failed to INSERT('XXX')");
+    CHK(pOp->setValue("COL_1", 1) == 0, "Failed to setValue() for COL_1");
+    CHK(pOp->setValue("COL_2", 2) == 0, "Failed to setValue() for COL_2");
+    CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+    pTrans->close();
+
+    // Verify that we receive both an INSERT and a DELETE trigger.
+    // They can come in any order as the triggers may not be fired
+    // from the same data node.
+    NdbDictionary::Event::TableEvent type = getAnEventType(ndb);
+    if (type == NdbDictionary::Event::TE_DELETE) {
+      CHK(recAttrPre[0]->isNULL() == 0 && !memcmp(recAttrPre[0]->aRef(), "xyz", 3),
+          "Deleted before PK-value was not 'xyz'");
+      CHK(recAttrPre[1]->isNULL() == 0 && recAttrPre[1]->int32_value() == 1,
+          "Before COL_1-value was not '1'");
+      CHK(recAttrPre[2]->isNULL() == 0 && recAttrPre[2]->int32_value() == 2,
+          "Before COL_2-value was not '2'");
+
+      CHK(verifyEventType(ndb, NdbDictionary::Event::TE_INSERT) == NDBT_OK,
+          "Didn't receive the expected DELETE+INSERT-events");
+      CHK(recAttr[0]->isNULL() == 0 && !memcmp(recAttr[0]->aRef(), "XXX", 3),
+          "Inserted after PK-value was not 'XXX'");
+      CHK(recAttr[1]->isNULL() == 0 && recAttr[1]->int32_value() == 1,
+          "After COL_1-value was not '1'");
+      CHK(recAttr[2]->isNULL() == 0 && recAttr[2]->int32_value() == 2,
+          "After COL_2-value was not '2'");
+    } else if (type == NdbDictionary::Event::TE_INSERT) {
+      CHK(recAttr[0]->isNULL() == 0 && !memcmp(recAttr[0]->aRef(), "XXX", 3),
+          "Inserted after PK-value was not 'XXX'");
+      CHK(recAttr[1]->isNULL() == 0 && recAttr[1]->int32_value() == 1,
+          "After COL_1-value was not '1'");
+      CHK(recAttr[2]->isNULL() == 0 && recAttr[2]->int32_value() == 2,
+          "After COL_2-value was not '2'");
+
+      CHK(verifyEventType(ndb, NdbDictionary::Event::TE_DELETE) == NDBT_OK,
+          "Didn't receive the expected INSERT+DELETE-events");
+      CHK(recAttrPre[0]->isNULL() == 0 && !memcmp(recAttrPre[0]->aRef(), "xyz", 3),
+          "Deleted before PK-value was not 'xyz'");
+      CHK(recAttrPre[1]->isNULL() == 0 && recAttrPre[1]->int32_value() == 1,
+          "Before COL_1-value was not '1'");
+      CHK(recAttrPre[2]->isNULL() == 0 && recAttrPre[2]->int32_value() == 2,
+          "Before COL_2-value was not '2'");
+    } else {
+      CHK(false, "Didn't receive the expected DELETE+INSERT-events");
+    }
+    CHK(verifyNoEvents(ndb) == NDBT_OK,
+        "Too many events, expected only an UPDATE");
+
+    // Delete the 'XXX' row before we can continue.
+    // Not a part of the test case as such.
+    CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->deleteTuple() == 0, "Failed to create delete operation")
+    CHK(pOp->equal("Key", "XXX") == 0, "Failed to specify 'Key'");
+    CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+    pTrans->close();
+    CHK(verifyEventType(ndb, NdbDictionary::Event::TE_DELETE) == NDBT_OK,
+        "Didn't receive the expected DELETE-event");
+    CHK(setTestValues(ndb, table, NdbDictionary::Event::TE_INSERT) == NDBT_OK,
+        "Failed to set test values");
+
+    ///////////////////////////////////////////////////
+    // Extend the previous DELETE+INSERT test case:
+    //  - Update the PK to a non-equal value, the update it back
+    //    to original vales.
+    //  - Both updates need to be issued as delete+insert's.
+    //  - As the temporary inserted non-equal PK value is deleted
+    //    by the 2'nd update -> no visible change in txn -> no trigger!
+    //  - Change to original PK-value is a NOOP change wrt txn.
+    //    -> expect a single UPDATE Trigger with identical before/after values
+    CHK(setTestValues(ndb, table) == NDBT_OK, "Failed to set test values");
+    CHK(pTrans = ndb->startTransaction(), "Failed to startTransaction()");
+    // 1'th update of PK value(xyz -> XXX) as above
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->deleteTuple() == 0, "Failed to create delete operation")
+    CHK(pOp->equal("Key", "xyz") == 0, "Failed to specify 'Key'");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->insertTuple() == 0, "Failed to create re-insert operation")
+    CHK(pOp->setValue("Key","XXX") == 0, "Failed to INSERT('XXX')");
+    CHK(pOp->setValue("COL_1", 1) == 0, "Failed to setValue() for COL_1");
+    CHK(pOp->setValue("COL_2", 2) == 0, "Failed to setValue() for COL_2");
+
+    // 2'nd update of PK-value(XXX -> xyz) back to original values
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->deleteTuple() == 0, "Failed to create delete operation")
+    CHK(pOp->equal("Key", "XXX") == 0, "Failed to specify 'Key'");
+    pOp = pTrans->getNdbOperation(table->getName());
+    CHK(pOp != NULL && pOp->insertTuple() == 0, "Failed to create re-insert operation")
+    CHK(pOp->setValue("Key","xyz") == 0, "Failed to re-INSERT('xyz')");
+    CHK(pOp->setValue("COL_1", 1) == 0, "Failed to setValue() for COL_1");
+    CHK(pOp->setValue("COL_2", 2) == 0, "Failed to setValue() for COL_2");
+    CHK(pTrans->execute(Commit) == 0, "Failed to execute");
+    pTrans->close();
+
+    CHK(verifyEventType(ndb, NdbDictionary::Event::TE_UPDATE) == NDBT_OK,
+        "Didn't receive the expected UPDATE-event");
+
+    // PK is always received, no PK-values should have changed:
+    CHK(recAttrPre[0]->isNULL() == 0 && !memcmp(recAttrPre[0]->aRef(), "xyz", 3),
+        "Before PK-value was not 'xyz'");
+    CHK(recAttr[0]->isNULL() == 0 && !memcmp(recAttr[0]->aRef(), "xyz", 3),
+        "After PK-value was not 'xyz'");
+
+    // COL's values are present, even if they didn't change
+    CHK(recAttrPre[1]->isNULL() == 0 && recAttrPre[1]->int32_value() == 1,
+        "Before COL_1-value was not '1'");
+    CHK(recAttrPre[2]->isNULL() == 0 && recAttrPre[2]->int32_value() == 2,
+        "Before COL_2-value was not '2'");
+    CHK(recAttr[1]->isNULL() == 0 && recAttr[1]->int32_value() == 1,
+        "After COL_1-value was not '1'");
+    CHK(recAttr[2]->isNULL() == 0 && recAttr[2]->int32_value() == 2,
+        "After COL_2-value was not '2'");
+
+    CHK(verifyNoEvents(ndb) == NDBT_OK,
+        "Too many events, expected only an UPDATE");
+
+    dropAtReturnGuard.release();
+  }
+  return NDBT_OK;
+}
+///////////////////////////
 
 int
 runBug35208_createTable(NDBT_Context* ctx, NDBT_Step* step)
@@ -5540,11 +6153,10 @@ int runGetLogEventPretty(NDBT_Context* ctx, NDBT_Step* step)
     return NDBT_FAILED;
 
   int filter[] = {15, NDB_MGM_EVENT_CATEGORY_INFO, 0};
-  socket_t fd= ndb_mgm_listen_event(mgmd.handle(), filter);
-  ndb_socket_t my_fd;
-  ndb_socket_create_from_native(my_fd, fd);
+  NdbSocket my_fd{ndb_socket_create_from_native(
+                    ndb_mgm_listen_event(mgmd.handle(), filter))};
 
-  if(!ndb_socket_valid(my_fd))
+  if(!my_fd.is_valid())
   {
     ndbout << "FAILED: could not listen to event" << endl;
     return NDBT_FAILED;
@@ -5585,8 +6197,9 @@ int runGetLogEventPretty(NDBT_Context* ctx, NDBT_Step* step)
       }
     }
   }
+  my_fd.close();
 
- if (ctx->getProperty("BufferUsage2") && prettyStatusMsges2 > 0)
+  if (ctx->getProperty("BufferUsage2") && prettyStatusMsges2 > 0)
     return NDBT_OK;
 
   if (prettyStatusMsges > 0)
@@ -5829,6 +6442,272 @@ runCreateDropConsume(NDBT_Context* ctx, NDBT_Step* step)
   ctx->stopTest();
   return res;
 }
+
+int runSubscriptionChecker(NDBT_Context* ctx,
+                           NDBT_Step* step,
+                           Ndb* pNdb,
+                           const NdbDictionary::Table* table,
+                           const char* name)
+{
+  NdbEventOperation* evOp = createEventOperation(pNdb,
+                                                 *table);
+  if (evOp == NULL)
+  {
+    return NDBT_FAILED;
+  }
+
+  NodeBitmask subscriberViews[MAX_NDB_NODES];
+  for (Uint32 n=0; n < MAX_NDB_NODES; n++)
+  {
+    subscriberViews[n].clear();
+  }
+
+  bool error = false;
+  Uint32 maxSubscribers = 0;
+
+  while (!ctx->isTestStopped() && !error)
+  {
+    int res = pNdb->pollEvents(1000);
+
+    if (res > 0)
+    {
+      NdbEventOperation* nextEvent;
+      while ((nextEvent = pNdb->nextEvent()) != NULL)
+      {
+        switch (evOp->getEventType())
+        {
+        case NdbDictionary::Event::TE_SUBSCRIBE:
+        {
+          const Uint32 subscriber = evOp->getReqNodeId();
+          const Uint32 reporter = evOp->getNdbdNodeId();
+          const Uint64 epoch = evOp->getEpoch();
+          NodeBitmask& view = subscriberViews[reporter];
+          ndbout_c("%s : Reporter %u reports subscribe from node %u in epoch %llu/%llu",
+                   name, reporter, subscriber,
+                   epoch >> 32, epoch & 0xffffffff);
+          if (view.get(subscriber))
+          {
+            ndbout_c("%s : Error, %u already subscribed",
+                     name, subscriber);
+            /* Note that nothing stops there being > 1 subscriber per API nodeid */
+            error = true;
+            continue;
+          }
+          view.set(subscriber);
+          break;
+        }
+        case NdbDictionary::Event::TE_UNSUBSCRIBE:
+        {
+          const Uint32 subscriber = evOp->getReqNodeId();
+          const Uint32 reporter = evOp->getNdbdNodeId();
+          const Uint64 epoch = evOp->getEpoch();
+          NodeBitmask& view = subscriberViews[reporter];
+          ndbout_c("%s : Reporter %u reports unsubscribe from node %u in epoch %llu/%llu",
+                   name, reporter, subscriber,
+                   epoch >> 32, epoch & 0xffffffff);
+          if (!view.get(subscriber))
+          {
+            /* Note that nothing stops there being > 1 subscriber per API nodeid */
+            ndbout_c("%s : Error, %u not subscribed",
+                     name, subscriber);
+            error = true;
+          }
+          view.clear(subscriber);
+          break;
+        }
+        case NdbDictionary::Event::TE_NODE_FAILURE:
+        {
+          const Uint32 failedNode = evOp->getNdbdNodeId();
+          const Uint64 epoch = evOp->getEpoch();
+          ndbout_c("%s : Node failure report for node %u in epoch %llu/%llu",
+                   name, failedNode,
+                   epoch >> 32, epoch & 0xffffffff);
+          NodeBitmask& view = subscriberViews[failedNode];
+          ndbout_c("%s : Clearing subscribers in my node %u view : %s",
+                   name,
+                   failedNode,
+                   BaseString::getPrettyText(view).c_str());
+          view.clear();
+          break;
+        }
+        case NdbDictionary::Event::TE_CLUSTER_FAILURE:
+        {
+          // Unexpected
+          const Uint64 epoch = evOp->getEpoch();
+          ndbout_c("%s : Cluster failure in epoch %llu/%llu",
+                   name,
+                   epoch >> 32, epoch & 0xffffffff);
+          if ((ctx->getProperty("IgnoreDisconnect", (Uint32)0)) != 0)
+          {
+            ndbout_c("%s : Ignoring cluster failure", name);
+            pNdb->dropEventOperation(evOp);
+            return NDBT_OK;
+          }
+
+          error = true;
+          break;
+        }
+        default:
+          ndbout_c("%s : Ignoring event of type %u",
+                   name, evOp->getEventType());
+          break;
+        }
+      }
+    }
+
+    Uint32 reporters = 0;
+    NodeBitmask unionView;
+    unionView.clear();
+    //maxSubscribers = 0;
+
+    for (Uint32 n=0; n < MAX_NDB_NODES; n++)
+    {
+      NodeBitmask& nodeView = subscriberViews[n];
+
+      if (!nodeView.isclear())
+      {
+        if (!unionView.isclear() &&
+            !unionView.equal(nodeView))
+        {
+          ndbout_c("%s : Reporter %u view different to existing union view : %s",
+                   name,
+                   n,
+                   BaseString::getPrettyText(nodeView).c_str());
+        }
+        reporters++;
+        unionView.bitOR(nodeView);
+      }
+    }
+
+    /* For ease of comparing different checker's views in output
+     * Add own-node to unionView as it's implicit
+     */
+    unionView.set(pNdb->getNodeId());
+
+    ndbout_c("%s : unionView : reporters(%u) : %s",
+             name, reporters, BaseString::getPrettyText(unionView).c_str());
+
+    const Uint32 currentSubscribers = unionView.count();
+    if (currentSubscribers > maxSubscribers)
+    {
+      maxSubscribers = currentSubscribers;
+    }
+    if (currentSubscribers < maxSubscribers)
+    {
+      ndbout_c("%s : Subscriber(s) lost - have (%u), max was %u",
+               name, currentSubscribers, maxSubscribers);
+      if ((ctx->getProperty("IgnoreSubscriberLoss", (Uint32)0)) != 0)
+      {
+        ndbout_c("%s : Ignoring subscriber loss", name);
+        maxSubscribers = currentSubscribers;
+      }
+      else
+      {
+        error = true;
+      }
+    }
+  }
+
+  pNdb->dropEventOperation(evOp);
+
+  return (error ? NDBT_FAILED : NDBT_OK);
+}
+
+int runSubscriptionCheckerSameConn(NDBT_Context* ctx, NDBT_Step* step)
+{
+  Ndb* pNdb = GETNDB(step);
+  const NdbDictionary::Table * table= ctx->getTab();
+  BaseString name;
+  name.appfmt("CheckerSC %u (%u)",
+              step->getStepNo(),
+              pNdb->getNodeId());
+
+  return runSubscriptionChecker(ctx, step, pNdb, table, name.c_str());
+}
+
+int runSubscriptionCheckerOtherConn(NDBT_Context* ctx, NDBT_Step* step)
+{
+  Ndb_cluster_connection* otherConn;
+  Ndb* otherNdb;
+
+  if (cc(&otherConn, &otherNdb) != 0)
+  {
+    ndbout_c("Failed to setup another Api connection");
+    return NDBT_FAILED;
+  }
+
+  BaseString name;
+  name.appfmt("CheckerOC %u (%u)",
+              step->getStepNo(),
+              otherNdb->getNodeId());
+
+  const NdbDictionary::Table* table =
+      otherNdb->getDictionary()->getTable(ctx->getTab()->getName());
+
+  int res = runSubscriptionChecker(ctx, step, otherNdb, table, name.c_str());
+
+  delete otherNdb;
+  delete otherConn;
+
+  return res;
+}
+
+int
+runRestartRandomNodeStartWithError(NDBT_Context* ctx, NDBT_Step* step)
+{
+  int code = ctx->getProperty("ErrorInjectCode", (Uint32)0);
+
+  int result = NDBT_OK;
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2){
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  /* Give other steps some time to get going */
+  NdbSleep_SecSleep(5);
+
+  do
+  {
+    int nodeId = restarter.getNode(NdbRestarter::NS_RANDOM);
+    ndbout << "Restart node " << nodeId << endl;
+    if(restarter.restartOneDbNode(nodeId, false, true, true) != 0){
+      g_err << "Failed to restartNextDbNode" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    if (restarter.waitNodesNoStart(&nodeId, 1)) {
+      g_err << "Failed to wait node to reach no start state" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    if (restarter.insertErrorInNode(nodeId, code)){
+      g_err << "Failed to inject error" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    if (restarter.startNodes(&nodeId, 1)){
+      g_err << "Failed to start node" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    if(restarter.waitClusterStarted(60) != 0){
+      g_err << "Cluster failed to start" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+  } while (0);
+
+  restarter.insertErrorInAllNodes(0); //Remove the injected error
+  ctx->stopTest();
+  return result;
+}
+
 
 NDBT_TESTSUITE(test_event);
 TESTCASE("BasicEventOperation", 
@@ -6107,6 +6986,16 @@ TESTCASE("EmptyUpdates",
   STEP(runEventLoad);
   FINALIZER(runDropEvent);
 }
+TESTCASE("PrimaryKeyUpdates",
+         "Verify that updates of char-PKs to 'equal by collation rules'-values"
+         " are allowed, and sent as part of BEFORE/AFTER values in triggers")
+{
+  INITIALIZER(createCharPKTable);
+  INITIALIZER(runCreateEvent);
+  STEP(testPKUpdates);
+  FINALIZER(runDropEvent);
+  FINALIZER(dropCharPKTable);
+}
 TESTCASE("Apiv2EmptyEpochs",
          "Verify the behaviour of the new API w.r.t."
          "empty epochs")
@@ -6267,7 +7156,34 @@ TESTCASE("ExhaustedSafeCounterPool",
   FINALIZER(clearEmptySafeCounterPool);
   FINALIZER(runDropShadowTable);
 }
-
+TESTCASE("SubscribeEventsNR",
+         "Test that the subscriber/unsubscribe "
+         "events received are as expected over "
+         "node restarts.")
+{
+  TC_PROPERTY("ReportSubscribe", 1);
+  INITIALIZER(runCreateEvent);
+  STEP(runRestarterLoop);
+  STEP(runSubscriptionCheckerSameConn);
+  STEPS(runSubscriptionCheckerOtherConn,2);
+  FINALIZER(runDropEvent);
+}
+TESTCASE("SubscribeEventsNRAF",
+         "Test that the subscriber/unsubscribe "
+         "events received are as expected over "
+         "simultaneous data node restarts and "
+         "API nodes failure")
+{
+  TC_PROPERTY("ReportSubscribe", 1);
+  TC_PROPERTY("IgnoreDisconnect", 1);
+  TC_PROPERTY("IgnoreSubscriberLoss", 1);
+  TC_PROPERTY("ErrorInjectCode", 13058);
+  INITIALIZER(runCreateEvent);
+  STEP(runRestartRandomNodeStartWithError)
+  STEP(runSubscriptionCheckerSameConn);
+  STEPS(runSubscriptionCheckerOtherConn,2);
+  FINALIZER(runDropEvent);
+}
 TESTCASE("DelayedEventDrop",
         "Create and Drop events with load, having multiple events droppable"
          "at once")

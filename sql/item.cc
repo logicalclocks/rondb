@@ -637,9 +637,11 @@ bool Item::itemize(Parse_context *pc, Item **res) {
     command => we should check pc->select on zero
   */
   if (pc->select) {
-    enum_parsing_context place = pc->select->parsing_place;
-    if (place == CTX_SELECT_LIST || place == CTX_HAVING)
+    const enum_parsing_context place = pc->select->parsing_place;
+    if (place == CTX_SELECT_LIST || place == CTX_HAVING ||
+        place == CTX_ORDER_BY) {
       pc->select->select_n_having_items++;
+    }
   }
   return false;
 }
@@ -2212,6 +2214,8 @@ void Item::split_sum_func2(THD *thd, Ref_item_array ref_item_array,
   const bool is_sum_func = type() == SUM_FUNC_ITEM && !m_is_window_function;
   if ((!is_sum_func && has_aggregation() && !m_is_window_function) ||
       (!m_is_window_function && has_wf()) ||
+      (has_grouping_func() &&
+       !is_function_of_type(this, Item_func::GROUPING_FUNC)) ||
       (type() == FUNC_ITEM && ((down_cast<Item_func *>(this))->functype() ==
                                    Item_func::ISNOTNULLTEST_FUNC ||
                                (down_cast<Item_func *>(this))->functype() ==
@@ -6547,7 +6551,10 @@ static inline type_conversion_status field_conv_with_cache(
       *to_is_memcpyable = -1;
     }
   }
-  if (*to_is_memcpyable != static_cast<uint32_t>(-1)) {
+  if (*to_is_memcpyable != static_cast<uint32_t>(-1) &&
+      *to_is_memcpyable == to->pack_length() && from->type() == to->type() &&
+      (from->type() != MYSQL_TYPE_NEWDECIMAL ||
+       from->decimals() == to->decimals())) {
     memcpy(to->field_ptr(), from->field_ptr(), *to_is_memcpyable);
     return TYPE_OK;
   } else {
@@ -7160,6 +7167,13 @@ void Item_hex_string::print(const THD *, String *str,
   }
   const uchar *ptr = pointer_cast<const uchar *>(str_value.ptr());
   const uchar *end = ptr + str_value.length();
+  // If it is an empty string, print X''. Printing "0x" makes it not
+  // parse correctly when this printed string is re-used to parse
+  // this expression.
+  if (ptr == end) {
+    str->append("X''");
+    return;
+  }
   str->append("0x");
   for (; ptr != end; ptr++) {
     str->append(_dig_vec_lower[*ptr >> 4]);
@@ -8360,7 +8374,7 @@ void Item_ref::print(const THD *thd, String *str,
   if (m_ref_item == nullptr)  // Unresolved reference: print reference
     return Item_ident::print(thd, str, query_type);
 
-  if (!const_item() && m_alias_of_expr &&
+  if (!thd->lex->reparse_derived_table_condition && m_alias_of_expr &&
       ref_item()->type() != Item::CACHE_ITEM && ref_type() != VIEW_REF &&
       table_name == nullptr && item_name.ptr()) {
     Simple_cstring str1 = ref_item()->real_item()->item_name;

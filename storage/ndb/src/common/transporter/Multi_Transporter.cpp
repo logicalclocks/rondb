@@ -68,12 +68,12 @@ Multi_Transporter::resetBuffers()
   send_checksum_state.init();
 }
 
-bool Multi_Transporter::connect_server_impl(NdbSocket &)
+bool Multi_Transporter::connect_server_impl(NdbSocket&&)
 {
   return true;
 }
 
-bool Multi_Transporter::connect_client_impl(NdbSocket &)
+bool Multi_Transporter::connect_client_impl(NdbSocket&&)
 {
   return true;
 }
@@ -90,6 +90,12 @@ Multi_Transporter::initTransporter()
 
 void
 Multi_Transporter::disconnectImpl()
+{
+  require(false);
+}
+
+void
+Multi_Transporter::releaseAfterDisconnect()
 {
   require(false);
 }

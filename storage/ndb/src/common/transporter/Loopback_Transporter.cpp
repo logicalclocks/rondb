@@ -61,7 +61,7 @@ Loopback_Transporter::connect_client(bool multi_connection)
     goto err;
   }
 
-  theSocket.init_from_new(pair[0]);
+  theSocket = NdbSocket{pair[0]};
   m_send_socket = pair[1];
 
   m_connected = true;
@@ -76,21 +76,19 @@ err:
 void
 Loopback_Transporter::disconnectImpl()
 {
-  ndb_socket_t pair[] = { theSocket.ndb_socket(), m_send_socket };
-
-  get_callback_obj()->lock_transporter(remoteNodeId, m_transporter_index);
-
-  theSocket.invalidate();
-  ndb_socket_invalidate(&m_send_socket);
-
-  get_callback_obj()->unlock_transporter(remoteNodeId, m_transporter_index);
-
-  if (ndb_socket_valid(pair[0]))
-    ndb_socket_close(pair[0]);
-
-  if (ndb_socket_valid(pair[1]))
-    ndb_socket_close(pair[1]);
+  Transporter::disconnectImpl();
+  if (ndb_socket_valid(m_send_socket))
+    ndb_socket_shutdown_both(m_send_socket);
 }
+
+void
+Loopback_Transporter::releaseAfterDisconnect()
+{
+  Transporter::releaseAfterDisconnect();
+  ndb_socket_close(m_send_socket);
+  ndb_socket_invalidate(&m_send_socket);
+}
+
 
 bool
 Loopback_Transporter::send_is_possible(int timeout_millisec) const

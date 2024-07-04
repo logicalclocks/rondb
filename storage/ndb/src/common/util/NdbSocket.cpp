@@ -20,6 +20,9 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
+
+#include <utility> // std::move
+
 #include "openssl/ssl.h"
 #include "openssl/err.h"
 
@@ -97,8 +100,11 @@ bool NdbSocket::associate(SSL * new_ssl)
   if(ssl) return false; // already associated
   if(new_ssl == nullptr) return false;
   if(! SSL_set_fd(new_ssl, s.s)) return false;
-  socket_table_set_ssl(s.s, new_ssl);
   ssl = new_ssl;
+
+  // SSL will need mutex protection:
+  assert(mutex == nullptr);
+  mutex = NdbMutex_Create();
   return true;
 }
 
@@ -107,7 +113,7 @@ X509 * NdbSocket::peer_certificate() const {
   return SSL_get_peer_certificate(ssl);
 }
 
-int NdbSocket::set_nonblocking(int on) {
+int NdbSocket::set_nonblocking(int on) const {
   if(ssl) {
     if(on) {
       SSL_clear_mode(ssl, SSL_MODE_AUTO_RETRY);
@@ -119,29 +125,17 @@ int NdbSocket::set_nonblocking(int on) {
       SSL_clear_mode(ssl, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     }
   }
-
   return ndb_socket_nonblock(s, on);
 }
 
-bool NdbSocket::enable_locking() {
-  if(! mutex) mutex = NdbMutex_Create();
-  return (bool) mutex;
-}
-
-bool NdbSocket::disable_locking() {
-  int r = mutex ? NdbMutex_Destroy(mutex) : 0;
-  mutex = nullptr;
-  return (r == 0);
-}
 
 /* NdbSocket private instance methods */
 
 // ssl_close
 void NdbSocket::ssl_close() {
-  Guard2 guard(mutex);     // acquire mutex if non-null
-  set_nonblocking(false);  // set to blocking
+  Guard guard(mutex);
+  ndb_socket_nonblock(s, false); // set blocking BIO
   SSL_shutdown(ssl);       // wait for close
-  socket_table_clear_ssl(s.s);
   SSL_free(ssl);
   ssl = nullptr;
 }
@@ -174,7 +168,6 @@ bool NdbSocket::ssl_handshake() {
 
   log_ssl_error(desc);
   close();
-  invalidate();
   return false;
 }
 
@@ -189,7 +182,11 @@ static ssize_t handle_ssl_error(int err, const char * fn) {
       return 0;           // caller should close the socket
     case SSL_ERROR_WANT_READ:
     case SSL_ERROR_WANT_WRITE:
-      return TLS_BUSY_TRY_AGAIN;
+      // FIXME Bug#3569340:
+      //
+      // Note that for upper transporter layers we expect either 0 or -1
+      // to be returned in case of failures.
+      return TLS_BUSY_TRY_AGAIN;  // <- return -1;
     case SSL_ERROR_SYSCALL:
       return -1;          // caller should check errno and close the socket
     case SSL_ERROR_ZERO_RETURN:
@@ -203,7 +200,7 @@ static ssize_t handle_ssl_error(int err, const char * fn) {
 
 bool NdbSocket::update_keys(bool req_peer) const {
   if(ssl && (SSL_version(ssl) == TLS1_3_VERSION)) {
-    Guard2 guard(mutex); // acquire mutex if non-null
+    Guard guard(mutex);
     int flag = req_peer ? SSL_KEY_UPDATE_REQUESTED
                         : SSL_KEY_UPDATE_NOT_REQUESTED;
     return SSL_key_update(ssl, flag);
@@ -224,12 +221,28 @@ bool NdbSocket::key_update_pending() const {
   return (bool) SSL_renegotiate_pending(ssl);
 }
 
+int NdbSocket::ssl_shutdown() const {
+  int err;
+  {
+    Guard guard(mutex);
+    ndb_socket_nonblock(s, false); // set blocking BIO
+    const int r = SSL_shutdown(ssl);
+    if (r >= 0) return 0;
+    err = SSL_get_error(ssl, r);
+  }
+  Debug_Log("SSL_shutdown(): ERR %d", err);
+  return handle_ssl_error(err, "SSL_shutdown");
+}
+
 ssize_t NdbSocket::ssl_recv(char *buf, size_t len) const
 {
   bool r;
   size_t nread = 0;
   {
-    Guard2 guard(mutex); // acquire mutex if non-null
+    Guard guard(mutex);
+    if(unlikely(ssl == nullptr || SSL_get_shutdown(ssl)))
+      return 0;
+
     r = SSL_read_ex(ssl, buf, len, &nread);
   }
 
@@ -244,7 +257,10 @@ ssize_t NdbSocket::ssl_peek(char *buf, size_t len) const
   bool r;
   size_t nread = 0;
   {
-    Guard2 guard(mutex); // acquire mutex if non-null
+    Guard guard(mutex);
+    if(unlikely(ssl == nullptr || SSL_get_shutdown(ssl)))
+      return 0;
+
     r = SSL_peek_ex(ssl, buf, len, &nread);
   }
 
@@ -261,8 +277,10 @@ ssize_t NdbSocket::ssl_send(const char * buf, size_t len) const
 
   /* Locked section */
   {
-    Guard2 guard(mutex);
-    if(unlikely(ssl == nullptr)) return -1; // conn. closed by another thread
+    Guard guard(mutex);
+    if(unlikely(ssl == nullptr || SSL_get_shutdown(ssl)))
+      return -1;
+
     if(SSL_write_ex(ssl, buf, len, &nwrite))
       return nwrite;
     err = SSL_get_error(ssl, 0);
@@ -282,82 +300,49 @@ bool NdbSocket::key_update_pending() const { return false; }
 ssize_t NdbSocket::ssl_recv(char *, size_t) const { return too_old; }
 ssize_t NdbSocket::ssl_peek(char *, size_t) const { return too_old; }
 ssize_t NdbSocket::ssl_send(const char *, size_t) const { return too_old; }
+int NdbSocket::ssl_shutdown() const { return -1; }
 #endif
 
 /*
  * writev()
  */
 
-/* consolidate() returns the number of consecutive iovec send buffers
-   that can be combined and sent together with total size < a 16KB TLS record.
-
-   MaxTlsRecord is set to some small amount less than 16KB.
+/* MaxTlsRecord is set to some small amount less than 16KB.
 
    MaxSingleBuffer is set to some size point where a record is so large that
-   consolidation is not worth the cost of the in-memory copy required.
+   it is not worth the cost of the in-memory copy to 'pack' it.
    12KB here is just a guess.
 */
 static constexpr const int MaxTlsRecord = 16000;
 static constexpr size_t MaxSingleBuffer = 12 * 1024;
 
-int NdbSocket::consolidate(const struct iovec *vec,
-                           const int nvec) const
-{
-  int n = 0;
-  size_t total = 0;
-  for(int i = 0; i < nvec ; i++) {
-    size_t len = vec[i].iov_len;
-    if(len > MaxSingleBuffer) break;
-    total += len;
-    if(total > MaxTlsRecord) break;
-    n++;
-  }
-  if(n == 0) n = 1;
-  return n;
-}
+static_assert(MaxSingleBuffer <= MaxTlsRecord);
 
 ssize_t NdbSocket::ssl_writev(const struct iovec *vec, int nvec) const
 {
-  while(nvec > 0 && vec->iov_len == 0) {
-    vec++;
-    nvec--;
-  }
+  if (unlikely(nvec <= 0)) return 0;
 
-  ssize_t total = 0;
-  while(nvec > 0) {
-    int sent;
-    int n = consolidate(vec, nvec);
-    if(n > 1) {
-      sent = send_several_iov(vec, n);
-    } else {
-      sent = ssl_send((const char *) vec[0].iov_base, vec[0].iov_len);
+  if (nvec == 1 || vec[0].iov_len > MaxSingleBuffer) {
+    return ssl_send((const char *)vec[0].iov_base, vec[0].iov_len);
+  } else {
+    // Pack iovec's into buff[], first iovec will always fit.
+    char buff[MaxTlsRecord];
+    size_t buff_len = vec[0].iov_len;
+    memcpy(buff, vec[0].iov_base, buff_len);
+
+    // Pack more iovec's into remaining buff[] space
+    for (int i = 1; i < nvec && buff_len < MaxTlsRecord; i++) {
+      const struct iovec & v = vec[i];
+      size_t cpy_len = v.iov_len;
+      if (buff_len + cpy_len > MaxTlsRecord) {
+        // Do a partial copy of last iovec[]
+        cpy_len = MaxTlsRecord - buff_len;
+      }
+      memcpy(buff + buff_len, v.iov_base, cpy_len);
+      buff_len += cpy_len;
     }
-
-    if(sent > 0) {
-      vec += n;
-      nvec -= n;
-      total += sent;
-    } else if(total > 0) {
-      break;  // return total bytes sent prior to error
-    } else {
-      return sent; // no data has been sent; return error code
-    }
+    return ssl_send(buff, buff_len);
   }
-  return total;
-}
-
-int NdbSocket::send_several_iov(const struct iovec * vec, int n) const {
-  size_t len = 0;
-  char buff[MaxTlsRecord];
-
-  for(int i = 0 ; i < n ; i++) {
-    const struct iovec & v = vec[i];
-    memcpy(buff + len, v.iov_base, v.iov_len);
-    len += v.iov_len;
-    assert(len <= MaxTlsRecord);
-  }
-
-  return ssl_send(buff, len);
 }
 
 
@@ -446,7 +431,8 @@ int NdbSocket::ssl_readln(int timeout, int * elapsed,
     Timer t(elapsed);
     result = poll_readable(timeout);
   }
-  if(result <= 0) return -1;
+  if(result == 0) return 0; // timeout
+  if(result < 0) return -1;
 
   /* Read until a complete line is available, eof, or timeout */
   TlsLineReader reader(*this, buf, len, heldMutex);
@@ -463,6 +449,7 @@ int NdbSocket::ssl_readln(int timeout, int * elapsed,
   } while(! (reader.error() || (*elapsed >= timeout)));
 
   Debug_Log("ssl_readln => -1 [ELAPSED: %d]", *elapsed);
+  if (*elapsed >= timeout) return 0;
   return -1;
 }
 

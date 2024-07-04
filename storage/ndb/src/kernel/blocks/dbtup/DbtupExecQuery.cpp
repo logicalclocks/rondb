@@ -512,6 +512,7 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
 
   if (unlikely(req_struct->m_reorg != ScanFragReq::REORG_ALL))
   {
+    ndbassert(req_struct->m_reorg != ScanFragReq::REORG_MOVED_COPY);
     const Uint32 moved = bits & Tuple_header::REORG_MOVE;
     if (! ((req_struct->m_reorg == ScanFragReq::REORG_NOT_MOVED &&
             moved == 0) ||
@@ -2102,30 +2103,32 @@ int Dbtup::handleReadReq(Signal* signal,
 }
 
 static
-void
-handle_reorg(Dbtup::KeyReqStruct * req_struct,
-             Dbtup::Fragrecord::FragState state)
+Uint32
+get_reorg_flag(Dbtup::KeyReqStruct * req_struct,
+               Dbtup::Fragrecord::FragState state)
 {
   Uint32 reorg = req_struct->m_reorg;
   switch(state){
-    case Dbtup::Fragrecord::FS_FREE:
-    case Dbtup::Fragrecord::FS_REORG_NEW:
-    case Dbtup::Fragrecord::FS_REORG_COMMIT_NEW:
-    case Dbtup::Fragrecord::FS_REORG_COMPLETE_NEW:
-      return;
-    case Dbtup::Fragrecord::FS_REORG_COMMIT:
-    case Dbtup::Fragrecord::FS_REORG_COMPLETE:
-      if (reorg != ScanFragReq::REORG_NOT_MOVED)
-        return;
-      break;
-    case Dbtup::Fragrecord::FS_ONLINE:
-      if (reorg != ScanFragReq::REORG_MOVED)
-        return;
-      break;
-    default:
-      return;
+  case Dbtup::Fragrecord::FS_FREE:
+  case Dbtup::Fragrecord::FS_REORG_NEW:
+  case Dbtup::Fragrecord::FS_REORG_COMMIT_NEW:
+  case Dbtup::Fragrecord::FS_REORG_COMPLETE_NEW:
+    return 0;
+  case Dbtup::Fragrecord::FS_REORG_COMMIT:
+  case Dbtup::Fragrecord::FS_REORG_COMPLETE:
+    if (reorg != ScanFragReq::REORG_NOT_MOVED)
+      return 0;
+    break;
+  case Dbtup::Fragrecord::FS_ONLINE:
+    if (reorg != ScanFragReq::REORG_MOVED &&
+        reorg != ScanFragReq::REORG_MOVED_COPY)
+      return 0;
+    break;
+  default:
+    return 0;
   }
-  req_struct->m_tuple_ptr->m_header_bits |= Dbtup::Tuple_header::REORG_MOVE;
+
+  return Dbtup::Tuple_header::REORG_MOVE;
 }
 
 /* ---------------------------------------------------------------- */
@@ -2303,7 +2306,8 @@ int Dbtup::handleUpdateReq(Signal* signal,
 
   if (req_struct->m_reorg != ScanFragReq::REORG_ALL)
   {
-    handle_reorg(req_struct, regFragPtr->fragStatus);
+    req_struct->m_tuple_ptr->m_header_bits |=
+      get_reorg_flag(req_struct, regFragPtr->fragStatus);
   }
 
   req_struct->m_tuple_ptr->set_tuple_version(tup_version);
@@ -3172,6 +3176,13 @@ int Dbtup::handleInsertReq(Signal* signal,
 
       disk_ptr->set_base_record_ref(ref);
     }
+
+    if (req_struct->m_reorg != ScanFragReq::REORG_ALL)
+    {
+      req_struct->m_tuple_ptr->m_header_bits |=
+        get_reorg_flag(req_struct, regFragPtr->fragStatus);
+    }
+
     setChecksum(req_struct->m_tuple_ptr, regTabPtr);
     /**
      * At this point we hold the fragment mutex to ensure that TUP scans
@@ -3187,6 +3198,7 @@ int Dbtup::handleInsertReq(Signal* signal,
   }
   else 
   {
+    /* ! mem_insert */
     if (ERROR_INSERTED(4020))
     {
       c_lqh->upgrade_to_exclusive_frag_access();
@@ -3211,11 +3223,23 @@ int Dbtup::handleInsertReq(Signal* signal,
      * finalizing the writes on the row.
      */
     m_base_header_bits &= ~(Uint32)Tuple_header::FREE;
-  }
 
-  if (req_struct->m_reorg != ScanFragReq::REORG_ALL)
-  {
-    handle_reorg(req_struct, regFragPtr->fragStatus);
+    if (req_struct->m_reorg != ScanFragReq::REORG_ALL)
+    {
+      m_base_header_bits |=
+        get_reorg_flag(req_struct, regFragPtr->fragStatus);
+    }
+
+    /**
+     * Fragment-locking :
+     *   No need to protect this checksum write, we only perform it here for
+     *   non-first inserts since first insert operations are handled above
+     *   while holding the mutex. For non-first operations the row is not
+     *   visible to other threads at this time, copy rows are not even visible to
+     *   TUP scans, thus no need to protect it here. The row becomes visible
+     *   when inserted into the active list after returning from this call.
+     */
+    setChecksum(req_struct->m_tuple_ptr, regTabPtr);
   }
 
   /* Have been successful with disk + mem, update ACC to point to
@@ -3238,19 +3262,7 @@ int Dbtup::handleInsertReq(Signal* signal,
   {
     * accminupdateptr = 0; // No accminupdate should be performed
   }
-  if (!mem_insert)
-  {
-    /**
-     * No need to protect this checksum write, we only perform it here for
-     * non-first inserts since first insert operations are handled above
-     * while holding the mutex. For non-first operations the row is not
-     * visible to others at this time, copy rows are not even visible to
-     * TUP scans, thus no need to protect it here. The row becomes visible
-     * when inserted into the active list after returning from this call.
-     */
-    jamDebug();
-    setChecksum(req_struct->m_tuple_ptr, regTabPtr);
-  }
+
   set_tuple_state(regOperPtr.p, TUPLE_PREPARED);
   return 0;
 

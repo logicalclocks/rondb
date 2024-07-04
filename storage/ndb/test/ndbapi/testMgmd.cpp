@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
 
    This program is free software; you can redistribute it and/or modify
@@ -1529,7 +1529,7 @@ runTestUnresolvedHosts1(NDBT_Context* ctx, NDBT_Step* step)
   Mgmd mgmd(1);
   int exit_value;
   CHECK(mgmd.start_from_config_ini(wd.path()));
-  CHECK(mgmd.wait(exit_value, 50));
+  CHECK(mgmd.wait(exit_value));
   CHECK(exit_value == 1);
   return NDBT_OK;
 }
@@ -1609,7 +1609,14 @@ runTestUnresolvedHosts2(NDBT_Context* ctx, NDBT_Step* step)
   Ndbd ndbd2(2);
   CHECK(ndbd2.start(wd.path(), mgmd.connectstring(config)));
   CHECK(ndbd2.wait(ndbd_exit_code, 200) == 0);   // first 20-second wait
-  CHECK(ndbd2.wait(ndbd_exit_code, 200) == 1);   // second 20-second wait
+  CHECK(ndbd2.wait(ndbd_exit_code, 400) == 1);   // second 20-second wait
+  CHECK(ndbd1.stop());
+  CHECK(mgmd.stop());
+
+  BaseString mgmdlog = path(wd.path(), "ndb_145_cluster.log", nullptr);
+  Vector<BaseString> search_list;
+  search_list.push_back("Unable to allocate nodeid for NDB");
+  CHECK(Print_find_in_file(mgmdlog.c_str(), search_list) == true);
 
   return NDBT_OK;
 }

@@ -146,7 +146,6 @@ SHM_Transporter::~SHM_Transporter()
 {
   DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %d\n",
                 localNodeId, remoteNodeId, __LINE__));
-  doDisconnect();
 }
 
 void
@@ -322,13 +321,13 @@ SHM_Transporter::setupBuffers()
 }
 
 bool
-SHM_Transporter::connect_server_impl(NdbSocket & sockfd)
+SHM_Transporter::connect_server_impl(NdbSocket&& sockfd)
 {
   DBUG_ENTER("SHM_Transporter::connect_server_impl");
   DEBUG_FPRINTF((stderr, "(%u)connect_server_impl(%u)\n",
                  localNodeId, remoteNodeId));
-  SecureSocketOutputStream s_output(sockfd);
-  SecureSocketInputStream s_input(sockfd);
+  SocketOutputStream s_output(sockfd);
+  SocketInputStream s_input(sockfd);
 
   // Create
   if (!_shmSegCreated)
@@ -420,30 +419,28 @@ SHM_Transporter::connect_server_impl(NdbSocket & sockfd)
   }
   DEBUG_FPRINTF((stderr, "(%u)set_socket()(%u)\n",
                  localNodeId, remoteNodeId));
-  set_socket(sockfd);
+  set_socket(std::move(sockfd));
   DBUG_RETURN(r);
 }
 
 void
-SHM_Transporter::set_socket(NdbSocket & sock)
+SHM_Transporter::set_socket(NdbSocket&& sock)
 {
   set_get(sock.ndb_socket(), IPPROTO_TCP, TCP_NODELAY, "TCP_NODELAY", 1);
   set_get(sock.ndb_socket(), SOL_SOCKET, SO_KEEPALIVE, "SO_KEEPALIVE", 1);
   sock.set_nonblocking(true);
-  get_callback_obj()->lock_transporter(remoteNodeId, m_transporter_index);
-  NdbSocket::transfer(theSocket, sock);
+  theSocket = std::move(sock);
   send_checksum_state.init();
-  get_callback_obj()->unlock_transporter(remoteNodeId, m_transporter_index);
 }
 
 bool
-SHM_Transporter::connect_client_impl(NdbSocket & sockfd)
+SHM_Transporter::connect_client_impl(NdbSocket&& sockfd)
 {
   DBUG_ENTER("SHM_Transporter::connect_client_impl");
   DEBUG_FPRINTF((stderr, "(%u)connect_client_impl(%u)\n",
                  localNodeId, remoteNodeId));
-  SecureSocketInputStream s_input(sockfd);
-  SecureSocketOutputStream s_output(sockfd);
+  SocketInputStream s_input(sockfd);
+  SocketOutputStream s_output(sockfd);
   char buf[256];
 
   // Wait for server to create and attach
@@ -551,7 +548,7 @@ SHM_Transporter::connect_client_impl(NdbSocket & sockfd)
                            localNodeId, __LINE__, remoteNodeId));
     detach_shm(false);
   }
-  set_socket(sockfd);
+  set_socket(std::move(sockfd));
   DEBUG_FPRINTF((stderr, "(%u)set_socket(%u)\n",
                  localNodeId, remoteNodeId));
   DBUG_RETURN(r);
@@ -611,22 +608,6 @@ void SHM_Transporter::setupBuffersUndone()
     NdbMutex_Unlock(serverMutex);
     NdbMutex_Unlock(clientMutex);
   }
-}
-
-void
-SHM_Transporter::disconnect_socket()
-{
-  get_callback_obj()->lock_transporter(remoteNodeId, m_transporter_index);
-
-  if(theSocket.is_valid())
-  {
-    if(theSocket.close() < 0) {
-      report_error(TE_ERROR_CLOSING_SOCKET);
-    }
-  }
-  theSocket.invalidate();
-  setupBuffersUndone();
-  get_callback_obj()->unlock_transporter(remoteNodeId, m_transporter_index);
 }
 
 /**

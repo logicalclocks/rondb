@@ -36,7 +36,7 @@ using namespace std::chrono_literals;
 using namespace std::string_literals;
 using testing::StartsWith;
 
-class RouterConfigOwerwriteTest : public RouterComponentTest {
+class RouterConfigOwerwriteTest : public RouterComponentBootstrapTest {
  protected:
   auto &launch_router(const std::vector<std::string> &params,
                       int expected_exit_code,
@@ -65,37 +65,7 @@ class RouterConfigOwerwriteTest : public RouterComponentTest {
                                                        });
   }
 
-  ProcessWrapper &launch_router_for_bootstrap(
-      const std::vector<std::string> &params,
-      int expected_exit_code = EXIT_SUCCESS) {
-    return ProcessManager::launch_router(
-        params, expected_exit_code, /*catch_stderr=*/true, /*with_sudo=*/false,
-        /*wait_for_notify_ready=*/-1s);
-  }
-
-  static bool wait_file_exists(const std::string &file,
-                               std::chrono::milliseconds timeout = 5s) {
-    if (getenv("WITH_VALGRIND")) {
-      timeout *= 10;
-    }
-
-    const auto MSEC_STEP = 20ms;
-    bool found = false;
-    using clock_type = std::chrono::steady_clock;
-    const auto end = clock_type::now() + timeout;
-    do {
-      found = mysql_harness::Path(file).exists();
-      if (!found) {
-        auto step = std::min(timeout, MSEC_STEP);
-        RouterComponentTest::sleep_for(step);
-      }
-    } while (!found && clock_type::now() < end);
-
-    return found;
-  }
-
   TempDirectory conf_dir{"conf"};
-  const std::string simple_trace_file{get_data_dir().join("my_port.js").str()};
 };
 
 class BootstrapDebugLevelOkTest
@@ -291,7 +261,8 @@ TEST_F(RouterConfigOwerwriteTest, OverwriteRoutingPort) {
   const std::string overwrite_param =
       "--routing:A.bind_port=" + std::to_string(router_port_overwrite);
 
-  launch_mysql_server_mock(simple_trace_file, server_port, EXIT_SUCCESS);
+  launch_mysql_server_mock(get_data_dir().join("my_port.js").str(), server_port,
+                           EXIT_SUCCESS);
 
   launch_router({"-c", conf_file, overwrite_param}, EXIT_SUCCESS, 5s);
 
@@ -312,7 +283,8 @@ TEST_F(RouterConfigOwerwriteTest, OverwriteOptionMissingInTheConfig) {
 
   const std::string overwrite_param = "--routing:A.max_connect_errors=1";
 
-  launch_mysql_server_mock(simple_trace_file, server_port, EXIT_SUCCESS);
+  launch_mysql_server_mock(get_data_dir().join("my_port.js").str(), server_port,
+                           EXIT_SUCCESS);
 
   launch_router({"-c", conf_file, overwrite_param}, EXIT_SUCCESS, 5s);
 
@@ -343,7 +315,8 @@ TEST_P(OverwriteIgnoreUnknownOptionTest, OverwriteIgnoreUnknownOption) {
 
   const std::string overwrite_param = GetParam();
 
-  launch_mysql_server_mock(simple_trace_file, server_port, EXIT_SUCCESS);
+  launch_mysql_server_mock(get_data_dir().join("my_port.js").str(), server_port,
+                           EXIT_SUCCESS);
 
   launch_router({"-c", conf_file, overwrite_param,
                  "--DEFAULT.unknown_config_option", "warning"},

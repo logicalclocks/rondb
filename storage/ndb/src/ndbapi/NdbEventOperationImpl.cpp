@@ -1054,6 +1054,7 @@ NdbEventOperationImpl::receive_event()
   const Uint32* aAttrPtr = m_data_item->ptr[0].p;
   const Uint32* aAttrEndPtr = aAttrPtr + m_data_item->ptr[0].sz;
   const Uint32* aDataPtr = m_data_item->ptr[1].p;
+  const Uint32* aDataEndPtr = m_data_item->ptr[1].p + m_data_item->ptr[1].sz;
 
   DBUG_DUMP_EVENT(
       "after", (const char*)m_data_item->ptr[1].p, m_data_item->ptr[1].sz * 4);
@@ -1063,7 +1064,19 @@ NdbEventOperationImpl::receive_event()
   // copy data into the RecAttr's
   // we assume that the respective attribute lists are sorted
 
-  // first the pk's
+  // Note:
+  // - The attr data in ptr[1] section contain only the attr value.
+  //   The header section in ptr[0] contain its header.
+  // - In the ptr[2] section, the headers preceed each attr value.
+  // - The same PK-attr may be sent twice:
+  //   1. Always as part of the PK-value, extracted as first part
+  //      of ptr[1] section.
+  //   2. Optional as part of the BEFORE value as well if it changed.
+  // - Retrieved BEFORE/AFTER-PK values are first set to the *same*
+  //   value from the PK-value, then BEFORE-PK is replaced with the
+  //   PK-values in BEFORE if found.
+  //
+  // First the pk's
   {
     NdbRecAttr *tAttr= theFirstPkAttrs[0];
     NdbRecAttr *tAttr1= theFirstPkAttrs[1];
@@ -1075,7 +1088,7 @@ NdbEventOperationImpl::receive_event()
 	     AttributeHeader(*aAttrPtr).getAttributeId());
       receive_data(tAttr, aDataPtr, tDataSz);
       if (!is_insert)
-	receive_data(tAttr1, aDataPtr, tDataSz);
+        receive_data(tAttr1, aDataPtr, tDataSz);
       else
         tAttr1->setUNDEFINED(); // do not leave unspecified
       tAttr1= tAttr1->next();
@@ -1085,88 +1098,90 @@ NdbEventOperationImpl::receive_event()
       tAttr= tAttr->next();
     }
   }
-  
-  NdbRecAttr *tWorkingRecAttr = theFirstDataAttrs[0];
-  Uint32 tRecAttrId;
-  Uint32 tAttrId;
-  Uint32 tDataSz;
-  int hasSomeData= (operation != NdbDictionary::Event::_TE_UPDATE) ||
-    m_allow_empty_update;
-  while ((aAttrPtr < aAttrEndPtr) && (tWorkingRecAttr != nullptr)) {
-    tRecAttrId = tWorkingRecAttr->attrId();
-    tAttrId = AttributeHeader(*aAttrPtr).getAttributeId();
-    tDataSz = AttributeHeader(*aAttrPtr).getByteSize();
-    
-    while (tAttrId > tRecAttrId) {
-      DBUG_PRINT_EVENT("info",("undef [%u] %u 0x%x [%u] 0x%x",
-                               tAttrId, tDataSz, *aDataPtr, tRecAttrId, aDataPtr));
-      tWorkingRecAttr->setUNDEFINED();
-      tWorkingRecAttr = tWorkingRecAttr->next();
-      if (tWorkingRecAttr == nullptr)
-	break;
-      tRecAttrId = tWorkingRecAttr->attrId();
-    }
-    if (tWorkingRecAttr == nullptr)
-      break;
-    
-    if (tAttrId == tRecAttrId) {
-      hasSomeData=1;
-      
-      DBUG_PRINT_EVENT("info",("set [%u] %u 0x%x [%u] 0x%x",
-                               tAttrId, tDataSz, *aDataPtr, tRecAttrId, aDataPtr));
-      
-      receive_data(tWorkingRecAttr, aDataPtr, tDataSz);
-      tWorkingRecAttr = tWorkingRecAttr->next();
-    }
-    aAttrPtr++;
-    aDataPtr += (tDataSz + 3) >> 2;
-  }
-    
-  while (tWorkingRecAttr != nullptr) {
-    tRecAttrId = tWorkingRecAttr->attrId();
-    //printf("set undefined [%u] %u %u [%u]\n",
-    //       tAttrId, tDataSz, *aDataPtr, tRecAttrId);
-    tWorkingRecAttr->setUNDEFINED();
-    tWorkingRecAttr = tWorkingRecAttr->next();
-  }
-  
-  tWorkingRecAttr = theFirstDataAttrs[1];
-  aDataPtr = m_data_item->ptr[2].p;
-  const Uint32* aDataEndPtr = aDataPtr + m_data_item->ptr[2].sz;
-  while ((aDataPtr < aDataEndPtr) && (tWorkingRecAttr != nullptr)) {
-    tRecAttrId = tWorkingRecAttr->attrId();
-    tAttrId = AttributeHeader(*aDataPtr).getAttributeId();
-    tDataSz = AttributeHeader(*aDataPtr).getByteSize();
-    aDataPtr++;
-    while (tAttrId > tRecAttrId) {
-      tWorkingRecAttr->setUNDEFINED();
-      tWorkingRecAttr = tWorkingRecAttr->next();
-      if (tWorkingRecAttr == nullptr)
-	break;
-      tRecAttrId = tWorkingRecAttr->attrId();
-    }
-    if (tWorkingRecAttr == nullptr)
-      break;
-    if (tAttrId == tRecAttrId) {
-      assert(!m_eventImpl->m_tableImpl->getColumn(tRecAttrId)->getPrimaryKey());
-      hasSomeData=1;
-      
-      receive_data(tWorkingRecAttr, aDataPtr, tDataSz);
-      tWorkingRecAttr = tWorkingRecAttr->next();
-    }
-    aDataPtr += (tDataSz + 3) >> 2;
-  }
-  while (tWorkingRecAttr != nullptr) {
-    tWorkingRecAttr->setUNDEFINED();
-    tWorkingRecAttr = tWorkingRecAttr->next();
-  }
-  
-  if (hasSomeData)
-  {
-    DBUG_RETURN_EVENT(1);
-  }
 
-  DBUG_RETURN_EVENT(0);
+  bool hasSomeData= (operation != NdbDictionary::Event::_TE_UPDATE);
+
+  // AFTER values
+  {
+    NdbRecAttr *dataRecAttr = theFirstDataAttrs[0];
+    while ((aAttrPtr < aAttrEndPtr) && (dataRecAttr != nullptr)) {
+      Uint32 tRecAttrId = dataRecAttr->attrId();
+      const Uint32 tAttrId = AttributeHeader(*aAttrPtr).getAttributeId();
+      const Uint32 tDataSz = AttributeHeader(*aAttrPtr).getByteSize();
+      assert(m_eventImpl->m_tableImpl->getColumn(tAttrId) == nullptr || // Unknown column
+             !m_eventImpl->m_tableImpl->getColumn(tAttrId)->getPrimaryKey());
+
+      while (tAttrId > tRecAttrId) {
+        DBUG_PRINT_EVENT("info",("undef [%u] %u 0x%x [%u] 0x%x",
+                                tAttrId, tDataSz, *aDataPtr, tRecAttrId, aDataPtr));
+        dataRecAttr->setUNDEFINED();
+        dataRecAttr = dataRecAttr->next();
+        if (dataRecAttr == nullptr)
+          break;
+        tRecAttrId = dataRecAttr->attrId();
+      }
+      if (tAttrId == tRecAttrId) {
+        hasSomeData = true;
+        DBUG_PRINT_EVENT("info",("set [%u] %u 0x%x [%u] 0x%x",
+                                 tAttrId, tDataSz, *aDataPtr, tRecAttrId, aDataPtr));
+        receive_data(dataRecAttr, aDataPtr, tDataSz);
+        dataRecAttr = dataRecAttr->next();
+      }
+      aAttrPtr++;
+      aDataPtr += (tDataSz + 3) >> 2;
+      assert(aDataPtr <= aDataEndPtr);
+    }
+    while (dataRecAttr != nullptr) {
+      dataRecAttr->setUNDEFINED();
+      dataRecAttr = dataRecAttr->next();
+    }
+  }  // end AFTER-value
+
+  // BEFORE values, possibly with PK values as well
+  {
+    NdbRecAttr *dataRecAttr = theFirstDataAttrs[1];
+    NdbRecAttr *pkRecAttr = theFirstPkAttrs[1];
+    aDataPtr = m_data_item->ptr[2].p;
+    aDataEndPtr = aDataPtr + m_data_item->ptr[2].sz;
+    while (aDataPtr < aDataEndPtr) {
+      const Uint32 tAttrId = AttributeHeader(*aDataPtr).getAttributeId();
+      const Uint32 tDataSz = AttributeHeader(*aDataPtr).getByteSize();
+      aDataPtr++;
+
+      // recAttr is either a PK-BEFORE or a DATA-BEFORE-VALUE
+      NdbRecAttr **recAttr;
+      const NdbColumnImpl* const col = m_eventImpl->m_tableImpl->getColumn(tAttrId);
+      if (col && col->getPrimaryKey()) {
+        recAttr = &pkRecAttr;
+      } else {
+        recAttr = &dataRecAttr;
+      }
+      if ((*recAttr) != nullptr) {
+        Uint32 tRecAttrId = (*recAttr)->attrId();
+        while (tAttrId > tRecAttrId) {
+          if (col && !col->getPrimaryKey()) {
+            // PK-values already set, do not UNDEFINE
+            (*recAttr)->setUNDEFINED();
+          }
+          (*recAttr) = (*recAttr)->next();
+          if ((*recAttr) == nullptr)
+            break;
+          tRecAttrId = (*recAttr)->attrId();
+        }
+        if (tAttrId == tRecAttrId) {
+          hasSomeData = 1;
+          receive_data((*recAttr), aDataPtr, tDataSz);
+          (*recAttr) = (*recAttr)->next();
+        }
+      }
+      aDataPtr += (tDataSz + 3) >> 2;
+    }
+    while (dataRecAttr != nullptr) {
+      dataRecAttr->setUNDEFINED();
+      dataRecAttr = dataRecAttr->next();
+    }
+  }
+  DBUG_RETURN_EVENT(hasSomeData || m_allow_empty_update);
 }
 
 NdbDictionary::Event::TableEvent 
@@ -1899,29 +1914,31 @@ NdbEventBuffer::isConsistentGCI(Uint64 gci)
   DBUG_RETURN(true);
 }
 
-NdbEventOperationImpl*
-NdbEventBuffer::getEpochEventOperations(Uint32* iter, Uint32* event_types, Uint32* cumulative_any_value)
-{
-  DBUG_ENTER("NdbEventBuffer::getEpochEventOperations");
-  EpochData *epoch = m_event_queue.first_epoch();
+NdbEventOperationImpl *
+NdbEventBuffer::getEpochEventOperations(Uint32 *iter,
+                                        Uint32 &event_types,
+                                        Uint32 &cumulative_any_value,
+                                        Uint32 &filtered_any_value) const {
+  DBUG_TRACE;
+  const EpochData *const epoch = m_event_queue.first_epoch();
   while (*iter < epoch->m_gci_op_count)
   {
-    Gci_op g = epoch->m_gci_op_list[(*iter)++];
-    if (g.op->m_state == NdbEventOperation::EO_EXECUTING)
-    {
-      if (event_types != nullptr)
-        *event_types = g.event_types;
-      if (cumulative_any_value != nullptr)
-        *cumulative_any_value = g.cumulative_any_value;
-      DBUG_PRINT("info", ("gci: %u  g.op: %p  g.event_types: 0x%lx"
-                          "g.cumulative_any_value: 0x%lx 0x%x %s",
-          (unsigned) epoch->m_gci.getGCI(), g.op,
-          (long) g.event_types, (long) g.cumulative_any_value,
-          m_ndb->getReference(), m_ndb->getNdbObjectName()));
-      DBUG_RETURN(g.op);
+    const Gci_op gci_op = epoch->m_gci_op_list[(*iter)++];
+    if (gci_op.op->m_state == NdbEventOperation::EO_EXECUTING) {
+      event_types = gci_op.event_types;
+      cumulative_any_value = gci_op.cumulative_any_value;
+      filtered_any_value = gci_op.filtered_any_value;
+      DBUG_PRINT("info",
+                 ("gci: %u  op: %p  event_types: 0x%lx"
+                  "cumulative_any_value: 0x%lx "
+                  "reference: '0x%x %s'",
+                  (unsigned)epoch->m_gci.getGCI(), gci_op.op, (long)event_types,
+                  (long)cumulative_any_value,
+                  m_ndb->getReference(), m_ndb->getNdbObjectName()));
+      return gci_op.op;
     }
   }
-  DBUG_RETURN(NULL);
+  return nullptr;
 }
 
 void
@@ -3359,13 +3376,17 @@ NdbEventBuffer::insertDataL(NdbEventOperationImpl *op,
         // XXX fix by doing merge at end of epoch (extra mem cost)
         {
           Uint32 any_value = sdata->anyValue;
-          Gci_op g = { op, (1U << operation), any_value };
+          Uint32 filtered = op->m_any_value_filter(any_value);
+          Gci_op g = { op, (1U << operation), any_value, filtered };
           bucket->add_gci_op(g);
         }
         {
           Uint32 any_value = data->sdata->anyValue;
+          Uint32 filtered = op->m_any_value_filter(any_value);
           Gci_op g = { op, 
-                       (1U << SubTableData::getOperation(data->sdata->requestInfo)), any_value};
+                       (1U << SubTableData::getOperation(data->sdata->requestInfo)),
+                       any_value,
+                       filtered };
           bucket->add_gci_op(g);
         }
       }
@@ -4167,9 +4188,12 @@ NdbEventBuffer::move_data()
 void
 Gci_container::append_data(EventBufDataHead *data)
 {
-  Gci_op g = {data->m_event_op,
-              1U << SubTableData::getOperation(data->sdata->requestInfo),
-              data->sdata->anyValue};
+  const Uint32 any_value = data->sdata->anyValue;
+  const Uint32 filtered = data->m_event_op->m_any_value_filter(any_value);
+  Gci_op g = { data->m_event_op,
+               1U << SubTableData::getOperation(data->sdata->requestInfo),
+               any_value,
+               filtered };
   add_gci_op(g);
 
   data->m_next = nullptr;
@@ -4191,14 +4215,15 @@ Gci_container::add_gci_op(Gci_op g)
   DBUG_ENTER_EVENT("Gci_container::add_gci_op");
   DBUG_PRINT_EVENT("info", ("p.op: %p  g.event_types: %x g.cumulative_any_value: %x", g.op, g.event_types, g.cumulative_any_value));
   assert(g.op != nullptr && g.op->theMainOp == nullptr); // as in nextEvent
-  Uint32 i;
-  for (i = 0; i < m_gci_op_count; i++) {
+  Uint32 i = 0;
+  for (; i < m_gci_op_count; i++) {
     if (m_gci_op_list[i].op == g.op)
       break;
   }
   if (i < m_gci_op_count) {
     m_gci_op_list[i].event_types |= g.event_types;
     m_gci_op_list[i].cumulative_any_value &= g.cumulative_any_value;
+    m_gci_op_list[i].filtered_any_value |= g.filtered_any_value;
   } else {
     if (m_gci_op_count == m_gci_op_alloc) {
       Uint32 n = 1 + 2 * m_gci_op_alloc;

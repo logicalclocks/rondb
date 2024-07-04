@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 
 #include "ndb_config.h"
+#include "util/require.h"
 
 #ifdef HAVE_POLL_H
 #include <poll.h>
@@ -82,6 +83,12 @@ int ndb_socket_configure_reuseaddr(ndb_socket_t s, int enable)
 }
 
 static inline
+int ndb_socket_shutdown_both(ndb_socket_t s)
+{
+  return shutdown(s.s, SHUT_RDWR);
+}
+
+static inline
 int ndb_socket_close(ndb_socket_t s)
 {
   return close(s.s);
@@ -108,20 +115,38 @@ int ndb_socket_nonblock(ndb_socket_t s, int enable)
 }
 
 static inline
+bool ndb_is_socket(ndb_socket_t s [[maybe_unused]])
+{
+#if defined(VM_TRACE) || !defined(NDEBUG) || defined(ERROR_INSERT)
+  if (s.s == INVALID_SOCKET) return true;
+  struct stat sb;
+  if (fstat(s.s, &sb) == -1) return true;
+  if((sb.st_mode & S_IFMT) == S_IFSOCK) return true;
+  fprintf(stderr,"FATAL ERROR: %s: %u: Handle is not a socket: fd=%d file type=%o\n",__func__,__LINE__,s.s,sb.st_mode&S_IFMT);
+  return false;
+#else
+  return true;
+#endif
+}
+
+static inline
 ssize_t ndb_recv(ndb_socket_t s, char* buf, size_t len, int flags)
 {
+  require(ndb_is_socket(s));
   return recv(s.s, buf, len, flags);
 }
 
 static inline
 ssize_t ndb_send(ndb_socket_t s, const char* buf, size_t len, int flags)
 {
+  require(ndb_is_socket(s));
   return send(s.s, buf, len, flags);
 }
 
 static inline
 ssize_t ndb_socket_writev(ndb_socket_t s, const struct iovec *iov, int iovcnt)
 {
+  require(ndb_is_socket(s));
   return writev(s.s, iov, iovcnt);
 }
 

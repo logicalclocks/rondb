@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2022, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -176,12 +176,13 @@ static struct my_option options[] =
 
 class EchoSession : public SocketServer::Session {
 public:
-  EchoSession(ndb_socket_t s, bool sink, SSL_CTX * ctx) :
-    SocketServer::Session(s),
+  EchoSession(NdbSocket&& s, bool sink, SSL_CTX * ctx) :
+    SocketServer::Session(m_secure_socket),
     m_sink(sink),
     m_ssl_ctx(ctx),
-    m_secure_socket(s, NdbSocket::From::New) {}
+    m_secure_socket(std::move(s)) {}
   void runSession() override;
+  void stopSession() override;
 private:
   bool m_sink;
   SSL_CTX * m_ssl_ctx;
@@ -191,8 +192,8 @@ private:
 class PlainService : public SocketServer::Service {
 public:
   PlainService(bool sink) : m_sink(sink) {}
-  EchoSession * newSession(ndb_socket_t s) override {
-    return new EchoSession(s, m_sink, nullptr);
+  EchoSession * newSession(NdbSocket&& s) override {
+    return new EchoSession(std::move(s), m_sink, nullptr);
   }
 private:
   const bool m_sink;
@@ -201,8 +202,9 @@ private:
 class TlsService : public SocketServer::Service {
 public:
   TlsService(bool sink);
-  EchoSession * newSession(ndb_socket_t s) override {
-    return new EchoSession(s, m_sink, m_ssl_ctx);
+  ~TlsService() override { if (m_ssl_ctx) SSL_CTX_free(m_ssl_ctx); }
+  EchoSession * newSession(NdbSocket&& s) override {
+    return new EchoSession(std::move(s), m_sink, m_ssl_ctx);
   }
   static int on_ssl_verify(int, X509_STORE_CTX *);
 
@@ -252,6 +254,9 @@ TlsService::TlsService(bool sink) : m_sink(sink) {
   /* Set the cipher list */
   r = SSL_CTX_set_cipher_list(m_ssl_ctx, cipher_list);
   require(r);
+
+  EVP_PKEY_free(tls_key);
+  X509_free(tls_cert);
 }
 
 int TlsService::on_ssl_verify(int r, X509_STORE_CTX *) {
@@ -292,6 +297,10 @@ void EchoSession::runSession() {
   }
 }
 
+void EchoSession::stopSession() {
+  m_stop = true;
+  m_secure_socket.close();
+}
 
 /*** Client ****/
 
@@ -320,34 +329,34 @@ Client::Client(const char * hostname) : SocketClient(nullptr),
 }
 
 NdbSocket & Client::connect_plain() {
+  require(!m_plain_socket.is_valid());
   ndb_sockaddr server_addr;
   if (Ndb_getAddr(&server_addr, m_server_host))
   {
     puts("Plain connection lookup server address failed.");
-    m_plain_socket.invalidate();
     return m_plain_socket;
   }
   server_addr.set_port(opt_port);
   if (!init(server_addr.get_address_family(), false))
     return m_plain_socket;
-  connect(m_plain_socket, server_addr);
+  m_plain_socket = connect(server_addr);
   ndb_setsockopt(m_plain_socket.ndb_socket(), IPPROTO_TCP, TCP_NODELAY,
                  & opt_tcp_no_delay);
   return m_plain_socket;
 }
 
 NdbSocket & Client::connect_tls() {
+  require(!m_tls_socket.is_valid());
   ndb_sockaddr server_addr;
   if (Ndb_getAddr(&server_addr, m_server_host))
   {
     puts("TLS connection lookup server address failed.");
-    m_tls_socket.invalidate();
     return m_tls_socket;
   }
   server_addr.set_port(opt_port + 1);
   if (!init(server_addr.get_address_family(), false))
     return m_tls_socket;
-  connect(m_tls_socket, server_addr);
+  m_tls_socket = connect(server_addr);
 
   if(! m_tls_socket.is_valid())
     puts("Could not connect to server");
@@ -360,7 +369,7 @@ NdbSocket & Client::connect_tls() {
     }
     else NdbSocket::free_ssl(ssl);
     puts("TLS connection failed.");
-    m_tls_socket.invalidate();
+    m_tls_socket.close();
   }
   ndb_setsockopt(m_tls_socket.ndb_socket(), IPPROTO_TCP, TCP_NODELAY,
                  & opt_tcp_no_delay);
@@ -471,11 +480,10 @@ void ClientTest::rusage13() const {
 class SendRecvTest : public ClientTest {
 public:
   SendRecvTest(NdbSocket & s, const char * name,
-               bool blocking, bool locking, int buff_size = opt_buff_size) :
+               bool blocking, int buff_size = opt_buff_size) :
     ClientTest(s),  m_name(name), m_test_bytes(opt_send_MB * 1000000),
-    m_buff_size(buff_size), m_block(blocking), m_locking(locking)
+    m_buff_size(buff_size), m_block(blocking)
   {
-    assert(! (blocking && locking));  // can result in deadlock
     m_send_buffer = (char *) malloc(m_buff_size);
     m_recv_buffer = (char *) malloc(m_buff_size);
     int d = m_test_bytes / m_buff_size;
@@ -515,20 +523,17 @@ protected:
   int m_buff_size;
   int m_update_keys {0};
   bool m_block;
-  bool m_locking;
+  //bool m_locking;
   bool m_repeat_input {true};
 };
 
 void SendRecvTest::setup() {
   m_socket.set_nonblocking(! m_block);
-  if(m_locking) m_socket.enable_locking();
-  else m_socket.disable_locking();
 }
 
 void SendRecvTest::printTestName(int n) {
-  printf("(t%d) %s %s %s ", n, m_name,
-         m_block   ? "  blocking  " : "non-blocking",
-         m_locking ? "(w/ mutex)"   : "(no mutex)");
+  printf("(t%d) %s %s ", n, m_name,
+         m_block   ? "  blocking  " : "non-blocking");
 }
 
 int SendRecvTest::runTest() {
@@ -678,9 +683,9 @@ int SendRecvTest::testRecv() {
  */
 class SendTest : public SendRecvTest {
 public:
-  SendTest(NdbSocket & s, const char * name, bool locking,
+  SendTest(NdbSocket & s, const char * name,
            size_t buff = opt_buff_size) :
-    SendRecvTest(s, name, false, locking, buff)               {}
+    SendRecvTest(s, name, false, buff)               {}
 
   void printTestName(int n) override {
     printf("(t%d) SendTest: %s ", n, m_name);
@@ -727,7 +732,7 @@ void SendTest::printTestResult() {
 class WarmupTest : public SendRecvTest {
 public:
   WarmupTest(NdbSocket &s) :
-    SendRecvTest(s, "", false, true, 4096)
+    SendRecvTest(s, "", false, 4096)
   {
     m_test_bytes = 2000000;
     m_verbose_level = 2;
@@ -748,7 +753,7 @@ public:
 class ReadLineTest : public SendRecvTest {
 public:
   ReadLineTest(NdbSocket & s, const char * name) :
-    SendRecvTest(s, name, false, true)
+    SendRecvTest(s, name, false)
   {
     m_repeat_input = false; // don't read the file more than once
     m_test_bytes = 1000000; // don't send more than this
@@ -836,7 +841,7 @@ int IovList::adjust(size_t x) {
 */
 class WritevTest : public SendTest {
 public:
-  WritevTest(NdbSocket &, const char *, bool, size_t buff, std::vector<int>
+  WritevTest(NdbSocket &, const char *, size_t buff, std::vector<int>
              dist = { 25, 60, 250, 600, 2500, 6000, 25000, -1 });
  ~WritevTest() override  { m_iov.free_all(); }
 
@@ -849,8 +854,8 @@ private:
 };
 
 WritevTest::WritevTest(NdbSocket & s, const char * name,
-                       bool locking, size_t buff, std::vector<int> dist) :
-  SendTest(s, name, locking, buff), m_buffer_dist(dist)
+                       size_t buff, std::vector<int> dist) :
+  SendTest(s, name, buff), m_buffer_dist(dist)
 {
   size_t size = m_buff_size;
   int n = 0;
@@ -915,8 +920,8 @@ int WritevTest::testSend() {
 */
 class BigWritevTest : public WritevTest {
 public:
-  BigWritevTest(NdbSocket & s, const char * name, bool locking) :
-    WritevTest(s, name, locking, 262144,
+  BigWritevTest(NdbSocket & s, const char * name) :
+    WritevTest(s, name, 262144,
                { 32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768 }) {}
 };
 
@@ -925,7 +930,7 @@ public:
 class KeyUpdateTest : public SendRecvTest {
 public:
   KeyUpdateTest(NdbSocket &s, const char * name) :
-    SendRecvTest(s, name, false, true)
+    SendRecvTest(s, name, false)
   {
     m_update_keys = 1;
   }
@@ -962,11 +967,14 @@ int run_client(const char * server_host) {
    */
   std::vector<ClientTest *> tests =
   {
-    new SendRecvTest(plain_socket, "plain", true,  false),
-    new SendRecvTest(tls_socket,   " TLS ", true,  false),
-    new SendRecvTest(plain_socket, "plain", false, false),
-    new SendRecvTest(plain_socket, "plain", false, true),
-    new SendRecvTest(tls_socket,   " TLS ", false, true),
+    new SendRecvTest(plain_socket, "plain", true),
+    // As TLS set locks, it cant be blocking at the same time?
+    //  ... recv() may block while holding the lock, waiting for send
+    //      to become 'unblocked'.
+    //  ... Sender is waiting for lock, thus cant unblock recv()
+    //new SendRecvTest(tls_socket,   " TLS ", true),
+    new SendRecvTest(plain_socket, "plain", false),
+    new SendRecvTest(tls_socket,   " TLS ", false),
 
     new ReadLineTest(plain_socket, "plain readline"),
     new ReadLineTest(tls_socket,   " TLS  readline"),
@@ -974,13 +982,13 @@ int run_client(const char * server_host) {
     new KeyUpdateTest(tls_socket,
                       opt_tls12 ? "TLS 1.2 renegotiate" : "TLS 1.3 key update"),
 
-    new SendTest(plain_socket, " plain basic", false),
-    new SendTest(tls_socket, " TLS  basic", true),
+    new SendTest(plain_socket, " plain basic"),
+    new SendTest(tls_socket, " TLS  basic"),
 
-    new WritevTest(plain_socket,   "plain writev", false, opt_buff_size),
-    new WritevTest(tls_socket,     " TLS  writev", true, opt_buff_size),
-    new BigWritevTest(plain_socket, "plain big writev", false),
-    new BigWritevTest(tls_socket,   " TLS  big writev", true)
+    new WritevTest(plain_socket,   "plain writev", opt_buff_size),
+    new WritevTest(tls_socket,     " TLS  writev", opt_buff_size),
+    new BigWritevTest(plain_socket, "plain big writev"),
+    new BigWritevTest(tls_socket,   " TLS  big writev")
   };
 
   /* Print list of tests and exit */

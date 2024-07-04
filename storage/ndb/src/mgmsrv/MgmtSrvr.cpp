@@ -287,7 +287,6 @@ MgmtSrvr::MgmtSrvr(const MgmtOpts& opts) :
   /* Setup clusterlog as client[0] in m_event_listner */
   {
     Ndb_mgmd_event_service::Event_listener se;
-    ndb_socket_initialize(&(se.m_socket));
     for(size_t t = 0; t<LogLevel::LOGLEVEL_CATEGORIES; t++){
       se.m_logLevel.setLogLevel((LogLevel::EventCategory)t, 7);
     }
@@ -1889,10 +1888,10 @@ MgmtSrvr::sendall_STOP_REQ(NodeBitmask &stoppedNodes,
 int
 MgmtSrvr::guess_master_node(SignalSender& ss)
 {
+  NodeId guess = m_master_node;
   /**
    * First check if m_master_node is started
    */
-  NodeId guess = m_master_node;
   if (guess != 0)
   {
     trp_node node = ss.getNodeInfo(guess);
@@ -1901,41 +1900,56 @@ MgmtSrvr::guess_master_node(SignalSender& ss)
   }
 
   /**
-   * Check for any started node
+   * Check started nodes based on dynamicId
    */
-  guess = 0;
-  while(getNextNodeId(&guess, NDB_MGM_NODE_TYPE_NDB))
+  Uint32 min = UINT32_MAX;
+  NodeId node_id = 0;
+  while(getNextNodeId(&node_id, NDB_MGM_NODE_TYPE_NDB))
   {
-    trp_node node = ss.getNodeInfo(guess);
-    if (node.m_state.startLevel == NodeState::SL_STARTED)
+    trp_node node = ss.getNodeInfo(node_id);
+    if(node.m_state.dynamicId < min)
     {
-      return guess;
+      if(node.m_state.startLevel == NodeState::SL_STARTED)
+      {
+        min = node.m_state.dynamicId;
+        guess = node_id;
+      }
     }
   }
+  //found
+  if(min < UINT32_MAX)
+    return guess;
 
   /**
-   * Check any confirmed node
+   * Check confirmed nodes based on dynamicId
    */
-  guess = 0;
-  while(getNextNodeId(&guess, NDB_MGM_NODE_TYPE_NDB))
+  node_id = 0;
+  while(getNextNodeId(&node_id, NDB_MGM_NODE_TYPE_NDB))
   {
-    trp_node node = ss.getNodeInfo(guess);
-    if (node.is_confirmed())
+    trp_node node = ss.getNodeInfo(node_id);
+    if(node.m_state.dynamicId < min)
     {
-      return guess;
+      if(node.is_confirmed())
+      {
+        min = node.m_state.dynamicId;
+        guess = node_id;
+      }
     }
   }
+  //found
+  if(min < UINT32_MAX)
+    return guess;
 
   /**
    * Check any connected node
    */
-  guess = 0;
-  while(getNextNodeId(&guess, NDB_MGM_NODE_TYPE_NDB))
+  node_id = 0;
+  while(getNextNodeId(&node_id, NDB_MGM_NODE_TYPE_NDB))
   {
-    trp_node node = ss.getNodeInfo(guess);
+    trp_node node = ss.getNodeInfo(node_id);
     if (node.is_connected())
     {
-      return guess;
+      return node_id;
     }
   }
 
@@ -4030,6 +4044,12 @@ MgmtSrvr::trp_deliver_signal(const NdbApiSignal* signal,
     */
     release_local_nodeid_reservation(nodeId);
 
+    /*
+      Clear connect address cache in case there
+      is some stale address there
+    */
+    clear_connect_address_cache(nodeId);
+
     union {
       Uint32 theData[25];
       EventReport repData;
@@ -4086,8 +4106,13 @@ MgmtSrvr::trp_deliver_signal(const NdbApiSignal* signal,
 
       /* Clear local nodeid reservation(if any) */
       release_local_nodeid_reservation(i);
-
       clear_connect_address_cache(i);
+
+      /* Clear m_master_node when master disconnects */
+      if(i == m_master_node)
+      {
+        m_master_node = 0;
+      }
     }
     return;
   }
@@ -5150,16 +5175,7 @@ MgmtSrvr::startBackup(Uint32& backupId, int waitCompleted,
   SignalSender ss(theFacade);
   ss.lock(); // lock will be released on exit
 
-  NodeId nodeId = m_master_node;
-  if (okToSendTo(nodeId, false) != 0)
-  {
-    bool next;
-    nodeId = m_master_node = 0;
-    while((next = getNextNodeId(&nodeId, NDB_MGM_NODE_TYPE_NDB)) == true &&
-          okToSendTo(nodeId, false) != 0);
-    if(!next)
-      return NO_CONTACT_WITH_DB_NODES;
-  }
+  NodeId nodeId = guess_master_node(ss);
 
   SimpleSignal ssig;
   BackupReq* req = CAST_PTR(BackupReq, ssig.getDataPtrSend());
@@ -5234,11 +5250,26 @@ MgmtSrvr::startBackup(Uint32& backupId, int waitCompleted,
   while (1) {
     if (do_send)
     {
+      nodeId = guess_master_node(ss);
+
+      if(waitCompleted == 0 &&
+          ndbd_start_backup_nowait_reply(getNodeInfo(nodeId).m_info.m_version))
+      {
+        req->flags |= BackupReq::NOWAIT_REPLY;
+      }
+      else
+      {
+        req->flags &= ~((Uint32)BackupReq::NOWAIT_REPLY);
+      }
+
       if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
 	return SEND_OR_RECEIVE_FAILED;
       }
-      if (waitCompleted == 0)
-	return 0;
+      if (waitCompleted == 0 &&
+          !ndbd_start_backup_nowait_reply(getNodeInfo(nodeId).m_info.m_version))
+      {
+        return 0;
+      }
       do_send = 0;
     }
     SimpleSignal *signal = ss.waitFor();
@@ -5246,6 +5277,21 @@ MgmtSrvr::startBackup(Uint32& backupId, int waitCompleted,
     int gsn = signal->readSignalNumber();
     switch (gsn) {
     case GSN_BACKUP_CONF:{
+
+  /*
+   * BACKUP NOWAIT case.
+   * BACKUP_CONF received from Backup. It is only used to confirm that
+   * the node is the master node and the backup can proceed.
+   * No more feedback expected from data node in this case.
+   */
+    if(waitCompleted == 0)
+    {
+      return 0;
+    }
+
+    /*
+     * BACKUP WAIT case.
+     */
       const BackupConf * const conf = 
 	CAST_CONSTPTR(BackupConf, signal->getDataPtr());
 #ifdef VM_TRACE
@@ -5537,15 +5583,16 @@ MgmtSrvr::getConnectionDbParameter(int node1, int node2,
 
 
 bool
-MgmtSrvr::transporter_connect(ndb_socket_t sockfd,
+MgmtSrvr::transporter_connect(NdbSocket&& socket,
                               BaseString& msg,
-                              bool& close_with_reset,
                               bool& log_failure)
 {
   DBUG_ENTER("MgmtSrvr::transporter_connect");
   TransporterRegistry* tr= theFacade->get_registry();
-  if (!tr->connect_server(sockfd, msg, close_with_reset, log_failure))
+  if (!tr->connect_server(std::move(socket), msg, log_failure))
+  {
     DBUG_RETURN(false);
+  }
 
   /**
    * TransporterRegistry::update_connections() is responsible

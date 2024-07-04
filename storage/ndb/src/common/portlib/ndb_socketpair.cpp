@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -110,8 +110,8 @@ int ndb_socketpair(ndb_socket_t s[2])
   ret= socketpair(AF_UNIX, SOCK_STREAM, 0, sock);
   if (ret == 0)
   {
-    ndb_socket_create_from_native(s[0], sock[0]);
-    ndb_socket_create_from_native(s[1], sock[1]);
+    s[0] = ndb_socket_create_from_native(sock[0]);
+    s[1] = ndb_socket_create_from_native(sock[1]);
   }
   return ret;
 }

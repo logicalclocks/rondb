@@ -442,6 +442,20 @@ bool metadata_schema_version_is_compatible(
   return true;
 }
 
+bool ROUTER_LIB_EXPORT metadata_schema_version_is_deprecated(
+    const mysqlrouter::MetadataSchemaVersion &version) {
+  return version < kNewMetadataVersion;
+}
+
+std::string ROUTER_LIB_EXPORT get_metadata_schema_deprecated_msg(
+    const mysqlrouter::MetadataSchemaVersion &version) {
+  return "The target Cluster's Metadata version ('" + to_string(version) +
+         "') is deprecated. Please use the latest MySQL Shell to upgrade it "
+         "using 'dba.upgradeMetadata()'. Although this version of MySQL Router "
+         "still supports it, future versions will no longer work with this "
+         "Cluster unless its metadata is upgraded.";
+}
+
 std::string to_string(const MetadataSchemaVersion &version) {
   return std::to_string(version.major) + "." + std::to_string(version.minor) +
          "." + std::to_string(version.patch);
@@ -517,24 +531,26 @@ bool check_group_replication_online(MySQLSession *mysql) {
 
 bool check_group_has_quorum(MySQLSession *mysql) {
   std::string q =
-      "SELECT SUM(IF(member_state = 'ONLINE', 1, 0)) as num_onlines, COUNT(*) "
-      "as num_total"
-      " FROM performance_schema.replication_group_members";
+      "SELECT SUM(IF(member_state = 'ONLINE', 1, 0)) as num_onlines, "
+      "SUM(IF(member_state = 'RECOVERING', 1, 0)) as num_recovering, "
+      "COUNT(*) as num_total "
+      "FROM performance_schema.replication_group_members";
 
   std::unique_ptr<MySQLSession::ResultRow> result(
       mysql->query_one(q));  // throws MySQLSession::Error
   if (result) {
-    if (result->size() != 2) {
+    if (result->size() != 3) {
       throw std::out_of_range(
           "Invalid number of values returned from "
           "performance_schema.replication_group_members: "
-          "expected 2 got " +
+          "expected 3 got " +
           std::to_string(result->size()));
     }
     int online = strtoi_checked((*result)[0]);
-    int all = strtoi_checked((*result)[1]);
-    // log_info("%d members online out of %d", online, all);
-    if (online >= all / 2 + 1) return true;
+    int recovering = strtoi_checked((*result)[1]);
+    int all = strtoi_checked((*result)[2]);
+
+    if ((online + recovering) > all / 2) return true;
     return false;
   }
 

@@ -109,15 +109,21 @@ protected:
    * A client connects to the remote server
    * A server accepts any new connections
    */
-  bool connect_server_impl(NdbSocket & sockfd) override;
-  bool connect_client_impl(NdbSocket & sockfd) override;
-  bool connect_common(NdbSocket & sockfd);
+  bool connect_server_impl(NdbSocket&& sockfd) override;
+  bool connect_client_impl(NdbSocket&& sockfd) override;
+  bool connect_common(NdbSocket&& sockfd);
   
   /**
    * Disconnects a TCP/IP node, possibly blocking.
    */
-  void disconnectImpl() override;
-  
+  //void disconnectImpl() override;  // No need to override
+
+  /**
+   * Release resorces after disconnectImpl() has brought
+   * transporter into DISCONNECTED state.
+   */
+  void releaseAfterDisconnect() override;
+
 private:
   Uint32 maxReceiveSize;
   

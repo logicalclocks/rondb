@@ -367,17 +367,17 @@ extern int g_errorInsert;
 
 #define SLEEP_ERROR_INSERTED(x) if(ERROR_INSERTED(x)){NdbSleep_SecSleep(10);}
 
-MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, ndb_socket_t sock,
+MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, NdbSocket&& sock,
                              Uint64 session_id)
-  : SocketServer::Session(sock),
+  : SocketServer::Session(m_secure_socket),
+    m_secure_socket(std::move(sock)),
     m_mgmsrv(mgm),
     m_session_id(session_id),
     m_name("unknown:0")
 {
   DBUG_ENTER("MgmApiSession::MgmApiSession");
-  m_secure_socket.init_from_new(sock);
-  m_input = new SecureSocketInputStream(m_secure_socket, SOCKET_TIMEOUT);
-  m_output = new BufferedSecureOutputStream(m_secure_socket, SOCKET_TIMEOUT);
+  m_input = new SocketInputStream(m_secure_socket, SOCKET_TIMEOUT);
+  m_output = new BufferSocketOutputStream(m_secure_socket, SOCKET_TIMEOUT);
   m_parser = new Parser_t(commands, *m_input);
   m_stopSelf= 0;
   m_ctx= NULL;
@@ -386,7 +386,7 @@ MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, ndb_socket_t sock,
   m_vMajor = m_vMinor = m_vBuild = 0;
 
   ndb_sockaddr addr;
-  if (ndb_getpeername(sock, &addr) == 0)
+  if (ndb_getpeername(sock.ndb_socket(), &addr) == 0)
   {
     char addr_buf[NDB_ADDR_STRLEN];
     char *addr_str = Ndb_inet_ntop(&addr,
@@ -413,7 +413,6 @@ MgmApiSession::~MgmApiSession()
   if(m_secure_socket.is_valid())
   {
     m_secure_socket.close();
-    m_secure_socket.invalidate();
   }
   if(m_stopSelf < 0)
     g_RestartServer= true;
@@ -508,7 +507,6 @@ MgmApiSession::runSession()
   if(m_secure_socket.is_valid())
   {
     m_secure_socket.close();
-    m_secure_socket.invalidate();
   }
   NdbMutex_Unlock(m_mutex);
 
@@ -1694,16 +1692,19 @@ Ndb_mgmd_event_service::log(int eventType, const Uint32* theData,
   logevent2str(str, eventType, theData, len, nodeId, 0,
                pretty_text, sizeof(pretty_text));
 
-  Vector<ndb_socket_t> copy;
+  Vector<NdbSocket *> copy;
   m_clients.lock();
   for(i = m_clients.size() - 1; i >= 0; i--)
   {
     if(threshold <= m_clients[i].m_logLevel.getLogLevel(cat))
     {
-      if(!ndb_socket_valid(m_clients[i].m_socket))
+      if(m_clients[i].m_socket_ptr == nullptr)
         continue;
 
-      SocketOutputStream out(m_clients[i].m_socket);
+      if(!m_clients[i].m_socket_ptr->is_valid())
+        continue;
+
+      SocketOutputStream out(* m_clients[i].m_socket_ptr);
 
       int r;
       if (m_clients[i].m_parsable)
@@ -1724,7 +1725,7 @@ Ndb_mgmd_event_service::log(int eventType, const Uint32* theData,
 
       if (r<0)
       {
-        copy.push_back(m_clients[i].m_socket);
+        copy.push_back(m_clients[i].m_socket_ptr);
         m_clients.erase(i, false);
       }
     }
@@ -1733,8 +1734,10 @@ Ndb_mgmd_event_service::log(int eventType, const Uint32* theData,
   
   if ((n= (int)copy.size()))
   {
-    for(i= 0; i < n; i++)
-      ndb_socket_close(copy[i]);
+    for(i= 0; i < n; i++) {
+      copy[i]->close();
+      delete copy[i];
+    }
 
     LogLevel tmp; tmp.clear();
     m_clients.lock();
@@ -1776,18 +1779,18 @@ Ndb_mgmd_event_service::check_listeners()
   m_clients.lock();
   for(i= m_clients.size() - 1; i >= 0; i--)
   {
-    if(!ndb_socket_valid(m_clients[i].m_socket))
+    if(m_clients[i].m_socket_ptr == nullptr)
       continue;
 
-    SocketOutputStream out(m_clients[i].m_socket);
+    if(!(m_clients[i].m_socket_ptr->is_valid()))
+      continue;
 
-    DBUG_PRINT("info",("%d %s",
-                       i,
-                       ndb_socket_to_string(m_clients[i].m_socket).c_str()));
+    SocketOutputStream out(* m_clients[i].m_socket_ptr);
 
     if(out.println("<PING>") < 0)
     {
-      ndb_socket_close(m_clients[i].m_socket);
+      m_clients[i].m_socket_ptr->close();
+      delete m_clients[i].m_socket_ptr;
       m_clients.erase(i, false);
       n=1;
     }
@@ -1804,13 +1807,13 @@ Ndb_mgmd_event_service::check_listeners()
 }
 
 void
-Ndb_mgmd_event_service::add_listener(const Event_listener& client)
+Ndb_mgmd_event_service::add_listener(Event_listener& client, NdbSocket&& socket)
 {
   DBUG_ENTER("Ndb_mgmd_event_service::add_listener");
-  DBUG_PRINT("enter",("client.m_socket: %s",
-                      ndb_socket_to_string(client.m_socket).c_str()));
 
   check_listeners();
+
+  client.m_socket_ptr = new NdbSocket(std::move(socket));
 
   m_clients.push_back(client);
   update_max_log_level(client.m_logLevel);
@@ -1822,9 +1825,9 @@ void
 Ndb_mgmd_event_service::stop_sessions(){
   m_clients.lock();
   for(int i = m_clients.size() - 1; i >= 0; i--){
-    if(ndb_socket_valid(m_clients[i].m_socket))
+    if(m_clients[i].m_socket_ptr && m_clients[i].m_socket_ptr->is_valid())
     {
-      ndb_socket_close(m_clients[i].m_socket);
+      m_clients[i].m_socket_ptr->close();
       m_clients.erase(i, false);
     }
   }
@@ -1914,7 +1917,6 @@ MgmApiSession::listen_event(Parser<MgmApiSession>::Context & ctx,
 
   Ndb_mgmd_event_service::Event_listener le;
   le.m_parsable = parsable;
-  le.m_socket = m_secure_socket.ndb_socket();
 
   Vector<BaseString> list;
   param.trim();
@@ -1978,9 +1980,9 @@ done:
 
   if(result==0)
   {
-    m_mgmsrv.m_event_listner.add_listener(le);
+    m_mgmsrv.m_event_listner.add_listener(le, std::move(m_secure_socket));
     m_stop = true;
-    m_secure_socket.invalidate();
+    assert(! m_secure_socket.is_valid()); // it has been transfered to listener
   }
 }
 
@@ -2012,11 +2014,10 @@ void
 MgmApiSession::transporter_connect(Parser_t::Context &ctx,
 				   Properties const &args)
 {
-  bool close_with_reset = true;
   bool log_failure = false;
   BaseString errormsg;
-  if (!m_mgmsrv.transporter_connect(m_secure_socket.ndb_socket(), errormsg,
-                                    close_with_reset, log_failure))
+  if (!m_mgmsrv.transporter_connect(std::move(m_secure_socket), errormsg,
+                                    log_failure))
   {
     // Connection not allowed or failed
     if (log_failure)
@@ -2026,19 +2027,6 @@ MgmApiSession::transporter_connect(Parser_t::Context &ctx,
                              name(),
                              errormsg.c_str());
     }
-    // Close the socket to indicate failure to client
-    m_secure_socket.close_with_reset(close_with_reset);
-    m_secure_socket.invalidate(); // Already closed
-  }
-  else
-  {
-    /*
-      Conversion to transporter succeeded
-      Stop this session thread and release resources
-      but don't close the socket, it's been taken over
-      by the transporter
-    */
-    m_secure_socket.invalidate();  // so nobody closes it
   }
 
   m_stop= true; // Stop the session
