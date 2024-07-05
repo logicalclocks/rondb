@@ -72,7 +72,7 @@ jobs:
           echo "Found tarball: $tarball"
 
           host_user="$REPO_HOPSWORKS_USER@$REPO_HOPSWORKS_HOSTNAME"
-          user_code_path="/opt/repository/dev/$REPO_HOPSWORKS_USER"
+          user_code_path="/home/$REPO_HOPSWORKS_USER/upload_area"
 
           echo "Copying $tarball to $host_user:$user_code_path/"
           scp ./$tarball $host_user:$user_code_path/
