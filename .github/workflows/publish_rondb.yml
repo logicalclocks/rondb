@@ -13,14 +13,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: true
 
-# TODO: Make workflow dispatch which creates git tags as well (?)
-#   workflow_dispatch:
-#     inputs:
-#       run_test:
-#         description: 'Run test'
-#         required: false
-#         default: 'true'
-
 jobs:
   publish-arm-tarball:
     runs-on: [self-hosted, ARM64]
