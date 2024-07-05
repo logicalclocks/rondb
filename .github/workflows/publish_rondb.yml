@@ -22,9 +22,8 @@ concurrency:
 #         default: 'true'
 
 jobs:
-  publish-tarball:
-    # TODO: Run on Github runner on armchair
-    runs-on: ubuntu-latest
+  publish-arm-tarball:
+    runs-on: [self-hosted, ARM64]
     env:
       REPO_HOPSWORKS_HOSTNAME: repo.hops.works
       REPO_HOPSWORKS_USER: repo_upload
