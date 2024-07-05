@@ -1,6 +1,6 @@
 /*
   Copyright (c) 2011, 2023, Oracle and/or its affiliates.
-  Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+  Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -31,15 +31,7 @@
 #include "signaldata/DumpStateOrd.hpp"
 #include "signaldata/EnableCom.hpp"
 #include "signaldata/RouteOrd.hpp"
-<<<<<<< RonDB // RONDB-624 todo
-#include "signaldata/DumpStateOrd.hpp"
 #include "signaldata/Abort.hpp"
-#include "portlib/NdbTCP.h"
-||||||| Common ancestor
-#include "signaldata/DumpStateOrd.hpp"
-#include "portlib/NdbTCP.h"
-=======
->>>>>>> MySQL 8.0.36
 
 #include "EventLogger.hpp"
 #include "mt.hpp"

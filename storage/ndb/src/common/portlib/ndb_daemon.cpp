@@ -1,5 +1,5 @@
 /* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,13 +28,9 @@
 #include <ndb_daemon.h>
 #include <portlib/NdbHost.h>
 #include <stdio.h>
-<<<<<<< RonDB // RONDB-624 todo
 #include <util/require.h>
-||||||| Common ancestor
-=======
 #include <BaseString.hpp>
 #include "portlib/ndb_compiler.h"
->>>>>>> MySQL 8.0.36
 
 #include "m_string.h"
 #include "my_sys.h"

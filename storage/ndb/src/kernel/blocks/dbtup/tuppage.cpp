@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -288,18 +288,11 @@ Uint32 Tup_varsize_page::alloc_record(Uint32 alloc_size, Tup_varsize_page *temp,
 
   insert_pos += alloc_size;
   free_space -= alloc_size;
-<<<<<<< RonDB // RONDB-624 todo
   /* Ensure varsized part is zeroed before it is committed */
 #ifdef TUP_DATA_VALIDATION
   Uint32 *memset_ptr = get_ptr(page_idx);
   memset(memset_ptr, 0, alloc_size * 4);
 #endif
-||||||| Common ancestor
-  //g_eventLogger->info("%p->alloc_record(%d%s) -> %d", this,alloc_size, (chain ? " CHAIN" : ""),page_idx);
-=======
-  // g_eventLogger->info("%p->alloc_record(%d%s) -> %d", this,alloc_size, (chain
-  // ? " CHAIN" : ""),page_idx);
->>>>>>> MySQL 8.0.36
   return page_idx;
 }
 

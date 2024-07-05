@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -238,34 +238,12 @@ void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
 /* ---------------------------------------------------------------- */
 /* ----------------------- SEND READ ATTRINFO --------------------- */
 /* ---------------------------------------------------------------- */
-<<<<<<< RonDB // RONDB-624 todo
-void Dbtup::sendReadAttrinfo(Signal* signal,
-                             KeyReqStruct *req_struct,
-                             Uint32 ToutBufIndex)
-{
-  if(ToutBufIndex == 0)
-    return;
-  
-  const BlockReference recBlockref= req_struct->rec_blockref;
-  ndbassert(refToMain(recBlockref) != 32770);
-  const Uint32 nodeId= refToNode(recBlockref);
-||||||| Common ancestor
-void Dbtup::sendReadAttrinfo(Signal* signal,
-                             KeyReqStruct *req_struct,
-                             Uint32 ToutBufIndex)
-{
-  if(ToutBufIndex == 0)
-    return;
-  
-  const BlockReference recBlockref= req_struct->rec_blockref;
-  const Uint32 nodeId= refToNode(recBlockref);
-=======
 void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
                              Uint32 ToutBufIndex) {
   if (ToutBufIndex == 0) return;
->>>>>>> MySQL 8.0.36
 
   const BlockReference recBlockref = req_struct->rec_blockref;
+  ndbassert(refToMain(recBlockref) != 32770);
   const Uint32 nodeId = refToNode(recBlockref);
 
   bool connectedToNode = getNodeInfo(nodeId).m_connected;

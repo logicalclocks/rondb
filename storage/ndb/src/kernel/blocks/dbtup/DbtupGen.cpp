@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -387,19 +387,6 @@ void Dbtup::execCONTINUEB(Signal *signal) {
         c_lqh->checkLcpStopBlockedLab(signal, scanPtr.p->m_userPtr);
       }
       return;
-    case ZFREE_EXTENT: {
-      jam();
-      TablerecPtr tabPtr;
-      tabPtr.i = dataPtr;
-      FragrecordPtr fragPtr;
-      fragPtr.i = signal->theData[2];
-      ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
-      ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
-      drop_fragment_free_extent(signal, tabPtr, fragPtr, signal->theData[3]);
-      return;
-    }
-<<<<<<< RonDB // RONDB-624 todo
-    return;
   case ZFREE_EXTENT:
   {
     jam();
@@ -454,87 +441,7 @@ void Dbtup::execCONTINUEB(Signal *signal) {
     rebuild_page_free_list(signal);
     return;
   }
-  case ZDISK_RESTART_UNDO:
-  {
-    jam();
-    if (!assembleFragments(signal)) {
-||||||| Common ancestor
-    return;
-  case ZFREE_EXTENT:
-  {
-    jam();
-    TablerecPtr tabPtr;
-    tabPtr.i= dataPtr;
-    FragrecordPtr fragPtr;
-    fragPtr.i= signal->theData[2];
-    ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
-    ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
-    drop_fragment_free_extent(signal, tabPtr, fragPtr, signal->theData[3]);
-    return;
-  }
-  case ZUNMAP_PAGES:
-  {
-    jam();
-    TablerecPtr tabPtr;
-    tabPtr.i= dataPtr;
-    FragrecordPtr fragPtr;
-    fragPtr.i= signal->theData[2];
-    ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
-    ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
-    drop_fragment_unmap_pages(signal, tabPtr, fragPtr, signal->theData[3]);
-    return;
-  }
-  case ZFREE_VAR_PAGES:
-  {
-    jam();
-    drop_fragment_free_var_pages(signal);
-    return;
-  }
-  case ZFREE_PAGES:
-  {
-    jam();
-    drop_fragment_free_pages(signal);
-    return;
-  }
-  case ZREBUILD_FREE_PAGE_LIST:
-  {
-    jam();
-    rebuild_page_free_list(signal);
-    return;
-  }
-  case ZDISK_RESTART_UNDO:
-  {
-    jam();
-    if (!assembleFragments(signal)) {
-=======
-    case ZUNMAP_PAGES: {
->>>>>>> MySQL 8.0.36
-      jam();
-      TablerecPtr tabPtr;
-      tabPtr.i = dataPtr;
-      FragrecordPtr fragPtr;
-      fragPtr.i = signal->theData[2];
-      ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
-      ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
-      drop_fragment_unmap_pages(signal, tabPtr, fragPtr, signal->theData[3]);
-      return;
-    }
-    case ZFREE_VAR_PAGES: {
-      jam();
-      drop_fragment_free_var_pages(signal);
-      return;
-    }
-    case ZFREE_PAGES: {
-      jam();
-      drop_fragment_free_pages(signal);
-      return;
-    }
-    case ZREBUILD_FREE_PAGE_LIST: {
-      jam();
-      rebuild_page_free_list(signal);
-      return;
-    }
-    case ZDISK_RESTART_UNDO: {
+     case ZDISK_RESTART_UNDO: {
       jam();
       if (!assembleFragments(signal)) {
         jam();
@@ -571,80 +478,6 @@ void Dbtup::execSTTOR(Signal *signal) {
   Uint32 startPhase = signal->theData[1];
   Uint32 sigKey = signal->theData[6];
   switch (startPhase) {
-<<<<<<< RonDB // RONDB-624 todo
-  case ZSTARTPHASE1:
-    jam();
-    c_started = false;
-    if (m_is_query_block)
-    {
-      ndbrequire((c_tux = (Dbtux*)globalData.getBlock(DBQTUX,
-                                                      instance())) != 0);
-      ndbrequire((c_acc = (Dbacc*)globalData.getBlock(DBQACC,
-                                                      instance())) != 0);
-      ndbrequire((c_lqh = (Dblqh*)globalData.getBlock(DBQLQH,
-                                                      instance())) != 0);
-      ndbrequire((c_backup =
-        (Backup*)globalData.getBlock(QBACKUP, instance())) != 0);
-    }
-    else
-    {
-      ndbrequire((c_tux = (Dbtux*)globalData.getBlock(DBTUX,
-                                                      instance())) != 0);
-      ndbrequire((c_acc = (Dbacc*)globalData.getBlock(DBACC,
-                                                      instance())) != 0);
-      ndbrequire((c_lqh = (Dblqh*)globalData.getBlock(DBLQH,
-                                                      instance())) != 0);
-      ndbrequire((c_backup =
-        (Backup*)globalData.getBlock(BACKUP, instance())) != 0);
-    }
-    ndbrequire((c_suma = (Suma*)globalData.getBlock(SUMA)) != 0);
-    ndbrequire((c_tsman = (Tsman*)globalData.getBlock(TSMAN)) != 0);
-    ndbrequire((c_lgman = (Lgman*)globalData.getBlock(LGMAN)) != 0);
-    ndbrequire((c_pgman =
-                (Pgman*)globalData.getBlock(PGMAN, instance())) != 0);
-    cownref = reference();
-    break;
-  case 3:
-  {
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
-||||||| Common ancestor
-  case ZSTARTPHASE1:
-    jam();
-    c_started = false;
-    if (m_is_query_block)
-    {
-      ndbrequire((c_tux = (Dbtux*)globalData.getBlock(DBQTUX,
-                                                      instance())) != 0);
-      ndbrequire((c_acc = (Dbacc*)globalData.getBlock(DBQACC,
-                                                      instance())) != 0);
-      ndbrequire((c_lqh = (Dblqh*)globalData.getBlock(DBQLQH,
-                                                      instance())) != 0);
-      ndbrequire((c_backup =
-        (Backup*)globalData.getBlock(QBACKUP, instance())) != 0);
-    }
-    else
-    {
-      ndbrequire((c_tux = (Dbtux*)globalData.getBlock(DBTUX,
-                                                      instance())) != 0);
-      ndbrequire((c_acc = (Dbacc*)globalData.getBlock(DBACC,
-                                                      instance())) != 0);
-      ndbrequire((c_lqh = (Dblqh*)globalData.getBlock(DBLQH,
-                                                      instance())) != 0);
-      ndbrequire((c_backup =
-        (Backup*)globalData.getBlock(BACKUP, instance())) != 0);
-    }
-    ndbrequire((c_tsman = (Tsman*)globalData.getBlock(TSMAN)) != 0);
-    ndbrequire((c_lgman = (Lgman*)globalData.getBlock(LGMAN)) != 0);
-    ndbrequire((c_pgman =
-                (Pgman*)globalData.getBlock(PGMAN, instance())) != 0);
-    cownref = reference();
-    break;
-  case 3:
-  {
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
-=======
     case ZSTARTPHASE1:
       jam();
       c_started = false;
@@ -667,6 +500,7 @@ void Dbtup::execSTTOR(Signal *signal) {
         ndbrequire((c_backup = (Backup *)globalData.getBlock(BACKUP,
                                                              instance())) != 0);
       }
+      ndbrequire((c_suma = (Suma*)globalData.getBlock(SUMA)) != 0);
       ndbrequire((c_tsman = (Tsman *)globalData.getBlock(TSMAN)) != 0);
       ndbrequire((c_lgman = (Lgman *)globalData.getBlock(LGMAN)) != 0);
       ndbrequire((c_pgman = (Pgman *)globalData.getBlock(PGMAN, instance())) !=
@@ -675,7 +509,6 @@ void Dbtup::execSTTOR(Signal *signal) {
       break;
     case 3: {
 #if (defined(VM_TRACE) || defined(ERROR_INSERT)) && \
->>>>>>> MySQL 8.0.36
     defined(DO_TRANSIENT_POOL_STAT)
       /* Start reporting statistics for transient pools */
       signal->theData[0] = ZTUP_TRANSIENT_POOL_STAT;

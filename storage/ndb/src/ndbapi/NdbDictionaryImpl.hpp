@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -807,24 +807,11 @@ class NdbDictInterface {
   int forceGCPWait(int type);
   int getRestartGCI(Uint32 *);
 
-<<<<<<< RonDB // RONDB-624 todo
-  static int parseTableInfo(NdbTableImpl ** dst, 
-			    const Uint32 * data, Uint32 len,
-			    bool fullyQualifiedNames,
-                            class NdbImpl*,
-                            Uint32 version= 0xFFFFFFFF);
-||||||| Common ancestor
-  static int parseTableInfo(NdbTableImpl ** dst, 
-			    const Uint32 * data, Uint32 len,
-			    bool fullyQualifiedNames,
-                            Uint32 version= 0xFFFFFFFF);
-=======
   static int parseTableInfo(NdbTableImpl **dst, const Uint32 *data, Uint32 len,
-                            bool fullyQualifiedNames,
+                            bool fullyQualifiedNames, class NdbImpl*,
                             Uint32 version = 0xFFFFFFFF);
 
   static int parseFileInfo(NdbFileImpl &dst, const Uint32 *data, Uint32 len);
->>>>>>> MySQL 8.0.36
 
   static int parseFilegroupInfo(NdbFilegroupImpl &dst, const Uint32 *data,
                                 Uint32 len);

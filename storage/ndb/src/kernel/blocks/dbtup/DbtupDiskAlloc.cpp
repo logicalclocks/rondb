@@ -904,43 +904,11 @@ Dbtup::disk_page_prealloc(Signal* signal,
       /**
        * We need to alloc an extent
        */
-<<<<<<< RonDB // RONDB-624 todo
-      if (!c_extent_pool.seize(ext))
-      {
-	jam();
-	err= 1606;
-	c_page_request_pool.release(req);
-	return -err;
-      }
-      {  
-        Tablespace_client tsman(signal, this, c_tsman,
-                      fragPtrP->fragTableId,
-                      fragPtrP->fragmentId,
-                      c_lqh->getCreateSchemaVersion(fragPtrP->fragTableId),
-                      fragPtrP->m_tablespace_id);
-        err= tsman.alloc_extent(&ext.p->m_key, &ext.p->m_extent_no);
-||||||| Common ancestor
-      if (!c_extent_pool.seize(ext))
-      {
-	jam();
-	err= 1606;
-	c_page_request_pool.release(req);
-	return -err;
-      }
-      {  
-        Tablespace_client tsman(signal, this, c_tsman,
-                      fragPtrP->fragTableId,
-                      fragPtrP->fragmentId,
-                      c_lqh->getCreateSchemaVersion(fragPtrP->fragTableId),
-                      fragPtrP->m_tablespace_id);
-        err= tsman.alloc_extent(&ext.p->m_key);
-=======
       if (!c_extent_pool.seize(ext)) {
         jam();
         err = 1606;
         c_page_request_pool.release(req);
         return -err;
->>>>>>> MySQL 8.0.36
       }
       {
         Tablespace_client tsman(
@@ -2436,262 +2404,61 @@ void Dbtup::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
       preq.m_page.m_file_no = rec->m_file_no_page_idx >> 16;
       preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
       f_undo.m_offset = 0;
+      f_undo.m_tot_len = 0;
       break;
     }
     case File_formats::Undofile::UNDO_TUP_UPDATE: {
       jam();
-      Disk_undo::Update *rec = (Disk_undo::Update *)ptr;
+      Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
       preq.m_page.m_page_no = rec->m_page_no;
       preq.m_page.m_file_no = rec->m_file_no_page_idx >> 16;
       preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
       f_undo.m_offset = 0;
+      f_undo.m_tot_len = 0;
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    if (!isNdbMtLqh())
-      disk_restart_undo_next(signal);
-    
-    DEB_UNDO_LCP(("(%u)UNDO LCP [%u,%u] tab(%u,%u)",
-                  instance(),
-                  lcpId,
-                  localLcpId,
-                  tableId,
-                  fragId));
-    return;
-  }
-  case File_formats::Undofile::UNDO_TUP_ALLOC:
-  {
-    jam();
-    Disk_undo::Alloc* rec= (Disk_undo::Alloc*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    f_undo.m_tot_len = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_UPDATE:
-  {
-    jam();
-    Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    f_undo.m_tot_len = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
-  case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
-  {
-    jam();
-    Disk_undo::UpdatePart* rec= (Disk_undo::UpdatePart*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = rec->m_offset;
-    f_undo.m_tot_len = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
-  case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
-  {
-    jam();
-    Disk_undo::Update_Free_FirstVarPart* rec=
-      (Disk_undo::Update_Free_FirstVarPart*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    f_undo.m_tot_len = rec->m_tot_len;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_FREE:
-  {
-    jam();
-    Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    f_undo.m_tot_len = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_FREE_PART:
-  case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
-  {
-    jam();
-    Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    f_undo.m_tot_len = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_DROP:
-  {
-    jam();
-    Disk_undo::Drop* rec = (Disk_undo::Drop*)ptr;
-    /**
-     * We could come here in a number of situations:
-     * 1) It could be a record that belongs to a table that we are not
-     *    restoring, in this case we won't find the table in the search
-     *    below.
-     * 2) It could belong to a table we are restoring, but this is a
-     *    drop of a previous incarnation of this table. Definitely no
-     *    more log records should be executed for this table.
-     * 
-     * Coming here after we reached the end of the fragment LCP should not
-     * happen, so we insert an ndbrequire to ensure this doesn't happen.
-     */
-    Uint32 tableId = rec->m_table;
-    if (tableId < cnoOfTablerec)
-    {
-||||||| Common ancestor
-    if (!isNdbMtLqh())
-      disk_restart_undo_next(signal);
-    
-    DEB_UNDO_LCP(("(%u)UNDO LCP [%u,%u] tab(%u,%u)",
-                  instance(),
-                  lcpId,
-                  localLcpId,
-                  tableId,
-                  fragId));
-    return;
-  }
-  case File_formats::Undofile::UNDO_TUP_ALLOC:
-  {
-    jam();
-    Disk_undo::Alloc* rec= (Disk_undo::Alloc*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_UPDATE:
-  {
-    jam();
-    Disk_undo::Update* rec= (Disk_undo::Update*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
-  {
-    jam();
-    Disk_undo::UpdatePart* rec= (Disk_undo::UpdatePart*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = rec->m_offset;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
-  {
-    jam();
-    Disk_undo::Update* rec= (Disk_undo::Update*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_FREE:
-  {
-    jam();
-    Disk_undo::Free* rec= (Disk_undo::Free*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_FREE_PART:
-  {
-    jam();
-    Disk_undo::Free* rec= (Disk_undo::Free*)ptr;
-    preq.m_page.m_page_no = rec->m_page_no;
-    preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
-    preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
-    f_undo.m_offset = 0;
-    break;
-  }
-  case File_formats::Undofile::UNDO_TUP_DROP:
-  {
-    jam();
-    Disk_undo::Drop* rec = (Disk_undo::Drop*)ptr;
-    Ptr<Tablerec> tabPtr;
-    /**
-     * We could come here in a number of situations:
-     * 1) It could be a record that belongs to a table that we are not
-     *    restoring, in this case we won't find the table in the search
-     *    below.
-     * 2) It could belong to a table we are restoring, but this is a
-     *    drop of a previous incarnation of this table. Definitely no
-     *    more log records should be executed for this table.
-     * 
-     * Coming here after we reached the end of the fragment LCP should not
-     * happen, so we insert an ndbrequire to ensure this doesn't happen.
-     */
-    tabPtr.i= rec->m_table;
-    if (tabPtr.i < cnoOfTablerec)
-    {
-=======
-    case File_formats::Undofile::UNDO_TUP_UPDATE_PART: {
->>>>>>> MySQL 8.0.36
+    case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
+    case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART: {
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      DEB_UNDO_LCP(("(%u)UNDO_TUP_DROP: lsn: %llu, tab: %u",
-                    instance(),
-                    lsn,
-                    tableId));
-      for(Uint32 i = 0; i < MAX_FRAG_PER_LQH; i++)
-      {
-||||||| Common ancestor
-      ptrAss(tabPtr, tablerec);
-      DEB_UNDO_LCP(("(%u)UNDO_TUP_DROP: lsn: %llu, tab: %u",
-                    instance(),
-                    lsn,
-                    tabPtr.i));
-      for(Uint32 i = 0; i<NDB_ARRAY_SIZE(tabPtr.p->fragrec); i++)
-      {
-=======
       Disk_undo::UpdatePart *rec = (Disk_undo::UpdatePart *)ptr;
       preq.m_page.m_page_no = rec->m_page_no;
       preq.m_page.m_file_no = rec->m_file_no_page_idx >> 16;
       preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
       f_undo.m_offset = rec->m_offset;
+      f_undo.m_tot_len = 0;
       break;
     }
-    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART: {
+    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
+    case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART: {
       jam();
-      Disk_undo::Update *rec = (Disk_undo::Update *)ptr;
+      Disk_undo::Update_Free_FirstVarPart* rec =
+        (Disk_undo::Update_Free_FirstVarPart*)ptr;
       preq.m_page.m_page_no = rec->m_page_no;
       preq.m_page.m_file_no = rec->m_file_no_page_idx >> 16;
       preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
       f_undo.m_offset = 0;
+      f_undo.m_tot_len = rec->m_tot_len;
       break;
     }
     case File_formats::Undofile::UNDO_TUP_FREE: {
       jam();
-      Disk_undo::Free *rec = (Disk_undo::Free *)ptr;
+      Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
       preq.m_page.m_page_no = rec->m_page_no;
       preq.m_page.m_file_no = rec->m_file_no_page_idx >> 16;
       preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
       f_undo.m_offset = 0;
+      f_undo.m_tot_len = 0;
       break;
     }
-    case File_formats::Undofile::UNDO_TUP_FREE_PART: {
+    case File_formats::Undofile::UNDO_TUP_FREE_PART:
+    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART: {
       jam();
-      Disk_undo::Free *rec = (Disk_undo::Free *)ptr;
+      Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
       preq.m_page.m_page_no = rec->m_page_no;
       preq.m_page.m_file_no = rec->m_file_no_page_idx >> 16;
       preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
       f_undo.m_offset = 0;
+      f_undo.m_tot_len = 0;
       break;
     }
     case File_formats::Undofile::UNDO_TUP_DROP: {
@@ -2710,68 +2477,26 @@ void Dbtup::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
        * Coming here after we reached the end of the fragment LCP should not
        * happen, so we insert an ndbrequire to ensure this doesn't happen.
        */
-      tabPtr.i = rec->m_table;
-      if (tabPtr.i < cnoOfTablerec) {
->>>>>>> MySQL 8.0.36
+      Uint32 tableId = rec->m_table;
+      if (tableId < cnoOfTablerec) {
         jam();
-<<<<<<< RonDB // RONDB-624 todo
-        Uint32 fragId = c_lqh->getNextTupFragid(tableId, i);
-        if (fragId != RNIL)
-        {
-||||||| Common ancestor
-        if (tabPtr.p->fragrec[i] != RNIL)
-        {
-=======
-        ptrAss(tabPtr, tablerec);
-        DEB_UNDO_LCP(("(%u)UNDO_TUP_DROP: lsn: %llu, tab: %u", instance(), lsn,
-                      tabPtr.i));
-        for (Uint32 i = 0; i < NDB_ARRAY_SIZE(tabPtr.p->fragrec); i++) {
->>>>>>> MySQL 8.0.36
+        DEB_UNDO_LCP(("(%u)UNDO_TUP_DROP: lsn: %llu, tab: %u",
+                      instance(),
+                      lsn,
+                      tableId));
+        for (Uint32 i = 0; i < MAX_FRAG_PER_LQH; i++) {
           jam();
-<<<<<<< RonDB // RONDB-624 todo
-          jamLine(Uint16(fragId));
-          disk_restart_undo_lcp(tableId, fragId,
-                                Fragrecord::UC_DROP, 0, 0, lsn);
-||||||| Common ancestor
-          jamLine(Uint16(tabPtr.p->fragid[i]));
-          disk_restart_undo_lcp(tabPtr.i, tabPtr.p->fragid[i],
-                                Fragrecord::UC_DROP, 0, 0, lsn);
-=======
-          if (tabPtr.p->fragrec[i] != RNIL) {
-            jam();
-            jamLine(Uint16(tabPtr.p->fragid[i]));
-            disk_restart_undo_lcp(tabPtr.i, tabPtr.p->fragid[i],
+          Uint32 fragId = c_lqh->getNextTupFragid(tableId, i);
+          if (fragId != RNIL) {
+            jamLine(Uint16(fragId));
+            disk_restart_undo_lcp(tableId, fragId,
                                   Fragrecord::UC_DROP, 0, 0, lsn);
           }
->>>>>>> MySQL 8.0.36
         }
       }
-      if (!isNdbMtLqh()) disk_restart_undo_next(signal);
       return;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    return;
-  }
-  case File_formats::Undofile::UNDO_END:
-    jam();
-    f_undo_done = true;
-    ndbrequire(c_pending_undo_page_hash.getCount() == 0);
-    return;
-  default:
-    ndbabort();
-||||||| Common ancestor
-    if (!isNdbMtLqh())
-      disk_restart_undo_next(signal);
-    return;
-  }
-  case File_formats::Undofile::UNDO_END:
-    jam();
-    f_undo_done = true;
-    ndbrequire(c_pending_undo_page_hash.getCount() == 0);
-    return;
-  default:
-    ndbabort();
-=======
+
     case File_formats::Undofile::UNDO_END:
       jam();
       f_undo_done = true;
@@ -2779,7 +2504,6 @@ void Dbtup::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
       return;
     default:
       ndbabort();
->>>>>>> MySQL 8.0.36
   }
 
   f_undo.m_key = preq.m_page;

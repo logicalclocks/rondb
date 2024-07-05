@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,28 +25,7 @@
 
 #include <NdbEnv.h>
 #include <NdbSleep.h>
-<<<<<<< RonDB // RONDB-624 todo
-#include "m_ctype.h"
 #include <util/require.h>
-#include <signaldata/IndexStatSignal.hpp>
-#include <signaldata/GetTabInfo.hpp>
-#include <signaldata/DictTabInfo.hpp>
-#include <signaldata/CreateTable.hpp>
-#include <signaldata/CreateIndx.hpp>
-#include <signaldata/CreateEvnt.hpp>
-#include <signaldata/SumaImpl.hpp>
-#include <signaldata/DropTable.hpp>
-||||||| Common ancestor
-#include "m_ctype.h"
-#include <signaldata/IndexStatSignal.hpp>
-#include <signaldata/GetTabInfo.hpp>
-#include <signaldata/DictTabInfo.hpp>
-#include <signaldata/CreateTable.hpp>
-#include <signaldata/CreateIndx.hpp>
-#include <signaldata/CreateEvnt.hpp>
-#include <signaldata/SumaImpl.hpp>
-#include <signaldata/DropTable.hpp>
-=======
 #include <util/version.h>
 #include <zlib.h>  //compress, uncompress
 #include <AttributeHeader.hpp>
@@ -54,7 +33,6 @@
 #include <Bitmask.hpp>
 #include <NdbOut.hpp>
 #include <SimpleProperties.hpp>
->>>>>>> MySQL 8.0.36
 #include <signaldata/AlterTable.hpp>
 #include <signaldata/ApiRegSignalData.hpp>
 #include <signaldata/CreateEvnt.hpp>

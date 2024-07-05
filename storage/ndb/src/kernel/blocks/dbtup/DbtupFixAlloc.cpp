@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -276,45 +276,15 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
   c_page_pool.getPtr(pagePtr);
   Uint32 state = pagePtr.p->page_state;
   Local_Page_fifo free_pages(c_page_pool, regFragPtr->thFreeFirst);
-<<<<<<< RonDB // RONDB-624 todo
-  switch(state){
-  case ZTH_MM_FREE:
-    acquire_frag_mutex(regFragPtr, page_no, jamBuffer());
-    if (((Fix_page*)pagePtr.p)->alloc_record(idx) != idx)
-    {
-      jam();
-      DEB_899_ERROR(("(%u)899 error FREE: tab(%u,%u) row(%u,%u)",
-                      instance(),
-                      regFragPtr->fragTableId,
-                      regFragPtr->fragmentId,
-                      page_no,
-                      idx));
-      * err = ZROWID_ALLOCATED;
-      release_frag_mutex(regFragPtr, page_no, jamBuffer());
-||||||| Common ancestor
-  switch(state){
-  case ZTH_MM_FREE:
-    acquire_frag_mutex(regFragPtr, page_no);
-    if (((Fix_page*)pagePtr.p)->alloc_record(idx) != idx)
-    {
-      DEB_899_ERROR(("(%u)899 error FREE: tab(%u,%u) row(%u,%u)",
-                      instance(),
-                      regFragPtr->fragTableId,
-                      regFragPtr->fragmentId,
-                      page_no,
-                      idx));
-      * err = ZROWID_ALLOCATED;
-      release_frag_mutex(regFragPtr, page_no);
-=======
   switch (state) {
     case ZTH_MM_FREE:
-      acquire_frag_mutex(regFragPtr, page_no);
+      acquire_frag_mutex(regFragPtr, page_no, jamBuffer());
       if (((Fix_page *)pagePtr.p)->alloc_record(idx) != idx) {
         DEB_899_ERROR(("(%u)899 error FREE: tab(%u,%u) row(%u,%u)", instance(),
                        regFragPtr->fragTableId, regFragPtr->fragmentId, page_no,
                        idx));
         *err = ZROWID_ALLOCATED;
-        release_frag_mutex(regFragPtr, page_no);
+        release_frag_mutex(regFragPtr, page_no, jamBuffer());
         return 0;
       }
 
@@ -325,81 +295,26 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
       }
 
       regFragPtr->m_fixedElemCount++;
+      DEB_ELEM_COUNT(("(%u) Inc m_fixedElemCount: now %llu tab(%u,%u),"
+                      " line: %u",
+                      instance(),
+                      regFragPtr->m_fixedElemCount,
+                      regFragPtr->fragTableId,
+                      regFragPtr->fragmentId,
+                      __LINE__));
       *out_frag_page_id = page_no;
       key->m_page_no = pagePtr.i;
       key->m_page_idx = idx;
       return pagePtr.p->m_data + idx;
     case ZTH_MM_FULL:
+      jam()
       *err = ZROWID_ALLOCATED;
       DEB_899_ERROR(("(%u)899 error FULL: tab(%u,%u) row(%u,%u)", instance(),
                      regFragPtr->fragTableId, regFragPtr->fragmentId, page_no,
                      idx));
->>>>>>> MySQL 8.0.36
       return 0;
-<<<<<<< RonDB // RONDB-624 todo
-    }
-    
-    if(pagePtr.p->free_space == 0)
-    {
-      jam();
-      pagePtr.p->page_state = ZTH_MM_FULL;
-      free_pages.remove(pagePtr);
-    }
- 
-    regFragPtr->m_fixedElemCount++;
-    DEB_ELEM_COUNT(("(%u) Inc m_fixedElemCount: now %llu tab(%u,%u),"
-                    " line: %u",
-                    instance(),
-                    regFragPtr->m_fixedElemCount,
-                    regFragPtr->fragTableId,
-                    regFragPtr->fragmentId,
-                    __LINE__));
-    *out_frag_page_id= page_no;
-    key->m_page_no = pagePtr.i;
-    key->m_page_idx = idx;
-    return pagePtr.p->m_data + idx;
-  case ZTH_MM_FULL:
-    jam();
-    * err = ZROWID_ALLOCATED;
-    DEB_899_ERROR(("(%u)899 error FULL: tab(%u,%u) row(%u,%u)",
-                    instance(),
-                    regFragPtr->fragTableId,
-                    regFragPtr->fragmentId,
-                    page_no,
-                    idx));
-    return 0;
-  default:
-    ndbabort();
-||||||| Common ancestor
-    }
-    
-    if(pagePtr.p->free_space == 0)
-    {
-      jam();
-      pagePtr.p->page_state = ZTH_MM_FULL;
-      free_pages.remove(pagePtr);
-    }
-    
-    regFragPtr->m_fixedElemCount++;
-    *out_frag_page_id= page_no;
-    key->m_page_no = pagePtr.i;
-    key->m_page_idx = idx;
-    return pagePtr.p->m_data + idx;
-  case ZTH_MM_FULL:
-    * err = ZROWID_ALLOCATED;
-    DEB_899_ERROR(("(%u)899 error FULL: tab(%u,%u) row(%u,%u)",
-                    instance(),
-                    regFragPtr->fragTableId,
-                    regFragPtr->fragmentId,
-                    page_no,
-                    idx));
-    return 0;
-  default:
-    ndbabort();
-=======
     default:
       ndbabort();
->>>>>>> MySQL 8.0.36
   }
   return 0; /* purify: deadcode */
 }

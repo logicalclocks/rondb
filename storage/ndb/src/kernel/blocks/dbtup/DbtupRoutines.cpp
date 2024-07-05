@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,16 +42,6 @@
 
 #define JAM_FILE_ID 402
 
-void Dbtup::setUpQueryRoutines(Tablerec *regTabPtr) {
-  Uint32 startDescriptor = regTabPtr->tabDescriptor;
-  ndbrequire((startDescriptor + (regTabPtr->m_no_of_attributes
-                                 << ZAD_LOG_SIZE)) <= cnoOfTabDescrRec);
-  for (Uint32 i = 0; i < regTabPtr->m_no_of_attributes; i++) {
-    Uint32 attrDescrStart = startDescriptor + (i << ZAD_LOG_SIZE);
-    Uint32 attrDescr = tableDescriptor[attrDescrStart].tabDescr;
-    Uint32 attrOffset = tableDescriptor[attrDescrStart + 1].tabDescr;
-
-<<<<<<< RonDB // RONDB-624 todo
 void
 Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
 {
@@ -61,22 +51,6 @@ Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
     Uint32 attrOffset = regTabPtr->tabDescriptor[attrDescrStart + 1];
 
     //Uint32 type = AttributeDescriptor::getType(attrDescr);
-||||||| Common ancestor
-void
-Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
-{
-  Uint32 startDescriptor= regTabPtr->tabDescriptor;
-  ndbrequire((startDescriptor + (regTabPtr->m_no_of_attributes << ZAD_LOG_SIZE)) 
-	     <= cnoOfTabDescrRec);
-  for (Uint32 i= 0; i < regTabPtr->m_no_of_attributes; i++) {
-    Uint32 attrDescrStart= startDescriptor + (i << ZAD_LOG_SIZE);
-    Uint32 attrDescr= tableDescriptor[attrDescrStart].tabDescr;
-    Uint32 attrOffset= tableDescriptor[attrDescrStart + 1].tabDescr;
-
-    //Uint32 type = AttributeDescriptor::getType(attrDescr);
-=======
-    // Uint32 type = AttributeDescriptor::getType(attrDescr);
->>>>>>> MySQL 8.0.36
     Uint32 array = AttributeDescriptor::getArrayType(attrDescr);
     Uint32 charset = AttributeOffset::getCharsetFlag(attrOffset);
     Uint32 size = AttributeDescriptor::getSize(attrDescr);
