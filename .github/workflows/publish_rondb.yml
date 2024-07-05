@@ -20,7 +20,7 @@ jobs:
     env:
       REPO_HOPSWORKS_HOSTNAME: repo.hops.works
       REPO_HOPSWORKS_USER: repo_upload
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_PRIVATE_KEY: ${{ secrets.REPO_UPLOAD_SSH_PRIVATE_KEY }}
 
     steps:
       - uses: actions/checkout@v3
