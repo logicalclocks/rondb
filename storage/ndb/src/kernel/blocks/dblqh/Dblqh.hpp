@@ -41,21 +41,13 @@
 #include <signaldata/CopyFrag.hpp>
 #include <signaldata/CreateTab.hpp>
 #include <signaldata/DropTab.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/CopyFrag.hpp>
-#include <signaldata/CopyActive.hpp>
-#include <signaldata/LqhKey.hpp>
-||||||| Common ancestor
-#include <signaldata/CopyFrag.hpp>
-#include <signaldata/CopyActive.hpp>
-=======
 #include <signaldata/FsOpenReq.hpp>
 #include <signaldata/LCP.hpp>
 #include <signaldata/LqhFrag.hpp>
+#include <signaldata/LqhKey.hpp>
 #include <signaldata/LqhTransConf.hpp>
 #include <signaldata/NodeRecoveryStatusRep.hpp>
 #include "kernel/DblqhState.hpp"
->>>>>>> MySQL 8.0.36
 
 // primary key is stored in TUP
 #include "../dbacc/Dbacc.hpp"
@@ -837,49 +829,9 @@ class Dblqh : public SimulatedBlock {
       REMOVING = 5           ///< The fragment is currently removed.
                              ///< Operations are not allowed.
     };
-<<<<<<< RonDB // RONDB-624 todo
-||||||| Common ancestor
-    /**
-     *        Last GCI for executing the fragment log in this phase.
-     */
-    UintR execSrLastGci[4];
-    /**
-     *       Start GCI for executing the fragment log in this phase.
-     */
-    UintR execSrStartGci[4];
-    /**
-     *       Requesting user pointer for executing the fragment log in
-     *       this phase
-     */
-    UintR execSrUserptr[4];
-    /**
-     *       The LCP identifier of the LCP's. 
-     *       =0 means that the LCP number has not been stored.
-     *       The LCP identifier is supplied by DIH when starting the LCP.   
-     */
-=======
     enum LogFlag { STATE_TRUE = 0, STATE_FALSE = 1 };
     enum SrStatus { SS_IDLE = 0, SS_STARTED = 1, SS_COMPLETED = 2 };
     enum LcpFlag { LCP_STATE_TRUE = 0, LCP_STATE_FALSE = 1 };
-    /**
-     *        Last GCI for executing the fragment log in this phase.
-     */
-    UintR execSrLastGci[4];
-    /**
-     *       Start GCI for executing the fragment log in this phase.
-     */
-    UintR execSrStartGci[4];
-    /**
-     *       Requesting user pointer for executing the fragment log in
-     *       this phase
-     */
-    UintR execSrUserptr[4];
-    /**
-     *       The LCP identifier of the LCP's.
-     *       =0 means that the LCP number has not been stored.
-     *       The LCP identifier is supplied by DIH when starting the LCP.
-     */
->>>>>>> MySQL 8.0.36
     UintR lcpId[MAX_LCP_STORED];
     UintR maxGciInLcp;
 
@@ -2697,7 +2649,6 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_magic;
     Uint32 ptrI;
 
-<<<<<<< RonDB // RONDB-624 todo
     TcConnectionrec() :
       m_magic(Magic::make(TYPE_ID)),
       fragmentptr(RNIL64),
@@ -2793,183 +2744,6 @@ class Dblqh : public SimulatedBlock {
       m_next_block = nullptr;
 #endif
     }
-||||||| Common ancestor
-    TcConnectionrec() :
-      m_magic(Magic::make(TYPE_ID)),
-      accConnectrec(RNIL),
-      tupConnectrec(RNIL),
-      nextTcConnectrec(RNIL),
-      connectState(CONNECTED),
-      keyInfoIVal(RNIL),
-      attrInfoIVal(RNIL),
-      //transid has no special value indicating not set
-      abortState(ABORT_IDLE),
-      applOprec(RNIL),
-      clientConnectrec(RNIL),
-      //tcTimer must be set before used
-      currReclenAi(0),
-      currTupAiLen(0),
-      //fragmentid must be set in all paths before use
-      //fragmentptr must be set in all paths before use
-      gci_hi(0),
-      gci_lo(0),
-      //hashValue has no special value indicating not set
-      logWriteState(NOT_STARTED),
-      nextHashRec(RNIL),
-      prevHashRec(RNIL),
-      nextLogTcrec(nullptr),
-      prevLogTcrec(nullptr),
-      nextTcLogQueue(nullptr),
-      prevTcLogQueue(nullptr),
-      //readlenAi must be set before used
-      //reqinfo must be set before used
-      //schemaVersion must be set before used
-      //tableref must be set before used
-      tcOprec(RNIL),
-      hashIndex(RNIL),
-      //tcHashKeyHi must be set before used
-      tcScanInfo(Uint32(~0)),
-      tcScanRec(RNIL),
-      totReclenAi(0),
-      totSendlenAi(0),
-      savePointId(0),
-      transactionState(TC_NOT_CONNECTED),
-      applRef(Uint32(~0)),
-      clientBlockref(Uint32(~0)),
-      //tcBlockref must be set before used
-      commitAckMarker(RNIL),
-      numFiredTriggers(0),
-      lqhKeyReqId(0),
-      //errCode must be set before used
-      //nextReplica must be set before used
-      primKeyLen(0),
-      //nodeAfterNext must be set before used
-      //activeCreat must be set before used
-      //dirtyOp must be set before used
-      //indTakeOver must be set before used
-      //lastReplicaNo must be set before used
-      //lockType only used for key operations, must be set before used
-      nextSeqNoReplica(0),
-      //opSimple only used for key operations, must be set before used
-      //opExec must be set before used
-      //operation must be set before used
-      //m_reorg must be set before used
-      //reclenAiLqhKey used for short signals, must be set before used
-      //replicaType only used for write key operations, must be set before used
-      seqNoReplica(0),
-      //tcNodeFailrec only set when abortState is set to NEW_FROM_TC
-      //m_disk_table set before used
-      //m_use_rowid used for key operations, set before used
-      //m_dealloc must be set before used
-      //m_fire_trig_pass must be set before used
-      m_committed_log_space(0),
-      m_flags(0),
-      //m_log_part_ptr_i set before used, only key ops
-      //m_rowid set before used
-      
-      //logStartFileNo must be set before used
-      //logStartPageIndex must be set before used
-      //logStartPageNo must be set before used
-      //logStopPageNo must be set before used
-
-      //copyCountWords must be set before used
-      reqRef(Uint32(~0)),
-      reqBlockref(Uint32(~0))
-      //m_corrFactorLo must be set before used
-      //m_corrFactorHi must be set before used
-      //scanKeyInfoPos only used when m_flags has OP_SCANKEYINFOPOSSAVED set
-      //m_nr_delete only used in Copy fragment, set before used
-    {
-    }
-=======
-    TcConnectionrec()
-        : m_magic(Magic::make(TYPE_ID)),
-          accConnectrec(RNIL),
-          tupConnectrec(RNIL),
-          nextTcConnectrec(RNIL),
-          connectState(CONNECTED),
-          keyInfoIVal(RNIL),
-          attrInfoIVal(RNIL),
-          // transid has no special value indicating not set
-          abortState(ABORT_IDLE),
-          applOprec(RNIL),
-          clientConnectrec(RNIL),
-          // tcTimer must be set before used
-          currReclenAi(0),
-          currTupAiLen(0),
-          // fragmentid must be set in all paths before use
-          // fragmentptr must be set in all paths before use
-          gci_hi(0),
-          gci_lo(0),
-          // hashValue has no special value indicating not set
-          logWriteState(NOT_STARTED),
-          nextHashRec(RNIL),
-          prevHashRec(RNIL),
-          nextLogTcrec(nullptr),
-          prevLogTcrec(nullptr),
-          nextTcLogQueue(nullptr),
-          prevTcLogQueue(nullptr),
-          // readlenAi must be set before used
-          // reqinfo must be set before used
-          // schemaVersion must be set before used
-          // tableref must be set before used
-          tcOprec(RNIL),
-          hashIndex(RNIL),
-          // tcHashKeyHi must be set before used
-          tcScanInfo(Uint32(~0)),
-          tcScanRec(RNIL),
-          totReclenAi(0),
-          totSendlenAi(0),
-          savePointId(0),
-          transactionState(TC_NOT_CONNECTED),
-          applRef(Uint32(~0)),
-          clientBlockref(Uint32(~0)),
-          // tcBlockref must be set before used
-          commitAckMarker(RNIL),
-          numFiredTriggers(0),
-          lqhKeyReqId(0),
-          // errCode must be set before used
-          // nextReplica must be set before used
-          primKeyLen(0),
-          // nodeAfterNext must be set before used
-          // activeCreat must be set before used
-          // dirtyOp must be set before used
-          // indTakeOver must be set before used
-          // lastReplicaNo must be set before used
-          // lockType only used for key operations, must be set before used
-          nextSeqNoReplica(0),
-          // opSimple only used for key operations, must be set before used
-          // opExec must be set before used
-          // operation must be set before used
-          // m_reorg must be set before used
-          // reclenAiLqhKey used for short signals, must be set before used
-          // replicaType only used for write key operations, must be set before
-          // used
-          seqNoReplica(0),
-          // tcNodeFailrec only set when abortState is set to NEW_FROM_TC
-          // m_disk_table set before used
-          // m_use_rowid used for key operations, set before used
-          // m_dealloc must be set before used
-          // m_fire_trig_pass must be set before used
-          m_committed_log_space(0),
-          m_flags(0),
-          // m_log_part_ptr_i set before used, only key ops
-          // m_rowid set before used
-
-          // logStartFileNo must be set before used
-          // logStartPageIndex must be set before used
-          // logStartPageNo must be set before used
-          // logStopPageNo must be set before used
-
-          // copyCountWords must be set before used
-          reqRef(Uint32(~0)),
-          reqBlockref(Uint32(~0))
-    // m_corrFactorLo must be set before used
-    // m_corrFactorHi must be set before used
-    // scanKeyInfoPos only used when m_flags has OP_SCANKEYINFOPOSSAVED set
-    // m_nr_delete only used in Copy fragment, set before used
-    {}
->>>>>>> MySQL 8.0.36
 
     ~TcConnectionrec()
     {
@@ -3245,25 +3019,14 @@ private:
   void setup_key_pointers(Uint32 tcIndex, bool acquire_lock = true);
   void exec_next_scan_conf(Signal *signal);
   void exec_next_scan_ref(Signal *signal);
-<<<<<<< RonDB // RONDB-624 todo
-  void continue_next_scan_conf(Signal *signal,
-                               ScanRecord::ScanState scanState,
-                               ScanRecord * const scanPtr);
+  void continue_next_scan_conf(Signal *signal, ScanRecord::ScanState scanState,
+                               ScanRecord *const scanPtr);
   Uint32 get_pgman_flags()
   {
     return LqhKeyReq::getNrCopyFlag(m_tc_connect_ptr.p->reqinfo) |
            c_executing_redo_log;
   }
 private:
-||||||| Common ancestor
-  void continue_next_scan_conf(Signal *signal,
-                               ScanRecord::ScanState scanState,
-                               ScanRecord * const scanPtr);
-private:
-=======
-  void continue_next_scan_conf(Signal *signal, ScanRecord::ScanState scanState,
-                               ScanRecord *const scanPtr);
->>>>>>> MySQL 8.0.36
 
  private:
   BLOCK_DEFINES(Dblqh);
@@ -4115,20 +3878,9 @@ private:
  public:
   Uint32 readPrimaryKeys(Uint32 opPtrI, Uint32 *dst, bool xfrm);
 
-<<<<<<< RonDB // RONDB-624 todo
   void acckeyconf_tupkeyreq(Signal*, TcConnectionrec*, Fragrecord*,
                             Uint32, Uint32);
   void acckeyconf_load_diskpage(Signal*,TcConnectionrecPtr,Fragrecord*,
-||||||| Common ancestor
-  void acckeyconf_tupkeyreq(Signal*, TcConnectionrec*, Fragrecord*,
-                            Uint32, Uint32, Uint32);
-  void acckeyconf_load_diskpage(Signal*,TcConnectionrecPtr,Fragrecord*,
-=======
- private:
-  void acckeyconf_tupkeyreq(Signal *, TcConnectionrec *, Fragrecord *, Uint32,
-                            Uint32, Uint32);
-  void acckeyconf_load_diskpage(Signal *, TcConnectionrecPtr, Fragrecord *,
->>>>>>> MySQL 8.0.36
                                 Uint32, Uint32);
 
   void handle_nr_copy(Signal*, Ptr<TcConnectionrec>);
@@ -4170,89 +3922,6 @@ public:
   void add_delete_size(Uint64 average_row_size) {
     m_delete_size += average_row_size;
   }
-<<<<<<< RonDB // RONDB-624 todo
-  
-public:
-  void acckeyconf_load_diskpage_callback(Signal*, Uint32, Uint32);
-  
-private:
-  void next_scanconf_load_diskpage(Signal* signal, 
-				   ScanRecord * const scanPtr,
-				   Ptr<TcConnectionrec> regTcPtr,
-				   Fragrecord* fragPtrP);
-  
-  void next_scanconf_tupkeyreq(Signal* signal,
-                               ScanRecord * const scanPtr,
-			       TcConnectionrec * regTcPtr,
-			       Fragrecord* fragPtrP);
-
-public:  
-  void next_scanconf_load_diskpage_callback(Signal* signal, Uint32, Uint32);
-
-  void tupcommit_conf_callback(Signal* signal, Uint32 tcPtrI);
-private:
-  void tupcommit_conf(Signal* signal,
-                      TcConnectionrecPtr,
-                      Fragrecord *);
-
-  void mark_end_of_lcp_restore(Signal* signal);
-  void log_fragment_copied(Signal* signal);
-  
-// ----------------------------------------------------------------
-// These are variables handling the records. For most records one
-// pointer to the array of structs, one pointer-struct, a file size
-// and a first free record variable. The pointer struct are temporary
-// variables that are kept on the class object since there are often a
-// great deal of those variables that exist simultaneously and
-// thus no perfect solution of handling them is currently available.
-// ----------------------------------------------------------------
-/* ------------------------------------------------------------------------- */
-/*       POSITIONS WITHIN THE ATTRINBUF AND THE MAX SIZE OF DATA WITHIN AN   */
-/*       ATTRINBUF.                                                          */
-/* ------------------------------------------------------------------------- */
-||||||| Common ancestor
-  
-public:
-  void acckeyconf_load_diskpage_callback(Signal*, Uint32, Uint32);
-  
-private:
-  void next_scanconf_load_diskpage(Signal* signal, 
-				   ScanRecord * const scanPtr,
-				   Ptr<TcConnectionrec> regTcPtr,
-				   Fragrecord* fragPtrP);
-  
-  void next_scanconf_tupkeyreq(Signal* signal,
-                               ScanRecord * const scanPtr,
-			       TcConnectionrec * regTcPtr,
-			       Fragrecord* fragPtrP,
-			       Uint32 disk_page);
-
-public:  
-  void next_scanconf_load_diskpage_callback(Signal* signal, Uint32, Uint32);
-
-  void tupcommit_conf_callback(Signal* signal, Uint32 tcPtrI);
-private:
-  void tupcommit_conf(Signal* signal,
-                      TcConnectionrecPtr,
-                      Fragrecord *);
-
-  void mark_end_of_lcp_restore(Signal* signal);
-  void log_fragment_copied(Signal* signal);
-  
-// ----------------------------------------------------------------
-// These are variables handling the records. For most records one
-// pointer to the array of structs, one pointer-struct, a file size
-// and a first free record variable. The pointer struct are temporary
-// variables that are kept on the class object since there are often a
-// great deal of those variables that exist simultaneously and
-// thus no perfect solution of handling them is currently available.
-// ----------------------------------------------------------------
-/* ------------------------------------------------------------------------- */
-/*       POSITIONS WITHIN THE ATTRINBUF AND THE MAX SIZE OF DATA WITHIN AN   */
-/*       ATTRINBUF.                                                          */
-/* ------------------------------------------------------------------------- */
-=======
->>>>>>> MySQL 8.0.36
 
  public:
   void acckeyconf_load_diskpage_callback(Signal *, Uint32, Uint32);
@@ -4263,8 +3932,8 @@ private:
                                    Fragrecord *fragPtrP);
 
   void next_scanconf_tupkeyreq(Signal *signal, ScanRecord *const scanPtr,
-                               TcConnectionrec *regTcPtr, Fragrecord *fragPtrP,
-                               Uint32 disk_page);
+                               TcConnectionrec *regTcPtr,
+                               Fragrecord *fragPtrP);
 
  public:
   void next_scanconf_load_diskpage_callback(Signal *signal, Uint32, Uint32);
@@ -4547,38 +4216,10 @@ private:
   /* -------------------------------------------------------------------------
    */
   UintR ccurrentGcprec;
-<<<<<<< RonDB // RONDB-624 todo
 /* ------------------------------------------------------------------------- */
-/* These variable is used to keep track of what time we have reported so far */
-/* in the TIME_SIGNAL handling.                                              */
+/* These variables are used to keep track of what time we have reported so   */
+/* far in the TIME_SIGNAL handling.                                          */
 /* ------------------------------------------------------------------------- */
-||||||| Common ancestor
-/* ------------------------------------------------------------------------- */
-/*THESE VARIABLES ARE USED TO KEEP TRACK OF ALL ACTIVE COPY FRAGMENTS IN LQH.*/
-/* ------------------------------------------------------------------------- */
-  Uint8 cnoActiveCopy;
-  UintR cactiveCopy[4];
-/* ------------------------------------------------------------------------- */
-/* These variable is used to keep track of what time we have reported so far */
-/* in the TIME_SIGNAL handling.                                              */
-/* ------------------------------------------------------------------------- */
-=======
-  /* -------------------------------------------------------------------------
-   */
-  /*THESE VARIABLES ARE USED TO KEEP TRACK OF ALL ACTIVE COPY FRAGMENTS IN
-   * LQH.*/
-  /* -------------------------------------------------------------------------
-   */
-  Uint8 cnoActiveCopy;
-  UintR cactiveCopy[4];
-  /* -------------------------------------------------------------------------
-   */
-  /* These variable is used to keep track of what time we have reported so far
-   */
-  /* in the TIME_SIGNAL handling. */
-  /* -------------------------------------------------------------------------
-   */
->>>>>>> MySQL 8.0.36
   NDB_TICKS c_latestTIME_SIGNAL;
   Uint64 c_elapsed_time_millis;
 

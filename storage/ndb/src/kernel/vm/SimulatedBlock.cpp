@@ -34,21 +34,9 @@
 #include "portlib/ndb_compiler.h"
 #include "util/require.h"
 
-<<<<<<< RonDB // RONDB-624 todo
 #include <rondb_hash.hpp>
 
-#include "SimulatedBlock.hpp"
-#include <NdbOut.hpp>
-#include <OutputStream.hpp>
-#include <GlobalData.hpp>
-||||||| Common ancestor
-#include "SimulatedBlock.hpp"
-#include <NdbOut.hpp>
-#include <OutputStream.hpp>
-#include <GlobalData.hpp>
-=======
 #include <DebuggerNames.hpp>
->>>>>>> MySQL 8.0.36
 #include <Emulator.hpp>
 #include <ErrorHandlingMacros.hpp>
 #include <FastScheduler.hpp>

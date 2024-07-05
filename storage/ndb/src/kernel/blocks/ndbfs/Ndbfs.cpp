@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -54,16 +54,8 @@
 #include <NdbOut.hpp>
 #include <RefConvert.hpp>
 #include <portlib/NdbDir.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <NdbOut.hpp>
-#include <Configuration.hpp>
 #include <NdbConfig.h>
-||||||| Common ancestor
-#include <NdbOut.hpp>
-#include <Configuration.hpp>
-=======
 #include "debugger/DebuggerNames.hpp"
->>>>>>> MySQL 8.0.36
 
 #include <EventLogger.hpp>
 
@@ -1428,200 +1420,6 @@ void Ndbfs::report(Request *request, Signal *signal) {
     FsConf *const fsConf = (FsConf *)&signal->theData[0];
     fsConf->userPointer = request->theUserPointer;
     switch (request->action) {
-<<<<<<< RonDB // RONDB-624 todo
-    case Request:: open: {
-      jam();
-      theOpenFiles.insert(request->file, request->theFilePointer);
-
-      // Keep track on max number of opened files
-      if (theOpenFiles.size() > m_maxOpenedFiles)
-        m_maxOpenedFiles = theOpenFiles.size();
-
-      Uint32 fileInfo = 0;
-      if (request->par.open.use_o_direct)
-      {
-        fileInfo = FsConf::USE_O_DIRECT;
-      }
-      fsConf->filePointer = request->theFilePointer;
-      fsConf->fileInfo = fileInfo;
-      fsConf->file_size_hi = request->m_file_size_hi;
-      fsConf->file_size_lo = request->m_file_size_lo;
-      sendSignal(ref, GSN_FSOPENCONF, signal, 5, JBA);
-      break;
-    }
-    case Request:: closeRemove:
-    case Request:: close: {
-      jam();
-      // removes the file from OpenFiles list
-      theOpenFiles.erase(request->theFilePointer); 
-      // Put the file in idle files list
-      pushIdleFile(request->file);
-      sendSignal(ref, GSN_FSCLOSECONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: writeSync:
-    case Request:: write:
-    {
-      jam();
-      sendSignal(ref, GSN_FSWRITECONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: read:
-    {
-      jam();
-      sendSignal(ref, GSN_FSREADCONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: readPartial: {
-      jam();
-      size_t bytes_read = 0;
-      for (int i = 0; i < request->par.readWrite.numberOfPages; i++)
-        bytes_read += request->par.readWrite.pages[i].size;
-      fsConf->bytes_read = Uint32(bytes_read);
-      sendSignal(ref, GSN_FSREADCONF, signal, 2, JBA);
-      break;
-    }
-    case Request:: sync: {
-      jam();
-      sendSignal(ref, GSN_FSSYNCCONF, signal, 1, JBA);
-      break;
-    }//case
-    case Request::append:
-    case Request::append_synch:
-    {
-      jam();
-      signal->theData[1] = Uint32(request->par.append.size);
-      sendSignal(ref, GSN_FSAPPENDCONF, signal, 2, JBA);
-      break;
-    }
-    case Request::rmrf: {
-      jam();
-      // Put the file in idle files list
-      pushIdleFile(request->file);
-      sendSignal(ref, GSN_FSREMOVECONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: end: {
-    case Request:: suspend:
-      // Report nothing
-      break;
-    }
-    case Request::allocmem: {
-      jam();
-      AllocMemConf* conf = (AllocMemConf*)signal->getDataPtrSend();
-      conf->senderRef = reference();
-      conf->senderData = request->theUserPointer;
-      conf->bytes_hi = Uint32(request->par.alloc.bytes >> 32);
-      conf->bytes_lo = Uint32(request->par.alloc.bytes);
-      sendSignal(ref, GSN_ALLOC_MEM_CONF, signal,
-                 AllocMemConf::SignalLength, JBB);
-      pushIdleFile(request->file);
-      break;
-    }
-    case Request::buildindx: {
-      jam();
-      BuildIndxImplConf* rep = (BuildIndxImplConf*)signal->getDataPtrSend();
-      rep->senderRef = reference();
-      rep->senderData = request->theUserPointer;
-      sendSignal(ref, GSN_BUILD_INDX_IMPL_CONF, signal,
-                 BuildIndxImplConf::SignalLength, JBB);
-      pushIdleFile(request->file);
-      break;
-||||||| Common ancestor
-    case Request:: open: {
-      jam();
-      theOpenFiles.insert(request->file, request->theFilePointer);
-
-      // Keep track on max number of opened files
-      if (theOpenFiles.size() > m_maxOpenedFiles)
-        m_maxOpenedFiles = theOpenFiles.size();
-
-      fsConf->filePointer = request->theFilePointer;
-      fsConf->fileInfo = 0;
-      fsConf->file_size_hi = request->m_file_size_hi;
-      fsConf->file_size_lo = request->m_file_size_lo;
-      sendSignal(ref, GSN_FSOPENCONF, signal, 5, JBA);
-      break;
-    }
-    case Request:: closeRemove:
-    case Request:: close: {
-      jam();
-      // removes the file from OpenFiles list
-      theOpenFiles.erase(request->theFilePointer); 
-      // Put the file in idle files list
-      pushIdleFile(request->file);
-      sendSignal(ref, GSN_FSCLOSECONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: writeSync:
-    case Request:: write:
-    {
-      jam();
-      sendSignal(ref, GSN_FSWRITECONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: read:
-    {
-      jam();
-      sendSignal(ref, GSN_FSREADCONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: readPartial: {
-      jam();
-      size_t bytes_read = 0;
-      for (int i = 0; i < request->par.readWrite.numberOfPages; i++)
-        bytes_read += request->par.readWrite.pages[i].size;
-      fsConf->bytes_read = Uint32(bytes_read);
-      sendSignal(ref, GSN_FSREADCONF, signal, 2, JBA);
-      break;
-    }
-    case Request:: sync: {
-      jam();
-      sendSignal(ref, GSN_FSSYNCCONF, signal, 1, JBA);
-      break;
-    }//case
-    case Request::append:
-    case Request::append_synch:
-    {
-      jam();
-      signal->theData[1] = Uint32(request->par.append.size);
-      sendSignal(ref, GSN_FSAPPENDCONF, signal, 2, JBA);
-      break;
-    }
-    case Request::rmrf: {
-      jam();
-      // Put the file in idle files list
-      pushIdleFile(request->file);
-      sendSignal(ref, GSN_FSREMOVECONF, signal, 1, JBA);
-      break;
-    }
-    case Request:: end: {
-    case Request:: suspend:
-      // Report nothing
-      break;
-    }
-    case Request::allocmem: {
-      jam();
-      AllocMemConf* conf = (AllocMemConf*)signal->getDataPtrSend();
-      conf->senderRef = reference();
-      conf->senderData = request->theUserPointer;
-      conf->bytes_hi = Uint32(request->par.alloc.bytes >> 32);
-      conf->bytes_lo = Uint32(request->par.alloc.bytes);
-      sendSignal(ref, GSN_ALLOC_MEM_CONF, signal,
-                 AllocMemConf::SignalLength, JBB);
-      pushIdleFile(request->file);
-      break;
-    }
-    case Request::buildindx: {
-      jam();
-      BuildIndxImplConf* rep = (BuildIndxImplConf*)signal->getDataPtrSend();
-      rep->senderRef = reference();
-      rep->senderData = request->theUserPointer;
-      sendSignal(ref, GSN_BUILD_INDX_IMPL_CONF, signal,
-                 BuildIndxImplConf::SignalLength, JBB);
-      pushIdleFile(request->file);
-      break;
-=======
       case Request::open: {
         jam();
         theOpenFiles.insert(request->file, request->theFilePointer);
@@ -1630,8 +1428,13 @@ void Ndbfs::report(Request *request, Signal *signal) {
         if (theOpenFiles.size() > m_maxOpenedFiles)
           m_maxOpenedFiles = theOpenFiles.size();
 
+        Uint32 fileInfo = 0;
+        if (request->par.open.use_o_direct)
+        {
+          fileInfo = FsConf::USE_O_DIRECT;
+        }
         fsConf->filePointer = request->theFilePointer;
-        fsConf->fileInfo = 0;
+        fsConf->fileInfo = fileInfo;
         fsConf->file_size_hi = request->m_file_size_hi;
         fsConf->file_size_lo = request->m_file_size_lo;
         sendSignal(ref, GSN_FSOPENCONF, signal, 5, JBA);
@@ -1713,7 +1516,6 @@ void Ndbfs::report(Request *request, Signal *signal) {
         pushIdleFile(request->file);
         break;
       }
->>>>>>> MySQL 8.0.36
     }
   }  // if
   signal->setTrace(orgTrace);

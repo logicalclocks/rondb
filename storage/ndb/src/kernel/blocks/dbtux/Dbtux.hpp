@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,14 +32,8 @@
 #include <AttributeHeader.hpp>
 #include <DataBuffer.hpp>
 #include <IntrusiveList.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <RWPool64.hpp>
-||||||| Common ancestor
-#include <md5_hash.hpp>
-=======
 #include <SimulatedBlock.hpp>
-#include <md5_hash.hpp>
->>>>>>> MySQL 8.0.36
 
 // big brother
 #include <dbacc/Dbacc.hpp>

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,18 +48,14 @@
 #include <signaldata/EventReport.hpp>
 #include <signaldata/EventSubscribeReq.hpp>
 #include <signaldata/GetConfig.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
-||||||| Common ancestor
-=======
 #include <signaldata/NodeStateSignalData.hpp>
 #include <signaldata/SetLogLevelOrd.hpp>
 #include <signaldata/StartOrd.hpp>
 #include <signaldata/Sync.hpp>
 #include <signaldata/TamperOrd.hpp>
 #include <signaldata/TestOrd.hpp>
->>>>>>> MySQL 8.0.36
 
 #ifdef ERROR_INSERT
 #include <signaldata/FsOpenReq.hpp>
@@ -2233,57 +2229,28 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal) {
 
   jamEntry();
 
-<<<<<<< RonDB // RONDB-624 todo
-  switch(req.tableId){
-  case Ndbinfo::RESOURCES_TABLEID:
-  {
-    jam();
-    Uint32 resource_id = cursor->data[0];
-    Resource_limit resource_limit;
-
-    if (resource_id == 0)
-    {
-      jam();
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId()); // Node id
-      row.write_uint32(resource_id);
-
-      Uint32 curr_used = m_ctx.m_mm.get_in_use();
-      Uint32 max = m_ctx.m_mm.get_allocated();
-      row.write_uint32(max); // reserved
-      row.write_uint32(curr_used); // current in use
-      row.write_uint32(max); // max
-      row.write_uint32(0); // high water mark, TODO
-      row.write_uint32(0); // spare
-      ndbinfo_send_row(signal, req, row, rl);
-
-      resource_id++;
-    }
-    while(m_ctx.m_mm.get_resource_limit(resource_id, resource_limit))
-    {
-||||||| Common ancestor
-  switch(req.tableId){
-  case Ndbinfo::RESOURCES_TABLEID:
-  {
-    jam();
-    Uint32 resource_id = cursor->data[0];
-    Resource_limit resource_limit;
-
-    if (resource_id == 0)
-    {
-      resource_id++;
-    }
-    while(m_ctx.m_mm.get_resource_limit(resource_id, resource_limit))
-    {
-=======
   switch (req.tableId) {
     case Ndbinfo::RESOURCES_TABLEID: {
->>>>>>> MySQL 8.0.36
       jam();
       Uint32 resource_id = cursor->data[0];
       Resource_limit resource_limit;
 
-      if (resource_id == 0) {
+      if (resource_id == 0)
+      {
+        jam();
+        Ndbinfo::Row row(signal, req);
+        row.write_uint32(getOwnNodeId()); // Node id
+        row.write_uint32(resource_id);
+
+        Uint32 curr_used = m_ctx.m_mm.get_in_use();
+        Uint32 max = m_ctx.m_mm.get_allocated();
+        row.write_uint32(max); // reserved
+        row.write_uint32(curr_used); // current in use
+        row.write_uint32(max); // max
+        row.write_uint32(0); // high water mark, TODO
+        row.write_uint32(0); // spare
+        ndbinfo_send_row(signal, req, row, rl);
+
         resource_id++;
       }
       while (m_ctx.m_mm.get_resource_limit(resource_id, resource_limit)) {
@@ -2308,115 +2275,6 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal) {
       }
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    break;
-  }
-
-  case Ndbinfo::NODES_TABLEID:
-  {
-    jam();
-    const NodeState& nodeState = getNodeState();
-    const Uint32 start_level = nodeState.startLevel;
-    const NDB_TICKS now = NdbTick_getCurrentTicks();
-    const Uint64 uptime = NdbTick_Elapsed(m_start_time, now).seconds();
-    Uint32 generation = m_ctx.m_config.get_config_generation(); 
- 
-    Ndbinfo::Row row(signal, req);
-    row.write_uint32(getOwnNodeId()); // Node id
-
-    row.write_uint64(uptime);         // seconds
-    row.write_uint32(start_level);
-    row.write_uint32(start_level == NodeState::SL_STARTING ?
-                     nodeState.starting.startPhase : 0);
-    row.write_uint32(generation);
-    ndbinfo_send_row(signal, req, row, rl);
-    break;
-  }
-
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    jam();
-
-    Resource_limit res_limit;
-    m_ctx.m_mm.get_resource_limit(RG_DATAMEM, res_limit);
-
-    const Uint32 dm_pages_used = res_limit.m_curr;
-    const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
-
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "Data memory",
-        dm_pages_used,
-        dm_pages_total,
-        sizeof(GlobalPage),
-        0,
-        { CFG_DB_DATA_MEM,0,0,0 },
-        0},
-      { "Long message buffer",
-        g_sectionSegmentPool.getUsed(),
-        g_sectionSegmentPool.getSize(),
-        sizeof(SectionSegment),
-        g_sectionSegmentPool.getUsedHi(),
-        { CFG_DB_LONG_SIGNAL_BUFFER,0,0,0 },
-        0},
-      { NULL, 0,0,0,0,{ 0,0,0,0 }, 0}
-    };
-||||||| Common ancestor
-    break;
-  }
-
-  case Ndbinfo::NODES_TABLEID:
-  {
-    jam();
-    const NodeState& nodeState = getNodeState();
-    const Uint32 start_level = nodeState.startLevel;
-    const NDB_TICKS now = NdbTick_getCurrentTicks();
-    const Uint64 uptime = NdbTick_Elapsed(m_start_time, now).seconds();
-    Uint32 generation = m_ctx.m_config.get_config_generation(); 
- 
-    Ndbinfo::Row row(signal, req);
-    row.write_uint32(getOwnNodeId()); // Node id
-
-    row.write_uint64(uptime);         // seconds
-    row.write_uint32(start_level);
-    row.write_uint32(start_level == NodeState::SL_STARTING ?
-                     nodeState.starting.startPhase : 0);
-    row.write_uint32(generation);
-    ndbinfo_send_row(signal, req, row, rl);
-    break;
-  }
-
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    jam();
-
-    Resource_limit res_limit;
-    m_ctx.m_mm.get_resource_limit(RG_DATAMEM, res_limit);
-
-    const Uint32 dm_pages_used = res_limit.m_curr;
-    const Uint32 dm_pages_total =
-      res_limit.m_max > 0 ? res_limit.m_max : res_limit.m_min;
-
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "Data memory",
-        dm_pages_used,
-        dm_pages_total,
-        sizeof(GlobalPage),
-        0,
-        { CFG_DB_DATA_MEM,0,0,0 },
-        0},
-      { "Long message buffer",
-        g_sectionSegmentPool.getUsed(),
-        g_sectionSegmentPool.getSize(),
-        sizeof(SectionSegment),
-        g_sectionSegmentPool.getUsedHi(),
-        { CFG_DB_LONG_SIGNAL_BUFFER,0,0,0 },
-        0},
-      { NULL, 0,0,0,0,{ 0,0,0,0 }, 0}
-    };
-=======
->>>>>>> MySQL 8.0.36
 
     case Ndbinfo::NODES_TABLEID: {
       jam();
@@ -2446,8 +2304,7 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal) {
       m_ctx.m_mm.get_resource_limit(RG_DATAMEM, res_limit);
 
       const Uint32 dm_pages_used = res_limit.m_curr;
-      const Uint32 dm_pages_total =
-          res_limit.m_max > 0 ? res_limit.m_max : res_limit.m_min;
+      const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
 
       Ndbinfo::pool_entry pools[] = {{"Data memory",
                                       dm_pages_used,
@@ -2546,42 +2403,6 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal) {
         }
         row.write_string(buf);  // config_values
 
-<<<<<<< RonDB // RONDB-624 todo
-    for(row_num = 1, ndb_mgm_first(iter);
-        ndb_mgm_valid(iter);
-        row_num++, ndb_mgm_next(iter))
-    {
-      if(row_num > sent_row_num)
-      {
-        Uint32 row_node_id, row_node_type;
-        const char * hostname = nullptr;
-        Ndbinfo::Row row(signal, req);
-        row.write_uint32(getOwnNodeId());
-        ndb_mgm_get_int_parameter(iter, CFG_NODE_ID, & row_node_id);
-        row.write_uint32(row_node_id);
-        ndb_mgm_get_int_parameter(iter, CFG_TYPE_OF_SECTION, & row_node_type);
-        row.write_uint32(row_node_type);
-        ndb_mgm_get_string_parameter(iter, CFG_NODE_HOST, & hostname);
-        row.write_string(hostname);
-||||||| Common ancestor
-    for(row_num = 1, ndb_mgm_first(iter);
-        ndb_mgm_valid(iter);
-        row_num++, ndb_mgm_next(iter))
-    {
-      if(row_num > sent_row_num)
-      {
-        Uint32 row_node_id, row_node_type;
-        const char * hostname;
-        Ndbinfo::Row row(signal, req);
-        row.write_uint32(getOwnNodeId());
-        ndb_mgm_get_int_parameter(iter, CFG_NODE_ID, & row_node_id);
-        row.write_uint32(row_node_id);
-        ndb_mgm_get_int_parameter(iter, CFG_TYPE_OF_SECTION, & row_node_type);
-        row.write_uint32(row_node_type);
-        ndb_mgm_get_string_parameter(iter, CFG_NODE_HOST, & hostname);
-        row.write_string(hostname);
-=======
->>>>>>> MySQL 8.0.36
         ndbinfo_send_row(signal, req, row, rl);
 
         if (rl.need_break(req)) {
@@ -2603,7 +2424,7 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal) {
            row_num++, ndb_mgm_next(iter)) {
         if (row_num > sent_row_num) {
           Uint32 row_node_id, row_node_type;
-          const char *hostname;
+          const char *hostname = nullptr;
           Ndbinfo::Row row(signal, req);
           row.write_uint32(getOwnNodeId());
           ndb_mgm_get_int_parameter(iter, CFG_NODE_ID, &row_node_id);
@@ -3358,64 +3179,12 @@ void Cmvmi::execCONTINUEB(Signal *signal) {
       m_ctx.m_mm.get_resource_limit(RG_DATAMEM, rl);
       {
         const Uint32 dm_pages_used = rl.m_curr;
-        const Uint32 dm_pages_total =
-            (rl.m_max < Resource_limit::HIGHEST_LIMIT) ? rl.m_max : rl.m_min;
+        const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
         const Uint32 dm_percent_now =
             calc_percent(dm_pages_used, dm_pages_total);
 
-<<<<<<< RonDB // RONDB-624 todo
-void
-Cmvmi::execCONTINUEB(Signal* signal)
-{
-  switch(signal->theData[0]){
-  case ZREPORT_MEMORY_USAGE:
-  {
-    jam();
-    Uint32 cnt = signal->theData[1];
-    Uint32 dm_percent_last = signal->theData[2];
-    Uint32 tup_percent_last = signal->theData[3];
-    Uint32 acc_percent_last = signal->theData[4];
-
-    // Data memory threshold
-    Resource_limit rl;
-    m_ctx.m_mm.get_resource_limit(RG_DATAMEM, rl);
-    {
-      const Uint32 dm_pages_used = rl.m_curr;
-      const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
-      const Uint32 dm_percent_now = calc_percent(dm_pages_used,
-                                                 dm_pages_total);
-
-      const Uint32 acc_pages_used =
-        sum_array(g_acc_pages_used, NDB_ARRAY_SIZE(g_acc_pages_used));
-||||||| Common ancestor
-void
-Cmvmi::execCONTINUEB(Signal* signal)
-{
-  switch(signal->theData[0]){
-  case ZREPORT_MEMORY_USAGE:
-  {
-    jam();
-    Uint32 cnt = signal->theData[1];
-    Uint32 dm_percent_last = signal->theData[2];
-    Uint32 tup_percent_last = signal->theData[3];
-    Uint32 acc_percent_last = signal->theData[4];
-
-    // Data memory threshold
-    Resource_limit rl;
-    m_ctx.m_mm.get_resource_limit(RG_DATAMEM, rl);
-    {
-      const Uint32 dm_pages_used = rl.m_curr;
-      const Uint32 dm_pages_total =
-          (rl.m_max < Resource_limit::HIGHEST_LIMIT) ? rl.m_max : rl.m_min;
-      const Uint32 dm_percent_now = calc_percent(dm_pages_used,
-                                                 dm_pages_total);
-
-      const Uint32 acc_pages_used =
-        sum_array(g_acc_pages_used, NDB_ARRAY_SIZE(g_acc_pages_used));
-=======
         const Uint32 acc_pages_used =
             sum_array(g_acc_pages_used, NDB_ARRAY_SIZE(g_acc_pages_used));
->>>>>>> MySQL 8.0.36
 
         const Uint32 tup_pages_used = dm_pages_used - acc_pages_used;
 

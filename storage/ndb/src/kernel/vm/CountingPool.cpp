@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2012, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,15 +30,7 @@
 #include <NdbTap.hpp>
 #include "Pool.hpp"
 #include "RWPool.hpp"
-<<<<<<< RonDB // RONDB-624 todo
 #include "test_context.hpp"
-||||||| Common ancestor
-#include "test_context.hpp"
-#include "WOPool.hpp"
-=======
-#include "WOPool.hpp"
-#include "test_context.hpp"
->>>>>>> MySQL 8.0.36
 
 #define JAM_FILE_ID 304
 

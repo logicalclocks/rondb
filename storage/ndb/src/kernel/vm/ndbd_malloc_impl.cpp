@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2006, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,14 +26,7 @@
 #include "ndbd_malloc_impl.hpp"
 #include "my_config.h"
 #include "ndbd_malloc.hpp"
-<<<<<<< RonDB // RONDB-624 todo
-#include "ndbd_malloc_impl.hpp"
-#include "ndbd_malloc.hpp"
-||||||| Common ancestor
-#include "ndbd_malloc_impl.hpp"
-=======
 #include "util/require.h"
->>>>>>> MySQL 8.0.36
 
 #include <time.h>
 
@@ -131,20 +124,10 @@ static constexpr size_t ALLOC_PAGES_PER_SYSTEM_PAGE =
    Disable on Solaris:
    Bug #32575486 NDBMTD CONSUMES ALL AVAILABLE MEMORY IN DEBUG ON SOLARIS
 */
-<<<<<<< RonDB // RONDB-624 todo
 #if defined(VM_TRACE) && !defined(__sun) && !defined(__aarch64__)
 #if defined(_WIN32) || \
     (defined(MADV_DONTDUMP) && \
      defined(MAP_NORESERVE)) || \
-||||||| Common ancestor
-#if defined(VM_TRACE) && !defined(__sun)
-#if defined(_WIN32) || \
-    (defined(MADV_DONTDUMP) && \
-     defined(MAP_NORESERVE)) || \
-=======
-#if defined(VM_TRACE) && !defined(__sun)
-#if defined(_WIN32) || (defined(MADV_DONTDUMP) && defined(MAP_NORESERVE)) || \
->>>>>>> MySQL 8.0.36
     defined(MAP_GUARD)
 /*
  * Only activate use of do_virtual_alloc() if build platform allows reserving
@@ -336,98 +319,41 @@ retry:
       while (ptr == 0) {
         if (watchCounter) *watchCounter = 9;
 
-        ptr = sbrk(sizeof(Alloc_page) * sz);
-
-        if (ptr == (void *)-1) {
-          if (method == 'S') {
-            f_method_idx++;
-            goto retry;
-          }
-
-<<<<<<< RonDB // RONDB-624 todo
-      ptr = mmap(nullptr,
-                 sizeof(Alloc_page) * sz,
-                 PROT_WRITE,
-                 MAP_ANON | MAP_PRIVATE,
-                 -1,
-                 0);
+        ptr = mmap(nullptr,
+                   sizeof(Alloc_page) * sz,
+                   PROT_WRITE,
+                   MAP_ANON | MAP_PRIVATE,
+                   -1,
+                   0);
       
-      if (ptr == MAP_FAILED)
-      {
-	if (method == 'S')
-	{
-	  f_method_idx++;
-	  goto retry;
-	}
+        if (ptr == MAP_FAILED)
+        {
+	  if (method == 'S')
+	  {
+	    f_method_idx++;
+	    goto retry;
+	  }
 	
-	ptr = 0;
-	sz = 1 + (9 * sz) / 10;
-	if (pages >= 32 && sz < 32)
-	{
-	  sz = pages;
-	  f_method_idx++;
-	  goto retry;
-	}
-      }
-      else if (UintPtr(ptr) < UintPtr(baseaddress))
-      {
-        /**
-         * Unusable memory :(
-         */
-        g_eventLogger->info(
-            "sbrk(%lluMb) => %p which is less than baseaddress!!",
-            Uint64((sizeof(Alloc_page) * sz) >> 20), ptr);
-        f_method_idx++;
-        goto retry;
-||||||| Common ancestor
-      ptr = sbrk(sizeof(Alloc_page) * sz);
-      
-      if (ptr == (void*)-1)
-      {
-	if (method == 'S')
-	{
-	  f_method_idx++;
-	  goto retry;
-	}
-	
-	ptr = 0;
-	sz = 1 + (9 * sz) / 10;
-	if (pages >= 32 && sz < 32)
-	{
-	  sz = pages;
-	  f_method_idx++;
-	  goto retry;
-	}
-      }
-      else if (UintPtr(ptr) < UintPtr(baseaddress))
-      {
-        /**
-         * Unusable memory :(
-         */
-        g_eventLogger->info(
-            "sbrk(%lluMb) => %p which is less than baseaddress!!",
-            Uint64((sizeof(Alloc_page) * sz) >> 20), ptr);
-        f_method_idx++;
-        goto retry;
-=======
-          ptr = 0;
-          sz = 1 + (9 * sz) / 10;
-          if (pages >= 32 && sz < 32) {
-            sz = pages;
-            f_method_idx++;
-            goto retry;
-          }
-        } else if (UintPtr(ptr) < UintPtr(baseaddress)) {
+	  ptr = 0;
+	  sz = 1 + (9 * sz) / 10;
+	  if (pages >= 32 && sz < 32)
+	  {
+	    sz = pages;
+	    f_method_idx++;
+	    goto retry;
+	  }
+        }
+        else if (UintPtr(ptr) < UintPtr(baseaddress))
+        {
           /**
            * Unusable memory :(
            */
           g_eventLogger->info(
-              "sbrk(%lluMb) => %p which is less than baseaddress!!",
-              Uint64((sizeof(Alloc_page) * sz) >> 20), ptr);
+            "sbrk(%lluMb) => %p which is less than baseaddress!!",
+            Uint64((sizeof(Alloc_page) * sz) >> 20), ptr);
           f_method_idx++;
           goto retry;
         }
->>>>>>> MySQL 8.0.36
       }
       break;
     }
@@ -961,7 +887,6 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
       break;
     }
   }
-<<<<<<< RonDB // RONDB-624 todo
   
   if (allocated < m_resource_limits.get_reserved())
   {
@@ -982,49 +907,6 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
               (Uint64)(sizeof(Alloc_page)*allocated)>>20);
     if (!alloc_less_memory)
       return false;
-  }
-||||||| Common ancestor
-  
-  if (allocated < m_resource_limits.get_free_reserved())
-  {
-    g_eventLogger->
-      error("Unable to alloc min memory from OS: min: %lldMb "
-            " allocated: %lldMb",
-            (Uint64)(sizeof(Alloc_page)*m_resource_limits.get_free_reserved()) >> 20,
-            (Uint64)(sizeof(Alloc_page)*allocated) >> 20);
-    return false;
-  }
-  else if (allocated < pages)
-  {
-    g_eventLogger->
-      warning("Unable to alloc requested memory from OS: min: %lldMb"
-              " requested: %lldMb allocated: %lldMb",
-              (Uint64)(sizeof(Alloc_page)*m_resource_limits.get_free_reserved())>>20,
-              (Uint64)(sizeof(Alloc_page)*max_pages)>>20,
-              (Uint64)(sizeof(Alloc_page)*allocated)>>20);
-    if (!alloc_less_memory)
-      return false;
-  }
-=======
->>>>>>> MySQL 8.0.36
-
-  if (allocated < m_resource_limits.get_free_reserved()) {
-    g_eventLogger->error(
-        "Unable to alloc min memory from OS: min: %lldMb "
-        " allocated: %lldMb",
-        (Uint64)(sizeof(Alloc_page) * m_resource_limits.get_free_reserved()) >>
-            20,
-        (Uint64)(sizeof(Alloc_page) * allocated) >> 20);
-    return false;
-  } else if (allocated < pages) {
-    g_eventLogger->warning(
-        "Unable to alloc requested memory from OS: min: %lldMb"
-        " requested: %lldMb allocated: %lldMb",
-        (Uint64)(sizeof(Alloc_page) * m_resource_limits.get_free_reserved()) >>
-            20,
-        (Uint64)(sizeof(Alloc_page) * max_pages) >> 20,
-        (Uint64)(sizeof(Alloc_page) * allocated) >> 20);
-    if (!alloc_less_memory) return false;
   }
 
   if (m_base_page == NULL) {
@@ -1425,7 +1307,6 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
 /* ---------------------------------------------------------------- */
       Uint32 sz = remove_free_list(zone, start, i);
       Uint32 extra = sz - cnt;
-<<<<<<< RonDB // RONDB-624 todo
       if (sz > cnt)
       {
         /**
@@ -1439,22 +1320,7 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
          */
         insert_free_list(zone, start + cnt, extra);
         * pages = cnt;
-||||||| Common ancestor
-      assert(sz >= cnt);
-      if (extra)
-      {
-	insert_free_list(zone, start + cnt, extra);
-	clear_and_set(start, start+cnt-1);
-=======
-      assert(sz >= cnt);
-      if (extra) {
-        insert_free_list(zone, start + cnt, extra);
-        clear_and_set(start, start + cnt - 1);
-      } else {
-        clear(start, start + cnt - 1);
->>>>>>> MySQL 8.0.36
       }
-<<<<<<< RonDB // RONDB-624 todo
       else
       {
         /**
@@ -1476,18 +1342,6 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
       * ret = start;
       assert(m_resource_limits.get_in_use() + cnt <=
              m_resource_limits.get_allocated());
-||||||| Common ancestor
-      else
-      {
-	clear(start, start+cnt-1);
-      }
-      * ret = start;
-      assert(m_resource_limits.get_in_use() + cnt <= m_resource_limits.get_allocated());
-=======
-      *ret = start;
-      assert(m_resource_limits.get_in_use() + cnt <=
-             m_resource_limits.get_allocated());
->>>>>>> MySQL 8.0.36
       return;
     }
     if (first_up)

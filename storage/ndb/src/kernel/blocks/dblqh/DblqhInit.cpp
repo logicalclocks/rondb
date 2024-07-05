@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -502,51 +502,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg,
   while (m_commitAckMarkerPool.startup()) {
     refresh_watch_dog();
   }
-<<<<<<< RonDB // RONDB-624 todo
   m_commitAckMarkerHash.setSize(COMMIT_ACK_MARKER_HASH_SIZE);
-  
-  tcNodeFailRecord = (TcNodeFailRecord*)allocRecord("TcNodeFailRecord",
-						    sizeof(TcNodeFailRecord),
-						    ctcNodeFailrecFileSize);
-  
-/*
-  ndbout << "FRAGREC SIZE = " << sizeof(Fragrecord) << endl;
-  ndbout << "TAB SIZE = " << sizeof(Tablerec) << endl;
-  ndbout << "GCP SIZE = " << sizeof(GcpRecord) << endl;
-  ndbout << "LCP SIZE = " << sizeof(LcpRecord) << endl;
-  ndbout << "LCPLOC SIZE = " << sizeof(LcpLocRecord) << endl;
-  ndbout << "LOGPART SIZE = " << sizeof(LogPartRecord) << endl;
-  ndbout << "LOGFILE SIZE = " << sizeof(LogFileRecord) << endl;
-  ndbout << "TC SIZE = " << sizeof(TcConnectionrec) << endl;
-  ndbout << "HOST SIZE = " << sizeof(HostRecord) << endl;
-  ndbout << "LFO SIZE = " << sizeof(LogFileOperationRecord) << endl;
-  ndbout << "PR SIZE = " << sizeof(PageRefRecord) << endl;
-  ndbout << "SCAN SIZE = " << sizeof(ScanRecord) << endl;
-*/
-||||||| Common ancestor
-  m_commitAckMarkerHash.setSize(4096);
-  
-  tcNodeFailRecord = (TcNodeFailRecord*)allocRecord("TcNodeFailRecord",
-						    sizeof(TcNodeFailRecord),
-						    ctcNodeFailrecFileSize);
-  
-/*
-  ndbout << "FRAGREC SIZE = " << sizeof(Fragrecord) << endl;
-  ndbout << "TAB SIZE = " << sizeof(Tablerec) << endl;
-  ndbout << "GCP SIZE = " << sizeof(GcpRecord) << endl;
-  ndbout << "LCP SIZE = " << sizeof(LcpRecord) << endl;
-  ndbout << "LCPLOC SIZE = " << sizeof(LcpLocRecord) << endl;
-  ndbout << "LOGPART SIZE = " << sizeof(LogPartRecord) << endl;
-  ndbout << "LOGFILE SIZE = " << sizeof(LogFileRecord) << endl;
-  ndbout << "TC SIZE = " << sizeof(TcConnectionrec) << endl;
-  ndbout << "HOST SIZE = " << sizeof(HostRecord) << endl;
-  ndbout << "LFO SIZE = " << sizeof(LogFileOperationRecord) << endl;
-  ndbout << "PR SIZE = " << sizeof(PageRefRecord) << endl;
-  ndbout << "SCAN SIZE = " << sizeof(ScanRecord) << endl;
-*/
-=======
-  m_commitAckMarkerHash.setSize(4096);
->>>>>>> MySQL 8.0.36
 
   tcNodeFailRecord = (TcNodeFailRecord *)allocRecord(
       "TcNodeFailRecord", sizeof(TcNodeFailRecord), ctcNodeFailrecFileSize);

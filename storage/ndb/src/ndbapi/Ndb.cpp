@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,25 +30,14 @@ Name:          Ndb.cpp
 #include <ndb_global.h>
 #include "util/require.h"
 
-<<<<<<< RonDB // RONDB-624 todo
-#include "API.hpp"
-#include <rondb_hash.hpp>
-#include "my_config.h"
-
-||||||| Common ancestor
-#include "API.hpp"
-#include <md5_hash.hpp>
-#include "my_config.h"
-=======
 #include <NdbEnv.h>
->>>>>>> MySQL 8.0.36
 #include <NdbSleep.h>
 #include <NdbTick.h>
 #include <ndb_limits.h>
 #include <BaseString.hpp>
 #include <NdbOut.hpp>
 #include <NdbSqlUtil.hpp>
-#include <md5_hash.hpp>
+#include <rondb_hash.hpp>
 #include "API.hpp"
 #include "my_config.h"
 

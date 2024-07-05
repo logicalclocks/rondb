@@ -1614,35 +1614,10 @@ Suma::execNODE_FAILREP(Signal* signal)
   } else {
     memset(rep->theNodes + NdbNodeBitmask48::Size, 0, _NDB_NBM_DIFF_BYTES);
   }
-<<<<<<< RonDB // RONDB-624 todo
-  else
-  {
-    jam();
-    memset(rep->theNodes + NdbNodeBitmask48::Size,
-           0,
-           _NDB_NBM_DIFF_BYTES);
-  }
-  NdbNodeBitmask failed; failed.assign(NdbNodeBitmask::Size, rep->theNodes);
-  
-  if(c_restart.m_ref && failed.get(refToNode(c_restart.m_ref)))
-  {
-||||||| Common ancestor
-  else
-  {
-    memset(rep->theNodes + NdbNodeBitmask48::Size,
-           0,
-           _NDB_NBM_DIFF_BYTES);
-  }
-  NdbNodeBitmask failed; failed.assign(NdbNodeBitmask::Size, rep->theNodes);
-  
-  if(c_restart.m_ref && failed.get(refToNode(c_restart.m_ref)))
-  {
-=======
   NdbNodeBitmask failed;
   failed.assign(NdbNodeBitmask::Size, rep->theNodes);
 
   if (c_restart.m_ref && failed.get(refToNode(c_restart.m_ref))) {
->>>>>>> MySQL 8.0.36
     jam();
 
     if (c_restart.m_waiting_on_self) {
@@ -2569,54 +2544,8 @@ void Suma::execSUB_CREATE_REQ(Signal *signal) {
     subPtr.p->m_table_ptrI = tabPtr.i;
   }
 
-<<<<<<< RonDB // RONDB-624 todo
-  switch(tabPtr.p->m_state){
-  case Table::DEFINED:{
-    jam();
-    // Send conf
-    subOpList.release(subOpPtr);
-    subPtr.p->m_state = Subscription::DEFINED;
-    SubCreateConf * const conf = (SubCreateConf*)signal->getDataPtrSend();
-    conf->senderRef  = reference();
-    conf->senderData = senderData;
-    sendSignal(senderRef, GSN_SUB_CREATE_CONF, signal,
-               SubCreateConf::SignalLength, JBB);
-    checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
-                        c_subOpPool);
-    return;
-  }
-  case Table::UNDEFINED:{
-    jam();
-    tabPtr.p->m_state = Table::DEFINING;
-    subPtr.p->m_state = Subscription::DEFINING;
-
-    if (ERROR_INSERTED(13031))
-    {
-||||||| Common ancestor
-  switch(tabPtr.p->m_state){
-  case Table::DEFINED:{
-    jam();
-    // Send conf
-    subOpList.release(subOpPtr);
-    subPtr.p->m_state = Subscription::DEFINED;
-    SubCreateConf * const conf = (SubCreateConf*)signal->getDataPtrSend();
-    conf->senderRef  = reference();
-    conf->senderData = senderData;
-    sendSignal(senderRef, GSN_SUB_CREATE_CONF, signal,
-               SubCreateConf::SignalLength, JBB);
-    return;
-  }
-  case Table::UNDEFINED:{
-    jam();
-    tabPtr.p->m_state = Table::DEFINING;
-    subPtr.p->m_state = Subscription::DEFINING;
-
-    if (ERROR_INSERTED(13031))
-    {
-=======
   switch (tabPtr.p->m_state) {
     case Table::DEFINED: {
->>>>>>> MySQL 8.0.36
       jam();
       // Send conf
       subOpList.release(subOpPtr);
@@ -2626,6 +2555,9 @@ void Suma::execSUB_CREATE_REQ(Signal *signal) {
       conf->senderData = senderData;
       sendSignal(senderRef, GSN_SUB_CREATE_CONF, signal,
                  SubCreateConf::SignalLength, JBB);
+      checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                          c_subOpPool);
+
       return;
     }
     case Table::UNDEFINED: {
@@ -2653,40 +2585,10 @@ void Suma::execSUB_CREATE_REQ(Signal *signal) {
       req->tableId = tableId;
       req->schemaTransId = schemaTransId;
 
-<<<<<<< RonDB // RONDB-624 todo
-    {
-      Local_Subscription_list list(c_subscriptionPool,
-                                   tabPtr.p->m_subscriptions);
-      list.remove(subPtr);
-||||||| Common ancestor
-    {
-      Local_Subscription_list list(c_subscriptionPool,
-                                     tabPtr.p->m_subscriptions);
-      list.remove(subPtr);
-=======
       sendSignal(DBDICT_REF, GSN_GET_TABINFOREQ, signal,
                  GetTabInfoReq::SignalLength, JBB);
       return;
->>>>>>> MySQL 8.0.36
     }
-<<<<<<< RonDB // RONDB-624 todo
-    c_subscriptions.release(subPtr);
-    sendSubCreateRef(signal, senderRef, senderData,
-                     SubCreateRef::TableDropped);
-    checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
-                        c_subscriptionPool);
-    checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
-                        c_subOpPool);
-    return;
-  }
-||||||| Common ancestor
-    c_subscriptions.release(subPtr);
-
-    sendSubCreateRef(signal, senderRef, senderData,
-                     SubCreateRef::TableDropped);
-    return;
-  }
-=======
     case Table::DEFINING: {
       jam();
       /**
@@ -2707,9 +2609,12 @@ void Suma::execSUB_CREATE_REQ(Signal *signal) {
 
       sendSubCreateRef(signal, senderRef, senderData,
                        SubCreateRef::TableDropped);
+      checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
+                          c_subscriptionPool);
+      checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                          c_subOpPool);
       return;
     }
->>>>>>> MySQL 8.0.36
   }
 
   ndbabort();
@@ -8253,7 +8158,6 @@ void Suma::execDROP_NODEGROUP_IMPL_REQ(Signal *signal) {
   return;
 }
 
-<<<<<<< RonDB // RONDB-624 todo
 void
 Suma::sendPoolShrink(const Uint32 pool_index)
 {
@@ -8283,12 +8187,5 @@ Suma::shrinkTransientPools(Uint32 pool_index)
   }
 }
 
-//template void append(DataBuffer<11>&,SegmentedSectionPtr,SectionSegmentPool&);
-
-||||||| Common ancestor
-//template void append(DataBuffer<11>&,SegmentedSectionPtr,SectionSegmentPool&);
-
-=======
 // template void
 // append(DataBuffer<11>&,SegmentedSectionPtr,SectionSegmentPool&);
->>>>>>> MySQL 8.0.36

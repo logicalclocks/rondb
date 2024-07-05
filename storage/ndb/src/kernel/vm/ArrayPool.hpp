@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,17 +35,7 @@
 #include <ErrorReporter.hpp>
 #include <pc.hpp>
 #include "Pool.hpp"
-<<<<<<< RonDB // RONDB-624 todo
-#include <ErrorReporter.hpp>
-#include <Bitmask.hpp>
-#include <mgmapi.h>
 #include <ndb_prefetch.h>
-||||||| Common ancestor
-#include <ErrorReporter.hpp>
-#include <Bitmask.hpp>
-#include <mgmapi.h>
-=======
->>>>>>> MySQL 8.0.36
 
 #include <NdbMutex.h>
 #include <EventLogger.hpp>

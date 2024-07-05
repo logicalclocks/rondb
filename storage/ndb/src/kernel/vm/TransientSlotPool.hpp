@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2017, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -103,20 +103,10 @@ class TransientSlotPool {
 
   TransientPagePool *m_page_pool;
   Slot_list::Head m_free_list;
-<<<<<<< RonDB // RONDB-624 todo
-  // Needed for page type when allocating new pages (in seize/expand)
-  Uint32 m_type_id;
-  // Needed to release into right end of free list (approx).
-  Uint32 m_use_count;
-||||||| Common ancestor
-  Uint32 m_type_id; // Needed for page type when allocating new pages (in seize/expand)
-  Uint32 m_use_count; // Needed to release into right end of free list (approx).
-=======
   Uint32 m_type_id;  // Needed for page type when allocating new pages (in
                      // seize/expand)
   Uint32
       m_use_count;  // Needed to release into right end of free list (approx).
->>>>>>> MySQL 8.0.36
   /**
    * m_may_shrink - set when top page is unused.
    * Cleared by seize() when first slot on top page is seized.

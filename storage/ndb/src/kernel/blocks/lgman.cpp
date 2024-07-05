@@ -1,5 +1,5 @@
 /* Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3728,7 +3728,6 @@ Logfile_client::add_entry_complex(const Change* src,
     DEB_LGMAN(("Line(%u): free_log_words: %llu, change: -%llu", __LINE__,
                lg_ptr.p->m_free_log_words, diff));
   }
-<<<<<<< RonDB // RONDB-624 todo
 
   /**
    * Given that this is an UNDO log, it means that the first item we
@@ -3780,29 +3779,9 @@ Logfile_client::add_entry_complex(const Change* src,
     Uint32 tot_part_len = sz_last_part + in_page_header_size;
     if (is_update)
     {
-||||||| Common ancestor
-  Uint32 type_length;
-  {
-    if (is_update)
-    {
-=======
-  Uint32 type_length;
-  {
-    if (is_update) {
-      type_length = (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_PART << 16 |
-                     remaining_page_space);
-    } else {
->>>>>>> MySQL 8.0.36
       type_length =
-<<<<<<< RonDB // RONDB-624 todo
         (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_VAR_PART << 16 | tot_part_len);
-||||||| Common ancestor
-        (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_PART << 16 | remaining_page_space);
-=======
-          (Dbtup::Disk_undo::UNDO_FREE_PART << 16 | remaining_page_space);
->>>>>>> MySQL 8.0.36
     }
-<<<<<<< RonDB // RONDB-624 todo
     else
     {
       type_length =
@@ -3814,23 +3793,6 @@ Logfile_client::add_entry_complex(const Change* src,
       { src[1].ptr, sz_last_part},
       { &type_length, 1}
     };
-||||||| Common ancestor
-    else
-    {
-      type_length =
-        (Dbtup::Disk_undo::UNDO_FREE_PART << 16 | remaining_page_space);
-    }
-    Logfile_client::Change c[3] =
-    {
-      { src[0].ptr, src[0].len},
-      { src[1].ptr, sz_first_part},
-      { &type_length, 1}
-    };
-=======
-    Logfile_client::Change c[3] = {{src[0].ptr, src[0].len},
-                                   {src[1].ptr, sz_first_part},
-                                   {&type_length, 1}};
->>>>>>> MySQL 8.0.36
     jamBlock(m_client_block);
     return add_entry_simple(c,
                             3,
@@ -5053,66 +5015,6 @@ void Lgman::execute_undo_record(Signal *signal) {
       } break;
       case File_formats::Undofile::UNDO_TUP_DROP:
         jam();
-<<<<<<< RonDB // RONDB-624 todo
-        g_eventLogger->info("LGMAN: Stop UNDO log execution at LSN %llu,"
-                            " found LCP record",
-                            lsn);
-        g_eventLogger->info("LGMAN: Undo log replay complete: Applied %llu"
-                            " pages to sync with last LCP",m_pages_applied);
-	stop_run_undo_log(signal);
-	return;
-      }
-    }
-    break;
-    case File_formats::Undofile::UNDO_TUP_DROP:
-      jam();
-      if (isNdbMtLqh() && wait_pending(lsn, ptr, len))
-      {
-        // wait for pending records to complete
-        return;
-      }
-      break;
-    case File_formats::Undofile::UNDO_TUP_ALLOC:
-    case File_formats::Undofile::UNDO_TUP_UPDATE:
-    case File_formats::Undofile::UNDO_TUP_FREE:
-    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
-    case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
-    case File_formats::Undofile::UNDO_TUP_FREE_PART:
-    case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
-    case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
-    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
-      break;
-    default:
-      ndbabort();
-||||||| Common ancestor
-        g_eventLogger->info("LGMAN: Stop UNDO log execution at LSN %llu,"
-                            " found LCP record",
-                            lsn);
-        g_eventLogger->info("LGMAN: Undo log replay complete: Applied %llu"
-                            " pages to sync with last LCP",m_pages_applied);
-	stop_run_undo_log(signal);
-	return;
-      }
-    }
-    break;
-    case File_formats::Undofile::UNDO_TUP_DROP:
-      jam();
-      if (isNdbMtLqh() && wait_pending(lsn, ptr, len))
-      {
-        // wait for pending records to complete
-        return;
-      }
-      break;
-    case File_formats::Undofile::UNDO_TUP_ALLOC:
-    case File_formats::Undofile::UNDO_TUP_UPDATE:
-    case File_formats::Undofile::UNDO_TUP_FREE:
-    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
-    case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
-    case File_formats::Undofile::UNDO_TUP_FREE_PART:
-      break;
-    default:
-      ndbabort();
-=======
         if (isNdbMtLqh() && wait_pending(lsn, ptr, len)) {
           // wait for pending records to complete
           return;
@@ -5127,7 +5029,6 @@ void Lgman::execute_undo_record(Signal *signal) {
         break;
       default:
         ndbabort();
->>>>>>> MySQL 8.0.36
     }
     /**
      * If we've reached here, it means we have decided to send the undo record

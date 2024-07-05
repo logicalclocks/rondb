@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,187 +39,6 @@ void Dbtux::execDBINFO_SCANREQ(Signal *signal) {
 
   jamEntry();
 
-<<<<<<< RonDB // RONDB-624 todo
-  switch(req.tableId){
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "Index",
-        c_indexPool.getUsed(),
-        c_indexPool.getSize(),
-        c_indexPool.getEntrySize(),
-        c_indexPool.getUsedHi(),
-        { CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
-        0},
-      { "Fragment",
-        cnoOfAllocatedFragrec,
-        0,
-        sizeof(Frag)/4,
-        cnoOfMaxAllocatedFragrec,
-        { CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_REPLICAS,0,0 },
-        0},
-      { "Descriptor page",
-        c_descPageList.getCount(),
-        0,
-        sizeof(DescPage),
-        c_descMaxPagesAllocated,
-        { CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
-        0},
-      { "Fragment Operation",
-        c_fragOpPool.getUsed(),
-        c_fragOpPool.getSize(),
-        c_fragOpPool.getEntrySize(),
-        c_fragOpPool.getUsedHi(),
-        { 0,0,0,0 },
-        0},
-      { "Scan Operation",
-        c_scanOpPool.getUsed(),
-        c_scanOpPool.getSize(),
-        c_scanOpPool.getEntrySize(),
-        c_scanOpPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_SCANS,0,0,0 },
-        0},
-      { "Scan Bound",
-        c_scanBoundPool.getUsed(),
-        c_scanBoundPool.getSize(),
-        c_scanBoundPool.getEntrySize(),
-        c_scanBoundPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_SCANS,0,0,0 },
-        0},
-      { "Scan Lock",
-        c_scanLockPool.getUsed(),
-        c_scanLockPool.getSize(),
-        c_scanLockPool.getEntrySize(),
-        c_scanLockPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_SCANS,
-          CFG_DB_BATCH_SIZE,0,0 },
-        0},
-      { NULL, 0,0,0,0,{ 0,0,0,0 },0}
-    };
-
-    const size_t num_config_params =
-      sizeof(pools[0].config_params) / sizeof(pools[0].config_params[0]);
-    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
-    Uint32 pool = cursor->data[0];
-    ndbrequire(pool < numPools);
-    BlockNumber bn = blockToMain(number());
-    while(pools[pool].poolname)
-    {
-      jam();
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(bn);           // block number
-      row.write_uint32(instance());   // block instance
-      row.write_string(pools[pool].poolname);
-      row.write_uint64(pools[pool].used);
-      row.write_uint64(pools[pool].total);
-      row.write_uint64(pools[pool].used_hi);
-      row.write_uint64(pools[pool].entry_size);
-      for (size_t i = 0; i < num_config_params; i++)
-        row.write_uint32(pools[pool].config_params[i]);
-      row.write_uint32(GET_RG(pools[pool].record_type));
-      row.write_uint32(GET_TID(pools[pool].record_type));
-      ndbinfo_send_row(signal, req, row, rl);
-      pool++;
-      if (rl.need_break(req))
-      {
-||||||| Common ancestor
-  switch(req.tableId){
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "Index",
-        c_indexPool.getUsed(),
-        c_indexPool.getSize(),
-        c_indexPool.getEntrySize(),
-        c_indexPool.getUsedHi(),
-        { CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
-        0},
-      { "Fragment",
-        c_fragPool.getUsed(),
-        c_fragPool.getSize(),
-        c_fragPool.getEntrySize(),
-        c_fragPool.getUsedHi(),
-        { CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_REPLICAS,0,0 },
-        0},
-      { "Descriptor page",
-        c_descPagePool.getUsed(),
-        c_descPagePool.getSize(),
-        c_descPagePool.getEntrySize(),
-        c_descPagePool.getUsedHi(),
-        { CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
-        0},
-      { "Fragment Operation",
-        c_fragOpPool.getUsed(),
-        c_fragOpPool.getSize(),
-        c_fragOpPool.getEntrySize(),
-        c_fragOpPool.getUsedHi(),
-        { 0,0,0,0 },
-        0},
-      { "Scan Operation",
-        c_scanOpPool.getUsed(),
-        c_scanOpPool.getSize(),
-        c_scanOpPool.getEntrySize(),
-        c_scanOpPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_SCANS,0,0,0 },
-        0},
-      { "Scan Bound",
-        c_scanBoundPool.getUsed(),
-        c_scanBoundPool.getSize(),
-        c_scanBoundPool.getEntrySize(),
-        c_scanBoundPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_SCANS,0,0,0 },
-        0},
-      { "Scan Lock",
-        c_scanLockPool.getUsed(),
-        c_scanLockPool.getSize(),
-        c_scanLockPool.getEntrySize(),
-        c_scanLockPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_SCANS,
-          CFG_DB_BATCH_SIZE,0,0 },
-        0},
-      { NULL, 0,0,0,0,{ 0,0,0,0 },0}
-    };
-
-    const size_t num_config_params =
-      sizeof(pools[0].config_params) / sizeof(pools[0].config_params[0]);
-    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
-    Uint32 pool = cursor->data[0];
-    ndbrequire(pool < numPools);
-    BlockNumber bn = blockToMain(number());
-    while(pools[pool].poolname)
-    {
-      jam();
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(bn);           // block number
-      row.write_uint32(instance());   // block instance
-      row.write_string(pools[pool].poolname);
-      row.write_uint64(pools[pool].used);
-      row.write_uint64(pools[pool].total);
-      row.write_uint64(pools[pool].used_hi);
-      row.write_uint64(pools[pool].entry_size);
-      for (size_t i = 0; i < num_config_params; i++)
-        row.write_uint32(pools[pool].config_params[i]);
-      row.write_uint32(GET_RG(pools[pool].record_type));
-      row.write_uint32(GET_TID(pools[pool].record_type));
-      ndbinfo_send_row(signal, req, row, rl);
-      pool++;
-      if (rl.need_break(req))
-      {
-=======
   switch (req.tableId) {
     case Ndbinfo::POOLS_TABLEID: {
       Ndbinfo::pool_entry pools[] = {
@@ -231,21 +50,23 @@ void Dbtux::execDBINFO_SCANREQ(Signal *signal) {
            {CFG_DB_NO_TABLES, CFG_DB_NO_ORDERED_INDEXES,
             CFG_DB_NO_UNIQUE_HASH_INDEXES, 0},
            0},
-          {"Fragment",
-           c_fragPool.getUsed(),
-           c_fragPool.getSize(),
-           c_fragPool.getEntrySize(),
-           c_fragPool.getUsedHi(),
-           {CFG_DB_NO_ORDERED_INDEXES, CFG_DB_NO_REPLICAS, 0, 0},
-           0},
-          {"Descriptor page",
-           c_descPagePool.getUsed(),
-           c_descPagePool.getSize(),
-           c_descPagePool.getEntrySize(),
-           c_descPagePool.getUsedHi(),
-           {CFG_DB_NO_TABLES, CFG_DB_NO_ORDERED_INDEXES,
-            CFG_DB_NO_UNIQUE_HASH_INDEXES, 0},
-           0},
+          { "Fragment",
+           cnoOfAllocatedFragrec,
+           0,
+           sizeof(Frag)/4,
+           cnoOfMaxAllocatedFragrec,
+           { CFG_DB_NO_ORDERED_INDEXES,
+             CFG_DB_NO_REPLICAS,0,0 },
+             0},
+          { "Descriptor page",
+           c_descPageList.getCount(),
+           0,
+           sizeof(DescPage),
+           c_descMaxPagesAllocated,
+           { CFG_DB_NO_TABLES,
+             CFG_DB_NO_ORDERED_INDEXES,
+             CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
+             0},
           {"Fragment Operation",
            c_fragOpPool.getUsed(),
            c_fragOpPool.getSize(),
@@ -283,7 +104,6 @@ void Dbtux::execDBINFO_SCANREQ(Signal *signal) {
       ndbrequire(pool < numPools);
       BlockNumber bn = blockToMain(number());
       while (pools[pool].poolname) {
->>>>>>> MySQL 8.0.36
         jam();
         Ndbinfo::Row row(signal, req);
         row.write_uint32(getOwnNodeId());

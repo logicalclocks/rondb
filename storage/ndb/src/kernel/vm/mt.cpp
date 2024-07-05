@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -182,24 +182,12 @@ alignas(NDB_CL) static Uint32 glob_unused[NDB_CL / 4];
 
 #define NO_SEND_THREAD (MAX_BLOCK_THREADS + MAX_NDBMT_SEND_THREADS + 1)
 
-<<<<<<< RonDB // RONDB-624 todo
-/* max signal is 32 words, 9 for signal header and 25 datawords */
+/* max signal is 34 words, 9 for signal header and 25 datawords */
 #define MAX_SIGNAL_SIZE 34
 static_assert(((sizeof(SignalHeader) / 4) + 25) == MAX_SIGNAL_SIZE);
 
 #define MIN_SIGNALS_PER_PAGE ((thr_job_buffer::SIZE / MAX_SIGNAL_SIZE) - \
                                MAX_SIGNALS_BEFORE_FLUSH_OTHER)
-||||||| Common ancestor
-/* max signal is 32 words, 7 for signal header and 25 datawords */
-#define MAX_SIGNAL_SIZE 32
-#define MIN_SIGNALS_PER_PAGE ((thr_job_buffer::SIZE / MAX_SIGNAL_SIZE) - \
-                               MAX_SIGNALS_BEFORE_FLUSH_OTHER)
-=======
-/* max signal is 32 words, 7 for signal header and 25 datawords */
-#define MAX_SIGNAL_SIZE 32
-#define MIN_SIGNALS_PER_PAGE \
-  ((thr_job_buffer::SIZE / MAX_SIGNAL_SIZE) - MAX_SIGNALS_BEFORE_FLUSH_OTHER)
->>>>>>> MySQL 8.0.36
 
 #if defined(HAVE_LINUX_FUTEX) && defined(NDB_HAVE_XCNG)
 #define USE_FUTEX
@@ -7290,7 +7278,6 @@ void mt_add_thr_map(Uint32 block, Uint32 instance) {
     require(num_lqh_threads == globalData.ndbMtLqhWorkers);
   }
   require(instance != 0);
-<<<<<<< RonDB // RONDB-624 todo
   switch(block){
   case DBLQH:
   case DBACC:
@@ -7330,75 +7317,8 @@ void mt_add_thr_map(Uint32 block, Uint32 instance) {
     }
     else
     {
-||||||| Common ancestor
-  switch(block){
-  case DBLQH:
-  case DBACC:
-  case DBTUP:
-  case DBTUX:
-  case BACKUP:
-  case RESTORE:
-    thr_no += (instance - 1) % num_lqh_threads;
-    break;
-  case DBQLQH:
-  case DBQACC:
-  case DBQTUP:
-  case DBQTUX:
-  case QBACKUP:
-  case QRESTORE:
-    thr_no += num_lqh_threads + (instance - 1);
-    break;
-  case PGMAN:
-    if (instance == num_lqh_threads + 1)
-    {
-      // Put extra PGMAN together with it's Proxy
-      thr_no = block2ThreadId(block, 0);
-    }
-    else
-    {
-=======
-  switch (block) {
-    case DBLQH:
-    case DBACC:
-    case DBTUP:
-    case DBTUX:
-    case BACKUP:
-    case RESTORE:
->>>>>>> MySQL 8.0.36
       thr_no += (instance - 1) % num_lqh_threads;
-      break;
-    case DBQLQH:
-    case DBQACC:
-    case DBQTUP:
-    case DBQTUX:
-    case QBACKUP:
-    case QRESTORE:
-      thr_no += num_lqh_threads + (instance - 1);
-      break;
-    case PGMAN:
-      if (instance == num_lqh_threads + 1) {
-        // Put extra PGMAN together with it's Proxy
-        thr_no = block2ThreadId(block, 0);
-      } else {
-        thr_no += (instance - 1) % num_lqh_threads;
-      }
-      break;
-    case DBTC:
-    case DBSPJ: {
-      if (globalData.ndbMtTcThreads == 0 && globalData.ndbMtMainThreads > 0) {
-        /**
-         * No TC threads and not ndbd emulation and there is at
-         * at least one main thread, use the first main thread as
-         * thread to handle the the DBTC worker.
-         */
-        thr_no = 0;
-      } else {
-        /* TC threads comes after LDM and Query threads */
-        thr_no += num_lqh_threads + num_query_threads + (instance - 1);
-      }
-      break;
     }
-<<<<<<< RonDB // RONDB-624 todo
     break;
   case DBTC:
   case DBSPJ:
@@ -7438,52 +7358,6 @@ void mt_add_thr_map(Uint32 block, Uint32 instance) {
     break;
   default:
     require(false);
-||||||| Common ancestor
-    break;
-  case DBTC:
-  case DBSPJ:
-  {
-    if (globalData.ndbMtTcThreads == 0 &&
-        globalData.ndbMtMainThreads > 0)
-    {
-      /**
-       * No TC threads and not ndbd emulation and there is at
-       * at least one main thread, use the first main thread as
-       * thread to handle the the DBTC worker.
-       */
-      thr_no = 0;
-    }
-    else
-    {
-      /* TC threads comes after LDM and Query threads */
-      thr_no += num_lqh_threads +
-                num_query_threads +
-                (instance - 1);
-    }
-    break;
-  }
-  case THRMAN:
-    thr_no = instance - 1;
-    break;
-  case TRPMAN:
-    thr_no += num_lqh_threads +
-              num_query_threads +
-              num_tc_threads +
-              (instance - 1);
-    break;
-  default:
-    require(false);
-=======
-    case THRMAN:
-      thr_no = instance - 1;
-      break;
-    case TRPMAN:
-      thr_no +=
-          num_lqh_threads + num_query_threads + num_tc_threads + (instance - 1);
-      break;
-    default:
-      require(false);
->>>>>>> MySQL 8.0.36
   }
   add_thr_map(block, instance, thr_no);
 }

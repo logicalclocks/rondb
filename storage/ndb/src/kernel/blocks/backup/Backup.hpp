@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -587,99 +587,6 @@ class Backup : public SimulatedBlock {
    * One record per backup
    */
   struct BackupRecord {
-<<<<<<< RonDB // RONDB-624 todo
-    BackupRecord(Backup& b, 
-                 Table_pool& tp,
-                 BackupFile_pool& bp,
-                 TriggerRecord_pool& trp)
-      : slaveState(b, validSlaveTransitions, validSlaveTransitionsCount,1)
-      , m_first_fragment(false)
-      , m_num_fragments(0)
-      , prepare_table(tp)
-      , tables(tp)
-      , triggers(trp), files(bp)
-      , ctlFilePtr(RNIL)
-      ,logFilePtr(RNIL)
-      , masterData(b)
-      , backup(b)
-      , m_encrypted_file(false)
-      {
-        m_wait_end_lcp = false;
-        m_wait_empty_queue = false;
-        m_initial_lcp_started = false;
-        m_wait_gci_to_delete = 0;
-        localLcpId = 0;
-        m_wait_data_file_close = false;
-        m_disk_data_exist = false;
-        m_wait_sync_extent = false;
-        m_wait_final_sync_extent = false;
-        m_wait_disk_data_sync = false;
-        m_num_sync_pages_waiting = 0;
-        m_num_sync_extent_pages_written = 0;
-        /*
-          report of backup status uses these variables to keep track
-          if backup ia running and current state
-        */
-        m_gsn = 0;
-        masterData.gsn = 0;
-        m_informDropTabTableId = Uint32(~0);
-        m_informDropTabReference = Uint32(~0);
-        currentDeleteLcpFile = RNIL64;
-        noOfRecords = 0;
-        noOfBytes = 0;
-        for (Uint32 i = 0; i < BackupFormat::NDB_MAX_FILES_PER_LCP; i++)
-        {
-          dataFilePtr[i] = RNIL;
-          prepareDataFilePtr[i] = RNIL;
-        }
-        idleFragWorkerCount = 0;
-||||||| Common ancestor
-    BackupRecord(Backup& b, 
-                 Table_pool& tp,
-                 BackupFile_pool& bp,
-                 TriggerRecord_pool& trp)
-      : slaveState(b, validSlaveTransitions, validSlaveTransitionsCount,1)
-      , m_first_fragment(false)
-      , m_num_fragments(0)
-      , prepare_table(tp)
-      , tables(tp)
-      , triggers(trp), files(bp)
-      , ctlFilePtr(RNIL)
-      ,logFilePtr(RNIL)
-      , masterData(b)
-      , backup(b)
-      , m_encrypted_file(false)
-      {
-        m_wait_end_lcp = false;
-        m_wait_empty_queue = false;
-        m_initial_lcp_started = false;
-        m_wait_gci_to_delete = 0;
-        localLcpId = 0;
-        m_wait_data_file_close = false;
-        m_disk_data_exist = false;
-        m_wait_sync_extent = false;
-        m_wait_final_sync_extent = false;
-        m_wait_disk_data_sync = false;
-        m_num_sync_pages_waiting = 0;
-        m_num_sync_extent_pages_written = 0;
-        /*
-          report of backup status uses these variables to keep track
-          if backup ia running and current state
-        */
-        m_gsn = 0;
-        masterData.gsn = 0;
-        m_informDropTabTableId = Uint32(~0);
-        m_informDropTabReference = Uint32(~0);
-        currentDeleteLcpFile = RNIL;
-        noOfRecords = 0;
-        noOfBytes = 0;
-        for (Uint32 i = 0; i < BackupFormat::NDB_MAX_FILES_PER_LCP; i++)
-        {
-          dataFilePtr[i] = RNIL;
-          prepareDataFilePtr[i] = RNIL;
-        }
-        idleFragWorkerCount = 0;
-=======
     BackupRecord(Backup &b, Table_pool &tp, BackupFile_pool &bp,
                  TriggerRecord_pool &trp)
         : slaveState(b, validSlaveTransitions, validSlaveTransitionsCount, 1),
@@ -714,13 +621,12 @@ class Backup : public SimulatedBlock {
       masterData.gsn = 0;
       m_informDropTabTableId = Uint32(~0);
       m_informDropTabReference = Uint32(~0);
-      currentDeleteLcpFile = RNIL;
+      currentDeleteLcpFile = RNIL64;
       noOfRecords = 0;
       noOfBytes = 0;
       for (Uint32 i = 0; i < BackupFormat::NDB_MAX_FILES_PER_LCP; i++) {
         dataFilePtr[i] = RNIL;
         prepareDataFilePtr[i] = RNIL;
->>>>>>> MySQL 8.0.36
       }
       idleFragWorkerCount = 0;
     }

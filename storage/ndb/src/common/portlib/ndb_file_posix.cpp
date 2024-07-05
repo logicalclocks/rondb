@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2019, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -461,10 +461,6 @@ int ndb_file::detect_direct_io_block_size_and_alignment() {
    * never use O_DIRECT.
    */
   ret = ::pread(m_handle, end - align, align, NDB_O_DIRECT_WRITE_ALIGNMENT);
-<<<<<<< RonDB // RONDB-624 todo
-  if (ret == -1 || ret != NDB_O_DIRECT_WRITE_ALIGNMENT)
-  {
-||||||| Common ancestor
   if (ret == -1 && errno == EBADF)
   {
     // TODO YYY: assume EBADF means file is not open for read, for debugging assume direct io is ok
@@ -472,18 +468,9 @@ int ndb_file::detect_direct_io_block_size_and_alignment() {
     m_direct_io_block_alignment = align;
     return 0;
   }
-  if (ret == -1)
+
+  if (ret == -1 || ret != NDB_O_DIRECT_WRITE_ALIGNMENT)
   {
-=======
-  if (ret == -1 && errno == EBADF) {
-    // TODO YYY: assume EBADF means file is not open for read, for debugging
-    // assume direct io is ok
-    m_direct_io_block_size = block_size;
-    m_direct_io_block_alignment = align;
-    return 0;
-  }
-  if (ret == -1) {
->>>>>>> MySQL 8.0.36
     return -1;
   }
 

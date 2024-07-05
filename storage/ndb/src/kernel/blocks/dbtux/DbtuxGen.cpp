@@ -25,12 +25,8 @@
 
 #define DBTUX_GEN_CPP
 #include "Dbtux.hpp"
-<<<<<<< RonDB // RONDB-624 todo
 #include "../dblqh/Dblqh.hpp"
-||||||| Common ancestor
-=======
 #include "util/require.h"
->>>>>>> MySQL 8.0.36
 
 #include <signaldata/NodeStateSignalData.hpp>
 

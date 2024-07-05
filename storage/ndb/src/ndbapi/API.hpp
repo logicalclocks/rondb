@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,22 +47,10 @@
 #include <NdbOperation.hpp>
 #include <NdbRecAttr.hpp>
 #include <NdbReceiver.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <NdbBlob.hpp>
-#include "NdbBlobImpl.hpp"
-#include <NdbInterpretedCode.hpp>
-#include "NdbWaitGroup.hpp"
-||||||| Common ancestor
-#include <NdbBlob.hpp>
-#include <NdbBlobImpl.hpp>
-#include <NdbInterpretedCode.hpp>
-#include <NdbWaitGroup.hpp>
-=======
 #include <NdbScanOperation.hpp>
 #include <NdbTransaction.hpp>
 #include <NdbWaitGroup.hpp>
 #include "NdbIndexStatImpl.hpp"
->>>>>>> MySQL 8.0.36
 
 #include <NdbEventOperation.hpp>
 #include "NdbEventOperationImpl.hpp"

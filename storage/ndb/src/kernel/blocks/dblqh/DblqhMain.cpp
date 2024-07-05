@@ -27,24 +27,12 @@
 #include <ndb_limits.h>
 #include <algorithm>
 #include <cstring>
-<<<<<<< RonDB // RONDB-624 todo
-#include <ndb_limits.h>
-#include <util/rondb_hash.hpp>
-||||||| Common ancestor
-#include <ndb_limits.h>
-#include <md5_hash.hpp>
-=======
-#include <md5_hash.hpp>
 #include "Dblqh.hpp"
->>>>>>> MySQL 8.0.36
+#include <util/rondb_hash.hpp>
 
 #include <ndb_version.h>
-<<<<<<< RonDB // RONDB-624 todo
 #include <signaldata/GetCpuUsage.hpp>
-||||||| Common ancestor
-=======
 #include <signaldata/AccFrag.hpp>
->>>>>>> MySQL 8.0.36
 #include <signaldata/AccKeyReq.hpp>
 #include <signaldata/AccScan.hpp>
 #include <signaldata/CopyActive.hpp>
@@ -85,16 +73,10 @@
 #include <signaldata/AlterTable.hpp>
 #include <signaldata/DictTabInfo.hpp>
 
-<<<<<<< RonDB // RONDB-624 todo
 #include <signaldata/Abort.hpp>
-#include <signaldata/LCP.hpp>
-||||||| Common ancestor
-#include <signaldata/LCP.hpp>
-=======
 #include <NdbEnv.h>
 #include <NdbSpin.h>
 #include <Checksum.hpp>
->>>>>>> MySQL 8.0.36
 #include <DebuggerNames.hpp>
 #include <KeyDescriptor.hpp>
 #include <SectionReader.hpp>
@@ -114,18 +96,7 @@
 #include <signaldata/SystemError.hpp>
 #include <signaldata/TransIdAI.hpp>
 #include <signaldata/UndoLogLevel.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <signaldata/CommitReq.hpp>
-#include <NdbEnv.h>
-#include <NdbSpin.h>
-#include <Checksum.hpp>
-||||||| Common ancestor
-#include <NdbEnv.h>
-#include <NdbSpin.h>
-#include <Checksum.hpp>
-=======
->>>>>>> MySQL 8.0.36
-
 #include "../suma/Suma.hpp"
 #include "DblqhCommon.hpp"
 #include "portlib/mt-asm.h"
@@ -764,112 +735,25 @@ void Dblqh::handle_queued_log_write(Signal *signal, LogPartRecord *logPartPtrP,
                     logPartPtrP);
       removeLogTcrec(tcConnectptr.p, logPartPtrP);
       unlock_log_part(logPartPtrP);
-<<<<<<< RonDB // RONDB-624 todo
-      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) ABORT",
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) ABORT Queued",
                      instance(),
                      logPartPtrP->logPartNo,
                      tcConnectptr.i));
-      abortCommonLab(signal, tcConnectptr);
-||||||| Common ancestor
-      abortCommonLab(signal, tcConnectptr);
-=======
       continueAfterLogAbortWriteLab(signal, tcConnectptr);
       break;
->>>>>>> MySQL 8.0.36
     }
     case TcConnectionrec::LOG_COMMIT_QUEUED:
     case TcConnectionrec::LOG_COMMIT_QUEUED_WAIT_SIGNAL: {
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) PREPARE",
-                     instance(),
-                     logPartPtrP->logPartNo,
-                     tcConnectptr.i));
-      doWritePrepareLog(signal, tcConnectptr);
-    }
-    return;
-  }
-  case TcConnectionrec::LOG_ABORT_QUEUED:
-  {
-    jam();
-    writeAbortLog(signal,
-                  tcConnectptr.p,
-                  logPagePtr,
-                  logFilePtr,
-                  logPartPtrP);
-    removeLogTcrec(tcConnectptr.p, logPartPtrP);
-    unlock_log_part(logPartPtrP);
-    DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) ABORT Queued",
-                   instance(),
-                   logPartPtrP->logPartNo,
-                   tcConnectptr.i));
-    continueAfterLogAbortWriteLab(signal, tcConnectptr);
-    break;
-  }
-  case TcConnectionrec::LOG_COMMIT_QUEUED:
-  case TcConnectionrec::LOG_COMMIT_QUEUED_WAIT_SIGNAL:
-  {
-    jam();
-    writeCommitLog(signal,tcConnectptr.p, logPartPtrP);
-    removeLogTcrec(tcConnectptr.p, logPartPtrP);
-    unlock_log_part(logPartPtrP);
-    if (tcConnectptr.p->transactionState ==
-        TcConnectionrec::LOG_COMMIT_QUEUED)
-    {
-      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) Commit Queued",
-                     instance(),
-                     logPartPtrP->logPartNo,
-                     tcConnectptr.i));
-      if (tcConnectptr.p->seqNoReplica == 0 ||
-          tcConnectptr.p->activeCreat == Fragrecord::AC_NR_COPY)
-      {
-        jam();
-        localCommitLab(signal, tcConnectptr);
-      }
-      else
-      {
-||||||| Common ancestor
-      doWritePrepareLog(signal, tcConnectptr);
-    }
-    return;
-  }
-  case TcConnectionrec::LOG_ABORT_QUEUED:
-  {
-    jam();
-    writeAbortLog(signal,
-                  tcConnectptr.p,
-                  logPagePtr,
-                  logFilePtr,
-                  logPartPtrP);
-    removeLogTcrec(tcConnectptr.p, logPartPtrP);
-    unlock_log_part(logPartPtrP);
-    continueAfterLogAbortWriteLab(signal, tcConnectptr);
-    break;
-  }
-  case TcConnectionrec::LOG_COMMIT_QUEUED:
-  case TcConnectionrec::LOG_COMMIT_QUEUED_WAIT_SIGNAL:
-  {
-    jam();
-    writeCommitLog(signal,tcConnectptr.p, logPartPtrP);
-    removeLogTcrec(tcConnectptr.p, logPartPtrP);
-    unlock_log_part(logPartPtrP);
-    if (tcConnectptr.p->transactionState ==
-        TcConnectionrec::LOG_COMMIT_QUEUED)
-    {
-      if (tcConnectptr.p->seqNoReplica == 0 ||
-          tcConnectptr.p->activeCreat == Fragrecord::AC_NR_COPY)
-      {
-        jam();
-        localCommitLab(signal, tcConnectptr);
-      }
-      else
-      {
-=======
       writeCommitLog(signal, tcConnectptr.p, logPartPtrP);
       removeLogTcrec(tcConnectptr.p, logPartPtrP);
       unlock_log_part(logPartPtrP);
       if (tcConnectptr.p->transactionState ==
           TcConnectionrec::LOG_COMMIT_QUEUED) {
+        DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) Commit Queued",
+                       instance(),
+                       logPartPtrP->logPartNo,
+                       tcConnectptr.i));
         if (tcConnectptr.p->seqNoReplica == 0 ||
             tcConnectptr.p->activeCreat == Fragrecord::AC_NR_COPY) {
           jam();
@@ -879,34 +763,19 @@ void Dblqh::handle_queued_log_write(Signal *signal, LogPartRecord *logPartPtrP,
           commitReplyLab(signal, tcConnectptr.p);
         }
       } else {
->>>>>>> MySQL 8.0.36
         jam();
+        DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) Commit Queued Wait",
+                       instance(),
+                       logPartPtrP->logPartNo,
+                       tcConnectptr.i));
         tcConnectptr.p->transactionState =
             TcConnectionrec::LOG_COMMIT_WRITTEN_WAIT_SIGNAL;
       }
       return;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    else
-    {
-      jam();
-      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) Commit Queued Wait",
-                     instance(),
-                     logPartPtrP->logPartNo,
-                     tcConnectptr.i));
-      tcConnectptr.p->transactionState =
-        TcConnectionrec::LOG_COMMIT_WRITTEN_WAIT_SIGNAL;
-||||||| Common ancestor
-    else
-    {
-      jam();
-      tcConnectptr.p->transactionState =
-        TcConnectionrec::LOG_COMMIT_WRITTEN_WAIT_SIGNAL;
-=======
     default: {
       ndbabort();
       return;
->>>>>>> MySQL 8.0.36
     }
   }  // switch
 }
@@ -1090,7 +959,6 @@ void Dblqh::execCONTINUEB(Signal *signal) {
   Uint32 data2 = signal->theData[3];
   TcConnectionrecPtr tcConnectptr;
   switch (tcase) {
-<<<<<<< RonDB // RONDB-624 todo
 #ifdef CONNECT_DEBUG
   case ZPRINT_CONNECT_DEBUG:
   {
@@ -1119,145 +987,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     return;
   }
 #ifdef DEBUG_MUTEX_STATS
-  case ZPRINT_MUTEX_STATS:
-  {
-    jam();
-    print_fragment_mutex_stats(signal);
-    return;
-  }
-#endif
-  case ZSTART_SEND_EXEC_CONF:
-  {
-    jam();
-    start_send_exec_conf(signal);
-    return;
-  }
-  case ZCONTINUE_WRITE_LOG:
-  {
-    /**
-     * While in state LOG_COMMIT_QUEUED, LOG_COMMIT_QUEUED_WAIT_SIGNAL,
-     * LOG_ABORT_QUEUED, LOG_QUEUED AND also not in any log queue, no
-     * one should be able to change the state of the operation.
-     * We verify this here.
-     */
-    jam();
-    TcConnectionrecPtr tcPtr;
-    tcPtr.i = data0;
-    ndbrequire(tcConnect_pool.getValidPtr(tcPtr));
-    ndbrequire(is_same_trans(tcPtr.i, data1, data2));
-    LogPartRecord *regLogPartPtr;
-    regLogPartPtr = tcPtr.p->m_log_part_ptr_p;
-    lock_log_part(regLogPartPtr);
-    prepare_queued_log_write(signal,
-                             tcPtr.p,
-                             regLogPartPtr,
-                             signal->theData[4]);
-    handle_queued_log_write(signal,
-                            regLogPartPtr,
-                            tcPtr);
-    return;
-  }
-  case ZCONTINUE_PHASE3_START:
-  {
-    jam();
-    continue_srPhase3Start(signal);
-    return;
-  }
-  case ZCONTINUE_SR_GCI_LIMITS:
-  {
-    jam();
-    continue_srGciLimits(signal);
-    return;
-  }
-  case ZCONTINUE_REDO_LOG_EXEC_COMPLETED:
-  {
-    jam();
-    continue_execSrCompletedLab(signal);
-    return;
-  }
-  case ZCONTINUE_SR_FOURTH_COMP:
-  {
-    jam();
-    continue_srFourthComp(signal);
-    return;
-  }
-  case ZPGMAN_PREP_LCP_ACTIVE_CHECK:
-  {
-    if (data1 == 0)
-    {
-||||||| Common ancestor
-  case ZPRINT_MUTEX_STATS:
-  {
-    jam();
-    print_fragment_mutex_stats(signal);
-    return;
-  }
-  case ZSTART_SEND_EXEC_CONF:
-  {
-    jam();
-    start_send_exec_conf(signal);
-    return;
-  }
-  case ZCONTINUE_WRITE_LOG:
-  {
-    /**
-     * While in state LOG_COMMIT_QUEUED, LOG_COMMIT_QUEUED_WAIT_SIGNAL,
-     * LOG_ABORT_QUEUED, LOG_QUEUED AND also not in any log queue, no
-     * one should be able to change the state of the operation.
-     * We verify this here.
-     */
-    jam();
-    TcConnectionrecPtr tcPtr;
-    tcPtr.i = data0;
-    ndbrequire(tcConnect_pool.getValidPtr(tcPtr));
-    ndbrequire(is_same_trans(tcPtr.i, data1, data2));
-    LogPartRecord *regLogPartPtr;
-    regLogPartPtr = tcPtr.p->m_log_part_ptr_p;
-    lock_log_part(regLogPartPtr);
-    prepare_queued_log_write(signal,
-                             tcPtr.p,
-                             regLogPartPtr,
-                             signal->theData[4]);
-    handle_queued_log_write(signal,
-                            regLogPartPtr,
-                            tcPtr);
-    return;
-  }
-  case ZCONTINUE_PHASE3_START:
-  {
-    jam();
-    continue_srPhase3Start(signal);
-    return;
-  }
-  case ZCONTINUE_SR_GCI_LIMITS:
-  {
-    jam();
-    continue_srGciLimits(signal);
-    return;
-  }
-  case ZCONTINUE_REDO_LOG_EXEC_COMPLETED:
-  {
-    jam();
-    continue_execSrCompletedLab(signal);
-    return;
-  }
-  case ZCONTINUE_SR_FOURTH_COMP:
-  {
-    jam();
-    continue_srFourthComp(signal);
-    return;
-  }
-  case ZPGMAN_PREP_LCP_ACTIVE_CHECK:
-  {
-    if (data1 == 0)
-    {
-=======
     case ZPRINT_MUTEX_STATS: {
->>>>>>> MySQL 8.0.36
       jam();
       print_fragment_mutex_stats(signal);
       return;
     }
+#endif
     case ZSTART_SEND_EXEC_CONF: {
       jam();
       start_send_exec_conf(signal);
@@ -1342,259 +1077,11 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     }
 #endif
 
-<<<<<<< RonDB // RONDB-624 todo
-  case ZSTART_QUEUED_SCAN:
-  {
-    jamDebug();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    restart_queued_scan(signal, data0);
-    return;
-  }
-  case ZCHECK_SYSTEM_SCANS:
-  {
-    handle_check_system_scans(signal);
-    signal->theData[0] = ZCHECK_SYSTEM_SCANS;
-    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal,
-                        DELAY_CHECK_SYSTEM_SCANS, 1);
-    break;
-  }
-  case ZLOG_LQHKEYREQ:
-  {
-    LogPartRecordPtr logPartPtr;
-
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    logPartPtr.i = data0;
-    ptrCheckGuard(logPartPtr, clogPartFileSize, logPartRecord);
-    queued_log_write(signal, logPartPtr.p);
-    return;
-  }
-  case ZSR_GCI_LIMITS:
-    jam();
-    srGciLimits(signal, data0, data1);
-    return;
-    break;
-  case ZSR_LOG_LIMITS:
-    jam();
-    signal->theData[0] = data0;
-    signal->theData[1] = data1;
-    signal->theData[2] = data2;
-    srLogLimits(signal);
-    return;
-    break;
-  case ZSEND_EXEC_CONF:
-    jam();
-    sendExecConf(signal, data0, data1);
-    return;
-    break;
-  case ZEXEC_SR:
-    jam();
-    signal->theData[0] = data0;
-    execSr(signal);
-    return;
-    break;
-  case ZSR_FOURTH_COMP:
-    jam();
-    signal->theData[0] = data0;
-    srFourthComp(signal);
-    return;
-    break;
-  case ZINIT_FOURTH:
-    jam();
-    signal->theData[0] = data0;
-    initFourth(signal);
-    return;
-    break;
-  case ZTIME_SUPERVISION:
-    jam();
-    signal->theData[0] = data0;
-    timeSup(signal);
-    return;
-    break;
-  case ZSR_PHASE3_START:
-    jam();
-    srPhase3Start(signal);
-    return;
-    break;
-  case ZLQH_TRANS_NEXT:
-  {
-    jam();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    TcNodeFailRecordPtr tcNodeFailPtr;
-    tcNodeFailPtr.i = data0;
-    ptrCheckGuard(tcNodeFailPtr, ctcNodeFailrecFileSize, tcNodeFailRecord);
-    lqhTransNextLab(signal, tcNodeFailPtr);
-    return;
-    break;
-  }
-  case ZSCAN_TC_CONNECT:
-    jam();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    tabptr.i = data1;
-    ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-    scanTcConnectLab(signal, data0, data2);
-    return;
-    break;
-  case ZINITIALISE_RECORDS:
-    jam();
-    initialiseRecordsLab(signal, data0, data2, signal->theData[4]);
-    return;
-    break;
-  case ZINIT_GCP_REC:
-    jam();
-    gcpPtr.i = 0;
-    ptrAss(gcpPtr, gcpRecord);
-    initGcpRecLab(signal);
-    return;
-    break;
-  case ZCHECK_LCP_STOP_BLOCKED:
-  {
-    jam();
-    checkLcpStopBlockedLab(signal, data0);
-    return;
-  }
-  case ZSCAN_MARKERS:
-    jam();
-    scanMarkers(signal, data0, data1);
-    return;
-    break;
-
-  case ZOPERATION_EVENT_REP:
-    jam();
-    /* Send counter event report */
-    {
-      const Uint32 len = c_Counters.build_event_rep(signal);
-      sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, len, JBB);
-||||||| Common ancestor
-  case ZSTART_QUEUED_SCAN:
-  {
-    jamDebug();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    restart_queued_scan(signal, data0);
-    return;
-  }
-  case ZCHECK_SYSTEM_SCANS:
-  {
-    handle_check_system_scans(signal);
-    signal->theData[0] = ZCHECK_SYSTEM_SCANS;
-    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal,
-                        DELAY_CHECK_SYSTEM_SCANS, 1);
-    break;
-  }
-  case ZLOG_LQHKEYREQ:
-  {
-    LogPartRecordPtr logPartPtr;
-
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    logPartPtr.i = data0;
-    ptrCheckGuard(logPartPtr, clogPartFileSize, logPartRecord);
-    queued_log_write(signal, logPartPtr.p);
-    return;
-  }
-  case ZSR_GCI_LIMITS:
-    jam();
-    signal->theData[0] = data0;
-    srGciLimits(signal);
-    return;
-    break;
-  case ZSR_LOG_LIMITS:
-    jam();
-    signal->theData[0] = data0;
-    signal->theData[1] = data1;
-    signal->theData[2] = data2;
-    srLogLimits(signal);
-    return;
-    break;
-  case ZSEND_EXEC_CONF:
-    jam();
-    signal->theData[0] = data0;
-    sendExecConf(signal);
-    return;
-    break;
-  case ZEXEC_SR:
-    jam();
-    signal->theData[0] = data0;
-    execSr(signal);
-    return;
-    break;
-  case ZSR_FOURTH_COMP:
-    jam();
-    signal->theData[0] = data0;
-    srFourthComp(signal);
-    return;
-    break;
-  case ZINIT_FOURTH:
-    jam();
-    signal->theData[0] = data0;
-    initFourth(signal);
-    return;
-    break;
-  case ZTIME_SUPERVISION:
-    jam();
-    signal->theData[0] = data0;
-    timeSup(signal);
-    return;
-    break;
-  case ZSR_PHASE3_START:
-    jam();
-    srPhase3Start(signal);
-    return;
-    break;
-  case ZLQH_TRANS_NEXT:
-  {
-    jam();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    TcNodeFailRecordPtr tcNodeFailPtr;
-    tcNodeFailPtr.i = data0;
-    ptrCheckGuard(tcNodeFailPtr, ctcNodeFailrecFileSize, tcNodeFailRecord);
-    lqhTransNextLab(signal, tcNodeFailPtr);
-    return;
-    break;
-  }
-  case ZSCAN_TC_CONNECT:
-    jam();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    tabptr.i = data1;
-    ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-    scanTcConnectLab(signal, data0, data2);
-    return;
-    break;
-  case ZINITIALISE_RECORDS:
-    jam();
-    initialiseRecordsLab(signal, data0, data2, signal->theData[4]);
-    return;
-    break;
-  case ZINIT_GCP_REC:
-    jam();
-    gcpPtr.i = 0;
-    ptrAss(gcpPtr, gcpRecord);
-    initGcpRecLab(signal);
-    return;
-    break;
-  case ZCHECK_LCP_STOP_BLOCKED:
-  {
-    jam();
-    checkLcpStopBlockedLab(signal, data0);
-    return;
-  }
-  case ZSCAN_MARKERS:
-    jam();
-    scanMarkers(signal, data0, data1);
-    return;
-    break;
-
-  case ZOPERATION_EVENT_REP:
-    jam();
-    /* Send counter event report */
-    {
-      const Uint32 len = c_Counters.build_event_rep(signal);
-      sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, len, JBB);
-=======
     case ZSTART_QUEUED_SCAN: {
       jamDebug();
       ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
       restart_queued_scan(signal, data0);
       return;
->>>>>>> MySQL 8.0.36
     }
     case ZCHECK_SYSTEM_SCANS: {
       handle_check_system_scans(signal);
@@ -1603,47 +1090,6 @@ void Dblqh::execCONTINUEB(Signal *signal) {
                           DELAY_CHECK_SYSTEM_SCANS, 1);
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    break;
-  case ZDROP_TABLE_WAIT_USAGE:
-    jam();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    dropTab_wait_usage(signal);
-    return;
-    break;
-  case ZENABLE_EXPAND_CHECK:
-  {
-    jam();
-    Uint32 tableId = signal->theData[1];
-    Uint32 fragId = signal->theData[2];
-    TablerecPtr tabPtr;
-    fragptr.i = RNIL64;
-    getTableFragmentrec(tableId,
-                        fragId,
-                        tabPtr,
-                        fragptr);
-    if (fragptr.i != RNIL64)
-    {
-      ndbrequire(c_lcp_complete_fragments.getPtr(fragptr));
-      FragrecordPtr save = fragptr;
-||||||| Common ancestor
-    break;
-  case ZDROP_TABLE_WAIT_USAGE:
-    jam();
-    ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-    dropTab_wait_usage(signal);
-    return;
-    break;
-  case ZENABLE_EXPAND_CHECK:
-  {
-    jam();
-    fragptr.i = signal->theData[1];
-    if (fragptr.i != RNIL)
-    {
-      jam();
-      c_lcp_complete_fragments.getPtr(fragptr);
-      Ptr<Fragrecord> save = fragptr;
-=======
     case ZLOG_LQHKEYREQ: {
       LogPartRecordPtr logPartPtr;
 
@@ -1655,8 +1101,7 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     }
     case ZSR_GCI_LIMITS:
       jam();
-      signal->theData[0] = data0;
-      srGciLimits(signal);
+      srGciLimits(signal, data0, data1);
       return;
       break;
     case ZSR_LOG_LIMITS:
@@ -1669,8 +1114,7 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       break;
     case ZSEND_EXEC_CONF:
       jam();
-      signal->theData[0] = data0;
-      sendExecConf(signal);
+      sendExecConf(signal, data0, data1);
       return;
       break;
     case ZEXEC_SR:
@@ -1742,44 +1186,6 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       scanMarkers(signal, data0, data1);
       return;
       break;
->>>>>>> MySQL 8.0.36
-
-<<<<<<< RonDB // RONDB-624 todo
-      c_lcp_complete_fragments.next(fragptr);
-      if (fragptr.i != RNIL64)
-      {
-        jam();
-        signal->theData[0] = ZENABLE_EXPAND_CHECK;
-        signal->theData[1] = fragptr.p->tabRef;
-        signal->theData[2] = fragptr.p->fragId;
-        sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);	
-        c_lcp_complete_fragments.remove(save);
-        return;
-      }
-      else
-      {
-        jam();
-        c_lcp_complete_fragments.remove(save);
-      }
-    }
-    {
-      cstartRecReq = SRR_REDO_COMPLETE;
-      ndbrequire(c_lcp_complete_fragments.isEmpty());
-||||||| Common ancestor
-      c_lcp_complete_fragments.next(fragptr);
-      signal->theData[0] = ZENABLE_EXPAND_CHECK;
-      signal->theData[1] = fragptr.i;
-      sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);	
-
-      c_lcp_complete_fragments.remove(save);
-      return;
-    }
-    else
-    {
-      jam();
-      cstartRecReq = SRR_REDO_COMPLETE;
-      ndbrequire(c_lcp_complete_fragments.isEmpty());
-=======
     case ZOPERATION_EVENT_REP:
       jam();
       /* Send counter event report */
@@ -1802,31 +1208,47 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       dropTab_wait_usage(signal);
       return;
       break;
-    case ZENABLE_EXPAND_CHECK: {
-      jam();
-      fragptr.i = signal->theData[1];
-      if (fragptr.i != RNIL) {
+
+  case ZENABLE_EXPAND_CHECK:
+  {
+    jam();
+    Uint32 tableId = signal->theData[1];
+    Uint32 fragId = signal->theData[2];
+    TablerecPtr tabPtr;
+    fragptr.i = RNIL64;
+    getTableFragmentrec(tableId,
+                        fragId,
+                        tabPtr,
+                        fragptr);
+    if (fragptr.i != RNIL64)
+    {
+      ndbrequire(c_lcp_complete_fragments.getPtr(fragptr));
+      FragrecordPtr save = fragptr;
+
+      c_lcp_complete_fragments.next(fragptr);
+      if (fragptr.i != RNIL64)
+      {
         jam();
-        c_lcp_complete_fragments.getPtr(fragptr);
-        Ptr<Fragrecord> save = fragptr;
-
-        c_lcp_complete_fragments.next(fragptr);
         signal->theData[0] = ZENABLE_EXPAND_CHECK;
-        signal->theData[1] = fragptr.i;
-        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
-
+        signal->theData[1] = fragptr.p->tabRef;
+        signal->theData[2] = fragptr.p->fragId;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);	
         c_lcp_complete_fragments.remove(save);
         return;
-      } else {
+      }
+      else
+      {
         jam();
-        cstartRecReq = SRR_REDO_COMPLETE;
-        ndbrequire(c_lcp_complete_fragments.isEmpty());
->>>>>>> MySQL 8.0.36
-
-        rebuildOrderedIndexes(signal, 0);
-        return;
+        c_lcp_complete_fragments.remove(save);
       }
     }
+    {
+      cstartRecReq = SRR_REDO_COMPLETE;
+      ndbrequire(c_lcp_complete_fragments.isEmpty());
+      rebuildOrderedIndexes(signal, 0);
+      return;
+    }
+  }
     case ZRETRY_TCKEYREF: {
       jam();
       Uint32 cnt = signal->theData[1];
@@ -2123,38 +1545,6 @@ void Dblqh::execSTTOR(Signal *signal) {
   /* SYSTEM RESTART RANK */
   csignalKey = signal->theData[6];
   switch (tstartPhase) {
-<<<<<<< RonDB // RONDB-624 todo
-  case ZSTART_PHASE1:
-    jam();
-    sttor_startphase1(signal);
-    set_use_mutex_for_log_parts();
-    sendsttorryLab(signal);
-    return;
-  case 2:
-    jam();
-    set_up_qt_our_rr_group();
-    startphase2Lab(signal, /* dummy */ ~0);
-    return;
-  case 3:
-    jam();
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
-||||||| Common ancestor
-  case ZSTART_PHASE1:
-    jam();
-    sttor_startphase1(signal);
-    set_use_mutex_for_log_parts();
-    sendsttorryLab(signal);
-    return;
-  case 2:
-    jam();
-    startphase2Lab(signal, /* dummy */ ~0);
-    return;
-  case 3:
-    jam();
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
-=======
     case ZSTART_PHASE1:
       jam();
       sttor_startphase1(signal);
@@ -2163,64 +1553,18 @@ void Dblqh::execSTTOR(Signal *signal) {
       return;
     case 2:
       jam();
+      set_up_qt_our_rr_group();
       startphase2Lab(signal, /* dummy */ ~0);
       return;
     case 3:
       jam();
 #if (defined(VM_TRACE) || defined(ERROR_INSERT)) && \
->>>>>>> MySQL 8.0.36
     defined(DO_TRANSIENT_POOL_STAT)
 
       /* Start reporting statistics for transient pools */
       signal->theData[0] = ZLQH_TRANSIENT_POOL_STAT;
       sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
 #endif
-<<<<<<< RonDB // RONDB-624 todo
-    if (m_is_query_block)
-    {
-      /**
-       * These variables are the same in all LDM instances and they are
-       * not changed while the data node is running. Thus we set them
-       * here instead of when calling setup_query_thread* methods.
-       */
-      ndbrequire(isNdbMtLqh());
-      Dblqh *lqh_block = (Dblqh*)globalData.getBlock(DBLQH, 1);
-      this->ctabrecFileSize = lqh_block->ctabrecFileSize;
-      Dbtup *tup_block = (Dbtup*)globalData.getBlock(DBTUP, 1);
-      c_tup->cnoOfTablerec = tup_block->cnoOfTablerec;
-      Dbtux *tux_block = (Dbtux*)globalData.getBlock(DBTUX, 1);
-      c_tux->c_indexPool.setNewSize(
-        tux_block->c_indexPool.getSize());
-      signal->theData[0] = cownref;
-      sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
-||||||| Common ancestor
-    if (m_is_query_block)
-    {
-      /**
-       * These variables are the same in all LDM instances and they are
-       * not changed while the data node is running. Thus we set them
-       * here instead of when calling setup_query_thread* methods.
-       */
-      ndbrequire(isNdbMtLqh());
-      Dblqh *lqh_block = (Dblqh*)globalData.getBlock(DBLQH, 1);
-      this->c_fragment_pool.setNewSize(
-        lqh_block->c_fragment_pool.getSize());
-      this->ctabrecFileSize = lqh_block->ctabrecFileSize;
-      Dbtup *tup_block = (Dbtup*)globalData.getBlock(DBTUP, 1);
-      c_tup->cnoOfFragrec = tup_block->cnoOfFragrec;
-      c_tup->cnoOfTablerec = tup_block->cnoOfTablerec;
-      Dbacc *acc_block = (Dbacc*)globalData.getBlock(DBACC, 1);
-      c_acc->cfragmentsize = acc_block->cfragmentsize;
-      Dbtux *tux_block = (Dbtux*)globalData.getBlock(DBTUX, 1);
-      c_tux->c_fragPool.setNewSize(
-        tux_block->c_fragPool.getSize());
-      c_tux->c_indexPool.setNewSize(
-        tux_block->c_indexPool.getSize());
-      c_tux->c_descPagePool.setNewSize(
-        tux_block->c_descPagePool.getSize());
-      signal->theData[0] = cownref;
-      sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
-=======
       if (m_is_query_block) {
         /**
          * These variables are the same in all LDM instances and they are
@@ -2245,43 +1589,10 @@ void Dblqh::execSTTOR(Signal *signal) {
         return;
       } else {
         send_read_local_sysfile(signal);
+        update_cpu_usage(signal);
       }
->>>>>>> MySQL 8.0.36
       return;
-<<<<<<< RonDB // RONDB-624 todo
-    }
-    else
-    {
-      send_read_local_sysfile(signal);
-      update_cpu_usage(signal);
-    }
-    return;
-  case 4:
-    jam();
-    if (!m_is_query_block)
-    {
-      define_backup(signal);
-    }
-    else
-    {
-||||||| Common ancestor
-    }
-    else
-    {
-      send_read_local_sysfile(signal);
-    }
-    return;
-  case 4:
-    jam();
-    if (!m_is_query_block)
-    {
-      define_backup(signal);
-    }
-    else
-    {
-=======
     case 4:
->>>>>>> MySQL 8.0.36
       jam();
       if (!m_is_query_block) {
         define_backup(signal);
@@ -2328,59 +1639,21 @@ void Dblqh::execSTTOR(Signal *signal) {
         write_local_sysfile_restart_complete_done(signal);
         DEB_START_PHASE9(("(%u)Start phase 9 wait completed", instance()));
       }
+#ifdef DEBUG_MUTEX_STATS
       send_print_mutex_stats(signal);
+#endif
+#ifdef CONNECT_DEBUG
+      send_connect_debug(signal);
+#endif
       return;
     default:
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      /**
-       * Restart is done, record this fact and move on in restart
-       * processing.
-       */
-      write_local_sysfile_restart_complete_done(signal);
-      DEB_START_PHASE9(("(%u)Start phase 9 wait completed", instance()));
-    }
-#ifdef DEBUG_MUTEX_STATS
-    send_print_mutex_stats(signal);
-#endif
-#ifdef CONNECT_DEBUG
-    send_connect_debug(signal);
-#endif
-    return;
-  default:
-    jam();
-    /*empty*/;
-    sendsttorryLab(signal);
-    return;
-    break;
-  }//switch
-}//Dblqh::execSTTOR()
-||||||| Common ancestor
-      /**
-       * Restart is done, record this fact and move on in restart
-       * processing.
-       */
-      write_local_sysfile_restart_complete_done(signal);
-      DEB_START_PHASE9(("(%u)Start phase 9 wait completed", instance()));
-    }
-    send_print_mutex_stats(signal);
-    return;
-  default:
-    jam();
-    /*empty*/;
-    sendsttorryLab(signal);
-    return;
-    break;
-  }//switch
-}//Dblqh::execSTTOR()
-=======
       /*empty*/;
       sendsttorryLab(signal);
       return;
       break;
   }  // switch
 }  // Dblqh::execSTTOR()
->>>>>>> MySQL 8.0.36
 
 void Dblqh::write_local_sysfile_restart_complete_done(Signal *signal) {
   cstartPhase = ZNIL;
@@ -6241,7 +5514,6 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
                                     5));
   }
 
-<<<<<<< RonDB // RONDB-624 todo
   do
   {
     Uint32 firstWord = packedData[step];
@@ -6302,146 +5574,8 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
          * add an extra parameter since the signal can be sent
          * directly and not through the packed signal interface.
          */
-||||||| Common ancestor
-  while (Tlength > Tstep) {
-    switch (TpackedData[Tstep] >> 28) {
-    case ZCOMMIT:
-      jam();
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      sig4 = TpackedData[Tstep + 4];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
-      signal->theData[3] = sig3;
-      signal->theData[4] = sig4 & Tgci_lo_mask;
-      signal->header.theLength = TcommitLen;
-      jamBuffer()->markEndOfSigExec();
-      execCOMMIT(signal);
-      Tstep += TcommitLen;
-      break;
-    case ZCOMPLETE:
-      jam();
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
-      signal->header.theLength = 3;
-      jamBuffer()->markEndOfSigExec();
-      execCOMPLETE(signal);
-      Tstep += 3;
-      break;
-    case ZLQHKEYCONF: {
-      jam();
-      LqhKeyConf * lqhKeyConf = CAST_PTR(LqhKeyConf, signal->theData);
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      sig4 = TpackedData[Tstep + 4];
-      sig5 = TpackedData[Tstep + 5];
-      sig6 = TpackedData[Tstep + 6];
-      lqhKeyConf->connectPtr = sig0;
-      lqhKeyConf->opPtr = sig1;
-      lqhKeyConf->userRef = sig2;
-      lqhKeyConf->readLen = sig3;
-      lqhKeyConf->transId1 = sig4;
-      lqhKeyConf->transId2 = sig5;
-      lqhKeyConf->numFiredTriggers = sig6;
-      jamBuffer()->markEndOfSigExec();
-      execLQHKEYCONF(signal);
-      Tstep += LqhKeyConf::SignalLength;
-      break;
-    }
-    case ZREMOVE_MARKER:
-      jam();
-      sig0 = TpackedData[Tstep + 1];
-      sig1 = TpackedData[Tstep + 2];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      if ((TpackedData[Tstep] & 1) == 0)
-      {
-        /**
-         * This is the normal path where we remove a marker
-         * after commit.
-         */
-        signal->header.theLength = 2;
-      }
-      else
-      {
-        /**
-         * This is a new path that is used when removing a marker
-         * after an API node failure. We indicate this in packed
-         * signal by setting one of the 28 unused bits in the
-         * packed signal (the first word only uses the last 4 bits
-         * in the first 32-bit word.
-         *
-         * We indicate this to the execREMOVE_MARKER_ORD method
-         * by setting the Length of the signal to 3 (we cannot
-         * add an extra parameter since the signal can be sent
-         * directly and not through the packed signal interface.
-         */
-=======
-  while (Tlength > Tstep) {
-    switch (TpackedData[Tstep] >> 28) {
-      case ZCOMMIT:
-        jam();
-        sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-        sig1 = TpackedData[Tstep + 1];
-        sig2 = TpackedData[Tstep + 2];
-        sig3 = TpackedData[Tstep + 3];
-        sig4 = TpackedData[Tstep + 4];
-        signal->theData[0] = sig0;
-        signal->theData[1] = sig1;
-        signal->theData[2] = sig2;
-        signal->theData[3] = sig3;
-        signal->theData[4] = sig4 & Tgci_lo_mask;
-        signal->header.theLength = TcommitLen;
-        jamBuffer()->markEndOfSigExec();
-        execCOMMIT(signal);
-        Tstep += TcommitLen;
-        break;
-      case ZCOMPLETE:
-        jam();
-        sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-        sig1 = TpackedData[Tstep + 1];
-        sig2 = TpackedData[Tstep + 2];
-        signal->theData[0] = sig0;
-        signal->theData[1] = sig1;
-        signal->theData[2] = sig2;
->>>>>>> MySQL 8.0.36
         signal->header.theLength = 3;
-        jamBuffer()->markEndOfSigExec();
-        execCOMPLETE(signal);
-        Tstep += 3;
-        break;
-      case ZLQHKEYCONF: {
-        jam();
-        LqhKeyConf *lqhKeyConf = CAST_PTR(LqhKeyConf, signal->theData);
-        sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-        sig1 = TpackedData[Tstep + 1];
-        sig2 = TpackedData[Tstep + 2];
-        sig3 = TpackedData[Tstep + 3];
-        sig4 = TpackedData[Tstep + 4];
-        sig5 = TpackedData[Tstep + 5];
-        sig6 = TpackedData[Tstep + 6];
-        lqhKeyConf->connectPtr = sig0;
-        lqhKeyConf->opPtr = sig1;
-        lqhKeyConf->userRef = sig2;
-        lqhKeyConf->readLen = sig3;
-        lqhKeyConf->transId1 = sig4;
-        lqhKeyConf->transId2 = sig5;
-        lqhKeyConf->numFiredTriggers = sig6;
-        jamBuffer()->markEndOfSigExec();
-        execLQHKEYCONF(signal);
-        Tstep += LqhKeyConf::SignalLength;
-        break;
       }
-<<<<<<< RonDB // RONDB-624 todo
       step += 3;
       execREMOVE_MARKER_ORD(signal);
       break;
@@ -6463,96 +5597,6 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
   }//while
   while (length > step);
   ndbrequire(length == step);
-||||||| Common ancestor
-      jamBuffer()->markEndOfSigExec();
-      execREMOVE_MARKER_ORD(signal);
-      Tstep += 3;
-      break;
-    case ZFIRE_TRIG_REQ:
-      jam();
-      ndbassert(FireTrigReq::SignalLength == 4);
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
-      signal->theData[3] = sig3;
-      signal->header.theLength = FireTrigReq::SignalLength;
-      signal->header.theSendersBlockRef = TsenderRef;
-      jamBuffer()->markEndOfSigExec();
-      execFIRE_TRIG_REQ(signal);
-      Tstep += FireTrigReq::SignalLength;
-      break;
-    default:
-      ndbabort();
-      return;
-    }//switch
-#ifdef ERROR_INSERT
-    signal->header.theSendersBlockRef = senderBlockRef;
-#endif
-  }//while
-  ndbrequire(Tlength == Tstep);
-=======
-      case ZREMOVE_MARKER:
-        jam();
-        sig0 = TpackedData[Tstep + 1];
-        sig1 = TpackedData[Tstep + 2];
-        signal->theData[0] = sig0;
-        signal->theData[1] = sig1;
-        if ((TpackedData[Tstep] & 1) == 0) {
-          /**
-           * This is the normal path where we remove a marker
-           * after commit.
-           */
-          signal->header.theLength = 2;
-        } else {
-          /**
-           * This is a new path that is used when removing a marker
-           * after an API node failure. We indicate this in packed
-           * signal by setting one of the 28 unused bits in the
-           * packed signal (the first word only uses the last 4 bits
-           * in the first 32-bit word.
-           *
-           * We indicate this to the execREMOVE_MARKER_ORD method
-           * by setting the Length of the signal to 3 (we cannot
-           * add an extra parameter since the signal can be sent
-           * directly and not through the packed signal interface.
-           */
-          signal->header.theLength = 3;
-        }
-        jamBuffer()->markEndOfSigExec();
-        execREMOVE_MARKER_ORD(signal);
-        Tstep += 3;
-        break;
-      case ZFIRE_TRIG_REQ:
-        jam();
-        ndbassert(FireTrigReq::SignalLength == 4);
-        sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-        sig1 = TpackedData[Tstep + 1];
-        sig2 = TpackedData[Tstep + 2];
-        sig3 = TpackedData[Tstep + 3];
-        signal->theData[0] = sig0;
-        signal->theData[1] = sig1;
-        signal->theData[2] = sig2;
-        signal->theData[3] = sig3;
-        signal->header.theLength = FireTrigReq::SignalLength;
-        signal->header.theSendersBlockRef = TsenderRef;
-        jamBuffer()->markEndOfSigExec();
-        execFIRE_TRIG_REQ(signal);
-        Tstep += FireTrigReq::SignalLength;
-        break;
-      default:
-        ndbabort();
-        return;
-    }  // switch
-#ifdef ERROR_INSERT
-    signal->header.theSendersBlockRef = senderBlockRef;
-#endif
-  }  // while
-  ndbrequire(Tlength == Tstep);
->>>>>>> MySQL 8.0.36
   return;
 }  // Dblqh::execPACKED_SIGNAL()
 
@@ -6682,111 +5726,8 @@ void Dblqh::updatePackedList(Signal *signal, HostRecord *ahostptr,
 void Dblqh::execREAD_PSEUDO_REQ(Uint32 opPtrI, Uint32 attrId, Uint32 *out,
                                 Uint32 out_words) {
   jamEntryDebug();
-<<<<<<< RonDB // RONDB-624 todo
   TcConnectionrecPtr regTcPtr = m_tc_connect_ptr;
   ndbassert(m_tc_connect_ptr.i == opPtrI);
-  switch (attrId)
-  {
-  case AttributeHeader::RANGE_NO:
-    ndbassert(1 <= out_words);
-    out[0] = regTcPtr.p->m_scan_curr_range_no;
-    break;
-  case AttributeHeader::RECORDS_IN_RANGE:
-  case AttributeHeader::INDEX_STAT_KEY:
-  case AttributeHeader::INDEX_STAT_VALUE:
-  {
-    jam();
-    // scanptr gets reset somewhere within the timeslice
-    ScanRecordPtr tmp;
-    tmp.i = regTcPtr.p->tcScanRec;
-    ndbrequire(c_scanRecordPool.getValidPtr(tmp));
-    c_tux->execREAD_PSEUDO_REQ(tmp.p->scanAccPtr, attrId, out, out_words);
-    break;
-  }
-  case AttributeHeader::LOCK_REF:
-  {
-    /* Return 3x 32-bit words
-     *  - LQH instance info
-     *  - TC operation index
-     *  - Bottom 32-bits of LQH-local key-request id (for uniqueness)
-     */
-    jam();
-    ndbassert(3 <= out_words);
-    out[0] = (getOwnNodeId() << 16) | regTcPtr.p->fragmentid;
-    out[1] = regTcPtr.p->tcOprec;
-    out[2] = (Uint32) regTcPtr.p->lqhKeyReqId;
-    break;
-  }
-  case AttributeHeader::OP_ID:
-  {
-    jam();
-    ndbassert(8 <= out_words * 4);
-    memcpy(out, &regTcPtr.p->lqhKeyReqId, 8);
-    break;
-  }
-  case AttributeHeader::CORR_FACTOR64:
-  {
-    Uint32 add = 0;
-    ScanRecordPtr tmp;
-    tmp.i = regTcPtr.p->tcScanRec;
-    if (tmp.i != RNIL)
-    {
-||||||| Common ancestor
-  TcConnectionrecPtr regTcPtr;
-  regTcPtr.i = opPtrI;
-  ndbrequire(tcConnect_pool.getValidPtr(regTcPtr));
-  
-  switch (attrId)
-  {
-  case AttributeHeader::RANGE_NO:
-    ndbassert(1 <= out_words);
-    out[0] = regTcPtr.p->m_scan_curr_range_no;
-    break;
-  case AttributeHeader::RECORDS_IN_RANGE:
-  case AttributeHeader::INDEX_STAT_KEY:
-  case AttributeHeader::INDEX_STAT_VALUE:
-  {
-    jam();
-    // scanptr gets reset somewhere within the timeslice
-    ScanRecordPtr tmp;
-    tmp.i = regTcPtr.p->tcScanRec;
-    ndbrequire(c_scanRecordPool.getValidPtr(tmp));
-    c_tux->execREAD_PSEUDO_REQ(tmp.p->scanAccPtr, attrId, out, out_words);
-    break;
-  }
-  case AttributeHeader::LOCK_REF:
-  {
-    /* Return 3x 32-bit words
-     *  - LQH instance info
-     *  - TC operation index
-     *  - Bottom 32-bits of LQH-local key-request id (for uniqueness)
-     */
-    jam();
-    ndbassert(3 <= out_words);
-    out[0] = (getOwnNodeId() << 16) | regTcPtr.p->fragmentid;
-    out[1] = regTcPtr.p->tcOprec;
-    out[2] = (Uint32) regTcPtr.p->lqhKeyReqId;
-    break;
-  }
-  case AttributeHeader::OP_ID:
-  {
-    jam();
-    ndbassert(8 <= out_words * 4);
-    memcpy(out, &regTcPtr.p->lqhKeyReqId, 8);
-    break;
-  }
-  case AttributeHeader::CORR_FACTOR64:
-  {
-    Uint32 add = 0;
-    ScanRecordPtr tmp;
-    tmp.i = regTcPtr.p->tcScanRec;
-    if (tmp.i != RNIL)
-    {
-=======
-  TcConnectionrecPtr regTcPtr;
-  regTcPtr.i = opPtrI;
-  ndbrequire(tcConnect_pool.getValidPtr(regTcPtr));
-
   switch (attrId) {
     case AttributeHeader::RANGE_NO:
       ndbassert(1 <= out_words);
@@ -6799,7 +5740,6 @@ void Dblqh::execREAD_PSEUDO_REQ(Uint32 opPtrI, Uint32 attrId, Uint32 *out,
       // scanptr gets reset somewhere within the timeslice
       ScanRecordPtr tmp;
       tmp.i = regTcPtr.p->tcScanRec;
->>>>>>> MySQL 8.0.36
       ndbrequire(c_scanRecordPool.getValidPtr(tmp));
       c_tux->execREAD_PSEUDO_REQ(tmp.p->scanAccPtr, attrId, out, out_words);
       break;
@@ -6984,52 +5924,9 @@ void Dblqh::execTUPKEYREF(Signal *signal) {
       abortCommonLab(signal, tcConnectptr);
       return;
     }
-<<<<<<< RonDB // RONDB-624 todo
-/* ------------------------------------------------------------------------- */
-// Abort was not ready to start until this signal came back. Now we are ready
-// to start the abort.
-/* ------------------------------------------------------------------------- */
-    abortCommonLab(signal, tcConnectptr);
-    return;
-  }
-  case TcConnectionrec::WAIT_ACC_ABORT:
-  {
-    jam();
-    ndbassert(false);
-/* ------------------------------------------------------------------------- */
-/*       IGNORE SINCE ABORT OF THIS OPERATION IS ONGOING ALREADY.            */
-/* ------------------------------------------------------------------------- */
-    return;
-  }
-  default:
-    jamLine(tcConnectptr.p->transactionState);
-    ndbabort();
-  }//switch
-}//Dblqh::execTUPKEYREF()
-||||||| Common ancestor
-/* ------------------------------------------------------------------------- */
-// Abort was not ready to start until this signal came back. Now we are ready
-// to start the abort.
-/* ------------------------------------------------------------------------- */
-    abortCommonLab(signal, tcConnectptr);
-    return;
-  }
-  case TcConnectionrec::WAIT_ACC_ABORT:
-  {
-    jam();
-/* ------------------------------------------------------------------------- */
-/*       IGNORE SINCE ABORT OF THIS OPERATION IS ONGOING ALREADY.            */
-/* ------------------------------------------------------------------------- */
-    return;
-  }
-  default:
-    jamLine(tcConnectptr.p->transactionState);
-    ndbabort();
-  }//switch
-}//Dblqh::execTUPKEYREF()
-=======
     case TcConnectionrec::WAIT_ACC_ABORT: {
       jam();
+      ndbassert(false);
       /* -------------------------------------------------------------------------
        */
       /*       IGNORE SINCE ABORT OF THIS OPERATION IS ONGOING ALREADY. */
@@ -7042,7 +5939,6 @@ void Dblqh::execTUPKEYREF(Signal *signal) {
       ndbabort();
   }  // switch
 }  // Dblqh::execTUPKEYREF()
->>>>>>> MySQL 8.0.36
 
 void Dblqh::sendPackedSignal(Signal *signal,
                              struct PackedWordsContainer *container) {
@@ -7826,85 +6722,6 @@ void Dblqh::execSIGNAL_DROPPED_REP(Signal *signal) {
       const LqhKeyReq *const truncatedLqhKeyReq =
           (LqhKeyReq *)&rep->originalData[0];
 
-<<<<<<< RonDB // RONDB-624 todo
-    break;
-  }
-  case GSN_SCAN_FRAGREQ:
-  {
-    jam();
-    /* Get original signal data - unfortunately it may
-     * have been truncated.  We must not read beyond
-     * word # 22
-     * We will notify the client that their SCAN_FRAGREQ
-     * failed
-     */
-    // TODO : Handle fragmented failure
-    const ScanFragReq* const truncatedScanFragReq = 
-      (ScanFragReq*) &rep->originalData[0];
-    const Uint32 senderData= truncatedScanFragReq->senderData;
-    const Uint32 transid1= truncatedScanFragReq->transId1;
-    const Uint32 transid2= truncatedScanFragReq->transId2;
-
-    /* Send SCAN_FRAGREF back to the client */
-    ScanFragRef* ref= (ScanFragRef*)&signal->theData[0];
-    ref->senderData= senderData;
-    ref->transId1= transid1;
-    ref->transId2= transid2;
-    ref->errorCode= ZGET_ATTRINBUF_ERROR;
-    ref->senderRef = reference();
-    
-    if (refToNode(signal->senderBlockRef()) != getOwnNodeId())
-    {
-      signal->m_send_wakeups++;
-    }
-    sendSignal(signal->senderBlockRef(), GSN_SCAN_FRAGREF, signal,
-               ScanFragRef::SignalLength, JBB);
-    break;
-  }
-  default:
-    jam();
-    /* Don't expect dropped signals for other GSNs,
-     * default handling
-     */
-    SimulatedBlock::execSIGNAL_DROPPED_REP(signal);
-||||||| Common ancestor
-    break;
-  }
-  case GSN_SCAN_FRAGREQ:
-  {
-    jam();
-    /* Get original signal data - unfortunately it may
-     * have been truncated.  We must not read beyond
-     * word # 22
-     * We will notify the client that their SCAN_FRAGREQ
-     * failed
-     */
-    // TODO : Handle fragmented failure
-    const ScanFragReq* const truncatedScanFragReq = 
-      (ScanFragReq*) &rep->originalData[0];
-    const Uint32 senderData= truncatedScanFragReq->senderData;
-    const Uint32 transid1= truncatedScanFragReq->transId1;
-    const Uint32 transid2= truncatedScanFragReq->transId2;
-
-    /* Send SCAN_FRAGREF back to the client */
-    ScanFragRef* ref= (ScanFragRef*)&signal->theData[0];
-    ref->senderData= senderData;
-    ref->transId1= transid1;
-    ref->transId2= transid2;
-    ref->errorCode= ZGET_ATTRINBUF_ERROR;
-    ref->senderRef = reference();
-    
-    sendSignal(signal->senderBlockRef(), GSN_SCAN_FRAGREF, signal,
-               ScanFragRef::SignalLength, JBB);
-    break;
-  }
-  default:
-    jam();
-    /* Don't expect dropped signals for other GSNs,
-     * default handling
-     */
-    SimulatedBlock::execSIGNAL_DROPPED_REP(signal);
-=======
       earlyKeyReqAbort(signal, truncatedLqhKeyReq, ZGET_DATAREC_ERROR,
                        tcConnectptr);
 
@@ -7933,6 +6750,10 @@ void Dblqh::execSIGNAL_DROPPED_REP(Signal *signal) {
       ref->errorCode = ZGET_ATTRINBUF_ERROR;
       ref->senderRef = reference();
 
+      if (refToNode(signal->senderBlockRef()) != getOwnNodeId())
+      {
+        signal->m_send_wakeups++;
+      }
       sendSignal(signal->senderBlockRef(), GSN_SCAN_FRAGREF, signal,
                  ScanFragRef::SignalLength, JBB);
       break;
@@ -7943,7 +6764,6 @@ void Dblqh::execSIGNAL_DROPPED_REP(Signal *signal) {
        * default handling
        */
       SimulatedBlock::execSIGNAL_DROPPED_REP(signal);
->>>>>>> MySQL 8.0.36
   };
 
   return;
@@ -15394,113 +14214,18 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
       // We know that at least one of those has received the COMMIT signal, thus
       // we declare us only prepared since we then receive the expected COMMIT
       // signal.
+      //
+      // We cannot arrive here for calls from execABORTREQ or execABORT since
+      // the dirty writes are not REDO logged.
       /* -------------------------------------------------------------------------
        */
       ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
       sendLqhTransconf(signal, LqhTransConf::Prepared, tcConnectptr);
       return;
-<<<<<<< RonDB // RONDB-624 todo
-    }//if
-    break;
-  case TcConnectionrec::LOG_COMMIT_WRITTEN_WAIT_SIGNAL:
-  case TcConnectionrec::LOG_COMMIT_QUEUED_WAIT_SIGNAL:
-    jam();
-/* ------------------------------------------------------------------------- */
-// We can only reach these states for multi-updates on a record in a
-// transaction.
-// We know that at least one of those has received the COMMIT signal, thus we
-// declare us only prepared since we then receive the expected COMMIT signal.
-//
-// We cannot arrive here for calls from execABORTREQ or execABORT since the
-// dirty writes are not REDO logged.
-/* ------------------------------------------------------------------------- */
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
-    sendLqhTransconf(signal, LqhTransConf::Prepared, tcConnectptr);
-    return;
-  case TcConnectionrec::WAIT_TUP:
-    jam();
-/* ------------------------------------------------------------------------- */
-// TUP is currently active. We have to wait for the TUPKEYREF or TUPKEYCONF
-// to arrive since we might otherwise jeopardise the local checkpoint
-// consistency in overload situations.
-/* ------------------------------------------------------------------------- */
-    regTcPtr->transactionState = TcConnectionrec::WAIT_TUP_TO_ABORT;
-    DEB_COPY(("(%u)transactionState(%u) set to WAIT_TUP_TO_ABORT,"
-              " abortState: %u",
-              instance(),
-              tcConnectptr.i,
-              regTcPtr->abortState));
-    return;
-  case TcConnectionrec::WAIT_ACC:
-    jam();
-    {
-      ndbassert(!m_is_in_query_thread);
-      fragptr.i = regTcPtr->fragmentptr;
-      ndbrequire(c_fragment_pool.getPtr(fragptr));
-      acquire_frag_abort_access(fragptr.p, regTcPtr);
-      abortContinueAfterBlockedLab(signal, tcConnectptr);
-      release_frag_access(fragptr.p);
-    }
-    return;
-  case TcConnectionrec::LOG_QUEUED:
-    jam();
-    if (!remove_from_prepare_log_queue(signal, tcConnectptr))
-    {
-||||||| Common ancestor
-    }//if
-    break;
-  case TcConnectionrec::LOG_COMMIT_WRITTEN_WAIT_SIGNAL:
-  case TcConnectionrec::LOG_COMMIT_QUEUED_WAIT_SIGNAL:
-    jam();
-/* ------------------------------------------------------------------------- */
-// We can only reach these states for multi-updates on a record in a
-// transaction.
-// We know that at least one of those has received the COMMIT signal, thus we
-// declare us only prepared since we then receive the expected COMMIT signal.
-/* ------------------------------------------------------------------------- */
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
-    sendLqhTransconf(signal, LqhTransConf::Prepared, tcConnectptr);
-    return;
-  case TcConnectionrec::WAIT_TUP:
-    jam();
-/* ------------------------------------------------------------------------- */
-// TUP is currently active. We have to wait for the TUPKEYREF or TUPKEYCONF
-// to arrive since we might otherwise jeopardise the local checkpoint
-// consistency in overload situations.
-/* ------------------------------------------------------------------------- */
-    regTcPtr->transactionState = TcConnectionrec::WAIT_TUP_TO_ABORT;
-    DEB_COPY(("(%u)transactionState(%u) set to WAIT_TUP_TO_ABORT,"
-              " abortState: %u",
-              instance(),
-              tcConnectptr.i,
-              regTcPtr->abortState));
-    return;
-  case TcConnectionrec::WAIT_ACC:
-    jam();
-    {
-      ndbassert(!m_is_in_query_thread);
-      fragptr.i = regTcPtr->fragmentptr;
-      c_fragment_pool.getPtr(fragptr);
-      acquire_frag_abort_access(fragptr.p, regTcPtr);
-      abortContinueAfterBlockedLab(signal, tcConnectptr);
-      release_frag_access(fragptr.p);
-    }
-    return;
-  case TcConnectionrec::LOG_QUEUED:
-    jam();
-    if (!remove_from_prepare_log_queue(signal, tcConnectptr))
-    {
-=======
     case TcConnectionrec::WAIT_TUP:
->>>>>>> MySQL 8.0.36
       jam();
       /* -------------------------------------------------------------------------
        */
-<<<<<<< RonDB // RONDB-624 todo
-      ndbrequire(m_use_mutex_for_log_parts);
-||||||| Common ancestor
-      ndbrequire(globalData.ndbMtLqhWorkers > globalData.ndbLogParts);
-=======
       // TUP is currently active. We have to wait for the TUPKEYREF or
       // TUPKEYCONF to arrive since we might otherwise jeopardise the local
       // checkpoint consistency in overload situations.
@@ -15511,60 +14236,13 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
           ("(%u)transactionState(%u) set to WAIT_TUP_TO_ABORT,"
            " abortState: %u",
            instance(), tcConnectptr.i, regTcPtr->abortState));
->>>>>>> MySQL 8.0.36
       return;
-<<<<<<< RonDB // RONDB-624 todo
-    }
-    break;
-  case TcConnectionrec::WAIT_TUP_TO_ABORT:
-  case TcConnectionrec::LOG_ABORT_QUEUED:
-  case TcConnectionrec::WAIT_ACC_ABORT:
-    jam();
-/* ------------------------------------------------------------------------- */
-/*ABORT IS ALREADY ONGOING DUE TO SOME ERROR. WE HAVE ALREADY SET THE STATE  */
-/*OF THE ABORT SO THAT WE KNOW THAT TC EXPECTS A REPORT. WE CAN THUS SIMPLY  */
-/*EXIT AND WAIT FOR THE ABORT TO COMPLETE.                                   */
-/* ------------------------------------------------------------------------- */
-    return;
-  case TcConnectionrec::WAIT_TUP_COMMIT:
-  case TcConnectionrec::LOG_COMMIT_QUEUED:
-    jam();
-/* ------------------------------------------------------------------------- */
-/*THIS IS ONLY AN ALLOWED STATE IF A DIRTY WRITE OR SIMPLE READ IS PERFORMED.*/
-/*IF WE ARE MERELY CHECKING THE TRANSACTION STATE IT IS ALSO AN ALLOWED STATE*/
-/* ------------------------------------------------------------------------- */
-    if (regTcPtr->dirtyOp == ZTRUE)
-    {
-||||||| Common ancestor
-    }
-    break;
-  case TcConnectionrec::WAIT_TUP_TO_ABORT:
-  case TcConnectionrec::LOG_ABORT_QUEUED:
-  case TcConnectionrec::WAIT_ACC_ABORT:
-    jam();
-/* ------------------------------------------------------------------------- */
-/*ABORT IS ALREADY ONGOING DUE TO SOME ERROR. WE HAVE ALREADY SET THE STATE  */
-/*OF THE ABORT SO THAT WE KNOW THAT TC EXPECTS A REPORT. WE CAN THUS SIMPLY  */
-/*EXIT.                                                                      */
-/* ------------------------------------------------------------------------- */
-    return;
-  case TcConnectionrec::WAIT_TUP_COMMIT:
-  case TcConnectionrec::LOG_COMMIT_QUEUED:
-    jam();
-/* ------------------------------------------------------------------------- */
-/*THIS IS ONLY AN ALLOWED STATE IF A DIRTY WRITE OR SIMPLE READ IS PERFORMED.*/
-/*IF WE ARE MERELY CHECKING THE TRANSACTION STATE IT IS ALSO AN ALLOWED STATE*/
-/* ------------------------------------------------------------------------- */
-    if (regTcPtr->dirtyOp == ZTRUE)
-    {
-=======
     case TcConnectionrec::WAIT_ACC:
->>>>>>> MySQL 8.0.36
       jam();
       {
         ndbassert(!m_is_in_query_thread);
         fragptr.i = regTcPtr->fragmentptr;
-        c_fragment_pool.getPtr(fragptr);
+        ndbrequire(c_fragment_pool.getPtr(fragptr));
         acquire_frag_abort_access(fragptr.p, regTcPtr);
         abortContinueAfterBlockedLab(signal, tcConnectptr);
         release_frag_access(fragptr.p);
@@ -15572,129 +14250,6 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
       return;
     case TcConnectionrec::LOG_QUEUED:
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-/* ------------------------------------------------------------------------- */
-/*A SIMPLE READ IS CURRENTLY RELEASING THE LOCKS OR WAITING FOR ACCESS TO    */
-/*ACC TO CLEAR THE LOCKS. COMPLETE THIS PROCESS AND THEN RETURN AS NORMAL.   */
-/*NO DATA HAS CHANGED DUE TO THIS SIMPLE READ ANYWAY.                        */
-/* ------------------------------------------------------------------------- */
-      return;
-    }//if
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
-    jam();
-/* ------------------------------------------------------------------------- */
-/*WE ARE ONLY CHECKING THE STATUS OF THE TRANSACTION. IT IS COMMITTING.      */
-/*COMPLETE THE COMMIT LOCALLY AND THEN SEND REPORT OF COMMITTED TO THE NEW TC*/
-/* ------------------------------------------------------------------------- */
-    sendLqhTransconf(signal, LqhTransConf::Committed, tcConnectptr);
-    return;
-  case TcConnectionrec::COMMITTED:
-    jam();
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
-/* ------------------------------------------------------------------------- */
-/*WE ARE CHECKING TRANSACTION STATUS. REPORT COMMITTED AND CONTINUE WITH THE */
-/*NEXT OPERATION.                                                            */
-/* ------------------------------------------------------------------------- */
-    sendLqhTransconf(signal, LqhTransConf::Committed, tcConnectptr);
-    return;
-  default:
-    ndbabort();
-/* ------------------------------------------------------------------------- */
-/*THE STATE WAS NOT AN ALLOWED STATE ON A NORMAL OPERATION. SCANS AND COPY   */
-/*FRAGMENT OPERATIONS SHOULD HAVE EXECUTED IN ANOTHER PATH.                  */
-/* ------------------------------------------------------------------------- */
-  }//switch
-  abortCommonLab(signal, tcConnectptr);
-}
-
-void Dblqh::abortErrorLab(Signal* signal, TcConnectionrecPtr tcConnectptr)
-{
-  ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(tcConnectptr));
-  TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  if (regTcPtr->abortState == TcConnectionrec::ABORT_IDLE) {
-    jam();
-    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
-    regTcPtr->errorCode = terrorCode;
-  }//if
-  abortCommonLab(signal, tcConnectptr);
-  return;
-}//Dblqh::abortErrorLab()
-
-void Dblqh::abortCommonLab(Signal* signal,
-                           const TcConnectionrecPtr tcConnectptr)
-{
-  TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  const Uint32 activeCreat = regTcPtr->activeCreat;
-
-  remove_commit_marker(regTcPtr);
-
-  if (unlikely(activeCreat == Fragrecord::AC_NR_COPY))
-  {
-    jam();
-    if (regTcPtr->m_nr_delete.m_cnt)
-    {
-||||||| Common ancestor
-/* ------------------------------------------------------------------------- */
-/*A SIMPLE READ IS CURRENTLY RELEASING THE LOCKS OR WAITING FOR ACCESS TO    */
-/*ACC TO CLEAR THE LOCKS. COMPLETE THIS PROCESS AND THEN RETURN AS NORMAL.   */
-/*NO DATA HAS CHANGED DUE TO THIS SIMPLE READ ANYWAY.                        */
-/* ------------------------------------------------------------------------- */
-      return;
-    }//if
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
-    jam();
-/* ------------------------------------------------------------------------- */
-/*WE ARE ONLY CHECKING THE STATUS OF THE TRANSACTION. IT IS COMMITTING.      */
-/*COMPLETE THE COMMIT LOCALLY AND THEN SEND REPORT OF COMMITTED TO THE NEW TC*/
-/* ------------------------------------------------------------------------- */
-    sendLqhTransconf(signal, LqhTransConf::Committed, tcConnectptr);
-    return;
-  case TcConnectionrec::COMMITTED:
-    jam();
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
-/* ------------------------------------------------------------------------- */
-/*WE ARE CHECKING TRANSACTION STATUS. REPORT COMMITTED AND CONTINUE WITH THE */
-/*NEXT OPERATION.                                                            */
-/* ------------------------------------------------------------------------- */
-    sendLqhTransconf(signal, LqhTransConf::Committed, tcConnectptr);
-    return;
-  default:
-    ndbabort();
-/* ------------------------------------------------------------------------- */
-/*THE STATE WAS NOT AN ALLOWED STATE ON A NORMAL OPERATION. SCANS AND COPY   */
-/*FRAGMENT OPERATIONS SHOULD HAVE EXECUTED IN ANOTHER PATH.                  */
-/* ------------------------------------------------------------------------- */
-  }//switch
-  abortCommonLab(signal, tcConnectptr);
-}//Dblqh::abortStateHandlerLab()
-
-void Dblqh::abortErrorLab(Signal* signal, TcConnectionrecPtr tcConnectptr)
-{
-  ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
-  TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  if (regTcPtr->abortState == TcConnectionrec::ABORT_IDLE) {
-    jam();
-    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
-    regTcPtr->errorCode = terrorCode;
-  }//if
-  abortCommonLab(signal, tcConnectptr);
-  return;
-}//Dblqh::abortErrorLab()
-
-void Dblqh::abortCommonLab(Signal* signal,
-                           const TcConnectionrecPtr tcConnectptr)
-{
-  TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  const Uint32 activeCreat = regTcPtr->activeCreat;
-
-  remove_commit_marker(regTcPtr);
-
-  if (unlikely(activeCreat == Fragrecord::AC_NR_COPY))
-  {
-    jam();
-    if (regTcPtr->m_nr_delete.m_cnt)
-    {
-=======
       if (!remove_from_prepare_log_queue(signal, tcConnectptr)) {
         jam();
         /**
@@ -15709,14 +14264,14 @@ void Dblqh::abortCommonLab(Signal* signal,
          * necessarily colocated with the REDO log parts. This only happens
          * if there are more LDM instances than there are REDO log parts.
          */
-        ndbrequire(globalData.ndbMtLqhWorkers > globalData.ndbLogParts);
+        ndbrequire(m_use_mutex_for_log_parts);
         return;
       }
       break;
     case TcConnectionrec::WAIT_TUP_TO_ABORT:
     case TcConnectionrec::LOG_ABORT_QUEUED:
     case TcConnectionrec::WAIT_ACC_ABORT:
->>>>>>> MySQL 8.0.36
+
       jam();
       /* -------------------------------------------------------------------------
        */
@@ -15724,7 +14279,7 @@ void Dblqh::abortCommonLab(Signal* signal,
        * STATE  */
       /*OF THE ABORT SO THAT WE KNOW THAT TC EXPECTS A REPORT. WE CAN THUS
        * SIMPLY  */
-      /*EXIT. */
+      /*EXIT AND WAIT FOR THE ABORT TO COMPLETE. */
       /* -------------------------------------------------------------------------
        */
       return;
@@ -15800,8 +14355,21 @@ void Dblqh::abortCommonLab(Signal* signal,
   abortCommonLab(signal, tcConnectptr);
 }  // Dblqh::abortStateHandlerLab()
 
+void Dblqh::abortErrorLab(Signal* signal, TcConnectionrecPtr tcConnectptr)
+{
+  ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(tcConnectptr));
+  TcConnectionrec * const regTcPtr = tcConnectptr.p;
+  if (regTcPtr->abortState == TcConnectionrec::ABORT_IDLE) {
+    jam();
+    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
+    regTcPtr->errorCode = terrorCode;
+  }//if
+  abortCommonLab(signal, tcConnectptr);
+  return;
+}//Dblqh::abortErrorLab()
+
 void Dblqh::abortErrorLab(Signal *signal, TcConnectionrecPtr tcConnectptr) {
-  ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
+  ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(tcConnectptr));
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
   if (regTcPtr->abortState == TcConnectionrec::ABORT_IDLE) {
     jam();
@@ -16605,70 +15173,13 @@ void Dblqh::lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr) {
              * check to continue our scan. Always unlock here to ensure
              * we don't keep the lock for too long times.
              */
-<<<<<<< RonDB // RONDB-624 todo
             unlock_alloc_operation();
-            switch( tcConnectptr.p->operation )
-            {
-            case ZUNLOCK :
-              jam(); /* Skip over */
-              break;
-            case ZREAD :
-              jam();
-              if (tcConnectptr.p->opSimple == ZTRUE)
-              {
-||||||| Common ancestor
-            switch( tcConnectptr.p->operation )
-            {
-            case ZUNLOCK :
-              jam(); /* Skip over */
-              break;
-            case ZREAD :
-              jam();
-              if (tcConnectptr.p->opSimple == ZTRUE)
-              {
-=======
             switch (tcConnectptr.p->operation) {
               case ZUNLOCK:
                 jam(); /* Skip over */
                 break;
               case ZREAD:
->>>>>>> MySQL 8.0.36
                 jam();
-<<<<<<< RonDB // RONDB-624 todo
-                break; /* Skip over */
-              }
-              [[fallthrough]];
-            default :
-              jam();
-              tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
-              tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
-              DEB_ABORT_TRANS(("(%u)LQH_TRANSREQ found tcAccPtrI: %u"
-                               " trans(H'%.8x,H'%.8x), tcRef(%u,%x), "
-                               "state: %u",
-                               instance(),
-                               tcConnectptr.p->accConnectrec,
-                               tcConnectptr.p->transid[0],
-                               tcConnectptr.p->transid[1],
-                               tcConnectptr.p->tcOprec,
-                               tcConnectptr.p->tcBlockref,
-                               tcConnectptr.p->transactionState));
-
-              abortStateHandlerLab(signal, tcConnectptr);
-              return;
-            } // switch
-            lock_alloc_operation();
-||||||| Common ancestor
-                break; /* Skip over */
-              }
-              [[fallthrough]];
-            default :
-              jam();
-              tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
-              tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
-              abortStateHandlerLab(signal, tcConnectptr);
-              return;
-            } // switch
-=======
                 if (tcConnectptr.p->opSimple == ZTRUE) {
                   jam();
                   break; /* Skip over */
@@ -16678,10 +15189,21 @@ void Dblqh::lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr) {
                 jam();
                 tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
                 tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
+                DEB_ABORT_TRANS(("(%u)LQH_TRANSREQ found tcAccPtrI: %u"
+                                 " trans(H'%.8x,H'%.8x), tcRef(%u,%x), "
+                                 "state: %u",
+                                 instance(),
+                                 tcConnectptr.p->accConnectrec,
+                                 tcConnectptr.p->transid[0],
+                                 tcConnectptr.p->transid[1],
+                                 tcConnectptr.p->tcOprec,
+                                 tcConnectptr.p->tcBlockref,
+                                 tcConnectptr.p->transactionState));
+
                 abortStateHandlerLab(signal, tcConnectptr);
                 return;
             }  // switch
->>>>>>> MySQL 8.0.36
+            lock_alloc_operation();
           }
         } else {
           /**
@@ -16696,36 +15218,9 @@ void Dblqh::lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr) {
           switch (scanptr.p->scanType) {
             case ScanRecord::COPY: {
               jam();
-<<<<<<< RonDB // RONDB-624 todo
-              unlock_alloc_operation();
-	      /* ------------------------------------------------------------
-	       * THE RECEIVER OF THE COPY HAVE FAILED. 
-	       * WE HAVE TO CLOSE THE COPY PROCESS. 
-	       * ----------------------------------------------------------- */
-              if (0) g_eventLogger->info("close copy");
-              tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
-              tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
-              ndbassert(!m_is_query_block);
-              setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
-              closeCopyRequestLab(signal, tcConnectptr);
-              release_frag_access(prim_tab_fragptr.p);
-              return;
-||||||| Common ancestor
-	      /* ------------------------------------------------------------
-	       * THE RECEIVER OF THE COPY HAVE FAILED. 
-	       * WE HAVE TO CLOSE THE COPY PROCESS. 
-	       * ----------------------------------------------------------- */
-              if (0) g_eventLogger->info("close copy");
-              tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
-              tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
-              ndbassert(!m_is_query_block);
-              setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
-              closeCopyRequestLab(signal, tcConnectptr);
-              release_frag_access(prim_tab_fragptr.p);
-              return;
-=======
               if (scanptr.p->scanNodeId == tcNodeFailPtr.p->oldNodeId) {
                 jam();
+                unlock_alloc_operation();
                 /* ------------------------------------------------------------
                  * THE RECEIVER OF THE COPY HAVE FAILED.
                  * WE HAVE TO CLOSE THE COPY PROCESS.
@@ -16747,6 +15242,7 @@ void Dblqh::lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr) {
               if (refToNode(tcConnectptr.p->tcBlockref) ==
                   tcNodeFailPtr.p->oldNodeId) {
                 jam();
+                unlock_alloc_operation();
                 tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
                 tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
                 ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
@@ -16757,68 +15253,14 @@ void Dblqh::lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr) {
                 return;
               }  // if
               break;
->>>>>>> MySQL 8.0.36
             }
-<<<<<<< RonDB // RONDB-624 todo
-	    break;
-	  }
-	  case ScanRecord::SCAN:
-	  {
-	    jam();
-	    if (refToNode(tcConnectptr.p->tcBlockref) == 
-		tcNodeFailPtr.p->oldNodeId) {
-	      jam();
-              unlock_alloc_operation();
-	      tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
-	      tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
-              ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-              ndbassert(!m_is_query_block);
-              setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
-	      closeScanRequestLab(signal, tcConnectptr);
-              release_frag_access(prim_tab_fragptr.p);
-	      return;
-	    }//if
-	    break;
-	  }
-	  default:
-            g_eventLogger->info("scanptr.p->scanType: %u", scanptr.p->scanType);
-            g_eventLogger->info("tcConnectptr.p->transactionState: %u",
-                                tcConnectptr.p->transactionState);
-            unlock_alloc_operation();
-            ndbabort();
-||||||| Common ancestor
-	    break;
-	  }
-	  case ScanRecord::SCAN:
-	  {
-	    jam();
-	    if (refToNode(tcConnectptr.p->tcBlockref) == 
-		tcNodeFailPtr.p->oldNodeId) {
-	      jam();
-	      tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
-	      tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
-              ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
-              ndbassert(!m_is_query_block);
-              setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
-	      closeScanRequestLab(signal, tcConnectptr);
-              release_frag_access(prim_tab_fragptr.p);
-	      return;
-	    }//if
-	    break;
-	  }
-	  default:
-            g_eventLogger->info("scanptr.p->scanType: %u", scanptr.p->scanType);
-            g_eventLogger->info("tcConnectptr.p->transactionState: %u",
-                                tcConnectptr.p->transactionState);
-            ndbabort();
-=======
             default:
               g_eventLogger->info("scanptr.p->scanType: %u",
                                   scanptr.p->scanType);
               g_eventLogger->info("tcConnectptr.p->transactionState: %u",
                                   tcConnectptr.p->transactionState);
+              unlock_alloc_operation();
               ndbabort();
->>>>>>> MySQL 8.0.36
           }
         }
       } else {
@@ -18014,18 +16456,27 @@ void Dblqh::closeScanRequestLab(Signal *signal,
           /* -------------------------------------------------------------------
            *  WE ARE CURRENTLY STARTING UP THE SCAN. SET COMPLETED STATUS
            *  AND WAIT FOR COMPLETION OF STARTUP.
+           *
+           * We should never arrive here, there is no real-time break in this
+           * state.
            * -------------------------------------------------------------------
            */
           scanPtr->scanCompletedStatus = ZTRUE;
+          ndbabort();
           break;
         case ScanRecord::WAIT_CLOSE_SCAN:
           jam();
           scanPtr->scanCompletedStatus = ZTRUE;
-          return;
           /* -------------------------------------------------------------------
            *       CLOSE IS ALREADY ONGOING. WE NEED NOT DO ANYTHING.
+           *
+           * It is even important to not call relinkScan below since we already
+           * set scanAccPtr = RNIL which means that we haven't setup the scan
+           * context and we should avoid calling relinkScan without scan
+           * context.
            * -------------------------------------------------------------------
            */
+          return;
         case ScanRecord::WAIT_SCAN_NEXTREQ:
           jam();
           /* -------------------------------------------------------------------
@@ -18034,9 +16485,36 @@ void Dblqh::closeScanRequestLab(Signal *signal,
            * -------------------------------------------------------------------
            */
           scanPtr->scanCompletedStatus = ZTRUE;
-
-          if (scanPtr->scanLockHold == ZTRUE) {
-            if (scanPtr->m_curr_batch_size_rows > 0) {
+          if (scanPtr->scanLockHold == ZTRUE)
+          {
+            /**
+             * Ensure that we change scanState under mutex protection.
+             * After changing the state we should be safe that no more
+             * LQHKEYREQ with take over action is executed for this
+             * scan operation.
+             *
+             * After changing the state we will still need to wait for the
+             * m_takeOverRefCount to go down to 0 to ensure that we don't
+             * release any locks before the take over operation is
+             * completed. Should be extremely rare that this happens.
+             */
+            jam();
+            Uint32 takeOverRefCount;
+            lock_take_over_hash();
+            scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ_ending;
+            takeOverRefCount = scanPtr->m_takeOverRefCount;
+            unlock_take_over_hash();
+            Uint32 loopCount = 0;
+            while (takeOverRefCount > 0)
+            {
+              NdbSpin();
+              loopCount++;
+              ndbrequire(loopCount < 3000000);
+              mb();
+              takeOverRefCount = scanPtr->m_takeOverRefCount;
+            }
+	    if (scanPtr->m_curr_batch_size_rows > 0)
+            {
               jam();
               scanPtr->scanReleaseCounter = 1;
               scanReleaseLocksLab(signal, tcConnectptr.p);
@@ -18044,6 +16522,10 @@ void Dblqh::closeScanRequestLab(Signal *signal,
             }  // if
           }    // if
           closeScanLab(signal, tcConnectptr.p);
+          return;
+        case ScanRecord::WAIT_SCAN_NEXTREQ_ending:
+          //Already being closed
+          jam();
           return;
         default:
           ndbabort();
@@ -18055,120 +16537,8 @@ void Dblqh::closeScanRequestLab(Signal *signal,
        *       SET COMPLETION STATUS AND WAIT FOR OPPORTUNITY TO STOP THE SCAN.
        * ---------------------------------------------------------------------
        */
-<<<<<<< RonDB // RONDB-624 todo
+      scanPtr->scanCompletedStatus = ZTRUE;
       break;
-    case ScanRecord::WAIT_ACC_SCAN:
-      jam();
-      /* -------------------------------------------------------------------
-       *  WE ARE CURRENTLY STARTING UP THE SCAN. SET COMPLETED STATUS 
-       *  AND WAIT FOR COMPLETION OF STARTUP.
-       *
-       * We should never arrive here, there is no real-time break in this
-       * state.
-       * ------------------------------------------------------------------- */
-||||||| Common ancestor
-      break;
-    case ScanRecord::WAIT_ACC_SCAN:
-      jam();
-      /* -------------------------------------------------------------------
-       *  WE ARE CURRENTLY STARTING UP THE SCAN. SET COMPLETED STATUS 
-       *  AND WAIT FOR COMPLETION OF STARTUP.
-       * ------------------------------------------------------------------- */
-=======
->>>>>>> MySQL 8.0.36
-      scanPtr->scanCompletedStatus = ZTRUE;
-      ndbabort();
-      break;
-<<<<<<< RonDB // RONDB-624 todo
-    case ScanRecord::WAIT_CLOSE_SCAN:
-      jam();
-      scanPtr->scanCompletedStatus = ZTRUE;
-      /* -------------------------------------------------------------------
-       *       CLOSE IS ALREADY ONGOING. WE NEED NOT DO ANYTHING.
-       *
-       * It is even important to not call relinkScan below since we already
-       * set scanAccPtr = RNIL which means that we haven't setup the scan
-       * context and we should avoid calling relinkScan without scan context.
-       * ------------------------------------------------------------------- */
-      return;
-    case ScanRecord::WAIT_SCAN_NEXTREQ:
-      jam();
-      /* -------------------------------------------------------------------
-       * WE ARE WAITING FOR A SCAN_NEXTREQ FROM SCAN COORDINATOR(TC)
-       * WHICH HAVE CRASHED. CLOSE THE SCAN
-       * ------------------------------------------------------------------- */
-      scanPtr->scanCompletedStatus = ZTRUE;
-      if (scanPtr->scanLockHold == ZTRUE)
-      {
-        /**
-         * Ensure that we change scanState under mutex protection.
-         * After changing the state we should be safe that no more
-         * LQHKEYREQ with take over action is executed for this
-         * scan operation.
-         *
-         * After changing the state we will still need to wait for the
-         * m_takeOverRefCount to go down to 0 to ensure that we don't
-         * release any locks before the take over operation is
-         * completed. Should be extremely rare that this happens.
-         */
-        jam();
-        Uint32 takeOverRefCount;
-        lock_take_over_hash();
-        scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ_ending;
-        takeOverRefCount = scanPtr->m_takeOverRefCount;
-        unlock_take_over_hash();
-        Uint32 loopCount = 0;
-        while (takeOverRefCount > 0)
-        {
-          NdbSpin();
-          loopCount++;
-          ndbrequire(loopCount < 3000000);
-          mb();
-          takeOverRefCount = scanPtr->m_takeOverRefCount;
-        }
-	if (scanPtr->m_curr_batch_size_rows > 0)
-        {
-	  jam();
-	  scanPtr->scanReleaseCounter = 1;
-	  scanReleaseLocksLab(signal, tcConnectptr.p);
-	  return;
-	}//if
-        jam();
-      }//if
-      closeScanLab(signal, tcConnectptr.p);
-      return;
-    case ScanRecord::WAIT_SCAN_NEXTREQ_ending:
-      //Already being closed
-      jam();
-      return;
-||||||| Common ancestor
-    case ScanRecord::WAIT_CLOSE_SCAN:
-      jam();
-      scanPtr->scanCompletedStatus = ZTRUE;
-      return;
-      /* -------------------------------------------------------------------
-       *       CLOSE IS ALREADY ONGOING. WE NEED NOT DO ANYTHING.
-       * ------------------------------------------------------------------- */
-    case ScanRecord::WAIT_SCAN_NEXTREQ:
-      jam();
-      /* -------------------------------------------------------------------
-       * WE ARE WAITING FOR A SCAN_NEXTREQ FROM SCAN COORDINATOR(TC)
-       * WHICH HAVE CRASHED. CLOSE THE SCAN
-       * ------------------------------------------------------------------- */
-      scanPtr->scanCompletedStatus = ZTRUE;
-
-      if (scanPtr->scanLockHold == ZTRUE) {
-	if (scanPtr->m_curr_batch_size_rows > 0) {
-	  jam();
-	  scanPtr->scanReleaseCounter = 1;
-	  scanReleaseLocksLab(signal, tcConnectptr.p);
-	  return;
-	}//if
-      }//if
-      closeScanLab(signal, tcConnectptr.p);
-      return;
-=======
->>>>>>> MySQL 8.0.36
     default:
       ndbabort();
   }  // switch
@@ -22054,37 +20424,10 @@ void Dblqh::copyCompletedLab(Signal *signal,
   tcConnectptr.p->copyCountWords -= words;
   if (scanptr.p->scanCompletedStatus == ZTRUE) {
     jam();
-<<<<<<< RonDB // RONDB-624 todo
 /*---------------------------------------------------------------------------*/
 // Copy to complete, we will not start any new copying.
 // closeCopyLab will only act if copyCountWords == 0.
 /*---------------------------------------------------------------------------*/
-||||||| Common ancestor
-    return;
-  }//if
-/*---------------------------------------------------------------------------*/
-// No more outstanding copies. We will only start new ones from here if it was
-// stopped before and this only happens when copyCountWords is bigger than the
-// threshold value. Since this did not occur we must be waiting for completion.
-// Check that this is so. If not we crash to find out what is going on.
-/*---------------------------------------------------------------------------*/
-
-  if (scanptr.p->scanCompletedStatus == ZTRUE) {
-    jam();
-=======
-    return;
-  }  // if
-  /*---------------------------------------------------------------------------*/
-  // No more outstanding copies. We will only start new ones from here if it was
-  // stopped before and this only happens when copyCountWords is bigger than the
-  // threshold value. Since this did not occur we must be waiting for
-  // completion. Check that this is so. If not we crash to find out what is
-  // going on.
-  /*---------------------------------------------------------------------------*/
-
-  if (scanptr.p->scanCompletedStatus == ZTRUE) {
-    jam();
->>>>>>> MySQL 8.0.36
     closeCopyLab(signal, tcConnectptr.p);
     return;
   }
@@ -37003,55 +35346,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
         Uint64 total = logPartPtr.p->noLogFiles * Uint64(clogFileSize);
         Uint64 high = 0;  // TODO
 
-<<<<<<< RonDB // RONDB-624 todo
-  case Ndbinfo::LOGBUFFERS_TABLEID:
-  {
-    const size_t entry_size = sizeof(LogPageRecord);
-    const Uint64 high = 0; // TODO
-
-    LogPartRecordPtr logPartPtr;
-    for (logPartPtr.i = 0;
-         logPartPtr.i < clogPartFileSize;
-         logPartPtr.i++)
-    {
-      ptrAss(logPartPtr, logPartRecord);
-      const Uint64 free = logPartPtr.p->noOfFreeLogPages;
-      const Uint64 total = logPartPtr.p->logPageCount;
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(Ndbinfo::REDO);  // log type = REDO
-      row.write_uint32(0);              // log id, always 0 in LQH
-      row.write_uint32(logPartPtr.p->logPartNo); // log part
-
-      row.write_uint64(total*entry_size);        // total allocated
-      row.write_uint64((total-free)*entry_size); // currently in use
-      row.write_uint64(high*entry_size);         // in use high water mark
-      ndbinfo_send_row(signal, req, row, rl);
-||||||| Common ancestor
-  case Ndbinfo::LOGBUFFERS_TABLEID:
-  {
-    const size_t entry_size = sizeof(LogPageRecord);
-    const Uint64 high = 0; // TODO
-
-    LogPartRecordPtr logPartPtr;
-    for (logPartPtr.i = 0;
-         logPartPtr.i < clogPartFileSize;
-         logPartPtr.i++)
-    {
-      ptrAss(logPartPtr, logPartRecord);
-      const Uint64 free = logPartPtr.p->noOfFreeLogPages;
-      const Uint64 total = logPartPtr.p->logPageCount;
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(Ndbinfo::REDO);  // log type = REDO
-      row.write_uint32(logPartPtr.p->logPartNo);
-      row.write_uint32(instance());     // log part, instance for ndbmtd
-
-      row.write_uint64(total*entry_size);        // total allocated
-      row.write_uint64((total-free)*entry_size); // currently in use
-      row.write_uint64(high*entry_size);         // in use high water mark
-      ndbinfo_send_row(signal, req, row, rl);
-=======
         Ndbinfo::Row row(signal, req);
         row.write_uint32(getOwnNodeId());
         row.write_uint32(0);                        // log type, 0 = REDO
@@ -37070,7 +35364,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
         }
       }
       break;
->>>>>>> MySQL 8.0.36
     }
 
     case Ndbinfo::LOGBUFFERS_TABLEID: {
@@ -37085,8 +35378,8 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
         Ndbinfo::Row row(signal, req);
         row.write_uint32(getOwnNodeId());
         row.write_uint32(Ndbinfo::REDO);  // log type = REDO
-        row.write_uint32(logPartPtr.p->logPartNo);
-        row.write_uint32(instance());  // log part, instance for ndbmtd
+        row.write_uint32(0);              // log id, always 0 in LQH
+        row.write_uint32(logPartPtr.p->logPartNo); // log part
 
         row.write_uint64(total * entry_size);           // total allocated
         row.write_uint64((total - free) * entry_size);  // currently in use
@@ -37126,21 +35419,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
           return;
         }
       }
-<<<<<<< RonDB // RONDB-624 todo
-      Uint32 mutexIndex = 0;
-      for (; bucket < ctransidHashSize; bucket++)
-      {
-        buckets_checked++;
-        if (buckets_checked > max_buckets_to_check)
-        {
-||||||| Common ancestor
-
-      for (; bucket < ctransidHashSize; bucket++)
-      {
-        buckets_checked++;
-        if (buckets_checked > max_buckets_to_check)
-        {
-=======
       break;
     }
     case Ndbinfo::OPERATIONS_TABLEID: {
@@ -37150,25 +35428,12 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
 
       while (true) {
         if (rl.need_break(req)) {
->>>>>>> MySQL 8.0.36
           jam();
           ndbinfo_send_scan_break(signal, req, rl, bucket);
           return;
         }
-<<<<<<< RonDB // RONDB-624 todo
-        mutexIndex = bucket & (NUM_TRANSACTION_HASH_MUTEXES - 1);
-        NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
-        if (ctransidHash[bucket] != RNIL)
-          break;
-        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-      }
-||||||| Common ancestor
 
-        if (ctransidHash[bucket] != RNIL)
-          break;
-      }
-=======
-
+        Uint32 mutexIndex = 0;
         for (; bucket < ctransidHashSize; bucket++) {
           buckets_checked++;
           if (buckets_checked > max_buckets_to_check) {
@@ -37176,41 +35441,11 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
             ndbinfo_send_scan_break(signal, req, rl, bucket);
             return;
           }
->>>>>>> MySQL 8.0.36
 
-<<<<<<< RonDB // RONDB-624 todo
-      if (bucket == ctransidHashSize)
-      {
-        break;
-      }
-      TcConnectionrecPtr tcPtr;
-      tcPtr.i = ctransidHash[bucket];
-      while (tcPtr.i != RNIL)
-      {
-        jam();
-        ndbrequire(tcConnect_pool.getValidPtr(tcPtr));
-        Ndbinfo::Row row(signal, req);
-        ndbinfo_write_op(row, tcPtr);
-        ndbinfo_send_row(signal, req, row, rl);
-        tcPtr.i = tcPtr.p->nextHashRec;
-||||||| Common ancestor
-      if (bucket == ctransidHashSize)
-      {
-        break;
-      }
-
-      TcConnectionrecPtr tcPtr;
-      tcPtr.i = ctransidHash[bucket];
-      while (tcPtr.i != RNIL)
-      {
-        jam();
-        ndbrequire(tcConnect_pool.getValidPtr(tcPtr));
-        Ndbinfo::Row row(signal, req);
-        ndbinfo_write_op(row, tcPtr);
-        ndbinfo_send_row(signal, req, row, rl);
-        tcPtr.i = tcPtr.p->nextHashRec;
-=======
+          mutexIndex = bucket & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+          NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
           if (ctransidHash[bucket] != RNIL) break;
+          NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
         }
 
         if (bucket == ctransidHashSize) {
@@ -37227,160 +35462,15 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
           ndbinfo_send_row(signal, req, row, rl);
           tcPtr.i = tcPtr.p->nextHashRec;
         }
+        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
         bucket++;
->>>>>>> MySQL 8.0.36
       }
-<<<<<<< RonDB // RONDB-624 todo
-      NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-      bucket++;
-    }
-    break;
-  }
-  case Ndbinfo::FRAG_OPERATIONS_TABLEID:
-  {
-    Uint32 tableid = cursor->data[0];
-    if (m_is_query_block)
-    {
-      jam();
-      /* Skip stats output for query threads, not gathered */
-      tableid = ctabrecFileSize;
-||||||| Common ancestor
-      bucket++;
-    }
-    break;
-  }
-  case Ndbinfo::FRAG_OPERATIONS_TABLEID:
-  {
-    Uint32 tableid = cursor->data[0];
-    if (m_is_query_block)
-    {
-      jam();
-      /* Skip stats output for query threads, not gathered */
-      tableid = ctabrecFileSize;
-=======
       break;
->>>>>>> MySQL 8.0.36
     }
     case Ndbinfo::FRAG_OPERATIONS_TABLEID: {
       Uint32 tableid = cursor->data[0];
       if (m_is_query_block) {
         jam();
-<<<<<<< RonDB // RONDB-624 todo
-        // Loop over all fragments for this table.
-        Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
-        for (Uint32 f = 0; f < num_fragments_in_array; f++)
-        {
-          if (tabPtr.p->fragrec[f] != RNIL64)
-          {
-            jam();
-            Fragrecord* const frag =
-              c_fragment_pool.getPtr(tabPtr.p->fragrec[f]);
-
-            /* Get fragment's stats from TUP */
-            const Dbtup::FragStats fs
-                = c_tup->get_frag_stats(frag->tupFragptr);
-
-            const Uint64 commitCount = fs.committedChanges;
-
-            Fragrecord::UsageStat& useStat = frag->m_useStat;
-
-            Ndbinfo::Row row(signal, req);
-            row.write_uint32(getOwnNodeId());
-            row.write_uint32(instance());
-            row.write_uint32(tableid);
-            row.write_uint32(frag->fragId);
-            row.write_uint64(useStat.m_readKeyReqCount);
-            row.write_uint64(useStat.m_insKeyReqCount);
-            row.write_uint64(useStat.m_updKeyReqCount);
-            row.write_uint64(useStat.m_writeKeyReqCount);
-            row.write_uint64(useStat.m_delKeyReqCount);
-            row.write_uint64(useStat.m_keyRefCount);
-            row.write_uint64(useStat.m_keyReqAttrWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_keyReqKeyWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_keyProgramWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_keyInstructionCount);
-            row.write_uint64(useStat.m_keyReqWordsReturned * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanFragReqCount);
-            row.write_uint64(useStat.m_scanRowsExamined);
-            row.write_uint64(useStat.m_scanRowsReturned);
-            row.write_uint64(useStat.m_scanWordsReturned * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanProgramWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanBoundWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanInstructionCount);
-            row.write_uint64(useStat.m_queuedScanCount);
-
-            row.write_uint32(frag->m_activeScans);
-
-            row.write_uint32(Local_ScanRecord_fifo
-                             (c_scanRecordPool, frag->m_queuedScans).getCount());
-
-            row.write_uint32(Local_ScanRecord_fifo
-                             (c_scanRecordPool, frag->m_queuedTupScans).getCount());
-
-            row.write_uint32(Local_ScanRecord_fifo
-                             (c_scanRecordPool, 
-                              frag->m_queuedAccScans).getCount());
-            
-            row.write_uint64(commitCount);
-            ndbinfo_send_row(signal, req, row, rl);
-||||||| Common ancestor
-        // Loop over all fragments for this table.
-        for (Uint32 f = 0; f<NDB_ARRAY_SIZE(tabPtr.p->fragrec); f++)
-        {
-          if (tabPtr.p->fragrec[f] != RNIL)
-          {
-            jam();
-            Fragrecord* const frag =
-              c_fragment_pool.getPtr(tabPtr.p->fragrec[f]);
-
-            /* Get fragment's stats from TUP */
-            const Dbtup::FragStats fs
-                = c_tup->get_frag_stats(frag->tupFragptr);
-
-            const Uint64 commitCount = fs.committedChanges;
-
-            Fragrecord::UsageStat& useStat = frag->m_useStat;
-
-            Ndbinfo::Row row(signal, req);
-            row.write_uint32(getOwnNodeId());
-            row.write_uint32(instance());
-            row.write_uint32(tableid);
-            row.write_uint32(frag->fragId);
-            row.write_uint64(useStat.m_readKeyReqCount);
-            row.write_uint64(useStat.m_insKeyReqCount);
-            row.write_uint64(useStat.m_updKeyReqCount);
-            row.write_uint64(useStat.m_writeKeyReqCount);
-            row.write_uint64(useStat.m_delKeyReqCount);
-            row.write_uint64(useStat.m_keyRefCount);
-            row.write_uint64(useStat.m_keyReqAttrWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_keyReqKeyWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_keyProgramWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_keyInstructionCount);
-            row.write_uint64(useStat.m_keyReqWordsReturned * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanFragReqCount);
-            row.write_uint64(useStat.m_scanRowsExamined);
-            row.write_uint64(useStat.m_scanRowsReturned);
-            row.write_uint64(useStat.m_scanWordsReturned * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanProgramWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanBoundWords * sizeof(Uint32));
-            row.write_uint64(useStat.m_scanInstructionCount);
-            row.write_uint64(useStat.m_queuedScanCount);
-
-            row.write_uint32(frag->m_activeScans);
-
-            row.write_uint32(Local_ScanRecord_fifo
-                             (c_scanRecordPool, frag->m_queuedScans).getCount());
-
-            row.write_uint32(Local_ScanRecord_fifo
-                             (c_scanRecordPool, frag->m_queuedTupScans).getCount());
-
-            row.write_uint32(Local_ScanRecord_fifo
-                             (c_scanRecordPool, 
-                              frag->m_queuedAccScans).getCount());
-            
-            row.write_uint64(commitCount);
-            ndbinfo_send_row(signal, req, row, rl);
-=======
         /* Skip stats output for query threads, not gathered */
         tableid = ctabrecFileSize;
       }
@@ -37392,8 +35482,10 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
         if (tabPtr.p->tableStatus != Tablerec::NOT_DEFINED) {
           jam();
           // Loop over all fragments for this table.
-          for (Uint32 f = 0; f < NDB_ARRAY_SIZE(tabPtr.p->fragrec); f++) {
-            if (tabPtr.p->fragrec[f] != RNIL) {
+          Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
+          for (Uint32 f = 0; f < num_fragments_in_array; f++)
+          {
+            if (tabPtr.p->fragrec[f] != RNIL64) {
               jam();
               Fragrecord *const frag =
                   c_fragment_pool.getPtr(tabPtr.p->fragrec[f]);
@@ -37448,7 +35540,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
               row.write_uint64(commitCount);
               ndbinfo_send_row(signal, req, row, rl);
             }
->>>>>>> MySQL 8.0.36
           }
         }
 
@@ -37465,10 +35556,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
 
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    
-    break;
-  }
   case Ndbinfo::TABLE_MEM_USE_TABLEID:
   {
     /*
@@ -37570,100 +35657,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
     }
     break;
   }
-  case Ndbinfo::FRAG_MEM_USE_TABLEID:
-  {
-    /*
-      Loop over all tables. cursor->data[0] shows where this batch should start.
-     */
-    for (Uint32 tableid = cursor->data[0]; tableid < ctabrecFileSize; tableid++)
-    {
-      TablerecPtr tabPtr;
-      tabPtr.i = tableid;
-      ptrAss(tabPtr, tablerec);
-      if (tabPtr.p->tableStatus != Tablerec::NOT_DEFINED)
-      {
-        jam();
-        // Loop over the fragments of this table.
-        Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
-        for (Uint32 fragNo = 0;
-             fragNo < num_fragments_in_array;
-             fragNo++)
-        {
-          FragrecordPtr myFragPtr;
-          myFragPtr.i = tabPtr.p->fragrec[fragNo];
-          if (myFragPtr.i != RNIL64)
-          {
-            jam();
-            ndbrequire(c_fragment_pool.getPtr(myFragPtr));
-            
-            /* Get fragment's stats from TUP */
-            const Dbtup::FragStats fs
-              = c_tup->get_frag_stats(myFragPtr.p->tupFragptr);
-
-            Ndbinfo::Row row(signal, req);
-            row.write_uint32(getOwnNodeId());
-            row.write_uint32(instance());
-            row.write_uint32(tableid);
-            row.write_uint32(myFragPtr.p->fragId);
-
-            Uint64 hashMapBytes = 0;
-            Uint32 accL2PMapBytes = 0;
-
-            if (myFragPtr.p->accFragptr == RNIL64)
-            {
-              jam();
-              ndbassert(DictTabInfo::isOrderedIndex(tabPtr.p->tableType));
-            }
-            else
-            {
-||||||| Common ancestor
-    
-    break;
-  }
-  case Ndbinfo::FRAG_MEM_USE_TABLEID:
-  {
-    /*
-      Loop over all tables. cursor->data[0] shows where this batch should start.
-     */
-    for (Uint32 tableid = cursor->data[0]; tableid < ctabrecFileSize; tableid++)
-    {
-      TablerecPtr tabPtr;
-      tabPtr.i = tableid;
-      ptrAss(tabPtr, tablerec);
-      if (tabPtr.p->tableStatus != Tablerec::NOT_DEFINED)
-      {
-        jam();
-        // Loop over the fragments of this table.
-        for (Uint32 fragNo = 0; fragNo<NDB_ARRAY_SIZE(tabPtr.p->fragrec); 
-             fragNo++)
-        {
-          FragrecordPtr myFragPtr;
-          if ((myFragPtr.i = tabPtr.p->fragrec[fragNo]) != RNIL)
-          {
-            jam();
-            c_fragment_pool.getPtr(myFragPtr);
-            
-            /* Get fragment's stats from TUP */
-            const Dbtup::FragStats fs
-              = c_tup->get_frag_stats(myFragPtr.p->tupFragptr);
-
-            Ndbinfo::Row row(signal, req);
-            row.write_uint32(getOwnNodeId());
-            row.write_uint32(instance());
-            row.write_uint32(tableid);
-            row.write_uint32(myFragPtr.p->fragId);
-
-            Uint64 hashMapBytes = 0;
-            Uint32 accL2PMapBytes = 0;
-
-            if (myFragPtr.p->accFragptr == RNIL)
-            {
-              jam();
-              ndbassert(DictTabInfo::isOrderedIndex(tabPtr.p->tableType));
-            }
-            else
-            {
-=======
     case Ndbinfo::FRAG_MEM_USE_TABLEID: {
       /*
         Loop over all tables. cursor->data[0] shows where this batch should
@@ -37677,22 +35670,18 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
         if (tabPtr.p->tableStatus != Tablerec::NOT_DEFINED) {
           jam();
           // Loop over the fragments of this table.
-          for (Uint32 fragNo = 0; fragNo < NDB_ARRAY_SIZE(tabPtr.p->fragrec);
-               fragNo++) {
+          Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
+          for (Uint32 fragNo = 0;
+               fragNo < num_fragments_in_array;
+               fragNo++)
+          {
             FragrecordPtr myFragPtr;
-            if ((myFragPtr.i = tabPtr.p->fragrec[fragNo]) != RNIL) {
->>>>>>> MySQL 8.0.36
+            myFragPtr.i = tabPtr.p->fragrec[fragNo];
+            if (myFragPtr.i != RNIL64)
+            {
               jam();
-<<<<<<< RonDB // RONDB-624 todo
-              accL2PMapBytes =
-                c_acc->getL2PMapAllocBytes(myFragPtr.p->accFragptr);
-              hashMapBytes =
-                c_acc->getLinHashByteSize(myFragPtr.p->accFragptr);
-||||||| Common ancestor
-              accL2PMapBytes =
-                c_acc->getL2PMapAllocBytes(myFragPtr.p->accFragptr);
-              hashMapBytes = c_acc->getLinHashByteSize(myFragPtr.p->accFragptr);
-=======
+              ndbrequire(c_fragment_pool.getPtr(myFragPtr));
+              jam();
               c_fragment_pool.getPtr(myFragPtr);
 
               /* Get fragment's stats from TUP */
@@ -37708,7 +35697,7 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
               Uint64 hashMapBytes = 0;
               Uint32 accL2PMapBytes = 0;
 
-              if (myFragPtr.p->accFragptr == RNIL) {
+              if (myFragPtr.p->accFragptr == RNIL64) {
                 jam();
                 ndbassert(DictTabInfo::isOrderedIndex(tabPtr.p->tableType));
               } else {
@@ -37742,7 +35731,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
               row.write_uint64(hashMapBytes);
 
               ndbinfo_send_row(signal, req, row, rl);
->>>>>>> MySQL 8.0.36
             }
           }
         }
@@ -37761,124 +35749,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
 
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    break;
-  }
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "LQH Operation Record",
-        tcConnect_pool.getUsed(),
-        tcConnect_pool.getSize(),
-        tcConnect_pool.getEntrySize(),
-        tcConnect_pool.getUsedHi(),
-        { 0, 0, 0, 0},
-        RT_DBLQH_TC_CONNECT},
-      { "LQH scan Record",
-        c_scanRecordPool.getUsed(),
-        c_scanRecordPool.getSize(),
-        c_scanRecordPool.getEntrySize(),
-        c_scanRecordPool.getUsedHi(),
-        { 0, 0, 0, 0},
-        RT_DBLQH_SCAN_RECORD},
-      { "Commit ACK Marker",
-        m_commitAckMarkerPool.getUsed(),
-        m_commitAckMarkerPool.getSize(),
-        m_commitAckMarkerPool.getEntrySize(),
-        m_commitAckMarkerPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_OPS, CFG_DB_NO_OPS,0,0 },
-        RT_DBLQH_COMMIT_ACK_MARKER},
-      { NULL, 0,0,0,0,{0,0,0,0},0 }
-    };
-
-    const size_t num_config_params =
-      sizeof(pools[0].config_params) / sizeof(pools[0].config_params[0]);
-    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
-    Uint32 pool = cursor->data[0];
-    ndbrequire(pool < numPools);
-    BlockNumber bn = blockToMain(number());
-    while(pools[pool].poolname)
-    {
-      jam();
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(bn);           // block number
-      row.write_uint32(instance());   // block instance
-      row.write_string(pools[pool].poolname);
-
-      row.write_uint64(pools[pool].used);
-      row.write_uint64(pools[pool].total);
-      row.write_uint64(pools[pool].used_hi);
-      row.write_uint64(pools[pool].entry_size);
-      for (size_t i = 0; i < num_config_params; i++)
-        row.write_uint32(pools[pool].config_params[i]);
-      row.write_uint32(GET_RG(pools[pool].record_type));
-      row.write_uint32(GET_TID(pools[pool].record_type));
-      ndbinfo_send_row(signal, req, row, rl);
-      pool++;
-      if (rl.need_break(req))
-      {
-||||||| Common ancestor
-    
-    break;
-  }
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "LQH Operation Record",
-        tcConnect_pool.getUsed(),
-        tcConnect_pool.getSize(),
-        tcConnect_pool.getEntrySize(),
-        tcConnect_pool.getUsedHi(),
-        { 0, 0, 0, 0},
-        RT_DBLQH_TC_CONNECT},
-      { "LQH scan Record",
-        c_scanRecordPool.getUsed(),
-        c_scanRecordPool.getSize(),
-        c_scanRecordPool.getEntrySize(),
-        c_scanRecordPool.getUsedHi(),
-        { 0, 0, 0, 0},
-        RT_DBLQH_SCAN_RECORD},
-      { "Commit ACK Marker",
-        m_commitAckMarkerPool.getUsed(),
-        m_commitAckMarkerPool.getSize(),
-        m_commitAckMarkerPool.getEntrySize(),
-        m_commitAckMarkerPool.getUsedHi(),
-        { CFG_DB_NO_LOCAL_OPS, CFG_DB_NO_OPS,0,0 },
-        RT_DBLQH_COMMIT_ACK_MARKER},
-      { NULL, 0,0,0,0,{0,0,0,0},0 }
-    };
-
-    const size_t num_config_params =
-      sizeof(pools[0].config_params) / sizeof(pools[0].config_params[0]);
-    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
-    Uint32 pool = cursor->data[0];
-    ndbrequire(pool < numPools);
-    BlockNumber bn = blockToMain(number());
-    while(pools[pool].poolname)
-    {
-      jam();
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(bn);           // block number
-      row.write_uint32(instance());   // block instance
-      row.write_string(pools[pool].poolname);
-
-      row.write_uint64(pools[pool].used);
-      row.write_uint64(pools[pool].total);
-      row.write_uint64(pools[pool].used_hi);
-      row.write_uint64(pools[pool].entry_size);
-      for (size_t i = 0; i < num_config_params; i++)
-        row.write_uint32(pools[pool].config_params[i]);
-      row.write_uint32(GET_RG(pools[pool].record_type));
-      row.write_uint32(GET_TID(pools[pool].record_type));
-      ndbinfo_send_row(signal, req, row, rl);
-      pool++;
-      if (rl.need_break(req))
-      {
-=======
     case Ndbinfo::POOLS_TABLEID: {
       Ndbinfo::pool_entry pools[] = {
           {"LQH Operation Record",
@@ -37911,7 +35781,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
       ndbrequire(pool < numPools);
       BlockNumber bn = blockToMain(number());
       while (pools[pool].poolname) {
->>>>>>> MySQL 8.0.36
         jam();
         Ndbinfo::Row row(signal, req);
         row.write_uint32(getOwnNodeId());

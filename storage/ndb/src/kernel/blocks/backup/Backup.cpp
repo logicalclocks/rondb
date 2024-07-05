@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,12 +30,8 @@
 
 #include <NdbTCP.h>
 #include <Bitmask.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <util/rondb_hash.hpp>
-||||||| Common ancestor
-=======
 #include "util/ndb_math.h"
->>>>>>> MySQL 8.0.36
 
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/ReadNodesConf.hpp>
@@ -56,16 +52,11 @@
 #include <signaldata/FsRef.hpp>
 #include <signaldata/FsRemoveReq.hpp>
 
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/GetCpuUsage.hpp>
-
-||||||| Common ancestor
-=======
 #include <signaldata/BackupContinueB.hpp>
->>>>>>> MySQL 8.0.36
 #include <signaldata/BackupImpl.hpp>
 #include <signaldata/BackupSignalData.hpp>
 #include <signaldata/EventReport.hpp>
+#include <signaldata/GetCpuUsage.hpp>
 
 #include <signaldata/UtilSequence.hpp>
 
@@ -2175,7 +2166,6 @@ void Backup::execCONTINUEB(Signal *signal) {
   const Uint32 Tdata1 = signal->theData[1];
   const Uint32 Tdata2 = signal->theData[2];
   const Uint32 Tdata3 = signal->theData[3];
-<<<<<<< RonDB // RONDB-624 todo
   
   switch(Tdata0) {
 
@@ -2215,70 +2205,7 @@ void Backup::execCONTINUEB(Signal *signal) {
     break;
   }
 #endif
-  case BackupContinueB::ZCHECK_PGMAN_PREP_LCP:
-  {
-    jam();
-    check_pgman_prep_lcp_ready(signal, Tdata1);
-    return;
-  }
-  case BackupContinueB::RESET_DISK_SPEED_COUNTER:
-  {
-    jam();
-    const NDB_TICKS curr_time = NdbTick_getCurrentTicks();
-    const Uint64 millisPassed = 
-      NdbTick_Elapsed(m_monitor_snapshot_start,curr_time).milliSec();
-    if (millisPassed >= 800 && !m_node_restart_check_sent)
-    {
-      /**
-       * Check for node restart ongoing, we will check for it and use
-       * the cached copy of the node restart state when deciding on the
-       * disk checkpoint speed. We will start this check a few intervals
-       * before calculating the new disk checkpoint speed. We will send
-       * such a check once per interval we are changing disk checkpoint
-       * speed.
-       *
-       * So we call DIH asynchronously here after 800ms have passed such
-       * that when 1000 ms have passed and we will check disk speeds we
-       * have information about if there is a node restart ongoing or not.
-       * This information will only affect disk write speed, so it's not
-       * a problem to rely on up to 200ms old information.
-       */
-||||||| Common ancestor
-  
-  switch(Tdata0) {
-  case BackupContinueB::ZCHECK_PGMAN_PREP_LCP:
-  {
-    jam();
-    check_pgman_prep_lcp_ready(signal, Tdata1);
-    return;
-  }
-  case BackupContinueB::RESET_DISK_SPEED_COUNTER:
-  {
-    jam();
-    const NDB_TICKS curr_time = NdbTick_getCurrentTicks();
-    const Uint64 millisPassed = 
-      NdbTick_Elapsed(m_monitor_snapshot_start,curr_time).milliSec();
-    if (millisPassed >= 800 && !m_node_restart_check_sent)
-    {
-      /**
-       * Check for node restart ongoing, we will check for it and use
-       * the cached copy of the node restart state when deciding on the
-       * disk checkpoint speed. We will start this check a few intervals
-       * before calculating the new disk checkpoint speed. We will send
-       * such a check once per interval we are changing disk checkpoint
-       * speed.
-       *
-       * So we call DIH asynchronously here after 800ms have passed such
-       * that when 1000 ms have passed and we will check disk speeds we
-       * have information about if there is a node restart ongoing or not.
-       * This information will only affect disk write speed, so it's not
-       * a problem to rely on up to 200ms old information.
-       */
-=======
-
-  switch (Tdata0) {
     case BackupContinueB::ZCHECK_PGMAN_PREP_LCP: {
->>>>>>> MySQL 8.0.36
       jam();
       check_pgman_prep_lcp_ready(signal, Tdata1);
       return;
@@ -2334,92 +2261,22 @@ void Backup::execCONTINUEB(Signal *signal) {
       send_next_reset_disk_speed_counter(signal);
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    handle_overflow(m_overflow_disk_write,
-                    m_words_written_this_period,
-                    m_curr_disk_write_speed);
-    handle_overflow(m_backup_overflow_disk_write,
-                    m_backup_words_written_this_period,
-                    m_curr_backup_disk_write_speed);
-    calculate_next_delay(curr_time);
-    send_next_reset_disk_speed_counter(signal);
-    break;
-  }
-  case BackupContinueB::BACKUP_FRAGMENT_INFO:
-  {
-    jam();
-    const Uint32 ptr_I = Tdata1;
-    Uint32 tabPtr_I = Tdata2;
-    Uint32 fragId = signal->theData[3];
-||||||| Common ancestor
-    handle_overflow(m_overflow_disk_write,
-                    m_words_written_this_period,
-                    m_curr_disk_write_speed);
-    handle_overflow(m_backup_overflow_disk_write,
-                    m_backup_words_written_this_period,
-                    m_curr_backup_disk_write_speed);
-    calculate_next_delay(curr_time);
-    send_next_reset_disk_speed_counter(signal);
-    break;
-  }
-  case BackupContinueB::BACKUP_FRAGMENT_INFO:
-  {
-    jam();
-    const Uint32 ptr_I = Tdata1;
-    Uint32 tabPtr_I = Tdata2;
-    Uint32 fragPtr_I = signal->theData[3];
-=======
     case BackupContinueB::BACKUP_FRAGMENT_INFO: {
       jam();
       const Uint32 ptr_I = Tdata1;
       Uint32 tabPtr_I = Tdata2;
-      Uint32 fragPtr_I = signal->theData[3];
->>>>>>> MySQL 8.0.36
+      Uint32 fragId = signal->theData[3];
 
       BackupRecordPtr ptr;
       ndbrequire(c_backupPool.getPtr(ptr, ptr_I));
       TablePtr tabPtr;
       ptr.p->tables.getPtr(tabPtr, tabPtr_I);
 
-<<<<<<< RonDB // RONDB-624 todo
-    if (fragId != tabPtr.p->num_backup_fragments)
-    {
-      jam();
-      Fragment* fragPtrP;
-      get_backup_fragment(&fragPtrP, tabPtr, fragId);
-      
-      BackupFilePtr filePtr;
-      ptr.p->files.getPtr(filePtr, ptr.p->ctlFilePtr);
-      
-      const Uint32 sz = sizeof(BackupFormat::CtlFile::FragmentInfo) >> 2;
-      Uint32 * dst;
-      if (!filePtr.p->operation.dataBuffer.getWritePtr(&dst, sz))
+      if (fragId != tabPtr.p->num_backup_fragments)
       {
-	sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 
-                            WaitDiskBufferCapacityMillis, 4);
-	return;
-||||||| Common ancestor
-    if (fragPtr_I != tabPtr.p->fragments.getSize())
-    {
-      jam();
-      FragmentPtr fragPtr;
-      tabPtr.p->fragments.getPtr(fragPtr, fragPtr_I);
-      
-      BackupFilePtr filePtr;
-      ptr.p->files.getPtr(filePtr, ptr.p->ctlFilePtr);
-      
-      const Uint32 sz = sizeof(BackupFormat::CtlFile::FragmentInfo) >> 2;
-      Uint32 * dst;
-      if (!filePtr.p->operation.dataBuffer.getWritePtr(&dst, sz))
-      {
-	sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 
-                            WaitDiskBufferCapacityMillis, 4);
-	return;
-=======
-      if (fragPtr_I != tabPtr.p->fragments.getSize()) {
         jam();
-        FragmentPtr fragPtr;
-        tabPtr.p->fragments.getPtr(fragPtr, fragPtr_I);
+        Fragment* fragPtrP;
+        get_backup_fragment(&fragPtrP, tabPtr, fragId);
 
         BackupFilePtr filePtr;
         ptr.p->files.getPtr(filePtr, ptr.p->ctlFilePtr);
@@ -2436,81 +2293,21 @@ void Backup::execCONTINUEB(Signal *signal) {
             (BackupFormat::CtlFile::FragmentInfo *)dst;
         fragInfo->SectionType = htonl(BackupFormat::FRAGMENT_INFO);
         fragInfo->SectionLength = htonl(sz);
-        fragInfo->TableId = htonl(fragPtr.p->tableId);
-        fragInfo->FragmentNo = htonl(fragPtr_I);
+        fragInfo->TableId = htonl(fragPtrP->tableId);
+        fragInfo->FragmentNo = htonl(fragId);
         fragInfo->NoOfRecordsLow =
-            htonl((Uint32)(fragPtr.p->noOfRecords & 0xFFFFFFFF));
+          htonl((Uint32)(fragPtrP->noOfRecords & 0xFFFFFFFF));
         fragInfo->NoOfRecordsHigh =
-            htonl((Uint32)(fragPtr.p->noOfRecords >> 32));
+          htonl((Uint32)(fragPtrP->noOfRecords >> 32));
         fragInfo->FilePosLow = htonl(0);
         fragInfo->FilePosHigh = htonl(0);
 
         filePtr.p->operation.dataBuffer.updateWritePtr(sz);
 
-        fragPtr_I++;
->>>>>>> MySQL 8.0.36
+        fragId++;
       }
-<<<<<<< RonDB // RONDB-624 todo
-      
-      BackupFormat::CtlFile::FragmentInfo * fragInfo = 
-	(BackupFormat::CtlFile::FragmentInfo*)dst;
-      fragInfo->SectionType = htonl(BackupFormat::FRAGMENT_INFO);
-      fragInfo->SectionLength = htonl(sz);
-      fragInfo->TableId = htonl(fragPtrP->tableId);
-      fragInfo->FragmentNo = htonl(fragId);
-      fragInfo->NoOfRecordsLow = htonl((Uint32)(fragPtrP->noOfRecords & 0xFFFFFFFF));
-      fragInfo->NoOfRecordsHigh = htonl((Uint32)(fragPtrP->noOfRecords >> 32));
-      fragInfo->FilePosLow = htonl(0);
-      fragInfo->FilePosHigh = htonl(0);
-      
-      filePtr.p->operation.dataBuffer.updateWritePtr(sz);
-      
-      fragId++;
-    }
-    
-    if (fragId == tabPtr.p->num_backup_fragments)
-    {
-      BackupLockTab *req = (BackupLockTab *)signal->getDataPtrSend();
-      req->m_senderRef = reference();
-      req->m_tableId = tabPtr.p->tableId;
-      req->m_lock_unlock = BackupLockTab::UNLOCK_TABLE;
-      req->m_backup_state = BackupLockTab::BACKUP_FRAGMENT_INFO;
-      req->m_backupRecordPtr_I = ptr_I;
-      req->m_tablePtr_I = tabPtr_I;
-      sendSignal(DBDICT_REF, GSN_BACKUP_LOCK_TAB_REQ, signal,
-                 BackupLockTab::SignalLength, JBB);
-||||||| Common ancestor
-      
-      BackupFormat::CtlFile::FragmentInfo * fragInfo = 
-	(BackupFormat::CtlFile::FragmentInfo*)dst;
-      fragInfo->SectionType = htonl(BackupFormat::FRAGMENT_INFO);
-      fragInfo->SectionLength = htonl(sz);
-      fragInfo->TableId = htonl(fragPtr.p->tableId);
-      fragInfo->FragmentNo = htonl(fragPtr_I);
-      fragInfo->NoOfRecordsLow = htonl((Uint32)(fragPtr.p->noOfRecords & 0xFFFFFFFF));
-      fragInfo->NoOfRecordsHigh = htonl((Uint32)(fragPtr.p->noOfRecords >> 32));
-      fragInfo->FilePosLow = htonl(0);
-      fragInfo->FilePosHigh = htonl(0);
-      
-      filePtr.p->operation.dataBuffer.updateWritePtr(sz);
-      
-      fragPtr_I++;
-    }
-    
-    if (fragPtr_I == tabPtr.p->fragments.getSize())
-    {
-      BackupLockTab *req = (BackupLockTab *)signal->getDataPtrSend();
-      req->m_senderRef = reference();
-      req->m_tableId = tabPtr.p->tableId;
-      req->m_lock_unlock = BackupLockTab::UNLOCK_TABLE;
-      req->m_backup_state = BackupLockTab::BACKUP_FRAGMENT_INFO;
-      req->m_backupRecordPtr_I = ptr_I;
-      req->m_tablePtr_I = tabPtr_I;
-      sendSignal(DBDICT_REF, GSN_BACKUP_LOCK_TAB_REQ, signal,
-                 BackupLockTab::SignalLength, JBB);
-=======
-
-      if (fragPtr_I == tabPtr.p->fragments.getSize()) {
+      if (fragId == tabPtr.p->num_backup_fragments)
+      {
         BackupLockTab *req = (BackupLockTab *)signal->getDataPtrSend();
         req->m_senderRef = reference();
         req->m_tableId = tabPtr.p->tableId;
@@ -2526,135 +2323,12 @@ void Backup::execCONTINUEB(Signal *signal) {
       signal->theData[0] = BackupContinueB::BACKUP_FRAGMENT_INFO;
       signal->theData[1] = ptr_I;
       signal->theData[2] = tabPtr_I;
-      signal->theData[3] = fragPtr_I;
+      signal->theData[3] = fragId;
       sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
->>>>>>> MySQL 8.0.36
       return;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    
-    signal->theData[0] = BackupContinueB::BACKUP_FRAGMENT_INFO;
-    signal->theData[1] = ptr_I;
-    signal->theData[2] = tabPtr_I;
-    signal->theData[3] = fragId;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
-    return;
-  }
-  case BackupContinueB::START_FILE_THREAD:
-  case BackupContinueB::BUFFER_UNDERFLOW:
-  {
-    jam();
-    BackupFilePtr filePtr;
-    ndbrequire(c_backupFilePool.getPtr(filePtr, Tdata1));
-    checkFile(signal, filePtr);
-    return;
-  }
-  case BackupContinueB::BUFFER_FULL_SCAN:
-  {
-    jam();
-    BackupFilePtr filePtr;
-    BackupRecordPtr ptr;
-    ndbrequire(c_backupFilePool.getPtr(filePtr, Tdata1));
-    ndbrequire(c_backupPool.getPtr(ptr, filePtr.p->backupPtr));
-    /**
-     * Given that we've been waiting a few milliseconds for buffers to become
-     * free, we need to initialise the priority mode algorithm to ensure that
-     * we select the correct priority mode.
-     *
-     * We get the number of jobs waiting at B-level to assess the current
-     * activity level to get a new starting point of the algorithm.
-     * Any load level below 16 signals in the buffer we ignore, if we have
-     * a higher level we provide a value that will ensure that we most likely
-     * will start at A-level.
-     */
-    init_scan_prio_level(signal, ptr);
-    checkScan(signal, ptr, filePtr, true);
-    return;
-  }
-  break;
-  case BackupContinueB::BUFFER_FULL_FRAG_COMPLETE:
-  {
-    jam();
-    BackupFilePtr filePtr;
-    ndbrequire(c_backupFilePool.getPtr(filePtr, Tdata1));
-    fragmentCompleted(signal, filePtr, Tdata2);
-    return;
-  }
-  break;
-  case BackupContinueB::BUFFER_FULL_META:
-  {
-    jam();
-    BackupRecordPtr ptr;
-    ndbrequire(c_backupPool.getPtr(ptr, Tdata1));
-    
-    BackupFilePtr filePtr;
-
-    if (ptr.p->is_lcp())
-    {
-||||||| Common ancestor
-    
-    signal->theData[0] = BackupContinueB::BACKUP_FRAGMENT_INFO;
-    signal->theData[1] = ptr_I;
-    signal->theData[2] = tabPtr_I;
-    signal->theData[3] = fragPtr_I;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
-    return;
-  }
-  case BackupContinueB::START_FILE_THREAD:
-  case BackupContinueB::BUFFER_UNDERFLOW:
-  {
-    jam();
-    BackupFilePtr filePtr;
-    ndbrequire(c_backupFilePool.getPtr(filePtr, Tdata1));
-    checkFile(signal, filePtr);
-    return;
-  }
-  case BackupContinueB::BUFFER_FULL_SCAN:
-  {
-    jam();
-    BackupFilePtr filePtr;
-    BackupRecordPtr ptr;
-    ndbrequire(c_backupFilePool.getPtr(filePtr, Tdata1));
-    ndbrequire(c_backupPool.getPtr(ptr, filePtr.p->backupPtr));
-    /**
-     * Given that we've been waiting a few milliseconds for buffers to become
-     * free, we need to initialise the priority mode algorithm to ensure that
-     * we select the correct priority mode.
-     *
-     * We get the number of jobs waiting at B-level to assess the current
-     * activity level to get a new starting point of the algorithm.
-     * Any load level below 16 signals in the buffer we ignore, if we have
-     * a higher level we provide a value that will ensure that we most likely
-     * will start at A-level.
-     */
-    init_scan_prio_level(signal, ptr);
-    checkScan(signal, ptr, filePtr, true);
-    return;
-  }
-  break;
-  case BackupContinueB::BUFFER_FULL_FRAG_COMPLETE:
-  {
-    jam();
-    BackupFilePtr filePtr;
-    ndbrequire(c_backupFilePool.getPtr(filePtr, Tdata1));
-    fragmentCompleted(signal, filePtr, Tdata2);
-    return;
-  }
-  break;
-  case BackupContinueB::BUFFER_FULL_META:
-  {
-    jam();
-    BackupRecordPtr ptr;
-    ndbrequire(c_backupPool.getPtr(ptr, Tdata1));
-    
-    BackupFilePtr filePtr;
-
-    if (ptr.p->is_lcp())
-    {
-=======
     case BackupContinueB::START_FILE_THREAD:
     case BackupContinueB::BUFFER_UNDERFLOW: {
->>>>>>> MySQL 8.0.36
       jam();
       BackupFilePtr filePtr;
       ndbrequire(c_backupFilePool.getPtr(filePtr, Tdata1));
@@ -3421,178 +3095,6 @@ void Backup::execDBINFO_SCANREQ(Signal *signal) {
 
   Ndbinfo::Ratelimit rl;
 
-<<<<<<< RonDB // RONDB-624 todo
-  switch(req.tableId){
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "Backup Record",
-        c_backupPool.getUsed(),
-        c_backupPool.getSize(),
-        c_backupPool.getEntrySize(),
-        c_backupPool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,0,0,0 },
-        0},
-      { "Backup File",
-        c_backupFilePool.getUsed(),
-        c_backupFilePool.getSize(),
-        c_backupFilePool.getEntrySize(),
-        c_backupFilePool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,0,0,0 },
-        0},
-      { "Table",
-        c_tablePool.getUsed(),
-        c_tablePool.getSize(),
-        c_tablePool.getEntrySize(),
-        c_tablePool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,
-          CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES },
-        0},
-      { "Trigger",
-        c_triggerPool.getUsed(),
-        c_triggerPool.getSize(),
-        c_triggerPool.getEntrySize(),
-        c_triggerPool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,
-          CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES },
-        0},
-      { "Fragment",
-        0, 0, 0, 0,
-        { CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
-        0},
-      { "Page",
-        c_pagePool.getUsed(),
-        c_pagePool.getSize(),
-        c_pagePool.getEntrySize(),
-        c_pagePool.getUsedHi(),
-        { CFG_DB_BACKUP_MEM,
-          CFG_DB_BACKUP_DATA_BUFFER_MEM,0,0 },
-        0},
-      { NULL, 0,0,0,0, { 0,0,0,0 }, 0}
-    };
-
-    const size_t num_config_params =
-      NDB_ARRAY_SIZE(pools[0].config_params);
-    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
-    Uint32 pool = cursor->data[0];
-    ndbrequire(pool < numPools);
-    BlockNumber bn = blockToMain(number());
-    while(pools[pool].poolname)
-    {
-      jam();
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(bn);           // block number
-      row.write_uint32(instance());   // block instance
-      row.write_string(pools[pool].poolname);
-
-      row.write_uint64(pools[pool].used);
-      row.write_uint64(pools[pool].total);
-      row.write_uint64(pools[pool].used_hi);
-      row.write_uint64(pools[pool].entry_size);
-      for (size_t i = 0; i < num_config_params; i++)
-        row.write_uint32(pools[pool].config_params[i]);
-      row.write_uint32(GET_RG(pools[pool].record_type));
-      row.write_uint32(GET_TID(pools[pool].record_type));
-      ndbinfo_send_row(signal, req, row, rl);
-      pool++;
-      if (rl.need_break(req))
-      {
-||||||| Common ancestor
-  switch(req.tableId){
-  case Ndbinfo::POOLS_TABLEID:
-  {
-    Ndbinfo::pool_entry pools[] =
-    {
-      { "Backup Record",
-        c_backupPool.getUsed(),
-        c_backupPool.getSize(),
-        c_backupPool.getEntrySize(),
-        c_backupPool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,0,0,0 },
-        0},
-      { "Backup File",
-        c_backupFilePool.getUsed(),
-        c_backupFilePool.getSize(),
-        c_backupFilePool.getEntrySize(),
-        c_backupFilePool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,0,0,0 },
-        0},
-      { "Table",
-        c_tablePool.getUsed(),
-        c_tablePool.getSize(),
-        c_tablePool.getEntrySize(),
-        c_tablePool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,
-          CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES },
-        0},
-      { "Trigger",
-        c_triggerPool.getUsed(),
-        c_triggerPool.getSize(),
-        c_triggerPool.getEntrySize(),
-        c_triggerPool.getUsedHi(),
-        { CFG_DB_PARALLEL_BACKUPS,
-          CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES },
-        0},
-      { "Fragment",
-        c_fragmentPool.getUsed(),
-        c_fragmentPool.getSize(),
-        c_fragmentPool.getEntrySize(),
-        c_fragmentPool.getUsedHi(),
-        { CFG_DB_NO_TABLES,
-          CFG_DB_NO_ORDERED_INDEXES,
-          CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
-        0},
-      { "Page",
-        c_pagePool.getUsed(),
-        c_pagePool.getSize(),
-        c_pagePool.getEntrySize(),
-        c_pagePool.getUsedHi(),
-        { CFG_DB_BACKUP_MEM,
-          CFG_DB_BACKUP_DATA_BUFFER_MEM,0,0 },
-        0},
-      { NULL, 0,0,0,0, { 0,0,0,0 }, 0}
-    };
-
-    const size_t num_config_params =
-      NDB_ARRAY_SIZE(pools[0].config_params);
-    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
-    Uint32 pool = cursor->data[0];
-    ndbrequire(pool < numPools);
-    BlockNumber bn = blockToMain(number());
-    while(pools[pool].poolname)
-    {
-      jam();
-      Ndbinfo::Row row(signal, req);
-      row.write_uint32(getOwnNodeId());
-      row.write_uint32(bn);           // block number
-      row.write_uint32(instance());   // block instance
-      row.write_string(pools[pool].poolname);
-
-      row.write_uint64(pools[pool].used);
-      row.write_uint64(pools[pool].total);
-      row.write_uint64(pools[pool].used_hi);
-      row.write_uint64(pools[pool].entry_size);
-      for (size_t i = 0; i < num_config_params; i++)
-        row.write_uint32(pools[pool].config_params[i]);
-      row.write_uint32(GET_RG(pools[pool].record_type));
-      row.write_uint32(GET_TID(pools[pool].record_type));
-      ndbinfo_send_row(signal, req, row, rl);
-      pool++;
-      if (rl.need_break(req))
-      {
-=======
   switch (req.tableId) {
     case Ndbinfo::POOLS_TABLEID: {
       Ndbinfo::pool_entry pools[] = {
@@ -3627,10 +3129,7 @@ void Backup::execDBINFO_SCANREQ(Signal *signal) {
             CFG_DB_NO_ORDERED_INDEXES, CFG_DB_NO_UNIQUE_HASH_INDEXES},
            0},
           {"Fragment",
-           c_fragmentPool.getUsed(),
-           c_fragmentPool.getSize(),
-           c_fragmentPool.getEntrySize(),
-           c_fragmentPool.getUsedHi(),
+           0, 0, 0, 0,
            {CFG_DB_NO_TABLES, CFG_DB_NO_ORDERED_INDEXES,
             CFG_DB_NO_UNIQUE_HASH_INDEXES, 0},
            0},
@@ -3649,7 +3148,6 @@ void Backup::execDBINFO_SCANREQ(Signal *signal) {
       ndbrequire(pool < numPools);
       BlockNumber bn = blockToMain(number());
       while (pools[pool].poolname) {
->>>>>>> MySQL 8.0.36
         jam();
         Ndbinfo::Row row(signal, req);
         row.write_uint32(getOwnNodeId());

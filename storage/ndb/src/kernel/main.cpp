@@ -25,13 +25,7 @@
 
 #include <ndb_global.h>
 #include <ndb_opts.h>
-<<<<<<< RonDB // RONDB-624 todo
-#include <kernel/NodeBitmask.hpp>
 #include <NdbConfig.h>
-||||||| Common ancestor
-#include <kernel/NodeBitmask.hpp>
-=======
->>>>>>> MySQL 8.0.36
 #include <portlib/ndb_daemon.h>
 #include <kernel/NodeBitmask.hpp>
 #include "util/ndb_openssl_evp.h"
@@ -77,161 +71,6 @@ bool g_is_forked = false;
 extern NdbNodeBitmask g_nowait_nodes;
 extern NodeBitmask g_not_active_nodes;
 
-<<<<<<< RonDB // RONDB-624 todo
-static struct my_option my_long_options[] =
-{
-  NdbStdOpt::usage,
-  NdbStdOpt::help,
-  NdbStdOpt::version,
-  NdbStdOpt::ndb_connectstring ,
-  NdbStdOpt::mgmd_host,
-  NdbStdOpt::connectstring,
-  NdbStdOpt::ndb_nodeid,
-  NdbStdOpt::connect_retry_delay, //used
-  NdbStdOpt::connect_retries, // used
-  NDB_STD_OPT_DEBUG
-  { "core-file", NDB_OPT_NOSHORT, "Write core on errors.",\
-    &opt_core, nullptr, nullptr, GET_BOOL, NO_ARG,
-    OPT_WANT_CORE_DEFAULT, 0, 0, nullptr, 0, nullptr },
-  { "initial", NDB_OPT_NOSHORT,
-    "Perform initial start of ndbd, including cleaning the file system. "
-    "Consult documentation before using this",
-    &opt_initial, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "nostart", 'n',
-    "Don't start ndbd immediately. Ndbd will await command from ndb_mgmd",
-    &opt_no_start, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "daemon", 'd', "Start ndbd as daemon (default)",
-    &opt_daemon, nullptr, nullptr, GET_BOOL, NO_ARG,
-    1, 0, 0, nullptr, 0, nullptr },
-  { "nodaemon", NDB_OPT_NOSHORT,
-    "Do not start ndbd as daemon, provided for testing purposes",
-    &opt_no_daemon, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "foreground", NDB_OPT_NOSHORT,
-    "Run real ndbd in foreground, provided for debugging purposes"
-    " (implies --nodaemon)",
-    &opt_foreground, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "nowait-nodes", NDB_OPT_NOSHORT,
-    "Nodes that will not be waited for during start",
-    &opt_nowait_nodes, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "initial-start", NDB_OPT_NOSHORT,
-    "Perform a partial initial start of the cluster.  "
-    "Each node should be started with this option, as well as --nowait-nodes",
-    &opt_initialstart, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "service-name", NDB_OPT_NOSHORT,
-    "Service name sets the file prefix on various files and directories",
-    &opt_service_name, nullptr, nullptr,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr },
-  { "bind-address", NDB_OPT_NOSHORT, "Local bind address",
-    &opt_bind_address, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "verbose", 'v', "Write more log messages",
-    &opt_verbose, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 1, nullptr, 0, nullptr },
-  { "report-fd", 256, "INTERNAL: fd where to write extra shutdown status",
-    &opt_report_fd, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
-    0, 0, INT_MAX, nullptr, 0, nullptr },
-  { "filesystem-password", NDB_OPT_NOSHORT, "Filesystem password",
-    nullptr, nullptr, nullptr,
-    GET_PASSWORD, OPT_ARG, 0, 0, 0, nullptr, 0, &opt_filesystem_password},
-  { "filesystem-password-from-stdin", NDB_OPT_NOSHORT,
-    "Read encryption/decryption password from stdin",
-    &opt_filesystem_password_from_stdin.opt_value, nullptr, nullptr,
-    GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, &opt_filesystem_password_from_stdin},
-  { "allocated-nodeid", 256, "INTERNAL: nodeid allocated by angel process",
-    &opt_allocated_nodeid, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
-    0, 0, UINT_MAX, nullptr, 0, nullptr },
-  { "angel-pid", NDB_OPT_NOSHORT, "INTERNAL: angel process id",
-    &opt_angel_pid, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
-    0, 0, UINT_MAX, nullptr, 0, nullptr },
-  { "connect-retries", 'r',
-    "Number of times mgmd is contacted at start. -1: eternal retries",
-    (uchar**) &opt_retries, (uchar**) &opt_retries, 0,
-    GET_INT, REQUIRED_ARG, 0, -1, 65535, 0, 0, 0 },
-  { "connect-delay", NDB_OPT_NOSHORT,
-    "Number of seconds between each connection attempt",
-    (uchar**) &opt_delay, (uchar**) &opt_delay, 0,
-    GET_INT, REQUIRED_ARG, 0, 0, 3600, 0, 0, 0 },
-  { "logbuffer-size", NDB_OPT_NOSHORT,
-    "Size of the log buffer for data node ndb_x_out.log",
-    &opt_logbuffer_size, nullptr, nullptr,
-||||||| Common ancestor
-static struct my_option my_long_options[] =
-{
-  NdbStdOpt::usage,
-  NdbStdOpt::help,
-  NdbStdOpt::version,
-  NdbStdOpt::ndb_connectstring ,
-  NdbStdOpt::mgmd_host,
-  NdbStdOpt::connectstring,
-  NdbStdOpt::ndb_nodeid,
-  NdbStdOpt::connect_retry_delay, //used
-  NdbStdOpt::connect_retries, // used
-  NDB_STD_OPT_DEBUG
-  { "core-file", NDB_OPT_NOSHORT, "Write core on errors.",\
-    &opt_core, nullptr, nullptr, GET_BOOL, NO_ARG,
-    OPT_WANT_CORE_DEFAULT, 0, 0, nullptr, 0, nullptr },
-  { "initial", NDB_OPT_NOSHORT,
-    "Perform initial start of ndbd, including cleaning the file system. "
-    "Consult documentation before using this",
-    &opt_initial, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "nostart", 'n',
-    "Don't start ndbd immediately. Ndbd will await command from ndb_mgmd",
-    &opt_no_start, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "daemon", 'd', "Start ndbd as daemon (default)",
-    &opt_daemon, nullptr, nullptr, GET_BOOL, NO_ARG,
-    1, 0, 0, nullptr, 0, nullptr },
-  { "nodaemon", NDB_OPT_NOSHORT,
-    "Do not start ndbd as daemon, provided for testing purposes",
-    &opt_no_daemon, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "foreground", NDB_OPT_NOSHORT,
-    "Run real ndbd in foreground, provided for debugging purposes"
-    " (implies --nodaemon)",
-    &opt_foreground, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "nowait-nodes", NDB_OPT_NOSHORT,
-    "Nodes that will not be waited for during start",
-    &opt_nowait_nodes, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "initial-start", NDB_OPT_NOSHORT,
-    "Perform a partial initial start of the cluster.  "
-    "Each node should be started with this option, as well as --nowait-nodes",
-    &opt_initialstart, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "bind-address", NDB_OPT_NOSHORT, "Local bind address",
-    &opt_bind_address, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, nullptr, 0, nullptr },
-  { "verbose", 'v', "Write more log messages",
-    &opt_verbose, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 1, nullptr, 0, nullptr },
-  { "report-fd", 256, "INTERNAL: fd where to write extra shutdown status",
-    &opt_report_fd, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
-    0, 0, INT_MAX, nullptr, 0, nullptr },
-  { "filesystem-password", NDB_OPT_NOSHORT, "Filesystem password",
-    nullptr, nullptr, nullptr,
-    GET_PASSWORD, OPT_ARG, 0, 0, 0, nullptr, 0, &opt_filesystem_password},
-  { "filesystem-password-from-stdin", NDB_OPT_NOSHORT,
-    "Read encryption/decryption password from stdin",
-    &opt_filesystem_password_from_stdin.opt_value, nullptr, nullptr,
-    GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, &opt_filesystem_password_from_stdin},
-  { "allocated-nodeid", 256, "INTERNAL: nodeid allocated by angel process",
-    &opt_allocated_nodeid, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
-    0, 0, UINT_MAX, nullptr, 0, nullptr },
-  { "angel-pid", NDB_OPT_NOSHORT, "INTERNAL: angel process id",
-    &opt_angel_pid, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
-    0, 0, UINT_MAX, nullptr, 0, nullptr },
-  { "logbuffer-size", NDB_OPT_NOSHORT,
-    "Size of the log buffer for data node ndb_x_out.log",
-    &opt_logbuffer_size, nullptr, nullptr,
-=======
 static struct my_option my_long_options[] = {
     NdbStdOpt::usage,
     NdbStdOpt::help,
@@ -273,6 +112,10 @@ static struct my_option my_long_options[] = {
      "Each node should be started with this option, as well as --nowait-nodes",
      &opt_initialstart, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0,
      nullptr},
+    { "service-name", NDB_OPT_NOSHORT,
+     "Service name sets the file prefix on various files and directories",
+     &opt_service_name, nullptr, nullptr,
+     GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr },
     {"bind-address", NDB_OPT_NOSHORT, "Local bind address", &opt_bind_address,
      nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr},
     {"verbose", 'v', "Write more log messages", &opt_verbose, nullptr, nullptr,
@@ -293,10 +136,17 @@ static struct my_option my_long_options[] = {
     {"angel-pid", NDB_OPT_NOSHORT, "INTERNAL: angel process id", &opt_angel_pid,
      nullptr, nullptr, GET_UINT, REQUIRED_ARG, 0, 0, UINT_MAX, nullptr, 0,
      nullptr},
+    { "connect-retries", 'r',
+     "Number of times mgmd is contacted at start. -1: eternal retries",
+     (uchar**) &opt_retries, (uchar**) &opt_retries, 0,
+     GET_INT, REQUIRED_ARG, 0, -1, 65535, 0, 0, 0 },
+    { "connect-delay", NDB_OPT_NOSHORT,
+     "Number of seconds between each connection attempt",
+     (uchar**) &opt_delay, (uchar**) &opt_delay, 0,
+     GET_INT, REQUIRED_ARG, 0, 0, 3600, 0, 0, 0 },
     {"logbuffer-size", NDB_OPT_NOSHORT,
      "Size of the log buffer for data node ndb_x_out.log", &opt_logbuffer_size,
      nullptr, nullptr,
->>>>>>> MySQL 8.0.36
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
      GET_ULONG, REQUIRED_ARG, 1024 * 1024, 2048, ULONG_MAX, nullptr, 0, nullptr
 #else

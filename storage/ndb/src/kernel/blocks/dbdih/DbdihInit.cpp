@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,7 +29,6 @@
 
 #define JAM_FILE_ID 355
 
-<<<<<<< RonDB // RONDB-624 todo
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #define DEBUG_AUTOMATIC_MEMORY 1
 #endif
@@ -40,27 +39,11 @@
 #define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
 #endif
 
-
-||||||| Common ancestor
-=======
 #define DEBUG(x) \
   { ndbout << "DIH::" << x << endl; }
->>>>>>> MySQL 8.0.36
 
-<<<<<<< RonDB // RONDB-624 todo
-#define DEBUG(x) { ndbout << "DIH::" << x << endl; }
-
-void Dbdih::initData() 
-{
-  callocated_frags = 0;
-||||||| Common ancestor
-#define DEBUG(x) { ndbout << "DIH::" << x << endl; }
-
-void Dbdih::initData() 
-{
-=======
 void Dbdih::initData() {
->>>>>>> MySQL 8.0.36
+  callocated_frags = 0;
   m_set_up_multi_trp_in_node_restart = false;
   cpageFileSize = ZPAGEREC;
 

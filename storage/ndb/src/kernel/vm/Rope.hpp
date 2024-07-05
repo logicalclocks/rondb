@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -115,29 +115,7 @@ public:
 
   void erase();
 
-<<<<<<< RonDB // RONDB-624 todo
 private:
-||||||| Common ancestor
-  static Uint32 getSegmentSizeInBytes() { return RopeBase::getSegmentSizeInBytes();}
-
-private:
-  char * firstSegment(Ptr<Segment> &) const;
-  char * nextSegment(Ptr<Segment> &) const;
-
-private:
-=======
-  static Uint32 hash(const char *str, Uint32 len, Uint32 starter = 0);
-
-  static Uint32 getSegmentSizeInBytes() {
-    return RopeBase::getSegmentSizeInBytes();
-  }
-
- private:
-  char *firstSegment(Ptr<Segment> &) const;
-  char *nextSegment(Ptr<Segment> &) const;
-
- private:
->>>>>>> MySQL 8.0.36
   Uint32 m_hash;
   Uint32 m_length;
   char *m_string;
@@ -156,7 +134,6 @@ LcLocalRope::empty() const {
   return m_length == 0;
 }
 
-<<<<<<< RonDB // RONDB-624 todo
 inline
 Uint32
 LcConstRope::size() const {
@@ -168,29 +145,7 @@ bool
 LcConstRope::empty() const {
   return m_length == 0;
 }
-||||||| Common ancestor
-inline
-Uint32
-ConstRope::size() const {
-  return m_length;
-}
 
-inline
-bool
-ConstRope::empty() const {
-  return m_length == 0;
-}
-=======
-inline Uint32 ConstRope::size() const { return m_length; }
->>>>>>> MySQL 8.0.36
-
-<<<<<<< RonDB // RONDB-624 todo
-||||||| Common ancestor
-
-=======
-inline bool ConstRope::empty() const { return m_length == 0; }
-
->>>>>>> MySQL 8.0.36
 #undef JAM_FILE_ID
 
 #endif

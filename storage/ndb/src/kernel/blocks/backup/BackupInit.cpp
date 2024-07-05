@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -40,33 +40,11 @@
 
 // extern const unsigned Ndbcntr::g_sysTableCount;
 
-<<<<<<< RonDB // RONDB-624 todo
-//extern const unsigned Ndbcntr::g_sysTableCount;
-
-Backup::Backup(Block_context& ctx,
-               Uint32 instanceNumber,
-               Uint32 blockNo) :
-  SimulatedBlock(blockNo, ctx, instanceNumber),
-  m_delete_lcp_file_list(c_deleteLcpFilePool),
-  c_nodes(c_nodePool),
-  c_backups(c_backupPool)
-{
-||||||| Common ancestor
-//extern const unsigned Ndbcntr::g_sysTableCount;
-
-Backup::Backup(Block_context& ctx,
-               Uint32 instanceNumber,
-               Uint32 blockNo) :
-  SimulatedBlock(blockNo, ctx, instanceNumber),
-  c_nodes(c_nodePool),
-  c_backups(c_backupPool)
-{
-=======
 Backup::Backup(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     : SimulatedBlock(blockNo, ctx, instanceNumber),
+      m_delete_lcp_file_list(c_deleteLcpFilePool),
       c_nodes(c_nodePool),
       c_backups(c_backupPool) {
->>>>>>> MySQL 8.0.36
   BLOCK_CONSTRUCTOR(Backup);
 
   c_masterNodeId = getOwnNodeId();

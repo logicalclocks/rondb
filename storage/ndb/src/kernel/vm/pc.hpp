@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,7 +112,6 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
  * Make an entry in the jamBuffer to record file number and up to 16 bits of
  * arbitrary data.
  */
-<<<<<<< RonDB // RONDB-624 todo
 #define _internal_thrjamData(jamBufferArg, data) \
   do { \
     EmulatedJamBuffer* const jamBuffer = jamBufferArg; \
@@ -176,70 +175,6 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 
 #define thrjam(buf) _internal_thrjamLinenumber(buf, __LINE__)
 #define thrjamEntry(buf) thrjam(buf)
-||||||| Common ancestor
-#define thrjamLine(jamBufferArg, line) \
-  do { \
-    EmulatedJamBuffer* const jamBuffer = jamBufferArg; \
-    Uint32 jamIndex = jamBuffer->theEmulatedJamIndex; \
-    jamBuffer->theEmulatedJam[jamIndex++] = JamEvent((JAM_FILE_ID), (line)); \
-    jamBuffer->theEmulatedJamIndex = jamIndex & JAM_MASK; \
-    /* Occasionally check that the jam buffer belongs to this thread.*/ \
-    assert((jamIndex & 3) != 0 || jamBuffer == NDB_THREAD_TLS_JAM);       \
-    /* Occasionally check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
-    assert((jamIndex & 0xff) != 0 ||                     \
-           JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
-  } while(0)
-
-#define jamBlockLine(block, line) thrjamLine(block->jamBuffer(), line)
-#define jamBlock(block) jamBlockLine((block), __LINE__)
-#define jamLine(line) jamBlockLine(this, (line))
-#define jam() jamLine(__LINE__)
-#define jamBlockEntryLine(block, line) \
-  thrjamEntryBlockLine(block->jamBuffer(), block->number(), line)
-#define jamEntryBlock(block) jamEntryBlockLine(block, __LINE__)
-#define jamEntryLine(line) jamBlockEntryLine(this, (line))
-#define jamEntry() jamEntryLine(__LINE__)
-
-#define jamNoBlockLine(line) \
-    thrjamLine(NDB_THREAD_TLS_JAM, line)
-#define jamNoBlock() jamNoBlockLine(__LINE__)
-
-#define thrjamEntryLine(buf, line) thrjamEntryBlockLine(buf, number(), line)
-
-#define thrjam(buf) thrjamLine(buf, __LINE__)
-#define thrjamEntry(buf) thrjamEntryLine(buf, __LINE__)
-=======
-#define thrjamLine(jamBufferArg, line)                                       \
-  do {                                                                       \
-    EmulatedJamBuffer *const jamBuffer = jamBufferArg;                       \
-    Uint32 jamIndex = jamBuffer->theEmulatedJamIndex;                        \
-    jamBuffer->theEmulatedJam[jamIndex++] = JamEvent((JAM_FILE_ID), (line)); \
-    jamBuffer->theEmulatedJamIndex = jamIndex & JAM_MASK;                    \
-    /* Occasionally check that the jam buffer belongs to this thread.*/      \
-    assert((jamIndex & 3) != 0 || jamBuffer == NDB_THREAD_TLS_JAM);          \
-    /* Occasionally check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
-    assert((jamIndex & 0xff) != 0 ||                                         \
-           JamEvent::verifyId((JAM_FILE_ID), __FILE__));                     \
-  } while (0)
-
-#define jamBlockLine(block, line) thrjamLine(block->jamBuffer(), line)
-#define jamBlock(block) jamBlockLine((block), __LINE__)
-#define jamLine(line) jamBlockLine(this, (line))
-#define jam() jamLine(__LINE__)
-#define jamBlockEntryLine(block, line) \
-  thrjamEntryBlockLine(block->jamBuffer(), block->number(), line)
-#define jamEntryBlock(block) jamEntryBlockLine(block, __LINE__)
-#define jamEntryLine(line) jamBlockEntryLine(this, (line))
-#define jamEntry() jamEntryLine(__LINE__)
-
-#define jamNoBlockLine(line) thrjamLine(NDB_THREAD_TLS_JAM, line)
-#define jamNoBlock() jamNoBlockLine(__LINE__)
-
-#define thrjamEntryLine(buf, line) thrjamEntryBlockLine(buf, number(), line)
-
-#define thrjam(buf) thrjamLine(buf, __LINE__)
-#define thrjamEntry(buf) thrjamEntryLine(buf, __LINE__)
->>>>>>> MySQL 8.0.36
 
 #if defined VM_TRACE || defined ERROR_INSERT || defined EXTRA_JAM
 #define jamDebug() jam()
