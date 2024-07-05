@@ -24,6 +24,7 @@ concurrency:
 jobs:
   publish-arm-tarball:
     runs-on: [self-hosted, ARM64]
+    if: github.repository == 'logicalclocks/rondb'
     env:
       REPO_HOPSWORKS_HOSTNAME: repo.hops.works
       REPO_HOPSWORKS_USER: repo_upload
