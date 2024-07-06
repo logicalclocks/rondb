@@ -31,22 +31,8 @@
 #define DEBUG(x) \
   { ndbout << "Qmgr::" << x << endl; }
 
-<<<<<<< RonDB // RONDB-624 todo
-#define DEBUG(x) { ndbout << "Qmgr::" << x << endl; }
-
-
-void Qmgr::initData() 
-{
-  m_graceful_shutdown_started = false;
-||||||| Common ancestor
-#define DEBUG(x) { ndbout << "Qmgr::" << x << endl; }
-
-
-void Qmgr::initData() 
-{
-=======
 void Qmgr::initData() {
->>>>>>> MySQL 8.0.36
+  m_graceful_shutdown_started = false;
   creadyDistCom = ZFALSE;
   m_current_switch_multi_trp_node = 0;
   m_get_num_multi_trps_sent = 0;

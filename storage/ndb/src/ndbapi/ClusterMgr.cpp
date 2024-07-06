@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,15 +32,9 @@
 
 #include <NdbSleep.h>
 #include <NdbTick.h>
-<<<<<<< RonDB // RONDB-624 todo
 #include <Logger.hpp>
-#include <ProcessInfo.hpp>
-||||||| Common ancestor
-#include <ProcessInfo.hpp>
-=======
 #include <IPCConfig.hpp>
 #include <NdbOut.hpp>
->>>>>>> MySQL 8.0.36
 #include <OwnProcessInfo.hpp>
 #include <ProcessInfo.hpp>
 #include "ClusterMgr.hpp"
@@ -55,16 +49,8 @@
 #include <signaldata/SumaImpl.hpp>
 #include "kernel/signaldata/DumpStateOrd.hpp"
 #include "kernel/signaldata/TestOrd.hpp"
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/SumaImpl.hpp>
-#include <signaldata/ProcessInfoRep.hpp>
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
-||||||| Common ancestor
-#include <signaldata/SumaImpl.hpp>
-#include <signaldata/ProcessInfoRep.hpp>
-=======
->>>>>>> MySQL 8.0.36
 
 #include <mgmapi.h>
 #include <mgmapi_config_parameters.h>
@@ -517,115 +503,23 @@ void ClusterMgr::threadMain() {
 void ClusterMgr::trp_deliver_signal(const NdbApiSignal *sig,
                                     const LinearSectionPtr ptr[3]) {
   const Uint32 gsn = sig->theVerId_signalNumber;
-<<<<<<< RonDB // RONDB-624 todo
-  const Uint32 * theData = sig->getDataPtr();
-
-  switch (gsn){
-  case GSN_ACTIVATE_REQ:
-    execACTIVATE_REQ(theData);
-    break;
-
-  case GSN_DEACTIVATE_REQ:
-    execDEACTIVATE_REQ(theData);
-    break;
-
-  case GSN_SET_HOSTNAME_REQ:
-    execSET_HOSTNAME_REQ(sig, ptr);
-    break;
-
-  case GSN_API_REGREQ:
-    execAPI_REGREQ(theData);
-    break;
-
-  case GSN_API_REGCONF:
-     execAPI_REGCONF(sig, ptr);
-    break;
-
-  case GSN_API_REGREF:
-    execAPI_REGREF(theData);
-    break;
-
-  case GSN_DUMP_STATE_ORD:
-    execDUMP_STATE_ORD(sig, ptr);
-    break;
-
-  case GSN_NODE_FAILREP:
-    execNODE_FAILREP(sig, ptr);
-    break;
-
-  case GSN_NF_COMPLETEREP:
-    execNF_COMPLETEREP(sig, ptr);
-    break;
-  case GSN_ARBIT_STARTREQ:
-    if (theArbitMgr != nullptr)
-      theArbitMgr->doStart(theData);
-    break;
-
-  case GSN_ARBIT_CHOOSEREQ:
-    if (theArbitMgr != nullptr)
-      theArbitMgr->doChoose(theData);
-    break;
-
-  case GSN_ARBIT_STOPORD:
-    if(theArbitMgr != nullptr)
-      theArbitMgr->doStop(theData);
-    break;
-
-  case GSN_ALTER_TABLE_REP:
-  {
-    if (theFacade.m_globalDictCache == nullptr)
-||||||| Common ancestor
-  const Uint32 * theData = sig->getDataPtr();
-
-  switch (gsn){
-  case GSN_API_REGREQ:
-    execAPI_REGREQ(theData);
-    break;
-
-  case GSN_API_REGCONF:
-     execAPI_REGCONF(sig, ptr);
-    break;
-
-  case GSN_API_REGREF:
-    execAPI_REGREF(theData);
-    break;
-
-  case GSN_DUMP_STATE_ORD:
-    execDUMP_STATE_ORD(sig, ptr);
-    break;
-
-  case GSN_NODE_FAILREP:
-    execNODE_FAILREP(sig, ptr);
-    break;
-
-  case GSN_NF_COMPLETEREP:
-    execNF_COMPLETEREP(sig, ptr);
-    break;
-  case GSN_ARBIT_STARTREQ:
-    if (theArbitMgr != nullptr)
-      theArbitMgr->doStart(theData);
-    break;
-
-  case GSN_ARBIT_CHOOSEREQ:
-    if (theArbitMgr != nullptr)
-      theArbitMgr->doChoose(theData);
-    break;
-
-  case GSN_ARBIT_STOPORD:
-    if(theArbitMgr != nullptr)
-      theArbitMgr->doStop(theData);
-    break;
-
-  case GSN_ALTER_TABLE_REP:
-  {
-    if (theFacade.m_globalDictCache == nullptr)
-=======
   const Uint32 *theData = sig->getDataPtr();
 
   switch (gsn) {
+    case GSN_ACTIVATE_REQ:
+      execACTIVATE_REQ(theData);
+      break;
+
+    case GSN_DEACTIVATE_REQ:
+      execDEACTIVATE_REQ(theData);
+      break;
+
+    case GSN_SET_HOSTNAME_REQ:
+      execSET_HOSTNAME_REQ(sig, ptr);
+      break;
+
     case GSN_API_REGREQ:
       execAPI_REGREQ(theData);
->>>>>>> MySQL 8.0.36
       break;
 
     case GSN_API_REGCONF:

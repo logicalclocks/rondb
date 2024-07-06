@@ -26,36 +26,11 @@
 #define QMGR_C
 #include <NdbSleep.h>
 #include <NdbTick.h>
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/NodeRecoveryStatusRep.hpp>
-#include <signaldata/EventReport.hpp>
-#include <signaldata/CloseComReqConf.hpp>
-#include <signaldata/StartOrd.hpp>
-#include <signaldata/StopReq.hpp>
-#include <signaldata/PrepFailReqRef.hpp>
-#include <signaldata/NodeFailRep.hpp>
-#include <signaldata/ReadNodesConf.hpp>
-#include <signaldata/NFCompleteRep.hpp>
-#include <signaldata/CheckNodeGroups.hpp>
-#include <signaldata/ArbitSignalData.hpp>
-||||||| Common ancestor
-#include <signaldata/NodeRecoveryStatusRep.hpp>
-#include <signaldata/EventReport.hpp>
-#include <signaldata/StartOrd.hpp>
-#include <signaldata/CloseComReqConf.hpp>
-#include <signaldata/PrepFailReqRef.hpp>
-#include <signaldata/NodeFailRep.hpp>
-#include <signaldata/ReadNodesConf.hpp>
-#include <signaldata/NFCompleteRep.hpp>
-#include <signaldata/CheckNodeGroups.hpp>
-#include <signaldata/ArbitSignalData.hpp>
-=======
 #include <ndb_version.h>
 #include <NodeInfo.hpp>
 #include <OwnProcessInfo.hpp>
 #include <pc.hpp>
 #include <signaldata/ApiBroadcast.hpp>
->>>>>>> MySQL 8.0.36
 #include <signaldata/ApiRegSignalData.hpp>
 #include <signaldata/ApiVersion.hpp>
 #include <signaldata/ArbitSignalData.hpp>
@@ -80,35 +55,21 @@
 #include <signaldata/ReadNodesConf.hpp>
 #include <signaldata/RouteOrd.hpp>
 #include <signaldata/StartOrd.hpp>
+#include <signaldata/StopReq.hpp>
 #include <signaldata/Sync.hpp>
 #include <signaldata/SyncThreadViaReqConf.hpp>
 #include <signaldata/TakeOverTcConf.hpp>
 #include <signaldata/TrpKeepAlive.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <signaldata/GetNumMultiTrp.hpp>
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
-#include <signaldata/Sync.hpp>
-#include <ndb_version.h>
-#include <OwnProcessInfo.hpp>
-#include <NodeInfo.hpp>
-#include <NdbSleep.h>
 #include <Configuration.hpp>
 #ifdef _WIN32
 #include <ws2tcpip.h>
 #endif
 
-||||||| Common ancestor
-#include <signaldata/GetNumMultiTrp.hpp>
-#include <signaldata/Sync.hpp>
-#include <ndb_version.h>
-#include <OwnProcessInfo.hpp>
-#include <NodeInfo.hpp>
-#include <NdbSleep.h>
-=======
 #include <signaldata/Upgrade.hpp>
 #include "Qmgr.hpp"
->>>>>>> MySQL 8.0.36
 #include "portlib/NdbTCP.h"
 #include "portlib/ndb_sockaddr.h"
 
@@ -5255,7 +5216,6 @@ void Qmgr::failReportLab(Signal *signal, Uint16 aFailedNode,
     static const Uint32 bitmaskTextLen = NdbNodeBitmask::TextLength + 1;
     char extra[2 * bitmaskTextLen + 30];
 
-<<<<<<< RonDB // RONDB-624 todo
     switch(aFailCause){
     case FailRep::ZOWN_FAILURE: 
       jam();
@@ -5343,172 +5303,11 @@ void Qmgr::failReportLab(Signal *signal, Uint16 aFailedNode,
                             sourceNode);
         /* Let's wait for remote disconnection */
         return;
-||||||| Common ancestor
-    switch(aFailCause){
-    case FailRep::ZOWN_FAILURE: 
-      msg = "Own failure"; 
-      break;
-    case FailRep::ZOTHER_NODE_WHEN_WE_START: 
-    case FailRep::ZOTHERNODE_FAILED_DURING_START:
-      msg = "Other node died during start"; 
-      break;
-    case FailRep::ZIN_PREP_FAIL_REQ:
-      msg = "Prep fail";
-      break;
-    case FailRep::ZSTART_IN_REGREQ:
-      msg = "Start timeout";
-      break;
-    case FailRep::ZHEARTBEAT_FAILURE:
-      msg = "Heartbeat failure";
-      break;
-    case FailRep::ZLINK_FAILURE:
-      msg = "Connection failure";
-      break;
-    case FailRep::ZPARTITIONED_CLUSTER:
-    {
-      code = NDBD_EXIT_PARTITIONED_SHUTDOWN;
-      char buf1[bitmaskTextLen], buf2[bitmaskTextLen];
-      c_clusterNodes.getText(buf1);
-      if (((signal->getLength()== FailRep::OrigSignalLength + FailRep::PartitionedExtraLength_v1) ||
-           (signal->getLength()== FailRep::SignalLength + FailRep::PartitionedExtraLength_v1)) &&
-          signal->header.theVerId_signalNumber == GSN_FAIL_REP)
-      {
-	jam();
-	NdbNodeBitmask part;
-	Uint32 senderRef = signal->getSendersBlockRef();
-	Uint32 senderVersion = getNodeInfo(refToNode(senderRef)).m_version;
-	if (signal->getNoOfSections() >= 1)
-	{
-	  ndbrequire(ndbd_send_node_bitmask_in_section(senderVersion));
-	  SectionHandle handle(this, signal);
-	  SegmentedSectionPtr ptr;
-          ndbrequire(handle.getSection(ptr, 0));
-
-	  ndbrequire(ptr.sz <= NdbNodeBitmask::Size);
-          copy(part.rep.data, ptr);
-
-	  releaseSections(handle);
-	}
-	else
-	{
-	  part.assign(NdbNodeBitmask48::Size, rep->partitioned.partition_v1);
-	}
-	part.getText(buf2);
-	BaseString::snprintf(extra, sizeof(extra),
-			     "Our cluster: %s other cluster: %s",
-			     buf1, buf2);
       }
-      else
-      {
-	jam();
-	BaseString::snprintf(extra, sizeof(extra),
-			     "Our cluster: %s", buf1);
-      }
-      msg = extra;
-      break;
-    }
-    case FailRep::ZMULTI_NODE_SHUTDOWN:
-      msg = "Multi node shutdown";
-      break;
-    case FailRep::ZCONNECT_CHECK_FAILURE:
-      msg = "Connectivity check failure";
-      break;
-    case FailRep::ZFORCED_ISOLATION:
-      msg = "Forced isolation";
-      if (ERROR_INSERTED(942))
-      {
-        g_eventLogger->info("FAIL_REP FORCED_ISOLATION received from data node %u - ignoring.",
-                            sourceNode);
-        /* Let's wait for remote disconnection */
-        return;
-=======
-    switch (aFailCause) {
-      case FailRep::ZOWN_FAILURE:
-        msg = "Own failure";
-        break;
-      case FailRep::ZOTHER_NODE_WHEN_WE_START:
-      case FailRep::ZOTHERNODE_FAILED_DURING_START:
-        msg = "Other node died during start";
-        break;
-      case FailRep::ZIN_PREP_FAIL_REQ:
-        msg = "Prep fail";
-        break;
-      case FailRep::ZSTART_IN_REGREQ:
-        msg = "Start timeout";
-        break;
-      case FailRep::ZHEARTBEAT_FAILURE:
-        msg = "Heartbeat failure";
-        break;
-      case FailRep::ZLINK_FAILURE:
-        msg = "Connection failure";
-        break;
-      case FailRep::ZPARTITIONED_CLUSTER: {
-        code = NDBD_EXIT_PARTITIONED_SHUTDOWN;
-        char buf1[bitmaskTextLen], buf2[bitmaskTextLen];
-        c_clusterNodes.getText(buf1);
-        if (((signal->getLength() ==
-              FailRep::OrigSignalLength + FailRep::PartitionedExtraLength_v1) ||
-             (signal->getLength() ==
-              FailRep::SignalLength + FailRep::PartitionedExtraLength_v1)) &&
-            signal->header.theVerId_signalNumber == GSN_FAIL_REP) {
-          jam();
-          NdbNodeBitmask part;
-          Uint32 senderRef = signal->getSendersBlockRef();
-          Uint32 senderVersion = getNodeInfo(refToNode(senderRef)).m_version;
-          if (signal->getNoOfSections() >= 1) {
-            ndbrequire(ndbd_send_node_bitmask_in_section(senderVersion));
-            SectionHandle handle(this, signal);
-            SegmentedSectionPtr ptr;
-            ndbrequire(handle.getSection(ptr, 0));
-
-            ndbrequire(ptr.sz <= NdbNodeBitmask::Size);
-            copy(part.rep.data, ptr);
-
-            releaseSections(handle);
-          } else {
-            part.assign(NdbNodeBitmask48::Size, rep->partitioned.partition_v1);
-          }
-          part.getText(buf2);
-          BaseString::snprintf(extra, sizeof(extra),
-                               "Our cluster: %s other cluster: %s", buf1, buf2);
-        } else {
-          jam();
-          BaseString::snprintf(extra, sizeof(extra), "Our cluster: %s", buf1);
-        }
-        msg = extra;
-        break;
->>>>>>> MySQL 8.0.36
-      }
-<<<<<<< RonDB // RONDB-624 todo
       break;
     default:
       jam();
       msg = "<UNKNOWN>";
-||||||| Common ancestor
-      break;
-    default:
-      msg = "<UNKNOWN>";
-=======
-      case FailRep::ZMULTI_NODE_SHUTDOWN:
-        msg = "Multi node shutdown";
-        break;
-      case FailRep::ZCONNECT_CHECK_FAILURE:
-        msg = "Connectivity check failure";
-        break;
-      case FailRep::ZFORCED_ISOLATION:
-        msg = "Forced isolation";
-        if (ERROR_INSERTED(942)) {
-          g_eventLogger->info(
-              "FAIL_REP FORCED_ISOLATION received from data node %u - "
-              "ignoring.",
-              sourceNode);
-          /* Let's wait for remote disconnection */
-          return;
-        }
-        break;
-      default:
-        msg = "<UNKNOWN>";
->>>>>>> MySQL 8.0.36
     }
 
     CRASH_INSERTION(932);
