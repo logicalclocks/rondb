@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -114,29 +114,6 @@ bool SimpleProperties::Reader::next() { return readValue(); }
 
 bool SimpleProperties::Reader::valid() const { return m_type != InvalidValue; }
 
-<<<<<<< RonDB // RONDB-624 todo
-Uint32
-SimpleProperties::Reader::getValueLen() const {
-  switch(m_type){
-  case Uint32Value:
-    return 4;
-  case StringValue:
-  case BinaryValue:
-    return m_strLen;
-  case InvalidValue:
-    return 0;
-||||||| Common ancestor
-Uint16
-SimpleProperties::Reader::getValueLen() const {
-  switch(m_type){
-  case Uint32Value:
-    return 4;
-  case StringValue:
-  case BinaryValue:
-    return m_strLen;
-  case InvalidValue:
-    return 0;
-=======
 Uint16 SimpleProperties::Reader::getKey() const { return m_key; }
 
 Uint16 SimpleProperties::Reader::getValueLen() const {
@@ -148,7 +125,6 @@ Uint16 SimpleProperties::Reader::getValueLen() const {
       return m_strLen;
     case InvalidValue:
       return 0;
->>>>>>> MySQL 8.0.36
   }
   return 0;
 }

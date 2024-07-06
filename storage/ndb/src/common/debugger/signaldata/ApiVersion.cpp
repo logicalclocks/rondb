@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,22 +35,10 @@ bool printAPI_VERSION_REQ(FILE *output, const Uint32 *theData, Uint32 len,
   const ApiVersionReq *sig = (const ApiVersionReq *)&theData[0];
 
   fprintf(output,
-<<<<<<< RonDB // RONDB-624 todo
           " senderRef: (node: %d, block: %d), nodeId: %d\n" \
           " version: %x, mysql_version: %x\n",
 	  refToNode(sig->senderRef), refToBlock(sig->senderRef),
 	  sig->nodeId, sig->version, sig->mysql_version);
-||||||| Common ancestor
-          " senderRef: (node: %d, block: %d), nodeId: %d\n" \
-          " version: %d, mysql_version: %d\n",
-	  refToNode(sig->senderRef), refToBlock(sig->senderRef),
-	  sig->nodeId, sig->version, sig->mysql_version);
-=======
-          " senderRef: (node: %d, block: %d), nodeId: %d\n"
-          " version: %d, mysql_version: %d\n",
-          refToNode(sig->senderRef), refToBlock(sig->senderRef), sig->nodeId,
-          sig->version, sig->mysql_version);
->>>>>>> MySQL 8.0.36
   return true;
 }
 

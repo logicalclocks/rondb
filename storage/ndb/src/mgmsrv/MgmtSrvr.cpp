@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -63,21 +63,11 @@
 #include <signaldata/SetLogLevelOrd.hpp>
 #include <signaldata/StartOrd.hpp>
 #include <signaldata/Sync.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/GetConfig.hpp>
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
-#include <NdbSleep.h>
-#include <portlib/NdbDir.hpp>
-||||||| Common ancestor
-#include <signaldata/GetConfig.hpp>
-#include <NdbSleep.h>
-#include <portlib/NdbDir.hpp>
-=======
 #include <signaldata/TamperOrd.hpp>
 #include <signaldata/TestOrd.hpp>
 #include "NdbTCP.h"
->>>>>>> MySQL 8.0.36
 #include "portlib/ndb_sockaddr.h"
 
 #include <NdbConfig.h>
@@ -3595,23 +3585,6 @@ void MgmtSrvr::trp_deliver_signal(const NdbApiSignal *signal,
       const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
       Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
 
-<<<<<<< RonDB // RONDB-624 todo
-    for (Uint32 i = BitmaskImpl::find_first(len, nbm);
-         i != BitmaskImpl::NotFound;
-         i = BitmaskImpl::find_next(len, nbm, i + 1))
-    {
-      theData[1] = i;
-      eventReport(theData, 1, theData);
-      g_eventLogger->debug("NODE_FAILREP for node: %u", i);
-      m_config_manager->set_node_failed(i);
-||||||| Common ancestor
-    for (Uint32 i = BitmaskImpl::find_first(len, nbm);
-         i != BitmaskImpl::NotFound;
-         i = BitmaskImpl::find_next(len, nbm, i + 1))
-    {
-      theData[1] = i;
-      eventReport(theData, 1, theData);
-=======
       const Uint32 *nbm;
       if (signal->m_noOfSections >= 1) {
         assert(len == 0);
@@ -3621,13 +3594,14 @@ void MgmtSrvr::trp_deliver_signal(const NdbApiSignal *signal,
         assert(len == NodeBitmask::Size);  // only full length in ndbapi
         nbm = rep->theAllNodes;
       }
->>>>>>> MySQL 8.0.36
 
       for (Uint32 i = BitmaskImpl::find_first(len, nbm);
            i != BitmaskImpl::NotFound;
            i = BitmaskImpl::find_next(len, nbm, i + 1)) {
         theData[1] = i;
         eventReport(theData, 1, theData);
+        g_eventLogger->debug("NODE_FAILREP for node: %u", i);
+        m_config_manager->set_node_failed(i);
 
         /* Clear local nodeid reservation(if any) */
         release_local_nodeid_reservation(i);
@@ -4479,45 +4453,20 @@ bool MgmtSrvr::alloc_node_id(NodeId &nodeid, enum ndb_mgm_node_type type,
   char *addr_str = Ndb_inet_ntop(client_addr, addr_buf, sizeof(addr_buf));
 
   error_code = 0;
-<<<<<<< RonDB // RONDB-624 todo
-  g_eventLogger->debug("Trying to allocate nodeid for %s" \
-                       "(nodeid: %u, type: %s)",
-                       addr_str, (unsigned)nodeid, type_str);
+  g_eventLogger->debug(
+      "Trying to allocate nodeid for %s"
+      "(nodeid: %u, type: %s)",
+      addr_str, (unsigned)nodeid, type_str);
 
   DEBUG_FPRINTF((stderr, "Allocate nodeid %u for %s type: %s\n",
                  (unsigned)nodeid,
                  addr_str,
                  type_str));
 
-  if (alloc_node_id_impl(nodeid, type, client_addr,
-                         error_code, error_string,
-                         timeout_s))
-  {
-    g_eventLogger->info("Nodeid %u allocated for %s at %s",
-                        (unsigned)nodeid, type_str, addr_str);
-||||||| Common ancestor
-  g_eventLogger->debug("Trying to allocate nodeid for %s" \
-                       "(nodeid: %u, type: %s)",
-                       addr_str, (unsigned)nodeid, type_str);
-
-
-  if (alloc_node_id_impl(nodeid, type, client_addr,
-                         error_code, error_string,
-                         timeout_s))
-  {
-    g_eventLogger->info("Nodeid %u allocated for %s at %s",
-                        (unsigned)nodeid, type_str, addr_str);
-=======
-  g_eventLogger->debug(
-      "Trying to allocate nodeid for %s"
-      "(nodeid: %u, type: %s)",
-      addr_str, (unsigned)nodeid, type_str);
-
   if (alloc_node_id_impl(nodeid, type, client_addr, error_code, error_string,
                          timeout_s)) {
     g_eventLogger->info("Nodeid %u allocated for %s at %s", (unsigned)nodeid,
                         type_str, addr_str);
->>>>>>> MySQL 8.0.36
     return true;
   }
 

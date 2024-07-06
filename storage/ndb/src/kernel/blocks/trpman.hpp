@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,30 +47,19 @@ class Trpman : public SimulatedBlock {
   void execENABLE_COMREQ(Signal *signal);
   void execDISCONNECT_REP(Signal *signal);
   void execCONNECT_REP(Signal *signal);
-<<<<<<< RonDB // RONDB-624 todo
   void execROUTE_ORD(Signal* signal);
   void execACTIVATE_TRP_REQ(Signal*);
   void execUPD_QUERY_DIST_ORD(Signal*);
   void execSEND_PUSH_ABORTREQ(Signal*);
-||||||| Common ancestor
-  void execROUTE_ORD(Signal* signal);
-  void execACTIVATE_TRP_REQ(Signal*);
-  void execUPD_QUERY_DIST_ORD(Signal*);
-=======
-  void execROUTE_ORD(Signal *signal);
-  void execACTIVATE_TRP_REQ(Signal *);
-  void execUPD_QUERY_DIST_ORD(Signal *);
 
   void sendSYNC_THREAD_VIA_CONF(Signal *, Uint32, Uint32);
   void execSYNC_THREAD_VIA_REQ(Signal *);
->>>>>>> MySQL 8.0.36
 
   void execDBINFO_SCANREQ(Signal *);
 
   void execNDB_TAMPER(Signal *);
   void execDUMP_STATE_ORD(Signal *);
 
-<<<<<<< RonDB // RONDB-624 todo
   void execNDB_TAMPER(Signal*);
   void execDUMP_STATE_ORD(Signal*);
   void startCONTINUEB(Signal*);
@@ -80,16 +69,6 @@ public:
                            const Uint32 instance,
                            Uint32 **out_data,
                            Uint32 *buf_ptr);
-||||||| Common ancestor
-  void execNDB_TAMPER(Signal*);
-  void execDUMP_STATE_ORD(Signal*);
-public:
-  Uint32 distribute_signal(SignalHeader * const header,
-                           const Uint32 instance);
-=======
- public:
-  Uint32 distribute_signal(SignalHeader *const header, const Uint32 instance);
->>>>>>> MySQL 8.0.36
   DistributionHandler m_distribution_handle;
   bool m_distribution_handler_inited;
 

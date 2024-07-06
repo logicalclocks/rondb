@@ -121,23 +121,7 @@ void malloctest(int loopcount, int memsize, int touch) {
       for (j = 0; j < size; j = j + 4096) ptr[j] = 1;
     }
   }
-<<<<<<< RonDB // RONDB-624 todo
-  total=(int)(getMicro()-start);
-  
-  mean=(float)((float)total/(float)loopcount);
-  printf("Total time malloc %d bytes: %2.3f microsecs  loopcount %d touch %d\n",
-	 size, mean,loopcount, touch);  
-}
-||||||| Common ancestor
-  total=(int)(getMicro()-start);
-  
-  mean=(float)((float)total/(float)loopcount);
-  printf("Total time malloc %d bytes: %2.3f microsecs  loopcount %d touch %d \n",
-	 size, mean,loopcount, touch);  
-}
-=======
   total = (int)(getMicro() - start);
->>>>>>> MySQL 8.0.36
 
   mean = (float)((float)total / (float)loopcount);
   printf(

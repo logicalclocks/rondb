@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2010, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -219,65 +219,9 @@ int main(int argc, const char *argv[]) {
       cout << "read: " << fn << endl;
       p.load(fn);
 
-<<<<<<< RonDB // RONDB-624 todo
-    // test store
-    const char* kv4 = ("\\ a\\ key\\ =\\ a value\n"
-                       "key\\!=value\\!\n"
-                       "key\\#=value\\#\n"
-                       "key0=value0\n" "key1=value1\n"
-                       "key2=\n" "key3=\n"
-                       "key\\:=value\\:\n"
-                       "key\\==value\\=\n");
-    {
-        //cout << "kv4='" << endl << kv4 << "'" << endl;
-        stringbuf ib(kv4);
-        p.load(ib);
-        //cout << "p={" << endl << p << "}" << endl;
-
-        stringbuf ob;
-        p.store(ob);
-        //cout << "ib='" << ib.str() << "'" << endl;
-        //cout << "ob='" << ob.str() << "'" << endl;
-        assert (ib.str() == ob.str());
-
-        Properties q;
-        q.load(ob);
-        //cout << "q={" << endl << q << "}" << endl;
-        assert (p == q);
-
-        p.clear();
-||||||| Common ancestor
-    // test store
-    const char* kv4 = ("\\ a\\ key\\ =\\ a value \n"
-                       "key\\!=value\\!\n"
-                       "key\\#=value\\#\n"
-                       "key0=value0\n" "key1=value1\n"
-                       "key2=\n" "key3=\n"
-                       "key\\:=value\\:\n"
-                       "key\\==value\\=\n");
-    {
-        //cout << "kv4='" << endl << kv4 << "'" << endl;
-        stringbuf ib(kv4);
-        p.load(ib);
-        //cout << "p={" << endl << p << "}" << endl;
-
-        stringbuf ob;
-        p.store(ob);
-        //cout << "ib='" << ib.str() << "'" << endl;
-        //cout << "ob='" << ob.str() << "'" << endl;
-        assert (ib.str() == ob.str());
-
-        Properties q;
-        q.load(ob);
-        //cout << "q={" << endl << q << "}" << endl;
-        assert (p == q);
-
-        p.clear();
-=======
       cout << "print:" << endl;
       wstring h(L"this header string passed to store() should be first");
       p.store(cout, &h);
->>>>>>> MySQL 8.0.36
     }
   }
 

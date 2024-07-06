@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,17 +30,8 @@
 #include <signaldata/AccLock.hpp>
 #include <signaldata/AccScan.hpp>
 #include <signaldata/NextScan.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/AccLock.hpp>
-#include <portlib/ndb_prefetch.h>
 #include <util/rondb_hash.hpp>
-||||||| Common ancestor
-#include <signaldata/AccLock.hpp>
-#include <md5_hash.hpp>
-#include <portlib/ndb_prefetch.h>
-=======
 #include "../backup/Backup.hpp"
->>>>>>> MySQL 8.0.36
 #include "../dblqh/Dblqh.hpp"
 #include "Dbtup.hpp"
 
@@ -1844,17 +1835,10 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
             if ((bits & ScanOp::SCAN_NR) && (scan.m_endPage != RNIL)) {
               if (key.m_page_no < scan.m_endPage) {
                 jam();
-                DEB_NR_SCAN(("scanning page %u", key.m_page_no));
+                DEB_NR_SCAN(("(%u)scanning page %u", instance(), key.m_page_no));
                 goto cont;
               }
               jam();
-<<<<<<< RonDB // RONDB-624 todo
-              DEB_NR_SCAN(("(%u)scanning page %u", instance(), key.m_page_no));
-              goto cont;
-||||||| Common ancestor
-              DEB_NR_SCAN(("scanning page %u", key.m_page_no));
-              goto cont;
-=======
               // no more pages, scan ends
               pos.m_get = ScanPos::Get_undef;
               scan.m_state = ScanOp::Last;
@@ -1898,23 +1882,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
               scan.m_last_seen = __LINE__;
               scan.m_state = ScanOp::Last;
               return true;
->>>>>>> MySQL 8.0.36
             }
-<<<<<<< RonDB // RONDB-624 todo
-            jam();
-            // no more pages, scan ends
-            pos.m_get = ScanPos::Get_undef;
-            scan.m_state = ScanOp::Last;
-            scan.m_last_seen = __LINE__;
-            return true;
-||||||| Common ancestor
-            jam();
-            // no more pages, scan ends
-            pos.m_get = ScanPos::Get_undef;
-            scan.m_state = ScanOp::Last;
-            return true;
-=======
->>>>>>> MySQL 8.0.36
           }
           if (unlikely((bits & ScanOp::SCAN_LCP) &&
                        (key.m_page_no >= scan.m_endPage))) {
@@ -1958,43 +1926,6 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
             Uint32 *next_ptr, *prev_ptr;
             if (bits & ScanOp::SCAN_LCP) {
               jam();
-<<<<<<< RonDB // RONDB-624 todo
-              pagePtr.p = nullptr;
-              goto nopage;
-            }
-          }
-          else
-          {
-            /**
-             * Ensure that we access the page map with protection from
-             * the query thread, no need for this protection from LDM
-             * thread.
-             */
-            acquire_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
-            pos.m_realpid_mm = getRealpidCheck(fragPtr.p,
-                                               key.m_page_no);
-            release_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
-            if (unlikely(pos.m_realpid_mm == RNIL))
-            {
-||||||| Common ancestor
-              pagePtr.p = nullptr;
-              goto nopage;
-            }
-          }
-          else
-          {
-            /**
-             * Ensure that we access the page map with protection from
-             * the query thread, no need for this protection from LDM
-             * thread.
-             */
-            acquire_frag_page_map_mutex_read(fragPtr.p);
-            pos.m_realpid_mm = getRealpidCheck(fragPtr.p,
-                                               key.m_page_no);
-            release_frag_page_map_mutex_read(fragPtr.p);
-            if (unlikely(pos.m_realpid_mm == RNIL))
-            {
-=======
               pos.m_realpid_mm = getRealpidScan(fragPtr.p, key.m_page_no,
                                                 &next_ptr, &prev_ptr);
               Uint32 ret_val =
@@ -2018,15 +1949,14 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
                * the query thread, no need for this protection from LDM
                * thread.
                */
-              acquire_frag_page_map_mutex_read(fragPtr.p);
+              acquire_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
               pos.m_realpid_mm = getRealpidCheck(fragPtr.p, key.m_page_no);
-              release_frag_page_map_mutex_read(fragPtr.p);
+              release_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
               if (unlikely(pos.m_realpid_mm == RNIL)) {
                 jam();
                 pos.m_get = ScanPos::Get_next_page_mm;
                 break;  // incr loop count
               }
->>>>>>> MySQL 8.0.36
               jam();
             }
           } else {
@@ -2099,78 +2029,9 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
           }
           /* LCP normal case 4a) above goes here */
 
-<<<<<<< RonDB // RONDB-624 todo
-    nopage:
-        pos.m_page = pagePtr.p;
-        pos.m_get = ScanPos::Get_tuple;
-      }
-      continue;
-    case ScanPos::Get_next_page_dd:
-      // move to next disk page
-      jam();
-      {
-        Disk_alloc_info& alloc = frag.m_disk_alloc_info;
-        Local_fragment_extent_list list(c_extent_pool, alloc.m_extent_list);
-        Ptr<Extent_info> ext_ptr;
-        ndbrequire(c_extent_pool.getPtr(ext_ptr, pos.m_extent_info_ptr_i));
-        Extent_info* ext = ext_ptr.p;
-        key.m_page_no++;
-        if (key.m_page_no >= ext->m_first_page_no + alloc.m_extent_size) {
-          // no more pages in this extent
-          jam();
-          if (! list.next(ext_ptr)) {
-            // no more extents, scan ends
-            jam();
-            pos.m_get = ScanPos::Get_undef;
-            scan.m_state = ScanOp::Last;
-            scan.m_last_seen = __LINE__;
-            return true;
-          } else {
-            // move to next extent
-            jam();
-            pos.m_extent_info_ptr_i = ext_ptr.i;
-            ext = c_extent_pool.getPtr(pos.m_extent_info_ptr_i);
-            key.m_file_no = ext->m_key.m_file_no;
-            key.m_page_no = ext->m_first_page_no;
-          }
-||||||| Common ancestor
-    nopage:
-        pos.m_page = pagePtr.p;
-        pos.m_get = ScanPos::Get_tuple;
-      }
-      continue;
-    case ScanPos::Get_next_page_dd:
-      // move to next disk page
-      jam();
-      {
-        Disk_alloc_info& alloc = frag.m_disk_alloc_info;
-        Local_fragment_extent_list list(c_extent_pool, alloc.m_extent_list);
-        Ptr<Extent_info> ext_ptr;
-        ndbrequire(c_extent_pool.getPtr(ext_ptr, pos.m_extent_info_ptr_i));
-        Extent_info* ext = ext_ptr.p;
-        key.m_page_no++;
-        if (key.m_page_no >= ext->m_first_page_no + alloc.m_extent_size) {
-          // no more pages in this extent
-          jam();
-          if (! list.next(ext_ptr)) {
-            // no more extents, scan ends
-            jam();
-            pos.m_get = ScanPos::Get_undef;
-            scan.m_state = ScanOp::Last;
-            return true;
-          } else {
-            // move to next extent
-            jam();
-            pos.m_extent_info_ptr_i = ext_ptr.i;
-            ext = c_extent_pool.getPtr(pos.m_extent_info_ptr_i);
-            key.m_file_no = ext->m_key.m_file_no;
-            key.m_page_no = ext->m_first_page_no;
-          }
-=======
         nopage:
           pos.m_page = pagePtr.p;
           pos.m_get = ScanPos::Get_tuple;
->>>>>>> MySQL 8.0.36
         }
         continue;
       case ScanPos::Get_next_page_dd:
@@ -2191,6 +2052,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
               jam();
               pos.m_get = ScanPos::Get_undef;
               scan.m_state = ScanOp::Last;
+              scan.m_last_seen = __LINE__;
               return true;
             } else {
               // move to next extent
@@ -2284,114 +2146,6 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
               break;  // incr loop count
             }
           }
-<<<<<<< RonDB // RONDB-624 todo
-        } // if ScanOp::SCAN_DD read ahead
-      }
-      [[fallthrough]];
-    case ScanPos::Get_page_dd:
-      // get global page in PGMAN cache
-      jam();
-      {
-        // check if page is un-allocated or empty
-	if (likely(! (bits & ScanOp::SCAN_NR)))
-	{
-          D("Tablespace_client - scanNext");
-	  Tablespace_client tsman(signal, this, c_tsman,
-                         frag.fragTableId, 
-                         frag.fragmentId,
-                         c_lqh->getCreateSchemaVersion(frag.fragTableId),
-                         frag.m_tablespace_id);
-	  unsigned uncommitted, committed;
-	  uncommitted = committed = ~(unsigned)0;
-	  int ret = tsman.get_page_free_bits(&key, &uncommitted, &committed);
-	  ndbrequire(ret == 0);
-	  if (committed == 0 && uncommitted == 0) {
-	    // skip empty page
-	    jam();
-	    pos.m_get = ScanPos::Get_next_page_dd;
-	    break; // incr loop count
-	  }
-	}
-        // page request to PGMAN
-        Page_cache_client::Request preq;
-        preq.m_page = pos.m_key;
-        preq.m_table_id = frag.fragTableId;
-        preq.m_fragment_id = frag.fragmentId;
-        preq.m_callback.m_callbackData = scanPtr.i;
-        preq.m_callback.m_callbackFunction =
-          safe_cast(&Dbtup::disk_page_tup_scan_callback);
-        int flags = Page_cache_client::DISK_SCAN;
-        Page_cache_client pgman(this, c_pgman);
-        Ptr<GlobalPage> pagePtr;
-        int res = pgman.get_page(signal, preq, flags);
-        pagePtr = pgman.m_ptr;
-        jamEntry();
-        if (res == 0) {
-          jam();
-          // request queued
-          pos.m_get = ScanPos::Get_tuple;
-          scan.m_last_seen = __LINE__;
-          return false;
-        }
-        else if (res < 0)
-        {
-          jam();
-          if (res == -1)
-          {
-||||||| Common ancestor
-        } // if ScanOp::SCAN_DD read ahead
-      }
-      [[fallthrough]];
-    case ScanPos::Get_page_dd:
-      // get global page in PGMAN cache
-      jam();
-      {
-        // check if page is un-allocated or empty
-	if (likely(! (bits & ScanOp::SCAN_NR)))
-	{
-          D("Tablespace_client - scanNext");
-	  Tablespace_client tsman(signal, this, c_tsman,
-                         frag.fragTableId, 
-                         frag.fragmentId,
-                         c_lqh->getCreateSchemaVersion(frag.fragTableId),
-                         frag.m_tablespace_id);
-	  unsigned uncommitted, committed;
-	  uncommitted = committed = ~(unsigned)0;
-	  int ret = tsman.get_page_free_bits(&key, &uncommitted, &committed);
-	  ndbrequire(ret == 0);
-	  if (committed == 0 && uncommitted == 0) {
-	    // skip empty page
-	    jam();
-	    pos.m_get = ScanPos::Get_next_page_dd;
-	    break; // incr loop count
-	  }
-	}
-        // page request to PGMAN
-        Page_cache_client::Request preq;
-        preq.m_page = pos.m_key;
-        preq.m_table_id = frag.fragTableId;
-        preq.m_fragment_id = frag.fragmentId;
-        preq.m_callback.m_callbackData = scanPtr.i;
-        preq.m_callback.m_callbackFunction =
-          safe_cast(&Dbtup::disk_page_tup_scan_callback);
-        int flags = Page_cache_client::DISK_SCAN;
-        Page_cache_client pgman(this, c_pgman);
-        Ptr<GlobalPage> pagePtr;
-        int res = pgman.get_page(signal, preq, flags);
-        pagePtr = pgman.m_ptr;
-        jamEntry();
-        if (res == 0) {
-          jam();
-          // request queued
-          pos.m_get = ScanPos::Get_tuple;
-          return false;
-        }
-        else if (res < 0)
-        {
-          jam();
-          if (res == -1)
-          {
-=======
           // page request to PGMAN
           Page_cache_client::Request preq;
           preq.m_page = pos.m_key;
@@ -2407,7 +2161,6 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
           pagePtr = pgman.m_ptr;
           jamEntry();
           if (res == 0) {
->>>>>>> MySQL 8.0.36
             jam();
             // request queued
             pos.m_get = ScanPos::Get_tuple;
@@ -2424,102 +2177,13 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
             }
             /* Flag to reply code that we have an error */
             scan.m_state = ScanOp::Invalid;
+            scan.m_last_seen = __LINE__;
             return true;
           }
-<<<<<<< RonDB // RONDB-624 todo
-          /* Flag to reply code that we have an error */
-          scan.m_state = ScanOp::Invalid;
-          scan.m_last_seen = __LINE__;
-          return true;
-||||||| Common ancestor
-          /* Flag to reply code that we have an error */
-          scan.m_state = ScanOp::Invalid;
-          return true;
-=======
           ndbrequire(res > 0);
           pos.m_page = (Page *)pagePtr.p;
->>>>>>> MySQL 8.0.36
         }
-<<<<<<< RonDB // RONDB-624 todo
-        ndbrequire(res > 0);
-        pos.m_page = (Page*)pagePtr.p;
-      }
-      pos.m_get = ScanPos::Get_tuple;
-      continue;
-      // get tuple
-      // move to next tuple
-    case ScanPos::Get_next_tuple:
-      // move to next fixed size tuple
-      jamDebug();
-      {
-        key.m_page_idx += size;
-||||||| Common ancestor
-        ndbrequire(res > 0);
-        pos.m_page = (Page*)pagePtr.p;
-      }
-      pos.m_get = ScanPos::Get_tuple;
-      continue;
-      // get tuple
-      // move to next tuple
-    case ScanPos::Get_next_tuple:
-      // move to next fixed size tuple
-      jam();
-      {
-        key.m_page_idx += size;
-=======
->>>>>>> MySQL 8.0.36
         pos.m_get = ScanPos::Get_tuple;
-<<<<<<< RonDB // RONDB-624 todo
-      }
-      [[fallthrough]];
-    case ScanPos::Get_tuple:
-      // get fixed size tuple
-      jamDebug();
-      if ((bits & ScanOp::SCAN_VS) == 0)
-      {
-        Fix_page* page = (Fix_page*)pos.m_page;
-        if (key.m_page_idx + size <= Fix_page::DATA_WORDS) 
-	{
-	  pos.m_get = ScanPos::Get_next_tuple;
-	  if (unlikely((bits & ScanOp::SCAN_NR) &&
-              pos.m_realpid_mm == RNIL))
-          {
-            /**
-             * pos.m_page isn't initialized this path, so handle early
-             * We're doing a node restart and we are scanning beyond our
-             * existing rowid's since starting node had those rowid's
-             * defined.
-             */
-            jam();
-            foundGCI = 0;
-            goto found_deleted_rowid;
-          }
-||||||| Common ancestor
-      }
-      [[fallthrough]];
-    case ScanPos::Get_tuple:
-      // get fixed size tuple
-      jam();
-      if ((bits & ScanOp::SCAN_VS) == 0)
-      {
-        Fix_page* page = (Fix_page*)pos.m_page;
-        if (key.m_page_idx + size <= Fix_page::DATA_WORDS) 
-	{
-	  pos.m_get = ScanPos::Get_next_tuple;
-	  if (unlikely((bits & ScanOp::SCAN_NR) &&
-              pos.m_realpid_mm == RNIL))
-          {
-            /**
-             * pos.m_page isn't initialized this path, so handle early
-             * We're doing a node restart and we are scanning beyond our
-             * existing rowid's since starting node had those rowid's
-             * defined.
-             */
-            jam();
-            foundGCI = 0;
-            goto found_deleted_rowid;
-          }
-=======
         continue;
         // get tuple
         // move to next tuple
@@ -2550,151 +2214,17 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
               foundGCI = 0;
               goto found_deleted_rowid;
             }
->>>>>>> MySQL 8.0.36
 #ifdef VM_TRACE
-          if (! (bits & ScanOp::SCAN_DD))
-          {
-            acquire_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
-            Uint32 realpid = getRealpidCheck(fragPtr.p, key.m_page_no);
-            release_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
-            ndbrequire(pos.m_realpid_mm == realpid);
-          }
+            if (! (bits & ScanOp::SCAN_DD))
+            {
+              acquire_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
+              Uint32 realpid = getRealpidCheck(fragPtr.p, key.m_page_no);
+              release_frag_page_map_mutex_read(fragPtr.p, jamBuffer());
+              ndbrequire(pos.m_realpid_mm == realpid);
+            }
 #endif
             tuple_header_ptr = (Tuple_header *)&page->m_data[key.m_page_idx];
 
-<<<<<<< RonDB // RONDB-624 todo
-          if ((key.m_page_idx + (size * 4)) <= Fix_page::DATA_WORDS)
-          {
-            /**
-             * Continue staying ahead of scan on this page by prefetching
-             * a row 4 tuples ahead of this tuple, prefetched the first 3
-             * at PREFETCH_SCAN_TUPLE.
-             */
-            struct Tup_fixsize_page *page_ptr =
-              (struct Tup_fixsize_page*)page;
-            NDB_PREFETCH_READ(page_ptr->get_ptr(key.m_page_idx + (size * 3),
-                                                size));
-          }
-	  if (likely((! ((bits & ScanOp::SCAN_NR) ||
-                         (bits & ScanOp::SCAN_LCP))) ||
-                     ((bits & ScanOp::SCAN_LCP) &&
-                      !pos.m_lcp_scan_changed_rows_page)))
-          {
-            jamDebug();
-            /**
-             * We come here for normal full table scans and also for LCP
-             * scans where we scan ALL ROWS pages.
-             *
-             * We simply check if the row is free, if it isn't then we will
-             * handle it. For LCP scans we will also check at found_tuple that
-             * the LCP_SKIP bit isn't set. If it is then the rowid was empty
-             * at start of LCP. If the rowid is free AND we are scanning an
-             * ALL ROWS page then the LCP_SKIP cannot be set, this is set only
-             * for CHANGED ROWS pages when deleting tuples.
-             *
-             * Free rowid's might have existed at start of LCP. This was
-             * handled by using the LCP keep list when tuple was deleted.
-             * So when we come here we don't have to worry about LCP scanning
-             * those rows.
-             *
-             * LCP_DELETE flag can never be set on ALL ROWS pages.
-             *
-             * The state Tuple_header::ALLOC means that the row is being
-             * inserted, it thus have no current committed state and is
-             * thus here equivalent to the FREE state for LCP scans.
-             *
-             * We need to acquire the TUP fragment mutex before reading the
-             * tuple header bits. The reason for this is to ensure that
-             * we don't interact with INSERT operations that will
-             * manipulate the header bits during allocation of a new row.
-             *
-             * If someone is inserting a row in this very position we will
-             * hold the mutex and thus acquiring the mutex here for query
-             * threads ensure that they don't read a row in the middle of
-             * its insertion process.
-             */
-            acquire_frag_mutex_read(fragPtr.p, key.m_page_no, jamBuffer());
-            thbits = tuple_header_ptr->m_header_bits;
-            release_frag_mutex_read(fragPtr.p, key.m_page_no, jamBuffer());
-            if ((bits & ScanOp::SCAN_LCP) &&
-                (thbits & Tuple_header::LCP_DELETE))
-            {
-              g_eventLogger->info("(%u)LCP_DELETE on tab(%u,%u), row(%u,%u)"
-                                  " ALL ROWS page, header: %x",
-                                  instance(),
-                                  fragPtr.p->fragTableId,
-                                  fragPtr.p->fragmentId,
-                                  key.m_page_no,
-                                  key.m_page_idx,
-                                  thbits);
-              ndbabort();
-||||||| Common ancestor
-          if ((key.m_page_idx + (size * 4)) <= Fix_page::DATA_WORDS)
-          {
-            /**
-             * Continue staying ahead of scan on this page by prefetching
-             * a row 4 tuples ahead of this tuple, prefetched the first 3
-             * at PREFETCH_SCAN_TUPLE.
-             */
-            struct Tup_fixsize_page *page_ptr =
-              (struct Tup_fixsize_page*)page;
-            NDB_PREFETCH_READ(page_ptr->get_ptr(key.m_page_idx + (size * 3),
-                                                size));
-          }
-	  if (likely((! ((bits & ScanOp::SCAN_NR) ||
-                         (bits & ScanOp::SCAN_LCP))) ||
-                     ((bits & ScanOp::SCAN_LCP) &&
-                      !pos.m_lcp_scan_changed_rows_page)))
-          {
-            jam();
-            /**
-             * We come here for normal full table scans and also for LCP
-             * scans where we scan ALL ROWS pages.
-             *
-             * We simply check if the row is free, if it isn't then we will
-             * handle it. For LCP scans we will also check at found_tuple that
-             * the LCP_SKIP bit isn't set. If it is then the rowid was empty
-             * at start of LCP. If the rowid is free AND we are scanning an
-             * ALL ROWS page then the LCP_SKIP cannot be set, this is set only
-             * for CHANGED ROWS pages when deleting tuples.
-             *
-             * Free rowid's might have existed at start of LCP. This was
-             * handled by using the LCP keep list when tuple was deleted.
-             * So when we come here we don't have to worry about LCP scanning
-             * those rows.
-             *
-             * LCP_DELETE flag can never be set on ALL ROWS pages.
-             *
-             * The state Tuple_header::ALLOC means that the row is being
-             * inserted, it thus have no current committed state and is
-             * thus here equivalent to the FREE state for LCP scans.
-             *
-             * We need to acquire the TUP fragment mutex before reading the
-             * tuple header bits. The reason for this is to ensure that
-             * we don't interact with INSERT operations that will
-             * manipulate the header bits during allocation of a new row.
-             *
-             * If someone is inserting a row in this very position we will
-             * hold the mutex and thus acquiring the mutex here for query
-             * threads ensure that they don't read a row in the middle of
-             * its insertion process.
-             */
-            acquire_frag_mutex_read(fragPtr.p, key.m_page_no);
-            thbits = tuple_header_ptr->m_header_bits;
-            release_frag_mutex_read(fragPtr.p, key.m_page_no);
-            if ((bits & ScanOp::SCAN_LCP) &&
-                (thbits & Tuple_header::LCP_DELETE))
-            {
-              g_eventLogger->info("(%u)LCP_DELETE on tab(%u,%u), row(%u,%u)"
-                                  " ALL ROWS page, header: %x",
-                                  instance(),
-                                  fragPtr.p->fragTableId,
-                                  fragPtr.p->fragmentId,
-                                  key.m_page_no,
-                                  key.m_page_idx,
-                                  thbits);
-              ndbabort();
-=======
             if ((key.m_page_idx + (size * 4)) <= Fix_page::DATA_WORDS) {
               /**
                * Continue staying ahead of scan on this page by prefetching
@@ -2705,77 +2235,12 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
                   (struct Tup_fixsize_page *)page;
               NDB_PREFETCH_READ(
                   page_ptr->get_ptr(key.m_page_idx + (size * 3), size));
->>>>>>> MySQL 8.0.36
             }
             if (likely((!((bits & ScanOp::SCAN_NR) ||
                           (bits & ScanOp::SCAN_LCP))) ||
                        ((bits & ScanOp::SCAN_LCP) &&
                         !pos.m_lcp_scan_changed_rows_page))) {
               jam();
-<<<<<<< RonDB // RONDB-624 todo
-              acquire_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
-              tuple_header_ptr->m_header_bits =
-                thbits & (~Tuple_header::LCP_SKIP);
-              DEB_LCP_SKIP(("(%u)Reset LCP_SKIP on tab(%u,%u), row(%u,%u)"
-                            ", header: %x"
-                            ", new header: %x"
-                            ", tuple_header_ptr: %p",
-                            instance(),
-                            fragPtr.p->fragTableId,
-                            fragPtr.p->fragmentId,
-                            key.m_page_no,
-                            key.m_page_idx,
-                            thbits,
-                            tuple_header_ptr->m_header_bits,
-                            tuple_header_ptr));
-              updateChecksum(tuple_header_ptr,
-                             tablePtr.p,
-                             thbits,
-                             tuple_header_ptr->m_header_bits);
-              release_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
-            }
-            scan.m_last_seen = __LINE__;
-	  }
-	  else if (bits & ScanOp::SCAN_NR)
-	  {
-            thbits = tuple_header_ptr->m_header_bits;
-	    if ((foundGCI = *tuple_header_ptr->get_mm_gci(tablePtr.p)) >
-                 scan.m_scanGCI ||
-                foundGCI == 0)
-	    {
-||||||| Common ancestor
-              acquire_frag_mutex(fragPtr.p, key.m_page_no);
-              tuple_header_ptr->m_header_bits =
-                thbits & (~Tuple_header::LCP_SKIP);
-              DEB_LCP_SKIP(("(%u)Reset LCP_SKIP on tab(%u,%u), row(%u,%u)"
-                            ", header: %x"
-                            ", new header: %x"
-                            ", tuple_header_ptr: %p",
-                            instance(),
-                            fragPtr.p->fragTableId,
-                            fragPtr.p->fragmentId,
-                            key.m_page_no,
-                            key.m_page_idx,
-                            thbits,
-                            tuple_header_ptr->m_header_bits,
-                            tuple_header_ptr));
-              updateChecksum(tuple_header_ptr,
-                             tablePtr.p,
-                             thbits,
-                             tuple_header_ptr->m_header_bits);
-              release_frag_mutex(fragPtr.p, key.m_page_no);
-            }
-            scan.m_last_seen = __LINE__;
-	  }
-	  else if (bits & ScanOp::SCAN_NR)
-	  {
-            thbits = tuple_header_ptr->m_header_bits;
-	    if ((foundGCI = *tuple_header_ptr->get_mm_gci(tablePtr.p)) >
-                 scan.m_scanGCI ||
-                foundGCI == 0)
-	    {
-=======
->>>>>>> MySQL 8.0.36
               /**
                * We come here for normal full table scans and also for LCP
                * scans where we scan ALL ROWS pages.
@@ -2808,9 +2273,9 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
                * threads ensure that they don't read a row in the middle of
                * its insertion process.
                */
-              acquire_frag_mutex_read(fragPtr.p, key.m_page_no);
+              acquire_frag_mutex_read(fragPtr.p, key.m_page_no, jamBuffer());
               thbits = tuple_header_ptr->m_header_bits;
-              release_frag_mutex_read(fragPtr.p, key.m_page_no);
+              release_frag_mutex_read(fragPtr.p, key.m_page_no, jamBuffer());
               if ((bits & ScanOp::SCAN_LCP) &&
                   (thbits & Tuple_header::LCP_DELETE)) {
                 g_eventLogger->info(
@@ -2837,7 +2302,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
               if ((bits & ScanOp::SCAN_LCP) &&
                   (thbits & Tuple_header::LCP_SKIP)) {
                 jam();
-                acquire_frag_mutex(fragPtr.p, key.m_page_no);
+                acquire_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
                 tuple_header_ptr->m_header_bits =
                     thbits & (~Tuple_header::LCP_SKIP);
                 DEB_LCP_SKIP(
@@ -2850,7 +2315,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
                      tuple_header_ptr->m_header_bits, tuple_header_ptr));
                 updateChecksum(tuple_header_ptr, tablePtr.p, thbits,
                                tuple_header_ptr->m_header_bits);
-                release_frag_mutex(fragPtr.p, key.m_page_no);
+                release_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
               }
               scan.m_last_seen = __LINE__;
             } else if (bits & ScanOp::SCAN_NR) {
@@ -3037,7 +2502,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
              * We need to use a mutex since otherwise readers could calculate
              * the wrong checksum.
              */
-            acquire_frag_mutex(fragPtr.p, key.m_page_no);
+            acquire_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
             tuple_header_ptr->m_header_bits =
                 thbits & ~(Uint32)Tuple_header::LCP_SKIP;
 
@@ -3049,76 +2514,9 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
 
             updateChecksum(tuple_header_ptr, tablePtr.p, thbits,
                            tuple_header_ptr->m_header_bits);
-            release_frag_mutex(fragPtr.p, key.m_page_no);
+            release_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
             scan.m_last_seen = __LINE__;
           }
-<<<<<<< RonDB // RONDB-624 todo
-          // TUPKEYREQ handles savepoint stuff
-          scan.m_last_seen = __LINE__;
-          scan.m_state = ScanOp::Current;
-          return true;
-        }
-        else
-        {
-          jam();
-          /* Clear LCP_SKIP bit so that it will not show up in next LCP */
-          /**
-           * We need to use a mutex since otherwise readers could calculate
-           * the wrong checksum.
-           */
-          acquire_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
-          tuple_header_ptr->m_header_bits =
-            thbits & ~(Uint32)Tuple_header::LCP_SKIP;
-
-          DEB_LCP_SKIP(("(%u) 3 Reset LCP_SKIP on tab(%u,%u), row(%u,%u)"
-                        ", header: %x",
-                        instance(),
-                        fragPtr.p->fragTableId,
-                        fragPtr.p->fragmentId,
-                        key.m_page_no,
-                        key.m_page_idx,
-                        thbits));
-
-          updateChecksum(tuple_header_ptr,
-                         tablePtr.p,
-                         thbits,
-                         tuple_header_ptr->m_header_bits);
-          release_frag_mutex(fragPtr.p, key.m_page_no, jamBuffer());
-          scan.m_last_seen = __LINE__;
-||||||| Common ancestor
-          // TUPKEYREQ handles savepoint stuff
-          scan.m_state = ScanOp::Current;
-          return true;
-        }
-        else
-        {
-          jam();
-          /* Clear LCP_SKIP bit so that it will not show up in next LCP */
-          /**
-           * We need to use a mutex since otherwise readers could calculate
-           * the wrong checksum.
-           */
-          acquire_frag_mutex(fragPtr.p, key.m_page_no);
-          tuple_header_ptr->m_header_bits =
-            thbits & ~(Uint32)Tuple_header::LCP_SKIP;
-
-          DEB_LCP_SKIP(("(%u) 3 Reset LCP_SKIP on tab(%u,%u), row(%u,%u)"
-                        ", header: %x",
-                        instance(),
-                        fragPtr.p->fragTableId,
-                        fragPtr.p->fragmentId,
-                        key.m_page_no,
-                        key.m_page_idx,
-                        thbits));
-
-          updateChecksum(tuple_header_ptr,
-                         tablePtr.p,
-                         thbits,
-                         tuple_header_ptr->m_header_bits);
-          release_frag_mutex(fragPtr.p, key.m_page_no);
-          scan.m_last_seen = __LINE__;
-=======
->>>>>>> MySQL 8.0.36
         }
         break;
 

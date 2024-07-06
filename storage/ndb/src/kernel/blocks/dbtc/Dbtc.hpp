@@ -46,23 +46,9 @@
 #include <signaldata/LqhTransConf.hpp>
 #include <signaldata/TcIndx.hpp>
 #include <signaldata/TransIdAI.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/EventReport.hpp>
 #include <signaldata/TcContinueB.hpp>
-#include <trigger_definitions.h>
-#include <SignalCounter.hpp>
-#include <KeyTable.hpp>
-#include <portlib/NdbTick.h>
-||||||| Common ancestor
-#include <signaldata/EventReport.hpp>
-#include <trigger_definitions.h>
-#include <SignalCounter.hpp>
-#include <KeyTable.hpp>
-#include <portlib/NdbTick.h>
-=======
 #include <signaldata/TrigAttrInfo.hpp>
 #include "CountingPool.hpp"
->>>>>>> MySQL 8.0.36
 #include "TransientPool.hpp"
 #include "TransientSlotPool.hpp"
 #include "kernel/DbtcState.hpp"

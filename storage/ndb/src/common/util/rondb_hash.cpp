@@ -27,7 +27,6 @@
 
 #include <my_compiler.h>  // likely
 #include <my_config.h>    // big/little endian
-<<<<<<< RonDB // RONDB-624 todo
 
 void
 rondb_calc_hash(Uint32 hash_val[4],
@@ -67,11 +66,6 @@ rondb_calc_hash_val(const char *key,
   rondb_calc_hash(hash_val, key, keylen, use_new);
   return hash_val[0];
 }
-||||||| Common ancestor
-
-=======
-#include <string.h>       // memcpy()
->>>>>>> MySQL 8.0.36
 
 /*
  * This code implements the MD5 message-digest algorithm.

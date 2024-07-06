@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,13 +36,8 @@
 #include <signaldata/GetTabInfo.hpp>
 #include "diskpage.hpp"
 
-<<<<<<< RonDB // RONDB-624 todo
 #include <RWPool.hpp>
 #include <RWPool64.hpp>
-||||||| Common ancestor
-#include <WOPool.hpp>
-=======
->>>>>>> MySQL 8.0.36
 #include <SafeMutex.hpp>
 #include <WOPool.hpp>
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -33,24 +33,11 @@
 #include <KeyDescriptor.hpp>
 #include <SectionReader.hpp>
 #include <cstring>
-#include <md5_hash.hpp>
 #include <signaldata/AlterTab.hpp>
 #include <signaldata/AlterTable.hpp>
 #include <signaldata/AttrInfo.hpp>
 #include <signaldata/CreateTab.hpp>
 #include <signaldata/DbspjErr.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <Interpreter.hpp>
-#include <AttributeHeader.hpp>
-#include <AttributeDescriptor.hpp>
-#include <KeyDescriptor.hpp>
-||||||| Common ancestor
-#include <Interpreter.hpp>
-#include <AttributeHeader.hpp>
-#include <AttributeDescriptor.hpp>
-#include <KeyDescriptor.hpp>
-#include <md5_hash.hpp>
-=======
 #include <signaldata/DiGetNodes.hpp>
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
@@ -58,7 +45,6 @@
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/QueryTree.hpp>
 #include <signaldata/RouteOrd.hpp>
->>>>>>> MySQL 8.0.36
 #include <signaldata/TcKeyConf.hpp>
 #include <signaldata/TcKeyRef.hpp>
 #include <signaldata/TransIdAI.hpp>
@@ -68,15 +54,7 @@
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/ReadNodesConf.hpp>
 #include <signaldata/SignalDroppedRep.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <EventLogger.hpp>
-#include <Bitmask.hpp>
 #include <util/rondb_hash.hpp>
-||||||| Common ancestor
-#include <EventLogger.hpp>
-#include <Bitmask.hpp>
-=======
->>>>>>> MySQL 8.0.36
 
 #define JAM_FILE_ID 479
 

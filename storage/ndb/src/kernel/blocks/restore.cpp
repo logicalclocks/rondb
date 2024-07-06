@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,25 +41,8 @@
 #include <signaldata/FsRemoveReq.hpp>
 #include <signaldata/KeyInfo.hpp>
 #include <signaldata/LqhKey.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <AttributeHeader.hpp>
-#include <backup/Backup.hpp>
-#include <dblqh/Dblqh.hpp>
-#include <dbtup/Dbtup.hpp>
-#include <KeyDescriptor.hpp>
-#include <signaldata/DumpStateOrd.hpp>
 #include <util/rondb_hash.hpp>
-||||||| Common ancestor
-#include <AttributeHeader.hpp>
-#include <md5_hash.hpp>
-#include <backup/Backup.hpp>
-#include <dblqh/Dblqh.hpp>
-#include <dbtup/Dbtup.hpp>
-#include <KeyDescriptor.hpp>
-#include <signaldata/DumpStateOrd.hpp>
-=======
 #include <signaldata/RestoreImpl.hpp>
->>>>>>> MySQL 8.0.36
 
 #include <NdbTick.h>
 #include <EventLogger.hpp>
