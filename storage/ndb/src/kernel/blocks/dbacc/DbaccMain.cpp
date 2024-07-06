@@ -46,16 +46,9 @@
 #include <signaldata/FsRemoveReq.hpp>
 #include <signaldata/NextScan.hpp>
 #include <signaldata/NodeStateSignalData.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <util/rondb_hash.hpp>
-#include <EventLogger.hpp>
-||||||| Common ancestor
-#include <md5_hash.hpp>
-#include <EventLogger.hpp>
-=======
 #include <signaldata/TransIdAI.hpp>
 #include <signaldata/TuxMaint.hpp>
->>>>>>> MySQL 8.0.36
 
 extern EventLogger *g_eventLogger;
 
@@ -1107,7 +1100,6 @@ void Dbacc::sendAcckeyconf(Signal *signal) const {
   signal->theData[2] = operationRecPtr.p->fid;
   signal->theData[3] = operationRecPtr.p->localdata.m_page_no;
   signal->theData[4] = operationRecPtr.p->localdata.m_page_idx;
-<<<<<<< RonDB // RONDB-624 todo
 }//Dbacc::sendAcckeyconf()
 
 /**
@@ -1394,53 +1386,6 @@ void Dbacc::execACCKEYREQ(Signal* signal,
                           Uint32 opPtrI,
                           Dbacc::Operationrec *opPtrP)
 {
-||||||| Common ancestor
-}//Dbacc::sendAcckeyconf()
-
-/* ******************--------------------------------------------------------------- */
-/* ACCKEYREQ                                         REQUEST FOR INSERT, DELETE,     */
-/*                                                   RERAD AND UPDATE, A TUPLE.      */
-/*                                                   SENDER: LQH,    LEVEL B         */
-/*  SIGNAL DATA:      OPERATION_REC_PTR,             CONNECTION PTR                  */
-/*                    TABPTR,                        TABLE ID = TABLE RECORD POINTER */
-/*                    TREQINFO,                                                      */
-/*                    THASHVALUE,                    HASH VALUE OF THE TUP           */
-/*                    TKEYLEN,                       LENGTH OF THE PRIMARY KEYS      */
-/*                    TKEY1,                         PRIMARY KEY 1                   */
-/*                    TKEY2,                         PRIMARY KEY 2                   */
-/*                    TKEY3,                         PRIMARY KEY 3                   */
-/*                    TKEY4,                         PRIMARY KEY 4                   */
-/* ******************--------------------------------------------------------------- */
-void Dbacc::execACCKEYREQ(Signal* signal,
-                          Uint32 opPtrI,
-                          Dbacc::Operationrec *opPtrP) 
-{
-=======
-}  // Dbacc::sendAcckeyconf()
-
-/* ******************---------------------------------------------------------------
- */
-/* ACCKEYREQ                                         REQUEST FOR INSERT, DELETE,
- */
-/*                                                   RERAD AND UPDATE, A TUPLE.
- */
-/*                                                   SENDER: LQH,    LEVEL B */
-/*  SIGNAL DATA:      OPERATION_REC_PTR,             CONNECTION PTR */
-/*                    TABPTR,                        TABLE ID = TABLE RECORD
- * POINTER */
-/*                    TREQINFO, */
-/*                    THASHVALUE,                    HASH VALUE OF THE TUP */
-/*                    TKEYLEN,                       LENGTH OF THE PRIMARY KEYS
- */
-/*                    TKEY1,                         PRIMARY KEY 1 */
-/*                    TKEY2,                         PRIMARY KEY 2 */
-/*                    TKEY3,                         PRIMARY KEY 3 */
-/*                    TKEY4,                         PRIMARY KEY 4 */
-/* ******************---------------------------------------------------------------
- */
-void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
-                          Dbacc::Operationrec *opPtrP) {
->>>>>>> MySQL 8.0.36
   jamEntryDebug();
   AccKeyReq* const req = reinterpret_cast<AccKeyReq*>(&signal->theData[0]);
   fragrecptr = prepare_fragptr;
@@ -1535,7 +1480,6 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
   Uint32 op = opbits & Operationrec::OP_MASK;
   if (found == ZTRUE) {
     switch (op) {
-<<<<<<< RonDB // RONDB-624 todo
     case ZREAD:
     case ZUPDATE:
     case ZDELETE:
@@ -1628,160 +1572,9 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
       }
       else
       {
-||||||| Common ancestor
-    case ZREAD:
-    case ZUPDATE:
-    case ZDELETE:
-    case ZWRITE:
-    case ZSCAN_OP:
-      if (likely(!lockOwnerPtr.p))
-      {
-        release_frag_mutex_get(fragrecptr.p, operationRecPtr);
-	if(unlikely(op == ZWRITE))
-	{
-	  jam();
-	  opbits &= ~(Uint32)Operationrec::OP_MASK;
-	  opbits |= (op = ZUPDATE);
-	  operationRecPtr.p->m_op_bits = opbits; // store to get correct ACCKEYCONF
-	}
-	opbits |= Operationrec::OP_STATE_RUNNING;
-	opbits |= Operationrec::OP_RUN_QUEUE;
-        c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
-                                operationRecPtr.p->localdata.m_page_idx,
-                                fragrecptr.p->tupFragptr);
-        sendAcckeyconf(signal);
-        if (! (opbits & Operationrec::OP_DIRTY_READ))
-        {
-	  /*---------------------------------------------------------------*/
-	  // It is not a dirty read. We proceed by locking and continue with
-	  // the operation.
-	  /*---------------------------------------------------------------*/
-          jamDebug();
-          ndbassert(!m_is_in_query_thread);
-          Uint32 eh = elemPageptr.p->word32[elemptr];
-          operationRecPtr.p->reducedHashValue =
-            ElementHeader::getReducedHashValue(eh);
-          operationRecPtr.p->elementPage = elemPageptr.i;
-          operationRecPtr.p->elementContainer = elemConptr;
-          operationRecPtr.p->elementPointer = elemptr;
-
-	  eh = ElementHeader::setLocked(operationRecPtr.i);
-	  fragrecptr.p->lockCount++;
-	  opbits |= Operationrec::OP_LOCK_OWNER;
-	  operationRecPtr.p->m_op_bits = opbits;
-
-          /**
-           * Ensure that any thread that reads element header also can see
-           * the updates to the operation record. Only required when we are
-           * using query threads.
-           */
-          query_thread_memory_barrier();
-          elemPageptr.p->word32[elemptr] = eh;
-
-          fragrecptr.p->
-            m_lockStats.req_start_imm_ok((opbits & 
-                                          Operationrec::OP_LOCK_MODE) 
-                                         != ZREADLOCK,
-                                         operationRecPtr.p->m_lockTime,
-                                         getHighResTimer());
-          
-          return;
-        }
-        else
-        {
-          jamDebug();
-	  /*---------------------------------------------------------------*/
-	  // It is a dirty read. We do not lock anything. Set state to
-	  // IDLE since no COMMIT call will come.
-	  /*---------------------------------------------------------------*/
-	  opbits = Operationrec::OP_EXECUTED_DIRTY_READ;
-	  operationRecPtr.p->m_op_bits = opbits;
-          return;
-        }//if
-      }
-      else
-      {
-=======
-      case ZREAD:
-      case ZUPDATE:
-      case ZDELETE:
-      case ZWRITE:
-      case ZSCAN_OP:
-        if (likely(!lockOwnerPtr.p)) {
-          release_frag_mutex_get(fragrecptr.p, operationRecPtr);
-          if (unlikely(op == ZWRITE)) {
-            jam();
-            opbits &= ~(Uint32)Operationrec::OP_MASK;
-            opbits |= (op = ZUPDATE);
-            operationRecPtr.p->m_op_bits =
-                opbits;  // store to get correct ACCKEYCONF
-          }
-          opbits |= Operationrec::OP_STATE_RUNNING;
-          opbits |= Operationrec::OP_RUN_QUEUE;
-          c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
-                                  operationRecPtr.p->localdata.m_page_idx,
-                                  fragrecptr.p->tupFragptr);
-          sendAcckeyconf(signal);
-          if (!(opbits & Operationrec::OP_DIRTY_READ)) {
-            /*---------------------------------------------------------------*/
-            // It is not a dirty read. We proceed by locking and continue with
-            // the operation.
-            /*---------------------------------------------------------------*/
-            jamDebug();
-            ndbassert(!m_is_in_query_thread);
-            Uint32 eh = elemPageptr.p->word32[elemptr];
-            operationRecPtr.p->reducedHashValue =
-                ElementHeader::getReducedHashValue(eh);
-            operationRecPtr.p->elementPage = elemPageptr.i;
-            operationRecPtr.p->elementContainer = elemConptr;
-            operationRecPtr.p->elementPointer = elemptr;
-
-            eh = ElementHeader::setLocked(operationRecPtr.i);
-            fragrecptr.p->lockCount++;
-            opbits |= Operationrec::OP_LOCK_OWNER;
-            operationRecPtr.p->m_op_bits = opbits;
-
-            /**
-             * Ensure that any thread that reads element header also can see
-             * the updates to the operation record. Only required when we are
-             * using query threads.
-             */
-            query_thread_memory_barrier();
-            elemPageptr.p->word32[elemptr] = eh;
-
-            fragrecptr.p->m_lockStats.req_start_imm_ok(
-                (opbits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
-                operationRecPtr.p->m_lockTime, getHighResTimer());
-
-            return;
-          } else {
-            jamDebug();
-            /*---------------------------------------------------------------*/
-            // It is a dirty read. We do not lock anything. Set state to
-            // IDLE since no COMMIT call will come.
-            /*---------------------------------------------------------------*/
-            opbits = Operationrec::OP_EXECUTED_DIRTY_READ;
-            operationRecPtr.p->m_op_bits = opbits;
-            return;
-          }  // if
-        } else {
-          jam();
-          accIsLockedLab(signal, lockOwnerPtr);
-          return;
-        }  // if
-      case ZINSERT:
->>>>>>> MySQL 8.0.36
         jam();
-<<<<<<< RonDB // RONDB-624 todo
         accIsLockedLab(signal, lockOwnerPtr, hash);
-||||||| Common ancestor
-        accIsLockedLab(signal, lockOwnerPtr);
-=======
-        ndbassert(!m_is_in_query_thread);
-        insertExistElemLab(signal, lockOwnerPtr);
->>>>>>> MySQL 8.0.36
         return;
-<<<<<<< RonDB // RONDB-624 todo
       }//if
     case ZINSERT:
       jam();
@@ -1825,79 +1618,6 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
   else
   {
     release_frag_mutex_hash(fragrecptr.p, hash);
-||||||| Common ancestor
-      }//if
-    case ZINSERT:
-      jam();
-      ndbassert(!m_is_in_query_thread);
-      insertExistElemLab(signal, lockOwnerPtr);
-      return;
-    default:
-      ndbabort();
-    }//switch
-  }
-  else if (found == ZFALSE)
-  {
-    switch (op){
-    case ZWRITE:
-      opbits &= ~(Uint32)Operationrec::OP_MASK;
-      opbits |= (op = ZINSERT);
-      [[fallthrough]];
-    case ZINSERT:
-      jam();
-      opbits |= Operationrec::OP_INSERT_IS_DONE;
-      opbits |= Operationrec::OP_STATE_RUNNING;
-      opbits |= Operationrec::OP_RUN_QUEUE;
-      operationRecPtr.p->m_op_bits = opbits;
-      insertelementLab(signal, bucketPageptr, bucketConidx);
-      ndbassert(!m_is_in_query_thread);
-      return;
-    case ZREAD:
-    case ZUPDATE:
-    case ZDELETE:
-    case ZSCAN_OP:
-      jam();
-      release_frag_mutex_get(fragrecptr.p, operationRecPtr);
-      acckeyref1Lab(signal, ZREAD_ERROR);
-      return;
-    default:
-      ndbabort();
-    }//switch
-  }
-  else
-  {
-=======
-      default:
-        ndbabort();
-    }  // switch
-  } else if (found == ZFALSE) {
-    switch (op) {
-      case ZWRITE:
-        opbits &= ~(Uint32)Operationrec::OP_MASK;
-        opbits |= (op = ZINSERT);
-        [[fallthrough]];
-      case ZINSERT:
-        jam();
-        opbits |= Operationrec::OP_INSERT_IS_DONE;
-        opbits |= Operationrec::OP_STATE_RUNNING;
-        opbits |= Operationrec::OP_RUN_QUEUE;
-        operationRecPtr.p->m_op_bits = opbits;
-        insertelementLab(signal, bucketPageptr, bucketConidx);
-        ndbassert(!m_is_in_query_thread);
-        return;
-      case ZREAD:
-      case ZUPDATE:
-      case ZDELETE:
-      case ZSCAN_OP:
-        jam();
-        release_frag_mutex_get(fragrecptr.p, operationRecPtr);
-        acckeyref1Lab(signal, ZREAD_ERROR);
-        return;
-      default:
-        ndbabort();
-    }  // switch
-  } else {
->>>>>>> MySQL 8.0.36
     jam();
     acckeyref1Lab(signal, found);
   }//if
@@ -7106,29 +6826,12 @@ void Dbacc::endofexpLab(Signal* signal)
   {
     jam();
     /* IT MEANS THAT IF SLACK < ZERO */
-<<<<<<< RonDB // RONDB-624 todo
     /* --------------------------------------------------------------------- */
     /* IT IS STILL NECESSARY TO EXPAND THE FRAGMENT EVEN MORE. START IT FROM */
     /* HERE WITHOUT WAITING FOR NEXT COMMIT ON THE FRAGMENT.                 */
     /* --------------------------------------------------------------------- */
     signal->theData[0] = fragrecptr.p->fragmentid;
     signal->theData[1] = fragrecptr.p->myTableId;
-||||||| Common ancestor
-    /* --------------------------------------------------------------------------------- */
-    /*       IT IS STILL NECESSARY TO EXPAND THE FRAGMENT EVEN MORE. START IT FROM HERE  */
-    /*       WITHOUT WAITING FOR NEXT COMMIT ON THE FRAGMENT.                            */
-    /* --------------------------------------------------------------------------------- */
-    signal->theData[0] = fragrecptr.i;
-=======
-    /* ---------------------------------------------------------------------------------
-     */
-    /*       IT IS STILL NECESSARY TO EXPAND THE FRAGMENT EVEN MORE. START IT
-     * FROM HERE  */
-    /*       WITHOUT WAITING FOR NEXT COMMIT ON THE FRAGMENT. */
-    /* ---------------------------------------------------------------------------------
-     */
-    signal->theData[0] = fragrecptr.i;
->>>>>>> MySQL 8.0.36
     fragrecptr.p->expandOrShrinkQueued = true;
     sendSignal(reference(), GSN_EXPANDCHECK2, signal, 2, JBB);
   }//if
@@ -7145,45 +6848,8 @@ void Dbacc::execDEBUG_SIG(Signal *signal) {
 LHBits32 Dbacc::getElementHash(OperationrecPtr& oprec)
 {
   ndbassert(!oprec.isNull());
-
-<<<<<<< RonDB // RONDB-624 todo
-  // Only calculate hash value if operation does not already have a
-  // complete hash value
-  ndbrequire(oprec.p->hashValue.valid_bits() >= fragrecptr.p->MAX_HASH_VALUE_BITS)
+  ndbrequire(oprec.p->hashValue.valid_bits() >= fragrecptr.p->MAX_HASH_VALUE_BITS);
   return oprec.p->hashValue;
-  {
-||||||| Common ancestor
-  // Only calculate hash value if operation does not already have a complete hash value
-  if (oprec.p->hashValue.valid_bits() < fragrecptr.p->MAX_HASH_VALUE_BITS)
-  {
-=======
-  // Only calculate hash value if operation does not already have a complete
-  // hash value
-  if (oprec.p->hashValue.valid_bits() < fragrecptr.p->MAX_HASH_VALUE_BITS) {
->>>>>>> MySQL 8.0.36
-    jam();
-    Uint32 keys[2048 * MAX_XFRM_MULTIPLY];
-    Local_key localkey;
-    localkey = oprec.p->localdata;
-    const bool xfrm = fragrecptr.p->hasCharAttr;
-    Uint32 len =
-        readTablePk(localkey.m_page_no, localkey.m_page_idx,
-                    ElementHeader::setLocked(oprec.i), oprec, &keys[0], xfrm);
-    if (len > 0) {
-      /**
-       * Return of len == 0 can only happen when the element is ready to be
-       * deleted and no new operations is linked to the element, thus the
-       * element will be removed soon since it will always return 0 for
-       * all operations and as soon as the operations in the lock queue
-       * have completed the element will be gone. Thus no issue if the
-       * element is in the wrong place in the hash since it won't be found
-       * by anyone even if in the right place.
-       */
-      oprec.p->hashValue = LHBits32(rondb_calc_hash_val((const char*)&keys[0],
-                                    len,
-                                    fragrecptr.p->m_use_new_hash_function));
-    }
-  }
 }
 
 LHBits32 Dbacc::getElementHash(Uint32 const *elemptr) {
@@ -8392,57 +8058,7 @@ void Dbacc::execNEXT_SCANREQ(Signal *signal) {
   ndbrequire(Magic::check_ptr(scanPtr.p));
 
   switch (tscanNextFlag) {
-<<<<<<< RonDB // RONDB-624 todo
-  case NextScanReq::ZSCAN_NEXT:
-    jam();
-    /*empty*/;
-    break;
-  case NextScanReq::ZSCAN_NEXT_COMMIT:
-  case NextScanReq::ZSCAN_COMMIT:
-    jam();
-    /* --------------------------------------------------------------------- */
-    /* COMMIT ACTIVE OPERATION. 
-     * SEND NEXT SCAN ELEMENT IF IT IS ZCOPY_NEXT_COMMIT.
-     * --------------------------------------------------------------------- */
-    ndbrequire(m_curr_acc->oprec_pool.getUncheckedPtrRW(operationRecPtr));
-    fragrecptr.i = operationRecPtr.p->fragptr;
-    ndbrequire(c_fragment_pool.getPtr(fragrecptr));
-    ndbrequire(Magic::check_ptr(operationRecPtr.p));
-    if (!scanPtr.p->scanReadCommittedFlag) {
-      commitOperation(signal);
-    }//if
-    operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
-    takeOutActiveScanOp();
-    releaseOpRec();
-    scanPtr.p->scanOpsAllocated--;
-    if (tscanNextFlag == NextScanReq::ZSCAN_COMMIT) {
-||||||| Common ancestor
-  case NextScanReq::ZSCAN_NEXT:
-    jam();
-    /*empty*/;
-    break;
-  case NextScanReq::ZSCAN_NEXT_COMMIT:
-  case NextScanReq::ZSCAN_COMMIT:
-    jam();
-    /* --------------------------------------------------------------------- */
-    /* COMMIT ACTIVE OPERATION. 
-     * SEND NEXT SCAN ELEMENT IF IT IS ZCOPY_NEXT_COMMIT.
-     * --------------------------------------------------------------------- */
-    ndbrequire(oprec_pool.getUncheckedPtrRW(operationRecPtr));
-    fragrecptr.i = operationRecPtr.p->fragptr;
-    ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
-    ndbrequire(Magic::check_ptr(operationRecPtr.p));
-    if (!scanPtr.p->scanReadCommittedFlag) {
-      commitOperation(signal);
-    }//if
-    operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
-    takeOutActiveScanOp();
-    releaseOpRec();
-    scanPtr.p->scanOpsAllocated--;
-    if (tscanNextFlag == NextScanReq::ZSCAN_COMMIT) {
-=======
     case NextScanReq::ZSCAN_NEXT:
->>>>>>> MySQL 8.0.36
       jam();
       /*empty*/;
       break;
@@ -8455,9 +8071,9 @@ void Dbacc::execNEXT_SCANREQ(Signal *signal) {
        * SEND NEXT SCAN ELEMENT IF IT IS ZCOPY_NEXT_COMMIT.
        * ---------------------------------------------------------------------
        */
-      ndbrequire(oprec_pool.getUncheckedPtrRW(operationRecPtr));
+      ndbrequire(m_curr_acc->oprec_pool.getUncheckedPtrRW(operationRecPtr));
       fragrecptr.i = operationRecPtr.p->fragptr;
-      ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
+      ndbrequire(c_fragment_pool.getPtr(fragrecptr));
       ndbrequire(Magic::check_ptr(operationRecPtr.p));
       if (!scanPtr.p->scanReadCommittedFlag) {
         commitOperation(signal);
@@ -8479,7 +8095,7 @@ void Dbacc::execNEXT_SCANREQ(Signal *signal) {
     case NextScanReq::ZSCAN_CLOSE:
       jam();
       fragrecptr.i = scanPtr.p->activeLocalFrag;
-      ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
+      ndbrequire(c_fragment_pool.getPtr(fragrecptr));
       ndbassert(fragrecptr.p->activeScanMask & scanPtr.p->scanMask);
       /* ---------------------------------------------------------------------
        * THE SCAN PROCESS IS FINISHED. RELOCK ALL LOCKED EL.
@@ -8487,45 +8103,9 @@ void Dbacc::execNEXT_SCANREQ(Signal *signal) {
        * ------------------------------------------------------------------- */
       releaseScanLab(signal);
       return;
-<<<<<<< RonDB // RONDB-624 todo
-    }//if
-    break;
-  case NextScanReq::ZSCAN_CLOSE:
-    jam();
-    fragrecptr.i = scanPtr.p->activeLocalFrag;
-    ndbrequire(c_fragment_pool.getPtr(fragrecptr));
-    ndbassert(fragrecptr.p->activeScanMask & scanPtr.p->scanMask);
-    /* ---------------------------------------------------------------------
-     * THE SCAN PROCESS IS FINISHED. RELOCK ALL LOCKED EL. 
-     * RELEASE ALL INVOLVED REC.
-     * ------------------------------------------------------------------- */
-    releaseScanLab(signal);
-    return;
-  default:
-    ndbabort();
-  }//switch
-||||||| Common ancestor
-    }//if
-    break;
-  case NextScanReq::ZSCAN_CLOSE:
-    jam();
-    fragrecptr.i = scanPtr.p->activeLocalFrag;
-    ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
-    ndbassert(fragrecptr.p->activeScanMask & scanPtr.p->scanMask);
-    /* ---------------------------------------------------------------------
-     * THE SCAN PROCESS IS FINISHED. RELOCK ALL LOCKED EL. 
-     * RELEASE ALL INVOLVED REC.
-     * ------------------------------------------------------------------- */
-    releaseScanLab(signal);
-    return;
-  default:
-    ndbabort();
-  }//switch
-=======
     default:
       ndbabort();
   }  // switch
->>>>>>> MySQL 8.0.36
   scanPtr.p->scan_lastSeen = __LINE__;
   signal->theData[0] = scanPtr.i;
   signal->theData[1] = AccCheckScan::ZNOT_CHECK_LCP_STOP;
@@ -9782,7 +9362,6 @@ void Dbacc::takeOutReadyScanQueue() const {
 /* ------------------------------------------------------------------------- */
 /* ------------------------------------------------------------------------- */
 
-<<<<<<< RonDB // RONDB-624 todo
 void Dbacc::getFragPtr(FragmentrecPtr &rootPtr,
                        Uint32 tableId,
                        Uint32 fragId,
@@ -9812,56 +9391,6 @@ void Dbacc::getFragPtr(FragmentrecPtr &rootPtr,
 void Dbacc::initOverpage(Page8Ptr iopPageptr)
 {
   Page32* p32 = reinterpret_cast<Page32*>(iopPageptr.p - (iopPageptr.i % 4));
-||||||| Common ancestor
-bool Dbacc::getfragmentrec(FragmentrecPtr& rootPtr, Uint32 fid)
-{
-  for (Uint32 i = 0; i < NDB_ARRAY_SIZE(tabptr.p->fragholder); i++) {
-    jam();
-    if (tabptr.p->fragholder[i] == fid) {
-      jam();
-      fragrecptr.i = tabptr.p->fragptrholder[i];
-      ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
-      return true;
-    }//if
-  }//for
-  return false;
-}//Dbacc::getrootfragmentrec()
-
-/* --------------------------------------------------------------------------------- */
-/* INIT_OVERPAGE                                                                     */
-/*         INPUT. IOP_PAGEPTR, POINTER TO AN OVERFLOW PAGE RECORD                    */
-/*         DESCRIPTION: CONTAINERS AND FREE LISTS OF THE PAGE, GET INITIALE VALUE    */
-/*         ACCORDING TO LH3 AND PAGE STRUCTOR DESCRIPTION OF NDBACC BLOCK            */
-/* --------------------------------------------------------------------------------- */
-void Dbacc::initOverpage(Page8Ptr iopPageptr)
-{
-  Page32* p32 = reinterpret_cast<Page32*>(iopPageptr.p - (iopPageptr.i % 4));
-=======
-bool Dbacc::getfragmentrec(FragmentrecPtr &rootPtr, Uint32 fid) {
-  for (Uint32 i = 0; i < NDB_ARRAY_SIZE(tabptr.p->fragholder); i++) {
-    jam();
-    if (tabptr.p->fragholder[i] == fid) {
-      jam();
-      fragrecptr.i = tabptr.p->fragptrholder[i];
-      ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
-      return true;
-    }  // if
-  }    // for
-  return false;
-}  // Dbacc::getrootfragmentrec()
-
-/* ---------------------------------------------------------------------------------
- */
-/* INIT_OVERPAGE */
-/*         INPUT. IOP_PAGEPTR, POINTER TO AN OVERFLOW PAGE RECORD */
-/*         DESCRIPTION: CONTAINERS AND FREE LISTS OF THE PAGE, GET INITIALE
- * VALUE    */
-/*         ACCORDING TO LH3 AND PAGE STRUCTOR DESCRIPTION OF NDBACC BLOCK */
-/* ---------------------------------------------------------------------------------
- */
-void Dbacc::initOverpage(Page8Ptr iopPageptr) {
-  Page32 *p32 = reinterpret_cast<Page32 *>(iopPageptr.p - (iopPageptr.i % 4));
->>>>>>> MySQL 8.0.36
   ndbrequire(p32->magic == Page32::MAGIC);
   Uint32 tiopPrevFree;
   Uint32 tiopNextFree;
@@ -10359,106 +9888,6 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
       }
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    break;
-  }
-  case Ndbinfo::FRAG_LOCKS_TABLEID:
-  {
-    Uint32 tableid = cursor->data[0];
-    
-    for (;tableid < ctablesize; tableid++)
-    {
-      TabrecPtr tabPtr;
-      tabPtr.i = tableid;
-      ptrAss(tabPtr, tabrec);
-      Uint32 f = 0;
-      Uint32 fragId = c_lqh->getNextAccFragid(tabPtr.i, f);
-      if (fragId != RNIL)
-      {
-        jam();
-        // Loop over all fragments for this table.
-        for (; f < MAX_FRAG_PER_LQH; f++)
-        {
-          FragmentrecPtr frp;
-          frp.i = c_lqh->getNextAccFragrec(tabPtr.i, f);
-          if (frp.i != RNIL64)
-          {
-            jam();
-            ndbrequire(c_fragment_pool.getPtr(frp));
-            
-            const Fragmentrec::LockStats& ls = frp.p->m_lockStats;
-            Uint32 f_save = f;
-            Uint32 fragId = c_lqh->getNextAccFragid(tabPtr.i, f);
-            ndbrequire(f == f_save);
-            
-            Ndbinfo::Row row(signal, req);
-            row.write_uint32(getOwnNodeId());
-            row.write_uint32(instance());
-            row.write_uint32(tableid);
-            row.write_uint32(fragId);
-
-            row.write_uint64(ls.m_ex_req_count);
-            row.write_uint64(ls.m_ex_imm_ok_count);
-            row.write_uint64(ls.m_ex_wait_ok_count);
-            row.write_uint64(ls.m_ex_wait_fail_count);
-            
-            row.write_uint64(ls.m_sh_req_count);
-            row.write_uint64(ls.m_sh_imm_ok_count);
-            row.write_uint64(ls.m_sh_wait_ok_count);
-            row.write_uint64(ls.m_sh_wait_fail_count);
-
-            row.write_uint64(ls.m_wait_ok_millis);
-            row.write_uint64(ls.m_wait_fail_millis);
-
-            ndbinfo_send_row(signal, req, row, rl);
-||||||| Common ancestor
-    break;
-  }
-  case Ndbinfo::FRAG_LOCKS_TABLEID:
-  {
-    Uint32 tableid = cursor->data[0];
-    
-    for (;tableid < ctablesize; tableid++)
-    {
-      TabrecPtr tabPtr;
-      tabPtr.i = tableid;
-      ptrAss(tabPtr, tabrec);
-      if (tabPtr.p->fragholder[0] != RNIL)
-      {
-        jam();
-        // Loop over all fragments for this table.
-        for (Uint32 f = 0; f < NDB_ARRAY_SIZE(tabPtr.p->fragholder); f++)
-        {
-          if (tabPtr.p->fragholder[f] != RNIL)
-          {
-            jam();
-            FragmentrecPtr frp;
-            frp.i = tabPtr.p->fragptrholder[f];
-            ptrCheckGuard(frp, cfragmentsize, fragmentrec);
-            
-            const Fragmentrec::LockStats& ls = frp.p->m_lockStats;
-            
-            Ndbinfo::Row row(signal, req);
-            row.write_uint32(getOwnNodeId());
-            row.write_uint32(instance());
-            row.write_uint32(tableid);
-            row.write_uint32(tabPtr.p->fragholder[f]);
-
-            row.write_uint64(ls.m_ex_req_count);
-            row.write_uint64(ls.m_ex_imm_ok_count);
-            row.write_uint64(ls.m_ex_wait_ok_count);
-            row.write_uint64(ls.m_ex_wait_fail_count);
-            
-            row.write_uint64(ls.m_sh_req_count);
-            row.write_uint64(ls.m_sh_imm_ok_count);
-            row.write_uint64(ls.m_sh_wait_ok_count);
-            row.write_uint64(ls.m_sh_wait_fail_count);
-
-            row.write_uint64(ls.m_wait_ok_millis);
-            row.write_uint64(ls.m_wait_fail_millis);
-
-            ndbinfo_send_row(signal, req, row, rl);
-=======
     case Ndbinfo::FRAG_LOCKS_TABLEID: {
       Uint32 tableid = cursor->data[0];
 
@@ -10466,23 +9895,28 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
         TabrecPtr tabPtr;
         tabPtr.i = tableid;
         ptrAss(tabPtr, tabrec);
-        if (tabPtr.p->fragholder[0] != RNIL) {
+        Uint32 f = 0;
+        Uint32 fragId = c_lqh->getNextAccFragid(tabPtr.i, f);
+        if (fragId != RNIL)
+        {
           jam();
           // Loop over all fragments for this table.
-          for (Uint32 f = 0; f < NDB_ARRAY_SIZE(tabPtr.p->fragholder); f++) {
-            if (tabPtr.p->fragholder[f] != RNIL) {
+          for (; f < MAX_FRAG_PER_LQH; f++)
+          {
+            FragmentrecPtr frp;
+            frp.i = c_lqh->getNextAccFragrec(tabPtr.i, f);
+            if (frp.i != RNIL64)
+            {
               jam();
-              FragmentrecPtr frp;
-              frp.i = tabPtr.p->fragptrholder[f];
-              ptrCheckGuard(frp, cfragmentsize, fragmentrec);
-
+              ndbrequire(c_fragment_pool.getPtr(frp));
+            
               const Fragmentrec::LockStats &ls = frp.p->m_lockStats;
 
               Ndbinfo::Row row(signal, req);
               row.write_uint32(getOwnNodeId());
               row.write_uint32(instance());
               row.write_uint32(tableid);
-              row.write_uint32(tabPtr.p->fragholder[f]);
+              row.write_uint32(fragId);
 
               row.write_uint64(ls.m_ex_req_count);
               row.write_uint64(ls.m_ex_imm_ok_count);
@@ -10499,7 +9933,6 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
 
               ndbinfo_send_row(signal, req, row, rl);
             }
->>>>>>> MySQL 8.0.36
           }
         }
 
@@ -10515,197 +9948,6 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
       }
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    break;
-  }
-  case Ndbinfo::ACC_OPERATIONS_TABLEID:
-  {
-    jam();
-    /* Take a break periodically when scanning records */
-    Uint32 maxToCheck = 100;
-    NDB_TICKS now = getHighResTimer();
-    OperationrecPtr opRecPtr;
-    Uint32 i = cursor->data[0];
-    do
-    {
-      if (rl.need_break(req) || maxToCheck == 0)
-      {
-        jam();
-        ndbinfo_send_scan_break(signal, req, rl, i);
-        return;
-      }
-      NdbMutex_Lock(&c_lqh->alloc_operation_mutex);
-      bool found = getNextOpRec(i, opRecPtr, 10);
-      /**
-       * ACC holds lock requests/operations in a 2D queue 
-       * structure.
-       * The lock owning operation is directly linked from the
-       * PK hash element.  Only one operation is the 'owner'
-       * at any one time.
-       * 
-       * The lock owning operation may have other operations
-       * concurrently holding the lock, for example other
-       * operations in the same transaction, or, for shared
-       * reads, in other transactions.
-       * These operations are in the 'parallel' queue of the
-       * lock owning operation, linked from its 
-       * nextParallelQue member.
-       *
-       * Non-compatible lock requests must wait until some/
-       * all of the current lock holder(s) have released the
-       * lock before they can run.  They are held in the
-       * 'serial' queue, lined from the lockOwner's 
-       * nextSerialQue member.
-       * 
-       * Note also : Only one operation per row can 'run' 
-       * in LDM at any one time, but this serialisation 
-       * is not considered as locking overhead.
-       *
-       * Note also : These queue members are part of overlays
-       * and are not always guaranteed to be valid, m_op_bits
-       * often must be consulted too.
-       */
-      if (found &&
-          opRecPtr.p->m_op_bits != Operationrec::OP_INITIAL)
-      {
-        jam();
-
-        FragmentrecPtr fp;
-        fp.i = opRecPtr.p->fragptr;
-        ndbrequire(c_fragment_pool.getPtr(fp));
-
-        const Uint32 tableId = fp.p->myTableId;
-        const Uint32 fragId = fp.p->myfid;
-        const Uint64 rowId = 
-          Uint64(opRecPtr.p->localdata.m_page_no) << 32 |
-          Uint64(opRecPtr.p->localdata.m_page_idx);
-        /* Send as separate attrs, as in cluster_operations */
-        const Uint32 transId0 = opRecPtr.p->transId1;
-        const Uint32 transId1 = opRecPtr.p->transId2;
-        const Uint32 prevSerialQue = opRecPtr.p->prevSerialQue;
-        const Uint32 nextSerialQue = opRecPtr.p->nextSerialQue;
-        const Uint32 prevParallelQue = opRecPtr.p->prevParallelQue;
-        const Uint32 nextParallelQue = opRecPtr.p->nextParallelQue;
-        const Uint32 flags = opRecPtr.p->m_op_bits;
-        /* Ignore Uint32 overflow at ~ 50 days */
-        const Uint32 durationMillis = 
-          (Uint32) NdbTick_Elapsed(opRecPtr.p->m_lockTime,
-                                   now).milliSec();
-        const Uint32 userPtr = opRecPtr.p->userptr;
-
-        /* Live operation */
-        Ndbinfo::Row row(signal, req);
-        row.write_uint32(getOwnNodeId());
-        row.write_uint32(instance());
-        row.write_uint32(tableId);
-        row.write_uint32(fragId);
-        row.write_uint64(rowId);
-        row.write_uint32(transId0);
-        row.write_uint32(transId1);
-        row.write_uint32(opRecPtr.i);
-        row.write_uint32(flags);
-        row.write_uint32(prevSerialQue);
-        row.write_uint32(nextSerialQue);
-        row.write_uint32(prevParallelQue);
-        row.write_uint32(nextParallelQue);
-        row.write_uint32(durationMillis);
-        row.write_uint32(userPtr);
-        NdbMutex_Unlock(&c_lqh->alloc_operation_mutex);
-||||||| Common ancestor
-    break;
-  }
-  case Ndbinfo::ACC_OPERATIONS_TABLEID:
-  {
-    jam();
-    /* Take a break periodically when scanning records */
-    Uint32 maxToCheck = 100;
-    NDB_TICKS now = getHighResTimer();
-    OperationrecPtr opRecPtr;
-    Uint32 i = cursor->data[0];
-    do
-    {
-      if (rl.need_break(req) || maxToCheck == 0)
-      {
-        jam();
-        ndbinfo_send_scan_break(signal, req, rl, i);
-        return;
-      }
-      bool found = getNextOpRec(i, opRecPtr, 10);
-      /**
-       * ACC holds lock requests/operations in a 2D queue 
-       * structure.
-       * The lock owning operation is directly linked from the
-       * PK hash element.  Only one operation is the 'owner'
-       * at any one time.
-       * 
-       * The lock owning operation may have other operations
-       * concurrently holding the lock, for example other
-       * operations in the same transaction, or, for shared
-       * reads, in other transactions.
-       * These operations are in the 'parallel' queue of the
-       * lock owning operation, linked from its 
-       * nextParallelQue member.
-       *
-       * Non-compatible lock requests must wait until some/
-       * all of the current lock holder(s) have released the
-       * lock before they can run.  They are held in the
-       * 'serial' queue, lined from the lockOwner's 
-       * nextSerialQue member.
-       * 
-       * Note also : Only one operation per row can 'run' 
-       * in LDM at any one time, but this serialisation 
-       * is not considered as locking overhead.
-       *
-       * Note also : These queue members are part of overlays
-       * and are not always guaranteed to be valid, m_op_bits
-       * often must be consulted too.
-       */
-      if (found &&
-          opRecPtr.p->m_op_bits != Operationrec::OP_INITIAL)
-      {
-        jam();
-
-        FragmentrecPtr fp;
-        fp.i = opRecPtr.p->fragptr;
-        ptrCheckGuard(fp, cfragmentsize, fragmentrec);
-
-        const Uint32 tableId = fp.p->myTableId;
-        const Uint32 fragId = fp.p->myfid;
-        const Uint64 rowId = 
-          Uint64(opRecPtr.p->localdata.m_page_no) << 32 |
-          Uint64(opRecPtr.p->localdata.m_page_idx);
-        /* Send as separate attrs, as in cluster_operations */
-        const Uint32 transId0 = opRecPtr.p->transId1;
-        const Uint32 transId1 = opRecPtr.p->transId2;
-        const Uint32 prevSerialQue = opRecPtr.p->prevSerialQue;
-        const Uint32 nextSerialQue = opRecPtr.p->nextSerialQue;
-        const Uint32 prevParallelQue = opRecPtr.p->prevParallelQue;
-        const Uint32 nextParallelQue = opRecPtr.p->nextParallelQue;
-        const Uint32 flags = opRecPtr.p->m_op_bits;
-        /* Ignore Uint32 overflow at ~ 50 days */
-        const Uint32 durationMillis = 
-          (Uint32) NdbTick_Elapsed(opRecPtr.p->m_lockTime,
-                                   now).milliSec();
-        const Uint32 userPtr = opRecPtr.p->userptr;
-
-        /* Live operation */
-        Ndbinfo::Row row(signal, req);
-        row.write_uint32(getOwnNodeId());
-        row.write_uint32(instance());
-        row.write_uint32(tableId);
-        row.write_uint32(fragId);
-        row.write_uint64(rowId);
-        row.write_uint32(transId0);
-        row.write_uint32(transId1);
-        row.write_uint32(opRecPtr.i);
-        row.write_uint32(flags);
-        row.write_uint32(prevSerialQue);
-        row.write_uint32(nextSerialQue);
-        row.write_uint32(prevParallelQue);
-        row.write_uint32(nextParallelQue);
-        row.write_uint32(durationMillis);
-        row.write_uint32(userPtr);
-=======
     case Ndbinfo::ACC_OPERATIONS_TABLEID: {
       jam();
       /* Take a break periodically when scanning records */
@@ -10719,6 +9961,7 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
           ndbinfo_send_scan_break(signal, req, rl, i);
           return;
         }
+        NdbMutex_Lock(&c_lqh->alloc_operation_mutex);
         bool found = getNextOpRec(i, opRecPtr, 10);
         /**
          * ACC holds lock requests/operations in a 2D queue
@@ -10751,38 +9994,10 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
          */
         if (found && opRecPtr.p->m_op_bits != Operationrec::OP_INITIAL) {
           jam();
->>>>>>> MySQL 8.0.36
 
-<<<<<<< RonDB // RONDB-624 todo
-        ndbinfo_send_row(signal, req, row, rl);
-      }
-      else
-      {
-        NdbMutex_Unlock(&c_lqh->alloc_operation_mutex);
-      }
-      maxToCheck--;
-      if (i == RNIL)
-      {
-        /* No more rows left to scan */
-        ndbinfo_send_scan_conf(signal, req, rl);
-        return;
-      }
-    } while (true);
-||||||| Common ancestor
-        ndbinfo_send_row(signal, req, row, rl);
-      }
-      maxToCheck--;
-      if (i == RNIL)
-      {
-        /* No more rows left to scan */
-        ndbinfo_send_scan_conf(signal, req, rl);
-        return;
-      }
-    } while (true);
-=======
           FragmentrecPtr fp;
           fp.i = opRecPtr.p->fragptr;
-          ptrCheckGuard(fp, cfragmentsize, fragmentrec);
+          ndbrequire(c_fragment_pool.getPtr(fp));
 
           const Uint32 tableId = fp.p->myTableId;
           const Uint32 fragId = fp.p->myfid;
@@ -10818,8 +10033,13 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
           row.write_uint32(nextParallelQue);
           row.write_uint32(durationMillis);
           row.write_uint32(userPtr);
+          NdbMutex_Unlock(&c_lqh->alloc_operation_mutex);
 
           ndbinfo_send_row(signal, req, row, rl);
+        }
+        else
+        {
+          NdbMutex_Unlock(&c_lqh->alloc_operation_mutex);
         }
         maxToCheck--;
         if (i == RNIL) {
@@ -10828,7 +10048,6 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
           return;
         }
       } while (true);
->>>>>>> MySQL 8.0.36
 
       break;
     }
