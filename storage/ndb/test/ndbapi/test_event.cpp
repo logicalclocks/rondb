@@ -3676,61 +3676,6 @@ int checkAnyValueInEvent(Ndb *pNdb, NdbRecAttr *preKey, NdbRecAttr *postKey,
       continue;
     }
 
-<<<<<<< RonDB // RONDB-624 todo
-    NdbEventOperation* event;
-    while((event= pNdb->nextEvent()) != NULL)
-    {
-//       printf("Event is %p of type %u\n",
-//              event, event->getEventType());
-//       printf("Got event, prekey is %u predata is %u\n",
-//              preKey->u_32_value(),
-//              preAttr->u_32_value());
-//       printf("           postkey is %u postdata is %u anyvalue is %u\n",
-//              postKey->u_32_value(),
-//              postAttr->u_32_value(),
-//              event->getAnyValue());
-      
-      received ++;
-      Uint32 keyVal= (checkPre? 
-                      preKey->u_32_value() :
-                      postKey->u_32_value());
-      
-      if (event->getAnyValue() != 
-          (anyValueOffset + keyVal))
-      {
-        g_err << "Error : Got event, key is " <<
-          keyVal << " anyValue is " <<
-          event->getAnyValue() <<
-          " expected " << (anyValueOffset + keyVal) 
-              << endl;
-||||||| Common ancestor
-    NdbEventOperation* event;
-    while((event= pNdb->nextEvent()) != NULL)
-    {
-//       printf("Event is %p of type %u\n",
-//              event, event->getEventType());
-//       printf("Got event, prekey is %u predata is %u \n",
-//              preKey->u_32_value(),
-//              preAttr->u_32_value());
-//       printf("           postkey is %u postdata is %u anyvalue is %u\n",
-//              postKey->u_32_value(),
-//              postAttr->u_32_value(),
-//              event->getAnyValue());
-      
-      received ++;
-      Uint32 keyVal= (checkPre? 
-                      preKey->u_32_value() :
-                      postKey->u_32_value());
-      
-      if (event->getAnyValue() != 
-          (anyValueOffset + keyVal))
-      {
-        g_err << "Error : Got event, key is " <<
-          keyVal << " anyValue is " <<
-          event->getAnyValue() <<
-          " expected " << (anyValueOffset + keyVal) 
-              << endl;
-=======
     NdbEventOperation *event;
     while ((event = pNdb->nextEvent()) != NULL) {
       //       printf("Event is %p of type %u\n",
@@ -3751,7 +3696,6 @@ int checkAnyValueInEvent(Ndb *pNdb, NdbRecAttr *preKey, NdbRecAttr *postKey,
         g_err << "Error : Got event, key is " << keyVal << " anyValue is "
               << event->getAnyValue() << " expected "
               << (anyValueOffset + keyVal) << endl;
->>>>>>> MySQL 8.0.36
         return NDBT_FAILED;
       }
     }

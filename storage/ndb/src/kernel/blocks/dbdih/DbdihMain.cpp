@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -75,6 +75,7 @@
 
 #include <NdbEnv.h>
 #include <ndb_constants.h>
+#include <ndbd_malloc.hpp>
 #include <DebuggerNames.hpp>
 #include <SectionReader.hpp>
 #include <signaldata/AlterTab.hpp>
@@ -93,17 +94,10 @@
 #include <signaldata/FsCloseReq.hpp>
 #include <signaldata/FsOpenReq.hpp>
 #include <signaldata/IsolateOrd.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <ndb_constants.h>
-#include <ndbd_malloc.hpp>
-||||||| Common ancestor
-#include <ndb_constants.h>
-=======
 #include <signaldata/LqhFrag.hpp>
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/SumaImpl.hpp>
 #include <signaldata/Upgrade.hpp>
->>>>>>> MySQL 8.0.36
 #include "portlib/mt-asm.h"
 
 #include <EventLogger.hpp>
@@ -1967,64 +1961,6 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
       ndbsttorry10Lab(signal, __LINE__);
       break;
 
-<<<<<<< RonDB // RONDB-624 todo
-      /***********************************************************************
-       * When starting nodes while system is operational we must be controlled
-       * by the master. There can be multiple node restarts ongoing, but this
-       * phase only allows for one node at a time. So it has to be controlled
-       * from the master node.
-       *
-       * When this signal is confirmed the master has also copied the 
-       * dictionary and the distribution information.
-       */
-      ndbassert(c_lcpState.lcpStatus == LCP_STATUS_IDLE);
-      c_lcpState.setLcpStatus(LCP_STATUS_IDLE, __LINE__);
-      g_eventLogger->info("Request copying of distribution and dictionary"
-                          " information from master(%u) Starting",
-                          refToNode(cmasterdihref));
-
-      StartMeReq * req = (StartMeReq*)&signal->theData[0];
-      req->startingRef = reference();
-      req->startingVersion = 0; // Obsolete
-      sendSignal(cmasterdihref, GSN_START_MEREQ, signal, 
-                 StartMeReq::SignalLength, JBB);
-      return;
-    }
-    ndbabort();
-  case ZNDB_SPH5:
-    jam();
-    switch(typestart){
-    case NodeState::ST_INITIAL_START:
-    case NodeState::ST_SYSTEM_RESTART:
-||||||| Common ancestor
-      /***********************************************************************
-       * When starting nodes while system is operational we must be controlled
-       * by the master. There can be multiple node restarts ongoing, but this
-       * phase only allows for one node at a time. So it has to be controlled
-       * from the master node.
-       *
-       * When this signal is confirmed the master has also copied the 
-       * dictionary and the distribution information.
-       */
-      ndbassert(c_lcpState.lcpStatus == LCP_STATUS_IDLE);
-      c_lcpState.setLcpStatus(LCP_STATUS_IDLE, __LINE__);
-      g_eventLogger->info("Request copying of distribution and dictionary"
-                          " information from master Starting");
-
-      StartMeReq * req = (StartMeReq*)&signal->theData[0];
-      req->startingRef = reference();
-      req->startingVersion = 0; // Obsolete
-      sendSignal(cmasterdihref, GSN_START_MEREQ, signal, 
-                 StartMeReq::SignalLength, JBB);
-      return;
-    }
-    ndbabort();
-  case ZNDB_SPH5:
-    jam();
-    switch(typestart){
-    case NodeState::ST_INITIAL_START:
-    case NodeState::ST_SYSTEM_RESTART:
-=======
     case ZNDB_SPH4:
       jam();
       {
@@ -2072,9 +2008,9 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
            */
           ndbassert(c_lcpState.lcpStatus == LCP_STATUS_IDLE);
           c_lcpState.setLcpStatus(LCP_STATUS_IDLE, __LINE__);
-          g_eventLogger->info(
-              "Request copying of distribution and dictionary"
-              " information from master Starting");
+          g_eventLogger->info("Request copying of distribution and dictionary"
+                              " information from master(%u) Starting",
+                              refToNode(cmasterdihref));
 
           StartMeReq *req = (StartMeReq *)&signal->theData[0];
           req->startingRef = reference();
@@ -2085,7 +2021,6 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
       }
       ndbabort();
     case ZNDB_SPH5:
->>>>>>> MySQL 8.0.36
       jam();
       switch (typestart) {
         case NodeState::ST_INITIAL_START:
@@ -7101,13 +7036,6 @@ void Dbdih::execDBINFO_SCANREQ(Signal *signal) {
             } else {
               row.write_uint32(0);
             }
-<<<<<<< RonDB // RONDB-624 todo
-            while (replicaPtr.i != RNIL64)
-            {
-||||||| Common ancestor
-            while (replicaPtr.i != RNIL)
-            {
-=======
 
             if (fragPtr.p->noStoredReplicas > 2) {
               row.write_uint32(fragPtr.p->activeNodes[2]);
@@ -7126,37 +7054,7 @@ void Dbdih::execDBINFO_SCANREQ(Signal *signal) {
             row.write_uint32(fragPtr.p->noLcpReplicas);
             ndbinfo_send_row(signal, req, row, rl);
             if (rl.need_break(req)) {
->>>>>>> MySQL 8.0.36
               jam();
-<<<<<<< RonDB // RONDB-624 todo
-              Ndbinfo::Row row(signal, req);
-              ndbrequire(c_replicaRecordPool.getPtr(replicaPtr));
-              row.write_uint32(cownNodeId);
-              row.write_uint32(tabPtr.i);
-              row.write_uint32(fragPtr.p->fragId);
-              row.write_uint32(replicaPtr.p->initialGci);
-              row.write_uint32(replicaPtr.p->procNode);
-              row.write_uint32(replicaPtr.p->lcpOngoingFlag);
-              row.write_uint32(replicaPtr.p->noCrashedReplicas);
-              Uint32 lastId = 0;
-              Uint32 maxLcpId = 0;
-              for (Uint32 j = 0; j < MAX_LCP_USED; j++)
-              {
-||||||| Common ancestor
-              Ndbinfo::Row row(signal, req);
-              c_replicaRecordPool.getPtr(replicaPtr);
-              row.write_uint32(cownNodeId);
-              row.write_uint32(tabPtr.i);
-              row.write_uint32(fragPtr.p->fragId);
-              row.write_uint32(replicaPtr.p->initialGci);
-              row.write_uint32(replicaPtr.p->procNode);
-              row.write_uint32(replicaPtr.p->lcpOngoingFlag);
-              row.write_uint32(replicaPtr.p->noCrashedReplicas);
-              Uint32 lastId = 0;
-              Uint32 maxLcpId = 0;
-              for (Uint32 j = 0; j < MAX_LCP_USED; j++)
-              {
-=======
               Uint32 new_cursor = tabPtr.i + ((fragId + 1) << 16);
               ndbinfo_send_scan_break(signal, req, rl, new_cursor);
               return;
@@ -7196,14 +7094,13 @@ void Dbdih::execDBINFO_SCANREQ(Signal *signal) {
                 jam();
                 replicaPtr.i = fragPtr.p->storedReplicas;
               } else {
->>>>>>> MySQL 8.0.36
                 jam();
                 replicaPtr.i = fragPtr.p->oldStoredReplicas;
               }
-              while (replicaPtr.i != RNIL) {
+              while (replicaPtr.i != RNIL64) {
                 jam();
                 Ndbinfo::Row row(signal, req);
-                c_replicaRecordPool.getPtr(replicaPtr);
+                ndbrequire(c_replicaRecordPool.getPtr(replicaPtr));
                 row.write_uint32(cownNodeId);
                 row.write_uint32(tabPtr.i);
                 row.write_uint32(fragPtr.p->fragId);
@@ -12618,48 +12515,6 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal *signal) {
           }
           break;
         }
-<<<<<<< RonDB // RONDB-624 todo
-        set_default_node_groups(signal, noOfFragments);
-        switch (partitionBalance)
-        {
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_NODE:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_NODE:
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_2:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_3:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_4:
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_2:
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_4:
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_6:
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_8:
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_16:
-          {
-            use_specific_fragment_count = false;
-            break;
-          }
-          case NDB_PARTITION_BALANCE_SPECIFIC:
-          {
-            use_specific_fragment_count = true;
-||||||| Common ancestor
-        set_default_node_groups(signal, noOfFragments);
-        switch (partitionBalance)
-        {
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_NODE:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_NODE:
-          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_2:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_3:
-          case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_4:
-          {
-            use_specific_fragment_count = false;
-            break;
-          }
-          case NDB_PARTITION_BALANCE_SPECIFIC:
-          {
-            use_specific_fragment_count = true;
-=======
         case DictTabInfo::HashMapPartition: {
           jam();
           Ptr<Hash2FragmentMap> ptr;
@@ -12668,7 +12523,6 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal *signal) {
               noOfFragments % partitionCount != 0) {
             jam();
             err = CreateFragmentationRef::InvalidFragmentationType;
->>>>>>> MySQL 8.0.36
             break;
           }
           set_default_node_groups(signal, noOfFragments);
@@ -12679,7 +12533,12 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal *signal) {
             case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM:
             case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_2:
             case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_3:
-            case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_4: {
+            case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_4:
+            case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_2:
+            case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_4:
+            case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_6:
+            case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_8:
+            case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_16: {
               use_specific_fragment_count = false;
               break;
             }
@@ -14516,46 +14375,12 @@ void Dbdih::execALTER_TAB_REQ(Signal *signal) {
       break;
     case AlterTabReq::AlterTableRevert:
       jam();
-      D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i);
+      D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i
+        << " schemaVersion: 0x" << hex << tableVersion);
       tabPtr.p->schemaVersion = tableVersion;
 
-<<<<<<< RonDB // RONDB-624 todo
-    connectPtr.p->m_alter.m_totalfragments = tabPtr.p->totalfragments;
-    connectPtr.p->m_alter.m_org_totalfragments = tabPtr.p->totalfragments;
-    connectPtr.p->m_alter.m_partitionCount = tabPtr.p->partitionCount;
-    connectPtr.p->m_alter.m_changeMask = req->changeMask;
-    connectPtr.p->m_alter.m_new_map_ptr_i = req->new_map_ptr_i;
-    connectPtr.p->userpointer = senderData;
-    connectPtr.p->userblockref = senderRef;
-    connectPtr.p->connectState = ConnectRecord::ALTER_TABLE;
-    connectPtr.p->table = tabPtr.i;
-    tabPtr.p->connectrec = connectPtr.i;
-    break;
-  case AlterTabReq::AlterTableRevert:
-    jam();
-    D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i
-      << " schemaVersion: 0x" << hex << tableVersion);
-    tabPtr.p->schemaVersion = tableVersion;
-||||||| Common ancestor
-    connectPtr.p->m_alter.m_totalfragments = tabPtr.p->totalfragments;
-    connectPtr.p->m_alter.m_org_totalfragments = tabPtr.p->totalfragments;
-    connectPtr.p->m_alter.m_partitionCount = tabPtr.p->partitionCount;
-    connectPtr.p->m_alter.m_changeMask = req->changeMask;
-    connectPtr.p->m_alter.m_new_map_ptr_i = req->new_map_ptr_i;
-    connectPtr.p->userpointer = senderData;
-    connectPtr.p->userblockref = senderRef;
-    connectPtr.p->connectState = ConnectRecord::ALTER_TABLE;
-    connectPtr.p->table = tabPtr.i;
-    tabPtr.p->connectrec = connectPtr.i;
-    break;
-  case AlterTabReq::AlterTableRevert:
-    jam();
-    D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i);
-    tabPtr.p->schemaVersion = tableVersion;
-=======
       connectPtr.i = req->connectPtr;
       ptrCheckGuard(connectPtr, cconnectFileSize, connectRecord);
->>>>>>> MySQL 8.0.36
 
       ndbrequire(connectPtr.p->connectState == ConnectRecord::ALTER_TABLE);
 
@@ -14585,7 +14410,8 @@ void Dbdih::execALTER_TAB_REQ(Signal *signal) {
       break;
     case AlterTabReq::AlterTableCommit: {
       jam();
-      D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i);
+      D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i
+        << " schemaVersion: 0x" << hex << newTableVersion);
       tabPtr.p->schemaVersion = newTableVersion;
 
       connectPtr.i = req->connectPtr;
@@ -14604,72 +14430,6 @@ void Dbdih::execALTER_TAB_REQ(Signal *signal) {
       connectPtr.p->userpointer = senderData;
       connectPtr.p->userblockref = senderRef;
 
-<<<<<<< RonDB // RONDB-624 todo
-    send_alter_tab_conf(signal, connectPtr);
-
-    ndbrequire(tabPtr.p->connectrec == connectPtr.i);
-    tabPtr.p->connectrec = RNIL;
-    release_connect(connectPtr);
-    return;
-    break;
-  case AlterTabReq::AlterTableCommit:
-  {
-    jam();
-    D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i
-      << " schemaVersion: 0x" << hex << newTableVersion);
-    tabPtr.p->schemaVersion = newTableVersion;
-
-    connectPtr.i = req->connectPtr;
-    ptrCheckGuard(connectPtr, cconnectFileSize, connectRecord);
-    connectPtr.p->userpointer = senderData;
-    connectPtr.p->userblockref = senderRef;
-    ndbrequire(connectPtr.p->connectState == ConnectRecord::ALTER_TABLE);
-    make_new_table_read_and_writeable(tabPtr, connectPtr, signal);
-    return;
-  }
-  case AlterTabReq::AlterTableComplete:
-    jam();
-    D("AlterTabReq::AlterTableComplete: tableId: " << tabPtr.i);
-    connectPtr.i = req->connectPtr;
-    ptrCheckGuard(connectPtr, cconnectFileSize, connectRecord);
-    connectPtr.p->userpointer = senderData;
-    connectPtr.p->userblockref = senderRef;
-
-    if (!make_old_table_non_writeable(tabPtr, connectPtr))
-    {
-||||||| Common ancestor
-    send_alter_tab_conf(signal, connectPtr);
-
-    ndbrequire(tabPtr.p->connectrec == connectPtr.i);
-    tabPtr.p->connectrec = RNIL;
-    release_connect(connectPtr);
-    return;
-    break;
-  case AlterTabReq::AlterTableCommit:
-  {
-    jam();
-    D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i);
-    tabPtr.p->schemaVersion = newTableVersion;
-
-    connectPtr.i = req->connectPtr;
-    ptrCheckGuard(connectPtr, cconnectFileSize, connectRecord);
-    connectPtr.p->userpointer = senderData;
-    connectPtr.p->userblockref = senderRef;
-    ndbrequire(connectPtr.p->connectState == ConnectRecord::ALTER_TABLE);
-    make_new_table_read_and_writeable(tabPtr, connectPtr, signal);
-    return;
-  }
-  case AlterTabReq::AlterTableComplete:
-    jam();
-    D("AlterTabReq::AlterTableComplete: tableId: " << tabPtr.i);
-    connectPtr.i = req->connectPtr;
-    ptrCheckGuard(connectPtr, cconnectFileSize, connectRecord);
-    connectPtr.p->userpointer = senderData;
-    connectPtr.p->userblockref = senderRef;
-
-    if (!make_old_table_non_writeable(tabPtr, connectPtr))
-    {
-=======
       if (!make_old_table_non_writeable(tabPtr, connectPtr)) {
         jam();
         send_alter_tab_conf(signal, connectPtr);
@@ -14685,7 +14445,6 @@ void Dbdih::execALTER_TAB_REQ(Signal *signal) {
        */
       [[fallthrough]];
     case AlterTabReq::AlterTableWaitScan: {
->>>>>>> MySQL 8.0.36
       jam();
       const NDB_TICKS now = NdbTick_getCurrentTicks();
       signal->theData[0] = DihContinueB::ZWAIT_OLD_SCAN;
@@ -14860,7 +14619,10 @@ void Dbdih::wait_old_scan(Signal *signal) {
   const NDB_TICKS now = NdbTick_getCurrentTicks();
   const Uint32 elapsed = (Uint32)NdbTick_Elapsed(start, now).seconds();
 
-<<<<<<< RonDB // RONDB-624 todo
+  if (elapsed >= wait) {
+    infoEvent("Waiting %us for %u scans to complete on table %u", elapsed,
+              tabPtr.p->m_scan_count[1], tabPtr.i);
+
     /* Report after 3 seconds, 10 seconds and every 10 seconds after this */
     if (wait == 3)
     {
@@ -14870,16 +14632,6 @@ void Dbdih::wait_old_scan(Signal *signal) {
     {
       signal->theData[7] = wait + 10;
     }
-||||||| Common ancestor
-
-    signal->theData[7] = wait + 10;
-=======
-  if (elapsed >= wait) {
-    infoEvent("Waiting %us for %u scans to complete on table %u", elapsed,
-              tabPtr.p->m_scan_count[1], tabPtr.i);
-
-    signal->theData[7] = wait + 10;
->>>>>>> MySQL 8.0.36
   }
   sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 8);
 }
@@ -15972,43 +15724,9 @@ Uint32 Dbdih::extractNodeInfo(EmulatedJamBuffer *jambuf,
   return nodeCount;
 }  // Dbdih::extractNodeInfo()
 
-<<<<<<< RonDB // RONDB-624 todo
-void
-Dbdih::start_scan_on_table(TabRecordPtr tabPtr,
-                           Signal *signal,
-                           Uint32 schemaTransId,
-                           EmulatedJamBuffer *jambuf)
-{
-||||||| Common ancestor
-#define DIH_TAB_WRITE_LOCK(tabPtrP) \
-  do { assertOwnThread(); tabPtrP->m_lock.write_lock(); } while (0)
-
-#define DIH_TAB_WRITE_UNLOCK(tabPtrP) \
-  do { assertOwnThread(); tabPtrP->m_lock.write_unlock(); } while (0)
-
-void
-Dbdih::start_scan_on_table(TabRecordPtr tabPtr,
-                           Signal *signal,
-                           Uint32 schemaTransId,
-                           EmulatedJamBuffer *jambuf)
-{
-=======
-#define DIH_TAB_WRITE_LOCK(tabPtrP) \
-  do {                              \
-    assertOwnThread();              \
-    tabPtrP->m_lock.write_lock();   \
-  } while (0)
-
-#define DIH_TAB_WRITE_UNLOCK(tabPtrP) \
-  do {                                \
-    assertOwnThread();                \
-    tabPtrP->m_lock.write_unlock();   \
-  } while (0)
-
 void Dbdih::start_scan_on_table(TabRecordPtr tabPtr, Signal *signal,
                                 Uint32 schemaTransId,
                                 EmulatedJamBuffer *jambuf) {
->>>>>>> MySQL 8.0.36
   /**
    * This method is called from start of scans in TC threads. We need to
    * protect against calls from multiple threads. The state and the
@@ -16424,93 +16142,6 @@ Dbdih::make_table_use_new_replica(Signal *signal,
 
   DIH_TAB_WRITE_LOCK(tabPtr.p);
   switch (replicaType) {
-<<<<<<< RonDB // RONDB-624 todo
-  case UpdateFragStateReq::STORED:
-    jam();
-    CRASH_INSERTION(7138);
-    /* ----------------------------------------------------------------------*/
-    /*  HERE WE ARE INSERTING THE NEW BACKUP NODE IN THE EXECUTION OF ALL    */
-    /*  OPERATIONS. FROM HERE ON ALL OPERATIONS ON THIS FRAGMENT WILL INCLUDE*/
-    /*  USE OF THE NEW REPLICA.                                              */
-    /* --------------------------------------------------------------------- */
-    insertBackup(fragPtr, destNodeId);
-    
-    fragPtr.p->distributionKey++;
-    fragPtr.p->distributionKey &= 255;
-    fragPtr.p->onlineSynchOngoing = 1;
-    fragPtr.p->changeNumber++;
-    DEB_ACTIVE_NODES(("insertBackup: tab(%u,%u),"
-                      " distKey: %u, senderSignalId: %u, signalId: %u"
-                      ", activeNodes[] = [%u,%u,%u] changeNumber: %u",
-                      fragPtr.p->tableId,
-                      fragPtr.p->fragId,
-                      fragPtr.p->distributionKey,
-                      signal->header.theSendersSignalId,
-                      signal->header.theSignalId,
-                      fragPtr.p->activeNodes[0],
-                      fragPtr.p->activeNodes[1],
-                      fragPtr.p->activeNodes[2],
-                      fragPtr.p->changeNumber));
-    break;
-  case UpdateFragStateReq::COMMIT_STORED:
-    jam();
-    CRASH_INSERTION(7139);
-    /**
-     * The node restart of a fragment is completed, now change to use
-     * the preferred new distribution of primary replicas. The primary
-     * replica isn't required to be durable at this change.
-     * 
-     * We also update the order of the replicas here so that we use the
-     * specified primary node as primary.
-     * If any node is using preferredPrimary as primary node this is
-     * preferred if the node is alive.
-     */
-    removeOldStoredReplica(fragPtr, replicaPtr);
-    linkStoredReplica(fragPtr, replicaPtr);
-    fragPtr.p->primaryNode = primaryNode;
-    fragPtr.p->onlineSynchOngoing = 0;
-    updateNodeInfo(signal, fragPtr);
-    break;
-  case UpdateFragStateReq::START_LOGGING:
-    jam();
-    break;
-  default:
-    ndbabort();
-  }//switch
-||||||| Common ancestor
-  case UpdateFragStateReq::STORED:
-    jam();
-    CRASH_INSERTION(7138);
-    /* ----------------------------------------------------------------------*/
-    /*  HERE WE ARE INSERTING THE NEW BACKUP NODE IN THE EXECUTION OF ALL    */
-    /*  OPERATIONS. FROM HERE ON ALL OPERATIONS ON THIS FRAGMENT WILL INCLUDE*/
-    /*  USE OF THE NEW REPLICA.                                              */
-    /* --------------------------------------------------------------------- */
-    insertBackup(fragPtr, destNodeId);
-    
-    fragPtr.p->distributionKey++;
-    fragPtr.p->distributionKey &= 255;
-    break;
-  case UpdateFragStateReq::COMMIT_STORED:
-    jam();
-    CRASH_INSERTION(7139);
-    /* ----------------------------------------------------------------------*/
-    /*  HERE WE ARE MOVING THE REPLICA TO THE STORED SECTION SINCE IT IS NOW */
-    /*  FULLY LOADED WITH ALL DATA NEEDED.                                   */
-    // We also update the order of the replicas here so that if the new 
-    // replica is the desired primary we insert it as primary.
-    /* ----------------------------------------------------------------------*/
-    removeOldStoredReplica(fragPtr, replicaPtr);
-    linkStoredReplica(fragPtr, replicaPtr);
-    updateNodeInfo(fragPtr);
-    break;
-  case UpdateFragStateReq::START_LOGGING:
-    jam();
-    break;
-  default:
-    ndbabort();
-  }//switch
-=======
     case UpdateFragStateReq::STORED:
       jam();
       CRASH_INSERTION(7138);
@@ -16525,20 +16156,39 @@ Dbdih::make_table_use_new_replica(Signal *signal,
 
       fragPtr.p->distributionKey++;
       fragPtr.p->distributionKey &= 255;
+      fragPtr.p->onlineSynchOngoing = 1;
+      fragPtr.p->changeNumber++;
+      DEB_ACTIVE_NODES(("insertBackup: tab(%u,%u),"
+                        " distKey: %u, senderSignalId: %u, signalId: %u"
+                        ", activeNodes[] = [%u,%u,%u] changeNumber: %u",
+                        fragPtr.p->tableId,
+                        fragPtr.p->fragId,
+                        fragPtr.p->distributionKey,
+                        signal->header.theSendersSignalId,
+                        signal->header.theSignalId,
+                        fragPtr.p->activeNodes[0],
+                        fragPtr.p->activeNodes[1],
+                        fragPtr.p->activeNodes[2],
+                        fragPtr.p->changeNumber));
       break;
     case UpdateFragStateReq::COMMIT_STORED:
       jam();
       CRASH_INSERTION(7139);
-      /* ----------------------------------------------------------------------*/
-      /*  HERE WE ARE MOVING THE REPLICA TO THE STORED SECTION SINCE IT IS NOW
+      /**
+       * The node restart of a fragment is completed, now change to use
+       * the preferred new distribution of primary replicas. The primary
+       * replica isn't required to be durable at this change.
+       * 
+       * We also update the order of the replicas here so that we use the
+       * specified primary node as primary.
+       * If any node is using preferredPrimary as primary node this is
+       * preferred if the node is alive.
        */
-      /*  FULLY LOADED WITH ALL DATA NEEDED. */
-      // We also update the order of the replicas here so that if the new
-      // replica is the desired primary we insert it as primary.
-      /* ----------------------------------------------------------------------*/
       removeOldStoredReplica(fragPtr, replicaPtr);
       linkStoredReplica(fragPtr, replicaPtr);
-      updateNodeInfo(fragPtr);
+      fragPtr.p->primaryNode = primaryNode;
+      fragPtr.p->onlineSynchOngoing = 0;
+      updateNodeInfo(signal, fragPtr);
       break;
     case UpdateFragStateReq::START_LOGGING:
       jam();
@@ -16546,7 +16196,6 @@ Dbdih::make_table_use_new_replica(Signal *signal,
     default:
       ndbabort();
   }  // switch
->>>>>>> MySQL 8.0.36
   DIH_TAB_WRITE_UNLOCK(tabPtr.p);
 }
 
@@ -25572,68 +25221,6 @@ void Dbdih::searchStoredReplicas(FragmentstorePtr fragPtr)
     if (nodePtr.p->nodeStatus == NodeRecord::ALIVE) {
       jam();
       switch (nodePtr.p->activeStatus) {
-<<<<<<< RonDB // RONDB-624 todo
-      case Sysfile::NS_Active:
-      case Sysfile::NS_ActiveMissed_1:
-      case Sysfile::NS_ActiveMissed_2:{
-	/* ----------------------------------------------------------------- */
-	/*   INITIALISE THE CREATE REPLICA STRUCTURE THAT IS USED FOR SENDING*/
-	/*   TO LQH START_FRAGREQ.                                           */
-	/*   SET THE DATA NODE WHERE THE LOCAL CHECKPOINT IS FOUND. ALSO     */
-	/*   SET A REFERENCE TO THE REPLICA POINTER OF THAT.                 */
-	/* ----------------------------------------------------------------- */
-	CreateReplicaRecordPtr createReplicaPtr;
-	createReplicaPtr.i = cnoOfCreateReplicas;
-	ptrCheckGuard(createReplicaPtr, 4, createReplicaRecord);
-	cnoOfCreateReplicas++;
-	
-	/**
-	 * Should have been checked in resetReplicaSr
-	 */
-	ndbrequire(setup_create_replica(fragPtr,
-					createReplicaPtr.p, 
-					replicaPtr));
-	break;
-      }
-      default:
-        jam();
-        /**
-         * The list of stored replicas was set up in resetReplicaSr, nothing
-         * should have changed since then.
-         */
-        ndbabort();
-        /*empty*/;
-        break;
-      }//switch
-||||||| Common ancestor
-      case Sysfile::NS_Active:
-      case Sysfile::NS_ActiveMissed_1:
-      case Sysfile::NS_ActiveMissed_2:{
-	/* ----------------------------------------------------------------- */
-	/*   INITIALISE THE CREATE REPLICA STRUCTURE THAT IS USED FOR SENDING*/
-	/*   TO LQH START_FRAGREQ.                                           */
-	/*   SET THE DATA NODE WHERE THE LOCAL CHECKPOINT IS FOUND. ALSO     */
-	/*   SET A REFERENCE TO THE REPLICA POINTER OF THAT.                 */
-	/* ----------------------------------------------------------------- */
-	CreateReplicaRecordPtr createReplicaPtr;
-	createReplicaPtr.i = cnoOfCreateReplicas;
-	ptrCheckGuard(createReplicaPtr, 4, createReplicaRecord);
-	cnoOfCreateReplicas++;
-	
-	/**
-	 * Should have been checked in resetReplicaSr
-	 */
-	ndbrequire(setup_create_replica(fragPtr,
-					createReplicaPtr.p, 
-					replicaPtr));
-	break;
-      }
-      default:
-        jam();
-        /*empty*/;
-        break;
-      }//switch
-=======
         case Sysfile::NS_Active:
         case Sysfile::NS_ActiveMissed_1:
         case Sysfile::NS_ActiveMissed_2: {
@@ -25660,10 +25247,14 @@ void Dbdih::searchStoredReplicas(FragmentstorePtr fragPtr)
         }
         default:
           jam();
+          /**
+           * The list of stored replicas was set up in resetReplicaSr, nothing
+           * should have changed since then.
+           */
+          ndbabort();
           /*empty*/;
           break;
       }  // switch
->>>>>>> MySQL 8.0.36
     }
     replicaPtr.i = nextReplicaPtrI;
   }  // while
@@ -28571,6 +28162,9 @@ void Dbdih::execCREATE_NODEGROUP_IMPL_REQ(Signal *signal) {
         }
         if (getNodeActiveStatus(req->nodes[i]) != Sysfile::NS_Configured) {
           jam();
+          jamData(i);
+          jamData(req->nodes[i]);
+          jamData(getNodeActiveStatus(req->nodes[i]));
           err = CreateNodegroupRef::NodeAlreadyInNodegroup;
           goto error;
         }
@@ -28586,16 +28180,7 @@ void Dbdih::execCREATE_NODEGROUP_IMPL_REQ(Signal *signal) {
 
       if (cnt != cnoReplicas) {
         jam();
-<<<<<<< RonDB // RONDB-624 todo
-        jamData(i);
-        jamData(req->nodes[i]);
-        jamData(getNodeActiveStatus(req->nodes[i]));
-        err = CreateNodegroupRef::NodeAlreadyInNodegroup;
-||||||| Common ancestor
-        err = CreateNodegroupRef::NodeAlreadyInNodegroup;
-=======
         err = CreateNodegroupRef::InvalidNoOfNodesInNodegroup;
->>>>>>> MySQL 8.0.36
         goto error;
       }
 
@@ -28686,58 +28271,20 @@ void Dbdih::execCREATE_NODEGROUP_IMPL_REQ(Signal *signal) {
          * setup multi socket transporter to communicate with other nodes in
          * the new node group.
          */
-        DEB_MULTI_TRP(("Set up multi transporter after Create nodegroup"));
+        g_eventLogger->info("Set up multi transporter after Create nodegroup");
         m_set_up_multi_trp_in_node_restart = false;
         signal->theData[0] = reference();
         sendSignal(QMGR_REF, GSN_SET_UP_MULTI_TRP_REQ, signal, 1, JBB);
+      } else {
+        jam();
+        g_eventLogger->info("Our node not part of new node group");
       }
       break;
     }
     case CreateNodegroupImplReq::RT_COMPLETE:
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      /**
-       * We are part of a newly created node group. Thus it is now time to
-       * setup multi socket transporter to communicate with other nodes in
-       * the new node group.
-       */
-      g_eventLogger->info("Set up multi transporter after Create nodegroup");
-      m_set_up_multi_trp_in_node_restart = false;
-      signal->theData[0] = reference();
-      sendSignal(QMGR_REF, GSN_SET_UP_MULTI_TRP_REQ, signal, 1, JBB);
-    }
-    else
-    {
-      jam();
-      g_eventLogger->info("Our node not part of new node group");
-    }
-    break;
-  }
-  case CreateNodegroupImplReq::RT_COMPLETE:
-    jam();
-    gci = m_micro_gcp.m_current_gci;
-    break;
-||||||| Common ancestor
-      /**
-       * We are part of a newly created node group. Thus it is now time to
-       * setup multi socket transporter to communicate with other nodes in
-       * the new node group.
-       */
-      DEB_MULTI_TRP(("Set up multi transporter after Create nodegroup"));
-      m_set_up_multi_trp_in_node_restart = false;
-      signal->theData[0] = reference();
-      sendSignal(QMGR_REF, GSN_SET_UP_MULTI_TRP_REQ, signal, 1, JBB);
-    }
-    break;
-  }
-  case CreateNodegroupImplReq::RT_COMPLETE:
-    jam();
-    gci = m_micro_gcp.m_current_gci;
-    break;
-=======
       gci = m_micro_gcp.m_current_gci;
       break;
->>>>>>> MySQL 8.0.36
   }
 
   {

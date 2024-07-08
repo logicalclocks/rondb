@@ -30,7 +30,6 @@
 
 #include <EventLogger.hpp>
 
-<<<<<<< RonDB // RONDB-624 todo
 Uint32 packedSignalLength(Uint32 signalType)
 {
   switch (signalType)

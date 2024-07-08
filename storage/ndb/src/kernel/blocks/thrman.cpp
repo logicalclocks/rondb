@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,12 +28,8 @@
 #include <signaldata/DbinfoScan.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/LoadOrd.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <signaldata/GetCpuUsage.hpp>
-||||||| Common ancestor
-=======
 #include <signaldata/Sync.hpp>
->>>>>>> MySQL 8.0.36
 
 #include <NdbSpin.h>
 #include <EventLogger.hpp>
@@ -349,12 +345,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal) {
         }
         val = 10000;
         m_enable_adaptive_spinning = true;
-<<<<<<< RonDB // RONDB-624 todo
         m_configured_spintime_us = MAX_SPIN_TIME;
-||||||| Common ancestor
-        m_configured_spintime = MAX_SPIN_TIME;
-=======
-        m_configured_spintime = MAX_SPIN_TIME;
       } else {
         g_eventLogger->info(
             "SpinMethod set to %s, ignored this use either "
@@ -362,7 +353,6 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal) {
             "AggressiveSpinning or DatabaseMachineSpinning"
             ", falling back to default StaticSpinning",
             conf);
->>>>>>> MySQL 8.0.36
       }
     } else {
       m_enable_adaptive_spinning = false;
@@ -571,96 +561,8 @@ void Thrman::execSTTOR(Signal *signal) {
 
   const Uint32 startPhase = signal->theData[1];
 
-<<<<<<< RonDB // RONDB-624 todo
-  switch (startPhase)
-  {
-  case 1:
-    jam();
-    memset(&m_last_50ms_base_measure, 0, sizeof(m_last_50ms_base_measure));
-    memset(&m_last_1sec_base_measure, 0, sizeof(m_last_1sec_base_measure));
-    memset(&m_last_20sec_base_measure, 0, sizeof(m_last_20sec_base_measure));
-    memset(&m_last_50ms_base_measure, 0, sizeof(m_last_50ms_rusage));
-    memset(&m_last_1sec_base_measure, 0, sizeof(m_last_1sec_rusage));
-    memset(&m_last_20sec_base_measure, 0, sizeof(m_last_20sec_rusage));
-    prev_50ms_tick = NdbTick_getCurrentTicks();
-    prev_20sec_tick = prev_50ms_tick;
-    prev_1sec_tick = prev_50ms_tick;
-    if (!m_enable_adaptive_spinning)
-    {
-      m_configured_spintime_us = getConfiguredSpintime();
-      g_eventLogger->info("Using StaticSpinning with spintime %u us",
-                          m_configured_spintime_us);
-    }
-    m_current_spintime_us = 0;
-    m_gain_spintime_in_us = 25;
-
-    /* Initialise overload control variables */
-    m_shared_environment = false;
-    m_overload_handling_activated = false;
-    m_current_overload_status = (OverloadStatus)LIGHT_LOAD_CONST;
-    m_warning_level = 0;
-    m_max_warning_level = 20;
-    m_burstiness = 0;
-    m_current_decision_stats = &c_1sec_stats;
-    m_send_thread_percentage = 0;
-    m_send_thread_assistance_level = 0;
-    m_node_overload_level = 0;
-
-    for (Uint32 i = 0; i < MAX_BLOCK_THREADS + 1; i++)
-    {
-      m_thread_overload_status[i].overload_status =
-        (OverloadStatus)LIGHT_LOAD_CONST;
-      m_thread_overload_status[i].wakeup_instance = 0;
-    }
-
-    /* Initialise measurements */
-    res = Ndb_GetRUsage(&m_last_50ms_rusage, false);
-    if (res == 0)
-    {
-||||||| Common ancestor
-  switch (startPhase)
-  {
-  case 1:
-    jam();
-    memset(&m_last_50ms_base_measure, 0, sizeof(m_last_50ms_base_measure));
-    memset(&m_last_1sec_base_measure, 0, sizeof(m_last_1sec_base_measure));
-    memset(&m_last_20sec_base_measure, 0, sizeof(m_last_20sec_base_measure));
-    memset(&m_last_50ms_base_measure, 0, sizeof(m_last_50ms_rusage));
-    memset(&m_last_1sec_base_measure, 0, sizeof(m_last_1sec_rusage));
-    memset(&m_last_20sec_base_measure, 0, sizeof(m_last_20sec_rusage));
-    prev_50ms_tick = NdbTick_getCurrentTicks();
-    prev_20sec_tick = prev_50ms_tick;
-    prev_1sec_tick = prev_50ms_tick;
-    m_configured_spintime = getConfiguredSpintime();
-    m_current_spintime = 0;
-    m_gain_spintime_in_us = 25;
-
-    /* Initialise overload control variables */
-    m_shared_environment = false;
-    m_overload_handling_activated = false;
-    m_current_overload_status = (OverloadStatus)LIGHT_LOAD_CONST;
-    m_warning_level = 0;
-    m_max_warning_level = 20;
-    m_burstiness = 0;
-    m_current_decision_stats = &c_1sec_stats;
-    m_send_thread_percentage = 0;
-    m_node_overload_level = 0;
-
-    for (Uint32 i = 0; i < MAX_BLOCK_THREADS + 1; i++)
-    {
-      m_thread_overload_status[i].overload_status =
-        (OverloadStatus)MEDIUM_LOAD_CONST;
-      m_thread_overload_status[i].wakeup_instance = 0;
-    }
-
-    /* Initialise measurements */
-    res = Ndb_GetRUsage(&m_last_50ms_rusage, false);
-    if (res == 0)
-    {
-=======
   switch (startPhase) {
     case 1:
->>>>>>> MySQL 8.0.36
       jam();
       memset(&m_last_50ms_base_measure, 0, sizeof(m_last_50ms_base_measure));
       memset(&m_last_1sec_base_measure, 0, sizeof(m_last_1sec_base_measure));
@@ -671,8 +573,13 @@ void Thrman::execSTTOR(Signal *signal) {
       prev_50ms_tick = NdbTick_getCurrentTicks();
       prev_20sec_tick = prev_50ms_tick;
       prev_1sec_tick = prev_50ms_tick;
-      m_configured_spintime = getConfiguredSpintime();
-      m_current_spintime = 0;
+      if (!m_enable_adaptive_spinning)
+      {
+        m_configured_spintime_us = getConfiguredSpintime();
+        g_eventLogger->info("Using StaticSpinning with spintime %u us",
+                            m_configured_spintime_us);
+      }
+      m_current_spintime_us = 0;
       m_gain_spintime_in_us = 25;
 
       /* Initialise overload control variables */
@@ -688,7 +595,7 @@ void Thrman::execSTTOR(Signal *signal) {
 
       for (Uint32 i = 0; i < MAX_BLOCK_THREADS + 1; i++) {
         m_thread_overload_status[i].overload_status =
-            (OverloadStatus)MEDIUM_LOAD_CONST;
+            (OverloadStatus)LIGHT_LOAD_CONST;
         m_thread_overload_status[i].wakeup_instance = 0;
       }
 
@@ -785,57 +692,8 @@ void Thrman::execSTTOR(Signal *signal) {
         sendNextCONTINUEB(signal, 10, ZCONTINUEB_CHECK_SPINTIME);
         sendSTTORRY(signal, false);
       }
-<<<<<<< RonDB // RONDB-624 todo
-      sendNextCONTINUEB(signal, 50, ZCONTINUEB_MEASURE_CPU_USAGE);
-      sendNextCONTINUEB(signal, 10, ZCONTINUEB_CHECK_SPINTIME);
-    }
-    else
-    {
-      sendNextCONTINUEB(signal, 50, ZCONTINUEB_MEASURE_CPU_USAGE);
-      sendNextCONTINUEB(signal, 10, ZCONTINUEB_CHECK_SPINTIME);
-      sendSTTORRY(signal, false);
-    }
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryWorkers > 0)
-    {
-      jam();
-      initial_query_distribution(signal);
-    }
-    return;
-  case 2:
-  {
-    m_gain_spintime_in_us = getWakeupLatency();
-    if (instance() == m_main_thrman_instance)
-    {
-      g_eventLogger->info("Set wakeup latency to %u microseconds",
-                          m_gain_spintime_in_us);
-||||||| Common ancestor
-      sendNextCONTINUEB(signal, 50, ZCONTINUEB_MEASURE_CPU_USAGE);
-      sendNextCONTINUEB(signal, 10, ZCONTINUEB_CHECK_SPINTIME);
-    }
-    else
-    {
-      sendNextCONTINUEB(signal, 50, ZCONTINUEB_MEASURE_CPU_USAGE);
-      sendNextCONTINUEB(signal, 10, ZCONTINUEB_CHECK_SPINTIME);
-      sendSTTORRY(signal, false);
-    }
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryThreads > 0)
-    {
-      jam();
-      initial_query_distribution(signal);
-    }
-    return;
-  case 2:
-  {
-    m_gain_spintime_in_us = getWakeupLatency();
-    if (instance() == m_main_thrman_instance)
-    {
-      g_eventLogger->info("Set wakeup latency to %u microseconds",
-                          m_gain_spintime_in_us);
-=======
       if (instance() == m_rep_thrman_instance &&
-          globalData.ndbMtQueryThreads > 0) {
+          globalData.ndbMtQueryWorkers > 0) {
         jam();
         initial_query_distribution(signal);
       }
@@ -849,45 +707,16 @@ void Thrman::execSTTOR(Signal *signal) {
       set_spin_stat(0, true);
       sendSTTORRY(signal, true);
       return;
->>>>>>> MySQL 8.0.36
     }
-<<<<<<< RonDB // RONDB-624 todo
-    set_spin_stat(0, true);
-    sendSTTORRY(signal, true);
-    return;
-  }
-  case 9:
-  {
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryWorkers > 0)
-    {
-      jam();
-      signal->theData[0] = ZUPDATE_QUERY_DISTRIBUTION;
-      sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
-||||||| Common ancestor
-    set_spin_stat(0, true);
-    sendSTTORRY(signal, true);
-    return;
-  }
-  case 9:
-  {
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryThreads > 0)
-    {
-      jam();
-      signal->theData[0] = ZUPDATE_QUERY_DISTRIBUTION;
-      sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
-=======
     case 9: {
       if (instance() == m_rep_thrman_instance &&
-          globalData.ndbMtQueryThreads > 0) {
+          globalData.ndbMtQueryWorkers > 0) {
         jam();
         signal->theData[0] = ZUPDATE_QUERY_DISTRIBUTION;
         sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
       }
       sendSTTORRY(signal, true);
       return;
->>>>>>> MySQL 8.0.36
     }
     default:
       ndbabort();
@@ -4686,10 +4515,9 @@ void Thrman::execDBINFO_SCANREQ(Signal *signal) {
             Uint64 exec_full_percentage =
                 exec_percentage + buffer_full_percentage;
             Uint64 exec_full_send_percentage =
-                exec_percentage + buffer_full_percentage + send_percentage;
-            Uint64 all_exec_percentage = exec_percentage +
-                                         buffer_full_percentage +
-                                         send_percentage + spin_percentage;
+                exec_full_percentage + send_percentage;
+            Uint64 all_exec_percentage = exec_full_send_percentage +
+                                         spin_percentage;
             Uint64 sleep_percentage = 0;
             if (buffer_full_percentage > Uint64(100)) {
               buffer_full_percentage = Uint64(100);
@@ -4734,121 +4562,11 @@ void Thrman::execDBINFO_SCANREQ(Signal *signal) {
             row.write_uint32(0);
           }
 
-<<<<<<< RonDB // RONDB-624 todo
-          Uint64 exec_percentage =
-                        ((Uint64(100) * exec_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          Uint64 spin_percentage =
-                        ((Uint64(100) * spin_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          Uint64 send_percentage =
-                        ((Uint64(100) * send_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          Uint64 buffer_full_percentage =
-                        ((Uint64(100) * buffer_full_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          /* Ensure that total percentage reported is always 100% */
-          Uint64 exec_full_percentage = exec_percentage +
-                                        buffer_full_percentage;
-          Uint64 exec_full_send_percentage = exec_full_percentage +
-                                             send_percentage;
-          Uint64 all_exec_percentage = exec_full_send_percentage +
-                                       spin_percentage;
-          Uint64 sleep_percentage = 0;
-          if (buffer_full_percentage > Uint64(100))
-          {
-            jam();
-            buffer_full_percentage = Uint64(100);
-            exec_percentage = 0;
-            send_percentage = 0;
-            spin_percentage = 0;
-          }
-          else if (exec_full_percentage > Uint64(100))
-          {
-            jam();
-            exec_percentage = Uint64(100) - buffer_full_percentage;
-            send_percentage = 0;
-            spin_percentage = 0;
-          }
-          else if (exec_full_send_percentage > Uint64(100))
-          {
-            jam();
-            send_percentage = Uint64(100) - exec_full_percentage;
-            spin_percentage = 0;
-||||||| Common ancestor
-          Uint64 exec_percentage =
-                        ((Uint64(100) * exec_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          Uint64 spin_percentage =
-                        ((Uint64(100) * spin_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          Uint64 send_percentage =
-                        ((Uint64(100) * send_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          Uint64 buffer_full_percentage =
-                        ((Uint64(100) * buffer_full_time) +
-                        Uint64(500 * 1000)) /
-                        measure.m_elapsed_time;
-
-          /* Ensure that total percentage reported is always 100% */
-          Uint64 exec_full_percentage = exec_percentage +
-                                        buffer_full_percentage;
-          Uint64 exec_full_send_percentage = exec_percentage +
-                                             buffer_full_percentage +
-                                             send_percentage;
-          Uint64 all_exec_percentage = exec_percentage +
-                                       buffer_full_percentage +
-                                       send_percentage +
-                                       spin_percentage;
-          Uint64 sleep_percentage = 0;
-          if (buffer_full_percentage > Uint64(100))
-          {
-            buffer_full_percentage = Uint64(100);
-            exec_percentage = 0;
-            send_percentage = 0;
-            spin_percentage = 0;
-          }
-          else if (exec_full_percentage > Uint64(100))
-          {
-            exec_percentage = Uint64(100) - buffer_full_percentage;
-            send_percentage = 0;
-            spin_percentage = 0;
-          }
-          else if (exec_full_send_percentage > Uint64(100))
-          {
-            exec_percentage = Uint64(100) - exec_full_percentage;
-            spin_percentage = 0;
-=======
           ndbinfo_send_row(signal, req, row, rl);
           if (instance() != m_main_thrman_instance || m_num_send_threads == 0) {
             jam();
             break;
->>>>>>> MySQL 8.0.36
           }
-<<<<<<< RonDB // RONDB-624 todo
-          else if (all_exec_percentage > Uint64(100))
-          {
-            jam();
-            spin_percentage = Uint64(100) - exec_full_send_percentage;
-||||||| Common ancestor
-          else if (all_exec_percentage > Uint64(100))
-          {
-            exec_percentage = Uint64(100) - exec_full_send_percentage;
-=======
           pos++;
         } else {
           /* Send thread CPU load */
@@ -4859,165 +4577,21 @@ void Thrman::execDBINFO_SCANREQ(Signal *signal) {
             ndbassert(false);
             ndbinfo_send_scan_conf(signal, req, rl);
             return;
->>>>>>> MySQL 8.0.36
           }
-<<<<<<< RonDB // RONDB-624 todo
-          else
-          {
-            jam();
-            sleep_percentage = Uint64(100) - all_exec_percentage;
-||||||| Common ancestor
-          else
-          {
-            sleep_percentage = Uint64(100) - all_exec_percentage;
-=======
           SendThreadMeasurement measure;
           bool success =
-              calculate_send_thread_load_last_second(pos - 1, &measure);
+              calculate_send_thread_load_last_second(pos - 1, &measure, 1000);
           if (!success) {
             g_eventLogger->info(
                 "Failed calculate_send_thread_load_last_second");
             ndbassert(false);
             ndbinfo_send_scan_conf(signal, req, rl);
             return;
->>>>>>> MySQL 8.0.36
           }
-<<<<<<< RonDB // RONDB-624 todo
-          ndbrequire((exec_percentage +
-                      buffer_full_percentage +
-                      send_percentage +
-                      spin_percentage +
-                      sleep_percentage) == Uint64(100));
-                 
-          row.write_uint32(Uint32(exec_percentage));
-          row.write_uint32(Uint32(sleep_percentage));
-          row.write_uint32(Uint32(spin_percentage));
-          row.write_uint32(Uint32(send_percentage));
-          row.write_uint32(Uint32(buffer_full_percentage));
-
-          row.write_uint32(Uint32(measure.m_elapsed_time));
-        }
-        else
-        {
-          jam();
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-        }
-||||||| Common ancestor
-          ndbrequire(exec_percentage +
-                     buffer_full_percentage +
-                     send_percentage +
-                     spin_percentage +
-                     sleep_percentage == Uint64(100));
-                 
-          row.write_uint32(Uint32(exec_percentage));
-          row.write_uint32(Uint32(sleep_percentage));
-          row.write_uint32(Uint32(spin_percentage));
-          row.write_uint32(Uint32(send_percentage));
-          row.write_uint32(Uint32(buffer_full_percentage));
-
-          row.write_uint32(Uint32(measure.m_elapsed_time));
-        }
-        else
-        {
-          jam();
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-          row.write_uint32(0);
-        }
-=======
           Ndbinfo::Row row(signal, req);
           row.write_uint32(getOwnNodeId());
           row.write_uint32(m_num_threads + (pos - 1));
->>>>>>> MySQL 8.0.36
 
-<<<<<<< RonDB // RONDB-624 todo
-        ndbinfo_send_row(signal, req, row, rl);
-        if (instance() != m_main_thrman_instance ||
-            m_num_send_threads == 0)
-        {
-          jam();
-          break;
-        }
-        pos++;
-      }
-      else
-      {
-        /* Send thread CPU load */
-        jam();
-        if ((pos - 1) >= m_num_send_threads)
-        {
-          jam();
-          g_eventLogger->info("send instance out of range");
-          ndbassert(false);
-          ndbinfo_send_scan_conf(signal, req, rl);
-          return;
-        }
-        SendThreadMeasurement measure;
-        bool success = calculate_send_thread_load_last_ms(pos - 1,
-                                                          &measure,
-                                                          1000);
-        if (!success)
-        {
-          g_eventLogger->info("Failed calculate_send_thread_load_last_ms");
-          ndbassert(false);
-          ndbinfo_send_scan_conf(signal, req, rl);
-          return;
-        }
-        Ndbinfo::Row row(signal, req);
-        row.write_uint32(getOwnNodeId());
-        row.write_uint32 (m_num_threads + (pos - 1));
-||||||| Common ancestor
-        ndbinfo_send_row(signal, req, row, rl);
-        if (instance() != m_main_thrman_instance ||
-            m_num_send_threads == 0)
-        {
-          jam();
-          break;
-        }
-        pos++;
-      }
-      else
-      {
-        /* Send thread CPU load */
-        jam();
-        if ((pos - 1) >= m_num_send_threads)
-        {
-          jam();
-          g_eventLogger->info("send instance out of range");
-          ndbassert(false);
-          ndbinfo_send_scan_conf(signal, req, rl);
-          return;
-        }
-        SendThreadMeasurement measure;
-        bool success = calculate_send_thread_load_last_second(pos - 1,
-                                                              &measure);
-        if (!success)
-        {
-          g_eventLogger->info("Failed calculate_send_thread_load_last_second");
-          ndbassert(false);
-          ndbinfo_send_scan_conf(signal, req, rl);
-          return;
-        }
-        Ndbinfo::Row row(signal, req);
-        row.write_uint32(getOwnNodeId());
-        row.write_uint32 (m_num_threads + (pos - 1));
-=======
           if (measure.m_elapsed_time_os == 0) {
             jam();
             row.write_uint32(0);
@@ -5027,7 +4601,6 @@ void Thrman::execDBINFO_SCANREQ(Signal *signal) {
             Uint64 user_time_os_percentage =
                 ((Uint64(100) * measure.m_user_time_os) + Uint64(500 * 1000)) /
                 measure.m_elapsed_time_os;
->>>>>>> MySQL 8.0.36
 
             row.write_uint32(Uint32(user_time_os_percentage));
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2013, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,28 +23,13 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-<<<<<<< RonDB // RONDB-624 todo
 
-#include "util/require.h"
-#include <ndb_global.h>
-#include <NdbThread.h>
-||||||| Common ancestor
-#include "util/require.h"
-#include <ndb_global.h>
-#include <NdbThread.h>
-=======
->>>>>>> MySQL 8.0.36
 #include <NdbLockCpuUtil.h>
 #include <NdbMutex.h>
-<<<<<<< RonDB // RONDB-624 todo
-||||||| Common ancestor
-#include <memory>
-=======
 #include <NdbThread.h>
 #include <ndb_global.h>
 #include <memory>
 #include "util/require.h"
->>>>>>> MySQL 8.0.36
 
 #define UNDEFINED_PROCESSOR_SET 0xFFFF
 
@@ -133,28 +118,8 @@ static int use_processor_set(const Uint32 *cpu_ids, Uint32 num_cpu_ids,
           ret = NdbThread_LockCreateCPUSet(cpu_ids, num_cpu_ids,
                                            &handler->ndb_cpu_set);
         }
-<<<<<<< RonDB // RONDB-624 todo
-        else
-        {
-         ret = NdbThread_LockCreateCPUSet(cpu_ids,
-                                          num_cpu_ids,
-                                          &handler->ndb_cpu_set);
-        }
-        if (ret != 0)
-        {
-          free((void*)handler->cpu_ids);
-||||||| Common ancestor
-        else
-        {
-         ret = NdbThread_LockCreateCPUSet(cpu_ids,
-                                          num_cpu_ids,
-                                          &handler->ndb_cpu_set);
-        }
-        if (ret != 0)
-        {
-=======
         if (ret != 0) {
->>>>>>> MySQL 8.0.36
+          free((void*)handler->cpu_ids);
           handler->num_cpu_ids = 0;
           handler->cpu_ids = nullptr;
           return ret;

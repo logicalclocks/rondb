@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -122,31 +122,9 @@ class LqhFragReq {
   
   friend bool printLQHFRAGREQ(FILE *, const Uint32 *, Uint32, Uint16);
 
-<<<<<<< RonDB // RONDB-624 todo
-public:
+ public:
   static constexpr Uint32 SignalLength = 25;
   static constexpr Uint32 OldSignalLength = 24;
-  
-  enum RequestInfo {
-    CreateInRunning = 0x8000000,
-    TemporaryTable = 0x00000010
-  };
-||||||| Common ancestor
-public:
-  static constexpr Uint32 SignalLength = 24;
-  static constexpr Uint32 OldSignalLength = 23;
-  static constexpr Uint32 OldestSignalLength = 22;
-  
-  enum RequestInfo {
-    CreateInRunning = 0x8000000,
-    TemporaryTable = 0x00000010
-  };
-=======
- public:
-  static constexpr Uint32 SignalLength = 24;
-  static constexpr Uint32 OldSignalLength = 23;
-  static constexpr Uint32 OldestSignalLength = 22;
->>>>>>> MySQL 8.0.36
 
   enum RequestInfo { CreateInRunning = 0x8000000, TemporaryTable = 0x00000010 };
 

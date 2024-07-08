@@ -26,15 +26,7 @@
 #ifndef NDB_MGMD_HPP
 #define NDB_MGMD_HPP
 
-<<<<<<< RonDB // RONDB-624 todo
-#include "util/require.h"
-#include "portlib/ndb_compiler.h"
 #include "portlib/ndb_socket.h"
-||||||| Common ancestor
-#include "util/require.h"
-#include "portlib/ndb_compiler.h"
-=======
->>>>>>> MySQL 8.0.36
 #include <mgmapi.h>
 #include "../../src/mgmapi/mgmapi_internal.h"
 #include "mgmcommon/NdbMgm.hpp"

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -40,17 +41,8 @@ class CopyFragReq {
    * Receiver(s)
    */
   friend class Dblqh;
-<<<<<<< RonDB // RONDB-624 todo
 
   friend bool printCOPY_FRAGREQ(FILE *, const Uint32 *, Uint32, Uint16);
-
-public:
-  static constexpr Uint32 SignalLength = 11;
-||||||| Common ancestor
-public:
-  static constexpr Uint32 SignalLength = 11;
-=======
->>>>>>> MySQL 8.0.36
 
  public:
   static constexpr Uint32 SignalLength = 11;

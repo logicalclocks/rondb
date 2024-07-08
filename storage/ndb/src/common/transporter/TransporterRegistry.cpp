@@ -3404,90 +3404,18 @@ void TransporterRegistry::start_clients_thread() {
       }
 
       const NodeId nodeId = t->getRemoteNodeId();
-<<<<<<< RonDB // RONDB-624 todo
-      switch(performStates[nodeId]){
-      case CONNECTING:
-      {
-        if (t->isPartOfMultiTransporter())
-        {
-          DEBUG_FPRINTF((stderr, "Node %u part of MultiTrp\n",
-                         t->getRemoteNodeId()));
-          break;
-        }
-        if (!get_active_node(nodeId))
-        {
-          DEBUG_FPRINTF((stderr, "Node %u not active\n",
-                         t->getRemoteNodeId()));
-          break;
-        }
-        if (!t->isConnected() && !t->isServer)
-        {
-          if (get_and_clear_node_up_indicator(nodeId))
-          {
-            // Other node have indicated that node nodeId is up, try connect
-            // now and restart backoff sequence
-            backoff_reset_connecting_time(nodeId);
-          }
-          if (!backoff_update_and_check_time_for_connect(nodeId))
-          {
-            // Skip connect this time
-            continue;
-          }
-
-	  bool connected= false;
-	  /**
-	   * First, we try to connect (if we have a port number).
-	   */
-
-	  if (t->get_s_port())
-          {
-            DBUG_PRINT("info", ("connecting to Node %d using port %d",
-                                nodeId, t->get_s_port()));
-            unlockMultiTransporters();
-            connected= t->connect_client(false);
-            lockMultiTransporters();
-            DEBUG_FPRINTF((stderr, "connect_client to Node %u res: %u\n",
-                           t->getRemoteNodeId(), connected));
-||||||| Common ancestor
-      switch(performStates[nodeId]){
-      case CONNECTING:
-      {
-        if (t->isPartOfMultiTransporter())
-        {
-          break;
-        }
-        if (!t->isConnected() && !t->isServer)
-        {
-          if (get_and_clear_node_up_indicator(nodeId))
-          {
-            // Other node have indicated that node nodeId is up, try connect
-            // now and restart backoff sequence
-            backoff_reset_connecting_time(nodeId);
-          }
-          if (!backoff_update_and_check_time_for_connect(nodeId))
-          {
-            // Skip connect this time
-            continue;
-          }
-
-	  bool connected= false;
-	  /**
-	   * First, we try to connect (if we have a port number).
-	   */
-
-	  if (t->get_s_port())
-          {
-            DBUG_PRINT("info", ("connecting to node %d using port %d",
-                                nodeId, t->get_s_port()));
-            unlockMultiTransporters();
-            connected= t->connect_client();
-            lockMultiTransporters();
-=======
       switch (performStates[nodeId]) {
         case CONNECTING: {
           if (t->isPartOfMultiTransporter()) {
+            DEBUG_FPRINTF((stderr, "Node %u part of MultiTrp\n",
+                           t->getRemoteNodeId()));
             break;
->>>>>>> MySQL 8.0.36
+          }
+          if (!get_active_node(nodeId))
+          {
+            DEBUG_FPRINTF((stderr, "Node %u not active\n",
+                           t->getRemoteNodeId()));
+            break;
           }
           if (!t->isConnected() && !t->isServer) {
             if (get_and_clear_node_up_indicator(nodeId)) {
@@ -3505,23 +3433,16 @@ void TransporterRegistry::start_clients_thread() {
              * First, we try to connect (if we have a port number).
              */
 
-<<<<<<< RonDB // RONDB-624 todo
-            DBUG_PRINT("info", ("connection to Node %d should use "
-                                "dynamic port",
-                                nodeId));
-||||||| Common ancestor
-            DBUG_PRINT("info", ("connection to node %d should use "
-                                "dynamic port",
-                                nodeId));
-=======
             if (t->get_s_port()) {
               DBUG_PRINT("info", ("connecting to node %d using port %d", nodeId,
                                   t->get_s_port()));
               unlockMultiTransporters();
-              connected = t->connect_client();
+              connected = t->connect_client(false);
               lockMultiTransporters();
+              DEBUG_FPRINTF((stderr, "connect_client to Node %u res: %u\n",
+                             t->getRemoteNodeId(), connected));
+
             }
->>>>>>> MySQL 8.0.36
 
             /**
              * If dynamic, get the port for connecting from the management
@@ -3532,18 +3453,8 @@ void TransporterRegistry::start_clients_thread() {
               int server_port = 0;
               unlockMultiTransporters();
 
-<<<<<<< RonDB // RONDB-624 todo
-	    if(ndb_mgm_is_connected(m_mgm_handle))
-	    {
-              DBUG_PRINT("info", ("asking mgmd which port to use for Node %d",
-||||||| Common ancestor
-	    if(ndb_mgm_is_connected(m_mgm_handle))
-	    {
-              DBUG_PRINT("info", ("asking mgmd which port to use for node %d",
-=======
               DBUG_PRINT("info", ("connection to node %d should use "
                                   "dynamic port",
->>>>>>> MySQL 8.0.36
                                   nodeId));
 
               if (!ndb_mgm_is_connected(m_mgm_handle))
@@ -3592,94 +3503,6 @@ void TransporterRegistry::start_clients_thread() {
                       ndb_mgm_get_latest_error_msg(m_mgm_handle),
                       ndb_mgm_get_latest_error_line(m_mgm_handle));
                 }
-<<<<<<< RonDB // RONDB-624 todo
-	      }
-	      else if(ndb_mgm_is_connected(m_mgm_handle))
-	      {
-                DBUG_PRINT("info", ("Failed to get dynamic port, res: %d",
-                                    res));
-                g_eventLogger->info("Failed to get dynamic port, res: %d",
-                                    res);
-		ndb_mgm_disconnect(m_mgm_handle);
-	      }
-	      else
-	      {
-                DBUG_PRINT("info", ("mgmd close connection early"));
-                g_eventLogger->info
-                  ("Management server closed connection early. "
-                   "It is probably being shut down (or has problems). "
-                   "We will retry the connection. %d %s %s line: %d",
-                   ndb_mgm_get_latest_error(m_mgm_handle),
-                   ndb_mgm_get_latest_error_desc(m_mgm_handle),
-                   ndb_mgm_get_latest_error_msg(m_mgm_handle),
-                   ndb_mgm_get_latest_error_line(m_mgm_handle)
-                   );
-	      }
-	    }
-	    /** else
-	     * We will not be able to get a new port unless
-	     * the m_mgm_handle is connected. Note that not
-	     * being connected is an ok state, just continue
-	     * until it is able to connect. Continue using the
-	     * old port until we can connect again and get a
-	     * new port.
-	     */
-            lockMultiTransporters();
-	  }
-	}
-	break;
-      }
-      case DISCONNECTING:
-      {
-        if (t->isConnected())
-        {
-          DEBUG_FPRINTF((stderr, "(Node %u)doDisconnect(Node %u), line: %u\n",
-                         localNodeId, t->getRemoteNodeId(), __LINE__));
-          t->doDisconnect();
-||||||| Common ancestor
-	      }
-	      else if(ndb_mgm_is_connected(m_mgm_handle))
-	      {
-                DBUG_PRINT("info", ("Failed to get dynamic port, res: %d",
-                                    res));
-                g_eventLogger->info("Failed to get dynamic port, res: %d",
-                                    res);
-		ndb_mgm_disconnect(m_mgm_handle);
-	      }
-	      else
-	      {
-                DBUG_PRINT("info", ("mgmd close connection early"));
-                g_eventLogger->info
-                  ("Management server closed connection early. "
-                   "It is probably being shut down (or has problems). "
-                   "We will retry the connection. %d %s %s line: %d",
-                   ndb_mgm_get_latest_error(m_mgm_handle),
-                   ndb_mgm_get_latest_error_desc(m_mgm_handle),
-                   ndb_mgm_get_latest_error_msg(m_mgm_handle),
-                   ndb_mgm_get_latest_error_line(m_mgm_handle)
-                   );
-	      }
-	    }
-	    /** else
-	     * We will not be able to get a new port unless
-	     * the m_mgm_handle is connected. Note that not
-	     * being connected is an ok state, just continue
-	     * until it is able to connect. Continue using the
-	     * old port until we can connect again and get a
-	     * new port.
-	     */
-            lockMultiTransporters();
-	  }
-	}
-	break;
-      }
-      case DISCONNECTING:
-	if(t->isConnected())
-        {
-          DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %u\n",
-                         localNodeId, t->getRemoteNodeId(), __LINE__));
-	  t->doDisconnect();
-=======
               }
               /** else
                * We will not be able to get a new port unless
@@ -3693,44 +3516,15 @@ void TransporterRegistry::start_clients_thread() {
             }
           }
           break;
->>>>>>> MySQL 8.0.36
         }
-<<<<<<< RonDB // RONDB-624 todo
-        else
-        {
-          DEBUG_FPRINTF((stderr, "Node %u DISCONNECTING\n",
-                         t->getRemoteNodeId()));
-        }
-        break;
-      }
-      case DISCONNECTED:
-      {
-        if (t->isConnected())
-        {
-          g_eventLogger->warning("Found connection to %u in state DISCONNECTED "
-                                 " while being connected, disconnecting!",
-                                 t->getRemoteNodeId());
-          DEBUG_FPRINTF((stderr, "(Node %u)doDisconnect(Node %u), line: %u\n",
-                         localNodeId, t->getRemoteNodeId(), __LINE__));
-          t->doDisconnect();
-||||||| Common ancestor
-	break;
-      case DISCONNECTED:
-      {
-        if (t->isConnected())
-        {
-          g_eventLogger->warning("Found connection to %u in state DISCONNECTED "
-                                 " while being connected, disconnecting!",
-                                 t->getRemoteNodeId());
-          DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %u\n",
-                         localNodeId, t->getRemoteNodeId(), __LINE__));
-          t->doDisconnect();
-=======
         case DISCONNECTING:
           if (t->isConnected()) {
             DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %u\n",
                            localNodeId, t->getRemoteNodeId(), __LINE__));
             t->doDisconnect();
+          } else {
+            DEBUG_FPRINTF((stderr, "Node %u DISCONNECTING\n",
+                           t->getRemoteNodeId()));
           }
           break;
         case DISCONNECTED: {
@@ -3742,58 +3536,12 @@ void TransporterRegistry::start_clients_thread() {
             DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %u\n",
                            localNodeId, t->getRemoteNodeId(), __LINE__));
             t->doDisconnect();
+          } else {
+            DEBUG_FPRINTF((stderr, "Node %u DISCONNECTED\n",
+                           t->getRemoteNodeId()));
           }
           break;
->>>>>>> MySQL 8.0.36
         }
-<<<<<<< RonDB // RONDB-624 todo
-        else
-        {
-          DEBUG_FPRINTF((stderr, "Node %u DISCONNECTED\n",
-                         t->getRemoteNodeId()));
-        }
-        break;
-      }
-      case CONNECTED:
-      {
-        if (t->isPartOfMultiTransporter() &&
-            !t->isConnected() &&
-            !t->isServer)
-        {
-          require(t->get_s_port());
-          DBUG_PRINT("info", ("connecting multi-transporter to Node %d"
-                     " using port %d",
-                     nodeId,
-                     t->get_s_port()));
-          unlockMultiTransporters();
-          t->connect_client(true);
-          DEBUG_FPRINTF((stderr,
-            "Connect client of Node %u, trp id %u, res: %u\n",
-                        t->getRemoteNodeId(),
-                        t->getTransporterIndex(),
-                        t->isConnected()));
-          lockMultiTransporters();
-||||||| Common ancestor
-        break;
-      }
-      case CONNECTED:
-      {
-        if (t->isPartOfMultiTransporter() &&
-            !t->isConnected() &&
-            !t->isServer)
-        {
-          require(t->get_s_port());
-          DBUG_PRINT("info", ("connecting multi-transporter to node %d"
-                     " using port %d",
-                     nodeId,
-                     t->get_s_port()));
-          unlockMultiTransporters();
-          t->connect_client();
-          DEBUG_FPRINTF((stderr, "Connect client of trp id %u, res: %u\n",
-                        t->getTransporterIndex(),
-                        t->isConnected()));
-          lockMultiTransporters();
-=======
         case CONNECTED: {
           if (t->isPartOfMultiTransporter() && !t->isConnected() &&
               !t->isServer) {
@@ -3802,33 +3550,18 @@ void TransporterRegistry::start_clients_thread() {
                                 " using port %d",
                                 nodeId, t->get_s_port()));
             unlockMultiTransporters();
-            t->connect_client();
+            t->connect_client(true);
             DEBUG_FPRINTF((stderr, "Connect client of trp id %u, res: %u\n",
                            t->getTransporterIndex(), t->isConnected()));
             lockMultiTransporters();
+          } else {
+            DEBUG_FPRINTF_DETAIL((stderr, "Node %u CONNECTED\n",
+                                  t->getRemoteNodeId()));
           }
->>>>>>> MySQL 8.0.36
+          break;
         }
-<<<<<<< RonDB // RONDB-624 todo
-        else
-        {
-          DEBUG_FPRINTF_DETAIL((stderr, "Node %u CONNECTED\n",
-                                t->getRemoteNodeId()));
-        }
-        break;
-      }
-      default:
-      {
-	break;
-||||||| Common ancestor
-      }
-      default:
-	break;
-=======
         default:
           break;
->>>>>>> MySQL 8.0.36
-      }
       }
     }
     unlockMultiTransporters();

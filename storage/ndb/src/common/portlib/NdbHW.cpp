@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2013, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -37,18 +37,10 @@
 #include "ndb_config.h"
 #include "util/require.h"
 
-<<<<<<< RonDB // RONDB-624 todo
-//#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
-#define DEBUG_HW(arglist) do { } while(0)
-||||||| Common ancestor
-//#define DEBUG_HW(arglist) do { printf arglist ; } while (0)
-#define DEBUG_HW(arglist) do { } while(0)
-=======
 //#define DEBUG_HW(arglist) do { printf arglist ; } while (0)
 #define DEBUG_HW(arglist) \
   do {                    \
   } while (0)
->>>>>>> MySQL 8.0.36
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>

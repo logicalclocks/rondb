@@ -1,4 +1,5 @@
 /* Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,30 +74,18 @@ inline Uint64 NdbTimer::elapsedTime(void) const {
 inline void NdbTimer::printTransactionStatistics(const char* text, 
 						 int numTransactions, 
 						 int numOperations,
-                                                 int numThreads = 1){
+                                                 int numThreads = 1) {
 
   // Convert to Uint32 in order to be able to print it to screen
   Uint32 lapTime = (Uint32)elapsedTime();
-<<<<<<< RonDB // RONDB-624 todo
-  ndbout_c("%i transactions, %i %s total time = %d ms\nAverage %f ms/transaction, %f ms/%s.\n%f transactions/second, %f %ss/second.\n",
-	 numTransactions, numTransactions*numOperations, text, lapTime,
-         ((double)lapTime*numThreads/numTransactions), ((double)lapTime/(numTransactions*numOperations)), text, 
-         1000.0/((double)lapTime/numTransactions), 1000.0/((double)lapTime/(numTransactions*numOperations)), text);
-||||||| Common ancestor
-  ndbout_c("%i transactions, %i %s total time = %d ms\nAverage %f ms/transaction, %f ms/%s.\n%f transactions/second, %f %ss/second.\n",
-	 numTransactions, numTransactions*numOperations, text, lapTime,
-         ((double)lapTime/numTransactions), ((double)lapTime/(numTransactions*numOperations)), text, 
-         1000.0/((double)lapTime/numTransactions), 1000.0/((double)lapTime/(numTransactions*numOperations)), text);
-=======
   ndbout_c(
       "%i transactions, %i %s total time = %d ms\nAverage %f ms/transaction, "
       "%f ms/%s.\n%f transactions/second, %f %ss/second.\n",
       numTransactions, numTransactions * numOperations, text, lapTime,
-      ((double)lapTime / numTransactions),
+      ((double)(lapTime * numThreads) / numTransactions),
       ((double)lapTime / (numTransactions * numOperations)), text,
       1000.0 / ((double)lapTime / numTransactions),
       1000.0 / ((double)lapTime / (numTransactions * numOperations)), text);
->>>>>>> MySQL 8.0.36
 }
 
 inline void NdbTimer::printTestTimer(int numLoops, int numRecords) {

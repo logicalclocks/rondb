@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,25 +28,13 @@
 #include <time.h>
 #include "util/require.h"
 
-<<<<<<< RonDB // RONDB-624 todo
-#include <mgmapi.h>
 #include <ConfigValues.hpp>
-#include <NdbOut.hpp>
-||||||| Common ancestor
-#include <mgmapi.h>
-#include <NdbOut.hpp>
-=======
->>>>>>> MySQL 8.0.36
 #include <NdbSleep.h>
 #include <NdbTick.h>
 #include <mgmapi.h>
 #include <portlib/ndb_localtime.h>
-<<<<<<< RonDB // RONDB-624 todo
 #include <../src/mgmapi/mgmapi_configuration.hpp>
-||||||| Common ancestor
-=======
 #include <NdbOut.hpp>
->>>>>>> MySQL 8.0.36
 
 #include <NdbToolsProgramExitCodes.hpp>
 

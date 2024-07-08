@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3749,22 +3749,8 @@ void BackupRestore::cback(int result, restore_callback_t *cb)
      * Error. temporary or permanent?
      */
     if (errorHandler(cb))
-<<<<<<< RonDB // RONDB-624 todo
-      tuple_a(cb); // retry
-    else
-    {
-||||||| Common ancestor
-      tuple_a(cb); // retry
-    else
-    {
-      restoreLogger.log_error("Restore: Failed to restore data due to a unrecoverable error. Exiting...");
-=======
       tuple_a(cb);  // retry
     else {
-      restoreLogger.log_error(
-          "Restore: Failed to restore data due to a unrecoverable error. "
-          "Exiting...");
->>>>>>> MySQL 8.0.36
       cb->next = m_free_callback;
       m_free_callback = cb;
       set_data_error(true);
@@ -3788,17 +3774,9 @@ void BackupRestore::cback(int result, restore_callback_t *cb)
     }
   } else if (get_fatal_error())  // fatal error in other restore-thread
   {
-<<<<<<< RonDB // RONDB-624 todo
-    restoreLogger.log_error("Restore: Failed to restore data due to an "
-                            "unrecoverable error in another restore thread. "
-                            "Exiting...");
-||||||| Common ancestor
-    restoreLogger.log_error("Restore: Failed to restore data due to a unrecoverable error. Exiting...");
-=======
     restoreLogger.log_error(
         "Restore: Failed to restore data due to a unrecoverable error. "
         "Exiting...");
->>>>>>> MySQL 8.0.36
     cb->next = m_free_callback;
     m_free_callback = cb;
     return;

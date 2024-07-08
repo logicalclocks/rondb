@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,20 +29,8 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <stdlib.h>
-<<<<<<< RonDB // RONDB-624 todo
 #include <string.h>
 #include <stdio.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/uio.h>
-#include <sys/types.h>
-||||||| Common ancestor
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/uio.h>
-#include <sys/types.h>
-=======
->>>>>>> MySQL 8.0.36
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>

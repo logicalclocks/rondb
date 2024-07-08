@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -798,35 +798,11 @@ TableS::~TableS() {
 // Parse dictTabInfo buffer and pushback to to vector storage
 bool RestoreMetaData::parseTableDescriptor(const Uint32 *data, Uint32 len) {
   NdbTableImpl *tableImpl = 0;
-  int ret = NdbDictInterface::parseTableInfo(&tableImpl, data, len, false,
+  int ret = NdbDictInterface::parseTableInfo(&tableImpl, data, len, false, nullptr,
                                              ndbd_drop6(m_fileHeader.NdbVersion)
                                                  ? MAKE_VERSION(5, 1, 2)
                                                  : m_fileHeader.NdbVersion);
 
-<<<<<<< RonDB // RONDB-624 todo
-// Parse dictTabInfo buffer and pushback to to vector storage 
-bool
-RestoreMetaData::parseTableDescriptor(const Uint32 * data, Uint32 len)
-{
-  NdbTableImpl* tableImpl = 0;
-  int ret = NdbDictInterface::parseTableInfo
-    (&tableImpl, data, len, false, nullptr,
-     ndbd_drop6(m_fileHeader.NdbVersion) ? MAKE_VERSION(5,1,2) :
-     m_fileHeader.NdbVersion);
-  
-||||||| Common ancestor
-// Parse dictTabInfo buffer and pushback to to vector storage 
-bool
-RestoreMetaData::parseTableDescriptor(const Uint32 * data, Uint32 len)
-{
-  NdbTableImpl* tableImpl = 0;
-  int ret = NdbDictInterface::parseTableInfo
-    (&tableImpl, data, len, false,
-     ndbd_drop6(m_fileHeader.NdbVersion) ? MAKE_VERSION(5,1,2) :
-     m_fileHeader.NdbVersion);
-  
-=======
->>>>>>> MySQL 8.0.36
   if (ret != 0) {
     ndberror_struct err_struct;
     err_struct.code = ret;

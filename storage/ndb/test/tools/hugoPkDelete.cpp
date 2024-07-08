@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,28 +73,12 @@ int main(int argc, const char **argv) {
       {"usage", '?', arg_flag, &_help, "Print help", ""}};
   int num_args = sizeof(args) / sizeof(args[0]);
   int optind = 0;
-<<<<<<< RonDB // RONDB-624 todo
-  char desc[] = 
-    "tabname\n"\
-    "This program will delete all records in a table using PK\n";
-  
-  if(getarg(args, num_args, argc, argv, &optind) ||
-     argv[optind] == NULL || _records == 0 || _help) {
-||||||| Common ancestor
-  char desc[] = 
-    "tabname\n"\
-    "This program will delete all records in a table using PK \n";
-  
-  if(getarg(args, num_args, argc, argv, &optind) ||
-     argv[optind] == NULL || _records == 0 || _help) {
-=======
   char desc[] =
       "tabname\n"
       "This program will delete all records in a table using PK \n";
 
   if (getarg(args, num_args, argc, argv, &optind) || argv[optind] == NULL ||
       _records == 0 || _help) {
->>>>>>> MySQL 8.0.36
     arg_printusage(args, num_args, argv[0], desc);
     return NDBT_ProgramExit(NDBT_WRONGARGS);
   }

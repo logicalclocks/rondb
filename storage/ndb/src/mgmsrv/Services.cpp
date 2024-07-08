@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2024, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -219,27 +219,18 @@ const ParserRow<MgmApiSession> commands[] = {
 
     MGM_CMD("enter single user", &MgmApiSession::enterSingleUser, ""),
     MGM_ARG("nodeId", Int, Mandatory, "Node"),
-<<<<<<< RonDB // RONDB-624 todo
   
-  MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, ""),
+    MGM_CMD("get mgm nodeid", &MgmApiSession::get_mgm_nodeid, ""),
 
-  MGM_CMD("get mgm nodeid", &MgmApiSession::get_mgm_nodeid, ""),
-
-  MGM_CMD("set_hostname", &MgmApiSession::set_hostname, ""),
+    MGM_CMD("set_hostname", &MgmApiSession::set_hostname, ""),
     MGM_ARG("node", Int, Mandatory, "node"),
     MGM_ARG("new_hostname", String, Mandatory, "new hostname"),
 
-  MGM_CMD("activate", &MgmApiSession::activate, ""),
+    MGM_CMD("activate", &MgmApiSession::activate, ""),
     MGM_ARG("node", Int, Mandatory, "node"),
 
-  MGM_CMD("deactivate", &MgmApiSession::deactivate, ""),
+    MGM_CMD("deactivate", &MgmApiSession::deactivate, ""),
     MGM_ARG("node", Int, Mandatory, "node"),
-||||||| Common ancestor
-  
-  MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, ""),
-  
-=======
->>>>>>> MySQL 8.0.36
 
     MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, ""),
 

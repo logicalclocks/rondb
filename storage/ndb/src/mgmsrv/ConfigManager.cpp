@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -478,14 +478,9 @@ bool ConfigManager::init(void) {
   DBUG_RETURN(true);
 }
 
-<<<<<<< RonDB // RONDB-624 todo
-
-bool
-ConfigManager::prepareConfigChange(const Config* config)
-{
+bool ConfigManager::prepareConfigChange(const Config *config) {
   unsigned exclude[] = {CFG_SECTION_SYSTEM, 0};
-  if (m_prepared_config)
-  {
+  if (m_prepared_config) {
     if (m_prepared_config->equal(config, exclude))
     {
       m_prepared_already = true;
@@ -500,46 +495,13 @@ ConfigManager::prepareConfigChange(const Config* config)
                            "when already prepared");
       return false;
     }
-||||||| Common ancestor
-
-bool
-ConfigManager::prepareConfigChange(const Config* config)
-{
-  if (m_prepared_config)
-  {
-    g_eventLogger->error("Can't prepare configuration change " \
-                         "when already prepared");
-    return false;
-=======
-bool ConfigManager::prepareConfigChange(const Config *config) {
-  if (m_prepared_config) {
-    g_eventLogger->error(
-        "Can't prepare configuration change "
-        "when already prepared");
-    return false;
->>>>>>> MySQL 8.0.36
   }
-<<<<<<< RonDB // RONDB-624 todo
-  Uint32 generation= config->getGeneration();
-  if (generation == 0)
-  {
-    g_eventLogger->error("Can't prepare configuration change for "\
-                         "configuration with generation 0");
-||||||| Common ancestor
-
-  Uint32 generation= config->getGeneration();
-  if (generation == 0)
-  {
-    g_eventLogger->error("Can't prepare configuration change for "\
-                         "configuration with generation 0");
-=======
 
   Uint32 generation = config->getGeneration();
   if (generation == 0) {
     g_eventLogger->error(
         "Can't prepare configuration change for "
         "configuration with generation 0");
->>>>>>> MySQL 8.0.36
     return false;
   }
 
@@ -1949,48 +1911,6 @@ ConfigManager::run()
         break;
       }
 
-<<<<<<< RonDB // RONDB-624 todo
-      Uint32 nodeId = 0;
-      for (nodeId = nodeMap.find_first();
-           nodeId != NodeBitmask::NotFound;
-           nodeId = nodeMap.find_next(nodeId+1))
-      {
-        g_eventLogger->info("Node %d failed", nodeId);
-        m_started.clear(nodeId);
-        m_checked.clear(nodeId);
-        m_defragger.node_failed(nodeId);
-
-        if (m_config_change.m_state != ConfigChangeState::IDLE)
-        {
-          g_eventLogger->info("Node %d failed during config change!!",
-                              nodeId);
-          g_eventLogger->warning("Node failure handling of config "
-                                 "change protocol not yet implemented!! "
-                                 "No more configuration changes can occur, "
-                                 "but the node will continue to serve the "
-                                 "last good configuration");
-          // TODO start take over of config change protocol
-||||||| Common ancestor
-      Uint32 nodeId = 0;
-      for (nodeId = nodeMap.find_first();
-           nodeId != NodeBitmask::NotFound;
-           nodeId = nodeMap.find_next(nodeId+1))
-      {
-        m_started.clear(nodeId);
-        m_checked.clear(nodeId);
-        m_defragger.node_failed(nodeId);
-
-        if (m_config_change.m_state != ConfigChangeState::IDLE)
-        {
-          g_eventLogger->info("Node %d failed during config change!!",
-                              nodeId);
-          g_eventLogger->warning("Node failure handling of config "
-                                 "change protocol not yet implemented!! "
-                                 "No more configuration changes can occur, "
-                                 "but the node will continue to serve the "
-                                 "last good configuration");
-          // TODO start take over of config change protocol
-=======
       case GSN_NODE_FAILREP: {
         const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
         assert(sig->getLength() >= NodeFailRep::SignalLengthLong);
@@ -2002,7 +1922,6 @@ ConfigManager::run()
           nodeMap.assign(sig->ptr[0].sz, sig->ptr[0].p);
         } else {
           nodeMap.assign(len, rep->theAllNodes);
->>>>>>> MySQL 8.0.36
         }
         assert(rep->noOfNodes == nodeMap.count());
         nodeMap.bitAND(m_all_mgm);
@@ -2010,6 +1929,7 @@ ConfigManager::run()
         Uint32 nodeId = 0;
         for (nodeId = nodeMap.find_first(); nodeId != NodeBitmask::NotFound;
              nodeId = nodeMap.find_next(nodeId + 1)) {
+          g_eventLogger->info("Node %d failed", nodeId);
           m_started.clear(nodeId);
           m_checked.clear(nodeId);
           m_defragger.node_failed(nodeId);
@@ -2028,29 +1948,6 @@ ConfigManager::run()
         }
         break;
       }
-<<<<<<< RonDB // RONDB-624 todo
-      break;
-    }
-    case GSN_API_REGCONF:{
-      NodeId nodeId = refToNode(sig->header.theSendersBlockRef);
-      if (m_all_mgm.get(nodeId) &&      // Is a mgm node
-          !m_started.get(nodeId))       // Not already marked as started
-      {
-        g_eventLogger->info("Node %d connected", nodeId);
-        g_eventLogger->info("Node %d set m_started", nodeId);
-        m_started.set(nodeId);
-||||||| Common ancestor
-      break;
-    }
-
-    case GSN_API_REGCONF:{
-      NodeId nodeId = refToNode(sig->header.theSendersBlockRef);
-      if (m_all_mgm.get(nodeId) &&      // Is a mgm node
-          !m_started.get(nodeId))       // Not already marked as started
-      {
-        g_eventLogger->info("Node %d connected", nodeId);
-        m_started.set(nodeId);
-=======
 
       case GSN_API_REGCONF: {
         NodeId nodeId = refToNode(sig->header.theSendersBlockRef);
@@ -2058,10 +1955,10 @@ ConfigManager::run()
             !m_started.get(nodeId))   // Not already marked as started
         {
           g_eventLogger->info("Node %d connected", nodeId);
+          g_eventLogger->info("Node %d set m_started", nodeId);
           m_started.set(nodeId);
         }
         break;
->>>>>>> MySQL 8.0.36
       }
 
       case GSN_CONFIG_CHECK_REQ:
