@@ -1474,6 +1474,8 @@ protected:
   Uint32 theFinalUpdateSize;	   // Size of final updates for interpretation
   Uint32 theFinalReadSize;	   // Size of final reads for interpretation
 
+  Uint32 theAggregationSize;  // Size of aggregation program
+
   Uint8  theStartIndicator;	 // Indicator of whether start operation
   Uint8  theCommitIndicator;	 // Indicator of whether commit operation
   Uint8  theSimpleIndicator;	 // Indicator of whether simple operation

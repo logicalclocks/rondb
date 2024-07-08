@@ -104,6 +104,7 @@ private:
    * Get:ers for requestInfo
    */
   static Uint8 getParallelism(const UintR & requestInfo);
+  static Uint8 getAggregation(const UintR & requestInfo);
   static Uint8 getLockMode(const UintR & requestInfo);
   static Uint8 getHoldLockFlag(const UintR & requestInfo);
   static Uint8 getReadCommittedFlag(const UintR & requestInfo);
@@ -125,6 +126,7 @@ private:
    */
   static void clearRequestInfo(UintR & requestInfo);
   static void setParallelism(UintR & requestInfo, Uint32 flag);
+  static void setAggregation(UintR & requestInfo, Uint32 flag);
   static void setLockMode(UintR & requestInfo, Uint32 flag);
   static void setHoldLockFlag(UintR & requestInfo, Uint32 flag);
   static void setReadCommittedFlag(UintR & requestInfo, Uint32 flag);
@@ -149,6 +151,20 @@ private:
                                         Note: these bits are ignored since
                                         7.0.34, 7.1.23, 7.2.7 and should be
                                         zero-filled until future reuse.
+ g = Aggregation           - 1(of 8) Bit 7   reuse the highest bit of Parallelism
+                                             since it is ignored in current implementation
+                                             So we use 1000 0000 (other bits must are 0)
+                                             to represent aggregation.
+                                             Keep it, it would be safer to test with this
+                                             restriction for a while.
+                                             **********************NOTICE**********************
+                                             if someone would like to use the remaining 7 bits
+                                             in the future, release this restriction by removing
+                                             the assert in both ScanTabReq::setAggregation() and
+                                             ScanTabReq::getAggregation()
+
+                                             UPDATE: already uncommented those asserts
+                                             **************************************************
  l = Lock mode             - 1  Bit 8
  h = Hold lock mode        - 1  Bit 10
  c = Read Committed        - 1  Bit 11
@@ -171,10 +187,14 @@ private:
            1111111111222222222233
  01234567890123456789012345678901
  pppppppplnhcktzxbbbbbbbbbbdjafR
+        g
 */
 
 #define PARALLEL_SHIFT     (0)
 #define PARALLEL_MASK      (255)
+
+#define SCAN_AGGREGATION_SHIFT (7)
+#define SCAN_AGGREGATION_MASK  (1)
 
 #define LOCK_MODE_SHIFT     (8)
 #define LOCK_MODE_MASK      (1)
@@ -222,6 +242,14 @@ inline
 Uint8
 ScanTabReq::getParallelism(const UintR & requestInfo){
   return (Uint8)((requestInfo >> PARALLEL_SHIFT) & PARALLEL_MASK);
+}
+
+inline
+Uint8
+ScanTabReq::getAggregation(const UintR & requestInfo) {
+  // assert((requestInfo & 0x7F) == 0);
+  return ((Uint8)((requestInfo >> SCAN_AGGREGATION_SHIFT) &
+                  SCAN_AGGREGATION_MASK));
 }
 
 inline
@@ -286,6 +314,13 @@ ScanTabReq::setParallelism(UintR & requestInfo, Uint32 type){
   ASSERT_MAX(type, PARALLEL_MASK, "ScanTabReq::setParallelism");
   requestInfo= (requestInfo & ~(PARALLEL_MASK << PARALLEL_SHIFT)) |
                ((type & PARALLEL_MASK) << PARALLEL_SHIFT);
+}
+
+inline
+void
+ScanTabReq::setAggregation(UintR & requestInfo, Uint32 flag) {
+  // assert((requestInfo & 0x7F) == 0);
+  requestInfo |= (flag << SCAN_AGGREGATION_SHIFT);
 }
 
 inline

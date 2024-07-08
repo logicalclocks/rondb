@@ -11885,6 +11885,7 @@ void Dbtc::logScanTimeout(Signal* signal,
   bool keyinfo = ScanFragReq::getKeyinfoFlag(scanPtr.p->scanRequestInfo);
   bool range = ScanFragReq::getRangeScanFlag(scanPtr.p->scanRequestInfo);
   bool nodisk = ScanFragReq::getNoDiskFlag(scanPtr.p->scanRequestInfo);
+  bool aggregation = ScanFragReq::getAggregationFlag(scanPtr.p->scanRequestInfo);
 
   Uint32 runningCount = 0 , deliveredCount = 0, queuedCount = 0;
   {
@@ -11903,7 +11904,7 @@ void Dbtc::logScanTimeout(Signal* signal,
 
   g_eventLogger->info("TC %u : Scan timeout "
                       "[0x%08x 0x%08x] state %u tab %u dist %u ri 0x%x "
-                      " (%s%s%s%s%s%s) frags r %u d %u q %u "
+                      " (%s%s%s%s%s%s%s) frags r %u d %u q %u "
                       "frag state %u, fid %u node %u instance %u",
                       instance(),
                       apiPtr.p->transid[0],
@@ -11918,6 +11919,7 @@ void Dbtc::logScanTimeout(Signal* signal,
                       (keyinfo?"ki ":""),
                       (range?"range ":""),
                       (nodisk?"nodisk ":"disk "),
+                      (aggregation?"aggregation ":"noaggregation "),
                       runningCount,
                       deliveredCount,
                       queuedCount,
@@ -16523,6 +16525,8 @@ Dbtc::initScanrec(ScanRecordPtr scanptr,
   ScanFragReq::setTupScanFlag(tmp, ScanTabReq::getTupScanFlag(ri));
   ScanFragReq::setNoDiskFlag(tmp, ScanTabReq::getNoDiskFlag(ri));
   ScanFragReq::setMultiFragFlag(tmp, ScanTabReq::getMultiFragFlag(ri));
+  ScanFragReq::setAggregationFlag(tmp, ScanTabReq::getAggregation(ri));
+
   if (unlikely(ScanTabReq::getViaSPJFlag(ri)))
   {
     jam();
