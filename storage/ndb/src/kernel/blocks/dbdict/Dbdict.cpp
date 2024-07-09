@@ -540,7 +540,7 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal) {
           row.write_uint32(parentObjId);
           row.write_string(nameBuff); /* FQ name */
           ndbinfo_send_row(signal, req, row, rl);
-        } else if (req.tableId == Ndbinfo::TABLE_MAP_TABLEID) {
+        } else if (req.tableId == Ndbinfo::TABLE_MAP_TABLEID) {
           if (ltd.getTableType() == DictTabInfo::TableType::SystemTable ||
               ltd.getTableType() == DictTabInfo::TableType::UserTable ||
               ltd.getTableType() == DictTabInfo::TableType::UniqueHashIndex ||

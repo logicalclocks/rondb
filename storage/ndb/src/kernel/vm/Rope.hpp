@@ -115,6 +115,8 @@ public:
 
   void erase();
 
+  static Uint32 hash(const char * str, Uint32 len, Uint32 starter = 0);
+
 private:
   Uint32 m_hash;
   Uint32 m_length;

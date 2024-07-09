@@ -915,7 +915,7 @@ Dbtup::disk_page_prealloc(Signal* signal,
             signal, this, c_tsman, fragPtrP->fragTableId, fragPtrP->fragmentId,
             c_lqh->getCreateSchemaVersion(fragPtrP->fragTableId),
             fragPtrP->m_tablespace_id);
-        err = tsman.alloc_extent(&ext.p->m_key);
+        err= tsman.alloc_extent(&ext.p->m_key, &ext.p->m_extent_no);
       }
       if (err < 0) {
         jamEntry();

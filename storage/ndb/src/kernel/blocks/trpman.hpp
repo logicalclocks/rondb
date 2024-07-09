@@ -60,8 +60,6 @@ class Trpman : public SimulatedBlock {
   void execNDB_TAMPER(Signal *);
   void execDUMP_STATE_ORD(Signal *);
 
-  void execNDB_TAMPER(Signal*);
-  void execDUMP_STATE_ORD(Signal*);
   void startCONTINUEB(Signal*);
   void execCONTINUEB(Signal*);
 public:

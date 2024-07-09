@@ -362,6 +362,9 @@ class Dbacc : public SimulatedBlock {
     explicit Page8_pool(Page32_pool &pool) : m_page_pool(pool) {}
     void getPtr(Ptr<Page8> &page) const;
     void getPtrForce(Ptr<Page8> &page) const;
+   private:
+    Page32_pool& m_page_pool;
+  };
 
 typedef SLCFifoList<Page8_pool, IA_Page8> Page8List;
 typedef LocalSLCFifoList<Page8_pool, IA_Page8> LocalPage8List;

@@ -26,17 +26,7 @@
 //#define DBTC_MAIN
 #define DBTC_C
 
-<<<<<<< RonDB // RONDB-624 todo
-#include "Dbtc.hpp"
-#include <RefConvert.hpp>
-||||||| Common ancestor
-#include "Dbtc.hpp"
-#include <cstring>
-#include "md5_hash.hpp"
-#include <RefConvert.hpp>
-=======
 #include <NdbSpin.h>
->>>>>>> MySQL 8.0.36
 #include <ndb_limits.h>
 #include <ndb_rand.h>
 #include <RefConvert.hpp>
@@ -44,6 +34,7 @@
 #include "Dbtc.hpp"
 #include "md5_hash.hpp"
 
+#include <signaldata/Abort.hpp>
 #include <signaldata/AbortAll.hpp>
 #include <signaldata/AlterIndx.hpp>
 #include <signaldata/AlterIndxImpl.hpp>
@@ -77,10 +68,6 @@
 #include <signaldata/TcCommit.hpp>
 #include <signaldata/TcContinueB.hpp>
 #include <signaldata/TcHbRep.hpp>
-<<<<<<< RonDB // RONDB-624 todo
-#include <signaldata/Abort.hpp>
-||||||| Common ancestor
-=======
 #include <signaldata/TcKeyConf.hpp>
 #include <signaldata/TcKeyFailConf.hpp>
 #include <signaldata/TcKeyRef.hpp>
@@ -88,7 +75,6 @@
 #include <signaldata/TcRollbackRep.hpp>
 #include <signaldata/TransIdAI.hpp>
 #include <signaldata/TrigAttrInfo.hpp>
->>>>>>> MySQL 8.0.36
 
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
@@ -122,13 +108,7 @@
 #include <kernel/Interpreter.hpp>
 #include <signaldata/CreateFKImpl.hpp>
 #include <signaldata/DropFKImpl.hpp>
-<<<<<<< RonDB // RONDB-624 todo
 #include <signaldata/CommitReq.hpp>
-#include <kernel/Interpreter.hpp>
-||||||| Common ancestor
-#include <kernel/Interpreter.hpp>
-=======
->>>>>>> MySQL 8.0.36
 #include <signaldata/TuxBound.hpp>
 #include "../dbdih/Dbdih.hpp"
 #include "portlib/mt-asm.h"
@@ -376,392 +356,251 @@ void Dbtc::execCONTINUEB(Signal *signal) {
   UintR Tdata5 = signal->theData[6];
 #endif
   switch (tcase) {
-<<<<<<< RonDB // RONDB-624 todo
 #ifdef DEBUG_QUERY_THREAD_USAGE
-  case TcContinueB::ZQUERY_THREAD_USAGE:
-  {
-    jam();
-    query_thread_usage(signal);
-    return;
-  }
+    case TcContinueB::ZQUERY_THREAD_USAGE:
+    {
+      jam();
+      query_thread_usage(signal);
+      return;
+    }
 #endif
-  case TcContinueB::ZCHECK_GCP_FINISHED:
-  {
-    jam();
-    checkGcpFinished(signal);
-    return;
-  }
-  case TcContinueB::ZCHECK_TO_ABORT_HANDLING:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = signal->theData[2];
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
-    apiConnectptr.p->finish_trans_counter--;
-    ndbrequire(!apiConnectptr.p->send_fail_data_process_ongoing &&
-               apiConnectptr.p->check_fail_data_process_ongoing);
-    apiConnectptr.p->check_fail_data_process_ongoing = false;
-    check_tc_hbrep(signal, apiConnectptr);
-    checkFailData_abort(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZCHECK_TO_COMMIT_HANDLING:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = signal->theData[2];
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
-    apiConnectptr.p->finish_trans_counter--;
-    ndbrequire(!apiConnectptr.p->send_fail_data_process_ongoing &&
-               apiConnectptr.p->check_fail_data_process_ongoing);
-    apiConnectptr.p->check_fail_data_process_ongoing = false;
-    check_tc_hbrep(signal, apiConnectptr);
-    checkFailData_commit(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZCHECK_TO_COMPLETE_HANDLING:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = signal->theData[2];
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
-    apiConnectptr.p->finish_trans_counter--;
-    ndbrequire(!apiConnectptr.p->send_fail_data_process_ongoing &&
-               apiConnectptr.p->check_fail_data_process_ongoing);
-    apiConnectptr.p->check_fail_data_process_ongoing = false;
-    check_tc_hbrep(signal, apiConnectptr);
-    checkFailData_complete(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZSEND_TO_ABORT_HANDLING:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = signal->theData[2];
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
-    apiConnectptr.p->finish_trans_counter--;
-    /**
-     * We can only handle one thread at a time that acts on the transaction.
-     * There are thus three possible states, no process is ongoing and we
-     * are waiting for responses from LDM/Query threads. If this is true
-     * then both send_fail_data_process_ongoing and
-     * check_fail_data_process_ongoing is false and finish_trans_counter
-     * is not zero. We can have a send process ongoing, in this state we
-     * can receive ABORTCONF/COMMITCONF/COMPLETECONF signals and we can
-     * handle those. But we cannot handle finish processing and we cannot
-     * handle continuation of send since a process is already ongoing.
-     * Similarly for the check process we cannot start a new send process
-     * or finish processing while this is ongoing.
-     *
-     * We come to toCommitHandling/toAbortHandling/toCompleteHandling
-     * from many different places and we want to check that we are
-     * in a state where we can start up send process. Thus we reset
-     * it here and let the method set it again. We are obviously in
-     * the process of sending, but want to ensure that our state
-     * checking works ok.
-     */
-    ndbrequire(apiConnectptr.p->send_fail_data_process_ongoing &&
-               !apiConnectptr.p->check_fail_data_process_ongoing);
-    apiConnectptr.p->send_fail_data_process_ongoing = false;
-    check_tc_hbrep(signal, apiConnectptr);
-    toAbortHandlingLab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZSEND_TO_COMMIT_HANDLING:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = signal->theData[2];
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
-    apiConnectptr.p->finish_trans_counter--;
-    ndbrequire(apiConnectptr.p->send_fail_data_process_ongoing &&
-               !apiConnectptr.p->check_fail_data_process_ongoing);
-    apiConnectptr.p->send_fail_data_process_ongoing = false;
-    check_tc_hbrep(signal, apiConnectptr);
-    toCommitHandlingLab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZSEND_TO_COMPLETE_HANDLING:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = signal->theData[2];
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
-    apiConnectptr.p->finish_trans_counter--;
-    ndbrequire(apiConnectptr.p->send_fail_data_process_ongoing &&
-               !apiConnectptr.p->check_fail_data_process_ongoing);
-    apiConnectptr.p->send_fail_data_process_ongoing = false;
-    check_tc_hbrep(signal, apiConnectptr);
-    toCompleteHandlingLab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZSEND_SETUP_FAIL_DATA:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = signal->theData[2];
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    Uint32 type = signal->theData[3];
-    ndbrequire(!(apiConnectptr.p->send_fail_data_process_ongoing ||
-                 apiConnectptr.p->check_fail_data_process_ongoing));
-    check_tc_hbrep(signal, apiConnectptr);
-    if (setupFailData(signal, apiConnectptr, type))
+    case TcContinueB::ZCHECK_GCP_FINISHED:
     {
-      tcConnectptr.i = apiConnectptr.p->tcConnect.getFirst();
+      jam();
+      checkGcpFinished(signal);
+      return;
+    }
+    case TcContinueB::ZCHECK_TO_ABORT_HANDLING:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      tcConnectptr.i = signal->theData[2];
       ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-      if (type == ZABORT_SETUP)
-      {
-        jam();
-        apiConnectptr.p->returnsignal = RS_TCROLLBACKREP;
-        apiConnectptr.p->returncode = ZNODEFAIL_BEFORE_COMMIT;
-        toAbortHandlingLab(signal, apiConnectptr);
-        return;
-      }
-      else if (type == ZCOMMIT_SETUP)
-      {
-        jam();
-        toCommitHandlingLab(signal, apiConnectptr);
-      }
-      else
-      {
-        jam();
-        ndbrequire(type == ZCOMPLETE_SETUP);
-        toCompleteHandlingLab(signal, apiConnectptr);
-      }
-    }
-    return;
-  }
-  case TcContinueB::ZRELEASE_SEIZED_INDEX_OPS:
-  {
-    jam();
-    LocalTcIndexOperation_dllist::Head seize_index_head;
-    Uint32 size_head = sizeof(seize_index_head);
-    ndbrequire(signal->length() == (1 + (size_head / 4)));
-    Uint32 loop_count = 0;
-    memcpy((char*)&seize_index_head,
-           (char*)&signal->theData[1],
-           size_head);
-    releaseAllSeizedIndexOperations(signal,
-                                    &seize_index_head,
-                                    loop_count,
-                                    true);
-    return;
-  }
-  case TcContinueB::ZRELEASE_FIRED_TRIGGER_DATA:
-  {
-    jam();
-    Local_TcFiredTriggerData_fifo::Head triggers_head;
-    Uint32 size_head = sizeof(triggers_head);
-    ndbrequire(signal->length() == (1 + (size_head / 4)));
-    Uint32 loop_count = 0;
-    memcpy((char*)&triggers_head,
-           (char*)&signal->theData[1],
-           size_head);
-    releaseFiredTriggerData(signal,
-                            &triggers_head,
-                            loop_count,
-                            true);
-    return;
-  }
-  case TcContinueB::ZRELEASE_TRANS_RESOURCES:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    check_tc_hbrep(signal, apiConnectptr);
-    releaseTransResources(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZRELEASE_ABORT_RESOURCES:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    check_tc_hbrep(signal, apiConnectptr);
-    releaseAbortResources(signal, apiConnectptr, false);
-    return;
-  }
-  case TcContinueB::ZRELEASE_TAKE_OVER:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    check_tc_hbrep(signal, apiConnectptr);
-    releaseTakeOver(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZRELEASE_TAKE_OVER_TRANS:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = signal->theData[1];
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    remove_takeover_transaction(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZSCAN_FOR_READ_BACKUP:
-    jam();
-    scan_for_read_backup(signal, Tdata0, Tdata1, Tdata2);
-    return;
-  case TcContinueB::ZRETURN_FROM_QUEUED_DELIVERY:
-    jam();
-    ndbabort();
-    return;
-  case TcContinueB::ZCOMPLETE_TRANS_AT_TAKE_OVER:
-    jam();
-    tcNodeFailptr.i = Tdata0;
-    ptrCheckGuard(tcNodeFailptr, 1, tcFailRecord);
-    completeTransAtTakeOverLab(signal, Tdata1);
-    return;
-  case TcContinueB::ZCONTINUE_TIME_OUT_CONTROL:
-    jam();
-    timeOutLoopStartLab(signal, Tdata0);
-    return;
-  case TcContinueB::ZNODE_TAKE_OVER_COMPLETED:
-    jam();
-    tcNodeFailptr.i = 0;
-    ptrAss(tcNodeFailptr, tcFailRecord);
-    nodeTakeOverCompletedLab(signal, Tdata0, 0);
-    return;
-  case TcContinueB::ZINITIALISE_RECORDS:
-    jam();
-    initialiseRecordsLab(signal, Tdata0, Tdata2, Tdata3);
-    return;
-  case TcContinueB::ZSEND_COMMIT_LOOP:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = Tdata0;
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    if (apiConnectptr.p->setup_fail_data)
-    {
-      jam();
-      setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+      ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
+      apiConnectptr.p->finish_trans_counter--;
+      ndbrequire(!apiConnectptr.p->send_fail_data_process_ongoing &&
+                 apiConnectptr.p->check_fail_data_process_ongoing);
+      apiConnectptr.p->check_fail_data_process_ongoing = false;
+      check_tc_hbrep(signal, apiConnectptr);
+      checkFailData_abort(signal, apiConnectptr);
       return;
     }
-    check_tc_hbrep(signal, apiConnectptr);
-    tcConnectptr.i = Tdata1;
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->counter > 0);
-    apiConnectptr.p->counter--;
-    commit020Lab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZSEND_COMPLETE_LOOP:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = Tdata0;
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    if (apiConnectptr.p->setup_fail_data)
+    case TcContinueB::ZCHECK_TO_COMMIT_HANDLING:
     {
       jam();
-      setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      tcConnectptr.i = signal->theData[2];
+      ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
+      apiConnectptr.p->finish_trans_counter--;
+      ndbrequire(!apiConnectptr.p->send_fail_data_process_ongoing &&
+                 apiConnectptr.p->check_fail_data_process_ongoing);
+      apiConnectptr.p->check_fail_data_process_ongoing = false;
+      check_tc_hbrep(signal, apiConnectptr);
+      checkFailData_commit(signal, apiConnectptr);
       return;
     }
-    check_tc_hbrep(signal, apiConnectptr);
-    tcConnectptr.i = Tdata1;
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    ndbrequire(apiConnectptr.p->counter > 0);
-    apiConnectptr.p->counter--;
-    complete010Lab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZHANDLE_FAILED_API_NODE:
-    jam();
-    handleFailedApiNode(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::ZTRANS_EVENT_REP:
-    jam();
-    /* Send transaction counters report */
+    case TcContinueB::ZCHECK_TO_COMPLETE_HANDLING:
     {
-      const Uint32 len = c_counters.build_event_rep(signal);
-      sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, len, JBB);
-||||||| Common ancestor
-  case TcContinueB::ZSCAN_FOR_READ_BACKUP:
-    jam();
-    scan_for_read_backup(signal, Tdata0, Tdata1, Tdata2);
-    return;
-  case TcContinueB::ZRETURN_FROM_QUEUED_DELIVERY:
-    jam();
-    ndbabort();
-    return;
-  case TcContinueB::ZCOMPLETE_TRANS_AT_TAKE_OVER:
-    jam();
-    tcNodeFailptr.i = Tdata0;
-    ptrCheckGuard(tcNodeFailptr, 1, tcFailRecord);
-    completeTransAtTakeOverLab(signal, Tdata1);
-    return;
-  case TcContinueB::ZCONTINUE_TIME_OUT_CONTROL:
-    jam();
-    timeOutLoopStartLab(signal, Tdata0);
-    return;
-  case TcContinueB::ZNODE_TAKE_OVER_COMPLETED:
-    jam();
-    tcNodeFailptr.i = 0;
-    ptrAss(tcNodeFailptr, tcFailRecord);
-    nodeTakeOverCompletedLab(signal, Tdata0, 0);
-    return;
-  case TcContinueB::ZINITIALISE_RECORDS:
-    jam();
-    initialiseRecordsLab(signal, Tdata0, Tdata2, Tdata3);
-    return;
-  case TcContinueB::ZSEND_COMMIT_LOOP:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = Tdata0;
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = Tdata1;
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    commit020Lab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZSEND_COMPLETE_LOOP:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = Tdata0;
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    tcConnectptr.i = Tdata1;
-    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    complete010Lab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZHANDLE_FAILED_API_NODE:
-    jam();
-    handleFailedApiNode(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::ZTRANS_EVENT_REP:
-    jam();
-    /* Send transaction counters report */
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      tcConnectptr.i = signal->theData[2];
+      ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
+      apiConnectptr.p->finish_trans_counter--;
+      ndbrequire(!apiConnectptr.p->send_fail_data_process_ongoing &&
+                 apiConnectptr.p->check_fail_data_process_ongoing);
+      apiConnectptr.p->check_fail_data_process_ongoing = false;
+      check_tc_hbrep(signal, apiConnectptr);
+      checkFailData_complete(signal, apiConnectptr);
+      return;
+    }
+    case TcContinueB::ZSEND_TO_ABORT_HANDLING:
     {
-      const Uint32 len = c_counters.build_event_rep(signal);
-      sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, len, JBB);
-=======
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      tcConnectptr.i = signal->theData[2];
+      ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
+      apiConnectptr.p->finish_trans_counter--;
+      /**
+       * We can only handle one thread at a time that acts on the transaction.
+       * There are thus three possible states, no process is ongoing and we
+       * are waiting for responses from LDM/Query threads. If this is true
+       * then both send_fail_data_process_ongoing and
+       * check_fail_data_process_ongoing is false and finish_trans_counter
+       * is not zero. We can have a send process ongoing, in this state we
+       * can receive ABORTCONF/COMMITCONF/COMPLETECONF signals and we can
+       * handle those. But we cannot handle finish processing and we cannot
+       * handle continuation of send since a process is already ongoing.
+       * Similarly for the check process we cannot start a new send process
+       * or finish processing while this is ongoing.
+       *
+       * We come to toCommitHandling/toAbortHandling/toCompleteHandling
+       * from many different places and we want to check that we are
+       * in a state where we can start up send process. Thus we reset
+       * it here and let the method set it again. We are obviously in
+       * the process of sending, but want to ensure that our state
+       * checking works ok.
+       */
+      ndbrequire(apiConnectptr.p->send_fail_data_process_ongoing &&
+                 !apiConnectptr.p->check_fail_data_process_ongoing);
+      apiConnectptr.p->send_fail_data_process_ongoing = false;
+      check_tc_hbrep(signal, apiConnectptr);
+      toAbortHandlingLab(signal, apiConnectptr);
+      return;
+    }
+    case TcContinueB::ZSEND_TO_COMMIT_HANDLING:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      tcConnectptr.i = signal->theData[2];
+      ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
+      apiConnectptr.p->finish_trans_counter--;
+      ndbrequire(apiConnectptr.p->send_fail_data_process_ongoing &&
+                 !apiConnectptr.p->check_fail_data_process_ongoing);
+      apiConnectptr.p->send_fail_data_process_ongoing = false;
+      check_tc_hbrep(signal, apiConnectptr);
+      toCommitHandlingLab(signal, apiConnectptr);
+      return;
+    }
+    case TcContinueB::ZSEND_TO_COMPLETE_HANDLING:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      tcConnectptr.i = signal->theData[2];
+      ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
+      apiConnectptr.p->finish_trans_counter--;
+      ndbrequire(apiConnectptr.p->send_fail_data_process_ongoing &&
+                 !apiConnectptr.p->check_fail_data_process_ongoing);
+      apiConnectptr.p->send_fail_data_process_ongoing = false;
+      check_tc_hbrep(signal, apiConnectptr);
+      toCompleteHandlingLab(signal, apiConnectptr);
+      return;
+    }
+    case TcContinueB::ZSEND_SETUP_FAIL_DATA:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      tcConnectptr.i = signal->theData[2];
+      ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      Uint32 type = signal->theData[3];
+      ndbrequire(!(apiConnectptr.p->send_fail_data_process_ongoing ||
+                   apiConnectptr.p->check_fail_data_process_ongoing));
+      check_tc_hbrep(signal, apiConnectptr);
+      if (setupFailData(signal, apiConnectptr, type))
+      {
+        tcConnectptr.i = apiConnectptr.p->tcConnect.getFirst();
+        ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+        if (type == ZABORT_SETUP)
+        {
+          jam();
+          apiConnectptr.p->returnsignal = RS_TCROLLBACKREP;
+          apiConnectptr.p->returncode = ZNODEFAIL_BEFORE_COMMIT;
+          toAbortHandlingLab(signal, apiConnectptr);
+          return;
+        }
+        else if (type == ZCOMMIT_SETUP)
+        {
+          jam();
+          toCommitHandlingLab(signal, apiConnectptr);
+        }
+        else
+        {
+          jam();
+          ndbrequire(type == ZCOMPLETE_SETUP);
+          toCompleteHandlingLab(signal, apiConnectptr);
+        }
+      }
+      return;
+    }
+    case TcContinueB::ZRELEASE_SEIZED_INDEX_OPS:
+    {
+      jam();
+      LocalTcIndexOperation_dllist::Head seize_index_head;
+      Uint32 size_head = sizeof(seize_index_head);
+      ndbrequire(signal->length() == (1 + (size_head / 4)));
+      Uint32 loop_count = 0;
+      memcpy((char*)&seize_index_head,
+             (char*)&signal->theData[1],
+             size_head);
+      releaseAllSeizedIndexOperations(signal,
+                                      &seize_index_head,
+                                      loop_count,
+                                      true);
+      return;
+    }
+    case TcContinueB::ZRELEASE_FIRED_TRIGGER_DATA:
+    {
+      jam();
+      Local_TcFiredTriggerData_fifo::Head triggers_head;
+      Uint32 size_head = sizeof(triggers_head);
+      ndbrequire(signal->length() == (1 + (size_head / 4)));
+      Uint32 loop_count = 0;
+      memcpy((char*)&triggers_head,
+             (char*)&signal->theData[1],
+             size_head);
+      releaseFiredTriggerData(signal,
+                              &triggers_head,
+                              loop_count,
+                              true);
+      return;
+    }
+    case TcContinueB::ZRELEASE_TRANS_RESOURCES:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      check_tc_hbrep(signal, apiConnectptr);
+      releaseTransResources(signal, apiConnectptr);
+      return;
+    }
+    case TcContinueB::ZRELEASE_ABORT_RESOURCES:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      check_tc_hbrep(signal, apiConnectptr);
+      releaseAbortResources(signal, apiConnectptr, false);
+      return;
+    }
+    case TcContinueB::ZRELEASE_TAKE_OVER:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      check_tc_hbrep(signal, apiConnectptr);
+      releaseTakeOver(signal, apiConnectptr);
+      return;
+    }
+    case TcContinueB::ZRELEASE_TAKE_OVER_TRANS:
+    {
+      jam();
+      ApiConnectRecordPtr apiConnectptr;
+      apiConnectptr.i = signal->theData[1];
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      remove_takeover_transaction(signal, apiConnectptr);
+      return;
+    }
     case TcContinueB::ZSCAN_FOR_READ_BACKUP:
       jam();
       scan_for_read_backup(signal, Tdata0, Tdata1, Tdata2);
@@ -795,135 +634,39 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       ApiConnectRecordPtr apiConnectptr;
       apiConnectptr.i = Tdata0;
       ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      if (apiConnectptr.p->setup_fail_data)
+      {
+        jam();
+        setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+        return;
+      }
+      check_tc_hbrep(signal, apiConnectptr);
       tcConnectptr.i = Tdata1;
       ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      ndbrequire(apiConnectptr.p->counter > 0);
+      apiConnectptr.p->counter--;
       commit020Lab(signal, apiConnectptr);
       return;
->>>>>>> MySQL 8.0.36
     }
     case TcContinueB::ZSEND_COMPLETE_LOOP: {
       jam();
       ApiConnectRecordPtr apiConnectptr;
       apiConnectptr.i = Tdata0;
       ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      if (apiConnectptr.p->setup_fail_data)
+      {
+        jam();
+        setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+        return;
+      }
+      check_tc_hbrep(signal, apiConnectptr);
       tcConnectptr.i = Tdata1;
       ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+      ndbrequire(apiConnectptr.p->counter > 0);
+      apiConnectptr.p->counter--;
       complete010Lab(signal, apiConnectptr);
       return;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    return;
-  case TcContinueB::ZCONTINUE_TIME_OUT_FRAG_CONTROL:
-    jam();
-    timeOutLoopStartFragLab(signal, Tdata0);
-    return;
-  case TcContinueB::ZABORT_BREAK:
-  {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = Tdata0;
-    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
-    if (apiConnectptr.p->setup_fail_data)
-    {
-      jam();
-      setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
-      return;
-    }
-    check_tc_hbrep(signal, apiConnectptr);
-    apiConnectptr.p->counter--;
-    tcConnectptr.i = Tdata1;
-    abort015Lab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZHANDLE_FAILED_API_NODE_REMOVE_MARKERS:
-    jam();
-    removeMarkerForFailedAPI(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::ZWAIT_ABORT_ALL:
-    jam();
-    checkAbortAllTimeout(signal, Tdata0);
-    return;
-  case TcContinueB::ZCHECK_SCAN_ACTIVE_FAILED_LQH:
-    jam();
-    checkScanActiveInFailedLqh(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::ZNF_CHECK_TRANSACTIONS:
-    jam();
-    nodeFailCheckTransactions(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::TRIGGER_PENDING:
-  {
-    jam();
-    ApiConnectRecordPtr transPtr;
-    transPtr.i = Tdata0;
-    c_apiConnectRecordPool.getPtr(transPtr);
-#ifdef ERROR_INSERT
-    if (ERROR_INSERTED(8082))
-    {
-      /* Max of 100000 TRIGGER_PENDING TcContinueBs to 
-       * single ApiConnectRecord
-       * See testBlobs -bug 45768
-       */
-      if (++transPtr.p->continueBCount > 100000)
-||||||| Common ancestor
-    return;
-  case TcContinueB::ZCONTINUE_TIME_OUT_FRAG_CONTROL:
-    jam();
-    timeOutLoopStartFragLab(signal, Tdata0);
-    return;
-  case TcContinueB::ZABORT_BREAK:
-  {
-    jam();
-    tcConnectptr.i = Tdata0;
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = Tdata1;
-    c_apiConnectRecordPool.getPtr(apiConnectptr);
-    apiConnectptr.p->counter--;
-    abort015Lab(signal, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZABORT_TIMEOUT_BREAK:
-  {
-    jam();
-    tcConnectptr.i = Tdata0;
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = Tdata1;
-    c_apiConnectRecordPool.getPtr(apiConnectptr);
-    apiConnectptr.p->counter--;
-    sendAbortedAfterTimeout(signal, 1, apiConnectptr);
-    return;
-  }
-  case TcContinueB::ZHANDLE_FAILED_API_NODE_REMOVE_MARKERS:
-    jam();
-    removeMarkerForFailedAPI(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::ZWAIT_ABORT_ALL:
-    jam();
-    checkAbortAllTimeout(signal, Tdata0);
-    return;
-  case TcContinueB::ZCHECK_SCAN_ACTIVE_FAILED_LQH:
-    jam();
-    checkScanActiveInFailedLqh(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::ZNF_CHECK_TRANSACTIONS:
-    jam();
-    nodeFailCheckTransactions(signal, Tdata0, Tdata1);
-    return;
-  case TcContinueB::TRIGGER_PENDING:
-  {
-    jam();
-    ApiConnectRecordPtr transPtr;
-    transPtr.i = Tdata0;
-    c_apiConnectRecordPool.getPtr(transPtr);
-#ifdef ERROR_INSERT
-    if (ERROR_INSERTED(8082))
-    {
-      /* Max of 100000 TRIGGER_PENDING TcContinueBs to 
-       * single ApiConnectRecord
-       * See testBlobs -bug 45768
-       */
-      if (++transPtr.p->continueBCount > 100000)
-=======
     case TcContinueB::ZHANDLE_FAILED_API_NODE:
       jam();
       handleFailedApiNode(signal, Tdata0, Tdata1);
@@ -931,26 +674,17 @@ void Dbtc::execCONTINUEB(Signal *signal) {
     case TcContinueB::ZTRANS_EVENT_REP:
       jam();
       /* Send transaction counters report */
->>>>>>> MySQL 8.0.36
       {
         const Uint32 len = c_counters.build_event_rep(signal);
         sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, len, JBB);
       }
 
       {
-<<<<<<< RonDB // RONDB-624 todo
-        warningReport(signal, 29, 0);
-        return;
-||||||| Common ancestor
-        warningReport(signal, 29);
-        return;
-=======
         const Uint32 report_interval = 5000;
         const Uint32 len = c_counters.build_continueB(signal);
         signal->theData[0] = TcContinueB::ZTRANS_EVENT_REP;
         sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, report_interval,
                             len);
->>>>>>> MySQL 8.0.36
       }
       return;
     case TcContinueB::ZCONTINUE_TIME_OUT_FRAG_CONTROL:
@@ -959,11 +693,18 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       return;
     case TcContinueB::ZABORT_BREAK: {
       jam();
-      tcConnectptr.i = Tdata0;
       ApiConnectRecordPtr apiConnectptr;
-      apiConnectptr.i = Tdata1;
-      c_apiConnectRecordPool.getPtr(apiConnectptr);
+      apiConnectptr.i = Tdata0;
+      ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+      if (apiConnectptr.p->setup_fail_data)
+      {
+        jam();
+        setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+        return;
+      }
+      check_tc_hbrep(signal, apiConnectptr);
       apiConnectptr.p->counter--;
+      tcConnectptr.i = Tdata1;
       abort015Lab(signal, apiConnectptr);
       return;
     }
@@ -1037,7 +778,7 @@ void Dbtc::execCONTINUEB(Signal *signal) {
         if (unlikely(!(apiConnectptr.p->transid[0] == Tdata1 &&
                        apiConnectptr.p->transid[1] == Tdata2 &&
                        apiConnectptr.p->isExecutingDeferredTriggers()))) {
-          warningReport(signal, 29);
+          warningReport(signal, 29, 0);
           return;
         }
       }
@@ -1171,8 +912,7 @@ void Dbtc::execCONTINUEB(Signal *signal) {
 #endif
         break;
       }
-      if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink(
-              MAX_SHRINKS)) {
+      if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink()) {
         c_transient_pools_shrinking.clear(pool_index);
       } else {
         signal->theData[1] = pool_index;
@@ -1180,41 +920,9 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       }
       break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink())
-    {
-      c_transient_pools_shrinking.clear(pool_index);
-    }
-    else
-    {
-      signal->theData[1] = pool_index;
-      sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
-    }
-    break;
-  }
-  default:
-    ndbabort();
-  }//switch
-||||||| Common ancestor
-    if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink(MAX_SHRINKS))
-    {
-      c_transient_pools_shrinking.clear(pool_index);
-    }
-    else
-    {
-      signal->theData[1] = pool_index;
-      sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
-    }
-    break;
-  }
-  default:
-    ndbabort();
-  }//switch
-=======
     default:
       ndbabort();
   }  // switch
->>>>>>> MySQL 8.0.36
 }
 
 void Dbtc::execDIGETNODESREF(Signal *signal,
@@ -1768,47 +1476,21 @@ void Dbtc::execSTTOR(Signal *signal) {
       startphase1x010Lab(signal);
       return;
     }
+    case 7:
+    {
+      jam();
+      signal->theData[0] = TcContinueB::ZCHECK_GCP_FINISHED;
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10000, 1);
+      sttorryLab(signal);
+      return;
+    }
     default: {
       jam();
       sttorryLab(signal);
       return;
     }
-<<<<<<< RonDB // RONDB-624 todo
-    startphase1x010Lab(signal);
-    return;
-  }
-  case 7:
-  {
-    jam();
-    signal->theData[0] = TcContinueB::ZCHECK_GCP_FINISHED;
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10000, 1);
-    sttorryLab(signal);
-    return;
-  }
-  default:
-  {
-    jam();
-    sttorryLab(signal);
-    return;
-  }
-  }//switch
-}//Dbtc::execSTTOR()
-||||||| Common ancestor
-    startphase1x010Lab(signal);
-    return;
-  }
-  default:
-  {
-    jam();
-    sttorryLab(signal);
-    return;
-  }
-  }//switch
-}//Dbtc::execSTTOR()
-=======
   }  // switch
 }  // Dbtc::execSTTOR()
->>>>>>> MySQL 8.0.36
 
 void Dbtc::sttorryLab(Signal *signal) {
   signal->theData[0] = csignalKey;
@@ -2136,61 +1818,24 @@ bool Dbtc::handleFailedApiConnection(Signal *signal, Uint32 *TloopCount,
   /***********************************************************************/
   // The connected node is the failed node.
   /**********************************************************************/
-<<<<<<< RonDB // RONDB-624 todo
-  switch(apiConnectptr.p->apiConnectstate) {
-  case CS_RELEASE:
-  {
-    jam();
-    set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
-    break;
-  }
-  case CS_DISCONNECTED:
-  {
-    /*********************************************************************/
-    // These states do not need any special handling. 
-    // Simply continue with the next.
-    /*********************************************************************/
-    jam();
-    break;
-  }
-  case CS_ABORTING:
-  {
-    /*********************************************************************/
-    // This could actually mean that the API connection is already 
-    // ready to release if the abortState is IDLE.
-    /*********************************************************************/
-    if (apiConnectptr.p->abortState == AS_IDLE) {
-      jam();
-      releaseApiCon(signal, apiConnectptr.i);
-    } else {
-||||||| Common ancestor
-  switch(apiConnectptr.p->apiConnectstate) {
-  case CS_DISCONNECTED:
-    /*********************************************************************/
-    // These states do not need any special handling. 
-    // Simply continue with the next.
-    /*********************************************************************/
-    jam();
-    break;
-  case CS_ABORTING:
-    /*********************************************************************/
-    // This could actually mean that the API connection is already 
-    // ready to release if the abortState is IDLE.
-    /*********************************************************************/
-    if (apiConnectptr.p->abortState == AS_IDLE) {
-      jam();
-      releaseApiCon(signal, apiConnectptr.i);
-    } else {
-=======
   switch (apiConnectptr.p->apiConnectstate) {
+    case CS_RELEASE:
+    {
+      jam();
+      set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
+      break;
+    }
     case CS_DISCONNECTED:
+    {
       /*********************************************************************/
       // These states do not need any special handling.
       // Simply continue with the next.
       /*********************************************************************/
       jam();
       break;
+    }
     case CS_ABORTING:
+    {
       /*********************************************************************/
       // This could actually mean that the API connection is already
       // ready to release if the abortState is IDLE.
@@ -2203,6 +1848,7 @@ bool Dbtc::handleFailedApiConnection(Signal *signal, Uint32 *TloopCount,
         set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
       }  // if
       break;
+    }
     case CS_WAIT_ABORT_CONF:
     case CS_WAIT_COMMIT_CONF:
     case CS_START_COMMITTING:
@@ -2216,65 +1862,8 @@ bool Dbtc::handleFailedApiConnection(Signal *signal, Uint32 *TloopCount,
       // Also we will increase the number of outstanding api records to
       // wait for before we can respond with API_FAILCONF.
       /*********************************************************************/
->>>>>>> MySQL 8.0.36
       jam();
       set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
-<<<<<<< RonDB // RONDB-624 todo
-    }//if
-    break;
-  }
-  case CS_WAIT_ABORT_CONF:
-  case CS_WAIT_COMMIT_CONF:
-  case CS_START_COMMITTING:
-  case CS_PREPARE_TO_COMMIT:
-  case CS_COMMITTING:
-  case CS_COMMIT_SENT:
-    /*********************************************************************/
-    // These states indicate that an abort process or commit process is 
-    // already ongoing. We will set a state in the api record indicating 
-    // that the API node has failed.
-    // Also we will increase the number of outstanding api records to 
-    // wait for before we can respond with API_FAILCONF.
-    /*********************************************************************/
-    jam();
-    set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
-    break;
-  case CS_START_SCAN:
-  {
-    /*********************************************************************/
-    // The api record was performing a scan operation. We need to check 
-    // on the scan state. Since completing a scan process might involve
-    // sending several signals we will increase the loop count by 64.
-    /*********************************************************************/
-    jam();
-||||||| Common ancestor
-    }//if
-    break;
-  case CS_WAIT_ABORT_CONF:
-  case CS_WAIT_COMMIT_CONF:
-  case CS_START_COMMITTING:
-  case CS_PREPARE_TO_COMMIT:
-  case CS_COMMITTING:
-  case CS_COMMIT_SENT:
-    /*********************************************************************/
-    // These states indicate that an abort process or commit process is 
-    // already ongoing. We will set a state in the api record indicating 
-    // that the API node has failed.
-    // Also we will increase the number of outstanding api records to 
-    // wait for before we can respond with API_FAILCONF.
-    /*********************************************************************/
-    jam();
-    set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
-    break;
-  case CS_START_SCAN:
-  {
-    /*********************************************************************/
-    // The api record was performing a scan operation. We need to check 
-    // on the scan state. Since completing a scan process might involve
-    // sending several signals we will increase the loop count by 64.
-    /*********************************************************************/
-    jam();
-=======
       break;
     case CS_START_SCAN: {
       /*********************************************************************/
@@ -2283,7 +1872,6 @@ bool Dbtc::handleFailedApiConnection(Signal *signal, Uint32 *TloopCount,
       // sending several signals we will increase the loop count by 64.
       /*********************************************************************/
       jam();
->>>>>>> MySQL 8.0.36
 
       set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
 
@@ -3982,10 +3570,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
      * execution batch are always scheduled towards the LDM thread and will
      * not be scheduled towards a query thread.
      */
-<<<<<<< RonDB // RONDB-624 todo
-    DEB_EXEC_WRITE_COUNT(("(%u) write_count = %u, zero exec_count",
-                          instance(),
-                          regApiPtr->m_write_count));
+    DEB_EXEC_WRITE_COUNT(("(%u) write_count = %u, zero exec write_count",
+                          instance(), regApiPtr->m_write_count));
     regApiPtr->m_exec_count = 0;
     regApiPtr->m_simple_read_count = 0;
     Uint32 flags = regApiPtr->m_flags;
@@ -4013,70 +3599,10 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     tabSingleUserMode = localTabptr.p->singleUserMode;
   }
   switch (regApiPtr->apiConnectstate) {
-  case CS_CONNECTED:{
-    if (likely(TstartFlag == 1 &&
-               getAllowStartTransaction(refToNode(sendersBlockRef),
-                                        tabSingleUserMode) == true))
-    {
-      //---------------------------------------------------------------------
-      // Initialise API connect record if transaction is started.
-      //---------------------------------------------------------------------
-      jam();
-      initApiConnectRec(signal, regApiPtr);
-      regApiPtr->m_flags |= TexecFlag;
-    } else {
-      releaseSections(handle);
-      if (getAllowStartTransaction(refToNode(sendersBlockRef),
-                                   tabSingleUserMode) == true)
-      {
-	/*------------------------------------------------------------------
-	 * WE EXPECTED A START TRANSACTION. SINCE NO OPERATIONS HAVE BEEN 
-	 * RECEIVED WE INDICATE THIS BY SETTING FIRST_TC_CONNECT TO RNIL TO 
-	 * ENSURE PROPER OPERATION OF THE COMMON ABORT HANDLING.
-	 *-----------------------------------------------------------------*/
-        TCKEY_abort(signal, 0, apiConnectptr);
-	return;
-||||||| Common ancestor
-    DEB_EXEC_WRITE_COUNT(("(%u) write_count = %u, zero exec write_count",
-                          instance(),
-                          regApiPtr->m_write_count));
-    regApiPtr->m_exec_write_count = 0;
-  }
-  switch (regApiPtr->apiConnectstate) {
-  case CS_CONNECTED:{
-    if (likely(TstartFlag == 1 &&
-               getAllowStartTransaction(refToNode(sendersBlockRef),
-                                 localTabptr.p->singleUserMode) == true))
-    {
-      //---------------------------------------------------------------------
-      // Initialise API connect record if transaction is started.
-      //---------------------------------------------------------------------
-      jam();
-      initApiConnectRec(signal, regApiPtr);
-      regApiPtr->m_flags |= TexecFlag;
-    } else {
-      releaseSections(handle);
-      if (getAllowStartTransaction(refToNode(sendersBlockRef),
-                                   localTabptr.p->singleUserMode) == true)
-      {
-
-	/*------------------------------------------------------------------
-	 * WE EXPECTED A START TRANSACTION. SINCE NO OPERATIONS HAVE BEEN 
-	 * RECEIVED WE INDICATE THIS BY SETTING FIRST_TC_CONNECT TO RNIL TO 
-	 * ENSURE PROPER OPERATION OF THE COMMON ABORT HANDLING.
-	 *-----------------------------------------------------------------*/
-        TCKEY_abort(signal, 0, apiConnectptr);
-	return;
-=======
-    DEB_EXEC_WRITE_COUNT(("(%u) write_count = %u, zero exec write_count",
-                          instance(), regApiPtr->m_write_count));
-    regApiPtr->m_exec_write_count = 0;
-  }
-  switch (regApiPtr->apiConnectstate) {
     case CS_CONNECTED: {
       if (likely(TstartFlag == 1 &&
                  getAllowStartTransaction(refToNode(sendersBlockRef),
-                                          localTabptr.p->singleUserMode) ==
+                                          tabSingleUserMode) ==
                      true)) {
         //---------------------------------------------------------------------
         // Initialise API connect record if transaction is started.
@@ -4084,59 +3610,10 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         initApiConnectRec(signal, regApiPtr);
         regApiPtr->m_flags |= TexecFlag;
->>>>>>> MySQL 8.0.36
       } else {
-<<<<<<< RonDB // RONDB-624 todo
-	/**
-	 * getAllowStartTransaction(refToNode(sendersBlockRef)) == false
-	 */
-        TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
-	return;
-      }//if
-    }
-  }
-  break;
-  case CS_STARTED:
-    if (TstartFlag == 1 && regApiPtr->tcConnect.isEmpty())
-    {
-      /**
-       * If last operation in last transaction was a simple/dirty read
-       *  it does not have to be committed or rollbacked hence,
-       *  the state will be CS_STARTED
-       */
-      jam();
-      if (unlikely(getNodeState().getSingleUserMode()) &&
-          getNodeState().getSingleUserApi() != refToNode(sendersBlockRef) &&
-          !tabSingleUserMode)
-      {
-||||||| Common ancestor
-	/**
-	 * getAllowStartTransaction(refToNode(sendersBlockRef)) == false
-	 */
-        TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
-	return;
-      }//if
-    }
-  }
-  break;
-  case CS_STARTED:
-    if (TstartFlag == 1 && regApiPtr->tcConnect.isEmpty())
-    {
-      /**
-       * If last operation in last transaction was a simple/dirty read
-       *  it does not have to be committed or rollbacked hence,
-       *  the state will be CS_STARTED
-       */
-      jam();
-      if (unlikely(getNodeState().getSingleUserMode()) &&
-          getNodeState().getSingleUserApi() != refToNode(sendersBlockRef) &&
-          !localTabptr.p->singleUserMode)
-      {
-=======
->>>>>>> MySQL 8.0.36
         releaseSections(handle);
         if (getAllowStartTransaction(refToNode(sendersBlockRef),
-                                     localTabptr.p->singleUserMode) == true) {
+                                     tabSingleUserMode) == true) {
           /*------------------------------------------------------------------
            * WE EXPECTED A START TRANSACTION. SINCE NO OPERATIONS HAVE BEEN
            * RECEIVED WE INDICATE THIS BY SETTING FIRST_TC_CONNECT TO RNIL TO
@@ -4152,95 +3629,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
           return;
         }  // if
       }
-<<<<<<< RonDB // RONDB-624 todo
-      initApiConnectRec(signal, regApiPtr);
-      regApiPtr->m_flags |= TexecFlag;
-    } else { 
-      //----------------------------------------------------------------------
-      // Transaction is started already. 
-      // Check that the operation is on the same transaction.
-      //-----------------------------------------------------------------------
-      compare_transid1 = regApiPtr->transid[0] ^ transId1;
-      compare_transid2 = regApiPtr->transid[1] ^ transId2;
-      jam();
-      compare_transid1 = compare_transid1 | compare_transid2;
-      if (unlikely(compare_transid1 != 0))
-      {
-        releaseSections(handle);
-        TCKEY_abort(signal, 1, apiConnectptr);
-	return;
-      }//if
-      ndbrequire(regApiPtr->apiCopyRecord != RNIL);
-    }
-    break;
-  case CS_ABORTING:
-  {
-    /**
-     * In this state it is normal to receive signals in the combined
-     * state CS_ABORTING and abortState == AS_IDLE. This means that the
-     * previous abort was completed and we are now starting up a new
-     * transaction.
-     *
-     * However if we receive a signal that hasn't got a start flag and
-     * also not an exec flag, then we simply drop the signal since these
-     * signals can only be received when a transaction has been started.
-     *
-     * When a signal arrives that haven't got a start flag but has an
-     * exec flag we need to take action. A signal that has the exec flag
-     * set expects a response of some kind. If such a signal is not
-     * responded to the NDB API will hang. Thus it is very important
-     * to respond with an aborted signal when an exec flag arrives.
-     *
-     * The reason to wait until we have received the exec flag until we
-     * respond is to ensure that all communication with aborted transaction
-     * is completed when we abort the transaction completely and respond
-     * to the sender such that the other end can start new transactions
-     * again.
-     *
-     * These exec flags can arrive in several states, both states with
-     * CS_ABORTING, but also in the state CS_RELEASE which is the final
-     * state of releasing the transaction resources, thus no wait for
-     * signals from other threads and nodes. This state ensures that
-     * we can avoid handling timeouts before completing the abort.
-     *
-     * Receiving a start flag when the previous transaction isn't
-     * completed is a protocol error.
-     */
-    if (likely(regApiPtr->abortState == AS_IDLE))
-    {
-      if (likely(TstartFlag == 1))
-      {
-        if (unlikely(getAllowStartTransaction(refToNode(sendersBlockRef),
-                          tabSingleUserMode) == false))
-        {
-||||||| Common ancestor
-      initApiConnectRec(signal, regApiPtr);
-      regApiPtr->m_flags |= TexecFlag;
-    } else { 
-      //----------------------------------------------------------------------
-      // Transaction is started already. 
-      // Check that the operation is on the same transaction.
-      //-----------------------------------------------------------------------
-      compare_transid1 = regApiPtr->transid[0] ^ tcKeyReq->transId1;
-      compare_transid2 = regApiPtr->transid[1] ^ tcKeyReq->transId2;
-      jam();
-      compare_transid1 = compare_transid1 | compare_transid2;
-      if (unlikely(compare_transid1 != 0))
-      {
-        releaseSections(handle);
-        TCKEY_abort(signal, 1, apiConnectptr);
-	return;
-      }//if
-      ndbrequire(regApiPtr->apiCopyRecord != RNIL);
-    }
-    break;
-  case CS_ABORTING:
-    if (regApiPtr->abortState == AS_IDLE) {
-      if (TstartFlag == 1) {
-        if(getAllowStartTransaction(refToNode(sendersBlockRef),
-                                    localTabptr.p->singleUserMode) == false)
-        {
-=======
     } break;
     case CS_STARTED:
       if (TstartFlag == 1 && regApiPtr->tcConnect.isEmpty()) {
@@ -4252,54 +3640,20 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         if (unlikely(getNodeState().getSingleUserMode()) &&
             getNodeState().getSingleUserApi() != refToNode(sendersBlockRef) &&
-            !localTabptr.p->singleUserMode) {
->>>>>>> MySQL 8.0.36
+            !tabSingleUserMode) {
           releaseSections(handle);
           TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
           return;
         }
         initApiConnectRec(signal, regApiPtr);
-<<<<<<< RonDB // RONDB-624 todo
-	regApiPtr->m_flags |= TexecFlag;
-      }
-      else if (TexecFlag)
-      {
-        releaseSections(handle);
-        TCKEY_abort(signal, 59, apiConnectptr);
-	return;
-      }
-      else
-      { 
-	//--------------------------------------------------------------------
-	// The current transaction was aborted successfully. 
-	// We will not do anything before we receive an operation 
-	// with a start indicator. We will ignore this signal.
-	//--------------------------------------------------------------------
-	jam();
-	DEBUG("Drop TCKEYREQ - apiConnectState=CS_ABORTING, ==AS_IDLE");
-||||||| Common ancestor
-	regApiPtr->m_flags |= TexecFlag;
-      } else if(TexecFlag) {
-        releaseSections(handle);
-        TCKEY_abort(signal, 59, apiConnectptr);
-	return;
-      } else { 
-	//--------------------------------------------------------------------
-	// The current transaction was aborted successfully. 
-	// We will not do anything before we receive an operation 
-	// with a start indicator. We will ignore this signal.
-	//--------------------------------------------------------------------
-	jam();
-	DEBUG("Drop TCKEYREQ - apiConnectState=CS_ABORTING, ==AS_IDLE");
-=======
         regApiPtr->m_flags |= TexecFlag;
       } else {
         //----------------------------------------------------------------------
         // Transaction is started already.
         // Check that the operation is on the same transaction.
         //-----------------------------------------------------------------------
-        compare_transid1 = regApiPtr->transid[0] ^ tcKeyReq->transId1;
-        compare_transid2 = regApiPtr->transid[1] ^ tcKeyReq->transId2;
+        compare_transid1 = regApiPtr->transid[0] ^ transId1;
+        compare_transid2 = regApiPtr->transid[1] ^ transId2;
         jam();
         compare_transid1 = compare_transid1 | compare_transid2;
         if (unlikely(compare_transid1 != 0)) {
@@ -4311,11 +3665,43 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       }
       break;
     case CS_ABORTING:
-      if (regApiPtr->abortState == AS_IDLE) {
-        if (TstartFlag == 1) {
-          if (getAllowStartTransaction(refToNode(sendersBlockRef),
-                                       localTabptr.p->singleUserMode) ==
-              false) {
+    {
+      /**
+       * In this state it is normal to receive signals in the combined
+       * state CS_ABORTING and abortState == AS_IDLE. This means that the
+       * previous abort was completed and we are now starting up a new
+       * transaction.
+       *
+       * However if we receive a signal that hasn't got a start flag and
+       * also not an exec flag, then we simply drop the signal since these
+       * signals can only be received when a transaction has been started.
+       *
+       * When a signal arrives that haven't got a start flag but has an
+       * exec flag we need to take action. A signal that has the exec flag
+       * set expects a response of some kind. If such a signal is not
+       * responded to the NDB API will hang. Thus it is very important
+       * to respond with an aborted signal when an exec flag arrives.
+       *
+       * The reason to wait until we have received the exec flag until we
+       * respond is to ensure that all communication with aborted transaction
+       * is completed when we abort the transaction completely and respond
+       * to the sender such that the other end can start new transactions
+       * again.
+       *
+       * These exec flags can arrive in several states, both states with
+       * CS_ABORTING, but also in the state CS_RELEASE which is the final
+       * state of releasing the transaction resources, thus no wait for
+       * signals from other threads and nodes. This state ensures that
+       * we can avoid handling timeouts before completing the abort.
+       *
+       * Receiving a start flag when the previous transaction isn't
+       * completed is a protocol error.
+       */
+      if (likely(regApiPtr->abortState == AS_IDLE)) {
+        if (likely(TstartFlag == 1)) {
+          if (unlikely(getAllowStartTransaction(refToNode(sendersBlockRef),
+                                       tabSingleUserMode) ==
+                       false)) {
             releaseSections(handle);
             TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
             return;
@@ -4347,7 +3733,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         // Previous transaction is still aborting
         //----------------------------------------------------------------------
         jam();
->>>>>>> MySQL 8.0.36
         releaseSections(handle);
         if (TstartFlag == 1) {
           //--------------------------------------------------------------------
@@ -4365,23 +3750,25 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         //----------------------------------------------------------------------
         DEBUG("Drop TCKEYREQ - apiConnectState=CS_ABORTING, !=AS_IDLE");
         return;
-<<<<<<< RonDB // RONDB-624 todo
-      }//if
-    }
-    else
-    {
-      //----------------------------------------------------------------------
-      // Previous transaction is still aborting
-      //----------------------------------------------------------------------
-||||||| Common ancestor
-      }//if
-    } else {
-      //----------------------------------------------------------------------
-      // Previous transaction is still aborting
-      //----------------------------------------------------------------------
-=======
       }  // if
       break;
+    }
+    case CS_RELEASE:
+    {
+      releaseSections(handle);
+      if (TstartFlag == 1)
+      {
+        TCKEY_abort(signal, 2, apiConnectptr);
+        return;
+      }
+      else if (TexecFlag)
+      {
+        TCKEY_abort(signal, 59, apiConnectptr);
+        return;
+      }
+      DEBUG("Drop TCKEYREQ - apiConnectState=CS_RELEASE");
+      return;
+    }
     case CS_START_COMMITTING:
     case CS_SEND_FIRE_TRIG_REQ:
     case CS_WAIT_FIRE_TRIG_REQ:
@@ -4389,7 +3776,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         break;
       }
->>>>>>> MySQL 8.0.36
       jam();
       [[fallthrough]];
     default:
@@ -4405,92 +3791,9 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
        * THUS THERE IS NO ACTION FROM THE API THAT CAN SPEED UP THIS PROCESS.
        *---------------------------------------------------------------------*/
       releaseSections(handle);
-<<<<<<< RonDB // RONDB-624 todo
-      if (TstartFlag == 1)
-      {
-	//--------------------------------------------------------------------
-	// If a new transaction tries to start while the old is 
-	// still aborting, we will report this protocol error to the
-        // starting API.
-	//--------------------------------------------------------------------
-        TCKEY_abort(signal, 2, apiConnectptr);
-        return;
-      }
-      else if(TexecFlag)
-      {
-        TCKEY_abort(signal, 59, apiConnectptr);
-        return;
-      }
-      //----------------------------------------------------------------------
-      // Ignore signals without start indicator set when aborting transaction.
-      //----------------------------------------------------------------------
-      DEBUG("Drop TCKEYREQ - apiConnectState=CS_ABORTING, !=AS_IDLE");
-||||||| Common ancestor
-      if (TstartFlag == 1) {
-	//--------------------------------------------------------------------
-	// If a new transaction tries to start while the old is 
-	// still aborting, we will report this to the starting API.
-	//--------------------------------------------------------------------
-        TCKEY_abort(signal, 2, apiConnectptr);
-        return;
-      } else if(TexecFlag) {
-        TCKEY_abort(signal, 59, apiConnectptr);
-        return;
-      }
-      //----------------------------------------------------------------------
-      // Ignore signals without start indicator set when aborting transaction.
-      //----------------------------------------------------------------------
-      DEBUG("Drop TCKEYREQ - apiConnectState=CS_ABORTING, !=AS_IDLE");
-=======
       TCKEY_abort(signal, 55, apiConnectptr);
->>>>>>> MySQL 8.0.36
       return;
-<<<<<<< RonDB // RONDB-624 todo
-    }
-    break;
-  }
-  case CS_RELEASE:
-  {
-    releaseSections(handle);
-    if (TstartFlag == 1)
-    {
-      TCKEY_abort(signal, 2, apiConnectptr);
-      return;
-    }
-    else if (TexecFlag)
-    {
-      TCKEY_abort(signal, 59, apiConnectptr);
-      return;
-    }
-    DEBUG("Drop TCKEYREQ - apiConnectState=CS_RELEASE");
-    return;
-  }
-  case CS_START_COMMITTING:
-  case CS_SEND_FIRE_TRIG_REQ:
-  case CS_WAIT_FIRE_TRIG_REQ:
-    if(isIndexOpReturn || isExecutingTrigger)
-    {
-      jam();
-      break;
-    }
-    jam();
-    [[fallthrough]];
-  default:
-    jam();
-    jamLine(regApiPtr->apiConnectstate);
-    /*----------------------------------------------------------------------
-     * IN THIS CASE THE NDBAPI IS AN UNTRUSTED ENTITY THAT HAS SENT A SIGNAL 
-     * WHEN IT WAS NOT EXPECTED TO. 
-     * WE MIGHT BE IN A PROCESS TO RECEIVE, PREPARE, 
-     * COMMIT OR COMPLETE AND OBVIOUSLY THIS IS NOT A DESIRED EVENT.
-     * WE WILL ALWAYS COMPLETE THE ABORT HANDLING BEFORE WE ALLOW 
-     * ANYTHING TO HAPPEN ON THIS CONNECTION AGAIN. 
-     * THUS THERE IS NO ACTION FROM THE API THAT CAN SPEED UP THIS PROCESS.
-     *---------------------------------------------------------------------*/
-    releaseSections(handle);
-    TCKEY_abort(signal, 55, apiConnectptr);
-    return;
-  }//switch
+  }  // switch
   if (unlikely(ERROR_INSERTED(8120) || (TtabIndex >= TtabMaxIndex)))
   {
     releaseSections(handle);
@@ -4541,45 +3844,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     abortErrorLab(signal, apiConnectptr);
     return;
   }
-  if (regApiPtr->apiCopyRecord == RNIL)
-  {
-||||||| Common ancestor
-    }//if
-    break;
-  case CS_START_COMMITTING:
-  case CS_SEND_FIRE_TRIG_REQ:
-  case CS_WAIT_FIRE_TRIG_REQ:
-    if(isIndexOpReturn || isExecutingTrigger)
-    {
-      jam();
-      break;
-    }
-    jam();
-    [[fallthrough]];
-  default:
-    jam();
-    jamLine(regApiPtr->apiConnectstate);
-    /*----------------------------------------------------------------------
-     * IN THIS CASE THE NDBAPI IS AN UNTRUSTED ENTITY THAT HAS SENT A SIGNAL 
-     * WHEN IT WAS NOT EXPECTED TO. 
-     * WE MIGHT BE IN A PROCESS TO RECEIVE, PREPARE, 
-     * COMMIT OR COMPLETE AND OBVIOUSLY THIS IS NOT A DESIRED EVENT.
-     * WE WILL ALWAYS COMPLETE THE ABORT HANDLING BEFORE WE ALLOW 
-     * ANYTHING TO HAPPEN ON THIS CONNECTION AGAIN. 
-     * THUS THERE IS NO ACTION FROM THE API THAT CAN SPEED UP THIS PROCESS.
-     *---------------------------------------------------------------------*/
-    releaseSections(handle);
-    TCKEY_abort(signal, 55, apiConnectptr);
-    return;
-  }//switch
-
-  if (regApiPtr->apiCopyRecord == RNIL)
-  {
-=======
-  }  // switch
 
   if (regApiPtr->apiCopyRecord == RNIL) {
->>>>>>> MySQL 8.0.36
     ndbrequire(TstartFlag == 1);
     if (unlikely(!seizeApiConnectCopy(signal, apiConnectptr.p))) {
       jam();
@@ -5007,40 +4273,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     }
     c_counters.cwriteCount++;
     switch (TOperationType) {
-<<<<<<< RonDB // RONDB-624 todo
-    case ZUPDATE:
-    case ZINSERT:
-    case ZDELETE:
-    case ZWRITE:
-    case ZREFRESH:
-      jamDebug();
-      regApiPtr->m_write_count++;
-      if (unlikely(regApiPtr->m_flags &
-                   ApiConnectRecord::TF_DEFERRED_CONSTRAINTS))
-      {
-        /**
-         * Allow slave applier to ignore m_max_writes_per_trans
-         */
-        if (unlikely(regApiPtr->m_write_count > m_take_over_operations))
-        {
-||||||| Common ancestor
-    case ZUPDATE:
-    case ZINSERT:
-    case ZDELETE:
-    case ZWRITE:
-    case ZREFRESH:
-      jamDebug();
-      regApiPtr->m_write_count++;
-      regApiPtr->m_exec_write_count++;
-      if (unlikely(regApiPtr->m_flags &
-                   ApiConnectRecord::TF_DEFERRED_CONSTRAINTS))
-      {
-        /**
-         * Allow slave applier to ignore m_max_writes_per_trans
-         */
-        if (unlikely(regApiPtr->m_write_count > m_take_over_operations))
-        {
-=======
       case ZUPDATE:
       case ZINSERT:
       case ZDELETE:
@@ -5048,7 +4280,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       case ZREFRESH:
         jamDebug();
         regApiPtr->m_write_count++;
-        regApiPtr->m_exec_write_count++;
         if (unlikely(regApiPtr->m_flags &
                      ApiConnectRecord::TF_DEFERRED_CONSTRAINTS)) {
           /**
@@ -5062,7 +4293,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
           }
         } else if (unlikely(regApiPtr->m_write_count >
                             m_max_writes_per_trans)) {
->>>>>>> MySQL 8.0.36
           jam();
           /* This transaction is too big */
           TCKEY_abort(signal, 65, apiConnectptr);
@@ -9488,40 +8718,15 @@ void Dbtc::execLQHKEYREF(Signal *signal) {
 
         const Uint32 opType = regTcPtr->operation;
         Ptr<TcDefinedTriggerData> trigPtr;
-<<<<<<< RonDB // RONDB-624 todo
         ndbrequire(getDefinedTriggerData(trigPtr, regTcPtr->currentTriggerId));
-        switch(trigPtr.p->triggerType){
-        case TriggerType::SECONDARY_INDEX:{
-          jam();
-          // The operation executed an index trigger
-          TcIndexDataPtr indexPtr;
-          ndbrequire(getIndexDataOperation(indexPtr, trigPtr.p->indexId));
-          TcIndexData* indexData = indexPtr.p;
-          indexId = indexData->indexId;
-          regApiPtr->errorData = indexId;
-          if (errCode == ZALREADYEXIST)
-          {
-||||||| Common ancestor
-        c_theDefinedTriggers.getPtr(trigPtr, regTcPtr->currentTriggerId);
-        switch(trigPtr.p->triggerType){
-        case TriggerType::SECONDARY_INDEX:{
-          jam();
-	
-          // The operation executed an index trigger
-          TcIndexData* indexData = c_theIndexes.getPtr(trigPtr.p->indexId);
-          indexId = indexData->indexId;
-          regApiPtr->errorData = indexId;
-          if (errCode == ZALREADYEXIST)
-          {
-=======
-        c_theDefinedTriggers.getPtr(trigPtr, regTcPtr->currentTriggerId);
         switch (trigPtr.p->triggerType) {
           case TriggerType::SECONDARY_INDEX: {
->>>>>>> MySQL 8.0.36
             jam();
 
             // The operation executed an index trigger
-            TcIndexData *indexData = c_theIndexes.getPtr(trigPtr.p->indexId);
+            TcIndexDataPtr indexPtr;
+            ndbrequire(getIndexDataOperation(indexPtr, trigPtr.p->indexId));
+            TcIndexData *indexData = indexPtr.p;
             indexId = indexData->indexId;
             regApiPtr->errorData = indexId;
             if (errCode == ZALREADYEXIST) {
@@ -9795,47 +9000,10 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
     regApiPtr->m_exec_count = 0;
     regApiPtr->m_tc_hbrep_timer = ctcTimer;
     switch (regApiPtr->apiConnectstate) {
-<<<<<<< RonDB // RONDB-624 todo
-    case CS_STARTED:
-      if (likely(!regApiPtr->tcConnect.isEmpty()))
-      {
-        tcConnectptr.i = regApiPtr->tcConnect.getFirst();
-        ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-        if (likely(regApiPtr->lqhkeyconfrec == regApiPtr->lqhkeyreqrec))
-        {
-          jamDebug();
-          /*******************************************************************/
-          // The proper case where the application is waiting for commit or 
-          // abort order.
-          // Start the commit order.
-          /*******************************************************************/
-          regApiPtr->returnsignal = RS_TC_COMMITCONF;
-          setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
-          diverify010Lab(signal, apiConnectptr);
-          return;
-||||||| Common ancestor
-    case CS_STARTED:
-      if (likely(!regApiPtr->tcConnect.isEmpty()))
-      {
-        tcConnectptr.i = regApiPtr->tcConnect.getFirst();
-        tcConnectRecord.getPtr(tcConnectptr);
-        if (likely(regApiPtr->lqhkeyconfrec == regApiPtr->lqhkeyreqrec))
-        {
-          jamDebug();
-          /*******************************************************************/
-          // The proper case where the application is waiting for commit or 
-          // abort order.
-          // Start the commit order.
-          /*******************************************************************/
-          regApiPtr->returnsignal = RS_TC_COMMITCONF;
-          setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
-          diverify010Lab(signal, apiConnectptr);
-          return;
-=======
       case CS_STARTED:
         if (likely(!regApiPtr->tcConnect.isEmpty())) {
           tcConnectptr.i = regApiPtr->tcConnect.getFirst();
-          tcConnectRecord.getPtr(tcConnectptr);
+          ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
           if (likely(regApiPtr->lqhkeyconfrec == regApiPtr->lqhkeyreqrec)) {
             jamDebug();
             /*******************************************************************/
@@ -9858,7 +9026,6 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
             errorCode = ZTRANS_STATUS_ERROR;
             abort010Lab(signal, apiConnectptr);
           }  // if
->>>>>>> MySQL 8.0.36
         } else {
           jam();
           /**
@@ -9870,6 +9037,7 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
           commitConf->transId2 = transId2;
           commitConf->gci_hi = 0;
           commitConf->gci_lo = 0;
+          signal->m_send_wakeups++;
           sendSignal(apiBlockRef, GSN_TC_COMMITCONF, signal,
                      TcCommitConf::SignalLength, JBB);
 
@@ -9880,39 +9048,10 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
         break;
       case CS_RECEIVING:
         jam();
-<<<<<<< RonDB // RONDB-624 todo
-        /**
-         * No operations, accept commit
-         */
-        TcCommitConf * const commitConf = (TcCommitConf *)&signal->theData[0];
-        commitConf->apiConnectPtr = apiConnectPtr;
-        commitConf->transId1 = transId1;
-        commitConf->transId2 = transId2;
-        commitConf->gci_hi = 0;
-        commitConf->gci_lo = 0;
-        signal->m_send_wakeups++;
-        sendSignal(apiBlockRef, GSN_TC_COMMITCONF, signal, 
-		   TcCommitConf::SignalLength, JBB);
-        
-||||||| Common ancestor
-        /**
-         * No operations, accept commit
-         */
-        TcCommitConf * const commitConf = (TcCommitConf *)&signal->theData[0];
-        commitConf->apiConnectPtr = apiConnectPtr;
-        commitConf->transId1 = transId1;
-        commitConf->transId2 = transId2;
-        commitConf->gci_hi = 0;
-        commitConf->gci_lo = 0;
-        sendSignal(apiBlockRef, GSN_TC_COMMITCONF, signal, 
-		   TcCommitConf::SignalLength, JBB);
-        
-=======
         /***********************************************************************/
         // A transaction is still receiving data. We cannot commit an unfinished
         // transaction. We will abort it instead.
         /***********************************************************************/
->>>>>>> MySQL 8.0.36
         regApiPtr->returnsignal = RS_NO_RETURN;
         errorCode = ZPREPAREINPROGRESS;
         abort010Lab(signal, apiConnectptr);
@@ -9931,9 +9070,10 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
         // concluded yet.
         /***********************************************************************/
         errorCode = ZCOMMITINPROGRESS;
+        jam();
         break;
       case CS_ABORTING:
-        jam();
+      case CS_RELEASE:
         errorCode =
             regApiPtr->returncode ? regApiPtr->returncode : ZABORTINPROGRESS;
         break;
@@ -9947,101 +9087,8 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
       default:
         warningHandlerLab(signal, __LINE__);
         return;
-<<<<<<< RonDB // RONDB-624 todo
-      }//if
-      break;
-    case CS_RECEIVING:
-      jam();
-      /***********************************************************************/
-      // A transaction is still receiving data. We cannot commit an unfinished 
-      // transaction. We will abort it instead.
-      /***********************************************************************/
-      regApiPtr->returnsignal = RS_NO_RETURN;
-      errorCode = ZPREPAREINPROGRESS;
-      abort010Lab(signal, apiConnectptr);
-      break;
-      
-    case CS_START_COMMITTING:
-    case CS_COMMITTING:
-    case CS_COMMIT_SENT:
-    case CS_COMPLETING:
-    case CS_COMPLETE_SENT:
-    case CS_REC_COMMITTING:
-    case CS_PREPARE_TO_COMMIT:
-      jam();
-      /***********************************************************************/
-      // The transaction is already performing a commit but it is not concluded
-      // yet.
-      /***********************************************************************/
-      errorCode = ZCOMMITINPROGRESS;
-      jam();
-      break;
-    case CS_ABORTING:
-    case CS_RELEASE:
-      errorCode = regApiPtr->returncode ? 
-	regApiPtr->returncode : ZABORTINPROGRESS;
-      break;
-    case CS_START_SCAN:
-      jam();
-      /***********************************************************************/
-      // The transaction is a scan. Scans cannot commit
-      /***********************************************************************/
-      errorCode = ZSCANINPROGRESS;
-      break;
-    default:
-      warningHandlerLab(signal, __LINE__);
-      return;
-    }//switch
-    TcCommitRef * const commitRef = (TcCommitRef*)&signal->theData[0];
-||||||| Common ancestor
-      }//if
-      break;
-    case CS_RECEIVING:
-      jam();
-      /***********************************************************************/
-      // A transaction is still receiving data. We cannot commit an unfinished 
-      // transaction. We will abort it instead.
-      /***********************************************************************/
-      regApiPtr->returnsignal = RS_NO_RETURN;
-      errorCode = ZPREPAREINPROGRESS;
-      abort010Lab(signal, apiConnectptr);
-      break;
-      
-    case CS_START_COMMITTING:
-    case CS_COMMITTING:
-    case CS_COMMIT_SENT:
-    case CS_COMPLETING:
-    case CS_COMPLETE_SENT:
-    case CS_REC_COMMITTING:
-    case CS_PREPARE_TO_COMMIT:
-      jam();
-      /***********************************************************************/
-      // The transaction is already performing a commit but it is not concluded
-      // yet.
-      /***********************************************************************/
-      errorCode = ZCOMMITINPROGRESS;
-      break;
-    case CS_ABORTING:
-      jam();
-      errorCode = regApiPtr->returncode ? 
-	regApiPtr->returncode : ZABORTINPROGRESS;
-      break;
-    case CS_START_SCAN:
-      jam();
-      /***********************************************************************/
-      // The transaction is a scan. Scans cannot commit
-      /***********************************************************************/
-      errorCode = ZSCANINPROGRESS;
-      break;
-    default:
-      warningHandlerLab(signal, __LINE__);
-      return;
-    }//switch
-    TcCommitRef * const commitRef = (TcCommitRef*)&signal->theData[0];
-=======
     }  // switch
     TcCommitRef *const commitRef = (TcCommitRef *)&signal->theData[0];
->>>>>>> MySQL 8.0.36
     commitRef->apiConnectPtr = apiConnectPtr;
     commitRef->transId1 = transId1;
     commitRef->transId2 = transId2;
@@ -10096,95 +9143,6 @@ void Dbtc::execTCROLLBACKREQ(Signal *signal) {
   apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
   apiConnectptr.p->m_tc_hbrep_timer = ctcTimer;
   switch (apiConnectptr.p->apiConnectstate) {
-<<<<<<< RonDB // RONDB-624 todo
-  case CS_STARTED:
-  case CS_RECEIVING:
-    jamDebug();
-    apiConnectptr.p->returnsignal = RS_TCROLLBACKCONF;
-    abort010Lab(signal, apiConnectptr);
-    return;
-  case CS_CONNECTED:
-    jam();
-    signal->theData[0] = apiConnectptr.p->ndbapiConnect;
-    signal->theData[1] = apiConnectptr.p->transid[0];
-    signal->theData[2] = apiConnectptr.p->transid[1];
-    signal->m_send_wakeups++;
-    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
-	       signal, 3, JBB);
-    break;
-  case CS_START_SCAN:
-  case CS_PREPARE_TO_COMMIT:
-  case CS_COMMITTING:
-  case CS_COMMIT_SENT:
-  case CS_COMPLETING:
-  case CS_COMPLETE_SENT:
-  case CS_WAIT_COMMIT_CONF:
-  case CS_WAIT_COMPLETE_CONF:
-  case CS_RESTART:
-  case CS_RELEASE:
-  case CS_DISCONNECTED:
-  case CS_START_COMMITTING:
-  case CS_REC_COMMITTING:
-    jam();
-    /* ***************< */
-    /* TC_ROLLBACKREF < */
-    /* ***************< */
-    signal->theData[0] = apiConnectptr.p->ndbapiConnect;
-    signal->theData[1] = apiConnectptr.p->transid[0];
-    signal->theData[2] = apiConnectptr.p->transid[1];
-    signal->theData[3] = ZROLLBACKNOTALLOWED;
-    signal->theData[4] = apiConnectptr.p->apiConnectstate;
-    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKREF, 
-	       signal, 5, JBB);
-    break;
-                                                 /* SEND A REFUSAL SIGNAL*/
-  case CS_ABORTING:
-    jam();
-    if (apiConnectptr.p->abortState == AS_IDLE) {
-||||||| Common ancestor
-  case CS_STARTED:
-  case CS_RECEIVING:
-    jamDebug();
-    apiConnectptr.p->returnsignal = RS_TCROLLBACKCONF;
-    abort010Lab(signal, apiConnectptr);
-    return;
-  case CS_CONNECTED:
-    jam();
-    signal->theData[0] = apiConnectptr.p->ndbapiConnect;
-    signal->theData[1] = apiConnectptr.p->transid[0];
-    signal->theData[2] = apiConnectptr.p->transid[1];
-    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
-	       signal, 3, JBB);
-    break;
-  case CS_START_SCAN:
-  case CS_PREPARE_TO_COMMIT:
-  case CS_COMMITTING:
-  case CS_COMMIT_SENT:
-  case CS_COMPLETING:
-  case CS_COMPLETE_SENT:
-  case CS_WAIT_COMMIT_CONF:
-  case CS_WAIT_COMPLETE_CONF:
-  case CS_RESTART:
-  case CS_DISCONNECTED:
-  case CS_START_COMMITTING:
-  case CS_REC_COMMITTING:
-    jam();
-    /* ***************< */
-    /* TC_ROLLBACKREF < */
-    /* ***************< */
-    signal->theData[0] = apiConnectptr.p->ndbapiConnect;
-    signal->theData[1] = apiConnectptr.p->transid[0];
-    signal->theData[2] = apiConnectptr.p->transid[1];
-    signal->theData[3] = ZROLLBACKNOTALLOWED;
-    signal->theData[4] = apiConnectptr.p->apiConnectstate;
-    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKREF, 
-	       signal, 5, JBB);
-    break;
-                                                 /* SEND A REFUSAL SIGNAL*/
-  case CS_ABORTING:
-    jam();
-    if (apiConnectptr.p->abortState == AS_IDLE) {
-=======
     case CS_STARTED:
     case CS_RECEIVING:
       jamDebug();
@@ -10192,21 +9150,11 @@ void Dbtc::execTCROLLBACKREQ(Signal *signal) {
       abort010Lab(signal, apiConnectptr);
       return;
     case CS_CONNECTED:
->>>>>>> MySQL 8.0.36
       jam();
       signal->theData[0] = apiConnectptr.p->ndbapiConnect;
       signal->theData[1] = apiConnectptr.p->transid[0];
       signal->theData[2] = apiConnectptr.p->transid[1];
-<<<<<<< RonDB // RONDB-624 todo
       signal->m_send_wakeups++;
-      sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
-		 signal, 3, JBB);
-    } else {
-||||||| Common ancestor
-      sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
-		 signal, 3, JBB);
-    } else {
-=======
       sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, signal, 3,
                  JBB);
       break;
@@ -10219,6 +9167,7 @@ void Dbtc::execTCROLLBACKREQ(Signal *signal) {
     case CS_WAIT_COMMIT_CONF:
     case CS_WAIT_COMPLETE_CONF:
     case CS_RESTART:
+    case CS_RELEASE:
     case CS_DISCONNECTED:
     case CS_START_COMMITTING:
     case CS_REC_COMMITTING:
@@ -10242,6 +9191,7 @@ void Dbtc::execTCROLLBACKREQ(Signal *signal) {
         signal->theData[0] = apiConnectptr.p->ndbapiConnect;
         signal->theData[1] = apiConnectptr.p->transid[0];
         signal->theData[2] = apiConnectptr.p->transid[1];
+        signal->m_send_wakeups++;
         sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, signal,
                    3, JBB);
       } else {
@@ -10250,7 +9200,6 @@ void Dbtc::execTCROLLBACKREQ(Signal *signal) {
       }  // if
       break;
     case CS_WAIT_ABORT_CONF:
->>>>>>> MySQL 8.0.36
       jam();
       apiConnectptr.p->returnsignal = RS_TCROLLBACKCONF;
       break;
@@ -11623,43 +10572,10 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
   /*       THIS TRANSACTION HAVE EXPERIENCED A TIME-OUT AND WE NEED TO*/
   /*       FIND OUT WHAT WE NEED TO DO BASED ON THE STATE INFORMATION.*/
   /*------------------------------------------------------------------*/
-<<<<<<< RonDB // RONDB-624 todo
-  switch (apiConnectptr.p->apiConnectstate)
-  {
-  case CS_STARTED:
-  {
-    if (apiConnectptr.p->lqhkeyreqrec == apiConnectptr.p->lqhkeyconfrec &&
-        errCode != ZCLUSTER_IN_SINGLEUSER_MODE)
-    {
-      jam();
-      /*
-      We are waiting for application to continue the transaction. In this
-      particular state we will use the application timeout parameter rather
-      than the shorter Deadlock detection timeout.
-      */
-      if (c_appl_timeout_value == 0 ||
-          (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value)
-      {
-||||||| Common ancestor
-  switch (apiConnectptr.p->apiConnectstate) {
-  case CS_STARTED:
-    if(apiConnectptr.p->lqhkeyreqrec == apiConnectptr.p->lqhkeyconfrec &&
-       errCode != ZCLUSTER_IN_SINGLEUSER_MODE){
-      jam();
-      /*
-      We are waiting for application to continue the transaction. In this
-      particular state we will use the application timeout parameter rather
-      than the shorter Deadlock detection timeout.
-      */
-      if (c_appl_timeout_value == 0 ||
-          (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value)
-      {
-=======
   switch (apiConnectptr.p->apiConnectstate) {
     case CS_STARTED:
       if (apiConnectptr.p->lqhkeyreqrec == apiConnectptr.p->lqhkeyconfrec &&
           errCode != ZCLUSTER_IN_SINGLEUSER_MODE) {
->>>>>>> MySQL 8.0.36
         jam();
         /*
         We are waiting for application to continue the transaction. In this
@@ -11676,126 +10592,6 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
 
       logTransactionTimeout(signal, TapiConPtr, errCode);
 
-<<<<<<< RonDB // RONDB-624 todo
-    apiConnectptr.p->returnsignal = RS_TCROLLBACKREP;      
-    apiConnectptr.p->returncode = errCode;
-    abort010Lab(signal, apiConnectptr);
-    break;
-  }
-  case CS_RECEIVING:
-  case CS_REC_COMMITTING:
-  case CS_START_COMMITTING:
-  case CS_WAIT_FIRE_TRIG_REQ:
-  case CS_SEND_FIRE_TRIG_REQ:
-  {
-    jam();
-    /*------------------------------------------------------------------*/
-    /*       WE ARE STILL IN THE PREPARE PHASE AND THE TRANSACTION HAS  */
-    /*       NOT YET REACHED ITS COMMIT POINT. THUS IT IS NOW OK TO     */
-    /*       START ABORTING THE TRANSACTION. ALSO START CHECKING THE    */
-    /*       REMAINING TRANSACTIONS.                                    */
-    /*------------------------------------------------------------------*/
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    terrorCode = errCode;
-    abortErrorLab(signal, apiConnectptr);
-    break;
-  }
-  case CS_PREPARE_TO_COMMIT:
-  {
-    jam();
-    /**
-     * CS_COMMITTING and CS_COMPLETING are states where we send commit
-     * and complete signals, should be short lived.
-     * CS_PREPARE_TO_COMMIT is where DIH is asked for permission to
-     * commit.  Should be short lived unless there are communication
-     * issues with GCP_PREPARE/COMMIT processing.
-     * Use periodic logging to get some throttled visibility.
-     */
-    periodicLogOddTimeoutAndResetTimer(apiConnectptr);
-    break;
-  }
-  case CS_COMMITTING:
-  case CS_COMMIT_SENT:
-  {
-    jam();
-    /*------------------------------------------------------------------*/
-    /* We are waiting for confirmation that Commit has occurred at one  */
-    /* or more LQH instances.  We cannot speed this up.                 */
-    /* Only in confirmed node failure situations do we take action.     */
-    /*------------------------------------------------------------------*/
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    if (apiConnectptr.p->setup_fail_data)
-    {
-||||||| Common ancestor
-    apiConnectptr.p->returnsignal = RS_TCROLLBACKREP;      
-    apiConnectptr.p->returncode = errCode;
-    abort010Lab(signal, apiConnectptr);
-    return;
-  case CS_RECEIVING:
-  case CS_REC_COMMITTING:
-  case CS_START_COMMITTING:
-  case CS_WAIT_FIRE_TRIG_REQ:
-  case CS_SEND_FIRE_TRIG_REQ:
-    jam();
-    /*------------------------------------------------------------------*/
-    /*       WE ARE STILL IN THE PREPARE PHASE AND THE TRANSACTION HAS  */
-    /*       NOT YET REACHED ITS COMMIT POINT. THUS IT IS NOW OK TO     */
-    /*       START ABORTING THE TRANSACTION. ALSO START CHECKING THE    */
-    /*       REMAINING TRANSACTIONS.                                    */
-    /*------------------------------------------------------------------*/
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    terrorCode = errCode;
-    abortErrorLab(signal, apiConnectptr);
-    return;
-  case CS_COMMITTING:
-    jam();
-    /*------------------------------------------------------------------*/
-    // We are simply waiting for a signal in the job buffer. Only extreme
-    // conditions should get us here. We ignore it.
-    /*------------------------------------------------------------------*/
-    [[fallthrough]];
-  case CS_COMPLETING:
-    jam();
-    /*------------------------------------------------------------------*/
-    // We are simply waiting for a signal in the job buffer. Only extreme
-    // conditions should get us here. We ignore it.
-    /*------------------------------------------------------------------*/
-    [[fallthrough]];
-  case CS_PREPARE_TO_COMMIT:
-  {
-    jam();
-    /**
-     * CS_COMMITTING and CS_COMPLETING are states where we send commit
-     * and complete signals, should be short lived.
-     * CS_PREPARE_TO_COMMIT is where DIH is asked for permission to
-     * commit.  Should be short lived unless there are communication
-     * issues with GCP_PREPARE/COMMIT processing.
-     * Use periodic logging to get some throttled visibility.
-     */
-    periodicLogOddTimeoutAndResetTimer(apiConnectptr);
-    break;
-  }
-  case CS_COMMIT_SENT:
-    jam();
-    /*------------------------------------------------------------------*/
-    /* We are waiting for confirmation that Commit has occurred at one  */
-    /* or more LQH instances.  We cannot speed this up.                 */
-    /* Only in confirmed node failure situations do we take action.     */
-    /*------------------------------------------------------------------*/
-    if (errCode == ZNODEFAIL_BEFORE_COMMIT)
-    {
-      jam();
-      /**
-       * Node failure handling, switch to serial commit handling
-       * which can accomodate lost signals
-       */
-      tabortInd = ZCOMMIT_SETUP;
-      setupFailData(signal, apiConnectptr.p);
-      toCommitHandlingLab(signal, apiConnectptr);
-    }
-    else
-    {
-=======
       apiConnectptr.p->returnsignal = RS_TCROLLBACKREP;
       apiConnectptr.p->returncode = errCode;
       abort010Lab(signal, apiConnectptr);
@@ -11805,63 +10601,8 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
     case CS_START_COMMITTING:
     case CS_WAIT_FIRE_TRIG_REQ:
     case CS_SEND_FIRE_TRIG_REQ:
->>>>>>> MySQL 8.0.36
-      jam();
-<<<<<<< RonDB // RONDB-624 todo
-      /**
-       * Set up of setupFailData is already in process, cannot start
-       * another one when already in process.
-       */
-      return;
-    }
-    init_setupFailData(signal,
-                       apiConnectptr,
-                       ZCOMMIT_SETUP);
-    break;
-  }
-  case CS_COMPLETING:
-  case CS_COMPLETE_SENT:
-  {
-    jam();
-    /*--------------------------------------------------------------------*/
-    /* We are waiting for confirmation that Complete has occured at one   */
-    /* or more LQH instances.  We cannot speed this up.                   */
-    /* Only in confirmed node failure situations do we take action.       */
-    /*--------------------------------------------------------------------*/
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    if (apiConnectptr.p->setup_fail_data)
-    {
-||||||| Common ancestor
-      /**
-       * Slow commit - could be communication failure or overload
-       * Log details if user configured verbosity.
-       * Always log summary.
-       */
-      logTransactionTimeout(signal, TapiConPtr, errCode);
-      periodicLogOddTimeoutAndResetTimer(apiConnectptr);
-    }
-    return;
-  case CS_COMPLETE_SENT:
-    jam();
-    /*--------------------------------------------------------------------*/
-    /* We are waiting for confirmation that Complete has occured at one   */
-    /* or more LQH instances.  We cannot speed this up.                   */
-    /* Only in confirmed node failure situations do we take action.       */
-    /*--------------------------------------------------------------------*/
-    if (errCode == ZNODEFAIL_BEFORE_COMMIT)
     {
       jam();
-      /**
-       * Node failure handling, switch to serial complete handling
-       * which can handle lost signals.
-       */
-      tabortInd = ZCOMMIT_SETUP;
-      setupFailData(signal, apiConnectptr.p);
-      toCompleteHandlingLab(signal, apiConnectptr);
-    }
-    else
-    {
-=======
       /*------------------------------------------------------------------*/
       /*       WE ARE STILL IN THE PREPARE PHASE AND THE TRANSACTION HAS  */
       /*       NOT YET REACHED ITS COMMIT POINT. THUS IT IS NOW OK TO     */
@@ -11871,36 +10612,10 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
       logTransactionTimeout(signal, TapiConPtr, errCode);
       terrorCode = errCode;
       abortErrorLab(signal, apiConnectptr);
-      return;
-    case CS_COMMITTING:
-      jam();
-      /*------------------------------------------------------------------*/
-      // We are simply waiting for a signal in the job buffer. Only extreme
-      // conditions should get us here. We ignore it.
-      /*------------------------------------------------------------------*/
-      [[fallthrough]];
-    case CS_COMPLETING:
-      jam();
-      /*------------------------------------------------------------------*/
-      // We are simply waiting for a signal in the job buffer. Only extreme
-      // conditions should get us here. We ignore it.
-      /*------------------------------------------------------------------*/
-      [[fallthrough]];
+      break;
+    }
     case CS_PREPARE_TO_COMMIT: {
->>>>>>> MySQL 8.0.36
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      /* Already ongoing */
-      return;
-||||||| Common ancestor
-      /**
-       * Slow complete - could be communication failure or overload,
-       * Log details if user configured verbosity.
-       * Always log summary
-       */
-      logTransactionTimeout(signal, TapiConPtr, errCode);
-      periodicLogOddTimeoutAndResetTimer(apiConnectptr);
-=======
       /**
        * CS_COMMITTING and CS_COMPLETING are states where we send commit
        * and complete signals, should be short lived.
@@ -11911,82 +10626,91 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
        */
       periodicLogOddTimeoutAndResetTimer(apiConnectptr);
       break;
->>>>>>> MySQL 8.0.36
     }
-<<<<<<< RonDB // RONDB-624 todo
-    init_setupFailData(signal,
-                       apiConnectptr,
-                       ZCOMPLETE_SETUP);
-    break;
-  }
-  case CS_ABORTING:
-  {
-    jam();
-    /*------------------------------------------------------------------*/
-    /*       TIME-OUT DURING ABORT. WE NEED TO SEND ABORTED FOR ALL     */
-    /*       NODES THAT HAVE FAILED BEFORE SENDING ABORTED.             */
-    /*------------------------------------------------------------------*/
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    if (apiConnectptr.p->setup_fail_data)
-    {
-      jam();
-      /* Already ongoing */
-      return;
-    }
-    init_setupFailData(signal,
-                       apiConnectptr,
-                       ZABORT_SETUP);
-    break;
-  }
-  case CS_START_SCAN:
-  {
-    jam();
-
-    /*
-      We are waiting for application to continue the transaction. In this
-      particular state we will use the application timeout parameter rather
-      than the shorter Deadlock detection timeout.
-    */
-    if (c_appl_timeout_value == 0 ||
-        (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value)
-    {
-||||||| Common ancestor
-    return;
-  case CS_ABORTING:
-    jam();
-    /*------------------------------------------------------------------*/
-    /*       TIME-OUT DURING ABORT. WE NEED TO SEND ABORTED FOR ALL     */
-    /*       NODES THAT HAVE FAILED BEFORE SENDING ABORTED.             */
-    /*------------------------------------------------------------------*/
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    tcConnectptr.i = apiConnectptr.p->tcConnect.getFirst();
-    sendAbortedAfterTimeout(signal, 0, apiConnectptr);
-    break;
-  case CS_START_SCAN:{
-    jam();
-
-    /*
-      We are waiting for application to continue the transaction. In this
-      particular state we will use the application timeout parameter rather
-      than the shorter Deadlock detection timeout.
-    */
-    if (c_appl_timeout_value == 0 ||
-        (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value)
-    {
-=======
+    case CS_COMMITTING:
     case CS_COMMIT_SENT:
->>>>>>> MySQL 8.0.36
+    {
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      return;
-    }//if
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    ScanRecordPtr scanptr;
-    scanptr.i = apiConnectptr.p->apiScanRec;
-    scanRecordPool.getPtr(scanptr);
-    scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
-    break;
-  }
+      /*------------------------------------------------------------------*/
+      /* We are waiting for confirmation that Commit has occurred at one  */
+      /* or more LQH instances.  We cannot speed this up.                 */
+      /* Only in confirmed node failure situations do we take action.     */
+      /*------------------------------------------------------------------*/
+      logTransactionTimeout(signal, TapiConPtr, errCode);
+      if (apiConnectptr.p->setup_fail_data) {
+        jam();
+        /**
+         * Set up of setupFailData is already in process, cannot start
+         * another one when already in process.
+         */
+        return;
+      }
+      init_setupFailData(signal,
+                         apiConnectptr,
+                         ZCOMMIT_SETUP);
+      break;
+    }
+    case CS_COMPLETING:
+    case CS_COMPLETE_SENT:
+    {
+      jam();
+      /*--------------------------------------------------------------------*/
+      /* We are waiting for confirmation that Complete has occured at one   */
+      /* or more LQH instances.  We cannot speed this up.                   */
+      /* Only in confirmed node failure situations do we take action.       */
+      /*--------------------------------------------------------------------*/
+      logTransactionTimeout(signal, TapiConPtr, errCode);
+      if (apiConnectptr.p->setup_fail_data)
+      {
+        jam();
+        /* Already ongoing */
+        return;
+      }
+      init_setupFailData(signal,
+                         apiConnectptr,
+                         ZCOMPLETE_SETUP);
+      break;
+    }
+    case CS_ABORTING:
+    {
+      jam();
+      /*------------------------------------------------------------------*/
+      /*       TIME-OUT DURING ABORT. WE NEED TO SEND ABORTED FOR ALL     */
+      /*       NODES THAT HAVE FAILED BEFORE SENDING ABORTED.             */
+      /*------------------------------------------------------------------*/
+      logTransactionTimeout(signal, TapiConPtr, errCode);
+      if (apiConnectptr.p->setup_fail_data)
+      {
+        jam();
+        /* Already ongoing */
+        return;
+      }
+      init_setupFailData(signal,
+                         apiConnectptr,
+                         ZABORT_SETUP);
+      break;
+    }
+    case CS_START_SCAN: {
+      jam();
+
+      /*
+        We are waiting for application to continue the transaction. In this
+        particular state we will use the application timeout parameter rather
+        than the shorter Deadlock detection timeout.
+      */
+      if (c_appl_timeout_value == 0 ||
+          (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value) {
+        jam();
+        return;
+      }  // if
+      logTransactionTimeout(signal, TapiConPtr, errCode);
+      ScanRecordPtr scanptr;
+      scanptr.i = apiConnectptr.p->apiScanRec;
+      scanRecordPool.getPtr(scanptr);
+      scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
+      break;
+    }
+  // MySQL->RonDB
   case CS_WAIT_ABORT_CONF:
   {
     jam();
@@ -12101,326 +10825,21 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
     /* We are releasing transaction, do nothing */
     break;
   }
-  case CS_FAIL_PREPARED:
-  case CS_FAIL_COMMITTING:
-  case CS_FAIL_COMMITTED:
-  case CS_RESTART:
-  case CS_FAIL_ABORTED:
-  case CS_DISCONNECTED:
-  {
-    jam();
-    jamLine(apiConnectptr.p->apiConnectstate);
-    ndbabort();
-    break;
-  }
-  default:
-  {
-    jam();
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    jamLine(apiConnectptr.p->apiConnectstate);
-    /*------------------------------------------------------------------*/
-    /*       AN IMPOSSIBLE STATE IS SET. CRASH THE SYSTEM.              */
-    /*------------------------------------------------------------------*/
-||||||| Common ancestor
-      return;
-    }//if
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    ScanRecordPtr scanptr;
-    scanptr.i = apiConnectptr.p->apiScanRec;
-    scanRecordPool.getPtr(scanptr);
-    scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
-    break;
-  }
-  case CS_WAIT_ABORT_CONF:
-    jam();
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    tcConnectptr.i = apiConnectptr.p->currentTcConnect;
-    tcConnectRecord.getPtr(tcConnectptr);
-    arrGuard(apiConnectptr.p->currentReplicaNo, MAX_REPLICAS);
-    hostptr.i = tcConnectptr.p->tcNodedata[apiConnectptr.p->currentReplicaNo];
-    ptrCheckGuard(hostptr, chostFilesize, hostRecord);
-    if (hostptr.p->hostStatus == HS_ALIVE) {
-      /*------------------------------------------------------------------*/
-      // Time-out waiting for ABORTCONF. We will resend the ABORTREQ just in
-      // case.
-      /*------------------------------------------------------------------*/
-      warningReport(signal, 20);
-      apiConnectptr.p->timeOutCounter++;
-      if (apiConnectptr.p->timeOutCounter > 3) {
-	/*------------------------------------------------------------------*/
-	// 100 time-outs are not acceptable. We will shoot down the node
-	// not responding.
-	/*------------------------------------------------------------------*/
-        reportNodeFailed(signal, hostptr.i);
-      }//if
-      apiConnectptr.p->currentReplicaNo++;
-    }//if
-    tcurrentReplicaNo = (Uint8)Z8NIL;
-    toAbortHandlingLab(signal, apiConnectptr);
-    return;
-  case CS_WAIT_COMMIT_CONF:
-    jam();
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    CRASH_INSERTION(8053);
-    tcConnectptr.i = apiConnectptr.p->currentTcConnect;
-    tcConnectRecord.getPtr(tcConnectptr);
-    arrGuard(apiConnectptr.p->currentReplicaNo, MAX_REPLICAS);
-    hostptr.i = tcConnectptr.p->tcNodedata[apiConnectptr.p->currentReplicaNo];
-    ptrCheckGuard(hostptr, chostFilesize, hostRecord);
-    if (hostptr.p->hostStatus == HS_ALIVE) {
-      /*------------------------------------------------------------------*/
-      // Time-out waiting for COMMITCONF. We will resend the COMMITREQ just in
-      // case.
-      /*------------------------------------------------------------------*/
-      warningReport(signal, 21);
-      apiConnectptr.p->timeOutCounter++;
-      if (apiConnectptr.p->timeOutCounter > 3) {
-	/*------------------------------------------------------------------*/
-	// 100 time-outs are not acceptable. We will shoot down the node
-	// not responding.
-	/*------------------------------------------------------------------*/
-        reportNodeFailed(signal, hostptr.i);
-      }//if
-      apiConnectptr.p->currentReplicaNo++;
-    }//if
-    tcurrentReplicaNo = (Uint8)Z8NIL;
-    toCommitHandlingLab(signal, apiConnectptr);
-    return;
-  case CS_WAIT_COMPLETE_CONF:
-    jam();
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    tcConnectptr.i = apiConnectptr.p->currentTcConnect;
-    tcConnectRecord.getPtr(tcConnectptr);
-    arrGuard(apiConnectptr.p->currentReplicaNo, MAX_REPLICAS);
-    hostptr.i = tcConnectptr.p->tcNodedata[apiConnectptr.p->currentReplicaNo];
-    ptrCheckGuard(hostptr, chostFilesize, hostRecord);
-    if (hostptr.p->hostStatus == HS_ALIVE) {
-      /*------------------------------------------------------------------*/
-      // Time-out waiting for COMPLETECONF. We will resend the COMPLETEREQ
-      // just in case.
-      /*------------------------------------------------------------------*/
-      warningReport(signal, 22);
-      apiConnectptr.p->timeOutCounter++;
-      if (apiConnectptr.p->timeOutCounter > 100) {
-	/*------------------------------------------------------------------*/
-	// 100 time-outs are not acceptable. We will shoot down the node
-	// not responding.
-	/*------------------------------------------------------------------*/
-        reportNodeFailed(signal, hostptr.i);
-      }//if
-      apiConnectptr.p->currentReplicaNo++;
-    }//if
-    tcurrentReplicaNo = (Uint8)Z8NIL;
-    toCompleteHandlingLab(signal, apiConnectptr);
-    return;
-  case CS_FAIL_PREPARED:
-  case CS_FAIL_COMMITTING:
-  case CS_FAIL_COMMITTED:
-  case CS_RESTART:
-  case CS_FAIL_ABORTED:
-  case CS_DISCONNECTED:
-  default:
-    jam();
-    logTransactionTimeout(signal, TapiConPtr, errCode);
-    jamLine(apiConnectptr.p->apiConnectstate);
-    /*------------------------------------------------------------------*/
-    /*       AN IMPOSSIBLE STATE IS SET. CRASH THE SYSTEM.              */
-    /*------------------------------------------------------------------*/
-    systemErrorLab(signal, __LINE__);
-    return;
-  }//switch
-  return;
-}//Dbtc::timeOutFoundLab()
-
-void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordPtr const apiConnectptr)
-{
-  ApiConnectRecord * transP = apiConnectptr.p;
-  if(transP->abortState == AS_IDLE){
-    jam();
-    warningEvent("TC: %d: %d state=%d abort==IDLE place: %d fop=%d t: %d", 
-		 __LINE__,
-		 apiConnectptr.i, 
-		 transP->apiConnectstate,
-                 apiConnectptr.p->m_apiConTimer_line,
-                 transP->tcConnect.getFirst(),
-                 getApiConTimer(apiConnectptr)
-		 );
-    g_eventLogger->info(
-        "TC: %d: %d state=%d abort==IDLE place: %d fop=%d t: %d", __LINE__,
-        apiConnectptr.i, transP->apiConnectstate,
-        apiConnectptr.p->m_apiConTimer_line, transP->tcConnect.getFirst(),
-        getApiConTimer(apiConnectptr));
-=======
-      /*------------------------------------------------------------------*/
-      /* We are waiting for confirmation that Commit has occurred at one  */
-      /* or more LQH instances.  We cannot speed this up.                 */
-      /* Only in confirmed node failure situations do we take action.     */
-      /*------------------------------------------------------------------*/
-      if (errCode == ZNODEFAIL_BEFORE_COMMIT) {
-        jam();
-        /**
-         * Node failure handling, switch to serial commit handling
-         * which can accomodate lost signals
-         */
-        tabortInd = ZCOMMIT_SETUP;
-        setupFailData(signal, apiConnectptr.p);
-        toCommitHandlingLab(signal, apiConnectptr);
-      } else {
-        jam();
-        /**
-         * Slow commit - could be communication failure or overload
-         * Log details if user configured verbosity.
-         * Always log summary.
-         */
-        logTransactionTimeout(signal, TapiConPtr, errCode);
-        periodicLogOddTimeoutAndResetTimer(apiConnectptr);
-      }
-      return;
-    case CS_COMPLETE_SENT:
-      jam();
-      /*--------------------------------------------------------------------*/
-      /* We are waiting for confirmation that Complete has occured at one   */
-      /* or more LQH instances.  We cannot speed this up.                   */
-      /* Only in confirmed node failure situations do we take action.       */
-      /*--------------------------------------------------------------------*/
-      if (errCode == ZNODEFAIL_BEFORE_COMMIT) {
-        jam();
-        /**
-         * Node failure handling, switch to serial complete handling
-         * which can handle lost signals.
-         */
-        tabortInd = ZCOMMIT_SETUP;
-        setupFailData(signal, apiConnectptr.p);
-        toCompleteHandlingLab(signal, apiConnectptr);
-      } else {
-        jam();
-        /**
-         * Slow complete - could be communication failure or overload,
-         * Log details if user configured verbosity.
-         * Always log summary
-         */
-        logTransactionTimeout(signal, TapiConPtr, errCode);
-        periodicLogOddTimeoutAndResetTimer(apiConnectptr);
-      }
-      return;
-    case CS_ABORTING:
-      jam();
-      /*------------------------------------------------------------------*/
-      /*       TIME-OUT DURING ABORT. WE NEED TO SEND ABORTED FOR ALL     */
-      /*       NODES THAT HAVE FAILED BEFORE SENDING ABORTED.             */
-      /*------------------------------------------------------------------*/
-      logTransactionTimeout(signal, TapiConPtr, errCode);
-      tcConnectptr.i = apiConnectptr.p->tcConnect.getFirst();
-      sendAbortedAfterTimeout(signal, 0, apiConnectptr);
-      break;
-    case CS_START_SCAN: {
-      jam();
-
-      /*
-        We are waiting for application to continue the transaction. In this
-        particular state we will use the application timeout parameter rather
-        than the shorter Deadlock detection timeout.
-      */
-      if (c_appl_timeout_value == 0 ||
-          (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value) {
-        jam();
-        return;
-      }  // if
-      logTransactionTimeout(signal, TapiConPtr, errCode);
-      ScanRecordPtr scanptr;
-      scanptr.i = apiConnectptr.p->apiScanRec;
-      scanRecordPool.getPtr(scanptr);
-      scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
-      break;
-    }
-    case CS_WAIT_ABORT_CONF:
-      jam();
-      logTransactionTimeout(signal, TapiConPtr, errCode);
-      tcConnectptr.i = apiConnectptr.p->currentTcConnect;
-      tcConnectRecord.getPtr(tcConnectptr);
-      arrGuard(apiConnectptr.p->currentReplicaNo, MAX_REPLICAS);
-      hostptr.i = tcConnectptr.p->tcNodedata[apiConnectptr.p->currentReplicaNo];
-      ptrCheckGuard(hostptr, chostFilesize, hostRecord);
-      if (hostptr.p->hostStatus == HS_ALIVE) {
-        /*------------------------------------------------------------------*/
-        // Time-out waiting for ABORTCONF. We will resend the ABORTREQ just in
-        // case.
-        /*------------------------------------------------------------------*/
-        warningReport(signal, 20);
-        apiConnectptr.p->timeOutCounter++;
-        if (apiConnectptr.p->timeOutCounter > 3) {
-          /*------------------------------------------------------------------*/
-          // 100 time-outs are not acceptable. We will shoot down the node
-          // not responding.
-          /*------------------------------------------------------------------*/
-          reportNodeFailed(signal, hostptr.i);
-        }  // if
-        apiConnectptr.p->currentReplicaNo++;
-      }  // if
-      tcurrentReplicaNo = (Uint8)Z8NIL;
-      toAbortHandlingLab(signal, apiConnectptr);
-      return;
-    case CS_WAIT_COMMIT_CONF:
-      jam();
-      logTransactionTimeout(signal, TapiConPtr, errCode);
-      CRASH_INSERTION(8053);
-      tcConnectptr.i = apiConnectptr.p->currentTcConnect;
-      tcConnectRecord.getPtr(tcConnectptr);
-      arrGuard(apiConnectptr.p->currentReplicaNo, MAX_REPLICAS);
-      hostptr.i = tcConnectptr.p->tcNodedata[apiConnectptr.p->currentReplicaNo];
-      ptrCheckGuard(hostptr, chostFilesize, hostRecord);
-      if (hostptr.p->hostStatus == HS_ALIVE) {
-        /*------------------------------------------------------------------*/
-        // Time-out waiting for COMMITCONF. We will resend the COMMITREQ just in
-        // case.
-        /*------------------------------------------------------------------*/
-        warningReport(signal, 21);
-        apiConnectptr.p->timeOutCounter++;
-        if (apiConnectptr.p->timeOutCounter > 3) {
-          /*------------------------------------------------------------------*/
-          // 100 time-outs are not acceptable. We will shoot down the node
-          // not responding.
-          /*------------------------------------------------------------------*/
-          reportNodeFailed(signal, hostptr.i);
-        }  // if
-        apiConnectptr.p->currentReplicaNo++;
-      }  // if
-      tcurrentReplicaNo = (Uint8)Z8NIL;
-      toCommitHandlingLab(signal, apiConnectptr);
-      return;
-    case CS_WAIT_COMPLETE_CONF:
-      jam();
-      logTransactionTimeout(signal, TapiConPtr, errCode);
-      tcConnectptr.i = apiConnectptr.p->currentTcConnect;
-      tcConnectRecord.getPtr(tcConnectptr);
-      arrGuard(apiConnectptr.p->currentReplicaNo, MAX_REPLICAS);
-      hostptr.i = tcConnectptr.p->tcNodedata[apiConnectptr.p->currentReplicaNo];
-      ptrCheckGuard(hostptr, chostFilesize, hostRecord);
-      if (hostptr.p->hostStatus == HS_ALIVE) {
-        /*------------------------------------------------------------------*/
-        // Time-out waiting for COMPLETECONF. We will resend the COMPLETEREQ
-        // just in case.
-        /*------------------------------------------------------------------*/
-        warningReport(signal, 22);
-        apiConnectptr.p->timeOutCounter++;
-        if (apiConnectptr.p->timeOutCounter > 100) {
-          /*------------------------------------------------------------------*/
-          // 100 time-outs are not acceptable. We will shoot down the node
-          // not responding.
-          /*------------------------------------------------------------------*/
-          reportNodeFailed(signal, hostptr.i);
-        }  // if
-        apiConnectptr.p->currentReplicaNo++;
-      }  // if
-      tcurrentReplicaNo = (Uint8)Z8NIL;
-      toCompleteHandlingLab(signal, apiConnectptr);
-      return;
+  // RonDB->MySQL
     case CS_FAIL_PREPARED:
     case CS_FAIL_COMMITTING:
     case CS_FAIL_COMMITTED:
     case CS_RESTART:
     case CS_FAIL_ABORTED:
     case CS_DISCONNECTED:
+  // MySQL->RonDB
+  {
+    jam();
+    jamLine(apiConnectptr.p->apiConnectstate);
+    ndbabort();
+    break;
+  }
+  // RonDB->MySQL
     default:
       jam();
       logTransactionTimeout(signal, TapiConPtr, errCode);
@@ -12428,27 +10847,6 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
       /*------------------------------------------------------------------*/
       /*       AN IMPOSSIBLE STATE IS SET. CRASH THE SYSTEM.              */
       /*------------------------------------------------------------------*/
-      systemErrorLab(signal, __LINE__);
-      return;
-  }  // switch
-  return;
-}  // Dbtc::timeOutFoundLab()
-
-void Dbtc::sendAbortedAfterTimeout(Signal *signal, int Tcheck,
-                                   ApiConnectRecordPtr const apiConnectptr) {
-  ApiConnectRecord *transP = apiConnectptr.p;
-  if (transP->abortState == AS_IDLE) {
-    jam();
-    warningEvent("TC: %d: %d state=%d abort==IDLE place: %d fop=%d t: %d",
-                 __LINE__, apiConnectptr.i, transP->apiConnectstate,
-                 apiConnectptr.p->m_apiConTimer_line,
-                 transP->tcConnect.getFirst(), getApiConTimer(apiConnectptr));
-    g_eventLogger->info(
-        "TC: %d: %d state=%d abort==IDLE place: %d fop=%d t: %d", __LINE__,
-        apiConnectptr.i, transP->apiConnectstate,
-        apiConnectptr.p->m_apiConTimer_line, transP->tcConnect.getFirst(),
-        getApiConTimer(apiConnectptr));
->>>>>>> MySQL 8.0.36
     ndbabort();
     break;
   }
@@ -12730,20 +11128,7 @@ void Dbtc::timeOutFoundFragLab(Signal *signal, UintR TscanConPtr) {
                              ptr.i);
 #endif
       break;
-<<<<<<< RonDB // RONDB-624 todo
-    }
-    logScanTimeout(signal, ptr, scanptr);
-    if(connectCount != ptr.p->m_connectCount)
-    {
-||||||| Common ancestor
-    }
-
-    logScanTimeout(signal, ptr, scanptr);
-
-    if(connectCount != ptr.p->m_connectCount){
-=======
     case ScanFragRec::LQH_ACTIVE: {
->>>>>>> MySQL 8.0.36
       jam();
 
       /**
@@ -16297,77 +14682,6 @@ void Dbtc::updateApiStateFail(Signal *signal, Uint32 transid1, Uint32 transid2,
   switch (transStatus) {
     case LqhTransConf::Committed:
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      apiConnectptr.p->apiConnectstate = CS_FAIL_COMMITTING;
-      apiConnectptr.p->globalcheckpointid = gci;
-      break;
-    case CS_FAIL_COMPLETED:
-      jam();
-      apiConnectptr.p->globalcheckpointid = gci;
-      apiConnectptr.p->apiConnectstate = CS_FAIL_COMMITTED;
-      break;
-    default:
-      jam();
-      ndbabort();
-      break;
-    }
-    break;
-  case LqhTransConf::Prepared:
-    jam();
-    switch (apiConnectptr.p->apiConnectstate) {
-    case CS_FAIL_COMMITTED:
-      jam();
-      apiConnectptr.p->apiConnectstate = CS_FAIL_COMMITTING;
-      break;
-    case CS_FAIL_ABORTED:
-      jam();
-      apiConnectptr.p->apiConnectstate = CS_FAIL_ABORTING;
-      break;
-    case CS_FAIL_COMMITTING:
-    case CS_FAIL_PREPARED:
-    case CS_FAIL_ABORTING:
-      jam();
-      /*empty*/;
-      break;
-    default:
-      jam();
-      ndbabort();
-||||||| Common ancestor
-      apiConnectptr.p->apiConnectstate = CS_FAIL_COMMITTING;
-      apiConnectptr.p->globalcheckpointid = gci;
-      break;
-    case CS_FAIL_COMPLETED:
-      jam();
-      apiConnectptr.p->globalcheckpointid = gci;
-      apiConnectptr.p->apiConnectstate = CS_FAIL_COMMITTED;
-      break;
-    default:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      break;
-    }//switch
-    break;
-  case LqhTransConf::Prepared:
-    jam();
-    switch (apiConnectptr.p->apiConnectstate) {
-    case CS_FAIL_COMMITTED:
-      jam();
-      apiConnectptr.p->apiConnectstate = CS_FAIL_COMMITTING;
-      break;
-    case CS_FAIL_ABORTED:
-      jam();
-      apiConnectptr.p->apiConnectstate = CS_FAIL_ABORTING;
-      break;
-    case CS_FAIL_COMMITTING:
-    case CS_FAIL_PREPARED:
-    case CS_FAIL_ABORTING:
-      jam();
-      /*empty*/;
-      break;
-    default:
-      jam();
-      systemErrorLab(signal, __LINE__);
-=======
       switch (apiConnectptr.p->apiConnectstate) {
         case CS_FAIL_COMMITTING:
         case CS_FAIL_COMMITTED:
@@ -16386,36 +14700,12 @@ void Dbtc::updateApiStateFail(Signal *signal, Uint32 transid1, Uint32 transid2,
           break;
         default:
           jam();
-          systemErrorLab(signal, __LINE__);
+          ndbabort();
           break;
-      }  // switch
->>>>>>> MySQL 8.0.36
+      }
       break;
-<<<<<<< RonDB // RONDB-624 todo
-    }
-    break;
-  case LqhTransConf::Aborted:
-    jam();
-    switch (apiConnectptr.p->apiConnectstate) {
-    case CS_FAIL_COMMITTING:
-    case CS_FAIL_COMMITTED:
-||||||| Common ancestor
-    }//switch
-    break;
-  case LqhTransConf::Aborted:
-    jam();
-    switch (apiConnectptr.p->apiConnectstate) {
-    case CS_FAIL_COMMITTING:
-    case CS_FAIL_COMMITTED:
-=======
     case LqhTransConf::Prepared:
->>>>>>> MySQL 8.0.36
       jam();
-<<<<<<< RonDB // RONDB-624 todo
-      ndbabort();
-||||||| Common ancestor
-      systemErrorLab(signal, __LINE__);
-=======
       switch (apiConnectptr.p->apiConnectstate) {
         case CS_FAIL_COMMITTED:
           jam();
@@ -16433,10 +14723,9 @@ void Dbtc::updateApiStateFail(Signal *signal, Uint32 transid1, Uint32 transid2,
           break;
         default:
           jam();
-          systemErrorLab(signal, __LINE__);
+          ndbabort();
           break;
-      }  // switch
->>>>>>> MySQL 8.0.36
+      }
       break;
     case LqhTransConf::Aborted:
       jam();
@@ -16444,7 +14733,7 @@ void Dbtc::updateApiStateFail(Signal *signal, Uint32 transid1, Uint32 transid2,
         case CS_FAIL_COMMITTING:
         case CS_FAIL_COMMITTED:
           jam();
-          systemErrorLab(signal, __LINE__);
+          ndbabort();
           break;
         case CS_FAIL_PREPARED:
           jam();
@@ -16468,34 +14757,8 @@ void Dbtc::updateApiStateFail(Signal *signal, Uint32 transid1, Uint32 transid2,
       jam();
       ndbabort();
       break;
-<<<<<<< RonDB // RONDB-624 todo
-    }
-    break;
-  case LqhTransConf::Marker:
-    jam();
-    break;
-  default:
-    jam();
-    ndbabort();
-    break;
   }
 }
-||||||| Common ancestor
-    }//switch
-    break;
-  case LqhTransConf::Marker:
-    jam();
-    break;
-  default:
-    jam();
-    systemErrorLab(signal, __LINE__);
-    break;
-  }//switch
-}//Dbtc::updateApiStateFail()
-=======
-  }  // switch
-}  // Dbtc::updateApiStateFail()
->>>>>>> MySQL 8.0.36
 
 /*------------------------------------------------------------*/
 /*               UPDATE_TC_STATE_FAIL                         */
@@ -19793,20 +18056,6 @@ void Dbtc::releaseAbortResources(Signal* signal,
       jam();
       ok = true;
 #ifdef ERROR_INSERT
-<<<<<<< RonDB // RONDB-624 todo
-      if (ERROR_INSERTED(8101))
-      {
-        char buf[128];
-        BaseString::snprintf(buf, sizeof(buf),
-                             "Sending CONTINUEB:ZDEBUG_DELAY_TCROLLBACKREP");
-        warningEvent("%s", buf);
-||||||| Common ancestor
-      if (ERROR_INSERTED(8101))
-      {
-        char buf[128];
-        BaseString::snprintf(buf, sizeof(buf), "Sending CONTINUEB:ZDEBUG_DELAY_TCROLLBACKREP");
-        warningEvent("%s", buf);
-=======
         if (ERROR_INSERTED(8101)) {
           char buf[128];
           BaseString::snprintf(buf, sizeof(buf),
@@ -19821,7 +18070,6 @@ void Dbtc::releaseAbortResources(Signal* signal,
           signal->theData[4] = apiConnectptr.p->returncode;
           signal->theData[5] = apiConnectptr.p->errorData;
           signal->theData[6] = blockRef;
->>>>>>> MySQL 8.0.36
 
           sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 7);
           break;
@@ -19842,38 +18090,16 @@ void Dbtc::releaseAbortResources(Signal* signal,
         jam();
         ok = true;
         break;
-      case RS_TCKEYCONF:
-      case RS_TC_COMMITCONF:
+    // MySQL->RonDB/
+    case RS_TCKEYCONF:
+      jamDebug();
+      break;
+    case RS_TC_COMMITCONF:
+      jamDebug();
+      // RonDB->MySQL
         break;
     }
-<<<<<<< RonDB // RONDB-624 todo
-      break;
-    case RS_NO_RETURN:
-      jam();
-      ok = true;
-      break;
-    case RS_TCKEYCONF:
-      jamDebug();
-      break;
-    case RS_TC_COMMITCONF:
-      jamDebug();
-      break;
-    }    
-    if(!ok){
-||||||| Common ancestor
-      break;
-    case RS_NO_RETURN:
-      jam();
-      ok = true;
-      break;
-    case RS_TCKEYCONF:
-    case RS_TC_COMMITCONF:
-      break;
-    }    
-    if(!ok){
-=======
     if (!ok) {
->>>>>>> MySQL 8.0.36
       jam();
       g_eventLogger->info("returnsignal = %d", apiConnectptr.p->returnsignal);
       sendSystemError(signal, __LINE__);
@@ -23515,72 +21741,10 @@ void Dbtc::trigger_op_finished(Signal *signal,
   if (trigPtrI != RNIL) {
     jam();
     Ptr<TcDefinedTriggerData> trigPtr;
-<<<<<<< RonDB // RONDB-624 todo
     ndbrequire(getDefinedTriggerData(trigPtr, trigPtrI));
-    switch(trigPtr.p->triggerType){
-    case TriggerType::FK_PARENT:
-    {
-      if (errCode == ZNOT_FOUND)
-      {
-        jam();
-        break; // good!
-      }
-
-      Ptr<TcFKData> fkPtr;
-      // TODO make it a pool.getPtr() instead
-      // by also adding fk_ptr_i to definedTriggerData
-      ndbrequire(c_fk_hash.find(fkPtr, trigPtr.p->fkId));
-      if (errCode == 0 && ((fkPtr.p->bits&CreateFKImplReq::FK_ON_ACTION) == 0))
-      {
-        jam();
-        // Only restrict
-        terrorCode = ZFK_CHILD_ROW_EXISTS;
-        apiConnectptr.p->errorData = trigPtr.p->fkId;
-      }
-      else if (errCode == 0)
-      {
-        /**
-         * Check action performed against expected result...
-         */
-        if (triggeringOp->operation == ZDELETE &&
-            (fkPtr.p->bits & CreateFKImplReq::FK_DELETE_ACTION))
-        {
-||||||| Common ancestor
-    c_theDefinedTriggers.getPtr(trigPtr, trigPtrI);
-    switch(trigPtr.p->triggerType){
-    case TriggerType::FK_PARENT:
-    {
-      if (errCode == ZNOT_FOUND)
-      {
-        jam();
-        break; // good!
-      }
-
-      Ptr<TcFKData> fkPtr;
-      // TODO make it a pool.getPtr() instead
-      // by also adding fk_ptr_i to definedTriggerData
-      ndbrequire(c_fk_hash.find(fkPtr, trigPtr.p->fkId));
-      if (errCode == 0 && ((fkPtr.p->bits&CreateFKImplReq::FK_ON_ACTION) == 0))
-      {
-        jam();
-        // Only restrict
-        terrorCode = ZFK_CHILD_ROW_EXISTS;
-        apiConnectptr.p->errorData = trigPtr.p->fkId;
-      }
-      else if (errCode == 0)
-      {
-        /**
-         * Check action performed against expected result...
-         */
-        if (triggeringOp->operation == ZDELETE &&
-            (fkPtr.p->bits & CreateFKImplReq::FK_DELETE_ACTION))
-        {
-=======
-    c_theDefinedTriggers.getPtr(trigPtr, trigPtrI);
     switch (trigPtr.p->triggerType) {
       case TriggerType::FK_PARENT: {
         if (errCode == ZNOT_FOUND) {
->>>>>>> MySQL 8.0.36
           jam();
           break;  // good!
         }
@@ -23836,23 +22000,10 @@ bool Dbtc::executeTrigger(Signal *signal, TcFiredTriggerData *firedTriggerData,
   bool found = getDefinedTriggerData(definedTriggerPtr,
                                      firedTriggerData->triggerId);
 
-<<<<<<< RonDB // RONDB-624 todo
-  // If triggerIds don't match, the trigger has been dropped
-  // -> skip trigger exec.
-  if (likely(found))
-  {
-    TcDefinedTriggerData* const definedTriggerData = definedTriggerPtr.p;
-||||||| Common ancestor
-  // If triggerIds don't match, the trigger has been dropped -> skip trigger exec.
-  if (likely(definedTriggerPtr.p->triggerId == firedTriggerData->triggerId))
-  {
-    TcDefinedTriggerData* const definedTriggerData = definedTriggerPtr.p;
-=======
   // If triggerIds don't match, the trigger has been dropped -> skip trigger
   // exec.
-  if (likely(definedTriggerPtr.p->triggerId == firedTriggerData->triggerId)) {
+  if (likely(found)) {
     TcDefinedTriggerData *const definedTriggerData = definedTriggerPtr.p;
->>>>>>> MySQL 8.0.36
     transPtr->p->pendingTriggers--;
     switch (firedTriggerData->triggerType) {
       case (TriggerType::SECONDARY_INDEX):

@@ -352,6 +352,7 @@ struct Fragoperrec {
     BlockReference lqhBlockrefFrag;
     Uint32 m_senderRef;
   };
+};
   typedef Ptr<Fragoperrec> FragoperrecPtr;
 
   /* Operation record used during alter table. */
@@ -969,12 +970,14 @@ struct Operationrec {
   Uint32 prevActiveOp;
   Uint32 nextActiveOp;
 
-    Uint32 fragPageId;
+  Uint32 fragPageId;
 
-    CommitState m_commit_state;
+  CommitState m_commit_state;
 
-    bool is_first_operation() const { return prevActiveOp == RNIL; }
-    bool is_last_operation() const { return nextActiveOp == RNIL; }
+  bool is_first_operation() const { return prevActiveOp == RNIL; }
+  bool is_last_operation() const { return nextActiveOp == RNIL; }
+
+  Uint32 m_undo_buffer_space; // In words
 
   Uint32 m_any_value;
   Uint32 nextPool;
@@ -1038,6 +1041,8 @@ struct Operationrec {
    * a transaction currently. So each update will create a new
    * version even if in the same transaction.
    */
+    unsigned int tupVersion : 16;
+
     unsigned int m_reorg : 2;
     unsigned int in_active_list : 1;
     unsigned int delete_insert_flag : 1;
@@ -2075,6 +2080,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     AttributeMask changeMask;
     Uint16 var_pos_array[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
     OperationrecPtr prevOpPtr;
+    Dblqh *m_lqh;
   };
 
   friend struct Undo_buffer;

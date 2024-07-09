@@ -39,7 +39,6 @@
 #include <RWPool.hpp>
 #include <RWPool64.hpp>
 #include <SafeMutex.hpp>
-#include <WOPool.hpp>
 
 #define JAM_FILE_ID 339
 

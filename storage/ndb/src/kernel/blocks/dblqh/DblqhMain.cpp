@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1573,17 +1573,11 @@ void Dblqh::execSTTOR(Signal *signal) {
          */
         ndbrequire(isNdbMtLqh());
         Dblqh *lqh_block = (Dblqh *)globalData.getBlock(DBLQH, 1);
-        this->c_fragment_pool.setNewSize(lqh_block->c_fragment_pool.getSize());
         this->ctabrecFileSize = lqh_block->ctabrecFileSize;
         Dbtup *tup_block = (Dbtup *)globalData.getBlock(DBTUP, 1);
-        c_tup->cnoOfFragrec = tup_block->cnoOfFragrec;
         c_tup->cnoOfTablerec = tup_block->cnoOfTablerec;
-        Dbacc *acc_block = (Dbacc *)globalData.getBlock(DBACC, 1);
-        c_acc->cfragmentsize = acc_block->cfragmentsize;
         Dbtux *tux_block = (Dbtux *)globalData.getBlock(DBTUX, 1);
-        c_tux->c_fragPool.setNewSize(tux_block->c_fragPool.getSize());
         c_tux->c_indexPool.setNewSize(tux_block->c_indexPool.getSize());
-        c_tux->c_descPagePool.setNewSize(tux_block->c_descPagePool.getSize());
         signal->theData[0] = cownref;
         sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
         return;
@@ -14354,19 +14348,6 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
   }  // switch
   abortCommonLab(signal, tcConnectptr);
 }  // Dblqh::abortStateHandlerLab()
-
-void Dblqh::abortErrorLab(Signal* signal, TcConnectionrecPtr tcConnectptr)
-{
-  ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(tcConnectptr));
-  TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  if (regTcPtr->abortState == TcConnectionrec::ABORT_IDLE) {
-    jam();
-    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
-    regTcPtr->errorCode = terrorCode;
-  }//if
-  abortCommonLab(signal, tcConnectptr);
-  return;
-}//Dblqh::abortErrorLab()
 
 void Dblqh::abortErrorLab(Signal *signal, TcConnectionrecPtr tcConnectptr) {
   ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(tcConnectptr));
@@ -35681,8 +35662,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
             {
               jam();
               ndbrequire(c_fragment_pool.getPtr(myFragPtr));
-              jam();
-              c_fragment_pool.getPtr(myFragPtr);
 
               /* Get fragment's stats from TUP */
               const Dbtup::FragStats fs =
