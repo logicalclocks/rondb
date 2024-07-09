@@ -1469,7 +1469,7 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
                     ndb_socket_get_native(sock_fd), nullptr);
         } else if (recvdata.m_epoll_events[i].events & EPOLLIN) {
           recvdata.m_read_transporters.set(trpid);
-          recvdata.m_recv_sockets_transporters.set(trpid);
+          recvdata.m_recv_socket_transporters.set(trpid);
         }
       }
     } else if (num_socket_events < 0) {
