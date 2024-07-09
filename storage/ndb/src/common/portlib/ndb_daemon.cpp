@@ -25,12 +25,12 @@
 #ifdef _WIN32
 #include <process.h>
 #endif
-#include <ndb_daemon.h>
 #include <portlib/NdbHost.h>
 #include <stdio.h>
 #include <util/require.h>
 #include <BaseString.hpp>
 #include "portlib/ndb_compiler.h"
+#include <ndb_daemon.h>
 
 #include "m_string.h"
 #include "my_sys.h"

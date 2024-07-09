@@ -76,7 +76,9 @@ void get_jbb_estimated_stats(Uint32, Uint32, Uint64**, Uint64**, Uint64**);
 void prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group);
 Uint32 get_load_indicator(Uint32 dst);
 
-void sendlocal(Uint32 self, const struct SignalHeader *s, const Uint32 *data,
+void sendlocal(Uint32 self,
+               struct SignalHeader *s,
+               const Uint32 *data,
                const Uint32 secPtr[3]);
 void sendprioa(Uint32 self, const struct SignalHeader *s, const Uint32 *data,
                const Uint32 secPtr[3]);

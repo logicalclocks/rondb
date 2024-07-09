@@ -909,7 +909,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "If the application takes too long time, the transaction gets aborted.\n"
       "Timeout set to 0 means that we don't timeout at all on application wait.\n"
       "Default is set to around 40 days",
-     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, 3600000, "0",
+     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "3600000", "0",
      STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_TRANSACTION_DEADLOCK_TIMEOUT, "TransactionDeadlockDetectionTimeout",

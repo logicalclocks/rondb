@@ -26,7 +26,6 @@
 #include <ndb_global.h>
 #include <NdbSchemaCon.hpp>
 #include <cstring>
-#include <md5_hash.hpp>
 #include "NdbApi.hpp"
 #include "util/require.h"
 

@@ -410,7 +410,6 @@ DECLARE_NDBINFO_TABLE(DISK_WRITE_SPEED_AGGREGATE, 16) = {
          "Number of bytes written to REDO log per second last"
          " 10 seconds"},
         {"std_dev_backup_lcp_speed_last_10sec", Ndbinfo::Number64,
->>>>>>> MySQL 8.0.36
          "Standard deviation of Number of bytes written by backup and LCP"
          " per second last 10 seconds"},
         {"std_dev_redo_speed_last_10sec", Ndbinfo::Number64,

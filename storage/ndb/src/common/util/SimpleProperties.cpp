@@ -116,7 +116,7 @@ bool SimpleProperties::Reader::valid() const { return m_type != InvalidValue; }
 
 Uint16 SimpleProperties::Reader::getKey() const { return m_key; }
 
-Uint16 SimpleProperties::Reader::getValueLen() const {
+Uint32 SimpleProperties::Reader::getValueLen() const {
   switch (m_type) {
     case Uint32Value:
       return 4;

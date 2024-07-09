@@ -32,7 +32,6 @@
 #include <RefConvert.hpp>
 #include <cstring>
 #include "Dbtc.hpp"
-#include "md5_hash.hpp"
 
 #include <signaldata/Abort.hpp>
 #include <signaldata/AbortAll.hpp>
@@ -706,16 +705,6 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       apiConnectptr.p->counter--;
       tcConnectptr.i = Tdata1;
       abort015Lab(signal, apiConnectptr);
-      return;
-    }
-    case TcContinueB::ZABORT_TIMEOUT_BREAK: {
-      jam();
-      tcConnectptr.i = Tdata0;
-      ApiConnectRecordPtr apiConnectptr;
-      apiConnectptr.i = Tdata1;
-      c_apiConnectRecordPool.getPtr(apiConnectptr);
-      apiConnectptr.p->counter--;
-      sendAbortedAfterTimeout(signal, 1, apiConnectptr);
       return;
     }
     case TcContinueB::ZHANDLE_FAILED_API_NODE_REMOVE_MARKERS:
@@ -10849,7 +10838,6 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
       /*------------------------------------------------------------------*/
     ndbabort();
     break;
-  }
   }
 }
 

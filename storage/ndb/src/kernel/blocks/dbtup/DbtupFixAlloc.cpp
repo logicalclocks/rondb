@@ -307,7 +307,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
       key->m_page_idx = idx;
       return pagePtr.p->m_data + idx;
     case ZTH_MM_FULL:
-      jam()
+      jam();
       *err = ZROWID_ALLOCATED;
       DEB_899_ERROR(("(%u)899 error FULL: tab(%u,%u) row(%u,%u)", instance(),
                      regFragPtr->fragTableId, regFragPtr->fragmentId, page_no,

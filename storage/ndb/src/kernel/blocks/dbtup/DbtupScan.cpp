@@ -26,7 +26,6 @@
 #define DBTUP_C
 #define DBTUP_SCAN_CPP
 #include <portlib/ndb_prefetch.h>
-#include <md5_hash.hpp>
 #include <signaldata/AccLock.hpp>
 #include <signaldata/AccScan.hpp>
 #include <signaldata/NextScan.hpp>

@@ -4580,10 +4580,10 @@ void Thrman::execDBINFO_SCANREQ(Signal *signal) {
           }
           SendThreadMeasurement measure;
           bool success =
-              calculate_send_thread_load_last_second(pos - 1, &measure, 1000);
+              calculate_send_thread_load_last_ms(pos - 1, &measure, 1000);
           if (!success) {
             g_eventLogger->info(
-                "Failed calculate_send_thread_load_last_second");
+                "Failed calculate_send_thread_load_last_ms");
             ndbassert(false);
             ndbinfo_send_scan_conf(signal, req, rl);
             return;

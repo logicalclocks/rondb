@@ -1113,11 +1113,6 @@ void Dbtup::execALTER_TAB_REQ(Signal *signal) {
     handleAlterTablePrepare(signal, req, regTabPtr);
     return;
   }
-  case AlterTabReq::AlterTableCommit: {
-    jam();
-    handleAlterTableCommit(signal, req, regTabPtr);
-    return;
-  }
   case AlterTabReq::AlterTableCommit:
   {
     jam();

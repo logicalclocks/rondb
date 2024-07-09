@@ -352,6 +352,12 @@ struct Fragoperrec {
     BlockReference lqhBlockrefFrag;
     Uint32 m_senderRef;
   };
+  Uint32 m_senderData;
+  Uint32 m_restoredLcpId;
+  Uint32 m_restoredLocalLcpId;
+  Uint32 m_maxGciCompleted;
+  bool inUse;
+  bool definingFragment;
 };
   typedef Ptr<Fragoperrec> FragoperrecPtr;
 
@@ -1980,7 +1986,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     /**
      * Variables often used in read of columns
      */
-    TableDescriptor *attr_descr;
+    Uint32 *attr_descr;
     Uint32 check_offset[2];
     Uint32 max_read;
     Uint32 out_buf_index;
