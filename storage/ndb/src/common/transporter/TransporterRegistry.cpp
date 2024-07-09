@@ -57,7 +57,7 @@
 
 #include <EventLogger.hpp>
 
-#if 0
+#if 1
 #define DEBUG_FPRINTF(arglist) \
   do {                         \
     fprintf arglist;           \

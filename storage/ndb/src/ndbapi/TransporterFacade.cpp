@@ -1613,9 +1613,6 @@ bool TransporterFacade::configure(NodeId nodeId,
   iter.get(CFG_TCP_ONLY_IPV4, &use_only_ipv4);
   m_use_only_ipv4 = use_only_ipv4;
 
-  /* Set up active communication with all configured nodes */
-  set_up_node_active_in_send_buffers(nodeId, conf);
-
   // Configure transporters
   if (!IPCConfig::configureTransporters(theOwnId, conf, *theTransporterRegistry,
                                         true))

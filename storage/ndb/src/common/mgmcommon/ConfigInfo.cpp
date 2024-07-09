@@ -269,7 +269,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ***************************************************************************/
     {KEY_INTERNAL, "COMPUTER", "COMPUTER", "Computer section",
      ConfigInfo::CI_INTERNAL, false, ConfigInfo::CI_SECTION,
-     nullptr, nullptr, nullptr},
+     0},
 
     {KEY_INTERNAL, "Id", "COMPUTER", "Name of computer", ConfigInfo::CI_USED,
      false, ConfigInfo::CI_STRING, MANDATORY, nullptr, nullptr},
@@ -283,7 +283,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ***************************************************************************/
     {CFG_SECTION_SYSTEM, "SYSTEM", "SYSTEM", "System section",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
-     (const char *)CFG_SECTION_SYSTEM, nullptr, nullptr},
+     CFG_SECTION_SYSTEM},
 
     {CFG_SYS_NAME, "Name", "SYSTEM", "Name of system (RonDB)",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_STRING, MANDATORY, nullptr,
@@ -305,8 +305,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      * DB
      ***************************************************************************/
     {CFG_SECTION_NODE, DB_TOKEN, DB_TOKEN, "[DB] section", ConfigInfo::CI_USED,
-     false, ConfigInfo::CI_SECTION, (const char *)NODE_TYPE_DB,
-     nullptr, nullptr},
+     false, ConfigInfo::CI_SECTION, NODE_TYPE_DB},
 
     {CFG_DB_SUBSCRIPTIONS, "MaxNoOfSubscriptions", DB_TOKEN,
      "Max no of subscriptions (default 0 == MaxNoOfTables)",
@@ -940,7 +939,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "How to perform arbitration to avoid split-brain issue when node(s) fail",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_ENUM,
      "Default", /* Default value */
-     (const char*)arbit_method_typelib, nullptr},
+     arbit_method_typelib},
 
     {CFG_NODE_DATADIR, "DataDir", DB_TOKEN, "Data directory for this node",
      ConfigInfo::CI_USED, CI_CHECK_WRITABLE | CI_RESTART_INITIAL,
@@ -1536,7 +1535,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ***************************************************************************/
     {CFG_SECTION_NODE, API_TOKEN, API_TOKEN, "Node section",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
-     (const char *)NODE_TYPE_API, nullptr, nullptr},
+     NODE_TYPE_API},
 
     {KEY_INTERNAL, "wan", API_TOKEN, "Use WAN TCP setting as default",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "false", "false", "true"},
@@ -1655,7 +1654,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 #else
      "queue", /* Default value */
 #endif
-     (const char*)default_operation_redo_problem_action_typelib, nullptr},
+     default_operation_redo_problem_action_typelib},
 
     {CFG_DEFAULT_HASHMAP_SIZE, "DefaultHashmapSize", API_TOKEN,
      "Hashmap size to use for new tables.  Normally this should be left unset, "
@@ -1693,7 +1692,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ***************************************************************************/
     {CFG_SECTION_NODE, MGM_TOKEN, MGM_TOKEN, "Node section",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
-     (const char *)NODE_TYPE_MGM, nullptr, nullptr},
+     NODE_TYPE_MGM},
 
     {KEY_INTERNAL, "wan", MGM_TOKEN, "Use WAN TCP setting as default",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_BOOL, "false", "false", "true"},
@@ -1810,7 +1809,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ***************************************************************************/
     {CFG_SECTION_CONNECTION, "TCP", "TCP", "Connection section",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
-     (const char *)CONNECTION_TYPE_TCP, nullptr, nullptr},
+     CONNECTION_TYPE_TCP},
 
     {CFG_CONNECTION_HOSTNAME_1, "HostName1", "TCP",
      "Name/IP of computer on one side of the connection", ConfigInfo::CI_USED,
@@ -1917,7 +1916,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ***************************************************************************/
     {CFG_SECTION_CONNECTION, "SHM", "SHM", "Connection section",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_SECTION,
-     (const char *)CONNECTION_TYPE_SHM, nullptr, nullptr},
+     CONNECTION_TYPE_SHM},
 
     {CFG_CONNECTION_HOSTNAME_1, "HostName1", "SHM",
      "Name/IP of computer on one side of the connection", ConfigInfo::CI_USED,
@@ -2002,7 +2001,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ***************************************************************************/
     {CFG_SECTION_CONNECTION, "SCI", "SCI", "SCI not supported",
      ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_SECTION,
-     (const char *)CONNECTION_TYPE_SCI, nullptr, nullptr},
+     CONNECTION_TYPE_SCI},
 
     {CFG_CONNECTION_NODE_1, "NodeId1", "SCI", "SCI not supported",
      ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_STRING, MANDATORY,
