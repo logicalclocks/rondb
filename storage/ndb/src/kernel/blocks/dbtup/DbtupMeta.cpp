@@ -172,6 +172,10 @@ void Dbtup::execCREATE_TAB_REQ(Signal *signal) {
   regTabPtr.p->tableStatus = DEFINING;
   regTabPtr.p->m_bits = 0;
   regTabPtr.p->m_bits |=
+      (req->checksumIndicator ? Tablerec::TR_Checksum : 0);
+  regTabPtr.p->m_bits |=
+      (req->GCPIndicator ? Tablerec::TR_RowGCI : 0);
+  regTabPtr.p->m_bits |=
       (req->forceVarPartFlag ? Tablerec::TR_ForceVarPart : 0);
   regTabPtr.p->m_bits |=
       (req->GCPIndicator > 1 ? Tablerec::TR_ExtraRowGCIBits : 0);
