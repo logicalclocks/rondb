@@ -4754,6 +4754,12 @@ void Qmgr::api_failed(Signal *signal, Uint32 nodeId) {
       handleApiCloseComConf(signal);
       return;
     }
+
+    /**
+     * Normal ZFAIL_CLOSING path
+     * Failure handling already in progress
+     */
+    return;
   }
 
   ndbrequire(failedNodePtr.p->failState == NORMAL);

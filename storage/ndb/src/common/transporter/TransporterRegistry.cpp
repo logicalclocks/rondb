@@ -863,7 +863,7 @@ bool TransporterRegistry::createMultiTransporter(NodeId node_id,
   DEBUG_FPRINTF((stderr,
                  "createMultiTrp, Node %u num trps: %u"
                  ", num active trps: %u, num inactive trps: %u\n",
-                 nodeId,
+                 node_id,
                  num_trps,
                  multi_trp->get_num_active_transporters(),
                  multi_trp->get_num_inactive_transporters()));
@@ -2521,7 +2521,7 @@ void TransporterRegistry::start_connecting(NodeId node_id) {
  */
 bool TransporterRegistry::start_disconnecting_trp(TrpId trp_id, int errnum,
                                                   bool send_source) {
-  DEBUG_FPRINTF((stderr, "(%u)REG:start_disconnecting(trp:%u, %d)\n",
+  DEBUG_FPRINTF((stderr, "(%u)REG:start_disconnecting_trp(trp:%u, %d)\n",
                  localNodeId, trp_id, errnum));
   switch (performStates[trp_id]) {
     case DISCONNECTED: {
@@ -2714,7 +2714,7 @@ void TransporterRegistry::report_disconnect(TransporterReceiveHandle &recvdata,
    */
   lockMultiTransporters();
   performStates[trp_id] = DISCONNECTED;
-  DEBUG_FPRINTF((stderr, "(%u)performStates[trp:%u] = DISCONNECTED\n",
+  DEBUG_FPRINTF((stderr, "(Node %u)performStates[trp:%u] = DISCONNECTED\n",
                  localNodeId, trp_id));
 
   bool ready_to_disconnect = true;
@@ -3229,11 +3229,6 @@ void TransporterRegistry::start_clients_thread() {
       const NodeId nodeId = t->getRemoteNodeId();
       switch (performStates[trpId]) {
         case CONNECTING: {
-          if (t->isPartOfMultiTransporter()) {
-            DEBUG_FPRINTF((stderr, "Node %u part of MultiTrp\n",
-                           t->getRemoteNodeId()));
-            break;
-          }
           if (!get_active_node(nodeId))
           {
             DEBUG_FPRINTF((stderr, "Node %u not active\n",
@@ -3363,8 +3358,8 @@ void TransporterRegistry::start_clients_thread() {
                            localNodeId, nodeId, trpId, __LINE__));
             t->doDisconnect();
           } else {
-            DEBUG_FPRINTF((stderr, "Node %u DISCONNECTED\n",
-                           t->getRemoteNodeId()));
+            //DEBUG_FPRINTF((stderr, "Node %u DISCONNECTED\n",
+            //               t->getRemoteNodeId()));
           }
           break;
         case CONNECTED:

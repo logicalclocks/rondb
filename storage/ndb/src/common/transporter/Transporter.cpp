@@ -559,7 +559,8 @@ void Transporter::checksum_state::dumpBadChecksumInfo(
 }
 
 void Transporter::set_get(ndb_socket_t fd, int level, int optval,
-                          const char * /*optname*/, int val) {
+                          const char *optname, int val) {
+  (void)optname;
   int actual = 0, defval = 0;
 
   ndb_getsockopt(fd, level, optval, &defval);
