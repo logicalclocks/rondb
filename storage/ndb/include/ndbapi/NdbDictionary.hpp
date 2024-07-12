@@ -1297,6 +1297,31 @@ class NdbDictionary {
      */
     bool hasDefaultValues() const;
 
+    /*
+     * Set TTL seconds
+     */
+    void setTTLSec(Uint32 sec);
+
+    /*
+     * Get TTL seconds
+     */
+    Uint32 getTTLSec();
+
+    /*
+     * Set TTL column no
+     */
+    void setTTLColumnNo(Uint32 no);
+
+    /*
+     * Get TTL column no
+     */
+    Uint32 getTTLColumnNo();
+
+    /*
+     * Is TTL enabled
+     */
+    bool isTTLEnabled();
+
   private:
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
     friend class Ndb;

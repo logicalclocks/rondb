@@ -421,7 +421,13 @@ enum ha_extra_function {
   */
   HA_EXTRA_ENABLE_UNIQUE_RECORD_FILTER,
   /* Disable and free unique record filter. */
-  HA_EXTRA_DISABLE_UNIQUE_RECORD_FILTER
+  HA_EXTRA_DISABLE_UNIQUE_RECORD_FILTER,
+  /*
+   * Zart
+   * TTL
+   */
+  HA_EXTRA_IGNORE_TTL,
+  HA_EXTRA_NO_IGNORE_TTL,
 };
 
 /* Compatible option, to be deleted in 6.0 */

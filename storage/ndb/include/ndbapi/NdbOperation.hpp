@@ -1125,6 +1125,12 @@ class NdbOperation {
       OO_NOWAIT = 0x1000,
       OO_GET_FINAL_VALUE = 0x2000,
       OO_REPLICA_APPLIER = 0x4000,
+      /*
+       * Zart
+       * TODO (Zhao)
+       * Force operation ignore TTL
+       */
+      OO_TTL_IGNORE    = 0x8000
     };
 
     /* An operation-specific abort option.
@@ -1562,9 +1568,14 @@ class NdbOperation {
     OF_DISABLE_FK = 0x10,
     OF_NOWAIT = 0x20,
     OF_BLOB_PART_READ = 0x40,
-    OF_REPLICA_APPLIER = 0x80
+    OF_REPLICA_APPLIER = 0x80,
+    OF_TTL_IGNORE = 0x100
   };
-  Uint8 m_flags;
+  /*
+   * Zart
+   * Expand it to 16 bits
+   */
+  Uint16 m_flags;
 
   Uint8 _unused1;
 

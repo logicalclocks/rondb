@@ -220,6 +220,12 @@ class LqhKeyReq {
 
   static UintR getNoWaitFlag(const UintR &requestInfo);
   static void setNoWaitFlag(UintR &requestInfo, UintR val);
+  /*
+   * Zart
+   * TTL
+   */
+  static void setTTLIgnoreFlag(UintR &requestInfo, UintR val);
+  static UintR getTTLIgnoreFlag(const UintR &requestInfo);
 
   enum RequestInfo {
     RI_KEYLEN_SHIFT = 0,
@@ -230,8 +236,12 @@ class LqhKeyReq {
     RI_NOWAIT_SHIFT = 3,
     RI_REPLICA_APPLIER_SHIFT = 5,
 
+    /*
+     * Zart
+     * TTL
+     */
+    RI_TTL_IGNORE_SHIFT = 6,
     /* Currently unused */
-    RI_CLEAR_SHIFT6 = 6,
     RI_CLEAR_SHIFT7 = 7,
     RI_CLEAR_SHIFT8 = 8,
     RI_CLEAR_SHIFT9 = 9,
@@ -490,6 +500,12 @@ inline void LqhKeyReq::setSimpleFlag(UintR &requestInfo, UintR val) {
 
 inline void LqhKeyReq::setOperation(UintR &requestInfo, UintR val) {
   ASSERT_MAX(val, RI_OPERATION_MASK, "LqhKeyReq::setOperation");
+  /*
+   * Zart
+   * Need to clear the previous operation bits before setting a
+   * new one
+   */
+  requestInfo &= ~((Uint32)RI_OPERATION_MASK << RI_OPERATION_SHIFT);
   requestInfo |= (val << RI_OPERATION_SHIFT);
 }
 
@@ -617,8 +633,7 @@ inline UintR LqhKeyReq::getDisableFkConstraints(const UintR &requestInfo) {
 }
 
 inline UintR LqhKeyReq::getLongClearBits(const UintR &requestInfo) {
-  const Uint32 mask = (1 << RI_CLEAR_SHIFT6) |
-                      (1 << RI_CLEAR_SHIFT7) | (1 << RI_CLEAR_SHIFT8) |
+  const Uint32 mask = (1 << RI_CLEAR_SHIFT7) | (1 << RI_CLEAR_SHIFT8) |
                       (1 << RI_CLEAR_SHIFT9);
 
   return (requestInfo & mask);
@@ -658,6 +673,15 @@ inline void LqhKeyReq::setReplicaApplierFlag(UintR &requestInfo, UintR val) {
 
 inline UintR LqhKeyReq::getReplicaApplierFlag(const UintR &requestInfo) {
   return (requestInfo >> RI_REPLICA_APPLIER_SHIFT) & 1;
+}
+
+inline void LqhKeyReq::setTTLIgnoreFlag(UintR &requestInfo, UintR val){
+  ASSERT_BOOL(val, "LqhKeyReq::setTTLIgnoreFlag");
+  requestInfo |= (val << RI_TTL_IGNORE_SHIFT);
+}
+
+inline UintR LqhKeyReq::getTTLIgnoreFlag(const UintR & requestInfo){
+  return (requestInfo >> RI_TTL_IGNORE_SHIFT) & 1;
 }
 
 inline Uint32 table_version_major_lqhkeyreq(Uint32 x) {

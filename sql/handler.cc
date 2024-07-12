@@ -2909,6 +2909,11 @@ int handler::ha_close(void) {
 */
 
 int handler::ha_index_init(uint idx, bool sorted) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_index_init\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   DBUG_EXECUTE_IF("ha_index_init_fail", return HA_ERR_TABLE_DEF_CHANGED;);
   int result;
   DBUG_TRACE;
@@ -2929,6 +2934,11 @@ int handler::ha_index_init(uint idx, bool sorted) {
 */
 
 int handler::ha_index_end() {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_index_end\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   DBUG_TRACE;
   /* SQL HANDLER function can call this without having it locked. */
   assert(table->open_by_handler || table_share->tmp_table != NO_TMP_TABLE ||
@@ -2953,6 +2963,11 @@ int handler::ha_index_end() {
 */
 
 int handler::ha_rnd_init(bool scan) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_rnd_init\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   DBUG_EXECUTE_IF("ha_rnd_init_fail", return HA_ERR_TABLE_DEF_CHANGED;);
   int result;
   DBUG_TRACE;
@@ -2972,6 +2987,11 @@ int handler::ha_rnd_init(bool scan) {
 */
 
 int handler::ha_rnd_end() {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_rnd_end\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   DBUG_TRACE;
   /* SQL HANDLER function can call this without having it locked. */
   assert(table->open_by_handler || table_share->tmp_table != NO_TMP_TABLE ||
@@ -2994,6 +3014,11 @@ int handler::ha_rnd_end() {
 */
 
 int handler::ha_rnd_next(uchar *buf) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_rnd_next\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   int result;
   DBUG_EXECUTE_IF("ha_rnd_next_deadlock", return HA_ERR_LOCK_DEADLOCK;);
   DBUG_TRACE;
@@ -3025,6 +3050,11 @@ int handler::ha_rnd_next(uchar *buf) {
 */
 
 int handler::ha_rnd_pos(uchar *buf, uchar *pos) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_rnd_pos\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   int result;
   DBUG_TRACE;
   assert(table_share->tmp_table != NO_TMP_TABLE || m_lock_type != F_UNLCK);
@@ -6484,7 +6514,11 @@ int handler::multi_range_read_init(RANGE_SEQ_IF *seq_funcs,
 int handler::ha_multi_range_read_next(char **range_info) {
   int result;
   DBUG_TRACE;
-
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_multi_range_read_next\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   // Set status for the need to update generated fields
   m_update_generated_read_fields = table->has_gcol();
 
@@ -6516,6 +6550,11 @@ int handler::multi_range_read_next(char **range_info) {
   int range_res = 0;
   bool dup_found = false;
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart, handler::multi_range_read_next\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   // For a multi-valued index the unique filter have to be used for correct
   // result
   assert(!(table->key_info[active_index].flags & HA_MULTI_VALUED_KEY) ||
@@ -7421,6 +7460,11 @@ int handler::read_range_first(const key_range *start_key,
 int handler::ha_read_range_first(const key_range *start_key,
                                  const key_range *end_key, bool eq_range,
                                  bool sorted) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_read_range_first\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   int result;
   DBUG_TRACE;
 
@@ -7441,6 +7485,11 @@ int handler::ha_read_range_next() {
   int result;
   DBUG_TRACE;
 
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(table_share->table_name.str, TTL_TABLE_NAME) == 0) {
+    fprintf(stderr, "Zart handler::ha_read_range_next\n");
+  }
+#endif  // TTL_TRACE_HANDLER
   // Set status for the need to update generated fields
   m_update_generated_read_fields = table->has_gcol();
 
@@ -8063,6 +8112,8 @@ int handler::ha_reset() {
   /* Reset the handler flags used for dupilcate record handling */
   table->file->extra(HA_EXTRA_NO_IGNORE_DUP_KEY);
   table->file->extra(HA_EXTRA_WRITE_CANNOT_REPLACE);
+  /* Reset the handle flags used for ignoring TTL */
+  table->file->extra(HA_EXTRA_NO_IGNORE_TTL);
   /* Reset information about pushed engine conditions */
   pushed_cond = nullptr;
   /* Reset information about pushed index conditions */
@@ -8070,6 +8121,7 @@ int handler::ha_reset() {
   // Forget the record buffer.
   m_record_buffer = nullptr;
   m_unique = nullptr;
+  // fprintf(stderr, "Zart ha_reset, table_name: %s\n", table->s->table_name.str);
 
   const int retval = reset();
   return retval;

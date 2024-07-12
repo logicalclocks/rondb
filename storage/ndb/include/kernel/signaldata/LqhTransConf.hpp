@@ -200,7 +200,9 @@ inline void LqhTransConf::setDirtyFlag(UintR &requestInfo, UintR val) {
 }
 
 inline void LqhTransConf::setOperation(UintR &requestInfo, UintR val) {
-  ASSERT_MAX(val, LTC_OPERATION_MASK, "LqhTransConf::setOperation");
+  if (val != ZINSERT_TTL) {
+    ASSERT_MAX(val, LTC_OPERATION_MASK, "LqhTransConf::setOperation");
+  }
   requestInfo |= (val << LTC_OPERATION_SHIFT);
 }
 

@@ -960,6 +960,7 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
           continue;
         }
 
+        DEBUG_SYNC(thd, "zhao_wait_for_row_get_expired_after_reading_3");
         if (will_batch) {
           /*
             Typically a batched handler can execute the batched jobs when:
