@@ -50,7 +50,6 @@
 
 class Transporter {
   friend class TransporterRegistry;
-  friend class Multi_Transporter;
   friend class Qmgr;
 
  public:
@@ -62,9 +61,9 @@ class Transporter {
   virtual ~Transporter();
 
   /**
-   * Disconnect node/socket
+   * Initiate the asynch disconnecting protocol of node/socket
    */
-  bool do_disconnect(int err, bool send_source);
+  bool start_disconnecting(int err, bool send_source);
 
   /**
    * Clear any data buffered in the transporter.
@@ -84,29 +83,14 @@ class Transporter {
   Uint32 get_multi_transporter_instance() {
     return m_multi_transporter_instance;
   }
-  virtual bool isMultiTransporter() { return false; }
 
   void set_multi_transporter_instance(Uint32 val) {
     m_multi_transporter_instance = val;
   }
 
-  virtual Uint64 get_bytes_sent() const { return m_bytes_sent; }
+  Uint64 get_bytes_sent() const { return m_bytes_sent; }
 
-  virtual Uint64 get_bytes_received() const { return m_bytes_received; }
-
-  /**
-   * In most cases we use only one transporter per node connection.
-   * But in cases where the transporter is heavily loaded we can
-   * have multiple transporters to send for one node connection.
-   * In this case theNodeIdTransporters points to a Multi_Transporter
-   * object that has implemented a hash algorithm for
-   * get_send_transporter based on sending thread and receiving
-   * thread.
-   */
-  virtual Transporter *get_send_transporter(Uint32 recBlock [[maybe_unused]],
-                                            Uint32 sendBlock [[maybe_unused]]) {
-    return this;
-  }
+  Uint64 get_bytes_received() const { return m_bytes_received; }
 
   /**
    * None blocking
@@ -129,12 +113,11 @@ class Transporter {
    */
   void doDisconnect();
 
-  void forceUnsafeDisconnect();
-
   /**
    * Are we currently connected
    */
   bool isConnected() const;
+  bool isReleased() const;
 
   /**
    * Remote Node Id
@@ -207,24 +190,13 @@ class Transporter {
     memcpy(&remoteHostName, new_hostname, 256);
   }
   bool is_server() { return isServerCurr;}
-protected:
-  Transporter(TransporterRegistry &,
-              TrpId transporter_index,
-	      TransporterType,
-	      const char *lHostName,
-	      const char *rHostName, 
-	      int s_port,
-	      bool isMgmConnection,
-	      NodeId lNodeId,
-	      NodeId rNodeId,
-	      NodeId serverNodeId,
-	      int byteorder, 
-	      bool compression, 
-	      bool checksum, 
-	      bool signalId,
-              Uint32 max_send_buffer,
-              bool _presend_checksum,
-              Uint32 spintime);
+ protected:
+  Transporter(TransporterRegistry &, TrpId transporter_index, TransporterType,
+              const char *lHostName, const char *rHostName, int s_port,
+              bool isMgmConnection, NodeId lNodeId, NodeId rNodeId,
+              NodeId serverNodeId, int byteorder, bool compression,
+              bool checksum, bool signalId, Uint32 max_send_buffer,
+              bool _presend_checksum, Uint32 spintime);
 
   virtual bool configure(const TransporterConfiguration* conf);
   virtual bool configure_derived(const TransporterConfiguration* conf) = 0;
@@ -338,7 +310,14 @@ protected:
     return m_transporter_registry.callbackObj;
   }
   void report_error(enum TransporterError err, const char *info = nullptr) {
-    m_transporter_registry.report_error(remoteNodeId, err, info);
+    m_transporter_registry.report_error(m_transporter_index, err, info);
+  }
+
+  void lock_send_transporter() {
+    get_callback_obj()->lock_send_transporter(m_transporter_index);
+  }
+  void unlock_send_transporter() {
+    get_callback_obj()->unlock_send_transporter(m_transporter_index);
   }
 
   Uint32 fetch_send_iovec_data(struct iovec dst[], Uint32 cnt);
@@ -387,6 +366,10 @@ inline TransporterType Transporter::getTransporterType() const {
 }
 
 inline bool Transporter::isConnected() const { return m_connected; }
+
+inline bool Transporter::isReleased() const {
+  return !isConnected() && !theSocket.is_valid();
+}
 
 inline NodeId Transporter::getRemoteNodeId() const { return remoteNodeId; }
 

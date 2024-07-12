@@ -524,7 +524,7 @@ AccessPath *Item_in_subselect::root_access_path() const {
     // the query to the log for debugging, it isn't fully optimized
     // yet and might not yet have an iterator. Thus, return nullptr instead of
     // assert-failing.
-    assert(current_thd->lex->using_hypergraph_optimizer);
+    assert(current_thd->lex->using_hypergraph_optimizer());
     return nullptr;
   }
 }
@@ -2538,6 +2538,7 @@ void Item_in_subselect::update_used_tables() {
   Item_subselect::update_used_tables();
   left_expr->update_used_tables();
   used_tables_cache |= left_expr->used_tables();
+  add_accum_properties(left_expr);
 }
 
 /**
@@ -2681,6 +2682,12 @@ bool Item_subselect::clean_up_after_removal(uchar *arg) {
 
   // Check whether this item should be removed
   if (ctx->is_stopped(this)) return false;
+
+  if (reference_count() > 1) {
+    (void)decrement_ref_count();
+    ctx->stop_at(this);
+    return false;
+  }
 
   // Remove item on upward traversal, not downward:
   if (marker == MARKER_NONE) {

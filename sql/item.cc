@@ -76,6 +76,7 @@
 #include "sql/sql_class.h"    // THD
 #include "sql/sql_derived.h"  // Condition_pushdown
 #include "sql/sql_error.h"
+#include "sql/sql_executor.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
 #include "sql/sql_show.h"  // append_identifier
@@ -3683,6 +3684,7 @@ bool Item_param::fix_fields(THD *, Item **) {
   }
   if (param_state() == NULL_VALUE) {
     // Parameter data type may be ignored, keep existing type
+    set_data_type_null();
     fixed = true;
     return false;
   }
@@ -4247,6 +4249,7 @@ String *Item_param::val_str(String *str) {
   assert(param_state() != NO_VALUE);
 
   if (param_state() == NULL_VALUE) {
+    null_value = true;
     return nullptr;
   }
   switch (data_type_actual()) {
@@ -4321,6 +4324,7 @@ void Item_param::copy_param_actual_type(Item_param *from) {
     default:
       break;
   }
+  sync_clones();
 }
 
 /**
@@ -5631,7 +5635,7 @@ bool is_null_on_empty_table(THD *thd, Item_field *i) {
            qsl->group_list.elements == 0;
   else
     return (sl->resolve_place == Query_block::RESOLVE_SELECT_LIST ||
-            (thd->lex->using_hypergraph_optimizer && sl->is_ordered())) &&
+            (thd->lex->using_hypergraph_optimizer() && sl->is_ordered())) &&
            sl->with_sum_func && sl->group_list.elements == 0 &&
            thd->lex->in_sum_func == nullptr;
 }
@@ -7558,6 +7562,18 @@ bool Item::cache_const_expr_analyzer(uchar **arg) {
   return false;
 }
 
+bool Item::clean_up_after_removal(uchar *arg) {
+  Cleanup_after_removal_context *const ctx =
+      pointer_cast<Cleanup_after_removal_context *>(arg);
+
+  if (ctx->is_stopped(this)) return false;
+
+  if (reference_count() > 1) {
+    (void)decrement_ref_count();
+  }
+  return false;
+}
+
 bool Item::can_be_substituted_for_gc(bool array) const {
   switch (real_item()->type()) {
     case FUNC_ITEM:
@@ -7973,15 +7989,18 @@ bool Item_ref::clean_up_after_removal(uchar *arg) {
 
   if (ctx->is_stopped(this)) return false;
 
-  // Exit if second visit to this object:
-  if (m_unlinked) return false;
+  // Decrement reference count for referencing object before
+  // referenced object:
+  if (reference_count() > 1) {
+    (void)decrement_ref_count();
+    ctx->stop_at(this);
+    return false;
+  }
+  if (ref_item()->is_abandoned()) return false;
 
   if (ref_item()->decrement_ref_count() > 0) {
     ctx->stop_at(this);
   }
-
-  // Ensure the count is not decremented twice:
-  m_unlinked = true;
 
   return false;
 }
@@ -10894,29 +10913,31 @@ bool Item_asterisk::itemize(Parse_context *pc, Item **res) {
   return false;
 }
 
-bool ItemsAreEqual(const Item *a, const Item *b, bool binary_cmp) {
-  const Item *real_a = a->real_item();
-  const Item *real_b = b->real_item();
+/**
+  Unwrap an Item argument so that Item::eq() can see the "real" item, and not
+  just the wrapper. It unwraps Item_ref using real_item(), and also cache items
+  and rollup group wrappers, since these may not have been added consistently to
+  both sides compared by Item::eq().
+ */
+static const Item *UnwrapArgForEq(const Item *item) {
+  const Item *prev_item;
+  do {
+    prev_item = item;
+    item = item->real_item();
 
-  // Unwrap caches, as they may not be added consistently
-  // to both sides.
-  if (real_a->type() == Item::CACHE_ITEM) {
-    real_a = down_cast<const Item_cache *>(real_a)->get_example();
-  }
-  if (real_b->type() == Item::CACHE_ITEM) {
-    real_b = down_cast<const Item_cache *>(real_b)->get_example();
-  }
-  if (real_a->type() == Item::FUNC_ITEM &&
-      down_cast<const Item_func *>(real_a)->functype() ==
-          Item_func::ROLLUP_GROUP_ITEM_FUNC) {
-    real_a = down_cast<const Item_rollup_group_item *>(real_a)->inner_item();
-  }
-  if (real_b->type() == Item::FUNC_ITEM &&
-      down_cast<const Item_func *>(real_b)->functype() ==
-          Item_func::ROLLUP_GROUP_ITEM_FUNC) {
-    real_b = down_cast<const Item_rollup_group_item *>(real_b)->inner_item();
-  }
-  return real_a->eq(real_b, binary_cmp);
+    if (item->type() == Item::CACHE_ITEM) {
+      item = down_cast<const Item_cache *>(item)->get_example();
+    }
+
+    if (is_rollup_group_wrapper(item)) {
+      item = down_cast<const Item_rollup_group_item *>(item)->inner_item();
+    }
+  } while (item != prev_item);  // Keep trying till no wrapper is found.
+  return item;
+}
+
+bool ItemsAreEqual(const Item *a, const Item *b, bool binary_cmp) {
+  return UnwrapArgForEq(a)->eq(UnwrapArgForEq(b), binary_cmp);
 }
 
 bool AllItemsAreEqual(const Item *const *a, const Item *const *b, int num_items,

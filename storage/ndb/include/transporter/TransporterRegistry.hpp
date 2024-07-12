@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -76,7 +76,14 @@
 // A transporter is always in an IOState.
 // NoHalt is used initially and as long as it is no restrictions on
 // sending or receiving.
-enum IOState { NoHalt = 0, HaltInput = 1, HaltOutput = 2, HaltIO = 3 };
+// Note that the Halt states are a bitmask.
+// Also note that only NoHalt and HaltIO seems to be used.
+enum IOState {
+  NoHalt = 0,
+  HaltInput = 1,
+  HaltOutput = 2,
+  HaltIO = HaltInput | HaltOutput
+};
 
 static const char *performStateString[] = {
     "is connected", "is trying to connect", "does nothing",
@@ -158,16 +165,19 @@ struct TransporterReceiveData {
   TrpBitmask m_has_data_transporters;
 
   /**
+   * Subset of m_has_data_transporters which we completed handling
+   * of in previous ::performReceive before we was interrupted due
+   * to lack of job buffers. Will skip these when we later retry
+   * ::performReceive in order to avoid starvation of non-handled
+   * transporters.
+   */
+  TrpBitmask m_handled_transporters;
+
+  /**
    * Bitmask of transporters having received corrupted or unsupported
    * message. No more unpacking and delivery of messages allowed.
-   *
-   * OJA FIXME:
-   *    Documented as 'Bitmask of transporters' (TrpBitmask)
-   *    Declared and used(!) as a NodeBitMask!
-   *
-   * Could it possibly be the root cause of the multiTransporter checksum bug?
    */
-  NodeBitmask m_bad_data_transporters;
+  TrpBitmask m_bad_data_transporters;
 
   /**
    * Last transporter received from if unable to complete all transporters
@@ -279,16 +289,13 @@ class TransporterRegistry {
    * Multi_Transporter changes. There is a mutex protecting changes
    * to those data structures.
    */
-  void lockMultiTransporters();
-  void unlockMultiTransporters();
-  void insert_allTransporters(Transporter*);
-  void remove_allTransporters(Transporter*);
-  void insert_node_transporter(NodeId, Transporter*);
-  bool isMultiTransporter(Transporter*);
-  void switch_active_trp(Multi_Transporter*);
-  Uint32 get_num_active_transporters(Multi_Transporter*);
+  void lockMultiTransporters() const;
+  void unlockMultiTransporters() const;
+  void insert_allTransporters(Transporter *);
+  void remove_allTransporters(Transporter *);
+  static void switch_active_trp(Multi_Transporter *);
+  static Uint32 get_num_active_transporters(Multi_Transporter *);
   void set_hostname(Uint32 nodeId, const char *new_hostname);
-private:
 
   NdbMutex *theMultiTransporterMutex;
   /**
@@ -351,49 +358,52 @@ private:
     DISCONNECTED = 2,
     DISCONNECTING = 3
   };
-  const char *getPerformStateString(NodeId nodeId) const {
-    return performStateString[(unsigned)performStates[nodeId]];
-  }
-
-  PerformState getPerformState(NodeId nodeId) const {
-    return performStates[nodeId];
-  }
-
   /**
    * Get and set methods for PerformState
    */
-  void do_connect(NodeId node_id);
+  const char *getPerformStateString(TrpId trpId) const {
+    return performStateString[(unsigned)performStates[trpId]];
+  }
+  PerformState getPerformState(TrpId trpId) const {
+    return performStates[trpId];
+  }
   /**
-   * do_disconnect can be issued both from send and recv, it is possible to
-   * specify from where it is called in send_source parameter, this enables
-   * us to provide more detailed information for disconnects.
+   * Initiate asynch connecting 'protocol' for node and transporters
    */
-  bool do_disconnect(NodeId node_id, int errnum = 0, bool send_source = true);
-  bool is_connected(NodeId node_id) const {
-    return performStates[node_id] == CONNECTED;
+  void start_connecting(NodeId node_id);
+  void start_connecting_trp(TrpId trpId);
+  /**
+   * start_disconnecting can be issued both from send and recv.
+   * It is possible to specify from where it is called
+   * in send_source parameter, this enables us to provide more
+   * detailed information for disconnects.
+   */
+  bool start_disconnecting(NodeId node_id, int errnum = 0,
+                           bool send_source = true);
+  bool start_disconnecting_trp(TrpId trpId, int errnum = 0,
+                               bool send_source = true);
+  bool is_connected(TrpId trpId) const {
+    return performStates[trpId] == CONNECTED;
   }
 
  private:
-  void report_connect(TransporterReceiveHandle &, NodeId node_id);
-  void report_disconnect(TransporterReceiveHandle &, NodeId node_id,
-                         int errnum);
-  void report_error(NodeId nodeId, TransporterError errorCode,
+  void report_connect(TransporterReceiveHandle &, TrpId trpId);
+  void report_disconnect(TransporterReceiveHandle &, TrpId trpId, int errnum);
+  void report_error(TrpId trpId, TransporterError errorCode,
                     const char *errorInfo = nullptr);
   void dump_and_report_bad_message(const char file[], unsigned line,
-                    TransporterReceiveHandle & recvHandle,
-                    SignalHeader & sig_header,
-                    Uint32 * readPtr,
-                    size_t sizeOfData,
-                    NodeId remoteNodeId,
-                    IOState state,
-                    TransporterError errorCode);
-public:
-  
+                                   TransporterReceiveHandle &recvHandle,
+                                   SignalHeader & sig_header,
+                                   Uint32 *readPtr, size_t sizeOfData,
+                                   NodeId remoteNodeId, TrpId trpId,
+                                   IOState state, TransporterError errorCode);
+
+ public:
   /**
-   * Get and set methods for IOState
+   * Set IOState on all Transporters to NodeId
    */
-  IOState ioState(NodeId nodeId) const;
   void setIOState(NodeId nodeId, IOState state);
+  void setIOState_trp(TrpId trpId, IOState state);
 
   /**
    * Methods to handle backoff of connection attempts when attempt fails
@@ -467,7 +477,7 @@ public:
   /**
    * prepareSend
    *
-   * When IOState is HaltOutput or HaltIO do not send or insert any
+   * When IOState has the HaltOutput bit set, do not send or insert any
    * signals in the SendBuffer, unless it is intended for the remote
    * QMGR block (blockno 252)
    * Perform prepareSend on the transporter.
@@ -480,8 +490,8 @@ public:
   template <typename AnySectionArg>
   SendStatus prepareSendTemplate(TransporterSendBufferHandle *sendHandle,
                                  const SignalHeader *signalHeader, Uint8 prio,
-                                 const Uint32 *signalData, NodeId nodeId,
-                                 Transporter *t, AnySectionArg section);
+                                 const Uint32 *signalData, Transporter *t,
+                                 AnySectionArg section);
 
   Transporter *prepareSend_getTransporter(const SignalHeader *signalHeader,
                                           NodeId nodeId, TrpId &trp_id,
@@ -526,10 +536,12 @@ public:
                                  int s_port);  // signed port. <0 is dynamic
 
   int get_transporter_count() const;
+  NodeId get_transporter_node_id(TrpId id) const;
   Transporter* get_transporter(TrpId id) const;
-  NodeId get_node_id_trp(TrpId id) const;
+  Transporter *get_node_base_transporter(NodeId nodeId) const;
   Transporter* get_node_transporter(NodeId nodeId) const;
-  bool is_shm_transporter(NodeId nodeId);
+  Transporter *get_node_transporter_instance(NodeId nodeId, int inst) const;
+  bool is_shm_transporter(TrpId trp_id);
   bool use_only_ipv4(NodeId nodeId)
   {
     (void)nodeId;
@@ -541,9 +553,7 @@ public:
   Uint64 get_bytes_sent(NodeId nodeId) const;
   Uint64 get_bytes_received(NodeId nodeId) const;
 
-  Uint32 get_num_multi_transporters();
-  Multi_Transporter *get_multi_transporter(Uint32 index);
-  Multi_Transporter *get_node_multi_transporter(NodeId node_id);
+  Multi_Transporter *get_node_multi_transporter(NodeId node_id) const;
 
   bool m_use_only_ipv4;
 
@@ -560,17 +570,15 @@ private:
   NodeId localNodeId;
   unsigned maxTransporters;
   Uint32 nTransporters;
-  Uint32 nMultiTransporters;
   Uint32 nTCPTransporters;
   Uint32 nSHMTransporters;
 
 #ifdef ERROR_INSERT
-  NodeBitmask m_blocked;
-  TrpBitmask m_blocked_trp;
-  NodeBitmask m_blocked_disconnected;
+  TrpBitmask m_blocked;
+  TrpBitmask m_blocked_disconnected;
   int m_disconnect_errors[MAX_NTRANSPORTERS];
 
-  NodeBitmask m_sendBlocked;
+  TrpBitmask m_sendBlocked;
 
   Uint32 m_mixology_level;
 #endif
@@ -579,20 +587,24 @@ private:
    * Arrays holding all transporters in the order they are created
    */
   Transporter **allTransporters;
-  Multi_Transporter **theMultiTransporters;
   TCP_Transporter **theTCPTransporters;
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
   SHM_Transporter **theSHMTransporters;
 #endif
 
   /**
-   * Array, indexed by nodeId, holding all transporters
+   * Array, indexed by nodeId, holding all base transporters
    */
   TransporterType *theTransporterTypes;
   Transporter **theNodeIdTransporters;
 
   /**
-   * State arrays, index by host id
+   * Array, indexed by nodeId for those having a MultiTransporter
+   */
+  Multi_Transporter **theNodeIdMultiTransporters;
+
+  /**
+   * State arrays, index by Transporter id (TrpId)
    */
   PerformState* performStates;
   bool*         nodeActiveStates;
@@ -628,6 +640,7 @@ private:
   /**
    * Overloaded bits, for fast check.
    * Similarly slowdown bits for fast check.
+   * TODO: Should be TrpBitmask's
    */
   NodeBitmask m_status_overloaded;
   NodeBitmask m_status_slowdown;
@@ -637,11 +650,12 @@ private:
    *
    * Defined in Packer.cpp.
    */
+
   Uint32 unpack(TransporterReceiveHandle &, Uint32 *readPtr, Uint32 bufferSize,
-                NodeId remoteNodeId, IOState state, bool &stopReceiving);
+                NodeId remoteNodeId, TrpId trpId, bool &stopReceiving);
 
   Uint32 *unpack(TransporterReceiveHandle &, Uint32 *readPtr, Uint32 *eodPtr,
-                 Uint32 *endPtr, NodeId remoteNodeId, IOState state,
+                 Uint32 *endPtr, NodeId remoteNodeId, TrpId trpId,
                  bool &stopReceiving);
 
   static Uint32 unpack_length_words(const Uint32 *readPtr, Uint32 maxWords,
@@ -688,7 +702,7 @@ public:
   void inc_slowdown_count(NodeId nodeId);
 
   void get_trps_for_node(NodeId nodeId, TrpId *trp_ids, Uint32 &num_trp_ids,
-                         Uint32 max_trp_ids);
+                         Uint32 max_trp_ids) const;
 
   Uint32 get_num_trps();
 
@@ -730,19 +744,18 @@ public:
   Uint32 get_total_spintime() const;
   void reset_total_spintime() const;
 
-  TrpId getTransporterIndex(Transporter *t);
-  void set_recv_thread_idx(Transporter *t, Uint32 recv_thread_idx);
+  static void set_recv_thread_idx(Transporter *t, Uint32 recv_thread_idx);
 
   void set_active_node(Uint32 nodeId, Uint32 active, bool log);
   bool get_active_node(Uint32 nodeId);
 #ifdef ERROR_INSERT
   /* Utils for testing latency issues */
-  bool isBlocked(NodeId nodeId);
-  void blockReceive(TransporterReceiveHandle &, NodeId nodeId);
-  void unblockReceive(TransporterReceiveHandle &, NodeId nodeId);
-  bool isSendBlocked(NodeId nodeId) const;
-  void blockSend(TransporterReceiveHandle &recvdata, NodeId nodeId);
-  void unblockSend(TransporterReceiveHandle &recvdata, NodeId nodeId);
+  bool isBlocked(TrpId trpId) const;
+  void blockReceive(TransporterReceiveHandle &, TrpId trpId);
+  void unblockReceive(TransporterReceiveHandle &, TrpId trpId);
+  bool isSendBlocked(TrpId trpId) const;
+  void blockSend(TransporterReceiveHandle &recvdata, TrpId trpId);
+  void unblockSend(TransporterReceiveHandle &recvdata, TrpId trpId);
 
   /* Testing interleaving of signal processing */
   Uint32 getMixologyLevel() const;

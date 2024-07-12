@@ -5,7 +5,11 @@ use ndbinfo;
 ##
 ## ndb$tables
 select count(*) from ndb$tables;
+<<<<<<< HEAD
 count(*)	51
+=======
+count(*)	50
+>>>>>>> 49ef33f7edadef3ae04665e73d1babd40179a4f1
 explain select count(*) from ndb$tables;
 id	1
 select_type	SIMPLE
@@ -61,8 +65,13 @@ foreign_keys	10	124
 index_columns	20	80
 ndb$acc_operations	15	64
 ndb$backup_id	1	20
+<<<<<<< HEAD
 ndb$blocks	30	20
 ndb$columns	540	44
+=======
+ndb$blocks	29	20
+ndb$columns	536	44
+>>>>>>> 49ef33f7edadef3ae04665e73d1babd40179a4f1
 ndb$config_nodes	34	28
 ndb$config_params	178	120
 ndb$config_values	344	24
@@ -92,6 +101,7 @@ ndb$pools	384	84
 ndb$processes	34	68
 ndb$resources	26	28
 ndb$restart_info	2	100
+<<<<<<< HEAD
 ndb$stored_tables	100	80
 ndb$table_distribution_status	100	52
 ndb$table_distribution_status_all	200	52
@@ -107,6 +117,22 @@ ndb$test	8000	24
 ndb$threadblocks	126	16
 ndb$threads	30	40
 ndb$threadstat	26	144
+=======
+ndb$stored_tables	43	80
+ndb$table_distribution_status	43	52
+ndb$table_distribution_status_all	86	52
+ndb$table_fragments	344	60
+ndb$table_fragments_all	344	60
+ndb$table_replicas	344	64
+ndb$table_replicas_all	344	64
+ndb$tables	50	40
+ndb$tc_time_track_stats	384	104
+ndb$test	8000	24
+ndb$threadblock_details	124	24
+ndb$threadblocks	124	16
+ndb$threads	26	40
+ndb$threadstat	22	144
+>>>>>>> 49ef33f7edadef3ae04665e73d1babd40179a4f1
 ndb$transactions	5	44
 ndb$transporters	32	64
 

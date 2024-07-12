@@ -549,7 +549,7 @@ void SHM_Transporter::wakeup() {
       require(nBytesSent < 0);  // Should not be possible with any other value
       int err = ndb_socket_errno();
       if (DISCONNECT_ERRNO(err, nBytesSent)) {
-        do_disconnect(err, true);
+        start_disconnecting(err, true);
       }
     } else {
       return;
@@ -571,7 +571,7 @@ void SHM_Transporter::doReceive() {
         err = ndb_socket_errno();
       }
       if (DISCONNECT_ERRNO(err, nBytesRead)) {
-        do_disconnect(err, false);
+        start_disconnecting(err, false);
       } else {
         one_more_try = false;
       }

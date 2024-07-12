@@ -314,10 +314,11 @@ void ClusterMgr::startup() {
   assert(theNode.defined);
 
   lock();
-  theFacade.doConnect(nodeId);
+  theFacade.startConnecting(nodeId);
   flush_send_buffers();
   unlock();
 
+  // Wait for the async 'connecting' protocol to report 'connected'
   for (Uint32 i = 0; i < 3000; i++) {
     theFacade.request_connection_check();
     prepare_poll();
@@ -416,7 +417,7 @@ void ClusterMgr::threadMain() {
       if (!theNode.defined) continue;
 
       if (theNode.is_connected() == false) {
-        theFacade.doConnect(nodeId);
+        theFacade.startConnecting(nodeId);
         continue;
       }
 
@@ -1611,7 +1612,7 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
     }
 
     if (connected) {
-      theFacade.doDisconnect(i);
+      theFacade.startDisconnecting(i);
     }
   }
 

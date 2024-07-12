@@ -35,7 +35,9 @@
 
 DECLARE_NDBINFO_TABLE(TABLES, 4) = {
     {"tables", 4, 0,
-     [](const Ndbinfo::Counts &) { return Ndbinfo::getNumTables(); },
+     [](const Ndbinfo::Counts &) {
+       return Ndbinfo::getNumTableEntries() /* TODO: reduce to actual tables */;
+     },
      "metadata for tables available through ndbinfo"},
     {{"table_id", Ndbinfo::Number, ""},
 
@@ -235,6 +237,25 @@ DECLARE_NDBINFO_TABLE(THREADBLOCKS, 4) = {
         {"thr_no", Ndbinfo::Number, "thread number"},
         {"block_number", Ndbinfo::Number, "block number"},
         {"block_instance", Ndbinfo::Number, "block instance"},
+    }};
+
+DECLARE_NDBINFO_TABLE(THREADBLOCK_DETAILS, 6) = {
+    {"threadblock_details", 6, 0,
+     [](const Ndbinfo::Counts &c) {
+       // In this estimate, 18 is the number of single-instance blocks,
+       // and 11 is the number of multi-instance blocks.
+       // The result is not exact.
+       return c.data_nodes * (18 + (c.instances.lqh * 11));
+     },
+     "which blocks are run in which threads and some internal state "
+     "details"},
+    {
+        {"node_id", Ndbinfo::Number, "node id"},
+        {"thr_no", Ndbinfo::Number, "thread number"},
+        {"block_number", Ndbinfo::Number, "block number"},
+        {"block_instance", Ndbinfo::Number, "block instance"},
+        {"error_insert_value", Ndbinfo::Number, "error insert value"},
+        {"error_insert_extra", Ndbinfo::Number, "error insert extra"},
     }};
 
 DECLARE_NDBINFO_TABLE(THREADSTAT, 18) = {
@@ -1176,78 +1197,83 @@ DECLARE_NDBINFO_TABLE(TABLE_MAP,3) =
 #define DBINFOTBL(x) \
   { Ndbinfo::x##_TABLEID, (const Ndbinfo::Table *)&ndbinfo_##x }
 
+#define DBINFOTBL_UNSUPPORTED(x) \
+  { Ndbinfo::unsupported_##x##_TABLEID, nullptr }
+
 static struct ndbinfo_table_list_entry {
   Ndbinfo::TableId id;
   const Ndbinfo::Table *table;
 } ndbinfo_tables[] = {
-  // NOTE! the tables must be added to the list in the same order
-  // as they are in "enum TableId"
-  DBINFOTBL(TABLES),
-  DBINFOTBL(COLUMNS),
-  DBINFOTBL(TEST),
-  DBINFOTBL(POOLS),
-  DBINFOTBL(TRANSPORTERS),
-  DBINFOTBL(LOGSPACES),
-  DBINFOTBL(LOGBUFFERS),
-  DBINFOTBL(RESOURCES),
-  DBINFOTBL(COUNTERS),
-  DBINFOTBL(NODES),
-  DBINFOTBL(DISKPAGEBUFFER),
-  DBINFOTBL(THREADBLOCKS),
-  DBINFOTBL(THREADSTAT),
-  DBINFOTBL(TRANSACTIONS),
-  DBINFOTBL(OPERATIONS),
-  DBINFOTBL(MEMBERSHIP),
-  DBINFOTBL(DICT_OBJ_INFO),
-  DBINFOTBL(FRAG_MEM_USE),
-  DBINFOTBL(DISK_WRITE_SPEED_BASE),
-  DBINFOTBL(DISK_WRITE_SPEED_AGGREGATE),
-  DBINFOTBL(FRAG_OPERATIONS),
-  DBINFOTBL(RESTART_INFO),
-  DBINFOTBL(TC_TIME_TRACK_STATS),
-  DBINFOTBL(CONFIG_VALUES),
-  DBINFOTBL(THREADS),
-  DBINFOTBL(CPUSTAT_50MS),
-  DBINFOTBL(CPUSTAT_1SEC),
-  DBINFOTBL(CPUSTAT_20SEC),
-  DBINFOTBL(CPUSTAT),
-  DBINFOTBL(FRAG_LOCKS),
-  DBINFOTBL(ACC_OPERATIONS),
-  DBINFOTBL(TABLE_DIST_STATUS),
-  DBINFOTBL(TABLE_FRAGMENTS),
-  DBINFOTBL(TABLE_REPLICAS),
-  DBINFOTBL(TABLE_DIST_STATUS_ALL),
-  DBINFOTBL(TABLE_FRAGMENTS_ALL),
-  DBINFOTBL(TABLE_REPLICAS_ALL),
-  DBINFOTBL(STORED_TABLES),
-  DBINFOTBL(PROCESSES),
-  DBINFOTBL(CONFIG_NODES),
-  DBINFOTBL(PGMAN_TIME_TRACK_STATS),
-  DBINFOTBL(DISKSTAT),
-  DBINFOTBL(DISKSTATS_1SEC),
-  DBINFOTBL(HWINFO),
-  DBINFOTBL(CPUINFO),
-  DBINFOTBL(CPUDATA),
-  DBINFOTBL(CPUDATA_50MS),
-  DBINFOTBL(CPUDATA_1SEC),
-  DBINFOTBL(CPUDATA_20SEC),
-  DBINFOTBL(TABLE_MEM_USE),
-  DBINFOTBL(TABLE_MAP)
+    // NOTE! the tables must be added to the list in the same order
+    // as they are in "enum TableId"
+    DBINFOTBL(TABLES),
+    DBINFOTBL(COLUMNS),
+    DBINFOTBL(TEST),
+    DBINFOTBL(POOLS),
+    DBINFOTBL(TRANSPORTERS),
+    DBINFOTBL(LOGSPACES),
+    DBINFOTBL(LOGBUFFERS),
+    DBINFOTBL(RESOURCES),
+    DBINFOTBL(COUNTERS),
+    DBINFOTBL(NODES),
+    DBINFOTBL(DISKPAGEBUFFER),
+    DBINFOTBL(THREADBLOCKS),
+    DBINFOTBL(THREADSTAT),
+    DBINFOTBL(TRANSACTIONS),
+    DBINFOTBL(OPERATIONS),
+    DBINFOTBL(MEMBERSHIP),
+    DBINFOTBL(DICT_OBJ_INFO),
+    DBINFOTBL(FRAG_MEM_USE),
+    DBINFOTBL(DISK_WRITE_SPEED_BASE),
+    DBINFOTBL(DISK_WRITE_SPEED_AGGREGATE),
+    DBINFOTBL(FRAG_OPERATIONS),
+    DBINFOTBL(RESTART_INFO),
+    DBINFOTBL(TC_TIME_TRACK_STATS),
+    DBINFOTBL(CONFIG_VALUES),
+    DBINFOTBL(THREADS),
+    DBINFOTBL(CPUSTAT_50MS),
+    DBINFOTBL(CPUSTAT_1SEC),
+    DBINFOTBL(CPUSTAT_20SEC),
+    DBINFOTBL(CPUSTAT),
+    DBINFOTBL(FRAG_LOCKS),
+    DBINFOTBL(ACC_OPERATIONS),
+    DBINFOTBL(TABLE_DIST_STATUS),
+    DBINFOTBL(TABLE_FRAGMENTS),
+    DBINFOTBL(TABLE_REPLICAS),
+    DBINFOTBL(TABLE_DIST_STATUS_ALL),
+    DBINFOTBL(TABLE_FRAGMENTS_ALL),
+    DBINFOTBL(TABLE_REPLICAS_ALL),
+    DBINFOTBL(STORED_TABLES),
+    DBINFOTBL(PROCESSES),
+    DBINFOTBL(CONFIG_NODES),
+    DBINFOTBL(PGMAN_TIME_TRACK_STATS),
+    DBINFOTBL(DISKSTAT),
+    DBINFOTBL(DISKSTATS_1SEC),
+    DBINFOTBL(HWINFO),
+    DBINFOTBL(CPUINFO),
+    DBINFOTBL(CPUDATA),
+    DBINFOTBL(CPUDATA_50MS),
+    DBINFOTBL(CPUDATA_1SEC),
+    DBINFOTBL(CPUDATA_20SEC),
+    DBINFOTBL(TABLE_MEM_USE),
+    DBINFOTBL(TABLE_MAP),
+    DBINFOTBL_UNSUPPORTED(CERTIFICATES),
+    DBINFOTBL(THREADBLOCK_DETAILS),
 };
 
 static int no_ndbinfo_tables =
     sizeof(ndbinfo_tables) / sizeof(ndbinfo_tables[0]);
 
-int Ndbinfo::getNumTables() { return no_ndbinfo_tables; }
+int Ndbinfo::getNumTableEntries() { return no_ndbinfo_tables; }
 
-const Ndbinfo::Table &Ndbinfo::getTable(int i) {
+const Ndbinfo::Table *Ndbinfo::getTable(int i) {
   assert(i >= 0 && i < no_ndbinfo_tables);
   ndbinfo_table_list_entry &entry = ndbinfo_tables[i];
   assert(entry.id == i);
-  return *entry.table;
+  return entry.table;
 }
 
-const Ndbinfo::Table &Ndbinfo::getTable(Uint32 i) { return getTable((int)i); }
+const Ndbinfo::Table *Ndbinfo::getTable(Uint32 i) { return getTable((int)i); }
 
 /**
  * #undef is needed since this file is included by NdbInfoTables.cpp

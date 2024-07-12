@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,7 +51,8 @@ class BackupContinueB {
     ZDELETE_LCP_FILE = 8,
     ZCHECK_PGMAN_PREP_LCP = 9,
     ZTRANSIENT_POOL_STAT = 10,
-    ZSHRINK_TRANSIENT_POOLS = 11
+    ZSHRINK_TRANSIENT_POOLS = 11,
+    ZERROR_DELAY_SEND_SIGNAL = 12
   };
 };
 

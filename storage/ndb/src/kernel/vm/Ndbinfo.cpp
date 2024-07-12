@@ -59,11 +59,17 @@ bool Ndbinfo::Row::check_buffer_space(AttributeHeader &ah) const {
 void Ndbinfo::Row::check_attribute_type(AttributeHeader &ah,
                                         ColumnType type) const {
 #ifdef VM_TRACE
-  const Table &tab = getTable(m_req.tableId);
+  const Table *tab = getTable(m_req.tableId);
   const Uint32 colid = ah.getAttributeId();
-  require(colid < (Uint32)tab.m.ncols);
-  require(tab.col[colid].coltype == type);
+  require(colid < (Uint32)tab->m.ncols);
+  require(tab->col[colid].coltype == type);
 #endif
+}
+
+void Ndbinfo::Row::write_null() {
+  // Write nothing for this columns, will be treated as NULL value at receiver.
+  col_counter++;
+  return;
 }
 
 void Ndbinfo::Row::write_string(const char *str) {

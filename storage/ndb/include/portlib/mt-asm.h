@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 /**
- * Only memory barriers *must* be ported
- * if XCNG (x86-sematics) is provided, spinlocks will be enabled
+ * If XCNG (x86-sematics) is provided, spinlocks will be enabled.
  */
 #ifndef NDB_MT_ASM_H
 #define NDB_MT_ASM_H
@@ -156,17 +155,15 @@ static inline int xcng(volatile unsigned *addr, int val) {
 #define NDB_HAVE_MB
 #define NDB_HAVE_RMB
 #define NDB_HAVE_WMB
-//#define NDB_HAVE_XCNG
-#define NDB_HAVE_CPU_PAUSE
 
 #define mb() asm volatile("dsb sy" ::: "memory")
 #define rmb() asm volatile("dsb ld" ::: "memory")
 #define wmb() asm volatile("dsb st" ::: "memory")
 
+//#define NDB_HAVE_XCNG
+#define NDB_HAVE_CPU_PAUSE
 #define cpu_pause() __asm__ __volatile__("yield")
 
-#else
-#define NDB_NO_ASM "Unsupported architecture (gcc)"
 #endif
 
 #elif defined(_MSC_VER)
@@ -202,8 +199,27 @@ static inline int xcng(volatile unsigned *addr, int val) {
 }
 
 static inline void cpu_pause() { YieldProcessor(); }
-#else
-#define NDB_NO_ASM "Unsupported compiler"
+#endif
+
+/**
+ * Generic fallback implementation of mandatory memory barriers.
+ */
+
+#ifndef NDB_HAVE_MB
+#define NDB_HAVE_MB
+#include <atomic>
+#define mb() std::atomic_thread_fence(std::memory_order_seq_cst)
+#endif
+
+#ifndef NDB_HAVE_RMB
+#define NDB_HAVE_RMB
+#define rmb() mb()
+#endif
+
+#ifndef NDB_HAVE_WMB
+#define NDB_HAVE_WMB
+#define wmb() mb()
+
 #endif
 
 #endif

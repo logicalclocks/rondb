@@ -66,14 +66,14 @@ static int changeStartPartitionedTimeout(NDBT_Context *ctx, NDBT_Step *step) {
     g_err << "Setting StartPartitionedTimeout to " << startPartitionedTimeout
           << endl;
     ConfigValues::Iterator iter(conf.m_configuration->m_config_values);
-    for (int nodeid = 1; nodeid < MAX_NODES; nodeid++) {
-      if (!iter.openSection(CFG_SECTION_NODE, nodeid)) continue;
+    for (int idx = 0; iter.openSection(CFG_SECTION_NODE, idx); idx++) {
       Uint32 oldValue = 0;
       if (iter.get(CFG_DB_START_PARTITION_TIMEOUT, oldValue)) {
         if (defaultValue == Uint32(~0)) {
           defaultValue = oldValue;
         } else if (oldValue != defaultValue) {
-          g_err << "StartPartitionedTimeout is not consistent across nodes"
+          g_err << "StartPartitionedTimeout is not consistent across data node"
+                   "sections"
                 << endl;
           break;
         }
@@ -1524,7 +1524,7 @@ int runBug18612(NDBT_Context *ctx, NDBT_Step *step) {
 int runBug18612SR(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
 
-  return NDBT_OK; /* Until we fix handling of partitioned clusters */
+  return NDBT_SKIPPED; /* Until we fix handling of partitioned clusters */
 
   if (restarter.getNumReplicas() < 2) {
     g_err << "[SKIPPED] Test requires 2 or more replicas." << endl;
@@ -2183,7 +2183,7 @@ int run_test_multi_socket(NDBT_Context *ctx, NDBT_Step *step) {
   }
   if (index < 2) {
     /* Test requires at least 2 replicas */
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   int pos = 0;
   int start_index = 1;
@@ -2209,6 +2209,7 @@ int run_test_multi_socket(NDBT_Context *ctx, NDBT_Step *step) {
 
     res.startNodes(&nodegroup_nodes[start_index], index - 1);
     if (res.waitClusterStarted()) return NDBT_FAILED;
+    if (res.insertErrorInAllNodes(0)) return NDBT_FAILED;
     pos++;
   }
   pos = 0;
@@ -2233,6 +2234,7 @@ int run_test_multi_socket(NDBT_Context *ctx, NDBT_Step *step) {
     res.startNodes(&nodegroup_nodes[start_index],
                    index - 1);  // Expect crash
     if (res.waitClusterStarted()) return NDBT_FAILED;
+    if (res.insertErrorInAllNodes(0)) return NDBT_FAILED;
     pos++;
   }
   return NDBT_OK;
@@ -2545,7 +2547,7 @@ int runCommitAck(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
   Ndb *pNdb = GETNDB(step);
 
-  if (records < 2) return NDBT_OK;
+  if (records < 2) return NDBT_SKIPPED;
   if (restarter.getNumDbNodes() < 2) {
     g_err << "[SKIPPED] Test skipped. Requires at least 2 nodes" << endl;
     return NDBT_SKIPPED;
@@ -2746,7 +2748,7 @@ int runPnr(NDBT_Context *ctx, NDBT_Step *step) {
        * nodegroup with only 1 member, can't run test
        */
       ctx->stopTest();
-      return NDBT_OK;
+      return NDBT_SKIPPED;
     }
   }
 
@@ -2842,7 +2844,8 @@ int runCreateBigTable(NDBT_Context *ctx, NDBT_Step *step) {
   do {
     hugoTrans.loadTableStartFrom(GETNDB(step), cnt, 10000);
     cnt += 10000;
-  } while (cnt < rows && (NdbTick_CurrentMillisecond() - now) < 180000);  // 180s
+  } while (cnt < rows &&
+           (NdbTick_CurrentMillisecond() - now) < 180000);  // 180s
   ndbout_c("Loaded %u rows in %llums", cnt, NdbTick_CurrentMillisecond() - now);
 
   return NDBT_OK;
@@ -3082,7 +3085,8 @@ int runBug34216(NDBT_Context *ctx, NDBT_Step *step) {
       return NDBT_FAILED;
     }
 
-    if (restarter.insertErrorInNode(nodeId, err) != 0) {
+    const Uint32 tableId = ctx->getTab()->getTableId();
+    if (restarter.insertError2InNode(nodeId, err, tableId) != 0) {
       g_err << "Failed to restartNextDbNode" << endl;
       result = NDBT_FAILED;
       break;
@@ -4652,8 +4656,8 @@ int runRestartToDynamicOrder(NDBT_Context *ctx, NDBT_Step *step) {
   Vector<Uint32> evens;
 
   if (numNodes == 2) {
-    ndbout_c("No Dynamic reordering possible with 2 nodes");
-    return NDBT_OK;
+    ndbout_c("[SKIPPED] No Dynamic reordering possible with 2 nodes");
+    return NDBT_SKIPPED;
   }
   if (numNodes & 1) {
     ndbout_c("Non multiple-of-2 number of nodes.  Not supported");
@@ -5675,9 +5679,9 @@ int runTestScanFragWatchdog(NDBT_Context *ctx, NDBT_Step *step) {
   /* Setup an error insert, then start a checkpoint */
   NdbRestarter restarter;
   if (restarter.getNumDbNodes() < 2) {
-    g_err << "Insufficient nodes for test." << endl;
+    g_err << "[SKIPPED] Insufficient nodes for test." << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   do {
@@ -5695,8 +5699,8 @@ int runTestScanFragWatchdog(NDBT_Context *ctx, NDBT_Step *step) {
       break;
     }
 
-    if (restarter.insertErrorInNode(victim, 10039) !=
-        0) /* Cause LCP/backup frag scan to halt */
+    if (restarter.insertErrorInNode(victim, 10055) !=
+        0) /* Cause LCP frag scan to halt */
     {
       g_err << "Error insert failed." << endl;
       break;
@@ -5886,9 +5890,9 @@ static Uint32 setConfigValueAndRestartNode(NdbMgmd *mgmd, Uint32 *keys,
 int runChangeNumLogPartsINR(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
   if (restarter.getNumDbNodes() < 2) {
-    g_err << "Insufficient nodes for test." << endl;
+    g_err << "[SKIPPED] Insufficient nodes for test." << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   int node_1 = restarter.getDbNodeId(0);
   if (node_1 == -1) {
@@ -5934,7 +5938,7 @@ int runChangeNumLogPartsINR(NDBT_Context *ctx, NDBT_Step *step) {
 int runChangeNumLDMsNR(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
   if (restarter.getNumDbNodes() < 2) {
-    g_err << "Insufficient nodes for test." << endl;
+    g_err << "[SKIPPED] Insufficient nodes for test." << endl;
     ctx->stopTest();
     return NDBT_SKIPPED;
   }
@@ -6054,9 +6058,9 @@ int runChangeNumLDMsNR(NDBT_Context *ctx, NDBT_Step *step) {
 int runTestScanFragWatchdogDisable(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
   if (restarter.getNumDbNodes() < 2) {
-    g_err << "Insufficient nodes for test." << endl;
+    g_err << "[SKIPPED] Insufficient nodes for test." << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
   Uint32 lcp_watchdog_limit = 0;
   int victim = restarter.getNode(NdbRestarter::NS_RANDOM);
@@ -6079,7 +6083,7 @@ int runTestScanFragWatchdogDisable(NDBT_Context *ctx, NDBT_Step *step) {
 
     g_err << "Injecting fault in node " << victim;
     g_err << " to suspend LCP frag scan..." << endl;
-    if (restarter.insertErrorInNode(victim, 10039) != 0) {
+    if (restarter.insertErrorInNode(victim, 10055) != 0) {
       g_err << "Error insert failed." << endl;
       break;
     }
@@ -6134,7 +6138,7 @@ int runTestScanFragWatchdogDisable(NDBT_Context *ctx, NDBT_Step *step) {
   } while (0);
 
   // Insert error code to resume LCP in case node halted
-  if (restarter.insertErrorInNode(victim, 10040) != 0) {
+  if (restarter.insertErrorInNode(victim, 0) != 0) {
     g_err << "Test cleanup failed: failed to resume LCP." << endl;
   }
   ctx->stopTest();
@@ -6146,9 +6150,9 @@ int runBug16834416(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
 
   if (restarter.getNumDbNodes() < 2) {
-    g_err << "Insufficient nodes for test." << endl;
+    g_err << "[SKIPPED] Insufficient nodes for test." << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   int loops = ctx->getNumLoops();
@@ -6194,9 +6198,9 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
   /* Setup an error insert, then start a checkpoint */
   NdbRestarter restarter;
   if (restarter.getNumDbNodes() < 2) {
-    g_err << "Insufficient nodes for test." << endl;
+    g_err << "[SKIPPED] Insufficient nodes for test." << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
   g_err << "Subscribing to MGMD events..." << endl;
@@ -6423,9 +6427,9 @@ int runBug16944817(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
 
   if (restarter.getNumDbNodes() < 2) {
-    g_err << "Insufficient nodes for test." << endl;
+    g_err << "[SKIPPED] Insufficient nodes for test." << endl;
     ctx->stopTest();
-    return NDBT_OK;
+    return NDBT_SKIPPED;
   }
 
 #ifndef NDEBUG
@@ -7853,8 +7857,6 @@ int runTestStartNode(NDBT_Context *ctx, NDBT_Step *step) {
  * particular for the last one that we are to restore. The number
  * 2058 is somewhat arbitrarily chosen to ensure this.
  *
- * The test case is hardcoded to make those special LCPs in node 2.
- *
  * Between each LCP we perform a random amount of updates to ensure
  * that each part of this table will create a non-empty LCP. We
  * insert a number of random LCPs that are empty as well to ensure
@@ -7862,32 +7864,59 @@ int runTestStartNode(NDBT_Context *ctx, NDBT_Step *step) {
  * many parts in the LCP.
  */
 int run_PLCP_many_parts(NDBT_Context *ctx, NDBT_Step *step) {
-  Ndb *pNdb = GETNDB(step);
-  int loops = 2200;
-  int records = ctx->getNumRecords();
-  bool drop_table = (bool)ctx->getProperty("DropTable", 1);
-  HugoTransactions hugoTrans(*ctx->getTab());
   NdbRestarter restarter;
-  const Uint32 nodeCount = restarter.getNumDbNodes();
-  int nodeId = 2;
-  NdbDictionary::Dictionary *pDict = GETNDB(step)->getDictionary();
-  NdbDictionary::Table tab = *ctx->getTab();
-  HugoOperations hugoOps(tab);
+  Config conf;
   NdbMgmd mgmd;
-  if (nodeCount != 2) {
-    g_err << "[SKIPPED] Test skipped.  Needs 2 nodes" << endl;
-    return NDBT_SKIPPED; /* Requires exact 2 nodes to run */
-  }
+
   int node_1 = restarter.getDbNodeId(0);
   int node_2 = restarter.getDbNodeId(1);
   if (node_1 == -1 || node_2 == -1) {
     g_err << "Failed to find node ids of data nodes" << endl;
     return NDBT_FAILED;
   }
+
   if (!mgmd.connect()) {
     g_err << "Failed to connect to ndb_mgmd." << endl;
     return NDBT_FAILED;
   }
+  if (!mgmd.get_config(conf)) {
+    g_err << "Failed to get config from ndb_mgmd." << endl;
+    return NDBT_FAILED;
+  }
+  ConfigValues::Iterator iter(conf.m_configuration->m_config_values);
+  Uint32 enabledPartialLCP = 1;
+  for (int idx = 0; iter.openSection(CFG_SECTION_NODE, idx); idx++) {
+    Uint32 nodeId = 0;
+    if (iter.get(CFG_NODE_ID, &nodeId)) {
+      if (nodeId == (Uint32)node_1) {
+        iter.get(CFG_DB_ENABLE_PARTIAL_LCP, &enabledPartialLCP);
+        iter.closeSection();
+        break;
+      }
+    }
+    iter.closeSection();
+  }
+
+  if (enabledPartialLCP == 0) {
+    g_err << "[SKIPPED] Test skipped. Needs EnablePartialLcp=1" << endl;
+    iter.closeSection();
+    return NDBT_SKIPPED;
+  }
+
+  Ndb *pNdb = GETNDB(step);
+  int loops = 2200;
+  int records = ctx->getNumRecords();
+  bool drop_table = (bool)ctx->getProperty("DropTable", 1);
+  HugoTransactions hugoTrans(*ctx->getTab());
+  const Uint32 nodeCount = restarter.getNumDbNodes();
+  NdbDictionary::Dictionary *pDict = GETNDB(step)->getDictionary();
+  NdbDictionary::Table tab = *ctx->getTab();
+  HugoOperations hugoOps(tab);
+  if (nodeCount != 2) {
+    g_err << "[SKIPPED] Test skipped.  Needs 2 nodes" << endl;
+    return NDBT_SKIPPED; /* Requires exact 2 nodes to run */
+  }
+
   Uint32 gcp_interval = 200;
   Uint32 key = CFG_DB_GCP_INTERVAL;
   if (setConfigValueAndRestartNode(&mgmd, &key, &gcp_interval, 1, node_1, true,
@@ -7910,7 +7939,7 @@ int run_PLCP_many_parts(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   g_err << "Executing " << loops << " loops" << endl;
-  if (restarter.insertErrorInNode(nodeId, 10048) != 0) {
+  if (restarter.insertErrorInNode(node_1, 10048) != 0) {
     g_err << "ERROR: Error insert 10048 failed" << endl;
     return NDBT_FAILED;
   }
@@ -7971,8 +8000,8 @@ int run_PLCP_many_parts(NDBT_Context *ctx, NDBT_Step *step) {
    * by restarting node 2 to ensure that we can also recover the
    * complex LCP setup.
    */
-  ndbout << "Restart node 2" << endl;
-  if (restarter.restartOneDbNode(nodeId, false, /* initial */
+  ndbout << "Restart node_1" << endl;
+  if (restarter.restartOneDbNode(node_1, false, /* initial */
                                  true,          /* nostart  */
                                  false,         /* abort */
                                  false /* force */) != 0) {
@@ -7980,14 +8009,14 @@ int run_PLCP_many_parts(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
   ndbout << "Wait for NoStart state" << endl;
-  restarter.waitNodesNoStart(&nodeId, 1);
+  restarter.waitNodesNoStart(&node_1, 1);
   ndbout << "Start node" << endl;
-  if (restarter.startNodes(&nodeId, 1) != 0) {
+  if (restarter.startNodes(&node_1, 1) != 0) {
     g_err << "Start failed" << endl;
     return NDBT_FAILED;
   }
   ndbout << "Waiting for node to start" << endl;
-  if (restarter.waitNodesStarted(&nodeId, 1) != 0) {
+  if (restarter.waitNodesStarted(&node_1, 1) != 0) {
     g_err << "Wait node start failed" << endl;
     return NDBT_FAILED;
   }
@@ -8100,8 +8129,8 @@ int run_PLCP_I2(NDBT_Context *ctx, NDBT_Step *step) {
   HugoTransactions hugoTrans(*ctx->getTab());
 
   if (nodeCount < 2) {
-    g_info << "Test skipped, requires at least 2 nodes" << endl;
-    return NDBT_OK; /* Requires at least 2 nodes to run */
+    g_info << "[SKIPPED] Requires at least 2 nodes" << endl;
+    return NDBT_SKIPPED; /* Requires at least 2 nodes to run */
   }
   g_err << "Executing " << loops << " loops" << endl;
   while (++i <= loops && result != NDBT_FAILED) {
@@ -9440,7 +9469,8 @@ int runTestStallTimeoutAndNF(NDBT_Context *ctx, NDBT_Step *step) {
 
       CHECK(hugoOps.startTransaction(pNdb, rowNum) == 0,
             "Start transaction failed");
-      CHECK(hugoOps.pkUpdateRecord(pNdb, 1, 1) == 0, "Define Update failed");
+      CHECK(hugoOps.pkUpdateRecord(pNdb, rowNum, 1) == 0,
+            "Define Update failed");
       CHECK(hugoOps.execute_NoCommit(pNdb) == 0, "Execute NoCommit failed");
 
       NdbTransaction *trans = hugoOps.getTransaction();
@@ -9468,8 +9498,12 @@ int runTestStallTimeoutAndNF(NDBT_Context *ctx, NDBT_Step *step) {
         pNdb->pollNdb(1000);
 
         if (cbd.ready) {
+          ndbout_c("     Result ready : %u", trans->getNdbError().code);
           break;
         }
+      }
+      if (!cbd.ready) {
+        ndbout_c("     No result yet");
       }
 
       /* Transaction stalled now */
@@ -9512,7 +9546,11 @@ int runTestStallTimeoutAndNF(NDBT_Context *ctx, NDBT_Step *step) {
         return NDBT_FAILED;
       }
 
-      CHECK(trans->getNdbError().code == 0, "Error on original request");
+      if (trans->getNdbError().code != 0) {
+        ndbout_c("Got unexpected failure code : %u : %s",
+                 trans->getNdbError().code, trans->getNdbError().message);
+        return NDBT_FAILED;
+      }
 
       NdbTransaction::CommitStatusType cst = trans->commitStatus();
 
@@ -9530,6 +9568,86 @@ int runTestStallTimeoutAndNF(NDBT_Context *ctx, NDBT_Step *step) {
   }   /* failType */
 
   return NDBT_OK;
+}
+
+int runLargeLockingReads(NDBT_Context *ctx, NDBT_Step *step) {
+  int result = NDBT_OK;
+  int readsize = MIN(100, ctx->getNumRecords());
+  int i = 0;
+  HugoTransactions hugoTrans(*ctx->getTab());
+  while (ctx->isTestStopped() == false) {
+    g_info << i << ": ";
+    if (hugoTrans.pkReadRecords(GETNDB(step), readsize, readsize,
+                                NdbOperation::LM_Read) != 0) {
+      return NDBT_FAILED;
+    }
+    i++;
+  }
+  return result;
+}
+
+int runRestartsWithSlowCommitComplete(NDBT_Context *ctx, NDBT_Step *step) {
+  int result = NDBT_OK;
+  NdbRestarter restarter;
+  const int numRestarts = 4;
+
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "Too few nodes" << endl;
+    ctx->stopTest();
+    return NDBT_SKIPPED;
+  }
+
+  for (int i = 0; i < numRestarts && !ctx->isTestStopped(); i++) {
+    int errorCode = 8132;  // Slow commit and complete sending at TC
+    ndbout << "Injecting error " << errorCode << " for slow commits + completes"
+           << endl;
+    restarter.insertErrorInAllNodes(errorCode);
+
+    /* Give some time for things to get stuck in slowness */
+    NdbSleep_MilliSleep(1000);
+
+    const int id = restarter.getNode(NdbRestarter::NS_RANDOM);
+    ndbout << "Restart node " << id << endl;
+
+    if (restarter.restartOneDbNode(id, false, true, true) != 0) {
+      g_err << "Failed to restart Db node" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    if (restarter.waitNodesNoStart(&id, 1)) {
+      g_err << "Failed to waitNodesNoStart" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    restarter.insertErrorInAllNodes(0);
+
+    if (restarter.startNodes(&id, 1)) {
+      g_err << "Failed to start node" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    if (restarter.waitClusterStarted() != 0) {
+      g_err << "Cluster failed to start" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    /* Ensure connected */
+    if (GETNDB(step)->get_ndb_cluster_connection().wait_until_ready(30, 30) !=
+        0) {
+      g_err << "Timeout waiting for NdbApi reconnect" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+  }
+
+  restarter.insertErrorInAllNodes(0);
+  ctx->stopTest();
+
+  return result;
 }
 
 NDBT_TESTSUITE(testNodeRestart);
@@ -10302,6 +10420,13 @@ TESTCASE("TransStallTimeout", "") {
 TESTCASE("TransStallTimeoutNF", "") {
   INITIALIZER(runLoadTable);
   STEP(runTestStallTimeoutAndNF);
+  FINALIZER(runClearTable);
+}
+TESTCASE("TransientStatesNF",
+         "Test node failure handling with transactions in transient states") {
+  INITIALIZER(runLoadTable);
+  STEPS(runLargeLockingReads, 5);
+  STEP(runRestartsWithSlowCommitComplete);
   FINALIZER(runClearTable);
 }
 NDBT_TESTSUITE_END(testNodeRestart)

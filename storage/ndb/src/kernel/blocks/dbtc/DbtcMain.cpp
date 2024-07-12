@@ -844,7 +844,8 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       jam();
       if (ERROR_INSERTED(8101)) {
         jam();
-        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 6);
+        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100,
+                            signal->getLength());
       } else {
         TcRollbackRep *const tcRollbackRep =
             (TcRollbackRep *)signal->getDataPtr();
@@ -7109,13 +7110,11 @@ void Dbtc::commit020Lab(Signal *signal,
     Tcount += sendCommitLqh(signal, localTcConnectptr.p, apiConnectptr.p);
     apiConnectptr.p->finish_trans_counter++;
 
-    if (tcConList.next(localTcConnectptr))
-    {
+    if (tcConList.next(localTcConnectptr)) {
       if (Tcount < ZMAX_COMMIT_PER_RT_BREAK &&
-          ! (ERROR_INSERTED(8057) ||
-             ERROR_INSERTED(8073) ||
-             ERROR_INSERTED(8089)))
-      {
+          !(ERROR_INSERTED(8057) || ERROR_INSERTED(8073) ||
+            ERROR_INSERTED(8089) ||
+            (ERROR_INSERTED(8132) && ((apiConnectptr.i & 0x1) == 0)))) {
         jam();
         continue;
       }
@@ -7133,9 +7132,13 @@ void Dbtc::commit020Lab(Signal *signal,
           sendSignalWithDelay(CMVMI_REF, GSN_NDB_TAMPER, signal, 100, 1);
           return;
         }
-        if (apiConnectptr.p->finish_trans_counter <
-            ZMAX_OUTSTANDING_COMMIT_OPS)
-        {
+        if (ERROR_INSERTED(8089) || ERROR_INSERTED(8132)) {
+          jam();
+          apiConnectptr.p->nextTcOperation = localTcConnectptr.i;
+          setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+          return;
+        } else if (apiConnectptr.p->finish_trans_counter <
+                   ZMAX_OUTSTANDING_COMMIT_OPS) {
           jamDebug();
           send_commit_loop(signal,
                            apiConnectptr,
@@ -7614,11 +7617,9 @@ void Dbtc::complete010Lab(Signal *signal,
     /* ************ */
     Tcount += sendCompleteLqh(signal, localTcConnectptr.p, apiConnectptr.p);
     apiConnectptr.p->finish_trans_counter++;
-    if (tcConList.next(localTcConnectptr))
-    {
-      if (Tcount < ZMAX_COMMIT_PER_RT_BREAK &&
-          !ERROR_INSERTED(8112)) 
-      {
+    if (tcConList.next(localTcConnectptr)) {
+      if (Tcount < ZMAX_COMMIT_PER_RT_BREAK && !ERROR_INSERTED(8112) &&
+          !(ERROR_INSERTED(8132) && ((apiConnectptr.i & 0x1) != 0))) {
         jamDebug();
         continue;
       }
@@ -7629,10 +7630,14 @@ void Dbtc::complete010Lab(Signal *signal,
         {
           CLEAR_ERROR_INSERT_VALUE;
           return;
-        }
-        if (apiConnectptr.p->finish_trans_counter <
-            ZMAX_OUTSTANDING_COMMIT_OPS)
-        {
+        }  // if
+        if (ERROR_INSERTED(8112) || ERROR_INSERTED(8132)) {
+          jam();
+          apiConnectptr.p->nextTcOperation = localTcConnectptr.i;
+          setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+          return;
+        } else if (apiConnectptr.p->finish_trans_counter <
+                   ZMAX_OUTSTANDING_COMMIT_OPS) {
           jamDebug();
           send_complete_loop(signal,
                              apiConnectptr,
@@ -20499,7 +20504,7 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
       signal->theData[4] = ZNODEFAIL_BEFORE_COMMIT;
       signal->theData[5] = RS_TCROLLBACKREP;
       signal->theData[6] = 8101;
-      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 6);
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 7);
       *signal = s;
     }
   } else if (ERROR_INSERTED(8101)) {

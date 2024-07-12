@@ -1178,7 +1178,8 @@ bool Ndb_schema_dist_client::log_schema_op_impl(
     }
 
     // Check if schema distribution is still ready.
-    if (m_share->have_event_operation() == false) {
+    if (m_share->have_event_operation() == false ||
+        m_result_share->have_event_operation() == false) {
       // This case is unlikely, but there is small race between
       // clients first check for schema distribution ready and schema op
       // registered in the coordinator(since the message is passed
@@ -1240,19 +1241,9 @@ static void ndbcluster_binlog_event_operation_teardown(THD *thd, Ndb *is_ndb,
       Ndb_event_data::get_event_data(pOp->getCustomData());
   NDB_SHARE *const share = event_data->share;
 
-  // Invalidate any cached NdbApi table if object version is lower
-  // than what was used when setting up the NdbEventOperation
-  // NOTE! This functionality need to be explained further
-  {
-    Thd_ndb *thd_ndb = get_thd_ndb(thd);
-    Ndb *ndb = thd_ndb->ndb;
-    Ndb_table_guard ndbtab_g(ndb, share->db, share->table_name);
-    const NDBTAB *ev_tab = pOp->getTable();
-    const NDBTAB *cache_tab = ndbtab_g.get_table();
-    if (cache_tab && cache_tab->getObjectId() == ev_tab->getObjectId() &&
-        cache_tab->getObjectVersion() <= ev_tab->getObjectVersion())
-      ndbtab_g.invalidate();
-  }
+  // Since table has been dropped or cluster connection lost the NdbApi table
+  // should be invalidated in the global dictionary cache
+  Ndb_table_guard::invalidate_table(is_ndb, share->db, share->table_name);
 
   // Close the table in MySQL Server
   ndb_tdc_close_cached_table(thd, share->db, share->table_name);
@@ -2303,8 +2294,7 @@ class Ndb_schema_event_handler {
   void ndbapi_invalidate_table(const char *db_name,
                                const char *table_name) const {
     DBUG_TRACE;
-    Ndb_table_guard ndbtab_g(m_thd_ndb->ndb, db_name, table_name);
-    ndbtab_g.invalidate();
+    Ndb_table_guard::invalidate_table(m_thd_ndb->ndb, db_name, table_name);
   }
 
   NDB_SHARE *acquire_reference(const char *db, const char *name,
@@ -3198,6 +3188,8 @@ class Ndb_schema_event_handler {
     if (schema->node_id == own_nodeid()) return;
 
     write_schema_op_to_binlog(m_thd, schema);
+    ndbapi_invalidate_table(schema->db, schema->name);
+    ndb_tdc_close_cached_table(m_thd, schema->db, schema->name);
 
     if (!create_table_from_engine(schema->db, schema->name,
                                   true, /* force_overwrite */
@@ -4273,14 +4265,9 @@ class Ndb_schema_event_handler {
     // take the GSL properly
     assert(!m_thd_ndb->check_option(Thd_ndb::IS_SCHEMA_DIST_PARTICIPANT));
 
-    // Sleep here will make other mysql server in same cluster setup to create
-    // the schema result table in NDB before this mysql server. This also makes
-    // the create table in the connection thread to acquire GSL before the
-    // Binlog thread
-    DBUG_EXECUTE_IF("ndb_bi_sleep_before_gsl", sleep(1););
     // Protect the setup with GSL(Global Schema Lock)
     Ndb_global_schema_lock_guard global_schema_lock_guard(m_thd);
-    if (global_schema_lock_guard.lock()) {
+    if (!global_schema_lock_guard.try_lock()) {
       ndb_log_info(" - failed to lock GSL");
       return true;
     }
@@ -5063,6 +5050,12 @@ static int ndbcluster_setup_binlog_for_share(THD *thd, Ndb *ndb,
         return -1;
       }
     }
+    // The function that check if event exist will silently mark the NDB table
+    // definition as 'Invalid' when the event's table version does not match the
+    // cached NDB table definitions version. This indicates that the caller have
+    // used a stale version of the NDB table definition and is a problem which
+    // has to be fixed by the caller of this function.
+    assert(ndbtab->getObjectStatus() != NdbDictionary::Object::Invalid);
 
     if (share->have_event_operation()) {
       DBUG_PRINT("info", ("binlogging already setup"));
@@ -5730,6 +5723,7 @@ bool ndbcluster_binlog_check_table_async(const std::string &db_name,
     // Never check util tables which are managed by the Ndb_binlog_thread
     // NOTE! The other tables are filtered elsewhere but ndb_apply_status is
     // special since it's not hidden.
+    assert(false);
     return false;
   }
 

@@ -29,6 +29,7 @@ ndb.ndb_76_inplace_upgrade : WL#12345678 No interest in upgrade from 7.6
 ndb.ndb_76_inplace_upgrade_triggers : WL#12345678 No interest in upgrade from 7.6
 ndb.ndb_restore_schema_tolerance : WL#12345678 Needs fixing since RonDB changes of ndb_restore
 ndb.ndb_multi_mgmd : WL#12345678 Needs to be looked into
+ndb.ndb_suma_handover     : Bug#35539093 Error insert 13048 never hit in ndb.ndb_suma_handover 
 
 # Failure to acquire MDL lock properly during drop database with uppercase
 # database name, affects lower_case_table_names=2 platform

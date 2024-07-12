@@ -50,7 +50,7 @@
 #include "mgmcommon/NdbMgm.hpp"
 #include "portlib/ndb_sockaddr.h"
 
-//#define MGMAPI_LOG
+// #define MGMAPI_LOG
 #define MGM_CMD(name, fun, desc)                                          \
   {                                                                       \
     name, 0, ParserRow<ParserDummy>::Cmd, ParserRow<ParserDummy>::String, \
@@ -282,6 +282,8 @@ extern "C" int ndb_mgm_set_connectstring(NdbMgmHandle handle,
 extern "C" int ndb_mgm_set_bindaddress(NdbMgmHandle handle, const char *arg) {
   DBUG_ENTER("ndb_mgm_set_bindaddress");
   free(handle->m_bindaddress);
+  handle->m_bindaddress = nullptr;
+  handle->m_bindaddress_port = 0;
 
   if (arg) {
     char hostbuf[NI_MAXHOST];
@@ -289,11 +291,8 @@ extern "C" int ndb_mgm_set_bindaddress(NdbMgmHandle handle, const char *arg) {
     if (Ndb_split_string_address_port(arg, hostbuf, sizeof(hostbuf), servbuf,
                                       sizeof(servbuf)) == 0) {
       char *endp = nullptr;
-      errno = 0;
       long val = strtol(servbuf, &endp, 10);
-
-      if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN)) ||
-          (errno != 0) || (*endp != '\0') || (val > UINT16_MAX) || (val < 0)) {
+      if (*endp != '\0' || val > UINT16_MAX || val < 0) {
         // invalid address
         SET_ERROR(handle, NDB_MGM_ILLEGAL_BIND_ADDRESS, "Illegal bind address");
         DBUG_RETURN(-1);
@@ -306,9 +305,6 @@ extern "C" int ndb_mgm_set_bindaddress(NdbMgmHandle handle, const char *arg) {
       SET_ERROR(handle, NDB_MGM_ILLEGAL_BIND_ADDRESS, "Illegal bind address");
       DBUG_RETURN(-1);
     }
-  } else {
-    handle->m_bindaddress = nullptr;
-    handle->m_bindaddress_port = 0;
   }
   if (handle->cfg.ids.size() != 0) {
     handle->cfg.bind_address_port = handle->m_bindaddress_port;
@@ -403,11 +399,11 @@ extern "C" const char *ndb_mgm_get_latest_error_msg(const NdbMgmHandle h) {
   ndb_mgmd.
   Read and return result
 
-  @param The mgmapi handle
-  @param List describing the expected reply
-  @param Name of the command to call
-  @param Arguments for the command
-  @param Any bulk data to send after the command
+  @param handle The mgmapi handle
+  @param command_reply List describing the expected reply
+  @param cmd Name of the command to call
+  @param cmd_args Arguments for the command
+  @param cmd_bulk Any bulk data to send after the command
 
  */
 static const Properties *ndb_mgm_call(
@@ -880,7 +876,7 @@ extern "C" socket_t ndb_mgm_get_fd(NdbMgmHandle handle) {
  * e.g. on timeout, we leave NdbMgmHandle disconnected
  */
 int ndb_mgm_disconnect_quiet(NdbMgmHandle handle) {
-  handle->socket.close();
+  if (handle->socket.is_valid()) handle->socket.close();
   handle->connected = 0;
 
   return 0;

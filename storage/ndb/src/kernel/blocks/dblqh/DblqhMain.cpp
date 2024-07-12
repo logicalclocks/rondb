@@ -12488,9 +12488,12 @@ void Dblqh::execCOMMIT(Signal *signal) {
   }
   if (ERROR_INSERTED(5110)) {
     jam();
-    g_eventLogger->info("LQH %u delaying commit", instance());
-    sendSignalWithDelay(cownref, GSN_COMMIT, signal, 200, signal->getLength());
-    return;
+    if (tcConnectptr.p->tableref > 2) {
+      jam();
+      g_eventLogger->info("LQH %u delaying commit", instance());
+      sendSignalWithDelay(cownref, GSN_COMMIT, signal, 200, signal->getLength());
+      return;
+    }
   }
 
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
@@ -12499,13 +12502,18 @@ void Dblqh::execCOMMIT(Signal *signal) {
     TcConnectionrec *const regTcPtr = tcConnectptr.p;
     TRACE_OP(regTcPtr, "COMMIT");
 
-#ifdef ERROR_INSERT
-    if (tcConnectptr.p->operation == ZUPDATE)
-    {
-      CRASH_INSERTION(5048);
-      if (ERROR_INSERTED(5049))
-      {
-        SET_ERROR_INSERT_VALUE(5048);
+    if (ERROR_INSERTED(5048) || ERROR_INSERTED(5049)) {
+      jam();
+      TablerecPtr tablePtr;
+      tablePtr.i = tcConnectptr.p->tableref;
+      ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+      if (tcConnectptr.p->operation == ZUPDATE &&
+          (ERROR_INSERT_EXTRA == 0 || ERROR_INSERT_EXTRA == tablePtr.i)) {
+        g_eventLogger->info("COMMIT an UPDATE on table:%u", tablePtr.i);
+        CRASH_INSERTION(5048);
+        if (ERROR_INSERTED(5049)) {
+          SET_ERROR_INSERT_VALUE(5048);
+        }
       }
     }
     if (ERROR_INSERTED(5093)) {
@@ -12517,7 +12525,6 @@ void Dblqh::execCOMMIT(Signal *signal) {
         return;
       }
     }
-#endif
     commitReqLab(signal, gci_hi, gci_lo, tcConnectptr);
     return;
   }//if
@@ -12683,10 +12690,13 @@ void Dblqh::execCOMPLETE(Signal *signal) {
   }
   if (ERROR_INSERTED(5111)) {
     jam();
-    g_eventLogger->info("LQH %u delaying complete", instance());
-    sendSignalWithDelay(cownref, GSN_COMPLETE, signal, 200,
-                        signal->getLength());
-    return;
+    if (tcConnectptr.p->tableref > 2) {
+      jam();
+      g_eventLogger->info("LQH %u delaying complete", instance());
+      sendSignalWithDelay(cownref, GSN_COMPLETE, signal, 200,
+                          signal->getLength());
+      return;
+    }
   }
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
   if (likely(tcConnectptr.p->transactionState == TcConnectionrec::COMMITTED) &&
@@ -36730,34 +36740,26 @@ void Dblqh::handle_check_system_scans(Signal *signal) {
         ndbassert(!m_is_query_block);
         if (i == ZLCP_CHECK_INDEX) {
           jam();
-          g_eventLogger->info("(%u)LCP Scan have stalled for %u milliseconds, last"
-                              "last seen on line %u, check_lcp_stop_count: %u",
-                              instance(),
-                              time_stalled,
-                              c_check_scanptr_save_line[i],
-                              loc_scanptr.p->scan_check_lcp_stop);
-        }
-        else if (i == ZBACKUP_CHECK_INDEX)
-        {
+          g_eventLogger->info(
+              "LCP Scan has stalled for %u milliseconds, "
+              "last seen on line %u, check_lcp_stop_count: %u",
+              time_stalled, c_check_scanptr_save_line[i],
+              loc_scanptr.p->scan_check_lcp_stop);
+        } else if (i == ZBACKUP_CHECK_INDEX) {
           jam();
-          g_eventLogger->info("(%u)Backup Scan have stalled for %u milliseconds, "
-                              "last seen on line %u, check_lcp_stop_count: %u",
-                              instance(),
-                              time_stalled,
-                              c_check_scanptr_save_line[i],
-                              loc_scanptr.p->scan_check_lcp_stop);
-        }
-        else if (i == ZCOPY_FRAGREQ_CHECK_INDEX)
-        {
+          g_eventLogger->info(
+              "Backup Scan has stalled for %u milliseconds, "
+              "last seen on line %u, check_lcp_stop_count: %u",
+              time_stalled, c_check_scanptr_save_line[i],
+              loc_scanptr.p->scan_check_lcp_stop);
+        } else if (i == ZCOPY_FRAGREQ_CHECK_INDEX) {
           jam();
-          g_eventLogger->info("(%u)COPY_FRAGREQ Scan have stalled for %u "
-                              "milliseconds, "
-                              "last seen on line %u, check_lcp_stop_count: %u",
-                              instance(),
-                              time_stalled,
-                              c_check_scanptr_save_line[i],
-                              loc_scanptr.p->scan_check_lcp_stop);
-
+          g_eventLogger->info(
+              "COPY_FRAGREQ Scan has stalled for %u "
+              "milliseconds, "
+              "last seen on line %u, check_lcp_stop_count: %u",
+              time_stalled, c_check_scanptr_save_line[i],
+              loc_scanptr.p->scan_check_lcp_stop);
           signal->theData[0] = DumpStateOrd::TupDumpOneScanRec;
           signal->theData[1] = loc_scanptr.p->scanAccPtr;
           EXECUTE_DIRECT(getDBTUP(), GSN_DUMP_STATE_ORD, signal, 2);

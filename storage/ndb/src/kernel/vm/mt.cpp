@@ -95,10 +95,11 @@ static constexpr Uint32 SIGNAL_RNIL = 0xFFFFFFFF;
 /**
  * Two new manual(recompile) error-injections in mt.cpp :
  *
- *     NDB_BAD_SEND : Causes send buffer code to mess with a byte in a send
- * buffer NDB_LUMPY_SEND : Causes transporters to be given small, oddly aligned
- * and sized IOVECs to send, testing ability of new and existing code to handle
- * this.
+ *     NDB_BAD_SEND: Causes send buffer code to mess with a byte in a send
+ *                   buffer
+ *     NDB_LUMPY_SEND: Causes transporters to be given small, oddly aligned
+ *                     and sized IOVECs to send, testing ability of new and
+ *                     existing code to handle this.
  *
  *   These are useful for testing the correctness of the new code, and
  *   the resulting behaviour / debugging output.
@@ -1981,10 +1982,10 @@ struct thr_send_thread_instance
   Uint32 m_awake;
 
   /* First trp that has data to be sent */
-  Uint32 m_first_trp;
+  TrpId m_first_trp;
 
   /* Last trp in list of trps with data available for sending */
-  Uint32 m_last_trp;
+  TrpId m_last_trp;
 
   /* Which list should I get trp from next time. */
   bool m_next_is_high_prio_trp;
@@ -2027,7 +2028,7 @@ struct thr_send_trps {
    * 'm_next' implements a list of 'send_trps' with PENDING'
    * data, not yet assigned to a send thread. 0 means NULL.
    */
-  Uint16 m_next;
+  TrpId m_next;
 
   /**
    * m_data_available are incremented/decremented by each
@@ -2653,8 +2654,10 @@ void thr_send_threads::insert_trp(
   if (trp_state.m_neighbour_trp)
     return;
 
-  Uint32 first_trp = send_instance->m_first_trp;
+  TrpId first_trp = send_instance->m_first_trp;
   struct thr_send_trps &last_trp_state = m_trp_state[send_instance->m_last_trp];
+  assert(trp_state.m_next == 0); // Not already inserted
+  assert(send_instance->m_last_trp != trp_id); // Not already inserted
   trp_state.m_next = 0;
   require(trp_state.m_data_available > 0);
   require(trp_state.m_in_list_no_neighbour == false);
@@ -2899,16 +2902,16 @@ static Uint64 mt_get_send_buffer_bytes(TrpId trp_id);
  *
  * Called under mutex protection of send_thread_mutex
  */
-#define DELAYED_PREV_NODE_IS_NEIGHBOUR UINT_MAX32
+static constexpr TrpId DELAYED_PREV_NODE_IS_NEIGHBOUR = UINT_MAX16;
 TrpId thr_send_threads::get_trp(
     Uint32 instance_no, NDB_TICKS now,
     struct thr_send_thread_instance *send_instance) {
-  Uint32 next;
+  TrpId next;
   TrpId trp_id;
   bool retry = false;
-  Uint32 prev = 0;
-  Uint32 delayed_trp = 0;
-  Uint32 delayed_prev_trp = 0;
+  TrpId prev = 0;
+  TrpId delayed_trp = 0;
+  TrpId delayed_prev_trp = 0;
   Uint32 min_wait_usec = UINT_MAX32;
   do {
     if (send_instance->m_next_is_high_prio_trp) {
@@ -3134,7 +3137,7 @@ found_neighbour:
   trp_state.m_data_available = 1;
   require(send_instance->m_num_trps_ready > 0);
   send_instance->m_num_trps_ready--;
-  return (TrpId)trp_id;
+  return trp_id;
 }
 
 /* Called under mutex protection of send_thread_mutex */
@@ -3656,8 +3659,10 @@ bool thr_send_threads::handle_send_trp(
   {
     /**
      * The only transporter ready for send was a transporter that still
-     * required waiting. We will only send if we have enough data to
-     * send without delay.
+     * required waiting. We will not send yet if:
+     * 1) We are overloaded,   ...or...
+     * 2) Size of the buffered sends has not yet reached the limit where
+     *    we cancel the wait for a larger send message to be collected.
      */
     if (m_trp_state[trp_id].m_send_overload)  // Pause overloaded trp
     {
@@ -3674,7 +3679,7 @@ bool thr_send_threads::handle_send_trp(
          * When encountering g_max_send_delay from send thread we
          * will let the send thread go to sleep for as long as
          * this trp has to wait (it is the shortest sleep we
-         * we have. For non-send threads the trp will simply
+         * have. For non-send threads the trp will simply
          * be reinserted and someone will pick up later to handle
          * things.
          *
@@ -3685,6 +3690,11 @@ bool thr_send_threads::handle_send_trp(
       }
       return false;
     }
+    /**
+     * We waited for a larger payload to accumulate. We have
+     * met the limit and now cancel any further delays.
+     */
+    set_max_delay(trp_id, now, 0);  // Large packet -> Send now
   }
 
   /**
@@ -9877,7 +9887,8 @@ assign_receiver_threads(void)
      */
     if (trp)
     {
-      Uint32 node_id = globalTransporterRegistry.get_node_id_trp(trp_id);
+      Uint32 node_id =
+        globalTransporterRegistry.get_transporter_node_id(trp_id);
       if (globalTransporterRegistry.is_shm_transporter(trp_id))
       {
         g_trp_to_recv_thr_map[trp_id] = recv_thread_idx_shm;
@@ -9946,26 +9957,6 @@ void mt_assign_recv_thread_new_trp(TrpId trp_id) {
   TransporterReceiveHandleKernel *recvdata =
       g_trp_receive_handle_ptr[choosen_recv_thread];
   recvdata->m_transporters.set(trp_id);
-}
-
-bool mt_epoll_add_trp(Uint32 self, TrpId trp_id) {
-  struct thr_repository *rep = g_thr_repository;
-  struct thr_data *selfptr = &rep->m_thread[self];
-  unsigned thr_no = selfptr->m_thr_no;
-  require(thr_no >= first_receiver_thread_no);
-  unsigned recv_thread_idx = thr_no - first_receiver_thread_no;
-  TransporterReceiveHandleKernel *recvdata =
-      g_trp_receive_handle_ptr[recv_thread_idx];
-  if (recv_thread_idx != g_trp_to_recv_thr_map[trp_id]) {
-    return false;
-  }
-  Transporter *t = globalTransporterRegistry.get_transporter(trp_id);
-  lock(&rep->m_send_buffers[trp_id].m_send_lock);
-  lock(&rep->m_receive_lock[recv_thread_idx]);
-  require(recvdata->epoll_add(t));
-  unlock(&rep->m_receive_lock[recv_thread_idx]);
-  unlock(&rep->m_send_buffers[trp_id].m_send_lock);
-  return true;
 }
 
 bool mt_is_recv_thread_for_new_trp(Uint32 self, TrpId trp_id) {

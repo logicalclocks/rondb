@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,7 +39,6 @@ Uint32 MAX_RECEIVED_SIGNALS = 1024;
 #define MAX_RECEIVED_SIGNALS 1024
 #endif
 
-
 void
 TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned line,
                           TransporterReceiveHandle & recvHandle,
@@ -47,10 +46,11 @@ TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned lin
                           Uint32 * readPtr,
                           size_t sizeInWords,
                           NodeId remoteNodeId,
+                          TrpId trpId,
                           IOState state,
                           TransporterError errorCode)
 {
-  report_error(remoteNodeId, errorCode);
+  report_error(trpId, errorCode);
 
   g_eventLogger->error("Last signal: GSN: %u, RecBlock: %u, "
                        "SendBlockRef: %x, Length: %u, "
@@ -95,13 +95,13 @@ TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned lin
     if (nb < 0) goto log_it;
     offs += nb;
 
-    const bool bad_data = recvHandle.m_bad_data_transporters.get(remoteNodeId);
+    const bool bad_data = recvHandle.m_bad_data_transporters.get(trpId);
     nb = BaseString::snprintf(msg + offs, sz - offs,
                               "\n"
                               "PerformState %u: IOState %u: bad_data %u\n"
                               "ptr %p: size %u bytes\n",
-                              performStates[remoteNodeId], state, bad_data,
-                              readPtr, (unsigned)(sizeInWords * 4));
+                              performStates[trpId], state, bad_data, readPtr,
+                              (unsigned)(sizeInWords * 4));
     if (nb < 0) goto log_it;
     offs += nb;
     size_t reserve;
@@ -144,7 +144,7 @@ TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned lin
 
 log_it:
   g_eventLogger->error("%s", msg);
-  recvHandle.m_bad_data_transporters.set(remoteNodeId);
+  recvHandle.m_bad_data_transporters.set(trpId);
 }
 
 static inline bool unpack_one(Uint32 *(&readPtr), Uint32 *eodPtr,
@@ -254,12 +254,14 @@ static inline bool unpack_one(Uint32 *(&readPtr), Uint32 *eodPtr,
 
 Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
                                    Uint32 *readPtr, Uint32 sizeOfData,
-                                   NodeId remoteNodeId, IOState state,
+                                   NodeId remoteNodeId, TrpId trpId,
                                    bool &stopReceiving) {
   assert(stopReceiving == false);
-  // If bad data detected in  previous run
+  const IOState state = ioStates[trpId];
+
+  // If bad data detected in previous run
   // skip all further data
-  if (unlikely(recvHandle.m_bad_data_transporters.get(remoteNodeId))) {
+  if (unlikely(recvHandle.m_bad_data_transporters.get(trpId))) {
     return sizeOfData;
   }
 
@@ -274,7 +276,7 @@ Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
   Uint32 loop_count = 0;
   bool doStopReceiving = false;
 
-  if (likely(state == NoHalt || state == HaltOutput)) {
+  if (likely(!(state & HaltInput))) {
     while ((eodPtr >= readPtr + (1 + (sizeof(Protocol6) >> 2))) &&
            (loop_count < MAX_RECEIVED_SIGNALS) && doStopReceiving == false &&
            unpack_one(readPtr, eodPtr, eodPtr, prio, signalHeader, signalData,
@@ -289,7 +291,7 @@ Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
 
     }  // while
   } else {
-    /** state = HaltIO || state == HaltInput */
+    /** state has 'HaltInput' */
 
     while ((eodPtr >= readPtr + (1 + (sizeof(Protocol6) >> 2))) &&
            (loop_count < MAX_RECEIVED_SIGNALS) && doStopReceiving == false &&
@@ -299,7 +301,7 @@ Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
 
       Uint32 rBlockNum = signalHeader.theReceiversBlockNumber;
 
-      if (rBlockNum == QMGR) {
+      if (rBlockNum == QMGR) {  // QMGR==252
         Uint32 sBlockNum = signalHeader.theSendersBlockRef;
         sBlockNum = numberToRef(sBlockNum, remoteNodeId);
         signalHeader.theSendersBlockRef = sBlockNum;
@@ -323,6 +325,7 @@ Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
             readPtr,
             eodPtr - readPtr,
             remoteNodeId,
+            trpId,
             state,
             errorCode);
     g_eventLogger->info("Loop count:%u", loop_count);
@@ -335,12 +338,13 @@ Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
 Uint32 *TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
                                     Uint32 *readPtr, Uint32 *eodPtr,
                                     Uint32 *endPtr, NodeId remoteNodeId,
-                                    IOState state, bool &stopReceiving) {
+                                    TrpId trpId, bool &stopReceiving) {
   assert(stopReceiving == false);
+  const IOState state = ioStates[trpId];
 
   // If bad data detected in previous run
   // skip all further data
-  if (unlikely(recvHandle.m_bad_data_transporters.get(remoteNodeId))) {
+  if (unlikely(recvHandle.m_bad_data_transporters.get(trpId))) {
     return eodPtr;
   }
 
@@ -357,7 +361,7 @@ Uint32 *TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
    * We will read past the endPtr, but never beyond the eodPtr. We will only
    * read one signal beyond the end and then we stop.
    */
-  if (likely(state == NoHalt || state == HaltOutput)) {
+  if (likely(!(state & HaltInput))) {
     while ((readPtr < endPtr) &&
            (eodPtr >= readPtr + (1 + (sizeof(Protocol6) >> 2))) &&
            (loop_count < MAX_RECEIVED_SIGNALS) && doStopReceiving == false &&
@@ -374,7 +378,7 @@ Uint32 *TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
 
     }  // while
   } else {
-    /** state = HaltIO || state == HaltInput */
+    /** state has 'HaltInput' */
 
     while ((readPtr < endPtr) &&
            (eodPtr >= readPtr + (1 + (sizeof(Protocol6) >> 2))) &&
@@ -385,10 +389,10 @@ Uint32 *TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
 
       Uint32 rBlockNum = signalHeader.theReceiversBlockNumber;
 
-      if(rBlockNum == QMGR){
-	Uint32 sBlockNum = signalHeader.theSendersBlockRef;
-	sBlockNum = numberToRef(sBlockNum, remoteNodeId);
-	signalHeader.theSendersBlockRef = sBlockNum;
+      if (rBlockNum == QMGR) {  // QMGR==252
+        Uint32 sBlockNum = signalHeader.theSendersBlockRef;
+        sBlockNum = numberToRef(sBlockNum, remoteNodeId);
+        signalHeader.theSendersBlockRef = sBlockNum;
 
         doStopReceiving = recvHandle.deliver_signal(&signalHeader, prio,
                                                     errorCode, signalData, ptr);
@@ -409,6 +413,7 @@ Uint32 *TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
       readPtr,
       eodPtr - readPtr,
       remoteNodeId,
+      trpId,
       state,
       errorCode);
   }

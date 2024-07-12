@@ -141,8 +141,6 @@ SimulatedBlock::SimulatedBlock(BlockNumber blockNumber,
 
   m_callbackTableAddr = 0;
 
-  CLEAR_ERROR_INSERT_VALUE;
-
 #ifndef NDBD_MULTITHREADED
   /* Ndbd, init from GlobalScheduler */
   m_pHighResTimer = globalScheduler.getHighResTimerPtr();
@@ -880,15 +878,6 @@ void SimulatedBlock::assign_recv_thread_new_trp(TrpId trp_id) {
 void SimulatedBlock::assign_multi_trps_to_send_threads() {
 #ifdef NDBD_MULTITHREADED
   mt_assign_multi_trps_to_send_threads();
-#endif
-}
-
-bool SimulatedBlock::epoll_add_trp(TrpId trp_id) {
-#ifdef NDBD_MULTITHREADED
-  return mt_epoll_add_trp(m_threadId, trp_id);
-#else
-  require(false);
-  return false;
 #endif
 }
 
@@ -4935,7 +4924,7 @@ void SimulatedBlock::ndbinfo_send_row(Signal *signal, const DbinfoScanReq &req,
                                       const Ndbinfo::Row &row,
                                       Ndbinfo::Ratelimit &rl) const {
   // Check correct number of columns against table
-  assert(row.columns() == Ndbinfo::getTable(req.tableId).columns());
+  assert(row.columns() == Ndbinfo::getTable(req.tableId)->columns());
 
   TransIdAI *tidai = (TransIdAI *)signal->getDataPtrSend();
   tidai->connectPtr = req.resultData;

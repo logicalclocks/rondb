@@ -155,32 +155,46 @@ int runTestSqlClient(NDBT_Context *ctx, NDBT_Step *step) {
     while (result.next()) {
     }
 
-    // Select second row from sql_client_test
-    Properties args;
-    args.put("0", 2);
-    if (!sql.doQuery("SELECT * FROM sql_client_test WHERE a=?", args, result))
-      return NDBT_FAILED;
-    result.print();
+    {
+      auto check_result = [](SqlResultSet &result) {
+        result.reset();
+        while (result.next()) {
+          ndbout << "a: " << result.columnAsInt("a") << endl
+                 << "b: " << result.column("b") << endl
+                 << "c: " << result.columnAsLong("c") << endl;
+          if (result.columnAsInt("a") != 2) {
+            ndbout << "Unexpected value for a" << endl;
+            return false;
+          }
 
-    result.reset();
-    while (result.next()) {
-      ndbout << "a: " << result.columnAsInt("a") << endl
-             << "b: " << result.column("b") << endl
-             << "c: " << result.columnAsLong("c") << endl;
-      if (result.columnAsInt("a") != 2) {
-        ndbout << "hepp1" << endl;
-        return NDBT_FAILED;
-      }
+          if (strcmp(result.column("b"), "bye")) {
+            ndbout << "Unexpected value for b" << endl;
+            return false;
+          }
 
-      if (strcmp(result.column("b"), "bye")) {
-        ndbout << "hepp2" << endl;
-        return NDBT_FAILED;
-      }
+          if (result.columnAsLong("c") != 9000000000ULL) {
+            ndbout << "Unexpected value for c" << endl;
+            return false;
+          }
+        }
+        return true;
+      };
 
-      if (result.columnAsLong("c") != 9000000000ULL) {
-        ndbout << "hepp3" << endl;
+      // Select second row from sql_client_test using placeholders and check
+      // expected result, this will use prepared statement behind the scenes
+      Properties args;
+      args.put("0", 2);
+      if (!sql.doQuery("SELECT * FROM sql_client_test WHERE a=?", args, result))
         return NDBT_FAILED;
-      }
+      result.print();
+      if (!check_result(result)) return NDBT_FAILED;
+
+      // Select second row from sql_client_test without placeholders and check
+      // expected result
+      if (!sql.doQuery("SELECT * FROM sql_client_test WHERE a=2", result))
+        return NDBT_FAILED;
+      result.print();
+      if (!check_result(result)) return NDBT_FAILED;
     }
 
     if (sql.selectCountTable("sql_client_test") != 2) {
@@ -190,6 +204,16 @@ int runTestSqlClient(NDBT_Context *ctx, NDBT_Step *step) {
 
     if (!sql.doQuery("DROP TABLE sql_client_test")) return NDBT_FAILED;
   }
+  return NDBT_OK;
+}
+
+int runTestSqlClientThread(NDBT_Context *ctx, NDBT_Step *step) {
+  SqlClient sql("");
+
+  // Select all rows from mysql.user
+  SqlResultSet result;
+  if (!sql.doQuery("SELECT * FROM mysql.user", result)) return NDBT_FAILED;
+  // result.print();
 
   return NDBT_OK;
 }
@@ -207,7 +231,12 @@ TESTCASE("AtrtClient", "Test AtrtClient class") {
 /*
   $> testNDBT -n SqlClient
 */
-TESTCASE("SqlClient", "Test SqlClient class") { INITIALIZER(runTestSqlClient); }
+TESTCASE("SqlClient", "Test SqlClient class") {
+  INITIALIZER(runTestSqlClient);
+}
+TESTCASE("SqlClientThreads", "Test SqlClient class with threads") {
+  STEPS(runTestSqlClientThread, 10);
+}
 NDBT_TESTSUITE_END(testNDBT)
 
 int main(int argc, const char **argv) {
