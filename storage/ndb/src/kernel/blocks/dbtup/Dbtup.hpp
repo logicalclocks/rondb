@@ -953,6 +953,10 @@ struct Operationrec {
     op_struct.bit_field.delete_insert_flag = false;
   }
 
+  ~Operationrec()
+  {
+  }
+
   enum CommitState
   {
     CommitNotStarted = 0,
@@ -1672,11 +1676,6 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   /* IF THE POINTER TO THE NEXT AREA IS RNIL THEN THIS IS THE LAST FREE AREA. */
   /*                                                                                       */
   /*****************************************************************************************/
-  struct TableDescriptor {
-    Uint32 tabDescr;
-  };
-  typedef Ptr<TableDescriptor> TableDescriptorPtr;
-
   struct HostBuffer {
     bool inPackedList;
     Uint32 packetLenTA;

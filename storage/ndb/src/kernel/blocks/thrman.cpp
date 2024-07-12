@@ -591,6 +591,7 @@ void Thrman::execSTTOR(Signal *signal) {
       m_burstiness = 0;
       m_current_decision_stats = &c_1sec_stats;
       m_send_thread_percentage = 0;
+      m_send_thread_assistance_level = 0;
       m_node_overload_level = 0;
 
       for (Uint32 i = 0; i < MAX_BLOCK_THREADS + 1; i++) {
@@ -4529,10 +4530,10 @@ void Thrman::execDBINFO_SCANREQ(Signal *signal) {
               send_percentage = 0;
               spin_percentage = 0;
             } else if (exec_full_send_percentage > Uint64(100)) {
-              exec_percentage = Uint64(100) - exec_full_percentage;
+              send_percentage = Uint64(100) - exec_full_percentage;
               spin_percentage = 0;
             } else if (all_exec_percentage > Uint64(100)) {
-              exec_percentage = Uint64(100) - exec_full_send_percentage;
+              spin_percentage = Uint64(100) - exec_full_send_percentage;
             } else {
               sleep_percentage = Uint64(100) - all_exec_percentage;
             }

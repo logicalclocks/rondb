@@ -5026,6 +5026,9 @@ void Lgman::execute_undo_record(Signal *signal) {
       case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
       case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
       case File_formats::Undofile::UNDO_TUP_FREE_PART:
+      case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
+      case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
+      case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
         break;
       default:
         ndbabort();

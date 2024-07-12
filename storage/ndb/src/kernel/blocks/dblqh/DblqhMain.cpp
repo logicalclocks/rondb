@@ -722,9 +722,17 @@ void Dblqh::handle_queued_log_write(Signal *signal, LogPartRecord *logPartPtrP,
          * log record have been written.
          */
         unlock_log_part(logPartPtrP);
+        DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) ABORT",
+                       instance(),
+                       logPartPtrP->logPartNo,
+                       tcConnectptr.i));
         abortCommonLab(signal, tcConnectptr);
       } else {
         jam();
+        DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) PREPARE",
+                       instance(),
+                       logPartPtrP->logPartNo,
+                       tcConnectptr.i));
         doWritePrepareLog(signal, tcConnectptr);
       }
       return;

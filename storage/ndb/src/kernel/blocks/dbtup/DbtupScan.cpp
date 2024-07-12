@@ -1841,6 +1841,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
               // no more pages, scan ends
               pos.m_get = ScanPos::Get_undef;
               scan.m_state = ScanOp::Last;
+              scan.m_last_seen = __LINE__;
               return true;
             } else if (bits & ScanOp::SCAN_LCP &&
                        key.m_page_no < scan.m_endPage) {
@@ -2163,6 +2164,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
             jam();
             // request queued
             pos.m_get = ScanPos::Get_tuple;
+            scan.m_last_seen = __LINE__;
             return false;
           } else if (res < 0) {
             jam();
@@ -2188,7 +2190,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
         // move to next tuple
       case ScanPos::Get_next_tuple:
         // move to next fixed size tuple
-        jam();
+        jamDebug();
         {
           key.m_page_idx += size;
           pos.m_get = ScanPos::Get_tuple;
@@ -2196,7 +2198,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
         [[fallthrough]];
       case ScanPos::Get_tuple:
         // get fixed size tuple
-        jam();
+        jamDebug();
         if ((bits & ScanOp::SCAN_VS) == 0) {
           Fix_page *page = (Fix_page *)pos.m_page;
           if (key.m_page_idx + size <= Fix_page::DATA_WORDS) {
@@ -2239,7 +2241,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
                           (bits & ScanOp::SCAN_LCP))) ||
                        ((bits & ScanOp::SCAN_LCP) &&
                         !pos.m_lcp_scan_changed_rows_page))) {
-              jam();
+              jamDebug();
               /**
                * We come here for normal full table scans and also for LCP
                * scans where we scan ALL ROWS pages.
@@ -2493,6 +2495,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
             }
             // TUPKEYREQ handles savepoint stuff
             scan.m_state = ScanOp::Current;
+            scan.m_last_seen = __LINE__;
             return true;
           } else {
             jam();
