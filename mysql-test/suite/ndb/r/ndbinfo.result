@@ -94,12 +94,20 @@ table_id	table_name	comment
 46	cpudata_50ms	Data about CPU usage per 50ms last second
 47	cpudata_1sec	Data about CPU usage per second last 20 seconds
 48	cpudata_20sec	Data about CPU usage per 20 sec last 400 seconds
+<<<<<<< HEAD
 49	table_memory_usage	Per table memory usage
 50	table_map	Mapping table_id to table and database name
 52	threadblock_details	which blocks are run in which threads and some internal state details
 SELECT COUNT(*) FROM ndb$tables;
 COUNT(*)
 52
+=======
+50	threadblock_details	which blocks are run in which threads and some internal state details
+51	transporter_details	detailed transporter status
+SELECT COUNT(*) FROM ndb$tables;
+COUNT(*)
+51
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 SELECT * FROM ndb$tables WHERE table_id = 2;
 table_id	table_name	comment	rows_estimate
 2	test	for testing	8000
@@ -148,9 +156,14 @@ table_id	table_name	comment
 46	cpudata_50ms	Data about CPU usage per 50ms last second
 47	cpudata_1sec	Data about CPU usage per second last 20 seconds
 48	cpudata_20sec	Data about CPU usage per 20 sec last 400 seconds
+<<<<<<< HEAD
 49	table_memory_usage	Per table memory usage
 50	table_map	Mapping table_id to table and database name
 52	threadblock_details	which blocks are run in which threads and some internal state details
+=======
+50	threadblock_details	which blocks are run in which threads and some internal state details
+51	transporter_details	detailed transporter status
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 SELECT * FROM ndb$tables WHERE table_name = 'LOGDESTINATION';
 table_id	table_name	comment	rows_estimate
 SELECT COUNT(*) FROM ndb$tables t, ndb$columns c
@@ -222,6 +235,7 @@ table_id	table_name
 12	threadstat
 13	transactions
 4	transporters
+51	transporter_details
 
 SELECT table_id, column_id, column_name FROM ndb$columns LIMIT 7;
 table_id	column_id	column_name
@@ -308,7 +322,11 @@ table_id
 48
 49
 50
+<<<<<<< HEAD
 52
+=======
+51
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
 TRUNCATE ndb$tables;
 ERROR HY000: Table 'ndb$tables' is read only

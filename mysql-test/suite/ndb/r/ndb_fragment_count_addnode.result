@@ -830,9 +830,6 @@ Partition	Row count	Commit count	Frag fixed memory	Frag varsized memory	Extent_s
 22 ...
 23 ...
 
-
-NDBT_ProgramExit: 0 - OK
-
 drop table t1,t2,t3,t4,t5,t6,t7,t8;
 create table t9(id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb
 comment="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2";

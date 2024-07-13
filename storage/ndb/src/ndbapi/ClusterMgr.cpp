@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,6 +34,7 @@
 #include <NdbSleep.h>
 #include <NdbTick.h>
 #include <Logger.hpp>
+#include <EventLogger.hpp>
 #include <IPCConfig.hpp>
 #include <NdbOut.hpp>
 #include <OwnProcessInfo.hpp>
@@ -92,6 +94,8 @@ error_printer(const char * fmt, ...)
   va_end(ap);
 }
 
+extern EventLogger *g_eventLogger;
+
 // Just a C wrapper for threadMain
 extern "C" void *runClusterMgr_C(void *me) {
   ((ClusterMgr *)me)->threadMain();
@@ -128,7 +132,10 @@ ClusterMgr::ClusterMgr(TransporterFacade & _facade):
 
   Uint32 ret = this->open(&theFacade, API_CLUSTERMGR);
   if (unlikely(ret == 0)) {
-    g_eventLogger->info("Failed to register ClusterMgr! ret: %d", ret);
+    fprintf(stderr,
+            "%s NDBAPI FATAL ERROR : Failed to register "
+            "ClusterMgr! ret: %d\n",
+            Logger::Timestamp().c_str(), ret);
     abort();
   }
   DBUG_VOID_RETURN;
@@ -256,10 +263,11 @@ void ClusterMgr::startThread() {
                        0,  // default stack size
                        "ndb_clustermgr", NDB_THREAD_PRIO_HIGH);
   if (theClusterMgrThread == nullptr) {
-    g_eventLogger->info(
-        "ClusterMgr::startThread:"
-        " Failed to create thread for cluster management.");
-    assert(theClusterMgrThread != nullptr);
+    fprintf(stderr,
+            "%s NDBAPI FATAL ERROR : ClusterMgr::startThread:"
+            " Failed to create thread for cluster management.\n",
+            Logger::Timestamp().c_str());
+    abort();
     DBUG_VOID_RETURN;
   }
 
@@ -444,6 +452,10 @@ void ClusterMgr::threadMain() {
         if (cm_node.hbCounter >= cm_node.hbFrequency) {
           cm_node.hbMissed++;
           cm_node.hbCounter = 0;
+          if (cm_node.hbMissed >= 2 && cm_node.hbFrequency > 0) {
+            g_eventLogger->warning("Node %u missed heartbeat %u from node %u.",
+                                   getOwnNodeId(), cm_node.hbMissed, nodeId);
+          }
         }
 
         if (theNode.m_info.m_type != NodeInfo::DB)
@@ -474,6 +486,10 @@ void ClusterMgr::threadMain() {
       if ((cm_node.hbMissed == 4 && cm_node.hbFrequency > 0) ||
           (cm_node.hbMissed == maxIntervalsWithoutFirstApiRegConf &&
            cm_node.hbFrequency == 0)) {
+        g_eventLogger->error(
+            "Node %u disconnecting node %u "
+            "due to missed heartbeat",
+            getOwnNodeId(), nodeId);
         nodeFailRep->noOfNodes++;
         NodeBitmask::set(theAllNodes, nodeId);
       }
@@ -1208,8 +1224,10 @@ void ClusterMgr::execAPI_REGREF(const Uint32 *theData) {
 
   switch (ref->errorCode) {
     case ApiRegRef::WrongType:
-      g_eventLogger->info("Node %d reports that this node should be a NDB node",
-                          nodeId);
+      fprintf(stderr,
+              "%s NDBAPI FATAL ERROR : Node %d reports that "
+              "this node %d should be an NDB node\n",
+              Logger::Timestamp().c_str(), nodeId, getOwnNodeId());
       abort();
     case ApiRegRef::UnsupportedVersion:
     default:
@@ -1907,9 +1925,11 @@ void ArbitMgr::doStart(const Uint32 *theData) {
                                0,  // default stack size
                                "ndb_arbitmgr", NDB_THREAD_PRIO_HIGH);
   if (theThread == nullptr) {
-    g_eventLogger->info(
-        "ArbitMgr::doStart: Failed to create thread for arbitration.");
-    assert(theThread != nullptr);
+    fprintf(stderr,
+            "%s NDBAPI FATAL ERROR : ArbitMgr::doStart: Failed to "
+            "create thread for arbitration.\n",
+            Logger::Timestamp().c_str());
+    abort();
   }
   NdbMutex_Unlock(theThreadMutex);
   DBUG_VOID_RETURN;

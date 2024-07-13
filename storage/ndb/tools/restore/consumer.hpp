@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -45,6 +46,7 @@ class BackupConsumer {
   virtual void tuple_free() {}
   virtual void endOfTuples() {}
   virtual bool logEntry(const LogEntry &) { return true; }
+<<<<<<< HEAD
   virtual void endOfLogEntrys(){}
   virtual bool prepare_staging(const TableS &){return true;}
   virtual bool finalize_staging(const TableS &){return true;}
@@ -68,6 +70,34 @@ class BackupConsumer {
   virtual bool isMissingTable(const TableS &){return false;}
   virtual bool has_temp_error() {return false;}
   virtual bool has_data_error() {return false;}
+=======
+  virtual void endOfLogEntrys() {}
+  virtual bool prepare_staging(const TableS &) { return true; }
+  virtual bool finalize_staging(const TableS &) { return true; }
+  virtual bool finalize_table(const TableS &) { return true; }
+  virtual bool rebuild_indexes(const TableS &) { return true; }
+  virtual bool createSystable(const TableS &) { return true; }
+  virtual bool update_apply_status(const RestoreMetaData &metaData,
+                                   bool snapshotstart) {
+    return true;
+  }
+  virtual bool delete_epoch_tuple() { return true; }
+  virtual bool report_started(unsigned backup_id, unsigned node_id) {
+    return true;
+  }
+  virtual bool report_meta_data(unsigned backup_id, unsigned node_id) {
+    return true;
+  }
+  virtual bool report_data(unsigned backup_id, unsigned node_id) {
+    return true;
+  }
+  virtual bool report_log(unsigned backup_id, unsigned node_id) { return true; }
+  virtual bool report_completed(unsigned backup_id, unsigned node_id) {
+    return true;
+  }
+  virtual bool isMissingTable(const TableS &) { return false; }
+  virtual void log_temp_errors() { return; }
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   virtual bool table_equal(const TableS &) { return true; }
   virtual bool table_compatible_check(TableS &) { return true; }
   virtual bool check_blobs(TableS &) { return true; }

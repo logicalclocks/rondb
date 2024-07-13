@@ -1,17 +1,22 @@
 /*
+<<<<<<< HEAD
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+=======
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -5083,7 +5088,8 @@ void Qmgr::execAPI_VERSION_REQ(Signal *signal) {
   if (nodeInfo.m_connected) {
     conf->version = nodeInfo.m_version;
     conf->mysql_version = nodeInfo.m_mysql_version;
-    ndb_sockaddr in = globalTransporterRegistry.get_connect_address(nodeId);
+    ndb_sockaddr in =
+        globalTransporterRegistry.get_connect_address_node(nodeId);
     if (in.get_in6_addr((in6_addr *)&conf->m_inet6_addr) == 0)
       siglen = ApiVersionConf::SignalLength;
     (void)in.get_in_addr((in_addr *)&conf->m_inet_addr);
@@ -8869,7 +8875,7 @@ void Qmgr::execDBINFO_SCANREQ(Signal *signal) {
                fallback-style report */
 
             ndb_sockaddr addr =
-                globalTransporterRegistry.get_connect_address(i);
+                globalTransporterRegistry.get_connect_address_node(i);
             char service_uri[INET6_ADDRSTRLEN + 6];
             strcpy(service_uri, "ndb://");
             Ndb_inet_ntop(&addr, service_uri + 6, 46);
@@ -8923,8 +8929,13 @@ void Qmgr::execPROCESSINFO_REP(Signal *signal) {
          takes a struct sockaddr * and length.
       */
       ndb_sockaddr addr =
+<<<<<<< HEAD
         globalTransporterRegistry.get_connect_address(report->node_id);
       processInfo->setHostAddress(& addr);
+=======
+          globalTransporterRegistry.get_connect_address_node(report->node_id);
+      processInfo->setHostAddress(&addr);
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     }
   }
   releaseSections(handle);
@@ -9623,7 +9634,7 @@ void Qmgr::connect_multi_transporter(Signal *signal, NodeId node_id) {
    * Connect a multi-transporter.
    * For clients this happens by moving the transporters inside the
    * multi-transporter into the allTransporters array and initiate the
-   * CONNECTING protocol with start_connecting_trp(). The multiTransporter parts
+   * CONNECTING protocol with start_connecting(). The multiTransporter parts
    * then connects as any other transporter and finally report_connect'ed.
    * QMGR will wait until all parts of the MultiTransporter has CONNECTED,
    * then 'switch' the MultiTransporter.
@@ -9654,7 +9665,7 @@ void Qmgr::connect_multi_transporter(Signal *signal, NodeId node_id) {
         ("Start connecting trp id %u for node %u, mti = %u, server: %u",
          t->getTransporterIndex(), node_id, t->get_multi_transporter_instance(),
          t->isServer));
-    globalTransporterRegistry.start_connecting_trp(t->getTransporterIndex());
+    globalTransporterRegistry.start_connecting(t->getTransporterIndex());
   }
   globalTransporterRegistry.unlockMultiTransporters();
   signal->theData[0] = ZCHECK_MULTI_TRP_CONNECT;
@@ -10331,7 +10342,7 @@ void Qmgr::check_switch_completed(Signal *signal, NodeId node_id) {
     jam();
     Transporter *tmp_trp = multi_trp->get_inactive_transporter(i);
     TrpId trp_id = tmp_trp->getTransporterIndex();
-    globalTransporterRegistry.start_disconnecting_trp(trp_id);
+    globalTransporterRegistry.start_disconnecting(trp_id);
   }
   globalTransporterRegistry.unlockMultiTransporters();
   /**

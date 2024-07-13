@@ -1,17 +1,22 @@
 /*
+<<<<<<< HEAD
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+=======
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -139,7 +144,6 @@ Cmvmi::Cmvmi(Block_context &ctx)
   addRecSignal(GSN_TC_COMMIT_ACK, &Cmvmi::execTC_COMMIT_ACK);
 
   addRecSignal(GSN_TESTSIG, &Cmvmi::execTESTSIG);
-  addRecSignal(GSN_NODE_START_REP, &Cmvmi::execNODE_START_REP, true);
 
   addRecSignal(GSN_CONTINUEB, &Cmvmi::execCONTINUEB);
   addRecSignal(GSN_DBINFO_SCANREQ, &Cmvmi::execDBINFO_SCANREQ);
@@ -212,7 +216,9 @@ Cmvmi::~Cmvmi() { m_shared_page_pool.clear(); }
 
 void Cmvmi::execNDB_TAMPER(Signal *signal) {
   jamEntry();
-  SET_ERROR_INSERT_VALUE(signal->theData[0]);
+
+  SimulatedBlock::execNDB_TAMPER(signal);
+
   if (ERROR_INSERTED(9999)) {
     CRASH_INSERTION(9999);
   }
@@ -236,31 +242,8 @@ void Cmvmi::execNDB_TAMPER(Signal *signal) {
     kill(getpid(), SIGABRT);
   }
 
-  if (ERROR_INSERTED(9006)) {
-    g_eventLogger->info("Activating error 9006 for SEGV of all nodes");
-    /*
-     * Disable this injected crash to generate core files. We can not use the
-     * CRASH_INSERTION macro here since it modifies the node start type in an
-     * unwanted way when testing fix for Bug #24945638 STOPONERROR = 0 WITH
-     * UNCONTROLLED EXIT RESTARTS IN SAME WAY AS PREVIOUS RESTART.
-     * Instead we explicitly turn off core file generation by directly
-     * modifying the opt_core variable of main.cpp.
-     */
-    extern bool opt_core;
-    opt_core = false;
-    raise(SIGSEGV);
-  }
 #endif
 
-  if (signal->theData[0] == 9003) {
-    // Migrated to TRPMAN
-    CLEAR_ERROR_INSERT_VALUE;
-    sendSignal(TRPMAN_REF, GSN_NDB_TAMPER, signal, signal->getLength(), JBB);
-  }
-  if (signal->theData[0] >= 9500 && signal->theData[0] < 9900) {
-    /* Subrange for TRPMAN */
-    sendSignal(TRPMAN_REF, GSN_NDB_TAMPER, signal, signal->getLength(), JBB);
-  }
 }  // execNDB_TAMPER()
 
 static Uint32 blocks[] = {
@@ -894,6 +877,7 @@ void Cmvmi::execSTTOR(Signal *signal) {
     globalData.activateSendPacked = 1;
     sendSTTORRY(signal);
   } else if (theStartPhase == 8) {
+<<<<<<< HEAD
 #ifdef ERROR_INSERT
     if (ERROR_INSERTED(9004)) {
       Uint32 tmp[25];
@@ -914,6 +898,16 @@ void Cmvmi::execSTTOR(Signal *signal) {
       return;
     }
 #endif
+=======
+    const ndb_mgm_configuration_iterator *p =
+        m_ctx.m_config.getOwnConfigIterator();
+    ndbrequire(p != 0);
+
+    Uint32 free_pct = 5;
+    ndb_mgm_get_int_parameter(p, CFG_DB_FREE_PCT, &free_pct);
+    m_ctx.m_mm.init_resource_spare(RG_DATAMEM, free_pct);
+
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     globalData.theStartLevel = NodeState::SL_STARTED;
     sendSTTORRY(signal);
   }
@@ -1091,7 +1085,10 @@ void Cmvmi::execSTART_ORD(Signal *signal) {
     for (unsigned int i = 1; i < MAX_NODES; i++) {
       if (getNodeInfo(i).m_type == NodeInfo::MGM) {
         jam();
-        globalTransporterRegistry.start_connecting(i);
+        const TrpId trpId = globalTransporterRegistry.get_the_only_base_trp(i);
+        if (trpId != 0) {
+          globalTransporterRegistry.start_connecting(trpId);
+        }
       }
     }
     g_eventLogger->info("First START_ORD executed to connect MGM servers");
@@ -1118,13 +1115,16 @@ void Cmvmi::execSTART_ORD(Signal *signal) {
       g_eventLogger->info("Received second START_ORD from node %u",
                           refToNode(signal->getSendersBlockRef()));
     }
-    // Disconnect all nodes as part of the system restart.
+    // Disconnect all transporters as part of the system restart.
     // We need to ensure that we are starting up
-    // without any connected nodes.
+    // without any connected transporters.
     for (unsigned int i = 1; i < MAX_NODES; i++) {
       if (i != getOwnNodeId() && getNodeInfo(i).m_type != NodeInfo::MGM) {
-        globalTransporterRegistry.start_disconnecting(i);
-        globalTransporterRegistry.setIOState(i, HaltIO);
+        const TrpId trpId = globalTransporterRegistry.get_the_only_base_trp(i);
+        if (trpId != 0) {
+          globalTransporterRegistry.start_disconnecting(trpId);
+          globalTransporterRegistry.setIOState(trpId, HaltIO);
+        }
       }
     }
     g_eventLogger->info("Disconnect all non-MGM servers");
@@ -1150,12 +1150,13 @@ void Cmvmi::execTAMPER_ORD(Signal *signal) {
   TamperOrd *const tamperOrd = (TamperOrd *)&signal->theData[0];
   Uint32 errNo = tamperOrd->errorNo;
 
-  if (errNo == 0) {
+  if (errNo <= 1) {
     jam();
-    signal->theData[0] = 0;
+    signal->theData[0] = errNo;
     for (Uint32 i = 0; blocks[i] != 0; i++) {
       sendSignal(blocks[i], GSN_NDB_TAMPER, signal, 1, JBB);
     }
+    sendSignal(CMVMI_REF, GSN_NDB_TAMPER, signal, 1, JBB);
     return;
   }
 
@@ -1214,6 +1215,12 @@ void Cmvmi::execTAMPER_ORD(Signal *signal) {
     /*--------------------------------------------------------------------*/
     jam();
     tuserblockref = DBTC_REF;
+  } else if (errNo < 9600) {
+    /*--------------------------------------------------------------------*/
+    // Insert errors into TRPMAN.
+    /*--------------------------------------------------------------------*/
+    jam();
+    tuserblockref = TRPMAN_REF;
   } else if (errNo < 10000) {
     /*--------------------------------------------------------------------*/
     // Insert errors into CMVMI.
@@ -2038,14 +2045,6 @@ void Cmvmi::execDUMP_STATE_ORD(Signal *signal) {
   }
 #endif
 
-#ifdef ERROR_INSERT
-  if (arg == 9004 && signal->getLength() == 2) {
-    SET_ERROR_INSERT_VALUE(9004);
-
-    /* Actual handling of dump code moved to TRPMAN */
-  }
-#endif
-
 #ifdef VM_TRACE
 #if 0
   {
@@ -2071,7 +2070,7 @@ void Cmvmi::execDUMP_STATE_ORD(Signal *signal) {
 #endif
 #endif
 
-  if (arg == 9999 || arg == 9006) {
+  if (arg == 9999) {
     Uint32 delay = 1000;
     switch (signal->getLength()) {
       case 1:
@@ -2453,15 +2452,6 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal) {
   }
 
   ndbinfo_send_scan_conf(signal, req, rl);
-}
-
-void Cmvmi::execNODE_START_REP(Signal *signal) {
-#ifdef ERROR_INSERT
-  if (ERROR_INSERTED(9002) && signal->theData[0] == getOwnNodeId()) {
-    signal->theData[0] = 9001;
-    execDUMP_STATE_ORD(signal);
-  }
-#endif
 }
 
 BLOCK_FUNCTIONS(Cmvmi)

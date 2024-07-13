@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2024, Oracle and/or its affiliates.
    Copyright (c) 2020, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -673,7 +674,11 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         int count = 0;
         try {
             op = clusterTransaction.getTableScanOperationLockModeExclusiveScanFlagKeyInfo(storeTable);
+<<<<<<< HEAD
             count = deletePersistentAll(op, true, 0, Long.MAX_VALUE);
+=======
+            count = deletePersistentAll(op, true, Long.MAX_VALUE);
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         } catch (ClusterJException ex) {
             failAutoTransaction();
             // TODO add table name to the error message
@@ -687,12 +692,18 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
     /** Delete all instances retrieved by the operation. The operation must have exclusive
      * access to the instances and have the ScanFlag.KEY_INFO flag set.
      * @param op the scan operation
+     * @param abort abort this transaction on error
+     * @param limit maximum number of instances to be deleted
      * @return the number of instances deleted
      */
+<<<<<<< HEAD
     public int deletePersistentAll(ScanOperation op,
                                    boolean abort,
                                    long skip,
                                    long limit) {
+=======
+    public int deletePersistentAll(ScanOperation op, boolean abort, long limit) {
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         int cacheCount = 0;
         int count = 0;
         int delete_count = 0;
@@ -708,6 +719,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
             int result = op.nextResult(fetch);
             switch (result) {
                 case RESULT_READY:
+<<<<<<< HEAD
                     if (skip <= 0 || count >= skip) {
                         op.deleteCurrentTuple();
                         ++cacheCount;
@@ -723,6 +735,14 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                         }
                     }
                     ++count;
+=======
+                    if(count < limit) {
+                      op.deleteCurrentTuple();
+                      ++count;
+                      ++cacheCount;
+                    }
+                    fetch = false;
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
                     break;
                 case SCAN_FINISHED:
                     done = true;
@@ -737,8 +757,9 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                     }
                     cacheCount = 0;
                     fetch = true;
+                    done = (count == limit);
                     break;
-                default: 
+                default:
                     throw new ClusterJException(
                             local.message("ERR_Next_Result_Illegal", result));
             }

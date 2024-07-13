@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -309,6 +310,13 @@ int runSetMinTimeBetweenLCP(NDBT_Context *ctx, NDBT_Step *step) {
     g_err << "Failed to set LCP to min value" << endl;
     return NDBT_FAILED;
   }
+  return NDBT_OK;
+}
+
+int runClearErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  CHECK3(restarter.insertErrorInAllNodes(0) == 0,
+         "failed to clear error insert value");
   return NDBT_OK;
 }
 
@@ -671,6 +679,8 @@ int runCreateAndDropAtRandom(NDBT_Context *ctx, NDBT_Step *step) {
       numExists--;
       if (numExists == 0) bias = 1;
     }
+    g_info << "Clear error insert 4013" << endl;
+    CHECK(restarter.insertErrorInAllNodes(0) == 0);
     i++;
   }
 
@@ -1084,6 +1094,11 @@ static int runDropTakeoverTest(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
 
+  g_info << "Clear error insert" << endl;
+  if (restarter.insertErrorInAllNodes(0) != 0) {
+    g_info << "Failed to clear error 5076/5077" << endl;
+    return NDBT_FAILED;
+  }
   return NDBT_OK;
 }
 
@@ -2538,11 +2553,13 @@ int runTableAddAttrsDuring(NDBT_Context *ctx, NDBT_Step *step) {
     ndbout << "Altering table" << endl;
 
     const NdbDictionary::Table *oldTable = dict->getTable(myTab.getName());
+    int nodeId = 0;
     if (oldTable) {
       NdbDictionary::Table newTable = *oldTable;
 
       char name[256];
       BaseString::snprintf(name, sizeof(name), "NEWCOL%d", l);
+<<<<<<< HEAD
       if (useDisk)
       {
         NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
@@ -2571,6 +2588,19 @@ int runTableAddAttrsDuring(NDBT_Context *ctx, NDBT_Step *step) {
         else
           res.insertErrorInNode(nodeId, 4039);
         ndbout << "Start alterTable with abortAlter" << endl;
+=======
+      NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1, false,
+                             true, 0, NdbDictionary::Column::StorageTypeMemory,
+                             true);
+      newTable.addColumn(newcol1);
+      // ToDo: check #loops, how many columns l
+      if (abortAlter == 0) {
+        CHECK2(dict->alterTable(*oldTable, newTable) == 0,
+               "TableAddAttrsDuring failed");
+      } else {
+        nodeId = res.getNode(NdbRestarter::NS_RANDOM);
+        res.insertErrorInNode(nodeId, 4029);
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         CHECK2(dict->alterTable(*oldTable, newTable) != 0,
                "TableAddAttrsDuring failed");
       }
@@ -2585,6 +2615,10 @@ int runTableAddAttrsDuring(NDBT_Context *ctx, NDBT_Step *step) {
       ndbout << "Failed to get oldTable" << endl;
       result= NDBT_FAILED;
       break;
+    }
+    if (nodeId) {
+      CHECK2(res.insertErrorInNode(nodeId, 0) == 0,
+             "failed to clear error insert");
     }
   }
 end:
@@ -11040,6 +11074,7 @@ TESTCASE("DropTableConcurrentLCP", "Drop a table while LCP is ongoing\n") {
   INITIALIZER(runSetMinTimeBetweenLCP);
   INITIALIZER(runSetDropTableConcurrentLCP);
   INITIALIZER(runDropTheTable);
+  FINALIZER(runClearErrorInsert);
   FINALIZER(runResetMinTimeBetweenLCP);
 }
 TESTCASE("DropTableConcurrentLCP2", "Drop a table while LCP is ongoing\n") {
@@ -11048,6 +11083,7 @@ TESTCASE("DropTableConcurrentLCP2", "Drop a table while LCP is ongoing\n") {
   INITIALIZER(runSetMinTimeBetweenLCP);
   INITIALIZER(runSetDropTableConcurrentLCP2);
   INITIALIZER(runDropTheTable);
+  FINALIZER(runClearErrorInsert);
   FINALIZER(runResetMinTimeBetweenLCP);
 }
 TESTCASE("CreateTableWhenDbIsFull",

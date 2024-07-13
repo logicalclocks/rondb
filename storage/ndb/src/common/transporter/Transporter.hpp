@@ -1,17 +1,22 @@
 /*
+<<<<<<< HEAD
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+=======
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -154,17 +159,18 @@ class Transporter {
   virtual bool doSend(bool need_wakeup = true) = 0;
 
   /* Get the configured maximum send buffer usage. */
-  Uint32 get_max_send_buffer() { return m_max_send_buffer; }
+  Uint32 get_max_send_buffer() const { return m_max_send_buffer; }
 
-  Uint32 get_connect_count() { return m_connect_count; }
+  Uint32 get_connect_count() const { return m_connect_count; }
 
   void inc_overload_count() { m_overload_count++; }
-  Uint32 get_overload_count() { return m_overload_count; }
+  Uint32 get_overload_count() const { return m_overload_count; }
   void inc_slowdown_count() { m_slowdown_count++; }
-  Uint32 get_slowdown_count() { return m_slowdown_count; }
+  Uint32 get_slowdown_count() const { return m_slowdown_count; }
   void set_recv_thread_idx(Uint32 recv_thread_idx) {
     m_recv_thread_idx = recv_thread_idx;
   }
+<<<<<<< HEAD
   void set_transporter_active(bool active)
   {
     m_is_active = active;
@@ -174,6 +180,11 @@ class Transporter {
     return m_is_active;
   }
   Uint32 get_recv_thread_idx() { return m_recv_thread_idx; }
+=======
+  void set_transporter_active(bool active) { m_is_active = active; }
+  bool is_transporter_active() const { return m_is_active; }
+  Uint32 get_recv_thread_idx() const { return m_recv_thread_idx; }
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
   TransporterType getTransporterType() const;
 

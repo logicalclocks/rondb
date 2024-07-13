@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1724,7 +1725,9 @@ int NdbScanOperation::nextResultNdbRecord(const char *&out_row,
     case 2:
       return retVal;
     case -1:
-      g_eventLogger->info("1:4008 on connection %d", theNdbCon->ptr2int());
+      g_eventLogger->info(
+          "NdbScanOperation::nextResultNdbRecord() 1:4008 on connection %d",
+          theNdbCon->ptr2int());
       setErrorCode(4008);  // Timeout
       break;
     case -2:
@@ -1812,7 +1815,7 @@ void NdbScanOperation::close(bool forceSend, bool releaseOp) {
   if (theNdbCon != nullptr) {
     if (DEBUG_NEXT_RESULT)
       g_eventLogger->info(
-          "close() theError.code = %d "
+          "NdbScanOperation::close() theError.code = %d "
           "m_api_receivers_count = %d "
           "m_conf_receivers_count = %d "
           "m_sent_receivers_count = %d",
@@ -3358,6 +3361,7 @@ int NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend) {
   if (seq == impl->getNodeSequence(nodeId) &&
       !send_next_scan_ordered(m_current_api_receiver)) {
     impl->incClientStat(Ndb::WaitScanResultCount, 1);
+<<<<<<< HEAD
     while (m_sent_receivers_count > 0 && !theError.code)
     {      
       int ret_code= poll_guard.wait_scan(3*timeout,
@@ -3368,6 +3372,16 @@ int NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend) {
         continue;
       if(ret_code == -1){
         g_eventLogger->info("2:4008 on connection %d", theNdbCon->ptr2int());
+=======
+    while (m_sent_receivers_count > 0 && !theError.code) {
+      int ret_code = poll_guard.wait_scan(3 * timeout, nodeId, forceSend);
+      if (ret_code == 0 && seq == impl->getNodeSequence(nodeId)) continue;
+      if (ret_code == -1) {
+        g_eventLogger->info(
+            "NdbIndexScanOperation::ordered_send_scan_wait_for_all() "
+            "2:4008 on connection %d",
+            theNdbCon->ptr2int());
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         setErrorCode(4008);
       } else {
         setErrorCode(4028);
@@ -3476,6 +3490,7 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
    * Wait for outstanding
    */
   impl->incClientStat(Ndb::WaitScanResultCount, 1);
+<<<<<<< HEAD
   while(theError.code == 0 && m_sent_receivers_count)
   {    
     int return_code= poll_guard->wait_scan(3*timeout,
@@ -3495,6 +3510,25 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
       m_sent_receivers_count = 0;
       theNdbCon->theReleaseOnClose = true;
       return -1;
+=======
+  while (theError.code == 0 && m_sent_receivers_count) {
+    int return_code = poll_guard->wait_scan(3 * timeout, nodeId, forceSend);
+    switch (return_code) {
+      case 0:
+        break;
+      case -1:
+        g_eventLogger->info(
+            "NdbScanOperation::close_impl() 3:4008 on connection %d",
+            theNdbCon->ptr2int());
+        setErrorCode(4008);
+        [[fallthrough]];
+      case -2:
+        m_api_receivers_count = 0;
+        m_conf_receivers_count = 0;
+        m_sent_receivers_count = 0;
+        theNdbCon->theReleaseOnClose = true;
+        return -1;
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     }
   }
 
@@ -3546,6 +3580,7 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
    * wait for close scan conf
    */
   impl->incClientStat(Ndb::WaitScanResultCount, 1);
+<<<<<<< HEAD
   while(m_sent_receivers_count+m_api_receivers_count+m_conf_receivers_count)
   {
     int return_code= poll_guard->wait_scan(3*timeout,
@@ -3565,6 +3600,26 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
       m_sent_receivers_count = 0;
       theNdbCon->theReleaseOnClose = true;
       return -1;
+=======
+  while (m_sent_receivers_count + m_api_receivers_count +
+         m_conf_receivers_count) {
+    int return_code = poll_guard->wait_scan(3 * timeout, nodeId, forceSend);
+    switch (return_code) {
+      case 0:
+        break;
+      case -1:
+        g_eventLogger->info(
+            "NdbScanOperation::close_impl() 4:4008 on connection %d",
+            theNdbCon->ptr2int());
+        setErrorCode(4008);
+        [[fallthrough]];
+      case -2:
+        m_api_receivers_count = 0;
+        m_conf_receivers_count = 0;
+        m_sent_receivers_count = 0;
+        theNdbCon->theReleaseOnClose = true;
+        return -1;
+>>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     }
   }
 
