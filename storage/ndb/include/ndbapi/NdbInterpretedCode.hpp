@@ -270,18 +270,18 @@ public:
                    Uint32 RegMemoryOffset,
                    Uint32 RegPos,
                    Uint32 RegSize,
-                   Uint32 RegDest);
+                   Uint32 RegDestSize);
   int read_partial(const NdbDictionary::Column *column,
                    Uint32 RegMemoryOffset,
                    Uint32 RegPos,
                    Uint32 RegSize,
-                   Uint32 RegDest);
+                   Uint32 RegDestSize);
   int read_full(Uint32 attrId,
                 Uint32 RegMemoryOffset,
-                Uint32 RegDest);
+                Uint32 RegDestSize);
   int read_full(const NdbDictionary::Column *column,
                 Uint32 RegMemoryOffset,
-                Uint32 RegDest);
+                Uint32 RegDestSize);
 
   /* Register arithmetic
    * -------------------
