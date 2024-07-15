@@ -166,21 +166,9 @@ class Transporter {
   void set_recv_thread_idx(Uint32 recv_thread_idx) {
     m_recv_thread_idx = recv_thread_idx;
   }
-<<<<<<< HEAD
-  void set_transporter_active(bool active)
-  {
-    m_is_active = active;
-  }
-  bool get_transporter_active()
-  {
-    return m_is_active;
-  }
-  Uint32 get_recv_thread_idx() { return m_recv_thread_idx; }
-=======
   void set_transporter_active(bool active) { m_is_active = active; }
   bool is_transporter_active() const { return m_is_active; }
   Uint32 get_recv_thread_idx() const { return m_recv_thread_idx; }
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
   TransporterType getTransporterType() const;
 

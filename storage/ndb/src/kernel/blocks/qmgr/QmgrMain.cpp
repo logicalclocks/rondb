@@ -8925,13 +8925,8 @@ void Qmgr::execPROCESSINFO_REP(Signal *signal) {
          takes a struct sockaddr * and length.
       */
       ndb_sockaddr addr =
-<<<<<<< HEAD
-        globalTransporterRegistry.get_connect_address(report->node_id);
-      processInfo->setHostAddress(& addr);
-=======
           globalTransporterRegistry.get_connect_address_node(report->node_id);
       processInfo->setHostAddress(&addr);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     }
   }
   releaseSections(handle);

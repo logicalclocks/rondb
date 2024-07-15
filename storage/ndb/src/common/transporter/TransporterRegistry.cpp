@@ -1,10 +1,6 @@
 /*
-<<<<<<< HEAD
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
-=======
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -107,7 +103,6 @@ class TransporterReceiveWatchdog {
 #endif
 };
 
-<<<<<<< HEAD
 bool
 TransporterRegistry::is_server(NodeId node_id) const
 {
@@ -121,26 +116,12 @@ TransporterRegistry::is_server(NodeId node_id) const
   return theNodeIdTransporters[node_id]->is_server();
 }
 
-ndb_sockaddr
-TransporterRegistry::get_connect_address(NodeId node_id) const
-{
-  Multi_Transporter *multi_trp = get_node_multi_transporter(node_id);
-  if (multi_trp != nullptr) {
-    if (multi_trp->get_num_active_transporters() > 0)
-    {
-      Transporter *trp = multi_trp->get_active_transporter(0);
-      return trp->m_connect_address;
-    }
-  }
-  return theNodeIdTransporters[node_id]->m_connect_address;
-=======
 ndb_sockaddr TransporterRegistry::get_connect_address_node(
     NodeId nodeId) const {
   return theNodeIdTransporters[nodeId]->m_connect_address;
 }
 ndb_sockaddr TransporterRegistry::get_connect_address(TrpId trpId) const {
   return allTransporters[trpId]->m_connect_address;
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 }
 
 Uint64 TransporterRegistry::get_bytes_sent(TrpId trpId) const {
@@ -1472,7 +1453,6 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
   Uint32 retVal = 0;
 
   /**
-<<<<<<< HEAD
    * It is important that we read data from transporters in a fair
    * manner. Thus it is important that not one transporter gets more
    * attention than others. To achieve this we decide which transporters
@@ -1580,15 +1560,6 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
      * Don't wait for sockets to receive data, we are already
      * ready to receive, thus set timeOutMillis = 0.
      */
-=======
-   * If any transporters have left-over data that was not fully received or
-   * executed in last loop, don't wait for more to arrive in poll.
-   * (Will still check if more arrived on other transporters).
-   * Ensure that retVal returns 'data available' even if nothing new.
-   */
-  if (!recvdata.m_recv_transporters.isclear() ||
-      !recvdata.m_has_data_transporters.isclear()) {
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     timeOutMillis = 0;
     retVal = 1;
   }
@@ -2002,75 +1973,8 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    * For SHM transporter the socket is only used to send wakeup
    * bytes. The m_has_data_transporters bitmap was set already in
    * pollReceive for SHM transporters.
-<<<<<<< HEAD
    *
    * 
-=======
-   */
-  for (Uint32 trp_id = recvdata.m_recv_transporters.find_first();
-       trp_id != BitmaskImpl::NotFound;
-       trp_id = recvdata.m_recv_transporters.find_next(trp_id + 1)) {
-    Transporter *transp = allTransporters[trp_id];
-    NodeId node_id = transp->getRemoteNodeId();
-    bool more_pending = false;
-    if (transp->getTransporterType() == tt_TCP_TRANSPORTER) {
-      TCP_Transporter *t = (TCP_Transporter *)transp;
-      assert(recvdata.m_transporters.get(trp_id));
-      assert(recv_thread_idx == transp->get_recv_thread_idx());
-
-      /**
-       * Check that transporter 'is CONNECTED'.
-       * A transporter can only be set into, or taken out of, 'is_connected'
-       * state by ::update_connections(). See comment there about
-       * synchronication between ::update_connections() and
-       * performReceive()
-       *
-       * Note that there is also the Transporter::isConnected(), which
-       * is a less restrictive check than 'is CONNECTED'. We may e.g.
-       * still be 'isConnected' while DISCONNECTING. isConnected()
-       * check should only be used in update_connections() to facilitate
-       * transitions between *CONNECT* states.
-       * CONNECTED should always imply -> isConnected().
-       * -> required in debug and instrumented builds
-       */
-      if (is_connected(trp_id)) {
-#if defined(VM_TRACE) || !defined(NDEBUG) || defined(ERROR_INSERT)
-        require(t->isConnected());
-#endif
-        int nBytes = t->doReceive(recvdata);
-        if (nBytes > 0) {
-          recvdata.transporter_recv_from(node_id);
-          recvdata.m_has_data_transporters.set(trp_id);
-        }
-        more_pending = t->hasPending();
-      }
-    } else {
-#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
-      require(transp->getTransporterType() == tt_SHM_TRANSPORTER);
-      SHM_Transporter *t = (SHM_Transporter *)transp;
-      assert(recvdata.m_transporters.get(trp_id));
-      if (is_connected(trp_id)) {
-#if defined(VM_TRACE) || !defined(NDEBUG) || defined(ERROR_INSERT)
-        require(t->isConnected());
-#endif
-        t->doReceive();
-        /**
-         * Ignore any data we read, the data wasn't collected by the
-         * shared memory transporter, it was simply read and thrown
-         * away, it is only a wakeup call to send data over the socket
-         * for shared memory transporters.
-         */
-      }
-#else
-      require(false);
-#endif
-    }
-    // If 'pending', more data is still available for immediate doReceive()
-    recvdata.m_recv_transporters.set(trp_id, more_pending);
-  }
-
-  /**
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
    * Unpack data either received above or pending from prev rounds.
    * For the Shared memory transporter m_has_data_transporters can
    * be set in pollReceive as well.
@@ -2112,11 +2016,11 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
       continue;
     }
     NodeId node_id = t->getRemoteNodeId();
+    bool more_pending = false;
 
     assert(recvdata.m_transporters.get(trp_id));
     assert(recv_thread_idx == t->get_recv_thread_idx());
 
-<<<<<<< HEAD
     /**
      * First check transporter 'is CONNECTED.
      * A transporter can only be set into, or taken out of, is_connected'
@@ -2148,6 +2052,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
               recvdata.transporter_recv_from(node_id);
               recvdata.m_has_data_transporters.set(trp_id);
             }
+            more_pending = t->hasPending();
           }
           else
           {
@@ -2181,6 +2086,9 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
             stop_unpacking = true;
             recvdata.m_stop_trp_id = trp_id;
           }
+          // If 'pending', more data is still available for immediate
+          // doReceive()
+          recvdata.m_recv_socket_transporters.set(trp_id, more_pending);
         }
         continue;
       }
@@ -2275,15 +2183,6 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
 #else
         require(false);
 #endif
-=======
-    if (is_connected(trp_id)) {
-#if defined(VM_TRACE) || !defined(NDEBUG) || defined(ERROR_INSERT)
-      require(t->isConnected());
-#endif
-      if (unlikely(recvdata.checkJobBuffer())) {
-        recvdata.m_last_trp_id = trp_id;  // Resume from trp after 'last_trp'
-        return 1;                         // Full, can't unpack more
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
       }
       if (unlikely(recvdata.m_handled_transporters.get(trp_id)))
         continue;  // Skip now to avoid starvation
@@ -2621,15 +2520,9 @@ void TransporterRegistry::start_connecting(TrpId trp_id) {
  * Return: 'true' if already fully DISCONNECTED, else 'false' if
  *          the asynch disconnect may still be in progres
  */
-<<<<<<< HEAD
-bool TransporterRegistry::start_disconnecting_trp(TrpId trp_id, int errnum,
-                                                  bool send_source) {
-  DEBUG_FPRINTF((stderr, "(%u)REG:start_disconnecting_trp(trp:%u, %d)\n",
-=======
 bool TransporterRegistry::start_disconnecting(TrpId trp_id, int errnum,
                                               bool send_source) {
   DEBUG_FPRINTF((stderr, "(%u)REG:start_disconnecting(trp:%u, %d)\n",
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
                  localNodeId, trp_id, errnum));
   switch (performStates[trp_id]) {
     case DISCONNECTED: {
@@ -3963,7 +3856,6 @@ Uint32 TransporterRegistry::get_num_active_transporters(Multi_Transporter *t) {
   return t->get_num_active_transporters();
 }
 
-<<<<<<< HEAD
 bool
 TransporterRegistry::get_active_node(Uint32 node_id)
 {
@@ -4004,12 +3896,12 @@ TransporterRegistry::set_active_node(Uint32 node_id,
       g_eventLogger->info("Activating Node %u", node_id);
     }
   }
-=======
+}
+
 bool TransporterRegistry::is_inactive_trp(TrpId trpId) const {
   assert(trpId < maxTransporters);
   assert(allTransporters[trpId] != nullptr);
   return !allTransporters[trpId]->is_transporter_active();
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 }
 
 /**

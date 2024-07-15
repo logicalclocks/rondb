@@ -273,507 +273,10 @@ int Ndb_mgmclient::set_always_encrypt_backup(bool on) const {
 /*****************************************************************************
  * HELP
  *****************************************************************************/
-<<<<<<< HEAD
-static const char *helpText =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "HELP                                   Print help text\n"
-    "HELP COMMAND                           Print detailed help for "
-    "COMMAND(e.g. SHOW)\n"
-#ifdef VM_TRACE  // DEBUG ONLY
-    "HELP DEBUG                             Help for debug compiled version\n"
-#endif
-    "SHOW                                   Print information about cluster\n"
-    "CREATE NODEGROUP <id>,<id>...          Add a Nodegroup containing nodes\n"
-    "DROP NODEGROUP <NG>                    Drop nodegroup with id NG\n"
-    "START BACKUP [<backup id>] [ENCRYPT [PASSWORD='<password>']] "
-    "[SNAPSHOTSTART | SNAPSHOTEND] [NOWAIT | WAIT STARTED | WAIT COMPLETED]\n"
-    "                                       Start backup "
-    "(default WAIT COMPLETED,SNAPSHOTEND)\n"
-    "ABORT BACKUP <backup id>               Abort backup\n"
-    "SHUTDOWN                               Shutdown all processes in cluster\n"
-    "PROMPT [<prompt-string>]               Toggle the prompt between string "
-    "specified\n"
-    "                                       or default prompt if no string "
-    "specified\n"
-    "CLUSTERLOG ON [<severity>] ...         Enable Cluster logging\n"
-    "CLUSTERLOG OFF [<severity>] ...        Disable Cluster logging\n"
-    "CLUSTERLOG TOGGLE [<severity>] ...     Toggle severity filter on/off\n"
-    "CLUSTERLOG INFO                        Print cluster log information\n"
-    "<id> HOSTNAME [<hostname/IP>]          Change hostname of a deactivated node\n"
-    "<id> ACTIVATE                          Activate a node previously deactivated\n"
-    "<id> DEACTIVATE                        Deactivate a node (and stop it)\n"
-    "<id> START                             Start data node (started with -n)\n"
-    "<id> RESTART [-n] [-i] [-a] [-f]       Restart data or management server "
-    "node\n"
-    "<id> STOP [-a] [-f]                    Stop data or management server "
-    "node\n"
-    "<id> NODELOG DEBUG ON                  Enable Debug logging in node log\n"
-    "<id> NODELOG DEBUG OFF                 Disable Debug logging in node log\n"
-    "ENTER SINGLE USER MODE <id>            Enter single user mode\n"
-    "EXIT SINGLE USER MODE                  Exit single user mode\n"
-    "<id> STATUS                            Print status\n"
-    "<id> CLUSTERLOG {<category>=<level>}+  Set log level for cluster log\n"
-    "PURGE STALE SESSIONS                   Reset reserved nodeid's in the "
-    "mgmt server\n"
-    "CONNECT [<connectstring>]              Connect to management server "
-    "(reconnect if already connected)\n"
-    "<id> REPORT <report-type>              Display report for <report-type>\n"
-    "QUIT                                   Quit management client\n";
-
-static const char *helpTextShow =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for SHOW command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "SHOW Print information about cluster\n\n"
-    "SHOW               Print information about cluster.The status reported is "
-    "from\n"
-    "                   the perspective of the data nodes. API and Management "
-    "Server nodes\n"
-    "                   are only reported as connected once the data nodes "
-    "have started.\n";
-
-static const char *helpTextHelp =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for HELP command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "HELP List available commands of RonDB Management Client\n\n"
-    "HELP               List available commands.\n";
-
-static const char *helpTextBackup =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for BACKUP command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "BACKUP  A backup is a snapshot of the database at a given time. \n"
-    "        The backup consists of three main parts:\n\n"
-    "        Metadata: the names and definitions of all database tables. \n"
-    "        Table records: the data actually stored in the database tables \n"
-    "        at the time that the backup was made.\n"
-    "        Transaction log: a sequential record telling how \n"
-    "        and when data was stored in the database.\n\n"
-    "        Backups are stored on each data node in the cluster that \n"
-    "        participates in the backup.\n\n"
-    "        The cluster log records backup related events (such as \n"
-    "        backup started, aborted, finished).\n";
-
-static const char *helpTextStartBackup =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for START BACKUP command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "START BACKUP  Start a cluster backup\n\n"
-    "START BACKUP [<backup id>] [ENCRYPT [PASSWORD='<password>']]\n"
-    "    [SNAPSHOTSTART | SNAPSHOTEND] [NOWAIT | WAIT STARTED | WAIT "
-    "COMPLETED]\n"
-    "                   Start a backup for the cluster.\n"
-    "                   Each backup gets an ID number that is reported to the\n"
-    "                   user. This ID number can help you find the backup on "
-    "the\n"
-    "                   file system, or ABORT BACKUP if you wish to cancel a \n"
-    "                   running backup.\n"
-    "                   You can also start specified backup using START BACKUP "
-    "<backup id> \n\n"
-    "                   <backup id> \n"
-    "                     Start a specified backup using <backup id> as bakcup "
-    "ID number.\n"
-    "                   <password> \n"
-    "                      Password for encrypting the backup files.\n"
-    "                      Should be enclosed in double/single quotes, \n"
-    "                      should be less than 256 characters in length and\n"
-    "                      be at least one character long.\n"
-    "                      Allowed characters: 0-9, A-Z, a-z, space( ), "
-    "comma(,), \n"
-    "                      #&()*+-./:;<=>?@[]_{|}~.\n"
-    "                   SNAPSHOTSTART \n"
-    "                     Backup snapshot is taken around the time the backup "
-    "is started.\n"
-    "                   SNAPSHOTEND \n"
-    "                     Backup snapshot is taken around the time the backup "
-    "is completed.\n"
-    "                   NOWAIT \n"
-    "                     Start a cluster backup and return immediately.\n"
-    "                     The management client will return control directly\n"
-    "                     to the user without waiting for the backup\n"
-    "                     to have started.\n"
-    "                     The status of the backup is recorded in the Cluster "
-    "log.\n"
-    "                   WAIT STARTED\n"
-    "                     Start a cluster backup and return until the backup "
-    "has\n"
-    "                     started. The management client will wait for the "
-    "backup \n"
-    "                     to have started before returning control to the "
-    "user.\n"
-    "                   WAIT COMPLETED\n"
-    "                     Start a cluster backup and return until the backup "
-    "has\n"
-    "                     completed. The management client will wait for the "
-    "backup\n"
-    "                     to complete before returning control to the user.\n";
-
-static const char *helpTextAbortBackup =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for ABORT BACKUP command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "ABORT BACKUP  Abort a cluster backup\n\n"
-    "ABORT BACKUP <backup id>  \n"
-    "                   Abort a backup that is already in progress.\n"
-    "                   The backup id can be seen in the cluster log or in "
-    "the\n"
-    "                   output of the START BACKUP command.\n";
-
-static const char *helpTextShutdown =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for SHUTDOWN command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "SHUTDOWN  Shutdown the cluster\n\n"
-    "SHUTDOWN           Shutdown the data nodes and management nodes.\n"
-    "                   MySQL Servers and NDBAPI nodes are currently not \n"
-    "                   shut down by issuing this command.\n";
-
-static const char *helpTextClusterlogOn =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for CLUSTERLOG ON command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "CLUSTERLOG ON  Enable Cluster logging\n\n"
-    "CLUSTERLOG ON [<severity>] ... \n"
-    "                   Turn the cluster log on.\n"
-    "                   It tells management server which severity levels\n"
-    "                   messages will be logged.\n\n"
-    "                   <severity> can be any one of the following values:\n"
-    "                   ALERT, CRITICAL, ERROR, WARNING, INFO, DEBUG.\n";
-
-static const char *helpTextClusterlogOff =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for CLUSTERLOG OFF command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "CLUSTERLOG OFF  Disable Cluster logging\n\n"
-    "CLUSTERLOG OFF [<severity>] ...  \n"
-    "                   Turn the cluster log off.\n"
-    "                   It tells management server which serverity\n"
-    "                   levels logging will be disabled.\n\n"
-    "                   <severity> can be any one of the following values:\n"
-    "                   ALERT, CRITICAL, ERROR, WARNING, INFO, DEBUG.\n";
-
-static const char *helpTextClusterlogToggle =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for CLUSTERLOG TOGGLE command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "CLUSTERLOG TOGGLE  Toggle severity filter on/off\n\n"
-    "CLUSTERLOG TOGGLE [<severity>] ...  \n"
-    "                   Toggle serverity filter on/off.\n"
-    "                   If a serverity level is already enabled,then it will\n"
-    "                   be disabled after you use the command,vice versa.\n\n"
-    "                   <severity> can be any one of the following values:\n"
-    "                   ALERT, CRITICAL, ERROR, WARNING, INFO, DEBUG.\n";
-
-static const char *helpTextClusterlogInfo =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for CLUSTERLOG INFO command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "CLUSTERLOG INFO  Print cluster log information\n\n"
-    "CLUSTERLOG INFO    Display which severity levels have been enabled,\n"
-    "                   see HELP CLUSTERLOG for list of the severity levels.\n";
-
-static const char* helpTextHostname =
-    "---------------------------------------------------------------------------\n"
-    " RonDB -- Management Client -- Help for HOSTNAME command\n"
-    "---------------------------------------------------------------------------\n"
-    "HOSTNAME Change hostname of a currently deactive node\n\n"
-    "<id> HOSTNAME [<hostname>]    Set the new hostname of the node identified  \n"
-    "                              by <id>.\n\n";
-
-static const char* helpTextActivate =
-    "---------------------------------------------------------------------------\n"
-    " RonDB -- Management Client -- Help for ACTIVATE command\n"
-    "---------------------------------------------------------------------------\n"
-    "ACTIVATE Activate a previously deactive node\n\n"
-    "<id> ACTIVATE        Activate the node identified by <id>.\n\n"
-    "We can define a node in the configuration for future growth. For example we\n"
-    "can start with a single node, but still define the number of replicas to be\n"
-    "3 and 3 nodes are defined. 2 of those of nodes are defined as Not Active.  \n"
-    "If later we want to start any of these nodes we need to execute the        \n"
-    "ACTIVATE NODE command. The active nodes won't allow an inactive node to    \n"
-    "join the cluster. It is possible to create inactive nodes of all types, API\n"
-    ", Management nodes and Data nodes. When starting an inactive node it must  \n"
-    "always be started with the flag --initial since it is assumed to be an     \n"
-    "initial start of the node. The actual start will then be treated as a      \n"
-    "normal initial node restart of the now activated node.                     \n";
-
-static const char* helpTextDeactivate =
-    "---------------------------------------------------------------------------\n"
-    " RonDB -- Management Client -- Help for DEACTIVATE command\n"
-    "---------------------------------------------------------------------------\n"
-    "DEACTIVATE Dectivate a previously deactive node\n\n"
-    "<id> DEACTIVATE        Deactivate the node identified by <id>.\n\n"
-    "We can deactivate a node currently active. A node can be used temporarily  \n"
-    "during a change of the cluster to ensure that we have proper replication   \n"
-    "during the change. As an example if we have a cluster with 2 data nodes and\n"
-    "we want to change one of the data nodes to another machine we can first    \n"
-    "activate a node and start it up. Thus after this start we have 3 replicas, \n"
-    "now we can deactivate the node we no longer need. This will both stop the  \n"
-    "node and deactivate the node. The node can only rejoin the cluster through \n"
-    "a new activation and initial start after this. Thus we cannot reuse any    \n"
-    "log files and checkpoint files from the deactivated node.                  \n";
-
-static const char *helpTextStart =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for START command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "START  Start data node (started with -n)\n\n"
-    "<id> START         Start the data node identified by <id>.\n"
-    "                   Only starts data nodes that have not\n"
-    "                   yet joined the cluster. These are nodes\n"
-    "                   launched or restarted with the -n(--nostart)\n"
-    "                   option.\n\n"
-    "                   It does not launch the ndbd process on a remote\n"
-    "                   machine.\n";
-
-static const char *helpTextRestart =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for RESTART command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "RESTART  Restart data or management server node\n\n"
-    "<id> RESTART [-n] [-i] [-a] [-f]\n"
-    "                   Restart the data or management node <id>(or All data "
-    "nodes).\n\n"
-    "                   -n (--nostart) restarts the node but does not\n"
-    "                   make it join the cluster. Use '<id> START' to\n"
-    "                   join the node to the cluster.\n\n"
-    "                   -i (--initial) perform initial start.\n"
-    "                   This cleans the file system (ndb_<id>_fs)\n"
-    "                   and the node will copy data from another node\n"
-    "                   in the same node group during start up.\n\n"
-    "                   Consult the documentation before using -i.\n\n"
-    "                   INCORRECT USE OF -i WILL CAUSE DATA LOSS!\n\n"
-    "                   -a Aborts the node, not syncing GCP.\n\n"
-    "                   -f Force restart even if that would mean the\n"
-    "                      whole cluster would need to be restarted\n";
-
-static const char *helpTextStop =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for STOP command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "STOP  Stop data or management server node\n\n"
-    "<id> STOP [-a] [-f]\n"
-    "                   Stop the data or management server node <id>.\n\n"
-    "                   ALL STOP will just stop all data nodes.\n\n"
-    "                   If you desire to also shut down management servers,\n"
-    "                   use SHUTDOWN instead.\n\n"
-    "                   -a Aborts the node, not syncing GCP.\n\n"
-    "                   -f Force stop even if that would mean the\n"
-    "                      whole cluster would need to be stopped\n";
-
-static const char *helpTextEnterSingleUserMode =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for ENTER SINGLE USER MODE command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "ENTER SINGLE USER MODE  Enter single user mode\n\n"
-    "ENTER SINGLE USER MODE <id> \n"
-    "                   Enters single-user mode, whereby only the MySQL Server "
-    "or NDBAPI\n"
-    "                   node identified by <id> is allowed to access the "
-    "database. \n";
-
-static const char *helpTextExitSingleUserMode =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for EXIT SINGLE USER MODE command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "EXIT SINGLE USER MODE  Exit single user mode\n\n"
-    "EXIT SINGLE USER MODE \n"
-    "                   Exits single-user mode, allowing all SQL nodes \n"
-    "                   (that is, all running mysqld processes) to access the "
-    "database. \n";
-
-static const char *helpTextNodelog =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for NODELOG command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "<id> NODELOG DEBUG ON   Enable debug messages in node log\n"
-    "<id> NODELOG DEBUG OFF  Disable debug messages in node log\n";
-
-static const char *helpTextStatus =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for STATUS command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "STATUS  Print status\n\n"
-    "<id> STATUS        Displays status information for the data node <id>\n"
-    "                   or for All data nodes. \n\n"
-    "                   e.g.\n"
-    "                      ALL STATUS\n"
-    "                      1 STATUS\n\n"
-    "                   When a node is starting, the start phase will be\n"
-    "                   listed.\n\n"
-    "                   Start Phase   Meaning\n"
-    "                   1             Clear the cluster file "
-    "system(ndb_<id>_fs). \n"
-    "                                 This stage occurs only when the "
-    "--initial option \n"
-    "                                 has been specified.\n"
-    "                   2             This stage sets up Cluster connections, "
-    "establishes \n"
-    "                                 inter-node communications and starts "
-    "Cluster heartbeats.\n"
-    "                   3             The arbitrator node is elected.\n"
-    "                   4             Initializes a number of internal cluster "
-    "variables.\n"
-    "                   5             For an initial start or initial node "
-    "restart,\n"
-    "                                 the redo log files are created.\n"
-    "                   6             If this is an initial start, create "
-    "internal system tables.\n"
-    "                   7             Update internal variables. \n"
-    "                   8             In a system restart, rebuild all "
-    "indexes.\n"
-    "                   9             Update internal variables. \n"
-    "                   10            The node can be connected by APIs and "
-    "can receive events.\n"
-    "                   11            At this point,event delivery is handed "
-    "over to\n"
-    "                                 the node joining the cluster.\n"
-    "(see manual for more information)\n";
-
-static const char *helpTextClusterlog =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for CLUSTERLOG command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "CLUSTERLOG  Set log level for cluster log\n\n"
-    " <id> CLUSTERLOG {<category>=<level>}+  \n"
-    "                   Logs <category> events with priority less than \n"
-    "                   or equal to <level> in the cluster log.\n\n"
-    "                   <category> can be any one of the following values:\n"
-    "                   STARTUP, SHUTDOWN, STATISTICS, CHECKPOINT, "
-    "NODERESTART,\n"
-    "                   CONNECTION, ERROR, INFO, CONGESTION, DEBUG, or BACKUP. "
-    "\n\n"
-    "                   <level> is represented by one of the numbers \n"
-    "                   from 1 to 15 inclusive, where 1 indicates 'most "
-    "important' \n"
-    "                   and 15 'least important'.\n\n"
-    "                   <severity> can be any one of the following values:\n"
-    "                   ALERT, CRITICAL, ERROR, WARNING, INFO, DEBUG.\n";
-
-static const char *helpTextPurgeStaleSessions =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for PURGE STALE SESSIONS command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "PURGE STALE SESSIONS  Reset reserved nodeid's in the mgmt server\n\n"
-    "PURGE STALE SESSIONS \n"
-    "                   Running this statement forces all reserved \n"
-    "                   node IDs to be checked; any that are not \n"
-    "                   being used by nodes acutally connected to \n"
-    "                   the cluster are then freed.\n\n"
-    "                   This command is not normally needed, but may be\n"
-    "                   required in some situations where failed nodes \n"
-    "                   cannot rejoin the cluster due to failing to\n"
-    "                   allocate a node id.\n";
-
-static const char *helpTextConnect =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for CONNECT command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "CONNECT  Connect to management server (reconnect if already connected)\n\n"
-    "CONNECT [<connectstring>] \n"
-    "                   Connect to management server.\n"
-    "                   The optional parameter connectstring specifies the \n"
-    "                   connect string to user.\n\n"
-    "                   A connect string may be:\n"
-    "                       mgm-server\n"
-    "                       mgm-server:port\n"
-    "                       mgm1:port,mgm2:port\n"
-    "                   With multiple management servers comma separated.\n"
-    "                   The management client with try to connect to the \n"
-    "                   management servers in the order they are listed.\n\n"
-    "                   If no connect string is specified, the default \n"
-    "                   is used. \n";
-
-static const char *helpTextReport =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for REPORT command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "REPORT  Displays a report of type <report-type> for the specified data \n"
-    "        node, or for all data nodes using ALL\n";
-static void helpTextReportFn();
-static void helpTextReportTypeOptionFn();
-
-static const char *helpTextQuit =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for QUIT command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "QUIT  Quit management client\n\n"
-    "QUIT               Terminates the management client. \n";
-
-static const char *helpTextPrompt =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for PROMPT command\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "PROMPT  Toggle the prompt between string specified\n"
-    "        or default prompt if no string specified\n\n"
-    "PROMPT [<prompt-string>]       Changes the prompt to <prompt-string>\n"
-    "                               No string resets the prompt to default\n\n";
-
-#ifdef VM_TRACE  // DEBUG ONLY
-static const char *helpTextDebug =
-    "--------------------------------------------------------------------------"
-    "-\n"
-    " RonDB -- Management Client -- Help for Debugging (Internal use only)\n"
-    "--------------------------------------------------------------------------"
-    "-\n"
-    "SHOW PROPERTIES                       Print config properties object\n"
-    "<id> LOGLEVEL {<category>=<level>}+   Set log level\n"
-=======
 // clang-format off
 static const char* helpText =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help\n"
+" RonDB -- Management Client -- Help\n"
 "---------------------------------------------------------------------------\n"
 "HELP                                   Print help text\n"
 "HELP COMMAND                           Print detailed help for COMMAND(e.g. SHOW)\n"
@@ -795,6 +298,9 @@ static const char* helpText =
 "CLUSTERLOG OFF [<severity>] ...        Disable Cluster logging\n"
 "CLUSTERLOG TOGGLE [<severity>] ...     Toggle severity filter on/off\n"
 "CLUSTERLOG INFO                        Print cluster log information\n"
+"<id> HOSTNAME [<hostname/IP>]          Change hostname of a deactivated node\n"
+"<id> ACTIVATE                          Activate a node previously deactivated\n"
+"<id> DEACTIVATE                        Deactivate a node (and stop it)\n"
 "<id> START                             Start data node (started with -n)\n"
 "<id> RESTART [-n] [-i] [-a] [-f]       Restart data or management server node\n"
 "<id> STOP [-a] [-f]                    Stop data or management server node\n"
@@ -812,7 +318,7 @@ static const char* helpText =
 
 static const char* helpTextShow =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for SHOW command\n"
+" RonDB -- Management Client -- Help for SHOW command\n"
 "---------------------------------------------------------------------------\n"
 "SHOW Print information about cluster\n\n"
 "SHOW               Print information about cluster.The status reported is from\n"
@@ -824,13 +330,13 @@ static const char* helpTextHelp =
 "---------------------------------------------------------------------------\n"
 " NDB Cluster -- Management Client -- Help for HELP command\n"
 "---------------------------------------------------------------------------\n"
-"HELP List available commands of NDB Cluster Management Client\n\n"
+"HELP List available commands of RonDB Management Client\n\n"
 "HELP               List available commands.\n"
 ;
 
 static const char* helpTextBackup =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for BACKUP command\n"
+" RonDB -- Management Client -- Help for BACKUP command\n"
 "---------------------------------------------------------------------------\n"
 "BACKUP  A backup is a snapshot of the database at a given time. \n"
 "        The backup consists of three main parts:\n\n"
@@ -889,7 +395,7 @@ static const char* helpTextStartBackup =
 
 static const char* helpTextAbortBackup =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for ABORT BACKUP command\n"
+" RonDB -- Management Client -- Help for ABORT BACKUP command\n"
 "---------------------------------------------------------------------------\n"
 "ABORT BACKUP  Abort a cluster backup\n\n"
 "ABORT BACKUP <backup id>  \n"
@@ -900,7 +406,7 @@ static const char* helpTextAbortBackup =
 
 static const char* helpTextShutdown =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for SHUTDOWN command\n"
+" RonDB -- Management Client -- Help for SHUTDOWN command\n"
 "---------------------------------------------------------------------------\n"
 "SHUTDOWN  Shutdown the cluster\n\n"
 "SHUTDOWN           Shutdown the data nodes and management nodes.\n"
@@ -910,7 +416,7 @@ static const char* helpTextShutdown =
 
 static const char* helpTextClusterlogOn =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG ON command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG ON command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG ON  Enable Cluster logging\n\n"
 "CLUSTERLOG ON [<severity>] ... \n"
@@ -923,7 +429,7 @@ static const char* helpTextClusterlogOn =
 
 static const char* helpTextClusterlogOff =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG OFF command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG OFF command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG OFF  Disable Cluster logging\n\n"
 "CLUSTERLOG OFF [<severity>] ...  \n"
@@ -936,7 +442,7 @@ static const char* helpTextClusterlogOff =
 
 static const char* helpTextClusterlogToggle =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG TOGGLE command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG TOGGLE command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG TOGGLE  Toggle severity filter on/off\n\n"
 "CLUSTERLOG TOGGLE [<severity>] ...  \n"
@@ -949,16 +455,59 @@ static const char* helpTextClusterlogToggle =
 
 static const char* helpTextClusterlogInfo =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG INFO command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG INFO command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG INFO  Print cluster log information\n\n"
 "CLUSTERLOG INFO    Display which severity levels have been enabled,\n"
 "                   see HELP CLUSTERLOG for list of the severity levels.\n"
 ;
 
+static const char* helpTextHostname =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for HOSTNAME command\n"
+"---------------------------------------------------------------------------\n"
+"HOSTNAME Change hostname of a currently deactive node\n\n"
+"<id> HOSTNAME [<hostname>]    Set the new hostname of the node identified   \n"
+"                              by <id>.\n\n"
+;
+
+static const char* helpTextActivate =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for ACTIVATE command\n"
+"---------------------------------------------------------------------------\n"
+"ACTIVATE Activate a previously deactive node\n\n"
+"<id> ACTIVATE        Activate the node identified by <id>.\n\n"
+"We can define a node in the configuration for future growth. For example we\n"
+"can start with a single node, but still define the number of replicas to be\n"
+"3 and 3 nodes are defined. 2 of those of nodes are defined as Not Active.  \n"
+"If later we want to start any of these nodes we need to execute the        \n"
+"ACTIVATE NODE command. The active nodes won't allow an inactive node to    \n"
+"join the cluster. It is possible to create inactive nodes of all types, API\n"
+", Management nodes and Data nodes. When starting an inactive node it must  \n"
+"always be started with the flag --initial since it is assumed to be an     \n"
+"initial start of the node. The actual start will then be treated as a      \n"
+"normal initial node restart of the now activated node.                     \n"
+;
+static const char* helpTextDeactivate =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for DEACTIVATE command\n"
+"---------------------------------------------------------------------------\n"
+"DEACTIVATE Dectivate a previously deactive node\n\n"
+"<id> DEACTIVATE        Deactivate the node identified by <id>.\n\n"
+"We can deactivate a node currently active. A node can be used temporarily  \n"
+"during a change of the cluster to ensure that we have proper replication   \n"
+"during the change. As an example if we have a cluster with 2 data nodes and\n"
+"we want to change one of the data nodes to another machine we can first    \n"
+"activate a node and start it up. Thus after this start we have 3 replicas, \n"
+"now we can deactivate the node we no longer need. This will both stop the  \n"
+"node and deactivate the node. The node can only rejoin the cluster through \n"
+"a new activation and initial start after this. Thus we cannot reuse any    \n"
+"log files and checkpoint files from the deactivated node.                  \n"
+;
+
 static const char* helpTextStart =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for START command\n"
+" RonDB -- Management Client -- Help for START command\n"
 "---------------------------------------------------------------------------\n"
 "START  Start data node (started with -n)\n\n"
 "<id> START         Start the data node identified by <id>.\n"
@@ -972,7 +521,7 @@ static const char* helpTextStart =
 
 static const char* helpTextRestart =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for RESTART command\n"
+" RonDB -- Management Client -- Help for RESTART command\n"
 "---------------------------------------------------------------------------\n"
 "RESTART  Restart data or management server node\n\n"
 "<id> RESTART [-n] [-i] [-a] [-f]\n"
@@ -993,7 +542,7 @@ static const char* helpTextRestart =
 
 static const char* helpTextStop =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for STOP command\n"
+" RonDB -- Management Client -- Help for STOP command\n"
 "---------------------------------------------------------------------------\n"
 "STOP  Stop data or management server node\n\n"
 "<id> STOP [-a] [-f]\n"
@@ -1008,7 +557,7 @@ static const char* helpTextStop =
 
 static const char* helpTextEnterSingleUserMode =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for ENTER SINGLE USER MODE command\n"
+" RonDB -- Management Client -- Help for ENTER SINGLE USER MODE command\n"
 "---------------------------------------------------------------------------\n"
 "ENTER SINGLE USER MODE  Enter single user mode\n\n"
 "ENTER SINGLE USER MODE <id> \n"
@@ -1018,7 +567,7 @@ static const char* helpTextEnterSingleUserMode =
 
 static const char* helpTextExitSingleUserMode =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for EXIT SINGLE USER MODE command\n"
+" RonDB -- Management Client -- Help for EXIT SINGLE USER MODE command\n"
 "---------------------------------------------------------------------------\n"
 "EXIT SINGLE USER MODE  Exit single user mode\n\n"
 "EXIT SINGLE USER MODE \n"
@@ -1028,7 +577,7 @@ static const char* helpTextExitSingleUserMode =
 
 static const char* helpTextNodelog =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for NODELOG command\n"
+" RonDB -- Management Client -- Help for NODELOG command\n"
 "---------------------------------------------------------------------------\n"
 "<id> NODELOG DEBUG ON   Enable debug messages in node log\n"
 "<id> NODELOG DEBUG OFF  Disable debug messages in node log\n"
@@ -1036,7 +585,7 @@ static const char* helpTextNodelog =
 
 static const char* helpTextStatus =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for STATUS command\n"
+" RonDB -- Management Client -- Help for STATUS command\n"
 "---------------------------------------------------------------------------\n"
 "STATUS  Print status\n\n"
 "<id> STATUS        Displays status information for the data node <id>\n"
@@ -1068,7 +617,7 @@ static const char* helpTextStatus =
 
 static const char* helpTextClusterlog =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG  Set log level for cluster log\n\n"
 " <id> CLUSTERLOG {<category>=<level>}+  \n"
@@ -1087,7 +636,7 @@ static const char* helpTextClusterlog =
 
 static const char* helpTextPurgeStaleSessions =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for PURGE STALE SESSIONS command\n"
+" RonDB -- Management Client -- Help for PURGE STALE SESSIONS command\n"
 "---------------------------------------------------------------------------\n"
 "PURGE STALE SESSIONS  Reset reserved nodeid's in the mgmt server\n\n"
 "PURGE STALE SESSIONS \n"
@@ -1103,7 +652,7 @@ static const char* helpTextPurgeStaleSessions =
 
 static const char* helpTextConnect =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CONNECT command\n"
+" RonDB -- Management Client -- Help for CONNECT command\n"
 "---------------------------------------------------------------------------\n"
 "CONNECT  Connect to management server (reconnect if already connected)\n\n"
 "CONNECT [<connectstring>] \n"
@@ -1123,7 +672,7 @@ static const char* helpTextConnect =
 
 static const char* helpTextReport =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for REPORT command\n"
+" RonDB -- Management Client -- Help for REPORT command\n"
 "---------------------------------------------------------------------------\n"
 "REPORT  Displays a report of type <report-type> for the specified data \n"
 "        node, or for all data nodes using ALL\n"
@@ -1134,7 +683,7 @@ static void helpTextReportTypeOptionFn();
 
 static const char* helpTextQuit =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for QUIT command\n"
+" RonDB -- Management Client -- Help for QUIT command\n"
 "---------------------------------------------------------------------------\n"
 "QUIT  Quit management client\n\n"
 "QUIT               Terminates the management client. \n"                    
@@ -1143,7 +692,7 @@ static const char* helpTextQuit =
 
 static const char* helpTextPrompt =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for PROMPT command\n"
+" RonDB -- Management Client -- Help for PROMPT command\n"
 "---------------------------------------------------------------------------\n"
 "PROMPT  Toggle the prompt between string specified\n"
 "        or default prompt if no string specified\n\n"
@@ -1159,7 +708,6 @@ static const char* helpTextDebug =
 "---------------------------------------------------------------------------\n"
 "SHOW PROPERTIES                       Print config properties object\n"
 "<id> LOGLEVEL {<category>=<level>}+   Set log level\n"
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 #ifdef ERROR_INSERT
 "<id> ERROR <errorNo>                  Inject error into NDB node\n"
 #endif

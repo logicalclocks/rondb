@@ -68,14 +68,10 @@ Trpman::Trpman(Block_context &ctx, Uint32 instanceno)
   addRecSignal(GSN_SYNC_THREAD_VIA_REQ, &Trpman::execSYNC_THREAD_VIA_REQ);
   addRecSignal(GSN_ACTIVATE_TRP_REQ, &Trpman::execACTIVATE_TRP_REQ);
   addRecSignal(GSN_UPD_QUERY_DIST_ORD, &Trpman::execUPD_QUERY_DIST_ORD);
-<<<<<<< HEAD
   addRecSignal(GSN_SEND_PUSH_ABORTREQ, &Trpman::execSEND_PUSH_ABORTREQ);
-
-=======
   addRecSignal(GSN_NODE_START_REP, &Trpman::execNODE_START_REP, true);
   addRecSignal(GSN_READ_CONFIG_REQ, &Trpman::execREAD_CONFIG_REQ);
   addRecSignal(GSN_STTOR, &Trpman::execSTTOR);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   addRecSignal(GSN_NDB_TAMPER, &Trpman::execNDB_TAMPER, true);
   addRecSignal(GSN_DUMP_STATE_ORD, &Trpman::execDUMP_STATE_ORD);
   addRecSignal(GSN_DBINFO_SCANREQ, &Trpman::execDBINFO_SCANREQ);
@@ -91,7 +87,6 @@ static NodeBitmask c_error_9000_nodes_mask;
 extern Uint32 MAX_RECEIVED_SIGNALS;
 #endif
 
-<<<<<<< HEAD
 void
 Trpman::startCONTINUEB(Signal *signal)
 {
@@ -134,12 +129,7 @@ Trpman::execCONTINUEB(Signal *signal)
   sendCONTINUEB(signal);
 }
 
-bool
-Trpman::handles_this_node(Uint32 nodeId, bool all)
-{
-=======
 bool Trpman::handles_this_trp(TrpId trpId) {
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   /* If there's only one receiver then no question */
   if (globalData.ndbMtReceiveThreads <= (Uint32)1) return true;
 
@@ -158,21 +148,14 @@ TrpId Trpman::get_the_only_base_trp(NodeId nodeId) const {
 }
 
 void Trpman::execOPEN_COMORD(Signal *signal) {
-<<<<<<< HEAD
-  // Connect to the specified NDB node, only QMGR allowed communication
-  // so far with the node
-
   startCONTINUEB(signal); //Start CONTINUEB processing if required
 
-  const BlockReference userRef = signal->theData[0];
-=======
   /**
    * Connect to the specified NDB node, only QMGR allowed communication
    * so far with the node. Even if multi-transporters will be used to
    * communicate with node, we initially open only the single base transporter.
    */
   const BlockReference userRef [[maybe_unused]] = signal->theData[0];
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   jamEntry();
 
   const Uint32 len = signal->getLength();

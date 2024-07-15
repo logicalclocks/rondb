@@ -3361,27 +3361,17 @@ int NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend) {
   if (seq == impl->getNodeSequence(nodeId) &&
       !send_next_scan_ordered(m_current_api_receiver)) {
     impl->incClientStat(Ndb::WaitScanResultCount, 1);
-<<<<<<< HEAD
-    while (m_sent_receivers_count > 0 && !theError.code)
-    {      
+    while (m_sent_receivers_count > 0 && !theError.code) {      
       int ret_code= poll_guard.wait_scan(3*timeout,
                                          nodeId,
                                          forceSend,
                                          &impl->m_start_time);
-      if (ret_code == 0 && seq == impl->getNodeSequence(nodeId))
-        continue;
-      if(ret_code == -1){
-        g_eventLogger->info("2:4008 on connection %d", theNdbCon->ptr2int());
-=======
-    while (m_sent_receivers_count > 0 && !theError.code) {
-      int ret_code = poll_guard.wait_scan(3 * timeout, nodeId, forceSend);
       if (ret_code == 0 && seq == impl->getNodeSequence(nodeId)) continue;
-      if (ret_code == -1) {
+      if(ret_code == -1) {
         g_eventLogger->info(
             "NdbIndexScanOperation::ordered_send_scan_wait_for_all() "
             "2:4008 on connection %d",
             theNdbCon->ptr2int());
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         setErrorCode(4008);
       } else {
         setErrorCode(4028);
@@ -3490,29 +3480,11 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
    * Wait for outstanding
    */
   impl->incClientStat(Ndb::WaitScanResultCount, 1);
-<<<<<<< HEAD
-  while(theError.code == 0 && m_sent_receivers_count)
-  {    
+  while (theError.code == 0 && m_sent_receivers_count) {
     int return_code= poll_guard->wait_scan(3*timeout,
                                            nodeId,
                                            forceSend,
                                            &impl->m_start_time);
-    switch(return_code){
-    case 0:
-      break;
-    case -1:
-      g_eventLogger->info("3:4008 on connection %d", theNdbCon->ptr2int());
-      setErrorCode(4008);
-      [[fallthrough]];
-    case -2:
-      m_api_receivers_count = 0;
-      m_conf_receivers_count = 0;
-      m_sent_receivers_count = 0;
-      theNdbCon->theReleaseOnClose = true;
-      return -1;
-=======
-  while (theError.code == 0 && m_sent_receivers_count) {
-    int return_code = poll_guard->wait_scan(3 * timeout, nodeId, forceSend);
     switch (return_code) {
       case 0:
         break;
@@ -3528,7 +3500,6 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
         m_sent_receivers_count = 0;
         theNdbCon->theReleaseOnClose = true;
         return -1;
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     }
   }
 
@@ -3580,30 +3551,12 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
    * wait for close scan conf
    */
   impl->incClientStat(Ndb::WaitScanResultCount, 1);
-<<<<<<< HEAD
-  while(m_sent_receivers_count+m_api_receivers_count+m_conf_receivers_count)
-  {
+  while (m_sent_receivers_count + m_api_receivers_count +
+         m_conf_receivers_count) {
     int return_code= poll_guard->wait_scan(3*timeout,
                                            nodeId,
                                            forceSend,
                                            &impl->m_start_time);
-    switch(return_code){
-    case 0:
-      break;
-    case -1:
-      g_eventLogger->info("4:4008 on connection %d", theNdbCon->ptr2int());
-      setErrorCode(4008);
-      [[fallthrough]];
-    case -2:
-      m_api_receivers_count = 0;
-      m_conf_receivers_count = 0;
-      m_sent_receivers_count = 0;
-      theNdbCon->theReleaseOnClose = true;
-      return -1;
-=======
-  while (m_sent_receivers_count + m_api_receivers_count +
-         m_conf_receivers_count) {
-    int return_code = poll_guard->wait_scan(3 * timeout, nodeId, forceSend);
     switch (return_code) {
       case 0:
         break;
@@ -3619,7 +3572,6 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
         m_sent_receivers_count = 0;
         theNdbCon->theReleaseOnClose = true;
         return -1;
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     }
   }
 

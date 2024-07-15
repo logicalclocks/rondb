@@ -1028,15 +1028,9 @@ int NdbTransaction::executeNoBlobs(NdbTransaction::ExecType aTypeOfExec,
                              "file a bug.");
         DBUG_PRINT("error", ("This timeout should never occure, execute()"));
         g_eventLogger->error(
-<<<<<<< HEAD
-            "Forcibly trying to rollback txn (%p"
-                             ") to try to clean up data node resources.",
-                             this);
-=======
             "Forcibly trying to rollback txn (0x%x 0x%x"
             ") to try to clean up data node resources.",
             (Uint32)theTransactionId, (Uint32)(theTransactionId >> 32));
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         executeNoBlobs(NdbTransaction::Rollback);
         theError.code = 4012;
         theError.status = NdbError::PermanentError;
@@ -1588,16 +1582,10 @@ int NdbTransaction::sendROLLBACK()  // Send a TCROLLBACKREQ signal;
     tSignal.setData(tTransId1, 2);
     tSignal.setData(tTransId2, 3);
     if (theError.code == 4012) {
-<<<<<<< HEAD
-      g_eventLogger->error("Sending TCROLLBACKREQ with Bad flag");
-      tSignal.setLength(tSignal.getLength() + 1); // + flags
-      tSignal.setData(0x1, 4); // potentially bad data
-=======
       g_eventLogger->error("Sending TCROLLBACKREQ with Bad flag to %u",
                            theDBnode);
       tSignal.setLength(tSignal.getLength() + 1);  // + flags
       tSignal.setData(0x1, 4);                     // potentially bad data
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     }
     tReturnCode = impl->sendSignal(&tSignal, theDBnode);
     if (tReturnCode != -1) {
@@ -2615,11 +2603,7 @@ from other transactions.
     if (tNoComp >= tNoSent) {
       return 0;	// No more operations to wait for
     }            // if
-<<<<<<< HEAD
-     // Not completed the reception yet.
-=======
                  // Not completed the reception yet.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   } else {
 #ifdef NDB_NO_DROPPED_SIGNAL
     abort();

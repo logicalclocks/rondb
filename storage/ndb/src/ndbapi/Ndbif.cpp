@@ -941,11 +941,7 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
         }
       } else {
 #ifdef VM_TRACE
-<<<<<<< HEAD
-      g_eventLogger->info("Received TCKEY_FAILCONF wo/ operation");
-=======
         g_eventLogger->info("Received TCKEY_FAILCONF wo/ operation");
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 #endif
       }
       if (tFirstData & 1) {
@@ -977,11 +973,7 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
         }
       }
 #ifdef VM_TRACE
-<<<<<<< HEAD
-    g_eventLogger->info("Received TCKEY_FAILREF wo/ operation");
-=======
       g_eventLogger->info("Received TCKEY_FAILREF wo/ operation");
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 #endif
       return;
     }

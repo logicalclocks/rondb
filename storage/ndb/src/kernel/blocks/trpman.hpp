@@ -75,26 +75,17 @@ public:
   DistributionHandler m_distribution_handle;
   bool m_distribution_handler_inited;
 
-<<<<<<< HEAD
-protected:
-  bool getParam(const char* name, Uint32* count) override;
-private:
-  void sendSTTORRY(Signal*);
-  void sendCONTINUEB(Signal*);
-  bool handles_this_node(Uint32 nodeId, bool all = false);
-  void close_com_failed_node(Signal*, Uint32);
-  void enable_com_node(Signal*, Uint32);
-  bool m_init_continueb;
-=======
  protected:
   bool getParam(const char *name, Uint32 *count) override;
 
  private:
+  void sendSTTORRY(Signal*);
+  void sendCONTINUEB(Signal*);
   TrpId get_the_only_base_trp(NodeId nodeId) const;
   bool handles_this_trp(TrpId trpId);
   void close_com_failed_node(Signal *, NodeId);
   void enable_com_node(Signal *, NodeId);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+  bool m_init_continueb;
 };
 
 class TrpmanProxy : public LocalProxy {

@@ -760,21 +760,12 @@ extern "C" int ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
       addr.set_port(cfg.ids[i].port);
       SocketClient s;
       s.set_connect_timeout(handle->timeout);
-<<<<<<< HEAD
-      if (!s.init(addr.get_address_family(), false))
-      {
-        fprintf(handle->errstream, 
-                "Unable to create socket, "
-                "while trying to connect with connect string: %s\n",
-                cfg.makeConnectString(buf, sizeof(buf)));
-=======
-      if (!s.init(addr.get_address_family())) {
+      if (!s.init(addr.get_address_family(), false)) {
         if (verbose > 0)
           fprintf(handle->errstream,
                   "Unable to create socket, "
                   "while trying to connect with connect string: %s\n",
                   cfg.makeConnectString(buf, sizeof(buf)));
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
         setError(handle, NDB_MGM_COULD_NOT_CONNECT_TO_SOCKET, __LINE__,
                  "Unable to create socket, "

@@ -460,11 +460,6 @@ bool Transporter::connect_client(NdbSocket &&socket) {
   }
 #endif
   update_connect_state(true);
-<<<<<<< HEAD
-  isServerCurr = false;
-  m_transporter_registry.unlockMultiTransporters();
-=======
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   DBUG_RETURN(true);
 }
 
@@ -562,12 +557,7 @@ void Transporter::checksum_state::dumpBadChecksumInfo(
 }
 
 void Transporter::set_get(ndb_socket_t fd, int level, int optval,
-<<<<<<< HEAD
-                          const char *optname, int val) {
-  (void)optname;
-=======
                           const char *optname [[maybe_unused]], int val) {
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   int actual = 0, defval = 0;
 
   ndb_getsockopt(fd, level, optval, &defval);

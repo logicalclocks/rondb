@@ -553,7 +553,6 @@ class TransporterRegistry {
     return m_use_only_ipv4;
   }
   bool is_server(NodeId) const;
-  ndb_sockaddr get_connect_address(NodeId node_id) const;
 
   ndb_sockaddr get_connect_address_node(NodeId nodeId) const;
   ndb_sockaddr get_connect_address(TrpId trpId) const;

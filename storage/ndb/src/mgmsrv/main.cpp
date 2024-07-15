@@ -422,7 +422,6 @@ static int mgmd_main(int argc, char **argv) {
     }
   }
 
-<<<<<<< HEAD
   if (opt_service_name)
   {
     NdbConfig_SetServiceName(opt_service_name);
@@ -437,8 +436,6 @@ static int mgmd_main(int argc, char **argv) {
     }
   }
 
-=======
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   /* Setup use of event logger */
   g_eventLogger->setCategory(opt_logname);
 
