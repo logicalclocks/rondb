@@ -761,7 +761,6 @@ class alignas(NDB_CL) SimulatedBlock
   const char *getThreadName();
   const char *getThreadDescription();
   void flush_send_buffers();
-  void insert_activate_trp(TrpId trp_id);
   void set_watchdog_counter();
   void assign_recv_thread_new_trp(TrpId trp_id);
   void assign_multi_trps_to_send_threads();

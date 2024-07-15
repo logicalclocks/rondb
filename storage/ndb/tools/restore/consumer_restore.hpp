@@ -117,7 +117,7 @@ class BackupRestore : public BackupConsumer {
   bool table(const TableS &) override;
   bool fk(Uint32 type, const void *ptr) override;
   bool endOfTables() override;
-  bool endOfTablesFK() override;
+  bool endOfTablesFK(bool at_rebuild) override;
   bool tuple(const TupleS &, Uint32 fragId) override;
   void tuple_free() override;
   virtual void tuple_a(restore_callback_t *cb);

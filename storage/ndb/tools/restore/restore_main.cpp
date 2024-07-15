@@ -428,9 +428,10 @@ static struct my_option my_long_options[] = {
      "Do not restore intermediate tables with #sql-prefixed names",
      &opt_exclude_intermediate_sql_tables, nullptr, nullptr, GET_BOOL, NO_ARG,
      1, 0, 0, 0, 0, 0},
-    {"disable-indexes", NDB_OPT_NOSHORT, "Disable indexes and foreign keys",
+    {"disable-indexes", 'D', "Disable unique indexes and foreign keys",
      &ga_disable_indexes, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-    {"rebuild-indexes", NDB_OPT_NOSHORT, "Rebuild indexes", &ga_rebuild_indexes,
+    {"rebuild-indexes", 'R', "Rebuild unique indexes and foreign keys",
+     &ga_rebuild_indexes,
      nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
     {"skip-unknown-objects", 256, "Skip unknown object when parsing backup",
      &ga_skip_unknown_objects, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0,
@@ -943,13 +944,19 @@ bool create_consumers(RestoreThreadData *data) {
   }
 
   if (ga_restore_epoch) {
+    // --restore-epoch is set. See comment by _restore_meta above.
     restore->m_restore_epoch_requested = true;
     if (data->m_part_id == 1) restore->m_restore_epoch = true;
   }
 
   if (ga_disable_indexes) {
+    // --disable-indexes is set. See comment by _restore_meta above.
     restore->m_metadata_work_requested = true;
-    if (data->m_part_id == 1) restore->m_disable_indexes = true;
+    if (data->m_part_id == 1)
+    {
+      restore->m_disable_indexes = true;
+      data->m_disable_indexes = true;
+    }
   }
 
   if (ga_rebuild_indexes) {
@@ -959,7 +966,8 @@ bool create_consumers(RestoreThreadData *data) {
 
   if (ga_with_apply_status) {
     restore->m_with_apply_status = true;
-    if (data->m_part_id == 1) restore->m_delete_epoch_tuple = true;
+    if (data->m_part_id == (Uint32)ga_part_count)
+      restore->m_rebuild_indexes = true;
   }
 
   if (opt_include_stored_grants) {
@@ -1948,7 +1956,8 @@ int do_restore(RestoreThreadData *thrdata) {
     return NdbToolsProgramExitCode::FAILED;
   }
 
-  if (!thrdata->m_restore_meta) {
+  if (!(thrdata->m_restore_meta || thrdata->m_disable_indexes))
+  {
     /**
      * Only thread 1 is allowed to restore metadata objects. restore_meta
      * flag is set to true on thread 1, which causes consumer-restore to
@@ -2077,7 +2086,7 @@ int do_restore(RestoreThreadData *thrdata) {
       return NdbToolsProgramExitCode::FAILED;
     }
     if (!ga_disable_indexes && !ga_rebuild_indexes) {
-      if (!g_consumers[i]->endOfTablesFK()) {
+      if (!g_consumers[i]->endOfTablesFK(false)) {
         restoreLogger.log_error("Restore: Failed while closing tables FKs");
         return NdbToolsProgramExitCode::FAILED;
       }
@@ -2433,7 +2442,7 @@ int do_restore(RestoreThreadData *thrdata) {
       }
     }
     for (Uint32 j = 0; j < g_consumers.size(); j++) {
-      if (!g_consumers[j]->endOfTablesFK()) {
+      if (!g_consumers[j]->endOfTablesFK(true)) {
         return NdbToolsProgramExitCode::FAILED;
       }
     }

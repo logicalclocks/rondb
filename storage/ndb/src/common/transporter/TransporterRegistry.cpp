@@ -1146,7 +1146,7 @@ SendStatus TransporterRegistry::prepareSendOverAllLinks(
       DEBUG("Discarding message due to trp_id = 0");
       return SEND_OK;
     }
-    require(t->get_transporter_active());
+    require(t->is_transporter_active());
 
     SendStatus status = prepareSendTemplate(sendHandle, signalHeader, prio,
                                             signalData, t, section);
@@ -2052,7 +2052,8 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
               recvdata.transporter_recv_from(node_id);
               recvdata.m_has_data_transporters.set(trp_id);
             }
-            more_pending = t->hasPending();
+            TCP_Transporter *tcp_t = (TCP_Transporter *)t;
+            more_pending = tcp_t->hasPending();
           }
           else
           {

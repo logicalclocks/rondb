@@ -132,7 +132,6 @@ void mt_getSendPerformanceTimers(Uint32 send_instance, Uint64 &exec_time,
 Uint32 mt_getNumSendThreads();
 Uint32 mt_getNumThreads();
 void mt_flush_send_buffers(Uint32 self);
-void mt_insert_activate_trp(TrpId trp_id);
 void mt_set_watchdog_counter(Uint32 self);
 void mt_assign_recv_thread_new_trp(TrpId trp_id);
 void mt_assign_multi_trps_to_send_threads();

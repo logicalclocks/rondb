@@ -3190,8 +3190,26 @@ bool BackupRestore::endOfTables() {
   return true;
 }
 
-bool BackupRestore::endOfTablesFK() {
-  if (!m_restore_meta && !m_rebuild_indexes && !m_disable_indexes) return true;
+bool BackupRestore::endOfTablesFK(bool at_rebuild) {
+  /*
+   * BackupConsumer::endOfTablesFK is called in two situations:
+   * 1) As part of metadata restore, before any data restore has begun, with
+   *    argument at_rebuild==false. Will only be called in this way if neither
+   *    --disable-indexes nor --rebuild-indexes is set. In this case,
+   *    we only want to create foreign keys on thread 1, and only if
+   *    --restore-meta is set. These two conditions are ensured by testing
+   *    m_restore_meta.
+   */
+  if (!at_rebuild && !m_restore_meta)
+      return true;
+  /*
+   * 2) At the end of the restore process, when no more data is to be restored,
+   *    with argument at_rebuild==true. Will only be called in this way if
+   *    --rebuild-indexes is set. In this case, we only want to create foreign
+   *    keys on the last thread. This is ensured by testing m_rebuild_indexes.
+ */
+  if (at_rebuild && !m_rebuild_indexes)
+      return true;
 
   NdbDictionary::Dictionary *dict = m_ndb->getDictionary();
   restoreLogger.log_info("Create foreign keys");

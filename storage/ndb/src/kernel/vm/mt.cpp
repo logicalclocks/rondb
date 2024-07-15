@@ -2163,9 +2163,6 @@ class thr_send_threads {
   }
   Uint32 get_send_instance(TrpId trp_id);
 
-  /* Insert trp into send queue during activate multi trp */
-  void insert_activate_trp(TrpId);
-
 private:
   struct thr_send_thread_instance* get_send_thread_instance_by_trp(TrpId);
 
@@ -2534,31 +2531,6 @@ thr_send_threads::start_send_threads()
   m_started_threads = true;
 }
 
-void
-thr_send_threads::insert_activate_trp(TrpId trp_id)
-{
-  /**
-   * During change neighbours to ensure that we send the
-   * ACTIVATE_TRP_REQ signal to the other side independent of timing
-   * of when we change to the multi transporters.
-   *
-   * During this state we hold all send thread mutexes. The transporter
-   * has been removed as neighbour previous to this call, thus it won't
-   * disappear due to us removing the neighbour flag.
-   */
-  if (m_trp_state[trp_id].m_data_available > 0)
-  {
-    m_trp_state[trp_id].m_data_available++;
-    if (m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD &&
-        m_trp_state[trp_id].m_in_list_no_neighbour == false)
-    {
-      struct thr_send_thread_instance *send_instance;
-      send_instance = get_send_thread_instance_by_trp(trp_id);
-      insert_trp(trp_id, send_instance);
-    }
-  }
-}
-
 struct thr_send_thread_instance*
 thr_send_threads::get_send_thread_instance_by_num(Uint32 instance_no)
 {
@@ -2586,7 +2558,7 @@ thr_send_threads::get_send_thread_instance_by_trp(TrpId trp_id) {
 void thr_send_threads::insert_trp(
     TrpId trp_id, struct thr_send_thread_instance *send_instance) {
   struct thr_send_trps &trp_state = m_trp_state[trp_id];
-  assert(trp_state.m_data_available > 0);
+  require(trp_state.m_data_available > 0);
 
   send_instance->m_more_trps = true;
   /* Ensure the lock free ::data_available see 'm_more_trps == true' */
@@ -2601,9 +2573,6 @@ void thr_send_threads::insert_trp(
   struct thr_send_trps &last_trp_state = m_trp_state[last_trp];
   trp_state.m_prev = 0;
   trp_state.m_next = 0;
-  require(trp_state.m_data_available > 0);
-  require(trp_state.m_in_list_no_neighbour == false);
-  trp_state.m_in_list_no_neighbour = true;
   send_instance->m_last_trp = trp_id;
 
   if (first_trp == 0) {
@@ -3707,34 +3676,13 @@ bool thr_send_threads::handle_send_trp(
   }
 
   /**
-   * We only return buffers here when we are calling this from a send
-   * thread. The send thread returns the send buffers using chunks,
-   * thus in most cases the call to release_chunk will return
-   * immediately, but at times it will release a chunk of send buffers.
-   * It is important to not hold the send mutex while performing this
-   * call since that would require holding two hot mutexes at the same
-   * time. There is no requirement to hold them simultaneously since
-   * they protect different things.
+   * Note that we do not yet return any send_buffers to the
+   * global pool: handle_send_trp() may be called from either
+   * a send-thread, or a worker-thread doing 'assist send'.
+   * These has different policies for releasing send_buffers,
+   * which should be handled by the respective callers.
+   * (release_chunk() or release_global())
    *
-   * The send thread mutex protects the order to send to transporters.
-   * The send thread buffer mutexes protects the list of free send
-   * buffers kept by each send thread instance.
-   *
-   * When this is called from the block thread we don't need to release
-   * any buffers, this is done in the block thread after completing its
-   * assistance to the send thread.
-   */
-  if (is_send_thread(thr_no))
-  {
-    /* Release chunk-wise to decrease pressure on lock */
-    send_instance->m_watchdog_counter = 3;
-    send_instance->m_send_buffer_pool.release_chunk(
-                                   g_thr_repository->m_mm,
-                                   RG_TRANSPORTER_BUFFERS,
-                                   send_instance->m_instance_no);
-  }
-
-  /**
    * Either own perform_send() processing, or external 'alert'
    * could have signaled that there are more sends pending.
    * If we had no progress in perform_send, we conclude that
@@ -3746,8 +3694,6 @@ bool thr_send_threads::handle_send_trp(
   now = NdbTick_getCurrentTicks();
 
   NdbMutex_Lock(send_instance->send_thread_mutex);
-  require(m_trp_state[trp_id].m_neighbour_trp ||
-          m_trp_state[trp_id].m_in_list_no_neighbour == false);
 #ifdef VM_TRACE
   my_thread_yield();
 #endif
@@ -4035,6 +3981,11 @@ void thr_send_threads::run_send_thread(Uint32 instance_no) {
         assert(!is_enqueued(trp_id, this_send_thread));
         break;
       }
+
+      /* Release chunk-wise to decrease pressure on lock */
+      this_send_thread->m_watchdog_counter = 3;
+      this_send_thread->m_send_buffer_pool.release_chunk(
+          g_thr_repository->m_mm, RG_TRANSPORTER_BUFFERS, instance_no);
 
       /**
        * We set trp_id = 0 for the very rare case where theRestartFlag is set
@@ -8553,15 +8504,6 @@ void mt_flush_send_buffers(Uint32 self) {
   struct thr_repository *rep = g_thr_repository;
   struct thr_data *selfptr = &rep->m_thread[self];
   do_flush(selfptr);
-}
-
-void
-mt_insert_activate_trp(TrpId trp_id)
-{
-  if (g_send_threads)
-  {
-    g_send_threads->insert_activate_trp(trp_id);
-  }
 }
 
 void
