@@ -1,10 +1,6 @@
 /*
-<<<<<<< HEAD
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
-=======
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,

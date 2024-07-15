@@ -2559,7 +2559,6 @@ int runTableAddAttrsDuring(NDBT_Context *ctx, NDBT_Step *step) {
 
       char name[256];
       BaseString::snprintf(name, sizeof(name), "NEWCOL%d", l);
-<<<<<<< HEAD
       if (useDisk)
       {
         NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
@@ -2588,19 +2587,6 @@ int runTableAddAttrsDuring(NDBT_Context *ctx, NDBT_Step *step) {
         else
           res.insertErrorInNode(nodeId, 4039);
         ndbout << "Start alterTable with abortAlter" << endl;
-=======
-      NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1, false,
-                             true, 0, NdbDictionary::Column::StorageTypeMemory,
-                             true);
-      newTable.addColumn(newcol1);
-      // ToDo: check #loops, how many columns l
-      if (abortAlter == 0) {
-        CHECK2(dict->alterTable(*oldTable, newTable) == 0,
-               "TableAddAttrsDuring failed");
-      } else {
-        nodeId = res.getNode(NdbRestarter::NS_RANDOM);
-        res.insertErrorInNode(nodeId, 4029);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         CHECK2(dict->alterTable(*oldTable, newTable) != 0,
                "TableAddAttrsDuring failed");
       }

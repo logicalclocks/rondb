@@ -59,11 +59,7 @@ public interface SessionSPI extends Session {
 
     int deletePersistentAll(DomainTypeHandler<?> domainTypeHandler);
 
-<<<<<<< HEAD
     int deletePersistentAll(ScanOperation op, boolean abort, long skip, long limit);
-=======
-    int deletePersistentAll(ScanOperation op, boolean abort, long limit);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
     void begin();
 

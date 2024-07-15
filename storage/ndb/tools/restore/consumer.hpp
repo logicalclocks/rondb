@@ -46,31 +46,6 @@ class BackupConsumer {
   virtual void tuple_free() {}
   virtual void endOfTuples() {}
   virtual bool logEntry(const LogEntry &) { return true; }
-<<<<<<< HEAD
-  virtual void endOfLogEntrys(){}
-  virtual bool prepare_staging(const TableS &){return true;}
-  virtual bool finalize_staging(const TableS &){return true;}
-  virtual bool finalize_table(const TableS &){return true;}
-  virtual bool rebuild_indexes(const TableS &) { return true;}
-  virtual bool createSystable(const TableS &){ return true;}
-  virtual bool update_apply_status(const RestoreMetaData &metaData, bool snapshotstart)
-    {return true;}
-  virtual bool delete_epoch_tuple()
-    {return true;}
-  virtual bool report_started(unsigned backup_id, unsigned node_id)
-    {return true;}
-  virtual bool report_meta_data(unsigned backup_id, unsigned node_id)
-    {return true;}
-  virtual bool report_data(unsigned backup_id, unsigned node_id)
-    {return true;}
-  virtual bool report_log(unsigned backup_id, unsigned node_id)
-    {return true;}
-  virtual bool report_completed(unsigned backup_id, unsigned node_id)
-    {return true;}
-  virtual bool isMissingTable(const TableS &){return false;}
-  virtual bool has_temp_error() {return false;}
-  virtual bool has_data_error() {return false;}
-=======
   virtual void endOfLogEntrys() {}
   virtual bool prepare_staging(const TableS &) { return true; }
   virtual bool finalize_staging(const TableS &) { return true; }
@@ -97,7 +72,6 @@ class BackupConsumer {
   }
   virtual bool isMissingTable(const TableS &) { return false; }
   virtual void log_temp_errors() { return; }
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   virtual bool table_equal(const TableS &) { return true; }
   virtual bool table_compatible_check(TableS &) { return true; }
   virtual bool check_blobs(TableS &) { return true; }

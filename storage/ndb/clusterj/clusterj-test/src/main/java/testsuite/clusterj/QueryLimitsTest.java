@@ -154,17 +154,14 @@ public class QueryLimitsTest extends AbstractQueryTest {
         if (session.currentTransaction().isActive()) {
             session.currentTransaction().rollback();
         }
-<<<<<<< HEAD
-=======
         try {
             // bad limit; cannot use skip for delete operations
             setLimits(1, 1);
             deleteEqualQuery("int_not_null_none", "none", 8, 1);
-            error("Bad limit for delete should fail.");
         } catch (ClusterJUserException ex) {
+            error("Limit for delete should not fail.");
             // good catch
         }
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         failOnError();        
     }
 

@@ -57,7 +57,6 @@ static const char *_nowait_nodes = 0;
 static NdbNodeBitmask nowait_nodes_bitmask;
 static int _verbose = 1;
 
-<<<<<<< HEAD
 static struct my_option my_long_options[] =
 {
   NdbStdOpt::usage,
@@ -100,38 +99,6 @@ extern "C"
 void catch_signal(int signum)
 {
 }
-=======
-static struct my_option my_long_options[] = {
-    NdbStdOpt::usage,
-    NdbStdOpt::help,
-    NdbStdOpt::version,
-    NdbStdOpt::ndb_connectstring,
-    NdbStdOpt::mgmd_host,
-    NdbStdOpt::connectstring,
-    NdbStdOpt::connect_retry_delay,
-    NdbStdOpt::connect_retries,
-    NDB_STD_OPT_DEBUG{"no-contact", 'n', "Wait for cluster no contact",
-                      &_no_contact, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0,
-                      nullptr, 0, nullptr},
-    {"not-started", NDB_OPT_NOSHORT, "Wait for cluster not started",
-     &_not_started, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0,
-     nullptr},
-    {"single-user", NDB_OPT_NOSHORT,
-     "Wait for cluster to enter single user mode", &_single_user, nullptr,
-     nullptr, GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, nullptr},
-    {"timeout", 't', "Timeout to wait in seconds", &_timeout, nullptr, nullptr,
-     GET_INT, REQUIRED_ARG, 120, 0, 0, nullptr, 0, nullptr},
-    {"wait-nodes", 'w', "Node ids to wait on, e.g. '1,2-4'", &_wait_nodes,
-     nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr},
-    {"nowait-nodes", NDB_OPT_NOSHORT,
-     "Nodes that will not be waited for, e.g. '2,3,4-7'", &_nowait_nodes,
-     nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr},
-    {"verbose", 'v', "Control the amount of printout", &_verbose, nullptr,
-     nullptr, GET_INT, REQUIRED_ARG, 1, 0, 2, nullptr, 0, nullptr},
-    NdbStdOpt::end_of_options};
-
-extern "C" void catch_signal(int /*signum*/) {}
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
 #include "../src/common/util/parse_mask.hpp"
 
@@ -490,17 +457,13 @@ int waitClusterStatus(const char *_addr, const ndb_mgm_node_status _status) {
       }
     }
 
-<<<<<<< HEAD
     if (_status == NDB_MGM_NODE_STATUS_STARTED &&
         any_started &&
         _allow_partial_start)
     {
       allInState = true;
     }
-    if (!allInState) {
-=======
     if (_verbose > 1 && !allInState) {
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
       char timestamp[9];
       ndbout << "[" << getTimeAsString(timestamp, sizeof(timestamp)) << "] "
              << "Waiting for cluster enter state "

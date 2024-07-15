@@ -3211,33 +3211,6 @@ static int bugtest_36756() {
     {{-1, 626, 0, 0, NdbTransaction::Aborted},   // AE
        {0, 626, 0, 626,
         NdbTransaction::Started}},  // IE
-<<<<<<< HEAD
-    // PkInsert
-    // Note operation order reversed for insert
-    {{-1, 630, 0, 0, NdbTransaction::Aborted},   // AE
-     {0, 630, 0, 630, NdbTransaction::Started}}, // IE
-    // PkUpdate
-    {{-1, 626, 0, 0, NdbTransaction::Aborted},   // AE
-     {0, 626, 0, 626, NdbTransaction::Started}}, // IE
-    // PkWrite
-    {{0, 0, 0, 0, NdbTransaction::Started},      // AE
-     {0, 0, 0, 0, NdbTransaction::Started}},     // IE
-    // PkDelete
-    {{-1, 626, 0, 0, NdbTransaction::Aborted},   // AE
-     {0, 626, 0, 626, NdbTransaction::Started}}, // IE
-    // UkRead
-    {{-1, 626, 0, 0, NdbTransaction::Aborted},   // AE
-     {0, 626, 0, 626, NdbTransaction::Started}}, // IE
-    // UkUpdate
-    {{-1, 626, 0, 0, NdbTransaction::Aborted},   // AE
-     {0, 626, 0, 626, NdbTransaction::Started}}, // IE
-    // UkWrite
-    {{-1, 626, 0, 0, NdbTransaction::Aborted},   // AE
-     {0, 626, 0, 626, NdbTransaction::Started}}, // IE
-    // UkDelete
-    {{-1, 626, 0, 0, NdbTransaction::Aborted},   // AE
-     {0, 626, 0, 626, NdbTransaction::Started}}  // IE
-=======
                                     // PkInsert
                                     // Note operation order reversed for insert
       {{-1, 630, 0, 0, NdbTransaction::Aborted},    // AE
@@ -3263,7 +3236,6 @@ static int bugtest_36756() {
                                                     // UkDelete
       {{-1, 626, 0, 0, NdbTransaction::Aborted},    // AE
        {0, 626, 0, 626, NdbTransaction::Started}}   // IE
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   };
 
   DBG("bugtest_36756 : IgnoreError Delete of nonexisting tuple aborts");

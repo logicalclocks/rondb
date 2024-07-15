@@ -1,10 +1,6 @@
 /*
-<<<<<<< HEAD
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
-=======
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -877,28 +873,6 @@ void Cmvmi::execSTTOR(Signal *signal) {
     globalData.activateSendPacked = 1;
     sendSTTORRY(signal);
   } else if (theStartPhase == 8) {
-<<<<<<< HEAD
-#ifdef ERROR_INSERT
-    if (ERROR_INSERTED(9004)) {
-      Uint32 tmp[25];
-      Uint32 len = signal->getLength();
-      memcpy(tmp, signal->theData, sizeof(tmp));
-
-      Uint32 db = c_dbNodes.find(0);
-      if (db == getOwnNodeId()) db = c_dbNodes.find(db);
-
-      DumpStateOrd *ord = (DumpStateOrd *)&signal->theData[0];
-      ord->args[0] = 9005;  // Active 9004
-      ord->args[1] = db;
-      sendSignal(TRPMAN_REF, GSN_DUMP_STATE_ORD, signal, 2, JBB);
-      CLEAR_ERROR_INSERT_VALUE;
-
-      memcpy(signal->theData, tmp, sizeof(tmp));
-      sendSignalWithDelay(reference(), GSN_STTOR, signal, 100, len);
-      return;
-    }
-#endif
-=======
     const ndb_mgm_configuration_iterator *p =
         m_ctx.m_config.getOwnConfigIterator();
     ndbrequire(p != 0);
@@ -907,7 +881,6 @@ void Cmvmi::execSTTOR(Signal *signal) {
     ndb_mgm_get_int_parameter(p, CFG_DB_FREE_PCT, &free_pct);
     m_ctx.m_mm.init_resource_spare(RG_DATAMEM, free_pct);
 
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
     globalData.theStartLevel = NodeState::SL_STARTED;
     sendSTTORRY(signal);
   }

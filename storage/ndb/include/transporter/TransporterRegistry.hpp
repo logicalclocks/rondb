@@ -298,8 +298,6 @@ class TransporterRegistry {
   static Uint32 get_num_active_transporters(Multi_Transporter *);
   void set_hostname(Uint32 nodeId, const char *new_hostname);
 
-<<<<<<< HEAD
-=======
   /**
    * An inactive transporter is part of a Multi_transporter.
    * It is currently not in use, until activated by switch_active_trp().
@@ -308,7 +306,6 @@ class TransporterRegistry {
   bool is_inactive_trp(TrpId trpId) const;
 
  private:
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   NdbMutex *theMultiTransporterMutex;
   /**
    * Report the dynamically allocated ports to ndb_mgmd so that clients
@@ -550,7 +547,6 @@ class TransporterRegistry {
   Transporter* get_node_transporter(NodeId nodeId) const;
   Transporter *get_node_transporter_instance(NodeId nodeId, int inst) const;
   bool is_shm_transporter(TrpId trp_id);
-<<<<<<< HEAD
   bool use_only_ipv4(NodeId nodeId)
   {
     (void)nodeId;
@@ -558,8 +554,6 @@ class TransporterRegistry {
   }
   bool is_server(NodeId) const;
   ndb_sockaddr get_connect_address(NodeId node_id) const;
-=======
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 
   ndb_sockaddr get_connect_address_node(NodeId nodeId) const;
   ndb_sockaddr get_connect_address(TrpId trpId) const;

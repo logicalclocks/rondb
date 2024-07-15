@@ -357,13 +357,9 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
      * @return the number of instances deleted
      * @throws ClusterJUserException if not all parameters are bound
      */
-<<<<<<< HEAD
     public int deletePersistentAll(QueryExecutionContext context,
                                    long skip,
                                    long limit) {
-=======
-    public int deletePersistentAll(QueryExecutionContext context, long limit) {
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         SessionSPI session = context.getSession();
         // calculate what kind of scan is needed
         // if no where clause, scan the entire table
@@ -431,14 +427,10 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
                     // set additional filter conditions
                     where.filterCmpValue(context, (IndexScanOperation)op);
                     // delete results of the scan; don't abort if no row found
-<<<<<<< HEAD
                     result = session.deletePersistentAll((IndexScanOperation)op,
                                                          false,
                                                          skip,
                                                          limit);
-=======
-                    result = session.deletePersistentAll((IndexScanOperation)op, false, limit);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
                     break;
                 }
 
@@ -453,14 +445,10 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
                         where.filterCmpValue(context, (ScanOperation)op);
                     }
                     // delete results of the scan; don't abort if no row found
-<<<<<<< HEAD
                     result = session.deletePersistentAll((ScanOperation)op,
                                                           false,
                                                           skip,
                                                           limit);
-=======
-                    result = session.deletePersistentAll((ScanOperation)op, false, limit);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
                     break;
                 }
 

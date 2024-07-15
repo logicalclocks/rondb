@@ -247,12 +247,8 @@ class BackupRestore : public BackupConsumer {
   bool m_delete_epoch_tuple;
 
   bool m_with_apply_status;
-<<<<<<< HEAD
-  bool m_no_upgrade; // for upgrade ArrayType from 5.0 backup file.
-=======
   bool m_with_sql_metadata;
   bool m_no_upgrade;  // for upgrade ArrayType from 5.0 backup file.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
   bool m_no_restore_disk;
   Uint32 m_tableChangesMask;
   static bool m_preserve_trailing_spaces;

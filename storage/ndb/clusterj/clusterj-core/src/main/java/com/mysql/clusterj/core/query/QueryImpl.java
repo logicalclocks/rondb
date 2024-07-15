@@ -167,14 +167,7 @@ public class QueryImpl<E> implements Query<E> {
      */
     public int deletePersistentAll() {
         try {
-<<<<<<< HEAD
             int result = dobj.deletePersistentAll(context, skip, limit);
-=======
-            if (skip != 0) {
-                throw new ClusterJUserException(local.message("ERR_Invalid_Limits", skip, limit));
-            }
-            int result = dobj.deletePersistentAll(context, limit);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
             return result;
         } catch (ClusterJDatastoreException cjde) {
             session.checkConnection(cjde);

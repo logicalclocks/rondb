@@ -674,11 +674,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         int count = 0;
         try {
             op = clusterTransaction.getTableScanOperationLockModeExclusiveScanFlagKeyInfo(storeTable);
-<<<<<<< HEAD
             count = deletePersistentAll(op, true, 0, Long.MAX_VALUE);
-=======
-            count = deletePersistentAll(op, true, Long.MAX_VALUE);
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         } catch (ClusterJException ex) {
             failAutoTransaction();
             // TODO add table name to the error message
@@ -696,14 +692,10 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
      * @param limit maximum number of instances to be deleted
      * @return the number of instances deleted
      */
-<<<<<<< HEAD
     public int deletePersistentAll(ScanOperation op,
                                    boolean abort,
                                    long skip,
                                    long limit) {
-=======
-    public int deletePersistentAll(ScanOperation op, boolean abort, long limit) {
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
         int cacheCount = 0;
         int count = 0;
         int delete_count = 0;
@@ -719,7 +711,6 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
             int result = op.nextResult(fetch);
             switch (result) {
                 case RESULT_READY:
-<<<<<<< HEAD
                     if (skip <= 0 || count >= skip) {
                         op.deleteCurrentTuple();
                         ++cacheCount;
@@ -735,14 +726,6 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                         }
                     }
                     ++count;
-=======
-                    if(count < limit) {
-                      op.deleteCurrentTuple();
-                      ++count;
-                      ++cacheCount;
-                    }
-                    fetch = false;
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
                     break;
                 case SCAN_FINISHED:
                     done = true;
