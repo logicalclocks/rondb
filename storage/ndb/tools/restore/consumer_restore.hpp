@@ -36,7 +36,7 @@ struct restore_callback_t {
   class TupleS tup;
   class LogEntry const *le;
   class NdbTransaction *connection;
-  int    retries;
+  int retries;
   int error_code;
   Uint32 fragId;
   Uint32 n_bytes;
@@ -56,13 +56,13 @@ enum AttrConvType {
   ACT_STAGING_PRESERVING = 2,
   ACT_STAGING_LOSSY = -2
 };
-typedef  AttrConvType (*AttrCheckCompatFunc)(const NDBCOL &old_col,
-                                             const NDBCOL &new_col);
+typedef AttrConvType (*AttrCheckCompatFunc)(const NDBCOL &old_col,
+                                            const NDBCOL &new_col);
 
 struct PromotionRules {
   NDBCOL::Type old_type;
   NDBCOL::Type new_type;
-  AttrCheckCompatFunc  attr_check_compatability;
+  AttrCheckCompatFunc attr_check_compatability;
   AttrConvertFunc attr_convert;
 };
 
@@ -71,9 +71,9 @@ class BackupRestore : public BackupConsumer {
   BackupRestore(Ndb_cluster_connection *conn, const char *instance_name,
                 Uint32 parallelism)
       : m_ndb(NULL),
-    m_cluster_connection(conn),
-    m_fatal_error(false),
-    m_data_error(false)
+        m_cluster_connection(conn),
+        m_fatal_error(false),
+        m_data_error(false)
 #ifdef ERROR_INSERT
         ,
         m_error_insert(0)
@@ -219,7 +219,7 @@ class BackupRestore : public BackupConsumer {
 
   // returns the handler function converting a value
   AttrConvertFunc get_convert_func(const NDBCOL::Type &old_type,
-                   const NDBCOL::Type &new_type);
+                                   const NDBCOL::Type &new_type);
 
   void update_next_auto_val(Uint32 orig_table_id, Uint64 next_val);
   bool get_fatal_error();

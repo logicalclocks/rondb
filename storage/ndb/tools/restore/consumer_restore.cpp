@@ -3444,18 +3444,11 @@ bool BackupRestore::has_data_error()
   return m_data_error;
 }
 
-void BackupRestore::set_fatal_error(bool err)
-{
-  m_fatal_error = err;
-}
+void BackupRestore::set_fatal_error(bool err) { m_fatal_error = err; }
 
-void BackupRestore::set_data_error(bool err)
-{
-  m_data_error = err;
-}
+void BackupRestore::set_data_error(bool err) { m_data_error = err; }
 
-bool BackupRestore::tuple(const TupleS & tup, Uint32 fragmentId)
-{
+bool BackupRestore::tuple(const TupleS &tup, Uint32 fragmentId) {
   set_fatal_error(false);
   const TableS *tab = tup.getTable();
 
@@ -3746,8 +3739,7 @@ void BackupRestore::logErrorWithLogEntry(const char* prefix, LogEntry const *le)
   NdbMutex_Unlock(restoreLogger.m_mutex);
 }
 
-void BackupRestore::cback(int result, restore_callback_t *cb)
-{
+void BackupRestore::cback(int result, restore_callback_t *cb) {
 #ifdef ERROR_INSERT
   if (m_error_insert == NDB_RESTORE_ERROR_INSERT_FAIL_RESTORE_TUPLE &&
       m_transactions > 10) {
