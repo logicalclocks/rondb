@@ -952,11 +952,7 @@ bool create_consumers(RestoreThreadData *data) {
   if (ga_disable_indexes) {
     // --disable-indexes is set. See comment by _restore_meta above.
     restore->m_metadata_work_requested = true;
-    if (data->m_part_id == 1)
-    {
-      restore->m_disable_indexes = true;
-      data->m_disable_indexes = true;
-    }
+    if (data->m_part_id == 1) restore->m_disable_indexes = true;
   }
 
   if (ga_rebuild_indexes) {
@@ -966,8 +962,7 @@ bool create_consumers(RestoreThreadData *data) {
 
   if (ga_with_apply_status) {
     restore->m_with_apply_status = true;
-    if (data->m_part_id == (Uint32)ga_part_count)
-      restore->m_rebuild_indexes = true;
+    if (data->m_part_id == 1) restore->m_delete_epoch_tuple = true;
   }
 
   if (opt_include_stored_grants) {
@@ -1956,8 +1951,7 @@ int do_restore(RestoreThreadData *thrdata) {
     return NdbToolsProgramExitCode::FAILED;
   }
 
-  if (!(thrdata->m_restore_meta || thrdata->m_disable_indexes))
-  {
+  if (!thrdata->m_restore_meta) {
     /**
      * Only thread 1 is allowed to restore metadata objects. restore_meta
      * flag is set to true on thread 1, which causes consumer-restore to
@@ -2583,16 +2577,13 @@ int main(int argc, char **argv) {
   if (_no_restore_disk) g_options.appfmt(" -d");
   if (ga_exclude_missing_columns)
     g_options.append(" --exclude-missing-columns");
-  if (ga_exclude_missing_tables)
-    g_options.append(" --exclude-missing-tables");
-  if (ga_disable_indexes)
-    g_options.append(" --disable-indexes");
+  if (ga_exclude_missing_tables) g_options.append(" --exclude-missing-tables");
+  if (ga_disable_indexes) g_options.append(" --disable-indexes");
+  if (ga_rebuild_indexes) g_options.append(" --rebuild-indexes");
   if (ga_continue_on_data_errors)
     g_options.append(" --continue-on-data-errors");
   if (ga_allow_unique_indexes)
     g_options.append(" --allow-unique-indexes");
-  if (ga_rebuild_indexes)
-    g_options.append(" --rebuild-indexes");
   g_options.appfmt(" -p %d", ga_nParallelism);
   if (ga_skip_unknown_objects) g_options.append(" --skip-unknown-objects");
   if (ga_skip_broken_objects) g_options.append(" --skip-broken-objects");
