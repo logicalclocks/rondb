@@ -50,13 +50,6 @@ Ndb *check_ndb_in_thd(THD *thd, bool validate_ndb) {
     if (!thd_ndb->recycle_ndb()) return nullptr;
   }
 
-
-  assert(thd->override_replica_filtering ==
-         THD::NO_OVERRIDE_REPLICA_FILTERING ||
-         (thd->override_replica_filtering ==
-          THD::OVERRIDE_REPLICA_FILTERING &&
-          thd->slave_thread));
-
   return thd_ndb->ndb;
 }
 

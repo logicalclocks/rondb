@@ -2968,12 +2968,6 @@ int mysql_execute_command(THD *thd, bool first_level) {
 
   CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_execute_command");
 
-  assert(thd->override_replica_filtering ==
-         THD::NO_OVERRIDE_REPLICA_FILTERING ||
-         (thd->override_replica_filtering ==
-          THD::OVERRIDE_REPLICA_FILTERING &&
-          thd->slave_thread));
-
   /*
     If there is a CREATE TABLE...START TRANSACTION command which
     is not yet committed or rollbacked, then we should allow only
@@ -3170,14 +3164,12 @@ int mysql_execute_command(THD *thd, bool first_level) {
         in 5.0 there are no SET statements in the binary log)
       - DROP TEMPORARY TABLE IF EXISTS: we always execute it (otherwise we
         have stale files on slave caused by exclusion of one tmp table).
-      - Slave filtering is overridden, e.g. since the query is internal.
     */
     if (!(lex->sql_command == SQLCOM_UPDATE_MULTI) &&
         !(lex->sql_command == SQLCOM_SET_OPTION) &&
         !(lex->sql_command == SQLCOM_DROP_TABLE && lex->drop_temporary &&
           lex->drop_if_exists) &&
-        all_tables_not_ok(thd, all_tables) &&
-        thd->override_replica_filtering == THD::NO_OVERRIDE_REPLICA_FILTERING) {
+        all_tables_not_ok(thd, all_tables)) {
       /* we warn the replica SQL thread */
       my_error(ER_REPLICA_IGNORED_TABLE, MYF(0));
       binlog_gtid_end_transaction(thd);

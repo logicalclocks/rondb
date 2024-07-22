@@ -2672,18 +2672,6 @@ class THD : public MDL_context_owner,
   /// instead /sven
   bool slave_thread;
 
-  // override_replica_filtering is used to indicate that we want to execute a
-  // query that normally would be suppressed in a replica thread.
-  enum enum_override_replica_filtering {
-    // Use a couple of semi-random constants to ensure initialization. They are
-    // chosen to encode "OSFY" and "OSFN" (meaning "override slave(replica) filtering
-    // yes/no") to aid debugging.
-    // Debug search terms: OSFY, OSFN, YFSO, NFSO
-    OVERRIDE_REPLICA_FILTERING = 0x4f534659,
-    NO_OVERRIDE_REPLICA_FILTERING = 0x4f53464e,
-  };
-  enum enum_override_replica_filtering override_replica_filtering;
-
   uchar password;
 
  private:
