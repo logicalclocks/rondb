@@ -87,15 +87,10 @@ Executing RESTART on all nodes.
 Starting shutdown. This may take a while. Please wait...
 All DB nodes are being restarted.
 
-<<<<<<< HEAD
-RonDB is being started.
-RonDB is being started.
-=======
 Node 1: NOT_STARTED
 Node 2: NOT_STARTED
-NDB Cluster is being started.
-NDB Cluster is being started.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+RonDB is being started.
+RonDB is being started.
 
 Node 1: STARTED
 Node 2: STARTED
@@ -131,15 +126,10 @@ Executing RESTART on all nodes.
 Starting shutdown. This may take a while. Please wait...
 All DB nodes are being restarted.
 
-<<<<<<< HEAD
-RonDB is being started.
-RonDB is being started.
-=======
 Node 1: NOT_STARTED
 Node 2: NOT_STARTED
-NDB Cluster is being started.
-NDB Cluster is being started.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+RonDB is being started.
+RonDB is being started.
 
 Node 1: STARTED
 Node 2: STARTED

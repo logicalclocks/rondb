@@ -1501,14 +1501,7 @@ NDB$PK Unsigned [3] NOT NULL AT=FIXED ST=MEMORY
 -- Indexes -- 
 PRIMARY KEY(b) - UniqueHashIndex
 
-<<<<<<< HEAD
-
-NDBT_ProgramExit: 0 - OK
-
 alter table t3 algorithm=inplace;
-=======
-alter table t3 algorithm=inplace, max_rows=100000000;
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 -- t3 --
 Version: Any
 Fragment type: HashMapPartition
@@ -1655,15 +1648,7 @@ NDB$PK Unsigned [3] NOT NULL AT=FIXED ST=MEMORY
 -- Indexes -- 
 PRIMARY KEY(b) - UniqueHashIndex
 
-<<<<<<< HEAD
-
-NDBT_ProgramExit: 0 - OK
-
 alter table t4 algorithm=inplace;
-=======
-alter table t4 algorithm=inplace, max_rows=100000000;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: setting MAX_ROWS on table without MAX_ROWS. Try ALGORITHM=COPY.
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 partitions added to t1 (expect 1)
 t1_added
 1
@@ -2173,14 +2158,7 @@ NDB$PK Unsigned [3] NOT NULL AT=FIXED ST=MEMORY
 -- Indexes -- 
 PRIMARY KEY(b) - UniqueHashIndex
 
-<<<<<<< HEAD
-
-NDBT_ProgramExit: 0 - OK
-
 alter table t3 algorithm=inplace;
-=======
-alter table t3 algorithm=inplace, max_rows=150000000;
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
 -- t3 --
 Version: Any
 Fragment type: HashMapPartition

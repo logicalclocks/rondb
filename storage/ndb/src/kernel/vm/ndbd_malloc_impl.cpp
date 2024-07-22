@@ -477,9 +477,6 @@ Resource_limits::check(Uint32 line) const {
       sumres_alloc += res_alloc;
     }
   }
-  g_eventLogger->info("Line: %u, spare: %u, sumres_alloc: %u, sumres: %u",
-                      line, spare, sumres_alloc, sumres);
-  dump();
   if(!((curr == get_in_use()) &&
        ((spare + sumres) == get_reserved()) &&
        ((sumres + spare)== (sumres_alloc + get_free_reserved())) &&
@@ -487,7 +484,6 @@ Resource_limits::check(Uint32 line) const {
                           get_free_reserved()) &&
        (get_shared_in_use() == shared_alloc)))
   {
-    g_eventLogger->info("Crash dump");
     dump();
     require(false);
   }

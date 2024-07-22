@@ -5,11 +5,7 @@ use ndbinfo;
 ##
 ## ndb$tables
 select count(*) from ndb$tables;
-<<<<<<< HEAD
-count(*)	52
-=======
-count(*)	51
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+count(*)	53
 explain select count(*) from ndb$tables;
 id	1
 select_type	SIMPLE
@@ -65,13 +61,8 @@ foreign_keys	10	124
 index_columns	20	80
 ndb$acc_operations	15	64
 ndb$backup_id	1	20
-<<<<<<< HEAD
 ndb$blocks	30	20
-ndb$columns	546	44
-=======
-ndb$blocks	29	20
-ndb$columns	550	44
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+ndb$columns	560	44
 ndb$config_nodes	34	28
 ndb$config_params	178	120
 ndb$config_values	344	24
@@ -101,7 +92,6 @@ ndb$pools	384	84
 ndb$processes	34	68
 ndb$resources	26	28
 ndb$restart_info	2	100
-<<<<<<< HEAD
 ndb$stored_tables	100	80
 ndb$table_distribution_status	100	52
 ndb$table_distribution_status_all	200	52
@@ -111,17 +101,7 @@ ndb$table_map	100	36
 ndb$table_memory_usage	100	44
 ndb$table_replicas	800	64
 ndb$table_replicas_all	400	64
-ndb$tables	52	40
-=======
-ndb$stored_tables	43	80
-ndb$table_distribution_status	43	52
-ndb$table_distribution_status_all	86	52
-ndb$table_fragments	344	60
-ndb$table_fragments_all	344	60
-ndb$table_replicas	344	64
-ndb$table_replicas_all	344	64
-ndb$tables	51	40
->>>>>>> 6dcee9fa4b19e67dea407787eba88e360dd679d9
+ndb$tables	53	40
 ndb$tc_time_track_stats	384	104
 ndb$test	8000	24
 ndb$threadblock_details	124	24

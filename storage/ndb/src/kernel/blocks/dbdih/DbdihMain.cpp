@@ -2366,7 +2366,7 @@ void Dbdih::execREAD_NODESCONF(Signal *signal) {
       progError(__LINE__, NDBD_EXIT_INVALID_CONFIG, buf);
     }
   }
-
+  jam();
   ndbrequire(csystemnodes >= 1 && csystemnodes < MAX_NDB_NODES);
 
   cmasterdihref = calcDihBlockRef(cmasterNodeId);
@@ -2387,6 +2387,7 @@ void Dbdih::execREAD_NODESCONF(Signal *signal) {
      *-----------------------------------------------------------------------*/
     makeNodeGroups(nodeArray);
   }  // if
+  jam();
   ndbrequire(checkNodeAlive(cmasterNodeId));
 
   /**
@@ -2394,9 +2395,12 @@ void Dbdih::execREAD_NODESCONF(Signal *signal) {
    *   and nodes that need take-over
    *
    */
+  jam();
+
   m_sr_nodes.clear();
   m_to_nodes.clear();
 
+  jam();
   // Start with assumption that all can restore
   {
     NodeRecordPtr specNodePtr;
