@@ -25,15 +25,15 @@ All DB nodes are being restarted.
 
 # Error since data nodes are down
 SELECT a FROM t1;
-ERROR HY000: Got error 4009 'Cluster Failure' from NDBCLUSTER
+ERROR HY000: Got error 4009 'No data node(s) available, check Cluster state' from NDBCLUSTER
 # Restart MySQL Server (with data nodes in no start)
 # restart
 # Error since data nodes are still down
 SELECT a FROM t1;
-ERROR HY000: Got error 4009 'Cluster Failure' from NDBCLUSTER
+ERROR HY000: Got error 4009 'No data node(s) available, check Cluster state' from NDBCLUSTER
 # Start data nodes again
-NDB Cluster is being started.
-NDB Cluster is being started.
+RonDB is being started.
+RonDB is being started.
 
 SELECT a FROM t1;
 a

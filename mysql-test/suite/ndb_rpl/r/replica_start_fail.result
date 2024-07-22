@@ -36,7 +36,7 @@ All DB nodes are being restarted.
 START REPLICA;
 include/wait_for_slave_sql_error.inc [errno=157]
 # Start cluster
-NDB Cluster is being started.
+RonDB is being started.
 
 # Start replica again
 include/rpl_start_slaves.inc
