@@ -588,7 +588,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
   }
   ed.m_mem_manager->set_prio_free_limits(0);
   ed.m_mem_manager->lock();
-  ed.m_mem_manager->check();
+  ed.m_mem_manager->check(__LINE__);
   ed.m_mem_manager->unlock();
   ed.m_mem_manager->init_memory_pools();
   return 0;                     // Success

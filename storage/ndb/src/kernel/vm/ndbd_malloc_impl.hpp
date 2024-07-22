@@ -375,7 +375,7 @@ public:
   void post_release_resource_pages(Uint32 id, Uint32 cnt);
   void post_alloc_resource_emergency(Uint32 id, Uint32 cnt, bool);
 
-  void check() const;
+  void check(Uint32) const;
   void dump() const;
 };
 
@@ -647,7 +647,7 @@ class Ndbd_mem_manager {
    */
   void lock();
   void unlock();
-  void check() const;
+  void check(Uint32) const;
 
   /**
    * Compute 2log of size

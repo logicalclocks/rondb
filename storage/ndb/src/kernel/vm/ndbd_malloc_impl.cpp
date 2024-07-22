@@ -451,8 +451,8 @@ Resource_limits::Resource_limits() {
 #ifndef VM_TRACE
 inline
 #endif
-    void
-    Resource_limits::check() const {
+void
+Resource_limits::check(Uint32 line) const {
 #ifdef VM_TRACE
   const Resource_limit *rl = m_limit;
   Uint32 curr = 0;
@@ -477,7 +477,9 @@ inline
       sumres_alloc += res_alloc;
     }
   }
-
+  g_eventLogger->info("Line: %u, spare: %u, sumres_alloc: %u, sumres: %u",
+                      line, spare, sumres_alloc, sumres);
+  dump();
   if(!((curr == get_in_use()) &&
        ((spare + sumres) == get_reserved()) &&
        ((sumres + spare)== (sumres_alloc + get_free_reserved())) &&
@@ -485,6 +487,7 @@ inline
                           get_free_reserved()) &&
        (get_shared_in_use() == shared_alloc)))
   {
+    g_eventLogger->info("Crash dump");
     dump();
     require(false);
   }
@@ -492,9 +495,9 @@ inline
 }
 
 void
-Ndbd_mem_manager::check() const
+Ndbd_mem_manager::check(Uint32 line) const
 {
-  m_resource_limits.check();
+  m_resource_limits.check(line);
 }
 
 void
@@ -1590,7 +1593,7 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
   if (likely(cnt))
   {
     m_resource_limits.post_alloc_resource_pages(idx, cnt);
-    m_resource_limits.check();
+    m_resource_limits.check(__LINE__);
     if (!locked) mt_mem_manager_unlock();
 #ifdef NDBD_RANDOM_START_PAGE
     *i += m_random_start_page_id;
@@ -1676,7 +1679,7 @@ Ndbd_mem_manager::alloc_emergency_page(Uint32 type,
   {
     assert(cnt == min);
     m_resource_limits.post_alloc_resource_emergency(idx, cnt, force_reserved);
-    m_resource_limits.check();
+    m_resource_limits.check(__LINE__);
     if (!locked)
     {
       mt_mem_manager_unlock();
@@ -1707,7 +1710,7 @@ void Ndbd_mem_manager::release_page(Uint32 type, Uint32 i, bool locked) {
   release(i, 1);
   m_resource_limits.post_release_resource_pages(idx, 1);
 
-  m_resource_limits.check();
+  m_resource_limits.check(__LINE__);
   if (!locked) mt_mem_manager_unlock();
 }
 
@@ -1755,7 +1758,7 @@ void Ndbd_mem_manager::alloc_pages(Uint32 type, Uint32 *i, Uint32 *cnt,
     req = 0;
   }
   *cnt = req;
-  m_resource_limits.check();
+  m_resource_limits.check(__LINE__);
   if (req == 0 && unlikely(m_dump_on_alloc_fail)) {
     g_eventLogger->info(
         "Page allocation failed in %s: no page available in zone %d.", __func__,
@@ -1793,7 +1796,7 @@ Ndbd_mem_manager::release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked)
 
   release(i, cnt);
   m_resource_limits.post_release_resource_pages(idx, cnt);
-  m_resource_limits.check();
+  m_resource_limits.check(__LINE__);
   if (!locked) mt_mem_manager_unlock();
 }
 

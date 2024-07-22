@@ -462,14 +462,6 @@ int ndb_file::detect_direct_io_block_size_and_alignment() {
    * never use O_DIRECT.
    */
   ret = ::pread(m_handle, end - align, align, NDB_O_DIRECT_WRITE_ALIGNMENT);
-  if (ret == -1 && errno == EBADF)
-  {
-    // TODO YYY: assume EBADF means file is not open for read, for debugging assume direct io is ok
-    m_direct_io_block_size = block_size;
-    m_direct_io_block_alignment = align;
-    return 0;
-  }
-
   if (ret == -1 || ret != NDB_O_DIRECT_WRITE_ALIGNMENT)
   {
     return -1;
