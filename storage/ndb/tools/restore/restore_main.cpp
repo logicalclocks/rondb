@@ -2086,7 +2086,7 @@ int do_restore(RestoreThreadData *thrdata) {
       return NdbToolsProgramExitCode::FAILED;
     }
     if (!ga_disable_indexes && !ga_rebuild_indexes) {
-      if (!g_consumers[i]->endOfTablesFK(false)) {
+      if (!g_consumers[i]->endOfTablesFK()) {
         restoreLogger.log_error("Restore: Failed while closing tables FKs");
         return NdbToolsProgramExitCode::FAILED;
       }
@@ -2442,7 +2442,7 @@ int do_restore(RestoreThreadData *thrdata) {
       }
     }
     for (Uint32 j = 0; j < g_consumers.size(); j++) {
-      if (!g_consumers[j]->endOfTablesFK(true)) {
+      if (!g_consumers[j]->endOfTablesFK()) {
         return NdbToolsProgramExitCode::FAILED;
       }
     }
