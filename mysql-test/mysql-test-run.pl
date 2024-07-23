@@ -290,6 +290,7 @@ our $opt_gcov_exe                  = "gcov";
 our $opt_gcov_msg                  = "mysql-test-gcov.msg";
 our $opt_hypergraph                = 0;
 our $opt_keep_ndbfs                = 0;
+our $opt_print_ndb_dump            = 0;
 our $opt_mem                       = $ENV{'MTR_MEM'} ? 1 : 0;
 our $opt_only_big_test             = 0;
 our $opt_parallel                  = $ENV{MTR_PARALLEL};
@@ -1768,6 +1769,7 @@ sub command_line_setup {
     'fast!'                  => \$opt_fast,
     'force-restart'         => \$opt_force_restart,
     'help|h'                => \$opt_usage,
+    'print-ndb-dump'        => \$opt_print_ndb_dump,
     'keep-ndbfs'            => \$opt_keep_ndbfs,
     'max-connections=i'     => \$opt_max_connections,
     'print-testcases'       => \&collect_option,
@@ -7063,9 +7065,10 @@ sub start_servers($) {
         "Start of '" . $cluster->name() . "' cluster failed";
 
       # Dump cluster log files to log file to help analyze the
-      # cause of the failed start
-      ndbcluster_dump($cluster);
-
+      # cause of the failed start if configured to do so.
+      if ($opt_print_ndb_dump) {
+        ndbcluster_dump($cluster);
+      }
       return 1;
     }
   }
