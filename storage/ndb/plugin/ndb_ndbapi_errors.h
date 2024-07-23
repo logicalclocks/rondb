@@ -47,6 +47,7 @@
 //
 
 //constexpr int NDB_ERR_CLUSTER_FAILURE = 4009;
+constexpr int RONDB_ERR_CLUSTER_FAILURE = 4009;
 constexpr int NDB_INVALID_SCHEMA_OBJECT = 241;
 
 #endif

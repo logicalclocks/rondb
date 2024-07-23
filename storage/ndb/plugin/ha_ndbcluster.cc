@@ -12121,7 +12121,7 @@ static int ndbcluster_table_exists_in_engine(handlerton *, THD *thd,
   NdbDictionary::Dictionary::List list;
   if (dict->listObjects(list, NdbDictionary::Object::UserTable) != 0) {
     const NdbError &ndb_err = dict->getNdbError();
-    if (is_cluster_failure_code(err.code)) {
+    if (is_cluster_failure_code(ndb_err.code)) {
       // Cluster failure occurred and it's not really possible to tell if table
       // exists or not. Let caller proceed without any warnings as subsequent
       // attempt to create table in NDB should also fail.
@@ -12795,7 +12795,7 @@ void ha_ndbcluster::print_error(int error, myf errflag) {
       // Error has been printed already
       return;
     }
-    handler::print_error(NDB_ERR_CLUSTER_FAILURE, errflag);
+    handler::print_error(RONDB_ERR_CLUSTER_FAILURE, errflag);
     return;
   }
 
