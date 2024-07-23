@@ -25809,22 +25809,14 @@ Dblqh::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   ptrCheckGuard(currLogPartPtr, clogPartFileSize, logPartRecord);
 
   Uint32 page_no = req->varIndex;
-  Uint32 init_zero = req->data.zeroPageIndicator.initZero;
   LogPageRecordPtr currLogPagePtr;
   currLogPagePtr.p = (LogPageRecord *)page_ptr.p;
 
-  if (page_no == 0)
-  {
+  std::memset(page_ptr.p, 0, sizeof(LogPageRecord));
+  if (page_no == 0) {
     // keep writing these afterwards
-    if (init_zero == 1)
-    {
-      std::memset(page_ptr.p, 0, sizeof(LogPageRecord));
-    }
-  }
-  else if (((page_no % ZPAGES_IN_MBYTE) == 0) ||
-           (page_no == ((clogFileSize * ZPAGES_IN_MBYTE) - 1)))
-  {
-    std::memset(page_ptr.p, 0, sizeof(LogPageRecord));
+  } else if (((page_no % ZPAGES_IN_MBYTE) == 0) ||
+             (page_no == ((clogFileSize * ZPAGES_IN_MBYTE) - 1))) {
     currLogPagePtr.p->logPageWord[ZPOS_LOG_LAP] = currLogPartPtr.p->logLap;
     currLogPagePtr.p->logPageWord[ZPOS_MAX_GCI_COMPLETED] =
         currLogPartPtr.p->logPartNewestCompletedGCI;
@@ -25839,23 +25831,11 @@ Dblqh::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
 
     currLogPagePtr.p->logPageWord[ZNEXT_PAGE] = RNIL;
     currLogPagePtr.p->logPageWord[ZPOS_CHECKSUM] =
-      calcPageCheckSum(currLogPagePtr);
-    return 0;
-  }
-  else
-  {
-    if (init_zero == 1)
-    {
-      std::memset(page_ptr.p, 0, sizeof(LogPageRecord));
-      currLogPagePtr.p->logPageWord[ZPOS_LOG_LAP] = currLogPartPtr.p->logLap;
-      currLogPagePtr.p->logPageWord[ZNEXT_PAGE] = RNIL;
-      currLogPagePtr.p->logPageWord[ZPOS_CHECKSUM] =
         calcPageCheckSum(currLogPagePtr);
-    }
-  }
-  if (init_zero == 0)
-  {
-    return 1;
+  } else if (0) {
+    currLogPagePtr.p->logPageWord[ZNEXT_PAGE] = RNIL;
+    currLogPagePtr.p->logPageWord[ZPOS_CHECKSUM] =
+        calcPageCheckSum(currLogPagePtr);
   }
   return 0;
 }
