@@ -1220,9 +1220,9 @@ void AsyncFile::log_set_odirect_result(int result) {
 
   if (odirect_failure)  // Failed set ODirect
     g_eventLogger->warning(
-        "Failed to set ODirect for file %s %s%s (errno: %u, block size %llu, "
-        "alignment %llu, direct io %d, avoid on append %d, io block size %llu, "
-        "alignment %llu).",
+        "Failed to set ODirect for file %s %s%s (errno: %u, block size %lu, "
+        "alignment %lu, direct io %d, avoid on append %d, io block size %lu, "
+        "alignment %lu).",
         filename, (param ? "under " : ""), (param ? param : ""),
         get_last_os_error(), m_file.get_block_size(),
         m_file.get_block_alignment(), m_file.have_direct_io_support(),
@@ -1233,9 +1233,9 @@ void AsyncFile::log_set_odirect_result(int result) {
                         (param ? "under " : ""), (param ? param : ""));
   else  // Failed checking ODirect
     g_eventLogger->warning(
-        "Failed to probe ODirect for file %s %s%s (errno: %u, block size %llu, "
-        "alignment %llu, direct io %d, avoid on append %d, io block size %llu, "
-        "alignment %llu).",
+        "Failed to probe ODirect for file %s %s%s (errno: %u, block size %lu, "
+        "alignment %lu, direct io %d, avoid on append %d, io block size %lu, "
+        "alignment %lu).",
         filename, (param ? "under " : ""), (param ? param : ""),
         get_last_os_error(), m_file.get_block_size(),
         m_file.get_block_alignment(), m_file.have_direct_io_support(),
