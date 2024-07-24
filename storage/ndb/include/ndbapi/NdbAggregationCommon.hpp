@@ -44,6 +44,7 @@ enum InterpreterOp {
   kOpMinus,
   kOpMul,
   kOpDiv,
+  kOpDivInt,
   kOpMod,
   kOpLoadCol,
   kOpLoadConst,
