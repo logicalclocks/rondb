@@ -2100,7 +2100,7 @@ void Cmvmi::execDUMP_STATE_ORD(Signal *signal) {
     openReq->fileNumber[1] = ~Uint32(0);
     openReq->fileNumber[2] = 0;
     openReq->fileNumber[3] = ~Uint32(0);
-    FsOpenReq::setVersion(openReq->fileNumber, 1);
+    FsOpenReq::setVersion(openReq->fileNumber, FsOpenReq::V_BLOCK);
     FsOpenReq::setSuffix(openReq->fileNumber, FsOpenReq::S_FRAGLOG);
     openReq->fileFlags = FsOpenReq::OM_WRITEONLY | FsOpenReq::OM_CREATE |
                          FsOpenReq::OM_TRUNCATE |

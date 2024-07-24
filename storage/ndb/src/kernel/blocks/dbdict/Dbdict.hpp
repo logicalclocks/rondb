@@ -4537,10 +4537,14 @@ class Dbdict : public SimulatedBlock {
 
   void sendSchemaComplete(Signal *, Uint32 callbackData, Uint32);
 
-  void map_fk_columns(Ptr<ForeignKeyRec>, Uint32*, Uint32*);
-public:
-  void send_drop_file(Signal*, Uint32, Uint32, DropFileImplReq::RequestInfo);
-  void send_drop_fg(Signal*, Uint32, Uint32, DropFilegroupImplReq::RequestInfo);
+  void get_fk_index_column_orders(ForeignKeyRecPtr fk_ptr,
+                                  Uint32 *parent_to_child,
+                                  Uint32 *child_to_parent) const;
+
+ public:
+  void send_drop_file(Signal *, Uint32, Uint32, DropFileImplReq::RequestInfo);
+  void send_drop_fg(Signal *, Uint32, Uint32,
+                    DropFilegroupImplReq::RequestInfo);
 
   int checkSingleUserMode(Uint32 senderRef);
 

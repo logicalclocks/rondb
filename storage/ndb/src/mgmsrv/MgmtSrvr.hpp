@@ -550,24 +550,21 @@ private:
     unsigned nodeid;
     BaseString hostname;
   };
-  bool build_node_list_from_config(NodeId node_id,
-                                   ndb_mgm_node_type type,
-                                   Vector<ConfigNode>& config_nodes,
-                                   int& error_code,
-                                   BaseString& error_string) const;
-  int find_node_type(NodeId nodeid,
-                     ndb_mgm_node_type type,
-                     const ndb_sockaddr* client_addr,
-                     const Vector<ConfigNode>& config_nodes,
-                     Vector<PossibleNode>& nodes,
-                     int& error_code, BaseString& error_string);
-  bool alloc_node_id_impl(NodeId& nodeid,
-                          ndb_mgm_node_type type,
-                          const ndb_sockaddr* client_addr,
-                          int& error_code, BaseString& error_string,
-                          Uint32 timeout_s = 20);
   bool check_node_support_activate();
 public:
+  bool build_node_type_list_from_config(NodeId node_id, ndb_mgm_node_type type,
+                                        Vector<ConfigNode> &config_nodes,
+                                        int &error_code,
+                                        BaseString &error_string) const;
+  void match_client_addr_to_config_nodes(NodeId nodeid, ndb_mgm_node_type type,
+                                         const ndb_sockaddr *client_addr,
+                                         const Vector<ConfigNode> &config_nodes,
+                                         Vector<PossibleNode> &nodes);
+  bool alloc_node_id_impl(NodeId &nodeid, ndb_mgm_node_type type,
+                          const ndb_sockaddr *client_addr, int &error_code,
+                          BaseString &error_string, Uint32 timeout_s = 20);
+
+ public:
   /*
     Nodeid allocation
     - MGM will never allocate a nodeid since either there is

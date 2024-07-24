@@ -60,11 +60,7 @@ class TcContinueB {
     ZSEND_FIRE_TRIG_REQ = 20,
     ZSTART_FRAG_SCANS = 21,
     ZSEND_FRAG_SCANS = 22
-#ifdef ERROR_INSERT
-    ,
-    ZDEBUG_DELAYED_ABORT = 23,
-    ZDEBUG_DELAY_TCROLLBACKREP = 24
-#endif
+    // 23, 24 not used
     ,ZSCAN_FOR_READ_BACKUP                 = 25
     ,ZTRANSIENT_POOL_STAT                  = 26
     ,ZSHRINK_TRANSIENT_POOLS               = 27

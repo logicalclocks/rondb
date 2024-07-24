@@ -811,7 +811,7 @@ void Restore::lcp_create_ctl_open(Signal *signal, FilePtr file_ptr) {
 
   req->userPointer = file_ptr.i;
 
-  FsOpenReq::setVersion(req->fileNumber, 5);
+  FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_LCP);
   FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
   FsOpenReq::v5_setLcpNo(req->fileNumber, 0);
   FsOpenReq::v5_setTableId(req->fileNumber, file_ptr.p->m_table_id);
@@ -985,7 +985,7 @@ void Restore::lcp_remove_old_file(Signal *signal, FilePtr file_ptr,
   req->userPointer = file_ptr.i;
   req->directory = 0;
   req->ownDirectory = 0;
-  FsOpenReq::setVersion(req->fileNumber, 5);
+  FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_LCP);
   if (is_ctl_file) {
     jam();
     FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
@@ -1100,7 +1100,7 @@ void Restore::open_ctl_file(Signal *signal, FilePtr file_ptr, Uint32 lcp_no) {
   req->fileFlags = FsOpenReq::OM_READONLY;
   req->userPointer = file_ptr.i;
 
-  FsOpenReq::setVersion(req->fileNumber, 5);
+  FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_LCP);
   FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
   FsOpenReq::v5_setLcpNo(req->fileNumber, lcp_no);
   FsOpenReq::v5_setTableId(req->fileNumber, file_ptr.p->m_table_id);
@@ -2066,7 +2066,7 @@ void Restore::open_data_file(Signal *signal, FilePtr file_ptr) {
                 instance(), file_ptr.p->m_table_id, file_ptr.p->m_fragment_id,
                 file_ptr.p->m_file_id));
 
-  FsOpenReq::setVersion(req->fileNumber, 5);
+  FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_LCP);
   FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_DATA);
   FsOpenReq::v5_setLcpNo(req->fileNumber, file_ptr.p->m_file_id);
   FsOpenReq::v5_setTableId(req->fileNumber, file_ptr.p->m_table_id);
@@ -2081,7 +2081,7 @@ void Restore::open_data_file(Signal *signal, FilePtr file_ptr) {
     LinearSectionPtr lsptr[3];
 
     // Use a dummy file name
-    ndbrequire(FsOpenReq::getVersion(req->fileNumber) != 4);
+    ndbrequire(FsOpenReq::getVersion(req->fileNumber) != FsOpenReq::V_FILENAME);
     lsptr[FsOpenReq::FILENAME].p = nullptr;
     lsptr[FsOpenReq::FILENAME].sz = 0;
 

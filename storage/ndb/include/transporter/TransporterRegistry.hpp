@@ -456,6 +456,12 @@ class TransporterRegistry {
   Uint32 get_connect_count(TrpId trpId) const;
 
   /**
+   * Update send buffer allocated and used bytes for given transporter
+   */
+  void update_send_buffer_usage(TrpId trpId, Uint64 allocBytes,
+                                Uint64 usedBytes);
+
+  /**
    * Set or clear overloaded bit.
    * Query if any overloaded bit is set.
    */
@@ -478,6 +484,14 @@ class TransporterRegistry {
    * Get transporter's slowdown count since connect
    */
   Uint32 get_slowdown_count(NodeId nodeId) const;
+
+  /**
+   * Get SendBuffer alloc + usage info
+   */
+  Uint64 get_send_buffer_alloc_bytes(TrpId trpId) const;
+  Uint64 get_send_buffer_used_bytes(TrpId trpId) const;
+  Uint64 get_send_buffer_max_alloc_bytes(TrpId trpId) const;
+  Uint64 get_send_buffer_max_used_bytes(TrpId trpId) const;
 
   /**
    * prepareSend
@@ -553,6 +567,7 @@ class TransporterRegistry {
     return m_use_only_ipv4;
   }
   bool is_server(NodeId) const;
+  TransporterType get_transporter_type(TrpId id) const;
 
   ndb_sockaddr get_connect_address_node(NodeId nodeId) const;
   ndb_sockaddr get_connect_address(TrpId trpId) const;

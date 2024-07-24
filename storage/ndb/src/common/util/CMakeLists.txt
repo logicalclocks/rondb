@@ -64,6 +64,7 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   SocketServer.cpp
   Vector.cpp
   basename.cpp
+  cstrbuf.cpp
   decimal_utils.cpp
   xxhash_avx2.cpp
   xxhash_std.cpp

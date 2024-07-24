@@ -3008,9 +3008,11 @@ template <bool to_left>
 longlong Item_func_shift::eval_int_op() {
   assert(fixed);
   ulonglong res = args[0]->val_uint();
+  if (current_thd->is_error()) return error_int();
   if (args[0]->null_value) return error_int();
 
   ulonglong shift = args[1]->val_uint();
+  if (current_thd->is_error()) return error_int();
   if (args[1]->null_value) return error_int();
 
   null_value = false;
@@ -3034,11 +3036,13 @@ String *Item_func_shift::eval_str_op(String *) {
 
   String tmp_str;
   String *arg = args[0]->val_str(&tmp_str);
-  if (!arg || args[0]->null_value) return error_str();
+  if (current_thd->is_error()) return error_str();
+  if (args[0]->null_value) return error_str();
 
   ssize_t arg_length = arg->length();
   size_t shift =
       min(args[1]->val_uint(), static_cast<ulonglong>(arg_length) * 8);
+  if (current_thd->is_error()) return error_str();
   if (args[1]->null_value) return error_str();
 
   if (tmp_value.alloc(arg->length())) return error_str();
@@ -4290,6 +4294,8 @@ bool Item_func_find_in_set::resolve_type(THD *thd) {
   if (args[0]->const_item() && args[1]->type() == FIELD_ITEM &&
       args[0]->may_eval_const_item(thd)) {
     Field *field = down_cast<Item_field *>(args[1])->field;
+    // Bail during CREATE TABLE/INDEX so we don't look for absent typelib.
+    if (field->is_wrapper_field()) return false;
     if (field->real_type() == MYSQL_TYPE_SET) {
       String *find = args[0]->val_str(&value);
       if (thd->is_error()) return true;
@@ -8615,7 +8621,7 @@ static bool check_table_and_trigger_access(Item **args, bool check_trigger_acl,
   }
 
   // Check access
-  ulong db_access = 0;
+  Access_bitmask db_access = 0;
   if (check_access(thd, SELECT_ACL, schema_name_ptr->ptr(), &db_access, nullptr,
                    false, true))
     return false;
