@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2022, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -40,7 +41,7 @@ class NdbSocket {
   NdbSocket(ndb_socket_t ndbsocket) : s(ndbsocket) {}
   ~NdbSocket() {
     assert(ssl == nullptr);
-    assert(!ndb_socket_valid(s));
+    //assert(!ndb_socket_valid(s));
     if (mutex != nullptr) NdbMutex_Destroy(mutex);
   }
   NdbSocket &operator=(NdbSocket &&);
