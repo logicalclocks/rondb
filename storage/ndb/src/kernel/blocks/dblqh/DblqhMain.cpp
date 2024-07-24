@@ -28934,8 +28934,18 @@ void Dblqh::execSr(Signal *signal) {
     logPartPtr.p->savePageIndex = logPagePtr.p->logPageWord[ZCURR_PAGE_INDEX];
     if (logPartPtr.p->execSrPagesRead < ZMIN_READ_BUFFER_SIZE) {
       /* --------------------------------------------------------------------
-       *  THERE WERE LESS THAN 16 KBYTE OF LOG PAGES REMAINING. WE WAIT UNTIL
-       *  THE NEXT 64 KBYTE ARRIVES UNTIL WE CONTINUE AGAIN.
+       *  THERE WERE LESS THAN 96 KBYTE OF LOG PAGES REMAINING. WE WAIT UNTIL
+       *  THE NEXT 256 KBYTE ARRIVES UNTIL WE CONTINUE AGAIN.
+       *
+       * ZMIN_READ_BUFFER_SIZE need to be set to the maximum number of pages
+       * that a log record can span. All log records can span 2 pages, but
+       * PREPARE operation records can span 3 pages. The maximum size of
+       * a PREPARE operation is header + 30000 bytes + 4096 bytes + 4 * 512
+       * bytes. This means it can span in the worst case 3 pages if it starts
+       * at the end of a page. By setting ZMIN_READ_BUFFER_SIZE to 3 we
+       * ensure that the stepAhead function won't step into pages not yet
+       * read from disk. When the row size increases potentially in the future
+       * this number need to increase as well.
        * ------------------------------------------------------------------- */
       if ((logPartPtr.p->execSrPagesRead + logPartPtr.p->execSrPagesExecuted) <
           ZPAGES_IN_MBYTE) {
@@ -30838,7 +30848,7 @@ Uint32 Dblqh::checkIfExecLog(Signal *signal,
 }  // Dblqh::checkIfExecLog()
 
 /* ========================================================================= */
-/* == CHECK IF THERE IS LESS THAN 192 KBYTE IN THE BUFFER PLUS INCOMING  === */
+/* == CHECK IF THERE IS LESS THAN 256 KBYTE IN THE BUFFER PLUS INCOMING  === */
 /*      READS ALREADY STARTED. IF SO IS THE CASE THEN START ANOTHER READ IF  */
 /*      THERE ARE MORE PAGES IN THIS MBYTE.                                  */
 /*                                                                           */
@@ -30852,7 +30862,7 @@ void Dblqh::checkReadExecSr(Signal *signal, LogFileRecordPtr logFilePtr,
       ZREAD_AHEAD_SIZE) {
     jam();
     /* ----------------------------------------------------------------------
-     *  WE HAVE LESS THAN 64 KBYTE OF LOG PAGES REMAINING IN MEMORY OR ON
+     *  WE HAVE LESS THAN 256 KBYTE OF LOG PAGES REMAINING IN MEMORY OR ON
      *  ITS WAY TO MAIN MEMORY. READ IN 8 MORE PAGES.
      * --------------------------------------------------------------------- */
     if ((logPartPtrP->execSrPagesRead + logPartPtrP->execSrPagesExecuted) <
