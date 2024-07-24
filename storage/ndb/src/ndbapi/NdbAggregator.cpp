@@ -226,7 +226,9 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
               res[i].is_unsigned == agg_res_ptr[i].is_unsigned) ||
               res[i].type == NDB_TYPE_DOUBLE) &&
               res[i].type == agg_res_ptr[i].type) ||
-              agg_res_ptr[i].type == NDB_TYPE_UNDEFINED);
+              agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||
+              (res[i].type == NDB_TYPE_UNDEFINED &&
+               n_gb_cols == 0));
       if (res[i].is_null) {
       } else if (agg_res_ptr[i].is_null) {
         agg_res_ptr[i] = res[i];
@@ -511,6 +513,18 @@ bool NdbAggregator::Div(Uint32 reg_1, Uint32 reg_2) {
   }
   buffer_[curr_prog_pos_++] =
     (kOpDiv) << 26 |
+    (reg_1 & 0x0F) << 12 |
+    (reg_2 & 0x0F) << 8;
+
+  return true;
+}
+
+bool NdbAggregator::DivInt(Uint32 reg_1, Uint32 reg_2) {
+  if (!CheckRegs(reg_1, reg_2)) {
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+    (kOpDivInt) << 26 |
     (reg_1 & 0x0F) << 12 |
     (reg_2 & 0x0F) << 8;
 

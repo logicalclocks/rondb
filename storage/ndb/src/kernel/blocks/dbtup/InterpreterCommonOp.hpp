@@ -444,7 +444,49 @@ Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
   return 0;
 }
 
-Int32 RegDivReg(const Register& a, const Register& b, Register* res) {
+int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
+                  bool is_div_int) {
+
+  Register a(tmp_a);
+  Register b(tmp_b);
+
+  if (!is_div_int) {
+    if (a.type == NDB_TYPE_BIGINT) {
+      int64_t val0 = a.value.val_int64;
+      bool val0_negtive = !a.is_unsigned && val0 < 0;
+      uint64_t uval0 = static_cast<uint64_t>(val0_negtive &&
+                       val0 != LLONG_MIN ? -val0 : val0);
+      if (!val0_negtive && uval0 > static_cast<int64_t>(pow(2, 53) - 1)) {
+        // overflow
+        return -1;
+      } else if (val0_negtive && val0 < -static_cast<int64_t>(pow(2, 53))) {
+        // overflow
+        return -1;
+      }
+
+      a.value.val_double = static_cast<double>(val0);
+      a.type = NDB_TYPE_DOUBLE;
+      a.is_unsigned = false;
+    }
+    if (b.type == NDB_TYPE_BIGINT) {
+      int64_t val0 = b.value.val_int64;
+      bool val0_negtive = !b.is_unsigned && val0 < 0;
+      uint64_t uval0 = static_cast<uint64_t>(val0_negtive &&
+                       val0 != LLONG_MIN ? -val0 : val0);
+      if (!val0_negtive && uval0 > static_cast<int64_t>(pow(2, 53) - 1)) {
+        // overflow
+        return -1;
+      } else if (val0_negtive && val0 < -static_cast<int64_t>(pow(2, 53))) {
+        // overflow
+        return -1;
+      }
+
+      b.value.val_double = static_cast<double>(val0);
+      b.type = NDB_TYPE_DOUBLE;
+      b.is_unsigned = false;
+    }
+  }
+
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -461,11 +503,15 @@ Int32 RegDivReg(const Register& a, const Register& b, Register* res) {
     SetRegisterNull(res);
     // Set the result type to be the resolved one
     res->type = res_type;
+    if (is_div_int) {
+      res->type = NDB_TYPE_BIGINT;
+    }
     // NULL
     return 1;
   }
 
   if (res_type == NDB_TYPE_BIGINT) {
+    assert(is_div_int);
     Int64 val0 = a.value.val_int64;
     Int64 val1 = b.value.val_int64;
     bool val0_negative, val1_negative, res_negative, res_unsigned;
@@ -531,10 +577,26 @@ Int32 RegDivReg(const Register& a, const Register& b, Register* res) {
     if (val1 == 0) {
       // Divided by zero
       SetRegisterNull(res);
+      if (is_div_int) {
+        res_type = NDB_TYPE_BIGINT;
+      }
     } else {
       double res_val = val0 / val1;
       if (std::isfinite(res_val)) {
         res->value.val_double = res_val;
+
+        if (is_div_int) {
+          res_type = NDB_TYPE_BIGINT;
+          double val = res->value.val_double;
+          if (val > 0) {
+            res->value.val_int64 = std::floor(val);
+          } else if (val < 0) {
+            res->value.val_int64 = std::ceil(val);
+          } else {
+            res->value.val_int64 = 0;
+          }
+          assert(!res->is_unsigned);
+        }
       } else {
         // overflow
         return -1;

@@ -592,8 +592,15 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       n_groups_ = gb_map_->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
-      for (Uint32 i = 0; i < n_agg_results_; i++) {
-        agg_res_ptr[i].type = agg_results_[i].type;
+      for (uint32_t i = 0; i < n_agg_results_; i++) {
+        agg_res_ptr[i].type = NDB_TYPE_UNDEFINED;
+        agg_res_ptr[i].value.val_int64 = 0;
+        agg_res_ptr[i].is_unsigned = false;
+        agg_res_ptr[i].is_null = true;
+        assert(agg_res_ptr[i].type == agg_results_[i].type);
+        assert(agg_res_ptr[i].value.val_int64 == agg_results_[i].value.val_int64);
+        assert(agg_res_ptr[i].is_unsigned == agg_results_[i].is_unsigned);
+        assert(agg_res_ptr[i].is_null == agg_results_[i].is_null);
       }
     }
   } else {
@@ -673,10 +680,22 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index2 = (value >> 8) & 0x0F;
 
         ret = RegDivReg(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+                  &registers_[reg_index], false);
         // assert(ret >= 0);
         if (ret < 0) {
           g_eventLogger->debug("Overflow[DIV], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+      case kOpDivInt:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+
+        ret = RegDivReg(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index], true);
+        // assert(ret >= 0);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[DIVINT], value is out of range");
           return ZAGG_MATH_OVERFLOW;
         }
         break;
