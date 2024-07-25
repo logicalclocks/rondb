@@ -186,6 +186,7 @@ class ndb_file {
   int init_zero(ndb_off_t data_size, ndb_off_t offset) const;
 
   int set_block_size_and_alignment(size_t size, size_t alignment);
+  void reset_block_size_and_alignment();
   static bool have_direct_io_support();
   /*
    * On Solaris directio should not be used during for example initialization
@@ -281,6 +282,14 @@ inline int ndb_file::set_block_size_and_alignment(size_t size, size_t align) {
   m_block_size = size;
   m_block_alignment = align;
   return 0;
+}
+
+inline
+void
+ndb_file::reset_block_size_and_alignment()
+{
+  m_block_size = 0;
+  m_block_alignment = 0;
 }
 
 inline ndb_file::size_t ndb_file::get_block_size() const {
