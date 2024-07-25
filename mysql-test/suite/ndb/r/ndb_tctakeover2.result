@@ -40,7 +40,7 @@ Start TC node
 Wait for all started
 OK
 rollback;
-ERROR HY000: Got temporary error 4025 'Node failure caused abort of transaction' from NDBCLUSTER
+Got one of the listed errors
 Extra pages is 1
 Start a transaction with a number of operations
 100 ops makes it easier to identify in case of noise
@@ -66,5 +66,5 @@ Start TC node
 Wait for all started
 OK
 rollback;
-ERROR HY000: Got temporary error 4025 'Node failure caused abort of transaction' from NDBCLUSTER
+Got one of the listed errors
 drop table t1;

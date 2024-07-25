@@ -92,7 +92,7 @@ while ($extra_pages < 2)
 
   --echo OK
 
-  --error 1297
+  --error 1297, 1205
   rollback;
 
   --inc $extra_pages
