@@ -78,7 +78,7 @@ while ($dist < 3)
            where counter_name="TRANSACTIONS"
         group by node_id;
 
-      --let $iter=100
+      --let $iter=200
       --let $errbound=$iter/10
       --let $rpt=$iter
       while ($rpt)
