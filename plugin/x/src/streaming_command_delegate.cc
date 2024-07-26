@@ -46,6 +46,8 @@
 #include "plugin/x/src/notices.h"
 #include "plugin/x/src/xpl_log.h"
 
+struct CHARSET_INFO;
+
 namespace xpl {
 
 using google::protobuf::io::CodedOutputStream;

@@ -60,8 +60,6 @@ SELECT count(*) FROM INFORMATION_SCHEMA.INNODB_FT_INDEX_CACHE;
 SET GLOBAL innodb_ft_num_word_optimize=10000;
 
 OPTIMIZE TABLE book;
-# Need to run OPTIMIZE TABLE twice because of Bug#35502793
-OPTIMIZE TABLE book;
 
 CALL find('they');
 

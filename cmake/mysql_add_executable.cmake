@@ -81,7 +81,7 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
                        # command, which is probably not what you want
                        # (except for mysqld.lib which is used by plugins).
     EXCLUDE_FROM_ALL   # add target, but do not build it by default
-    EXCLUDE_FROM_PGO   # add target, but do not build for PGO
+    EXCLUDE_FROM_PGO   # add target, but do not build for FPROFILE_GENERATE
     SKIP_INSTALL       # do not install it
     SKIP_TCMALLOC      # do not link with tcmalloc
     )
@@ -98,6 +98,7 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
     INCLUDE_DIRECTORIES # for TARGET_INCLUDE_DIRECTORIES
     SYSTEM_INCLUDE_DIRECTORIES # for TARGET_INCLUDE_DIRECTORIES SYSTEM
     LINK_LIBRARIES
+    LINK_OPTIONS
     )
   CMAKE_PARSE_ARGUMENTS(ARG
     "${EXECUTABLE_OPTIONS}"
@@ -105,6 +106,12 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
     "${EXECUTABLE_MULTI_VALUE_KW}"
     ${ARGN}
     )
+
+  IF(ARG_EXCLUDE_FROM_PGO)
+    IF(FPROFILE_GENERATE)
+      RETURN()
+    ENDIF()
+  ENDIF()
 
   SET(target ${target_arg})
   SET(sources ${ARG_UNPARSED_ARGUMENTS})
@@ -117,10 +124,14 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
       ${CMAKE_BINARY_DIR}/runtime_output_directory)
   ENDIF()
 
-  ADD_VERSION_INFO(${target} EXECUTABLE sources)
+  IF(ARG_COMPONENT)
+    ADD_VERSION_INFO(${target} EXECUTABLE sources "${ARG_COMPONENT}")
+  ELSE()
+    ADD_VERSION_INFO(${target} EXECUTABLE sources "")
+  ENDIF()
 
   ADD_EXECUTABLE(${target} ${sources})
-  TARGET_COMPILE_FEATURES(${target} PUBLIC cxx_std_17)
+  TARGET_COMPILE_FEATURES(${target} PUBLIC cxx_std_20)
 
   IF(TARGET my_tcmalloc)
     IF(ARG_SKIP_TCMALLOC OR target MATCHES "^rpd")
@@ -151,17 +162,30 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
     TARGET_INCLUDE_DIRECTORIES(${target} PRIVATE ${ARG_INCLUDE_DIRECTORIES})
   ENDIF()
   IF(ARG_SYSTEM_INCLUDE_DIRECTORIES)
-    TARGET_INCLUDE_DIRECTORIES(${target} SYSTEM PRIVATE ${ARG_SYSTEM_INCLUDE_DIRECTORIES})
+    TARGET_INCLUDE_DIRECTORIES(${target}
+      SYSTEM PRIVATE ${ARG_SYSTEM_INCLUDE_DIRECTORIES})
   ENDIF()
   IF(ARG_LINK_LIBRARIES)
     TARGET_LINK_LIBRARIES(${target} ${ARG_LINK_LIBRARIES})
+    # The "large" unit tests are HUGE on Windows, link them one-by-one.
+    # With Ninja, we can force this with the JOB_POOL_LINK property.
+    IF(WIN32)
+      LIST(FIND ARG_LINK_LIBRARIES server_unittest_library foundit)
+      IF(foundit GREATER_EQUAL 0)
+        SET_PROPERTY(TARGET ${target} PROPERTY JOB_POOL_LINK one_job)
+      ENDIF()
+    ENDIF()
+  ENDIF()
+  IF(ARG_LINK_OPTIONS)
+    MY_TARGET_LINK_OPTIONS(${target} ${ARG_LINK_OPTIONS})
   ENDIF()
 
   IF(ARG_EXCLUDE_FROM_PGO)
-    IF(FPROFILE_GENERATE)
-      SET(ARG_EXCLUDE_FROM_ALL TRUE)
-      SET(ARG_SKIP_INSTALL TRUE)
-      UNSET(ARG_ADD_TEST)
+    IF(FPROFILE_USE)
+      MY_CHECK_CXX_COMPILER_WARNING("-Wmissing-profile" HAS_MISSING_PROFILE)
+      IF(HAS_MISSING_PROFILE)
+        TARGET_COMPILE_OPTIONS(${target} PRIVATE ${HAS_MISSING_PROFILE})
+      ENDIF()
     ENDIF()
   ENDIF()
 
@@ -193,10 +217,14 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
   ENDIF()
 
   IF(WIN32_CLANG AND WITH_ASAN)
-    TARGET_LINK_LIBRARIES(${target} "${ASAN_LIB_DIR}/clang_rt.asan-x86_64.lib")
-    TARGET_LINK_LIBRARIES(${target} "${ASAN_LIB_DIR}/clang_rt.asan_cxx-x86_64.lib")
-    SET_TARGET_PROPERTIES(${target} PROPERTIES LINK_FLAGS
-      "/wholearchive:\"${ASAN_LIB_DIR}/clang_rt.asan-x86_64.lib\" /wholearchive:\"${ASAN_LIB_DIR}/clang_rt.asan_cxx-x86_64.lib\"")
+    TARGET_LINK_LIBRARIES(${target}
+      "${ASAN_LIB_DIR}/clang_rt.asan-x86_64.lib"
+      "${ASAN_LIB_DIR}/clang_rt.asan_cxx-x86_64.lib"
+      )
+    MY_TARGET_LINK_OPTIONS(${target}
+      "/wholearchive:\"${ASAN_LIB_DIR}/clang_rt.asan-x86_64.lib\"")
+    MY_TARGET_LINK_OPTIONS(${target}
+      "/wholearchive:\"${ASAN_LIB_DIR}/clang_rt.asan_cxx-x86_64.lib\"")
   ENDIF()
 
   # Add unit test, do not install it.

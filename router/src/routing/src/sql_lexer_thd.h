@@ -26,14 +26,16 @@
 #ifndef ROUTING_SQL_LEXER_THD_INCLUDED
 #define ROUTING_SQL_LEXER_THD_INCLUDED
 
-#include "m_ctype.h"   // CHARSET_INFO
-#include "my_alloc.h"  // MEM_ROOT
-#include "my_sys.h"    // strmake_root
+#include <stdint.h>
+
+#include "my_alloc.h"               // MEM_ROOT
+#include "my_sys.h"                 // strmake_root
+#include "mysql/strings/m_ctype.h"  // CHARSET_INFO
 #include "sql_lexer_parser_state.h"
 
 class THD {
  public:
-  using sql_mode_t = ulonglong;
+  using sql_mode_t = uint64_t;
 
   MEM_ROOT *mem_root{nullptr};  // Pointer to current memroot
 

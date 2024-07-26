@@ -4,10 +4,10 @@
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
 .\"      Date: 05/31/2024
 .\"    Manual: MySQL Database System
-.\"    Source: MySQL 8.0
+.\"    Source: MySQL 8.4
 .\"  Language: English
 .\"
-.TH "MYISAMCHK" "1" "05/31/2024" "MySQL 8\&.0" "MySQL Database System"
+.TH "MYISAMCHK" "1" "05/31/2024" "MySQL 8\&.4" "MySQL Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -1336,48 +1336,6 @@ T}
 Skip rows larger than the given length if
 \fBmyisamchk\fR
 cannot allocate memory to hold them\&.
-.RE
-.sp
-.RS 4
-.ie n \{\
-\h'-04'\(bu\h'+03'\c
-.\}
-.el \{\
-.sp -1
-.IP \(bu 2.3
-.\}
-\fB\-\-parallel\-recover\fR,
-\fB\-p\fR
-.TS
-allbox tab(:);
-lB l.
-T{
-Command-Line Format
-T}:T{
---parallel-recover
-T}
-.TE
-.sp 1
-.if n \{\
-.sp
-.\}
-.RS 4
-.it 1 an-trap
-.nr an-no-space-flag 1
-.nr an-break-flag 1
-.br
-.ps +1
-\fBNote\fR
-.ps -1
-.br
-This option is deprecated in MySQL 8\&.0\&.28 and removed in MySQL 8\&.0\&.30\&.
-.sp .5v
-.RE
-Use the same technique as
-\fB\-r\fR
-and
-\fB\-n\fR, but create all the keys in parallel, using different threads\&.
-\fIThis is beta\-quality code\&. Use at your own risk!\fR
 .RE
 .sp
 .RS 4

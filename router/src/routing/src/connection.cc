@@ -47,8 +47,7 @@ stdx::expected<void, std::error_code> ConnectorBase::init_destination() {
   } else {
     // no backends
     log_warning("%d: no connectable destinations :(", __LINE__);
-    return stdx::make_unexpected(
-        make_error_code(DestinationsErrc::kNoDestinations));
+    return stdx::unexpected(make_error_code(DestinationsErrc::kNoDestinations));
   }
 }
 
@@ -117,10 +116,10 @@ stdx::expected<void, std::error_code> ConnectorBase::try_connect() {
   };
 
   auto open_res = server_sock_.open(server_endpoint_.protocol(), socket_flags);
-  if (!open_res) return open_res.get_unexpected();
+  if (!open_res) return stdx::unexpected(open_res.error());
 
   const auto non_block_res = server_sock_.native_non_blocking(true);
-  if (!non_block_res) return non_block_res.get_unexpected();
+  if (!non_block_res) return stdx::unexpected(non_block_res.error());
 
   server_sock_.set_option(net::ip::tcp::no_delay{true});
 
@@ -137,7 +136,7 @@ stdx::expected<void, std::error_code> ConnectorBase::try_connect() {
 
   if (!src_addr_str.empty()) {
     const auto src_addr_res = net::ip::make_address_v4(src_addr_str.c_str());
-    if (!src_addr_res) return src_addr_res.get_unexpected();
+    if (!src_addr_res) return stdx::unexpected(src_addr_res.error());
 
 #if defined(IP_BIND_ADDRESS_NO_PORT)
     // linux 4.2 introduced IP_BIND_ADDRESS_NO_PORT to delay assigning a
@@ -155,14 +154,14 @@ stdx::expected<void, std::error_code> ConnectorBase::try_connect() {
             "failed: "
             "%s",
             __LINE__, setsockopt_res.error().message().c_str());
-        return setsockopt_res.get_unexpected();
+        return stdx::unexpected(setsockopt_res.error());
       }
     }
 #endif
 
     const auto bind_res = server_sock_.bind(net::ip::tcp::endpoint(
         src_addr_res.value_or(net::ip::address_v4{}), 0));
-    if (!bind_res) return bind_res.get_unexpected();
+    if (!bind_res) return stdx::unexpected(bind_res.error());
   }
 #endif
 
@@ -173,7 +172,7 @@ stdx::expected<void, std::error_code> ConnectorBase::try_connect() {
         ec == make_error_condition(std::errc::operation_would_block)) {
       // connect in progress, wait for completion.
       func_ = Function::kConnectFinish;
-      return connect_res.get_unexpected();
+      return stdx::unexpected(connect_res.error());
     } else {
       last_ec_ = ec;
       return next_endpoint();
@@ -270,7 +269,7 @@ stdx::expected<void, std::error_code> ConnectorBase::next_destination() {
       return init_destination();
     } else {
       // we couldn't connect to any of the destinations. Give up.
-      return stdx::make_unexpected(last_ec_);
+      return stdx::unexpected(last_ec_);
     }
   }
 }
@@ -278,14 +277,32 @@ stdx::expected<void, std::error_code> ConnectorBase::next_destination() {
 void MySQLRoutingConnectionBase::accepted() {
   context().increase_info_active_routes();
   context().increase_info_handled_routes();
+
+  client_fd_ = get_client_fd();
+  client_id_ = get_client_address();
 }
 
 void MySQLRoutingConnectionBase::connected() {
   const auto now = clock_type::now();
   stats_([now](Stats &stats) { stats.connected_to_server = now; });
 
+  server_id_ = get_server_address();
+
   if (log_level_is_handled(mysql_harness::logging::LogLevel::kDebug)) {
-    log_debug("[%s] connected %s -> %s", context().get_name().c_str(),
-              get_client_address().c_str(), get_server_address().c_str());
+    log_debug("[%s] fd=%d connected %s -> %s", context().get_name().c_str(),
+              client_fd_, client_id_.c_str(), server_id_.c_str());
+  }
+}
+
+void MySQLRoutingConnectionBase::log_connection_summary() {
+  auto log_id = [](const std::string &id) -> std::string {
+    return id.empty() ? "(not connected)" : id;
+  };
+
+  if (log_level_is_handled(mysql_harness::logging::LogLevel::kDebug)) {
+    log_debug("[%s] fd=%d %s -> %s: connection closed (up: %zub; down: %zub)",
+              this->context().get_name().c_str(), client_fd_,
+              log_id(client_id_).c_str(), log_id(server_id_).c_str(),
+              this->get_bytes_up(), this->get_bytes_down());
   }
 }

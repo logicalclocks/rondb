@@ -83,7 +83,7 @@ static void test_session_open(void *) {
   /* Open sessions: Must pass */
   for (int i = 0; i < nb_sessions; i++) {
     WRITE_VAL("srv_session_open %d - ", i + 1);
-    sessions[i] = srv_session_open(NULL, plugin_ctx);
+    sessions[i] = srv_session_open(nullptr, plugin_ctx);
     if (!sessions[i]) {
       WRITE_STR("Failed\n");
     } else {
@@ -104,7 +104,7 @@ static void test_session(void *) {
   /* Open sessions: Must pass */
   for (int i = 0; i < nb_sessions; i++) {
     WRITE_VAL("srv_session_open %d - ", i + 1);
-    sessions[i] = srv_session_open(NULL, plugin_ctx);
+    sessions[i] = srv_session_open(nullptr, plugin_ctx);
     if (!sessions[i]) {
       WRITE_STR("Failed\n");
     } else {

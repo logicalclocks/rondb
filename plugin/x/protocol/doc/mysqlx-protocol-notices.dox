@@ -63,7 +63,7 @@ The replica stopped to replicate changes from the replication source/group
 and may contain stale information.
 
 @note
-    Checking for ``SHOW SLAVE STATUS`` and ``io_thread`` and
+    Checking for ``SHOW REPLICA STATUS`` and ``io_thread`` and
     ``sql_thread`` leads to a race condition for the following query.
     One would have to check after query of the replica is still running to
     see if it didn't stop in between.

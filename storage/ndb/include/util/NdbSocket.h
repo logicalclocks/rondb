@@ -38,12 +38,14 @@ class NdbSocket {
  public:
   NdbSocket() = default;
   NdbSocket(NdbSocket &&oth);
+  // TODO: move ndb_socket_t into NdbSocket
   NdbSocket(ndb_socket_t ndbsocket) : s(ndbsocket) {}
   ~NdbSocket() {
     assert(ssl == nullptr);
     //assert(!ndb_socket_valid(s));
     if (mutex != nullptr) NdbMutex_Destroy(mutex);
   }
+
   NdbSocket &operator=(NdbSocket &&);
 
   int is_valid() const { return ndb_socket_valid(s); }
@@ -111,9 +113,10 @@ class NdbSocket {
    */
   bool key_update_pending() const;
 
-  /* Get peer's TLS certificate
+  /* Get peer's TLS certificate, and update the certificate reference count.
    *
-   * Returns nullptr if socket does not have TLS enabled.
+   * The caller should free the returned pointer using Certificate::free().
+   * Returns nullptr if no certificate is available.
    */
   struct x509_st *peer_certificate() const;
 

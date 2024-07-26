@@ -119,7 +119,7 @@ class DirIteratorImpl {
 
   void close(void) {
     if (m_find_handle) FindClose(m_find_handle);
-    m_find_handle = NULL;
+    m_find_handle = nullptr;
   }
 
   const char *next_entry(bool &is_reg) {
@@ -128,7 +128,7 @@ class DirIteratorImpl {
       is_reg = is_regular_file(m_find_data);
       return m_find_data.cFileName;
     }
-    return NULL;
+    return nullptr;
   }
 };
 
@@ -171,7 +171,7 @@ mode_t NdbDir::o_x(void) { return IF_WIN(0, S_IXOTH); }
 bool NdbDir::create(const char *dir, mode_t mode [[maybe_unused]],
                     bool ignore_existing) {
 #ifdef _WIN32
-  if (CreateDirectory(dir, NULL) == 0) {
+  if (CreateDirectory(dir, nullptr) == 0) {
     if (ignore_existing && GetLastError() == ERROR_ALREADY_EXISTS) return true;
 
     g_eventLogger->info("Failed to create directory '%s', error: %d", dir,
@@ -193,7 +193,7 @@ bool NdbDir::create(const char *dir, mode_t mode [[maybe_unused]],
 
 NdbDir::Temp::Temp() {
 #ifdef _WIN32
-  DWORD len = GetTempPath(0, NULL);
+  DWORD len = GetTempPath(0, nullptr);
   char *tmp = new char[len];
   if (GetTempPath(len, tmp) == 0) abort();
   m_path = tmp;

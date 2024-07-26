@@ -113,7 +113,7 @@ stdx::expected<bool, std::error_code> core_uses_pid() {
   std::ifstream ifs("/proc/sys/kernel/core_uses_pid");
 
   if (!ifs.good()) {
-    return stdx::make_unexpected(
+    return stdx::unexpected(
         make_error_code(std::errc::no_such_file_or_directory));
   }
 
@@ -126,7 +126,7 @@ stdx::expected<bool, std::error_code> core_uses_pid() {
   } else if (core_uses_pid == "1") {
     return true;
   } else {
-    return stdx::make_unexpected(make_error_code(std::errc::invalid_argument));
+    return stdx::unexpected(make_error_code(std::errc::invalid_argument));
   }
 }
 }  // namespace
@@ -139,8 +139,8 @@ std::string CoreFinder::core_name() const {
   module_name.resize(MAX_PATH);
 
   _splitpath_s(executable_.c_str(),                     //
-               NULL, 0,                                 // drive
-               NULL, 0,                                 // dir
+               nullptr, 0,                              // drive
+               nullptr, 0,                              // dir
                module_name.data(), module_name.size(),  // name
                nullptr, 0                               // ext
   );

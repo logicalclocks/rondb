@@ -122,18 +122,18 @@
 #include <string.h>
 #include <sys/types.h>
 #include <algorithm>
+#include <bit>
 
 #include "keycache.h"
-#include "my_bit.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_pointer_arithmetic.h"
 #include "my_sys.h"
 #include "my_thread_local.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_alloc.h"
@@ -242,9 +242,7 @@ static int fail_hlink(HASH_LINK *hlink);
 static int cache_empty(KEY_CACHE *keycache);
 #endif
 
-static inline uint next_power(uint value) {
-  return (uint)my_round_up_to_next_power((uint32)value) << 1;
-}
+static inline uint next_power(uint value) { return std::bit_ceil(value) << 1; }
 
 /*
   Initialize a key cache
@@ -2936,7 +2934,7 @@ static int flush_cached_blocks(KEY_CACHE *keycache,
                                enum flush_type type) {
   int error;
   int last_errno = 0;
-  uint count = (uint)(end - cache);
+  const uint count = (uint)(end - cache);
 
   /* Don't lock the cache during the flush */
   mysql_mutex_unlock(&keycache->cache_lock);

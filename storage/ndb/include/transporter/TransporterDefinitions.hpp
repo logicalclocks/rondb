@@ -30,6 +30,7 @@
 #include <kernel_types.h> 
 #include <ndb_global.h>
 #include <NdbOut.hpp>
+#include "SocketAuthenticator.hpp"  // TlsAuth
 
 /**
  * The sendbuffer limit after which the contents of the buffer is sent
@@ -89,6 +90,7 @@ struct TransporterConfiguration {
   NodeId remoteNodeId;
   NodeId localNodeId;
   NodeId serverNodeId;
+  bool requireTls;
   bool checksum;
   bool signalId;
   bool isMgmConnection; // is a mgm connection, requires transforming

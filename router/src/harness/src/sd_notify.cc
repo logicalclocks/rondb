@@ -75,11 +75,11 @@ static stdx::expected<void, std::error_code> notify(
 
   auto connect_res = sock.connect({pipe_name});
   if (!connect_res) {
-    return connect_res.get_unexpected();
+    return stdx::unexpected(connect_res.error());
   }
   auto write_res = net::write(sock, net::buffer(msg));
   if (!write_res) {
-    return write_res.get_unexpected();
+    return stdx::unexpected(write_res.error());
   }
 
   return {};
@@ -91,7 +91,7 @@ static stdx::expected<local::datagram_protocol::socket, std::error_code>
 connect_to_notify_socket(net::io_context &io_ctx,
                          const std::string &socket_name) {
   if (socket_name.empty()) {
-    return stdx::make_unexpected(make_error_code(std::errc::invalid_argument));
+    return stdx::unexpected(make_error_code(std::errc::invalid_argument));
   }
 
   auto sock_name = socket_name;
@@ -102,7 +102,7 @@ connect_to_notify_socket(net::io_context &io_ctx,
 
   if (ep.path() != sock_name) {
     // socket name was truncated
-    return stdx::make_unexpected(make_error_code(std::errc::filename_too_long));
+    return stdx::unexpected(make_error_code(std::errc::filename_too_long));
   }
 
   local::datagram_protocol::socket sock(io_ctx);
@@ -110,7 +110,7 @@ connect_to_notify_socket(net::io_context &io_ctx,
     const auto connect_res = sock.connect(ep);
     if (!connect_res) {
       if (connect_res.error() != make_error_code(std::errc::interrupted)) {
-        return connect_res.get_unexpected();
+        return stdx::unexpected(connect_res.error());
       }
 
       // stay in the loop in case we got interrupted.
@@ -125,14 +125,14 @@ static stdx::expected<void, std::error_code> notify(
   net::io_context io_ctx;
   auto connect_res = connect_to_notify_socket(io_ctx, socket_name);
   if (!connect_res) {
-    return connect_res.get_unexpected();
+    return stdx::unexpected(connect_res.error());
   }
 
   auto sock = std::move(connect_res.value());
 
   const auto write_res = net::write(sock, net::buffer(msg));
   if (!write_res) {
-    return write_res.get_unexpected();
+    return stdx::unexpected(write_res.error());
   }
 
   return {};

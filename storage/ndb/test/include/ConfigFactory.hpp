@@ -93,8 +93,9 @@ struct ConfigFactory {
     return config;
   }
 
+  template <typename T>
   static bool put(Properties &config, const char *section, Uint32 section_no,
-                  const char *key, Uint32 value) {
+                  const char *key, T value) {
     Properties *p;
     // Get a copy of the section to modify
     if (!config.getCopy(section, section_no, &p)) return false;

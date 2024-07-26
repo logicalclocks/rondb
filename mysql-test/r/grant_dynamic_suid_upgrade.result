@@ -1,0 +1,114 @@
+#
+# Test for WL#15874: Separate privileges for definer object creation
+#   and orphan object protection from SET_USER_ID and
+#   deprecate SET_USER_ID
+#
+# Also test WL#15875: Remove the deprecated SET_USER_ID privilege
+#
+# Test FR3
+# Test: FR8: Should have no result rows
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_USER_ID' ORDER BY 1;
+GRANTEE
+# Test: FR8: Should include root
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_ANY_DEFINER' ORDER BY 1;
+GRANTEE
+'root'@'localhost'
+# Test: FR8: Should include root
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'ALLOW_NONEXISTENT_DEFINER' ORDER BY 1;
+GRANTEE
+'root'@'localhost'
+# set grants as it used to be pre-worklog
+CREATE USER wl15874@localhost;
+# should fail: no such grant.
+GRANT SET_USER_ID ON *.* TO wl15874@localhost;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use
+REVOKE SET_ANY_DEFINER,ALLOW_NONEXISTENT_DEFINER ON *.* FROM root@localhost;
+INSERT INTO mysql.global_grants(USER,HOST,PRIV, WITH_GRANT_OPTION)
+VALUES ('wl15874', 'localhost', 'SET_USER_ID', 'Y');
+INSERT INTO mysql.global_grants(USER,HOST,PRIV, WITH_GRANT_OPTION)
+VALUES ('root', 'localhost', 'SET_USER_ID', 'Y');
+# restart:--upgrade=FORCE
+# Restart server with defaults
+# restart:
+# should fail after a restart and set_user_id present: no such grant.
+GRANT SET_USER_ID ON *.* TO wl15874@localhost;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use
+# Test FR4: SET_USER_ID deprecated at startup. Must be 0: deprecation gone
+select COUNT(*) FROM performance_schema.error_log
+WHERE PRIO='Warning' AND DATA REGEXP 'SET_USER_ID.*deprecated';
+COUNT(*)
+0
+# WL#15875 FR4: should return 0 rows: SET_USER_ID gone
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_USER_ID' ORDER BY 1;
+GRANTEE
+# FR3: should return 2 rows: root and wl15874
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_ANY_DEFINER' ORDER BY 1;
+GRANTEE
+'root'@'localhost'
+'wl15874'@'localhost'
+# FR3: should return 2 rows: root and wl15874
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'ALLOW_NONEXISTENT_DEFINER' ORDER BY 1;
+GRANTEE
+'root'@'localhost'
+'wl15874'@'localhost'
+# set grants to test FR3.1
+REVOKE ALLOW_NONEXISTENT_DEFINER,SET_ANY_DEFINER ON *.* FROM wl15874@localhost;
+REVOKE ALLOW_NONEXISTENT_DEFINER,SET_ANY_DEFINER ON *.* FROM root@localhost;
+GRANT SUPER ON *.* TO wl15874@localhost WITH GRANT OPTION;
+Warnings:
+Warning	1287	The SUPER privilege identifier is deprecated
+# FR3.1: should return 0 rows
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_USER_ID' ORDER BY 1;
+GRANTEE
+# FR3.1: should return 0 rows
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_ANY_DEFINER' ORDER BY 1;
+GRANTEE
+# FR3.1: should return 0 rows
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'ALLOW_NONEXISTENT_DEFINER' ORDER BY 1;
+GRANTEE
+# FR3.1: should return 3 rows: root, mysql.session and wl15874
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SUPER' ORDER BY 1;
+GRANTEE
+'mysql.session'@'localhost'
+'root'@'localhost'
+'wl15874'@'localhost'
+# Upgrade to test FR3.1
+# restart:--upgrade=FORCE
+# Restart server with defaults to test FR3.1
+# restart:
+# FR3.1: should return 0 rows
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_USER_ID' ORDER BY 1;
+GRANTEE
+# FR3.1: should return 3 rows: root, mysql.session and wl15874
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'SET_ANY_DEFINER' ORDER BY 1;
+GRANTEE
+'mysql.session'@'localhost'
+'root'@'localhost'
+'wl15874'@'localhost'
+# FR3.1: should return 3 rows: root, mysql.session and wl15874
+SELECT GRANTEE FROM INFORMATION_SCHEMA.USER_PRIVILEGES
+WHERE PRIVILEGE_TYPE = 'ALLOW_NONEXISTENT_DEFINER' ORDER BY 1;
+GRANTEE
+'mysql.session'@'localhost'
+'root'@'localhost'
+'wl15874'@'localhost'
+# Cleanup
+REVOKE ALLOW_NONEXISTENT_DEFINER,SET_ANY_DEFINER ON *.* FROM wl15874@localhost;
+REVOKE SUPER ON *.* FROM wl15874@localhost;
+Warnings:
+Warning	1287	The SUPER privilege identifier is deprecated
+REVOKE SET_ANY_DEFINER, ALLOW_NONEXISTENT_DEFINER ON *.* FROM 'mysql.session'@'localhost';
+DROP USER wl15874@localhost;
+# End of 8.2 tests

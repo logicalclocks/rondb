@@ -28,12 +28,16 @@
 #include <sys/types.h>
 
 #include "lex_string.h"
-#include "m_ctype.h"
+#include "m_string.h"
 #include "my_compiler.h"
 #include "my_inttypes.h"
 #include "my_macros.h"
 #include "my_sys.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
+#include "string_with_len.h"
+#include "strxnmov.h"
 #include "thr_mutex.h"
 
 /** Event strings. */
@@ -157,6 +161,12 @@ static SHOW_VAR simple_status[] = {
 #undef AUDIT_NULL_VAR
 
     {nullptr, nullptr, SHOW_UNDEF, SHOW_SCOPE_GLOBAL}};
+
+static void increment_counter(volatile int *counter) {
+  int value = *counter;
+  int new_value = value + 1;
+  *counter = new_value;
+}
 
 /*
   Define plugin variables.
@@ -322,8 +332,8 @@ static char *add_event(const char *var, LEX_CSTRING event, const char *data,
 static void process_event_record(MYSQL_THD thd, LEX_CSTRING event_name,
                                  const char *data, size_t data_length) {
   char *record_str = THDVAR(thd, event_record_def);
-  LEX_CSTRING record_begin = get_token(&record_str);
-  LEX_CSTRING record_end = get_token(&record_str);
+  const LEX_CSTRING record_begin = get_token(&record_str);
+  const LEX_CSTRING record_end = get_token(&record_str);
 
   if (record_str == nullptr) {
     return;
@@ -394,15 +404,15 @@ static void process_event_record(MYSQL_THD thd, LEX_CSTRING event_name,
 
 static int process_command(MYSQL_THD thd, LEX_CSTRING event_command,
                            bool consume_event) {
-  LEX_CSTRING abort_ret_command = {STRING_WITH_LEN("ABORT_RET")};
+  const LEX_CSTRING abort_ret_command = {STRING_WITH_LEN("ABORT_RET")};
 
   if (!my_charset_latin1.coll->strnncoll(
           &my_charset_latin1, (const uchar *)event_command.str,
           event_command.length, (const uchar *)abort_ret_command.str,
           abort_ret_command.length, false)) {
-    int ret_code = (int)THDVAR(thd, abort_value);
+    const int ret_code = (int)THDVAR(thd, abort_value);
     const char *err_message = (const char *)THDVAR(thd, abort_message);
-    LEX_CSTRING status = {STRING_WITH_LEN("EVENT-ORDER-ABORT")};
+    const LEX_CSTRING status = {STRING_WITH_LEN("EVENT-ORDER-ABORT")};
 
     char *order_str = THDVAR(thd, event_order_check);
 
@@ -441,19 +451,19 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
       0,
   };
   int buffer_data = 0;
-  unsigned long event_subclass =
+  const unsigned long event_subclass =
       static_cast<unsigned long>(*static_cast<const int *>(event));
   char *order_str = THDVAR(thd, event_order_check);
-  int event_order_started = (int)THDVAR(thd, event_order_started);
-  int exact_check = (int)THDVAR(thd, event_order_check_exact);
-  LEX_CSTRING event_name = event_to_str(event_class, event_subclass);
-  LEX_CSTRING event_token = get_token(&order_str);
-  LEX_CSTRING event_data = get_token(&order_str);
+  const int event_order_started = (int)THDVAR(thd, event_order_started);
+  const int exact_check = (int)THDVAR(thd, event_order_check_exact);
+  const LEX_CSTRING event_name = event_to_str(event_class, event_subclass);
+  const LEX_CSTRING event_token = get_token(&order_str);
+  const LEX_CSTRING event_data = get_token(&order_str);
   LEX_CSTRING event_command = get_token(&order_str);
   bool consume_event = true;
 
   /* prone to races, oh well */
-  number_of_calls++;
+  increment_counter(&number_of_calls);
 
   if (event_class == MYSQL_AUDIT_GENERAL_CLASS) {
     const struct mysql_event_general *event_general =
@@ -461,16 +471,16 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (event_general->event_subclass) {
       case MYSQL_AUDIT_GENERAL_LOG:
-        number_of_calls_general_log++;
+        increment_counter(&number_of_calls_general_log);
         break;
       case MYSQL_AUDIT_GENERAL_ERROR:
-        number_of_calls_general_error++;
+        increment_counter(&number_of_calls_general_error);
         break;
       case MYSQL_AUDIT_GENERAL_RESULT:
-        number_of_calls_general_result++;
+        increment_counter(&number_of_calls_general_result);
         break;
       case MYSQL_AUDIT_GENERAL_STATUS:
-        number_of_calls_general_status++;
+        increment_counter(&number_of_calls_general_status);
         break;
       default:
         break;
@@ -481,16 +491,16 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (event_connection->event_subclass) {
       case MYSQL_AUDIT_CONNECTION_CONNECT:
-        number_of_calls_connection_connect++;
+        increment_counter(&number_of_calls_connection_connect);
         break;
       case MYSQL_AUDIT_CONNECTION_DISCONNECT:
-        number_of_calls_connection_disconnect++;
+        increment_counter(&number_of_calls_connection_disconnect);
         break;
       case MYSQL_AUDIT_CONNECTION_CHANGE_USER:
-        number_of_calls_connection_change_user++;
+        increment_counter(&number_of_calls_connection_change_user);
         break;
       case MYSQL_AUDIT_CONNECTION_PRE_AUTHENTICATE:
-        number_of_calls_connection_pre_authenticate++;
+        increment_counter(&number_of_calls_connection_pre_authenticate);
         break;
       default:
         break;
@@ -501,10 +511,10 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (event_parse->event_subclass) {
       case MYSQL_AUDIT_PARSE_PREPARSE:
-        number_of_calls_parse_preparse++;
+        increment_counter(&number_of_calls_parse_preparse);
         break;
       case MYSQL_AUDIT_PARSE_POSTPARSE:
-        number_of_calls_parse_postparse++;
+        increment_counter(&number_of_calls_parse_postparse);
         break;
       default:
         break;
@@ -556,11 +566,11 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
   else if (event_class == MYSQL_AUDIT_SERVER_STARTUP_CLASS) {
     /* const struct mysql_event_server_startup *event_startup=
        (const struct mysql_event_server_startup *) event; */
-    number_of_calls_server_startup++;
+    increment_counter(&number_of_calls_server_startup);
   } else if (event_class == MYSQL_AUDIT_SERVER_SHUTDOWN_CLASS) {
     /* const struct mysql_event_server_shutdown *event_startup=
        (const struct mysql_event_server_shutdown *) event; */
-    number_of_calls_server_shutdown++;
+    increment_counter(&number_of_calls_server_shutdown);
   } else if (event_class == MYSQL_AUDIT_COMMAND_CLASS) {
     const struct mysql_event_command *local_event_command =
         (const struct mysql_event_command *)event;
@@ -570,10 +580,10 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (local_event_command->event_subclass) {
       case MYSQL_AUDIT_COMMAND_START:
-        number_of_calls_command_start++;
+        increment_counter(&number_of_calls_command_start);
         break;
       case MYSQL_AUDIT_COMMAND_END:
-        number_of_calls_command_end++;
+        increment_counter(&number_of_calls_command_end);
         break;
       default:
         break;
@@ -587,16 +597,16 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (event_query->event_subclass) {
       case MYSQL_AUDIT_QUERY_START:
-        number_of_calls_query_start++;
+        increment_counter(&number_of_calls_query_start);
         break;
       case MYSQL_AUDIT_QUERY_NESTED_START:
-        number_of_calls_query_nested_start++;
+        increment_counter(&number_of_calls_query_nested_start);
         break;
       case MYSQL_AUDIT_QUERY_STATUS_END:
-        number_of_calls_query_status_end++;
+        increment_counter(&number_of_calls_query_status_end);
         break;
       case MYSQL_AUDIT_QUERY_NESTED_STATUS_END:
-        number_of_calls_query_nested_status_end++;
+        increment_counter(&number_of_calls_query_nested_status_end);
         break;
       default:
         break;
@@ -611,16 +621,16 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (event_table->event_subclass) {
       case MYSQL_AUDIT_TABLE_ACCESS_INSERT:
-        number_of_calls_table_access_insert++;
+        increment_counter(&number_of_calls_table_access_insert);
         break;
       case MYSQL_AUDIT_TABLE_ACCESS_DELETE:
-        number_of_calls_table_access_delete++;
+        increment_counter(&number_of_calls_table_access_delete);
         break;
       case MYSQL_AUDIT_TABLE_ACCESS_UPDATE:
-        number_of_calls_table_access_update++;
+        increment_counter(&number_of_calls_table_access_update);
         break;
       case MYSQL_AUDIT_TABLE_ACCESS_READ:
-        number_of_calls_table_access_read++;
+        increment_counter(&number_of_calls_table_access_read);
         break;
       default:
         break;
@@ -647,10 +657,10 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (event_gvar->event_subclass) {
       case MYSQL_AUDIT_GLOBAL_VARIABLE_GET:
-        number_of_calls_global_variable_get++;
+        increment_counter(&number_of_calls_global_variable_get);
         break;
       case MYSQL_AUDIT_GLOBAL_VARIABLE_SET:
-        number_of_calls_global_variable_set++;
+        increment_counter(&number_of_calls_global_variable_set);
         break;
       default:
         break;
@@ -697,10 +707,10 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
 
     switch (evt->event_subclass) {
       case MYSQL_AUDIT_MESSAGE_INTERNAL:
-        number_of_calls_message_internal++;
+        increment_counter(&number_of_calls_message_internal);
         break;
       case MYSQL_AUDIT_MESSAGE_USER:
-        number_of_calls_message_user++;
+        increment_counter(&number_of_calls_message_user);
         break;
       default:
         break;
@@ -730,7 +740,7 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
       return 1;
     }
   } else {
-    LEX_CSTRING ignore = {STRING_WITH_LEN("<IGNORE>")};
+    const LEX_CSTRING ignore = {STRING_WITH_LEN("<IGNORE>")};
 
     /* When we are not in the event order check, check if the specified
        data corresponds to the actual event data. */
@@ -746,7 +756,8 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
         char invalid_data_buffer[sizeof(buffer)] = {
             0,
         };
-        LEX_CSTRING status = {STRING_WITH_LEN("EVENT-ORDER-INVALID-DATA")};
+        const LEX_CSTRING status = {
+            STRING_WITH_LEN("EVENT-ORDER-INVALID-DATA")};
 
         char *local_order_str = THDVAR(thd, event_order_check);
 
@@ -767,7 +778,7 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
       event_command.length = 0;
     } else {
       LEX_STRING order_cstr;
-      ulong consume = THDVAR(thd, event_order_check_consume_ignore_count);
+      const ulong consume = THDVAR(thd, event_order_check_consume_ignore_count);
       lex_string_set(&order_cstr, THDVAR(thd, event_order_check));
 
       THDVAR(thd, event_order_started) = 1;
@@ -788,7 +799,7 @@ static int audit_null_notify(MYSQL_THD thd, mysql_event_class_t event_class,
         lex_string_set(&order_cstr, order_cstr.str);
 
         if (order_cstr.length == 0) {
-          LEX_CSTRING status = {STRING_WITH_LEN("EVENT-ORDER-OK")};
+          const LEX_CSTRING status = {STRING_WITH_LEN("EVENT-ORDER-OK")};
 
           memmove(order_cstr.str, status.str, status.length + 1);
 

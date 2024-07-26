@@ -1,0 +1,3 @@
+# Run the Cluster/J tests with strict MGM TLS enabled
+
+--source suite/ndb/t/clusterj.test

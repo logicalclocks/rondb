@@ -21,12 +21,10 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
-ADD_LIBRARY(harness_net_ts STATIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/mysql/harness/net_ts/internet.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/mysql/harness/net_ts/socket.cpp
-  )
+ADD_LIBRARY(harness_net_ts INTERFACE)
+
 TARGET_INCLUDE_DIRECTORIES(harness_net_ts
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 TARGET_SOURCES(harness_net_ts
   INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql/harness/net_ts.h
@@ -55,7 +53,6 @@ TARGET_SOURCES(harness_net_ts
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql/harness/net_ts/timer.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql/harness/net_ts/win32_named_pipe.h
   )
-TARGET_LINK_LIBRARIES(harness_net_ts INTERFACE harness_stdx)
 
 IF(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   TARGET_LINK_LIBRARIES(harness_net_ts INTERFACE socket;nsl)

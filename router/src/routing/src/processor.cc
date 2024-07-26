@@ -30,6 +30,7 @@
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/stdx/expected.h"
 #include "mysql/harness/tls_error.h"
+#include "mysqlrouter/utils.h"  // to_string
 
 IMPORT_LOG_FUNCTIONS()
 
@@ -39,7 +40,7 @@ Processor::send_server_failed(std::error_code ec) {
   // error is returned.
   connection()->send_server_failed(ec, false);
 
-  return stdx::make_unexpected(ec);
+  return stdx::unexpected(ec);
 }
 
 stdx::expected<Processor::Result, std::error_code>
@@ -50,7 +51,7 @@ Processor::recv_server_failed(std::error_code ec) {
   // error is returned.
   connection()->recv_server_failed(ec, false);
 
-  return stdx::make_unexpected(ec);
+  return stdx::unexpected(ec);
 }
 
 stdx::expected<Processor::Result, std::error_code>
@@ -59,7 +60,7 @@ Processor::send_client_failed(std::error_code ec) {
   // error is returned.
   connection()->send_client_failed(ec, false);
 
-  return stdx::make_unexpected(ec);
+  return stdx::unexpected(ec);
 }
 
 stdx::expected<Processor::Result, std::error_code>
@@ -70,7 +71,7 @@ Processor::recv_client_failed(std::error_code ec) {
   // error is returned.
   connection()->recv_client_failed(ec, false);
 
-  return stdx::make_unexpected(ec);
+  return stdx::unexpected(ec);
 }
 
 stdx::expected<Processor::Result, std::error_code>
@@ -79,7 +80,7 @@ Processor::server_socket_failed(std::error_code ec) {
   // error is returned.
   connection()->server_socket_failed(ec, false);
 
-  return stdx::make_unexpected(ec);
+  return stdx::unexpected(ec);
 }
 
 stdx::expected<Processor::Result, std::error_code>
@@ -88,45 +89,44 @@ Processor::client_socket_failed(std::error_code ec) {
   // error is returned.
   connection()->client_socket_failed(ec, false);
 
-  return stdx::make_unexpected(ec);
+  return stdx::unexpected(ec);
 }
 
 stdx::expected<void, std::error_code> Processor::discard_current_msg(
-    Channel *src_channel, ClassicProtocolState *src_protocol) {
-  auto &recv_buf = src_channel->recv_plain_view();
+    Channel &src_channel, ClassicProtocolState &src_protocol) {
+  auto &recv_buf = src_channel.recv_plain_view();
 
   do {
-    auto &opt_current_frame = src_protocol->current_frame();
+    auto &opt_current_frame = src_protocol.current_frame();
     if (!opt_current_frame) return {};
 
     auto current_frame = *opt_current_frame;
 
     if (recv_buf.size() < current_frame.frame_size_) {
       // received message is incomplete.
-      return stdx::make_unexpected(make_error_code(std::errc::bad_message));
+      return stdx::unexpected(make_error_code(std::errc::bad_message));
     }
     if (current_frame.forwarded_frame_size_ != 0) {
       // partially forwarded already.
-      return stdx::make_unexpected(
-          make_error_code(std::errc::invalid_argument));
+      return stdx::unexpected(make_error_code(std::errc::invalid_argument));
     }
 
-    src_channel->consume_plain(current_frame.frame_size_);
+    src_channel.consume_plain(current_frame.frame_size_);
 
     auto msg_has_more_frames = current_frame.frame_size_ == (0xffffff + 4);
 
     // unset current frame and also current-msg
-    src_protocol->current_frame().reset();
+    src_protocol.current_frame().reset();
 
     if (!msg_has_more_frames) break;
 
     auto hdr_res = ClassicFrame::ensure_frame_header(src_channel, src_protocol);
     if (!hdr_res) {
-      return stdx::make_unexpected(hdr_res.error());
+      return stdx::unexpected(hdr_res.error());
     }
   } while (true);
 
-  src_protocol->current_msg_type().reset();
+  src_protocol.current_msg_type().reset();
 
   return {};
 }
@@ -141,3 +141,85 @@ void Processor::trace(Tracer::Event event) {
 }
 
 Tracer &Processor::tracer() { return connection()->tracer(); }
+
+TraceEvent *Processor::trace_span(TraceEvent *parent_span,
+                                  const std::string_view &prefix) {
+  if (parent_span == nullptr) return nullptr;
+
+  return std::addressof(parent_span->events.emplace_back(std::string(prefix)));
+}
+
+void Processor::trace_span_end(TraceEvent *event,
+                               TraceEvent::StatusCode status_code) {
+  if (event == nullptr) return;
+
+  event->status_code = status_code;
+  event->end_time = std::chrono::steady_clock::now();
+}
+
+TraceEvent *Processor::trace_command(const std::string_view &prefix) {
+  if (!connection()->events().active()) return nullptr;
+
+  auto *parent_span = std::addressof(connection()->events());
+
+  if (parent_span == nullptr) return nullptr;
+
+  return std::addressof(
+      parent_span->events().emplace_back(std::string(prefix)));
+}
+
+TraceEvent *Processor::trace_connect_and_forward_command(
+    TraceEvent *parent_span) {
+  auto *ev = trace_span(parent_span, "mysql/connect_and_forward");
+  if (ev == nullptr) return nullptr;
+
+  trace_set_connection_attributes(ev);
+
+  return ev;
+}
+
+TraceEvent *Processor::trace_connect(TraceEvent *parent_span) {
+  return trace_span(parent_span, "mysql/connect");
+}
+
+void Processor::trace_set_connection_attributes(TraceEvent *ev) {
+  auto &server_conn = connection()->server_conn();
+  ev->attrs.emplace_back("mysql.remote.is_connected", server_conn.is_open());
+
+  if (server_conn.is_open()) {
+    if (auto ep = connection()->destination_endpoint()) {
+      ev->attrs.emplace_back("mysql.remote.endpoint",
+                             mysqlrouter::to_string(*ep));
+    }
+    ev->attrs.emplace_back(
+        "mysql.remote.connection_id",
+        static_cast<int64_t>(
+            server_conn.protocol().server_greeting()->connection_id()));
+    ev->attrs.emplace_back("db.name", server_conn.protocol().schema());
+  }
+}
+
+TraceEvent *Processor::trace_forward_command(TraceEvent *parent_span) {
+  return trace_span(parent_span, "mysql/forward");
+}
+
+void Processor::trace_command_end(TraceEvent *event,
+                                  TraceEvent::StatusCode status_code) {
+  if (event == nullptr) return;
+
+  const auto allowed_after = connection()->connection_sharing_allowed();
+
+  event->end_time = std::chrono::steady_clock::now();
+  auto &attrs = event->attrs;
+
+  attrs.emplace_back("mysql.sharing_blocked", !allowed_after);
+
+  if (!allowed_after) {
+    // stringify why sharing is blocked.
+
+    attrs.emplace_back("mysql.sharing_blocked_by",
+                       connection()->connection_sharing_blocked_by());
+  }
+
+  trace_span_end(event, status_code);
+}

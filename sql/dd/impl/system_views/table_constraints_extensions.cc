@@ -26,6 +26,7 @@
 #include <string>
 
 #include "sql/dd/string_type.h"
+#include "string_with_len.h"
 
 namespace {
 enum {

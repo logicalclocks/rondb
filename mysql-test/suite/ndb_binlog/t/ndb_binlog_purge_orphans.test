@@ -25,7 +25,7 @@ call mtr.add_suppression("mysqld startup An incident event has been written");
 SHOW VARIABLES LIKE 'log_bin';
 SHOW VARIABLES LIKE 'ndb_log_bin';
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo # Find physical binlog file name format as it varies between platforms
 CREATE TABLE check_binlog_name (a int primary key) engine = NDB;
@@ -36,7 +36,7 @@ let $binlog_name =
      FROM mysql.ndb_binlog_index ORDER BY epoch LIMIT 1`;
 #echo binlog_name: $binlog_name;
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo # 1. Insert to create referencing rows
 CREATE TABLE t1 (a int PRIMARY KEY) ENGINE=ndb;
@@ -75,7 +75,7 @@ insert into mysql.ndb_binlog_index values
 
   (9, './Test.000006/', 27, 0, 0, 0, 0, 0, 0, 0, 0, 'Next file');
 
---source include/show_binary_logs.inc
+--source include/rpl/deprecated/show_binary_logs.inc
 --replace_result $binlog_name binlog
 SELECT DISTINCT(File) FROM mysql.ndb_binlog_index;
 
@@ -93,5 +93,5 @@ let $wait_condition=
 --replace_result $binlog_name binlog
 SELECT DISTINCT(File) FROM mysql.ndb_binlog_index;
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 

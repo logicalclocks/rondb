@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <memory>
 #include <new>
 
 #include "lex_string.h"
@@ -157,7 +158,7 @@ end:
 
 failure:
   table()->column_bitmaps_set(save_read_set, save_write_set);
-  destroy(file);
+  if (file != nullptr) ::destroy_at(file);
   file = save_file;
   return true;
 }

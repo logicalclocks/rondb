@@ -339,6 +339,7 @@ my @mysqld_rules = (
   { 'tmpdir'                                       => \&fix_tmpdir },
   { 'loose-sha256_password_auto_generate_rsa_keys' => "0" },
   { 'loose-caching_sha2_password_auto_generate_rsa_keys' => "0" },
+  { 'loose-mysql-native-password' => "ON" },
 
   { '#mtr_basedir' => sub { return shift->{ARGS}->{basedir}; }
   },
@@ -392,10 +393,6 @@ my @ndbd_rules = ({ 'BackupDataDir' => \&fix_cluster_backup_dir },
                   { 'DataDir'       => \&fix_cluster_dir },
                   { 'HostName'      => \&fix_host },
                   { '#cpubind'      => \&fix_cpubind },);
-
-# Rules to run for each memcached in the config
-#  - will be run in order listed here
-my @memcached_rules = ({ '#host' => \&fix_host }, { 'port' => \&fix_port },);
 
 # Rules to run for each cluster_config section
 #  - will be run in order listed here
@@ -777,8 +774,6 @@ sub new_config {
   $self->run_section_rules($config, 'cluster_config.ndbd', @ndbd_rules);
 
   $self->run_section_rules($config, 'mysqld.', @mysqld_rules);
-
-  $self->run_section_rules($config, 'memcached.', @memcached_rules);
 
   # [mysqlbinlog] need additional settings
   $self->run_rules_for_group($config, $config->insert('mysqlbinlog'),

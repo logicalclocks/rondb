@@ -90,7 +90,7 @@ void LO_activate();
 
 class LO_graph;
 void LO_add_authorised_arc(LO_graph *g, const LO_authorised_arc *arc);
-void LO_add_node_properties(LO_graph *g, const LO_node_properties *node);
+void LO_add_node_properties(LO_graph *g, const LO_node_properties *prop);
 
 void LO_dump();
 
@@ -99,6 +99,6 @@ void LO_cleanup();
 /*
   Helper for the performance schema.
 */
-PSI_thread *LO_get_chain_thread(PSI_thread *psi);
+PSI_thread *LO_get_chain_thread(PSI_thread *thread);
 
 #endif

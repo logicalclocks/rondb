@@ -39,7 +39,7 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 --let $rpl_server_number= 1
 --let $rpl_server_parameters= $RPL_PLUGIN_DIR_OPT --binlog_rotate_encryption_master_key_at_startup=ON --log-error=$MYSQL_TMP_DIR/master.err
 --let $rpl_omit_print_server_parameters= 1
---source include/rpl_restart_server.inc
+--source include/rpl/restart_server.inc
 --let $assert_text=binlog_encryption option shall be OFF
 --let $option_value = `SELECT variable_value FROM performance_schema.global_variables WHERE variable_name = "binlog_encryption"`
 --let $assert_cond= "$option_value" = "OFF"
@@ -49,7 +49,7 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 --let $assert_select=Ignoring binlog_rotate_encryption_master_key_at_startup
 --let $assert_count= 1
 --source include/assert_grep.inc
---let $binlog_file=query_get_value(SHOW MASTER STATUS, File, 1)
+--let $binlog_file=query_get_value(SHOW BINARY LOG STATUS, File, 1)
 --let $assert_text=Binary log rotated
 --let $assert_cond= RIGHT("$binlog_file", 6) = "000002"
 --source include/assert.inc
@@ -58,7 +58,7 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 --source include/assert.inc
 
 --let $rpl_server_number= 1
---source include/rpl_stop_server.inc
+--source include/rpl/stop_server.inc
 # Master is not able to run some queries from includes until restarted
 --connection slave
 --remove_file $master_error_log
@@ -94,13 +94,13 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 --echo Restart the master enabling the options
 --let $rpl_server_parameters= $RPL_PLUGIN_DIR_OPT --binlog_encryption=ON --binlog_rotate_encryption_master_key_at_startup=ON --log-error=$MYSQL_TMP_DIR/master.err
 --let $rpl_omit_print_server_parameters= 1
---source include/rpl_start_server.inc
+--source include/rpl/start_server.inc
 --connection master
 --let $assert_text=binlog_encryption option shall be ON
 --let $option_value = `SELECT variable_value FROM performance_schema.global_variables WHERE variable_name = "binlog_encryption"`
 --let $assert_cond= "$option_value" = "ON"
 --source include/assert.inc
---let $binlog_file=query_get_value(SHOW MASTER STATUS, File, 1)
+--let $binlog_file=query_get_value(SHOW BINARY LOG STATUS, File, 1)
 --let $assert_text=Binary log rotated
 --let $assert_cond= RIGHT("$binlog_file", 6) = "000003"
 --source include/assert.inc
@@ -108,14 +108,14 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 --let $assert_cond= "[SHOW BINARY LOGS, Encrypted, 3]" = "Yes"
 --source include/assert.inc
 --let $rpl_log_file=$MASTER_DATADIR$binlog_file
---source include/rpl_get_log_encryption_key_id.inc
+--source include/rpl/get_log_encryption_key_id.inc
 --let $assert_text=Binary log is encrypted with 2nd key
 --let $assert_cond= RIGHT("$rpl_encryption_key_id", 2) = "_2"
 --source include/assert.inc
 
 # Recovery of a failed key rotation with key seqno > 1
 --let $rpl_server_number= 1
---source include/rpl_stop_server.inc
+--source include/rpl/stop_server.inc
 # Master is not able to run some queries from includes until restarted
 --connection slave
 --remove_file $master_error_log
@@ -150,13 +150,13 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 --echo Restart the master enabling just the binlog_encryption option
 --let $rpl_server_parameters= $RPL_PLUGIN_DIR_OPT --binlog_encryption=ON --log-error=$MYSQL_TMP_DIR/master.err
 --let $rpl_omit_print_server_parameters= 1
---source include/rpl_start_server.inc
+--source include/rpl/start_server.inc
 --connection master
 --let $assert_text=binlog_encryption option shall be ON
 --let $option_value = `SELECT variable_value FROM performance_schema.global_variables WHERE variable_name = "binlog_encryption"`
 --let $assert_cond= "$option_value" = "ON"
 --source include/assert.inc
---let $binlog_file=query_get_value(SHOW MASTER STATUS, File, 1)
+--let $binlog_file=query_get_value(SHOW BINARY LOG STATUS, File, 1)
 --let $assert_text=Binary log rotated
 --let $assert_cond= RIGHT("$binlog_file", 6) = "000004"
 --source include/assert.inc
@@ -164,7 +164,7 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 --let $assert_cond= "[SHOW BINARY LOGS, Encrypted, 4]" = "Yes"
 --source include/assert.inc
 --let $rpl_log_file=$MASTER_DATADIR$binlog_file
---source include/rpl_get_log_encryption_key_id.inc
+--source include/rpl/get_log_encryption_key_id.inc
 --let $assert_text=Binary log is encrypted with 3th key
 --let $assert_cond= RIGHT("$rpl_encryption_key_id", 2) = "_3"
 --source include/assert.inc
@@ -173,7 +173,7 @@ call mtr.add_suppression("Could not find the data corresponding to Data ID:");
 CREATE TABLE t1 (c1 INT PRIMARY KEY AUTO_INCREMENT, c2 TEXT);
 INSERT INTO t1 (c2) VALUES ("MySQL");
 --let $key=3
---let $last_binlog_file=query_get_value(SHOW MASTER STATUS, File, 1)
+--let $last_binlog_file=query_get_value(SHOW BINARY LOG STATUS, File, 1)
 while ($key < 9)
 {
   --inc $key
@@ -181,36 +181,36 @@ while ($key < 9)
   --let $rpl_server_number= 1
   --let $rpl_server_parameters= $RPL_PLUGIN_DIR_OPT --binlog_encryption=ON --binlog_rotate_encryption_master_key_at_startup=ON --log-error=$MYSQL_TMP_DIR/master.err
   --let $rpl_omit_print_server_parameters= 1
-  --source include/rpl_restart_server.inc
+  --source include/rpl/restart_server.inc
   --let $assert_text=binlog_encryption option shall be ON
   --let $option_value = `SELECT variable_value FROM performance_schema.global_variables WHERE variable_name = "binlog_encryption"`
   --let $assert_cond= "$option_value" = "ON"
   --source include/assert.inc
-  --let $binlog_file=query_get_value(SHOW MASTER STATUS, File, 1)
+  --let $binlog_file=query_get_value(SHOW BINARY LOG STATUS, File, 1)
   --let $assert_text=Binary log rotated as expected
   --let $assert_cond= RIGHT("$binlog_file", 6) = 1 + RIGHT("$last_binlog_file", 6)
   --source include/assert.inc
   --let $rpl_log_file=$MASTER_DATADIR$binlog_file
-  --source include/rpl_get_log_encryption_key_id.inc
+  --source include/rpl/get_log_encryption_key_id.inc
   --let $assert_text=Binary log is encrypted with key #$key
   --let $assert_cond= RIGHT("$rpl_encryption_key_id", 2) = "_$key"
   --source include/assert.inc
-  --let $last_binlog_file=query_get_value(SHOW MASTER STATUS, File, 1)
+  --let $last_binlog_file=query_get_value(SHOW BINARY LOG STATUS, File, 1)
   INSERT INTO t1 (c2) VALUES ("MySQL");
 }
 
 # Cleanup
---source include/rpl_connection_slave.inc
---source include/start_slave.inc
---source include/rpl_connection_master.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--source include/rpl/connection_source.inc
 SET GLOBAL binlog_encryption = OFF;
 DROP TABLE t1;
 # Slave shall read from all encrypted binary log files
---source include/sync_slave_sql_with_master.inc
---source include/stop_slave.inc
+--source include/rpl/sync_to_replica.inc
+--source include/rpl/stop_replica.inc
 --let $rpl_server_number= 1
 --let $rpl_server_parameters=
 --let $rpl_omit_print_server_parameters= 1
---source include/rpl_restart_server.inc
---source include/rpl_connection_slave.inc
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
 SET GLOBAL keyring_operations= ON;

@@ -45,7 +45,6 @@ PSI_mutex_key key_GR_LOCK_applier_module_run,
     key_GR_LOCK_count_down_latch,
     key_GR_LOCK_delayed_init_run,
     key_GR_LOCK_delayed_init_server_ready,
-    key_GR_LOCK_force_members_running,
     key_GR_LOCK_group_action_coordinator_process,
     key_GR_LOCK_group_action_coordinator_thread,
     key_GR_LOCK_group_action_coordinator_thread_end,
@@ -68,6 +67,8 @@ PSI_mutex_key key_GR_LOCK_applier_module_run,
     key_GR_LOCK_primary_promotion_policy,
     key_GR_LOCK_recovery,
     key_GR_LOCK_recovery_donor_selection,
+    key_GR_LOCK_recovery_metadata_receive,
+    key_GR_LOCK_recovery_metadata_module_receive,
     key_GR_LOCK_recovery_module_run,
     key_GR_LOCK_server_ongoing_transaction_handler,
     key_GR_LOCK_message_service_run,
@@ -115,6 +116,7 @@ PSI_cond_key key_GR_COND_applier_module_run,
     key_GR_COND_primary_election_validation_notification,
     key_GR_COND_primary_promotion_policy,
     key_GR_COND_recovery,
+    key_GR_COND_recovery_metadata_receive,
     key_GR_COND_recovery_module_run,
     key_GR_COND_session_thread_method_exec,
     key_GR_COND_session_thread_run,
@@ -177,7 +179,9 @@ PSI_memory_key key_write_set_encoded,
     key_consistent_transactions,
     key_consistent_transactions_prepared,
     key_consistent_transactions_waiting,
-    key_consistent_transactions_delayed_view_change;
+    key_consistent_transactions_delayed_view_change,
+    key_compression_data,
+    key_recovery_metadata_message_buffer;
 /* clang-format on */
 
 #ifdef HAVE_PSI_INTERFACE
@@ -287,8 +291,6 @@ static PSI_mutex_info all_group_replication_psi_mutex_keys[] = {
      0, PSI_DOCUMENT_ME},
     {&key_GR_LOCK_delayed_init_server_ready, "LOCK_delayed_init_server_ready",
      PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
-    {&key_GR_LOCK_force_members_running, "LOCK_force_members_running",
-     PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
     {&key_GR_LOCK_group_action_coordinator_process,
      "key_GR_LOCK_group_action_coordinator_process", PSI_FLAG_SINGLETON, 0,
      PSI_DOCUMENT_ME},
@@ -347,6 +349,11 @@ static PSI_mutex_info all_group_replication_psi_mutex_keys[] = {
      PSI_DOCUMENT_ME},
     {&key_GR_LOCK_recovery_donor_selection, "LOCK_recovery_donor_selection",
      PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+    {&key_GR_LOCK_recovery_metadata_receive, "LOCK_recovery_metadata_receive",
+     PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+    {&key_GR_LOCK_recovery_metadata_module_receive,
+     "LOCK_recovery_metadata_module_receive", PSI_FLAG_SINGLETON, 0,
+     PSI_DOCUMENT_ME},
     {&key_GR_LOCK_recovery_module_run, "LOCK_recovery_module_run",
      PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
     {&key_GR_LOCK_server_ongoing_transaction_handler,
@@ -446,6 +453,8 @@ static PSI_cond_info all_group_replication_psi_condition_keys[] = {
      0, PSI_DOCUMENT_ME},
     {&key_GR_COND_wait_ticket, "COND_wait_ticket", PSI_FLAG_SINGLETON, 0,
      PSI_DOCUMENT_ME},
+    {&key_GR_COND_recovery_metadata_receive, "COND_recovery_metadata_receive",
+     PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
     {&key_GR_COND_recovery_module_run, "COND_recovery_module_run",
      PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
     {&key_GR_COND_recovery, "COND_recovery", PSI_FLAG_SINGLETON, 0,
@@ -597,7 +606,7 @@ static PSI_stage_info *all_group_replication_stages_keys[] = {
     &info_GR_STAGE_clone_execute};
 
 static PSI_memory_info all_group_replication_psi_memory_keys[] = {
-    {&key_write_set_encoded, "write_set_encoded", PSI_FLAG_ONLY_GLOBAL_STAT,
+    {&key_write_set_encoded, "write_set_encoded", PSI_FLAG_MEM_COLLECT,
      PSI_VOLATILITY_UNKNOWN,
      "Memory used to encode write set before getting broadcasted to group "
      "members."},
@@ -661,7 +670,15 @@ static PSI_memory_info all_group_replication_psi_memory_keys[] = {
      PSI_VOLATILITY_UNKNOWN,
      "Memory used to hold list of View_change_log_event which are delayed "
      "after the prepared consistent transactions waiting for the prepare "
-     "acknowledge."}};
+     "acknowledge."},
+    {&key_compression_data, "compression_data", PSI_FLAG_ONLY_GLOBAL_STAT,
+     PSI_VOLATILITY_UNKNOWN,
+     "Memory used to hold compressed certification info that will be required "
+     "during distributed recovery of the member that joined."},
+    {&key_recovery_metadata_message_buffer, "recovery_metadata_message_buffer",
+     PSI_FLAG_ONLY_GLOBAL_STAT, PSI_VOLATILITY_UNKNOWN,
+     "Memory used to hold recovery metadata message received on new joining "
+     "member of the group."}};
 
 void register_group_replication_mutex_psi_keys(PSI_mutex_info mutexes[],
                                                size_t mutex_count) {

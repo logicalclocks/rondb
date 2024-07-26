@@ -42,11 +42,12 @@
 #include "decimal.h"                       // E_DEC_FATAL_ERROR
 #include "field_types.h"                   // MYSQL_TYPE_DATE
                                            // assert
-#include "my_decimal.h"                    // my_decimal, my_decimal_cmp
 #include "my_inttypes.h"                   // longlong, ulonglong
 #include "my_time.h"                       // TIME_to_longlong_datetime_packed
+#include "mysql/strings/dtoa.h"            // DECIMAL_NOT_SPECIFIED
 #include "mysql/udf_registration_types.h"  // INT_RESULT, STRING_RESULT
 #include "mysql_time.h"                    // MYSQL_TIME
+#include "sql-common/my_decimal.h"         // my_decimal, my_decimal_cmp
 #include "sql/field.h"                     // Field_real, Field
 #include "sql/item.h"                      // Item, Item_field, Item_int
 #include "sql/item_cmpfunc.h"              // Item_bool_func2, Item_cond
@@ -236,7 +237,7 @@ static bool analyze_int_field_constant(THD *thd, Item_field *f,
     case INT_RESULT:
       break;
     case STRING_RESULT: {
-      if ((*const_val)->type() == Item::VARBIN_ITEM) {
+      if ((*const_val)->type() == Item::HEX_BIN_ITEM) {
         /*
           0x digits have STRING_RESULT but are ints in int
           context.
@@ -264,24 +265,23 @@ static bool analyze_int_field_constant(THD *thd, Item_field *f,
 
       if (err & E_DEC_TRUNCATED) {
         /*
-          Check for underflow, e.g. 1.7976931348623157E-308 would end up
-          as decimal 0.0, which means that the floating point values was
+          Check for underflow, e.g. 1.7976931348623157E-308 would end up as
+          decimal 0.0, which means that the floating point values was
           marginally greater than 0.0, so we "simulate" this by adding 0.1.
-          Correspondingly for negative underflow, we subtract 0.1. This is
-          OK, because we round later.
+          Correspondingly for negative underflow, we subtract 0.1. This is OK,
+          because we round later.  The value can also be truncated even if it
+          isn't quite as small as zero, but in such a case its absolute value
+          would always be smaller than 0.1, but not representable as a decimal,
+          so we use 0.1 for those as well.
         */
-        my_decimal n;
-        err = int2my_decimal(E_DEC_FATAL_ERROR, 0, false, &n);
-        assert(err == 0);
-        assert(my_decimal_cmp(&n, &dec) == 0);
         if (v > 0) {
           // underflow on the positive side
-          String s("0.1", thd->charset());
+          const String s("0.1", thd->charset());
           err = str2my_decimal(E_DEC_FATAL_ERROR, s.ptr(), s.length(),
                                s.charset(), &dec);
           assert(err == 0);
         } else {
-          String s("-0.1", thd->charset());
+          const String s("-0.1", thd->charset());
           err = str2my_decimal(E_DEC_FATAL_ERROR, s.ptr(), s.length(),
                                s.charset(), &dec);
           assert(err == 0);
@@ -471,7 +471,7 @@ static bool analyze_decimal_field_constant(THD *thd, const Item_field *f,
     0xnnn numbers, which also have STRING result type, but should be treated
     the same as ints.
   */
-  if (ir == STRING_RESULT && (*const_val)->type() != Item::VARBIN_ITEM) {
+  if (ir == STRING_RESULT && (*const_val)->type() != Item::HEX_BIN_ITEM) {
     was_string_or_real = true;
     ir = DECIMAL_RESULT;
   }
@@ -501,7 +501,7 @@ static bool analyze_decimal_field_constant(THD *thd, const Item_field *f,
     } break;
     case REAL_RESULT: {
       my_decimal val_dec;
-      double v = (*const_val)->val_real();
+      const double v = (*const_val)->val_real();
       err = double2decimal(v, &val_dec);
 
       if (err & E_DEC_OVERFLOW) {
@@ -725,11 +725,12 @@ static bool analyze_year_field_constant(THD *thd, Item **const_val,
     case REAL_RESULT:
     case INT_RESULT: {
       const double year = (*const_val)->val_real();
-      if (year > Field_year::MAX_YEAR) {
+      if (year > static_cast<double>(Field_year::MAX_YEAR)) {
         *place = RP_OUTSIDE_HIGH;
       } else if (year < 0.0) {
         *place = RP_OUTSIDE_LOW;
-      } else if (year > 0.0 && year < Field_year::MIN_YEAR) {
+      } else if (year > 0.0 &&
+                 year < static_cast<double>(Field_year::MIN_YEAR)) {
         /*
           These values can be given as constants, but are not allowed to be
           stored in the field, so an = or <> comparison can be folded. For
@@ -863,8 +864,8 @@ static bool analyze_timestamp_field_constant(THD *thd, const Item_field *f,
               false, MYSQL_TIMESTAMP_DATETIME);
 
           /* '1970-01-01 00:00:01.[000000]' */
-          MYSQL_TIME min_timestamp = my_time_set(1970, 1, 1, 0, 0, 1, 0, false,
-                                                 MYSQL_TIMESTAMP_DATETIME);
+          const MYSQL_TIME min_timestamp = my_time_set(
+              1970, 1, 1, 0, 0, 1, 0, false, MYSQL_TIMESTAMP_DATETIME);
 
           // We store in UTC, so use as is
           const longlong max_t =
@@ -1337,9 +1338,9 @@ bool fold_condition(THD *thd, Item *cond, Item **retcond,
         [1] See `create_tmp_field_from_item' case INT_RESULT.
       */
       seen_field = true;
-    } else if (args[i]->const_for_execution() && type != Item::SUBSELECT_ITEM) {
+    } else if (args[i]->const_for_execution() && type != Item::SUBQUERY_ITEM) {
       /*
-        Re test on Item::SUBSELECT_ITEM above: we exclude optimize time
+        Re test on Item::SUBQUERY_ITEM above: we exclude optimize time
         evaluation of constant subqueries for now; since it could still be
         expensive to evaluate and we have no cost model to decide whether
         folding it would save total time spent. It may turn out not to be

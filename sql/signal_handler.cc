@@ -23,6 +23,8 @@
 
 #include "my_config.h"
 
+#include "sql/signal_handler.h"
+
 #include <signal.h>
 #include <sys/types.h>
 #include <time.h>
@@ -71,16 +73,174 @@ static std::atomic<bool> s_handler_being_processed{false};
 */
 static std::atomic<bool> s_fatal_info_printed{false};
 
+#ifndef _WIN32
+static void print_extra_signal_information(int sig, siginfo_t *info) {
+  if (info == nullptr) {
+    return;
+  }
+  // SIGILL,  SIGFPE, SIGSEGV, SIGBUS, and SIGTRAP fill in si_addr
+  // All the si_code constants below are enum values (and macro defines).
+  // si_code itself is an int, so we should never see something like:
+  // error: enumeration value ... handled in switch [-Werror=switch]
+  const char *signal_name = nullptr;
+  const char *extra_info = "unknown siginfo_t::si_code";
+  switch (sig) {
+    case SIGILL:
+      signal_name = "SIGILL";
+      switch (info->si_code) {
+        case ILL_ILLOPC:
+          extra_info = "Illegal opcode";
+          break;
+        case ILL_ILLOPN:
+          extra_info = "Illegal operand";
+          break;
+        case ILL_ILLADR:
+          extra_info = "Illegal addressing mode";
+          break;
+        case ILL_ILLTRP:
+          extra_info = "Illegal trap";
+          break;
+        case ILL_PRVOPC:
+          extra_info = "Privileged opcode";
+          break;
+        case ILL_PRVREG:
+          extra_info = "Privileged register";
+          break;
+        case ILL_COPROC:
+          extra_info = "Coprocessor error";
+          break;
+        case ILL_BADSTK:
+          extra_info = "Internal stack error";
+          break;
+#ifdef ILL_BADIADDR
+        case ILL_BADIADDR:
+          extra_info = "Unimplemented instruction address";
+          break;
+#endif
+      }
+      break;
+    case SIGFPE:
+      signal_name = "SIGFPE";
+      switch (info->si_code) {
+        case FPE_INTDIV:
+          extra_info = "Integer divide by zero";
+          break;
+        case FPE_INTOVF:
+          extra_info = "Integer overflow";
+          break;
+        case FPE_FLTDIV:
+          extra_info = "Floating point divide by zero";
+          break;
+        case FPE_FLTOVF:
+          extra_info = "Floating point overflow";
+          break;
+        case FPE_FLTUND:
+          extra_info = "Floating point underflow";
+          break;
+        case FPE_FLTRES:
+          extra_info = "Floating point inexact result";
+          break;
+        case FPE_FLTINV:
+          extra_info = "Floating point invalid operation";
+          break;
+        case FPE_FLTSUB:
+          extra_info = "Subscript out of range";
+          break;
+#ifdef FPE_FLTUNK
+        case FPE_FLTUNK:
+          extra_info = "Undiagnosed floating-point exception";
+          break;
+#endif
+#ifdef FPE_CONDTRAP
+        case FPE_CONDTRAP:
+          extra_info = "Trap on condition";
+          break;
+#endif
+      }
+      break;
+    case SIGSEGV:
+      signal_name = "SIGSEGV";
+      switch (info->si_code) {
+        case SEGV_MAPERR:
+          extra_info = "Address not mapped to object";
+          break;
+        case SEGV_ACCERR:
+          extra_info = "Invalid permissions for mapped object";
+          break;
+      }
+      break;
+    case SIGBUS:
+      signal_name = "SIGBUS";
+      switch (info->si_code) {
+        case BUS_ADRALN:
+          extra_info = "Invalid address alignment";
+          break;
+        case BUS_ADRERR:
+          extra_info = "Non-existant physical address";
+          break;
+        case BUS_OBJERR:
+          extra_info = "Object specific hardware error";
+          break;
+#ifdef BUS_MCEERR_AR
+        case BUS_MCEERR_AR:
+          extra_info = "Hardware memory error: action required";
+          break;
+#endif
+#ifdef BUS_MCEERR_AO
+        case BUS_MCEERR_AO:
+          extra_info = "Hardware memory error: action optional";
+          break;
+#endif
+      }
+      break;
+    case SIGTRAP:
+      signal_name = "SIGTRAP";
+      switch (info->si_code) {
+        case TRAP_BRKPT:
+          extra_info = "Process breakpoint";
+          break;
+        case TRAP_TRACE:
+          extra_info = "Process trace trap";
+          break;
+#ifdef TRAP_BRANCH
+        case TRAP_BRANCH:
+          extra_info = "Process taken branch trap";
+          break;
+#endif
+#ifdef TRAP_HWBKPT
+        case TRAP_HWBKPT:
+          extra_info = "Hardware breakpoint/watchpoint";
+          break;
+#endif
+#ifdef TRAP_UNK
+        case TRAP_UNK:
+          extra_info = "Undiagnosed trap";
+          break;
+#endif
+      }
+      break;
+  }
+  if (signal_name != nullptr) {
+    my_safe_printf_stderr("Signal %s (%s) at address 0x%p\n", signal_name,
+                          extra_info, info->si_addr);
+    if (sig == SIGFPE) {
+    }
+  }
+}
+#endif  // not _WIN32
+
+std::atomic<my_signal_handler_callback_t> g_fatal_callback;
+
 /**
-  This function will try to dump relevant debugging information to stderr and
-  dump a core image.
+  This function will try to dump relevant debugging information to stderr.
 
   It may be called as part of the signal handler. This fact limits library calls
   that we can perform and much more, @see handle_fatal_signal
 
   @param sig Signal number
+  @param info Misc. information about the signal, see man sigaction(2).
 */
-void print_fatal_signal(int sig) {
+static void print_fatal_signal(int sig, siginfo_t *info [[maybe_unused]]) {
   s_fatal_info_printed = true;
 #ifdef _WIN32
   SYSTEMTIME utc_time;
@@ -132,6 +292,10 @@ void print_fatal_signal(int sig) {
       "%s-%s-%sT%s:%s:%sZ UTC - mysqld got " SIGNAL_FMT " ;\n", year_buf,
       month_buf, day_buf, hrs_buf, mins_buf, secs_buf, sig);
 
+#ifndef _WIN32
+  print_extra_signal_information(sig, info);
+#endif
+
   my_safe_printf_stderr(
       "%s",
       "Most likely, you have hit a bug, but this error can also "
@@ -181,9 +345,14 @@ void print_fatal_signal(int sig) {
         "Trying to get some variables.\n"
         "Some pointers may be invalid and cause the dump to abort.\n");
 
-    my_safe_printf_stderr("Query (%p): ", thd->query().str);
-    my_safe_puts_stderr(thd->query().str,
-                        std::min(size_t{1024}, thd->query().length));
+    const char *query = thd->rewritten_query().ptr();
+    size_t query_length = thd->rewritten_query().length();
+    if (query_length == 0) {
+      query = thd->query().str;
+      query_length = thd->query().length;
+    }
+    my_safe_printf_stderr("Query (%p): ", query);
+    my_safe_puts_stderr(query, std::min(size_t{1024}, query_length));
     my_safe_printf_stderr("Connection ID (thread ID): %u\n", thd->thread_id());
     my_safe_printf_stderr("Status: %s\n\n", kreason);
   }
@@ -213,8 +382,12 @@ void print_fatal_signal(int sig) {
   https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/signal?view=msvc-160
 
   @param sig Signal number
+  @param info Misc. information about the signal, see man sigaction(2).
+  @param ucontext Pointer to a ucontext_t structure.
+  "Commonly, the handler function doesn't make any use of the third argument."
 */
-extern "C" void handle_fatal_signal(int sig) {
+void handle_fatal_signal(int sig, siginfo_t *info [[maybe_unused]],
+                         void *ucontext [[maybe_unused]]) {
   if (s_handler_being_processed) {
     my_safe_printf_stderr("Fatal " SIGNAL_FMT " while backtracing\n", sig);
     _exit(MYSQLD_FAILURE_EXIT); /* Quit without running destructors */
@@ -223,8 +396,11 @@ extern "C" void handle_fatal_signal(int sig) {
   s_handler_being_processed = true;
 
   if (!s_fatal_info_printed) {
-    print_fatal_signal(sig);
+    print_fatal_signal(sig, info);
   }
+
+  if (g_fatal_callback.load() != nullptr)
+    (*g_fatal_callback)(sig, info, ucontext);
 
   if ((test_flags & TEST_CORE_ON_SIGNAL) != 0) {
     my_safe_printf_stderr("%s", "Writing a core file\n");
@@ -266,7 +442,7 @@ void my_server_abort() {
     This actually takes some time, some or many other threads may call
     my_server_abort in meantime.
   */
-  print_fatal_signal(SIGABRT);
+  print_fatal_signal(SIGABRT, nullptr);
   abort_processing = false;
   /*
     If there are no other threads pending abort then we call real abort as the

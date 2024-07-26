@@ -30,14 +30,9 @@
 #include "mysql/harness/net_ts/impl/socket.h"  // net::impl::socket::init
 
 #include "mysql/harness/stdx/expected_ostream.h"
+#include "router/tests/helpers/stdx_expected_no_error.h"
 
 #if defined(_WIN32)
-
-#define EXPECT_NO_ERROR(x) \
-  EXPECT_THAT((x), ::testing::Truly([](const auto &t) { return bool(t); }))
-
-#define ASSERT_NO_ERROR(x) \
-  ASSERT_THAT((x), ::testing::Truly([](const auto &t) { return bool(t); }))
 
 using namespace std::string_literals;
 
@@ -149,7 +144,7 @@ TEST(NetTS_named_pipe, stream_socket_bind_invalid_pipe_name) {
   EXPECT_NO_ERROR(acceptor.open());
 
   EXPECT_EQ(acceptor.bind(endp),
-            stdx::make_unexpected(
+            stdx::unexpected(
                 std::error_code{ERROR_INVALID_NAME, std::system_category()}));
   auto local_endp_res = acceptor.local_endpoint();
   ASSERT_NO_ERROR(local_endp_res);
@@ -174,7 +169,7 @@ TEST(NetTS_named_pipe, stream_socket_bind_accept_connect) {
 
   // should fail with ERROR_PIPE_LISTENING
   EXPECT_EQ(acceptor.accept(),
-            stdx::make_unexpected(
+            stdx::unexpected(
                 std::error_code{ERROR_PIPE_LISTENING, std::system_category()}));
   auto local_endp_res = acceptor.local_endpoint();
   ASSERT_NO_ERROR(local_endp_res);
@@ -201,9 +196,9 @@ TEST(NetTS_named_pipe, stream_socket_bind_accept_connect) {
   // named pipe is non-blocking, read() should non block if there is no data.
   std::array<char, 5> source{{0x01, 0x02, 0x03, 0x04, 0x05}};
   std::array<char, 16> sink;
-  EXPECT_EQ(net::read(client_sock, net::buffer(sink)),
-            stdx::make_unexpected(
-                std::error_code{ERROR_NO_DATA, std::system_category()}));
+  EXPECT_EQ(
+      net::read(client_sock, net::buffer(sink)),
+      stdx::unexpected(std::error_code{ERROR_NO_DATA, std::system_category()}));
 
   // write something
   auto write_res = net::write(server_sock, net::buffer(source));

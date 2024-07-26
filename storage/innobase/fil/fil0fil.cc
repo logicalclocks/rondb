@@ -2298,7 +2298,7 @@ bool Fil_shard::space_is_flushed(const fil_space_t *space) {
   return true;
 }
 
-#if !defined(NO_FALLOCATE) && defined(UNIV_LINUX)
+#ifdef UNIV_LINUX
 
 #include <sys/ioctl.h>
 
@@ -2321,7 +2321,7 @@ bool fil_fusionio_enable_atomic_write(pfs_os_file_t file) {
 
   return false;
 }
-#endif /* !NO_FALLOCATE && UNIV_LINUX */
+#endif /* UNIV_LINUX */
 
 /** Attach a file to a tablespace
 @param[in]      name            file name of a file that is not open
@@ -5160,7 +5160,6 @@ dberr_t Fil_shard::space_rename(space_id_t space_id, const char *old_path,
 
     } else if (count > 25000) {
       mutex_release();
-
       return DB_ERROR;
 
     } else if (space != get_space_by_name(space->name)) {
@@ -5243,9 +5242,7 @@ dberr_t Fil_shard::space_rename(space_id_t space_id, const char *old_path,
       /* There are pending I/O's or flushes or the
       file is currently being extended, sleep for
       a while and retry */
-
       retry = true;
-
       space->prevent_file_open = false;
 
     } else if (!file->is_flushed()) {
@@ -5473,7 +5470,7 @@ dberr_t fil_write_initial_pages(pfs_os_file_t file, const char *path,
   const page_size_t page_size(space_flags);
   const auto sz = ulonglong{size * page_size.physical()};
 
-#if !defined(NO_FALLOCATE) && defined(UNIV_LINUX)
+#ifdef UNIV_LINUX
   {
     int ret = 0;
 #ifdef UNIV_DEBUG
@@ -5496,7 +5493,7 @@ dberr_t fil_write_initial_pages(pfs_os_file_t file, const char *path,
       ib::warn(ER_IB_MSG_303, path, sz, ret, strerror(errno));
     }
   }
-#endif /* !NO_FALLOCATE && UNIV_LINUX */
+#endif /* UNIV_LINUX */
 
   if (!success || (tbsp_extend_and_initialize && !atomic_write)) {
     success = os_file_set_size(path, file, 0, sz, true);
@@ -5804,12 +5801,12 @@ dberr_t fil_ibd_open(bool validate, fil_type_t purpose, space_id_t space_id,
     return DB_CANNOT_OPEN_FILE;
   }
 
-#if !defined(NO_FALLOCATE) && defined(UNIV_LINUX)
+#ifdef UNIV_LINUX
   const bool atomic_write =
       !dblwr::is_enabled() && fil_fusionio_enable_atomic_write(df.handle());
 #else
   const bool atomic_write = false;
-#endif /* !NO_FALLOCATE && UNIV_LINUX */
+#endif /* UNIV_LINUX */
 
   dberr_t err;
 
@@ -6542,7 +6539,7 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
 
     mutex_release();
 
-    if (!tbsp_extend_and_initialize) {
+    if (!space->initialize_while_extending()) {
       std::this_thread::sleep_for(std::chrono::microseconds(20));
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -6667,7 +6664,7 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
     }
 #endif /* !UNIV_HOTBACKUP && UNIV_LINUX */
 
-#if !defined(NO_FALLOCATE) && defined(UNIV_LINUX)
+#ifdef UNIV_LINUX
     /* This is required by FusionIO HW/Firmware */
 
     int ret = posix_fallocate(file->handle.m_file, node_start, len);
@@ -6704,9 +6701,9 @@ bool Fil_shard::space_extend(fil_space_t *space, page_no_t size) {
 
       err = DB_IO_ERROR;
     }
-#endif /* NO_FALLOCATE || !UNIV_LINUX */
+#endif /* UNIV_LINUX */
 
-    if ((tbsp_extend_and_initialize && !file->atomic_write) ||
+    if ((space->initialize_while_extending() && !file->atomic_write) ||
         err == DB_IO_ERROR) {
       err = fil_write_zeros(file, phy_page_size, node_start, len);
 
@@ -7378,7 +7375,14 @@ void fil_space_release_free_extents(space_id_t space_id, ulint n_reserved) {
   fil_space_t *space = shard->get_space_by_id(space_id);
 
   ut_a(n_reserved < std::numeric_limits<uint32_t>::max());
-  ut_a(space->n_reserved_extents >= n_reserved);
+
+  if (space->n_reserved_extents < n_reserved) {
+    ib::error(ER_IB_MSG_0) << "Requested to release " << n_reserved
+                           << " reserved free extents, but the space has only "
+                           << space->n_reserved_extents
+                           << " reserved free extents";
+    ut_a(space->n_reserved_extents >= n_reserved);
+  }
 
   space->n_reserved_extents -= (uint32_t)n_reserved;
 
@@ -7952,7 +7956,7 @@ void fil_aio_wait(ulint segment) {
       if (m2 != nullptr) {
         auto bpage = static_cast<buf_page_t *>(m2);
         ut_d(bpage->take_io_responsibility());
-        buf_page_io_complete(bpage, false);
+        buf_page_io_complete(bpage, false, &type, m1);
       }
       return;
   }
@@ -8692,6 +8696,8 @@ dberr_t fil_tablespace_iterate(const Encryption_metadata &encryption_metadata,
 
   ut::aligned_free(page);
   ut::free(filepath);
+
+  block->page.reset_page_id();
 
   mutex_free(&block->mutex);
 
@@ -10177,6 +10183,62 @@ bool fil_check_missing_tablespaces() {
   return fil_system->check_missing_tablespaces();
 }
 
+/** Parse a path from a buffer.
+@param[in]      ptr             redo log record
+@param[in]      end             end of the redo log buffer
+@param[in]      check_suffix    indicate that .ibd suffix is required
+@param[out]     path            the path parsed from the buffer
+@param[out]     error_str       optional description of a detected corruption
+                                recv_sys->found_corrupt_log is set to true when
+                                error_str is set to a non empty string
+@return pointer to next redo log record
+@retval nullptr if this log record was truncated or corrupted */
+const static byte *parse_path_from_redo(const byte *ptr, const byte *end,
+                                        bool check_suffix, std::string &path,
+                                        std::string &error_str) {
+  ut_a(ptr != nullptr);
+
+  error_str.clear();
+
+  /* Where 2 = path len (uint16_t). */
+  if (end <= ptr + 2) {
+    return nullptr;
+  }
+
+  /* Read and check the path. */
+  auto len = mach_read_from_2(ptr);
+  ptr += 2;
+
+  /* Check if the file path is present. */
+  if (end < ptr + len) {
+    return nullptr;
+  }
+
+  /* Expecting two bytes to specify the length of a C string,
+  including the null terminator.
+  Expecting a C string, with no null characters, except at the
+  end, as specified by the length field */
+  path = {reinterpret_cast<const char *>(ptr),
+          (size_t)((len > 0) ? len - 1 : 0)};
+  if (len < 5) {
+    error_str = "The length must be >= 5.";
+  } else if (memchr(ptr, 0, len) != ptr + len - 1) {
+    error_str = "The length specified is invalid.";
+  } else if (check_suffix && !Fil_path::has_suffix(IBD, path)) {
+    error_str = "'" + path + "'. The file suffix must be '.ibd'.";
+  }
+
+  if (!error_str.empty()) {
+    recv_sys->found_corrupt_log = true;
+    return nullptr;
+  }
+
+  Fil_path::normalize(path);
+  ptr += len;
+
+  return ptr;
+}
+
 /** Redo a tablespace create.
 @param[in]      ptr             redo log record
 @param[in]      end             end of the redo log buffer
@@ -10185,9 +10247,9 @@ bool fil_check_missing_tablespaces() {
 @param[in]      parse_only      Don't apply, parse only
 @return pointer to next redo log record
 @retval nullptr if this log record was truncated */
-byte *fil_tablespace_redo_create(byte *ptr, const byte *end,
-                                 const page_id_t &page_id, ulint parsed_bytes,
-                                 bool parse_only) {
+const byte *fil_tablespace_redo_create(const byte *ptr, const byte *end,
+                                       const page_id_t &page_id,
+                                       ulint parsed_bytes, bool parse_only) {
   ut_a(page_id.page_no() == 0);
 
   /* We never recreate the system tablespace. */
@@ -10208,38 +10270,14 @@ byte *fil_tablespace_redo_create(byte *ptr, const byte *end,
 
   ptr += 4;
 
-  ulint len = mach_read_from_2(ptr);
-
-  ptr += 2;
-
-  /* Do we have the full/valid file name. */
-  if (end < ptr + len || len < 5) {
-    if (len < 5) {
-      char name[6];
-
-      snprintf(name, sizeof(name), "%.*s", (int)len, ptr);
-
-      ib::error(ER_IB_MSG_355) << "MLOG_FILE_CREATE : Invalid file name."
-                               << " Length (" << len << ") must be >= 5"
-                               << " and end in '.ibd'. File name in the"
-                               << " redo log is '" << name << "'";
-
-      recv_sys->found_corrupt_log = true;
+  std::string name, error_str;
+  ptr = parse_path_from_redo(ptr, end, !fsp_is_undo_tablespace(page_id.space()),
+                             name, error_str);
+  if (ptr == nullptr) {
+    if (!error_str.empty()) {
+      ib::error(ER_IB_MSG_355)
+          << "MLOG_FILE_CREATE : Invalid file name: " << error_str;
     }
-
-    return nullptr;
-  }
-
-  char *name = reinterpret_cast<char *>(ptr);
-
-  Fil_path::normalize(name);
-
-  ptr += len;
-
-  if (!(Fil_path::has_suffix(IBD, name) ||
-        fsp_is_undo_tablespace(page_id.space()))) {
-    recv_sys->found_corrupt_log = true;
-
     return nullptr;
   }
 
@@ -10248,7 +10286,7 @@ byte *fil_tablespace_redo_create(byte *ptr, const byte *end,
   }
 #ifdef UNIV_HOTBACKUP
 
-  meb_tablespace_redo_create(page_id, flags, name);
+  meb_tablespace_redo_create(page_id, flags, name.c_str());
 
 #else  /* !UNIV_HOTBACKUP */
 
@@ -10263,11 +10301,10 @@ byte *fil_tablespace_redo_create(byte *ptr, const byte *end,
   }
 
   /* Update filename with correct partition case, if needed. */
-  std::string name_str(name);
   std::string space_name;
-  fil_update_partition_name(page_id.space(), 0, false, space_name, name_str);
+  fil_update_partition_name(page_id.space(), 0, false, space_name, name);
 
-  auto abs_name = Fil_path::get_real_path(name_str);
+  auto abs_name = Fil_path::get_real_path(name);
 
   /* Duplicates should have been sorted out before we get here. */
   ut_a(result.second->size() == 1);
@@ -10285,9 +10322,10 @@ byte *fil_tablespace_redo_create(byte *ptr, const byte *end,
   return ptr;
 }
 
-byte *fil_tablespace_redo_rename(byte *ptr, const byte *end,
-                                 const page_id_t &page_id, ulint parsed_bytes,
-                                 bool parse_only [[maybe_unused]]) {
+const byte *fil_tablespace_redo_rename(const byte *ptr, const byte *end,
+                                       const page_id_t &page_id,
+                                       ulint parsed_bytes,
+                                       bool parse_only [[maybe_unused]]) {
   ut_a(page_id.page_no() == 0);
 
   /* We never recreate the system tablespace. */
@@ -10295,98 +10333,39 @@ byte *fil_tablespace_redo_rename(byte *ptr, const byte *end,
 
   ut_a(parsed_bytes != ULINT_UNDEFINED);
 
-  /* Where 2 = from name len (uint16_t). */
-  if (end <= ptr + 2) {
-    return nullptr;
-  }
+  std::string from_name, to_name, error_str;
 
-  /* Read and check the RENAME FROM_NAME. */
-  ulint from_len = mach_read_from_2(ptr);
-  ptr += 2;
-  char *from_name = reinterpret_cast<char *>(ptr);
-
-  /* Check if the 'from' file name is valid. */
-  if (end < ptr + from_len) {
-    return nullptr;
-  }
-
-  std::string whats_wrong;
-  constexpr char more_than_five[] = "The length must be >= 5.";
-  constexpr char end_with_ibd[] = "The file suffix must be '.ibd'.";
-  if (from_len < 5) {
-    recv_sys->found_corrupt_log = true;
-    whats_wrong.assign(more_than_five);
-  } else {
-    std::string name{from_name};
-
-    if (!Fil_path::has_suffix(IBD, name)) {
-      recv_sys->found_corrupt_log = true;
-      whats_wrong.assign(end_with_ibd);
+  ptr = parse_path_from_redo(ptr, end, true, from_name, error_str);
+  if (ptr == nullptr) {
+    if (!error_str.empty()) {
+      ib::info(ER_IB_MSG_357)
+          << "MLOG_FILE_RENAME: Invalid {from} file name: " << error_str;
     }
-  }
-
-  if (recv_sys->found_corrupt_log) {
-    ib::info(ER_IB_MSG_357) << "MLOG_FILE_RENAME: Invalid {from} file name: '"
-                            << from_name << "'. " << whats_wrong;
-
     return nullptr;
   }
 
-  ptr += from_len;
-  Fil_path::normalize(from_name);
-
-  /* Read and check the RENAME TO_NAME. */
-  ulint to_len = mach_read_from_2(ptr);
-  ptr += 2;
-  char *to_name = reinterpret_cast<char *>(ptr);
-
-  /* Check if the 'to' file name is valid. */
-  if (end < ptr + to_len) {
-    return nullptr;
-  }
-
-  if (to_len < 5) {
-    recv_sys->found_corrupt_log = true;
-    whats_wrong.assign(more_than_five);
-  } else {
-    std::string name{to_name};
-
-    if (!Fil_path::has_suffix(IBD, name)) {
-      recv_sys->found_corrupt_log = true;
-      whats_wrong.assign(end_with_ibd);
+  ptr = parse_path_from_redo(ptr, end, true, to_name, error_str);
+  if (ptr == nullptr) {
+    if (!error_str.empty()) {
+      ib::info(ER_IB_MSG_357)
+          << "MLOG_FILE_RENAME: Invalid {to} file name: " << error_str;
     }
-  }
-
-  if (recv_sys->found_corrupt_log) {
-    ib::info(ER_IB_MSG_357) << "MLOG_FILE_RENAME: Invalid {to} file name: '"
-                            << to_name << "'. " << whats_wrong;
-
     return nullptr;
   }
-
-  ptr += to_len;
-  Fil_path::normalize(to_name);
 
 #ifdef UNIV_HOTBACKUP
 
   if (!parse_only) {
-    meb_tablespace_redo_rename(page_id, from_name, to_name);
+    meb_tablespace_redo_rename(page_id, from_name.c_str(), to_name.c_str());
   }
 
 #else /* !UNIV_HOTBACKUP */
 
-  /* Update filename with correct partition case, if needed. */
-  std::string to_name_str(to_name);
-  std::string space_name;
-  fil_update_partition_name(page_id.space(), 0, false, space_name, to_name_str);
-
-  if (from_len == to_len && strncmp(to_name, from_name, to_len) == 0) {
+  if (from_name == to_name) {
     ib::error(ER_IB_MSG_360)
         << "MLOG_FILE_RENAME: The from and to name are the"
         << " same: '" << from_name << "', '" << to_name << "'";
-
     recv_sys->found_corrupt_log = true;
-
     return nullptr;
   }
 
@@ -10395,9 +10374,9 @@ byte *fil_tablespace_redo_rename(byte *ptr, const byte *end,
   return ptr;
 }
 
-byte *fil_tablespace_redo_extend(byte *ptr, const byte *end,
-                                 const page_id_t &page_id, ulint parsed_bytes,
-                                 bool parse_only) {
+const byte *fil_tablespace_redo_extend(const byte *ptr, const byte *end,
+                                       const page_id_t &page_id,
+                                       ulint parsed_bytes, bool parse_only) {
   ut_a(page_id.page_no() == 0);
 
   /* We never recreate the system tablespace. */
@@ -10562,9 +10541,9 @@ byte *fil_tablespace_redo_extend(byte *ptr, const byte *end,
 @param[in]      parse_only      Don't apply, parse only
 @return pointer to next redo log record
 @retval nullptr if this log record was truncated */
-byte *fil_tablespace_redo_delete(byte *ptr, const byte *end,
-                                 const page_id_t &page_id, ulint parsed_bytes,
-                                 bool parse_only) {
+const byte *fil_tablespace_redo_delete(const byte *ptr, const byte *end,
+                                       const page_id_t &page_id,
+                                       ulint parsed_bytes, bool parse_only) {
   ut_a(page_id.page_no() == 0);
 
   /* We never recreate the system tablespace. */
@@ -10572,41 +10551,14 @@ byte *fil_tablespace_redo_delete(byte *ptr, const byte *end,
 
   ut_a(parsed_bytes != ULINT_UNDEFINED);
 
-  /* Where 2 =  len (uint16_t). */
-  if (end <= ptr + 2) {
-    return nullptr;
-  }
-
-  ulint len = mach_read_from_2(ptr);
-
-  ptr += 2;
-
-  /* Do we have the full/valid file name. */
-  if (end < ptr + len || len < 5) {
-    if (len < 5) {
-      char name[6];
-
-      snprintf(name, sizeof(name), "%.*s", (int)len, ptr);
-
-      ib::error(ER_IB_MSG_362) << "MLOG_FILE_DELETE : Invalid file name."
-                               << " Length (" << len << ") must be >= 5"
-                               << " and end in '.ibd'. File name in the"
-                               << " redo log is '" << name << "'";
+  std::string name, error_str;
+  ptr = parse_path_from_redo(ptr, end, !fsp_is_undo_tablespace(page_id.space()),
+                             name, error_str);
+  if (ptr == nullptr) {
+    if (!error_str.empty()) {
+      ib::info(ER_IB_MSG_362)
+          << "MLOG_FILE_DELETE: Invalid file name: " << error_str;
     }
-
-    return nullptr;
-  }
-
-  char *name = reinterpret_cast<char *>(ptr);
-
-  Fil_path::normalize(name);
-
-  ptr += len;
-
-  if (!(Fil_path::has_suffix(IBD, name) ||
-        fsp_is_undo_tablespace(page_id.space()))) {
-    recv_sys->found_corrupt_log = true;
-
     return nullptr;
   }
 
@@ -10615,7 +10567,7 @@ byte *fil_tablespace_redo_delete(byte *ptr, const byte *end,
   }
 #ifdef UNIV_HOTBACKUP
 
-  meb_tablespace_redo_delete(page_id, name);
+  meb_tablespace_redo_delete(page_id, name.c_str());
 
 #else  /* !UNIV_HOTBACKUP */
 
@@ -10637,9 +10589,8 @@ byte *fil_tablespace_redo_delete(byte *ptr, const byte *end,
   ut_a(result.second->size() == 1);
 
   /* Update filename with correct partition case, if needed. */
-  std::string name_str(name);
   std::string space_name;
-  fil_update_partition_name(page_id.space(), 0, false, space_name, name_str);
+  fil_update_partition_name(page_id.space(), 0, false, space_name, name);
 
   fil_space_free(page_id.space(), false);
 
@@ -10650,8 +10601,8 @@ byte *fil_tablespace_redo_delete(byte *ptr, const byte *end,
   return ptr;
 }
 
-byte *fil_tablespace_redo_encryption(byte *ptr, const byte *end,
-                                     space_id_t space_id, lsn_t lsn) {
+const byte *fil_tablespace_redo_encryption(const byte *ptr, const byte *end,
+                                           space_id_t space_id, lsn_t lsn) {
   fil_space_t *space = fil_space_get(space_id);
 
   /* An undo space might be open but not have the ENCRYPTION bit set
@@ -10680,7 +10631,7 @@ byte *fil_tablespace_redo_encryption(byte *ptr, const byte *end,
     return (nullptr);
   }
 
-  byte *encryption_ptr = ptr;
+  const byte *encryption_ptr = ptr;
   ptr += len;
 
   /* If space is already loaded and have header_page_flushed_lsn greater than
@@ -11746,6 +11697,8 @@ std::ostream &Fil_page_header::print(std::ostream &out) const noexcept {
   /* Print the header information in the order it is stored. */
   out << "[Fil_page_header: FIL_PAGE_OFFSET=" << get_page_no()
       << ", FIL_PAGE_TYPE=" << get_page_type()
+      << ", FIL_PAGE_PREV=" << get_page_prev()
+      << ", FIL_PAGE_NEXT=" << get_page_next()
       << ", FIL_PAGE_SPACE_ID=" << get_space_id() << "]";
   return out;
 }
@@ -11760,6 +11713,14 @@ page_no_t Fil_page_header::get_page_no() const noexcept {
 
 uint16_t Fil_page_header::get_page_type() const noexcept {
   return mach_read_from_2(m_frame + FIL_PAGE_TYPE);
+}
+
+page_no_t Fil_page_header::get_page_prev() const noexcept {
+  return mach_read_from_4(m_frame + FIL_PAGE_PREV);
+}
+
+page_no_t Fil_page_header::get_page_next() const noexcept {
+  return mach_read_from_4(m_frame + FIL_PAGE_NEXT);
 }
 
 fil_node_t *fil_space_t::get_file_node(page_no_t *page_no) noexcept {
@@ -11859,3 +11820,46 @@ void fil_space_t::bump_version() {
   ++m_version;
 }
 #endif /* !UNIV_HOTBACKUP */
+
+dberr_t fil_prepare_file_for_io(space_id_t space_id, page_no_t &page_no,
+                                fil_node_t **node_out) {
+  auto shard = fil_system->shard_by_id(space_id);
+  shard->mutex_acquire();
+  fil_space_t *space = shard->get_space_by_id(space_id);
+  fil_node_t *node = space->get_file_node(&page_no);
+  ut_ad(node != nullptr);
+  dberr_t err{DB_SUCCESS};
+  bool file_ready = shard->prepare_file_for_io(node);
+  if (file_ready) {
+    *node_out = node;
+  } else {
+    *node_out = nullptr;
+    ut_ad(file_ready);
+    err = DB_IO_ERROR;
+  }
+  shard->mutex_release();
+  return err;
+}
+
+void fil_complete_write(space_id_t space_id, fil_node_t *node) {
+  auto shard = fil_system->shard_by_id(space_id);
+  shard->mutex_acquire();
+  shard->complete_io(node, IORequestWrite);
+  shard->mutex_release();
+}
+
+uint64_t fil_space_t::get_auto_extend_size() {
+  if (autoextend_size_in_bytes != 0) {
+    return autoextend_size_in_bytes;
+  }
+  if (is_bulk_operation_in_progress()) {
+    return m_bulk_extend_size.load();
+  }
+  return 0;
+}
+
+bool fil_space_t::initialize_while_extending() {
+  /* Don't initialize added space during bulk operation. The extended area
+  would be explicitly flushed with data or zero filled pages. */
+  return (tbsp_extend_and_initialize && !is_bulk_operation_in_progress());
+}

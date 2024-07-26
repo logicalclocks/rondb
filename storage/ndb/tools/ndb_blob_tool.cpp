@@ -24,6 +24,7 @@
 #include <ndb_global.h>
 #include <ndb_limits.h>
 #include <ndb_opts.h>
+#include "portlib/ssl_applink.h"
 #include "util/require.h"
 
 #include <NdbSleep.h>
@@ -131,6 +132,7 @@ static int doconnect() {
   int ret = 0;
   do {
     g_ncc = new Ndb_cluster_connection(opt_ndb_connectstring);
+    g_ncc->configure_tls(opt_tls_search_path, opt_mgm_tls);
     CHK2(g_ncc->connect(opt_connect_retries - 1, opt_connect_retry_delay, 1) ==
              0,
          getNdbError(g_ncc));
@@ -877,6 +879,8 @@ static struct my_option my_long_options[] = {
     NdbStdOpt::ndb_nodeid,
     NdbStdOpt::connect_retry_delay,
     NdbStdOpt::connect_retries,
+    NdbStdOpt::tls_search_path,
+    NdbStdOpt::mgm_tls,
     NDB_STD_OPT_DEBUG{"database", 'd', "Name of database table is in",
                       &opt_dbname, nullptr, nullptr, GET_STR, REQUIRED_ARG, 0,
                       0, 0, nullptr, 0, nullptr},

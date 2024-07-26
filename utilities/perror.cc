@@ -29,12 +29,14 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_getopt.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysys_err.h"
+#include "nulls.h"
 #include "print_version.h"
+#include "template_utils.h"
 #include "welcome_copyright_notice.h" /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 static bool verbose;
@@ -184,7 +186,7 @@ int get_ER_error_msg_by_symbol(const char *symbol) {
 static bool print_win_error_msg(DWORD error, bool verbose) {
   LPTSTR s;
   if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
-                    NULL, error, 0, (LPTSTR)&s, 0, NULL)) {
+                    nullptr, error, 0, (LPTSTR)&s, 0, nullptr)) {
     if (verbose)
       printf("Win32 error code %lu: %s", error, s);
     else

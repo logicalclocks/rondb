@@ -31,10 +31,10 @@
 #include <decimal_utils.hpp>
 #include "NdbImportCsv.hpp"
 #include "NdbImportCsvGram.hpp"
-#include "m_ctype.h"
 #include "my_byteorder.h"
 #include "my_config.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 // STL
 #include <cmath>
 

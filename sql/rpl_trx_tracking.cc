@@ -27,9 +27,9 @@
 #include <utility>
 #include <vector>
 
-#include "libbinlogevents/include/binlog_event.h"
 #include "my_inttypes.h"
 #include "my_sqlcommand.h"
+#include "mysql/binlog/event/binlog_event.h"
 #include "sql/binlog.h"
 #include "sql/current_thd.h"
 #include "sql/mysqld.h"
@@ -223,8 +223,7 @@ void Writeset_trx_dependency_tracker::get_dependency(THD *thd,
 
   /*
     Check if this transaction has a writeset, if the writeset will overflow the
-    history size, if the transaction_write_set_extraction is consistent
-    between session and global or if changes in the tables referenced in this
+    history size, or if changes in the tables referenced in this
     transaction cascade to other tables. If that happens revert to using the
     COMMIT_ORDER and clear the history to keep data consistent.
   */
@@ -236,10 +235,8 @@ void Writeset_trx_dependency_tracker::get_dependency(THD *thd,
          they can be executed in parallel.
        */
        is_empty_transaction_in_binlog_cache(thd)) &&
-      // hashing algorithm for the session must be the same as used by other
-      // rows in history
-      (global_system_variables.transaction_write_set_extraction ==
-       thd->variables.transaction_write_set_extraction) &&
+      // binlog format must be ROW
+      thd->variables.binlog_format == BINLOG_FORMAT_ROW &&
       // must not use foreign keys
       !write_set_ctx->get_has_related_foreign_keys() &&
       // it did not broke past the capacity already
@@ -302,28 +299,6 @@ void Writeset_trx_dependency_tracker::rotate(int64 start) {
 }
 
 /**
-  Get the writeset commit parent of transactions using the session dependencies.
-
-  @param[in]     thd             Current THD from which to extract trx context.
-  @param[in,out] sequence_number Sequence number of current transaction.
-  @param[in,out] commit_parent   Commit_parent of current transaction,
-                                 pre-filled with the commit_parent calculated
-                                 by the Write_set_trx_dependency_tracker as a
-                                 fall-back.
-*/
-void Writeset_session_trx_dependency_tracker::get_dependency(
-    THD *thd, int64 &sequence_number, int64 &commit_parent) {
-  int64 session_parent = thd->rpl_thd_ctx.dependency_tracker_ctx()
-                             .get_last_session_sequence_number();
-
-  if (session_parent != 0 && session_parent < sequence_number)
-    commit_parent = std::max(commit_parent, session_parent);
-
-  thd->rpl_thd_ctx.dependency_tracker_ctx().set_last_session_sequence_number(
-      sequence_number);
-}
-
-/**
   Get the dependencies in a transaction, the main entry point for the
   dependency tracking work.
 */
@@ -331,40 +306,9 @@ void Transaction_dependency_tracker::get_dependency(
     THD *thd, bool parallelization_barrier, int64 &sequence_number,
     int64 &commit_parent) {
   sequence_number = commit_parent = 0;
-
-  switch (m_opt_tracking_mode) {
-    case DEPENDENCY_TRACKING_COMMIT_ORDER:
-      m_commit_order.get_dependency(thd, parallelization_barrier,
-                                    sequence_number, commit_parent);
-      break;
-    case DEPENDENCY_TRACKING_WRITESET:
-      m_commit_order.get_dependency(thd, parallelization_barrier,
-                                    sequence_number, commit_parent);
-      m_writeset.get_dependency(thd, sequence_number, commit_parent);
-      break;
-    case DEPENDENCY_TRACKING_WRITESET_SESSION:
-      m_commit_order.get_dependency(thd, parallelization_barrier,
-                                    sequence_number, commit_parent);
-      m_writeset.get_dependency(thd, sequence_number, commit_parent);
-      m_writeset_session.get_dependency(thd, sequence_number, commit_parent);
-      break;
-    default:
-      assert(0);  // blow up on debug
-      /*
-        Fallback to commit order on production builds.
-       */
-      m_commit_order.get_dependency(thd, parallelization_barrier,
-                                    sequence_number, commit_parent);
-  }
-}
-
-void Transaction_dependency_tracker::tracking_mode_changed() {
-  Logical_clock max_committed_transaction =
-      m_commit_order.get_max_committed_transaction();
-  int64 timestamp = max_committed_transaction.get_timestamp() -
-                    max_committed_transaction.get_offset();
-
-  m_writeset.rotate(timestamp);
+  m_commit_order.get_dependency(thd, parallelization_barrier, sequence_number,
+                                commit_parent);
+  m_writeset.get_dependency(thd, sequence_number, commit_parent);
 }
 
 /**

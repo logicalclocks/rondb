@@ -3,10 +3,8 @@ set global ndb_log_apply_status=Off;
 show variables like '%ndb_log_apply_status%';
 Variable_name	Value
 ndb_log_apply_status	OFF
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
-reset master;
+RESET REPLICA;
+reset binary logs and gtids;
 Should have empty apply status table
 select * from mysql.ndb_apply_status;
 server_id	epoch	log_name	start_pos	end_pos
@@ -24,10 +22,8 @@ set global ndb_log_apply_status=On;
 show variables like '%ndb_log_apply_status%';
 Variable_name	Value
 ndb_log_apply_status	ON
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
-reset master;
+RESET REPLICA;
+reset binary logs and gtids;
 Should have empty apply status table
 select * from mysql.ndb_apply_status;
 server_id	epoch	log_name	start_pos	end_pos

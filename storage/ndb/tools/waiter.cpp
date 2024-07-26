@@ -36,6 +36,9 @@
 #include <portlib/ndb_localtime.h>
 #include <../src/mgmapi/mgmapi_configuration.hpp>
 #include <NdbOut.hpp>
+#include "portlib/ssl_applink.h"
+
+#include "util/TlsKeyManager.hpp"
 
 #include <NdbToolsProgramExitCodes.hpp>
 
@@ -57,16 +60,19 @@ static const char *_nowait_nodes = 0;
 static NdbNodeBitmask nowait_nodes_bitmask;
 static int _verbose = 1;
 
-static struct my_option my_long_options[] =
-{
-  NdbStdOpt::usage,
-  NdbStdOpt::help,
-  NdbStdOpt::version,
-  NdbStdOpt::ndb_connectstring,
-  NdbStdOpt::mgmd_host,
-  NdbStdOpt::connectstring,
-  NdbStdOpt::connect_retry_delay,
-  NdbStdOpt::connect_retries,
+static TlsKeyManager tlsKeyManager;
+
+static struct my_option my_long_options[] = {
+    NdbStdOpt::usage,
+    NdbStdOpt::help,
+    NdbStdOpt::version,
+    NdbStdOpt::ndb_connectstring,
+    NdbStdOpt::mgmd_host,
+    NdbStdOpt::connectstring,
+    NdbStdOpt::connect_retry_delay,
+    NdbStdOpt::connect_retries,
+    NdbStdOpt::tls_search_path,
+    NdbStdOpt::mgm_tls,
     NDB_STD_OPT_DEBUG{"no-contact", 'n', "Wait for cluster no contact",
                       &_no_contact, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0,
                       nullptr, 0, nullptr},
@@ -154,7 +160,8 @@ set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
 
 int main(int argc, char** argv){
   NDB_INIT(argv[0]);
-  Ndb_opts opts(argc, argv, my_long_options);
+  const char *groups[] = {"mysql_cluster", "ndb_waiter", nullptr};
+  Ndb_opts opts(argc, argv, my_long_options, groups);
 
 #ifndef NDEBUG
   opt_debug = "d:t:O,/tmp/ndb_waiter.trace";
@@ -211,6 +218,8 @@ int main(int argc, char** argv){
     nowait_nodes_bitmask.bitNOT();
   }
 
+  tlsKeyManager.init_mgm_client(opt_tls_search_path);
+
   int retval = waitClusterStatus(connect_string, wait_status);
   if (retval == -3) {
     return 3;  // Connect to mgmd failed
@@ -249,8 +258,9 @@ int getStatus() {
   if (status == nullptr) {
     MGMERR(handle);
     ndb_mgm_disconnect(handle);
-    if (ndb_mgm_connect(handle, opt_connect_retries - 1,
-                        opt_connect_retry_delay, _verbose > 1)) {
+    if (ndb_mgm_connect_tls(handle, opt_connect_retries - 1,
+                            opt_connect_retry_delay, _verbose > 1,
+                            opt_mgm_tls)) {
       MGMERR(handle);
       if (_verbose > 1) ndberr << "Reconnect failed" << endl;
       return -3;
@@ -349,12 +359,23 @@ int waitClusterStatus(const char *_addr, const ndb_mgm_node_status _status) {
     }
     return -3;
   }
+  ndb_mgm_set_ssl_ctx(handle, tlsKeyManager.ctx());
+
+  const char *tls_mode;
+  if (opt_mgm_tls == 1)
+    tls_mode = " (using TLS)";
+  else if (tlsKeyManager.ctx())
+    tls_mode = " (trying TLS)";
+  else
+    tls_mode = " (using cleartext)";
+
   char buf[1024];
   if (_verbose > 1)
     ndbout << "Connecting to management server at "
-           << ndb_mgm_get_connectstring(handle, buf, sizeof(buf)) << endl;
-  if (ndb_mgm_connect(handle, opt_connect_retries - 1, opt_connect_retry_delay,
-                      _verbose > 1)) {
+           << ndb_mgm_get_connectstring(handle, buf, sizeof(buf)) << tls_mode
+           << endl;
+  if (ndb_mgm_connect_tls(handle, opt_connect_retries - 1,
+                          opt_connect_retry_delay, _verbose > 1, opt_mgm_tls)) {
     MGMERR(handle);
     ndberr << "Connection to "
            << ndb_mgm_get_connectstring(handle, buf, sizeof(buf)) << " failed"

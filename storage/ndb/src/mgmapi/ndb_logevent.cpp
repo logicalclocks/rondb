@@ -36,9 +36,6 @@
 
 #include "ndb_logevent.hpp"
 
-extern int ndb_mgm_listen_event_internal(NdbMgmHandle, const int filter[], int,
-                                         ndb_socket_t *);
-
 struct ndb_logevent_error_msg {
   enum ndb_logevent_handle_error code;
   const char *msg;
@@ -72,8 +69,9 @@ NdbLogEventHandle ndb_mgm_create_logevent_handle_same_socket(NdbMgmHandle mh) {
 
 extern "C" NdbLogEventHandle ndb_mgm_create_logevent_handle(
     NdbMgmHandle mh, const int filter[]) {
-  auto h = new (std::nothrow)
-      ndb_logevent_handle(ndb_mgm_listen_event_internal(mh, filter, 1));
+  constexpr bool allow_tls = true;
+  auto h = new (std::nothrow) ndb_logevent_handle(
+      ndb_mgm_listen_event_internal(mh, filter, 1, allow_tls));
 
   if (h && !h->socket.is_valid()) {
     delete h;
@@ -100,16 +98,16 @@ extern "C" void ndb_mgm_destroy_logevent_handle(NdbLogEventHandle *h) {
   delete (*h);
 }
 
-#define ROW(a, b, c, d)                                      \
-  {                                                          \
-    NDB_LE_##a, b, c, 0, offsetof(struct ndb_logevent, a.d), \
-        sizeof(((struct ndb_logevent *)0)->a.d)              \
+#define ROW(a, b, c, d)                                            \
+  {                                                                \
+    NDB_LE_##a, b, c, nullptr, offsetof(struct ndb_logevent, a.d), \
+        sizeof(((struct ndb_logevent *)nullptr)->a.d)              \
   }
 
 #define ROW_FN(a, b, c, d, e)                                \
   {                                                          \
     NDB_LE_##a, b, c, e, offsetof(struct ndb_logevent, a.d), \
-        sizeof(((struct ndb_logevent *)0)->a.d)              \
+        sizeof(((struct ndb_logevent *)nullptr)->a.d)        \
   }
 
 static int ref_to_node(int ref) { return ref & 0xFFFF; }
@@ -439,8 +437,11 @@ struct Ndb_logevent_header_row {
   int size;
 };
 
-#define ROW2(a, b) \
-  { a, offsetof(struct ndb_logevent, b), sizeof(((struct ndb_logevent *)0)->b) }
+#define ROW2(a, b)                                  \
+  {                                                 \
+    a, offsetof(struct ndb_logevent, b),            \
+        sizeof(((struct ndb_logevent *)nullptr)->b) \
+  }
 
 struct Ndb_logevent_header_row ndb_logevent_header[] = {
     ROW2("type", type),

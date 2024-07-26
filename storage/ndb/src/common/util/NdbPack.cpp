@@ -27,7 +27,7 @@
 #include <ndb_global.h>
 #include <NdbOut.hpp>
 #include <NdbPack.hpp>
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "util/require.h"
 
 // NdbPack::Error
@@ -321,7 +321,7 @@ int NdbPack::DataArray::cmp(const Spec *spec, const DataArray *d2,
     const NdbSqlUtil::Type &sqlType = getSqlType(type.m_typeId);
     const Uint8 *p2 = d2->m_entries[i].m_data_ptr;
     const Uint32 n2 = d2->m_entries[i].m_data_len;
-    CHARSET_INFO *cs = all_charsets[type.m_csNumber];
+    const CHARSET_INFO *cs = all_charsets[type.m_csNumber];
     if (n1 != 0) {
       if (n2 != 0) {
         res = (*sqlType.m_cmp)(cs, p1, n1, p2, n2);
@@ -351,7 +351,7 @@ int NdbPack::Iter::cmp(const Iter &r2, const Uint8 *buf1,
       const NdbSqlUtil::Type &sqlType = getSqlType(type.m_typeId);
       const Uint8 *p1 = &buf1[r1.m_itemPos];
       const Uint8 *p2 = &buf2[r2.m_itemPos];
-      CHARSET_INFO *cs = all_charsets[type.m_csNumber];
+      const CHARSET_INFO *cs = all_charsets[type.m_csNumber];
       res = (*sqlType.m_cmp)(cs, p1, n1, p2, n2);
     } else {
       res = +1;
@@ -1318,7 +1318,7 @@ int Tdata::xcmp(const Tdata &tdata2, int *num_eq) const {
         const NdbPack::Type &type = tspec.m_spec.get_type(i);
         const int typeId = type.get_type_id();
         const int csNumber = type.get_cs_number();
-        CHARSET_INFO *cs = all_charsets[csNumber];
+        const CHARSET_INFO *cs = all_charsets[csNumber];
         switch (typeId) {
           case NDB_TYPE_INT: {
             require(cs == nullptr);

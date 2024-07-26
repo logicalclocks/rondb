@@ -21,12 +21,17 @@
 # if ($group_replication_found_primary_out_var)
 # {
 #   --let $rpl_connection_name= $group_replication_primary_connection_out_var
-#   --source include/rpl_connection.inc
+#   --source include/connection.inc
 #   # now on primary
 # }
 
 --let $include_filename= gr_find_a_primary.inc
 --source include/begin_include_file.inc
+
+if (`SELECT @@GLOBAL.group_replication_single_primary_mode != 1`)
+{
+  --die "The group must be operating in single-primary mode."
+}
 
 # save the connection to reinstate it later
 --let $_saved_current_connection= $CURRENT_CONNECTION
@@ -43,11 +48,10 @@ while ($_retry_find_primary)
   {
     # connect to the server
     --let $rpl_connection_name=server$_i_find_primary
-    --source include/rpl_connection.inc
+    --source include/connection.inc
 
-    let $_is_primary= `SELECT COUNT(*)=1 FROM performance_schema.global_status
-                              WHERE VARIABLE_NAME = "group_replication_primary_member" AND
-                              VARIABLE_VALUE = @@server_uuid`;
+    let $_is_primary= `SELECT COUNT(*)=1 FROM performance_schema.replication_group_members
+                       WHERE MEMBER_ROLE="PRIMARY" AND MEMBER_ID=@@server_uuid`;
 
     if ($_is_primary)
     {
@@ -72,7 +76,7 @@ while ($_retry_find_primary)
 }
 
 --let $rpl_connection_name=$_saved_current_connection
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $include_filename= group_replication_wait_until_role.inc
 --source include/end_include_file.inc

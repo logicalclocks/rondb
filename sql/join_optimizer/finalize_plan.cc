@@ -21,24 +21,27 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include "sql/join_optimizer/finalize_plan.h"
+
 #include <assert.h>
-#include <list>
-#include <utility>
+#include <algorithm>
+#include <functional>
 
 #include "mem_root_deque.h"
 #include "my_alloc.h"
 #include "my_base.h"
 #include "my_inttypes.h"
 #include "my_sqlcommand.h"
+#include "my_table_map.h"
 #include "prealloced_array.h"
 #include "sql/filesort.h"
 #include "sql/item.h"
+#include "sql/item_cmpfunc.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/join_optimizer/bit_utils.h"
 #include "sql/join_optimizer/join_optimizer.h"
 #include "sql/join_optimizer/materialize_path_parameters.h"
-#include "sql/join_optimizer/node_map.h"
 #include "sql/join_optimizer/relational_expression.h"
 #include "sql/join_optimizer/replace_item.h"
 #include "sql/join_optimizer/walk_access_paths.h"
@@ -98,7 +101,7 @@ static void ReplaceUpdateValuesWithTempTableFields(
   Collects the set of items in the item tree that satisfy the following:
 
   1) Neither the item itself nor any of its descendants have a reference to a
-     ROLLUP expression (item->has_rollup_expr() evaluates to false).
+     ROLLUP expression (item->has_grouping_set_dep() evaluates to false).
   2) The item is either the root item or its parent item does not satisfy 1).
 
   In other words, we do not collect _every_ item without rollup in the tree.
@@ -114,7 +117,7 @@ static void CollectItemsWithoutRollup(Item *root,
   CompileItem(
       root,
       [items](Item *item) {
-        if (item->has_rollup_expr()) {
+        if (item->has_grouping_set_dep()) {
           // Skip the item and continue searching down the item tree.
           return true;
         } else {
@@ -156,13 +159,14 @@ static TABLE *CreateTemporaryTableFromSelectList(
   // the temporary table and the replacement logic depends on base fields being
   // included.
   if (!after_aggregation &&
-      std::any_of(items_to_materialize->cbegin(), items_to_materialize->cend(),
-                  [](const Item *item) { return item->has_rollup_expr(); })) {
+      std::any_of(
+          items_to_materialize->cbegin(), items_to_materialize->cend(),
+          [](const Item *item) { return item->has_grouping_set_dep(); })) {
     items_to_materialize =
         new (thd->mem_root) mem_root_deque<Item *>(thd->mem_root);
     for (Item *item : *join->fields) {
       items_to_materialize->push_back(item);
-      if (item->has_rollup_expr()) {
+      if (item->has_grouping_set_dep()) {
         CollectItemsWithoutRollup(item, items_to_materialize);
       }
     }
@@ -222,10 +226,11 @@ static TABLE *CreateTemporaryTableFromSelectList(
     //
     // TODO(sgunders): Consider removing the rollup group items on the inner
     // levels, similar to what change_to_use_tmp_fields_except_sums() does.
-    auto new_end = std::remove_if(
-        temp_table_param->items_to_copy->begin(),
-        temp_table_param->items_to_copy->end(),
-        [](const Func_ptr &func) { return func.func()->has_rollup_expr(); });
+    auto *new_end = std::remove_if(temp_table_param->items_to_copy->begin(),
+                                   temp_table_param->items_to_copy->end(),
+                                   [](const Func_ptr &func) {
+                                     return func.func()->has_grouping_set_dep();
+                                   });
     temp_table_param->items_to_copy->erase(
         new_end, temp_table_param->items_to_copy->end());
   }
@@ -366,11 +371,11 @@ static Temp_table_param *GetItemsToCopy(AccessPath *path) {
       // Materializes a different query block.
       return nullptr;
     }
-    assert(param->query_blocks.size() == 1);
-    if (!param->query_blocks[0].copy_items) {
+    assert(param->m_operands.size() == 1);
+    if (!param->m_operands[0].copy_items) {
       return nullptr;
     }
-    return param->query_blocks[0].temp_table_param;
+    return param->m_operands[0].temp_table_param;
   }
   if (path->type == AccessPath::WINDOW) {
     return path->window().temp_table_param;
@@ -513,10 +518,10 @@ static void DelayedCreateTemporaryTable(THD *thd, Query_block *query_block,
                 *last_window_temp_table;
       } else {
         // All other materializations are of the SELECT list.
-        assert(path->materialize().param->query_blocks.size() == 1);
+        assert(path->materialize().param->m_operands.size() == 1);
         TABLE *table = CreateTemporaryTableFromSelectList(
             thd, query_block, nullptr,
-            &path->materialize().param->query_blocks[0].temp_table_param,
+            &path->materialize().param->m_operands[0].temp_table_param,
             after_aggregation);
         path->materialize().param->table =
             path->materialize().table_path->table_scan().table = table;
@@ -546,8 +551,10 @@ static void FinalizeWindowPath(
   JOIN *join = query_block->join;
   Temp_table_param *temp_table_param = path->window().temp_table_param;
   Window *window = path->window().window;
-  for (const Func_ptr_array *earlier_replacement : applied_replacements) {
-    window->apply_temp_table(thd, *earlier_replacement);
+  for (bool first_replacement = true;
+       const Func_ptr_array *earlier_replacement : applied_replacements) {
+    window->apply_temp_table(thd, *earlier_replacement, first_replacement);
+    first_replacement = false;
   }
   if (path->window().needs_buffering) {
     // Create the framebuffer. Note that it could exist already
@@ -719,7 +726,8 @@ bool FinalizePlanForQueryBlock(THD *thd, Query_block *query_block) {
         if (path->type == AccessPath::WINDOW) {
           FinalizeWindowPath(thd, query_block, *original_fields,
                              applied_replacements, path);
-        } else if (path->type == AccessPath::AGGREGATE) {
+        } else if (path->type == AccessPath::AGGREGATE ||
+                   path->type == AccessPath::GROUP_INDEX_SKIP_SCAN) {
           for (Cached_item &ci : join->group_fields) {
             for (const Func_ptr_array *earlier_replacement :
                  applied_replacements) {
@@ -733,15 +741,12 @@ bool FinalizePlanForQueryBlock(THD *thd, Query_block *query_block) {
 
           // Set up aggregators, now that fields point into the right temporary
           // table.
-          const bool need_distinct =
-              true;  // We don't support loose index scan yet.
           for (Item_sum **func_ptr = join->sum_funcs; *func_ptr != nullptr;
                ++func_ptr) {
             Item_sum *func = *func_ptr;
             Aggregator::Aggregator_type type =
-                need_distinct && func->has_with_distinct()
-                    ? Aggregator::DISTINCT_AGGREGATOR
-                    : Aggregator::SIMPLE_AGGREGATOR;
+                func->has_with_distinct() ? Aggregator::DISTINCT_AGGREGATOR
+                                          : Aggregator::SIMPLE_AGGREGATOR;
             if (func->set_aggregator(type) || func->aggregator_setup(thd)) {
               error = true;
               return true;

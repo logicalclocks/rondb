@@ -328,9 +328,9 @@ eval $show_trace;
 create table t3 (a mediumblob);
 set @a=repeat("x",1000000);
 set @b=repeat("y",1000000);
-select length(@a),md5(@a);
+select length(@a),sha2(@a, 0);
 flush status;
-prepare s from 'select length(?), md5(?)';
+prepare s from 'select length(?), sha2(?, 0)';
 eval $show_trace;
 execute s using @a,@a;
 prepare s from 'insert into t3 values(?)';
@@ -1200,6 +1200,8 @@ eval $show_trace;
 
 # GET_FORMAT
 
+prepare s from 'select GET_FORMAT(DATE, ?)';
+eval $show_trace;
 
 # GET_LOCK
 
@@ -2945,15 +2947,6 @@ eval $show_trace;
 prepare s from 'select WAIT_FOR_EXECUTED_GTID_SET(?,?)';
 eval $show_trace;
 
-# WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS
-
-prepare s from 'select WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS(?)';
-eval $show_trace;
-prepare s from 'select WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS(?,?)';
-eval $show_trace;
-prepare s from 'select WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS(?,?,?)';
-eval $show_trace;
-
 # WEEK
 
 prepare s from 'select WEEK(?)';
@@ -3643,3 +3636,14 @@ EXECUTE ps USING @v;
 
 DEALLOCATE PREPARE ps;
 DROP TABLE t;
+
+--echo # Bug#35287798: Prepared statement assertion error
+
+PREPARE ps FROM "SELECT format_bytes(?)";
+eval $show_trace;
+
+PREPARE ps FROM "SELECT format_pico_time(?)";
+eval $show_trace;
+
+PREPARE ps FROM "SELECT ps_thread_id(?)";
+eval $show_trace;

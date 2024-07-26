@@ -46,7 +46,7 @@ TEST(NetTS_impl_socket, close_invalid_handle) {
       ;
 
   EXPECT_THAT(net::impl::socket::close(net::impl::socket::kInvalidSocket),
-              ::testing::Eq(stdx::make_unexpected(expected_ec)));
+              ::testing::Eq(stdx::unexpected(expected_ec)));
 }
 
 /**
@@ -167,7 +167,7 @@ TEST(NetTS_impl_socket, native_non_blocking) {
     if (nb_ec) {
       EXPECT_EQ(*nb_ec, false);
     } else {
-      EXPECT_EQ(nb_ec, stdx::make_unexpected(
+      EXPECT_EQ(nb_ec, stdx::unexpected(
                            make_error_code(std::errc::function_not_supported)));
     }
   }
@@ -180,7 +180,7 @@ TEST(NetTS_impl_socket, native_non_blocking) {
     if (nb_ec) {
       EXPECT_EQ(*nb_ec, true);
     } else {
-      EXPECT_EQ(nb_ec, stdx::make_unexpected(
+      EXPECT_EQ(nb_ec, stdx::unexpected(
                            make_error_code(std::errc::function_not_supported)));
     }
   }
@@ -193,7 +193,7 @@ TEST(NetTS_impl_socket, native_non_blocking) {
     if (nb_ec) {
       EXPECT_EQ(*nb_ec, false);
     } else {
-      EXPECT_EQ(nb_ec, stdx::make_unexpected(
+      EXPECT_EQ(nb_ec, stdx::unexpected(
                            make_error_code(std::errc::function_not_supported)));
     }
   }

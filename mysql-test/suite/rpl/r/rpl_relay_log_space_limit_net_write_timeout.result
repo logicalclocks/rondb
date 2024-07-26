@@ -1,4 +1,4 @@
-include/master-slave.inc
+include/rpl/init_source_replica.inc
 Warnings:
 Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
 Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
@@ -29,12 +29,12 @@ CALL gen_transactions(5, 3, 104857600);
 # 3. Run replication
 
 [connection slave]
-include/start_slave.inc
+include/rpl/start_replica.inc
 
 # 4. Synchronize source and replica servers
 
 [connection master]
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 
 # 5. Check Pass condition 1: the number of connects to the source
 #    is less than or equal to the number of transactions
@@ -46,4 +46,4 @@ include/assert_grep.inc [Check Pass condition 1]
 [connection master]
 DROP TABLE t;
 DROP PROCEDURE gen_transactions;
-include/rpl_end.inc
+include/rpl/deinit.inc

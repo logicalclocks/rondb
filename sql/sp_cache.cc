@@ -29,9 +29,9 @@
 #include <string>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "map_helpers.h"
 #include "my_dbug.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/psi_memory_key.h"
 #include "sql/sp_head.h"
 
@@ -73,6 +73,19 @@ class sp_cache {
   */
   void enforce_limit(ulong upper_limit_for_elements) {
     if (m_hashtable.size() > upper_limit_for_elements) m_hashtable.clear();
+  }
+
+  /**
+   * @brief Check if the sp_cache contains the specified element.
+   *
+   * @param sp sp_head
+   * @return true if the element is in the cache.
+   * @return false if not.
+   */
+  bool has(sp_head *sp) {
+    for (auto &element : m_hashtable)
+      if (element.second.get() == sp) return true;
+    return false;
   }
 
  private:
@@ -208,4 +221,21 @@ int64 sp_cache_version() { return atomic_Cversion; }
 */
 void sp_cache_enforce_limit(sp_cache *c, ulong upper_limit_for_elements) {
   if (c) c->enforce_limit(upper_limit_for_elements);
+}
+
+/**
+ * @brief Check if the sp_cache contains the specified stored program.
+ *
+ * @note If the sp is part of a recursion, check if the first instance is part
+ * of the sp_cache
+ *
+ * @param[in] cp - the sp_cache that is to be checked.
+ * @param[in] sp - the stored program that needs to be part of that cache.
+ * @return true if the element is in the cache.
+ * @return false if not.
+ */
+bool sp_cache_has(sp_cache *cp, sp_head *sp) {
+  auto first_instance_sp = sp;
+  if (sp->m_recursion_level != 0) first_instance_sp = sp->m_first_instance;
+  return (cp != nullptr) && cp->has(first_instance_sp);
 }

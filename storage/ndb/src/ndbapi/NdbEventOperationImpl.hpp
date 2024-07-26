@@ -617,7 +617,6 @@ class NdbEventOperationImpl : public NdbEventOperation {
   EventBufData *m_data_item;
 
   void *m_custom_data;
-  int m_has_error;
 
   Uint32 m_fragmentId;
   UtilBuffer m_buffer;
@@ -636,6 +635,9 @@ class NdbEventOperationImpl : public NdbEventOperation {
 
   // Used for allowing empty updates be passed to the user
   bool m_allow_empty_update;
+
+  // Placeholder for the requestinfo which will be sent in SubStartReq
+  Uint32 m_requestInfo;
 
   // Default implementation that performs no filtering
   static Uint32 default_anyvalue_filter(Uint32 any_value) { return any_value; }

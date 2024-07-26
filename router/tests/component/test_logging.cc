@@ -1744,6 +1744,8 @@ TEST_F(RouterLoggingTest, very_long_router_name_gets_properly_logged) {
   // launch the router in bootstrap mode
   auto &router = launch_router_for_fail({
       "--bootstrap=127.0.0.1:" + std::to_string(server_port),
+      "--conf-set-option=DEFAULT.plugin_folder=" +
+          ProcessManager::get_plugin_dir().str(),
       "--name",
       name,
       "-d",
@@ -1774,10 +1776,14 @@ TEST_F(RouterLoggingTest, is_debug_logs_disabled_if_no_bootstrap_config_file) {
   TempDirectory bootstrap_dir;
 
   const auto server_port = port_pool_.get_next_available();
+  const auto http_port = port_pool_.get_next_available();
 
   // launch mock server and wait for it to start accepting connections
-  /*auto &server_mock =*/launch_mysql_server_mock(json_stmts, server_port,
-                                                  false);
+  /*auto &server_mock =*/launch_mysql_server_mock(
+      json_stmts, server_port, EXIT_SUCCESS, false, http_port);
+  set_mock_metadata(http_port, "00000000-0000-0000-0000-0000000000g1",
+                    classic_ports_to_gr_nodes({server_port}), 0, {server_port});
+
   // ASSERT_NO_FATAL_FAILURE(check_port_ready(server_mock, server_port));
 
   // launch the router in bootstrap mode
@@ -1806,10 +1812,12 @@ TEST_F(RouterLoggingTest, is_debug_logs_enabled_if_bootstrap_config_file) {
   TempDirectory bootstrap_conf;
 
   const auto server_port = port_pool_.get_next_available();
+  const auto http_port = port_pool_.get_next_available();
 
-  // launch mock server and wait for it to start accepting connections
-  auto &server_mock = launch_mysql_server_mock(json_stmts, server_port, false);
-  ASSERT_NO_FATAL_FAILURE(check_port_ready(server_mock, server_port));
+  launch_mysql_server_mock(json_stmts, server_port, EXIT_SUCCESS, false,
+                           http_port);
+  set_mock_metadata(http_port, "00000000-0000-0000-0000-0000000000g1",
+                    classic_ports_to_gr_nodes({server_port}), 0, {server_port});
 
   // launch the router in bootstrap mode
   std::string logger_section = "[logger]\nlevel = DEBUG\n";
@@ -1852,10 +1860,12 @@ TEST_F(RouterLoggingTest, is_debug_logs_written_to_file_if_logging_folder) {
   TempDirectory bootstrap_conf;
 
   const auto server_port = port_pool_.get_next_available();
+  const auto http_port = port_pool_.get_next_available();
 
-  // launch mock server and wait for it to start accepting connections
-  auto &server_mock = launch_mysql_server_mock(json_stmts, server_port, false);
-  ASSERT_NO_FATAL_FAILURE(check_port_ready(server_mock, server_port));
+  /*auto &server_mock =*/launch_mysql_server_mock(
+      json_stmts, server_port, EXIT_SUCCESS, false, http_port);
+  set_mock_metadata(http_port, "00000000-0000-0000-0000-0000000000g1",
+                    classic_ports_to_gr_nodes({server_port}), 0, {server_port});
 
   // create config with logging_folder set to that directory
   std::map<std::string, std::string> params = {{"logging_folder", ""}};
@@ -1902,10 +1912,12 @@ TEST_F(RouterLoggingTest, bootstrap_normal_logs_written_to_stdout) {
   TempDirectory bootstrap_conf;
 
   const auto server_port = port_pool_.get_next_available();
+  const auto http_port = port_pool_.get_next_available();
 
-  // launch mock server and wait for it to start accepting connections
-  auto &server_mock = launch_mysql_server_mock(json_stmts, server_port, false);
-  ASSERT_NO_FATAL_FAILURE(check_port_ready(server_mock, server_port));
+  /*auto &server_mock =*/launch_mysql_server_mock(
+      json_stmts, server_port, EXIT_SUCCESS, false, http_port);
+  set_mock_metadata(http_port, "00000000-0000-0000-0000-0000000000g1",
+                    classic_ports_to_gr_nodes({server_port}), 0, {server_port});
 
   // launch the router in bootstrap mode
   std::string logger_section = "[logger]\nlevel = DEBUG\n";
@@ -1966,9 +1978,9 @@ class MetadataCacheLoggingTest : public RouterLoggingTest {
                                 port_pool_.get_next_available(),
                                 port_pool_.get_next_available()};
     router_port_ = port_pool_.get_next_available();
-    metadata_cache_section = get_metadata_cache_section(cluster_nodes_ports);
+    metadata_cache_section = get_metadata_cache_section();
     routing_section =
-        get_metadata_cache_routing_section("PRIMARY", "round-robin", "");
+        get_metadata_cache_routing_section("PRIMARY", "round-robin");
   }
 
   std::string get_static_routing_section() {
@@ -1980,21 +1992,11 @@ class MetadataCacheLoggingTest : public RouterLoggingTest {
                                 });
   }
 
-  std::string get_metadata_cache_section(std::vector<uint16_t> ports) {
-    std::string metadata_caches;
-
-    for (const auto &port : ports) {
-      if (!metadata_caches.empty()) {
-        metadata_caches.append(",");
-      }
-      metadata_caches += "mysql://127.0.0.1:" + std::to_string(port);
-    }
-
+  std::string get_metadata_cache_section() {
     return mysql_harness::ConfigBuilder::build_section(
         "metadata_cache:test",
         {
             {"router_id", "1"},
-            {"bootstrap_server_addresses", metadata_caches},
             {"user", "mysql_router1_user"},
             {"metadata_cluster", "test"},
             {"connect_timeout", "1"},
@@ -2003,8 +2005,7 @@ class MetadataCacheLoggingTest : public RouterLoggingTest {
   }
 
   std::string get_metadata_cache_routing_section(const std::string &role,
-                                                 const std::string &strategy,
-                                                 const std::string &mode = "") {
+                                                 const std::string &strategy) {
     std::vector<std::pair<std::string, std::string>> options{
         {"bind_port", std::to_string(router_port_)},
         {"destinations", "metadata-cache://test/default?role=" + role},
@@ -2012,7 +2013,6 @@ class MetadataCacheLoggingTest : public RouterLoggingTest {
     };
 
     if (!strategy.empty()) options.emplace_back("routing_strategy", strategy);
-    if (!mode.empty()) options.emplace_back("mode", mode);
 
     return mysql_harness::ConfigBuilder::build_section("routing:test_default",
                                                        options);
@@ -2039,6 +2039,12 @@ class MetadataCacheLoggingTest : public RouterLoggingTest {
                                            bool log_to_console) {
     auto default_section = get_DEFAULT_defaults();
     init_keyring(default_section, temp_test_dir.name());
+
+    const auto state_file = create_state_file(
+        get_test_temp_dir_name(),
+        create_state_file_content("uuid", "", cluster_nodes_ports, 0));
+    default_section["dynamic_state"] = state_file;
+
     default_section["logging_folder"] =
         log_to_console ? "" : get_logging_dir().str();
     const std::string sinks =
@@ -2112,7 +2118,7 @@ TEST_F(MetadataCacheLoggingTest,
   EXPECT_TRUE(error_timestamp);
   EXPECT_FALSE(get_log_timestamp(
       router.get_logfile_path(),
-      std::string{".*metadata_cache ERROR.*"} + fail_msg, 2, 20 * ttl_));
+      std::string{".*metadata_cache ERROR.*"} + fail_msg, 2, 5 * ttl_));
   // After logging an error next logs should be debug (unless the server state
   // changes)
   const auto debug_timestamp = get_log_timestamp(
@@ -2124,11 +2130,11 @@ TEST_F(MetadataCacheLoggingTest,
   // Launch metadata server
   const auto http_port = cluster_nodes_http_ports[0];
   auto &server = launch_mysql_server_mock(
-      get_data_dir().join("metadata_dynamic_nodes.js").str(),
+      get_data_dir().join("metadata_dynamic_nodes_v2_gr.js").str(),
       cluster_nodes_ports[0], EXIT_SUCCESS, false, http_port);
   ASSERT_NO_FATAL_FAILURE(check_port_ready(server, cluster_nodes_ports[0]));
   EXPECT_TRUE(MockServerRestClient(http_port).wait_for_rest_endpoint_ready());
-  set_mock_metadata(http_port, "",
+  set_mock_metadata(http_port, "uuid",
                     classic_ports_to_gr_nodes(cluster_nodes_ports), 0,
                     classic_ports_to_cluster_nodes(cluster_nodes_ports));
   wait_for_transaction_count_increase(http_port);
@@ -2170,7 +2176,7 @@ TEST_F(MetadataCacheLoggingTest,
       cluster_nodes_ports[1], EXIT_SUCCESS, false, http_port);
   ASSERT_NO_FATAL_FAILURE(check_port_ready(server, cluster_nodes_ports[1]));
   EXPECT_TRUE(MockServerRestClient(http_port).wait_for_rest_endpoint_ready());
-  set_mock_metadata(http_port, "",
+  set_mock_metadata(http_port, "uuid",
                     classic_ports_to_gr_nodes(cluster_nodes_ports), 1,
                     classic_ports_to_cluster_nodes(cluster_nodes_ports));
 
@@ -2213,12 +2219,12 @@ TEST_F(MetadataCacheLoggingTest,
   server.wait_for_exit();
 
   auto &new_server = launch_mysql_server_mock(
-      get_data_dir().join("metadata_dynamic_nodes.js").str(),
+      get_data_dir().join("metadata_dynamic_nodes_v2_gr.js").str(),
       cluster_nodes_ports[0], EXIT_SUCCESS, false, cluster_nodes_http_ports[0]);
   ASSERT_NO_FATAL_FAILURE(check_port_ready(new_server, cluster_nodes_ports[0]));
   EXPECT_TRUE(MockServerRestClient(cluster_nodes_http_ports[0])
                   .wait_for_rest_endpoint_ready());
-  set_mock_metadata(cluster_nodes_http_ports[0], "",
+  set_mock_metadata(cluster_nodes_http_ports[0], "uuid",
                     classic_ports_to_gr_nodes(cluster_nodes_ports), 0,
                     classic_ports_to_cluster_nodes(cluster_nodes_ports));
   wait_for_transaction_count_increase(cluster_nodes_http_ports[0]);

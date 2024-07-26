@@ -27,14 +27,14 @@
 #include <stddef.h>
 #include <algorithm>
 
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
+#include "sql-common/my_decimal.h"
 #include "sql/current_thd.h"
 #include "sql/debug_sync.h"
 #include "sql/field.h"
 #include "sql/item.h"
 #include "sql/item_func.h"
-#include "sql/my_decimal.h"
 #include "sql/sql_class.h"
 #include "sql/sql_error.h"
 #include "sql/sql_lex.h"
@@ -376,8 +376,8 @@ bool Protocol_callback::end_result_metadata() {
 
   if (callbacks.end_result_metadata) {
     THD *t = current_thd;
-    uint status = t->server_status;
-    uint warn_count = t->get_stmt_da()->current_statement_cond_count();
+    const uint status = t->server_status;
+    const uint warn_count = t->get_stmt_da()->current_statement_cond_count();
 
     return callbacks.end_result_metadata(callbacks_ctx, status, warn_count);
   }

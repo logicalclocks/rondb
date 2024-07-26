@@ -125,7 +125,7 @@ void PasswordVault::load_passwords() {
   DATA_BLOB buf_decrypted;
   buf_encrypted.pbData = reinterpret_cast<BYTE *>(buf.get());
   buf_encrypted.cbData = end - begin;
-  if (!CryptUnprotectData(&buf_encrypted, NULL, NULL, NULL, NULL, 0,
+  if (!CryptUnprotectData(&buf_encrypted, nullptr, nullptr, nullptr, nullptr, 0,
                           &buf_decrypted)) {
     DWORD code = GetLastError();
     throw std::runtime_error(
@@ -167,7 +167,7 @@ void PasswordVault::store_passwords() {
   buf_decrypted.pbData =
       reinterpret_cast<BYTE *>(const_cast<char *>(data.c_str()));
   buf_decrypted.cbData = ss.str().size();
-  if (!CryptProtectData(&buf_decrypted, NULL, NULL, NULL, NULL,
+  if (!CryptProtectData(&buf_decrypted, nullptr, nullptr, nullptr, nullptr,
                         CRYPTPROTECT_LOCAL_MACHINE, &buf_encrypted)) {
     DWORD code = GetLastError();
     throw std::runtime_error(

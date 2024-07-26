@@ -30,7 +30,7 @@ include/start_group_replication.inc
 [connection server5]
 include/start_group_replication.inc
 CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
-include/rpl_sync.inc
+include/rpl/sync.inc
 
 ############################################################
 # 2. Only setup replication user and block applier channel
@@ -43,7 +43,7 @@ GRANT REPLICATION SLAVE ON *.* TO "recovery_user";
 GRANT GROUP_REPLICATION_STREAM ON *.* TO "recovery_user";
 FLUSH PRIVILEGES;
 SET SESSION sql_log_bin= 1;
-SET @@GLOBAL.DEBUG='+d,block_applier_updates';
+SET @@GLOBAL.DEBUG='+d,dump_thread_before_read_event';
 
 ############################################################
 # 3. Configure member 2 to use replication user, so that it
@@ -79,6 +79,10 @@ include/gr_wait_for_member_state.inc
 [connection server3]
 [connection server4]
 [connection server5]
+SET SESSION sql_log_bin= 0;
+DROP USER "recovery_user";
+FLUSH PRIVILEGES;
+SET SESSION sql_log_bin= 1;
 [connection server1]
 include/gr_wait_for_member_state.inc
 member5 @ server1 is marked as UNREACHABLE
@@ -114,11 +118,11 @@ SET @@GLOBAL.group_replication_recovery_reconnect_interval= @group_replication_r
 ############################################################
 # 8. Assert that group has 2 members: server 1 and 2.
 [connection server1]
-include/rpl_gr_wait_for_number_of_members.inc
+include/rpl/gr_wait_for_number_of_members.inc
 include/assert.inc [Server 1 must be present on group members]
 include/assert.inc [The value of view_id must be random:6]
 [connection server2]
-include/rpl_gr_wait_for_number_of_members.inc
+include/rpl/gr_wait_for_number_of_members.inc
 include/assert.inc [Server 2 must be present on group members]
 include/assert.inc [The value of view_id must be random:6]
 
@@ -126,14 +130,14 @@ include/assert.inc [The value of view_id must be random:6]
 # 9. Execute a transaction in order to prove liveness.
 [connection server2]
 INSERT INTO t1 VALUES (1);
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 include/assert.inc ['There is one value in table t1']
 include/diff_tables.inc [server1:test.t1, server2:test.t1]
 
 ############################################################
 # 10. Clean up.
 [connection server_3]
-include/rpl_reconnect.inc
+include/rpl/reconnect.inc
 include/assert.inc ['There are no values in table t1']
 SET SESSION sql_log_bin= 0;
 DROP USER "recovery_user";
@@ -141,7 +145,7 @@ FLUSH PRIVILEGES;
 DROP TABLE t1;
 SET SESSION sql_log_bin= 1;
 [connection server_4]
-include/rpl_reconnect.inc
+include/rpl/reconnect.inc
 include/assert.inc ['There are no values in table t1']
 SET SESSION sql_log_bin= 0;
 DROP USER "recovery_user";
@@ -149,12 +153,10 @@ FLUSH PRIVILEGES;
 DROP TABLE t1;
 SET SESSION sql_log_bin= 1;
 [connection server_5]
-include/rpl_reconnect.inc
+include/rpl/reconnect.inc
 include/assert.inc ['There are no values in table t1']
 SET SESSION sql_log_bin= 0;
 DROP TABLE t1;
-DROP USER "recovery_user";
-FLUSH PRIVILEGES;
 SET SESSION sql_log_bin= 1;
 [connection server1]
 SET SESSION sql_log_bin= 0;

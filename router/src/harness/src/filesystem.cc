@@ -33,6 +33,8 @@
 #include <ostream>
 #include <string_view>
 
+#include "mysql/harness/stdx/expected.h"
+
 namespace mysql_harness {
 
 ////////////////////////////////////////////////////////////////
@@ -251,15 +253,14 @@ stdx::expected<void, std::error_code> delete_dir_recursive(
     for (auto const &f : d) {
       if (f.is_directory()) {
         const auto res = delete_dir_recursive(f.str());
-        if (!res) return res.get_unexpected();
+        if (!res) return stdx::unexpected(res.error());
       } else {
         const auto res = delete_file(f.str());
-        if (!res) return res.get_unexpected();
+        if (!res) return stdx::unexpected(res.error());
       }
     }
   } catch (...) {
-    return stdx::make_unexpected(
-        std::error_code(errno, std::system_category()));
+    return stdx::unexpected(std::error_code(errno, std::system_category()));
   }
 
   return delete_dir(dir);

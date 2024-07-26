@@ -173,3 +173,11 @@ void NDBT_find_ndbd(BaseString &path) {
   return NDBT_find_executable_in_test_env(path, "ndbmtd.exe");
 #endif
 }
+
+void NDBT_find_sign_keys(BaseString &path) {
+#ifndef _WIN32
+  return NDBT_find_executable_in_test_env(path, "ndb_sign_keys");
+#else
+  return NDBT_find_executable_in_test_env(path, "ndb_sign_keys.exe");
+#endif
+}

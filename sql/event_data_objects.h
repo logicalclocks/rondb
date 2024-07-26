@@ -30,6 +30,7 @@
   @file event_data_objects.h
 */
 
+#include <stdint.h>
 #include <sys/types.h>
 
 #include "lex_string.h"
@@ -44,7 +45,7 @@ class String;
 class THD;
 class Time_zone;
 
-typedef ulonglong sql_mode_t;
+using sql_mode_t = uint64_t;
 namespace dd {
 class Event;
 }

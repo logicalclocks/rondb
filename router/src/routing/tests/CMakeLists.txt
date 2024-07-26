@@ -23,9 +23,6 @@
 
 ADD_DEFINITIONS(-DSSL_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/mysql-test/std_data/")
 
-# TODO(sgunders): Remove when all GMock tests use MOCK_METHOD().
-STRING(REPLACE "-Wsuggest-override" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-
 IF(MY_COMPILER_IS_CLANG)
   STRING_APPEND(CMAKE_CXX_FLAGS " -Wno-deprecated")
 ENDIF()
@@ -50,6 +47,8 @@ SET(test_files
   test_auth_digest.cc
   test_classic_quit_sender.cc
   test_classic_reset_connection_sender.cc
+  test_sql_splitting_allowed.cc
+  test_start_transaction_parser.cc
   )
 
 FOREACH(test_file ${test_files})
@@ -59,10 +58,12 @@ FOREACH(test_file ${test_files})
       routing_export_all
       test-helpers
     INCLUDE_DIRS
+      ${CMAKE_CURRENT_SOURCE_DIR}/../include
       ${CMAKE_CURRENT_SOURCE_DIR}/../src
       ${CMAKE_CURRENT_SOURCE_DIR}/../../harness/tests  # mock_io_service.h
   )
 ENDFOREACH()
+DOWNGRADE_STRINGOP_WARNINGS(routertest_routing_setup_tcp_service)
 
 ADD_TEST_FILE(${CMAKE_CURRENT_SOURCE_DIR}/plugin/test_plugin.cc
   MODULE "routing"
@@ -99,11 +100,11 @@ ADD_ROUTER_TEST_FILE(
     mysqlxmessages_lite
     connection_pool
     ext::libprotobuf-lite
+    routing_connections
   INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
   EXTRA_SOURCES
-    ../src/channel.cc
     ../src/context.cc
     ../src/destination_ssl_context.cc
   )
@@ -113,10 +114,10 @@ TARGET_INCLUDE_DIRECTORIES(${T}
   PRIVATE $<TARGET_PROPERTY:routing,INCLUDE_DIRECTORIES>)
 TARGET_COMPILE_DEFINITIONS(${T}
   PRIVATE ROUTING_STATIC_DEFINE=1)
-TARGET_COMPILE_FEATURES(${T} PUBLIC cxx_std_17)
+TARGET_COMPILE_FEATURES(${T} PUBLIC cxx_std_20)
 
 IF(LIBFUZZER_COMPILE_FLAGS)
-  MYSQL_ADD_EXECUTABLE(routertest_fuzz_parser_show_warnings
+  MYSQL_ADD_EXECUTABLE(routertest_fuzz_routing_parser_show_warnings
     fuzz_show_warnings.cc
     ../src/show_warnings_parser.cc
     ../src/sql_lexer.cc
@@ -126,7 +127,7 @@ IF(LIBFUZZER_COMPILE_FLAGS)
     LINK_LIBRARIES harness_stdx;mysys
     SKIP_INSTALL
     )
-  LIBFUZZER_ADD_TEST(routertest_fuzz_parser_show_warnings
+  LIBFUZZER_ADD_TEST(routertest_fuzz_routing_parser_show_warnings
     INITIAL_CORPUS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/corpus/show_warnings)
 
   MYSQL_ADD_EXECUTABLE(routertest_fuzz_routing_sql_lexer

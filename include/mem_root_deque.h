@@ -25,6 +25,7 @@
 #define MEM_ROOT_DEQUE_H
 
 #include <algorithm>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -239,14 +240,14 @@ class mem_root_deque {
   /// Removes the last element from the deque.
   void pop_back() {
     assert(!empty());
-    ::destroy(&get(--m_end_idx));
+    ::destroy_at(&get(--m_end_idx));
     invalidate_iterators();
   }
 
   /// Removes the first element from the deque.
   void pop_front() {
     assert(!empty());
-    ::destroy(&get(m_begin_idx++));
+    ::destroy_at(&get(m_begin_idx++));
     invalidate_iterators();
   }
 
@@ -277,7 +278,7 @@ class mem_root_deque {
   /// their memory cannot be freed.
   void clear() {
     for (size_t idx = m_begin_idx; idx != m_end_idx; ++idx) {
-      ::destroy(&get(idx));
+      ::destroy_at(&get(idx));
     }
     m_begin_idx = m_end_idx = m_capacity / 2;
     invalidate_iterators();
@@ -472,7 +473,7 @@ class mem_root_deque {
     if (first != last) {
       iterator new_end = std::move(last, cend(), pos);
       for (size_t idx = new_end.m_physical_idx; idx != m_end_idx; ++idx) {
-        ::destroy(&get(idx));
+        ::destroy_at(&get(idx));
       }
       m_end_idx = new_end.m_physical_idx;
     }

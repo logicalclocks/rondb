@@ -21,7 +21,14 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-OPTION(MSVC_CPPCHECK "Enable the extra MSVC CppCheck checks" OFF)
+IF(MSVC AND NOT MY_COMPILER_IS_CLANG)
+  OPTION(MSVC_CPPCHECK "Enable the extra MSVC CppCheck checks"
+    ${MYSQL_MAINTAINER_MODE})
+ELSE()
+  OPTION(MSVC_CPPCHECK "Enable the extra MSVC CppCheck checks"
+    OFF)
+ENDIF()
+
 
 # check https://learn.microsoft.com/en-us/cpp/build/reference/analyze-code-analysis
 
@@ -38,6 +45,18 @@ MACRO(MSVC_CPPCHECK_ADD_SUPPRESSIONS)
       STRING_APPEND(suppress_warnings " /wd6246") # Local declaration of '...' hides declaration of the same name in outer scope.
       STRING_APPEND(suppress_warnings " /wd4251") # '...': class '...' needs to have dll-interface to be used by clients of class '...'
 
+    ENDIF()
+
+    IF((NOT FORCE_UNSUPPORTED_COMPILER) AND MSVC_VERSION GREATER 1935)
+      STRING_APPEND(suppress_warnings " /wd26860") # Potentially empty optional ''...'' is unwrapped, may throw exception.: Lines: ...
+    ENDIF()
+
+    IF((NOT FORCE_UNSUPPORTED_COMPILER) AND MSVC_VERSION GREATER_EQUAL 1937)
+      STRING_APPEND(suppress_warnings " /wd26831") # Allocation size might be the result of a numerical overflow
+      STRING_APPEND(suppress_warnings " /wd26832") # Allocation size is the result of a narrowing conversion that could result in overflow
+      STRING_APPEND(suppress_warnings " /wd26833") # Allocation size might be the result of a numerical overflow before the bound check
+      STRING_APPEND(suppress_warnings " /wd26051") # Function with irreducible control flow graph
+      STRING_APPEND(suppress_warnings " /wd26111") # Caller failing to release lock ... before calling function ...
     ENDIF()
 
     STRING_APPEND(suppress_warnings " /wd26110") # Caller failing to hold lock '...' before calling function 'ReleaseSRWLockExclusive'.

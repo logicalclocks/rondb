@@ -33,6 +33,8 @@
 #include "sql/dd/string_type.h"
 #include "sql/dd/types/abstract_table.h"
 
+struct CHARSET_INFO;
+
 namespace dd {
 
 class Item_name_key;

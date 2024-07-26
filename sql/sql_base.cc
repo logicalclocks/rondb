@@ -37,8 +37,6 @@
 #include <utility>
 
 #include "ft_global.h"
-#include "libbinlogevents/include/table_id.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "map_helpers.h"
 #include "mf_wcomp.h"  // wild_one, wild_many
@@ -50,7 +48,6 @@
 #include "my_dbug.h"
 #include "my_dir.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_psi_config.h"
 #include "my_sqlcommand.h"
@@ -58,11 +55,13 @@
 #include "my_systime.h"
 #include "my_table_map.h"
 #include "my_thread_local.h"
+#include "mysql/binlog/event/table_id.h"
 #include "mysql/components/services/bits/mysql_cond_bits.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/components/services/bits/psi_cond_bits.h"
 #include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/plugin.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_file.h"
@@ -72,9 +71,12 @@
 #include "mysql/psi/mysql_thread.h"
 #include "mysql/psi/psi_table.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/thread_type.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
+#include "nulls.h"
+#include "scope_guard.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // check_table_access
 #include "sql/auth/sql_security_ctx.h"
@@ -101,6 +103,7 @@
 #include "sql/field.h"
 #include "sql/handler.h"
 #include "sql/histograms/histogram.h"
+#include "sql/histograms/table_histograms.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"  // Item_func_eq
 #include "sql/item_func.h"
@@ -122,7 +125,7 @@
 #include "sql/sp.h"               // Sroutine_hash_entry
 #include "sql/sp_cache.h"         // sp_cache_version
 #include "sql/sp_head.h"          // sp_head
-#include "sql/sql_audit.h"        // mysql_audit_table_access_notify
+#include "sql/sql_audit.h"        // mysql_event_tracking_table_access_notify
 #include "sql/sql_backup_lock.h"  // acquire_shared_backup_lock
 #include "sql/sql_class.h"        // THD
 #include "sql/sql_const.h"
@@ -152,6 +155,8 @@
 #include "sql/trigger_chain.h"  // Trigger_chain
 #include "sql/xa.h"
 #include "sql_string.h"
+#include "strmake.h"
+#include "strxnmov.h"
 #include "template_utils.h"
 #include "thr_mutex.h"
 
@@ -262,6 +267,10 @@ class Repair_mrg_table_error_handler : public Internal_error_handler {
      So if a table share is found through a reference its version won't
      change if any of those mutexes are held.
   9) share->m_flush_tickets
+  10) share->m_histograms
+     Inserting, acquiring, and releasing histograms from the collection
+     of histograms on the share is protected by LOCK_open.
+     See the comments in table_histograms.h for further details.
 */
 
 mysql_mutex_t LOCK_open;
@@ -387,7 +396,7 @@ static size_t create_table_def_key(const char *db_name, const char *table_name,
 */
 static size_t create_table_def_key_tmp(const THD *thd, const char *db_name,
                                        const char *table_name, char *key) {
-  size_t key_length = create_table_def_key(db_name, table_name, key);
+  const size_t key_length = create_table_def_key(db_name, table_name, key);
   int4store(key + key_length, thd->server_id);
   int4store(key + key_length + 4, thd->variables.pseudo_thread_id);
   return key_length + TMP_TABLE_KEY_EXTRA;
@@ -404,8 +413,8 @@ static size_t create_table_def_key_tmp(const THD *thd, const char *db_name,
   @param table_name  the table name
   @return the key
 */
-static std::string create_table_def_key_secondary(const char *db_name,
-                                                  const char *table_name) {
+std::string create_table_def_key_secondary(const char *db_name,
+                                           const char *table_name) {
   char key[MAX_DBKEY_LENGTH];
   size_t key_length = create_table_def_key(db_name, table_name, key);
   // Add a single byte to distinguish the secondary table from the
@@ -570,9 +579,58 @@ static TABLE_SHARE *process_found_table_share(THD *thd [[maybe_unused]],
   return share;
 }
 
+// MDL_release_locks_visitor subclass to release MDL for COLUMN_STATISTICS.
+class Release_histogram_locks : public MDL_release_locks_visitor {
+ public:
+  bool release(MDL_ticket *ticket) override {
+    return ticket->get_key()->mdl_namespace() == MDL_key::COLUMN_STATISTICS;
+  }
+};
+
 /**
-  Read any existing histogram statistics from the data dictionary and
-  store a copy of them in the TABLE_SHARE.
+  Read any existing histogram statistics from the data dictionary and store a
+  copy of them in the TABLE_SHARE.
+
+  This function is called while TABLE_SHARE is being set up and it should
+  therefore be safe to modify the collection of histograms on the share without
+  explicity locking LOCK_open.
+
+  @note We use short-lived MDL locks with explicit duration to protect the
+  histograms while reading them. We want to avoid using statement duration locks
+  on the histograms in order to prevent deadlocks of the following type:
+
+  Threads and commands:
+
+  Thread A: ALTER TABLE (TABLE_SHARE is not yet loaded in memory, so
+   read_histograms() will be invoked).
+
+  Thread B: ANALYZE TABLE ... UPDATE HISTOGRAM.
+
+  Problematic sequence of lock acquisitions:
+
+  A: Acquires SHARED_UPGRADABLE on table for ALTER TABLE.
+
+  A: Acquires SHARED_READ on histograms (with statement duration) when creating
+     TABLE_SHARE.
+
+  B: Acquires SHARED_READ on table.
+
+  B: Attempts to acquire EXCLUSIVE on histograms (in order to update them), but
+     gets stuck waiting for A to release SHARED_READ on histograms.
+
+  A: ((( A could release MDL LOCK on histograms here, if using explicit
+     duration, allowing B to progress )))
+
+  A: Attempts to upgrade the SHARED_UPGRADABLE on the table to EXCLUSIVE during
+     execution of the ALTER TABLE statement, but gets stuck waiting for thread B
+     to release SHARED_READ on table.
+
+  This deadlock scenario is prevented by releasing Thread A's lock on the
+  histograms early, before releasing its lock on the table, i.e. by using
+  explicit locks on the histograms rather than statement duration locks. When
+  Thread A releases the histogram locks, then Thread B can update the histograms
+  and eventually release its table lock, and finally Thread A can upgrade its
+  MDL lock and continue with its ALTER TABLE statement.
 
   @param thd Thread handler
   @param share The table share where to store the histograms
@@ -585,7 +643,14 @@ static TABLE_SHARE *process_found_table_share(THD *thd [[maybe_unused]],
 static bool read_histograms(THD *thd, TABLE_SHARE *share,
                             const dd::Schema *schema,
                             const dd::Abstract_table *table_def) {
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  assert(share->m_histograms != nullptr);
+  Table_histograms *table_histograms =
+      Table_histograms::create(key_memory_table_share);
+  if (table_histograms == nullptr) return true;
+  auto table_histograms_guard =
+      create_scope_guard([table_histograms]() { table_histograms->destroy(); });
+
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
   MDL_request_list mdl_requests;
   for (const auto column : table_def->columns()) {
     if (column->is_se_hidden()) continue;
@@ -595,13 +660,18 @@ static bool read_histograms(THD *thd, TABLE_SHARE *share,
                                           column->name(), &mdl_key);
 
     MDL_request *request = new (thd->mem_root) MDL_request;
-    MDL_REQUEST_INIT_BY_KEY(request, &mdl_key, MDL_SHARED_READ, MDL_STATEMENT);
+    MDL_REQUEST_INIT_BY_KEY(request, &mdl_key, MDL_SHARED_READ, MDL_EXPLICIT);
     mdl_requests.push_front(request);
   }
 
   if (thd->mdl_context.acquire_locks(&mdl_requests,
                                      thd->variables.lock_wait_timeout))
     return true; /* purecov: deadcode */
+
+  auto mdl_guard = create_scope_guard([&]() {
+    Release_histogram_locks histogram_mdl_releaser;
+    thd->mdl_context.release_locks(&histogram_mdl_releaser);
+  });
 
   for (const auto column : table_def->columns()) {
     if (column->is_se_hidden()) continue;
@@ -615,18 +685,14 @@ static bool read_histograms(THD *thd, TABLE_SHARE *share,
     }
 
     if (histogram != nullptr) {
-      /*
-        Make a clone of the histogram so it survives together with the
-        TABLE_SHARE in case the original histogram is thrown out of the
-        dictionary cache.
-      */
-      const histograms::Histogram *histogram_copy =
-          histogram->clone(&share->mem_root);
-      share->m_histograms->emplace(column->ordinal_position() - 1,
-                                   histogram_copy);
+      unsigned int field_index = column->ordinal_position() - 1;
+      if (table_histograms->insert_histogram(field_index, histogram))
+        return true;
     }
   }
 
+  if (share->m_histograms->insert(table_histograms)) return true;
+  table_histograms_guard.commit();  // Ownership transferred.
   return false;
 }
 
@@ -765,6 +831,7 @@ TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
   */
   share->increment_ref_count();      // Mark in use
   share->m_open_in_progress = true;  // Mark being opened
+  DEBUG_SYNC(thd, "table_share_open_in_progress");
 
   /*
     Temporarily release LOCK_open before opening the table definition,
@@ -779,7 +846,8 @@ TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
 
   {
     // We must make sure the schema is released and unlocked in the right order.
-    dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+    const dd::cache::Dictionary_client::Auto_releaser releaser(
+        thd->dd_client());
     const dd::Schema *sch = nullptr;
     const dd::Abstract_table *abstract_table = nullptr;
     open_table_err = true;  // Assume error to simplify code below.
@@ -808,6 +876,7 @@ TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
         share->table_category =
             get_table_category(share->db, share->table_name);
         thd->status_var.opened_shares++;
+        global_aggregated_stats.get_shard(thd->thread_id()).opened_shares++;
         open_table_err = false;
       }
     } else {
@@ -823,14 +892,18 @@ TABLE_SHARE *get_table_share(THD *thd, const char *db, const char *table_name,
 
       /*
         Read any existing histogram statistics from the data dictionary and
-        store a copy of them in the TABLE_SHARE.
+        store a copy of them in the TABLE_SHARE. We only perform this step for
+        non-temporary and primary engine tables. When these conditions are not
+        met m_histograms is nullptr.
 
         We need to do this outside the protection of LOCK_open, since the data
         dictionary might have to open tables in order to read histogram data
         (such recursion will not work).
       */
-      if (!open_table_err && read_histograms(thd, share, sch, abstract_table))
-        open_table_err = true; /* purecov: deadcode */
+      if (!open_table_err && share->m_histograms != nullptr &&
+          read_histograms(thd, share, sch, abstract_table)) {
+        open_table_err = true;
+      }
     }
   }
 
@@ -1120,12 +1193,16 @@ void intern_close_table(TABLE *table) {  // Free all structures
   DBUG_PRINT("tcache",
              ("table: '%s'.'%s' %p", table->s ? table->s->db.str : "?",
               table->s ? table->s->table_name.str : "?", table));
-
+  // Release the TABLE's histograms back to the share.
+  if (table->histograms != nullptr) {
+    table->s->m_histograms->release(table->histograms);
+    table->histograms = nullptr;
+  }
   free_io_cache(table);
-  destroy(table->triggers);
+  if (table->triggers != nullptr) ::destroy_at(table->triggers);
   if (table->file)                // Not true if placeholder
     (void)closefrm(table, true);  // close file
-  destroy(table);
+  ::destroy_at(table);
   my_free(table);
 }
 
@@ -1484,7 +1561,7 @@ void close_all_tables_for_name(THD *thd, TABLE_SHARE *share,
                                bool remove_from_locked_tables,
                                TABLE *skip_table) {
   char key[MAX_DBKEY_LENGTH];
-  size_t key_length = share->table_cache_key.length;
+  const size_t key_length = share->table_cache_key.length;
 
   memcpy(key, share->table_cache_key.str, key_length);
 
@@ -1497,7 +1574,7 @@ void close_all_tables_for_name(THD *thd, TABLE_SHARE *share,
 void close_all_tables_for_name(THD *thd, const char *db, const char *table_name,
                                bool remove_from_locked_tables) {
   char key[MAX_DBKEY_LENGTH];
-  size_t key_length = create_table_def_key(db, table_name, key);
+  const size_t key_length = create_table_def_key(db, table_name, key);
 
   close_all_tables_for_name(thd, key, key_length, db, table_name,
                             remove_from_locked_tables, nullptr);
@@ -1852,9 +1929,9 @@ bool close_temporary_tables(THD *thd) {
     to avoid the splitting if a slave server reads from this binlog.
   */
 
-  /* Better add "if exists", in case a RESET MASTER has been done */
+  /* Add "if exists", in case a RESET BINARY LOGS AND GTIDS has been done */
   const char stub[] = "DROP /*!40005 TEMPORARY */ TABLE IF EXISTS ";
-  uint stub_len = sizeof(stub) - 1;
+  const uint stub_len = sizeof(stub) - 1;
   char buf_trans[256], buf_non_trans[256];
   String s_query_trans =
       String(buf_trans, sizeof(buf_trans), system_charset_info);
@@ -1912,16 +1989,17 @@ bool close_temporary_tables(THD *thd) {
     are going to log. This is important for the binary logging code.
   */
   LEX *lex = thd->lex;
-  enum_sql_command sav_sql_command = lex->sql_command;
-  bool sav_drop_temp = lex->drop_temporary;
+  const enum_sql_command sav_sql_command = lex->sql_command;
+  const bool sav_drop_temp = lex->drop_temporary;
   lex->sql_command = SQLCOM_DROP_TABLE;
   lex->drop_temporary = true;
 
   /* scan sorted tmps to generate sequence of DROP */
   for (table = thd->temporary_tables; table; table = next) {
     if (is_user_table(table) && table->should_binlog_drop_if_temp()) {
-      bool save_thread_specific_used = thd->thread_specific_used;
-      my_thread_id save_pseudo_thread_id = thd->variables.pseudo_thread_id;
+      const bool save_thread_specific_used = thd->thread_specific_used;
+      const my_thread_id save_pseudo_thread_id =
+          thd->variables.pseudo_thread_id;
       /* Set pseudo_thread_id to be that of the processed table */
       thd->variables.pseudo_thread_id = tmpkeyval(table);
       String db;
@@ -2271,7 +2349,7 @@ void update_non_unique_table_error(Table_ref *update, const char *operation,
 
 TABLE *find_temporary_table(THD *thd, const char *db, const char *table_name) {
   char key[MAX_DBKEY_LENGTH];
-  size_t key_length = create_table_def_key_tmp(thd, db, table_name, key);
+  const size_t key_length = create_table_def_key_tmp(thd, db, table_name, key);
   return find_temporary_table(thd, key, key_length);
 }
 
@@ -2413,7 +2491,7 @@ void close_temporary(THD *thd, TABLE *table, bool free_share,
 
   if (free_share) {
     free_table_share(table->s);
-    destroy(table);
+    ::destroy_at(table);
     my_free(table);
   }
 }
@@ -2762,7 +2840,7 @@ static bool tdc_wait_for_old_version(THD *thd, const char *db,
 */
 
 bool add_view_place_holder(THD *thd, Table_ref *table_list) {
-  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(thd);
   LEX *lex_obj = new (thd->mem_root) st_lex_local;
   if (lex_obj == nullptr) return true;
   table_list->set_view_query(lex_obj);
@@ -2857,7 +2935,8 @@ bool open_table(THD *thd, Table_ref *table_list, Open_table_context *ot_ctx) {
     Note that we allow write locks on log tables as otherwise logging
     to general/slow log would be disabled in read only transactions.
   */
-  if (table_list->mdl_request.is_write_lock_request() && thd->tx_read_only &&
+  if (table_list->mdl_request.is_write_lock_request() &&
+      (thd->tx_read_only && !thd->is_cmd_skip_transaction_read_only()) &&
       !(flags & (MYSQL_LOCK_LOG_TABLE | MYSQL_OPEN_HAS_MDL_LOCK))) {
     my_error(ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION, MYF(0));
     return true;
@@ -2920,8 +2999,8 @@ bool open_table(THD *thd, Table_ref *table_list, Open_table_context *ot_ctx) {
             table->query_id != thd->query_id && /* skip tables already used */
             (thd->locked_tables_mode == LTM_LOCK_TABLES ||
              table->query_id == 0)) {
-          int distance = ((int)table->reginfo.lock_type -
-                          (int)table_list->lock_descriptor().type);
+          const int distance = ((int)table->reginfo.lock_type -
+                                (int)table_list->lock_descriptor().type);
 
           /*
             Find a table that either has the exact lock type requested,
@@ -2977,7 +3056,8 @@ bool open_table(THD *thd, Table_ref *table_list, Open_table_context *ot_ctx) {
         during prelocking process (in this case in theory we still
         should hold shared metadata lock on it).
       */
-      dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+      const dd::cache::Dictionary_client::Auto_releaser releaser(
+          thd->dd_client());
       const dd::View *view = nullptr;
       if (!thd->dd_client()->acquire(table_list->db, table_list->table_name,
                                      &view) &&
@@ -3192,6 +3272,7 @@ retry_share : {
     table->file->ha_extra(HA_EXTRA_RESET_STATE);
 
     thd->status_var.table_open_cache_hits++;
+    global_aggregated_stats.get_shard(thd->thread_id()).table_open_cache_hits++;
     goto table_found;
   } else if (share) {
     /*
@@ -3326,8 +3407,8 @@ share_found:
         locks pre-acquired. In these cases we still want to use DDL
         deadlock weight.
       */
-      uint deadlock_weight = ot_ctx->can_back_off()
-                                 ? MDL_wait_for_subgraph::DEADLOCK_WEIGHT_DML
+      const uint deadlock_weight =
+          ot_ctx->can_back_off() ? MDL_wait_for_subgraph::DEADLOCK_WEIGHT_DML
                                  : mdl_ticket->get_deadlock_weight();
 
       wait_result =
@@ -3363,7 +3444,8 @@ share_found:
   DEBUG_SYNC(thd, "open_table_found_share");
 
   {
-    dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+    const dd::cache::Dictionary_client::Auto_releaser releaser(
+        thd->dd_client());
     const dd::Table *table_def = nullptr;
     if (!(flags & MYSQL_OPEN_NO_NEW_TABLE_IN_SE) &&
         thd->dd_client()->acquire(share->db.str, share->table_name.str,
@@ -3392,7 +3474,7 @@ share_found:
         EXTRA_RECORD, thd->open_options, table, false, table_def);
 
     if (error) {
-      destroy(table);
+      ::destroy_at(table);
       my_free(table);
 
       if (error == 7)
@@ -3414,7 +3496,7 @@ share_found:
           break;
         default:
           closefrm(table, false);
-          destroy(table);
+          ::destroy_at(table);
           my_free(table);
           my_error(ER_CRASHED_ON_USAGE, MYF(0), share->table_name.str);
           goto err_lock;
@@ -3423,7 +3505,7 @@ share_found:
 
     if (open_table_entry_fini(thd, share, table_def, table)) {
       closefrm(table, false);
-      destroy(table);
+      ::destroy_at(table);
       my_free(table);
       goto err_lock;
     }
@@ -3441,6 +3523,7 @@ share_found:
     tc->unlock();
   }
   thd->status_var.table_open_cache_misses++;
+  global_aggregated_stats.get_shard(thd->thread_id()).table_open_cache_misses++;
 
 table_found:
   table->mdl_ticket = mdl_ticket;
@@ -3513,7 +3596,7 @@ err_lock:
 
 TABLE *find_locked_table(TABLE *list, const char *db, const char *table_name) {
   char key[MAX_DBKEY_LENGTH];
-  size_t key_length = create_table_def_key(db, table_name, key);
+  const size_t key_length = create_table_def_key(db, table_name, key);
 
   for (TABLE *table = list; table; table = table->next) {
     if (table->s->table_cache_key.length == key_length &&
@@ -3604,7 +3687,7 @@ TABLE *find_table_for_mdl_upgrade(THD *thd, const char *db,
     time).
 
 */
-static Table_id last_table_id;
+static mysql::binlog::event::Table_id last_table_id;
 
 void assign_new_table_id(TABLE_SHARE *share) {
   DBUG_TRACE;
@@ -3698,9 +3781,9 @@ static bool check_and_update_table_version(THD *thd, Table_ref *tables,
 
 static bool check_and_update_routine_version(THD *thd, Sroutine_hash_entry *rt,
                                              sp_head *sp) {
-  int64 spc_version = sp_cache_version();
+  const int64 spc_version = sp_cache_version();
   /* sp is NULL if there is no such routine. */
-  int64 version = sp ? sp->sp_cache_version() : spc_version;
+  const int64 version = sp ? sp->sp_cache_version() : spc_version;
   /*
     If the version in the parse tree is stale,
     or the version in the cache is stale and sp is not used,
@@ -3763,7 +3846,7 @@ static bool tdc_open_view(THD *thd, Table_ref *table_list,
   }
 
   if (share->is_view) {
-    bool view_open_result = open_and_read_view(thd, share, table_list);
+    const bool view_open_result = open_and_read_view(thd, share, table_list);
 
     release_table_share(share);
     mysql_mutex_unlock(&LOCK_open);
@@ -3790,8 +3873,9 @@ static bool open_table_entry_fini(THD *thd, TABLE_SHARE *share,
   if (table != nullptr && table->has_trigger()) {
     Table_trigger_dispatcher *d = Table_trigger_dispatcher::create(entry);
 
-    if (!d || d->check_n_load(thd, *table)) {
-      destroy(d);
+    if (d == nullptr) return true;
+    if (d->check_n_load(thd, *table)) {
+      ::destroy_at(d);
       return true;
     }
 
@@ -3830,7 +3914,7 @@ static bool open_table_entry_fini(THD *thd, TABLE_SHARE *share,
         LogErr(ERROR_LEVEL,
                ER_BINLOG_OOM_WRITING_DELETE_WHILE_OPENING_HEAP_TABLE,
                share->db.str, share->table_name.str);
-        destroy(entry->triggers);
+        ::destroy_at(entry->triggers);
         return true;
       }
       /*
@@ -3908,6 +3992,15 @@ static bool auto_repair_table(THD *thd, Table_ref *table_list) {
     closefrm(entry, false);
     result = false;
   }
+
+  // If we acquired histograms when opening the table we have to release them
+  // back to the share before releasing the share itself. This is usually
+  // handled by intern_close_table().
+  if (entry->histograms != nullptr) {
+    mysql_mutex_lock(&LOCK_open);
+    share->m_histograms->release(entry->histograms);
+    mysql_mutex_unlock(&LOCK_open);
+  }
   my_free(entry);
 
   table_cache_manager.lock_all_and_tdc();
@@ -3941,7 +4034,7 @@ class Fix_row_type_error_handler : public Internal_error_handler {
 
 static bool fix_row_type(THD *thd, Table_ref *table_list) {
   const char *cache_key;
-  size_t cache_key_length = get_table_def_key(table_list, &cache_key);
+  const size_t cache_key_length = get_table_def_key(table_list, &cache_key);
 
   thd->clear_error();
 
@@ -3989,7 +4082,7 @@ static bool fix_row_type(THD *thd, Table_ref *table_list) {
   }
 
   int error = 0;
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
   dd::Table *table_def = nullptr;
   if (thd->dd_client()->acquire_for_modification(
           share->db.str, share->table_name.str, &table_def))
@@ -4014,7 +4107,7 @@ static bool fix_row_type(THD *thd, Table_ref *table_list) {
   thd->pop_internal_handler();
 
   if (error == 8) {
-    Disable_autocommit_guard autocommit_guard(thd);
+    const Disable_autocommit_guard autocommit_guard(thd);
     HA_CREATE_INFO create_info;
     create_info.row_type = share->row_type;
     create_info.table_options = share->db_options_in_use;
@@ -4022,9 +4115,9 @@ static bool fix_row_type(THD *thd, Table_ref *table_list) {
     handler *file = get_new_handler(share, share->m_part_info != nullptr,
                                     thd->mem_root, share->db_type());
     if (file != nullptr) {
-      row_type correct_row_type = file->get_real_row_type(&create_info);
+      const row_type correct_row_type = file->get_real_row_type(&create_info);
       bool result = dd::fix_row_type(thd, table_def, correct_row_type);
-      destroy(file);
+      ::destroy_at(file);
 
       if (result) {
         trans_rollback_stmt(thd);
@@ -4358,7 +4451,7 @@ thr_lock_type read_lock_type_for_table(THD *thd,
     be cleared before executing sub-statement. So instead we have to look
     at THD::variables::sql_log_bin member.
   */
-  bool log_on = mysql_bin_log.is_open() && thd->variables.sql_log_bin;
+  const bool log_on = mysql_bin_log.is_open() && thd->variables.sql_log_bin;
 
   /*
     When we do not write to binlog or when we use row based replication,
@@ -4429,8 +4522,8 @@ static void process_table_fks(THD *thd, Query_tables_list *prelocking_ctx,
     Therefore we need to normalize/lowercase these names while prelocking
     set key is constructing from them.
   */
-  bool normalize_db_names = (lower_case_table_names == 2);
-  Sp_name_normalize_type name_normalize_type =
+  const bool normalize_db_names = (lower_case_table_names == 2);
+  const Sp_name_normalize_type name_normalize_type =
       (lower_case_table_names == 2) ? Sp_name_normalize_type::LOWERCASE_NAME
                                     : Sp_name_normalize_type::LEAVE_AS_IS;
 
@@ -4640,7 +4733,8 @@ static bool open_and_process_routine(
           on behalf of LOCK TABLES.
         */
         enum_mdl_type mdl_lock_type;
-        bool executing_LT = (prelocking_ctx->sql_command == SQLCOM_LOCK_TABLES);
+        const bool executing_LT =
+            (prelocking_ctx->sql_command == SQLCOM_LOCK_TABLES);
 
         if (rt->type() == Sroutine_hash_entry::FK_TABLE_ROLE_PARENT_CHECK ||
             rt->type() == Sroutine_hash_entry::FK_TABLE_ROLE_CHILD_CHECK) {
@@ -4849,7 +4943,7 @@ static bool open_and_process_routine(
           set during PREPARE) is changed between repeated executions of the
           prepared statement.
          */
-        int64 share_version = share->get_table_ref_version();
+        const int64 share_version = share->get_table_ref_version();
 
         if (rt->m_cache_version != share_version) {
           /*
@@ -4872,9 +4966,9 @@ static bool open_and_process_routine(
         }
 
         if (!has_prelocking_list) {
-          bool is_update =
+          const bool is_update =
               (rt->type() == Sroutine_hash_entry::FK_TABLE_ROLE_CHILD_UPDATE);
-          bool is_delete =
+          const bool is_delete =
               (rt->type() == Sroutine_hash_entry::FK_TABLE_ROLE_CHILD_DELETE);
 
           process_table_fks(thd, prelocking_ctx, share, false, is_update,
@@ -5203,12 +5297,32 @@ int run_before_dml_hook(THD *thd) {
   int out_value = 0;
 
   TX_TRACKER_GET(tst);
-  tst->add_trx_state(thd, TX_STMT_DML);
+
+  /*
+    Track this as DML only if it hasn't already been identified as DDL.
+
+    Some statements such as "CREATE TABLE ... AS SELECT ..."
+    are DDL ("CREATE TABLE ..."), but also pass through here
+    because of the DML part ("SELECT ...").
+
+    For now, a statement has to be one or the other, DDL or DML.
+    In the above example, the statement's sql_cmd_type() would be
+    SQL_CMD_DDL because of the "CREATE TABLE".
+
+    As tracking goes, a statement having only one type is a matter
+    of convention rather than one of necessity; if the convention
+    changes, document that change, and update the assertions in
+    the tracker code.
+  */
+  if ((tst->get_trx_state() & TX_STMT_DDL) == 0)
+    tst->add_trx_state(thd, TX_STMT_DML);
+  else
+    tst = nullptr;
 
   (void)RUN_HOOK(transaction, before_dml, (thd, out_value));
 
   if (out_value) {
-    tst->clear_trx_state(thd, TX_STMT_DML);
+    if (tst != nullptr) tst->clear_trx_state(thd, TX_STMT_DML);
     my_error(ER_BEFORE_DML_VALIDATION_ERROR, MYF(0));
   }
 
@@ -5897,7 +6011,8 @@ restart:
     /*
       Iterate through set of tables and generate table access audit events.
     */
-    if (!audit_notified && mysql_audit_table_access_notify(thd, *start)) {
+    if (!audit_notified &&
+        mysql_event_tracking_table_access_notify(thd, *start)) {
       error = true;
       goto err;
     }
@@ -6196,13 +6311,13 @@ bool DML_prelocking_strategy::handle_table(THD *thd,
          prelocking_ctx->sql_command == SQLCOM_LOCK_TABLES ||
          table_list->prelocking_placeholder) &&
         !(table_list->table->s->tmp_table)) {
-      bool is_insert =
+      const bool is_insert =
           (table_list->trg_event_map &
            static_cast<uint8>(1 << static_cast<int>(TRG_EVENT_INSERT)));
-      bool is_update =
+      const bool is_update =
           (table_list->trg_event_map &
            static_cast<uint8>(1 << static_cast<int>(TRG_EVENT_UPDATE)));
-      bool is_delete =
+      const bool is_delete =
           (table_list->trg_event_map &
            static_cast<uint8>(1 << static_cast<int>(TRG_EVENT_DELETE)));
 
@@ -6609,8 +6724,21 @@ err:
   statement, and if so, replace the opened tables with their secondary
   counterparts.
 
+  The secondary engine state is set according to these rules:
+  - If secondary engine operation is turned off, set state PRIMARY_ONLY
+  - If secondary engine operation is forced:
+      If operation can be evaluated in secondary engine, set state SECONDARY,
+      otherwise set state PRIMARY_ONLY.
+  - Otherwise, secondary engine state remains unchanged.
+
+  If state is SECONDARY, secondary engine tables are opened, unless there
+  is some property about the query or the environment that prevents this,
+  in which case the primary tables remain open. The caller must notice this
+  and issue exceptions according to its policy.
+
   @param thd       thread handler
   @param flags     bitmap of flags to pass to open_table
+
   @return true if an error is raised, false otherwise
 */
 static bool open_secondary_engine_tables(THD *thd, uint flags) {
@@ -6620,27 +6748,78 @@ static bool open_secondary_engine_tables(THD *thd, uint flags) {
   // The previous execution context should have been destroyed.
   assert(lex->secondary_engine_execution_context() == nullptr);
 
-  // If use of secondary engines has been disabled for the statement,
-  // there is nothing to do.
-  if (sql_cmd == nullptr || sql_cmd->secondary_storage_engine_disabled())
-    return false;
+  // Save value of forced secondary engine, as it is not sufficiently persistent
+  thd->set_secondary_engine_forced(thd->variables.use_secondary_engine ==
+                                   SECONDARY_ENGINE_FORCED);
 
-  // If the user has requested the use of a secondary storage engine
-  // for this statement, skip past the initial optimization for the
-  // primary storage engine and go straight to the secondary engine.
-  if (thd->secondary_engine_optimization() ==
-          Secondary_engine_optimization::PRIMARY_TENTATIVELY &&
-      thd->variables.use_secondary_engine == SECONDARY_ENGINE_FORCED) {
+  // If use of primary engine is requested, set state accordingly
+  if (thd->variables.use_secondary_engine == SECONDARY_ENGINE_OFF) {
+    // Check if properties of query conflicts with engine mode:
+    if (lex->can_execute_only_in_secondary_engine()) {
+      my_error(ER_CANNOT_EXECUTE_IN_PRIMARY, MYF(0),
+               lex->get_not_supported_in_primary_reason_str());
+      return true;
+    }
+
     thd->set_secondary_engine_optimization(
-        Secondary_engine_optimization::SECONDARY);
-    mysql_thread_set_secondary_engine(true);
-    mysql_statement_set_secondary_engine(thd->m_statement_psi, true);
+        Secondary_engine_optimization::PRIMARY_ONLY);
+    return false;
+  }
+  // Statements without Sql_cmd representations are for primary engine only:
+  if (sql_cmd == nullptr) {
+    thd->set_secondary_engine_optimization(
+        Secondary_engine_optimization::PRIMARY_ONLY);
+    return false;
   }
 
+  /*
+    Only some SQL commands can be offloaded to secondary table offload.
+    Note that table-less queries are always executed in primary engine.
+  */
+  const bool offload_possible =
+      (lex->sql_command == SQLCOM_SELECT && lex->table_count > 0) ||
+      ((lex->sql_command == SQLCOM_INSERT_SELECT ||
+        lex->sql_command == SQLCOM_CREATE_TABLE) &&
+       lex->table_count > 1);
+  /*
+    If query can only execute in secondary engine, effectively set it as
+    a forced secondary execution.
+  */
+  if (lex->can_execute_only_in_secondary_engine()) {
+    thd->set_secondary_engine_forced(true);
+  }
+  /*
+    If use of a secondary storage engine is requested for this statement,
+    skip past the initial optimization for the primary storage engine and
+    go straight to the secondary engine.
+    Notice the little difference between commands that must execute in
+    secondary engine, vs those that are forced to secondary engine:
+    the latter ones execute in primary engine if they are table-less.
+  */
+  if (thd->secondary_engine_optimization() ==
+          Secondary_engine_optimization::PRIMARY_TENTATIVELY &&
+      thd->is_secondary_engine_forced()) {
+    if (offload_possible) {
+      thd->set_secondary_engine_optimization(
+          Secondary_engine_optimization::SECONDARY);
+      mysql_thread_set_secondary_engine(true);
+      mysql_statement_set_secondary_engine(thd->m_statement_psi, true);
+    } else {
+      // Table-less queries cannot be executed in secondary engine
+      if (lex->can_execute_only_in_secondary_engine()) {
+        my_error(ER_CANNOT_EXECUTE_IN_PRIMARY, MYF(0),
+                 lex->get_not_supported_in_primary_reason_str());
+        return true;
+      }
+      thd->set_secondary_engine_optimization(
+          Secondary_engine_optimization::PRIMARY_ONLY);
+    }
+  }
   // Only open secondary engine tables if use of a secondary engine
-  // has been requested.
-  if (thd->secondary_engine_optimization() !=
-      Secondary_engine_optimization::SECONDARY)
+  // has been requested, and access has not been disabled previously.
+  if (sql_cmd->secondary_storage_engine_disabled() ||
+      thd->secondary_engine_optimization() !=
+          Secondary_engine_optimization::SECONDARY)
     return false;
 
   // If the statement cannot be executed in a secondary engine because
@@ -6649,7 +6828,7 @@ static bool open_secondary_engine_tables(THD *thd, uint flags) {
   // future executions of the statement, since these properties will
   // not change between executions.
   const LEX_CSTRING *secondary_engine =
-      sql_cmd->eligible_secondary_storage_engine();
+      sql_cmd->eligible_secondary_storage_engine(thd);
   const plugin_ref secondary_engine_plugin =
       secondary_engine == nullptr
           ? nullptr
@@ -6739,6 +6918,19 @@ bool open_tables_for_query(THD *thd, Table_ref *tables, uint flags) {
     goto end;
 
   if (open_secondary_engine_tables(thd, flags)) goto end;
+
+  if (thd->secondary_engine_optimization() ==
+          Secondary_engine_optimization::PRIMARY_TENTATIVELY &&
+      has_external_table(thd->lex)) {
+    /* Avoid materializing parts of result in primary engine
+     * during the PRIMARY_TENTATIVELY optimization phase
+     * if there are external tables since this can
+     * take a long time compared to the execution of the query
+     * in the secondary engine and it's wasted work if we end up
+     * executing the query in the secondary engine. */
+    thd->lex->add_statement_options(OPTION_NO_CONST_TABLES |
+                                    OPTION_NO_SUBQUERY_DURING_OPTIMIZATION);
+  }
 
   return false;
 end:
@@ -6834,7 +7026,7 @@ bool lock_tables(THD *thd, Table_ref *tables, uint count, uint flags) {
       the same statement.
     */
     thd->lex->lock_tables_state = Query_tables_list::LTS_LOCKED;
-    int ret = thd->decide_logging_format(tables);
+    const int ret = thd->decide_logging_format(tables);
     return ret;
   }
 
@@ -7017,7 +7209,7 @@ bool lock_tables(THD *thd, Table_ref *tables, uint count, uint flags) {
   */
   thd->lex->lock_tables_state = Query_tables_list::LTS_LOCKED;
 
-  int ret = thd->decide_logging_format(tables);
+  const int ret = thd->decide_logging_format(tables);
   return ret;
 }
 
@@ -7196,7 +7388,7 @@ TABLE *open_table_uncached(THD *thd, const char *path, const char *db,
   if (open_table_def(thd, share, table_def)) {
     /* No need to lock share->mutex as this is not needed for tmp tables */
     free_table_share(share);
-    destroy(tmp_table);
+    ::destroy_at(tmp_table);
     my_free(tmp_table);
     return nullptr;
   }
@@ -7220,7 +7412,7 @@ TABLE *open_table_uncached(THD *thd, const char *path, const char *db,
           (open_in_engine ? false : true), &table_def)) {
     /* No need to lock share->mutex as this is not needed for tmp tables */
     free_table_share(share);
-    destroy(tmp_table);
+    ::destroy_at(tmp_table);
     my_free(tmp_table);
     return nullptr;
   }
@@ -7280,7 +7472,7 @@ bool rm_temporary_table(THD *thd, handlerton *base, const char *path,
     error = true;
     LogErr(WARNING_LEVEL, ER_FAILED_TO_REMOVE_TEMP_TABLE, path, my_errno());
   }
-  destroy(file);
+  ::destroy_at(file);
   return error;
 }
 
@@ -7477,7 +7669,7 @@ static Field *find_field_in_view(THD *thd, Table_ref *table_list,
           Use own arena for Prepared Statements or data will be freed after
           PREPARE.
         */
-        Prepared_stmt_arena_holder ps_arena_holder(
+        const Prepared_stmt_arena_holder ps_arena_holder(
             thd, register_tree_change &&
                      thd->stmt_arena->is_stmt_prepare_or_first_stmt_execute());
 
@@ -7568,7 +7760,8 @@ static Field *find_field_in_natural_join(THD *thd, Table_ref *table_ref,
     Item *item;
 
     {
-      Prepared_stmt_arena_holder ps_arena_holder(thd, register_tree_change);
+      const Prepared_stmt_arena_holder ps_arena_holder(thd,
+                                                       register_tree_change);
 
       /*
         create_item() may, or may not create a new Item, depending on the
@@ -7819,7 +8012,7 @@ Field *find_field_in_table_ref(THD *thd, Table_ref *table_list,
         assert(ref && *ref && (*ref)->fixed);
         assert(*actual_table == (down_cast<Item_ident *>(*ref))->cached_table);
 
-        Column_privilege_tracker tracker(thd, want_privilege);
+        const Column_privilege_tracker tracker(thd, want_privilege);
         if ((*ref)->walk(&Item::check_column_privileges, enum_walk::PREFIX,
                          (uchar *)thd))
           return WRONG_GRANT;
@@ -7913,7 +8106,7 @@ Field *find_field_in_tables(THD *thd, Item_ident *item, Table_ref *first_table,
   const char *db = item->db_name;
   const char *table_name = item->table_name;
   const char *name = item->field_name;
-  size_t length = strlen(name);
+  const size_t length = strlen(name);
   uint field_index;
   char name_buff[NAME_LEN + 1];
   Table_ref *actual_table;
@@ -8123,6 +8316,14 @@ bool find_item_in_list(THD *thd, Item *find, mem_root_deque<Item *> *items,
   */
   assert(find_ident == nullptr || find_ident->field_name != nullptr);
 
+  /*
+    Some items, such as Item_aggregate_ref, do not have a name and hence
+    can never be found.
+  */
+  if (find_ident != nullptr && find_ident->field_name == nullptr) {
+    return false;
+  }
+
   int i = 0;
   for (auto it = VisibleFields(*items).begin();
        it != VisibleFields(*items).end(); ++it, ++i) {
@@ -8174,7 +8375,7 @@ bool find_item_in_list(THD *thd, Item *find, mem_root_deque<Item *> *items,
           if (find_ident->db_name != nullptr) break;  // Perfect match
         }
       } else {
-        int fname_cmp =
+        const int fname_cmp =
             my_strcasecmp(system_charset_info, item_field->field_name,
                           find_ident->field_name);
         if (item_field->item_name.eq_safe(find_ident->field_name)) {
@@ -8292,7 +8493,7 @@ bool find_item_in_list(THD *thd, Item *find, mem_root_deque<Item *> *items,
 static bool test_if_string_in_list(const char *find, List<String> *str_list) {
   List_iterator<String> str_list_it(*str_list);
   String *curr_str;
-  size_t find_length = strlen(find);
+  const size_t find_length = strlen(find);
   while ((curr_str = str_list_it++)) {
     if (find_length != curr_str->length()) continue;
     if (!my_strcasecmp(system_charset_info, find, curr_str->ptr())) return true;
@@ -8403,7 +8604,7 @@ static bool mark_common_columns(THD *thd, Table_ref *table_ref_1,
              ((using_fields == nullptr) && field->is_hidden_by_user())));
   };
 
-  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
   *found_using_fields = 0;
 
@@ -8617,7 +8818,7 @@ static bool store_natural_using_join_columns(THD *thd,
 
   assert(!natural_using_join->join_columns);
 
-  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
   if (!(non_join_columns = new (thd->mem_root) List<Natural_join_column>) ||
       !(natural_using_join->join_columns =
@@ -8718,7 +8919,7 @@ static bool store_top_level_join_columns(THD *thd, Table_ref *table_ref,
 
   assert(!table_ref->nested_join->natural_join_processed);
 
-  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
   /* Call the procedure recursively for each nested table reference. */
   if (table_ref->nested_join && !table_ref->nested_join->m_tables.empty()) {
@@ -8965,9 +9166,9 @@ bool setup_fields(THD *thd, Access_bitmask want_privilege, bool allow_sum_func,
 
   Query_block *const select = thd->lex->current_query_block();
   const enum_mark_columns save_mark_used_columns = thd->mark_used_columns;
-  nesting_map save_allow_sum_func = thd->lex->allow_sum_func;
-  Column_privilege_tracker column_privilege(thd,
-                                            column_update ? 0 : want_privilege);
+  const nesting_map save_allow_sum_func = thd->lex->allow_sum_func;
+  const Column_privilege_tracker column_privilege(
+      thd, column_update ? 0 : want_privilege);
 
   // Function can only be used to set up one specific operation:
   assert(want_privilege == 0 || want_privilege == SELECT_ACL ||
@@ -8984,11 +9185,11 @@ bool setup_fields(THD *thd, Access_bitmask want_privilege, bool allow_sum_func,
   if (allow_sum_func)
     thd->lex->allow_sum_func |= (nesting_map)1 << select->nest_level;
   thd->where = THD::DEFAULT_WHERE;
-  bool save_is_item_list_lookup = select->is_item_list_lookup;
+  const bool save_is_item_list_lookup = select->is_item_list_lookup;
   select->is_item_list_lookup = false;
 
   /*
-    To prevent fail on forward lookup we fill it with zerows,
+    To prevent fail on forward lookup we fill it with zeros,
     then if we got pointer on zero after find_item_in_list we will know
     that it is forward lookup.
 
@@ -8996,7 +9197,7 @@ bool setup_fields(THD *thd, Access_bitmask want_privilege, bool allow_sum_func,
     but it will be slower.
   */
   if (!ref_item_array.is_null()) {
-    size_t num_visible_fields = CountVisibleFields(*fields);
+    const size_t num_visible_fields = CountVisibleFields(*fields);
     assert(ref_item_array.size() >= num_visible_fields);
     memset(ref_item_array.array(), 0, sizeof(Item *) * num_visible_fields);
   }
@@ -9080,7 +9281,7 @@ bool setup_fields(THD *thd, Access_bitmask want_privilege, bool allow_sum_func,
         /* purecov: end */
       }
       if (want_privilege & (INSERT_ACL | UPDATE_ACL)) {
-        Column_privilege_tracker column_privilege_tr(thd, want_privilege);
+        const Column_privilege_tracker column_privilege_tr(thd, want_privilege);
         if (item->walk(&Item::check_column_privileges, enum_walk::PREFIX,
                        pointer_cast<uchar *>(thd)))
           return true;
@@ -9113,7 +9314,9 @@ bool setup_fields(THD *thd, Access_bitmask want_privilege, bool allow_sum_func,
       if ((item->has_aggregation() && !(item->type() == Item::SUM_FUNC_ITEM &&
                                         !item->m_is_window_function)) ||  //(1)
           item->has_wf())                                                 // (2)
-        item->split_sum_func(thd, ref_item_array, fields);
+        if (item->split_sum_func(thd, ref_item_array, fields)) {
+          return true;
+        }
     }
 
     select->select_list_tables |= item->used_tables();
@@ -10111,8 +10314,9 @@ bool mysql_rm_tmp_tables(void) {
 
       if (strlen(file->name) > tmp_file_prefix_length &&
           !memcmp(file->name, tmp_file_prefix, tmp_file_prefix_length)) {
-        size_t filePath_len = snprintf(filePath, sizeof(filePath), "%s%c%s",
-                                       tmpdir, FN_LIBCHAR, file->name);
+        const size_t filePath_len =
+            snprintf(filePath, sizeof(filePath), "%s%c%s", tmpdir, FN_LIBCHAR,
+                     file->name);
         file_str = make_lex_string_root(&files_root, filePath, filePath_len);
 
         if (file_str == nullptr || files.push_back(file_str, &files_root)) {
@@ -10255,8 +10459,9 @@ void tdc_remove_table(THD *thd, enum_tdc_remove_table_type remove_type,
         used.
       */
       if (remove_type != TDC_RT_REMOVE_NOT_OWN_KEEP_SHARE &&
-          remove_type != TDC_RT_MARK_FOR_REOPEN)
+          remove_type != TDC_RT_MARK_FOR_REOPEN) {
         share->clear_version();
+      }
       table_cache_manager.free_table(thd, remove_type, share);
     } else if (remove_type != TDC_RT_MARK_FOR_REOPEN) {
       // There are no TABLE objects associated, so just remove the
@@ -10361,7 +10566,7 @@ bool init_ftfuncs(THD *thd, Query_block *query_block) {
 
 bool open_trans_system_tables_for_read(THD *thd, Table_ref *table_list) {
   uint counter;
-  uint flags = MYSQL_OPEN_IGNORE_FLUSH | MYSQL_LOCK_IGNORE_TIMEOUT;
+  const uint flags = MYSQL_OPEN_IGNORE_FLUSH | MYSQL_LOCK_IGNORE_TIMEOUT;
 
   DBUG_TRACE;
 
@@ -10470,9 +10675,10 @@ void close_mysql_tables(THD *thd) {
 */
 TABLE *open_log_table(THD *thd, Table_ref *one_table,
                       Open_tables_backup *backup) {
-  uint flags = (MYSQL_OPEN_IGNORE_GLOBAL_READ_LOCK |
-                MYSQL_LOCK_IGNORE_GLOBAL_READ_ONLY | MYSQL_OPEN_IGNORE_FLUSH |
-                MYSQL_LOCK_IGNORE_TIMEOUT | MYSQL_LOCK_LOG_TABLE);
+  const uint flags =
+      (MYSQL_OPEN_IGNORE_GLOBAL_READ_LOCK | MYSQL_LOCK_IGNORE_GLOBAL_READ_ONLY |
+       MYSQL_OPEN_IGNORE_FLUSH | MYSQL_LOCK_IGNORE_TIMEOUT |
+       MYSQL_LOCK_LOG_TABLE);
   TABLE *table;
   DBUG_TRACE;
 

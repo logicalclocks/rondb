@@ -25,8 +25,10 @@
 #include <mysql/components/my_service.h>
 #include <mysql/components/services/dynamic_privilege.h>
 #include <mysql/components/services/mysql_runtime_error_service.h>
+#include "m_string.h"
 #include "plugin/group_replication/include/plugin.h"
 #include "sql/auth/auth_acls.h"
+#include "string_with_len.h"
 
 std::atomic<int> UDF_counter::number_udfs_running(0);
 
@@ -164,7 +166,7 @@ bool validate_uuid_parameter(std::string &uuid, size_t length,
     return true;
   }
 
-  if (!binary_log::Uuid::is_valid(uuid.c_str(), length)) {
+  if (!mysql::gtid::Uuid::is_valid(uuid.c_str(), length)) {
     *error_message = server_uuid_not_valid_str;
     return true;
   }

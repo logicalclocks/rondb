@@ -98,12 +98,14 @@
 
 #include <mysql/plugin.h>
 #include <algorithm>
+#include <memory>
 
-#include "m_ctype.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_pointer_arithmetic.h"
 #include "my_psi_config.h"
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
 #include "sql/current_thd.h"
 #include "sql/debug_sync.h"
 #include "sql/mysqld.h"
@@ -115,6 +117,9 @@
 #include "storage/myisam/ha_myisam.h"
 #include "storage/myisam/myisamdef.h"
 #include "storage/myisammrg/myrg_def.h"
+#include "string_with_len.h"
+#include "strmake.h"
+#include "strxnmov.h"
 #include "typelib.h"
 
 using std::max;
@@ -672,13 +677,13 @@ handler *ha_myisammrg::clone(const char *name, MEM_ROOT *mem_root) {
   */
   if (!(new_handler->ref =
             (uchar *)mem_root->Alloc(ALIGN_SIZE(ref_length) * 2))) {
-    destroy(new_handler);
+    ::destroy_at(new_handler);
     return nullptr;
   }
 
   if (new_handler->ha_open(table, name, table->db_stat,
                            HA_OPEN_IGNORE_IF_LOCKED, nullptr)) {
-    destroy(new_handler);
+    ::destroy_at(new_handler);
     return nullptr;
   }
 

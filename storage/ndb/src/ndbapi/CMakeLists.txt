@@ -79,7 +79,8 @@ ADD_CONVENIENCE_LIBRARY(ndbapi
   LINK_LIBRARIES ext::zlib
   )
 
-# Exclude ndbapi_objlib from PGO on Windows to avoid linker error LNK1248
-EXCLUDE_FROM_MSVC_PGO(ndbapi_objlib)
+SET_PROPERTY(SOURCE TransporterFacade.cpp
+             PROPERTY COMPILE_DEFINITIONS
+             NDB_TLS_SEARCH_PATH="${WITH_NDB_TLS_SEARCH_PATH}")
 
 NDB_ADD_TEST(SectionIterators-t SectionIterators.cpp NdbApiSignal.cpp)

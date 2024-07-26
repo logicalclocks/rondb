@@ -63,9 +63,10 @@ drop table t1;
 --echo
 
 --echo Testing ndb_waiter
---replace_regex /localhost:[0-9]*/localhost:<MGMD-PORT>/
+replace_regex /localhost:[0-9]+ .*/localhost:<MGMD-PORT><MAYBE-TLS>/;
 --exec $NDB_WAITER --verbose=2
---replace_regex /line.*/line=no_such_host/
+replace_regex /line.*/line=no_such_host/
+              /no_such_host:1186 .*/no_such_host:1186<MAYBE-TLS>/;
 --error 3
 --exec $NDB_WAITER --verbose=2 --ndb-connectstring=no_such_host --connect-retry-delay=1 --connect-retries=3
 

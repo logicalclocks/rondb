@@ -29,11 +29,11 @@
 #include <set>
 #include <utility>
 
-#include "libbinlogevents/include/binlog_event.h"  // SEQ_UNINIT
 #include "log_event.h"
 #include "my_inttypes.h"
-#include "my_thread_local.h"   // my_thread_id
-#include "prealloced_array.h"  // Prealloced_array
+#include "my_thread_local.h"                  // my_thread_id
+#include "mysql/binlog/event/binlog_event.h"  // SEQ_UNINIT
+#include "prealloced_array.h"                 // Prealloced_array
 
 class Log_event;
 class Query_log_event;
@@ -84,6 +84,10 @@ class Mts_submode {
   virtual int wait_for_workers_to_finish(Relay_log_info *rli,
                                          Slave_worker *ignore = nullptr) = 0;
 
+  /// @brief indicates the start of new file, which may e.g. update internal
+  /// counters in the submode
+  virtual void indicate_start_of_new_file() {}
+
   /**
     Sets additional context before the event is set to execute.
    */
@@ -117,9 +121,9 @@ class Mts_submode_database : public Mts_submode {
                                           Log_event &ev) override;
 
  private:
-  bool unfold_transaction_payload_event(Format_description_event &fde,
-                                        Transaction_payload_log_event &tple,
-                                        std::vector<Log_event *> &events);
+  bool unfold_transaction_payload_event(
+      mysql::binlog::event::Format_description_event &fde,
+      Transaction_payload_log_event &tple, std::vector<Log_event *> &events);
 };
 
 /**
@@ -173,10 +177,12 @@ class Mts_submode_logical_clock : public Mts_submode {
                                           Slave_worker_array *ws,
                                           Log_event *ev) override;
   /* Sets the force new group variable */
-  inline void start_new_group() {
-    force_new_group = true;
-    first_event = true;
-  }
+  inline void start_new_group() { force_new_group = true; }
+
+  /// @brief Sets a flag to indicate that we are starting a new binlog file,
+  /// therefore we need to skip the check for logical clock to not compare
+  /// against sequence_number from previous event (previous file)
+  void indicate_start_of_new_file() override { first_event = true; }
   /**
     Withdraw the delegated_job increased by the group.
   */

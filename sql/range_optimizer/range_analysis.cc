@@ -26,7 +26,6 @@
 #include <sys/types.h>
 
 #include "field_types.h"
-#include "m_ctype.h"
 #include "memory_debugging.h"
 #include "mf_wcomp.h"
 #include "my_alloc.h"
@@ -36,6 +35,7 @@
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_table_map.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
@@ -43,6 +43,7 @@
 #include "sql/current_thd.h"
 #include "sql/derror.h"
 #include "sql/field.h"
+#include "sql/field_common_properties.h"
 #include "sql/handler.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
@@ -775,7 +776,7 @@ static SEL_TREE *get_full_func_mm_tree(THD *thd, RANGE_OPT_PARAM *param,
     if (!((ref_tables | item_field->table_ref->map()) & param_comp))
       ftree = get_func_mm_tree(thd, param, prev_tables, read_tables,
                                remove_jump_scans, predicand, op, value, inv);
-    Item_equal *item_equal = item_field->item_equal;
+    Item_equal *item_equal = item_field->multi_equality();
     if (item_equal != nullptr) {
       for (Item_field &item : item_equal->get_fields()) {
         Field *f = item.field;
@@ -878,7 +879,7 @@ SEL_TREE *get_mm_tree(THD *thd, RANGE_OPT_PARAM *param, table_map prev_tables,
     dbug_print_tree("tree_returned", tree, param);
     return tree;
   }
-  if (cond->const_item() && !cond->is_expensive()) {
+  if (cond->const_item() && !cond->cost().IsExpensive()) {
     const SEL_TREE::Type type =
         cond->val_int() ? SEL_TREE::ALWAYS : SEL_TREE::IMPOSSIBLE;
     SEL_TREE *tree = new (param->temp_mem_root)
@@ -1051,6 +1052,7 @@ static bool is_spatial_operator(Item_func::Functype op_type) {
   switch (op_type) {
     case Item_func::SP_EQUALS_FUNC:
     case Item_func::SP_DISJOINT_FUNC:
+    case Item_func::SP_DISTANCE_FUNC:
     case Item_func::SP_INTERSECTS_FUNC:
     case Item_func::SP_TOUCHES_FUNC:
     case Item_func::SP_CROSSES_FUNC:
@@ -1127,6 +1129,14 @@ static SEL_TREE *get_mm_parts(THD *thd, RANGE_OPT_PARAM *param,
       tree->set_key(key_part->key,
                     sel_add(tree->release_key(key_part->key), sel_root));
       tree->keys_map.set_bit(key_part->key);
+      // A range constructed for a multi-valued index is never exact.
+      // So it needs the filter to be placed on top of the range access.
+      if (param->using_real_indexes) {
+        int index = param->real_keynr[key_part->key];
+        if (param->table->key_info[index].flags & HA_MULTI_VALUED_KEY) {
+          tree->inexact = true;
+        }
+      }
     }
   }
 
@@ -1213,12 +1223,28 @@ static bool save_value_and_handle_conversion(
   thd->variables.sql_mode = orig_sql_mode;
 
   switch (err) {
-    case TYPE_NOTE_TRUNCATED:
-    case TYPE_WARN_TRUNCATED:
-      *inexact = true;
-      [[fallthrough]];
     case TYPE_OK:
       return false;
+    case TYPE_NOTE_TRUNCATED:
+      // Insignificant truncation (trailing zero/space). Use it as an inexact
+      // range predicate.
+      *inexact = true;
+      return false;
+    case TYPE_WARN_TRUNCATED:
+      // Truncation of possibly significant parts. We may still be able to use
+      // it as a range predicate, but we need a filter to make sure we don't
+      // return too many rows.
+      *inexact = true;
+      // Use the truncated value in the range predicate, unless it's a string
+      // with a non-binary collation with a non-trivial strnxfrm function. For
+      // example, if c is a VARCHAR(1) column with the utf8mb4_0900_ai_ci
+      // collation, c <= 'ss' should match the value 'ß', but if we truncate it
+      // to c <= 's' to fit in the column type, it will not match 'ß'. For such
+      // predicates, we assume the predicate is always true, and let a filter
+      // decide the outcome.
+      return is_string_type(field->type()) &&
+             !my_binary_compare(field->charset()) &&
+             use_strnxfrm(field->charset());
     case TYPE_WARN_INVALID_STRING:
       /*
         An invalid string does not produce any rows when used with
@@ -1230,8 +1256,7 @@ static bool save_value_and_handle_conversion(
       }
       /*
         For other operations on invalid strings, we assume that the range
-        predicate is always true and let evaluate_join_record() decide
-        the outcome.
+        predicate is always true and let a filter decide the outcome.
       */
       *inexact = true;
       return true;
@@ -1244,7 +1269,7 @@ static bool save_value_and_handle_conversion(
 
         instead of always false. Because of this, we assume that the
         range predicate is always true instead of always false and let
-        evaluate_join_record() decide the outcome.
+        a filter decide the outcome.
       */
       *inexact = true;
       return true;

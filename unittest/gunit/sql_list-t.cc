@@ -31,12 +31,15 @@
 #include <gtest/gtest.h>
 #include <stddef.h>
 
+#include <memory>
+
 #include "my_inttypes.h"
 #include "my_thread.h"
 #include "sql/sql_error.h"
 #include "sql/sql_list.h"
 #include "sql/thr_malloc.h"
 #include "sql_string.h"
+#include "template_utils.h"
 #include "unittest/gunit/gunit_test_main.h"
 
 namespace sql_list_unittest {
@@ -83,7 +86,7 @@ TEST_F(SqlListTest, ConstructAndDestruct) {
   EXPECT_TRUE(m_int_list.is_empty());
   List<int> *p_int_list = new (*THR_MALLOC) List<int>;
   EXPECT_TRUE(p_int_list->is_empty());
-  destroy(p_int_list);
+  ::destroy_at(p_int_list);
 }
 
 // Tests basic operations push and pop.

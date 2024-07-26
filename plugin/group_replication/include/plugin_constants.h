@@ -72,15 +72,9 @@
 #define TRANSACTION_WITH_GUARANTEES_VERSION 0x080014
 
 /*
-  Version from which patch version number is also considered during member
-  join, view changes or primary member selection.
-*/
-#define PRIMARY_ELECTION_PATCH_CONSIDERATION 0x080017
-
-/*
   Version from which group replication and the server support cloning
 */
-#define CLONE_GR_SUPPORT_VERSION 0x080037
+#define CLONE_GR_SUPPORT_VERSION 0x080400
 
 /*
   Version from which group replication support timeout argument in UDF
@@ -89,8 +83,25 @@
 #define MEMBER_VERSION_INTRODUCING_RUNNING_TRANSACTION_TIMEOUT 0x080029
 
 /*
-  Starting on 8.0.35, inclusive, all 8.0 patch versions are compatible.
+  Version from which VCLE was removed.
 */
-#define MEMBER_8_0_LTS_VERSION 0x080035
+#define MEMBER_VERSION_REMOVING_VCLE 0x080300
+
+/*
+  Starting on 8.4.0, inclusive, all 8.4 patch versions are compatible.
+*/
+#define MEMBER_8_4_LTS_VERSION 0x080400
+
+/*
+  Preemptive garbage collection configuration default values.
+*/
+static constexpr bool PREEMPTIVE_GARBAGE_COLLECTION_DEFAULT{false};
+
+static constexpr unsigned int
+    PREEMPTIVE_GARBAGE_COLLECTION_ROWS_THRESHOLD_DEFAULT{100000};
+static constexpr unsigned int PREEMPTIVE_GARBAGE_COLLECTION_ROWS_THRESHOLD_MIN{
+    10000};
+static constexpr unsigned int PREEMPTIVE_GARBAGE_COLLECTION_ROWS_THRESHOLD_MAX{
+    100000000};
 
 #endif /* PLUGIN_CONSTANTS_INCLUDE */

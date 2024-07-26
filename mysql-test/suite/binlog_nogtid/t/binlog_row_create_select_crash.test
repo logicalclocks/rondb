@@ -33,13 +33,13 @@ CREATE TABLE t1 AS SELECT 1 AS col1;
 DROP TABLE t1;
 
 --connection default
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 SET SESSION DEBUG= '+d,mysql_lock_tables_kill_query';
 --error ER_QUERY_INTERRUPTED
 CREATE TABLE t2 AS SELECT 1 AS col1;
 SET SESSION DEBUG= '-d,mysql_lock_tables_kill_query';
 
 --echo # Verify that 'CREATE TABLE t2' event was not logged.
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 
 SET SESSION autocommit= 1;

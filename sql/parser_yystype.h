@@ -43,6 +43,7 @@
 #include "sql/key_spec.h"       // keytype, fk_option
 #include "sql/lexer_yystype.h"  // Lexer_yystype
 #include "sql/mem_root_array.h"
+#include "sql/olap.h"
 #include "sql/opt_hints.h"  // opt_hints_enum
 #include "sql/parse_tree_hints.h"
 #include "sql/parse_tree_node_base.h"
@@ -55,6 +56,7 @@
 #include "sql/sql_get_diagnostics.h"  // Diagnostics_information::Which_area
 #include "sql/sql_signal.h"           // enum_condition_item_name
 #include "sql/table.h"                // index_hint_type
+#include "sql/tablesample.h"          // enum for sampling methods
 #include "sql/trigger_def.h"          // enum_trigger_order_type
 #include "sql/window_lex.h"           // enum_window_frame_unit
 #include "sql/xa.h"                   // xa_option_words
@@ -86,6 +88,7 @@ class PT_exclusion;
 class PT_field_def_base;
 class PT_frame;
 class PT_group;
+class PT_tablesample;
 class PT_insert_values_list;
 class PT_into_destination;
 class PT_isolation_level;
@@ -175,8 +178,6 @@ enum enum_drop_mode {
   DROP_CASCADE,  // CASCADE option
   DROP_RESTRICT  // RESTRICT option
 };
-
-enum olap_type { UNSPECIFIED_OLAP_TYPE, ROLLUP_TYPE };
 
 struct Cast_type {
   Cast_target target;
@@ -337,7 +338,7 @@ struct PT_install_component_set_element {
 
 enum class Set_operator { UNION, EXCEPT, INTERSECT };
 
-union YYSTYPE {
+union MY_SQL_PARSER_STYPE {
   Lexer_yystype lexer;  // terminal values from the lexical scanner
   /*
     Hint parser section (sql_hints.yy)
@@ -434,7 +435,9 @@ union YYSTYPE {
   PT_limit_clause *limit_clause;
   Parse_tree_node *node;
   enum olap_type olap_type;
+  enum tablesample_type tablesample_type;
   PT_group *group;
+  PT_tablesample *tablesample;
   PT_window_list *windows;
   PT_window *window;
   PT_frame *window_frame;
@@ -612,6 +615,7 @@ union YYSTYPE {
   struct Histogram_param {
     int num_buckets;
     LEX_STRING data;
+    bool auto_update;
   } histogram_param;
   struct {
     Sql_cmd_analyze_table::Histogram_command command;
@@ -691,6 +695,7 @@ union YYSTYPE {
     Explain_format_type explain_format_type;
     bool is_analyze;
     bool is_explicit;
+    LEX_STRING explain_into_variable_name;
   } explain_options_type;
   struct {
     Item *set_var;
@@ -713,8 +718,13 @@ union YYSTYPE {
   Set_operator query_operator;
   PT_install_component_set_element *install_component_set_element;
   List<PT_install_component_set_element> *install_component_set_list;
+  struct {
+    Parse_tree_root *statement;
+    LEX_CSTRING schema_name_for_explain;
+  } explainable_stmt;
 };
 
-static_assert(sizeof(YYSTYPE) <= 32, "YYSTYPE is too big");
+static_assert(sizeof(MY_SQL_PARSER_STYPE) <= 32, "YYSTYPE is too big");
+using MY_HINT_PARSER_STYPE = MY_SQL_PARSER_STYPE;
 
 #endif  // PARSER_YYSTYPE_INCLUDED

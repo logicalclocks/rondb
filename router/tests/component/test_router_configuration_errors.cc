@@ -75,7 +75,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"connect_timeout", "0"},
              }),
      },
@@ -90,7 +90,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"connect_timeout", "-1"},
              }),
      },
@@ -105,7 +105,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"connect_timeout", "0x0"},
              }),
      },
@@ -120,7 +120,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"client_connect_timeout", "1"},
              }),
      },
@@ -135,7 +135,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"client_connect_timeout", "0x0"},
              }),
      },
@@ -150,7 +150,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"max_connect_errors", "0"},
              }),
      },
@@ -165,7 +165,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"max_connect_errors", "0x0"},
              }),
      },
@@ -180,7 +180,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"protocol", "invalid"},
              }),
      },
@@ -194,7 +194,7 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"protocol", ""},
              }),
      },
@@ -208,51 +208,13 @@ static const BrokenConfigParams broken_config_params[]{
              {
                  {"bind_address", "127.0.0.1:7001"},
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
                  {"client_connect_timeout", "31536001"},
              }),
      },
      "Configuration error: option client_connect_timeout in [routing] "
      "needs value between 2 and 31536000 inclusive, was '31536001'",
      ""},
-
-    {"metadata_cache_invalid_bind_address",
-     {
-         mysql_harness::ConfigBuilder::build_section(
-             "metadata_cache",
-             {
-                 {"bootstrap_server_addresses",
-                  "mysql://127.0.0.1:13000,mysql://127.0.0.1:99999"},
-             }),
-     },
-     "option bootstrap_server_addresses in [metadata_cache] is incorrect "
-     "(invalid URI: invalid port: impossible port number",
-     ""},
-    {"metadata_cache_no_bootstrap_server_addresses",
-     {
-         mysql_harness::ConfigBuilder::build_section("metadata_cache",
-                                                     {
-                                                         {"user", "foobar"},
-                                                     }),
-     },
-     "list of metadata-servers is empty: 'bootstrap_server_addresses' in the "
-     "configuration file is empty or not set and no known "
-     "'dynamic_config'-file",
-     ""},
-    {"metadata_cache_empty_bootstrap_server_addresses",
-     {
-         mysql_harness::ConfigBuilder::build_section(
-             "metadata_cache",
-             {
-                 {"user", "foobar"},
-                 {"bootstrap_server_addresses", ""},
-             }),
-     },
-     "list of metadata-servers is empty: 'bootstrap_server_addresses' in the "
-     "configuration file is empty or not set and no known "
-     "'dynamic_config'-file",
-     ""},
-
     {"metadata_cache_must_be_single",
      {
          mysql_harness::ConfigBuilder::build_section("metadata_cache:one", {}),
@@ -312,7 +274,7 @@ static const BrokenConfigParams broken_config_params[]{
              "routing:tests",
              {
                  {"destinations", "127.0.0.1:3306"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
              }),
      },
      "either bind_address or socket option needs to be supplied, or both",
@@ -324,7 +286,7 @@ static const BrokenConfigParams broken_config_params[]{
              "routing:tests",
              {
                  {"bind_address", "127.0.0.1:3307"},
-                 {"mode", "read-only"},
+                 {"routing_strategy", "round-robin"},
              }),
      },
      "option destinations in [routing:tests] is required",
@@ -388,21 +350,6 @@ static const BrokenConfigParams broken_config_params[]{
              }),
      },
      "Bind Address can not be part of destination",
-     ""},
-
-    {"routing_mode_is_case_insenstive",
-     {
-         mysql_harness::ConfigBuilder::build_section(
-             "routing:tests",
-             {
-                 {"bind_address", "127.0.0.1:3307"},
-                 {"destinations", "127.0.0.1:3306"},
-                 {"routing_strategy", "round-robin"},
-                 {"mode", "Read-Only"},
-             }),
-         mysql_harness::ConfigBuilder::build_section("routing:break", {}),
-     },
-     "routing:break",
      ""},
 
     {"routing_routing_strategy_is_case_insenstive",

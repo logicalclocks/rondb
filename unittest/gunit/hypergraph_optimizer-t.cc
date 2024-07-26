@@ -87,12 +87,14 @@
 
 using hypergraph::NodeMap;
 using my_testing::Server_initializer;
+using my_testing::TraceGuard;
 using std::string;
 using std::string_view;
 using std::to_string;
 using std::unordered_map;
 using std::vector;
 using testing::_;
+using testing::AnyOf;
 using testing::ElementsAre;
 using testing::Pair;
 using testing::Return;
@@ -101,9 +103,8 @@ using testing::UnorderedElementsAre;
 using namespace std::literals;  // For operator""sv.
 
 static AccessPath *FindBestQueryPlanAndFinalize(THD *thd,
-                                                Query_block *query_block,
-                                                string *trace) {
-  AccessPath *path = FindBestQueryPlan(thd, query_block, trace);
+                                                Query_block *query_block) {
+  AccessPath *path = FindBestQueryPlan(thd, query_block);
   if (path != nullptr) {
     query_block->join->set_root_access_path(path);
     EXPECT_FALSE(FinalizePlanForQueryBlock(thd, query_block));
@@ -159,12 +160,12 @@ void SortNodes(JoinHypergraph *graph) {
     node_order.push_back(i);
   }
   std::sort(node_order.begin(), node_order.end(), [graph](int a, int b) {
-    return strcmp(graph->nodes[a].table->alias, graph->nodes[b].table->alias) <
-           0;
+    return strcmp(graph->nodes[a].table()->alias,
+                  graph->nodes[b].table()->alias) < 0;
   });
   std::sort(graph->nodes.begin(), graph->nodes.end(),
             [](const JoinHypergraph::Node &a, const JoinHypergraph::Node &b) {
-              return strcmp(a.table->alias, b.table->alias) < 0;
+              return strcmp(a.table()->alias, b.table()->alias) < 0;
             });
 
   // Remap hyperedges to the new node indexes. Note that we don't
@@ -187,12 +188,37 @@ void SortNodes(JoinHypergraph *graph) {
 
   // Remap TES.
   for (Predicate &pred : graph->predicates) {
-    NodeMap new_tes = 0;
-    for (int node_idx : BitsSetIn(pred.total_eligibility_set)) {
+    NodeMap new_tes = pred.total_eligibility_set & PSEUDO_TABLE_BITS;
+    for (int node_idx :
+         BitsSetIn(pred.total_eligibility_set & ~PSEUDO_TABLE_BITS)) {
       new_tes |= NodeMap{1} << node_map[node_idx];
     }
     pred.total_eligibility_set = new_tes;
   }
+}
+
+vector<Item *> GetWhereConditions(const JoinHypergraph &graph) {
+  vector<Item *> where_conditions;
+  for (const Predicate &predicate :
+       make_array(graph.predicates.data(), graph.num_where_predicates)) {
+    if (!predicate.was_join_condition) {
+      where_conditions.push_back(predicate.condition);
+    }
+  }
+  return where_conditions;
+}
+
+// Create an index on the given columns, and make it report that it supports
+// ordered scans and range scans, including backward scans.
+int CreateOrderedIndex(std::initializer_list<Field *> columns,
+                       ulong key_flags = 0) {
+  assert(!empty(columns));
+  Fake_TABLE *table = pointer_cast<Fake_TABLE *>((*columns.begin())->table);
+  const int index = table->create_index(columns, key_flags);
+  ON_CALL(*down_cast<Mock_HANDLER *>(table->file), index_flags(index, _, _))
+      .WillByDefault(
+          Return(HA_READ_RANGE | HA_READ_ORDER | HA_READ_NEXT | HA_READ_PREV));
+  return index;
 }
 
 }  // namespace
@@ -204,12 +230,12 @@ TEST_F(MakeHypergraphTest, SingleTable) {
       ParseAndResolve("SELECT 1 FROM t1", /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -218,7 +244,7 @@ TEST_F(MakeHypergraphTest, SingleTable) {
   EXPECT_EQ(0, graph.edges.size());
   EXPECT_EQ(0, graph.predicates.size());
 
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
 }
 
 TEST_F(MakeHypergraphTest, InnerJoin) {
@@ -227,12 +253,12 @@ TEST_F(MakeHypergraphTest, InnerJoin) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -240,9 +266,9 @@ TEST_F(MakeHypergraphTest, InnerJoin) {
   SortNodes(&graph);
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // Simple edges; order doesn't matter.
   ASSERT_EQ(2, graph.edges.size());
@@ -268,20 +294,20 @@ TEST_F(MakeHypergraphTest, OuterJoin) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // Hyperedges. Order doesn't matter.
   ASSERT_EQ(2, graph.edges.size());
@@ -308,20 +334,20 @@ TEST_F(MakeHypergraphTest, OuterJoinNonNullRejecting) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // Hyperedges. Order doesn't matter.
   ASSERT_EQ(2, graph.edges.size());
@@ -350,20 +376,20 @@ TEST_F(MakeHypergraphTest, SemiJoin) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // Hyperedges. Order doesn't matter.
   ASSERT_EQ(2, graph.edges.size());
@@ -391,20 +417,20 @@ TEST_F(MakeHypergraphTest, AntiJoin) {
       /*nullable=*/false);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // Hyperedges. Order doesn't matter.
   ASSERT_EQ(2, graph.edges.size());
@@ -433,19 +459,19 @@ TEST_F(MakeHypergraphTest, Predicates) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(2, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
 
   // t1/t2.
   ASSERT_EQ(1, graph.edges.size());
@@ -475,20 +501,20 @@ TEST_F(MakeHypergraphTest, PushdownFromOuterJoinCondition) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // t2/t3.
   ASSERT_EQ(2, graph.edges.size());
@@ -528,20 +554,20 @@ TEST_F(MakeHypergraphTest, AssociativeRewriteToImprovePushdown) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t2", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t1", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t2", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t1", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // t1/t3.
   ASSERT_EQ(2, graph.edges.size());
@@ -579,12 +605,12 @@ TEST_F(MakeHypergraphTest, Cycle) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -592,12 +618,12 @@ TEST_F(MakeHypergraphTest, Cycle) {
   SortNodes(&graph);
 
   ASSERT_EQ(6, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
-  EXPECT_STREQ("t5", graph.nodes[4].table->alias);
-  EXPECT_STREQ("t6", graph.nodes[5].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
+  EXPECT_STREQ("t5", graph.nodes[4].table()->alias);
+  EXPECT_STREQ("t6", graph.nodes[5].table()->alias);
 
   // t1/t2.
   ASSERT_EQ(6, graph.edges.size());
@@ -659,21 +685,21 @@ TEST_F(MakeHypergraphTest, NoCycleBelowOuterJoin) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(4, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
 
   // t2/t3.
   ASSERT_EQ(3, graph.edges.size());
@@ -703,12 +729,12 @@ TEST_F(MakeHypergraphTest, CyclePushedFromOuterJoinCondition) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -716,10 +742,10 @@ TEST_F(MakeHypergraphTest, CyclePushedFromOuterJoinCondition) {
   SortNodes(&graph);
 
   ASSERT_EQ(4, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
 
   // t3/t2.
   ASSERT_EQ(4, graph.edges.size());
@@ -767,12 +793,12 @@ TEST_F(MakeHypergraphTest, CycleWithNullSafeEqual) {
       /*nullable=*/true);
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   // Expect a hypergraph of three nodes, and one simple edge connecting each
   // pair of nodes.
@@ -804,20 +830,20 @@ TEST_F(MakeHypergraphTest, MultipleEqualitiesCauseCycle) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // t1/t2.
   ASSERT_EQ(3, graph.edges.size());
@@ -842,7 +868,7 @@ TEST_F(MakeHypergraphTest, CyclesGetConsistentSelectivities) {
       ParseAndResolve("SELECT 1 FROM t1,t2,t3 WHERE t1.x=t2.x AND t2.x=t3.x",
                       /*nullable=*/true);
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
+  t1->create_index(t1->field[0]);
   ulong rec_per_key_int[] = {2};
   float rec_per_key[] = {2.0f};
   t1->key_info[0].set_rec_per_key_array(rec_per_key_int, rec_per_key);
@@ -855,12 +881,12 @@ TEST_F(MakeHypergraphTest, CyclesGetConsistentSelectivities) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   ASSERT_EQ(3, graph.edges.size());
   EXPECT_FLOAT_EQ(0.02F, graph.edges[0].selectivity);
@@ -882,18 +908,18 @@ TEST_F(MakeHypergraphTest, MultiEqualityPredicateAppliedOnce) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   ASSERT_EQ(4, graph.nodes.size());
-  EXPECT_STREQ("t3", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t1", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
+  EXPECT_STREQ("t3", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t1", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
 
   ASSERT_EQ(4, graph.edges.size());
 
@@ -935,19 +961,19 @@ TEST_F(MakeHypergraphTest, MultiEqualityPredicateNoRedundantJoinCondition) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   ASSERT_EQ(5, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
-  EXPECT_STREQ("t5", graph.nodes[4].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
+  EXPECT_STREQ("t5", graph.nodes[4].table()->alias);
 
   EXPECT_EQ(6, graph.edges.size());
 
@@ -988,21 +1014,21 @@ TEST_F(MakeHypergraphTest, MultiEqualityPredicateNoRedundantJoinCondition2) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   ASSERT_EQ(6, graph.nodes.size());
   SortNodes(&graph);
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
-  EXPECT_STREQ("t5", graph.nodes[4].table->alias);
-  EXPECT_STREQ("t6", graph.nodes[5].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
+  EXPECT_STREQ("t5", graph.nodes[4].table()->alias);
+  EXPECT_STREQ("t6", graph.nodes[5].table()->alias);
 
   EXPECT_EQ(11, graph.edges.size());
 
@@ -1052,20 +1078,20 @@ TEST_F(MakeHypergraphTest, ConflictRulesWithManyTables) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   SortNodes(&graph);
   ASSERT_EQ(5, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
-  EXPECT_STREQ("t5", graph.nodes[4].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
+  EXPECT_STREQ("t5", graph.nodes[4].table()->alias);
 
   for (const JoinPredicate &pred : graph.edges) {
     // We are not interested in the plan. However, while generating
@@ -1090,20 +1116,20 @@ TEST_F(MakeHypergraphTest, HyperpredicatesDoNotBlockExtraCycleEdges) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t2", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t1", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t2", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t1", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // t1/t3.
   ASSERT_EQ(3, graph.edges.size());
@@ -1143,12 +1169,12 @@ TEST_F(MakeHypergraphTest, Flattening) {
             ItemToString(query_block->where_cond()));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -1156,10 +1182,10 @@ TEST_F(MakeHypergraphTest, Flattening) {
   SortNodes(&graph);
 
   ASSERT_EQ(4, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
 
   ASSERT_EQ(4, graph.edges.size());
 
@@ -1208,20 +1234,20 @@ TEST_F(MakeHypergraphTest, PredicatePromotionOnMultipleEquals) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // t1/t2.
   ASSERT_EQ(3, graph.edges.size());
@@ -1289,20 +1315,20 @@ TEST_F(MakeHypergraphTest, MultipleEqualityPushedFromJoinConditions) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // t1/t2.
   ASSERT_EQ(2, graph.edges.size());
@@ -1342,12 +1368,12 @@ TEST_F(MakeHypergraphTest, UnpushableMultipleEqualityCausesCycle) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -1355,10 +1381,10 @@ TEST_F(MakeHypergraphTest, UnpushableMultipleEqualityCausesCycle) {
   SortNodes(&graph);
 
   ASSERT_EQ(4, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
 
   ASSERT_EQ(5, graph.edges.size());
 
@@ -1426,12 +1452,12 @@ TEST_F(MakeHypergraphTest, UnpushableMultipleEqualityWithSameTableTwice) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -1439,10 +1465,10 @@ TEST_F(MakeHypergraphTest, UnpushableMultipleEqualityWithSameTableTwice) {
   SortNodes(&graph);
 
   ASSERT_EQ(4, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
-  EXPECT_STREQ("t4", graph.nodes[3].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+  EXPECT_STREQ("t4", graph.nodes[3].table()->alias);
 
   ASSERT_EQ(4, graph.edges.size());
 
@@ -1493,12 +1519,12 @@ TEST_F(MakeHypergraphTest, EqualityPropagationExpandsTopConjunction) {
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
@@ -1506,8 +1532,8 @@ TEST_F(MakeHypergraphTest, EqualityPropagationExpandsTopConjunction) {
   SortNodes(&graph);
 
   ASSERT_EQ(2, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
 
   // Expect to find a simple equijoin condition and a table filter. The table
   // filter used to be part of the join condition, but it should not be.
@@ -1515,8 +1541,75 @@ TEST_F(MakeHypergraphTest, EqualityPropagationExpandsTopConjunction) {
   EXPECT_EQ("(t1.x = t2.x)",
             ItemsToString(graph.edges[0].expr->equijoin_conditions));
   EXPECT_EQ("(none)", ItemsToString(graph.edges[0].expr->join_conditions));
-  ASSERT_EQ(1, graph.num_where_predicates);
-  EXPECT_EQ("(t1.x < 10)", ItemToString(graph.predicates[0].condition));
+  EXPECT_EQ("(t1.x < 10)", ItemsToString(GetWhereConditions(graph)));
+}
+
+TEST_F(MakeHypergraphTest, PartialPushdownOfNonDeterministicPredicate) {
+  // The non-deterministic predicate referring to t1 and t2, which is
+  // ((RAND() < 0.5 AND t2.y = t3.y) OR t2.y = 1), cannot be pushed down as a
+  // join condition because non-deterministic predicates need to be evaluated at
+  // the latest possible point. We can however push down parts of it, namely
+  // ((t2.y = t3.y) or (t2.y = 1)). Since it is only partially pushed down, the
+  // full predicate must stay in the WHERE clause.
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1, t2, t3 WHERE t1.x = t2.x AND t2.x = t3.x AND "
+      "((RAND() < 0.5 AND t1.y = t2.y) OR t1.y = 1)",
+      /*nullable=*/false);
+
+  // Build multiple equalities from the WHERE condition.
+  COND_EQUAL *cond_equal = nullptr;
+  EXPECT_FALSE(optimize_cond(m_thd, query_block->where_cond_ref(), &cond_equal,
+                             &query_block->m_table_nest,
+                             &query_block->cond_value));
+
+  JoinHypergraph graph(m_thd->mem_root, query_block);
+  TraceGuard trace(m_thd);
+  bool always_false = false;
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
+  EXPECT_FALSE(always_false);
+
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+
+  EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
+  EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
+
+  SortNodes(&graph);
+
+  ASSERT_EQ(3, graph.nodes.size());
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
+
+  ASSERT_EQ(3, graph.edges.size());
+
+  // t1-t2. In addition to the equijoin condition, it should have a partial
+  // pushdown of the deterministic parts of the non-deterministic predicate to
+  // the join condition. (Used to get the full non-deterministic predicate.)
+  EXPECT_EQ(TableBitmap(0), graph.graph.edges[0].left);
+  EXPECT_EQ(TableBitmap(1), graph.graph.edges[0].right);
+  EXPECT_EQ("(t1.x = t2.x)",
+            ItemsToString(graph.edges[0].expr->equijoin_conditions));
+  EXPECT_EQ("((t1.y = t2.y) or (t1.y = 1))",
+            ItemsToString(graph.edges[0].expr->join_conditions));
+
+  // t2-t3. Simple edge with an equijoin condition.
+  EXPECT_EQ(TableBitmap(1), graph.graph.edges[2].left);
+  EXPECT_EQ(TableBitmap(2), graph.graph.edges[2].right);
+  EXPECT_EQ("(t2.x = t3.x)",
+            ItemsToString(graph.edges[1].expr->equijoin_conditions));
+  EXPECT_EQ("(none)", ItemsToString(graph.edges[1].expr->join_conditions));
+
+  // t1-t3. Simple edge with an equijoin condition.
+  EXPECT_EQ(TableBitmap(0), graph.graph.edges[4].left);
+  EXPECT_EQ(TableBitmap(2), graph.graph.edges[4].right);
+  EXPECT_EQ("(t1.x = t3.x)",
+            ItemsToString(graph.edges[2].expr->equijoin_conditions));
+  EXPECT_EQ("(none)", ItemsToString(graph.edges[2].expr->join_conditions));
+
+  // The full non-deterministic predicate should be left in the WHERE clause to
+  // filter out the additional rows that were let through by the join condition.
+  EXPECT_EQ("(((rand() < 0.5) and (t1.y = t2.y)) or (t1.y = 1))",
+            ItemsToString(GetWhereConditions(graph)));
 }
 
 // Sets up a nonsensical query, but the point is that the multiple equality
@@ -1546,20 +1639,20 @@ TEST_P(MakeHypergraphMultipleEqualParamTest,
                              &query_block->cond_value));
 
   JoinHypergraph graph(m_thd->mem_root, query_block);
-  string trace;
+  TraceGuard trace(m_thd);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
 
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   EXPECT_EQ(graph.graph.nodes.size(), graph.nodes.size());
   EXPECT_EQ(graph.graph.edges.size(), 2 * graph.edges.size());
 
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
   // t1/t2. This one should not be too surprising.
   ASSERT_EQ(2, graph.edges.size());
@@ -1601,9 +1694,9 @@ TEST_F(HypergraphOptimizerTest, SingleTable) {
       ParseAndResolve("SELECT 1 FROM t1", /*nullable=*/true);
   m_fake_tables["t1"]->file->stats.records = 100;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   ASSERT_EQ(AccessPath::TABLE_SCAN, root->type);
   EXPECT_EQ(m_fake_tables["t1"], root->table_scan().table);
@@ -1631,12 +1724,13 @@ TEST_F(HypergraphOptimizerTest, NumberOfAccessPaths) {
   m_fake_tables["t4"]->file->stats.data_file_length = 100;
   m_fake_tables["t5"]->file->stats.data_file_length = 100;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   EXPECT_TRUE(root != nullptr);
   std::smatch matches;
-  std::regex_search(trace, matches,
+  std::string trace_str{trace.contents().ToString()};
+  std::regex_search(trace_str.cbegin(), trace_str.cend(), matches,
                     std::regex("keeping a total of ([0-9]+) access paths"));
   ASSERT_EQ(matches.size(), 2);  // One match and one sub-match.
   int paths = std::stoi(matches[1]);
@@ -1650,9 +1744,9 @@ TEST_F(HypergraphOptimizerTest,
   m_fake_tables["t1"]->file->stats.records = 200;
   m_fake_tables["t2"]->file->stats.records = 3;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1696,9 +1790,9 @@ TEST_F(HypergraphOptimizerTest, PredicatePushdownOuterJoin) {
   m_fake_tables["t1"]->file->stats.records = 2000;
   m_fake_tables["t2"]->file->stats.records = 3;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   // The t2 filter cannot be pushed down through the join, so it should be
   // on the root.
@@ -1739,9 +1833,9 @@ TEST_F(HypergraphOptimizerTest, PartialPredicatePushdown) {
   m_fake_tables["t1"]->file->stats.records = 200;
   m_fake_tables["t2"]->file->stats.records = 30;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1787,9 +1881,9 @@ TEST_F(HypergraphOptimizerTest, PartialPredicatePushdownOuterJoin) {
   m_fake_tables["t1"]->file->stats.records = 200;
   m_fake_tables["t2"]->file->stats.records = 30;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1826,13 +1920,13 @@ TEST_F(HypergraphOptimizerTest, PredicatePushdownToRef) {
   Query_block *query_block =
       ParseAndResolve("SELECT 1 FROM t1 WHERE t1.x=3", /*nullable=*/true);
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], t1->field[1], /*unique=*/true);
+  t1->create_index({t1->field[0], t1->field[1]}, HA_NOSAME);
   m_fake_tables["t1"]->file->stats.records = 100;
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1850,11 +1944,11 @@ TEST_F(HypergraphOptimizerTest, NotPredicatePushdownToRef) {
   Query_block *query_block =
       ParseAndResolve("SELECT 1 FROM t1 WHERE t1.y=3", /*nullable=*/true);
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], t1->field[1], /*unique=*/true);
+  t1->create_index({t1->field[0], t1->field[1]}, HA_NOSAME);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1868,11 +1962,11 @@ TEST_F(HypergraphOptimizerTest, MultiPartPredicatePushdownToRef) {
   Query_block *query_block = ParseAndResolve(
       "SELECT 1 FROM t1 WHERE t1.y=3 AND t1.x=2", /*nullable=*/true);
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], t1->field[1], /*unique=*/true);
+  t1->create_index({t1->field[0], t1->field[1]}, HA_NOSAME);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1890,8 +1984,8 @@ TEST_F(HypergraphOptimizerTest, JoinConditionToRef) {
       /*nullable=*/true);
   Fake_TABLE *t2 = m_fake_tables["t2"];
   Fake_TABLE *t3 = m_fake_tables["t3"];
-  t2->create_index(t2->field[1], /*column2=*/nullptr, /*unique=*/false);
-  t3->create_index(t3->field[0], t3->field[1], /*unique=*/true);
+  t2->create_index(t2->field[1]);
+  t3->create_index({t3->field[0], t3->field[1]}, HA_NOSAME);
 
   // Hash join between t2/t3 is attractive, but hash join between t1 and t2/t3
   // should not be.
@@ -1900,9 +1994,9 @@ TEST_F(HypergraphOptimizerTest, JoinConditionToRef) {
   m_fake_tables["t3"]->file->stats.records = 1000;
   m_fake_tables["t3"]->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1952,12 +2046,9 @@ TEST_F(HypergraphOptimizerTest, PreferWidestEqRefKey) {
   Fake_TABLE *t1 = m_fake_tables["t1"];
 
   // Create three unique indexes.
-  const int key_x =
-      t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/true);
-  const int key_xy =
-      t1->create_index(t1->field[0], t1->field[1], /*unique=*/true);
-  const int key_y =
-      t1->create_index(t1->field[1], /*column2=*/nullptr, /*unique=*/true);
+  const int key_x = t1->create_index(t1->field[0], HA_NOSAME);
+  const int key_xy = t1->create_index({t1->field[0], t1->field[1]}, HA_NOSAME);
+  const int key_y = t1->create_index(t1->field[1], HA_NOSAME);
 
   EXPECT_EQ(0, key_x);
   EXPECT_EQ(1, key_xy);
@@ -1966,9 +2057,9 @@ TEST_F(HypergraphOptimizerTest, PreferWidestEqRefKey) {
   t1->file->stats.records = 10000;
   t1->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -1986,7 +2077,7 @@ TEST_F(HypergraphOptimizerTest, RefIntoHashJoin) {
       "SELECT 1 FROM t1 LEFT JOIN (t2 JOIN t3 ON t2.y=t3.y) ON t1.x=t3.x",
       /*nullable=*/true);
   Fake_TABLE *t3 = m_fake_tables["t3"];
-  t3->create_index(t3->field[0], /*column2=*/nullptr, /*unique=*/false);
+  t3->create_index(t3->field[0]);
   ulong rec_per_key_int[] = {1};
   float rec_per_key[] = {0.001f};
   t3->key_info[0].set_rec_per_key_array(rec_per_key_int, rec_per_key);
@@ -2021,9 +2112,9 @@ TEST_F(HypergraphOptimizerTest, RefIntoHashJoin) {
         return false;
       };
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2057,8 +2148,8 @@ TEST_F(HypergraphOptimizerTest, MultiEqualitySargable) {
       /*nullable=*/true);
   Fake_TABLE *t2 = m_fake_tables["t2"];
   Fake_TABLE *t3 = m_fake_tables["t3"];
-  t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/true);
-  t3->create_index(t3->field[0], /*column2=*/nullptr, /*unique=*/true);
+  t2->create_index(t2->field[0], HA_NOSAME);
+  t3->create_index(t3->field[0], HA_NOSAME);
 
   // Build multiple equalities from the WHERE condition.
   COND_EQUAL *cond_equal = nullptr;
@@ -2071,9 +2162,9 @@ TEST_F(HypergraphOptimizerTest, MultiEqualitySargable) {
   m_fake_tables["t2"]->file->stats.records = 10000;
   m_fake_tables["t3"]->file->stats.records = 1000000;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2103,7 +2194,7 @@ TEST_F(HypergraphOptimizerTest, DoNotApplyBothSargableJoinAndFilterJoin) {
       "SELECT 1 FROM t1, t2, t3, t4 WHERE t1.x = t2.x AND t2.x = t3.x",
       /*nullable=*/true);
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/false);
+  t1->create_index(t1->field[0]);
 
   // Build multiple equalities from the WHERE condition.
   COND_EQUAL *cond_equal = nullptr;
@@ -2130,16 +2221,16 @@ TEST_F(HypergraphOptimizerTest, DoNotApplyBothSargableJoinAndFilterJoin) {
       [](THD *, const JoinHypergraph &, AccessPath *path) {
         if (path->type == AccessPath::REF &&
             strcmp(path->ref().table->alias, "t1") == 0) {
-          path->cost *= 0.01;
-          path->init_cost *= 0.01;
-          path->cost_before_filter *= 0.01;
+          path->set_cost(path->cost() * 0.01);
+          path->set_init_cost(path->init_cost() * 0.01);
+          path->set_cost_before_filter(path->cost_before_filter() * 0.01);
         }
         return false;
       };
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2196,8 +2287,7 @@ TEST_F(HypergraphOptimizerTest, SargableJoinPredicateSelectivity) {
 
   // Add an index on t1(x) to make t1.x=t2.x sargable.
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  const int t1_idx =
-      t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/false);
+  const int t1_idx = t1->create_index(t1->field[0]);
   ulong rec_per_key_int[] = {1};
   float rec_per_key[] = {1.0f};
   t1->key_info[t1_idx].set_rec_per_key_array(rec_per_key_int, rec_per_key);
@@ -2210,9 +2300,9 @@ TEST_F(HypergraphOptimizerTest, SargableJoinPredicateSelectivity) {
   t3->file->stats.records = 10;
   t3->file->stats.data_file_length = 1e4;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2255,7 +2345,7 @@ TEST_F(HypergraphOptimizerTest, SargableJoinPredicateWithTypeMismatch) {
 
   // Add an index on t2(x) to make the join predicate sargable.
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/true);
+  t2->create_index(t2->field[0], HA_NOSAME);
 
   // Set up sizes to make index access on t2 preferable.
   t1->file->stats.records = 100;
@@ -2263,9 +2353,9 @@ TEST_F(HypergraphOptimizerTest, SargableJoinPredicateWithTypeMismatch) {
   t2->file->stats.records = 100000;
   t2->file->stats.data_file_length = 1e7;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2294,7 +2384,7 @@ TEST_F(HypergraphOptimizerTest, SargableJoinPredicateWithFunction) {
   Fake_TABLE *t2 = m_fake_tables["t2"];
 
   // Add an index on t1.x to make the join predicate sargable.
-  t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/true);
+  t1->create_index(t1->field[0], HA_NOSAME);
 
   // Set up sizes to make index access on t1 preferable.
   t1->file->stats.records = 100000;
@@ -2302,9 +2392,9 @@ TEST_F(HypergraphOptimizerTest, SargableJoinPredicateWithFunction) {
   t2->file->stats.records = 100;
   t2->file->stats.data_file_length = 1e5;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2332,10 +2422,9 @@ TEST_F(HypergraphOptimizerTest, SargableSubquery) {
     Query_block *subquery =
         query_block->first_inner_query_expression()->first_query_block();
     ResolveQueryBlock(m_thd, subquery, /*nullable=*/true, &m_fake_tables);
-    string trace;
-    AccessPath *subquery_path =
-        FindBestQueryPlanAndFinalize(m_thd, subquery, &trace);
-    SCOPED_TRACE(trace);  // Prints out the trace on failure.
+    TraceGuard trace(m_thd);
+    AccessPath *subquery_path = FindBestQueryPlanAndFinalize(m_thd, subquery);
+    SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
     // Prints out the query plan on failure.
     SCOPED_TRACE(PrintQueryPlan(0, subquery_path, subquery->join,
                                 /*is_root_of_join=*/true));
@@ -2344,15 +2433,15 @@ TEST_F(HypergraphOptimizerTest, SargableSubquery) {
 
   // Add an index on t1.x to make the predicate sargable.
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/true);
+  t1->create_index(t1->field[0], HA_NOSAME);
 
   // Set up sizes to make index lookup preferable.
   t1->file->stats.records = 100000;
   t1->file->stats.data_file_length = 1e7;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2377,13 +2466,13 @@ TEST_F(HypergraphOptimizerTest, SargableOuterReference) {
 
   // Add an index on t2.x to make the predicate in the subquery sargable.
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/true);
+  t2->create_index(t2->field[0], HA_NOSAME);
   t2->file->stats.records = 100000;
   t2->file->stats.data_file_length = 1e7;
 
-  string trace;
-  AccessPath *subquery_path = FindBestQueryPlan(m_thd, subquery, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *subquery_path = FindBestQueryPlan(m_thd, subquery);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, subquery_path, subquery->join,
                               /*is_root_of_join=*/true));
@@ -2406,7 +2495,7 @@ TEST_F(HypergraphOptimizerTest, SargableHyperpredicate) {
   Fake_TABLE *t3 = m_fake_tables["t3"];
 
   // Add an index on t1.x to make the join predicate sargable.
-  t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/true);
+  t1->create_index(t1->field[0], HA_NOSAME);
 
   // Set up sizes to make index access on t1 preferable.
   t1->file->stats.records = 100000;
@@ -2416,9 +2505,9 @@ TEST_F(HypergraphOptimizerTest, SargableHyperpredicate) {
   t3->file->stats.records = 200;
   t3->file->stats.data_file_length = 2e5;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2449,13 +2538,13 @@ TEST_F(HypergraphOptimizerTest, AntiJoinGetsSameEstimateWithAndWithoutIndex) {
 
     Fake_TABLE *t2 = m_fake_tables["t2"];
     if (has_index) {
-      t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/false);
+      t2->create_index(t2->field[0]);
     }
     t2->file->stats.records = 100;
 
-    string trace;
-    AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-    SCOPED_TRACE(trace);  // Prints out the trace on failure.
+    TraceGuard trace(m_thd);
+    AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+    SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
     if (!has_index) {
       ref_output_rows = root->num_output_rows();
@@ -2483,9 +2572,9 @@ TEST_F(HypergraphOptimizerTest, DelayedMaterializablePredicate) {
   m_fake_tables["t1"]->file->stats.records = 1000;
   m_fake_tables["t2"]->file->stats.records = 100;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
 
   // Expect a FILTER node with the delayed predicate, and its row estimate
@@ -2536,8 +2625,7 @@ TEST_F(HypergraphOptimizerTest, DoNotExpandJoinFiltersMultipleTimes) {
         return false;
       };
 
-  AccessPath *root =
-      FindBestQueryPlanAndFinalize(m_thd, query_block, /*trace=*/nullptr);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2562,12 +2650,12 @@ TEST_F(HypergraphOptimizerTest, InnerNestloopShouldBeLeftDeep) {
   Fake_TABLE *t2 = m_fake_tables["t2"];
   Fake_TABLE *t3 = m_fake_tables["t3"];
   Fake_TABLE *t4 = m_fake_tables["t4"];
-  t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/false);
-  t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/false);
-  t2->create_index(t2->field[1], /*column2=*/nullptr, /*unique=*/false);
-  t3->create_index(t3->field[1], /*column2=*/nullptr, /*unique=*/false);
-  t3->create_index(t3->field[2], /*column2=*/nullptr, /*unique=*/false);
-  t4->create_index(t4->field[2], /*column2=*/nullptr, /*unique=*/false);
+  t1->create_index(t1->field[0]);
+  t2->create_index(t2->field[0]);
+  t2->create_index(t2->field[1]);
+  t3->create_index(t3->field[1]);
+  t3->create_index(t3->field[2]);
+  t4->create_index(t4->field[2]);
 
   // We use the secondary engine hook to check that we never try a join between
   // ref accesses. They are not _wrong_, but they are redundant in this
@@ -2586,8 +2674,7 @@ TEST_F(HypergraphOptimizerTest, InnerNestloopShouldBeLeftDeep) {
         return false;
       };
 
-  EXPECT_NE(nullptr, FindBestQueryPlanAndFinalize(m_thd, query_block,
-                                                  /*trace=*/nullptr));
+  EXPECT_NE(nullptr, FindBestQueryPlanAndFinalize(m_thd, query_block));
 
   // We don't verify the plan in itself.
 }
@@ -2597,9 +2684,9 @@ TEST_F(HypergraphOptimizerTest, CombineFilters) {
       "SELECT 1 FROM t1 WHERE t1.x = 1 HAVING RAND() > 0.5", /*nullable=*/true);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -2626,7 +2713,7 @@ TEST_F(HypergraphOptimizerTest, InsertCastsInSelectExpressions) {
 
   Query_block *query_block =
       ParseAndResolve("SELECT t1.x = t1.y FROM t1", /*nullable=*/true);
-  FindBestQueryPlanAndFinalize(m_thd, query_block, /*trace=*/nullptr);
+  FindBestQueryPlanAndFinalize(m_thd, query_block);
   ASSERT_EQ(1, query_block->join->fields->size());
   EXPECT_EQ("(cast(t1.x as double) = cast(t1.y as double))",
             ItemToString((*query_block->join->fields)[0]));
@@ -2650,16 +2737,15 @@ TEST_F(HypergraphOptimizerTest, OrderingOfWherePredicates) {
        expr != nullptr; expr = expr->next_query_expression()) {
     Query_block *subquery = expr->first_query_block();
     ResolveQueryBlock(m_thd, subquery, /*nullable=*/true, &m_fake_tables);
-    string trace;
-    AccessPath *subquery_path =
-        FindBestQueryPlanAndFinalize(m_thd, subquery, &trace);
-    SCOPED_TRACE(trace);  // Prints out the trace on failure.
+    TraceGuard trace(m_thd);
+    AccessPath *subquery_path = FindBestQueryPlanAndFinalize(m_thd, subquery);
+    SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
     ASSERT_NE(nullptr, subquery_path);
   }
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -2689,10 +2775,9 @@ TEST_F(HypergraphOptimizerTest, OrderingOfJoinPredicates) {
     Query_block *subquery =
         query_block->first_inner_query_expression()->first_query_block();
     ResolveQueryBlock(m_thd, subquery, /*nullable=*/true, &m_fake_tables);
-    string trace;
-    AccessPath *subquery_path =
-        FindBestQueryPlanAndFinalize(m_thd, subquery, &trace);
-    SCOPED_TRACE(trace);  // Prints out the trace on failure.
+    TraceGuard trace(m_thd);
+    AccessPath *subquery_path = FindBestQueryPlanAndFinalize(m_thd, subquery);
+    SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
     ASSERT_NE(nullptr, subquery_path);
   }
 
@@ -2700,9 +2785,9 @@ TEST_F(HypergraphOptimizerTest, OrderingOfJoinPredicates) {
   m_fake_tables["t1"]->file->stats.records = 1;
   m_fake_tables["t2"]->file->stats.records = 1;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -2739,9 +2824,9 @@ TEST_P(HypergraphOptimizerCyclePredicatesSargableTest,
   Fake_TABLE *t1 = m_fake_tables["t1"];
   Fake_TABLE *t2 = m_fake_tables["t2"];
   Fake_TABLE *t3 = m_fake_tables["t3"];
-  t1->create_index(t1->field[0], /*column2=*/nullptr, /*unique=*/false);
-  t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/false);
-  t3->create_index(t3->field[0], /*column2=*/nullptr, /*unique=*/false);
+  t1->create_index(t1->field[0]);
+  t2->create_index(t2->field[0]);
+  t3->create_index(t3->field[0]);
 
   // Build multiple equalities from the WHERE condition.
   COND_EQUAL *cond_equal = nullptr;
@@ -2749,45 +2834,45 @@ TEST_P(HypergraphOptimizerCyclePredicatesSargableTest,
                              &query_block->m_table_nest,
                              &query_block->cond_value));
 
-  string trace;
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   JoinHypergraph graph(m_thd->mem_root, query_block);
   bool always_false = false;
-  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &trace, &graph, &always_false));
+  EXPECT_FALSE(MakeJoinHypergraph(m_thd, &graph, &always_false));
   EXPECT_FALSE(always_false);
-  FindSargablePredicates(m_thd, &trace, &graph);
+  FindSargablePredicates(m_thd, &graph);
 
   // Each node should have two sargable join predicates
   // (one to each of the other nodes). Verify that they are
   // correctly set up (the order does not matter, though).
   ASSERT_EQ(3, graph.nodes.size());
-  EXPECT_STREQ("t1", graph.nodes[0].table->alias);
-  EXPECT_STREQ("t2", graph.nodes[1].table->alias);
-  EXPECT_STREQ("t3", graph.nodes[2].table->alias);
+  EXPECT_STREQ("t1", graph.nodes[0].table()->alias);
+  EXPECT_STREQ("t2", graph.nodes[1].table()->alias);
+  EXPECT_STREQ("t3", graph.nodes[2].table()->alias);
 
-  ASSERT_EQ(2, graph.nodes[0].sargable_predicates.size());
+  ASSERT_EQ(2, graph.nodes[0].sargable_predicates().size());
   EXPECT_EQ(
       "t1.x -> t2.x [(t1.x = t2.x)]",
-      PrintSargablePredicate(graph.nodes[0].sargable_predicates[0], graph));
+      PrintSargablePredicate(graph.nodes[0].sargable_predicates()[0], graph));
   EXPECT_EQ(
       "t1.x -> t3.x [(t1.x = t3.x)]",
-      PrintSargablePredicate(graph.nodes[0].sargable_predicates[1], graph));
+      PrintSargablePredicate(graph.nodes[0].sargable_predicates()[1], graph));
 
-  ASSERT_EQ(2, graph.nodes[1].sargable_predicates.size());
+  ASSERT_EQ(2, graph.nodes[1].sargable_predicates().size());
   EXPECT_EQ(
       "t2.x -> t3.x [(t2.x = t3.x)]",
-      PrintSargablePredicate(graph.nodes[1].sargable_predicates[0], graph));
+      PrintSargablePredicate(graph.nodes[1].sargable_predicates()[0], graph));
   EXPECT_EQ(
       "t2.x -> t1.x [(t1.x = t2.x)]",
-      PrintSargablePredicate(graph.nodes[1].sargable_predicates[1], graph));
+      PrintSargablePredicate(graph.nodes[1].sargable_predicates()[1], graph));
 
-  ASSERT_EQ(2, graph.nodes[2].sargable_predicates.size());
+  ASSERT_EQ(2, graph.nodes[2].sargable_predicates().size());
   EXPECT_EQ(
       "t3.x -> t2.x [(t2.x = t3.x)]",
-      PrintSargablePredicate(graph.nodes[2].sargable_predicates[0], graph));
+      PrintSargablePredicate(graph.nodes[2].sargable_predicates()[0], graph));
   EXPECT_EQ(
       "t3.x -> t1.x [(t1.x = t3.x)]",
-      PrintSargablePredicate(graph.nodes[2].sargable_predicates[1], graph));
+      PrintSargablePredicate(graph.nodes[2].sargable_predicates()[1], graph));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -2810,9 +2895,9 @@ TEST_F(HypergraphOptimizerTest, SimpleInnerJoin) {
   m_fake_tables["t2"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t3"]->file->stats.data_file_length = 10000e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2851,16 +2936,16 @@ TEST_F(HypergraphOptimizerTest, StraightJoin) {
   Query_block *query_block =
       ParseAndResolve("SELECT 1 FROM t1 STRAIGHT_JOIN t2 ON t1.x=t2.x",
                       /*nullable=*/true);
-  m_fake_tables["t1"]->file->stats.records = 100;
-  m_fake_tables["t2"]->file->stats.records = 10000;
+  m_fake_tables["t1"]->file->stats.records = 10000;
+  m_fake_tables["t2"]->file->stats.records = 100;
 
   // Set up some large scan costs to discourage nested loop.
-  m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
-  m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
+  m_fake_tables["t1"]->file->stats.data_file_length = 100e6;
+  m_fake_tables["t2"]->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2874,11 +2959,11 @@ TEST_F(HypergraphOptimizerTest, StraightJoin) {
 
   AccessPath *outer = root->hash_join().outer;
   ASSERT_EQ(AccessPath::TABLE_SCAN, outer->type);
-  EXPECT_EQ(m_fake_tables["t1"], outer->table_scan().table);
+  EXPECT_EQ(m_fake_tables["t2"], outer->table_scan().table);
 
   AccessPath *inner = root->hash_join().inner;
   ASSERT_EQ(AccessPath::TABLE_SCAN, inner->type);
-  EXPECT_EQ(m_fake_tables["t2"], inner->table_scan().table);
+  EXPECT_EQ(m_fake_tables["t1"], inner->table_scan().table);
 
   // We should see only the two table scans and then t1-t2, no other orders.
   EXPECT_EQ(m_thd->m_current_query_partial_plans, 3);
@@ -2908,9 +2993,9 @@ TEST_F(HypergraphOptimizerTest, StraightJoinWithMoreTables) {
   m_fake_tables["t3"]->file->stats.data_file_length = 100e6;
   m_fake_tables["t4"]->file->stats.data_file_length = 1000e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2929,33 +3014,33 @@ TEST_F(HypergraphOptimizerTest, StraightJoinWithMoreTables) {
   EXPECT_EQ("(t3.x <> t4.x)", ItemToString(expr1->join_conditions[0]));
   EXPECT_EQ("(t4.y = t2.y)", ItemToString(expr1->equijoin_conditions[0]));
 
-  AccessPath *t4 = root->hash_join().inner;
+  AccessPath *t4 = root->hash_join().outer;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t4->type);
   EXPECT_EQ(m_fake_tables["t4"], t4->table_scan().table);
 
-  AccessPath *t1t2t3 = root->hash_join().outer;
+  AccessPath *t1t2t3 = root->hash_join().inner;
   ASSERT_EQ(AccessPath::HASH_JOIN, t1t2t3->type);
   RelationalExpression *expr2 = t1t2t3->hash_join().join_predicate->expr;
   EXPECT_EQ(RelationalExpression::STRAIGHT_INNER_JOIN, expr2->type);
   ASSERT_EQ(1, expr2->equijoin_conditions.size());
   EXPECT_EQ("(t1.y = t3.y)", ItemToString(expr2->equijoin_conditions[0]));
 
-  AccessPath *t3 = t1t2t3->hash_join().inner;
+  AccessPath *t3 = t1t2t3->hash_join().outer;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t3->type);
   EXPECT_EQ(m_fake_tables["t3"], t3->table_scan().table);
 
-  AccessPath *t1t2 = t1t2t3->hash_join().outer;
+  AccessPath *t1t2 = t1t2t3->hash_join().inner;
   ASSERT_EQ(AccessPath::HASH_JOIN, t1t2->type);
   RelationalExpression *expr3 = t1t2->hash_join().join_predicate->expr;
   EXPECT_EQ(RelationalExpression::STRAIGHT_INNER_JOIN, expr3->type);
   ASSERT_EQ(1, expr3->equijoin_conditions.size());
   EXPECT_EQ("(t1.x = t2.x)", ItemToString(expr3->equijoin_conditions[0]));
 
-  AccessPath *t2 = t1t2->hash_join().inner;
+  AccessPath *t2 = t1t2->hash_join().outer;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t2->type);
   EXPECT_EQ(m_fake_tables["t2"], t2->table_scan().table);
 
-  AccessPath *t1 = t1t2->hash_join().outer;
+  AccessPath *t1 = t1t2->hash_join().inner;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t1->type);
   EXPECT_EQ(m_fake_tables["t1"], t1->table_scan().table);
 }
@@ -2973,9 +3058,9 @@ TEST_F(HypergraphOptimizerTest, StraightJoinNotAssociative) {
   hton->secondary_engine_flags =
       MakeSecondaryEngineFlags(SecondaryEngineFlag::SUPPORTS_HASH_JOIN);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -2989,31 +3074,31 @@ TEST_F(HypergraphOptimizerTest, StraightJoinNotAssociative) {
   ASSERT_EQ(1, expr1->equijoin_conditions.size());
   EXPECT_EQ("(t3.y = t4.y)", ItemToString(expr1->equijoin_conditions[0]));
 
-  AccessPath *t4 = root->hash_join().inner;
+  AccessPath *t4 = root->hash_join().outer;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t4->type);
   EXPECT_EQ(m_fake_tables["t4"], t4->table_scan().table);
 
-  AccessPath *t1t2t3 = root->hash_join().outer;
+  AccessPath *t1t2t3 = root->hash_join().inner;
   ASSERT_EQ(AccessPath::HASH_JOIN, t1t2t3->type);
   RelationalExpression *expr2 = t1t2t3->hash_join().join_predicate->expr;
   EXPECT_EQ(RelationalExpression::STRAIGHT_INNER_JOIN, expr2->type);
 
-  AccessPath *t3 = t1t2t3->hash_join().inner;
+  AccessPath *t3 = t1t2t3->hash_join().outer;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t3->type);
   EXPECT_EQ(m_fake_tables["t3"], t3->table_scan().table);
 
-  AccessPath *t1t2 = t1t2t3->hash_join().outer;
+  AccessPath *t1t2 = t1t2t3->hash_join().inner;
   ASSERT_EQ(AccessPath::HASH_JOIN, t1t2->type);
   RelationalExpression *expr3 = t1t2->hash_join().join_predicate->expr;
   EXPECT_EQ(RelationalExpression::STRAIGHT_INNER_JOIN, expr3->type);
   ASSERT_EQ(1, expr3->equijoin_conditions.size());
   EXPECT_EQ("(t1.x = t2.x)", ItemToString(expr3->equijoin_conditions[0]));
 
-  AccessPath *t2 = t1t2->hash_join().inner;
+  AccessPath *t2 = t1t2->hash_join().outer;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t2->type);
   EXPECT_EQ(m_fake_tables["t2"], t2->table_scan().table);
 
-  AccessPath *t1 = t1t2->hash_join().outer;
+  AccessPath *t1 = t1t2->hash_join().inner;
   ASSERT_EQ(AccessPath::TABLE_SCAN, t1->type);
   EXPECT_EQ(m_fake_tables["t1"], t1->table_scan().table);
 }
@@ -3029,9 +3114,9 @@ TEST_F(HypergraphOptimizerTest, NullSafeEqualHashJoin) {
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3052,9 +3137,9 @@ TEST_F(HypergraphOptimizerTest, Cycle) {
       "t1,t2,t3 WHERE t1.x=t2.x AND t2.x=t3.x AND t1.x=t3.x",
       /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3075,9 +3160,9 @@ TEST_F(HypergraphOptimizerTest, CycleFromMultipleEquality) {
                              &query_block->m_table_nest,
                              &query_block->cond_value));
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3094,11 +3179,11 @@ TEST_F(HypergraphOptimizerTest, UniqueIndexCapsBothWays) {
   Fake_TABLE *t2 = m_fake_tables["t2"];
   t1->file->stats.records = 1000;
   t2->file->stats.records = 1000;
-  t1->create_index(t1->field[0], nullptr, /*unique=*/true);
+  t1->create_index(t1->field[0], HA_NOSAME);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3141,8 +3226,8 @@ TEST_F(HypergraphOptimizerTest, SubsumedSargableInDoubleCycle) {
   t3->file->stats.records = 100;
   t4->file->stats.records = 100;
   t4->file->stats.data_file_length = 100e6;
-  t3->create_index(t3->field[0], nullptr, /*unique=*/false);
-  t4->create_index(t4->field[0], t4->field[1], /*unique=*/false);
+  t3->create_index(t3->field[0]);
+  t4->create_index({t4->field[0], t4->field[1]});
 
   // Build multiple equalities from the WHERE condition.
   COND_EQUAL *cond_equal = nullptr;
@@ -3150,9 +3235,9 @@ TEST_F(HypergraphOptimizerTest, SubsumedSargableInDoubleCycle) {
                              &query_block->m_table_nest,
                              &query_block->cond_value));
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3210,9 +3295,9 @@ TEST_F(HypergraphOptimizerTest, SemiJoinPredicateNotRedundant) {
 
   // Create indexes on t1(y) and t4(y).
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[1], /*column2=*/nullptr, /*unique=*/false);
+  t1->create_index(t1->field[1]);
   Fake_TABLE *t4 = m_fake_tables["t4"];
-  t4->create_index(t4->field[1], /*column2=*/nullptr, /*unique=*/false);
+  t4->create_index(t4->field[1]);
 
   Fake_TABLE *t2 = m_fake_tables["t2"];
   Fake_TABLE *t3 = m_fake_tables["t3"];
@@ -3224,9 +3309,9 @@ TEST_F(HypergraphOptimizerTest, SemiJoinPredicateNotRedundant) {
   t3->file->stats.records = 1;
   t4->file->stats.records = 1000;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3262,11 +3347,11 @@ TEST_F(HypergraphOptimizerTest, SemiJoinPredicateNotRedundant2) {
 
   // Add an index on t2.x to make the join predicate t2.x = t3.x sargable.
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/false);
+  t2->create_index(t2->field[0]);
 
   // Add a unique index to make the join predicate t4.x = t5.x sargable.
   Fake_TABLE *t5 = m_fake_tables["t5"];
-  t5->create_index(t5->field[0], /*column2=*/nullptr, /*unique=*/true);
+  t5->create_index(t5->field[0], HA_NOSAME);
 
   // Set up table sizes so that nested loop joins with REF(t2) and EQ_REF(t5) as
   // the innermost tables are attractive.
@@ -3287,9 +3372,9 @@ TEST_F(HypergraphOptimizerTest, SemiJoinPredicateNotRedundant2) {
   EXPECT_EQ(nullptr, eq->const_arg());
   EXPECT_EQ(4, eq->get_fields().size());
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3334,7 +3419,7 @@ TEST_F(HypergraphOptimizerTest, SemijoinToInnerWithSargable) {
   Fake_TABLE *t2 = m_fake_tables["t2"];
   Fake_TABLE *t3 = m_fake_tables["t3"];
 
-  t2->create_index(t2->field[0], /*column2=*/nullptr, /*unique=*/false);
+  t2->create_index(t2->field[0]);
 
   t1->file->stats.records = 10;
   t2->file->stats.records = 100;
@@ -3351,9 +3436,9 @@ TEST_F(HypergraphOptimizerTest, SemijoinToInnerWithSargable) {
   EXPECT_EQ(nullptr, eq->const_arg());
   EXPECT_EQ(3, eq->get_fields().size());
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3391,9 +3476,9 @@ TEST_F(HypergraphOptimizerTest, SemijoinToInnerWithDegenerateJoinCondition) {
   m_fake_tables["t2"]->file->stats.records = 1000000;
   m_fake_tables["t2"]->file->stats.data_file_length = 1e8;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3455,9 +3540,9 @@ TEST_F(HypergraphOptimizerTest, HyperpredicatesConsistentRowEstimates) {
                              &query_block->cond_value));
   EXPECT_EQ(2, cond_equal->current_level.size());
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3489,9 +3574,9 @@ TEST_F(HypergraphOptimizerTest, SwitchesOrderToMakeSafeForRowid) {
       "SELECT t1.y FROM t1 JOIN t2 ON t1.x=t2.x ORDER BY t1.y, t2.y",
       /*nullable=*/true);
 
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
+  t1->create_index(t1->field[0]);
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[0], nullptr, /*unique=*/false);
+  t2->create_index(t2->field[0]);
 
   // The normal case for rowid-unsafe tables are LATERAL derived tables,
   // but since we don't support derived tables in the unit test,
@@ -3512,9 +3597,9 @@ TEST_F(HypergraphOptimizerTest, SwitchesOrderToMakeSafeForRowid) {
   m_fake_tables["t1"]->file->stats.records = 99;
   m_fake_tables["t2"]->file->stats.records = 100;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3559,9 +3644,9 @@ TEST_F(HypergraphOptimizerTest, MultiPredicateHashJoin) {
     m_fake_tables["t3"]->file->stats.records = 3000;
     m_fake_tables["t3"]->file->stats.data_file_length = 3e5;
 
-    string trace;
-    AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-    SCOPED_TRACE(trace);  // Prints out the trace on failure.
+    TraceGuard trace(m_thd);
+    AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+    SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
     // Prints out the query plan on failure.
     SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                                 /*is_root_of_join=*/true));
@@ -3617,9 +3702,9 @@ TEST_F(HypergraphOptimizerTest, HashJoinWithEquijoinHyperpredicate) {
   m_fake_tables["t3"]->file->stats.records = 10;
   m_fake_tables["t3"]->file->stats.data_file_length = 10e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3661,9 +3746,9 @@ TEST_F(HypergraphOptimizerTest, HashJoinWithNonEquijoinHyperpredicate) {
   m_fake_tables["t3"]->file->stats.records = 10;
   m_fake_tables["t3"]->file->stats.data_file_length = 10e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3701,10 +3786,9 @@ TEST_F(HypergraphOptimizerTest, HashJoinWithSubqueryPredicate) {
        expr != nullptr; expr = expr->next_query_expression()) {
     Query_block *subquery = expr->first_query_block();
     ResolveQueryBlock(m_thd, subquery, /*nullable=*/true, &m_fake_tables);
-    string trace;
-    AccessPath *subquery_path =
-        FindBestQueryPlanAndFinalize(m_thd, subquery, &trace);
-    SCOPED_TRACE(trace);  // Prints out the trace on failure.
+    TraceGuard trace(m_thd);
+    AccessPath *subquery_path = FindBestQueryPlanAndFinalize(m_thd, subquery);
+    SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
     ASSERT_NE(nullptr, subquery_path);
   }
 
@@ -3721,9 +3805,9 @@ TEST_F(HypergraphOptimizerTest, HashJoinWithSubqueryPredicate) {
   m_fake_tables["t3"]->file->stats.records = 10;
   m_fake_tables["t3"]->file->stats.data_file_length = 10e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
 
   // The top-level path should be a filter access path with a
   // subquery. The subquery should not be moved to the join
@@ -3791,15 +3875,15 @@ TEST_P(HypergraphFullTextTest, FullTextSearch) {
   // CREATE FULLTEXT INDEX idx ON t1(x).
   down_cast<Mock_HANDLER *>(t1->file)->set_ha_table_flags(
       t1->file->ha_table_flags() | HA_CAN_FULLTEXT);
-  t1->create_index(&column1, /*column2=*/nullptr, ulong{HA_FULLTEXT});
+  t1->create_index(&column1, HA_FULLTEXT);
 
   Query_block *query_block = ParseAndResolve(GetParam().query,
                                              /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3906,7 +3990,7 @@ TEST_F(HypergraphOptimizerTest, FullTextSearchNoHashJoin) {
   // CREATE FULLTEXT INDEX idx ON t1(x).
   down_cast<Mock_HANDLER *>(t1->file)->set_ha_table_flags(
       t1->file->ha_table_flags() | HA_CAN_FULLTEXT);
-  t1->create_index(&column1, /*column2=*/nullptr, ulong{HA_FULLTEXT});
+  t1->create_index(&column1, HA_FULLTEXT);
 
   Query_block *query_block = ParseAndResolve(
       "SELECT MATCH(t1.x) AGAINST ('abc') FROM t1, t2 WHERE t1.x = t2.x",
@@ -3917,9 +4001,9 @@ TEST_F(HypergraphOptimizerTest, FullTextSearchNoHashJoin) {
   m_fake_tables["t1"]->file->stats.records = 1000;
   m_fake_tables["t2"]->file->stats.records = 1000;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3941,7 +4025,7 @@ TEST_F(HypergraphOptimizerTest, FullTextCanSkipRanking) {
   // CREATE FULLTEXT INDEX idx ON t1(x).
   down_cast<Mock_HANDLER *>(t1->file)->set_ha_table_flags(
       t1->file->ha_table_flags() | HA_CAN_FULLTEXT);
-  t1->create_index(&column1, /*column2=*/nullptr, ulong{HA_FULLTEXT});
+  t1->create_index(&column1, HA_FULLTEXT);
 
   Query_block *query_block = ParseAndResolve(
       "SELECT MATCH(t1.x) AGAINST ('a') FROM t1 WHERE "
@@ -3951,9 +4035,9 @@ TEST_F(HypergraphOptimizerTest, FullTextCanSkipRanking) {
       /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -3995,7 +4079,7 @@ TEST_F(HypergraphOptimizerTest, FullTextAvoidDescSort) {
   // CREATE FULLTEXT INDEX idx ON t1(x).
   down_cast<Mock_HANDLER *>(t1->file)->set_ha_table_flags(
       t1->file->ha_table_flags() | HA_CAN_FULLTEXT);
-  t1->create_index(&column1, /*column2=*/nullptr, ulong{HA_FULLTEXT});
+  t1->create_index(&column1, HA_FULLTEXT);
 
   Query_block *query_block = ParseAndResolve(
       "SELECT t1.x FROM t1 WHERE MATCH(t1.x) AGAINST ('abc') "
@@ -4003,9 +4087,9 @@ TEST_F(HypergraphOptimizerTest, FullTextAvoidDescSort) {
       /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4028,7 +4112,7 @@ TEST_F(HypergraphOptimizerTest, FullTextAscSort) {
   // CREATE FULLTEXT INDEX idx ON t1(x).
   down_cast<Mock_HANDLER *>(t1->file)->set_ha_table_flags(
       t1->file->ha_table_flags() | HA_CAN_FULLTEXT);
-  t1->create_index(&column1, /*column2=*/nullptr, ulong{HA_FULLTEXT});
+  t1->create_index(&column1, HA_FULLTEXT);
 
   Query_block *query_block = ParseAndResolve(
       "SELECT t1.x FROM t1 WHERE MATCH(t1.x) AGAINST ('abc') "
@@ -4036,9 +4120,9 @@ TEST_F(HypergraphOptimizerTest, FullTextAscSort) {
       /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4061,16 +4145,16 @@ TEST_F(HypergraphOptimizerTest, FullTextDescSortNoPredicate) {
   // CREATE FULLTEXT INDEX idx ON t1(x).
   down_cast<Mock_HANDLER *>(t1->file)->set_ha_table_flags(
       t1->file->ha_table_flags() | HA_CAN_FULLTEXT);
-  t1->create_index(&column1, /*column2=*/nullptr, ulong{HA_FULLTEXT});
+  t1->create_index(&column1, HA_FULLTEXT);
 
   Query_block *query_block = ParseAndResolve(
       "SELECT t1.x FROM t1 ORDER BY MATCH(t1.x) AGAINST ('abc') DESC",
       /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4086,9 +4170,9 @@ TEST_F(HypergraphOptimizerTest, DistinctIsDoneAsSort) {
   Query_block *query_block =
       ParseAndResolve("SELECT DISTINCT t1.y, t1.x FROM t1", /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4110,9 +4194,9 @@ TEST_F(HypergraphOptimizerTest, DistinctIsSubsumedByGroup) {
       "SELECT DISTINCT t1.y, t1.x, 3 FROM t1 GROUP BY t1.x, t1.y",
       /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4131,9 +4215,9 @@ TEST_F(HypergraphOptimizerTest, DistinctWithOrderBy) {
                       /*nullable=*/true);
   m_thd->variables.sql_mode |= MODE_ONLY_FULL_GROUP_BY;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4163,9 +4247,9 @@ TEST_F(HypergraphOptimizerTest, DistinctSubsumesOrderBy) {
       ParseAndResolve("SELECT DISTINCT t1.y, t1.x FROM t1 ORDER BY t1.x",
                       /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4183,6 +4267,35 @@ TEST_F(HypergraphOptimizerTest, DistinctSubsumesOrderBy) {
   query_block->cleanup(/*full=*/true);
 }
 
+TEST_F(HypergraphOptimizerTest, DistinctWithEquivalence) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT DISTINCT t1.x, t2.x FROM t1, t2 WHERE t1.x = t2.x",
+      /*nullable=*/true);
+
+  m_fake_tables["t1"]->file->stats.records = 100;
+  m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
+  m_fake_tables["t2"]->file->stats.records = 100;
+  m_fake_tables["t2"]->file->stats.data_file_length = 1e6;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // Expect a sort with duplicate removal. Because of the equivalence in the
+  // join condition, it should suffice to sort on one column.
+  ASSERT_EQ(AccessPath::SORT, root->type);
+  EXPECT_TRUE(root->sort().remove_duplicates);
+  const ORDER *order = root->sort().order;
+  // Sort on exactly one column.
+  ASSERT_NE(nullptr, order);
+  EXPECT_EQ(nullptr, order->next);
+  // The result should be sorted on t1.x or on t2.x. We don't care which.
+  EXPECT_THAT(ItemToString(*order->item), AnyOf("t1.x", "t2.x"));
+}
+
 TEST_F(HypergraphOptimizerTest, SortAheadSingleTable) {
   Query_block *query_block =
       ParseAndResolve("SELECT t1.x, t2.x FROM t1, t2 ORDER BY t2.x",
@@ -4193,9 +4306,9 @@ TEST_F(HypergraphOptimizerTest, SortAheadSingleTable) {
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4233,9 +4346,9 @@ TEST_F(HypergraphOptimizerTest, CannotSortAheadBeforeBothTablesAreAvailable) {
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4267,9 +4380,9 @@ TEST_F(HypergraphOptimizerTest, SortAheadTwoTables) {
   m_fake_tables["t2"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t3"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4315,9 +4428,9 @@ TEST_F(HypergraphOptimizerTest, NoSortAheadOnNondeterministicFunction) {
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4340,9 +4453,9 @@ TEST_F(HypergraphOptimizerTest, SortAheadDueToEquivalence) {
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4389,17 +4502,16 @@ TEST_F(HypergraphOptimizerTest, SortAheadDueToUniqueIndex) {
   // Create a unique index on t2.x. This means that t2.y is now
   // redundant, and can (will) be reduced away when creating the homogenized
   // order.
-  m_fake_tables["t2"]->create_index(m_fake_tables["t2"]->field[0],
-                                    /*column2=*/nullptr, /*unique=*/true);
+  m_fake_tables["t2"]->create_index(m_fake_tables["t2"]->field[0], HA_NOSAME);
 
   m_fake_tables["t1"]->file->stats.records = 200;
   m_fake_tables["t2"]->file->stats.records = 10000;
   m_fake_tables["t1"]->file->stats.data_file_length = 2e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4444,17 +4556,16 @@ TEST_F(HypergraphOptimizerTest, NoSortAheadOnNonUniqueIndex) {
   // and we should resort to sorting the largest table (t2).
   // The rest of the test is equal to SortAheadDueToUniqueIndex,
   // and we don't really verify it.
-  m_fake_tables["t2"]->create_index(m_fake_tables["t2"]->field[0],
-                                    /*column2=*/nullptr, /*unique=*/false);
+  m_fake_tables["t2"]->create_index(m_fake_tables["t2"]->field[0]);
 
   m_fake_tables["t1"]->file->stats.records = 200;
   m_fake_tables["t2"]->file->stats.records = 10000;
   m_fake_tables["t1"]->file->stats.data_file_length = 2e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4482,14 +4593,13 @@ TEST_F(HypergraphOptimizerTest, ElideSortDueToBaseFilters) {
       "SELECT t1.x, t1.y FROM t1 WHERE t1.x=3 ORDER BY t1.x, t1.y",
       /*nullable=*/true);
 
-  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0],
-                                    /*column2=*/nullptr, /*unique=*/true);
+  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0], HA_NOSAME);
   m_fake_tables["t1"]->file->stats.records = 100;
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4507,16 +4617,15 @@ TEST_F(HypergraphOptimizerTest, ElideSortDueToDelayedFilters) {
       "ORDER BY t2.x, t2.y ",
       /*nullable=*/true);
 
-  m_fake_tables["t2"]->create_index(m_fake_tables["t2"]->field[0],
-                                    /*column2=*/nullptr, /*unique=*/true);
+  m_fake_tables["t2"]->create_index(m_fake_tables["t2"]->field[0], HA_NOSAME);
   m_fake_tables["t1"]->file->stats.records = 100;
   m_fake_tables["t2"]->file->stats.records = 10000;
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4540,19 +4649,13 @@ TEST_F(HypergraphOptimizerTest, ElideSortDueToIndex) {
       ParseAndResolve("SELECT t1.x FROM t1 ORDER BY t1.x DESC",
                       /*nullable=*/true);
 
-  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0],
-                                    /*column2=*/nullptr, /*unique=*/false);
+  CreateOrderedIndex({m_fake_tables["t1"]->field[0]});
   m_fake_tables["t1"]->file->stats.records = 100;
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
 
-  // Mark the index as returning ordered results.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_ORDER | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4567,14 +4670,88 @@ TEST_F(HypergraphOptimizerTest, ElideSortDueToIndex) {
   query_block->cleanup(/*full=*/true);
 }
 
+TEST_F(HypergraphOptimizerTest, ElideSortDueToSpatialIndex) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT t1.x from t1 ORDER by ST_Distance(t1.x, POINT(0, 0))",
+      /*nullable=*/true);
+
+  CreateOrderedIndex({m_fake_tables["t1"]->field[0]}, HA_SPATIAL);
+  m_fake_tables["t1"]->file->stats.records = 100;
+  m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
+
+  auto hton = new (m_thd->mem_root) Fake_handlerton;
+  hton->flags = HTON_SUPPORTS_DISTANCE_SCAN;
+  m_fake_tables["t1"]->file->ht = hton;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              true));  //=is_root_of_join
+
+  // The sort should be elided entirely due to index.
+  ASSERT_EQ(AccessPath::INDEX_DISTANCE_SCAN, root->type);
+  EXPECT_STREQ("t1", root->index_distance_scan().table->alias);
+  EXPECT_EQ(0, root->index_distance_scan().idx);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, IndexDistanceScanMulti) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT RANK() OVER (ORDER by ST_Distance(t1.x, POINT(0, 0))),\
+              RANK() OVER (ORDER by ST_Distance(t1.x, POINT(5, 5))),\
+              ROW_NUMBER() OVER (ORDER BY ST_DISTANCE(t1.x, POINT(5, 5)))\
+              FROM t1",
+      /*nullable=*/true);
+
+  CreateOrderedIndex({m_fake_tables["t1"]->field[0]}, HA_SPATIAL);
+  m_fake_tables["t1"]->file->stats.records = 100;
+  m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
+
+  auto hton = new (m_thd->mem_root) Fake_handlerton;
+  hton->flags = HTON_SUPPORTS_DISTANCE_SCAN;
+  m_fake_tables["t1"]->file->ht = hton;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              true));  //=is_root_of_join
+  // Check that the optimizer considers both orders
+  std::smatch matches1;
+  std::string trace_str{trace.contents().ToString()};
+  const auto num_pattern{
+      []() { return std::string("([0-9]+)([.]([0-9]+))?(e[+-]([0-9]+))?"); }};
+
+  std::regex_search(trace_str.cbegin(), trace_str.cend(), matches1,
+                    std::regex(("INDEX_DISTANCE_SCAN, cost=" + num_pattern() +
+                                ", init_cost=" + num_pattern() +
+                                ", rows=" + num_pattern() + ", order=1")
+                                   .c_str()));
+
+  EXPECT_GT(matches1.size(), 0);
+  std::smatch matches2;
+  std::regex_search(trace_str.cbegin(), trace_str.cend(), matches2,
+                    std::regex(("INDEX_DISTANCE_SCAN, cost=" + num_pattern() +
+                                ", init_cost=" + num_pattern() +
+                                ", rows=" + num_pattern() + ", order=2")
+                                   .c_str()));
+  EXPECT_GT(matches2.size(), 0);
+
+  query_block->cleanup(/*full=*/true);
+}
+
 TEST_F(HypergraphOptimizerTest, ElideConstSort) {
   Query_block *query_block =
       ParseAndResolve("SELECT t1.x FROM t1 ORDER BY 'a', 'b', CONCAT('c')",
                       /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4591,9 +4768,9 @@ TEST_F(HypergraphOptimizerTest, ElideRedundantPartsOfSortKey) {
       "ORDER BY t1.x, t2.x, 'abc', t1.y, t2.y",
       /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4623,9 +4800,9 @@ TEST_F(HypergraphOptimizerTest, ElideRedundantSortAfterGrouping) {
       "GROUP BY t1.x ORDER BY t2.x",
       /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4638,15 +4815,38 @@ TEST_F(HypergraphOptimizerTest, ElideRedundantSortAfterGrouping) {
   EXPECT_EQ(nullptr, query_block->join->order.order);
 }
 
+TEST_F(HypergraphOptimizerTest, NoMaterializationForElidedSortAfterGrouping) {
+  Query_block *query_block =
+      ParseAndResolve("SELECT SUM(t1.y) FROM t1 GROUP BY t1.x ORDER BY t1.x",
+                      /*nullable=*/true);
+
+  CreateOrderedIndex({m_fake_tables["t1"]->field[0]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // Expect that there is no materialization step after the aggregation. There
+  // usually is one when sorting after aggregation, but it's not needed when the
+  // sorting is elided.
+  ASSERT_EQ(AccessPath::AGGREGATE, root->type);
+  ASSERT_EQ(AccessPath::INDEX_SCAN, root->aggregate().child->type);
+  EXPECT_TRUE(root->aggregate().child->index_scan().use_order);
+  EXPECT_FALSE(root->aggregate().child->index_scan().reverse);
+}
+
 TEST_F(HypergraphOptimizerTest, ElideRedundantSortForDistinct) {
   Query_block *query_block = ParseAndResolve(
       "SELECT DISTINCT t2.x FROM t1 LEFT JOIN t2 ON t1.x = t2.x "
       "WHERE t2.x IS NULL",
       /*nullable=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4662,6 +4862,38 @@ TEST_F(HypergraphOptimizerTest, ElideRedundantSortForDistinct) {
             ItemToString(root->limit_offset().child->filter().condition));
 }
 
+TEST_F(HypergraphOptimizerTest, NoMaterializationForElidedSortForDistinct) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT DISTINCT t1.x FROM t1 GROUP BY t1.x, t1.y HAVING COUNT(*) < 10",
+      /*nullable=*/true);
+
+  // Add an index that can be used to get the desired ordering for GROUP BY
+  // without sorting.
+  CreateOrderedIndex(
+      {m_fake_tables["t1"]->field[0], m_fake_tables["t1"]->field[1]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // Expect that there is no materialization step below the REMOVE_DUPLICATES
+  // step. We'd need that if we had to sort the aggregated results in order to
+  // remove the duplicates, but since the sort is elided, a materialization step
+  // is unnecessary.
+  ASSERT_EQ(AccessPath::REMOVE_DUPLICATES, root->type);
+  AccessPath *child = root->remove_duplicates().child;
+  ASSERT_EQ(AccessPath::FILTER, child->type);
+  child = child->filter().child;
+  ASSERT_EQ(AccessPath::AGGREGATE, child->type);
+  child = child->aggregate().child;
+  ASSERT_EQ(AccessPath::INDEX_SCAN, child->type);
+  EXPECT_TRUE(child->index_scan().use_order);
+  EXPECT_FALSE(child->index_scan().reverse);
+}
+
 // This case is tricky; the order given by the index is (x, y), but the
 // interesting order is just (y). Normally, we only grow orders into interesting
 // orders, but here, we have to reduce them as well.
@@ -4670,20 +4902,14 @@ TEST_F(HypergraphOptimizerTest, IndexTailGetsUsed) {
       ParseAndResolve("SELECT t1.x, t1.y FROM t1 WHERE t1.x=42 ORDER BY t1.y",
                       /*nullable=*/true);
 
-  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0],
-                                    m_fake_tables["t1"]->field[1],
-                                    /*unique=*/false);
-  m_fake_tables["t1"]->file->stats.records = 100;
-  m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  CreateOrderedIndex({t1->field[0], t1->field[1]});
+  t1->file->stats.records = 100;
+  t1->file->stats.data_file_length = 1e6;
 
-  // Mark the index as returning ordered results.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_ORDER | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4708,9 +4934,9 @@ TEST_F(HypergraphOptimizerTest, SortAheadByCoverToElideSortForGroup) {
   m_fake_tables["t2"]->file->stats.records = 100;
   m_fake_tables["t2"]->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4742,20 +4968,13 @@ TEST_F(HypergraphOptimizerTest, SatisfyGroupByWithIndex) {
   Query_block *query_block =
       ParseAndResolve("SELECT t1.x FROM t1 GROUP BY t1.x",
                       /*nullable=*/true);
-
-  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0],
-                                    /*column2=*/nullptr, /*unique=*/false);
+  CreateOrderedIndex({m_fake_tables["t1"]->field[0]});
   m_fake_tables["t1"]->file->stats.records = 100;
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
 
-  // Mark the index as returning ordered results.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_ORDER | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4775,20 +4994,14 @@ TEST_F(HypergraphOptimizerTest, SatisfyGroupingForDistinctWithIndex) {
       ParseAndResolve("SELECT DISTINCT t1.y, t1.x FROM t1",
                       /*nullable=*/true);
 
-  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0],
-                                    m_fake_tables["t1"]->field[1],
-                                    /*unique=*/false);
+  CreateOrderedIndex(
+      {m_fake_tables["t1"]->field[0], m_fake_tables["t1"]->field[1]});
   m_fake_tables["t1"]->file->stats.records = 100;
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
 
-  // Mark the index as returning ordered results.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_ORDER | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4815,17 +5028,15 @@ TEST_F(HypergraphOptimizerTest, SemiJoinThroughLooseScan) {
   // Make t1 large and with a relevant index, and t2 small
   // and with none. The best plan then will be to remove
   // duplicates from t2 and then do lookups into t1.
-  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0],
-                                    /*column2=*/nullptr,
-                                    /*unique=*/true);
+  m_fake_tables["t1"]->create_index(m_fake_tables["t1"]->field[0], HA_NOSAME);
   m_fake_tables["t1"]->file->stats.records = 1000000;
   m_fake_tables["t1"]->file->stats.data_file_length = 10000e6;
   m_fake_tables["t2"]->file->stats.records = 100;
   m_fake_tables["t2"]->file->stats.data_file_length = 1e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4877,9 +5088,9 @@ TEST_F(HypergraphOptimizerTest, ImpossibleJoinConditionGivesZeroRows) {
   m_fake_tables["t2"]->file->stats.records = 1000;
   m_fake_tables["t3"]->file->stats.records = 1000;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4921,13 +5132,11 @@ TEST_F(HypergraphOptimizerTest, ImpossibleWhereInJoinGivesZeroRows) {
   // Create an index on t2.y so that the range optimizer analyzes the WHERE
   // clause and detects that it always evaluates to FALSE.
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[1],
-                   /*column2=*/nullptr,
-                   /*unique=*/false);
+  t2->create_index(t2->field[1]);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -4949,18 +5158,42 @@ TEST_F(HypergraphOptimizerTest, ImpossibleRangeInJoinWithFilterAndAggregation) {
   // Create an index on t2.y so that the range optimizer analyzes the WHERE
   // clause and detects that it always evaluates to FALSE.
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[1],
-                   /*column2=*/nullptr,
-                   /*unique=*/false);
+  t2->create_index(t2->field[1]);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
 
   EXPECT_EQ(AccessPath::ZERO_ROWS_AGGREGATED, root->type);
+}
+
+TEST_F(HypergraphOptimizerTest, FullTableCoveringIndexScan) {
+  Query_block *query_block = ParseAndResolve("SELECT 1 FROM t1",
+                                             /*nullable=*/false);
+
+  // Set up a covering index with much smaller data volume than the table.
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 100000;
+  t1->file->stats.data_file_length = 100e6;
+  t1->file->stats.block_size = 4096;
+  const int index = t1->create_index(t1->field[0], HA_NOSAME);
+  t1->covering_keys.clear_all();
+  t1->covering_keys.set_bit(index);
+  t1->s->key_info = t1->key_info;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::INDEX_SCAN, root->type);
+  EXPECT_STREQ("t1", root->index_scan().table->alias);
+  EXPECT_EQ(index, root->index_scan().idx);
 }
 
 TEST_F(HypergraphOptimizerTest, SimpleRangeScan) {
@@ -4969,16 +5202,11 @@ TEST_F(HypergraphOptimizerTest, SimpleRangeScan) {
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
   t1->file->stats.records = 1000;
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
+  CreateOrderedIndex({t1->field[0]});
 
-  // Mark the index as supporting range scans.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5009,16 +5237,11 @@ TEST_F(HypergraphOptimizerTest, ComplexMultipartRangeScan) {
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
   t1->file->stats.records = 1000;
-  t1->create_index(t1->field[0], t1->field[1], /*unique=*/false);
+  CreateOrderedIndex({t1->field[0], t1->field[1]});
 
-  // Mark the index as supporting range scans.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5081,17 +5304,11 @@ TEST_F(HypergraphOptimizerTest, RangeScanWithReverseOrdering) {
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
   t1->file->stats.records = 1000;
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
+  CreateOrderedIndex({t1->field[0]});
 
-  // Mark the index as supporting range scans _and_ ordering.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(
-          Return(HA_READ_RANGE | HA_READ_ORDER | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5115,14 +5332,11 @@ TEST_F(HypergraphOptimizerTest, ImpossibleRange) {
                       /*nullable=*/false);
 
   // We need an index, or we would never analyze ranges on t1.x.
-  Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
-  ON_CALL(*down_cast<Mock_HANDLER *>(t1->file), index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
+  CreateOrderedIndex({m_fake_tables["t1"]->field[0]});
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5152,14 +5366,11 @@ TEST_F(HypergraphOptimizerTest, ImpossibleRangeWithOverflowBitset) {
 
   // Add an index on t1.x so that we try a range scan on the
   // impossible range (x >= 2 AND x <= 1).
-  Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
-  ON_CALL(*down_cast<Mock_HANDLER *>(t1->file), index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
+  CreateOrderedIndex({m_fake_tables["t1"]->field[0]});
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -5175,17 +5386,12 @@ TEST_F(HypergraphOptimizerTest, IndexMerge) {
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
   t1->file->stats.records = 1000;
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
-  t1->create_index(t1->field[1], nullptr, /*unique=*/false);
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
 
-  // Mark the index as supporting range scans.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5219,17 +5425,12 @@ TEST_F(HypergraphOptimizerTest, IndexMergeSubsumesOnlyOnePredicate) {
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
   t1->file->stats.records = 1000;
-  t1->create_index(t1->field[0], nullptr, /*unique=*/false);
-  t1->create_index(t1->field[1], nullptr, /*unique=*/false);
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
 
-  // Mark the index as supporting range scans.
-  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-          index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5258,13 +5459,9 @@ TEST_F(HypergraphOptimizerTest, DontSubsumeIndexMergePredicateInRangeScan) {
   t1->file->stats.data_file_length = 1e6;
 
   // Create indexes on (x, y) and on (y).
-  EXPECT_EQ(0, t1->create_index(t1->field[0], t1->field[1], /*unique=*/false));
-  EXPECT_EQ(1, t1->create_index(t1->field[1], nullptr, /*unique=*/false));
-
-  // Mark the indexes as supporting range scans.
+  EXPECT_EQ(0, CreateOrderedIndex({t1->field[0], t1->field[1]}));
+  EXPECT_EQ(1, CreateOrderedIndex({t1->field[1]}));
   Mock_HANDLER *handler = down_cast<Mock_HANDLER *>(t1->file);
-  EXPECT_CALL(*handler, index_flags)
-      .WillRepeatedly(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
 
   // Report smaller ranges in the (x, y) index than in the (y) index, so that a
   // range scan on (x, y) is preferred to a range scan on (y). And also
@@ -5272,9 +5469,9 @@ TEST_F(HypergraphOptimizerTest, DontSubsumeIndexMergePredicateInRangeScan) {
   EXPECT_CALL(*handler, records_in_range(0, _, _)).WillRepeatedly(Return(1));
   EXPECT_CALL(*handler, records_in_range(1, _, _)).WillRepeatedly(Return(10));
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5301,10 +5498,10 @@ TEST_F(HypergraphOptimizerTest, DontSubsumeIndexMergePredicateInRangeScan) {
 TEST_F(HypergraphOptimizerTest, DontSubsumeRangePredicateInIndexMerge) {
   // Always false condition: t1.x BETWEEN 5 AND 0
   // Possible range scan: t1.x IS NULL
-  // Possible index merge: t1.y = 2 OR t1.z = 3
+  // Possible index merge: t1.y > 2 OR t1.z > 3
   Query_block *query_block = ParseAndResolve(
       "SELECT 1 FROM t1 WHERE t1.x BETWEEN 5 AND 0 "
-      "OR (t1.x IS NULL AND (t1.y = 2 OR t1.z = 3))",
+      "OR (t1.x IS NULL AND (t1.y > 2 OR t1.z > 3))",
       /*nullable=*/true);
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
@@ -5313,13 +5510,10 @@ TEST_F(HypergraphOptimizerTest, DontSubsumeRangePredicateInIndexMerge) {
 
   // Create indexes on x, y and z.
   for (int i = 0; i < 3; ++i) {
-    EXPECT_EQ(i, t1->create_index(t1->field[i], nullptr));
+    EXPECT_EQ(i, CreateOrderedIndex({t1->field[i]}));
   }
 
-  // Mark the indexes as supporting range scans.
   Mock_HANDLER *handler = down_cast<Mock_HANDLER *>(t1->file);
-  EXPECT_CALL(*handler, index_flags)
-      .WillRepeatedly(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
 
   // Make the index on x less selective than the other indexes, so that an index
   // merge on y and z is preferred to an index range scan on x.
@@ -5327,9 +5521,9 @@ TEST_F(HypergraphOptimizerTest, DontSubsumeRangePredicateInIndexMerge) {
   EXPECT_CALL(*handler, records_in_range(1, _, _)).WillRepeatedly(Return(10));
   EXPECT_CALL(*handler, records_in_range(2, _, _)).WillRepeatedly(Return(10));
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5343,8 +5537,39 @@ TEST_F(HypergraphOptimizerTest, DontSubsumeRangePredicateInIndexMerge) {
   // we get the entire WHERE condition for now.
   EXPECT_EQ(
       "((t1.x between 5 and 0) or "
-      "((t1.x is null) and ((t1.y = 2) or (t1.z = 3))))",
+      "((t1.x is null) and ((t1.y > 2) or (t1.z > 3))))",
       ItemToString(root->filter().condition));
+}
+
+TEST_F(HypergraphOptimizerTest, DontSubsumeConjunctionOfIndexMerges) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE "
+      "(t1.x < 0 OR t1.y < 0) OR "
+      "((t1.x > 100 OR t1.y > 0) AND (t1.y <> 1 OR t1.z > 0))",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  t1->file->stats.data_file_length = 1e6;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // Since an index merge plan cannot exactly represent the predicate due to the
+  // AND inside the OR, there must be a filter on top of the index merge.
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  EXPECT_EQ(
+      "((t1.x < 0) or (t1.y < 0) or "
+      "(((t1.x > 100) or (t1.y > 0)) and ((t1.y <> 1) or (t1.z > 0))))",
+      ItemToString(root->filter().condition));
+  EXPECT_EQ(AccessPath::INDEX_MERGE, root->filter().child->type);
 }
 
 TEST_F(HypergraphOptimizerTest, IndexMergePrefersNonCPKToOrderByPrimaryKey) {
@@ -5358,23 +5583,17 @@ TEST_F(HypergraphOptimizerTest, IndexMergePrefersNonCPKToOrderByPrimaryKey) {
 
     Fake_TABLE *t1 = m_fake_tables["t1"];
     t1->file->stats.records = 1000;
-    t1->s->primary_key =
-        t1->create_index(t1->field[0], nullptr, /*unique=*/false);
-    t1->create_index(t1->field[1], nullptr, /*unique=*/false);
+    t1->s->primary_key = CreateOrderedIndex({t1->field[0]});
+    CreateOrderedIndex({t1->field[1]});
 
-    // Mark the index as supporting range scans, being ordered, and being
-    // clustered.
-    ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
-            index_flags(_, _, _))
-        .WillByDefault(Return(HA_READ_RANGE | HA_READ_ORDER | HA_READ_NEXT |
-                              HA_READ_PREV));
+    // Mark the primary index as clustered.
     ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
             primary_key_is_clustered())
         .WillByDefault(Return(true));
 
-    string trace;
-    AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-    SCOPED_TRACE(trace);  // Prints out the trace on failure.
+    TraceGuard trace(m_thd);
+    AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+    SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
     // Prints out the query plan on failure.
     SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                                 /*is_root_of_join=*/true));
@@ -5404,10 +5623,8 @@ TEST_F(HypergraphOptimizerTest, IndexMergeInexactRangeWithOverflowBitset) {
   Fake_TABLE *t1 = new (m_thd->mem_root) Fake_TABLE(&x, &y, &z);
   t1->file->stats.records = 10000;
   t1->file->stats.data_file_length = 1e6;
-  t1->create_index(&x, nullptr, /*unique=*/false);
-  t1->create_index(&y, nullptr, /*unique=*/false);
-  ON_CALL(*down_cast<Mock_HANDLER *>(t1->file), index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
+  CreateOrderedIndex({&x});
+  CreateOrderedIndex({&y});
   m_fake_tables["t1"] = t1;
 
   // We want to test a query that does an inexact range scan (achieved by having
@@ -5425,9 +5642,9 @@ TEST_F(HypergraphOptimizerTest, IndexMergeInexactRangeWithOverflowBitset) {
   Query_block *query_block = ParseAndResolve(query.c_str(),
                                              /*nullable=*/false);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -5439,6 +5656,455 @@ TEST_F(HypergraphOptimizerTest, IndexMergeInexactRangeWithOverflowBitset) {
   // Since an inexact range predicate is used, all predicates should be kept in
   // the filter node on top.
   EXPECT_EQ(predicates, ItemToString(root->filter().condition));
+}
+
+TEST_F(HypergraphOptimizerTest, RORUnionInexactRangeWithOverflowBitset) {
+  // We want to test a query that uses an inexact ROR Union, achieved by having
+  // a predicate on a non-indexed column (t1.w) AND-ed to one of the predicates
+  // inside the OR that gets translated to a ROR Union. We also want to have so
+  // many predicates that they don't fit in an inlined OverflowBitset (at least
+  // 64 predicates).
+  constexpr int number_of_predicates = 70;
+  string predicates = "(((t1.x = 1) or ((t1.y = 3) and (t1.w = 4)))";
+  for (int i = 1; i < number_of_predicates; ++i) {
+    predicates += " and (t1.z <> " + to_string(i) + ')';
+  }
+  predicates += ')';
+
+  string query = "SELECT 1 FROM t1 WHERE " + predicates;
+  Query_block *query_block = ParseAndResolve(query.c_str(),
+                                             /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  t1->file->stats.data_file_length = 1e6;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  m_fake_tables["t1"] = t1;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  ASSERT_NE(nullptr, root);
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  EXPECT_EQ(AccessPath::ROWID_UNION, root->filter().child->type);
+
+  // Since an inexact ROWID_UNION is used, all predicates should be kept in the
+  // filter node on top.
+  EXPECT_EQ(predicates, ItemToString(root->filter().condition));
+}
+
+TEST_F(HypergraphOptimizerTest, RORUnion) {
+  Query_block *query_block =
+      ParseAndResolve("SELECT 1 FROM t1 WHERE t1.x = 3 OR t1.y = 4",
+                      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // No filter; it should be subsumed.
+  ASSERT_EQ(AccessPath::ROWID_UNION, root->type);
+  ASSERT_EQ(2, root->rowid_union().children->size());
+
+  AccessPath *child0 = (*root->rowid_union().children)[0];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child0->type);
+  ASSERT_EQ(1, child0->index_range_scan().num_ranges);
+
+  AccessPath *child1 = (*root->rowid_union().children)[1];
+  EXPECT_EQ(AccessPath::INDEX_RANGE_SCAN, child1->type);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORUnionSubsumesOnlyOnePredicate) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE (t1.x = 3 OR t1.y = 4) AND (t1.y = 0 OR t1.z = "
+      "0)",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // The second predicate should not be subsumed, so we have a filter.
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  EXPECT_EQ("((t1.y = 0) or (t1.z = 0))",
+            ItemToString(root->filter().condition));
+  EXPECT_EQ(AccessPath::ROWID_UNION, root->filter().child->type);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+// When there is a choice between Index Merge and ROR Union,
+// ROR Union plan is always picked since it avoids sorting
+// by Row IDs.
+TEST_F(HypergraphOptimizerTest, RORUnionPickedOverIndexMerge) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE (t1.x = 3 OR t1.y = 4) AND (t1.y > 0 OR t1.z > "
+      "0)",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  // Create indexes on x, y and z.
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // The second predicate should not be subsumed, so we have a filter.
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  EXPECT_EQ("((t1.y > 0) or (t1.z > 0))",
+            ItemToString(root->filter().condition));
+  EXPECT_EQ(AccessPath::ROWID_UNION, root->filter().child->type);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORUnionWithOrderBy) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE t1.x = 3 OR t1.y = 4 ORDER BY t1.x",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  t1->s->primary_key = CreateOrderedIndex({t1->field[0]}, HA_NOSAME);
+  CreateOrderedIndex({t1->field[1]});
+
+  // Mark the index as clustered.
+  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
+          primary_key_is_clustered())
+      .WillByDefault(Return(true));
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+                                   // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::ROWID_UNION, root->type);
+  EXPECT_EQ(2, root->rowid_union().children->size());
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORUnionBetterThanIndexMerge) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE t1.x = 3 AND t1.y > 4 or t1.z = 5",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[0], t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+
+  // Mark the index as supporting range scans.
+  Mock_HANDLER *handler = down_cast<Mock_HANDLER *>(t1->file);
+  ON_CALL(*handler, index_flags(_, _, _))
+      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
+
+  EXPECT_CALL(*handler, records_in_range(0, _, _)).WillRepeatedly(Return(150));
+  EXPECT_CALL(*handler, records_in_range(1, _, _)).WillRepeatedly(Return(100));
+  EXPECT_CALL(*handler, records_in_range(2, _, _)).WillRepeatedly(Return(100));
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+                                   // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  EXPECT_EQ(AccessPath::ROWID_UNION, root->filter().child->type);
+  AccessPath *rowid_union = root->filter().child;
+  EXPECT_EQ(2, rowid_union->rowid_union().children->size());
+
+  AccessPath *child0 = (*rowid_union->rowid_union().children)[0];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child0->type);
+  ASSERT_EQ(0, child0->index_range_scan().index);
+
+  AccessPath *child1 = (*rowid_union->rowid_union().children)[1];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child1->type);
+  ASSERT_EQ(2, child1->index_range_scan().index);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORIntersect) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE t1.x = 3 AND t1.y = 4 AND t1.z = 5",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // No filter; it should be subsumed.
+  ASSERT_EQ(AccessPath::ROWID_INTERSECTION, root->type);
+  ASSERT_EQ(3, root->rowid_intersection().children->size());
+
+  AccessPath *child0 = (*root->rowid_intersection().children)[0];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child0->type);
+  ASSERT_EQ(1, child0->index_range_scan().num_ranges);
+
+  AccessPath *child1 = (*root->rowid_intersection().children)[1];
+  EXPECT_EQ(AccessPath::INDEX_RANGE_SCAN, child1->type);
+  ASSERT_EQ(1, child1->index_range_scan().num_ranges);
+
+  AccessPath *child2 = (*root->rowid_intersection().children)[2];
+  EXPECT_EQ(AccessPath::INDEX_RANGE_SCAN, child2->type);
+  ASSERT_EQ(1, child2->index_range_scan().num_ranges);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORIntersectSubsumesPredicatesPartially) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE (t1.x = 3 AND t1.y = 4 AND t1.z = 5)",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // The second predicate should not be subsumed, so we have a filter.
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  EXPECT_EQ("(t1.z = 5)", ItemToString(root->filter().condition));
+  EXPECT_EQ(AccessPath::ROWID_INTERSECTION, root->filter().child->type);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORIntersectWithOrderBy) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE t1.x = 3 AND t1.y = 4 ORDER BY t1.x",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  t1->s->primary_key = CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+
+  // Mark the index as clustered.
+  ON_CALL(*down_cast<Mock_HANDLER *>(m_fake_tables["t1"]->file),
+          primary_key_is_clustered())
+      .WillByDefault(Return(true));
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+                                   // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // No ordering needed
+  ASSERT_EQ(AccessPath::ROWID_INTERSECTION, root->type);
+  EXPECT_EQ(1, root->rowid_intersection().children->size());
+  EXPECT_EQ(AccessPath::INDEX_RANGE_SCAN,
+            root->rowid_intersection().cpk_child->type);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORIntersectPreferCoveringIndex) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE t1.x = 3 AND t1.y = 4 AND t1.z = 5",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  CreateOrderedIndex({t1->field[0], t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+                                   // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::ROWID_INTERSECTION, root->type);
+  EXPECT_EQ(2, root->rowid_intersection().children->size());
+  AccessPath *child0 = (*root->rowid_intersection().children)[0];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child0->type);
+  // prefer the index which covers more fields
+  ASSERT_EQ(2, child0->index_range_scan().index);
+  ASSERT_EQ(2, child0->index_range_scan().num_used_key_parts);
+
+  AccessPath *child1 = (*root->rowid_intersection().children)[1];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child1->type);
+  ASSERT_EQ(3, child1->index_range_scan().index);
+  ASSERT_EQ(1, child1->index_range_scan().num_used_key_parts);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORIntersectBetterSelectivity) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE t1.x = 3 AND t1.y = 4 AND t1.z = 5",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+
+  Mock_HANDLER *handler = down_cast<Mock_HANDLER *>(t1->file);
+  EXPECT_CALL(*handler, records_in_range(0, _, _)).WillRepeatedly(Return(200));
+  EXPECT_CALL(*handler, records_in_range(1, _, _)).WillRepeatedly(Return(100));
+  EXPECT_CALL(*handler, records_in_range(2, _, _)).WillRepeatedly(Return(50));
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+                                   // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::ROWID_INTERSECTION, root->type);
+  EXPECT_EQ(3, root->rowid_intersection().children->size());
+  AccessPath *child0 = (*root->rowid_intersection().children)[0];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child0->type);
+  ASSERT_EQ(2, child0->index_range_scan().index);
+
+  AccessPath *child1 = (*root->rowid_intersection().children)[1];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child1->type);
+  ASSERT_EQ(1, child1->index_range_scan().index);
+
+  AccessPath *child2 = (*root->rowid_intersection().children)[2];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child2->type);
+  ASSERT_EQ(0, child2->index_range_scan().index);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORIntersectPreferCoveringOverSelectivity) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE t1.x = 3 AND t1.y = 4 AND t1.z = 5",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+  CreateOrderedIndex({t1->field[0], t1->field[1]});
+
+  Mock_HANDLER *handler = down_cast<Mock_HANDLER *>(t1->file);
+  EXPECT_CALL(*handler, records_in_range(0, _, _)).WillRepeatedly(Return(200));
+  EXPECT_CALL(*handler, records_in_range(1, _, _)).WillRepeatedly(Return(100));
+  EXPECT_CALL(*handler, records_in_range(2, _, _)).WillRepeatedly(Return(50));
+  EXPECT_CALL(*handler, records_in_range(3, _, _)).WillRepeatedly(Return(400));
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+                                   // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::ROWID_INTERSECTION, root->type);
+  EXPECT_EQ(2, root->rowid_intersection().children->size());
+  AccessPath *child0 = (*root->rowid_intersection().children)[0];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child0->type);
+  ASSERT_EQ(3, child0->index_range_scan().index);
+
+  AccessPath *child1 = (*root->rowid_intersection().children)[1];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child1->type);
+  ASSERT_EQ(2, child1->index_range_scan().index);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, RORUnionWithIntersect) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 WHERE (t1.x = 3 AND t1.y = 4)"
+      " OR (t1.z = 5)",
+      /*nullable=*/false);
+
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  CreateOrderedIndex({t1->field[0]});
+  CreateOrderedIndex({t1->field[1]});
+  CreateOrderedIndex({t1->field[2]});
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // We find the filter here even though it could be subsumed.
+  // At the moment we are aggressive in marking any range tree
+  // as inexact if it has more than one predicate (has an AND)
+  // in any one part of an OR condition like the one we have
+  // here.
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  AccessPath *rowid_union = root->filter().child;
+  ASSERT_EQ(AccessPath::ROWID_UNION, rowid_union->type);
+  ASSERT_EQ(2, rowid_union->rowid_union().children->size());
+
+  AccessPath *child0 = (*rowid_union->rowid_union().children)[0];
+  ASSERT_EQ(AccessPath::ROWID_INTERSECTION, child0->type);
+  EXPECT_EQ(2, child0->rowid_intersection().children->size());
+  AccessPath *child01 = (*child0->rowid_intersection().children)[0];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child01->type);
+  AccessPath *child02 = (*child0->rowid_intersection().children)[1];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child02->type);
+
+  AccessPath *child1 = (*rowid_union->rowid_union().children)[1];
+  ASSERT_EQ(AccessPath::INDEX_RANGE_SCAN, child1->type);
+  query_block->cleanup(/*full=*/true);
 }
 
 TEST_F(HypergraphOptimizerTest, PropagateCondConstants) {
@@ -5471,9 +6137,9 @@ TEST_F(HypergraphOptimizerTest, PropagationInNonEqualities) {
   m_fake_tables["t1"]->file->stats.data_file_length = 1e6;
   m_fake_tables["t2"]->file->stats.data_file_length = 100e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5503,9 +6169,9 @@ TEST_F(HypergraphOptimizerTest, PropagateEqualityToZeroRows) {
                              &query_block->m_table_nest,
                              &query_block->cond_value));
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5523,9 +6189,9 @@ TEST_F(HypergraphOptimizerTest, PropagateEqualityToZeroRowsAggregated) {
                              &query_block->m_table_nest,
                              &query_block->cond_value));
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5539,9 +6205,9 @@ TEST_F(HypergraphOptimizerTest, RowCountImplicitlyGrouped) {
 
   m_fake_tables["t1"]->file->stats.records = 100000;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5557,9 +6223,9 @@ TEST_F(HypergraphOptimizerTest, SingleTableDeleteWithOrderByLimit) {
                       /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   ASSERT_EQ(AccessPath::DELETE_ROWS, root->type);
   EXPECT_EQ(m_fake_tables["t1"]->pos_in_table_list->map(),
@@ -5579,9 +6245,9 @@ TEST_F(HypergraphOptimizerTest, SingleTableDeleteWithLimit) {
                       /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   ASSERT_EQ(AccessPath::DELETE_ROWS, root->type);
   EXPECT_EQ(m_fake_tables["t1"]->pos_in_table_list->map(),
@@ -5602,9 +6268,9 @@ TEST_F(HypergraphOptimizerTest, DeleteSingleAsMultiTable) {
                                              /*nullable=*/false);
   ASSERT_NE(nullptr, query_block);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   ASSERT_EQ(AccessPath::DELETE_ROWS, root->type);
   EXPECT_EQ(m_fake_tables["t1"]->pos_in_table_list->map(),
@@ -5625,9 +6291,9 @@ TEST_F(HypergraphOptimizerTest, DeleteFromTwoTables) {
   m_fake_tables["t1"]->file->stats.records = 1000;
   m_fake_tables["t2"]->file->stats.records = 100;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   ASSERT_EQ(AccessPath::DELETE_ROWS, root->type);
   ASSERT_EQ(AccessPath::HASH_JOIN, root->delete_rows().child->type);
@@ -5657,17 +6323,17 @@ TEST_F(HypergraphOptimizerTest, DeletePreferImmediate) {
   // is considered cheaper than (t1, t2) before the cost of buffered deletes is
   // taken into consideration.
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], nullptr, /*unique=*/true);
+  t1->create_index(t1->field[0], HA_NOSAME);
   t1->file->stats.records = 110000;
   t1->file->stats.data_file_length = 1.1e6;
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[0], nullptr, /*unique=*/true);
+  t2->create_index(t2->field[0], HA_NOSAME);
   t2->file->stats.records = 100000;
   t2->file->stats.data_file_length = 1.0e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -5695,16 +6361,12 @@ TEST_F(HypergraphOptimizerTest, ImmedateDeleteFromRangeScan) {
   ASSERT_NE(nullptr, query_block);
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], nullptr, /*unique=*/true);
+  CreateOrderedIndex({t1->field[0]}, HA_NOSAME);
   t1->file->stats.records = 100000;
 
-  // Mark the index as supporting range scans.
-  ON_CALL(*down_cast<Mock_HANDLER *>(t1->file), index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -5723,17 +6385,13 @@ TEST_F(HypergraphOptimizerTest, ImmedateDeleteFromIndexMerge) {
   ASSERT_NE(nullptr, query_block);
 
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], nullptr, /*unique=*/true);
-  t1->create_index(t1->field[1], nullptr, /*unique=*/true);
+  CreateOrderedIndex({t1->field[0]}, HA_NOSAME);
+  CreateOrderedIndex({t1->field[1]}, HA_NOSAME);
   t1->file->stats.records = 100000;
 
-  // Mark the indexes as supporting range scans.
-  ON_CALL(*down_cast<Mock_HANDLER *>(t1->file), index_flags(_, _, _))
-      .WillByDefault(Return(HA_READ_RANGE | HA_READ_NEXT | HA_READ_PREV));
-
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -5757,17 +6415,17 @@ TEST_F(HypergraphOptimizerTest, UpdatePreferImmediate) {
   // is considered cheaper than (t1, t2) before the cost of buffered updates is
   // taken into consideration.
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[0], nullptr, /*unique=*/true);
+  t1->create_index(t1->field[0], HA_NOSAME);
   t1->file->stats.records = 110000;
   t1->file->stats.data_file_length = 1.1e6;
   Fake_TABLE *t2 = m_fake_tables["t2"];
-  t2->create_index(t2->field[0], nullptr, /*unique=*/true);
+  t2->create_index(t2->field[0], HA_NOSAME);
   t2->file->stats.records = 100000;
   t2->file->stats.data_file_length = 1.0e6;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -5800,9 +6458,9 @@ TEST_F(HypergraphOptimizerTest, UpdateHashJoin) {
   t2->file->stats.records = 10000;
   t2->file->stats.data_file_length = 1e5;
 
-  string trace;
-  AccessPath *root = FindBestQueryPlan(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -5824,6 +6482,190 @@ TEST_F(HypergraphOptimizerTest, UpdateHashJoin) {
   EXPECT_EQ(t2, hash_join.inner->table_scan().table);
 }
 
+TEST_F(HypergraphOptimizerTest, IndexSkipScan) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT t1.y FROM t1 WHERE t1.y < 300", /*nullable=*/true);
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  t1->file->stats.data_file_length = 100e6;
+  CreateOrderedIndex({t1->field[0], t1->field[1], t1->field[2]}, HA_NOSAME);
+  m_thd->variables.optimizer_switch |= OPTIMIZER_SKIP_SCAN;
+  t1->covering_keys.clear_all();
+  t1->covering_keys.set_bit(0);  // covering index on (y,w)
+  t1->s->key_info = t1->key_info;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::INDEX_SKIP_SCAN, root->type);
+  ASSERT_EQ(0, root->index_skip_scan().index);
+  ASSERT_EQ(2, root->index_skip_scan().num_used_key_parts);
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, IndexSkipScanWithOrderBy) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT t1.y  FROM t1 WHERE t1.y < 300 ORDER BY t1.x,t1.y",
+      /*nullable=*/true);
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  t1->file->stats.data_file_length = 100e6;
+  CreateOrderedIndex({t1->field[0], t1->field[1]}, HA_NOSAME);
+  m_thd->variables.optimizer_switch |= OPTIMIZER_SKIP_SCAN;
+  t1->covering_keys.clear_all();
+  t1->covering_keys.set_bit(0);  // covering index on (x,y)
+  t1->s->key_info = t1->key_info;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // The ORDER BY order is the same as the skip scan index order, so the sort
+  // should be elided. Due to this, an AccessPath::SORT should not be added
+  // on top of AccessPath::INDEX_SKIP_SCAN
+  ASSERT_EQ(AccessPath::INDEX_SKIP_SCAN, root->type);
+  ASSERT_EQ(0, root->index_skip_scan().index);
+  ASSERT_EQ(2, root->index_skip_scan().num_used_key_parts);
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, IndexSkipScanMultiIndex) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT t1.y, t1.w  FROM t1 WHERE t1.w < 300 ORDER BY t1.y",
+      /*nullable=*/true);
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  t1->file->stats.data_file_length = 100e6;
+  CreateOrderedIndex({t1->field[2], t1->field[3]}, HA_NOSAME);
+  CreateOrderedIndex({t1->field[1], t1->field[3]}, HA_NOSAME);
+  m_thd->variables.optimizer_switch |= OPTIMIZER_SKIP_SCAN;
+  t1->covering_keys.clear_all();
+  // non-covering index on (z,w), covering index on (y,w)
+  t1->covering_keys.set_bit(0);
+  t1->covering_keys.set_bit(1);
+  t1->s->key_info = t1->key_info;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  // SORT path should be elided by INDEX_SKIP_SCAN
+  ASSERT_EQ(AccessPath::INDEX_SKIP_SCAN, root->type);
+  ASSERT_EQ(1, root->index_skip_scan().index);
+  ASSERT_EQ(2, root->index_skip_scan().num_used_key_parts);
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, IndexSkipScanMultiPredicate) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT t1.y, t1.z, t1.w FROM t1 WHERE t1.x = 5 AND t1.z > 10 ORDER BY "
+      "t1.x, t1.y",
+      /*nullable=*/true);
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 1000;
+  t1->file->stats.data_file_length = 100e6;
+  CreateOrderedIndex({t1->field[0], t1->field[1], t1->field[2]}, HA_NOSAME);
+  m_thd->variables.optimizer_switch |= OPTIMIZER_SKIP_SCAN;
+  t1->covering_keys.clear_all();
+  t1->covering_keys.set_bit(0);
+  t1->s->key_info = t1->key_info;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::FILTER, root->type);
+  EXPECT_EQ("((t1.x = 5) and (t1.z > 10))",
+            ItemToString(root->filter().condition));
+  AccessPath *child = root->filter().child;
+  ASSERT_EQ(AccessPath::INDEX_SKIP_SCAN, child->type);
+  ASSERT_EQ(0, child->index_skip_scan().index);
+  ASSERT_EQ(3, child->index_skip_scan().num_used_key_parts);
+
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, GroupIndexSkipScanAgg) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT t1.x, t1.y FROM t1 GROUP BY t1.x, t1.y", /*nullable=*/true);
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  t1->file->stats.block_size = 4096;
+  t1->file->stats.data_file_length = 100e6;
+  CreateOrderedIndex({t1->field[0], t1->field[1], t1->field[2]}, HA_NOSAME);
+  CreateOrderedIndex({t1->field[0], t1->field[1]}, HA_NOSAME);
+  t1->covering_keys.clear_all();
+  t1->covering_keys.set_bit(0);  // covering index on (x,y,z)
+  t1->covering_keys.set_bit(1);  // covering index on (x.y)
+  t1->s->key_info = t1->key_info;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::GROUP_INDEX_SKIP_SCAN, root->type);
+  query_block->cleanup(/*full=*/true);
+}
+
+TEST_F(HypergraphOptimizerTest, GroupIndexSkipScanDedup) {
+  Query_block *query_block =
+      ParseAndResolve("SELECT DISTINCT t1.x, t1.y FROM t1", /*nullable=*/true);
+  Fake_TABLE *t1 = m_fake_tables["t1"];
+  t1->file->stats.records = 10000;
+  t1->file->stats.block_size = 4096;
+  t1->file->stats.data_file_length = 100e6;
+  CreateOrderedIndex({t1->field[0], t1->field[1], t1->field[2]}, HA_NOSAME);
+  CreateOrderedIndex({t1->field[0], t1->field[1]}, HA_NOSAME);
+  t1->covering_keys.clear_all();
+  t1->covering_keys.set_bit(0);  // covering index on (x,y,z)
+  t1->covering_keys.set_bit(1);  // covering index on (x.y)
+  t1->s->key_info = t1->key_info;
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlan(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  ASSERT_EQ(AccessPath::GROUP_INDEX_SKIP_SCAN, root->type);
+  query_block->cleanup(/*full=*/true);
+}
+
+/// Test the TraceBuffer class.
+TEST_F(MakeHypergraphTest, TraceBuffer) {
+  TraceGuard trace(m_thd);
+  for (size_t i = 0; i < TraceBuffer::kSegmentSize * 2; i++) {
+    Trace(m_thd) << 'X';
+    if (i % TraceBuffer::kSegmentSize == 0 ||
+        i % TraceBuffer::kSegmentSize == 1 ||
+        i % TraceBuffer::kSegmentSize == TraceBuffer::kSegmentSize - 1) {
+      int count{0};
+      trace.contents().ForEach([&](char ch) {
+        EXPECT_EQ(ch, 'X');
+        ++count;
+      });
+      EXPECT_EQ(i + 1, count);
+    }
+  }
+}
+
 // An alias for better naming.
 using HypergraphSecondaryEngineTest = HypergraphOptimizerTest;
 
@@ -5842,9 +6684,9 @@ TEST_F(HypergraphSecondaryEngineTest, SingleTable) {
         return false;
       };
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
 
   ASSERT_EQ(AccessPath::TABLE_SCAN, root->type);
@@ -5873,9 +6715,9 @@ TEST_F(HypergraphSecondaryEngineTest, SimpleInnerJoin) {
         return false;
       };
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
 
   // Expect the biggest table to be the outer one. The table statistics tell
@@ -5893,9 +6735,9 @@ TEST_F(HypergraphSecondaryEngineTest, OrderedAggregation) {
 
   EnableSecondaryEngine(/*aggregation_is_unordered=*/false);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
 
   ASSERT_EQ(AccessPath::AGGREGATE, root->type);
@@ -5909,9 +6751,9 @@ TEST_F(HypergraphSecondaryEngineTest, UnorderedAggregation) {
 
   EnableSecondaryEngine(/*aggregation_is_unordered=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
 
   ASSERT_EQ(AccessPath::AGGREGATE, root->type);
@@ -5927,9 +6769,9 @@ TEST_F(HypergraphSecondaryEngineTest,
 
   EnableSecondaryEngine(/*aggregation_is_unordered=*/false);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -5955,9 +6797,9 @@ TEST_F(HypergraphSecondaryEngineTest, UnorderedAggregationDoesNotCover) {
 
   EnableSecondaryEngine(/*aggregation_is_unordered=*/true);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
                               /*is_root_of_join=*/true));
@@ -6003,9 +6845,9 @@ TEST_F(HypergraphSecondaryEngineTest, RejectAllPlans) {
   // No plans will be found, so expect an error.
   ErrorChecker error_checker{m_thd, ER_SECONDARY_ENGINE};
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   EXPECT_EQ(nullptr, root);
 }
 
@@ -6024,9 +6866,9 @@ TEST_F(HypergraphSecondaryEngineTest, RejectAllCompletePlans) {
   // No plans will be found, so expect an error.
   ErrorChecker error_checker{m_thd, ER_SECONDARY_ENGINE};
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   EXPECT_EQ(nullptr, root);
 }
 
@@ -6067,9 +6909,9 @@ TEST_F(HypergraphSecondaryEngineTest, RejectJoinOrders) {
         return false;
       };
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
 
   /*
@@ -6142,9 +6984,9 @@ TEST_F(HypergraphSecondaryEngineTest, SemiJoinWithOuterJoinMultipleEqual) {
   EXPECT_FALSE(optimize_cond(m_thd, query_block->where_cond_ref(), &cond_equal,
                              &query_block->m_table_nest,
                              &query_block->cond_value));
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Check if a plan was generated as the query could be executed using
   // hash joins.
   EXPECT_NE(nullptr, root);
@@ -6207,9 +7049,9 @@ TEST_F(HypergraphSecondaryEngineTest, SemiJoinWithOuterJoin) {
   // No plans will be found, so expect an error.
   ErrorChecker error_checker{m_thd, ER_SECONDARY_ENGINE};
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   // Check if all plans were rejected as the query cannot be executed
   // using hash joins.
   EXPECT_EQ(nullptr, root);
@@ -6250,9 +7092,9 @@ TEST_P(HypergraphSecondaryEngineRejectionTest, RejectPathType) {
   ErrorChecker error_checker(m_thd,
                              param.expect_error ? ER_SECONDARY_ENGINE : 0);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   EXPECT_EQ(param.expect_error, root == nullptr);
 
   query_block->cleanup(/*full=*/true);
@@ -6278,9 +7120,9 @@ TEST_P(HypergraphSecondaryEngineRejectionTest, ErrorOnPathType) {
   ErrorChecker error_checker(
       m_thd, param.expect_error ? ER_SECONDARY_ENGINE_PLUGIN : 0);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   EXPECT_EQ(param.expect_error, root == nullptr);
 
   query_block->cleanup(/*full=*/true);
@@ -6299,7 +7141,7 @@ INSTANTIATE_TEST_SUITE_P(
         {"SELECT t1.x FROM t1 GROUP BY t1.x HAVING COUNT(*) > 5 ORDER BY t1.x",
          AccessPath::FILTER, true},
         {"SELECT 1 FROM t1 GROUP BY t1.x ORDER BY SUM(t1.y)",
-         AccessPath::STREAM, true},
+         AccessPath::AGGREGATE, true},
     })));
 
 INSTANTIATE_TEST_SUITE_P(
@@ -6320,9 +7162,9 @@ TEST_F(HypergraphSecondaryEngineTest, NoRewriteOnFinalization) {
   handlerton->secondary_engine_flags |=
       MakeSecondaryEngineFlags(SecondaryEngineFlag::USE_EXTERNAL_EXECUTOR);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   const string query_plan = PrintQueryPlan(0, root, query_block->join,
@@ -6370,9 +7212,9 @@ TEST_F(HypergraphSecondaryEngineTest, ExplainWindowForExternalExecutor) {
   handlerton->secondary_engine_flags |=
       MakeSecondaryEngineFlags(SecondaryEngineFlag::USE_EXTERNAL_EXECUTOR);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   ASSERT_EQ(AccessPath::WINDOW, root->type);
   EXPECT_EQ(AccessPath::TABLE_SCAN, root->window().child->type);
@@ -6409,9 +7251,9 @@ TEST_F(HypergraphSecondaryEngineTest, NoMaterializationForExternalExecutor) {
   handlerton->secondary_engine_flags |=
       MakeSecondaryEngineFlags(SecondaryEngineFlag::USE_EXTERNAL_EXECUTOR);
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -6439,7 +7281,7 @@ TEST_F(HypergraphSecondaryEngineTest, DontCallCostHookForEmptyJoins) {
   // Create an index on t1.y, so that the range optimizer detects the impossible
   // table filter.
   Fake_TABLE *t1 = m_fake_tables["t1"];
-  t1->create_index(t1->field[1], nullptr, /*unique=*/true);
+  t1->create_index(t1->field[1], HA_NOSAME);
 
   // The secondary engine cost hook is stateless, so let's create a thread local
   // variable for it to store the state in.
@@ -6453,9 +7295,9 @@ TEST_F(HypergraphSecondaryEngineTest, DontCallCostHookForEmptyJoins) {
         return false;
       };
 
-  string trace;
-  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block, &trace);
-  SCOPED_TRACE(trace);  // Prints out the trace on failure.
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
   ASSERT_NE(nullptr, root);
   // Prints out the query plan on failure.
   SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
@@ -6472,6 +7314,163 @@ TEST_F(HypergraphSecondaryEngineTest, DontCallCostHookForEmptyJoins) {
   ASSERT_EQ(1, paths.size());
   ASSERT_EQ(AccessPath::TABLE_SCAN, paths[0].type);
   EXPECT_STREQ("t2", paths[0].table_scan().table->alias);
+}
+
+// An alias for better naming.
+using SecondaryEngineGraphSimplificationTest = HypergraphSecondaryEngineTest;
+
+TEST_F(SecondaryEngineGraphSimplificationTest, Restart) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 JOIN t2 ON t1.x=t2.x JOIN t3 ON t2.y=t3.y",
+      /*nullable=*/true);
+
+  static constexpr string_view reset_keyword =
+      "SECONDARY_ENGINE_REQUESTING_RESET";
+  thread_local int count_resets;
+  count_resets = 0;
+
+  handlerton *hton = EnableSecondaryEngine(/*aggregation_is_unordered=*/false);
+  hton->secondary_engine_check_optimizer_request =
+      [](THD *, const JoinHypergraph &, const AccessPath *, int, int,
+         bool is_root_access_path, std::string *trace) {
+        SecondaryEngineGraphSimplificationRequestParameters output = {
+            SecondaryEngineGraphSimplificationRequest::kContinue, 100};
+        if (is_root_access_path && count_resets == 0) {
+          *trace += reset_keyword;
+          count_resets += 1;
+          output.secondary_engine_optimizer_request =
+              SecondaryEngineGraphSimplificationRequest::kRestart;
+        }
+        return output;
+      };
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  ASSERT_NE(nullptr, root);
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  std::string trace_str{trace.contents().ToString()};
+
+  size_t pos_of_reset_keyword =
+      std::string(trace_str.cbegin(), trace_str.cend()).find(reset_keyword);
+  // Ensure reset got requested by secondary engine.
+  ASSERT_NE(pos_of_reset_keyword, std::string::npos);
+  ASSERT_EQ(count_resets, 1);
+
+  size_t pos_of_construct_after_reset =
+      std::string(trace_str.cbegin(), trace_str.cend())
+          .find("Constructed hypergraph", /* pos= */ pos_of_reset_keyword);
+  // Ensure hypergraph got constructed after the requested by secondary engine
+  ASSERT_NE(pos_of_construct_after_reset, std::string::npos);
+}
+
+TEST_F(SecondaryEngineGraphSimplificationTest, Triggered) {
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1 JOIN t2 ON t1.x=t2.x JOIN t3 ON t2.y=t3.y",
+      /*nullable=*/true);
+
+  static constexpr string_view simplification_trigger_keyword =
+      "SECONDARY_ENGINE_REQUESTING_SIMPLIFICATION";
+  thread_local int count_triggers;
+  count_triggers = 0;
+  thread_local int updated_subgraph_pairs_max;
+  updated_subgraph_pairs_max = 0;
+  handlerton *hton = EnableSecondaryEngine(/*aggregation_is_unordered=*/false);
+
+  hton->secondary_engine_check_optimizer_request =
+      [](THD *, const JoinHypergraph &, const AccessPath *,
+         int current_num_subgraph_pairs, int, bool, std::string *trace) {
+        SecondaryEngineGraphSimplificationRequestParameters output = {
+            SecondaryEngineGraphSimplificationRequest::kContinue, 100};
+        if ((current_num_subgraph_pairs > 1) && (count_triggers == 0)) {
+          *trace += simplification_trigger_keyword;
+          count_triggers += 1;
+          output.secondary_engine_optimizer_request =
+              SecondaryEngineGraphSimplificationRequest::kRestart;
+          output.subgraph_pair_limit = 2;
+        } else if ((count_triggers == 1) &&
+                   (current_num_subgraph_pairs > updated_subgraph_pairs_max)) {
+          updated_subgraph_pairs_max = current_num_subgraph_pairs;
+        }
+
+        return output;
+      };
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  ASSERT_NE(nullptr, root);
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  std::string trace_str{trace.contents().ToString()};
+
+  size_t pos_of_trigger_keyword =
+      std::string(trace_str.cbegin(), trace_str.cend())
+          .find(simplification_trigger_keyword);
+  // Ensure simplification got requested by secondary engine.
+  ASSERT_NE(pos_of_trigger_keyword, std::string::npos);
+  ASSERT_EQ(count_triggers, 1);
+  // Ensure simplified graph was simple enough search space.
+  ASSERT_LE(updated_subgraph_pairs_max, 2);
+
+  size_t pos_of_simplification_after_trigger =
+      std::string(trace_str.cbegin(), trace_str.cend())
+          .find("doing heuristic graph simplification.",
+                /* pos= */ pos_of_trigger_keyword);
+  // Ensure hypergraph triggered simplification after the request by secondary
+  // engine.
+  ASSERT_NE(pos_of_simplification_after_trigger, std::string::npos);
+}
+
+TEST_F(SecondaryEngineGraphSimplificationTest, RedundantOrderElements) {
+  // Query with redundant elements in ORDER BY used to fail if the secondary
+  // engine requested a restart of the optimization. In this query, one of the
+  // columns in the ORDER BY can be removed because the WHERE clause ensures the
+  // two columns have the same value.
+  Query_block *query_block = ParseAndResolve(
+      "SELECT 1 FROM t1, t2 WHERE t1.x = t2.x ORDER BY t1.x, t2.x",
+      /*nullable=*/true);
+
+  thread_local bool was_restarted;
+  was_restarted = false;
+
+  handlerton *hton = EnableSecondaryEngine(/*aggregation_is_unordered=*/true);
+  hton->secondary_engine_check_optimizer_request =
+      [](THD *, const JoinHypergraph &, const AccessPath *, int, int,
+         bool is_root_access_path,
+         std::string *) -> SecondaryEngineGraphSimplificationRequestParameters {
+    if (is_root_access_path && !was_restarted) {
+      was_restarted = true;
+      return {SecondaryEngineGraphSimplificationRequest::kRestart, 100};
+    }
+    return {SecondaryEngineGraphSimplificationRequest::kContinue, 0};
+  };
+
+  TraceGuard trace(m_thd);
+  AccessPath *root = FindBestQueryPlanAndFinalize(m_thd, query_block);
+  SCOPED_TRACE(trace.contents());  // Prints out the trace on failure.
+  ASSERT_NE(nullptr, root);
+
+  // Prints out the query plan on failure.
+  SCOPED_TRACE(PrintQueryPlan(0, root, query_block->join,
+                              /*is_root_of_join=*/true));
+
+  EXPECT_TRUE(was_restarted);
+
+  // We don't care which exact plan is chosen. But verify that the sort key does
+  // not include a redundant column.
+  ASSERT_EQ(AccessPath::SORT, root->type);
+  const ORDER *order = root->sort().order;
+  // Sort on exactly one column.
+  ASSERT_NE(nullptr, order);
+  EXPECT_EQ(nullptr, order->next);
+  // The result should be sorted on t1.x or on t2.x. We don't care which.
+  EXPECT_THAT(ItemToString(*order->item), AnyOf("t1.x", "t2.x"));
 }
 
 /*
@@ -6699,8 +7698,7 @@ std::pair<size_t, size_t> CountTreesAndPlans(
           for (RelationalExpression *op : join_ops) {
             op->conflict_rules.clear();
           }
-          MakeJoinGraphFromRelationalExpression(thd, expr, /*trace=*/nullptr,
-                                                &graph);
+          MakeJoinGraphFromRelationalExpression(thd, expr, &graph);
           CountingReceiver receiver(graph, num_relations);
           ASSERT_FALSE(EnumerateAllConnectedPartitions(graph.graph, &receiver));
           ++num_trees;
@@ -6949,9 +7947,9 @@ static void BM_FindBestQueryPlanPointSelect(size_t num_iterations) {
   Fake_TABLE *t1 = fake_tables["t1"];
   Fake_handler_for_benchmark fake_handler(t1);
   t1->set_handler(&fake_handler);
-  t1->s->primary_key = t1->create_index(t1->field[0], nullptr, /*unique=*/true);
-  t1->create_index(t1->field[1], nullptr, /*unique=*/false);
-  t1->create_index(t1->field[2], nullptr, /*unique=*/false);
+  t1->s->primary_key = t1->create_index(t1->field[0], HA_NOSAME);
+  t1->create_index(t1->field[1]);
+  t1->create_index(t1->field[2]);
   t1->file->stats.records = 100000;
   t1->file->stats.data_file_length = 1e8;
 
@@ -6980,7 +7978,7 @@ static void BM_FindBestQueryPlanPointSelect(size_t num_iterations) {
 
     for (size_t i = 0; i < num_iterations; ++i) {
       assert(query_block->join->where_cond == query_block->where_cond());
-      AccessPath *path = FindBestQueryPlan(thd, query_block, /*trace=*/nullptr);
+      AccessPath *path = FindBestQueryPlan(thd, query_block);
       assert(path != nullptr);
       assert(path->type == AccessPath::EQ_REF);
       query_block->join->set_root_access_path(path);

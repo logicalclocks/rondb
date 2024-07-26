@@ -11,11 +11,11 @@ test.t1	analyze	status	OK
 EXPLAIN FORMAT=TREE SELECT * FROM t1 x1
 WHERE x1.b = (SELECT MAX(b) FROM t1 x2 WHERE x2.a>x1.a);
 EXPLAIN
--> Filter: (x1.b = (select #2))  (cost=2.38..23.8 rows=10)
+-> Filter: (x1.b = (select #2))  (cost=1.71..17.1 rows=10)
     -> Table scan on x1  (cost=0.025..0.25 rows=10)
     -> Select #2 (subquery in condition; dependent)
-        -> Aggregate: max(x2.b)  (cost=2.25..2.25 rows=1)
-            -> Filter: (x2.a > x1.a)  (cost=0.125..1.25 rows=10)
+        -> Aggregate: max(x2.b)  (cost=1.58..1.58 rows=1)
+            -> Filter: (x2.a > x1.a)  (cost=0.375..1.25 rows=3.33)
                 -> Table scan on x2  (cost=0.025..0.25 rows=10)
 
 Warnings:
@@ -23,12 +23,12 @@ Note	1276	Field or reference 'test.x1.a' of SELECT #2 was resolved in SELECT #1
 EXPLAIN FORMAT=TREE SELECT * FROM t1 x1
 WHERE x1.b IN (SELECT MAX(b) FROM t1 x2 WHERE x2.a>x1.a);
 EXPLAIN
--> Filter: <in_optimizer>(x1.b,<exists>(select #2))  (cost=2.48..24.8 rows=10)
+-> Filter: <in_optimizer>(x1.b,<exists>(select #2))  (cost=1.81..18.1 rows=10)
     -> Table scan on x1  (cost=0.025..0.25 rows=10)
     -> Select #2 (subquery in condition; dependent)
-        -> Filter: (<cache>(x1.b) = <ref_null_helper>(max(x2.b)))  (cost=2.35..2.35 rows=1)
-            -> Aggregate: max(x2.b)  (cost=2.25..2.25 rows=1)
-                -> Filter: (x2.a > x1.a)  (cost=0.125..1.25 rows=10)
+        -> Filter: (<cache>(x1.b) = <ref_null_helper>(max(x2.b)))  (cost=1.68..1.68 rows=1)
+            -> Aggregate: max(x2.b)  (cost=1.58..1.58 rows=1)
+                -> Filter: (x2.a > x1.a)  (cost=0.375..1.25 rows=3.33)
                     -> Table scan on x2  (cost=0.025..0.25 rows=10)
 
 Warnings:
@@ -36,7 +36,7 @@ Note	1276	Field or reference 'test.x1.a' of SELECT #2 was resolved in SELECT #1
 EXPLAIN FORMAT=TREE SELECT * FROM t1 x1
 WHERE x1.b = (SELECT MAX(b) FROM t1 x2 WHERE x2.a>5);
 EXPLAIN
--> Filter: (x1.b = (select #2))  (cost=1.19..2.31 rows=10)
+-> Filter: (x1.b = (select #2))  (cost=2.31..2.31 rows=1)
     -> Table scan on x1  (cost=0.025..0.25 rows=10)
     -> Select #2 (subquery in condition; run only once)
         -> Aggregate: max(x2.b)  (cost=1.06..1.06 rows=1)
@@ -58,22 +58,22 @@ EXPLAIN
 EXPLAIN FORMAT=TREE SELECT * FROM t1 x1
 WHERE x1.b = (SELECT MAX(b) FROM t1 x2 WHERE x2.a>10*rand(0));
 EXPLAIN
--> Filter: (x1.b = (select #2))  (cost=2.38..23.8 rows=10)
+-> Filter: (x1.b = (select #2))  (cost=1.71..17.1 rows=10)
     -> Table scan on x1  (cost=0.025..0.25 rows=10)
     -> Select #2 (subquery in condition; uncacheable)
-        -> Aggregate: max(x2.b)  (cost=2.25..2.25 rows=1)
-            -> Filter: (x2.a > (10 * rand(0)))  (cost=0.125..1.25 rows=10)
+        -> Aggregate: max(x2.b)  (cost=1.58..1.58 rows=1)
+            -> Filter: (x2.a > (10 * rand(0)))  (cost=0.375..1.25 rows=3.33)
                 -> Table scan on x2  (cost=0.025..0.25 rows=10)
 
 EXPLAIN FORMAT=TREE SELECT * FROM t1 x1
 WHERE x1.b IN (SELECT MAX(b) FROM t1 x2 WHERE x2.a>10*rand(0));
 EXPLAIN
--> Filter: <in_optimizer>(x1.b,<exists>(select #2))  (cost=2.48..24.8 rows=10)
+-> Filter: <in_optimizer>(x1.b,<exists>(select #2))  (cost=1.81..18.1 rows=10)
     -> Table scan on x1  (cost=0.025..0.25 rows=10)
     -> Select #2 (subquery in condition; dependent)
-        -> Filter: (<cache>(x1.b) = <ref_null_helper>(max(x2.b)))  (cost=2.35..2.35 rows=1)
-            -> Aggregate: max(x2.b)  (cost=2.25..2.25 rows=1)
-                -> Filter: (x2.a > (10 * rand(0)))  (cost=0.125..1.25 rows=10)
+        -> Filter: (<cache>(x1.b) = <ref_null_helper>(max(x2.b)))  (cost=1.68..1.68 rows=1)
+            -> Aggregate: max(x2.b)  (cost=1.58..1.58 rows=1)
+                -> Filter: (x2.a > (10 * rand(0)))  (cost=0.375..1.25 rows=3.33)
                     -> Table scan on x2  (cost=0.025..0.25 rows=10)
 
 EXPLAIN FORMAT=TREE SELECT SUM(x1.a) s FROM t1 x1
@@ -97,9 +97,6 @@ EXPLAIN
     -> Select #2 (subquery in condition; uncacheable)
         -> Aggregate: max((x2.a + rand(0)))  (cost=1.25..1.25 rows=1)
             -> Table scan on x2  (cost=0.025..0.25 rows=10)
--> Select #2 (subquery in projection; uncacheable)
-    -> Aggregate: max((x2.a + rand(0)))  (cost=1.25..1.25 rows=1)
-        -> Table scan on x2  (cost=0.025..0.25 rows=10)
 
 DROP TABLE num,t1;
 #
@@ -216,3 +213,105 @@ EXPLAIN
         -> Table scan on x3  (rows=1000)
 
 DROP TABLE num10,t1;
+#
+# Bug#34527697: EXPLAIN and EXPLAIN ANALYZE disagree on
+#               covering index scans
+#
+CREATE TABLE t(
+x INT,
+y INT DEFAULT (x),
+z VARCHAR(128) DEFAULT (REPEAT('z', 128)), KEY (x));
+INSERT INTO t(x) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10);
+INSERT INTO t SELECT * FROM t;
+INSERT INTO t SELECT * FROM t;
+INSERT INTO t SELECT * FROM t;
+INSERT INTO t SELECT * FROM t;
+ANALYZE TABLE t;
+Table	Op	Msg_type	Msg_text
+test.t	analyze	status	OK
+EXPLAIN FORMAT=TREE SELECT 1 FROM t;
+EXPLAIN
+-> Covering index scan on t using x  (rows=160)
+
+EXPLAIN ANALYZE SELECT 1 FROM t;
+EXPLAIN
+-> Covering index scan on t using x  (rows=160) (actual rows=160 loops=1)
+
+EXPLAIN FORMAT=TREE SELECT 1 FROM t WHERE x = 4;
+EXPLAIN
+-> Covering index lookup on t using x (x=4)  (rows=16)
+
+EXPLAIN ANALYZE SELECT 1 FROM t WHERE x = 4;
+EXPLAIN
+-> Covering index lookup on t using x (x=4)  (rows=16) (actual rows=16 loops=1)
+
+EXPLAIN FORMAT=TREE SELECT 1 FROM t WHERE x > 4;
+EXPLAIN
+-> Covering index range scan on t using x over (4 < x)  (rows=96)
+
+EXPLAIN ANALYZE SELECT 1 FROM t WHERE x > 4;
+EXPLAIN
+-> Covering index range scan on t using x over (4 < x)  (rows=96) (actual rows=96 loops=1)
+
+EXPLAIN FORMAT=TREE SELECT x FROM t ORDER BY MOD(x, 2);
+EXPLAIN
+-> Sort: (t.x % 2)  (rows=160)
+    -> Covering index scan on t using x  (rows=160)
+
+EXPLAIN ANALYZE SELECT x FROM t ORDER BY MOD(x, 2);
+EXPLAIN
+-> Sort: (t.x % 2)  (rows=160) (actual rows=160 loops=1)
+    -> Covering index scan on t using x  (rows=160) (actual rows=160 loops=1)
+
+EXPLAIN FORMAT=TREE SELECT t1.x FROM t t1, t t2 WHERE t1.x < t2.y;
+EXPLAIN
+-> Inner hash join (no condition), extra conditions: (t1.x < t2.y)  (rows=8532)
+    -> Covering index scan on t1 using x  (rows=160)
+    -> Hash
+        -> Table scan on t2  (rows=160)
+
+EXPLAIN ANALYZE SELECT t1.x FROM t t1, t t2 WHERE t1.x < t2.y;
+EXPLAIN
+-> Inner hash join (no condition), extra conditions: (t1.x < t2.y)  (rows=8532) (actual rows=11520 loops=1)
+    -> Covering index scan on t1 using x  (rows=160) (actual rows=160 loops=1)
+    -> Hash
+        -> Table scan on t2  (rows=160) (actual rows=160 loops=1)
+
+DROP TABLE t;
+#
+# Bug#34727172 EXPLAIN FORMAT=JSON returns invalid JSON
+#              on INSERT statements with hypergraph
+#
+CREATE TABLE t (i INT);
+INSERT INTO t VALUES (1), (2), (3);
+EXPLAIN FORMAT=TREE INSERT INTO t VALUES (4), (5), (6);
+EXPLAIN
+-> Insert into t
+    -> Rows fetched before execution
+
+EXPLAIN FORMAT=TREE REPLACE INTO t VALUES (7), (8), (9);
+EXPLAIN
+-> Replace into t
+    -> Rows fetched before execution
+
+DROP TABLE t;
+#
+# Bug#35845129: Missing subqueries in EXPLAIN with hypergraph optimizer
+#
+CREATE TABLE t(x INT, y INT);
+ANALYZE TABLE t;
+Table	Op	Msg_type	Msg_text
+test.t	analyze	status	OK
+EXPLAIN FORMAT=TREE
+SELECT x IN (SELECT x FROM t) FROM t GROUP BY x ORDER BY MAX(y);
+EXPLAIN
+-> Sort: `max(t.y)`  (rows=1)
+    -> Stream results  (rows=1)
+        -> Group aggregate: max(t.y)  (rows=1)
+            -> Sort: t.x  (rows=1)
+                -> Table scan on t  (rows=1)
+-> Select #2 (subquery in projection; dependent)
+    -> Filter: (<if>(outer_field_is_not_null, ((<cache>(t.x) = t.x) or (t.x is null)), true) and <if>(outer_field_is_not_null, <is_not_null_test>(t.x), true))  (rows=1)
+        -> Table scan on t  (rows=1)
+
+DROP TABLE t;

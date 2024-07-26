@@ -43,10 +43,10 @@
 
 #include "field_types.h"  // enum_field_types
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_time.h"    /* enum_mysql_timestamp_type */
 #include "sql/sql_error.h" /* Sql_condition */
 #include "sql_string.h"
@@ -117,6 +117,8 @@ void make_time(const Date_time_format *format, const MYSQL_TIME *l_time,
 void make_datetime(const Date_time_format *format, const MYSQL_TIME *l_time,
                    String *str, uint dec);
 bool my_TIME_to_str(const MYSQL_TIME *ltime, String *str, uint dec);
+
+my_time_flags_t DatetimeConversionFlags(const THD *thd);
 
 void propagate_datetime_overflow_helper(THD *thd, int *warnings);
 

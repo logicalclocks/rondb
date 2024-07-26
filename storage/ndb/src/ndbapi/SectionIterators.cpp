@@ -255,12 +255,12 @@ int verifyIteratorContents(GenericSectionIterator &gsi, int dataWords,
   int pos = 0;
 
   while (pos < dataWords) {
-    const Uint32 *readPtr = NULL;
+    const Uint32 *readPtr = nullptr;
     Uint32 len = 0;
 
     readPtr = gsi.getNextWords(len);
 
-    VERIFY(readPtr != NULL);
+    VERIFY(readPtr != nullptr);
     VERIFY(len != 0);
     VERIFY(len <= (Uint32)(dataWords - pos));
 
@@ -280,10 +280,10 @@ int checkGenericSectionIterator(GenericSectionIterator &iter, int size,
   Uint32 sz;
 
   /* Check that iterator is empty now */
-  VERIFY(iter.getNextWords(sz) == NULL);
+  VERIFY(iter.getNextWords(sz) == nullptr);
   VERIFY(sz == 0);
 
-  VERIFY(iter.getNextWords(sz) == NULL);
+  VERIFY(iter.getNextWords(sz) == nullptr);
   VERIFY(sz == 0);
 
   iter.reset();
@@ -292,7 +292,7 @@ int checkGenericSectionIterator(GenericSectionIterator &iter, int size,
   VERIFY(verifyIteratorContents(iter, size, bias) == 0);
 
   /* Verify no more words available */
-  VERIFY(iter.getNextWords(sz) == NULL);
+  VERIFY(iter.getNextWords(sz) == nullptr);
   VERIFY(sz == 0);
 
   return 0;
@@ -357,22 +357,22 @@ int testLinearSectionIterator() {
 
 NdbApiSignal *createSignalChain(NdbApiSignal *&poolHead, int length, int bias) {
   /* Create signal chain, with word[n] == bias+n */
-  NdbApiSignal *chainHead = NULL;
-  NdbApiSignal *chainTail = NULL;
+  NdbApiSignal *chainHead = nullptr;
+  NdbApiSignal *chainTail = nullptr;
   int pos = 0;
 
   while (pos < length) {
     int offset = pos % NdbApiSignal::MaxSignalWords;
 
     if (offset == 0) {
-      if (poolHead == NULL) return 0;
+      if (poolHead == nullptr) return nullptr;
 
       NdbApiSignal *newSig = poolHead;
       poolHead = poolHead->next();
 
-      newSig->next(NULL);
+      newSig->next(nullptr);
 
-      if (chainHead == NULL) {
+      if (chainHead == nullptr) {
         chainHead = chainTail = newSig;
       } else {
         chainTail->next(newSig);
@@ -394,15 +394,15 @@ int testSignalSectionIterator() {
    * the iterator against the signal chains
    */
   const int totalNumSignals = 100;
-  NdbApiSignal *poolHead = NULL;
+  NdbApiSignal *poolHead = nullptr;
 
   /* Allocate some signals */
   for (int i = 0; i < totalNumSignals; i++) {
     NdbApiSignal *sig = new NdbApiSignal((BlockReference)0);
 
-    if (poolHead == NULL) {
+    if (poolHead == nullptr) {
       poolHead = sig;
-      sig->next(NULL);
+      sig->next(nullptr);
     } else {
       sig->next(poolHead);
       poolHead = sig;
@@ -413,17 +413,17 @@ int testSignalSectionIterator() {
   for (int dataWords = 1;
        dataWords <= (int)(totalNumSignals * NdbApiSignal::MaxSignalWords);
        dataWords++) {
-    NdbApiSignal *signalChain = NULL;
+    NdbApiSignal *signalChain = nullptr;
 
     VERIFY((signalChain = createSignalChain(poolHead, dataWords, bias)) !=
-           NULL);
+           nullptr);
 
     SignalSectionIterator ssi(signalChain);
 
     VERIFY(checkIterator(ssi, dataWords, bias) == 0);
 
     /* Now return the signals to the pool */
-    while (signalChain != NULL) {
+    while (signalChain != nullptr) {
       NdbApiSignal *sig = signalChain;
       signalChain = signalChain->next();
 
@@ -433,7 +433,7 @@ int testSignalSectionIterator() {
   }
 
   /* Free signals from pool */
-  while (poolHead != NULL) {
+  while (poolHead != nullptr) {
     NdbApiSignal *sig = poolHead;
     poolHead = sig->next();
     delete (sig);

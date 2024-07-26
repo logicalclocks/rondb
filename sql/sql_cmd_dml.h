@@ -79,7 +79,13 @@ class Sql_cmd_dml : public Sql_cmd {
    */
   bool execute(THD *thd) override;
 
-  bool is_dml() const override { return true; }
+  enum enum_sql_cmd_type sql_cmd_type() const override {
+    /*
+      Somewhat unsurprisingly, anything sub-classed to Sql_cmd_dml
+      identifies as DML by default.
+    */
+    return SQL_CMD_DML;
+  }
 
   virtual bool may_use_cursor() const { return false; }
 
@@ -207,7 +213,7 @@ class Sql_cmd_dml : public Sql_cmd {
 
     @return nullptr if not eligible or the name of the engine otherwise
   */
-  const MYSQL_LEX_CSTRING *get_eligible_secondary_engine() const;
+  const MYSQL_LEX_CSTRING *get_eligible_secondary_engine(THD *thd) const;
 
  protected:
   LEX *lex;              ///< Pointer to LEX for this statement

@@ -22,14 +22,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "compression.h"
-#include "m_ctype.h"
 #include "my_dbug.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 
 /**
   This function is used to validate compression algorithm specified as part
-  of change master to statement.
+  of change replication source to statement.
 
   @param name   compression algorithm name. Name can be either zlib,zstd or
                 empty string.

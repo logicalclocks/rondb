@@ -1002,6 +1002,7 @@ int runBug14019036(NDBT_Context *ctx, NDBT_Step *step) {
 
   res.insertErrorInAllNodes(5073); // slow down backup
 
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) {
     g_err << "Cannot connect to mgmd server" << endl;
     return NDBT_FAILED;
@@ -1908,6 +1909,7 @@ int runCheckPrintout(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter res;
   NdbMgmd mgmd;
 
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   CHECK2(mgmd.connect());
   CHECK2(mgmd.subscribe_to_events());
 

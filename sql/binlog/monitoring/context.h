@@ -72,8 +72,8 @@ class Compression_stats {
   /**
     The compression type.
    */
-  binary_log::transaction::compression::type m_type{
-      binary_log::transaction::compression::type::NONE};
+  mysql::binlog::event::compression::type m_type{
+      mysql::binlog::event::compression::type::NONE};
 
   /**
     Counter that tracks how many transactions have been observed.
@@ -134,7 +134,7 @@ class Compression_stats {
     compression type. It initializes the counters and transaction
     stats to 0.
    */
-  Compression_stats(log_type log, binary_log::transaction::compression::type);
+  Compression_stats(log_type log, mysql::binlog::event::compression::type);
 
   /**
     Copies the contents of the object referenced as a parameter.
@@ -175,7 +175,7 @@ class Compression_stats {
   /**
     Gets the compression type that this object instance is tracking.
    */
-  binary_log::transaction::compression::type get_type() const;
+  mysql::binlog::event::compression::type get_type() const;
 
   /**
     Gets the number of transactions counted.
@@ -214,7 +214,7 @@ class Transaction_compression {
     The map that contains rows of stats in the probe. A stats row is a
     combination of log type and compression type.
    */
-  std::map<std::pair<log_type, binary_log::transaction::compression::type>,
+  std::map<std::pair<log_type, mysql::binlog::event::compression::type>,
            Compression_stats *>
       m_stats;
 
@@ -239,13 +239,13 @@ class Transaction_compression {
                                  since the UNIX epoch.
     @param comp_bytes the bytes compressed by this transaction.
     @param uncomp_bytes the bytes uncompressed by this transaction.
-    @param sid_map the Sid_map to use to create a string representation from the
-                   transaction identifier provided.
+    @param tsid_map the Tsid_map to use to create a string representation from
+    the transaction identifier provided.
    */
   void update(log_type log_type,
-              binary_log::transaction::compression::type comp_type, Gtid &gtid,
+              mysql::binlog::event::compression::type comp_type, Gtid &gtid,
               uint64_t transaction_timestamp, uint64_t comp_bytes,
-              uint64_t uncomp_bytes, Sid_map *sid_map = global_sid_map);
+              uint64_t uncomp_bytes, Tsid_map *tsid_map = global_tsid_map);
 
   /**
     Gets the contents of the probe. The contents are a copy of the internal

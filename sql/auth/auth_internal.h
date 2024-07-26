@@ -184,7 +184,7 @@ void append_auth_id(const THD *thd, ACL_USER *acl_user, String *str);
 Access_bitmask get_access(TABLE *form, uint fieldnr, uint *next_field);
 int replace_db_table(THD *thd, TABLE *table, const char *db,
                      const LEX_USER &combo, Access_bitmask rights,
-                     bool revoke_grant);
+                     bool revoke_grant, bool all_current_privileges);
 int replace_proxies_priv_table(THD *thd, TABLE *table, const LEX_USER *user,
                                const LEX_USER *proxied_user,
                                bool with_grant_arg, bool revoke_grant);
@@ -197,11 +197,13 @@ int replace_table_table(THD *thd, GRANT_TABLE *grant_table,
                             *deleted_grant_table,
                         TABLE *table, const LEX_USER &combo, const char *db,
                         const char *table_name, Access_bitmask rights,
-                        Access_bitmask col_rights, bool revoke_grant);
+                        Access_bitmask col_rights, bool revoke_grant,
+                        bool all_current_privileges);
 int replace_routine_table(THD *thd, GRANT_NAME *grant_name, TABLE *table,
                           const LEX_USER &combo, const char *db,
                           const char *routine_name, bool is_proc,
-                          Access_bitmask rights, bool revoke_grant);
+                          Access_bitmask rights, bool revoke_grant,
+                          bool all_current_privileges);
 int open_grant_tables(THD *thd, Table_ref *tables, bool *transactional_tables);
 void acl_tables_setup_for_read(Table_ref *tables);
 

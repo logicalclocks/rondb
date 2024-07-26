@@ -32,8 +32,8 @@
 #include <unordered_set>
 #include <utility>
 
-#include "m_ctype.h"
 #include "my_inttypes.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/malloc_allocator.h"
 #include "sql/mem_root_allocator.h"
 #include "template_utils.h"
@@ -136,6 +136,15 @@ class Collation_key_equal {
   const CHARSET_INFO *cs;
   decltype(cs->coll->strnncollsp) strnncollsp;
 };
+
+/// @brief Allocator type used in Map_myalloc
+template <class Key, class Value>
+using Map_allocator_type = Malloc_allocator<std::pair<const Key, Value>>;
+
+/// @brief Map using custom Malloc_allocator allocator
+template <class Key, class Value, class Compare = std::less<Key>>
+using Map_myalloc =
+    std::map<Key, Value, Compare, Map_allocator_type<Key, Value>>;
 
 /**
   std::unordered_map, but with my_malloc, so that you can track the memory

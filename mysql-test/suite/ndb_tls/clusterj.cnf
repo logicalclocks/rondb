@@ -1,0 +1,2 @@
+!include suite/ndb/t/clusterj.cnf
+!include suite/ndb/tls.cnf

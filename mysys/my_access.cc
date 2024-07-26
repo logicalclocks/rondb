@@ -32,11 +32,12 @@
 
 #include <errno.h>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"  // IWYU pragma: keep
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
 
 #ifdef _WIN32
 
@@ -173,7 +174,7 @@ int check_if_legal_tablename(const char *name) {
   @return true if the drive exists, false otherwise.
 */
 static bool does_drive_exists(char drive_letter) {
-  DWORD drive_mask = GetLogicalDrives();
+  const DWORD drive_mask = GetLogicalDrives();
   drive_letter = toupper(drive_letter);
 
   return (drive_letter >= 'A' && drive_letter <= 'Z') &&
@@ -200,7 +201,7 @@ bool is_filename_allowed(const char *name [[maybe_unused]],
     For Windows, check if the file name contains : character.
     Start from end of path and search if the file name contains :
   */
-  const char *ch = NULL;
+  const char *ch = nullptr;
   for (ch = name + length - 1; ch >= name; --ch) {
     if (FN_LIBCHAR == *ch || '/' == *ch)
       break;

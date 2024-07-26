@@ -73,6 +73,8 @@
 #include "sql/sql_lex.h"
 #include "sql/table.h"
 #include "sql/transaction_info.h"
+#include "string_with_len.h"
+#include "strmake.h"
 #include "thr_mutex.h"
 
 #ifndef NDEBUG
@@ -349,11 +351,15 @@ int Slave_worker::init_worker(Relay_log_info *rli, ulong i) {
   server_version = version_product(rli->slave_version_split);
   bitmap_shifted = 0;
   workers = c_rli->workers;  // shallow copying is sufficient
-  wq_empty_waits = wq_size_waits_cnt = groups_done = events_done = curr_jobs =
-      0;
+  wq_empty_waits = 0;
+  wq_size_waits_cnt = 0;
+  groups_done = 0;
+  events_done = 0;
+  curr_jobs = 0;
   usage_partition = 0;
   end_group_sets_max_dbs = false;
-  gaq_index = last_group_done_index = c_rli->gaq->capacity;  // out of range
+  gaq_index = c_rli->gaq->capacity;              // out of range
+  last_group_done_index = c_rli->gaq->capacity;  // out of range
   last_groups_assigned_index = 0;
   assert(!jobs.inited_queue);
   jobs.avail = 0;
@@ -548,8 +554,8 @@ bool Slave_worker::read_info(Rpl_info_handler *from) {
 
 /*
   This function is used to make a copy of the worker object before we
-  destroy it while STOP SLAVE. This new object is then used to report the
-  worker status until next START SLAVE following which the new worker objects
+  destroy it while STOP REPLICA. This new object is then used to report the
+  worker status until next START REPLICA following which the new worker objects
   will be used.
 */
 void Slave_worker::copy_values_for_PFS(ulong worker_id,
@@ -1529,17 +1535,24 @@ void Slave_committed_queue::free_dynamic_items() {
 
 void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
                              va_list args) const {
+  const Gtid_specification *gtid_next = &info_thd->variables.gtid_next;
+  do_report(level, err_code, gtid_next, msg, args);
+}
+
+void Slave_worker::do_report(loglevel level, int err_code,
+                             const Gtid_specification *gtid_next,
+                             const char *msg, va_list args) const {
   char buff_coord[MAX_SLAVE_ERRMSG];
   char buff_gtid[Gtid::MAX_TEXT_LENGTH + 1];
   const char *log_name =
       const_cast<Slave_worker *>(this)->get_master_log_name();
   ulonglong log_pos = const_cast<Slave_worker *>(this)->get_master_log_pos();
   bool is_group_replication_applier_channel =
-      channel_map.is_group_replication_channel_name(c_rli->get_channel(), true);
-  const Gtid_specification *gtid_next = &info_thd->variables.gtid_next;
+      channel_map.is_group_replication_applier_channel_name(
+          c_rli->get_channel());
   THD *thd = info_thd;
 
-  gtid_next->to_string(global_sid_map, buff_gtid, true);
+  gtid_next->to_string(global_tsid_map, buff_gtid, true);
 
   if (level == ERROR_LEVEL && (!has_temporary_error(thd, err_code) ||
                                thd->get_transaction()->cannot_safely_rollback(
@@ -1603,11 +1616,9 @@ static bool may_have_timestamp(Log_event *ev) {
   bool res = false;
 
   switch (ev->get_type_code()) {
-    case binary_log::QUERY_EVENT:
-      res = true;
-      break;
-
-    case binary_log::GTID_LOG_EVENT:
+    case mysql::binlog::event::QUERY_EVENT:
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT:
       res = true;
       break;
 
@@ -1622,7 +1633,8 @@ static int64 get_last_committed(Log_event *ev) {
   int64 res = SEQ_UNINIT;
 
   switch (ev->get_type_code()) {
-    case binary_log::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT:
       res = static_cast<Gtid_log_event *>(ev)->last_committed;
       break;
 
@@ -1637,7 +1649,8 @@ static int64 get_sequence_number(Log_event *ev) {
   int64 res = SEQ_UNINIT;
 
   switch (ev->get_type_code()) {
-    case binary_log::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT:
       res = static_cast<Gtid_log_event *>(ev)->sequence_number;
       break;
 
@@ -1706,7 +1719,7 @@ int Slave_worker::slave_worker_exec_event(Log_event *ev) {
 #endif
 
   // Address partitioning only in database mode
-  if (!is_gtid_event(ev) && is_mts_db_partitioned(rli)) {
+  if (!is_any_gtid_event(ev) && is_mts_db_partitioned(rli)) {
     if (ev->contains_partition_info(end_group_sets_max_dbs)) {
       uint num_dbs = ev->mts_number_dbs();
 
@@ -1786,9 +1799,10 @@ void Slave_worker::report_commit_order_deadlock() {
 
 void Slave_worker::prepare_for_retry(Log_event &event) {
   if (event.get_type_code() ==
-      binary_log::ROWS_QUERY_LOG_EVENT) {  // If a `Rows_query_log_event`, let
-                                           // the event be disposed in the main
-                                           // worker loop.
+      mysql::binlog::event::
+          ROWS_QUERY_LOG_EVENT) {  // If a `Rows_query_log_event`, let
+                                   // the event be disposed in the main
+                                   // worker loop.
     event.worker = this;
     this->rows_query_ev = nullptr;
   }
@@ -2124,9 +2138,15 @@ bool append_item_to_jobs(slave_job_item *job_item, Slave_worker *worker,
     mysql_mutex_unlock(&rli->pending_jobs_lock);
     thd->EXIT_COND(&old_stage);
     if (thd->killed) return true;
-    if (rli->wq_size_waits_cnt % 10 == 1)
-      LogErr(INFORMATION_LEVEL, ER_RPL_MTA_REPLICA_COORDINATOR_HAS_WAITED,
-             rli->wq_size_waits_cnt, ev_size);
+    if (rli->wq_size_waits_cnt % 10 == 1) {
+      time_t my_now = time(nullptr);
+      if ((my_now - rli->mta_coordinator_has_waited_stat) >=
+          mts_online_stat_period) {
+        LogErr(INFORMATION_LEVEL, ER_RPL_MTA_REPLICA_COORDINATOR_HAS_WAITED,
+               rli->wq_size_waits_cnt, ev_size);
+        rli->mta_coordinator_has_waited_stat = my_now;
+      }
+    }
     mysql_mutex_lock(&rli->pending_jobs_lock);
 
     new_pend_size = rli->mts_pending_jobs_size + ev_size;
@@ -2134,6 +2154,7 @@ bool append_item_to_jobs(slave_job_item *job_item, Slave_worker *worker,
   rli->pending_jobs++;
   rli->mts_pending_jobs_size = new_pend_size;
   rli->mts_events_assigned++;
+  rli->mts_online_stat_curr++;
 
   mysql_mutex_unlock(&rli->pending_jobs_lock);
 
@@ -2483,7 +2504,7 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
     */
     worker_curr_ev.set_current_event(ev);
 
-    if (is_gtid_event(ev)) seen_gtid = true;
+    if (is_any_gtid_event(ev)) seen_gtid = true;
     if (!seen_begin && ev->starts_group()) {
       seen_begin = true;  // The current group is started with B-event
       worker->end_group_sets_max_dbs = true;
@@ -2521,14 +2542,15 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
       WL#7592 refines the original assert disjunction formula
       with the final disjunct.
     */
-    assert(seen_begin || is_gtid_event(ev) ||
-           ev->get_type_code() == binary_log::QUERY_EVENT ||
+    assert(seen_begin || is_any_gtid_event(ev) ||
+           ev->get_type_code() == mysql::binlog::event::QUERY_EVENT ||
            is_mts_db_partitioned(rli) || worker->id == 0 || seen_gtid);
 
-    if (ev->ends_group() || (!seen_begin && !is_gtid_event(ev) &&
-                             (ev->get_type_code() == binary_log::QUERY_EVENT ||
-                              /* break through by LC only in GTID off */
-                              (!seen_gtid && !is_mts_db_partitioned(rli)))))
+    if (ev->ends_group() ||
+        (!seen_begin && !is_any_gtid_event(ev) &&
+         (ev->get_type_code() == mysql::binlog::event::QUERY_EVENT ||
+          /* break through by LC only in GTID off */
+          (!seen_gtid && !is_mts_db_partitioned(rli)))))
       break;
 
     remove_item_from_jobs(job_item, worker, rli);
@@ -2555,7 +2577,7 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
       assert(opt_debug_sync_timeout > 0);
       assert(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
     };);
-    if (ev->get_type_code() == binary_log::QUERY_EVENT &&
+    if (ev->get_type_code() == mysql::binlog::event::QUERY_EVENT &&
         ((Query_log_event *)ev)->rollback_injected_by_coord) {
       /*
         If this was a rollback event injected by the coordinator because of a

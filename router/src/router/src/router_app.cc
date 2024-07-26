@@ -49,7 +49,9 @@
 #include "hostname_validator.h"
 #include "keyring/keyring_manager.h"
 #include "mysql/harness/arg_handler.h"
+#include "mysql/harness/config_option.h"
 #include "mysql/harness/config_parser.h"
+#include "mysql/harness/dynamic_config.h"
 #include "mysql/harness/dynamic_state.h"
 #include "mysql/harness/filesystem.h"
 #include "mysql/harness/log_reopen_component.h"
@@ -57,12 +59,17 @@
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/logging/registry.h"
 #include "mysql/harness/process_state_component.h"
+#include "mysql/harness/section_config_exposer.h"
 #include "mysql/harness/signal_handler.h"
+#include "mysql/harness/supported_config_options.h"
 #include "mysql/harness/utility/string.h"  // string_format
 #include "mysql/harness/vt100.h"
+#include "mysql_router_thread.h"  // kDefaultStackSizeInKiloByte
 #include "mysqlrouter/config_files.h"
+#include "mysqlrouter/connection_pool.h"
 #include "mysqlrouter/default_paths.h"
 #include "mysqlrouter/mysql_session.h"
+#include "mysqlrouter/routing.h"
 #include "mysqlrouter/supported_router_options.h"
 #include "mysqlrouter/utils.h"  // substitute_envvar
 #include "print_version.h"
@@ -75,7 +82,6 @@
 #include <unistd.h>
 #include <csignal>
 const char dir_sep = '/';
-const std::string path_sep = ":";
 #else
 #include <process.h>
 #include <windows.h>
@@ -86,7 +92,6 @@ const std::string path_sep = ":";
 #include "mysqlrouter/windows/service_operations.h"
 #define strtok_r strtok_s
 const char dir_sep = '\\';
-const std::string path_sep = ";";
 #endif
 
 IMPORT_LOG_FUNCTIONS()
@@ -143,7 +148,7 @@ void check_config_overwrites(const CmdArgHandler::ConfigOverwrites &overwrites,
     // only --logger.level config overwrite is allowed currently for bootstrap
     for (const auto &option : overwrite.second) {
       const std::string name = section + "." + option.first;
-      if (name != "logger.level") {
+      if (name != "logger.level" && name != "DEFAULT.plugin_folder") {
         throw std::runtime_error(
             "Invalid argument '--" + name +
             "'. Only '--logger.level' configuration option can be "
@@ -151,6 +156,19 @@ void check_config_overwrites(const CmdArgHandler::ConfigOverwrites &overwrites,
       }
     }
   }
+}
+
+std::string get_plugin_folder_overwrite(
+    const CmdArgHandler::ConfigOverwrites &overwrites) {
+  const auto default_key = std::make_pair("DEFAULT"s, ""s);
+  if (overwrites.count(default_key) != 0) {
+    const auto &default_overwrites = overwrites.at(default_key);
+    if (default_overwrites.count("plugin_folder") != 0) {
+      return default_overwrites.at("plugin_folder");
+    }
+  }
+
+  return "";
 }
 
 }  // namespace
@@ -247,7 +265,8 @@ void MySQLRouter::init(const std::string &program_name,
 #endif
 
   const bool is_bootstrap = !bootstrap_uri_.empty();
-  check_config_overwrites(arg_handler_.get_config_overwrites(),
+  const auto config_overwrites = arg_handler_.get_config_overwrites();
+  check_config_overwrites(config_overwrites,
                           is_bootstrap);  // throws std::runtime_error
 
   if (is_bootstrap) {
@@ -294,10 +313,12 @@ void MySQLRouter::init(const std::string &program_name,
     // here we re-configure it with settings from config file)
     init_main_logger(config, true);  // true = raw logging mode
 
-    bootstrap(
-        program_name,
-        bootstrap_uri_);  // throws MySQLSession::Error, std::runtime_error,
-                          // std::out_of_range, std::logic_error, ...?
+    bootstrap(program_name, bootstrap_uri_,
+              get_plugin_folder_overwrite(
+                  config_overwrites));  // throws MySQLSession::Error,
+                                        // std::runtime_error,
+                                        // std::out_of_range,
+                                        // std::logic_error, ...?
     return;
   }
 
@@ -348,10 +369,11 @@ void MySQLRouter::init_keyring(mysql_harness::Config &config) {
 }
 
 void MySQLRouter::init_dynamic_state(mysql_harness::Config &config) {
-  if (config.has_default("dynamic_state")) {
+  if (config.has_default(router::options::kDynamicState)) {
     using mysql_harness::DynamicState;
 
-    const std::string dynamic_state_file = config.get_default("dynamic_state");
+    const std::string dynamic_state_file =
+        config.get_default(router::options::kDynamicState);
     DIM::instance().set_DynamicState(
         [=]() { return new DynamicState(dynamic_state_file); },
         std::default_delete<mysql_harness::DynamicState>());
@@ -420,10 +442,11 @@ void MySQLRouter::init_main_logger(mysql_harness::LoaderConfig &config,
   harness_assert(use_os_log == false);
 #endif
 
-  if (!config.has_default("logging_folder"))
-    config.set_default("logging_folder", "");
+  if (!config.has_default(mysql_harness::loader::options::kLoggingFolder))
+    config.set_default(mysql_harness::loader::options::kLoggingFolder, "");
 
-  const std::string logging_folder = config.get_default("logging_folder");
+  const std::string logging_folder =
+      config.get_default(mysql_harness::loader::options::kLoggingFolder);
 
   // setup logging
   {
@@ -514,6 +537,7 @@ void MySQLRouter::init_loader(mysql_harness::LoaderConfig &config) {
   }
 
   loader_->register_supported_app_options(router_supported_options);
+  loader_->register_expose_app_config_callback(expose_router_configuration);
 }
 
 void MySQLRouter::start() {
@@ -546,8 +570,9 @@ void MySQLRouter::start() {
 #ifndef _WIN32
   // --user param given on the command line has a priority over
   // the user in the configuration
-  if (user_cmd_line_.empty() && config.has_default("user")) {
-    set_user(config.get_default("user"), true, this->sys_user_operations_);
+  if (user_cmd_line_.empty() && config.has_default(router::options::kUser)) {
+    set_user(config.get_default(router::options::kUser), true,
+             this->sys_user_operations_);
   }
 #endif
 
@@ -558,8 +583,8 @@ void MySQLRouter::start() {
   // Setup pidfile path for the application.
   // Order of significance: commandline > config file > ROUTER_PID envvar
   if (pid_file_path_.empty()) {
-    if (config.has_default("pid_file")) {
-      const std::string pidfile = config.get_default("pid_file");
+    if (config.has_default(router::options::kPidFile)) {
+      const std::string pidfile = config.get_default(router::options::kPidFile);
       if (!pidfile.empty()) {
         pid_file_path_ = pidfile;
       } else {
@@ -1667,6 +1692,17 @@ void MySQLRouter::prepare_command_options() noexcept {
       });
 
   arg_handler_.add_option(
+      OptionNames({"--disable-rw-split"}),
+      "Do not generate routing section for RW Split endpoint",
+      CmdOptionValueReq::none, "",
+      [this](const std::string &) {
+        this->bootstrap_options_["disable-rw-split"] = "1";
+      },
+      [this](const std::string &) {
+        this->assert_bootstrap_mode("--disable-rw-split");
+      });
+
+  arg_handler_.add_option(
       OptionNames({"--disable-rest"}),
       "Disable REST web service for Router monitoring", CmdOptionValueReq::none,
       "",
@@ -1802,8 +1838,7 @@ void MySQLRouter::prepare_command_options() noexcept {
 
   // in this context we only want the service-related options to be known and
   // displayed with --help; they are handled elsewhere (main-windows.cc)
-  ServiceConfOptions unused;
-  add_service_options(arg_handler_, unused);
+  add_service_options(arg_handler_);
 
   arg_handler_.add_option(
       CmdOption::OptionNames({"--remove-credentials-section"}),
@@ -1837,7 +1872,8 @@ void MySQLRouter::prepare_command_options() noexcept {
 // throws MySQLSession::Error, std::runtime_error, std::out_of_range,
 // std::logic_error, ... ?
 void MySQLRouter::bootstrap(const std::string &program_name,
-                            const std::string &server_url) {
+                            const std::string &server_url,
+                            const std::string &plugin_folder) {
   mysqlrouter::ConfigGenerator config_gen(out_stream_, err_stream_
 #ifndef _WIN32
                                           ,
@@ -1849,6 +1885,7 @@ void MySQLRouter::bootstrap(const std::string &program_name,
       bootstrap_options_);  // throws MySQLSession::Error, std::runtime_error,
                             // std::out_of_range, std::logic_error
   config_gen.warn_on_no_ssl(bootstrap_options_);  // throws std::runtime_error
+  config_gen.set_plugin_folder(plugin_folder);
 
 #ifdef _WIN32
   // Cannot run bootstrap mode as windows service since it requires console
@@ -2107,3 +2144,65 @@ void MySQLRouter::show_usage(bool include_options) noexcept {
 }
 
 void MySQLRouter::show_usage() noexcept { show_usage(true); }
+
+namespace {
+
+class RouterAppConfigExposer : public mysql_harness::SectionConfigExposer {
+ public:
+  using DC = mysql_harness::DynamicConfig;
+  RouterAppConfigExposer(const bool initial,
+                         const mysql_harness::ConfigSection &default_section)
+      : mysql_harness::SectionConfigExposer(initial, default_section,
+                                            DC::SectionId{"common", ""}) {}
+
+  void expose() override {
+    // set "global" router options from DEFAULT section
+    auto expose_int_option = [&](std::string_view option,
+                                 const int64_t default_val) {
+      auto value = default_val;
+      if (default_section_.has(option)) {
+        try {
+          value = mysql_harness::option_as_int<int64_t>(
+              default_section_.get(option), "");
+        } catch (...) {
+          // if it failed fallback to setting default
+        }
+      }
+
+      expose_option(option, value, default_val);
+    };
+
+    auto expose_str_option = [&](std::string_view option,
+                                 const std::string &default_val,
+                                 bool skip_if_empty = false) {
+      auto value = default_val;
+      if (default_section_.has(option)) {
+        value = default_section_.get(option);
+      }
+
+      const OptionValue op_val = (skip_if_empty && value.empty())
+                                     ? OptionValue(std::monostate{})
+                                     : value;
+      const OptionValue op_default_val = (skip_if_empty && default_val.empty())
+                                             ? OptionValue(std::monostate{})
+                                             : default_val;
+
+      expose_option(option, op_val, op_default_val);
+    };
+
+    expose_int_option(
+        router::options::kMaxTotalConnections,
+        static_cast<int64_t>(routing::kDefaultMaxTotalConnections));
+    expose_str_option(router::options::kName, kSystemRouterName);
+    // only share a user if it is not empty
+    expose_str_option(router::options::kUser, kDefaultSystemUserName, true);
+    expose_str_option("unknown_config_option", "error");
+  }
+};
+
+}  // namespace
+
+void expose_router_configuration(const bool initial,
+                                 const mysql_harness::ConfigSection &section) {
+  RouterAppConfigExposer(initial, section).expose();
+}

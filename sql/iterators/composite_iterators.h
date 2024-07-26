@@ -40,8 +40,9 @@
  */
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
+#include <sys/types.h>
 #include <memory>
 #include <string>
 #include <utility>
@@ -55,7 +56,7 @@
 #include "sql/join_type.h"
 #include "sql/mem_root_array.h"
 #include "sql/pack_rows.h"
-#include "sql/table.h"
+#include "sql/sql_array.h"
 #include "sql_string.h"
 
 class Cached_item;
@@ -64,11 +65,12 @@ class Item;
 class JOIN;
 class KEY;
 struct MaterializePathParameters;
-class Query_expression;
 class SJ_TMP_TABLE;
+class Table_ref;
 class THD;
 class Table_function;
 class Temp_table_param;
+struct TABLE;
 
 /**
   An iterator that takes in a stream of rows and passes through only those that
@@ -426,10 +428,10 @@ class CacheInvalidatorIterator final : public RowIterator {
 
 namespace materialize_iterator {
 /**
-   A query block to be materialized by MaterializeIterator.
+   An operand (query block) to be materialized by MaterializeIterator.
    (@see MaterializeIterator for details.)
 */
-struct QueryBlock {
+struct Operand {
   /// The iterator to read the actual rows from.
   unique_ptr_destroy_only<RowIterator> subquery_iterator;
 
@@ -443,9 +445,9 @@ struct QueryBlock {
   /// what ExecuteIteratorQuery() needs to do at the top level.)
   JOIN *join;
 
-  /// If true, unique constraint checking via hash key is disabled
+  /// If true, de-duplication checking via hash key is disabled
   /// when materializing this query block (ie., we simply avoid calling
-  /// check_unique_constraint() for each row). Used when materializing
+  /// check_unique_fields() for each row). Used when materializing
   /// UNION DISTINCT and UNION ALL parts into the same table.
   /// We'd like to just use a unique constraint via unique index instead,
   /// but there might be other indexes on the destination table
@@ -487,6 +489,9 @@ struct QueryBlock {
   // Used for informing the iterators about various shared state in the
   // materialization (including coordinating rematerializations).
   FollowTailIterator *recursive_reader = nullptr;
+
+  /// The estimated number of rows produced by this block
+  double m_estimated_output_rows{0.0};
 };
 
 /**
@@ -495,7 +500,7 @@ struct QueryBlock {
   @see MaterializeIterator.
 
   @param thd Thread handler.
-  @param query_blocks_to_materialize List of query blocks to materialize.
+  @param operands List of operands (query blocks) to materialize.
   @param path_params MaterializePath settings.
   @param table_iterator Iterator used for accessing the temporary table
     after materialization.
@@ -508,12 +513,10 @@ struct QueryBlock {
     join.
   @return the iterator.
 */
-RowIterator *CreateIterator(THD *thd,
-                            Mem_root_array<materialize_iterator::QueryBlock>
-                                query_blocks_to_materialize,
-                            const MaterializePathParameters *path_params,
-                            unique_ptr_destroy_only<RowIterator> table_iterator,
-                            JOIN *join);
+RowIterator *CreateIterator(
+    THD *thd, Mem_root_array<materialize_iterator::Operand> operands,
+    const MaterializePathParameters *path_params,
+    unique_ptr_destroy_only<RowIterator> table_iterator, JOIN *join);
 
 }  // namespace materialize_iterator
 

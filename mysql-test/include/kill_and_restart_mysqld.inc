@@ -27,7 +27,6 @@ if (!$restart_parameters)
 
 if (!$no_wait_for_reconnect)
 {
-    --enable_reconnect
     --source include/wait_until_connected_again.inc
     ## Script xplugin_wait_for_interfaces.inc
     #
@@ -48,6 +47,5 @@ if (!$no_wait_for_reconnect)
     {
       --source include/xplugin_wait_for_interfaces.inc
     }
-    --disable_reconnect
 }
 --let $no_wait_for_reconnect = 0

@@ -25,7 +25,7 @@ CREATE TABLE t1(c1 INT NOT NULL AUTO_INCREMENT PRIMARY KEY, c2 BLOB);
 # 3. Cleanup.
 [connection server1]
 DROP TABLE t1;
-include/rpl_sync.inc
+include/rpl/sync.inc
 [connection server2]
 include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_broadcast_thread_short_period';

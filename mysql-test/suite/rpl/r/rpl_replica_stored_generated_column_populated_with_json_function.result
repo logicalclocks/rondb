@@ -1,6 +1,6 @@
 #
 # 0. Create source-replica topology
-include/master-slave.inc
+include/rpl/init_source_replica.inc
 Warnings:
 Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
 Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
@@ -24,7 +24,7 @@ PRIMARY KEY (`id`)
 #
 # 1.1. Insert row on the source
 INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column populated]
 #
@@ -32,12 +32,12 @@ include/assert.inc [The table contains a row with generated column populated]
 #          updated on the replica
 [connection master]
 UPDATE log_data SET data = '{}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated to null]
 [connection master]
 UPDATE log_data SET data='{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated]
 #
@@ -45,13 +45,13 @@ include/assert.inc [The table contains a row with generated column updated]
 #          deleted on the replica
 [connection master]
 DELETE FROM log_data WHERE data = '{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table doesn't contain any row]
 # Clean up
 [connection master]
 DROP TABLE log_data;
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 [connection master]
 #
 # 2. Create table on the source without keys
@@ -65,7 +65,7 @@ CREATE TABLE `log_data` (
 #
 # 2.1. Insert row on the source
 INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column populated]
 #
@@ -73,12 +73,12 @@ include/assert.inc [The table contains a row with generated column populated]
 #          updated on the replica
 [connection master]
 UPDATE log_data SET data = '{}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated to null]
 [connection master]
 UPDATE log_data SET data='{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated]
 #
@@ -86,13 +86,13 @@ include/assert.inc [The table contains a row with generated column updated]
 #          deleted on the replica
 [connection master]
 DELETE FROM log_data WHERE data = '{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table doesn't contain any row]
 # Clean up
 [connection master]
 DROP TABLE log_data;
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 [connection master]
 #
 # 3. Create table on the source with primary key
@@ -108,7 +108,7 @@ PRIMARY KEY (`id`)
 #
 # 3.1. Insert row on the source
 INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column populated]
 #
@@ -116,12 +116,12 @@ include/assert.inc [The table contains a row with generated column populated]
 #          updated on the replica
 [connection master]
 UPDATE log_data SET data = '{}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated to null]
 [connection master]
 UPDATE log_data SET data='{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated]
 #
@@ -129,13 +129,13 @@ include/assert.inc [The table contains a row with generated column updated]
 #          deleted on the replica
 [connection master]
 DELETE FROM log_data WHERE data = '{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table doesn't contain any row]
 # Clean up
 [connection master]
 DROP TABLE log_data;
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 [connection master]
 #
 # 4. Create table on the source without keys
@@ -149,7 +149,7 @@ CREATE TABLE `log_data` (
 #
 # 4.1. Insert row on the source
 INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column populated]
 #
@@ -157,12 +157,12 @@ include/assert.inc [The table contains a row with generated column populated]
 #          updated on the replica
 [connection master]
 UPDATE log_data SET data = '{}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated to null]
 [connection master]
 UPDATE log_data SET data='{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated]
 #
@@ -170,40 +170,40 @@ include/assert.inc [The table contains a row with generated column updated]
 #          deleted on the replica
 [connection master]
 DELETE FROM log_data WHERE data = '{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table doesn't contain any row]
 # Clean up
 [connection master]
 DROP TABLE log_data;
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 [connection master]
 #
 # 5. Create table on the replica with an an extra stored
 #        column and binlog_row_image = 'MINIMAL'
 [connection master]
-include/disable_binlog.inc
+include/rpl/disable_binlog.inc
 CREATE TABLE `log_data` (
 `id` INT UNSIGNED NOT NULL,
 `data` MEDIUMTEXT NOT NULL,
 PRIMARY KEY (`id`)
 ) ENGINE = InnoDB;
-include/restore_binlog.inc
+include/rpl/restore_binlog.inc
 [connection slave]
-include/disable_binlog.inc
+include/rpl/disable_binlog.inc
 CREATE TABLE `log_data` (
 `id` INT UNSIGNED NOT NULL,
 `data` MEDIUMTEXT NOT NULL,
 `gcol` JSON GENERATED ALWAYS AS (json_extract(`data`,'$.x')) STORED,
 PRIMARY KEY (`id`)
 ) ENGINE = InnoDB;
-include/restore_binlog.inc
+include/rpl/restore_binlog.inc
 [connection master]
 SET @@SESSION.binlog_row_image = 'MINIMAL';
 #
 # 5.1. Insert row on the source
 INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column populated]
 #
@@ -211,12 +211,12 @@ include/assert.inc [The table contains a row with generated column populated]
 #          updated on the replica
 [connection master]
 UPDATE log_data SET data = '{}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated to null]
 [connection master]
 UPDATE log_data SET data='{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated]
 #
@@ -224,22 +224,22 @@ include/assert.inc [The table contains a row with generated column updated]
 #          deleted on the replica
 [connection master]
 DELETE FROM log_data WHERE data = '{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table doesn't contain any row]
 # Clean up
 [connection master]
 DROP TABLE log_data;
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 [connection master]
 #
 # 6. The replica has REQUIRE_TABLE_PRIMARY_KEY_CHECK = GENERATE,
 #        then create table on the source without keys
 #        and binlog_row_image = 'MINIMAL'
 [connection slave]
-include/stop_slave.inc
+include/rpl/stop_replica.inc
 CHANGE REPLICATION SOURCE TO REQUIRE_TABLE_PRIMARY_KEY_CHECK = GENERATE;
-include/start_slave.inc
+include/rpl/start_replica.inc
 [connection master]
 SET @@SESSION.binlog_row_image = 'MINIMAL';
 CREATE TABLE `log_data` (
@@ -250,7 +250,7 @@ CREATE TABLE `log_data` (
 #
 # 6.1. Insert row on the source
 INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column populated]
 #
@@ -258,12 +258,12 @@ include/assert.inc [The table contains a row with generated column populated]
 #          updated on the replica
 [connection master]
 UPDATE log_data SET data = '{}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated to null]
 [connection master]
 UPDATE log_data SET data='{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated]
 #
@@ -271,13 +271,13 @@ include/assert.inc [The table contains a row with generated column updated]
 #          deleted on the replica
 [connection master]
 DELETE FROM log_data WHERE data = '{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table doesn't contain any row]
 # Clean up
 [connection master]
 DROP TABLE log_data;
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 [connection master]
 #
 # 7. The replica has REQUIRE_TABLE_PRIMARY_KEY_CHECK = GENERATE,
@@ -295,7 +295,7 @@ CREATE TABLE `log_data` (
 #
 # 7.1. Insert row on the source
 INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column populated]
 #
@@ -303,12 +303,12 @@ include/assert.inc [The table contains a row with generated column populated]
 #          updated on the replica
 [connection master]
 UPDATE log_data SET data = '{}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated to null]
 [connection master]
 UPDATE log_data SET data='{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table contains a row with generated column updated]
 #
@@ -316,19 +316,19 @@ include/assert.inc [The table contains a row with generated column updated]
 #          deleted on the replica
 [connection master]
 DELETE FROM log_data WHERE data = '{"x":"a"}';
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 # verify that log_data has the correct values in the replica
 include/assert.inc [The table doesn't contain any row]
 # Clean up
 [connection master]
 DROP TABLE log_data;
-include/sync_slave_sql_with_master.inc
+include/rpl/sync_to_replica.inc
 #
 # 6. Clean up
 [connection slave]
-include/stop_slave_sql.inc
+include/rpl/stop_replica.inc
 CHANGE REPLICATION SOURCE TO REQUIRE_TABLE_PRIMARY_KEY_CHECK = PRIMARY_KEY_CHECK_VALUE;
-include/start_slave_sql.inc
+include/rpl/start_replica.inc
 [connection master]
 include/restore_sysvars.inc
-include/rpl_end.inc
+include/rpl/deinit.inc

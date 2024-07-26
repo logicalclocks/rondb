@@ -26,6 +26,7 @@
 #include "mysqlrouter/router_protobuf_export.h"
 
 #include "my_compiler.h"
+#include "scope_guard.h"
 
 MY_COMPILER_DIAGNOSTIC_PUSH()
 MY_COMPILER_CLANG_DIAGNOSTIC_IGNORE("-Wdeprecated-dynamic-exception-spec")
@@ -36,27 +37,29 @@ MY_COMPILER_DIAGNOSTIC_POP()
 
 #include "mysql/harness/plugin.h"
 
+// deinit the protobuf-library on
+//
+// - deinit of this plugin and,
+// - unload of this plugin
+static Scope_guard static_guard([]() {
+  google::protobuf::ShutdownProtobufLibrary();
+});
+
 extern "C" {
 
 mysql_harness::Plugin ROUTER_PROTOBUF_EXPORT harness_plugin_router_protobuf = {
-    mysql_harness::PLUGIN_ABI_VERSION,
-    mysql_harness::ARCHITECTURE_DESCRIPTOR,
-    "",
-    VERSION_NUMBER(0, 0, 1),
+    mysql_harness::PLUGIN_ABI_VERSION, mysql_harness::ARCHITECTURE_DESCRIPTOR,
+    "", VERSION_NUMBER(0, 0, 1),
     // requires
-    0,
-    nullptr,
+    0, nullptr,
     // conflicts
-    0,
-    nullptr,
+    0, nullptr,
     nullptr,  // init
-    [](mysql_harness::PluginFuncEnv *) {
-      google::protobuf::ShutdownProtobufLibrary();
-    },
+    [](mysql_harness::PluginFuncEnv *) { static_guard.rollback(); },
     nullptr,  // start
     nullptr,  // stop
     false,    // declare_readiness
-    0,
-    nullptr,
+    0, nullptr,
+    nullptr,  // expose_configuration
 };
 }

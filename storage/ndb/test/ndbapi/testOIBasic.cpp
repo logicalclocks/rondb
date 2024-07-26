@@ -38,8 +38,8 @@
 #include <NdbOut.hpp>
 #include <NdbSqlUtil.hpp>
 #include <NdbTest.hpp>
-#include "m_ctype.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 
 // options
 
@@ -5865,6 +5865,7 @@ int main(int argc, char **argv) {
   {
     Par par(g_opt);
     g_ncc = new Ndb_cluster_connection();
+    g_ncc->configure_tls(opt_tls_search_path, opt_mgm_tls);
     if (g_ncc->connect(30) != 0 || runtest(par) < 0) goto failed;
     delete g_ncc;
     g_ncc = 0;

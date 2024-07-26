@@ -27,7 +27,7 @@ eval EXECUTE stmt;
 # plan i.e it should be using multiple equalities that are established during
 # optimization.
 SELECT
-IF(TRACE LIKE '%Left join (extra join condition = (t1.a = 5) AND (t2.a = 5))%',
+IF(TRACE LIKE '%Left join [companion set %] (extra join condition = (t1.a = 5) AND (t2.a = 5))%',
    'OK', TRACE)
 FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
 eval PREPARE stmt FROM "$query";
@@ -467,3 +467,912 @@ ANALYZE TABLE t2;
 EXPLAIN ANALYZE SELECT 1 FROM t2 WHERE a=b;
 
 DROP TABLE t2;
+
+--echo #
+--echo # Bug#35129863 Hypergraph: Multi-field indexes ignored in some
+--echo # selectivity estimates
+--echo #
+
+CREATE TABLE num10 (n INT PRIMARY KEY);
+INSERT INTO num10 VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+
+CREATE TABLE t1(
+  a INT,
+  b INT,
+  c INT,
+  d INT,
+  e INT,
+  f INT,
+  g INT,
+  h INT,
+  v VARCHAR(5),
+  PRIMARY KEY(a,b,c),
+  KEY k1 (e,f,g),
+  UNIQUE KEY k2(h)
+);
+
+INSERT INTO t1
+  SELECT k%25, k%50, k, k, k%25, k%50, k, k, CAST( k%25 AS CHAR(5))
+  FROM (select x1.n*10+x2.n k from num10 x1, num10 x2) d1;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON a, b,c,d,e,f,g,v;
+ANALYZE TABLE t1;
+
+# Since [a,b] is a prefix of the primary key, we use the selectivity of this prefix instead
+# of multiplying individual sekectivities of each field.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.a=x2.a AND x1.b=x2.b;
+
+# [a,b,c] is also a prefix of the primary key.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2, t1 x3
+  WHERE x1.a=x2.a AND x1.b=x2.b AND x2.c=x3.c AND x2.d=x3.d;
+
+# Prefix of k1.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.e=x2.e AND x1.f=x2.f;
+
+# Prefix of k1.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.e=x2.e AND x1.f=x2.f AND x1.g=x2.g;
+
+# 'a' and 'e' are prefixes of two separate keys, so we multiply the selectivity of each.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.a=x2.a AND x1.e=x2.e;
+
+# [a,b] and [e,f] are index prefixes. Multiply the selectivity of each prefix.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.a=x2.a AND x1.b=x2.b
+   AND x1.e=x2.e AND x1.f=x2.f;
+
+# [x2.a, x2.b] form an index prefix, but they are joined with different tables
+# (x1 and x3). Therefore we derive the selectivity for x2.a from the
+# primary key, and the selectivty of x2.b from the histogram for that field.
+# And then we multiply these selectivities.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2, t1 x3 WHERE x1.a=x2.a AND x2.b=x3.b;
+
+# Mix of field=field and field=constant
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.a=x2.a AND x1.b=8;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.a=x2.a AND x1.b=x2.b
+   AND x1.c=8;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.a=x2.a AND x1.b=7
+   AND x1.c=8;
+
+# Join on entire primary key.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2 WHERE x1.a=x2.a AND x1.b=x2.b
+   AND x1.c=x2.c;
+
+# field=field on single table.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE a=b;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE a=b AND c=d;
+
+# Cycle x1->x2->x3 in predicate.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE FORMAT=TREE SELECT * FROM t1 x1, t1 x2, t1 x3
+  WHERE x1.a=x2.a AND x2.b=x3.b AND x3.c=x1.c;
+
+# Cap on most selective unique key (k2).
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 JOIN num10 ON h=n;
+
+# Cap on unique key k2 takes priority over [t1.a,t1.b] index prefix.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2, t1 x3 WHERE
+  x1.a=x2.a AND x1.b=x2.b AND x1.b=x3.h;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1, t1 x2, t1 x3
+  WHERE x1.a=x2.c AND x1.b=x2.b AND x2.b=x3.b;
+
+# x3.a is missing on the inner side of the left join. Therefore we use
+# histograms rather than the [x3.a, x3.b] index prefix for finding the
+# selectivity of x3.b=x1.d.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 x1 LEFT JOIN
+  (t1 x2 JOIN t1 x3 ON x2.a=x3.a AND x2.b=x3.b) ON x3.b=x1.d;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM  t1 x1
+WHERE 3 IN (SELECT x2.b FROM t1 x2 LEFT JOIN t1 x3 ON x2.c=x3.a AND x2.d=x3.b);
+
+# Implicit cast from VARCHAR to INT.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 x1 JOIN t1 x2 ON x1.a=x2.v AND x1.b=x2.b;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 x1, t1 x2, t1 x3
+WHERE x1.a=x2.c AND x1.a=x3.v AND x1.b=x3.f;
+
+CREATE TABLE t2(x INT, y INT, z INT, KEY (x, y), KEY(y, x));
+
+INSERT INTO t2(x, y) VALUES (1, 1), (2, 2), (3, 3), (4, 4);
+
+CREATE TABLE t3 AS SELECT * FROM t2;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t2 JOIN t3 USING (x, y);
+
+ANALYZE TABLE t2,t3;
+
+DROP TABLE t1, t2, t3, num10;
+
+--echo #
+--echo # Bug#34762651 Too high row estimates for DISTINCT
+--echo #
+
+
+CREATE TABLE t1(
+       a INT PRIMARY KEY,
+       b INT,
+       KEY(b),
+       c INT
+);
+
+INSERT INTO t1
+WITH RECURSIVE qn(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM qn WHERE n<100)
+SELECT n,  n%5, n%7 FROM qn;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON c;
+ANALYZE TABLE t1;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT DISTINCT b FROM t1;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT DISTINCT c FROM t1;
+
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT DISTINCT b,c FROM t1;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#34763224 Hypergraph orders and-terms inefficiently in subquery
+--echo #
+
+CREATE TABLE num (n INT);
+INSERT INTO num VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+
+CREATE TABLE t1(
+  a INT PRIMARY KEY,
+  b VARCHAR(128),
+  c INT
+);
+
+INSERT INTO t1 SELECT k, CAST(100+k AS CHAR(10)), k
+FROM (SELECT x1.n+x2.n*10 AS k FROM num x1, num x2) d1;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b, c;
+ANALYZE TABLE t1;
+
+# 'c<70' is cheaper even if it is less selective, so evaluate that first.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t1 x1 WHERE x1.c IN
+(SELECT c FROM t1 x2 WHERE  b<"150" AND c<70);
+
+--replace_regex $elide_costs
+EXPLAIN  FORMAT=TREE SELECT 1 FROM t1 WHERE b<"150" AND c<70;
+
+# Even if 'c<80' is cheaper, its selectivity is so low that it should be
+# evaluated last.
+--replace_regex $elide_costs
+EXPLAIN  FORMAT=TREE SELECT 1 FROM t1 WHERE b<"150" AND c<80;
+
+--echo #
+--echo # BUG 35507456
+--echo # Assertion `[&]() { for (const Predicate *first = begin; first < end; first++)
+--echo #
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t1
+WHERE  b<"150" AND RAND(0)>-1 AND c< 70;
+
+DELIMITER $$;
+CREATE FUNCTION foo(i INT)
+  RETURNS INT
+  LANGUAGE SQL
+BEGIN
+  RETURN i+1;
+END $$
+DELIMITER ;$$
+
+# Function call should be evaluated last.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t1 WHERE foo(2)=3 AND c=5;
+
+DROP FUNCTION foo;
+DROP TABLE num, t1;
+
+--echo #
+--echo # Bug#34787357 Hypergraph: row estimates for field=non_field_term
+--echo # ignores indexes and histogram
+--echo #
+
+CREATE TABLE t1 (
+  a INT,
+  b INT,
+  c INT,
+  d INT,
+  e INT,
+  f INT,
+  g INT,
+  PRIMARY KEY(a),
+  KEY k1 (b,d), --  'b' and 'd' are indepdendent.
+  KEY k2 (b,e), -- 'b' is funtionally dependent on 'e'.
+  KEY k3 (b,g), -- 'b' is funtionally dependent on 'g'.
+  KEY k4 (f,g) -- 'f' and 'g' are independet.
+);
+
+INSERT INTO t1
+WITH RECURSIVE qn(n) AS
+(SELECT 0 UNION ALL SELECT n+1 FROM qn WHERE n<255)
+SELECT n AS a, n DIV 16 AS b, n % 16 AS c, n % 16 AS d, n DIV 8 AS e,
+  n % 32 AS f, n DIV 8 AS g FROM qn;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON c;
+ANALYZE TABLE t1;
+
+# We estimate selectivity of <field>=<independent expression> as
+# 1/<num distinct values of field>. If there is a histogram on <field>,
+# or if it is the first field of an (non-hash) index, then the (estimated)
+# number of distinct values is directly available. If it is the second or
+# subsequent field of an index, we do not know to what extent <field> is
+# correlated with the preceeding fields. In this case, we estimate the
+# selectivity as the geometric mean of the two extermes:
+# 1) Uncorrelated:
+#    selectivity = records_per_key(prefix+key) / rows_in_table
+#
+# 2) prefix is functionally dependent on field:
+#    selectivity = records_per_key(prefix+key) / records_per_key(prefix)
+
+# Make estimate from index, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE b=FLOOR(RAND(0));
+
+# Make estimate from histogram, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE c=FLOOR(RAND(0));
+
+# Make estimate from histogram, even if value is unknown. Note that the field
+# is on the right hand side of '='.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE FLOOR(RAND(0))=c;
+
+# Make estimate from second field of index. Since 'b' and 'd' are independent,
+# the estimate will be too low.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE d=FLOOR(RAND(0));
+
+# Make estimate from second field of index. Since 'b' in functionally dependent
+# on 'e', the estimate will be too high.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE e=FLOOR(RAND(0));
+
+# Make estimate from second field of index. Since 'b' and 'd' are independent,
+# the estimate will be too low.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE d=0;
+
+# Make estimate from second field of index. Since 'b' in functionally dependent
+# on 'e', the estimate will be too high.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE e=0;
+
+# Make estimate from second field of indexes k3 and k4.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE g=FLOOR(RAND(0));
+
+# Make estimate from index, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE b=(SELECT MIN(b) FROM t1);
+
+# Make estimate from histogram, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE c=(SELECT MIN(b) FROM t1);
+
+# Use histogram or index to make estimate for <field>!=<expression>
+# predicates.
+
+# Make estimate from index, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE b<>FLOOR(RAND(0));
+
+# Make estimate from histogram, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE c<>FLOOR(RAND(0));
+
+# Make estimate from histogram, even if value is unknown. Note that the field
+# is on the right hand side of '<>'.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE FLOOR(RAND(0))<>c;
+
+# Make estimate from index, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE b<>(SELECT MIN(b) FROM t1);
+
+# Make estimate from histogram, even if value is unknown.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE c<>(SELECT MIN(b) FROM t1);
+
+# Make estimate from second field of index.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE d<>(SELECT MIN(b) FROM t1);
+
+# Make estimate from second field of index.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t1 WHERE e<>(SELECT MIN(b) FROM t1);
+
+# Subquery with column resolved in outer reference (OUTER_REF_TABLE_BIT).
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE FORMAT=TREE SELECT * FROM t1 x1 WHERE d =
+(SELECT MIN(g) FROM t1 x2 WHERE x1.b<>x2.b);
+
+DROP TABLE t1;
+
+
+--echo # Bug#35439787 Assertion `false && "Inconsistent row counts for
+--echo # different AccessPath objects."'
+--echo #
+
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b INT,
+  c INT,
+  d INT,
+  e INT,
+  KEY k1 (b,c)
+);
+
+ANALYZE TABLE t1;
+
+# To reproduce this bug we use a query with:
+# - A top-level semi-join, so that we get one CompanionSet for the
+#   root and one for the inner-join.
+# - A cyclic dependency between x2, x3 and x4.
+# - Terms comparing both the first and second field in a key to
+#   other fields.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t1 x1 WHERE EXISTS
+(SELECT 1 FROM t1 x2, t1 x3, t1 x4
+  WHERE x2.b=x3.d AND x2.c=x3.e AND x3.d=x4.b AND x2.e=x4.e);
+
+DROP TABLE t1;
+
+# Test case for post-push fix for commit with
+# 'Change-Id: I40156663f32a407490b066a566abe72b356cfda9'. Fix for UBSAN
+# error: building reference to dereferenced null pointer.
+CREATE TABLE t1 (a int, b int);
+
+ANALYZE TABLE t1;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM  t1 x1 LEFT JOIN (t1 x2, t1 x3)
+ON x1.a=x3.a WHERE x1.b<x2.b OR x2.a IS NULL;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#35719688 Assertion`new_path->cost >= new_path->init_cost' in
+--echo # ExpandSingleFilterAccessPath
+--echo #
+
+CREATE TABLE t1 (
+  a INT,
+  b INT,
+  c INT,
+  PRIMARY KEY(a),
+  KEY k_b(b),
+  KEY k_c(c)
+);
+
+INSERT INTO t1 VALUES (1,1,1);
+
+ANALYZE TABLE t1;
+
+CREATE TABLE t2 (
+  a INT PRIMARY KEY,
+  b INT
+);
+
+INSERT INTO t2 WITH RECURSIVE qn(n) AS
+(SELECT 1 UNION ALL SELECT n+1 FROM qn WHERE n<50) SELECT n, n FROM qn;
+
+ANALYZE TABLE t2;
+
+# To trigger this bug we need a query with:
+# - A ROWID_UNION access path.
+# - A predicate giving a selectivity estmate of zero (prior to the fix).
+# - An expensive filter condition.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 x0 WHERE (b=3 OR c=4) AND a <>
+(SELECT MAX(x1.a+x2.a) FROM t2 x1 JOIN t2 x2 ON x1.b<x2.b);
+
+DROP TABLE t1,t2;
+
+--echo #
+--echo # Bug#35789967 Assertion `val >= 0.0 || val == kUnknownCost' failed.
+--echo #
+
+CREATE TABLE t1
+(
+  a INT,
+  b INT,
+  c INT,
+  PRIMARY KEY(a),
+  KEY k2 (b,c)
+);
+
+INSERT INTO t1
+WITH RECURSIVE qn(n) AS (SELECT 10 UNION ALL SELECT n-1 FROM qn WHERE n>0)
+SELECT n, 1, n FROM qn;
+
+ANALYZE TABLE t1;
+
+# The assert was triggered by an independent singlerow subselect as a filter
+# condition.
+
+--replace_regex $elide_costs_and_rows
+EXPLAIN FORMAT=TREE SELECT b FROM t1 x1
+  WHERE c < 1 AND c = (SELECT MAX(b) FROM t1 x2);
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#35790381 Assertion `false &&
+--echo # "Inconsistent row counts for different AccessPath objects."'
+--echo #
+
+CREATE TABLE t1 (a INT, b INT, KEY k1 (a));
+
+INSERT INTO t1 VALUES (1,1),(2,2),(1,1),(2,2),(1,1),(2,2),(1,1),(2,2),(1,1),(2,2),(1,1),(2,2);
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b;
+ANALYZE TABLE t1;
+
+# The code that made row estimates for aggregation did not understand that
+# 'a' was a field, since it was represented by an Item_ref rather than an
+# Item_field. Therefore, it ignored the k1 index, and used a rule of thumb
+# instead (the square root of the number of input rows).
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT a, COUNT(*) FROM
+  (SELECT x1.a FROM t1 x1, t1 x2 WHERE x1.b = x2.a) AS dt GROUP BY a;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#35483044 Hypergraph: Invalid row estimate for filter on
+--echo # 'Index range scan'
+--echo #
+
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b INT NOT NULL,
+  c INT,
+  KEY k_b(b),
+  KEY k_c(c)
+);
+
+INSERT INTO t1 WITH RECURSIVE qn(n) AS
+(SELECT 1 UNION ALL SELECT n+1 FROM qn WHERE n<30) SELECT n, n/2, n/2 FROM qn;
+
+ANALYZE TABLE t1;
+
+# c=NULL is always false and should not affect the row estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=5 OR c=NULL;
+
+# 'c<=>NULL' and 'c IS NULL' are equivalent and should get the same row
+# estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=5 OR c<=>NULL;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=5 OR c IS NULL;
+
+# b=NULL is always false and should not affect the row estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=NULL OR c=5;
+
+# b<=>NULL is always false and should not affect the row estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b<=>NULL OR c=5;
+
+# Use index for selectivity estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b<=>FLOOR(RAND(0));
+
+# Use index for selectivity estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE c<=>FLOOR(RAND(0));
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b,c;
+
+# c=NULL is always false and should not affect the row estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=5 OR c=NULL;
+
+# 'c<=>NULL' and 'c IS NULL' are equivalent and should get the same row
+# estimate (from the histogram).
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=5 OR c<=>NULL;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=5 OR c IS NULL;
+
+# b=NULL is always false and should not affect the row estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b=NULL OR c=5;
+
+# b<=>NULL is always false and should not affect the row estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b<=>NULL OR c=5;
+
+# Use index for selectivity estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE b<=>FLOOR(RAND(0));
+
+# Use index for selectivity estimate.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE c<=>FLOOR(RAND(0));
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#35898221 Hypergraph: too low row estmate for semijoin
+--echo # that is not an equijoin
+--echo #
+
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b INT
+);
+
+CREATE TABLE t2 (
+  k INT,
+  l INT,
+  PRIMARY KEY(k)
+);
+
+INSERT INTO t1 WITH RECURSIVE qn(n) AS
+(SELECT 0 UNION ALL SELECT n+1 FROM qn WHERE n<29) SELECT n, n FROM qn;
+
+INSERT INTO t2 WITH RECURSIVE qn(n) AS
+(SELECT 0 UNION ALL SELECT n+1 FROM qn WHERE n<19) SELECT n, n%10 FROM qn;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b;
+ANALYZE TABLE t2 UPDATE HISTOGRAM ON l;
+ANALYZE TABLE t1,t2;
+
+# Simple semijoin. The row estimate should be:
+# CARD(t1) * CARD("SELECT DISTINCT l FROM t2") * SELECTIVITY(t1.a=t2.l)
+# = 30 * 10 * 1/30 = 10.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE t1.a IN (SELECT t2.l FROM t2);
+
+# Semijoin that is not an equijoin.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE EXISTS
+(SELECT 1 FROM t2 WHERE t1.a=t2.l AND t1.b<>t2.k);
+
+# Semijoin refering same inner field ('l') multiple times.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE EXISTS
+(SELECT 1 FROM t2 WHERE t2.l+ABS(t2.l)=t1.a);
+
+# Semijoin refering multiple inner fields.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE EXISTS
+(SELECT 1 FROM t2 WHERE t2.k+t2.l=t1.a);
+
+# Simple antijoin.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE NOT EXISTS
+(SELECT 1 FROM t2 WHERE t1.a=t2.l);
+
+# Antijoin that is not an equijoin.
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT * FROM t1 WHERE NOT EXISTS
+(SELECT 1 FROM t2 WHERE t1.a=t2.l AND t1.b<>t2.k);
+
+# Semijoin with row estimate from inner operand less than one.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE a IN
+(SELECT t2.l FROM t2 WHERE t2.l<0);
+
+# Semijoin with constant inner operand.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE t1.a IN (SELECT 5 FROM t2);
+
+DROP TABLE t1,t2;
+
+
+--echo #
+--echo # Bug#35997316 Hypergraph: Incomplete and inconvenient optimizer trace
+--echo #
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT);
+
+INSERT INTO t1 WITH RECURSIVE qn(n) AS
+(SELECT 0 UNION ALL SELECT n+1 FROM qn WHERE n+1<30) SELECT n, n%10 FROM qn;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b;
+ANALYZE TABLE t1;
+
+SET SESSION OPTIMIZER_TRACE='enabled=on';
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 x1
+  WHERE x1.a IN (SELECT x2.b FROM t1 x2);
+
+# Check that how we estimate the number of distinct values for x2.b are
+# logged in the optimizer trace.
+SELECT REGEXP_SUBSTR(
+  trace, "distinct values for field 'b' from histogram[^,]*",1,1,'n')
+  FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+SET SESSION OPTIMIZER_TRACE='enabled=off';
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#36125903 Hypergraph: Inconsistent numeric precision for
+--echo # AccessPath in optimizer trace
+--echo #
+
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b INT
+);
+
+INSERT INTO t1 WITH RECURSIVE qn(n) AS
+(SELECT 0 UNION ALL SELECT n+1 FROM qn WHERE n<100) SELECT n, n FROM qn;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b;
+ANALYZE TABLE t1;
+
+SET SESSION OPTIMIZER_TRACE="enabled=on";
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 x1, t1 x2, t1 x3, t1 x4;
+
+SELECT REGEXP_SUBSTR(trace, " - \\{NESTED_LOOP_JOIN[^\n]*keeping",1,1,'n')
+  FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 WHERE a=5 AND b=5;
+
+SELECT REGEXP_SUBSTR(trace, " - \\{FILTER[^\n]*keeping",1,1,'n')
+  FROM INFORMATION_SCHEMA.OPTIMIZER_TRACE;
+
+SET SESSION OPTIMIZER_TRACE="enabled=off";
+
+DROP TABLE t1;
+
+--echo # Bug#5889990: Setting secondary_engine to OFF causes offload issues
+
+CREATE TABLE t(x INT, y INT);
+INSERT INTO t VALUES (1, 2), (2, 3);
+ANALYZE TABLE t;
+
+SET optimizer_switch='hypergraph_optimizer=off';
+
+PREPARE ps FROM
+'SELECT *
+ FROM t AS t1 LEFT JOIN t AS t2 ON t1.x=t2.x AND t1.y IN (SELECT x FROM t)';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=on';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=off';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=on';
+
+PREPARE ps FROM
+'SELECT *
+ FROM t AS t1 LEFT JOIN t AS t2 ON t1.x=t2.x AND t1.y IN (SELECT x FROM t)';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=off';
+
+EXECUTE ps;
+
+DROP TABLE t;
+
+CREATE TABLE t(x VARCHAR(100), FULLTEXT KEY (x));
+INSERT INTO t VALUES ('abc'), ('xyz'), ('abc abc');
+ANALYZE TABLE t;
+
+SET optimizer_switch='hypergraph_optimizer=on';
+
+PREPARE ps FROM
+'SELECT x, MATCH(x) AGAINST (''abc'') AS score FROM t
+ GROUP BY x HAVING MATCH(x) AGAINST(''abc'') > 0';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=off';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=on';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=off';
+
+PREPARE ps FROM
+'SELECT x, MATCH(x) AGAINST (''abc'') AS score FROM t
+ GROUP BY x HAVING MATCH(x) AGAINST(''abc'') > 0';
+
+EXECUTE ps;
+
+SET optimizer_switch='hypergraph_optimizer=on';
+
+EXECUTE ps;
+
+DROP TABLE t;
+
+--echo #
+--echo # Bug #36135001: Hypergraph: Too low row estimate for index lookup
+--echo #
+
+CREATE TABLE t1(
+  a INT,
+  b INT,
+  c INT,
+  d INT,
+  PRIMARY KEY(a),
+  KEY k1(d)
+);
+
+INSERT INTO t1
+WITH RECURSIVE qn(n) AS
+(SELECT 0 UNION ALL SELECT n+1 FROM qn WHERE n<19)
+SELECT n, n%10, n%10, n%10 FROM qn;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b,c;
+ANALYZE TABLE t1;
+
+# Do a lookup on the primary key, so that we can verify that the row estimate
+# is 1.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 x1, t1 x2, t1 x3
+  WHERE x1.b=x2.a AND x2.b=x3.a AND (x1.c < 5 OR x3.c=7);
+
+# Do a lookup on non-unique key k1, where the row estimate should be 2.
+# 'ORDER BY' ensures that we get a nested loop join, where the lookup is
+# present.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 x1, t1 x2, t1 x3
+  WHERE x1.b=x2.d AND x2.b=x3.d AND (x1.c < 5 OR x3.c=7) ORDER BY x3.d;
+
+# Check that we handle two identical conditions correctly.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT * FROM t1 x1 LEFT JOIN t1 x2
+  ON x1.a <=> x2.a AND  x1.a <=> x2.a;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#35855573 Assertion `false && "Inconsistent row counts for
+--echo # different AccessPath objects."'
+--echo #
+
+CREATE TABLE t(pk INT PRIMARY KEY AUTO_INCREMENT, x INT);
+INSERT INTO t VALUES (), (), (), (), (), (), (), (), (), (), (), ();
+ANALYZE TABLE t;
+
+# Since t1.pk = t2.x and pk is the primary key, there is a functional
+# dependency t2.x->t1.x. Therefore, some candidate plans group on {t2.x, t1.x}
+# and others on {t1.x}, which are both valid. But EstimateDistinctRows() will
+# give different row estimates for these two sets of fields, as it does not take
+# functional depdenencies into account. This triggered the assert.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT DISTINCT t1.x, t2.x FROM t AS t1, t AS t2
+  WHERE t1.pk = t2.x ORDER BY t2.x;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT DISTINCT t1.x, t1.pk FROM t AS t1, t AS t2
+  WHERE t1.pk = t2.x ORDER BY t1.x;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT DISTINCT t1.pk, t2.x FROM t AS t1, t AS t2
+  WHERE t1.pk = t2.x ORDER BY t2.x;
+
+DROP TABLE t;
+
+--echo #
+--echo # Bug#35991881 Hypergraph: Wrong init_cost for nested loop join
+--echo #
+
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b INT,
+  c INT
+);
+
+INSERT INTO t1 WITH RECURSIVE qn(n) AS
+  (SELECT 0 UNION ALL SELECT n+1 FROM qn WHERE n+1<20)
+  SELECT n, n%10, n%10 FROM qn;
+
+ANALYZE TABLE t1 UPDATE HISTOGRAM ON b, c;
+ANALYZE TABLE t1;
+
+# This query should produce a plan with a NLJ between x1 and d1, since we
+# order on an indexed column (x1.a) and have LIMIT.
+# The relatively high first-row cost for d1 should be included in the
+# first-row cost of that NLJ.
+EXPLAIN FORMAT=TREE SELECT * FROM t1 x1 JOIN
+  (SELECT MAX(x2.c) k FROM t1 x2 JOIN t1 x3 ON x2.c < x3.b GROUP BY x3.c) d1
+  ON x1.b=d1.k ORDER BY x1.a LIMIT 1;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#36032958: Assertion `IsEmpty(child.delayed_predicates)' failed
+--echo #
+
+CREATE TABLE t(x INT, KEY(x));
+SELECT ROW_NUMBER() OVER () FROM t WHERE x = RAND() GROUP BY x;
+DROP TABLE t;
+
+--echo #
+--echo # Bug#36099491: Assertion secondary_engine_cost_hook != nullptr
+--echo #               failed with hypergraph_optimizer
+--echo #
+
+CREATE TABLE t (a INT, b VARCHAR(10));
+
+# Make the base tables bigger, so that it looks tempting to join the
+# smaller lateral derived table first in the queries below. The
+# optimizer needs to resist the temptation, because the lateral
+# derived table cannot be joined before the table it depends on.
+INSERT INTO t (a)
+WITH RECURSIVE 150tup(n) AS
+  (SELECT 1 UNION ALL SELECT n + 1 FROM 150tup WHERE n < 150)
+SELECT n FROM 150tup;
+
+ANALYZE TABLE t;
+
+SELECT /*+ SET_VAR(optimizer_max_subgraph_pairs = 1) */ COUNT(*)
+FROM t AS t1 LEFT JOIN t AS t2 ON TRUE
+WHERE t1.a IN (SELECT * FROM (SELECT DISTINCT t2.a) AS t3);
+
+SELECT /*+ SET_VAR(optimizer_max_subgraph_pairs = 1) */ COUNT(*)
+FROM t AS t1 LEFT JOIN t AS t2 ON TRUE,
+     LATERAL (SELECT DISTINCT t2.a FROM t) AS t3
+WHERE t1.a = t3.a;
+
+SELECT /*+ SET_VAR(optimizer_max_subgraph_pairs = 1) */ COUNT(*)
+FROM t AS t1 LEFT JOIN t AS t2 ON 1,
+     JSON_TABLE(t2.b, '$[*]' COLUMNS(i INT PATH '$[0]')) AS t3
+WHERE t3.i < 10 AND t1.a = t3.i;
+
+DROP TABLE t;
+
+--echo #
+--echo # Bug#36098954: Assertion GraphSimplifier::EdgesAreNeighboring
+--echo #               failed with hypergraph_optimizer
+--echo #
+
+CREATE TABLE t(x INT);
+SELECT /*+ SET_VAR(optimizer_max_subgraph_pairs = 1) */ 1
+FROM t WHERE x IN (
+  SELECT NULL FROM t AS t1, t AS t2 STRAIGHT_JOIN t AS t3 ON t2.x = t3.x
+) OR x = 1;
+DROP TABLE t;

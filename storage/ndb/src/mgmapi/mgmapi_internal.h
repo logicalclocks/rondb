@@ -112,6 +112,6 @@ struct ndb_mgm_configuration *ndb_mgm_get_configuration2(
 NdbLogEventHandle ndb_mgm_create_logevent_handle_same_socket(NdbMgmHandle mh);
 
 NdbSocket ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
-                                        int parsable);
+                                        int parsable, bool allow_tls);
 
 #endif

@@ -25,7 +25,7 @@ call mtr.add_suppression("Log filename extension number exhausted:");
 call mtr.add_suppression("Can't generate a unique log-filename");
 call mtr.add_suppression("Could not open .*");
 -- source include/have_log_bin.inc
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 -- let $MYSQLD_DATADIR= `select @@datadir`
 
@@ -51,7 +51,6 @@ EOF
 
 # 3. Restart the server
 -- exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
--- enable_reconnect
 -- source include/wait_until_connected_again.inc
 SET GLOBAL binlog_error_action= IGNORE_ERROR;
 ###########
@@ -81,5 +80,4 @@ FLUSH LOGS;
 
 # 3. Restart the server
 -- exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
--- enable_reconnect
 -- source include/wait_until_connected_again.inc

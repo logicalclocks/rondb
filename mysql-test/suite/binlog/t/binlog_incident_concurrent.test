@@ -60,7 +60,7 @@ begin
 end%
 delimiter ;%
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 # Start new connections to let the stmt_cache_size setting take effect
 connect(foreground,localhost,root,,);
@@ -102,7 +102,7 @@ while ($i <= $incidents)
   --let $binlog_file= query_get_value(SHOW BINARY LOGS, Log_name, $i)
   --let $somewhere = 1
   --let $event_sequence= !Gtid_or_anon # Incident
-  --source include/assert_binlog_events.inc
+  --source include/rpl/assert_binlog_events.inc
 
   inc $i;
 }

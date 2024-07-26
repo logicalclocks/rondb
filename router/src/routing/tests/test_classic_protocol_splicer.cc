@@ -38,7 +38,6 @@
 
 #include <openssl/ssl.h>  // SSL_CTX
 
-#include "channel.h"
 #include "connection.h"
 #include "mysql/harness/net_ts/buffer.h"
 #include "mysql/harness/net_ts/impl/socket.h"
@@ -50,16 +49,12 @@
 #include "mysql/harness/tls_context.h"
 #include "mysql/harness/tls_error.h"
 #include "mysql/harness/tls_server_context.h"
+#include "mysqlrouter/base_protocol.h"
+#include "mysqlrouter/channel.h"
+#include "mysqlrouter/ssl_mode.h"
 #include "openssl_version.h"
-#include "protocol/base_protocol.h"
-#include "ssl_mode.h"
+#include "stdx_expected_no_error.h"
 #include "test/helpers.h"  // init_test_logger
-
-#define ASSERT_NO_ERROR(x) \
-  ASSERT_THAT((x), ::testing::Truly([](auto const &v) { return (bool)v; }))
-
-#define EXPECT_NO_ERROR(x) \
-  EXPECT_THAT((x), ::testing::Truly([](auto const &v) { return (bool)v; }))
 
 using namespace std::chrono_literals;
 #if 0
@@ -577,7 +572,7 @@ class ProtocolSplicerTest
 
       EXPECT_THAT(connect_res,
                   ::testing::AnyOf(stdx::expected<void, std::error_code>{},
-                                   stdx::make_unexpected(
+                                   stdx::unexpected(
                                        make_error_code(TlsErrc::kWantRead))))
           << connect_res.error().message();
 

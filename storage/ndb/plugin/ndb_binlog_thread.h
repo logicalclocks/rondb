@@ -31,6 +31,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "storage/ndb/include/ndbapi/NdbDictionary.hpp"
+#include "storage/ndb/plugin/ndb_binlog_index_rows.h"
 #include "storage/ndb/plugin/ndb_component.h"
 #include "storage/ndb/plugin/ndb_metadata_sync.h"
 
@@ -38,7 +40,6 @@ class Ndb;
 class NdbEventOperation;
 class Ndb_sync_pending_objects_table;
 class Ndb_sync_excluded_objects_table;
-struct ndb_binlog_index_row;
 class injector;
 class injector_transaction;
 struct TABLE;
@@ -297,19 +298,52 @@ class Ndb_binlog_thread : public Ndb_component {
    */
   void fix_per_epoch_trans_settings(THD *thd);
 
+  /**
+    @brief Release THD resources (if necessary).
+    @note The common use case for THD's usage in a session thread is to reset
+    its state and clear used memory after each statement, thus most
+    called MySQL functions assume that memory can be allocated in any of the
+    mem_root's of THD and it will be released at a later time.  The THD owned
+    by the long lived ndb_binlog thread also need to release resources
+    at regular intervals, this functon is called after each epoch
+    (instead of statement) to check if there are any resources to release.
+
+     @param thd Thread handle
+  */
+  static void release_thd_resources(THD *thd);
+
+  Ndb_binlog_index_rows m_binlog_index_rows;
+
+  // Epoch context handler
+  struct EpochContext {
+    // Counter for rows in event
+    unsigned int trans_row_count = 0;
+    // Counter for replicated rows in event
+    unsigned int replicated_row_count = 0;
+
+    /**
+      @brief Check if epoch is considered empty in regards to the
+      number of rows recorded in the epoch transaction. An epoch is
+      considered empty if 1) it did not record any 'real' rows in the
+      binlog (from user tables) AND 2) if logging ndb_apply_status
+      updates, it received updates applied by another replica (that
+      were not on ndb_apply_status).
+
+      @retval true for empty epoch
+    */
+    bool is_empty_epoch() const;
+  };
+
   // Functions for handling received events
   int handle_data_get_blobs(const TABLE *table,
                             const NdbValue *const value_array,
                             Ndb_blobs_buffer &buffer, ptrdiff_t ptrdiff) const;
   void handle_data_unpack_record(TABLE *table, const NdbValue *value,
                                  MY_BITMAP *defined, uchar *buf) const;
-  int handle_error(NdbEventOperation *pOp) const;
   void handle_non_data_event(THD *thd, NdbEventOperation *pOp,
-                             ndb_binlog_index_row &row);
+                             NdbDictionary::Event::TableEvent type);
   int handle_data_event(const NdbEventOperation *pOp,
-                        ndb_binlog_index_row **rows,
-                        injector_transaction &trans, unsigned &trans_row_count,
-                        unsigned &replicated_row_count) const;
+                        injector_transaction &trans, EpochContext &epoch_ctx);
   bool handle_events_for_epoch(THD *thd, injector *inj, Ndb *i_ndb,
                                NdbEventOperation *&i_pOp,
                                const Uint64 current_epoch);
@@ -319,8 +353,7 @@ class Ndb_binlog_thread : public Ndb_component {
                                  ulonglong gci) const;
   void inject_table_map(injector_transaction &trans, Ndb *ndb) const;
   void commit_trans(injector_transaction &trans, THD *thd, Uint64 current_epoch,
-                    ndb_binlog_index_row *rows, unsigned trans_row_count,
-                    unsigned replicated_row_count);
+                    EpochContext epoch_ctx);
 
   // Cache for NDB metadata
   class Metadata_cache {

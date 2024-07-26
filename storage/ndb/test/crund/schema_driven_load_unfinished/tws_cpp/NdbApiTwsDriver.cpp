@@ -770,6 +770,7 @@ void NdbApiTwsDriver::initConnection() {
   cout << "creating cluster connection ..." << flush;
   assert(!mgmdConnect.empty());
   mgmd = new Ndb_cluster_connection(mgmdConnect.c_str());
+  mgmd->configure_tls(opt_tls_search_path, opt_mgm_tls);
   cout << " [ok]" << endl;  // no useful mgmd->string conversion
 
   // connect to cluster management node (ndb_mgmd)

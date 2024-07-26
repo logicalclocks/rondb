@@ -46,7 +46,7 @@ inline stdx::expected<int, std::error_code> create() {
   int res = ::kqueue();
 
   if (res == -1) {
-    return stdx::make_unexpected(impl::socket::last_error_code());
+    return stdx::unexpected(impl::socket::last_error_code());
   }
 
   return {res};
@@ -58,7 +58,7 @@ inline stdx::expected<int, std::error_code> kevent(
   int res = ::kevent(kedf, changelist, nchanges, eventlist, nevents, timeout);
 
   if (res == -1) {
-    return stdx::make_unexpected(impl::socket::last_error_code());
+    return stdx::unexpected(impl::socket::last_error_code());
   }
 
   return {res};

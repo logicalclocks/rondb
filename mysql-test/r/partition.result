@@ -295,13 +295,13 @@ t1	CREATE TABLE `t1` (
  PARTITION pmax VALUES LESS THAN MAXVALUE ENGINE = InnoDB) */
 DROP TABLE t1;
 create table t1 (a int NOT NULL, b varchar(5) NOT NULL)
-default charset=utf8
+default charset=utf8mb3
 partition by list (a)
 subpartition by key (b)
 (partition p0 values in (1),
 partition p1 values in (2));
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 drop table t1;
 create table t1 (a int, b int, key(a))
 partition by list (a)
@@ -2823,7 +2823,7 @@ SUBPARTITION BY HASH (to_days("col2"))
   SUBPARTITION s1 TABLESPACE = "innodb_file_per_table" ENGINE = InnoDB),
  PARTITION p1 VALUES LESS THAN MAXVALUE
  (SUBPARTITION s2 TABLESPACE = "innodb_file_per_table" ENGINE = InnoDB,
-  SUBPARTITION s3 TABLESPACE = "innodb_file_per_table" ENGINE = InnoDB)) */
+  SUBPARTITION "s3" TABLESPACE = "innodb_file_per_table" ENGINE = InnoDB)) */
 SELECT partition_expression FROM information_schema.partitions
 WHERE table_schema = 'test' AND table_name = 't1';
 PARTITION_EXPRESSION
@@ -2846,7 +2846,7 @@ SUBPARTITION BY HASH (to_days(`col2`))
   SUBPARTITION s1 TABLESPACE = `innodb_file_per_table` ENGINE = InnoDB),
  PARTITION p1 VALUES LESS THAN MAXVALUE
  (SUBPARTITION s2 TABLESPACE = `innodb_file_per_table` ENGINE = InnoDB,
-  SUBPARTITION s3 TABLESPACE = `innodb_file_per_table` ENGINE = InnoDB)) */
+  SUBPARTITION `s3` TABLESPACE = `innodb_file_per_table` ENGINE = InnoDB)) */
 SELECT partition_expression FROM information_schema.partitions
 WHERE table_schema = 'test' AND table_name = 't1';
 PARTITION_EXPRESSION
@@ -2868,7 +2868,7 @@ SUBPARTITION BY HASH (to_days(col2))
   SUBPARTITION s1 TABLESPACE = innodb_file_per_table ENGINE = InnoDB),
  PARTITION p1 VALUES LESS THAN MAXVALUE
  (SUBPARTITION s2 TABLESPACE = innodb_file_per_table ENGINE = InnoDB,
-  SUBPARTITION s3 TABLESPACE = innodb_file_per_table ENGINE = InnoDB)) */
+  SUBPARTITION `s3` TABLESPACE = innodb_file_per_table ENGINE = InnoDB)) */
 SELECT partition_expression FROM information_schema.partitions
 WHERE table_schema = 'test' AND table_name = 't1';
 PARTITION_EXPRESSION
@@ -3305,12 +3305,12 @@ DROP TABLE t1;
 CREATE TABLE t(  id int unsigned NOT NULL,
 data varchar(2) DEFAULT NULL,
 KEY data_idx (data(1),id)
-) DEFAULT CHARSET=utf8
+) DEFAULT CHARSET=utf8mb3
 /*!50100 PARTITION BY RANGE (id)
 (PARTITION p10 VALUES LESS THAN (10) ,
 PARTITION p20 VALUES LESS THAN (20) ) */;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 INSERT INTO t VALUES (6, 'ab'), (4, 'ab'), (5, 'ab'), (16, 'ab'), (14, 'ab'), (15, 'ab'), (5, 'ac'), (15, 'aa') ;
 SELECT id FROM t WHERE data = 'ab' ORDER BY id ASC;
 id
@@ -3340,3 +3340,14 @@ ERROR HY000: Expression of generated column 'c2' contains a disallowed function:
 ALTER TABLE t ADD COLUMN c3 CHAR(32) GENERATED ALWAYS AS (RANDOM_BYTES(32));
 ERROR HY000: Expression of generated column 'c3' contains a disallowed function: random_bytes.
 DROP TABLE t;
+#
+# Bug#35507164 Assertion `has_error == thd->get_stmt_da()->is_error()'
+#              failed
+#
+CREATE TABLE v0 ( c1 SERIAL )
+PARTITION BY RANGE ( c1 )
+SUBPARTITION BY
+LINEAR HASH ( c1 DIV - c1 ) ( PARTITION p2 VALUES LESS THAN MAXVALUE ) ;
+INSERT v0 SET c1 = 0;
+ERROR 22003: BIGINT UNSIGNED value is out of range in '(`c1` DIV -(`c1`))'
+DROP TABLE v0;

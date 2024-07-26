@@ -4,10 +4,10 @@
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
 .\"      Date: 05/31/2024
 .\"    Manual: MySQL Database System
-.\"    Source: MySQL 8.0
+.\"    Source: MySQL 8.4
 .\"  Language: English
 .\"
-.TH "MYSQLBINLOG" "1" "05/31/2024" "MySQL 8\&.0" "MySQL Database System"
+.TH "MYSQLBINLOG" "1" "05/31/2024" "MySQL 8\&.4" "MySQL Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -150,7 +150,7 @@ option\&. To read remote binary logs, the connection parameter options can be gi
 \fB\-\-socket\fR, and
 \fB\-\-user\fR\&.
 .PP
-When binary log files have been encrypted, which can be done from MySQL 8\&.0\&.14 onwards,
+When binary log files have been encrypted,
 \fBmysqlbinlog\fR
 cannot read them directly, but can read them from the server using the
 \fB\-\-read\-from\-remote\-server\fR
@@ -159,20 +159,18 @@ binlog_encryption
 system variable is set to
 ON\&. The
 SHOW BINARY LOGS
-statement shows whether a particular binary log file is encrypted or unencrypted\&. Encrypted and unencrypted binary log files can also be distinguished using the magic number at the start of the file header for encrypted log files (0xFD62696E), which differs from that used for unencrypted log files (0xFE62696E)\&. Note that from MySQL 8\&.0\&.14,
+statement shows whether a particular binary log file is encrypted or unencrypted\&. Encrypted and unencrypted binary log files can also be distinguished using the magic number at the start of the file header for encrypted log files (0xFD62696E), which differs from that used for unencrypted log files (0xFE62696E)\&. Note that
 \fBmysqlbinlog\fR
 returns a suitable error if you attempt to read an encrypted binary log file directly, but older versions of
 \fBmysqlbinlog\fR
 do not recognise the file as a binary log file at all\&. For more information on binary log encryption, see
 Section\ \&19.3.2, \(lqEncrypting Binary Log Files and Relay Log Files\(rq\&.
 .PP
-When binary log transaction payloads have been compressed, which can be done from MySQL 8\&.0\&.20 onwards,
+When binary log transaction payloads have been compressed,
 \fBmysqlbinlog\fR
-versions from that release on automatically decompress and decode the transaction payloads, and print them as they would uncompressed events\&. Older versions of
-\fBmysqlbinlog\fR
-cannot read compressed transaction payloads\&. When the server\*(Aqs
+automatically decompresses and decodes the transaction payloads, and prints them as it would uncompressed events\&. When
 binlog_transaction_compression
-system variable is set to
+is set to
 ON, transaction payloads are compressed and then written to the server\*(Aqs binary log file as a single event (a
 Transaction_payload_event)\&. With the
 \fB\-\-verbose\fR
@@ -214,8 +212,6 @@ environment variable\&.
 \fBmysqlbinlog\fR
 sets the value of
 pseudo_replica_mode
-or
-pseudo_slave_mode
 to true before executing any SQL statements\&. This system variable affects the handling of XA transactions, the
 original_commit_timestamp
 replication delay timestamp and the
@@ -495,7 +491,6 @@ allbox tab(:);
 lB l
 lB l
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
@@ -503,14 +498,9 @@ T}:T{
 --compress[={OFF|ON}]
 T}
 T{
-Introduced
-T}:T{
-8.0.17
-T}
-T{
 Deprecated
 T}:T{
-8.0.18
+Yes
 T}
 T{
 Type
@@ -527,7 +517,7 @@ T}
 Compress all information sent between the client and the server if possible\&. See
 Section\ \&6.2.8, \(lqConnection Compression Control\(rq\&.
 .sp
-This option was added in MySQL 8\&.0\&.17\&. As of MySQL 8\&.0\&.18 it is deprecated\&. Expect it to be removed in a future version of MySQL\&. See
+This option is deprecated\&. Expect it to be removed in a future version of MySQL\&. See
 the section called \(lqConfiguring Legacy Connection Compression\(rq\&.
 .RE
 .sp
@@ -545,17 +535,11 @@ allbox tab(:);
 lB l
 lB l
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --compression-algorithms=value
-T}
-T{
-Introduced
-T}:T{
-8.0.18
 T}
 T{
 Type
@@ -586,8 +570,6 @@ uncompressed\&.
 .sp
 For more information, see
 Section\ \&6.2.8, \(lqConnection Compression Control\(rq\&.
-.sp
-This option was added in MySQL 8\&.0\&.18\&.
 .RE
 .sp
 .RS 4
@@ -1511,6 +1493,35 @@ Section\ \&6.2.2.3, \(lqCommand-Line Options that Affect Option-File Handling\(r
 .sp -1
 .IP \(bu 2.3
 .\}
+\fB\-\-no\-login\-paths\fR
+.TS
+allbox tab(:);
+lB l.
+T{
+Command-Line Format
+T}:T{
+--no-login-paths
+T}
+.TE
+.sp 1
+Skips reading options from the login path file\&.
+.sp
+See
+\fB\-\-login\-path\fR
+for related information\&.
+.sp
+For additional information about this and other option\-file options, see
+Section\ \&6.2.2.3, \(lqCommand-Line Options that Affect Option-File Handling\(rq\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
 \fB\-\-no\-defaults\fR
 .TS
 allbox tab(:);
@@ -1893,23 +1904,15 @@ the section called \(lqUSING MYSQLBINLOG TO BACK UP BINARY LOG FILES\(rq\&.
 \fB\-\-read\-from\-remote\-source=\fR\fB\fItype\fR\fR
 .TS
 allbox tab(:);
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --read-from-remote-source=type
 T}
-T{
-Introduced
-T}:T{
-8.0.26
-T}
 .TE
 .sp 1
-From MySQL 8\&.0\&.26, use
-\fB\-\-read\-from\-remote\-source\fR, and before MySQL 8\&.0\&.26, use
-\fB\-\-read\-from\-remote\-master\fR\&. Both options have the same effect\&. The options read binary logs from a MySQL server with the
+This option reads binary logs from a MySQL server with the
 COM_BINLOG_DUMP
 or
 COM_BINLOG_DUMP_GTID
@@ -1918,8 +1921,6 @@ BINLOG\-DUMP\-NON\-GTIDS
 or
 BINLOG\-DUMP\-GTIDS, respectively\&. If
 \fB\-\-read\-from\-remote\-source=BINLOG\-DUMP\-GTIDS\fR
-or
-\fB\-\-read\-from\-remote\-master=BINLOG\-DUMP\-GTIDS\fR
 is combined with
 \fB\-\-exclude\-gtids\fR, transactions can be filtered out on the source, avoiding unnecessary network traffic\&.
 .sp
@@ -1959,12 +1960,12 @@ T}
 T{
 Deprecated
 T}:T{
-8.0.26
+Yes
 T}
 .TE
 .sp 1
-Use this option before MySQL 8\&.0\&.26 rather than
-\fB\-\-read\-from\-remote\-source\fR\&. Both options have the same effect\&.
+Deprecated synonym for
+\fB\-\-read\-from\-remote\-source\fR\&.
 .RE
 .sp
 .RS 4
@@ -1990,7 +1991,7 @@ T}
 Read the binary log from a MySQL server rather than reading a local log file\&. This option requires that the remote server be running\&. It works only for binary log files on the remote server and not relay log files\&. This accepts the binary log file name (including the numeric suffix) without the file path\&.
 .sp
 The connection parameter options are used with this option or the
-\fB\-\-read\-from\-remote\-master\fR
+\fB\-\-read\-from\-remote\-source\fR
 option\&. These options are
 \fB\-\-host\fR,
 \fB\-\-password\fR,
@@ -2004,7 +2005,7 @@ REPLICATION SLAVE
 privilege is required to use this option\&.
 .sp
 This option is like
-\fB\-\-read\-from\-remote\-master=BINLOG\-DUMP\-NON\-GTIDS\fR\&.
+\fB\-\-read\-from\-remote\-source=BINLOG\-DUMP\-NON\-GTIDS\fR\&.
 .RE
 .sp
 .RS 4
@@ -2052,17 +2053,11 @@ option value is treated as a prefix that modifies output file names\&.
 allbox tab(:);
 lB l
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --require-row-format
-T}
-T{
-Introduced
-T}:T{
-8.0.19
 T}
 T{
 Type
@@ -2082,9 +2077,7 @@ output\&. The stream of events produced with this option would be accepted by a 
 REQUIRE_ROW_FORMAT
 option of the
 CHANGE REPLICATION SOURCE TO
-statement (from MySQL 8\&.0\&.23) or
-CHANGE MASTER TO
-statement (before MySQL 8\&.0\&.23)\&.
+statement\&.
 binlog_format=ROW
 must be set on the server where the binary log was written\&. When you specify this option,
 \fBmysqlbinlog\fR
@@ -2103,8 +2096,6 @@ SET @@session\&.require_row_format
 statement at the start of its output to apply the restrictions when the output is executed, and does not print the
 SET @@session\&.pseudo_thread_id
 statement\&.
-.sp
-This option was added in MySQL 8\&.0\&.19\&.
 .RE
 .sp
 .RS 4
@@ -2318,7 +2309,7 @@ T}
 .sp 1
 The path name to a file in PEM format containing a client\-side copy of the public key required by the server for RSA key pair\-based password exchange\&. This option applies to clients that authenticate with the
 sha256_password
-or
+(deprecated) or
 caching_sha2_password
 authentication plugin\&. This option is ignored for accounts that do not authenticate with one of those plugins\&. It is also ignored if RSA\-based password exchange is not used, as is the case when the client connects to the server using a secure connection\&.
 .sp
@@ -2328,7 +2319,8 @@ is given and specifies a valid public key file, it takes precedence over
 \fB\-\-get\-server\-public\-key\fR\&.
 .sp
 For
-sha256_password, this option applies only if MySQL was built using OpenSSL\&.
+sha256_password
+(deprecated), this option applies only if MySQL was built using OpenSSL\&.
 .sp
 For information about the
 sha256_password
@@ -2549,7 +2541,7 @@ T}
 T{
 Deprecated
 T}:T{
-8.0.34
+Yes
 T}
 T{
 Type
@@ -2643,7 +2635,7 @@ STRICT
 causes the client to produce a warning at startup and to operate in non\-FIPS mode\&.
 .sp .5v
 .RE
-As of MySQL 8\&.0\&.34, this option is deprecated\&. Expect it to be removed in a future version of MySQL\&.
+This option is deprecated\&. Expect it to be removed in a future version of MySQL\&.
 .RE
 .sp
 .RS 4
@@ -2727,7 +2719,7 @@ Start decoding the binary log at the log position
 \fIN\fR
 or after\&. The position is a byte point in the log file, not an event counter; it needs to point to the starting position of an event to generate useful output\&. This option applies to the first log file named on the command line\&.
 .sp
-Prior to MySQL 8\&.0\&.33, the maximum value supported for this option was 4294967295 (232\-1)\&. In MySQL 8\&.0\&.33 and later, it is 18446744073709551616 (264\-1), unless
+The maximum value supported for this option is 18446744073709551616 (264\-1), unless
 \fB\-\-read\-from\-remote\-server\fR
 or
 \fB\-\-read\-from\-remote\-source\fR
@@ -2919,17 +2911,11 @@ Section\ \&9.5, \(lqPoint-in-Time (Incremental) Recovery\(rq\&.
 .TS
 allbox tab(:);
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --tls-ciphersuites=ciphersuite_list
-T}
-T{
-Introduced
-T}:T{
-8.0.16
 T}
 T{
 Type
@@ -2940,8 +2926,43 @@ T}
 .sp 1
 The permissible ciphersuites for encrypted connections that use TLSv1\&.3\&. The value is a list of one or more colon\-separated ciphersuite names\&. The ciphersuites that can be named for this option depend on the SSL library used to compile MySQL\&. For details, see
 Section\ \&8.3.2, \(lqEncrypted Connection TLS Protocols and Ciphers\(rq\&.
+.RE
 .sp
-This option was added in MySQL 8\&.0\&.16\&.
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+\fB\-\-tls\-sni\-servername=\fR\fB\fIserver_name\fR\fR
+.TS
+allbox tab(:);
+lB l
+lB l.
+T{
+Command-Line Format
+T}:T{
+--tls-sni-servername=server_name
+T}
+T{
+Type
+T}:T{
+String
+T}
+.TE
+.sp 1
+When specified, the name is passed to the
+libmysqlclient
+C API library using the
+MYSQL_OPT_TLS_SNI_SERVERNAME
+option of
+mysql_options()\&. The server name is not case\-sensitive\&. To show which server name the client specified for the current session, if any, check the
+Tls_sni_server_name
+status variable\&.
+.sp
+Server Name Indication (SNI) is an extension to the TLS protocol (OpenSSL must be compiled using TLS extensions for this option to function)\&. The MySQL implementation of SNI represents the client\-side only\&.
 .RE
 .sp
 .RS 4
@@ -2957,7 +2978,6 @@ This option was added in MySQL 8\&.0\&.16\&.
 allbox tab(:);
 lB l
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
@@ -2970,7 +2990,7 @@ T}:T{
 String
 T}
 T{
-Default Value (≥ 8.0.16)
+Default Value
 T}:T{
 .PP
 TLSv1,TLSv1.1,TLSv1.2,TLSv1.3
@@ -2978,11 +2998,6 @@ TLSv1,TLSv1.1,TLSv1.2,TLSv1.3
 .PP
 TLSv1,TLSv1.1,TLSv1.2
 (otherwise)
-T}
-T{
-Default Value (≤ 8.0.15)
-T}:T{
-TLSv1,TLSv1.1,TLSv1.2
 T}
 .TE
 .sp 1
@@ -3044,7 +3059,7 @@ The user name of the MySQL account to use when connecting to a remote server\&.
 .sp
 If you are using the
 Rewriter
-plugin with MySQL 8\&.0\&.31 or later, you should grant this user the
+plugin, you should grant this user the
 SKIP_QUERY_REWRITE
 privilege\&.
 .RE
@@ -3126,10 +3141,6 @@ T}
 .TE
 .sp 1
 Display version information and exit\&.
-.sp
-Unlike the case with previous versions of MySQL, the version number shown by
-\fBmysqlbinlog\fR
-when using this option is the same as the MySQL Server version\&.
 .RE
 .sp
 .RS 4
@@ -3144,17 +3155,11 @@ when using this option is the same as the MySQL Server version\&.
 .TS
 allbox tab(:);
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --zstd-compression-level=#
-T}
-T{
-Introduced
-T}:T{
-8.0.18
 T}
 T{
 Type
@@ -3173,8 +3178,6 @@ compression\&.
 .sp
 For more information, see
 Section\ \&6.2.8, \(lqConnection Compression Control\(rq\&.
-.sp
-This option was added in MySQL 8\&.0\&.18\&.
 .RE
 .PP
 You can pipe the output of
@@ -3297,7 +3300,7 @@ mysql \-u root \-p \-e "source /tmp/statements\&.sql"
 .RE
 .\}
 .PP
-From MySQL 8\&.0\&.12, you can also supply multiple binary log files to
+You can also supply multiple binary log files to
 \fBmysqlbinlog\fR
 as streamed input using a shell pipe\&. An archive of compressed binary log files can be decompressed and provided directly to
 \fBmysqlbinlog\fR\&. In this example,
@@ -3495,7 +3498,7 @@ Size: The size in bytes of the event\&.
 .sp -1
 .IP \(bu 2.3
 .\}
-Master Pos: The position of the next event in the original source log file\&.
+Master Pos: The position of the next event in the original source\*(Aqs binary log file\&.
 .RE
 .sp
 .RS 4
@@ -4268,14 +4271,14 @@ to create a dump file as a snapshot of the server\*(Aqs data\&. Use
 \fB\-\-events\fR, and
 \fB\-\-routines\fR
 to back up all data, and
-\fB\-\-master\-data=2\fR
+\fB\-\-source\-data=2\fR
 to include the current binary log coordinates in the dump file\&.
 .sp
 .if n \{\
 .RS 4
 .\}
 .nf
-mysqldump \-\-host=\fIhost_name\fR \-\-all\-databases \-\-events \-\-routines \-\-master\-data=2> \fIdump_file\fR
+mysqldump \-\-host=\fIhost_name\fR \-\-all\-databases \-\-events \-\-routines \-\-source\-data=2> \fIdump_file\fR
 .fi
 .if n \{\
 .RE
@@ -4303,7 +4306,7 @@ Then use the binary log backup to re\-execute events that were written after the
 .RS 4
 .\}
 .nf
-\-\- CHANGE MASTER TO MASTER_LOG_FILE=\*(Aqbinlog\&.001002\*(Aq, MASTER_LOG_POS=27284;
+\-\- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE=\*(Aqbinlog\&.001002\*(Aq, SOURCE_LOG_POS=27284;
 .fi
 .if n \{\
 .RE

@@ -42,7 +42,6 @@
 #include "openssl_version.h"
 
 #if OPENSSL_VERSION_NUMBER < ROUTER_OPENSSL_VERSION(1, 1, 0)
-#define RSA_bits(rsa) BN_num_bits(rsa->n)
 #define DH_bits(dh) BN_num_bits(dh->p)
 #endif
 
@@ -53,10 +52,6 @@
 
 #include <dh_ecdh_config.h>
 
-// type == decltype(BN_num_bits())
-#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(1, 0, 2)
-constexpr int kMinRsaKeySize{2048};
-#endif
 constexpr int kMinDhKeySize{1024};
 #if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(1, 1, 0)
 constexpr int kMaxSecurityLevel{5};
@@ -118,60 +113,6 @@ struct OsslDeleter<RSA> {
 #endif
 
 /**
- * get the key size of an RSA key.
- *
- * @param x509 a non-null pointer to RSA-key wrapped in a X509 struct.
- *
- * @returns a key-size of RSA key on success, a std::error_code on failure.
- */
-[[maybe_unused]]  // unused with openssl == 1.0.1 (RHEL6)
-stdx::expected<int, std::error_code>
-get_rsa_key_size(X509 *x509) {
-#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(1, 1, 0)
-  EVP_PKEY *public_key = X509_get0_pubkey(x509);
-#else
-  // if X509_get0_pubkey() isn't available, fall back to X509_get_pubkey() which
-  // increments the ref-count.
-  OsslUniquePtr<EVP_PKEY> public_key_storage(X509_get_pubkey(x509));
-
-  EVP_PKEY *public_key = public_key_storage.get();
-#endif
-  if (public_key == nullptr) {
-    return stdx::make_unexpected(
-        make_error_code(TlsCertErrc::kNotACertificate));
-  }
-
-  if (EVP_PKEY_base_id(public_key) != EVP_PKEY_RSA) {
-    return stdx::make_unexpected(make_error_code(TlsCertErrc::kNoRSACert));
-  }
-
-#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(3, 0, 0)
-  int key_bits;
-  if (!EVP_PKEY_get_int_param(public_key, OSSL_PKEY_PARAM_BITS, &key_bits)) {
-    return stdx::make_unexpected(
-        make_error_code(std::errc::no_such_file_or_directory));
-  }
-
-  return key_bits;
-#else
-#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(1, 1, 0)
-  RSA *rsa_key = EVP_PKEY_get0_RSA(public_key);
-#else
-  // if EVP_PKEY_get0_RSA() isn't available, fall back to EVP_PKEY_get1_RSA()
-  // which increments the ref-count.
-  OsslUniquePtr<RSA> rsa_key_storage(EVP_PKEY_get1_RSA(public_key));
-
-  RSA *rsa_key = rsa_key_storage.get();
-#endif
-  if (!rsa_key) {
-    return stdx::make_unexpected(
-        make_error_code(std::errc::no_such_file_or_directory));
-  }
-  return RSA_bits(rsa_key);
-#endif
-}
-
-/**
  * set DH params from filename to a SSL_CTX.
  *
  * ensures that the DH param has at least kMinDhKeySize bits.
@@ -181,7 +122,7 @@ get_rsa_key_size(X509 *x509) {
 stdx::expected<void, std::error_code> set_dh_params_from_filename(
     SSL_CTX *ssl_ctx, const std::string &dh_params) {
   OsslUniquePtr<BIO> pem_bio_storage(BIO_new_file(dh_params.c_str(), "rb"));
-  if (!pem_bio_storage) return stdx::make_unexpected(make_tls_error());
+  if (!pem_bio_storage) return stdx::unexpected(make_tls_error());
 
   auto pem_bio = pem_bio_storage.get();
 
@@ -191,7 +132,7 @@ stdx::expected<void, std::error_code> set_dh_params_from_filename(
       OSSL_DECODER_CTX_new_for_pkey(
           &dhpkey, "PEM", nullptr, "DH", OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS,
           nullptr /* libctx */, nullptr /* propquery */));
-  if (!decoder_ctx_storage) return stdx::make_unexpected(make_tls_error());
+  if (!decoder_ctx_storage) return stdx::unexpected(make_tls_error());
 
   auto *decoder_ctx = decoder_ctx_storage.get();
 
@@ -208,7 +149,7 @@ stdx::expected<void, std::error_code> set_dh_params_from_filename(
       // DECODER::unsupported: No supported data to decode. Input type: PEM
       ERR_raise(ERR_LIB_OSSL_DECODER, ERR_R_UNSUPPORTED);
     }
-    return stdx::make_unexpected(make_tls_error());
+    return stdx::unexpected(make_tls_error());
   }
 
   OsslUniquePtr<EVP_PKEY> dhpkey_storage(
@@ -218,7 +159,7 @@ stdx::expected<void, std::error_code> set_dh_params_from_filename(
       EVP_PKEY_CTX_new(dhpkey, nullptr));
 
   if (1 != EVP_PKEY_param_check(evp_ctx_storage.get())) {
-    return stdx::make_unexpected(make_tls_error());
+    return stdx::unexpected(make_tls_error());
   }
 
   int dh_bits;
@@ -227,17 +168,17 @@ stdx::expected<void, std::error_code> set_dh_params_from_filename(
     //
     // on the other side it should never fail as the "bits" should be always
     // present.
-    return stdx::make_unexpected(make_error_code(std::errc::invalid_argument));
+    return stdx::unexpected(make_error_code(std::errc::invalid_argument));
   }
 #else
   OsslUniquePtr<DH> dh_storage(
       PEM_read_bio_DHparams(pem_bio, nullptr, nullptr, nullptr));
-  if (!dh_storage) return stdx::make_unexpected(make_tls_error());
+  if (!dh_storage) return stdx::unexpected(make_tls_error());
 
   DH *dh = dh_storage.get();
 
   int codes = 0;
-  if (1 != DH_check(dh, &codes)) return stdx::make_unexpected(make_tls_error());
+  if (1 != DH_check(dh, &codes)) return stdx::unexpected(make_tls_error());
 
   if (codes != 0) {
     throw std::runtime_error("check of DH params failed: ");
@@ -255,12 +196,12 @@ stdx::expected<void, std::error_code> set_dh_params_from_filename(
 #if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(3, 0, 0)
   // on success, ownership if pkey is moved to the ssl-ctx
   if (1 != SSL_CTX_set0_tmp_dh_pkey(ssl_ctx, dhpkey)) {
-    return stdx::make_unexpected(make_tls_error());
+    return stdx::unexpected(make_tls_error());
   }
   (void)dhpkey_storage.release();
 #else
   if (1 != SSL_CTX_set_tmp_dh(ssl_ctx, dh)) {
-    return stdx::make_unexpected(make_tls_error());
+    return stdx::unexpected(make_tls_error());
   }
 #endif
 
@@ -272,68 +213,32 @@ stdx::expected<void, std::error_code> set_dh_params_from_filename(
  */
 stdx::expected<void, std::error_code> set_auto_dh_params(SSL_CTX *ssl_ctx) {
   if (false != set_dh(ssl_ctx)) {
-    return stdx::make_unexpected(make_tls_error());
+    return stdx::unexpected(make_tls_error());
   }
 
   return {};
 }
 }  // namespace
 
-TlsServerContext::TlsServerContext(TlsVersion min_ver, TlsVersion max_ver)
+TlsServerContext::TlsServerContext(TlsVersion min_ver, TlsVersion max_ver,
+                                   bool session_cache_mode,
+                                   size_t session_cache_size,
+                                   unsigned int session_cache_timeout)
     : TlsContext(server_method) {
   version_range(min_ver, max_ver);
   (void)set_ecdh(ssl_ctx_.get());
   SSL_CTX_set_options(ssl_ctx_.get(), SSL_OP_NO_COMPRESSION);
   cipher_list("ALL");  // ALL - unacceptable ciphers
-}
 
-stdx::expected<void, std::error_code> TlsServerContext::load_key_and_cert(
-    const std::string &private_key_file, const std::string &cert_chain_file) {
-  // load cert and key
-  if (!cert_chain_file.empty()) {
-    if (1 != SSL_CTX_use_certificate_chain_file(ssl_ctx_.get(),
-                                                cert_chain_file.c_str())) {
-      return stdx::make_unexpected(make_tls_error());
-    }
-  }
-#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(1, 0, 2)
-  // openssl 1.0.1 has no SSL_CTX_get0_certificate() and doesn't allow
-  // to access ctx->cert->key->x509 as cert_st is opaque to us.
-
-  // internal pointer, don't free
-  if (X509 *x509 = SSL_CTX_get0_certificate(ssl_ctx_.get())) {
-    auto key_size_res = get_rsa_key_size(x509);
-    if (!key_size_res) {
-      auto ec = key_size_res.error();
-
-      if (ec != TlsCertErrc::kNoRSACert) {
-        return stdx::make_unexpected(key_size_res.error());
-      }
-
-      // if it isn't a RSA Key ... just continue.
-    } else {
-      const auto key_size = *key_size_res;
-
-      if (key_size < kMinRsaKeySize) {
-        return stdx::make_unexpected(
-            make_error_code(TlsCertErrc::kRSAKeySizeToSmall));
-      }
-    }
+  const auto cache_mode =
+      session_cache_mode ? SSL_SESS_CACHE_SERVER : SSL_SESS_CACHE_OFF;
+  SSL_CTX_set_session_cache_mode(ssl_ctx_.get(), cache_mode);
+  if (cache_mode == SSL_SESS_CACHE_OFF) {
+    SSL_CTX_set_options(ssl_ctx_.get(), SSL_OP_NO_TICKET);
   } else {
-    // doesn't exist
-    return stdx::make_unexpected(
-        make_error_code(std::errc::no_such_file_or_directory));
+    SSL_CTX_sess_set_cache_size(ssl_ctx_.get(), session_cache_size);
+    SSL_CTX_set_timeout(ssl_ctx_.get(), session_cache_timeout);
   }
-#endif
-  if (1 != SSL_CTX_use_PrivateKey_file(ssl_ctx_.get(), private_key_file.c_str(),
-                                       SSL_FILETYPE_PEM)) {
-    return stdx::make_unexpected(make_tls_error());
-  }
-  if (1 != SSL_CTX_check_private_key(ssl_ctx_.get())) {
-    return stdx::make_unexpected(make_tls_error());
-  }
-
-  return {};
 }
 
 // load DH params
@@ -341,10 +246,10 @@ stdx::expected<void, std::error_code> TlsServerContext::init_tmp_dh(
     const std::string &dh_params) {
   if (!dh_params.empty()) {
     auto set_res = set_dh_params_from_filename(ssl_ctx_.get(), dh_params);
-    if (!set_res) return stdx::make_unexpected(set_res.error());
+    if (!set_res) return stdx::unexpected(set_res.error());
   } else {
     auto set_res = set_auto_dh_params(ssl_ctx_.get());
-    if (!set_res) return stdx::make_unexpected(set_res.error());
+    if (!set_res) return stdx::unexpected(set_res.error());
   }
 
   // ensure DH keys are only used once
@@ -355,23 +260,25 @@ stdx::expected<void, std::error_code> TlsServerContext::init_tmp_dh(
 }
 
 stdx::expected<void, std::error_code> TlsServerContext::verify(
-    TlsVerify verify, std::bitset<2> tls_opts) {
+    TlsVerify verify, stdx::flags<TlsVerifyOpts> tls_opts) {
   int mode = 0;
   switch (verify) {
     case TlsVerify::NONE:
       mode = SSL_VERIFY_NONE;
 
-      if (tls_opts.to_ulong() != 0) {
+      if (tls_opts) {
         // tls_opts MUST be zero if verify is NONE
-        return stdx::make_unexpected(
-            make_error_code(std::errc::invalid_argument));
+        return stdx::unexpected(make_error_code(std::errc::invalid_argument));
       }
       break;
     case TlsVerify::PEER:
       mode = SSL_VERIFY_PEER;
       break;
   }
-  if (tls_opts.test(TlsVerifyOpts::kFailIfNoPeerCert)) {
+  if (tls_opts & TlsVerifyOpts::kClientOnce) {
+    mode |= SSL_VERIFY_CLIENT_ONCE;
+  }
+  if (tls_opts & TlsVerifyOpts::kFailIfNoPeerCert) {
     mode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
   }
   SSL_CTX_set_verify(ssl_ctx_.get(), mode, nullptr);
@@ -390,7 +297,7 @@ stdx::expected<void, std::error_code> TlsServerContext::cipher_list(
 
   // load the cipher-list
   if (1 != SSL_CTX_set_cipher_list(ssl_ctx_.get(), ci.c_str())) {
-    return stdx::make_unexpected(make_tls_error());
+    return stdx::unexpected(make_tls_error());
   }
 
   return {};
@@ -400,78 +307,36 @@ std::vector<std::string> TlsServerContext::default_ciphers() {
   // as TLSv1.2 is the minimum version, only TLSv1.2+ ciphers are set by
   // default
 
-  // TLSv1.2 with PFS using SHA2, encrypted by AES in GCM or CBC mode
-  const std::vector<std::string> mandatory_p1{
+  return {
+      // Mandatory Ciphers (P1)
+      //
+      // TLSv1.2 with PFS, SHA2, AES with GCM
       "ECDHE-ECDSA-AES128-GCM-SHA256",  //
       "ECDHE-ECDSA-AES256-GCM-SHA384",  //
       "ECDHE-RSA-AES128-GCM-SHA256",    //
-      "ECDHE-ECDSA-AES128-SHA256",      //
-      "ECDHE-RSA-AES128-SHA256",
-  };
 
-  // TLSv1.2+ with PFS using SHA2, encrypted by AES in GCM or CBC mode
-  const std::vector<std::string> optional_p1{
+      // Approved Ciphers (A1)
+      //
+      // TLSv1.2+ with PFS, SHA2, AES with GCM or other AEAD algo's.
+
       // TLSv1.3
       "TLS_AES_128_GCM_SHA256",
       "TLS_AES_256_GCM_SHA384",
       "TLS_CHACHA20_POLY1305_SHA256",
       "TLS_AES_128_CCM_SHA256",
-      "TLS_AES_128_CCM_8_SHA256",
 
       // TLSv1.2
       "ECDHE-RSA-AES256-GCM-SHA384",
-      "ECDHE-RSA-AES256-SHA384",
-      "ECDHE-ECDSA-AES256-SHA384",
-      "DHE-RSA-AES128-GCM-SHA256",
-      "DHE-DSS-AES128-GCM-SHA256",
-      "DHE-RSA-AES128-SHA256",
-      "DHE-DSS-AES128-SHA256",
-      "DHE-DSS-AES256-GCM-SHA384",
-      "DHE-RSA-AES256-SHA256",
-      "DHE-DSS-AES256-SHA256",
-      "DHE-RSA-AES256-GCM-SHA384",
       "ECDHE-ECDSA-CHACHA20-POLY1305",
       "ECDHE-RSA-CHACHA20-POLY1305",
+      "ECDHE-ECDSA-AES256-CCM",
+      "ECDHE-ECDSA-AES128-CCM",
+      "DHE-RSA-AES128-GCM-SHA256",
+      "DHE-RSA-AES256-GCM-SHA384",
+      "DHE-RSA-AES128-CCM",
+      "DHE-RSA-AES256-CCM",
+      "DHE-RSA-CHACHA20-POLY1305",
   };
-
-  // TLSv1.2+ with DH, ECDH, RSA using SHA2
-  // encrypted by AES in GCM or CBC mode
-  const std::vector<std::string> optional_p2{
-      "DH-DSS-AES128-GCM-SHA256",
-      "ECDH-ECDSA-AES128-GCM-SHA256",
-      "DH-DSS-AES256-GCM-SHA384",
-      "ECDH-ECDSA-AES256-GCM-SHA384",
-      "AES128-GCM-SHA256",
-      "AES256-GCM-SHA384",
-      "AES128-SHA256",
-      "DH-DSS-AES128-SHA256",
-      "ECDH-ECDSA-AES128-SHA256",
-      "AES256-SHA256",
-      "DH-DSS-AES256-SHA256",
-      "ECDH-ECDSA-AES256-SHA384",
-      "DH-RSA-AES128-GCM-SHA256",
-      "ECDH-RSA-AES128-GCM-SHA256",
-      "DH-RSA-AES256-GCM-SHA384",
-      "ECDH-RSA-AES256-GCM-SHA384",
-      "DH-RSA-AES128-SHA256",
-      "ECDH-RSA-AES128-SHA256",
-      "DH-RSA-AES256-SHA256",
-      "ECDH-RSA-AES256-SHA384",
-  };
-
-  // required by RFC5246, but quite likely removed by the !SSLv3 filter
-  const std::vector<std::string> optional_p3{"AES128-SHA"};
-
-  std::vector<std::string> out;
-  out.reserve(mandatory_p1.size() + optional_p1.size() + optional_p2.size() +
-              optional_p3.size());
-  for (const std::vector<std::string> &a :
-       std::vector<std::vector<std::string>>{mandatory_p1, optional_p1,
-                                             optional_p2, optional_p3}) {
-    out.insert(out.end(), a.begin(), a.end());
-  }
-
-  return out;
 }
 
 int TlsServerContext::security_level() const {
@@ -496,7 +361,7 @@ stdx::expected<void, std::error_code> TlsServerContext::session_id_context(
     const unsigned char *sid_ctx, unsigned int sid_ctx_len) {
   if (0 ==
       SSL_CTX_set_session_id_context(ssl_ctx_.get(), sid_ctx, sid_ctx_len)) {
-    return stdx::make_unexpected(make_tls_error());
+    return stdx::unexpected(make_tls_error());
   }
 
   return {};

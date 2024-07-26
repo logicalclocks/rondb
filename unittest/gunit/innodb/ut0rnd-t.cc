@@ -426,7 +426,6 @@ static void BM_RND_GEN_STD_HASH(const size_t num_iterations) {
 }
 BENCHMARK(BM_RND_GEN_STD_HASH)
 
-#if SIZEOF_VOIDP >= 8
 static void BM_RND_GEN_STD_LINEAR(const size_t num_iterations) {
   std::linear_congruential_engine<uint64_t, 0xacb1f3526e25dd39,
                                   0xf72a876a516b4b56,
@@ -436,7 +435,6 @@ static void BM_RND_GEN_STD_LINEAR(const size_t num_iterations) {
                    [&eng](uint64_t, uint64_t n) { return eng(); });
 }
 BENCHMARK(BM_RND_GEN_STD_LINEAR)
-#endif
 
 static void BM_RND_GEN(const size_t num_iterations) {
   benchmark_hasher(num_iterations,

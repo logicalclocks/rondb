@@ -51,7 +51,7 @@ namespace memory {
 static inline size_t _cache_line_size() {
   size_t line_size{0};
   size_t sizeof_line_size = sizeof(line_size);
-  sysctlbyname("hw.cachelinesize", &line_size, &sizeof_line_size, 0, 0);
+  sysctlbyname("hw.cachelinesize", &line_size, &sizeof_line_size, nullptr, 0);
   return line_size;
 }
 
@@ -60,9 +60,9 @@ static inline size_t _cache_line_size() {
   size_t line_size{0};
   DWORD buffer_size = 0;
   DWORD i = 0;
-  SYSTEM_LOGICAL_PROCESSOR_INFORMATION *buffer = 0;
+  SYSTEM_LOGICAL_PROCESSOR_INFORMATION *buffer = nullptr;
 
-  GetLogicalProcessorInformation(0, &buffer_size);
+  GetLogicalProcessorInformation(nullptr, &buffer_size);
   buffer = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION *)malloc(buffer_size);
   GetLogicalProcessorInformation(&buffer[0], &buffer_size);
 
@@ -135,6 +135,10 @@ static inline size_t minimum_cacheline_for() {
   static const size_t size{memory::_cacheline_for<T>()};
   return size;
 }
+
+/// @brief Template that may access Aligned_atomic internals
+template <class T>
+class Aligned_atomic_accessor;
 
 /**
   @class memory::Aligned_atomic
@@ -295,6 +299,9 @@ class Aligned_atomic {
     @return The in-memory size of the allocated byte buffer.
    */
   size_t allocated_size() const;
+
+  template <typename Accessor_type>
+  friend class Aligned_atomic_accessor;
 
  private:
   /** The size of the byte buffer. */

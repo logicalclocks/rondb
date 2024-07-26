@@ -296,9 +296,13 @@ INSERT INTO t VALUES
 (2, '1999-12-31', '2000-01-01 00:00:00');
 SELECT ((year(QC_DATE) - year(QC_TIMESTAMP))) FROM t
 WHERE QC_DATE_KEY = 2;
-((year(QC_DATE) - year(QC_TIMESTAMP)))
--1
+ERROR 22003: BIGINT UNSIGNED value is out of range in '(year(`test`.`t`.`QC_DATE`) - year(`test`.`t`.`QC_TIMESTAMP`))'
 DROP TABLE t;
+CREATE TABLE y(y1 YEAR, y2 YEAR);
+INSERT INTO y VALUES(2020,2022);
+SELECT y1-y2 FROM y;
+ERROR 22003: BIGINT UNSIGNED value is out of range in '(`test`.`y`.`y1` - `test`.`y`.`y2`)'
+DROP TABLE y;
 #
 # WL#13537: Deprecate display width for the YEAR datatype
 #
@@ -441,3 +445,29 @@ NULL
 Warnings:
 Warning	1292	Truncated incorrect time value: '2085'
 DROP TABLE t1;
+#
+# Bug#35244286 Missing year function?
+#
+CREATE VIEW v1(c0) AS (SELECT CAST(2048 as year));
+SHOW CREATE VIEW v1;
+View	Create View	character_set_client	collation_connection
+v1	CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v1` (`c0`) AS select cast(2048 as year) AS `CAST(2048 as year)`	utf8mb4	utf8mb4_0900_ai_ci
+SELECT c0 FROM v1;
+c0
+2048
+DROP VIEW v1;
+CREATE TABLE t5 (c1 YEAR AS (CAST(1985 AS YEAR)));
+SHOW CREATE TABLE t5;
+Table	Create Table
+t5	CREATE TABLE `t5` (
+  `c1` year GENERATED ALWAYS AS (cast(1985 as year)) VIRTUAL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t5;
+# Bug#36094867: Intersect decimal precision assert error
+CREATE TABLE t0 (c0 YEAR);
+CREATE TABLE t1 (c0 INTEGER);
+SELECT x FROM (SELECT NULL FROM t1 GROUP BY t1.c0) AS x(x)
+INTERSECT
+SELECT t0.c0 FROM t0;
+x
+DROP TABLE t0, t1;

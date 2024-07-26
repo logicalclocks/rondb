@@ -100,13 +100,15 @@ static inline void dict_stats_init(dict_table_t *table); /*!< in/out: table */
 static inline void dict_stats_deinit(dict_table_t *table); /*!< in/out: table */
 
 /** Calculates new estimates for table and index statistics. The statistics
- are used in query optimization.
- @return DB_* error code or DB_SUCCESS */
-dberr_t dict_stats_update(dict_table_t *table, /*!< in/out: table */
-                          dict_stats_upd_option_t stats_upd_option);
-/*!< in: whether to (re) calc
-the stats or to fetch them from
-the persistent storage */
+are used in query optimization.
+@param[in]  table  table for which statistics are to be updated.
+@param[in]  stats_upd_option  statistics update option (persistent, etc).
+@param[in]  trx  statistics update will be done as part of this transaction.
+                 if null, a new transaction will be internally created.
+@return DB_* error code or DB_SUCCESS */
+dberr_t dict_stats_update(dict_table_t *table,
+                          dict_stats_upd_option_t stats_upd_option,
+                          trx_t *trx = nullptr);
 
 /** Removes the information for a particular index's stats from the persistent
  storage if it exists and if there is data stored for this index.
@@ -150,12 +152,6 @@ dberr_t dict_stats_rename_table(const char *old_name, /*!< in: old table name */
                                  is renamed */
     const char *old_index_name,  /*!< in: old index name */
     const char *new_index_name); /*!< in: new index name */
-
-/** Evict the stats tables if they loaded in tablespace cache and also
-close the stats .ibd files. We have to close stats tables because
-8.0 stats tables will use the same name. We load the stats from 5.7
-with a suffix "_backup57" and migrate the statistics. */
-void dict_stats_evict_tablespaces();
 
 /** Represent the record of innodb_table_stats table. */
 class TableStatsRecord {

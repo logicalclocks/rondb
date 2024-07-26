@@ -27,13 +27,13 @@
 #define ROUTER_HELPER_MYSQL_CLIENT_H
 
 #include <iterator>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include <mysql.h>
 
 #include "mysql/harness/stdx/expected.h"
-#include "mysql/harness/stdx/span.h"
 
 class MysqlError {
  public:
@@ -395,7 +395,6 @@ class MysqlClient {
   // TCP/UnixSocket/...
   using Protocol = IntegerOption<MYSQL_OPT_PROTOCOL>;
   using ReadTimeout = IntegerOption<MYSQL_OPT_READ_TIMEOUT>;
-  using Reconnect = BooleanOption<MYSQL_OPT_RECONNECT>;
   using RetryCount = IntegerOption<MYSQL_OPT_RETRY_COUNT>;
   using SslCa = ConstCharOption<MYSQL_OPT_SSL_CA>;
   using SslCaPath = ConstCharOption<MYSQL_OPT_SSL_CAPATH>;
@@ -437,7 +436,7 @@ class MysqlClient {
         initial_schema_.c_str(), port, nullptr /* socket */, flags_);
 
     if (r == nullptr) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -450,7 +449,7 @@ class MysqlClient {
         initial_schema_.c_str(), 0, path.c_str(), flags_);
 
     if (r == nullptr) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -460,7 +459,7 @@ class MysqlClient {
     const auto r = mysql_reset_connection(m_.get());
 
     if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -473,7 +472,7 @@ class MysqlClient {
                                      password.c_str(), schema.c_str());
 
     if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -483,47 +482,17 @@ class MysqlClient {
     const auto r = mysql_ping(m_.get());
 
     if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
-    }
-
-    return {};
-  }
-
-  stdx::expected<void, MysqlError> refresh(unsigned int options = 0) {
-    const auto r = mysql_refresh(m_.get(), options);
-
-    if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
-    }
-
-    return {};
-  }
-
-  stdx::expected<void, MysqlError> reload() {
-    const auto r = mysql_reload(m_.get());
-
-    if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
   }
 
   stdx::expected<void, MysqlError> shutdown() {
-    const auto r = mysql_shutdown(m_.get(), SHUTDOWN_DEFAULT);
+    const auto r = mysql_query(m_.get(), "SHUTDOWN");
 
     if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
-    }
-
-    return {};
-  }
-
-  stdx::expected<void, MysqlError> kill(uint32_t id) {
-    const auto r = mysql_kill(m_.get(), id);
-
-    if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -533,10 +502,20 @@ class MysqlClient {
     const auto r = mysql_stat(m_.get());
 
     if (r == nullptr) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {r};
+  }
+
+  stdx::expected<void, MysqlError> dump_debug_info() {
+    const auto res = mysql_dump_debug_info(m_.get());
+
+    if (res != 0) {
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
+    }
+
+    return {};
   }
 
   stdx::expected<unsigned int, MysqlError> warning_count() {
@@ -572,12 +551,12 @@ class MysqlClient {
 
     if constexpr (SettableMysqlOption::num_of_args == 1) {
       if (0 != mysql_options(m, opt.option(), opt.data())) {
-        return stdx::make_unexpected(make_mysql_error_code(m));
+        return stdx::unexpected(make_mysql_error_code(m));
       }
     } else {
       if (0 != mysql_options4(m, opt.option(), opt.first_data(),
                               opt.second_data())) {
-        return stdx::make_unexpected(make_mysql_error_code(m));
+        return stdx::unexpected(make_mysql_error_code(m));
       }
     }
 
@@ -628,7 +607,7 @@ class MysqlClient {
     auto m = m_.get();
 
     if (0 != mysql_set_server_option(m, opt)) {
-      return stdx::make_unexpected(make_mysql_error_code(m));
+      return stdx::unexpected(make_mysql_error_code(m));
     }
 
     return {};
@@ -746,7 +725,7 @@ class MysqlClient {
         if (-1 == next_res) {
           return {false};
         } else if (next_res > 0) {
-          return stdx::make_unexpected(make_mysql_error_code(m_));
+          return stdx::unexpected(make_mysql_error_code(m_));
         } else {
           res_ = mysql_use_result(m_);
 
@@ -807,12 +786,12 @@ class MysqlClient {
     };
 
     stdx::expected<void, MysqlError> bind_params(
-        const stdx::span<MYSQL_BIND> &params,
-        const stdx::span<const char *> &names) {
+        const std::span<MYSQL_BIND> &params,
+        const std::span<const char *> &names) {
       auto err =
           mysql_bind_param(m_, params.size(), params.data(), names.data());
 
-      if (err) return stdx::make_unexpected(make_mysql_error_code(m_));
+      if (err) return stdx::unexpected(make_mysql_error_code(m_));
 
       return {};
     }
@@ -821,7 +800,7 @@ class MysqlClient {
       auto r = mysql_real_query(m_, stmt.data(), stmt.size());
 
       if (r != 0) {
-        return stdx::make_unexpected(make_mysql_error_code(m_));
+        return stdx::unexpected(make_mysql_error_code(m_));
       }
 
       return {m_};
@@ -831,7 +810,7 @@ class MysqlClient {
       auto r = mysql_read_query_result(m_);
 
       if (r != 0) {
-        return stdx::make_unexpected(make_mysql_error_code(m_));
+        return stdx::unexpected(make_mysql_error_code(m_));
       }
 
       return {m_};
@@ -852,7 +831,7 @@ class MysqlClient {
     auto r = mysql_send_query(m_.get(), stmt.data(), stmt.size());
 
     if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -870,7 +849,7 @@ class MysqlClient {
     const auto r = mysql_select_db(m_.get(), schema.c_str());
 
     if (r != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -880,30 +859,20 @@ class MysqlClient {
     const auto res = mysql_list_dbs(m_.get(), nullptr);
 
     if (res == nullptr) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
+    using ret_type = stdx::expected<Statement::ResultSet, MysqlError>;
 
-    return {std::in_place, m_.get(), res};
-  }
-
-  stdx::expected<Statement::ResultSet, MysqlError> list_fields(
-      std::string tablename) {
-    const auto res = mysql_list_fields(m_.get(), tablename.c_str(), nullptr);
-
-    if (res == nullptr) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
-    }
-
-    return {std::in_place, m_.get(), res};
+    return ret_type{std::in_place, m_.get(), res};
   }
 
   stdx::expected<Statement::Result, MysqlError> query(
-      std::string_view stmt, const stdx::span<MYSQL_BIND> &params,
-      const stdx::span<const char *> &names) {
+      std::string_view stmt, const std::span<MYSQL_BIND> &params,
+      const std::span<const char *> &names) {
     Statement st(m_.get());
 
     const auto bind_res = st.bind_params(params, names);
-    if (!bind_res) return bind_res.get_unexpected();
+    if (!bind_res) return stdx::unexpected(bind_res.error());
 
     return st.query(stmt);
   }
@@ -937,17 +906,17 @@ class MysqlClient {
       const auto r = mysql_stmt_attr_set(st_.get(), attr.type(), attr.data());
 
       if (r != 0) {
-        return stdx::make_unexpected(make_mysql_error_code(st_.get()));
+        return stdx::unexpected(make_mysql_error_code(st_.get()));
       }
 
       return {};
     }
 
-    stdx::expected<void, MysqlError> prepare(const std::string &stmt) {
-      auto r = mysql_stmt_prepare(st_.get(), stmt.c_str(), stmt.size());
+    stdx::expected<void, MysqlError> prepare(std::string_view stmt) {
+      auto r = mysql_stmt_prepare(st_.get(), stmt.data(), stmt.size());
 
       if (r != 0) {
-        return stdx::make_unexpected(make_mysql_error_code(st_.get()));
+        return stdx::unexpected(make_mysql_error_code(st_.get()));
       }
       return {};
     }
@@ -957,24 +926,40 @@ class MysqlClient {
       return mysql_stmt_param_count(stmt);
     }
 
-    template <class T>
-    typename std::enable_if<
-        std::conjunction<std::is_same<typename T::value_type, MYSQL_BIND>,
-                         std::is_same<decltype(std::declval<T>().data()),
-                                      typename T::value_type *>>::value,
-        stdx::expected<void, MysqlError>>::type
-    bind_params(const T &params) {
+    stdx::expected<void, MysqlError> bind_params(
+        const std::span<MYSQL_BIND> &params,
+        const std::span<const char *> &names) {
       auto *stmt = st_.get();
 
       if (params.size() != param_count()) {
-        return stdx::make_unexpected(make_mysql_error_code(1));
+        return stdx::unexpected(make_mysql_error_code(1));
       }
 
-      auto r =
-          mysql_stmt_bind_param(stmt, const_cast<MYSQL_BIND *>(params.data()));
+      if (params.size() != names.size()) {
+        return stdx::unexpected(make_mysql_error_code(1));
+      }
 
+      auto r = mysql_stmt_bind_named_param(stmt, params.data(), params.size(),
+                                           names.data());
       if (r != 0) {
-        return stdx::make_unexpected(make_mysql_error_code(stmt));
+        return stdx::unexpected(make_mysql_error_code(stmt));
+      }
+
+      return {};
+    }
+
+    stdx::expected<void, MysqlError> bind_params(
+        const std::span<MYSQL_BIND> &params) {
+      auto *stmt = st_.get();
+
+      if (params.size() != param_count()) {
+        return stdx::unexpected(make_mysql_error_code(1));
+      }
+
+      auto r = mysql_stmt_bind_named_param(stmt, params.data(), params.size(),
+                                           nullptr);
+      if (r != 0) {
+        return stdx::unexpected(make_mysql_error_code(stmt));
       }
 
       return {};
@@ -991,7 +976,7 @@ class MysqlClient {
       auto *stmt = st_.get();
 
       auto res = mysql_stmt_send_long_data(stmt, param_num, data, data_len);
-      if (res != 0) return stdx::make_unexpected(make_mysql_error_code(stmt));
+      if (res != 0) return stdx::unexpected(make_mysql_error_code(stmt));
 
       return {};
     }
@@ -1061,7 +1046,7 @@ class MysqlClient {
         const auto r = mysql_stmt_fetch(st_);
 
         if (r == 1) {
-          return stdx::make_unexpected(make_mysql_error_code(st_));
+          return stdx::unexpected(make_mysql_error_code(st_));
         }
         return {};
       }
@@ -1074,12 +1059,12 @@ class MysqlClient {
           stdx::expected<void, MysqlError>>::type
       bind_result(T &params) {
         if (params.size() != field_count()) {
-          return stdx::make_unexpected(make_mysql_error_code(1));
+          return stdx::unexpected(make_mysql_error_code(1));
         }
 
         auto r = mysql_stmt_bind_result(st_, params.data());
         if (r != 0) {
-          return stdx::make_unexpected(make_mysql_error_code(st_));
+          return stdx::unexpected(make_mysql_error_code(st_));
         }
 
         return {};
@@ -1159,7 +1144,7 @@ class MysqlClient {
       auto r = mysql_stmt_execute(st_.get());
 
       if (r != 0) {
-        return stdx::make_unexpected(make_mysql_error_code(st_.get()));
+        return stdx::unexpected(make_mysql_error_code(st_.get()));
       }
 
       return {st_.get()};
@@ -1169,7 +1154,7 @@ class MysqlClient {
       auto r = mysql_stmt_reset(st_.get());
 
       if (r != 0) {
-        return stdx::make_unexpected(make_mysql_error_code(st_.get()));
+        return stdx::unexpected(make_mysql_error_code(st_.get()));
       }
       return {};
     }
@@ -1182,22 +1167,103 @@ class MysqlClient {
     std::unique_ptr<MYSQL_STMT, StmtDeleter> st_{mysql_stmt_init(nullptr)};
   };
 
-  stdx::expected<PreparedStatement, MysqlError> prepare(
-      const std::string &stmt) {
+  stdx::expected<PreparedStatement, MysqlError> prepare(std::string_view stmt) {
     PreparedStatement st(m_.get());
 
     auto res = st.prepare(stmt);
 
-    if (!res) return res.get_unexpected();
+    if (!res) return stdx::unexpected(res.error());
 
     return st;
+  }
+
+  class SessionTrackers {
+   public:
+    SessionTrackers(MYSQL *m, int first, int last)
+        : m_(m), first_(first), last_(last) {}
+
+    class Iterator {
+     public:
+      using value_type = std::tuple<enum_session_state_type, std::string_view>;
+
+      Iterator(MYSQL *m, int cur) : m_(m), cur_(cur) {
+        // either a tracker was found or cur_ is == .end()
+
+        for (; cur_ <= SESSION_TRACK_END; ++cur_) {
+          if (0 == mysql_session_track_get_first(
+                       m_, static_cast<enum_session_state_type>(cur_), &data_,
+                       &data_len_)) {
+            break;
+          }
+        }
+      }
+
+      Iterator &operator++() {
+        if (0 == mysql_session_track_get_next(
+                     m_, static_cast<enum_session_state_type>(cur_), &data_,
+                     &data_len_)) {
+          return *this;
+        }
+
+        // move to the next tracker-id
+
+        ++cur_;
+
+        data_ = nullptr;
+        data_len_ = 0;
+
+        for (; cur_ <= SESSION_TRACK_END; ++cur_) {
+          if (0 == mysql_session_track_get_first(
+                       m_, static_cast<enum_session_state_type>(cur_), &data_,
+                       &data_len_)) {
+            break;
+          }
+        }
+
+        return *this;
+      }
+
+      bool operator==(const Iterator &other) const {
+        return m_ == other.m_ && cur_ == other.cur_;
+      }
+
+      bool operator!=(const Iterator &other) const { return !(*this == other); }
+
+      value_type operator*() const {
+        return {static_cast<enum_session_state_type>(cur_), {data_, data_len_}};
+      }
+
+     private:
+      MYSQL *m_;
+      int cur_;
+
+      const char *data_{};
+      size_t data_len_{};
+    };
+
+    Iterator begin() const { return {m_, first_}; }
+    Iterator end() const {
+      return {m_, static_cast<enum_session_state_type>(static_cast<int>(last_) +
+                                                       1)};
+    }
+
+    using value_type = Iterator::value_type;
+
+   private:
+    MYSQL *m_;
+    int first_;
+    int last_;
+  };
+
+  SessionTrackers session_trackers() {
+    return {m_.get(), SESSION_TRACK_BEGIN, SESSION_TRACK_END};
   }
 
   stdx::expected<void, MysqlError> binlog_dump(MYSQL_RPL &rpl) {
     auto res = mysql_binlog_open(m_.get(), &rpl);
 
     if (res != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};
@@ -1207,7 +1273,7 @@ class MysqlClient {
     auto res = mysql_binlog_fetch(m_.get(), &rpl);
 
     if (res != 0) {
-      return stdx::make_unexpected(make_mysql_error_code(m_.get()));
+      return stdx::unexpected(make_mysql_error_code(m_.get()));
     }
 
     return {};

@@ -39,8 +39,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#ifdef __linux__
-#include <syscall.h>
+#include <cstdint>
+#include <string_view>
+#if defined(__linux__) || defined(__sun) || defined(__FreeBSD__)
+#include <sys/syscall.h>
+#ifdef HAVE_EXT_BACKTRACE
+#include <backtrace/stacktrace.hpp>
+#endif
 #endif
 #include <time.h>
 
@@ -190,7 +195,48 @@ void my_safe_puts_stderr(const char *val, size_t max_len) {
   my_safe_printf_stderr("%s", "\n");
 }
 
-#if defined(HAVE_BACKTRACE)
+#ifdef HAVE_EXT_BACKTRACE
+void my_print_stacktrace(const uchar *stack_bottom, ulong thread_stack) {
+  my_safe_printf_stderr("stack_bottom = %p thread_stack 0x%lx\n", stack_bottom,
+                        thread_stack);
+
+  struct cookie_t {
+    int index;
+  };
+  auto print_callback = [](void *cookie, uintptr_t pc, const char *filename,
+                           int lineno, const char *function) {
+    auto idx = static_cast<cookie_t *>(cookie)->index++;
+    if (filename != nullptr) {
+      std::string_view filename_sv{filename};
+      constexpr std::string_view parent_dir{"../"};
+      if (auto pos = filename_sv.rfind(parent_dir);
+          pos != std::string_view::npos) {
+        filename_sv.remove_prefix(pos + std::size(parent_dir));
+      }
+      constexpr std::string_view mysql_dir{"mysql/"};
+      if (auto pos = filename_sv.find(mysql_dir);
+          pos != std::string_view::npos) {
+        filename_sv.remove_prefix(pos + std::size(mysql_dir));
+      }
+      my_safe_printf_stderr(" #%d 0x%lx %s at %s:%d\n", idx, (unsigned long)pc,
+                            function == nullptr ? "<unknown>" : function,
+                            std::data(filename_sv), lineno);
+    } else {
+      my_safe_printf_stderr(" #%d 0x%lx %s\n", idx, (unsigned long)pc,
+                            function == nullptr ? "<unknown>" : function);
+    }
+
+    return 0;
+  };
+  auto error_callback = [](void *, const char *msg, int errnum) {
+    my_safe_printf_stderr("libbacktrace: %s", msg);
+    if (errnum > 0) my_safe_printf_stderr(": %d", errnum);
+    my_safe_printf_stderr("\n");
+  };
+  cookie_t cookie{.index = 0};
+  stacktrace::full(1, print_callback, error_callback, &cookie);
+}
+#elif defined(HAVE_BACKTRACE)
 
 #ifdef HAVE_ABI_CXA_DEMANGLE
 
@@ -204,7 +250,7 @@ static bool my_demangle_symbol(char *line) {
   char *demangled = nullptr;
 #ifdef __APPLE__  // OS X formatting of stacktraces is different from Linux
   char *begin = strstr(line, "_Z");
-  char *end = begin ? strchr(begin, ' ') : NULL;
+  char *end = begin ? strchr(begin, ' ') : nullptr;
 
   if (begin && end) {
     begin[-1] = '\0';
@@ -212,13 +258,13 @@ static bool my_demangle_symbol(char *line) {
     int status;
     demangled = my_demangle(begin, &status);
     if (!demangled || status) {
-      demangled = NULL;
+      demangled = nullptr;
       begin[-1] = '_';
       *end = ' ';
     }
   }
   if (demangled) my_safe_printf_stderr("%s %s %s\n", line, demangled, end + 1);
-#else  // !__APPLE__
+#else             // !__APPLE__
   char *begin = strchr(line, '(');
   char *end = begin ? strchr(begin, '+') : nullptr;
 
@@ -270,7 +316,6 @@ void my_print_stacktrace(const uchar *stack_bottom, ulong thread_stack) {
     if (demangled) free(demangled);
   }
 #endif
-
   void *addrs[128];
   char **strings = nullptr;
   int n = backtrace(addrs, array_elements(addrs));
@@ -286,8 +331,7 @@ void my_print_stacktrace(const uchar *stack_bottom, ulong thread_stack) {
     backtrace_symbols_fd(addrs, n, fileno(stderr));
   }
 }
-
-#endif /* HAVE_BACKTRACE */
+#endif /* HAVE_EXT_BACKTRACE || HAVE_BACKTRACE */
 #endif /* HAVE_STACKTRACE */
 
 /* Produce a core for the thread */
@@ -349,7 +393,7 @@ static void get_symbol_path(char *path, size_t size) {
     Add "debug" subdirectory of the application directory, sometimes PDB will
     placed here by installation.
   */
-  GetModuleFileName(NULL, pdb_debug_dir, MAX_PATH);
+  GetModuleFileName(nullptr, pdb_debug_dir, MAX_PATH);
   p = strrchr(pdb_debug_dir, '\\');
   if (p) {
     *p = 0;
@@ -465,7 +509,8 @@ void my_print_stacktrace(const uchar * /* stack_bottom */,
     BOOL have_symbol = false;
     BOOL have_source = false;
 
-    if (!StackWalk64(machine, hProcess, hThread, &frame, &context, 0, 0, 0, 0))
+    if (!StackWalk64(machine, hProcess, hThread, &frame, &context, nullptr,
+                     nullptr, nullptr, nullptr))
       break;
     addr = frame.AddrPC.Offset;
 
@@ -513,9 +558,9 @@ void my_write_core(int /* sig */) {
 
   if (!exception_ptrs) return;
 
-  if (GetModuleFileName(NULL, path, sizeof(path))) {
+  if (GetModuleFileName(nullptr, path, sizeof(path))) {
     char module_name[MAX_PATH];
-    _splitpath(path, NULL, NULL, module_name, NULL);
+    _splitpath(path, nullptr, nullptr, module_name, nullptr);
     // max length of a value being placed to dump_fname is
     // MAX_PATH + 1 byte for '.' + up to 10 bytes for string
     // representation of DWORD value + 4 bytes for .dmp suffix +
@@ -525,7 +570,7 @@ void my_write_core(int /* sig */) {
     snprintf(dump_fname, sizeof(dump_fname), "%s.%lu.dmp", module_name,
              GetCurrentProcessId());
   }
-  my_create_minidump(dump_fname, 0, 0);
+  my_create_minidump(dump_fname, nullptr, 0);
 }
 
 /** Create a minidump.
@@ -537,10 +582,10 @@ void my_write_core(int /* sig */) {
 void my_create_minidump(const char *name, HANDLE process, DWORD pid) {
   char path[MAX_PATH];
   MINIDUMP_EXCEPTION_INFORMATION info;
-  PMINIDUMP_EXCEPTION_INFORMATION info_ptr = NULL;
+  PMINIDUMP_EXCEPTION_INFORMATION info_ptr = nullptr;
   HANDLE hFile;
 
-  if (process == 0) {
+  if (process == nullptr) {
     /* Does not need to CloseHandle() for the below. */
     process = GetCurrentProcess();
     pid = GetCurrentProcessId();
@@ -550,14 +595,15 @@ void my_create_minidump(const char *name, HANDLE process, DWORD pid) {
     info_ptr = &info;
   }
 
-  hFile = CreateFile(name, GENERIC_WRITE, 0, 0, CREATE_ALWAYS,
-                     FILE_ATTRIBUTE_NORMAL, 0);
+  hFile = CreateFile(name, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                     FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hFile) {
-    MINIDUMP_TYPE mdt =
+    const MINIDUMP_TYPE mdt =
         (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithThreadInfo |
                         MiniDumpWithProcessThreadData);
     /* Create minidump, use info only if same process. */
-    if (MiniDumpWriteDump(process, pid, hFile, mdt, info_ptr, 0, 0)) {
+    if (MiniDumpWriteDump(process, pid, hFile, mdt, info_ptr, nullptr,
+                          nullptr)) {
       my_safe_printf_stderr("Minidump written to %s\n",
                             _fullpath(path, name, sizeof(path)) ? path : name);
     } else {
@@ -584,9 +630,9 @@ void my_safe_puts_stderr(const char *val, size_t len) {
 #ifdef _WIN32
 size_t my_write_stderr(const void *buf, size_t count) {
   DWORD bytes_written;
-  SetFilePointer(GetStdHandle(STD_ERROR_HANDLE), 0, NULL, FILE_END);
+  SetFilePointer(GetStdHandle(STD_ERROR_HANDLE), 0, nullptr, FILE_END);
   WriteFile(GetStdHandle(STD_ERROR_HANDLE), buf, (DWORD)count, &bytes_written,
-            NULL);
+            nullptr);
   return bytes_written;
 }
 #else
@@ -788,7 +834,7 @@ void my_safe_print_system_time() {
   char hrs_buf[3] = "00";
   char mins_buf[3] = "00";
   char secs_buf[3] = "00";
-  int base = 10;
+  const int base = 10;
 #ifdef _WIN32
   SYSTEMTIME utc_time;
   long hrs, mins, secs;

@@ -24,17 +24,17 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include <getarg.h>
 #include <HugoOperations.hpp>
 #include <HugoTransactions.hpp>
+#include <InputStream.hpp>
 #include <NDBT.hpp>
 #include <NdbApi.hpp>
 #include <NdbRestarter.hpp>
 #include <UtilTransactions.hpp>
 #include <signaldata/DumpStateOrd.hpp>
+#include "mgmapi_internal.h"
 #include "util/require.h"
-
-#include <getarg.h>
-#include <InputStream.hpp>
 
 struct CASE {
   bool start_row;
@@ -255,6 +255,7 @@ static int parse_args(int argc, char **argv) {
 
 static int connect_ndb() {
   g_cluster_connection = new Ndb_cluster_connection();
+  g_cluster_connection->configure_tls(opt_tls_search_path, opt_mgm_tls);
   if (g_cluster_connection->connect(12, 5, 1) != 0) {
     return 1;
   }
@@ -363,8 +364,8 @@ static int pause_lcp(int error) {
 
   int filter[] = {15, NDB_MGM_EVENT_CATEGORY_INFO, 0};
 
-  NdbSocket my_fd{ndb_socket_create_from_native(
-                    ndb_mgm_listen_event(g_restarter.handle, filter))};
+  NdbSocket my_fd =
+      ndb_mgm_listen_event_internal(g_restarter.handle, filter, 0, true);
 
   require(my_fd.is_valid());
   require(!g_restarter.insertErrorInAllNodes(error));
@@ -454,8 +455,7 @@ static int continue_lcp(int error) {
   NdbSocket my_fd;
 
   if (error) {
-    my_fd = ndb_socket_create_from_native(
-              ndb_mgm_listen_event(g_restarter.handle, filter));
+    my_fd = ndb_mgm_listen_event_internal(g_restarter.handle, filter, 0, true);
     require(my_fd.is_valid());
   }
 

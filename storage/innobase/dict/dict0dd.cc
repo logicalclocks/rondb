@@ -70,6 +70,7 @@ Data dictionary interface */
 #include "ha_innopart.h"
 #include "ha_prototypes.h"
 #include "mysql/plugin.h"
+#include "mysql/strings/m_ctype.h"
 #include "query_options.h"
 #include "sql/create_field.h"
 #include "sql/mysqld.h"  // lower_case_file_system
@@ -240,12 +241,6 @@ static bool dd_index_match(const dict_index_t *index, const Index *dd_index) {
   return match;
 }
 
-/** Check if the InnoDB table is consistent with dd::Table
-@tparam         Table           dd::Table or dd::Partition
-@param[in]      table                   InnoDB table
-@param[in]      dd_table                dd::Table or dd::Partition
-@return true    if match
-@retval false   if not match */
 template <typename Table>
 bool dd_table_match(const dict_table_t *table, const Table *dd_table) {
   /* Temporary table has no metadata written */
@@ -305,14 +300,14 @@ void dd_mdl_release(THD *thd, MDL_ticket **mdl) {
   *mdl = nullptr;
 }
 
-THD *dd_thd_for_undo(const trx_t *trx) {
-  return trx->mysql_thd == nullptr ? current_thd : trx->mysql_thd;
+THD *dd_thd_for_undo(const trx_t &trx) {
+  return trx.mysql_thd == nullptr ? current_thd : trx.mysql_thd;
 }
 
 /** Check if current undo needs a MDL or not
 @param[in]      trx     transaction
 @return true if MDL is necessary, otherwise false */
-bool dd_mdl_for_undo(const trx_t *trx) {
+bool dd_mdl_for_undo(const trx_t &trx) {
   /* Try best to find a valid THD for checking, in case in background
   rollback thread, trx doesn't hold a mysql_thd */
   THD *thd = dd_thd_for_undo(trx);
@@ -327,7 +322,7 @@ bool dd_mdl_for_undo(const trx_t *trx) {
   4. In runtime asynchronous rollback, no need for MDL.
   Check TRX_FORCE_ROLLBACK. */
   return (thd != nullptr && !thd->transaction_rollback_request &&
-          ((trx->in_innodb & TRX_FORCE_ROLLBACK) == 0));
+          ((trx.in_innodb & TRX_FORCE_ROLLBACK) == 0));
 }
 
 int acquire_uncached_table(THD *thd, dd::cache::Dictionary_client *client,
@@ -1330,7 +1325,7 @@ dberr_t dd_tablespace_rename(dd::Object_id dd_space_id, bool is_system_cs,
   }
 
   bool fail = client->update(new_space);
-  ut_ad(!fail);
+  DBUG_EXECUTE_IF("dictionary_client_update_fail_in_rename", fail = true;);
   dd::rename_tablespace_mdl_hook(thd, src_ticket, dst_ticket);
 
   return fail ? DB_ERROR : DB_SUCCESS;
@@ -2868,6 +2863,8 @@ void dd_add_fts_doc_id_index(dd::Table &new_table, const dd::Table &old_table) {
   return;
 }
 
+MY_COMPILER_DIAGNOSTIC_PUSH()
+MY_COMPILER_CLANG_WORKAROUND_TPARAM_DOCBUG()
 /** Find the specified dd::Index or dd::Partition_index in an InnoDB table
 @tparam         Index                   dd::Index or dd::Partition_index
 @param[in]      table                   InnoDB table object
@@ -2907,6 +2904,7 @@ const dict_index_t *dd_find_index(const dict_table_t *table, Index *dd_index) {
 
   return index;
 }
+MY_COMPILER_DIAGNOSTIC_POP()
 
 /** Return the prefix length of the key.
 @param[in]    key                Key information.
@@ -5411,6 +5409,8 @@ void dd_open_fk_tables(dict_names_t &fk_list, bool dict_locked, THD *thd) {
   }
 }
 
+MY_COMPILER_DIAGNOSTIC_PUSH()
+MY_COMPILER_CLANG_WORKAROUND_TPARAM_DOCBUG()
 /** Open or load a table definition based on a Global DD object.
 @tparam         Table           dd::Table or dd::Partition
 @param[in,out]  client          data dictionary client
@@ -5436,6 +5436,7 @@ dict_table_t *dd_open_table(dd::cache::Dictionary_client *client,
 
   return m_table;
 }
+MY_COMPILER_DIAGNOSTIC_POP()
 
 template dict_table_t *dd_open_table<dd::Table>(dd::cache::Dictionary_client *,
                                                 const TABLE *, const char *,

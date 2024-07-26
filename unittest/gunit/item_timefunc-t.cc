@@ -31,13 +31,12 @@
 #include <string>
 
 #include "decimal.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_time.h"
+#include "sql-common/my_decimal.h"
 #include "sql/item.h"
 #include "sql/item_timefunc.h"
-#include "sql/my_decimal.h"
 #include "sql/parse_location.h"
 #include "sql/parse_tree_node_base.h"
 #include "sql/sql_class.h"
@@ -45,6 +44,7 @@
 #include "sql/sql_lex.h"
 #include "sql/system_variables.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "unittest/gunit/test_utils.h"
 
 namespace item_timefunc_unittest {
@@ -84,8 +84,11 @@ static void CheckMetadataConsistency(THD *thd, Item *item) {
   ASSERT_FALSE(item->fix_fields(thd, ref));
   ASSERT_EQ(item, ref[0]);
 
-  // Expect a signed integer return type.
-  EXPECT_FALSE(item->unsigned_flag);
+  // Expect a signed integer return type, except for YEAR.
+  if (item->data_type() == MYSQL_TYPE_YEAR)
+    EXPECT_TRUE(item->unsigned_flag);
+  else
+    EXPECT_FALSE(item->unsigned_flag);
   EXPECT_EQ(0, item->decimals);
 
   const int64_t int_result = item->val_int();

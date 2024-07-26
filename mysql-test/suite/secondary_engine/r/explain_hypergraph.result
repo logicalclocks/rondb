@@ -12,8 +12,13 @@ EXPLAIN
 {
   "query": "/* select#1 */ select `test`.`t1`.`a` AS `a` from `test`.`t1`",
   "operation": "Table scan on t1",
+  "query_type": "select",
   "table_name": "t1",
   "access_type": "table",
+  "schema_name": "test",
+  "used_columns": [
+    "a"
+  ],
   "estimated_rows": 1.0,
   "estimated_total_cost": 0.25,
   "estimated_first_row_cost": 0.25
@@ -31,22 +36,31 @@ Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a` from `test`.`t1`
 EXPLAIN FORMAT=JSON SELECT * FROM t1, t1 t2 WHERE t1.a = t2.a;
 EXPLAIN
 {
-  "query": "/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t2`.`a` AS `a` from `test`.`t1` join `test`.`t1` `t2` where multiple equal(`test`.`t1`.`a`, `test`.`t2`.`a`)",
+  "query": "/* select#1 */ select `test`.`t1`.`a` AS `a`,`t2`.`a` AS `a` from `test`.`t1` join `test`.`t1` `t2` where multiple equal(`test`.`t1`.`a`, `t2`.`a`)",
   "inputs": [
     {
       "operation": "Table scan on t1 in secondary engine MOCK",
       "table_name": "t1",
       "access_type": "table",
+      "schema_name": "test",
+      "used_columns": [
+        "a"
+      ],
       "estimated_rows": 1.0,
       "secondary_engine": "MOCK",
       "estimated_total_cost": 0.5,
       "estimated_first_row_cost": 0.5
     },
     {
+      "alias": "t2",
       "heading": "Hash",
       "operation": "Table scan on t2 in secondary engine MOCK",
-      "table_name": "t2",
+      "table_name": "t1",
       "access_type": "table",
+      "schema_name": "test",
+      "used_columns": [
+        "a"
+      ],
       "estimated_rows": 1.0,
       "secondary_engine": "MOCK",
       "estimated_total_cost": 0.5,
@@ -55,6 +69,7 @@ EXPLAIN
   ],
   "join_type": "inner join",
   "operation": "Inner hash join (t1.a = t2.a)",
+  "query_type": "select",
   "access_type": "join",
   "estimated_rows": 0.10000000149011612,
   "hash_condition": [

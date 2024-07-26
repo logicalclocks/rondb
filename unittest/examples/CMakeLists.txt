@@ -40,3 +40,18 @@ ENDFOREACH()
 #    where even unused symbols must be defined)
 MYSQL_ADD_EXECUTABLE(mytime_client-t mytime_client-t.cc SKIP_INSTALL)
 TARGET_LINK_LIBRARIES(mytime_client-t mytime ${LIBRT})
+
+MYSQL_ADD_EXECUTABLE(libstrings_static-t
+  libstrings-t.cc
+  LINK_LIBRARIES strings
+  ADD_TEST libstrings_static
+  SKIP_INSTALL
+  )
+
+MYSQL_ADD_EXECUTABLE(libstrings_shared-t
+  libstrings-t.cc
+  LINK_LIBRARIES strings_shared
+  ADD_TEST libstrings_shared
+  SKIP_INSTALL
+  )
+

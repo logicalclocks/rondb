@@ -514,7 +514,6 @@ void Innodb_data_lock_inspector::destroy_data_lock_wait_iterator(
 @param[in]  id_str           The identifier string
 @param[out] cached_id        The cached identifier string
 @param[out] cached_id_length The cached identifier string length
-@returns string allocated in the performance schema container.
 */
 void alloc_identifier(PSI_server_data_lock_container *container,
                       PSI_identifier kind, const std::string &id_str,
@@ -589,7 +588,7 @@ void print_table_lock_id(const lock_t *lock, char *lock_id,
   join with INFORMATION_SCHEMA.innodb_trx.trx_requested_lock_id column */
   i_s_locks_row_t row;
   fill_locks_row(&row, lock, ULINT_UNDEFINED);
-  trx_i_s_create_lock_id(&row, lock_id, lock_id_size);
+  trx_i_s_create_lock_id(row, lock_id, lock_id_size);
 }
 
 /** Print a record lock id.
@@ -604,7 +603,7 @@ void print_record_lock_id(const lock_t *lock, ulint heap_no, char *lock_id,
   join with INFORMATION_SCHEMA.innodb_trx.trx_requested_lock_id column */
   i_s_locks_row_t row;
   fill_locks_row(&row, lock, heap_no);
-  trx_i_s_create_lock_id(&row, lock_id, lock_id_size);
+  trx_i_s_create_lock_id(row, lock_id, lock_id_size);
 }
 
 /** Print a lock id.

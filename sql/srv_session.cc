@@ -34,12 +34,10 @@
 #include <utility>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "mutex_lock.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_psi_config.h"
 #include "my_thread.h"
@@ -52,12 +50,15 @@
 #include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/bits/psi_rwlock_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/plugin_audit.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_rwlock.h"
 #include "mysql/psi/mysql_statement.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_time.h"
 #include "mysqld_error.h"
+#include "nulls.h"
 #include "pfs_thread_provider.h"
 #include "rwlock_scoped_lock.h"
 #include "sql/auth/sql_security_ctx.h"
@@ -355,7 +356,7 @@ class Mutexed_map_thd_srv_session {
     rwlock_scoped_lock lock(&LOCK_collection, false, __FILE__, __LINE__);
 
     std::map<const THD *, map_value_t>::iterator it = collection.find(key);
-    return (it != collection.end()) ? it->second.second : NULL;
+    return (it != collection.end()) ? it->second.second : nullptr;
   }
 
   /**

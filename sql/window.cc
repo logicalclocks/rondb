@@ -30,20 +30,23 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <unordered_set>
+#include <vector>
 
 #include "field_types.h"
-#include "m_ctype.h"
 #include "my_alloc.h"  // destroy
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "my_table_map.h"
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysqld_error.h"
 #include "sql/derror.h"  // ER_THD
 #include "sql/enum_query_type.h"
+#include "sql/field.h"
 #include "sql/handler.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
@@ -51,13 +54,13 @@
 #include "sql/item_sum.h"       // Item_sum
 #include "sql/item_timefunc.h"  // Item_date_add_interval
 #include "sql/join_optimizer/finalize_plan.h"
-#include "sql/join_optimizer/join_optimizer.h"
 #include "sql/join_optimizer/replace_item.h"
 #include "sql/key_spec.h"
 #include "sql/mem_root_array.h"
+#include "sql/mysqld_cs.h"
+#include "sql/parse_location.h"
 #include "sql/parse_tree_nodes.h"   // PT_*
 #include "sql/parse_tree_window.h"  // PT_window
-#include "sql/parser_yystype.h"
 #include "sql/sql_array.h"
 #include "sql/sql_class.h"
 #include "sql/sql_const.h"
@@ -69,10 +72,8 @@
 #include "sql/sql_resolver.h"   // find_order_in_list
 #include "sql/sql_show.h"
 #include "sql/sql_tmp_table.h"  // free_tmp_table
-#include "sql/system_variables.h"
 #include "sql/table.h"
 #include "sql/temp_table_param.h"  // Temp_table_param
-#include "sql/thd_raii.h"
 #include "sql/window_lex.h"
 #include "sql_string.h"
 #include "template_utils.h"
@@ -85,7 +86,7 @@ static ORDER *clone(THD *thd, ORDER *order) {
   ORDER *clone = nullptr;
   ORDER **prev_next = &clone;
   for (; order != nullptr; order = order->next) {
-    ORDER *o = new (thd->mem_root) PT_order_expr(nullptr, ORDER_ASC);
+    ORDER *o = new (thd->mem_root) PT_order_expr(POS(), nullptr, ORDER_ASC);
     std::memcpy(o, order, sizeof(*order));
     *prev_next = o;
     prev_next = &o->next;
@@ -548,7 +549,7 @@ bool Window::before_or_after_frame(bool before) {
     infinity = WBT_UNBOUNDED_FOLLOWING;
   }
 
-  enum enum_window_border_type border_type = border->m_border_type;
+  const enum enum_window_border_type border_type = border->m_border_type;
 
   if (border_type == infinity) return false;  // all rows included
 
@@ -694,13 +695,13 @@ bool Window::resolve_window_ordering(THD *thd, Ref_item_array ref_item_array,
       return true;
     oi = *order->item;
 
-    if (order->used_alias) {
+    if (order->used_alias != nullptr) {
       /*
         Order by using alias is not allowed for windows, cf. SQL 2011, section
         7.11 <window clause>, SR 4. Throw the same error code as when alias is
         argument of a window function, or any function.
       */
-      my_error(ER_BAD_FIELD_ERROR, MYF(0), oi->item_name.ptr(), thd->where);
+      my_error(ER_BAD_FIELD_ERROR, MYF(0), order->used_alias, thd->where);
       return true;
     }
 
@@ -724,8 +725,9 @@ bool Window::resolve_window_ordering(THD *thd, Ref_item_array ref_item_array,
       expression.
     */
     if (oi->has_aggregation() && oi->type() != Item::SUM_FUNC_ITEM) {
-      oi->split_sum_func(thd, ref_item_array, fields);
-      if (thd->is_error()) return true;
+      if (oi->split_sum_func(thd, ref_item_array, fields)) {
+        return true;
+      }
     }
   }
 
@@ -1103,7 +1105,7 @@ bool Window::setup_windows1(THD *thd, Query_block *select,
     We can encounter aggregate functions in the ORDER BY and PARTITION clauses
     of window function, so make sure we allow it:
   */
-  nesting_map save_allow_sum_func = thd->lex->allow_sum_func;
+  const nesting_map save_allow_sum_func = thd->lex->allow_sum_func;
   thd->lex->allow_sum_func |= (nesting_map)1 << select->nest_level;
 
   for (Window &w : *windows) {
@@ -1337,7 +1339,7 @@ void Window::cleanup() {
     (void)m_frame_buffer->file->ha_index_or_rnd_end();
     close_tmp_table(m_frame_buffer);
     free_tmp_table(m_frame_buffer);
-    ::destroy(m_frame_buffer_param);
+    ::destroy_at(m_frame_buffer_param);
   }
 
   m_frame_buffer_positions.clear();
@@ -1350,13 +1352,13 @@ void Window::cleanup() {
 void Window::destroy()  // called only at stmt destruction
 {
   for (Cached_item *ci : m_order_by_items) {
-    ::destroy(ci);
+    ::destroy_at(ci);
   }
   for (Cached_item *ci : m_partition_items) {
-    ::destroy(ci);
+    ::destroy_at(ci);
   }
-  destroy_array(m_comparators[0].data(), m_comparators[0].size());
-  destroy_array(m_comparators[1].data(), m_comparators[1].size());
+  std::destroy_n(m_comparators[0].data(), m_comparators[0].size());
+  std::destroy_n(m_comparators[1].data(), m_comparators[1].size());
 }
 
 void Window::reset_lead_lag() {
@@ -1525,19 +1527,26 @@ double Window::compute_cost(double cost, const List<Window> &windows) {
   return total_cost;
 }
 
-void Window::apply_temp_table(THD *thd, const Func_ptr_array &items_to_copy) {
-  for (Cached_item *&ci : m_partition_items) {
-    Item *item = FindReplacementOrReplaceMaterializedItems(
-        thd, ci->get_item()->real_item(), items_to_copy,
-        /*need_exact_match=*/true);
-    thd->change_item_tree(ci->get_item_ptr(), item);
+void Window::apply_temp_table(THD *thd, const Func_ptr_array &items_to_copy,
+                              bool first) {
+  // Window::setup_ordering_cached_items() adds Item_ref wrappers around the
+  // ordering and partitioning items. We need to see through them, so we unwrap
+  // them here. Since they get removed on the first call to apply_temp_table(),
+  // only unwrap on the first call.
+  const auto unwrap = [first](Item *item) {
+    return first ? down_cast<Item_ref *>(item)->ref_item() : item;
+  };
+
+  for (Mem_root_array<Cached_item *> *cached_items :
+       {&m_partition_items, &m_order_by_items}) {
+    for (Cached_item *&ci : *cached_items) {
+      Item *item = FindReplacementOrReplaceMaterializedItems(
+          thd, unwrap(ci->get_item()), items_to_copy,
+          /*need_exact_match=*/true);
+      thd->change_item_tree(ci->get_item_ptr(), item);
+    }
   }
-  for (Cached_item *&ci : m_order_by_items) {
-    Item *item = FindReplacementOrReplaceMaterializedItems(
-        thd, ci->get_item()->real_item(), items_to_copy,
-        /*need_exact_match=*/true);
-    thd->change_item_tree(ci->get_item_ptr(), item);
-  }
+
   // Item_rank looks directly into the ORDER *, so we need to update
   // that as well.
   if (m_order_by != nullptr) {
@@ -1548,13 +1557,13 @@ void Window::apply_temp_table(THD *thd, const Func_ptr_array &items_to_copy) {
     for (Arg_comparator &cmp : m_comparators[i]) {
       Item **left_ptr = cmp.get_left_ptr();
       Item *new_item = FindReplacementOrReplaceMaterializedItems(
-          thd, (*left_ptr)->real_item(), items_to_copy,
+          thd, unwrap(*left_ptr), items_to_copy,
           /*need_exact_match=*/true);
       thd->change_item_tree(left_ptr, new_item);
 
       Item_cache *cache = FindCacheInComparator(cmp);
       Item *new_cache_item = FindReplacementOrReplaceMaterializedItems(
-          thd, cache->get_example()->real_item(), items_to_copy,
+          thd, unwrap(cache->get_example()), items_to_copy,
           /*need_exact_match=*/true);
       thd->change_item_tree(cache->get_example_ptr(), new_cache_item);
     }

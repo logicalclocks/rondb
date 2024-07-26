@@ -50,14 +50,12 @@
 #include <unordered_map>
 #include <utility>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "map_helpers.h"
 #include "my_alloc.h"
 #include "my_base.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_psi_config.h"
 #include "my_sys.h"
@@ -66,9 +64,11 @@
 #include "mysql/components/services/bits/psi_memory_bits.h"
 #include "mysql/components/services/bits/psi_rwlock_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_memory.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_rwlock.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"
@@ -88,6 +88,7 @@
 #include "sql/thd_raii.h"
 #include "sql/thr_malloc.h"
 #include "sql/transaction.h"  // trans_rollback_stmt, trans_commit_stmt
+#include "string_with_len.h"
 #include "thr_lock.h"
 
 /*
@@ -695,7 +696,7 @@ bool Sql_cmd_create_server::execute(THD *thd) {
 
   int error;
   {
-    Disable_binlog_guard binlog_guard(thd);
+    const Disable_binlog_guard binlog_guard(thd);
     table->use_all_columns();
     empty_record(table);
 
@@ -765,7 +766,7 @@ bool Sql_cmd_alter_server::execute(THD *thd) {
 
   int error;
   {
-    Disable_binlog_guard binlog_guard(thd);
+    const Disable_binlog_guard binlog_guard(thd);
     table->use_all_columns();
 
     /* set the field that's the PK to the value we're looking for */
@@ -828,7 +829,7 @@ bool Sql_cmd_drop_server::execute(THD *thd) {
   int error;
   mysql_rwlock_wrlock(&THR_LOCK_servers);
   {
-    Disable_binlog_guard binlog_guard(thd);
+    const Disable_binlog_guard binlog_guard(thd);
     table->use_all_columns();
 
     /* set the field that's the PK to the value we're looking for */

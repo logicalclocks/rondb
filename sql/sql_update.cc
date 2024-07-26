@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -35,11 +36,9 @@
 
 #include "field_types.h"
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "mem_root_deque.h"  // mem_root_deque
 #include "my_alloc.h"
 #include "my_base.h"
-#include "my_bit.h"  // my_count_bits
 #include "my_bitmap.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -48,6 +47,7 @@
 #include "my_table_map.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"  // Prealloced_array
@@ -101,7 +101,7 @@
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
 #include "sql/sql_opt_exec_shared.h"
-#include "sql/sql_optimizer.h"  // build_equal_items, substitute_gc
+#include "sql/sql_optimizer.h"  // substitute_gc
 #include "sql/sql_partition.h"  // partition_key_modified
 #include "sql/sql_resolver.h"   // setup_order
 #include "sql/sql_select.h"
@@ -502,7 +502,7 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
   join_type type = JT_UNKNOWN;
 
   auto cleanup = create_scope_guard([&range_scan, table] {
-    destroy(range_scan);
+    if (range_scan != nullptr) ::destroy_at(range_scan);
     table->set_keyread(false);
     table->file->ha_index_or_rnd_end();
     free_io_cache(table);
@@ -686,8 +686,10 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
           Filesort has already found and selected the rows we want to update,
           so we don't need the where clause
         */
-        destroy(range_scan);
-        range_scan = nullptr;
+        if (range_scan != nullptr) {
+          ::destroy_at(range_scan);
+          range_scan = nullptr;
+        }
         conds = nullptr;
       } else {
         /*
@@ -815,8 +817,10 @@ bool Sql_cmd_update::update_single_table(THD *thd) {
             /*examined_rows=*/nullptr);
         if (iterator->Init()) return true;
 
-        destroy(range_scan);
-        range_scan = nullptr;
+        if (range_scan != nullptr) {
+          ::destroy_at(range_scan);
+          range_scan = nullptr;
+        }
         conds = nullptr;
       }
     } else {
@@ -1428,12 +1432,12 @@ static bool prepare_partial_update(Opt_trace_context *trace,
   single-table path are used.
 
   @param thd         Thread handler
-  @param select      Query block
+  @param qb          Query block
   @param table_list  Table to modify
   @returns true if we should switch
  */
 bool should_switch_to_multi_table_if_subqueries(const THD *thd,
-                                                const Query_block *select,
+                                                const Query_block *qb,
                                                 const Table_ref *table_list) {
   TABLE *t = table_list->updatable_base_table()->table;
   handler *h = t->file;
@@ -1442,7 +1446,7 @@ bool should_switch_to_multi_table_if_subqueries(const THD *thd,
   assert((h->ht->flags & HTON_IS_SECONDARY_ENGINE) == 0);
   // LIMIT, ORDER BY and read-before-write removal are not supported in
   // multi-table UPDATE/DELETE.
-  if (select->is_ordered() || select->has_limit() ||
+  if (qb->is_ordered() || qb->has_limit() ||
       (h->ha_table_flags() & HA_READ_BEFORE_WRITE_REMOVAL))
     return false;
   /*
@@ -1450,11 +1454,12 @@ bool should_switch_to_multi_table_if_subqueries(const THD *thd,
     account. They can serve as a solution is a user really wants to use the
     single-table path, e.g. in case of regression.
   */
-  for (Query_expression *unit = select->first_inner_query_expression(); unit;
-       unit = unit->next_query_expression()) {
-    if (unit->item && (unit->item->substype() == Item_subselect::IN_SUBS ||
-                       unit->item->substype() == Item_subselect::EXISTS_SUBS)) {
-      auto sub_query_block = unit->first_query_block();
+  for (Query_expression *qe = qb->first_inner_query_expression(); qe != nullptr;
+       qe = qe->next_query_expression()) {
+    if (qe->item != nullptr &&
+        (qe->item->subquery_type() == Item_subselect::IN_SUBQUERY ||
+         qe->item->subquery_type() == Item_subselect::EXISTS_SUBQUERY)) {
+      Query_block *sub_query_block = qe->first_query_block();
       Subquery_strategy subq_mat = sub_query_block->subquery_strategy(thd);
       if (subq_mat == Subquery_strategy::CANDIDATE_FOR_IN2EXISTS_OR_MAT ||
           subq_mat == Subquery_strategy::SUBQ_MATERIALIZATION)
@@ -1606,7 +1611,7 @@ bool Sql_cmd_update::prepare_inner(THD *thd) {
   */
   thd->table_map_for_update = tables_for_update = get_table_map(select->fields);
 
-  uint update_table_count_local = my_count_bits(tables_for_update);
+  const int update_table_count_local = std::popcount(tables_for_update);
 
   assert(update_table_count_local > 0);
 
@@ -2560,7 +2565,7 @@ bool UpdateRowsIterator::DoImmediateUpdatesAndBufferRowIds(
       }
 
       // check if a record exists with the same hash value
-      if (!check_unique_constraint(tmp_table))
+      if (!check_unique_fields(tmp_table))
         return false;  // skip adding duplicate record to the temp table
 
       /* Write row, ignoring duplicated updates to a row */

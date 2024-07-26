@@ -34,6 +34,7 @@
 #include "my_alloc.h"
 #include "my_checksum.h"  // ha_checksum
 #include "my_icp.h"
+#include "my_inttypes.h"
 #include "my_pointer_arithmetic.h"
 #include "myisam.h"     /* Structs & some defines */
 #include "myisampack.h" /* packing of keys */
@@ -413,7 +414,7 @@ struct MI_SORT_PARAM {
   do {                                             \
     (x)->s->state.changed |= STATE_CRASHED;        \
     DBUG_PRINT("error", ("Marked table crashed")); \
-    mi_report_crashed((x), 0);                     \
+    mi_report_crashed((x), nullptr);               \
   } while (0)
 #define mi_mark_crashed_on_repair(x)                                  \
   do {                                                                \

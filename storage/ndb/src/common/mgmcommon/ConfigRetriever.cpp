@@ -99,6 +99,14 @@ ConfigRetriever::~ConfigRetriever() {
   DBUG_VOID_RETURN;
 }
 
+void ConfigRetriever::init_mgm_tls(const char *tls_search_path,
+                                   Node::Type node_type,
+                                   int mgm_tls_req_level) {
+  m_tlsKeyManager.init_mgm_client(tls_search_path, node_type);
+  ndb_mgm_set_ssl_ctx(m_handle, m_tlsKeyManager.ctx());
+  m_tls_req_level = mgm_tls_req_level;
+}
+
 Uint32 ConfigRetriever::get_configuration_nodeid() const {
   return ndb_mgm_get_configuration_nodeid(m_handle);
 }
@@ -120,8 +128,8 @@ const char *ConfigRetriever::get_connectstring(char *buf, int buf_sz) const {
  
 int ConfigRetriever::do_connect(int no_retries, int retry_delay_in_seconds,
                                 int verbose) {
-  if (ndb_mgm_connect(m_handle, no_retries, retry_delay_in_seconds, verbose) ==
-      0) {
+  if (ndb_mgm_connect_tls(m_handle, no_retries, retry_delay_in_seconds, verbose,
+                          m_tls_req_level) == 0) {
     return 0;
   } else {
     const int err = ndb_mgm_get_latest_error(m_handle);
@@ -496,15 +504,16 @@ Uint32 ConfigRetriever::allocNodeId(int no_retries, int retry_delay_in_seconds,
 
   while (1) {
     if (ndb_mgm_is_connected(m_handle) == 1 ||
-        ndb_mgm_connect(m_handle, 0, 0, verbose) == 0) {
+        ndb_mgm_connect_tls(m_handle, 0, 0, verbose, m_tls_req_level) == 0) {
       int res = ndb_mgm_alloc_nodeid(m_handle, m_version, m_node_type,
                              no_retries == 0 /* only log last retry */);
       if (res >= 0) return (Uint32)res;  // Success!!
     }
 
     error = ndb_mgm_get_latest_error(m_handle);
-    if (no_retries == 0 ||                        /* No more retries */
-        error == NDB_MGM_ALLOCID_CONFIG_MISMATCH) /* Fatal error */
+    if (no_retries == 0 || /* No more retries */
+        error == NDB_MGM_ALLOCID_CONFIG_MISMATCH ||
+        error == NDB_MGM_AUTH_REQUIRES_TLS) /* Fatal errors */
     {
       break;
     }

@@ -28,6 +28,7 @@ usr/bin/mysqltest
 usr/bin/mysqltest_safe_process
 usr/bin/mysqlxtest
 usr/bin/mysql_keyring_encryption_test
+usr/bin/mysql_test_event_tracking
 # man pages
 usr/share/man/man1/comp_err.1
 # plugins
@@ -43,6 +44,9 @@ usr/lib/mysql/plugin/component_test_string_service_long.so
 usr/lib/mysql/plugin/component_pfs_example.so
 usr/lib/mysql/plugin/component_pfs_example_component_population.so
 usr/lib/mysql/plugin/pfs_example_plugin_employee.so
+usr/lib/mysql/plugin/component_test_execute_prepared_statement.so
+usr/lib/mysql/plugin/component_test_execute_regular_statement.so
+usr/lib/mysql/plugin/component_test_mysql_signal_handler.so
 usr/lib/mysql/plugin/component_test_pfs_notification.so
 usr/lib/mysql/plugin/component_test_pfs_resource_group.so
 usr/lib/mysql/plugin/component_test_udf_registration.so
@@ -119,8 +123,15 @@ usr/lib/mysql/plugin/component_test_mysql_system_variable_set.so
 usr/lib/mysql/plugin/component_test_table_access.so
 usr/lib/mysql/plugin/component_test_sensitive_system_variables.so
 usr/lib/mysql/plugin/component_test_status_var_reader.so
+usr/lib/mysql/plugin/component_test_server_telemetry_metrics.so
 usr/lib/mysql/plugin/component_test_server_telemetry_traces.so
 usr/lib/mysql/plugin/component_test_mysql_thd_store_service.so
+usr/lib/mysql/plugin/component_test_event_tracking_consumer.so
+usr/lib/mysql/plugin/component_test_event_tracking_producer_a.so
+usr/lib/mysql/plugin/component_test_event_tracking_producer_b.so
+usr/lib/mysql/plugin/component_test_event_tracking_consumer_a.so
+usr/lib/mysql/plugin/component_test_event_tracking_consumer_b.so
+usr/lib/mysql/plugin/component_test_event_tracking_consumer_c.so
 # test suite
 usr/lib/mysql-test/*
 # legal

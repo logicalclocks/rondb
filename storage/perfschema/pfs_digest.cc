@@ -48,6 +48,9 @@
 #include "storage/perfschema/pfs_instr.h"
 #include "storage/perfschema/table_helper.h"
 
+#include "sql/current_thd.h"
+#include "sql/debug_sync.h"
+
 size_t digest_max = 0;
 ulong digest_lost = 0;
 
@@ -80,6 +83,10 @@ int init_digest(const PFS_global_param *param) {
   digest_lost = 0;
   digest_monotonic_index.m_u32.store(1);
   digest_full = false;
+
+  statements_digest_stat_array = nullptr;
+  statements_digest_token_array = nullptr;
+  statements_digest_query_sample_text_array = nullptr;
 
   if (digest_max == 0) {
     return 0;
@@ -153,6 +160,7 @@ void cleanup_digest() {
   statements_digest_stat_array = nullptr;
   statements_digest_token_array = nullptr;
   statements_digest_query_sample_text_array = nullptr;
+  digest_max = 0;
 }
 
 static const uchar *digest_hash_get_key(const uchar *entry, size_t *length) {
@@ -283,6 +291,8 @@ search:
   /* Lookup LF_HASH using this new key. */
   entry = reinterpret_cast<PFS_statements_digest_stat **>(
       lf_hash_search(&digest_hash, pins, &hash_key, sizeof(PFS_digest_key)));
+
+  DEBUG_SYNC(current_thd, "after_lf_hash_search");
 
   if (entry && (entry != MY_LF_ERRPTR)) {
     /* If digest already exists, update stats and return. */

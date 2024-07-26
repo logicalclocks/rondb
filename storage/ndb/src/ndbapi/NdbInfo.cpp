@@ -502,7 +502,7 @@ unsigned NdbInfo::Table::columns(void) const { return m_columns.size(); }
 
 const NdbInfo::Column *NdbInfo::Table::getColumn(
     const unsigned attributeId) const {
-  return (attributeId < m_columns.size()) ? m_columns[attributeId] : NULL;
+  return (attributeId < m_columns.size()) ? m_columns[attributeId] : nullptr;
 }
 
 const NdbInfo::Column *NdbInfo::Table::getColumn(const char *name) const {

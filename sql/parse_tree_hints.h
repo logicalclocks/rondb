@@ -60,7 +60,9 @@ class PT_hint : public Parse_tree_node {
   bool state;                // true if hints is on, false otherwise
  public:
   PT_hint(opt_hints_enum hint_type_arg, bool switch_state_arg)
-      : hint_type(hint_type_arg), state(switch_state_arg) {}
+      : Parse_tree_node(POS()) /* TODO: handle position in hints */,
+        hint_type(hint_type_arg),
+        state(switch_state_arg) {}
 
   opt_hints_enum type() const { return hint_type; }
   bool switch_on() const { return state; }
@@ -101,7 +103,8 @@ class PT_hint_list : public Parse_tree_node {
   Mem_root_array<PT_hint *> hints;
 
  public:
-  explicit PT_hint_list(MEM_ROOT *mem_root) : hints(mem_root) {}
+  explicit PT_hint_list(MEM_ROOT *mem_root)
+      : super(POS()) /* TODO: handle position of hints */, hints(mem_root) {}
 
   /**
     Function handles list of the hints we get after
@@ -113,7 +116,7 @@ class PT_hint_list : public Parse_tree_node {
     @return  true in case of error,
              false otherwise
   */
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
 
   bool push_back(PT_hint *hint) { return hints.push_back(hint); }
 };
@@ -157,7 +160,7 @@ class PT_qb_level_hint : public PT_hint {
     @return  true in case of error,
              false otherwise
   */
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
 
   /**
     Append hint arguments to given string
@@ -197,7 +200,7 @@ class PT_table_level_hint : public PT_hint {
     @return  true in case of error,
              false otherwise
   */
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
 };
 
 /**
@@ -229,7 +232,7 @@ class PT_key_level_hint : public PT_hint {
     @return  true in case of error,
              false otherwise
   */
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
   void append_args(const THD *thd, String *str) const override;
 };
 
@@ -254,7 +257,7 @@ class PT_hint_qb_name : public PT_hint {
     @return  true in case of error,
              false otherwise
   */
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
   void append_args(const THD *thd, String *str) const override {
     append_identifier(thd, str, qb_name.str, qb_name.length);
   }
@@ -281,7 +284,7 @@ class PT_hint_max_execution_time : public PT_hint {
     @return  true in case of error,
              false otherwise
   */
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
   void append_args(const THD *, String *str) const override {
     str->append_ulonglong(milliseconds);
   }
@@ -307,7 +310,7 @@ class PT_hint_sys_var : public PT_hint {
     @return  true in case of error,
              false otherwise
   */
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
 };
 
 /**
@@ -334,7 +337,7 @@ class PT_hint_resource_group : public PT_hint {
              false otherwise
   */
 
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
 
   /**
     Append hint arguments to given string.

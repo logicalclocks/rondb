@@ -32,6 +32,8 @@
 
 #define JAM_FILE_ID 259
 
+struct CHARSET_INFO;
+
 struct KeyDescriptor {
   KeyDescriptor() {
     primaryTableId = RNIL;
@@ -45,7 +47,7 @@ struct KeyDescriptor {
   Uint8 noOfVarKeys;
   struct KeyAttr {
     Uint32 attributeDescriptor;
-    CHARSET_INFO *charsetInfo;
+    const CHARSET_INFO *charsetInfo;
   } keyAttr[MAX_ATTRIBUTES_IN_INDEX];
 };
 

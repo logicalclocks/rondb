@@ -44,7 +44,6 @@
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_pointer_arithmetic.h"
 #include "my_psi_config.h"
@@ -54,6 +53,7 @@
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql/plugin.h"
 #include "mysql/psi/mysql_file.h"
@@ -61,12 +61,16 @@
 #include "mysql/psi/mysql_table.h"
 #include "mysql/psi/psi_table.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysql_version.h"  // MYSQL_VERSION_ID
 #include "mysqld_error.h"
-#include "sql-common/json_dom.h"  // Json_wrapper
+#include "nulls.h"
+#include "sql-common/json_diff.h"  // Json_diff_vector
+#include "sql-common/json_dom.h"   // Json_wrapper
 #include "sql-common/json_path.h"
+#include "sql-common/my_decimal.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // acl_getroot
 #include "sql/auth/sql_security_ctx.h"
@@ -83,14 +87,13 @@
 #include "sql/field.h"
 #include "sql/filesort.h"  // filesort_free_buffers
 #include "sql/gis/srid.h"
+#include "sql/histograms/table_histograms.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"    // and_conds
 #include "sql/item_json_func.h"  // Item_func_array_cast
 #include "sql/join_optimizer/bit_utils.h"
-#include "sql/json_diff.h"  // Json_diff_vector
-#include "sql/key.h"        // find_ref_key
+#include "sql/key.h"  // find_ref_key
 #include "sql/log.h"
-#include "sql/my_decimal.h"
 #include "sql/mysqld.h"  // reg_ext key_file_frm ...
 #include "sql/nested_join.h"
 #include "sql/opt_trace.h"  // opt_trace_disable_if_no_security_...
@@ -106,6 +109,7 @@
 #include "sql/sql_error.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_opt_exec_shared.h"
+#include "sql/sql_optimizer.h"
 #include "sql/sql_parse.h"       // check_stack_overrun
 #include "sql/sql_partition.h"   // mysql_unpack_partition
 #include "sql/sql_plugin.h"      // plugin_unlock
@@ -122,8 +126,12 @@
 #include "sql/trigger_def.h"
 #include "sql_const.h"
 #include "sql_string.h"
+#include "string_with_len.h"
+#include "strxmov.h"
+#include "strxnmov.h"
 #include "template_utils.h"  // down_cast
 #include "thr_mutex.h"
+
 /* INFORMATION_SCHEMA name */
 LEX_CSTRING INFORMATION_SCHEMA_NAME = {STRING_WITH_LEN("information_schema")};
 
@@ -541,15 +549,23 @@ void TABLE_SHARE::destroy() {
     delete ha_share;
     ha_share = nullptr;
   }
-  if (m_part_info) {
-    ::destroy(m_part_info);
+  if (m_part_info != nullptr) {
+    ::destroy_at(m_part_info);
     m_part_info = nullptr;
   }
   /* The mutex is initialized only for shares that are part of the TDC */
   if (tmp_table == NO_TMP_TABLE) mysql_mutex_destroy(&LOCK_ha_data);
 
-  delete m_histograms;
-  m_histograms = nullptr;
+  /*
+    The Table_histograms_collection pointed to by m_histograms is allocated on
+    the TABLE_SHARE MEM_ROOT but owns objects that manage their own MEM_ROOT.
+    When destroying the share we have to manually invoke the destructor of
+    Table_histograms_collection to ensure that these objects are freed.
+  */
+  if (m_histograms != nullptr) {
+    m_histograms->~Table_histograms_collection();
+    m_histograms = nullptr;
+  }
 
   plugin_unlock(nullptr, db_plugin);
   db_plugin = nullptr;
@@ -699,7 +715,7 @@ void KEY_PART_INFO::init_from_field(Field *fld) {
   }
   init_flags();
 
-  ha_base_keytype key_type = field->key_type();
+  const ha_base_keytype key_type = field->key_type();
   type = (uint8)key_type;
   bin_cmp = key_type != HA_KEYTYPE_TEXT && key_type != HA_KEYTYPE_VARTEXT1 &&
             key_type != HA_KEYTYPE_VARTEXT2;
@@ -1213,7 +1229,7 @@ static int make_field_from_frm(THD *thd, TABLE_SHARE *share,
     pack_flag = uint2korr(strpos + 8);
     unireg_type = (uint)strpos[10];
     interval_nr = (uint)strpos[12];
-    uint comment_length = uint2korr(strpos + 15);
+    const uint comment_length = uint2korr(strpos + 15);
     field_type = (enum_field_types)(uint)strpos[13];
 
     /* charset and geometry_type share the same byte in frm */
@@ -1221,7 +1237,7 @@ static int make_field_from_frm(THD *thd, TABLE_SHARE *share,
       geom_type = (Field::geometry_type)strpos[14];
       charset = &my_charset_bin;
     } else {
-      uint csid = strpos[14] + (((uint)strpos[11]) << 8);
+      const uint csid = strpos[14] + (((uint)strpos[11]) << 8);
       if (!csid)
         charset = &my_charset_bin;
       else if (!(charset = get_charset(csid, MYF(0)))) {
@@ -1304,7 +1320,7 @@ static int make_field_from_frm(THD *thd, TABLE_SHARE *share,
       The difference is that in the old version we stored precision
       in the .frm table while we now store the display_length
     */
-    uint decimals = f_decimals(pack_flag);
+    const uint decimals = f_decimals(pack_flag);
     field_length = my_decimal_precision_to_length(field_length, decimals,
                                                   f_is_dec(pack_flag) == 0);
     LogErr(ERROR_LEVEL, ER_TABLE_INCOMPATIBLE_DECIMAL_FIELD,
@@ -1328,7 +1344,8 @@ static int make_field_from_frm(THD *thd, TABLE_SHARE *share,
     share->crashed = true;
   }
 
-  FRM_context::utype unireg = (FRM_context::utype)MTYP_TYPENR(unireg_type);
+  const FRM_context::utype unireg =
+      (FRM_context::utype)MTYP_TYPENR(unireg_type);
   // Construct auto_flag
   uchar auto_flags = Field::NONE;
 
@@ -1533,7 +1550,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
 
   uint total_key_parts;
   if (use_extended_sk) {
-    uint primary_key_parts =
+    const uint primary_key_parts =
         keys ? (new_frm_ver >= 3) ? (uint)strpos[4] : (uint)strpos[3] : 0;
     total_key_parts = key_parts + primary_key_parts * (keys - 1);
   } else
@@ -1664,7 +1681,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
     next_chunk += share->connect_string.length + 2;
     buff_end = extra_segment_buff + n_length;
     if (next_chunk + 2 < buff_end) {
-      uint str_db_type_length = uint2korr(next_chunk);
+      const uint str_db_type_length = uint2korr(next_chunk);
       LEX_CSTRING name;
       name.str = (char *)next_chunk + 2;
       name.length = str_db_type_length;
@@ -1734,7 +1751,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
       next_chunk += str_db_type_length + 2;
     }
     if (next_chunk + 5 < buff_end) {
-      uint32 partition_info_str_len = uint4korr(next_chunk);
+      const uint32 partition_info_str_len = uint4korr(next_chunk);
       if ((share->partition_info_str_len = partition_info_str_len)) {
         if (!(share->partition_info_str =
                   (char *)memdup_root(&share->mem_root, next_chunk + 4,
@@ -1757,7 +1774,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
                      ("fulltext key uses parser that is not defined in .frm"));
           goto err;
         }
-        LEX_CSTRING parser_name = {
+        const LEX_CSTRING parser_name = {
             reinterpret_cast<char *>(next_chunk),
             strlen(reinterpret_cast<char *>(next_chunk))};
         next_chunk += parser_name.length + 1;
@@ -1822,7 +1839,8 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
       if (tablespace_length) {
         Tablespace_name_error_handler error_handler;
         thd->push_internal_handler(&error_handler);
-        bool name_check_error = validate_tablespace_name_length(tablespace);
+        const bool name_check_error =
+            validate_tablespace_name_length(tablespace);
         thd->pop_internal_handler();
         if (!name_check_error &&
             !(share->tablespace = strmake_root(&share->mem_root, tablespace,
@@ -2045,7 +2063,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
         find_type(primary_key_name, &share->keynames, FIND_TYPE_NO_PREFIX);
     uint primary_key = (pk_off > 0 ? pk_off - 1 : MAX_KEY);
 
-    longlong ha_option = handler_file->ha_table_flags();
+    const longlong ha_option = handler_file->ha_table_flags();
     keyinfo = share->key_info;
     key_part = keyinfo->key_part;
 
@@ -2218,7 +2236,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
   disk_buff = nullptr;
   if (new_field_pack_flag <= 1) {
     /* Old file format with default as not null */
-    uint null_length = (share->null_fields + 7) / 8;
+    const uint null_length = (share->null_fields + 7) / 8;
     memset(share->default_values + (null_flags - record), 255, null_length);
   }
 
@@ -2264,14 +2282,14 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share,
   bitmap_init(&share->all_set, bitmaps, share->fields);
   bitmap_set_all(&share->all_set);
 
-  destroy(handler_file);
+  ::destroy_at(handler_file);
   my_free(extra_segment_buff);
   return 0;
 
 err:
   my_free(disk_buff);
   my_free(extra_segment_buff);
-  destroy(handler_file);
+  if (handler_file != nullptr) ::destroy_at(handler_file);
 
   open_table_error(thd, share, error, my_errno());
   return error;
@@ -2305,7 +2323,7 @@ static bool validate_value_generator_expr(Item *expr,
 
   // Map to get actual error code from error_type for the source.
   enum error_type { ER_NAME_FUNCTION, ER_FUNCTION, ER_VARIABLES, MAX_ERROR };
-  uint error_code_map[][MAX_ERROR] = {
+  const uint error_code_map[][MAX_ERROR] = {
       // Generated column errors.
       {ER_GENERATED_COLUMN_NAMED_FUNCTION_IS_NOT_ALLOWED,
        ER_GENERATED_COLUMN_FUNCTION_IS_NOT_ALLOWED,
@@ -2437,7 +2455,7 @@ static bool fix_value_generator_fields(THD *thd, TABLE *table,
   Item_ident::Change_context ctx(context);
   val_generator_expr->walk(&Item::change_context_processor, enum_walk::POSTFIX,
                            (uchar *)&ctx);
-  bool save_use_only_table_context = thd->lex->use_only_table_context;
+  const bool save_use_only_table_context = thd->lex->use_only_table_context;
   thd->lex->use_only_table_context = true;
 
   const char *save_where = thd->where;
@@ -2471,7 +2489,7 @@ static bool fix_value_generator_fields(THD *thd, TABLE *table,
 
   // Fix the fields for the value generator expression
   Item *new_func = val_generator_expr;
-  int fix_fields_error = val_generator_expr->fix_fields(thd, &new_func);
+  const int fix_fields_error = val_generator_expr->fix_fields(thd, &new_func);
 
   // Restore the current connection character set and collation.
   if (charset_switched)
@@ -2562,7 +2580,7 @@ void Value_generator::dup_expr_str(MEM_ROOT *root, const char *src,
 
 void Value_generator::print_expr(THD *thd, String *out) {
   out->length(0);
-  Sql_mode_parse_guard parse_guard(thd);
+  const Sql_mode_parse_guard parse_guard(thd);
   // Printing db and table name is useless
   auto flags = enum_query_type(QT_NO_DB | QT_NO_TABLE | QT_FORCE_INTRODUCERS);
   expr_item->print(thd, out, flags);
@@ -3163,11 +3181,24 @@ int open_table_from_share(THD *thd, TABLE_SHARE *share, const char *alias,
     }
   }
 
+  /*
+    Acquire histogram statistics for the TABLE from TABLE_SHARE. We must
+    remember to release the pointer back to the share in case we fail to open
+    the table. If the share represents a temporary table there are no histograms
+    to acquire and share->m_histograms is set to nullptr, so we skip this step.
+  */
+  if (share->m_histograms != nullptr) {
+    mysql_mutex_lock(&LOCK_open);
+    outparam->histograms = share->m_histograms->acquire();
+    mysql_mutex_unlock(&LOCK_open);
+  }
+
   /* The table struct is now initialized;  Open the table */
   error = 2;
   if (db_stat) {
     const dd::Table *table_def = table_def_param;
-    dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+    const dd::cache::Dictionary_client::Auto_releaser releaser(
+        thd->dd_client());
 
     if (!table_def) {
       if (thd->dd_client()->acquire(share->db.str, share->table_name.str,
@@ -3248,7 +3279,7 @@ int open_table_from_share(THD *thd, TABLE_SHARE *share, const char *alias,
       (share->table_category == TABLE_CATEGORY_GTID)) {
     outparam->no_replicate = true;
   } else if (outparam->file) {
-    handler::Table_flags flags = outparam->file->ha_table_flags();
+    const handler::Table_flags flags = outparam->file->ha_table_flags();
     outparam->no_replicate =
         !(flags & (HA_BINLOG_STMT_CAPABLE | HA_BINLOG_ROW_CAPABLE)) ||
         (flags & HA_HAS_OWN_BINLOGGING);
@@ -3257,13 +3288,23 @@ int open_table_from_share(THD *thd, TABLE_SHARE *share, const char *alias,
   }
 
   /* Increment the opened_tables counter, only when open flags set. */
-  if (db_stat) thd->status_var.opened_tables++;
+  if (db_stat) {
+    thd->status_var.opened_tables++;
+    global_aggregated_stats.get_shard(thd->thread_id()).opened_tables++;
+  }
 
   return 0;
 
 err:
+  // Release histograms if acquired while opening the table.
+  if (outparam->histograms) {
+    mysql_mutex_lock(&LOCK_open);
+    share->m_histograms->release(outparam->histograms);
+    mysql_mutex_unlock(&LOCK_open);
+    outparam->histograms = nullptr;
+  }
   if (!error_reported) open_table_error(thd, share, error, my_errno());
-  destroy(outparam->file);
+  ::destroy_at(outparam->file);
   if (outparam->part_info) free_items(outparam->part_info->item_list);
   if (outparam->vfield) {
     for (Field **vfield = outparam->vfield; *vfield; vfield++)
@@ -3305,7 +3346,7 @@ int closefrm(TABLE *table, bool free_share) {
       if ((*ptr)->gcol_info) free_items((*ptr)->gcol_info->item_list);
       if ((*ptr)->m_default_val_expr)
         free_items((*ptr)->m_default_val_expr->item_list);
-      destroy(*ptr);
+      ::destroy_at(*ptr);
     }
     table->field = nullptr;
   }
@@ -3314,7 +3355,7 @@ int closefrm(TABLE *table, bool free_share) {
       free_items(table_cc.value_generator()->item_list);
     }
   }
-  destroy(table->file);
+  if (table->file != nullptr) ::destroy_at(table->file);
   table->file = nullptr; /* For easier errorchecking */
   if (table->part_info) {
     /* Allocated through table->mem_root, freed below */
@@ -3425,7 +3466,7 @@ static void open_table_error(THD *thd, TABLE_SHARE *share, int error,
                  : (db_errno == EAGAIN) ? ER_SERVER_FILE_USED
                                         : ER_SERVER_CANT_OPEN_FILE,
              buff, db_errno, my_strerror(errbuf, sizeof(errbuf), db_errno));
-      destroy(file);
+      ::destroy_at(file);
       break;
     }
     default: /* Better wrong error than none */
@@ -3633,7 +3674,7 @@ Ident_name_check check_db_name(const char *name, size_t length) {
 Ident_name_check check_and_convert_db_name(LEX_STRING *org_name,
                                            bool preserve_lettercase) {
   char *name = org_name->str;
-  size_t name_length = org_name->length;
+  const size_t name_length = org_name->length;
   Ident_name_check ident_check_status;
 
   if (!name_length || name_length > NAME_LEN) {
@@ -3679,7 +3720,7 @@ Ident_name_check check_table_name(const char *name, size_t length) {
   while (name != end) {
     last_char_is_space = my_isspace(system_charset_info, *name);
     if (use_mb(system_charset_info)) {
-      int len = my_ismbchar(system_charset_info, name, end);
+      const int len = my_ismbchar(system_charset_info, name, end);
       if (len) {
         name += len;
         name_length++;
@@ -3704,8 +3745,8 @@ bool check_column_name(const char *name) {
   while (*name) {
     last_char_is_space = my_isspace(system_charset_info, *name);
     if (use_mb(system_charset_info)) {
-      int len = my_ismbchar(system_charset_info, name,
-                            name + system_charset_info->mbmaxlen);
+      const int len = my_ismbchar(system_charset_info, name,
+                                  name + system_charset_info->mbmaxlen);
       if (len) {
         name += len;
         name_length++;
@@ -3938,16 +3979,6 @@ end:
   return result;
 }
 
-const histograms::Histogram *TABLE_SHARE::find_histogram(
-    uint field_index) const {
-  if (m_histograms == nullptr) return nullptr;
-
-  const auto found = m_histograms->find(field_index);
-  if (found == m_histograms->end()) return nullptr;
-
-  return found->second;
-}
-
 /**
   Wait until the subject share is removed from the table
   definition cache and make sure it's destroyed.
@@ -4096,7 +4127,7 @@ void TABLE::init(THD *thd, Table_ref *tl) {
 
   /* Fix alias if table name changes. */
   if (strcmp(alias, tl->alias)) {
-    size_t length = strlen(tl->alias) + 1;
+    const size_t length = strlen(tl->alias) + 1;
     alias = static_cast<char *>(my_realloc(
         key_memory_TABLE, const_cast<char *>(alias), length, MYF(MY_WME)));
     memcpy(const_cast<char *>(alias), tl->alias, length);
@@ -4209,7 +4240,7 @@ bool TABLE::init_tmp_table(THD *thd, TABLE_SHARE *share, MEM_ROOT *m_root,
 
     init_tmp_table_share(thd, share, "", 0, name, name, m_root);
   } else {
-    LEX_CSTRING empty_name = {STRING_WITH_LEN("")};
+    const LEX_CSTRING empty_name = {STRING_WITH_LEN("")};
     share->db = empty_name;
     share->table_name = empty_name;
   }
@@ -4508,7 +4539,7 @@ bool Table_ref::merge_where(THD *thd) {
   */
   derived_where_cond = condition;
 
-  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
   /*
     Merge WHERE condition with the join condition of the outer join nest
@@ -4536,7 +4567,7 @@ bool Table_ref::create_field_translation(THD *thd) {
 
   assert(!field_translation);
 
-  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
   // Create view fields translation table
   Field_translator *transl = (Field_translator *)thd->stmt_arena->alloc(
@@ -4641,7 +4672,7 @@ bool Table_ref::prepare_check_option(THD *thd, bool is_cascaded) {
   }
 
   if (!check_option_processed) {
-    Prepared_stmt_arena_holder ps_arena_holder(thd);
+    const Prepared_stmt_arena_holder ps_arena_holder(thd);
     if ((with_check || is_cascaded) &&
         merge_join_conditions(thd, this, &check_option))
       return true; /* purecov: inspected */
@@ -4692,7 +4723,7 @@ bool Table_ref::prepare_replace_filter(THD *thd) {
   }
 
   if (!replace_filter_processed) {
-    Prepared_stmt_arena_holder ps_arena_holder(thd);
+    const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
     if (merge_join_conditions(thd, this, &replace_filter))
       return true; /* purecov: inspected */
@@ -6878,7 +6909,7 @@ bool Table_ref::update_derived_keys(THD *thd, Field *field, Item **values,
   if (derived_key_list.elements == 0) table->keys_in_use_for_query.set_all();
 
   for (uint i = 0; i < num_values; i++) {
-    table_map tables = values[i]->used_tables() & ~PSEUDO_TABLE_BITS;
+    const table_map tables = values[i]->used_tables() & ~PSEUDO_TABLE_BITS;
     if (!tables || values[i]->real_item()->type() != Item::FIELD_ITEM) continue;
     for (table_map tbl = 1; tables >= tbl; tbl <<= 1) {
       if (!(tables & tbl)) continue;
@@ -7075,7 +7106,7 @@ bool is_simple_order(ORDER *order) {
 
 void repoint_field_to_record(TABLE *table, uchar *old_rec, uchar *new_rec) {
   Field **fields = table->field;
-  ptrdiff_t ptrdiff = new_rec - old_rec;
+  const ptrdiff_t ptrdiff = new_rec - old_rec;
   for (uint i = 0; i < table->s->fields; i++)
     fields[i]->move_field_offset(ptrdiff);
 }
@@ -7123,7 +7154,7 @@ static bool update_generated_columns(TABLE *table, const MY_BITMAP *columns,
       blob->set_keep_old_value(true);
     }
 
-    type_conversion_status status =
+    const type_conversion_status status =
         field->gcol_info->expr_item->save_in_field(field, false);
 
     // Give up on error, but keep going if we just got a warning.
@@ -7273,10 +7304,11 @@ void TABLE::column_bitmaps_set(MY_BITMAP *read_set_arg,
 }
 
 handler *TABLE::get_primary_handler() const {
-  if (s->is_primary_engine()) {
+  if (s != nullptr && s->is_primary_engine()) {
     return file;
   }
-  return file->ha_get_primary_handler();
+
+  return (file != nullptr) ? file->ha_get_primary_handler() : nullptr;
 }
 
 bool Table_ref::set_recursive_reference() {
@@ -7299,13 +7331,67 @@ uint Table_ref::get_hidden_field_count_for_derived() const {
 bool Table_ref::is_external() const {
   if (m_table_ref_type == TABLE_REF_BASE_TABLE && table != nullptr &&
       table->file != nullptr) {
+    if (is_placeholder()) return false;
     handler *primary_handler = table->get_primary_handler();
     return primary_handler != nullptr &&
            Overlaps(primary_handler->ht->flags,
                     HTON_SUPPORTS_EXTERNAL_SOURCE) &&
+           primary_handler->get_table_share() != nullptr &&
            primary_handler->get_table_share()->has_secondary_engine();
   }
   return false;
+}
+
+bool Table_ref::validate_tablesample_clause(THD *thd) {
+  if (is_view_or_derived()) {
+    my_error(ER_TABLESAMPLE_ONLY_ON_BASE_TABLES, MYF(0));
+    return true;
+  }
+
+  if (!sampling_percentage->fixed &&
+      sampling_percentage->fix_fields(thd, &sampling_percentage)) {
+    return true;
+  }
+
+  if (sampling_percentage->data_type() == MYSQL_TYPE_INVALID) {
+    if (sampling_percentage->propagate_type(
+            thd, Type_properties(MYSQL_TYPE_DOUBLE, true)))
+      return true;
+    sampling_percentage->pin_data_type();
+    return false;
+  }
+
+  if (sampling_percentage->result_type() != REAL_RESULT &&
+      sampling_percentage->result_type() != INT_RESULT &&
+      sampling_percentage->result_type() != DECIMAL_RESULT) {
+    my_error(ER_TABLESAMPLE_PERCENTAGE, MYF(0));
+    return true;
+  }
+
+  if (sampling_percentage->const_item() && update_sampling_percentage()) {
+    return true;
+  }
+  return thd->is_error();
+}
+
+bool Table_ref::update_sampling_percentage() {
+  assert(has_tablesample() && sampling_percentage->fixed);
+  if (sampling_percentage->null_value) {
+    my_error(ER_TABLESAMPLE_PERCENTAGE, MYF(0));
+    return true;
+  }
+
+  sampling_percentage_val = sampling_percentage->val_real();
+
+  if (sampling_percentage_val < 0 || sampling_percentage_val > 100) {
+    my_error(ER_TABLESAMPLE_PERCENTAGE, MYF(0));
+    return true;
+  }
+  return false;
+}
+
+double Table_ref::get_sampling_percentage() const {
+  return sampling_percentage_val;
 }
 
 void LEX_MFA::copy(LEX_MFA *m, MEM_ROOT *alloc) {
@@ -7435,7 +7521,9 @@ struct Partial_update_info {
   }
 
   ~Partial_update_info() {
-    for (auto v : m_logical_diff_vectors) destroy(v);
+    for (auto *v : m_logical_diff_vectors) {
+      if (v != nullptr) ::destroy_at(v);
+    }
   }
 
   /**
@@ -7534,7 +7622,7 @@ bool TABLE::setup_partial_update(bool logical_diffs) {
 
   Opt_trace_context *trace = &thd->opt_trace;
   if (trace->is_started()) {
-    Opt_trace_object trace_wrapper(trace);
+    const Opt_trace_object trace_wrapper(trace);
     Opt_trace_object trace_partial_update(trace, "json_partial_update");
     trace_partial_update.add_utf8_table(pos_in_table_list);
     Opt_trace_array columns(trace, "eligible_columns");
@@ -7553,22 +7641,20 @@ bool TABLE::setup_partial_update(bool logical_diffs) {
 bool TABLE::setup_partial_update() {
   THD *thd = current_thd;
 
-  bool logical_diffs =
+  const bool logical_diffs =
       (thd->variables.binlog_row_value_options & PARTIAL_JSON_UPDATES) != 0 &&
       mysql_bin_log.is_open() &&
       (thd->variables.option_bits & OPTION_BIN_LOG) != 0 &&
-      log_bin_use_v1_row_events == 0 &&
       thd->is_current_stmt_binlog_format_row();
-  DBUG_PRINT(
-      "info",
-      ("TABLE::setup_partial_update(): logical_diffs=%d "
-       "because binlog_row_value_options=%d binlog.is_open=%d "
-       "sql_log_bin=%d use_v1_row_events=%d rbr=%d",
-       logical_diffs,
-       (thd->variables.binlog_row_value_options & PARTIAL_JSON_UPDATES) != 0,
-       mysql_bin_log.is_open(),
-       (thd->variables.option_bits & OPTION_BIN_LOG) != 0,
-       log_bin_use_v1_row_events, thd->is_current_stmt_binlog_format_row()));
+  DBUG_PRINT("info", ("TABLE::setup_partial_update(): logical_diffs=%d "
+                      "because binlog_row_value_options=%d binlog.is_open=%d "
+                      "sql_log_bin=%d rbr=%d",
+                      logical_diffs,
+                      (thd->variables.binlog_row_value_options &
+                       PARTIAL_JSON_UPDATES) != 0,
+                      mysql_bin_log.is_open(),
+                      (thd->variables.option_bits & OPTION_BIN_LOG) != 0,
+                      thd->is_current_stmt_binlog_format_row()));
   return setup_partial_update(logical_diffs);
 }
 
@@ -7583,7 +7669,7 @@ bool TABLE::has_columns_marked_for_partial_update() const {
 
 void TABLE::cleanup_partial_update() {
   DBUG_TRACE;
-  destroy(m_partial_update_info);
+  if (m_partial_update_info != nullptr) ::destroy_at(m_partial_update_info);
   m_partial_update_info = nullptr;
 }
 
@@ -7712,7 +7798,7 @@ void TABLE::add_logical_diff(const Field_json *field,
     value_str.set_ascii("<none>", 6);
   else {
     if (new_value->to_string(&value_str, false, "add_logical_diff",
-                             JsonDocumentDefaultDepthHandler))
+                             JsonDepthErrorHandler))
       value_str.length(0); /* purecov: inspected */
   }
   DBUG_PRINT("info", ("add_logical_diff(operation=%d, path=%.*s, value=%.*s)",
@@ -7735,7 +7821,7 @@ bool TABLE::is_binary_diff_enabled(const Field *field) const {
 
 bool TABLE::is_logical_diff_enabled(const Field *field) const {
   DBUG_TRACE;
-  bool ret =
+  const bool ret =
       m_partial_update_info != nullptr &&
       bitmap_is_set(&m_partial_update_info->m_enabled_logical_diff_columns,
                     field->field_index());
@@ -7765,6 +7851,14 @@ void TABLE::disable_logical_diffs_for_current_row(const Field *field) const {
   // Mark the column as disabled.
   bitmap_clear_bit(&m_partial_update_info->m_enabled_logical_diff_columns,
                    field->field_index());
+}
+
+const histograms::Histogram *TABLE::find_histogram(uint field_index) const {
+  const handler *primary = get_primary_handler();
+  if (primary == nullptr) return nullptr;
+  const TABLE *table = primary->get_table();
+  if (table == nullptr || table->histograms == nullptr) return nullptr;
+  return table->histograms->find_histogram(field_index);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -7811,7 +7905,7 @@ static int read_frm_file(THD *thd, TABLE_SHARE *share, FRM_context *frm_context,
   MEM_ROOT **root_ptr, *old_root;
 
   strxnmov(path, sizeof(path) - 1, share->normalized_path.str, reg_ext, NullS);
-  LEX_STRING pathstr = {path, strlen(path)};
+  const LEX_STRING pathstr = {path, strlen(path)};
 
   if ((file = mysql_file_open(key_file_frm, path, O_RDONLY, MYF(0))) < 0) {
     LogErr(ERROR_LEVEL, ER_CANT_OPEN_FRM_FILE, path);
@@ -7910,8 +8004,8 @@ int create_table_share_for_upgrade(THD *thd, const char *path,
   mysql_mutex_init(key_TABLE_SHARE_LOCK_ha_data, &share->LOCK_ha_data,
                    MY_MUTEX_INIT_FAST);
 
-  int r = read_frm_file(thd, share, frm_context, table_name,
-                        is_fix_view_cols_and_deps);
+  const int r = read_frm_file(thd, share, frm_context, table_name,
+                              is_fix_view_cols_and_deps);
   if (r != 0) {
     free_table_share(share);
     return r;
@@ -7959,7 +8053,8 @@ void TABLE::update_covering_prefix_keys(Field *field, uint16 key_read_length,
                          *part_end = part + actual_key_parts(key_info);
            part != part_end; ++part)
         if ((part->key_part_flag & HA_PART_KEY_SEG) && field->eq(part->field)) {
-          uint16 key_part_length = part->length / field->charset()->mbmaxlen;
+          const uint16 key_part_length =
+              part->length / field->charset()->mbmaxlen;
           if (key_part_length < key_read_length) covering_keys.clear_bit(keyno);
         }
     }
@@ -8007,4 +8102,5 @@ bool assert_invalid_stats_is_locked(const TABLE *table) {
   return true;
 }
 #endif
+
 //////////////////////////////////////////////////////////////////////////

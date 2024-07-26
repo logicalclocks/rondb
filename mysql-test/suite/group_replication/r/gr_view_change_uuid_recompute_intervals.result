@@ -11,6 +11,7 @@ SET @group_replication_view_change_uuid_save= @@GLOBAL.group_replication_view_ch
 SET GLOBAL group_replication_view_change_uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 include/start_and_bootstrap_group_replication.inc
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
@@ -19,6 +20,7 @@ SET @group_replication_view_change_uuid_save= @@GLOBAL.group_replication_view_ch
 SET GLOBAL group_replication_view_change_uuid =  "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 include/start_group_replication.inc
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
@@ -28,14 +30,14 @@ Warning	1681	'group_replication_view_change_uuid' is deprecated and will be remo
 #     transaction to the group
 [connection server1]
 CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
-include/rpl_sync.inc
+include/rpl/sync.inc
 
 ############################################################
 #  3. Insert data into table on server 2 that will add one
 #     transaction to the group
 [connection server2]
 INSERT INTO t1 VALUES (0);
-include/rpl_sync.inc
+include/rpl/sync.inc
 
 ############################################################
 #  4. Remove and rejoin server 2, that will generate a new
@@ -51,7 +53,7 @@ Warning	1681	'group_replication_view_change_uuid' is deprecated and will be remo
 #  5. Insert data into table on server 2 that will add one
 #     transaction to the group
 INSERT INTO t1 VALUES (1);
-include/rpl_sync.inc
+include/rpl/sync.inc
 
 ############################################################
 #  6. Transactions are added to the correct intervals and
@@ -91,11 +93,13 @@ include/assert.inc [GTID_EXECUTED must contain GTID_EXECUTED 4 view changes plus
 SET GTID_NEXT= 'AUTOMATIC';
 DROP TABLE t1;
 include/stop_group_replication.inc
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
 SET @@GLOBAL.group_replication_view_change_uuid= @group_replication_view_change_uuid_save;
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 [connection server2]
 include/stop_group_replication.inc
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
 SET @@GLOBAL.group_replication_view_change_uuid= @group_replication_view_change_uuid_save;
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.

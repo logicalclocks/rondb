@@ -50,7 +50,7 @@ class ListNode {
 
  public:
   /* Constructor */
-  ListNode<T>(T *t) : next(0), item(t), signalinfo(0) { note[0] = '\0'; }
+  ListNode(T *t) : next(0), item(t), signalinfo(0) { note[0] = '\0'; }
 
   /* Methods */
   void setNote(const char *txt) {
@@ -69,12 +69,12 @@ class SharedList {
   ListNode<T> *head;
 
  public:
-  SharedList<T>() : head(0) {
+  SharedList() : head(0) {
     int i = uv_mutex_init(&lock);
     assert(i == 0);
   }
 
-  ~SharedList<T>() { uv_mutex_destroy(&lock); }
+  ~SharedList() { uv_mutex_destroy(&lock); }
 
   void produce(ListNode<T> *node) {
     /* Find the tail */

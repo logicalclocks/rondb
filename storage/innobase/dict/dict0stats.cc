@@ -38,10 +38,12 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <map>
 #include <vector>
 
+#include <scope_guard.h>
 #include "dict0stats.h"
 #include "dyn0buf.h"
 #include "ha_prototypes.h"
 #include "lob0lob.h"
+#include "m_string.h"
 #include "pars0pars.h"
 #include "row0sel.h"
 #include "trx0trx.h"
@@ -171,22 +173,20 @@ static inline bool dict_stats_should_ignore_index(
 This function will free the pinfo object.
 @param[in,out]  pinfo   pinfo to pass to que_eval_sql() must already
 have any literals bound to it
-@param[in]      sql     SQL string to execute
-@param[in,out]  trx     in case of NULL the function will allocate and
-free the trx object. If it is not NULL then it will be rolled back
-only in the case of error, but not freed.
+@param[in]      sql   SQL string to execute
+@param[in,out]  trx   in case of NULL the function will allocate and free the
+                      trx object.
 @return DB_SUCCESS or error code */
 static dberr_t dict_stats_exec_sql(pars_info_t *pinfo, const char *sql,
                                    trx_t *trx) {
   dberr_t err;
-  bool trx_started = false;
+  const bool trx_started = (trx == nullptr);
 
   ut_ad(rw_lock_own(dict_operation_lock, RW_LOCK_X));
   ut_ad(!dict_sys_mutex_own());
 
   if (trx == nullptr) {
     trx = trx_allocate_for_background();
-    trx_started = true;
 
     if (srv_read_only_mode) {
       trx_start_internal_read_only(trx, UT_LOCATION_HERE);
@@ -197,14 +197,25 @@ static dberr_t dict_stats_exec_sql(pars_info_t *pinfo, const char *sql,
 
   err = que_eval_sql(pinfo, sql, trx); /* pinfo is freed here */
 
+  DBUG_EXECUTE_IF("dict_stats_exec_sql_lock_timeout", {
+    static thread_local int execution_counter{0};
+
+    execution_counter++;
+
+    err = DB_LOCK_WAIT_TIMEOUT;
+    if (execution_counter > 3) {
+      DBUG_SET("-d,dict_stats_exec_sql_lock_timeout");
+    }
+  });
+
   DBUG_EXECUTE_IF(
       "stats_index_error", if (!trx_started) {
         err = DB_STATS_DO_NOT_EXIST;
         trx->error_state = DB_STATS_DO_NOT_EXIST;
       });
 
-  if (!trx_started && err == DB_SUCCESS) {
-    return (DB_SUCCESS);
+  if (!trx_started) {
+    return err;
   }
 
   if (err == DB_SUCCESS) {
@@ -218,9 +229,7 @@ static dberr_t dict_stats_exec_sql(pars_info_t *pinfo, const char *sql,
     ut_a(trx->error_state == DB_SUCCESS);
   }
 
-  if (trx_started) {
-    trx_free_for_background(trx);
-  }
+  trx_free_for_background(trx);
 
   return (err);
 }
@@ -1662,7 +1671,7 @@ static inline void dict_stats_index_set_n_diff(const n_diff_data_t *n_diff_data,
  members stat_n_diff_key_vals[], stat_n_sample_sizes[], stat_index_size and
  stat_n_leaf_pages, based on the specified n_sample_pages.
 @param[in,out] n_sample_pages   number of leaf pages to sample. and suggested
-next value to retry if aborted.
+                next value to retry if aborted.
 @param[in,out] index            index to analyze.
 @return false if aborted */
 static bool dict_stats_analyze_index_low(uint64_t &n_sample_pages,
@@ -2183,14 +2192,17 @@ static dberr_t dict_stats_save_index_stat(dict_index_t *index, lint last_update,
 @param[in]      only_for_index  if this is non-NULL, then stats for indexes
 that are not equal to it will not be saved, if NULL, then all indexes' stats
 are saved
+@param[in]      trx  Save stats using this transaction.  If nullptr, then
+create a transaction and use that.
 @return DB_SUCCESS or error code */
 static dberr_t dict_stats_save(dict_table_t *table_orig,
-                               const index_id_t *only_for_index) {
+                               const index_id_t *only_for_index, trx_t *trx) {
   pars_info_t *pinfo;
-  dberr_t ret;
+  dberr_t ret{};
   dict_table_t *table;
   char db_utf8mb3[dict_name::MAX_DB_UTF8MB3_LEN];
   char table_utf8mb3[dict_name::MAX_TABLE_UTF8MB3_LEN];
+  const bool local_trx = (trx == nullptr);
 
   table = dict_stats_snapshot_create(table_orig);
 
@@ -2215,6 +2227,30 @@ static dberr_t dict_stats_save(dict_table_t *table_orig,
   pars_info_add_ull_literal(pinfo, "sum_of_other_index_sizes",
                             table->stat_sum_of_other_index_sizes);
 
+  if (local_trx) {
+    trx = trx_allocate_for_background();
+
+    if (srv_read_only_mode) {
+      trx_start_internal_read_only(trx, UT_LOCATION_HERE);
+    } else {
+      trx_start_internal(trx, UT_LOCATION_HERE);
+    }
+  }
+
+  auto guard = create_scope_guard([&]() {
+    if (local_trx) {
+      if (ret == DB_SUCCESS) {
+        trx_commit_for_mysql(trx);
+      } else {
+        trx_rollback_to_savepoint(trx, nullptr);
+      }
+      trx_free_for_background(trx);
+    }
+    rw_lock_x_unlock(dict_operation_lock);
+
+    dict_stats_snapshot_free(table);
+  });
+
   ret = dict_stats_exec_sql(pinfo,
                             "PROCEDURE TABLE_STATS_SAVE () IS\n"
                             "BEGIN\n"
@@ -2237,25 +2273,13 @@ static dberr_t dict_stats_save(dict_table_t *table_orig,
                             ":sum_of_other_index_sizes\n"
                             ");\n"
                             "END;",
-                            nullptr);
+                            trx);
 
   if (ret != DB_SUCCESS) {
     ib::error(ER_IB_MSG_223) << "Cannot save table statistics for table "
                              << table->name << ": " << ut_strerr(ret);
 
-    rw_lock_x_unlock(dict_operation_lock);
-
-    dict_stats_snapshot_free(table);
-
     return (ret);
-  }
-
-  trx_t *trx = trx_allocate_for_background();
-
-  if (srv_read_only_mode) {
-    trx_start_internal_read_only(trx, UT_LOCATION_HERE);
-  } else {
-    trx_start_internal(trx, UT_LOCATION_HERE);
   }
 
   dict_index_t *index;
@@ -2319,7 +2343,7 @@ static dberr_t dict_stats_save(dict_table_t *table_orig,
           &index->stat_n_sample_sizes[i], stat_description, trx);
 
       if (ret != DB_SUCCESS) {
-        goto end;
+        return ret;
       }
     }
 
@@ -2329,7 +2353,7 @@ static dberr_t dict_stats_save(dict_table_t *table_orig,
                                      "in the index",
                                      trx);
     if (ret != DB_SUCCESS) {
-      goto end;
+      return ret;
     }
 
     ret = dict_stats_save_index_stat(index, now, "size", index->stat_index_size,
@@ -2338,18 +2362,9 @@ static dberr_t dict_stats_save(dict_table_t *table_orig,
                                      "in the index",
                                      trx);
     if (ret != DB_SUCCESS) {
-      goto end;
+      return ret;
     }
   }
-
-  trx_commit_for_mysql(trx);
-
-end:
-  trx_free_for_background(trx);
-
-  rw_lock_x_unlock(dict_operation_lock);
-
-  dict_stats_snapshot_free(table);
 
   return (ret);
 }
@@ -2802,7 +2817,7 @@ void dict_stats_update_for_index(dict_index_t *index) /*!< in/out: index */
     dict_stats_analyze_index(index);
     dict_table_stats_unlock(index->table, RW_X_LATCH);
     index_id_t index_id(index->space, index->id);
-    dict_stats_save(index->table, &index_id);
+    dict_stats_save(index->table, &index_id, nullptr);
     return;
   }
 
@@ -2811,16 +2826,9 @@ void dict_stats_update_for_index(dict_index_t *index) /*!< in/out: index */
   dict_table_stats_unlock(index->table, RW_X_LATCH);
 }
 
-/** Calculates new estimates for table and index statistics. The statistics
- are used in query optimization.
- @return DB_SUCCESS or error code */
-dberr_t dict_stats_update(dict_table_t *table, /*!< in/out: table */
-                          dict_stats_upd_option_t stats_upd_option)
-/*!< in: whether to (re) calc
-the stats or to fetch them from
-the persistent statistics
-storage */
-{
+dberr_t dict_stats_update(dict_table_t *table,
+                          dict_stats_upd_option_t stats_upd_option,
+                          trx_t *trx) {
   ut_ad(!dict_sys_mutex_own());
 
   if (table->ibd_file_missing) {
@@ -2869,7 +2877,7 @@ storage */
         return (err);
       }
 
-      return (dict_stats_save(table, nullptr));
+      return (dict_stats_save(table, nullptr, trx));
 
     case DICT_STATS_RECALC_TRANSIENT:
       break;
@@ -2882,7 +2890,7 @@ storage */
       then save the stats on disk */
 
       if (dict_stats_is_persistent_enabled(table)) {
-        return (dict_stats_save(table, nullptr));
+        return (dict_stats_save(table, nullptr, trx));
       }
 
       return (DB_SUCCESS);
@@ -3455,52 +3463,6 @@ dberr_t dict_stats_rename_index(
   return (ret);
 }
 
-/** Evict the stats tables if they loaded in tablespace cache and also
-close the stats .ibd files. We have to close stats tables because
-8.0 stats tables will use the same name. We load the stats from 5.7
-with a suffix "_backup57" and migrate the statistics. */
-void dict_stats_evict_tablespaces() {
-  ut_ad(srv_is_upgrade_mode);
-
-  space_id_t space_id_index_stats = fil_space_get_id_by_name(INDEX_STATS_NAME);
-
-  space_id_t space_id_table_stats = fil_space_get_id_by_name(TABLE_STATS_NAME);
-
-  trx_t *trx = trx_allocate_for_background();
-
-  trx_start_internal(trx, UT_LOCATION_HERE);
-
-  if (space_id_index_stats != SPACE_UNKNOWN) {
-    dberr_t err;
-
-    err = fil_close_tablespace(space_id_index_stats);
-
-    if (err != DB_SUCCESS) {
-      ib::info(ER_IB_MSG_227)
-          << "dict_stats_evict_tablespace: "
-          << " fil_close_tablespace(" << space_id_index_stats << ") failed! "
-          << ut_strerr(err);
-    }
-  }
-
-  if (space_id_table_stats != SPACE_UNKNOWN) {
-    dberr_t err;
-
-    err = fil_close_tablespace(space_id_table_stats);
-
-    if (err != DB_SUCCESS) {
-      ib::info(ER_IB_MSG_228)
-          << "dict_stats_evict_tablespace: "
-          << " fil_close_tablespace(" << space_id_index_stats << ") failed! "
-          << ut_strerr(err);
-    }
-  }
-
-  trx_commit_for_mysql(trx);
-
-  trx_free_for_background(trx);
-}
-
 TableStatsRecord::TableStatsRecord() { m_heap = nullptr; }
 
 TableStatsRecord::~TableStatsRecord() {
@@ -3679,7 +3641,7 @@ void test_dict_stats_save() {
   index2_stat_n_sample_sizes[2] = TEST_IDX2_N_DIFF3_SAMPLE_SIZE;
   index2_stat_n_sample_sizes[3] = TEST_IDX2_N_DIFF4_SAMPLE_SIZE;
 
-  ret = dict_stats_save(&table, NULL);
+  ret = dict_stats_save(&table, NULL, nullptr);
 
   ut_a(ret == DB_SUCCESS);
 

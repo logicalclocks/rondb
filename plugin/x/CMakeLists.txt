@@ -88,7 +88,7 @@ IF(WITH_MYSQLX)
     DEFAULT
     DEPENDENCIES xprotocol_tags
     LINK_LIBRARIES
-    ext::libevent
+    harness_net_ts
     ext::icu
     ${MYSQLX_PROTOCOL_LIB}
     extra::rapidjson
@@ -96,8 +96,6 @@ IF(WITH_MYSQLX)
     ext::zstd
     ext::zlib
     )
-  # Exclude mysqlx plugin from PGO on Windows to avoid linker error LNK1248
-  EXCLUDE_FROM_MSVC_PGO(${MYSQLX_PLUGIN_NAME})
 ENDIF()
 
 IF(XPLUGIN_LOG_PROTOBUF)

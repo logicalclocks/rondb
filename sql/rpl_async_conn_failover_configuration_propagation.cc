@@ -29,6 +29,7 @@
 #include <mysql/components/services/group_replication_status_service.h>
 #include "mysql/components/services/log_builtins.h"
 #include "sql-common/json_dom.h"
+#include "sql-common/json_error_handler.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"  // srv_registry
 #include "sql/rpl_async_conn_failover_table_operations.h"
@@ -596,6 +597,7 @@ bool Rpl_acf_configuration_handler::send_managed_data(
     return true;
   }
 
+  const THD *const thd = current_thd;
   for (auto managed_detail : managed_list) {
     auto managed = configuration.add_managed();
     managed->set_channel(std::get<0>(managed_detail));
@@ -604,7 +606,13 @@ bool Rpl_acf_configuration_handler::send_managed_data(
 
     // Convert Json_wrapper to binary format
     String buffer;
-    if (std::get<3>(managed_detail).to_binary(current_thd, &buffer)) {
+    if (std::get<3>(managed_detail)
+            .to_binary(JsonSerializationDefaultErrorHandler(thd), &buffer)) {
+      return true;
+    }
+    if (buffer.length() > thd->variables.max_allowed_packet) {
+      my_error(ER_WARN_ALLOWED_PACKET_OVERFLOWED, MYF(0),
+               "json_binary::serialize", thd->variables.max_allowed_packet);
       return true;
     }
 
@@ -743,6 +751,7 @@ bool Rpl_acf_configuration_handler::get_configuration(
     return error;
   }
 
+  const THD *const thd = current_thd;
   configuration.set_managed_version(table_managed.get_version());
   for (RPL_FAILOVER_MANAGED_JSON_TUPLE managed_tuple : managed_list) {
     protobuf_replication_asynchronous_connection_failover::Managed *managed =
@@ -753,7 +762,13 @@ bool Rpl_acf_configuration_handler::get_configuration(
 
     // Convert Json_wrapper to binary format
     String buffer;
-    if (std::get<3>(managed_tuple).to_binary(current_thd, &buffer)) {
+    if (std::get<3>(managed_tuple)
+            .to_binary(JsonSerializationDefaultErrorHandler(thd), &buffer)) {
+      return true;
+    }
+    if (buffer.length() > thd->variables.max_allowed_packet) {
+      my_error(ER_WARN_ALLOWED_PACKET_OVERFLOWED, MYF(0),
+               "json_binary::serialize", thd->variables.max_allowed_packet);
       return true;
     }
 

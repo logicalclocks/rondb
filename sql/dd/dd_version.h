@@ -204,10 +204,23 @@
   ----------------------------------------------------------------------------
   Changes from version 80023:
   - No changes, this version number is not active yet.
+
+  80200:
+  ----------------------------------------------------------------------------
+  Changes:
+  - WL#14190: Replace old terms in replication SQL commands on the SOURCE
+    > Changes the enum of mysql.events.status to use the correct terminology
+
+  80300:
+  ----------------------------------------------------------------------------
+  Changes:
+  - WL#15786: Automatically updated histograms
+    > Adds a boolean "auto-update" property to the histogram JSON object in
+      the mysql.column_statistics table.
  */
 namespace dd {
 
-static const uint DD_VERSION = 80023;
+static const uint DD_VERSION = 80300;
 static_assert(DD_VERSION <= MYSQL_VERSION_ID,
               "This release can not use a version number from the future");
 

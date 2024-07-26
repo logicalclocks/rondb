@@ -1099,15 +1099,22 @@ class StmtExecute {
 
     ParamDef(uint16_t type_and_flags_) : type_and_flags(type_and_flags_) {}
 
-    ParamDef(uint16_t type_and_flags_, string_type name_)
-        : type_and_flags(type_and_flags_), name(std::move(name_)) {}
+    ParamDef(uint16_t type_and_flags_, string_type name_,
+             bool param_already_sent_ = false)
+        : type_and_flags(type_and_flags_),
+          name(std::move(name_)),
+          param_already_sent(param_already_sent_) {}
 
     friend bool operator==(const ParamDef &lhs, const ParamDef &rhs) {
       return lhs.type_and_flags == rhs.type_and_flags && lhs.name == rhs.name;
     }
 
     uint16_t type_and_flags{};
+
     string_type name;
+
+    // param already send via stmt_param_append_data
+    bool param_already_sent{false};
   };
 
   /**
@@ -1256,6 +1263,11 @@ constexpr bool operator==(const Quit &, const Quit &) { return true; }
 class Ping {};
 
 constexpr bool operator==(const Ping &, const Ping &) { return true; }
+
+// no content
+class Debug {};
+
+constexpr bool operator==(const Debug &, const Debug &) { return true; }
 
 template <bool Borrowed>
 class AuthMethodData {
@@ -1418,6 +1430,7 @@ using ListFields = borrowable::message::client::ListFields<false>;
 using Query = borrowable::message::client::Query<false>;
 using RegisterReplica = borrowable::message::client::RegisterReplica<false>;
 using Ping = borrowable::message::client::Ping;
+using Debug = borrowable::message::client::Debug;
 using Kill = borrowable::message::client::Kill;
 using ChangeUser = borrowable::message::client::ChangeUser<false>;
 using Reload = borrowable::message::client::Reload;
@@ -1465,6 +1478,7 @@ using InitSchema = borrowable::message::client::InitSchema<true>;
 using ListFields = borrowable::message::client::ListFields<true>;
 using RegisterReplica = borrowable::message::client::RegisterReplica<true>;
 using Ping = borrowable::message::client::Ping;
+using Debug = borrowable::message::client::Debug;
 using Kill = borrowable::message::client::Kill;
 using ChangeUser = borrowable::message::client::ChangeUser<true>;
 using Reload = borrowable::message::client::Reload;

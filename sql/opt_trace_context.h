@@ -30,6 +30,8 @@
 #include "mysql/components/services/bits/psi_bits.h"
 #include "prealloced_array.h"
 
+struct CHARSET_INFO;
+
 /**
    @file
    This contains the declaration of class Opt_trace_context, which is needed
@@ -38,6 +40,7 @@
 */
 
 class Opt_trace_stmt;  // implementation detail local to opt_trace.cc
+class UnstructuredTrace;
 
 typedef Prealloced_array<Opt_trace_stmt *, 16> Opt_trace_stmt_array;
 
@@ -269,6 +272,14 @@ class Opt_trace_context {
     if (unlikely(pimpl != nullptr)) pimpl->restore_I_S();
   }
 
+  UnstructuredTrace *unstructured_trace() {
+    return pimpl->m_unstructured_trace;
+  }
+
+  void set_unstructured_trace(UnstructuredTrace *trace) {
+    pimpl->m_unstructured_trace = trace;
+  }
+
  private:
   /**
      To have the smallest impact on THD's size, most of the implementation is
@@ -363,6 +374,9 @@ class Opt_trace_context {
        with OFFSET and LIMIT, when OFFSET >= 0.
     */
     long since_offset_0;
+
+    /// Trace in plain text, as used by Hypergraph.
+    UnstructuredTrace *m_unstructured_trace{nullptr};
   };
 
   Opt_trace_context_impl *pimpl;  /// Dynamically allocated implementation.

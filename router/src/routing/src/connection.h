@@ -38,6 +38,7 @@
 #include "destination_error.h"
 #include "mysql/harness/net_ts/io_context.h"
 #include "mysql/harness/net_ts/timer.h"
+#include "mysql/harness/stdx/expected.h"
 #include "mysql/harness/stdx/monitor.h"
 
 class MySQLRoutingConnectionBase {
@@ -53,6 +54,29 @@ class MySQLRoutingConnectionBase {
   const MySQLRoutingContext &context() const { return context_; }
 
   virtual std::string get_destination_id() const = 0;
+
+  virtual std::string read_only_destination_id() const {
+    return get_destination_id();
+  }
+
+  virtual std::string read_write_destination_id() const {
+    return get_destination_id();
+  }
+
+  virtual std::optional<net::ip::tcp::endpoint> destination_endpoint()
+      const = 0;
+
+  virtual std::optional<net::ip::tcp::endpoint> read_only_destination_endpoint()
+      const {
+    return destination_endpoint();
+  }
+
+  virtual std::optional<net::ip::tcp::endpoint>
+  read_write_destination_endpoint() const {
+    return destination_endpoint();
+  }
+
+  virtual net::impl::socket::native_handle_type get_client_fd() const = 0;
 
   /**
    * @brief Returns address of server to which connection is established.
@@ -152,6 +176,13 @@ class MySQLRoutingConnectionBase {
   Monitor<Stats> stats_{{}};
 
   Monitor<bool> disconnect_{{}};
+
+  void log_connection_summary();
+
+ private:
+  net::impl::socket::native_handle_type client_fd_;
+  std::string client_id_;
+  std::string server_id_;
 };
 
 class ConnectorBase {
@@ -249,12 +280,12 @@ class Connector : public ConnectorBase {
     switch (func_) {
       case Function::kInitDestination: {
         auto init_res = init_destination();
-        if (!init_res) return init_res.get_unexpected();
+        if (!init_res) return stdx::unexpected(init_res.error());
 
       } break;
       case Function::kConnectFinish: {
         auto connect_res = connect_finish();
-        if (!connect_res) return connect_res.get_unexpected();
+        if (!connect_res) return stdx::unexpected(connect_res.error());
 
       } break;
     }
@@ -263,12 +294,14 @@ class Connector : public ConnectorBase {
       // stops at 'connect_init()
       {
         auto connect_res = try_connect();
-        if (!connect_res) return connect_res.get_unexpected();
+        if (!connect_res) return stdx::unexpected(connect_res.error());
       }
     }
+    using ret_type = stdx::expected<ConnectionType, std::error_code>;
 
-    return {std::in_place, std::make_unique<TcpConnection>(
-                               std::move(socket()), std::move(endpoint()))};
+    return ret_type{std::in_place,
+                    std::make_unique<TcpConnection>(std::move(socket()),
+                                                    std::move(endpoint()))};
   }
 };
 
@@ -287,12 +320,12 @@ class PooledConnector : public ConnectorBase {
     switch (func_) {
       case Function::kInitDestination: {
         auto init_res = init_destination();
-        if (!init_res) return init_res.get_unexpected();
+        if (!init_res) return stdx::unexpected(init_res.error());
 
       } break;
       case Function::kConnectFinish: {
         auto connect_res = connect_finish();
-        if (!connect_res) return connect_res.get_unexpected();
+        if (!connect_res) return stdx::unexpected(connect_res.error());
 
       } break;
     }
@@ -306,7 +339,7 @@ class PooledConnector : public ConnectorBase {
 
       {
         auto connect_res = try_connect();
-        if (!connect_res) return connect_res.get_unexpected();
+        if (!connect_res) return stdx::unexpected(connect_res.error());
       }
     }
 

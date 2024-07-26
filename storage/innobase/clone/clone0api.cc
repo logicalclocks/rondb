@@ -41,9 +41,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "sql/mysqld.h"
 #include "sql/sql_backup_lock.h"
 #include "sql/sql_class.h"
-#include "sql/sql_prepare.h"
 #include "sql/sql_table.h"
 #include "sql/sql_thd_internal_api.h"
+#include "sql/statement/ed_connection.h"
 #include "sql/strfunc.h"
 
 #include "dict0dd.h"
@@ -2334,9 +2334,9 @@ static int clone_drop_binary_logs(THD *thd) {
   skip_grants(thd, sctx);
   thd->set_security_context(&sctx);
 
-  /* 1. Attempt to stop slaves if any. */
+  /* 1. Attempt to stop replicas if any. */
   char sql_stmt[FN_LEN + FN_LEN + 64];
-  snprintf(sql_stmt, sizeof(sql_stmt), "STOP SLAVE");
+  snprintf(sql_stmt, sizeof(sql_stmt), "STOP REPLICA");
 
   channel_map.rdlock();
   auto is_slave = is_slave_configured();
@@ -2344,7 +2344,7 @@ static int clone_drop_binary_logs(THD *thd) {
 
   if (is_slave && clone_execute_query(thd, &sql_stmt[0], 1, false)) {
     err = ER_INTERNAL_ERROR;
-    my_error(err, MYF(0), "Clone failed to stop slave");
+    my_error(err, MYF(0), "Clone failed to stop replica");
   }
 
   if (err == 0) {
@@ -2352,7 +2352,7 @@ static int clone_drop_binary_logs(THD *thd) {
     thd->clear_error();
 
     /* 2. Clear all binary logs and GTID. */
-    snprintf(sql_stmt, sizeof(sql_stmt), "RESET MASTER");
+    snprintf(sql_stmt, sizeof(sql_stmt), "RESET BINARY LOGS AND GTIDS");
 
     if (clone_execute_query(thd, &sql_stmt[0], 1, false)) {
       err = ER_INTERNAL_ERROR;

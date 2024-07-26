@@ -161,7 +161,7 @@ int zReader::setup_zstream() {
 
   m_stream.next_out = m_rctx.m_buf + local_prefix;
   m_stream.avail_out = static_cast<uInt>(m_rctx.m_len - local_prefix);
-  m_stream.next_in = Z_NULL;
+  m_stream.next_in = nullptr;
   m_stream.avail_in = 0;
 
   /* Zlib inflate needs 32 kilobytes for the default
@@ -922,7 +922,6 @@ byte *btr_copy_externally_stored_field_func(
 
   if (extern_len == 0) {
     /* The lob has already been purged. */
-    ut_ad(ref_t::page_no(field_ref) == FIL_NULL);
     *len = 0;
     return (buf);
   }

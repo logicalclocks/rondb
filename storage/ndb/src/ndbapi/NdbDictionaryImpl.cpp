@@ -55,7 +55,7 @@
 #include <signaldata/SumaImpl.hpp>
 #include <signaldata/WaitGCP.hpp>
 #include "API.hpp"
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 
 #define INCOMPATIBLE_VERSION -2
 
@@ -2787,10 +2787,10 @@ NdbTableImpl *NdbDictionaryImpl::getBlobTable(uint tab_id, uint col_no) {
   DBUG_PRINT("enter", ("tab_id: %u col_no %u", tab_id, col_no));
 
   NdbTableImpl *tab = m_receiver.getTable(tab_id);
-  if (tab == nullptr) DBUG_RETURN(NULL);
+  if (tab == nullptr) DBUG_RETURN(nullptr);
   Ndb_local_table_info *info = get_local_table_info(tab->m_internalName);
   delete tab;
-  if (info == nullptr) DBUG_RETURN(NULL);
+  if (info == nullptr) DBUG_RETURN(nullptr);
   NdbTableImpl *bt = getBlobTable(*info->m_table_impl, col_no);
   DBUG_RETURN(bt);
 }
@@ -5867,11 +5867,12 @@ int NdbDictInterface::executeSubscribeEvent(NdbEventOperationImpl &ev_op) {
   req->part = SubscriptionData::TableData;
   req->subscriberData = ev_op.m_oid;
   req->subscriberRef = m_reference;
+  req->requestInfo = ev_op.m_requestInfo;
 
-  DBUG_PRINT("info",
-             ("GSN_SUB_START_REQ subscriptionId=%d,subscriptionKey=%d,"
-              "subscriberData=%d",
-              req->subscriptionId, req->subscriptionKey, req->subscriberData));
+  DBUG_PRINT("info", ("GSN_SUB_START_REQ subscriptionId=%d,subscriptionKey=%d,"
+                      "subscriberData=%d requestInfo=%x",
+                      req->subscriptionId, req->subscriptionKey,
+                      req->subscriberData, req->requestInfo));
 
   int errCodes[] = {SubStartRef::Busy, SubStartRef::BusyWithNR,
                     SubStartRef::NotMaster, 0};
@@ -5931,14 +5932,14 @@ NdbEventImpl *NdbDictionaryImpl::getEvent(const char *eventName,
 
   std::unique_ptr<NdbEventImpl> ev = std::make_unique<NdbEventImpl>();
   if (ev == nullptr) {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   ev->setName(eventName);
 
   const int ret = m_receiver.createEvent(*ev, 1 /* getFlag set */);
   if (ret) {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   // We only have the table name with internal name
@@ -5947,7 +5948,7 @@ NdbEventImpl *NdbDictionaryImpl::getEvent(const char *eventName,
     tab = fetchGlobalTableImplRef(InitTable(ev->getTableName()));
     if (tab == nullptr) {
       DBUG_PRINT("error", ("unable to find table %s", ev->getTableName()));
-      DBUG_RETURN(NULL);
+      DBUG_RETURN(nullptr);
     }
     if ((tab->m_status != NdbDictionary::Object::Retrieved) ||
         ((Uint32)tab->m_id != ev->m_table_id) ||
@@ -5962,7 +5963,7 @@ NdbEventImpl *NdbDictionaryImpl::getEvent(const char *eventName,
       tab = fetchGlobalTableImplRef(InitTable(ev->getTableName()));
       if (tab == nullptr) {
         DBUG_PRINT("error", ("unable to find table %s", ev->getTableName()));
-        DBUG_RETURN(NULL);
+        DBUG_RETURN(nullptr);
       }
     }
     ev->setTable(tab);
@@ -5985,13 +5986,13 @@ NdbEventImpl *NdbDictionaryImpl::getEvent(const char *eventName,
       table_version_major(table.m_version) !=
           table_version_major(ev->m_table_version)) {
     m_error.code = 241;
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   if (attributeList_sz > (uint)table.getNoOfColumns()) {
     m_error.code = 241;
     DBUG_PRINT("error", ("Invalid version, too many columns"));
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   assert((int)attributeList_sz <= table.getNoOfColumns());
@@ -5999,7 +6000,7 @@ NdbEventImpl *NdbDictionaryImpl::getEvent(const char *eventName,
     if (id >= (uint)table.getNoOfColumns()) {
       m_error.code = 241;
       DBUG_PRINT("error", ("Invalid version, column %d out of range", id));
-      DBUG_RETURN(NULL);
+      DBUG_RETURN(nullptr);
     }
     if (!mask.get(id)) continue;
 
@@ -6060,7 +6061,7 @@ NdbEventImpl *NdbDictionaryImpl::getEvent(const char *eventName,
             m_error.code = 241; /* Invalid schema object version */
           }
 
-          DBUG_RETURN(NULL);
+          DBUG_RETURN(nullptr);
         }
         /* Blob event does not exist, ok */
       }
@@ -6078,7 +6079,7 @@ NdbEventImpl *NdbDictionaryImpl::getEvent(const char *eventName,
                          "present Expect : %d Actual : %d",
                          blob_count, blob_event_count));
     m_error.code = 241; /* Invalid schema object version */
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   // Return the successfully created event

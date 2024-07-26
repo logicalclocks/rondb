@@ -40,7 +40,7 @@ std::optional<std::string> AuthSha256Password::scramble(
 
 stdx::expected<size_t, std::error_code>
 AuthSha256Password::send_public_key_request(
-    Channel *dst_channel, ClassicProtocolState *dst_protocol) {
+    Channel &dst_channel, ClassicProtocolState &dst_protocol) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,
       classic_protocol::borrowed::message::client::AuthMethodData{
@@ -48,7 +48,7 @@ AuthSha256Password::send_public_key_request(
 }
 
 stdx::expected<size_t, std::error_code> AuthSha256Password::send_public_key(
-    Channel *dst_channel, ClassicProtocolState *dst_protocol,
+    Channel &dst_channel, ClassicProtocolState &dst_protocol,
     const std::string &public_key) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,
@@ -56,8 +56,8 @@ stdx::expected<size_t, std::error_code> AuthSha256Password::send_public_key(
 }
 
 stdx::expected<size_t, std::error_code>
-AuthSha256Password::send_plaintext_password(Channel *dst_channel,
-                                            ClassicProtocolState *dst_protocol,
+AuthSha256Password::send_plaintext_password(Channel &dst_channel,
+                                            ClassicProtocolState &dst_protocol,
                                             const std::string &password) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,
@@ -66,8 +66,8 @@ AuthSha256Password::send_plaintext_password(Channel *dst_channel,
 }
 
 stdx::expected<size_t, std::error_code>
-AuthSha256Password::send_encrypted_password(Channel *dst_channel,
-                                            ClassicProtocolState *dst_protocol,
+AuthSha256Password::send_encrypted_password(Channel &dst_channel,
+                                            ClassicProtocolState &dst_protocol,
                                             const std::string &encrypted) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,

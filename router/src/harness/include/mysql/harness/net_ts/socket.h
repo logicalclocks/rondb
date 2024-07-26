@@ -373,7 +373,7 @@ class basic_socket_impl_base {
 
   stdx::expected<void, std::error_code> non_blocking(bool mode) {
     if (!is_open()) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           std::make_error_code(std::errc::bad_file_descriptor));
     }
     non_blocking_ = mode;
@@ -393,12 +393,12 @@ class basic_socket_impl_base {
 
   stdx::expected<void, std::error_code> native_non_blocking(bool mode) {
     if (!is_open()) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           std::make_error_code(std::errc::bad_file_descriptor));
     }
 
     if (!mode && non_blocking()) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           std::make_error_code(std::errc::invalid_argument));
     }
 
@@ -431,8 +431,7 @@ class basic_socket_impl_base {
 
   stdx::expected<void, std::error_code> cancel() {
     if (!is_open()) {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::bad_file_descriptor));
+      return stdx::unexpected(make_error_code(std::errc::bad_file_descriptor));
     }
 
     io_ctx_->cancel(native_handle());
@@ -503,11 +502,11 @@ class basic_socket_impl : public basic_socket_impl_base {
   stdx::expected<void, error_type> open(
       const protocol_type &protocol = protocol_type(), int flags = 0) {
     if (is_open()) {
-      return stdx::make_unexpected(make_error_code(socket_errc::already_open));
+      return stdx::unexpected(make_error_code(socket_errc::already_open));
     }
     auto res = io_ctx_->socket_service()->socket(
         protocol.family(), protocol.type() | flags, protocol.protocol());
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 #ifdef SOCK_NONBLOCK
     if ((flags & SOCK_NONBLOCK) != 0) {
       native_non_blocking_ = 1;
@@ -520,7 +519,7 @@ class basic_socket_impl : public basic_socket_impl_base {
   stdx::expected<void, error_type> assign(
       const protocol_type &protocol, const native_handle_type &native_handle) {
     if (is_open()) {
-      return stdx::make_unexpected(make_error_code(socket_errc::already_open));
+      return stdx::unexpected(make_error_code(socket_errc::already_open));
     }
     protocol_ = protocol;
     native_handle_ = native_handle;
@@ -539,22 +538,23 @@ class basic_socket_impl : public basic_socket_impl_base {
                                                  struct sockaddr *endpoint_data,
                                                  socklen_t *endpoint_size,
                                                  int flags = 0) {
+    using ret_type = stdx::expected<socket_type, error_type>;
     if (flags != 0) {
       auto res = io_ctx_->socket_service()->accept4(
           native_handle(), endpoint_data, endpoint_size, flags);
       if (res) {
         return socket_type{io_ctx, protocol_, res.value()};
       } else if (res.error() != std::errc::operation_not_supported) {
-        return stdx::make_unexpected(res.error());
+        return stdx::unexpected(res.error());
       }
 
       // otherwise fall through to accept without flags
     }
     auto res = io_ctx_->socket_service()->accept(native_handle(), endpoint_data,
                                                  endpoint_size);
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 
-    return {std::in_place, io_ctx, protocol_, std::move(res.value())};
+    return ret_type{std::in_place, io_ctx, protocol_, std::move(res.value())};
   }
 
   stdx::expected<socket_type, error_type> accept(io_context &io_ctx,
@@ -611,7 +611,7 @@ class basic_socket_impl : public basic_socket_impl_base {
     auto res = io_ctx_->socket_service()->getsockname(
         native_handle(), reinterpret_cast<struct sockaddr *>(ep.data()),
         &ep_len);
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 
     ep.resize(ep_len);
 
@@ -625,7 +625,7 @@ class basic_socket_impl : public basic_socket_impl_base {
     auto res = io_ctx_->socket_service()->getpeername(
         native_handle(), reinterpret_cast<struct sockaddr *>(ep.data()),
         &ep_len);
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 
     ep.resize(ep_len);
 
@@ -674,10 +674,10 @@ class basic_socket_impl : public basic_socket_impl_base {
     io_control_bytes_avail_recv ioc;
 
     auto res = io_control(ioc);
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 
     if (ioc.value() < 0) {
-      return stdx::make_unexpected(make_error_code(std::errc::invalid_seek));
+      return stdx::unexpected(make_error_code(std::errc::invalid_seek));
     }
 
     // value is not negative, safe to cast to unsigned
@@ -688,7 +688,7 @@ class basic_socket_impl : public basic_socket_impl_base {
     io_control_at_mark ioc;
 
     auto res = io_control(ioc);
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 
     return ioc.value();
   }
@@ -780,18 +780,18 @@ class basic_socket : public socket_base, private basic_socket_impl<Protocol> {
           get_executor().context().async_wait(
               native_handle(), net::socket_base::wait_write,
               [this, __compl_handler = std::move(__compl_handler)](
-                  std::error_code ec) mutable {
-                if (ec) {
-                  __compl_handler(ec);
+                  std::error_code error_code) mutable {
+                if (error_code) {
+                  __compl_handler(error_code);
                   return;
                 }
 
                 // finish the non-blocking connect
                 net::socket_base::error so_error;
 
-                auto res = get_option(so_error);
-                if (!res) {
-                  __compl_handler(res.error());
+                auto result = get_option(so_error);
+                if (!result) {
+                  __compl_handler(result.error());
                   return;
                 }
 
@@ -869,24 +869,6 @@ class basic_socket : public socket_base, private basic_socket_impl<Protocol> {
     return __base::shutdown(st);
   }
 
-#if defined(ALL_COMPILERS_FULLY_SUPPORT_CPP14)
-  // the define ALL_COMPILERS_FULLY_SUPPORT_CPP14 is a placeholder.
-  //
-  // The code below assumes the compiler supports generalized lambda
-  // capture from C++14, allowing use move the ownership into the lambda.
-  //
-  // The code works with:
-  //
-  // - gcc 5.x and later
-  // - clang 4 and later
-  // - MSVC ...
-  //
-  // but it fails for move-only completion handlers with:
-  //
-  // - sun pro 15.6
-  //
-  // As soon as sun pro is fixed or supported for it is dropped,
-  // C++11 implementation below and this comment can be removed.
   template <typename CompletionToken>
   auto async_wait(wait_type w, CompletionToken &&token) {
     async_completion<CompletionToken, void(std::error_code)> init{token};
@@ -898,48 +880,6 @@ class basic_socket : public socket_base, private basic_socket_impl<Protocol> {
 
     return init.result.get();
   }
-#else
-  // C++11 compatible implementation of async_wait() which allows move-only
-  // completion handlers
-  //
-  // to be removed, once all supported compilers fully support C++14 generalized
-  // lambda capture
-
-  template <typename CompletionToken>
-  typename async_result<std::decay_t<CompletionToken>,
-                        void(std::error_code)>::return_type
-  async_wait(wait_type w, CompletionToken &&token) {
-    async_completion<CompletionToken, void(std::error_code)> init{token};
-
-    using async_completion_handler_type =
-        typename decltype(init)::completion_handler_type;
-
-    // capture the completion handler
-    class ClosureType {
-     public:
-      explicit ClosureType(async_completion_handler_type &&compl_handler)
-          : compl_handler_{
-                std::forward<decltype(compl_handler)>(compl_handler)} {}
-
-      void operator()(std::error_code ec) { compl_handler_(ec); }
-
-     private:
-      async_completion_handler_type compl_handler_;
-    };
-
-    // get native-handle before std::move()ing the completion handler into the
-    // async_wait(). Otherwise the native_handle() may refer to the moved-from
-    // object
-    const auto handle = native_handle();
-
-    get_executor().context().async_wait(
-        handle, w,
-        ClosureType(std::forward<async_completion_handler_type>(
-            init.completion_handler)));
-
-    return init.result.get();
-  }
-#endif
 
  protected:
   explicit basic_socket(io_context &ctx) : __base{ctx} {}
@@ -1098,6 +1038,9 @@ class basic_datagram_socket : public basic_socket<Protocol> {
   auto async_receive(const MutableBufferSequence &buffers,
                      socket_base::message_flags flags,
                      CompletionToken &&token) {
+    static_assert(
+        net::is_mutable_buffer_sequence<MutableBufferSequence>::value);
+
     async_completion<CompletionToken, void(std::error_code, size_t)> init{
         token};
 
@@ -1110,22 +1053,22 @@ class basic_datagram_socket : public basic_socket<Protocol> {
 
     this->get_executor().context().async_wait(
         this->native_handle(), socket_base::wait_read,
-        [this, __compl_handler = std::move(init.completion_handler), &buffers,
-         __fd = this->native_handle(),
-         __flags = flags](std::error_code ec) mutable {
+        [socket_service = this->get_executor().context().socket_service(),
+         compl_handler = std::move(init.completion_handler), &buffers,
+         native_handle = this->native_handle(),
+         flags](std::error_code ec) mutable {
           if (ec) {
-            __compl_handler(ec, 0);
+            compl_handler(ec, 0);
             return;
           }
 
           socket_base::msg_hdr msgs(buffers);
 
-          auto res = this->get_executor().context().socket_service()->recvmsg(
-              __fd, msgs, __flags);
+          auto res = socket_service->recvmsg(native_handle, msgs, flags);
           if (!res) {
-            __compl_handler(res.error(), 0);
+            compl_handler(res.error(), 0);
           } else {
-            __compl_handler({}, res.value());
+            compl_handler({}, res.value());
           }
         });
 
@@ -1135,6 +1078,9 @@ class basic_datagram_socket : public basic_socket<Protocol> {
   template <class MutableBufferSequence, class CompletionToken>
   auto async_receive(const MutableBufferSequence &buffers,
                      CompletionToken &&token) {
+    static_assert(
+        net::is_mutable_buffer_sequence<MutableBufferSequence>::value);
+
     return async_receive(buffers, 0, std::forward<CompletionToken>(token));
   }
 };
@@ -1179,7 +1125,7 @@ class basic_stream_socket : public basic_socket<Protocol> {
 
     if (res && res.value() == 0) {
       // remote did a orderly shutdown
-      return stdx::make_unexpected(make_error_code(net::stream_errc::eof));
+      return stdx::unexpected(make_error_code(net::stream_errc::eof));
     }
 
     return res;
@@ -1211,7 +1157,7 @@ class basic_stream_socket : public basic_socket<Protocol> {
 
     if (res && res.value() == 0) {
       // remote did a orderly shutdown
-      return stdx::make_unexpected(make_error_code(net::stream_errc::eof));
+      return stdx::unexpected(make_error_code(net::stream_errc::eof));
     }
 
     return res;
@@ -1242,6 +1188,9 @@ class basic_stream_socket : public basic_socket<Protocol> {
   auto async_receive(const MutableBufferSequence &buffers,
                      socket_base::message_flags flags,
                      CompletionToken &&token) {
+    static_assert(
+        net::is_mutable_buffer_sequence<MutableBufferSequence>::value);
+
     async_completion<CompletionToken, void(std::error_code, size_t)> init{
         token};
     if ((flags & socket_base::message_peek).any()) {
@@ -1257,70 +1206,30 @@ class basic_stream_socket : public basic_socket<Protocol> {
       return init.result.get();
     }
 
-    /*
-     * as we use C++14, we could use a lambda here which supports movable
-     * arguments, but sun-cc 15.6 generates the wrong constructor:
-     *
-     *  "...::{lambda at socket.h,1203:9}::<constructor>(
-     *    net::basic_stream_socket<net::ip::tcp>*,
-     *    const server_mock::MySQLServerMockSessionClassic::StateMachine&,
-     *    const std::list<net::const_buffer>&, int, std::bitset<31>&)"
-     *
-     *  The "const StateMachine &" should have been "StateMachine &&".
-     */
-
-    using compl_handler_type = typename decltype(init)::completion_handler_type;
-
-    class Completor {
-     public:
-      Completor(net::impl::socket::SocketServiceBase *socket_service,
-                compl_handler_type &&compl_handler,
-                const MutableBufferSequence &buffers,
-                impl::socket::native_handle_type native_handle,
-                socket_base::message_flags flags)
-          : socket_service_{socket_service},
-            compl_handler_(std::move(compl_handler)),
-            buffers_{buffers},
-            native_handle_{native_handle},
-            flags_{flags} {}
-
-      Completor(const Completor &) = delete;
-      Completor(Completor &&) = default;
-
-      void operator()(std::error_code ec) {
-        if (ec) {
-          compl_handler_(ec, 0);
-          return;
-        }
-
-        socket_base::msg_hdr msgs(buffers_);
-
-        const auto res = socket_service_->recvmsg(native_handle_, msgs, flags_);
-        if (!res) {
-          compl_handler_(res.error(), 0);
-        } else if (res.value() == 0) {
-          // remote did a orderly shutdown
-          compl_handler_(make_error_code(stream_errc::eof), 0);
-        } else {
-          compl_handler_({}, res.value());
-        }
-
-        return;
-      }
-
-     private:
-      net::impl::socket::SocketServiceBase *socket_service_;
-      compl_handler_type compl_handler_;
-      const MutableBufferSequence &buffers_;
-      impl::socket::native_handle_type native_handle_;
-      socket_base::message_flags flags_;
-    };
-
     this->get_executor().context().async_wait(
         this->native_handle(), socket_base::wait_read,
-        Completor(this->get_executor().context().socket_service(),
-                  std::move(init.completion_handler), buffers,
-                  this->native_handle(), flags));
+        [socket_service = this->get_executor().context().socket_service(),
+         compl_handler = std::move(init.completion_handler), buffers,
+         native_handle = this->native_handle(), flags](std::error_code ec) {
+          if (ec) {
+            compl_handler(ec, 0);
+            return;
+          }
+
+          socket_base::msg_hdr msgs(buffers);
+
+          const auto res = socket_service->recvmsg(native_handle, msgs, flags);
+          if (!res) {
+            compl_handler(res.error(), 0);
+          } else if (res.value() == 0) {
+            // remote did a orderly shutdown
+            compl_handler(make_error_code(stream_errc::eof), 0);
+          } else {
+            compl_handler({}, res.value());
+          }
+
+          return;
+        });
 
     return init.result.get();
   }
@@ -1328,14 +1237,16 @@ class basic_stream_socket : public basic_socket<Protocol> {
   template <class MutableBufferSequence, class CompletionToken>
   auto async_receive(const MutableBufferSequence &buffers,
                      CompletionToken &&token) {
+    static_assert(
+        net::is_mutable_buffer_sequence<MutableBufferSequence>::value);
+
     return async_receive(buffers, 0, std::forward<CompletionToken>(token));
   }
 
   template <class ConstBufferSequence, class CompletionToken>
   auto async_send(const ConstBufferSequence &buffers,
                   socket_base::message_flags flags, CompletionToken &&token) {
-    static_assert(net::is_const_buffer_sequence<ConstBufferSequence>::value,
-                  "");
+    static_assert(net::is_const_buffer_sequence<ConstBufferSequence>::value);
     async_completion<CompletionToken, void(std::error_code, size_t)> init{
         token};
     if (buffer_size(buffers) == 0) {
@@ -1344,64 +1255,34 @@ class basic_stream_socket : public basic_socket<Protocol> {
       return init.result.get();
     }
 
-    // see async_receive() for why this isn't a lambda.
-    using compl_handler_type = typename decltype(init)::completion_handler_type;
-
-    class Completor {
-     public:
-      Completor(net::impl::socket::SocketServiceBase *socket_service,
-                compl_handler_type &&compl_handler,
-                const ConstBufferSequence &buffers,
-                impl::socket::native_handle_type native_handle,
-                socket_base::message_flags flags)
-          : socket_service_{socket_service},
-            compl_handler_(std::move(compl_handler)),
-            buffers_{buffers},
-            native_handle_{native_handle},
-            flags_{flags} {}
-
-      Completor(const Completor &) = delete;
-      Completor(Completor &&) = default;
-
-      void operator()(std::error_code ec) {
-        if (ec) {
-          compl_handler_(ec, 0);
-          return;
-        }
-
-        socket_base::msg_hdr msgs(buffers_);
-
-        const auto res = socket_service_->sendmsg(native_handle_, msgs, flags_);
-        if (!res) {
-          compl_handler_(res.error(), 0);
-        } else {
-          compl_handler_({}, res.value());
-        }
-
-        return;
-      }
-
-      net::impl::socket::SocketServiceBase *socket_service_;
-      compl_handler_type compl_handler_;
-      const ConstBufferSequence &buffers_;
-      impl::socket::native_handle_type native_handle_;
-      socket_base::message_flags flags_;
-    };
-
-    // do something
     this->get_executor().context().async_wait(
         this->native_handle(), socket_base::wait_write,
-        Completor(this->get_executor().context().socket_service(),
-                  std::move(init.completion_handler), buffers,
-                  this->native_handle(), flags));
+        [socket_service = this->get_executor().context().socket_service(),
+         compl_handler = std::move(init.completion_handler), buffers,
+         native_handle = this->native_handle(), flags](std::error_code ec) {
+          if (ec) {
+            compl_handler(ec, 0);
+            return;
+          }
+
+          socket_base::msg_hdr msgs(buffers);
+
+          const auto res = socket_service->sendmsg(native_handle, msgs, flags);
+          if (!res) {
+            compl_handler(res.error(), 0);
+          } else {
+            compl_handler({}, res.value());
+          }
+
+          return;
+        });
 
     return init.result.get();
   }
 
   template <class ConstBufferSequence, class CompletionToken>
   auto async_send(const ConstBufferSequence &buffers, CompletionToken &&token) {
-    static_assert(net::is_const_buffer_sequence<ConstBufferSequence>::value,
-                  "");
+    static_assert(net::is_const_buffer_sequence<ConstBufferSequence>::value);
     return async_send(buffers, 0, std::forward<CompletionToken>(token));
   }
 };
@@ -1636,77 +1517,17 @@ class basic_socket_acceptor : public socket_base,
     return __base::wait(wt);
   }
 
-#if defined(ALL_COMPILERS_FULLY_SUPPORT_CPP14)
-  // the define ALL_COMPILERS_FULLY_SUPPORT_CPP14 is a placeholder.
-  //
-  // The code below assumes the compiler supports generalized lambda
-  // capture from C++14, allowing use move the ownership into the lambda.
-  //
-  // The code works with:
-  //
-  // - gcc 5.x and later
-  // - clang 4 and later
-  // - MSVC ...
-  //
-  // but it fails for move-only completion handlers with:
-  //
-  // - sun pro 15.6
-  //
-  // As soon as sun pro is fixed or supported for it is dropped,
-  // C++11 implementation below and this comment can be removed.
   template <typename CompletionToken>
   auto async_wait(wait_type w, CompletionToken &&token) {
     async_completion<CompletionToken, void(std::error_code)> init{token};
 
     get_executor().context().async_wait(
         native_handle(), w,
-        [__compl_handler = std::move(init.completion_handler)](
-            std::error_code ec) mutable { __compl_handler(ec); });
+        [compl_handler = std::move(init.completion_handler)](
+            std::error_code ec) mutable { compl_handler(ec); });
 
     return init.result.get();
   }
-#else
-  // C++11 compatible implementation of async_wait() which allows move-only
-  // completion handlers
-  //
-  // to be removed, once all supported compilers fully support C++14 generalized
-  // lambda capture
-
-  template <typename CompletionToken>
-  typename async_result<std::decay_t<CompletionToken>,
-                        void(std::error_code)>::return_type
-  async_wait(wait_type w, CompletionToken &&token) {
-    async_completion<CompletionToken, void(std::error_code)> init{token};
-
-    using async_completion_handler_type =
-        typename decltype(init)::completion_handler_type;
-
-    // capture the completion handler
-    class ClosureType {
-     public:
-      explicit ClosureType(async_completion_handler_type &&compl_handler)
-          : compl_handler_{
-                std::forward<decltype(compl_handler)>(compl_handler)} {}
-
-      void operator()(std::error_code ec) { compl_handler_(ec); }
-
-     private:
-      async_completion_handler_type compl_handler_;
-    };
-
-    // get native-handle before std::move()ing the completion handler into the
-    // async_wait(). Otherwise the native_handle() may refer to the moved-from
-    // object
-    const auto handle = native_handle();
-
-    get_executor().context().async_wait(
-        handle, w,
-        ClosureType(std::forward<async_completion_handler_type>(
-            init.completion_handler)));
-
-    return init.result.get();
-  }
-#endif
 
  private:
   protocol_type protocol_;
@@ -1792,7 +1613,7 @@ stdx::expected<InputIterator, std::error_code> connect(
     }
   }
 
-  return stdx::make_unexpected(make_error_code(socket_errc::not_found));
+  return stdx::unexpected(make_error_code(socket_errc::not_found));
 }
 
 template <class Protocol, class InputIterator, class ConnectCondition>

@@ -29,12 +29,14 @@
 #include <memory>
 
 #include "my_config.h"  // NOLINT(build/include_subdir)
-                        // NOLINT(build/include_subdir)
+
+#include "my_inttypes.h"  // NOLINT(build/include_subdir)
 #include "mysql/service_plugin_registry.h"
 #include "violite.h"  // NOLINT(build/include_subdir)
 
 #include "plugin/x/src/xpl_performance_schema.h"
 #include "sql/replication.h"
+#include "sql/ssl_acceptor_context_operator.h"
 #include "unittest/gunit/xplugin/xpl/mock/component_services.h"
 
 #ifdef HAVE_ARPA_INET_H
@@ -50,6 +52,10 @@
 const char *my_localhost;
 std::atomic<int32> connection_events_loop_aborted_flag;
 bool opt_initialize = false;
+
+Ssl_acceptor_context_container *mysql_main;
+
+bool Lock_and_access_ssl_acceptor_context::have_ssl() { return true; }
 
 int ip_to_hostname(struct sockaddr_storage *, const char *, char **,
                    uint32_t *) {
@@ -134,6 +140,8 @@ void conditional_sync_point(std::string) {}
 
 uint opt_debug_sync_timeout;
 void debug_sync(THD *, char const *, size_t) {}
+
+sigset_t mysqld_signal_mask;
 
 #ifdef HAVE_SETNS
 bool set_network_namespace(const std::string &) { return false; }

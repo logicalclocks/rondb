@@ -41,4 +41,3 @@ ADD_CONVENIENCE_LIBRARY(ndblogger
 EXCLUDE_FROM_MSVC_PGO(ndblogger_objlib)
 
 NDB_ADD_TEST(logger-t Logger.cpp  LIBS ndbgeneral ndbportlib ndbclient_static)
-

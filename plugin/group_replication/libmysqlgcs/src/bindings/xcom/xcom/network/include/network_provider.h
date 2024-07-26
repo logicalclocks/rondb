@@ -209,34 +209,23 @@ struct Network_connection {
         has_error(false) {
   }
 
-  Network_connection(int parameter_fd
+  Network_connection(int parameter_fd, void *parameter_ssl_fd)
+      : fd(parameter_fd),
 #ifndef XCOM_WITHOUT_OPENSSL
-                     ,
-                     SSL *parameter_ssl_fd
+        ssl_fd(static_cast<SSL *>(parameter_ssl_fd)),
 #endif
-                     )
-      : fd(parameter_fd)
-#ifndef XCOM_WITHOUT_OPENSSL
-        ,
-        ssl_fd(parameter_ssl_fd)
-#endif
-        ,
         has_error(false) {
   }
 
-  Network_connection(int parameter_fd
+  Network_connection(int parameter_fd,
 #ifndef XCOM_WITHOUT_OPENSSL
-                     ,
-                     SSL *parameter_ssl_fd
+                     SSL *parameter_ssl_fd,
 #endif
-                     ,
                      bool parameter_has_error)
-      : fd(parameter_fd)
+      : fd(parameter_fd),
 #ifndef XCOM_WITHOUT_OPENSSL
-        ,
-        ssl_fd(parameter_ssl_fd)
+        ssl_fd(parameter_ssl_fd),
 #endif
-        ,
         has_error(parameter_has_error) {
   }
 
@@ -381,9 +370,11 @@ class Network_provider {
 
   virtual std::function<void()> get_secure_connections_context_cleaner() {
     std::function<void()> retval = []() {
+#ifndef XCOM_WITHOUT_OPENSSL
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
-      ERR_remove_thread_state(0);
+      ERR_remove_thread_state(nullptr);
 #endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
+#endif
     };
 
     return retval;

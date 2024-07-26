@@ -31,14 +31,15 @@
 #include <string>
 
 #include "lex_string.h"
+#include "m_string.h"
 #include "my_alloc.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "my_time.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
@@ -79,6 +80,8 @@
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"  // trans_commit
 #include "sql/tztime.h"       // Time_zone
+
+struct CHARSET_INFO;
 
 namespace dd {
 
@@ -232,7 +235,7 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
     }
     ~Context_handler() {
       m_thd->variables.sql_mode = m_sql_mode;
-      destroy(m_file);
+      if (m_file != nullptr) ::destroy_at(m_file);
     }
 
    private:

@@ -1319,7 +1319,7 @@ Table	Op	Msg_type	Msg_text
 test.t1	analyze	status	OK
 explain SELECT id FROM t1 where salary = (SELECT MAX(salary) FROM t1);
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	PRIMARY	t1	NULL	ref	salary	salary	5	const	1	100.00	Using where; Using index
+1	PRIMARY	t1	NULL	ref	salary	salary	5	const	1	100.00	Using index
 2	SUBQUERY	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Select tables optimized away
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`id` AS `id` from `test`.`t1` where (`test`.`t1`.`salary` = (/* select#2 */ select max(`test`.`t1`.`salary`) from `test`.`t1`))
@@ -2086,13 +2086,13 @@ a
 1
 3
 SELECT a FROM t1 WHERE (1,2) > ANY (SELECT a FROM t1 WHERE b = 2);
-ERROR 21000: Operand should contain 1 column(s)
+ERROR 21000: Operand should contain 2 column(s)
 SELECT a FROM t1 WHERE a > ANY (SELECT a,2 FROM t1 WHERE b = 2);
 ERROR 21000: Operand should contain 1 column(s)
 SELECT a FROM t1 WHERE (1,2) > ANY (SELECT a,2 FROM t1 WHERE b = 2);
 ERROR 21000: Operand should contain 1 column(s)
 SELECT a FROM t1 WHERE (1,2) > ALL (SELECT a FROM t1 WHERE b = 2);
-ERROR 21000: Operand should contain 1 column(s)
+ERROR 21000: Operand should contain 2 column(s)
 SELECT a FROM t1 WHERE a > ALL (SELECT a,2 FROM t1 WHERE b = 2);
 ERROR 21000: Operand should contain 1 column(s)
 SELECT a FROM t1 WHERE (1,2) > ALL (SELECT a,2 FROM t1 WHERE b = 2);
@@ -4125,10 +4125,10 @@ SELECT
 SUM( (SELECT AVG( (SELECT COUNT(*) FROM t1 t HAVING t1.a < 12) ) FROM t2) )
 FROM t1;
 ERROR HY000: Invalid use of group function
-SELECT t1.a as XXA,
-SUM( (SELECT AVG( (SELECT COUNT(*) FROM t1 t HAVING XXA < 12) ) FROM t2) )
+SELECT t1.a as xxa,
+SUM( (SELECT AVG( (SELECT COUNT(*) FROM t1 t HAVING xxa < 12) ) FROM t2) )
 FROM t1;
-ERROR 42S22: Unknown column 'XXA' in 'having clause'
+ERROR HY000: Invalid use of group function
 DROP TABLE t1,t2;
 CREATE TABLE t1 (a int, b int, KEY (a));
 INSERT INTO t1 VALUES (1,1),(2,1);
@@ -4137,7 +4137,7 @@ Table	Op	Msg_type	Msg_text
 test.t1	analyze	status	OK
 EXPLAIN SELECT 1 FROM t1 WHERE a = (SELECT COUNT(*) FROM t1 GROUP BY b);
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	PRIMARY	t1	NULL	ref	a	a	5	const	1	100.00	Using where; Using index
+1	PRIMARY	t1	NULL	ref	a	a	5	const	1	100.00	Using index
 2	SUBQUERY	t1	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	Using temporary
 Warnings:
 Note	1003	/* select#1 */ select 1 AS `1` from `test`.`t1` where (`test`.`t1`.`a` = (/* select#2 */ select count(0) from `test`.`t1` group by `test`.`t1`.`b`))
@@ -4387,8 +4387,8 @@ count(*)
 drop table t0,t1,t2;
 SET sql_mode = default;
 CREATE TABLE t4 (
-f7 varchar(32) collate utf8_bin NOT NULL default '',
-f10 varchar(32) collate utf8_bin default NULL,
+f7 varchar(32) COLLATE utf8mb3_bin NOT NULL default '',
+f10 varchar(32) COLLATE utf8mb3_bin default NULL,
 PRIMARY KEY  (f7)
 );
 Warnings:
@@ -4396,9 +4396,9 @@ Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB
 Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 INSERT INTO t4 VALUES(1,1), (2,null);
 CREATE TABLE t2 (
-f4 varchar(32) collate utf8_bin NOT NULL default '',
-f2 varchar(50) collate utf8_bin default NULL,
-f3 varchar(10) collate utf8_bin default NULL,
+f4 varchar(32) COLLATE utf8mb3_bin NOT NULL default '',
+f2 varchar(50) COLLATE utf8mb3_bin default NULL,
+f3 varchar(10) COLLATE utf8mb3_bin default NULL,
 PRIMARY KEY  (f4),
 UNIQUE KEY uk1 (f2)
 );
@@ -4408,9 +4408,9 @@ Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB
 Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 INSERT INTO t2 VALUES(1,1,null), (2,2,null);
 CREATE TABLE t1 (
-f8 varchar(32) collate utf8_bin NOT NULL default '',
-f1 varchar(10) collate utf8_bin default NULL,
-f9 varchar(32) collate utf8_bin default NULL,
+f8 varchar(32) COLLATE utf8mb3_bin NOT NULL default '',
+f1 varchar(10) COLLATE utf8mb3_bin default NULL,
+f9 varchar(32) COLLATE utf8mb3_bin default NULL,
 PRIMARY KEY  (f8)
 );
 Warnings:
@@ -4419,8 +4419,8 @@ Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB
 Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 INSERT INTO t1 VALUES (1,'P',1), (2,'P',1), (3,'R',2);
 CREATE TABLE t3 (
-f6 varchar(32) collate utf8_bin NOT NULL default '',
-f5 varchar(50) collate utf8_bin default NULL,
+f6 varchar(32) COLLATE utf8mb3_bin NOT NULL default '',
+f5 varchar(50) COLLATE utf8mb3_bin default NULL,
 PRIMARY KEY (f6)
 );
 Warnings:
@@ -4444,7 +4444,9 @@ t3.f5
 FROM
 t2, t3, t1 JOIN t2 a1 ON t1.f9 = a1.f4
 GROUP BY a4;
-ERROR 42S22: Unknown column 'a4' in 'where clause'
+a4	f3	a6
+1	NULL	NULL
+2	NULL	NULL
 DROP TABLE t1, t2, t3, t4;
 create table t1 (a float(5,4) zerofill);
 Warnings:
@@ -4664,11 +4666,11 @@ Variable_name	Value
 Handler_read_rnd_next	5
 delete from t2;
 insert into t2 values (NULL, 0),(NULL, 0), (NULL, 0), (NULL, 0);
-flush status;
 ANALYZE TABLE t1, t2;
 Table	Op	Msg_type	Msg_text
 test.t1	analyze	status	OK
 test.t2	analyze	status	OK
+FLUSH STATUS;
 select oref, a, a in (select a from t1 where oref=t2.oref) Z from t2;
 oref	a	Z
 0	NULL	0
@@ -4678,7 +4680,7 @@ oref	a	Z
 show status like '%Handler_read%';
 Variable_name	Value
 Handler_read_first	5
-Handler_read_key	8
+Handler_read_key	5
 Handler_read_last	0
 Handler_read_next	0
 Handler_read_prev	0
@@ -5343,10 +5345,10 @@ EXPLAIN
 SELECT a FROM t1, t2 WHERE a=b AND (b NOT IN (SELECT a FROM t1));
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	PRIMARY	t1	NULL	ALL	NULL	NULL	NULL	NULL	3	100.00	Using where
-1	PRIMARY	t2	NULL	eq_ref	PRIMARY	PRIMARY	4	test.t1.a	1	100.00	Using index
+1	PRIMARY	t2	NULL	eq_ref	PRIMARY	PRIMARY	4	test.t1.a	1	100.00	Using where; Using index
 2	DEPENDENT SUBQUERY	t1	NULL	ALL	NULL	NULL	NULL	NULL	3	55.56	Using where
 Warnings:
-Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a` from `test`.`t1` join `test`.`t2` where ((`test`.`t2`.`b` = `test`.`t1`.`a`) and <in_optimizer>(`test`.`t1`.`a`,<exists>(/* select#2 */ select `test`.`t1`.`a` from `test`.`t1` where ((<cache>(`test`.`t2`.`b`) = `test`.`t1`.`a`) or (`test`.`t1`.`a` is null)) having <is_not_null_test>(`test`.`t1`.`a`)) is false))
+Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a` from `test`.`t1` join `test`.`t2` where ((`test`.`t2`.`b` = `test`.`t1`.`a`) and <in_optimizer>(`test`.`t2`.`b`,<exists>(/* select#2 */ select `test`.`t1`.`a` from `test`.`t1` where ((<cache>(`test`.`t2`.`b`) = `test`.`t1`.`a`) or (`test`.`t1`.`a` is null)) having <is_not_null_test>(`test`.`t1`.`a`)) is false))
 SELECT a FROM t1, t2 WHERE a=b AND (b NOT IN (SELECT a FROM t1));
 a
 SELECT a FROM t1, t2 WHERE a=b AND (b NOT IN (SELECT a FROM t1 WHERE a > 4));
@@ -5907,11 +5909,11 @@ SET @@sql_mode=default;
 DROP TABLE t1;
 CREATE TABLE t1 (s1 CHAR(1));
 INSERT INTO t1 VALUES ('a');
-SELECT * FROM t1 WHERE _utf8'a' = ANY (SELECT s1 FROM t1);
+SELECT * FROM t1 WHERE _utf8mb3'a' = ANY (SELECT s1 FROM t1);
 s1
 a
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 DROP TABLE t1;
 CREATE TABLE t1(c INT, KEY(c));
 CREATE TABLE t2(a INT, b INT);
@@ -6787,9 +6789,9 @@ SELECT * FROM t1 WHERE t1.number < ANY(SELECT number FROM t2);
 pk	number
 8	8
 DROP TABLE t1,t2;
-purge master logs before (select adddate(current_timestamp(), interval -4 day));
+purge binary logs before (select adddate(current_timestamp(), interval -4 day));
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '(select adddate(current_timestamp(), interval -4 day))' at line 1
-purge master logs before adddate(current_timestamp(), interval -4 day);
+purge binary logs before adddate(current_timestamp(), interval -4 day);
 create table t1(a int,b int,key(a),key(b));
 insert into t1(a,b) values (1,2),(2,1),(2,3),(3,4),(5,4),(5,5),
 (6,7),(7,4),(5,3);
@@ -8608,9 +8610,9 @@ DROP TABLE t1, t2, t3;
 #
 # Bug#22090717 WRONG RESULT FOR SELECT NULL IN (<SUBQUERY>)
 #
-CREATE TABLE t1(a MEDIUMTEXT CHARSET UTF8) ENGINE=INNODB;
+CREATE TABLE t1(a MEDIUMTEXT CHARSET utf8mb3) ENGINE=INNODB;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 INSERT INTO t1 VALUES(0x6F76786E7875);
 SELECT NULL IN (SELECT 1 FROM t1);
 NULL IN (SELECT 1 FROM t1)

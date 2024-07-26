@@ -27,16 +27,10 @@ ENDIF()
 
 MSVC_CPPCHECK_DISABLE()
 
-IF(WITH_LTO OR CMAKE_COMPILER_FLAG_WITH_LTO)
-  # We get ODR violations because of multiple bison parsers.
-  MY_CHECK_CXX_COMPILER_WARNING("error=odr" HAS_WARN_FLAG)
-  IF(HAS_WARN_FLAG)
-    STRING_APPEND(CMAKE_EXE_LINKER_FLAGS " ${HAS_WARN_FLAG}")
-  ENDIF()
+IF(NOT WITH_DEBUG)
+  # the innodb parts are documented assuming WITH_DEBUG (UNIV_DEBUG)
+  DISABLE_DOCUMENTATION_WARNINGS()
 ENDIF()
-
-# Some tests require Boost.
-INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
 
 INCLUDE_DIRECTORIES(SYSTEM ${GMOCK_INCLUDE_DIRS})
 
@@ -104,13 +98,7 @@ ADD_DEPENDENCIES(gunit_large GenError)
 TARGET_LINK_LIBRARIES(gunit_small
   mysys strings ${GTEST_LIBRARIES} ${UNITTEST_JEMALLOC_LIB} extra::rapidjson)
 TARGET_LINK_LIBRARIES(gunit_large
-  mysys strings ${GTEST_LIBRARIES} ${UNITTEST_JEMALLOC_LIB} extra::rapidjson)
-
-IF(WIN32)
-  ## Create an object library of nt_servc.cc, so we don't have to
-  ## compile it again for each target
-  ADD_LIBRARY(my_nt_servc OBJECT ../../sql/nt_servc.cc)
-ENDIF()
+  ${GTEST_LIBRARIES} ${UNITTEST_JEMALLOC_LIB} extra::rapidjson)
 
 # Add some defines.
 ADD_DEFINITIONS(-DMYSQL_SERVER -DEXTRA_CODE_FOR_UNIT_TESTING)
@@ -175,7 +163,6 @@ SET(TESTS
   pattern_matcher
   prealloced_array
   priority_queue
-  pump_object_filter
   record_buffer
   sql_class_header
   sql_list
@@ -183,6 +170,7 @@ SET(TESTS
   sql_string
   stl_alloc
   stream_cipher
+  strings_misc
   strings_skip_trailing
   strings_strnxfrm
   strings_utf8
@@ -203,6 +191,7 @@ ENDFOREACH()
 
 # Add tests (link them with gunit/gmock libraries and the server libraries)
 SET(SERVER_TESTS
+  authentication_policy
   bgc_ticket_manager
   character_set_deprecation
   compare_access_paths
@@ -245,6 +234,7 @@ SET(SERVER_TESTS
   gis_wkb_parser
   gis_wkb_writer
   graph_simplification
+  gtid_specification_parsing
   handler
   hash_join
   histograms
@@ -293,6 +283,7 @@ SET(SERVER_TESTS
   subquery_syntax
   table_cache
   table_factor_syntax
+  table_histograms
   table_list
   tc_log_mmap
   temptable_allocator
@@ -307,12 +298,16 @@ SET(SERVER_TESTS
   xid_extract
   log_event_status_size
 )
+# Hangs forever.
+IF(LINUX_ARM AND CMAKE_BUILD_TYPE_UPPER STREQUAL "RELWITHDEBINFO")
+  LIST(REMOVE_ITEM SERVER_TESTS bgc_ticket_manager)
+ENDIF()
 # Endless loop in FatalSignalDeathTest
 IF(LINUX_ALPINE)
   LIST(REMOVE_ITEM SERVER_TESTS segfault)
 ENDIF()
 
-IF(MY_COMPILER_IS_GNU AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 12)
+IF(MY_COMPILER_IS_GNU AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12)
   ADD_COMPILE_FLAGS(regexp_engine-t.cc COMPILE_FLAGS "-Wno-restrict")
 ENDIF()
 
@@ -358,12 +353,10 @@ MYSQL_ADD_EXECUTABLE(merge_small_tests-t ${ALL_SMALL_TESTS}
   ADD_TEST merge_small_tests
   COMPILE_DEFINITIONS ${DISABLE_PSI_DEFINITIONS}
   ENABLE_EXPORTS
-  LINK_LIBRARIES sqlgunitlib gunit_small extra::rapidjson
+  LINK_LIBRARIES sqlgunitlib gunit_small extra::rapidjson extra::boost
   )
+DOWNGRADE_STRINGOP_WARNINGS(merge_small_tests-t)
 
-IF(WIN32)
-  LIST(APPEND ALL_LARGE_TESTS ../../sql/nt_servc.cc)
-ENDIF()
 LIST(APPEND ALL_LARGE_TESTS ../../storage/example/ha_example.cc)
 
 MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
@@ -371,13 +364,16 @@ MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
   ENABLE_EXPORTS
   LINK_LIBRARIES gunit_large server_unittest_library
   )
+IF(MY_COMPILER_IS_GNU)
+  MY_TARGET_LINK_OPTIONS(merge_large_tests-t "-Wno-alloc-size-larger-than")
+ENDIF()
 
 FOREACH(test ${TESTS})
   MYSQL_ADD_EXECUTABLE(${test}-t ${test}-t.cc
     COMPILE_DEFINITIONS ${DISABLE_PSI_DEFINITIONS}
     ENABLE_EXPORTS
     EXCLUDE_FROM_ALL
-    LINK_LIBRARIES sqlgunitlib gunit_small
+    LINK_LIBRARIES sqlgunitlib gunit_small extra::boost
     SKIP_INSTALL
     )
 ENDFOREACH()
@@ -397,9 +393,6 @@ ADD_COMPILE_FLAGS(
 
 FOREACH(test ${SERVER_TESTS})
   SET(SRC_FILES ${test}-t.cc)
-  IF(WIN32)
-    LIST(APPEND SRC_FILES $<TARGET_OBJECTS:my_nt_servc>)
-  ENDIF()
   IF(test MATCHES "table_cache")
     LIST(APPEND SRC_FILES ../../storage/example/ha_example.cc)
   ENDIF()
@@ -433,7 +426,6 @@ MYSQL_ADD_EXECUTABLE(rpl_commit_order_queue-t rpl_commit_order_queue-t.cc
 
 ADD_SUBDIRECTORY(ddl_rewriter)
 ADD_SUBDIRECTORY(innodb)
-ADD_SUBDIRECTORY(keyring)
 ADD_SUBDIRECTORY(components/mysql_server)
 ADD_SUBDIRECTORY(components/keyring_common)
 ADD_SUBDIRECTORY(xplugin)
@@ -445,3 +437,5 @@ ADD_SUBDIRECTORY(memory)
 ADD_SUBDIRECTORY(containers)
 ADD_SUBDIRECTORY(locks)
 ADD_SUBDIRECTORY(changestreams)
+ADD_SUBDIRECTORY(libs/utils)
+ADD_SUBDIRECTORY(libs/serialization)

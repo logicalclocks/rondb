@@ -33,6 +33,7 @@
 #include <mysql/components/services/log_builtins.h>
 #include <mysqld_error.h>
 
+#include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
@@ -42,6 +43,8 @@
 #include "thr_cond.h"
 
 static constexpr int STRING_BUFFER = 1024 * 4;
+
+struct CHARSET_INFO;
 
 static const char *sep =
     "======================================================\n";
@@ -345,7 +348,7 @@ static void test_com_query(void *p [[maybe_unused]]) {
   WRITE_STR("COM_QUERY");
 
   /* Open session 1: Must pass */
-  st_session = srv_session_open(NULL, plugin_ctx);
+  st_session = srv_session_open(nullptr, plugin_ctx);
   if (!st_session) {
     LogPluginErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, "srv_session_open failed.");
   } else
@@ -453,7 +456,7 @@ static int test_com_init_db(void *p) {
 
   MYSQL_SESSION st_session;
 
-  ENSURE_API_NOT_NULL(st_session = srv_session_open(NULL, p));
+  ENSURE_API_NOT_NULL(st_session = srv_session_open(nullptr, p));
 
   if (st_session) switch_user(st_session, user_privileged);
   COM_DATA cmd;
@@ -475,49 +478,6 @@ static int test_com_init_db(void *p) {
 
   return 0;
 }
-
-/*
-static int test_com_list_fields(void *p)
-{
-  DBUG_TRACE;
-
-  MYSQL_SESSION st_session;
-
-  ENSURE_API_NOT_NULL(st_session = srv_session_open(NULL, p));
-
-  COM_DATA cmd;
-
-  cmd.com_init_db.db_name = "mysql";
-  cmd.com_init_db.length = strlen("mysql");
-  ENSURE_API_OK(command_service_run_command(st_session, COM_INIT_DB, &cmd,
-&my_charset_utf8mb3_general_ci, &sql_cbs, CS_TEXT_REPRESENTATION, p));
-
-  WRITE_VAL("switched default db to: %s\n",
-srv_session_info_get_current_db(st_session));
-
-
-  WRITE_STR("field_list\n");
-  cmd.com_field_list.table_name = (unsigned char*)"user";
-  cmd.com_field_list.table_name_length = strlen((const
-char*)cmd.com_field_list.table_name); cmd.com_field_list.query = (unsigned
-char*)"%"; cmd.com_field_list.query_length = strlen((const
-char*)cmd.com_field_list.query);
-  ENSURE_API_OK(command_service_run_command(st_session, COM_FIELD_LIST, &cmd,
-&my_charset_utf8mb3_general_ci, &sql_cbs, CS_TEXT_REPRESENTATION, p));
-
-  WRITE_STR("-----------------------------------------------------------------\n");
-  for (uint row_count=0;row_count < sql_num_rows;row_count++){
-    for (uint col_count=0;col_count < sql_num_cols;col_count+=2){
-      WRITE_VAL("%s\t\%s\n",sql_str_value[col_count][row_count],
-                  sql_str_value[col_count+1][row_count]);
-    }
-  }
-
-  ENSURE_API_OK(srv_session_close(st_session));
-
-  return 0;
-}
-*/
 
 struct Test_data {
   void *p;
@@ -570,9 +530,9 @@ static void *test_session_thread(Test_data *tdata) {
 
   tdata->go();
 
-  int r = command_service_run_command(tdata->session, COM_QUERY, &cmd,
-                                      &my_charset_utf8mb3_general_ci, &sql_cbs,
-                                      CS_TEXT_REPRESENTATION, &cbdata);
+  const int r = command_service_run_command(
+      tdata->session, COM_QUERY, &cmd, &my_charset_utf8mb3_general_ci, &sql_cbs,
+      CS_TEXT_REPRESENTATION, &cbdata);
   WRITE_VAL("Killed run_command return value: %i\n", r);
 
   WRITE_VAL("thread shutdown: %i (%s)\n", cbdata.shutdown,
@@ -604,7 +564,7 @@ static int test_query_kill(void *p) {
 
   WRITE_STR("test_query_kill\n");
 
-  ENSURE_API_NOT_NULL(st_session = srv_session_open(NULL, p));
+  ENSURE_API_NOT_NULL(st_session = srv_session_open(nullptr, p));
 
   switch_user(st_session, user_privileged);
   MYSQL_SESSION st_session_victim;
@@ -658,40 +618,6 @@ static int test_query_kill(void *p) {
   return 0;
 }
 
-static int test_com_process_kill(void *p) {
-  DBUG_TRACE;
-
-  MYSQL_SESSION st_session;
-  Callback_data cbd;
-
-  WRITE_STR("COM_KILL\n");
-
-  ENSURE_API_NOT_NULL(st_session = srv_session_open(NULL, p));
-
-  switch_user(st_session, user_privileged);
-  MYSQL_SESSION st_session_victim;
-  ENSURE_API_NOT_NULL(st_session_victim =
-                          srv_session_open(session_error_cb, p));
-
-  WRITE_VAL("session is dead? %i\n",
-            thd_killed(srv_session_info_get_thd(st_session_victim)));
-
-  COM_DATA cmd;
-
-  cmd.com_kill.id = srv_session_info_get_session_id(st_session_victim);
-  ENSURE_API_OK(command_service_run_command(
-      st_session, COM_PROCESS_KILL, &cmd, &my_charset_utf8mb3_general_ci,
-      &sql_cbs, CS_TEXT_REPRESENTATION, &cbd));
-
-  WRITE_VAL("session is dead now? %i\n",
-            thd_killed(srv_session_info_get_thd(st_session_victim)));
-
-  ENSURE_API_OK(srv_session_close(st_session));
-  ENSURE_API_OK(srv_session_close(st_session_victim));
-
-  return 0;
-}
-
 static int test_priv(void *p) {
   DBUG_TRACE;
 
@@ -701,7 +627,7 @@ static int test_priv(void *p) {
 
   WRITE_STR("COM_QUERY with priv\n");
 
-  ENSURE_API_NOT_NULL(root_session = srv_session_open(NULL, p));
+  ENSURE_API_NOT_NULL(root_session = srv_session_open(nullptr, p));
 
   switch_user(root_session, user_privileged);
 
@@ -716,7 +642,7 @@ static int test_priv(void *p) {
   WRITE_STR("now try as ordinary user\n");
   {
     MYSQL_SESSION ordinary_session;
-    ENSURE_API_NOT_NULL(ordinary_session = srv_session_open(NULL, p));
+    ENSURE_API_NOT_NULL(ordinary_session = srv_session_open(nullptr, p));
     switch_user(ordinary_session, user_ordinary);
 
     cbd.reset();
@@ -755,10 +681,6 @@ static void test_sql(void *p [[maybe_unused]]) {
   test_com_query(p);
   WRITE_SEP();
   test_com_init_db(p);
-  WRITE_SEP();
-  //  test_com_list_fields(p);
-  //  WRITE_SEP();
-  test_com_process_kill(p);
   WRITE_SEP();
   test_query_kill(p);
   WRITE_SEP();

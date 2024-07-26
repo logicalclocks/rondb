@@ -1,7 +1,7 @@
 ################################################################################
 # Validate that when a member joins a group, and it is missing data that was
 # purged from group binary logs, the joiner member will proceed by cloning a
-# group member. Since cloning will fail, the joiner will error out.
+# a group member. Since cloning will fail, the joiner will error out.
 #
 # Test:
 # 0. The test requires two servers: M1 and M2.
@@ -32,7 +32,7 @@
 --echo #    Commit some data and then purge all binary logs.
 --echo #    Bootstrap a group on server1.
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 # Install the clone plugin
 --replace_result $CLONE_PLUGIN CLONE_PLUGIN
@@ -45,11 +45,11 @@ INSERT INTO t1 VALUES (2);
 
 # Purge binary logs.
 SET sql_log_bin = 0;
---source include/gtid_utils.inc
+--source include/rpl/gtid_utils.inc
 SET sql_log_bin = 1;
 
 FLUSH BINARY LOGS;
---let $server_binlog_file_cur= query_get_value(SHOW MASTER STATUS, File, 1)
+--let $server_binlog_file_cur= query_get_value(SHOW BINARY LOG STATUS, File, 1)
 --replace_result $server_binlog_file_cur CURRENT_BINLOG_FILE
 --eval PURGE BINARY LOGS TO '$server_binlog_file_cur'
 
@@ -68,7 +68,7 @@ FLUSH BINARY LOGS;
 
 # Install the clone plugin
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --replace_result $CLONE_PLUGIN CLONE_PLUGIN
 --eval INSTALL PLUGIN clone SONAME '$CLONE_PLUGIN'
@@ -93,14 +93,14 @@ SET DEBUG_SYNC = "now SIGNAL signal.run_clone_query_continue";
 --echo ############################################################
 --echo # 3. Cleanup.
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 DROP TABLE t1;
---source include/gtid_utils_end.inc
+--source include/rpl/gtid_utils_end.inc
 
 UNINSTALL PLUGIN clone;
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 SET DEBUG_SYNC= 'RESET';
 SET @@GLOBAL.DEBUG='-d,gr_run_clone_query_fail_once';
 
@@ -109,6 +109,7 @@ UNINSTALL PLUGIN clone;
 SET SESSION sql_log_bin=0;
 call mtr.add_suppression("Skipping leave operation: concurrent attempt to leave the group is on-going.");
 call mtr.add_suppression("The server was automatically set into read only mode after an error was detected.");
+call mtr.add_suppression("The server was automatically set into offline mode after an error was detected.");
 call mtr.add_suppression("This member will start distributed recovery using clone. It is due to no ONLINE member has the missing data for recovering in its binary logs.");
 call mtr.add_suppression("Due to a critical cloning error or lack of donors, distributed recovery cannot be executed. The member will now leave the group.");
 SET SESSION sql_log_bin=1;

@@ -59,7 +59,6 @@ class ROUTING_EXPORT MySQLRoutingAPI {
 
   int get_max_connections() const;
   uint64_t get_max_connect_errors() const;
-  std::string get_mode() const;
 
   std::string get_name() const;
 
@@ -127,8 +126,6 @@ class ROUTING_EXPORT MySQLRoutingComponent {
   MySQLRoutingConnectionBase *get_connection(const std::string &ep);
 
   std::vector<std::string> route_names() const;
-
-  static const uint64_t kDefaultMaxTotalConnections = 512;
 
  private:
   // disable copy, as we are a single-instance

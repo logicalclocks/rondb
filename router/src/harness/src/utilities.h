@@ -55,9 +55,9 @@ class Range {
       return *this;
     }
 
-    bool operator==(const iterator &rhs) { return ptr_ == rhs.ptr_; }
+    bool operator==(const iterator &rhs) const { return ptr_ == rhs.ptr_; }
 
-    bool operator!=(const iterator &rhs) { return ptr_ != rhs.ptr_; }
+    bool operator!=(const iterator &rhs) const { return ptr_ != rhs.ptr_; }
 
     Type &operator*() { return *ptr_; }
 

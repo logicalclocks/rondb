@@ -56,6 +56,7 @@
 #include "portlib/NdbTick.h"
 #include "portlib/ndb_sockaddr.h"
 #include "util/NdbSocket.h"
+#include "util/TlsKeyManager.hpp"
 
 #ifndef _WIN32
 /*
@@ -253,6 +254,13 @@ class TransporterRegistry {
    *   they need to get initialized
    */
   bool init(TransporterReceiveHandle &);
+
+  /**
+   * Initialize TLS context. Cannot be called prior to init(NodeId).
+   * Returns true on success.
+   */
+  bool init_tls(const char *search_path, int node_type,
+                int mgm_tls_requirement_level);
 
   /**
      Perform handshaking of a client connection to accept it
@@ -549,10 +557,11 @@ class TransporterRegistry {
     NodeId m_remote_nodeId;
     int m_s_service_port;  // signed port number
     const char *m_interface;
+    bool m_require_tls;
   };
   Vector<Transporter_interface> m_transporter_interface;
   void add_transporter_interface(NodeId remoteNodeId, const char *interf,
-                                 int s_port);  // signed port. <0 is dynamic
+                                 int s_port, bool requireTls);
 
   int get_transporter_count() const;
   NodeId get_transporter_node_id(TrpId id) const;
@@ -571,6 +580,7 @@ class TransporterRegistry {
 
   ndb_sockaddr get_connect_address_node(NodeId nodeId) const;
   ndb_sockaddr get_connect_address(TrpId trpId) const;
+  bool is_encrypted_link(TrpId trpId) const;
 
   Uint64 get_bytes_sent(TrpId trpId) const;
   Uint64 get_bytes_received(TrpId trpId) const;
@@ -594,6 +604,8 @@ private:
   Uint32 nTransporters;
   Uint32 nTCPTransporters;
   Uint32 nSHMTransporters;
+  TlsKeyManager m_tls_keys;
+  int m_mgm_tls_req;
 
 #ifdef ERROR_INSERT
   TrpBitmask m_blocked;
@@ -728,6 +740,8 @@ public:
   TrpId get_the_only_base_trp(NodeId nodeId) const;
 
   Uint32 get_num_trps();
+  TlsKeyManager *getTlsKeyManager() { return &m_tls_keys; }
+  bool hasTlsCert() const { return (bool)m_tls_keys.ctx(); }
 
  private:
   /**

@@ -30,6 +30,8 @@
 #endif
 #include <gmock/gmock.h>
 #include <rapidjson/document.h>
+#include <rapidjson/prettywriter.h>
+#include <rapidjson/schema.h>
 #include <rapidjson/stringbuffer.h>
 
 #include <chrono>
@@ -37,11 +39,10 @@
 #include <thread>
 
 #include "mysql/harness/net_ts/buffer.h"
-#include "mysql/harness/net_ts/impl/resolver.h"
-#include "mysql/harness/net_ts/impl/socket.h"
-#include "mysql/harness/net_ts/internet.h"
 #include "mysql/harness/net_ts/socket.h"
+#include "mysql/harness/stdx/ranges.h"  // enumerate
 #include "mysqlrouter/mock_server_rest_client.h"
+#include "router_config.h"  // MYSQL_ROUTER_VERSION
 #include "router_test_helpers.h"
 
 namespace {
@@ -53,6 +54,10 @@ using JsonDocument =
     rapidjson::GenericDocument<rapidjson::UTF8<>, JsonAllocator>;
 using JsonStringBuffer =
     rapidjson::GenericStringBuffer<rapidjson::UTF8<>, rapidjson::CrtAllocator>;
+using JsonSchemaDocument =
+    rapidjson::GenericSchemaDocument<JsonValue, rapidjson::CrtAllocator>;
+using JsonSchemaValidator =
+    rapidjson::GenericSchemaValidator<JsonSchemaDocument>;
 }  // namespace
 
 using namespace std::chrono_literals;
@@ -62,13 +67,24 @@ std::string create_state_file_content(
     const std::string &cluster_type_specific_id,
     const std::string &clusterset_id,
     const std::vector<uint16_t> &metadata_servers_ports,
-    const uint64_t view_id /*= 0*/) {
-  std::string metadata_servers;
-  for (std::size_t i = 0; i < metadata_servers_ports.size(); i++) {
-    metadata_servers +=
-        "\"mysql://127.0.0.1:" + std::to_string(metadata_servers_ports[i]) +
-        "\"";
-    if (i < metadata_servers_ports.size() - 1) metadata_servers += ",";
+    const uint64_t view_id) {
+  std::vector<mysql_harness::TCPAddress> metadata_servers;
+  for (const auto port : metadata_servers_ports) {
+    metadata_servers.emplace_back("127.0.0.1", port);
+  }
+  return create_state_file_content(metadata_servers, cluster_type_specific_id,
+                                   clusterset_id, view_id);
+}
+
+std::string create_state_file_content(
+    const std::vector<mysql_harness::TCPAddress> &metadata_servers,
+    const std::string &cluster_type_specific_id,
+    const std::string &clusterset_id, const uint64_t view_id /*= 0*/) {
+  std::string metadata_servers_str;
+  for (auto [i, metadata_server] : stdx::views::enumerate(metadata_servers)) {
+    metadata_servers_str += "\"mysql://" + metadata_server.address() + ":" +
+                            std::to_string(metadata_server.port()) + "\"";
+    if (i < metadata_servers.size() - 1) metadata_servers_str += ",";
   }
   std::string view_id_str;
   if (view_id > 0) view_id_str = R"(, "view-id":)" + std::to_string(view_id);
@@ -89,7 +105,7 @@ std::string create_state_file_content(
        R"("version": ")" + version + R"(",)"
        R"("metadata-cache": {)"
          + cluster_id +
-         R"("cluster-metadata-servers": [)" + metadata_servers + "]"
+         R"("cluster-metadata-servers": [)" + metadata_servers_str + "]"
          + view_id_str +
         "}"
       "}";
@@ -226,6 +242,34 @@ int get_int_field_value(const std::string &json_string,
   return json_doc[field_name.c_str()].GetInt();
 }
 
+std::string get_str_field_value(const std::string &json_string,
+                                const std::string &field_name) {
+  rapidjson::Document json_doc;
+  json_doc.Parse(json_string.c_str());
+  if (!json_doc.HasMember(field_name.c_str())) {
+    // that can mean this has not been set yet
+    return "";
+  }
+
+  if (!json_doc[field_name.c_str()].IsString()) {
+    // that can mean this has not been set yet
+    return "";
+  }
+
+  return json_doc[field_name.c_str()].GetString();
+}
+
+std::string get_json_in_pretty_format(const std::string &json_string) {
+  rapidjson::Document json_doc;
+  json_doc.Parse(json_string.c_str());
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  json_doc.Accept(writer);
+
+  return buffer.GetString();
+}
+
 int get_transaction_count(const std::string &json_string) {
   return get_int_field_value(json_string, "transaction_count");
 }
@@ -277,9 +321,12 @@ bool wait_connection_dropped(mysqlrouter::MySQLSession &session,
 
   do {
     try {
-      session.query_one("select @@@port");
-    } catch (const mysqlrouter::MySQLSession::Error &) {
-      return true;
+      session.query_one("select @@port");
+    } catch (const mysqlrouter::MySQLSession::Error &e) {
+      // we expect "connection failed" or  "lost connection during query"
+      if (e.code() == 2003 || e.code() == 2013) return true;
+
+      throw e;
     }
 
     std::this_thread::sleep_for(kStep);
@@ -324,4 +371,131 @@ void make_bad_connection(uint16_t port) {
   while (net::read(sock, net::buffer(buf))) {
     // read until error.
   }
+}
+
+static void validate_json_against_schema(const JsonSchemaDocument &schema,
+                                         const JsonDocument &json) {
+  JsonSchemaValidator validator(schema);
+  if (!json.Accept(validator)) {
+    // validation failed - throw an error with info of where the problem is
+    rapidjson::StringBuffer sb_schema;
+    validator.GetInvalidSchemaPointer().StringifyUriFragment(sb_schema);
+    rapidjson::StringBuffer sb_json;
+    validator.GetInvalidDocumentPointer().StringifyUriFragment(sb_json);
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    json.Accept(writer);
+
+    // Output {"project":"rapidjson","stars":11}
+    std::cout << buffer.GetString() << std::endl;
+    FAIL() << std::string("Failed schema directive: ") + sb_schema.GetString() +
+                  "\nFailed schema keyword:   " +
+                  validator.GetInvalidSchemaKeyword() +
+                  "\nFailure location in validated document: " +
+                  sb_json.GetString() + "\n" + buffer.GetString() + "\n";
+  }
+}
+
+static void validate_json_against_schema(const std::string &json,
+                                         const std::string &schema) {
+  // 1. create schema object from string
+  JsonDocument schema_json;
+  if (schema_json
+          .Parse<rapidjson::kParseCommentsFlag>(schema.data(), schema.length())
+          .HasParseError()) {
+    FAIL() << "Parsing JSON schema failed at offset "
+           << std::to_string(schema_json.GetErrorOffset()) << ": "
+           << rapidjson::GetParseError_En(schema_json.GetParseError());
+    return;
+  }
+  JsonSchemaDocument schema_doc(schema_json);
+
+  // 2. create json document from string to verify
+  JsonDocument verified_json_doc;
+  if (verified_json_doc
+          .Parse<rapidjson::kParseCommentsFlag>(json.data(), json.length())
+          .HasParseError()) {
+    FAIL() << "Parsing JSON failed at offset "
+           << std::to_string(schema_json.GetErrorOffset()) << ": "
+           << rapidjson::GetParseError_En(verified_json_doc.GetParseError());
+    return;
+  }
+
+  // 3. validate JSON set in the metadata against the schema
+  validate_json_against_schema(schema_doc, verified_json_doc);
+}
+
+void validate_config_stored_in_md(uint16_t http_port,
+                                  const std::string &validation_schema) {
+  const auto server_globals =
+      MockServerRestClient(http_port).get_globals_as_json_string();
+  std::string config_json =
+      get_str_field_value(server_globals, "upd_attr_config_json");
+
+  config_json.erase(std::remove(config_json.begin(), config_json.end(), '\\'),
+                    config_json.end());
+
+  validate_json_against_schema(config_json, validation_schema);
+}
+
+std::string get_config_defaults_and_update_schema(uint16_t http_port) {
+  const auto server_globals =
+      MockServerRestClient(http_port).get_globals_as_json_string();
+  std::string schema = get_str_field_value(
+      server_globals, "upd_attr_config_defaults_and_schema_json");
+
+  std::string result = std::regex_replace(schema, std::regex("\\\\n"), "\n");
+  result.erase(std::remove(result.begin(), result.end(), '\\'), result.end());
+
+  return result;
+}
+
+namespace {
+std::string get_config_field(const std::string &json_string,
+                             const std::string &field_name) {
+  // the expected structure is:
+  // "Configuration": { "8.4.0": { "Defaults"
+
+  rapidjson::Document json_doc;
+  json_doc.Parse(json_string.c_str());
+
+  if (!json_doc.HasMember("Configuration") ||
+      !json_doc["Configuration"].IsObject()) {
+    return "";
+  }
+
+  auto json_configuration = json_doc["Configuration"].GetObject();
+  if (!json_configuration.HasMember(MYSQL_ROUTER_VERSION) ||
+      !json_configuration[MYSQL_ROUTER_VERSION].IsObject()) {
+    return "";
+  }
+
+  auto json_version = json_configuration[MYSQL_ROUTER_VERSION].GetObject();
+  if (!json_version.HasMember(field_name.c_str()) ||
+      !json_version[field_name.c_str()].IsObject()) {
+    return "";
+  }
+
+  auto &json_field = json_version[field_name.c_str()];
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  json_field.Accept(writer);
+  return buffer.GetString();
+}
+}  // namespace
+
+std::string get_config_defaults_stored_in_md(uint16_t http_port) {
+  const auto config_default_and_update_schema =
+      get_config_defaults_and_update_schema(http_port);
+
+  return get_config_field(config_default_and_update_schema, "Defaults");
+}
+
+std::string get_config_update_schema_stored_in_md(uint16_t http_port) {
+  const auto config_default_and_update_schema =
+      get_config_defaults_and_update_schema(http_port);
+
+  return get_config_field(config_default_and_update_schema,
+                          "ConfigurationChangesSchema");
 }

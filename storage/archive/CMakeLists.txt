@@ -22,11 +22,10 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
 MSVC_CPPCHECK_DISABLE()
+DISABLE_MISSING_PROFILE_WARNING()
 
 MYSQL_ADD_PLUGIN(archive azio.cc ha_archive.cc
   DEFAULT_LEGACY_ENGINE
   STORAGE_ENGINE
   LINK_LIBRARIES extra::rapidjson ext::zlib
 )
-# Exclude archive from PGO on Windows to avoid linker error LNK1248
-EXCLUDE_FROM_MSVC_PGO(archive)

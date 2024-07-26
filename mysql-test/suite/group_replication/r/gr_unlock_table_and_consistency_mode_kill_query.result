@@ -6,11 +6,9 @@ Note	####	Storing MySQL user name or password information in the connection meta
 
 # 1. Create table t1 and setup group of M1(primary), M2(secondary).
 [connection server1]
-SET @@GLOBAL.group_replication_consistency= BEFORE_ON_PRIMARY_FAILOVER;
 CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 include/start_and_bootstrap_group_replication.inc
 [connection server2]
-SET @@GLOBAL.group_replication_consistency= BEFORE_ON_PRIMARY_FAILOVER;
 include/start_group_replication.inc
 
 # 2. Lock table t1 on M2.
@@ -26,14 +24,14 @@ INSERT INTO t1 VALUES (1);
 include/stop_group_replication.inc
 
 # 4. UNLOCK table on M2.
-#    UNLOCK statement will be blocked due to consistency
+#    UNLOCK statement will be blocked due to default consistency
 #    BEFORE_ON_PRIMARY_FAILOVER
 [connection server2]
 UNLOCK TABLES;;
 
 # 5. Check UNLOCK statement executed on other client session does no
 #    release the LOCK table.
-#    KILL QUERY to release the UNLOCK.
+#    KILL QUERY to release the UNLOCK with consistency set to EVENTUAL.
 [connection server_2]
 SET @group_replication_consistency_save= @@SESSION.group_replication_consistency;
 SET @@SESSION.group_replication_consistency= 'EVENTUAL';

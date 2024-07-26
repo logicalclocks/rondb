@@ -219,7 +219,7 @@ SELECT COUNT(*) FROM mysql.global_grants
 --echo # Stop / start DB server which was created by MTR default
 --let $shutdown_server_timeout= 300
 --let $wait_counter= 3000
---let $restart_parameters= restart: --datadir=$MYSQLD_DATADIR --log-error=$MYSQLD_LOG --character-set-server=utf8 --collation-server=utf8_unicode_ci
+--let $restart_parameters= restart: --datadir=$MYSQLD_DATADIR --log-error=$MYSQLD_LOG --character-set-server=utf8mb3 --collation-server=utf8_unicode_ci
 --replace_result $MYSQLD_DATADIR MYSQLD_DATADIR $MYSQLD_LOG MYSQLD_LOG
 --source include/restart_mysqld.inc
 
@@ -382,7 +382,7 @@ ALTER TABLE test.t ENGINE = InnoDB;
 --let $shutdown_server_timeout= 300
 
 --let $wait_counter= 3000
---let $restart_parameters= restart: --datadir=$MYSQLD_DATADIR --log-error=$MYSQLD_LOG --character-set-server=utf8 --collation-server=utf8_unicode_ci
+--let $restart_parameters= restart: --datadir=$MYSQLD_DATADIR --log-error=$MYSQLD_LOG --character-set-server=utf8mb3 --collation-server=utf8_unicode_ci
 --replace_result $MYSQLD_DATADIR MYSQLD_DATADIR $MYSQLD_LOG MYSQLD_LOG
 --source include/start_mysqld.inc
 
@@ -485,7 +485,6 @@ let MYSQLD_LOG= $MYSQL_TMP_DIR/data80028_invalid_opt_hints/error.log;
 --let $shutdown_server_timeout= 300
 --let $wait_counter= 10000
 --exec echo "restart: --datadir=$DATADIR --log-error=$MYSQLD_LOG" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 CALL max_exec_time_10pov10();

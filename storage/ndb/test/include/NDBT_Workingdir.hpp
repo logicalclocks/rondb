@@ -28,10 +28,11 @@
 #ifndef NDBT_WORKINGDIR_HPP
 #define NDBT_WORKINGDIR_HPP
 
-#include <stdint.h>
-#include <BaseString.hpp>
-#include <NdbDir.hpp>
-#include "NdbProcess.hpp"
+#include <cstdint>
+
+#include "portlib/NdbDir.hpp"
+#include "portlib/NdbHost.h"
+#include "util/BaseString.hpp"
 #include "util/require.h"
 
 class NDBT_Workingdir {
@@ -46,7 +47,7 @@ class NDBT_Workingdir {
     require(tmp_path);
 
     m_wd.assfmt("%s%s%s%d", tmp_path, DIR_SEPARATOR, dirname,
-                (int)NdbProcess::getpid());
+                NdbHost_GetProcessId());
     if (access(m_wd.c_str(), F_OK) == 0) NdbDir::remove_recursive(m_wd.c_str());
     if (!NdbDir::create(m_wd.c_str())) abort();
   }

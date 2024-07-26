@@ -57,8 +57,14 @@ enum ndb_mgm_error {
   NDB_MGM_BIND_ADDRESS = 1012,
   /** Supplied bind-address is illegal */
   NDB_MGM_ILLEGAL_BIND_ADDRESS = 1013,
-  /** Cannot convert TLS MGM connection to transporter */
-  NDB_MGM_CANNOT_CONVERT_TO_TRANSPORTER = 1014,
+  /** TLS is not available; client-side error */
+  NDB_MGM_TLS_ERROR = 1014,
+  /** Server refused to upgrade connection to TLS */
+  NDB_MGM_TLS_REFUSED = 1015,
+  /** TLS handshake failed; connection closed */
+  NDB_MGM_TLS_HANDSHAKE_FAILED = 1016,
+  /** NdbMgmHandle is already connected */
+  NDB_MGM_ALREADY_CONNECTED = 1017,
 
   /* Alloc node id failures */
   /** Generic error, retry may succeed */
@@ -68,6 +74,14 @@ enum ndb_mgm_error {
   /** Mgmd failed to match hostname, but AllowUnresolvedHostnames=true.
       Connecting node should retry. */
   NDB_MGM_ALLOCID_CONFIG_RETRY = 1103,
+
+  /* Authorization failures.  Server did not allow command. */
+  /** Generic authorization failure. */
+  NDB_MGM_NOT_AUTHORIZED = 1501,
+  /** Command requires TLS */
+  NDB_MGM_AUTH_REQUIRES_TLS = 1502,
+  /** Command requires TLS client certificate */
+  NDB_MGM_AUTH_REQUIRES_CLIENT_CERT = 1503,
 
   /* Service errors - Start/Stop Node or System */
   /** Start failed */

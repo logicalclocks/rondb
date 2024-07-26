@@ -23,7 +23,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-#include "channel.h"
+#include "mysqlrouter/channel.h"
 
 #include <cassert>
 
@@ -39,7 +39,7 @@ stdx::expected<void, std::error_code> Channel::tls_accept() {
 
   const auto res = SSL_accept(ssl);
   if (res != 1) {
-    return stdx::make_unexpected(make_tls_ssl_error(ssl, res));
+    return stdx::unexpected(make_tls_ssl_error(ssl, res));
   }
 
   return {};
@@ -50,7 +50,7 @@ stdx::expected<void, std::error_code> Channel::tls_connect() {
 
   const auto res = SSL_connect(ssl);
   if (res != 1) {
-    return stdx::make_unexpected(make_tls_ssl_error(ssl, res));
+    return stdx::unexpected(make_tls_ssl_error(ssl, res));
   }
 
   return {};
@@ -65,7 +65,7 @@ stdx::expected<bool, std::error_code> Channel::tls_shutdown() {
 
   const auto res = SSL_shutdown(ssl);
   if (res < 0) {
-    return stdx::make_unexpected(make_tls_ssl_error(ssl, res));
+    return stdx::unexpected(make_tls_ssl_error(ssl, res));
   }
 
   if (res == 0) {
@@ -92,15 +92,14 @@ stdx::expected<size_t, std::error_code> Channel::read_plain(
   if (ssl_) {
     const auto res = SSL_read(ssl_.get(), b.data(), b.size());
     if (res <= 0) {
-      return stdx::make_unexpected(make_tls_ssl_error(ssl_.get(), res));
+      return stdx::unexpected(make_tls_ssl_error(ssl_.get(), res));
     }
 
     return res;
   }
 
   if (recv_view_.empty()) {
-    return stdx::make_unexpected(
-        make_error_code(std::errc::operation_would_block));
+    return stdx::unexpected(make_error_code(std::errc::operation_would_block));
   }
 
   auto transferred = net::buffer_copy(
@@ -131,7 +130,7 @@ stdx::expected<size_t, std::error_code> Channel::flush_from_recv_buf() {
       if (bio_res < 0) {
         if (transferred != 0) return transferred;
 
-        return stdx::make_unexpected(
+        return stdx::unexpected(
             make_error_code(std::errc::operation_would_block));
       }
 
@@ -166,7 +165,7 @@ stdx::expected<size_t, std::error_code> Channel::flush_to_send_buf() {
 
     const auto res = SSL_write(ssl_.get(), spn.data(), spn.size());
     if (res <= 0) {
-      return stdx::make_unexpected(make_tls_ssl_error(ssl_.get(), res));
+      return stdx::unexpected(make_tls_ssl_error(ssl_.get(), res));
     }
 
     // remove the data that has been sent.
@@ -196,13 +195,12 @@ stdx::expected<size_t, std::error_code> Channel::flush_to_send_buf() {
       dyn_buf.shrink(grow_size);
 
       if (!BIO_should_retry(wbio)) {
-        return stdx::make_unexpected(
-            make_error_code(std::errc::invalid_argument));
+        return stdx::unexpected(make_error_code(std::errc::invalid_argument));
       }
 
       if (transferred != 0) return transferred;
 
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           make_error_code(std::errc::operation_would_block));
     }
 
@@ -224,7 +222,7 @@ stdx::expected<size_t, std::error_code> Channel::read_to_plain(size_t sz) {
 
   {
     const auto flush_res = flush_from_recv_buf();
-    if (!flush_res) return stdx::make_unexpected(flush_res.error());
+    if (!flush_res) return stdx::unexpected(flush_res.error());
   }
 
   auto &plain_buf = recv_plain_buffer_;
@@ -255,7 +253,7 @@ stdx::expected<size_t, std::error_code> Channel::read_to_plain(size_t sz) {
       if (read_res.error() != TlsErrc::kWantRead &&
           read_res.error() !=
               make_error_code(std::errc::operation_would_block)) {
-        return read_res.get_unexpected();
+        return stdx::unexpected(read_res.error());
       }
 
       break;

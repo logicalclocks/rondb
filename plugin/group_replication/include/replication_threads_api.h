@@ -52,8 +52,8 @@ class Replication_thread_api {
   }
 
   /**
-    Initializes a channel connection in a similar way to a change master
-    command.
+    Initializes a channel connection in a similar way to a change replication
+    source command.
 
     @param hostname      The channel hostname
     @param port          The channel port
@@ -107,6 +107,8 @@ class Replication_thread_api {
                                 until view id clause.
     @param wait_for_connection  If when starting the receiver, the method should
                                 wait for the connection to succeed
+    @param until_condition      the replication until condition that can be
+                                applied to channels for the recovery.
 
     @return the operation status
       @retval 0      OK
@@ -115,8 +117,10 @@ class Replication_thread_api {
       @retval REPLICATION_THREAD_START_IO_NOT_CONNECTED
         Error when the threads start, but the IO thread cannot connect
    */
-  int start_threads(bool start_receiver, bool start_applier,
-                    std::string *view_id, bool wait_for_connection);
+  int start_threads(
+      bool start_receiver, bool start_applier, std::string *view_id,
+      bool wait_for_connection,
+      enum_channel_until_condition until_condition = CHANNEL_UNTIL_VIEW_ID);
 
   /**
     Stops the channel threads according to the given options.

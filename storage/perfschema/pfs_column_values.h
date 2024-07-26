@@ -25,7 +25,6 @@
 #define PFS_COLUMN_VALUES_H
 
 #include "lex_string.h"
-#include "m_string.h" /* LEX_STRING */
 
 /**
   @file storage/perfschema/pfs_column_values.h
@@ -70,6 +69,10 @@ extern LEX_CSTRING transaction_instrument_prefix;
 extern LEX_CSTRING builtin_memory_instrument_prefix;
 /** String prefix for all memory instruments. */
 extern LEX_CSTRING memory_instrument_prefix;
+/** String prefix for all meter instruments. */
+extern LEX_CSTRING meter_instrument_prefix;
+/** String prefix for all metric instruments. */
+extern LEX_CSTRING metric_instrument_prefix;
 /** Name of the global error class. */
 extern LEX_CSTRING error_class_name;
 

@@ -24,6 +24,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "openssl/ssl.h"
+
 #include <ndb_global.h>
 
 #include <mgmapi.h>
@@ -32,11 +34,13 @@
 #include <EventLogger.hpp>
 #include <LogLevel.hpp>
 #include <signaldata/SetLogLevelOrd.hpp>
+#include "util/TlsKeyManager.hpp"
 
 #include <ConfigValues.hpp>
 #include <Vector.hpp>
 #include <mgmapi_configuration.hpp>
 #include "../mgmapi/ndb_logevent.hpp"
+#include "MgmAuth.hpp"
 #include "Services.hpp"
 
 #include "ndb_mgmd_error.h"
@@ -45,6 +49,7 @@
 #include <ndberror.h>
 #include "portlib/NdbTCP.h"
 #include "portlib/ndb_sockaddr.h"
+#include "util/ndb_openssl3_compat.h"
 
 extern bool g_StopServer;
 extern bool g_RestartServer;
@@ -66,13 +71,14 @@ extern bool g_RestartServer;
    const int maxVal;
    void (T::* function)(const class Properties & args);
    const char * description;
+   void * user_value;
 */
 
-#define MGM_CMD(name, fun, desc)                                              \
+#define MGM_CMD(name, fun, desc, authlevel)                                   \
   {                                                                           \
     name, 0, ParserRow<MgmApiSession>::Cmd, ParserRow<MgmApiSession>::String, \
         ParserRow<MgmApiSession>::Optional,                                   \
-        ParserRow<MgmApiSession>::IgnoreMinMax, 0, 0, fun, desc, 0            \
+        ParserRow<MgmApiSession>::IgnoreMinMax, 0, 0, fun, desc, authlevel    \
   }
 
 #define MGM_ARG(name, type, opt, desc)                                         \
@@ -82,13 +88,6 @@ extern bool g_RestartServer;
         0, 0, 0, desc, 0                                                       \
   }
 
-#define MGM_ARG2(name, type, opt, min, max, desc)                              \
-  {                                                                            \
-    name, 0, ParserRow<MgmApiSession>::Arg, ParserRow<MgmApiSession>::type,    \
-        ParserRow<MgmApiSession>::opt, ParserRow<MgmApiSession>::IgnoreMinMax, \
-        min, max, 0, desc, 0                                                   \
-  }
-
 #define MGM_END()                                                       \
   {                                                                     \
     0, 0, ParserRow<MgmApiSession>::End, ParserRow<MgmApiSession>::Int, \
@@ -96,34 +95,30 @@ extern bool g_RestartServer;
         ParserRow<MgmApiSession>::IgnoreMinMax, 0, 0, 0, 0, 0           \
   }
 
-#define MGM_CMD_ALIAS(name, realName, fun)                                 \
-  {                                                                        \
-    name, realName, ParserRow<MgmApiSession>::CmdAlias,                    \
-        ParserRow<MgmApiSession>::Int, ParserRow<MgmApiSession>::Optional, \
-        ParserRow<MgmApiSession>::IgnoreMinMax, 0, 0, 0, 0, 0              \
-  }
+/* Command Auth structures are referenced by the "user_value" pointer in
+   ParserRow.
+*/
+struct CmdAuth {
+  MgmAuth::level level;
+};
 
-#define MGM_ARG_ALIAS(name, realName, fun)                                 \
-  {                                                                        \
-    name, realName, ParserRow<MgmApiSession>::ArgAlias,                    \
-        ParserRow<MgmApiSession>::Int, ParserRow<MgmApiSession>::Optional, \
-        ParserRow<MgmApiSession>::IgnoreMinMax, 0, 0, 0, 0, 0              \
-  }
+static struct CmdAuth Boot { MgmAuth::cmdIsBootstrap };
+static struct CmdAuth Basic { 0 };
 
 const ParserRow<MgmApiSession> commands[] = {
-    MGM_CMD("get config", &MgmApiSession::getConfig_v1, ""),
+    MGM_CMD("get config", &MgmApiSession::getConfig_v1, "", &Basic),
     MGM_ARG("version", Int, Mandatory, "Configuration version number"),
     MGM_ARG("node", Int, Optional, "Node ID"),
     MGM_ARG("nodetype", Int, Optional, "Type of requesting node"),
     MGM_ARG("from_node", Int, Optional, "Node to get config from"),
 
-    MGM_CMD("get config_v2", &MgmApiSession::getConfig_v2, ""),
+    MGM_CMD("get config_v2", &MgmApiSession::getConfig_v2, "", &Basic),
     MGM_ARG("version", Int, Mandatory, "Configuration version number"),
     MGM_ARG("node", Int, Optional, "Node ID"),
     MGM_ARG("nodetype", Int, Optional, "Type of requesting node"),
     MGM_ARG("from_node", Int, Optional, "Node to get config from"),
 
-    MGM_CMD("get nodeid", &MgmApiSession::get_nodeid, ""),
+    MGM_CMD("get nodeid", &MgmApiSession::get_nodeid, "", &Basic),
     MGM_ARG("version", Int, Mandatory, "Configuration version number"),
     MGM_ARG("nodetype", Int, Mandatory, "Node type"),
     MGM_ARG("transporter", String, Optional, "Transporter type"),
@@ -136,63 +131,66 @@ const ParserRow<MgmApiSession> commands[] = {
     MGM_ARG("timeout", Int, Optional, "Timeout in seconds"),
     MGM_ARG("log_event", Int, Optional, "Log failure in cluster log"),
 
-    MGM_CMD("get version", &MgmApiSession::getVersion, ""),
+    MGM_CMD("get version", &MgmApiSession::getVersion, "", &Boot),
 
-    MGM_CMD("set clientversion", &MgmApiSession::setClientVersion, ""),
+    MGM_CMD("set clientversion", &MgmApiSession::setClientVersion, "", &Boot),
     MGM_ARG("major", Int, Mandatory, "Client major version"),
     MGM_ARG("minor", Int, Mandatory, "Client minor version"),
     MGM_ARG("build", Int, Mandatory, "Client build version"),
 
-    MGM_CMD("get status", &MgmApiSession::getStatus, ""),
+    MGM_CMD("get status", &MgmApiSession::getStatus, "", &Basic),
     MGM_ARG("types", String, Optional, "Types"),
 
-    MGM_CMD("get info clusterlog", &MgmApiSession::getInfoClusterLog, ""),
-    MGM_CMD("get cluster loglevel", &MgmApiSession::getClusterLogLevel, ""),
+    MGM_CMD("get info clusterlog", &MgmApiSession::getInfoClusterLog, "",
+            &Basic),
 
-    MGM_CMD("restart node", &MgmApiSession::restart_v1, ""),
+    MGM_CMD("get cluster loglevel", &MgmApiSession::getClusterLogLevel, "",
+            &Basic),
+
+    MGM_CMD("restart node", &MgmApiSession::restart_v1, "", &Basic),
     MGM_ARG("node", String, Mandatory, "Nodes to restart"),
     MGM_ARG("initialstart", Int, Optional, "Initial start"),
     MGM_ARG("nostart", Int, Optional, "No start"),
     MGM_ARG("abort", Int, Optional, "Abort"),
 
-    MGM_CMD("restart node v2", &MgmApiSession::restart_v2, ""),
+    MGM_CMD("restart node v2", &MgmApiSession::restart_v2, "", &Basic),
     MGM_ARG("node", String, Mandatory, "Nodes to restart"),
     MGM_ARG("initialstart", Int, Optional, "Initial start"),
     MGM_ARG("nostart", Int, Optional, "No start"),
     MGM_ARG("abort", Int, Optional, "Abort"),
     MGM_ARG("force", Int, Optional, "Force"),
 
-    MGM_CMD("restart all", &MgmApiSession::restartAll, ""),
+    MGM_CMD("restart all", &MgmApiSession::restartAll, "", &Basic),
     MGM_ARG("initialstart", Int, Optional, "Initial start"),
     MGM_ARG("nostart", Int, Optional, "No start"),
     MGM_ARG("abort", Int, Optional, "Abort"),
 
-    MGM_CMD("insert error", &MgmApiSession::insertError, ""),
+    MGM_CMD("insert error", &MgmApiSession::insertError, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node to receive error"),
     MGM_ARG("error", Int, Mandatory, "Errorcode to insert"),
     MGM_ARG("extra", Int, Optional, "Extra info to error insert"),
 
-    MGM_CMD("set trace", &MgmApiSession::setTrace, ""),
+    MGM_CMD("set trace", &MgmApiSession::setTrace, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
     MGM_ARG("trace", Int, Mandatory, "Trace number"),
 
-    MGM_CMD("log signals", &MgmApiSession::logSignals, ""),
+    MGM_CMD("log signals", &MgmApiSession::logSignals, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
     MGM_ARG("blocks", String, Mandatory, "Blocks (space separated)"),
     MGM_ARG("in", Int, Mandatory, "Log input signals"),
     MGM_ARG("out", Int, Mandatory, "Log output signals"),
 
-    MGM_CMD("start signallog", &MgmApiSession::startSignalLog, ""),
+    MGM_CMD("start signallog", &MgmApiSession::startSignalLog, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
 
-    MGM_CMD("stop signallog", &MgmApiSession::stopSignalLog, ""),
+    MGM_CMD("stop signallog", &MgmApiSession::stopSignalLog, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
 
-    MGM_CMD("dump state", &MgmApiSession::dumpState, ""),
+    MGM_CMD("dump state", &MgmApiSession::dumpState, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
     MGM_ARG("args", String, Mandatory, "Args(space separated int's)"),
 
-    MGM_CMD("start backup", &MgmApiSession::startBackup, ""),
+    MGM_CMD("start backup", &MgmApiSession::startBackup, "", &Basic),
     MGM_ARG("completed", Int, Optional, "Wait until completed"),
     MGM_ARG("backupid", Int, Optional, "User input backup id"),
     MGM_ARG("backuppoint", Int, Optional,
@@ -202,141 +200,179 @@ const ParserRow<MgmApiSession> commands[] = {
     MGM_ARG("password_length", Int, Optional,
             "Length of encryption password in bytes"),
 
-    MGM_CMD("abort backup", &MgmApiSession::abortBackup, ""),
+    MGM_CMD("abort backup", &MgmApiSession::abortBackup, "", &Basic),
     MGM_ARG("id", Int, Mandatory, "Backup id"),
 
-    MGM_CMD("stop", &MgmApiSession::stop_v1, ""),
+    MGM_CMD("stop", &MgmApiSession::stop_v1, "", &Basic),
     MGM_ARG("node", String, Mandatory, "Node"),
     MGM_ARG("abort", Int, Mandatory, "Node"),
 
-    MGM_CMD("stop v2", &MgmApiSession::stop_v2, ""),
+    MGM_CMD("stop v2", &MgmApiSession::stop_v2, "", &Basic),
     MGM_ARG("node", String, Mandatory, "Node"),
     MGM_ARG("abort", Int, Mandatory, "Node"),
     MGM_ARG("force", Int, Optional, "Force"),
 
-    MGM_CMD("stop all", &MgmApiSession::stopAll, ""),
+    MGM_CMD("stop all", &MgmApiSession::stopAll, "", &Basic),
     MGM_ARG("abort", Int, Mandatory, "Node"),
     MGM_ARG("stop", String, Optional, "MGM/DB or both"),
 
-    MGM_CMD("enter single user", &MgmApiSession::enterSingleUser, ""),
+    MGM_CMD("enter single user", &MgmApiSession::enterSingleUser, "", &Basic),
     MGM_ARG("nodeId", Int, Mandatory, "Node"),
   
-    MGM_CMD("get mgm nodeid", &MgmApiSession::get_mgm_nodeid, ""),
+    MGM_CMD("get mgm nodeid", &MgmApiSession::get_mgm_nodeid, "", &Basic),
 
-    MGM_CMD("set_hostname", &MgmApiSession::set_hostname, ""),
+    MGM_CMD("set_hostname", &MgmApiSession::set_hostname, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "node"),
     MGM_ARG("new_hostname", String, Mandatory, "new hostname"),
 
-    MGM_CMD("activate", &MgmApiSession::activate, ""),
+    MGM_CMD("activate", &MgmApiSession::activate, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "node"),
 
-    MGM_CMD("deactivate", &MgmApiSession::deactivate, ""),
+    MGM_CMD("deactivate", &MgmApiSession::deactivate, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "node"),
 
-    MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, ""),
+    MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, "", &Basic),
 
-    MGM_CMD("start", &MgmApiSession::start, ""),
+    MGM_CMD("start", &MgmApiSession::start, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
 
-    MGM_CMD("start all", &MgmApiSession::startAll, ""),
+    MGM_CMD("start all", &MgmApiSession::startAll, "", &Basic),
 
-    MGM_CMD("bye", &MgmApiSession::bye, ""),
+    MGM_CMD("start tls", &MgmApiSession::startTls, "", &Boot),
 
-    MGM_CMD("end session", &MgmApiSession::endSession, ""),
+    MGM_CMD("bye", &MgmApiSession::bye, "", &Basic),
 
-    MGM_CMD("set loglevel", &MgmApiSession::setLogLevel, ""),
+    MGM_CMD("end session", &MgmApiSession::endSession, "", &Boot),
+
+    MGM_CMD("set loglevel", &MgmApiSession::setLogLevel, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
     MGM_ARG("category", Int, Mandatory, "Event category"),
     MGM_ARG("level", Int, Mandatory, "Log level (0-15)"),
 
-    MGM_CMD("set cluster loglevel", &MgmApiSession::setClusterLogLevel, ""),
+    MGM_CMD("set cluster loglevel", &MgmApiSession::setClusterLogLevel, "",
+            &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
     MGM_ARG("category", Int, Mandatory, "Event category"),
     MGM_ARG("level", Int, Mandatory, "Log level (0-15)"),
 
-    MGM_CMD("set logfilter", &MgmApiSession::setLogFilter, ""),
+    MGM_CMD("set logfilter", &MgmApiSession::setLogFilter, "", &Basic),
     MGM_ARG("level", Int, Mandatory, "Severety level"),
     MGM_ARG("enable", Int, Mandatory, "1=disable, 0=enable, -1=toggle"),
 
-    MGM_CMD("set parameter", &MgmApiSession::setParameter, ""),
+    MGM_CMD("set parameter", &MgmApiSession::setParameter, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
     MGM_ARG("parameter", Int, Mandatory, "Parameter"),
     MGM_ARG("value", String, Mandatory, "Value"),
 
     MGM_CMD("set connection parameter", &MgmApiSession::setConnectionParameter,
-            ""),
+            "", &Basic),
     MGM_ARG("node1", Int, Mandatory, "Node1 ID"),
     MGM_ARG("node2", Int, Mandatory, "Node2 ID"),
     MGM_ARG("param", Int, Mandatory, "Parameter"),
     MGM_ARG("value", Int, Mandatory, "Value"),
 
     MGM_CMD("get connection parameter", &MgmApiSession::getConnectionParameter,
-            ""),
+            "", &Basic),
     MGM_ARG("node1", Int, Mandatory, "Node1 ID"),
     MGM_ARG("node2", Int, Mandatory, "Node2 ID"),
     MGM_ARG("param", Int, Mandatory, "Parameter"),
 
-    MGM_CMD("listen event", &MgmApiSession::listen_event, ""),
+    MGM_CMD("listen event", &MgmApiSession::listen_event, "", &Basic),
     MGM_ARG("node", Int, Optional, "Node"),
     MGM_ARG("parsable", Int, Optional, "Parsable"),
     MGM_ARG("filter", String, Mandatory, "Event category"),
 
-    MGM_CMD("purge stale sessions", &MgmApiSession::purge_stale_sessions, ""),
+    MGM_CMD("purge stale sessions", &MgmApiSession::purge_stale_sessions, "",
+            &Basic),
 
-    MGM_CMD("check connection", &MgmApiSession::check_connection, ""),
+    MGM_CMD("check connection", &MgmApiSession::check_connection, "", &Boot),
 
-    MGM_CMD("transporter connect", &MgmApiSession::transporter_connect, ""),
+    MGM_CMD("transporter connect", &MgmApiSession::transporter_connect, "",
+            &Basic),
 
-    MGM_CMD("get mgmd nodeid", &MgmApiSession::get_mgmd_nodeid, ""),
+    MGM_CMD("get mgmd nodeid", &MgmApiSession::get_mgmd_nodeid, "", &Boot),
 
-    MGM_CMD("report event", &MgmApiSession::report_event, ""),
+    MGM_CMD("report event", &MgmApiSession::report_event, "", &Basic),
     MGM_ARG("length", Int, Mandatory, "Length"),
     MGM_ARG("data", String, Mandatory, "Data"),
 
-    MGM_CMD("list sessions", &MgmApiSession::listSessions, ""),
+    MGM_CMD("list sessions", &MgmApiSession::listSessions, "", &Basic),
 
-    MGM_CMD("get session id", &MgmApiSession::getSessionId, ""),
+    MGM_CMD("list certs", &MgmApiSession::listCerts, "Show TLS certificates",
+            &Basic),
 
-    MGM_CMD("get session", &MgmApiSession::getSession, ""),
+    MGM_CMD("get tls stats", &MgmApiSession::getTlsStats, "Get TLS statistics",
+            &Basic),
+
+    MGM_CMD("get session id", &MgmApiSession::getSessionId, "", &Basic),
+
+    MGM_CMD("get session", &MgmApiSession::getSession, "", &Basic),
     MGM_ARG("id", Int, Mandatory, "SessionID"),
 
-    MGM_CMD("set config", &MgmApiSession::setConfig_v1, ""),
+    MGM_CMD("set config", &MgmApiSession::setConfig_v1, "", &Basic),
     MGM_ARG("Content-Length", Int, Mandatory, "Length of config"),
     MGM_ARG("Content-Type", String, Mandatory, "Type of config"),
     MGM_ARG("Content-Transfer-Encoding", String, Mandatory, "encoding"),
 
-    MGM_CMD("set config_v2", &MgmApiSession::setConfig_v2, ""),
+    MGM_CMD("set config_v2", &MgmApiSession::setConfig_v2, "", &Basic),
     MGM_ARG("Content-Length", Int, Mandatory, "Length of config"),
     MGM_ARG("Content-Type", String, Mandatory, "Type of config"),
     MGM_ARG("Content-Transfer-Encoding", String, Mandatory, "encoding"),
 
-    MGM_CMD("create nodegroup", &MgmApiSession::create_nodegroup, ""),
+    MGM_CMD("create nodegroup", &MgmApiSession::create_nodegroup, "", &Basic),
     MGM_ARG("nodes", String, Mandatory, "Nodes"),
 
-    MGM_CMD("drop nodegroup", &MgmApiSession::drop_nodegroup, ""),
+    MGM_CMD("drop nodegroup", &MgmApiSession::drop_nodegroup, "", &Basic),
     MGM_ARG("ng", Int, Mandatory, "Nodegroup"),
 
-    MGM_CMD("show config", &MgmApiSession::showConfig, ""),
+    MGM_CMD("show config", &MgmApiSession::showConfig, "", &Basic),
     MGM_ARG("Section", String, Optional, "Section name"),
     MGM_ARG("NodeId", Int, Optional, "Nodeid"),
     MGM_ARG("Name", String, Optional, "Parameter name"),
 
-    MGM_CMD("reload config", &MgmApiSession::reloadConfig, ""),
+    MGM_CMD("reload config", &MgmApiSession::reloadConfig, "", &Basic),
     MGM_ARG("config_filename", String, Optional, "Reload from path"),
     MGM_ARG("mycnf", Int, Optional, "Reload from my.cnf"),
     MGM_ARG("force", Int, Optional, "Force reload"),
 
-    MGM_CMD("show variables", &MgmApiSession::show_variables, ""),
+    MGM_CMD("show variables", &MgmApiSession::show_variables, "", &Basic),
 
-    MGM_CMD("dump events", &MgmApiSession::dump_events, ""),
+    MGM_CMD("dump events", &MgmApiSession::dump_events, "", &Basic),
     MGM_ARG("type", Int, Mandatory, "Type of event"),
     MGM_ARG("nodes", String, Optional, "Nodes to include"),
 
-    MGM_CMD("set ports", &MgmApiSession::set_ports, ""),
+    MGM_CMD("set ports", &MgmApiSession::set_ports, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node which port list concerns"),
     MGM_ARG("num_ports", Int, Mandatory, "Number of ports being set"),
 
     MGM_END()};
+
+/*** Specialization of Parser<T>::run() for MgmApiSession ***/
+template <>
+bool Parser<MgmApiSession>::run(Context &ctx, MgmApiSession &session,
+                                volatile bool *stop) const {
+  const Properties *p = nullptr;
+  if (impl->run((ParserImpl::Context *)&ctx, &p, stop)) {
+    const ParserRow<MgmApiSession> *cmd = ctx.m_currentCmd;
+
+    require(cmd != nullptr);
+    require(ctx.m_aliasUsed.size() == 0);  // The grammar does not use aliases
+    require(cmd->function != nullptr);     // ... or CommandWithoutFunction
+
+    /* Authorization & Access Check */
+    CmdAuth *cmdAuthLevel = static_cast<CmdAuth *>(cmd->user_value);
+    int auth_result = session.checkAuth(cmdAuthLevel);
+    if (auth_result == MgmAuth::result::Ok) {
+      (session.*cmd->function)(ctx, *p);  // Call the function
+    } else {
+      session.reportAuthFailure(auth_result);
+    }
+
+    delete p;
+    return true;
+  }
+  return false;
+}
 
 extern int g_errorInsert;
 #define ERROR_INSERTED(x) (g_errorInsert == x || m_errorInsert == x)
@@ -362,6 +398,8 @@ MgmApiSession::MgmApiSession(class MgmtSrvr &mgm, NdbSocket &&sock,
   m_mutex = NdbMutex_Create();
   m_errorInsert = 0;
   m_vMajor = m_vMinor = m_vBuild = 0;
+  mgm.tls_stat_increment(MgmtSrvr::TlsStats::accepted);
+  mgm.tls_stat_increment(MgmtSrvr::TlsStats::current);
 
   ndb_sockaddr addr;
   if (ndb_getpeername(sock.ndb_socket(), &addr) == 0) {
@@ -383,6 +421,11 @@ MgmApiSession::~MgmApiSession() {
   if (m_secure_socket.is_valid()) {
     m_secure_socket.close();
   }
+  if (m_cert) {
+    X509_free(m_cert);
+    m_mgmsrv.tls_stat_decrement(MgmtSrvr::TlsStats::tls);
+  }
+  m_mgmsrv.tls_stat_decrement(MgmtSrvr::TlsStats::current);
   if (m_stopSelf < 0) g_RestartServer = true;
   if (m_stopSelf) g_StopServer = true;
   NdbMutex_Destroy(m_mutex);
@@ -484,6 +527,40 @@ void MgmApiSession::runSession() {
   g_eventLogger->debug("%s: Disconnected!", name());
 
   DBUG_VOID_RETURN;
+}
+
+/* Check the session's authorization to run a command.
+   This is a function of three inputs:
+     The current user session's auth level, m_sessionAuthLevel
+     The command's auth level
+     The server's auth options.
+   It returns an int MgmAuth::error code.
+*/
+int MgmApiSession::checkAuth(CmdAuth *cmdAuth) const {
+  const MgmAuth::level &cmdAuthLevel = cmdAuth->level;
+  int serverReqLevel = 0;
+  if (m_mgmsrv.require_tls()) serverReqLevel = MgmAuth::serverRequiresTls;
+
+  return MgmAuth::checkAuth(cmdAuthLevel, serverReqLevel, m_sessionAuthLevel);
+}
+
+int MgmAuth::checkAuth(int cmdAuthLevel, int serverOpt, int sessionAuthLevel) {
+  /* Bootstrap commands are always allowed */
+  if (cmdAuthLevel & cmdIsBootstrap) return result::Ok;
+
+  /* Check for TLS required by the server */
+  if ((serverOpt & serverRequiresTls) && !(sessionAuthLevel & clientHasTls))
+    return result::ServerRequiresTls;
+
+  /* All other cases are Okay */
+  return result::Ok;
+}
+
+void MgmApiSession::reportAuthFailure(int code) {
+  m_mgmsrv.tls_stat_increment(MgmtSrvr::TlsStats::authfail);
+  m_output->println("Authorization failed");
+  m_output->println("Error: %s", MgmAuth::message(code));
+  m_output->print("\n");
 }
 
 void MgmApiSession::get_nodeid(Parser_t::Context &,
@@ -1404,6 +1481,65 @@ void MgmApiSession::startAll(Parser<MgmApiSession>::Context &,
   m_output->println("%s", "");
 }
 
+int mgmsession_on_verify(int r, X509_STORE_CTX *ctx) {
+  int idx = SSL_get_ex_data_X509_STORE_CTX_idx();
+  if (idx >= 0) {
+    SSL *ssl = static_cast<SSL *>(X509_STORE_CTX_get_ex_data(ctx, idx));
+    if (ssl) {
+      MgmApiSession *s = static_cast<MgmApiSession *>(SSL_get_ex_data(ssl, 0));
+      if (s) return s->on_verify(r, ctx);
+    }
+  }
+  assert(false);                            // SSL_set_ex_data() problem
+  return TlsKeyManager::on_verify(0, ctx);  // fail verification
+}
+
+int MgmApiSession::on_verify(int r, X509_STORE_CTX *ctx) {
+  if (r) {
+    /* certificate verification has succeeded */
+    m_sessionAuthLevel |= (MgmAuth::clientHasTls | MgmAuth::clientHasCert);
+    m_cert = X509_STORE_CTX_get_current_cert(ctx);
+    X509_up_ref(m_cert);
+  }
+  return TlsKeyManager::on_verify(r, ctx);
+}
+
+void MgmApiSession::startTls(Parser<MgmApiSession>::Context &,
+                             Properties const &) {
+  struct ssl_ctx_st *ctx = nullptr;
+  struct ssl_st *ssl = nullptr;
+  const char *result = "Failed";
+
+  if (m_secure_socket.has_tls()) {
+    result = "Already Connected";
+  } else {
+    ctx = m_mgmsrv.theFacade->get_registry()->getTlsKeyManager()->ctx();
+  }
+
+  if (ctx) ssl = NdbSocket::get_server_ssl(ctx);
+
+  if (ssl) result = "Ok";
+
+  /* Send the reply to the client */
+  m_output->println("start tls reply");
+  m_output->println("result: %s", result);
+  m_output->println("%s", "");
+  m_output->flush();
+
+  /* Override the default verify callback, and run the TLS handshake */
+  if (ssl) {
+    if (m_secure_socket.associate(ssl)) {
+      SSL_set_ex_data(ssl, 0, this);
+      SSL_set_verify(ssl, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                     mgmsession_on_verify);
+      m_secure_socket.do_tls_handshake();
+      m_mgmsrv.tls_stat_increment(MgmtSrvr::TlsStats::upgraded);
+      m_mgmsrv.tls_stat_increment(MgmtSrvr::TlsStats::tls);
+    } else
+      NdbSocket::free_ssl(ssl);
+  }
+}
+
 static bool setEventLogFilter(int severity, int enable) {
   Logger::LoggerLevel level = (Logger::LoggerLevel)severity;
   if (enable > 0) {
@@ -1884,6 +2020,34 @@ void MgmApiSession::drop_nodegroup(Parser_t::Context &ctx,
   m_output->println("%s", "");
 }
 
+void MgmApiSession::show_cert(SocketServer::Session *_s, void *data) {
+  MgmApiSession *s = (MgmApiSession *)_s;
+  MgmApiSession *lister = (MgmApiSession *)data;
+
+  if (s != lister) NdbMutex_Lock(s->m_mutex);
+
+  Uint64 id = s->m_session_id;
+  if (s->m_cert) {
+    char addr_buf[NDB_ADDR_STRLEN];
+    ndb_sockaddr peerAddr;
+    ndb_getpeername(s->m_secure_socket.ndb_socket(), &peerAddr);
+    Ndb_inet_ntop(&peerAddr, addr_buf, NDB_ADDR_STRLEN);
+
+    TlsKeyManager::cert_record record;
+    TlsKeyManager::describe_cert(record, s->m_cert);
+    char exptime[32];
+    strftime(exptime, sizeof(exptime), "%d-%b-%Y", &record.exp_tm);
+
+    lister->m_output->println("session: %llu", id);
+    lister->m_output->println("address: %s", addr_buf);
+    lister->m_output->println("serial: %s", record.serial);
+    lister->m_output->println("name: %s", record.name);
+    lister->m_output->println("expires: %s", exptime);
+  }
+
+  if (s != lister) NdbMutex_Unlock(s->m_mutex);
+}
+
 void MgmApiSession::list_session(SocketServer::Session *_s, void *data) {
   MgmApiSession *s = (MgmApiSession *)_s;
   MgmApiSession *lister = (MgmApiSession *)data;
@@ -1894,6 +2058,9 @@ void MgmApiSession::list_session(SocketServer::Session *_s, void *data) {
   lister->m_output->println("session: %llu", id);
   lister->m_output->println("session.%llu.m_stopSelf: %d", id, s->m_stopSelf);
   lister->m_output->println("session.%llu.m_stop: %d", id, s->m_stop);
+  lister->m_output->println("session.%llu.tls: %d", id,
+                            s->m_secure_socket.has_tls() ? 1 : 0);
+
   if (s->m_ctx) {
     int l = (int)strlen(s->m_ctx->m_tokenBuffer);
     char *buf = (char *)malloc(2 * l + 1);
@@ -1930,6 +2097,28 @@ void MgmApiSession::listSessions(Parser_t::Context &ctx,
   m_output->println("%s", "");
 }
 
+void MgmApiSession::listCerts(Parser_t::Context &ctx, Properties const &args) {
+  m_output->println("list certs reply");
+  m_mgmsrv.get_socket_server()->foreachSession(show_cert, (void *)this);
+  m_output->println("%s", "");
+}
+
+void MgmApiSession::getTlsStats(Parser_t::Context &ctx,
+                                Properties const &args) {
+  m_output->println("get tls stats reply");
+  m_output->println("accepted: %u",
+                    m_mgmsrv.m_tls_stats[MgmtSrvr::TlsStats::accepted].load());
+  m_output->println("upgraded: %u",
+                    m_mgmsrv.m_tls_stats[MgmtSrvr::TlsStats::upgraded].load());
+  m_output->println("current: %u",
+                    m_mgmsrv.m_tls_stats[MgmtSrvr::TlsStats::current].load());
+  m_output->println("tls: %u",
+                    m_mgmsrv.m_tls_stats[MgmtSrvr::TlsStats::tls].load());
+  m_output->println("authfail: %u",
+                    m_mgmsrv.m_tls_stats[MgmtSrvr::TlsStats::authfail].load());
+  m_output->println("%s", "");
+}
+
 void MgmApiSession::getSessionId(Parser_t::Context &ctx,
                                  Properties const &args) {
   m_output->println("get session id reply");
@@ -1958,6 +2147,7 @@ void MgmApiSession::get_session(SocketServer::Session *_s, void *data) {
   p->l->m_output->println("id: %llu", s->m_session_id);
   p->l->m_output->println("m_stopSelf: %d", s->m_stopSelf);
   p->l->m_output->println("m_stop: %d", s->m_stop);
+  p->l->m_output->println("tls: %d", s->m_secure_socket.has_tls() ? 1 : 0);
   if (s->m_ctx) {
     int l = (int)strlen(s->m_ctx->m_tokenBuffer);
     p->l->m_output->println("parser_buffer_len: %u", l);

@@ -141,7 +141,9 @@ SET(GCS_SOURCES
   ${BUNDLED_LZ4_PATH}/xxhash.c # required by gcs_message_stage_split
   src/bindings/xcom/gcs_message_stage_split.cc
   src/bindings/xcom/gcs_xcom_synode.cc
-  src/bindings/xcom/gcs_xcom_expels_in_progress.cc)
+  src/bindings/xcom/gcs_xcom_expels_in_progress.cc
+  src/bindings/xcom/gcs_xcom_statistics_manager.cc
+  src/bindings/xcom/gcs_xcom_statistics_storage_impl.cc)
 
 ### Configuration ###
 
@@ -172,6 +174,13 @@ IF(MSVC)
       COMPILE_FLAGS
       "-Wno-unused-function"
       )
+    # clang has this, but clang++ does not.
+    MY_CHECK_C_COMPILER_FLAG("-Wdeprecated-non-prototype"
+      HAS_DEPRECATED_NON_PROTOTYPE)
+    IF(HAS_DEPRECATED_NON_PROTOTYPE)
+      ADD_COMPILE_FLAGS(${XCOM_SUNRPC_SOURCES} ${XCOM_RPCGEN_SOURCES}
+        COMPILE_FLAGS "-Wno-deprecated-non-prototype")
+    ENDIF()
   ELSE()
     ADD_COMPILE_FLAGS(${XCOM_SUNRPC_SOURCES} ${XCOM_RPCGEN_SOURCES}
       COMPILE_FLAGS "/wd4018")
@@ -219,11 +228,7 @@ IF(MYSQL_MAINTAINER_MODE)
   IF(MY_COMPILER_IS_CLANG)
     ADD_COMPILE_OPTIONS("-Wshadow")
   ELSEIF(MY_COMPILER_IS_GNU)
-    # GCC's -Wshadow is too noisy. Starting with GCC 7 we can use the
-    # more surgical -Wshadow=compatible-local
-    IF(NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0)
-      ADD_COMPILE_OPTIONS("-Wshadow=compatible-local")
-    ENDIF()
+    ADD_COMPILE_OPTIONS("-Wshadow=compatible-local")
   ENDIF()
 ENDIF()
 

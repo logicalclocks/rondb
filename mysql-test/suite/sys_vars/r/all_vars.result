@@ -109,6 +109,8 @@ replication_optimize_for_static_plugin_config
 replication_optimize_for_static_plugin_config
 replication_sender_observe_commit_only
 replication_sender_observe_commit_only
+restrict_fk_on_non_standard_key
+restrict_fk_on_non_standard_key
 resultset_metadata
 rpl_stop_replica_timeout
 rpl_stop_replica_timeout
@@ -120,6 +122,8 @@ select_into_disk_sync
 select_into_disk_sync
 select_into_disk_sync_delay
 select_into_disk_sync_delay
+set_operations_buffer_size
+set_operations_buffer_size
 skip_replica_start
 skip_replica_start
 skip_slave_start
@@ -169,6 +173,8 @@ temptable_use_mmap
 temptable_use_mmap
 terminology_use_previous
 terminology_use_previous
+tls_certificates_enforced_validation
+tls_certificates_enforced_validation
 tls_ciphersuites
 tls_ciphersuites
 use_secondary_engine

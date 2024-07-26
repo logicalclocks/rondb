@@ -1,0 +1,30 @@
+# ==== PURPOSE ====
+#
+# This test validates removal of functionalities
+#
+# ==== REFERENCES ====
+#
+# WL#13180 Remove function WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS
+#
+
+--source include/rpl/init_source_replica.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/stop_replica.inc
+--source include/have_binlog_format_row.inc
+
+--echo
+--echo # Test case 1:
+--echo #   Check that the WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS function
+--echo #   is no longer available
+--echo
+
+--error ER_SP_DOES_NOT_EXIST
+SELECT WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS('aaaaaaaa-aaaa-aaaa-aaaa-bbbbbbbbbbbb:1');
+
+
+--echo #
+--echo # Clean-up
+--echo #
+
+--source include/rpl/start_replica.inc
+--source include/rpl/deinit.inc

@@ -31,6 +31,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <openssl/bio.h>
@@ -50,6 +51,7 @@
 #include "mysql/harness/stdx/expected.h"
 #include "mysql/harness/stdx/monitor.h"
 #include "mysqlrouter/classic_protocol_message.h"
+#include "mysqlrouter/classic_protocol_session_track.h"
 
 namespace server_mock {
 
@@ -58,12 +60,25 @@ namespace server_mock {
  **/
 using RowValueType = std::vector<std::optional<std::string>>;
 
+using session_tracker_field =
+    std::variant<classic_protocol::session_track::TransactionCharacteristics,
+                 classic_protocol::session_track::TransactionState,
+                 classic_protocol::session_track::SystemVariable,
+                 classic_protocol::session_track::Schema,
+                 classic_protocol::session_track::State,
+                 classic_protocol::session_track::Gtid>;
+
+std::string encode_session_trackers(
+    const std::vector<session_tracker_field> &trackers);
+
 /** @brief Keeps result data for single SQL statement that returns
  *         resultset.
  **/
 struct ResultsetResponse {
   std::vector<classic_protocol::message::server::ColumnMeta> columns;
   std::vector<RowValueType> rows;
+
+  classic_protocol::message::server::Eof end_of_rows;
 };
 
 using OkResponse = classic_protocol::message::server::Ok;
@@ -99,15 +114,7 @@ class ProtocolBase {
   virtual void encode_error(const ErrorResponse &resp) = 0;
 
   // throws std::system_error
-  virtual void encode_ok(const uint64_t affected_rows = 0,
-                         const uint64_t last_insert_id = 0,
-                         const uint16_t server_status = 0,
-                         const uint16_t warning_count = 0) = 0;
-
-  void encode_ok(const OkResponse &resp) {
-    encode_ok(resp.affected_rows(), resp.last_insert_id(),
-              resp.status_flags().to_ulong(), resp.warning_count());
-  }
+  virtual void encode_ok(const OkResponse &resp) = 0;
 
   // throws std::system_error
   virtual void encode_resultset(const ResultsetResponse &response) = 0;
@@ -367,13 +374,15 @@ class ProtocolBase {
 class StatementReaderBase {
  public:
   struct handshake_data {
-    std::optional<ErrorResponse> error;
+    classic_protocol::message::server::Greeting greeting;
 
     std::optional<std::string> username;
     std::optional<std::string> password;
     bool cert_required{false};
     std::optional<std::string> cert_subject;
     std::optional<std::string> cert_issuer;
+
+    std::chrono::microseconds exec_time;
   };
 
   StatementReaderBase() = default;
@@ -401,13 +410,8 @@ class StatementReaderBase {
 
   virtual std::vector<AsyncNotice> get_async_notices() = 0;
 
-  virtual stdx::expected<classic_protocol::message::server::Greeting,
-                         std::error_code>
-  server_greeting(bool with_tls) = 0;
-
-  virtual stdx::expected<handshake_data, ErrorResponse> handshake() = 0;
-
-  virtual std::chrono::microseconds server_greeting_exec_time() = 0;
+  virtual stdx::expected<handshake_data, ErrorResponse> handshake(
+      bool is_greeting) = 0;
 
   virtual void set_session_ssl_info(const SSL *ssl) = 0;
 };

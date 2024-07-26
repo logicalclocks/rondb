@@ -7,7 +7,7 @@
 # - MIXED binlog format
 # - ROW binlog format.
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --disable_warnings
 drop database if exists my_local_db;
@@ -117,5 +117,5 @@ drop database my_local_db;
 # The content of the binlog dumped in the result file
 # should not contain any references to non-replicated tables.
 
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 

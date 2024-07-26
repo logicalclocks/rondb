@@ -37,7 +37,6 @@
 #include "mysql/harness/stdx/expected_ostream.h"
 #include "mysql/harness/string_utils.h"  // split_string
 #include "mysqlrouter/http_client.h"
-#include "mysqlrouter/http_request.h"
 #include "mysqlrouter/rest_client.h"
 #include "rest_api_testutils.h"
 #include "router/src/routing/tests/mysql_client.h"
@@ -121,11 +120,11 @@ TEST_F(RoutingConnectionErrorTest, connect_successful) {
                    {"filename", pwfile},
                })
       .section("http_server", {
+                                  {"bind_address", "127.0.0.1"},
                                   {"port", std::to_string(rest_port)},
                               });
   auto &r = router_spawner().spawn({"-c", writer.write()});
 
-  // check for connect errors via REST API
   IOContext io_ctx;
   RestClient rest_cli(io_ctx, router_host(), rest_port, kRestApiUsername,
                       kRestApiPassword);
@@ -147,7 +146,7 @@ TEST_F(RoutingConnectionErrorTest, connect_successful) {
 
     EXPECT_EQ(resp.get_response_code(), 200) << resp.get_response_code_line();
     if (resp.get_response_code() == 200) {
-      auto http_buf = resp.get_input_buffer();
+      auto &http_buf = resp.get_input_buffer();
       auto buf = http_buf.pop_front(http_buf.length());
 
       rapidjson::Document json_doc;
@@ -219,6 +218,7 @@ TEST_F(RoutingConnectionErrorTest, connect_backend_not_reachable) {
                    {"filename", pwfile},
                })
       .section("http_server", {
+                                  {"bind_address", "127.0.0.1"},
                                   {"port", std::to_string(rest_port)},
                               });
   auto &r = router_spawner().spawn({"-c", writer.write()});
@@ -245,7 +245,7 @@ TEST_F(RoutingConnectionErrorTest, connect_backend_not_reachable) {
     EXPECT_EQ(resp.get_response_code(), 200) << resp.get_response_code_line();
 
     if (resp.get_response_code() == 200) {
-      auto http_buf = resp.get_input_buffer();
+      auto &http_buf = resp.get_input_buffer();
       auto buf = http_buf.pop_front(http_buf.length());
 
       rapidjson::Document json_doc;
@@ -316,12 +316,15 @@ TEST_F(RoutingConnectionErrorTest, connect_from_connection_pool) {
                    {"filename", pwfile},
                })
       .section("http_server", {
+                                  {"bind_address", "127.0.0.1"},
                                   {"port", std::to_string(rest_port)},
                               });
   auto &r = router_spawner().spawn({"-c", writer.write()});
 
   {
     MysqlClient cli;  // first connection.
+    cli.username("username");
+    cli.password("password");
 
     auto connect_res = cli.connect(router_host(), router_port);
     EXPECT_NO_ERROR(connect_res);
@@ -333,17 +336,11 @@ TEST_F(RoutingConnectionErrorTest, connect_from_connection_pool) {
 
   {
     MysqlClient cli;  // from connection pool
+    cli.username("username");
+    cli.password("password");
 
     auto connect_res = cli.connect(router_host(), router_port);
-
-    EXPECT_FALSE(connect_res);
-    if (connect_res) {
-      // change-user is issued by the router when it takes the connection from
-      // the pool.
-      //
-      // the mock server doesn't support change-user (command 17) yet.
-      EXPECT_EQ(connect_res.error().message(), "Unsupported command: 17");
-    }
+    ASSERT_NO_ERROR(connect_res);
   }
 
   // check for connect errors via REST API
@@ -357,7 +354,7 @@ TEST_F(RoutingConnectionErrorTest, connect_from_connection_pool) {
   EXPECT_EQ(resp.get_response_code(), 200) << resp.get_response_code_line();
 
   if (resp.get_response_code() == 200) {
-    auto http_buf = resp.get_input_buffer();
+    auto &http_buf = resp.get_input_buffer();
     auto buf = http_buf.pop_front(http_buf.length());
 
     rapidjson::Document json_doc;
@@ -644,7 +641,7 @@ TEST_F(RoutingConnectionErrorTest, broken_client_greeting_seq_id_is_an_error) {
 TEST_F(RoutingConnectionErrorTest, auth_fail_is_not_an_connection_error) {
   auto server_port = port_pool_.get_next_available();
 
-  launch_mysql_server_mock(get_data_dir().join("bootstrap_gr.js").str(),
+  launch_mysql_server_mock(get_data_dir().join("my_port.js").str(),
                            server_port);
 
   std::array routes{
@@ -673,7 +670,7 @@ TEST_F(RoutingConnectionErrorTest, auth_fail_is_not_an_connection_error) {
 
   auto &r = router_spawner().spawn({"-c", writer.write()});
 
-  SCOPED_TRACE("// failed auth should not cause a 'connect-error'.");
+  SCOPED_TRACE("// connect+wait+close should not cause a connect-error.");
   net::io_context io_ctx;
   for (auto route : routes) {
     net::ip::tcp::socket sock(io_ctx);

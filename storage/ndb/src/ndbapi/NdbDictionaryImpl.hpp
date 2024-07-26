@@ -1320,11 +1320,11 @@ inline NdbTableImpl *NdbDictionaryImpl::getTable(const char *table_name,
 
   // Don't allow opening table without database or schema name specified,
   // the internal name format depends on those to be set
-  if (!checkDatabaseAndSchemaName()) DBUG_RETURN(NULL);
+  if (!checkDatabaseAndSchemaName()) DBUG_RETURN(nullptr);
 
   const BaseString internal_tabname(m_ndb.internalize_table_name(table_name));
   Ndb_local_table_info *info = get_local_table_info(internal_tabname);
-  if (info == nullptr) DBUG_RETURN(0);
+  if (info == nullptr) DBUG_RETURN(nullptr);
   if (data) *data = info->m_local_data;
   DBUG_RETURN(info->m_table_impl);
 }
@@ -1430,14 +1430,14 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndexGlobal(const char *index_name,
   // NdbDictionary. So if an index is not found, the error 723
   // "table not found" is returned. Map 723 to 4243 "index not found"
   if (m_error.code == 0 || m_error.code == 723) m_error.code = 4243;
-  DBUG_RETURN(0);
+  DBUG_RETURN(nullptr);
 }
 
 inline NdbIndexImpl *NdbDictionaryImpl::getIndexGlobal(const char *indexName,
                                                        const char *tableName) {
   DBUG_ENTER("NdbDictionaryImpl::getIndexGlobal");
   NdbTableImpl *t = getTableGlobal(tableName);
-  if (t == nullptr) DBUG_RETURN(0);
+  if (t == nullptr) DBUG_RETURN(nullptr);
   DBUG_RETURN(getIndexGlobal(indexName, *t));
 }
 

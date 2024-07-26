@@ -61,6 +61,7 @@
 #include "exception.h"
 #include "harness_assert.h"
 #include "my_thread.h"  // my_thread_self_setname
+#include "mysql/harness/dynamic_config.h"
 #include "mysql/harness/dynamic_loader.h"
 #include "mysql/harness/filesystem.h"
 #include "mysql/harness/logging/logging.h"
@@ -529,7 +530,7 @@ const Plugin *Loader::load(const std::string &plugin_name) {
 
 void Loader::start() {
   // unload plugins on exit
-  std::shared_ptr<void> exit_guard(nullptr, [this](void *) { unload_all(); });
+  Scope_guard exit_guard([this]() { unload_all(); });
 
   // check if there is anything to load; if not we currently treat is as an
   // error, not letting the user to run "idle" router that would close right
@@ -614,6 +615,16 @@ std::exception_ptr Loader::run() {
       check_config_options_supported();
     } catch (std::exception &) {
       first_eptr = std::current_exception();
+    }
+  }
+
+  if (!first_eptr) {
+    try {
+      expose_config_all(/*initial*/ true);
+    } catch (const std::exception &e) {
+      log_warning(
+          "Failed storing plugins initial configuration in DynamicConfig: %s",
+          e.what());
     }
   }
 
@@ -1164,6 +1175,22 @@ void Loader::check_default_config_options_supported() {
 
     if (!option_supported) {
       report_unsupported_option("DEFAULT", option.first, error_out);
+    }
+  }
+}
+
+void Loader::expose_config_all(const bool initial) {
+  // expose "common" application options
+  if (expose_app_config_clb_) {
+    expose_app_config_clb_(initial, config_.get_default_section());
+  }
+
+  // let each plugin expose its options
+  PluginFuncEnv env(&appinfo_, nullptr);
+  for (const ConfigSection *section : config_.sections()) {
+    const auto &plugin = plugins_.at(section->name).plugin();
+    if (plugin->expose_configuration) {
+      plugin->expose_configuration(&env, section->key.c_str(), initial);
     }
   }
 }

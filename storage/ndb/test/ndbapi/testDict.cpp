@@ -2294,6 +2294,7 @@ static int changeLCPInterval(NDBT_Context *ctx, NDBT_Step *step) {
       ctx->getProperty("LCPINTERVAL", (Uint32)new_cfg_db_lcp_interval);
 
   NdbMgmd mgmd;
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   Uint32 saved_old_value = 0;
   CHECK3(mgmd.change_config32(cfg_db_lcp_interval, &saved_old_value,
                               CFG_SECTION_NODE, CFG_DB_LCP_INTERVAL),
@@ -5187,6 +5188,7 @@ static int st_start_xcon(ST_Con &c) {
   do {
     int ret;
     Ndb_cluster_connection *xncc = new Ndb_cluster_connection;
+    xncc->configure_tls(opt_tls_search_path, opt_mgm_tls);
     chk2((ret = xncc->connect(30, 1, 0)) == 0, "ret:" << ret);
     chk2((ret = xncc->wait_until_ready(30, 10)) == 0, "ret:" << ret);
     Ndb *xndb = new Ndb(xncc, c.dbname);
@@ -10785,6 +10787,7 @@ static int changeStartDiskPageBufMem(NDBT_Context *ctx, NDBT_Step *step) {
       ctx->getProperty("STARTDISKPAGEBUFFER", (Uint64)new_diskpage_buffer);
 
   NdbMgmd mgmd;
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   Uint64 saved_old_value = 0;
   CHECK3(mgmd.change_config(start_disk_page_buffer, &saved_old_value,
                             CFG_SECTION_NODE, CFG_DB_DISK_PAGE_BUFFER_MEMORY),

@@ -1,7 +1,11 @@
 ################################################################################
 # Validate the behaviour of 'CREATE TABLE ... AS SELECT' coming from an async
 # replication channel to group replication.
+<<<<<<< HEAD
 # 
+=======
+#
+>>>>>>> 05e4357f78790766fea8342ecf072645b8310f94
 # Bug#36784284 - Secondary fails when executing a CREATE TABLE SELECT from
 #                an async channel
 #
@@ -26,11 +30,19 @@
 --echo ############################################################
 --echo #  1. Setup Group Replication on server 1 and 2.
 --let $rpl_connection_name= server1
+<<<<<<< HEAD
 --source include/rpl_connection.inc
 --source include/start_and_bootstrap_group_replication.inc
 
 --let $rpl_connection_name= server2
 --source include/rpl_connection.inc
+=======
+--source include/connection.inc
+--source include/start_and_bootstrap_group_replication.inc
+
+--let $rpl_connection_name= server2
+--source include/connection.inc
+>>>>>>> 05e4357f78790766fea8342ecf072645b8310f94
 --source include/start_group_replication.inc
 
 --let $group_replication_number_of_members= 2
@@ -42,16 +54,27 @@
 --echo #  2. Setup a asynchronous replication connection from server 3
 --echo #     into group (server 1)
 --let $rpl_connection_name= server1
+<<<<<<< HEAD
 --source include/rpl_connection.inc
 --replace_result $SERVER_MYPORT_3 SERVER_3_PORT
 --eval CHANGE REPLICATION SOURCE TO SOURCE_HOST="127.0.0.1", SOURCE_USER="root", SOURCE_PASSWORD="", SOURCE_PORT=$SERVER_MYPORT_3, SOURCE_AUTO_POSITION=1, REQUIRE_TABLE_PRIMARY_KEY_CHECK=OFF, REQUIRE_ROW_FORMAT=1  FOR CHANNEL ""
 --source include/start_slave.inc
+=======
+--source include/connection.inc
+--replace_result $SERVER_MYPORT_3 SERVER_3_PORT
+--eval CHANGE REPLICATION SOURCE TO SOURCE_HOST="127.0.0.1", SOURCE_USER="root", SOURCE_PASSWORD="", SOURCE_PORT=$SERVER_MYPORT_3, SOURCE_AUTO_POSITION=1, REQUIRE_TABLE_PRIMARY_KEY_CHECK=OFF, REQUIRE_ROW_FORMAT=1  FOR CHANNEL ""
+--source include/rpl/start_replica.inc
+>>>>>>> 05e4357f78790766fea8342ecf072645b8310f94
 
 --echo
 --echo ############################################################
 --echo #  3. Execute CREATE TABLE ... SELECT statements on server 3.
 --let $rpl_connection_name= server3
+<<<<<<< HEAD
 --source include/rpl_connection.inc
+=======
+--source include/connection.inc
+>>>>>>> 05e4357f78790766fea8342ecf072645b8310f94
 
 CREATE TABLE t1 (c1 INT, c2 VARCHAR(80),PRIMARY KEY (c1));
 CREATE TABLE t2 (PRIMARY KEY (c1)) AS SELECT * FROM t1;
@@ -64,17 +87,27 @@ CREATE TABLE t3 (PRIMARY KEY (c1)) AS SELECT * FROM t1;
 --echo #  4. Wait until transactions executed on server 3 are
 --echo #     applied on group.
 --let $sync_slave_connection= server1
+<<<<<<< HEAD
 --source include/sync_slave_sql_with_master.inc
 
 --let $rpl_connection_name= server3
 --source include/rpl_connection.inc
 --let $sync_slave_connection= server2
 --source include/sync_slave_sql_with_master.inc
+=======
+--source include/rpl/sync_to_replica.inc
+
+--let $rpl_connection_name= server3
+--source include/connection.inc
+--let $sync_slave_connection= server2
+--source include/rpl/sync_to_replica.inc
+>>>>>>> 05e4357f78790766fea8342ecf072645b8310f94
 
 --echo
 --echo ############################################################
 --echo #  5. Cleanup
 --let $rpl_connection_name= server3
+<<<<<<< HEAD
 --source include/rpl_connection.inc
 DROP TABLE t1, t2, t3;
 
@@ -89,6 +122,22 @@ DROP TABLE t1, t2, t3;
 --let $rpl_connection_name= server1
 --source include/rpl_connection.inc
 --source include/stop_slave.inc
+=======
+--source include/connection.inc
+DROP TABLE t1, t2, t3;
+
+--let $sync_slave_connection= server1
+--source include/rpl/sync_to_replica.inc
+
+--let $rpl_connection_name= server3
+--source include/connection.inc
+--let $sync_slave_connection= server2
+--source include/rpl/sync_to_replica.inc
+
+--let $rpl_connection_name= server1
+--source include/connection.inc
+--source include/rpl/stop_replica.inc
+>>>>>>> 05e4357f78790766fea8342ecf072645b8310f94
 CHANGE REPLICATION SOURCE TO SOURCE_AUTO_POSITION=0 FOR CHANNEL "";
 
 --source include/group_replication_end.inc

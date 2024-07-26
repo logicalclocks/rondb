@@ -4,12 +4,12 @@ log_bin	ON
 SHOW VARIABLES LIKE 'ndb_log_bin';
 Variable_name	Value
 ndb_log_bin	ON
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 # Find physical binlog file name format as it varies between platforms
 CREATE TABLE check_binlog_name (a int primary key) engine = NDB;
 INSERT INTO check_binlog_name VALUES (1);
 DROP TABLE check_binlog_name;
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 # 1. Insert to create referencing rows
 CREATE TABLE t1 (a int PRIMARY KEY) ENGINE=ndb;
 INSERT INTO t1 VALUES (1);
@@ -84,4 +84,4 @@ binlog.000007
 binlog.000008
 binlog.000009
 binlog.000010
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;

@@ -18,27 +18,27 @@
 #
 # 1. Start server so that binary log is created
 # 2. Prepare binary log with header only
-# 3. Check error ER_READ_LOG_EVENT_FAILED is reported 
+# 3. Check error ER_READ_LOG_EVENT_FAILED is reported
 #      "Error in Log_event::read_log_event()"
 # 4. Perpare binary log without Format_desc event
-# 5. Check error ER_BINLOG_CRASH_RECOVERY_MALFORMED_LOG is reported 
+# 5. Check error ER_BINLOG_CRASH_RECOVERY_MALFORMED_LOG is reported
 #      "Found invalid event sequence while recovering from binary log file."
 # 6. Set debug points binlog_crash_between_close_and_open so that server is crashed
 #    after binary log LOG_EVENT_BINLOG_IN_USE_F is set to false
-# 7. Check error ER_BINLOG_CANT_OPEN_CRASHED_BINLOG is reported 
+# 7. Check error ER_BINLOG_CANT_OPEN_CRASHED_BINLOG is reported
 #      "Failed to open the crashed binlog file when source server is recovering it."
 #
 # === References ===
-# 
+#
 # BUG #33658850 Binlog recovery not reporting all error states
 #
 --source include/have_debug.inc
---source include/have_binlog_format_mixed.inc
+--source include/have_binlog_format_row.inc
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --let $MYSQLD_DATADIR = `SELECT @@DATADIR`
---let $binlog = query_get_value(SHOW MASTER STATUS, File, 1)
+--let $binlog = query_get_value(SHOW BINARY LOG STATUS, File, 1)
 --let $event_following_format_desc_start = query_get_value(SHOW BINLOG EVENTS IN '$binlog', Pos, 2)
 --let $event_following_format_desc_stop = query_get_value(SHOW BINLOG EVENTS IN '$binlog', End_log_pos, 2)
 
@@ -114,7 +114,7 @@ RESET MASTER;
 #
 --source include/start_mysqld.inc
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 #
 # Search for error message : 'arrived the end of the file'
@@ -142,7 +142,7 @@ RESET MASTER;
 #
 --source include/start_mysqld.inc
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 #
 # Search for error message : 'binlog truncated in the middle of event; consider out of disk space'
@@ -172,7 +172,7 @@ let $error_pattern = Error in Log_event::read_log_event().*
 #
 --source include/start_mysqld.inc
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 #
 # Search for error message

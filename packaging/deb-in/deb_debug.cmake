@@ -32,14 +32,13 @@ SET (DEB_RULES_DEBUG_CMAKE
 		-DINSTALL_LIBDIR=lib/$(DEB_HOST_MULTIARCH) \\
 		-DSYSCONFDIR=/etc/mysql \\
 		-DMYSQL_UNIX_ADDR=/var/run/mysqld/mysqld.sock \\
-		-DWITH_INNODB_MEMCACHED=1 \\
 		-DWITH_MECAB=system \\
 		-DWITH_NUMA=ON \\
 		-DCOMPILATION_COMMENT=\"MySQL ${DEB_PRODUCTNAMEC} - ${DEB_LICENSENAME} - Debug\" \\
 		-DCOMPILATION_COMMENT_SERVER=\"MySQL ${DEB_PRODUCTNAMEC} Server - ${DEB_LICENSENAME} - Debug\" \\
 		-DINSTALL_LAYOUT=DEB \\
 		-DREPRODUCIBLE_BUILD=OFF \\
-		-DUSE_LD_LLD=OFF \\
+		-DMYSQL_MAINTAINER_MODE=0 \\
 		-DDEB_PRODUCT=${DEB_PRODUCT} \\
 		${DEB_CMAKE_EXTRAS}
 ")
@@ -77,10 +76,7 @@ usr/lib/mysql/plugin/debug/component_reference_cache.so
 usr/lib/mysql/plugin/debug/ddl_rewriter.so
 usr/lib/mysql/plugin/debug/group_replication.so
 usr/lib/mysql/plugin/debug/connection_control.so
-usr/lib/mysql/plugin/debug/innodb_engine.so
-usr/lib/mysql/plugin/debug/keyring_file.so
 usr/lib/mysql/plugin/debug/keyring_udf.so
-usr/lib/mysql/plugin/debug/libmemcached.so
 usr/lib/mysql/plugin/debug/libpluginmecab.so
 usr/lib/mysql/plugin/debug/locking_service.so
 usr/lib/mysql/plugin/debug/mypluglib.so
@@ -102,13 +98,16 @@ SET (DEB_INSTALL_DEBUG_TEST_PLUGINS
 usr/lib/mysql/plugin/debug/auth.so
 usr/lib/mysql/plugin/debug/auth_test_plugin.so
 usr/lib/mysql/plugin/debug/authentication_ldap_sasl_client.so
-usr/lib/mysql/plugin/debug/authentication_fido_client.so
+usr/lib/mysql/plugin/debug/authentication_webauthn_client.so
 usr/lib/mysql/plugin/debug/authentication_kerberos_client.so
 usr/lib/mysql/plugin/debug/authentication_oci_client.so
 usr/lib/mysql/plugin/debug/component_example_component1.so
 usr/lib/mysql/plugin/debug/component_example_component2.so
 usr/lib/mysql/plugin/debug/component_example_component3.so
 usr/lib/mysql/plugin/debug/component_log_sink_test.so
+usr/lib/mysql/plugin/debug/component_test_execute_prepared_statement.so
+usr/lib/mysql/plugin/debug/component_test_execute_regular_statement.so
+usr/lib/mysql/plugin/debug/component_test_mysql_signal_handler.so
 usr/lib/mysql/plugin/debug/component_test_string_service.so
 usr/lib/mysql/plugin/debug/component_test_string_service_charset.so
 usr/lib/mysql/plugin/debug/component_test_string_service_long.so
@@ -191,8 +190,15 @@ usr/lib/mysql/plugin/debug/component_test_mysql_system_variable_set.so
 usr/lib/mysql/plugin/debug/component_test_table_access.so
 usr/lib/mysql/plugin/debug/component_test_sensitive_system_variables.so
 usr/lib/mysql/plugin/debug/component_test_status_var_reader.so
+usr/lib/mysql/plugin/debug/component_test_server_telemetry_metrics.so
 usr/lib/mysql/plugin/debug/component_test_server_telemetry_traces.so
 usr/lib/mysql/plugin/debug/component_test_mysql_thd_store_service.so
+usr/lib/mysql/plugin/debug/component_test_event_tracking_consumer_c.so
+usr/lib/mysql/plugin/debug/component_test_event_tracking_consumer_b.so
+usr/lib/mysql/plugin/debug/component_test_event_tracking_consumer_a.so
+usr/lib/mysql/plugin/debug/component_test_event_tracking_producer_a.so
+usr/lib/mysql/plugin/debug/component_test_event_tracking_consumer.so
+usr/lib/mysql/plugin/debug/component_test_event_tracking_producer_b.so
 ")
 
 IF (DEB_PRODUCT STREQUAL "commercial")
@@ -204,21 +210,20 @@ usr/lib/mysql/plugin/debug/authentication_pam.so
 usr/lib/mysql/plugin/debug/authentication_ldap_sasl.so
 usr/lib/mysql/plugin/debug/authentication_kerberos.so
 usr/lib/mysql/plugin/debug/authentication_ldap_simple.so
+usr/lib/mysql/plugin/debug/telemetry_client.so
 usr/lib/mysql/plugin/debug/data_masking.so
 usr/lib/mysql/plugin/debug/keyring_okv.so
-usr/lib/mysql/plugin/debug/keyring_encrypted_file.so
 usr/lib/mysql/plugin/debug/keyring_hashicorp.so
-usr/lib/mysql/plugin/debug/keyring_oci.so
-usr/lib/mysql/plugin/debug/openssl_udf.so
 usr/lib/mysql/plugin/debug/thread_pool.so
 usr/lib/mysql/plugin/debug/firewall.so
-usr/lib/mysql/plugin/debug/authentication_fido.so
 usr/lib/mysql/plugin/debug/component_keyring_encrypted_file.so
 usr/lib/mysql/plugin/debug/component_keyring_oci.so
 usr/lib/mysql/plugin/debug/component_enterprise_encryption.so
 usr/lib/mysql/plugin/debug/component_masking.so
 usr/lib/mysql/plugin/debug/component_masking_functions.so
 usr/lib/mysql/plugin/debug/component_scheduler.so
+usr/lib/mysql/plugin/debug/component_telemetry.so
+usr/lib/mysql/plugin/debug/authentication_webauthn.so
 ")
   ENDIF()
   IF (DEB_AWS_SDK)

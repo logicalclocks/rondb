@@ -44,16 +44,13 @@
 
 #include "common.h"  // serial_comma
 #include "dim.h"
+#include "harness_assert.h"
 
 using mysql_harness::Path;
 using mysql_harness::serial_comma;
 using mysql_harness::logging::Logger;
 using mysql_harness::logging::LogLevel;
 using mysql_harness::logging::Record;
-
-// TODO one day we'll improve this and move it to a common spot
-#define harness_assert(COND) \
-  if (!(COND)) abort();
 
 namespace {
 
@@ -348,7 +345,6 @@ void create_module_loggers(Registry &registry, const LogLevel level,
   harness_assert(registry.get_logger_names().size() > 0);
 }
 
-HARNESS_EXPORT
 LogLevel log_level_from_string(std::string name) {
   std::transform(name.begin(), name.end(), name.begin(), ::tolower);
 
@@ -373,12 +369,21 @@ LogLevel log_level_from_string(std::string name) {
   throw std::invalid_argument(buffer.str());
 }
 
+std::string log_level_to_string(LogLevel log_level) {
+  for (const auto &lvl : kLogLevels) {
+    if (lvl.second == log_level) {
+      return std::string(lvl.first);
+    }
+  }
+
+  return "unknown";
+}
+
 LogLevel get_default_log_level(const Config &config, bool raw_mode) {
   constexpr const char kNone[] = "";
 
   // aliases with shorter names
-  constexpr const char *kLogLevel =
-      mysql_harness::logging::kConfigOptionLogLevel;
+  constexpr const char *kLogLevel = mysql_harness::logging::options::kLevel;
   constexpr const char *kLogger = mysql_harness::logging::kConfigSectionLogger;
 
   std::string level_name;
@@ -398,7 +403,7 @@ std::string get_default_log_filename(const Config &config) {
 
   // aliases with shorter names
   constexpr const char *kLogFilename =
-      mysql_harness::logging::kConfigOptionLogFilename;
+      mysql_harness::logging::options::kFilename;
   constexpr const char *kLogger = mysql_harness::logging::kConfigSectionLogger;
 
   std::string log_filename;
@@ -414,7 +419,6 @@ std::string get_default_log_filename(const Config &config) {
   return log_filename;
 }
 
-HARNESS_EXPORT
 LogTimestampPrecision log_timestamp_precision_from_string(std::string name) {
   std::transform(name.begin(), name.end(), name.begin(), ::tolower);
 
@@ -437,12 +441,21 @@ LogTimestampPrecision log_timestamp_precision_from_string(std::string name) {
   throw std::invalid_argument(buffer.str());
 }
 
+std::string log_timestamp_precision_to_string(LogTimestampPrecision tsp) {
+  // Return its enum representation
+  for (const auto &prec : kLogTimestampPrecisions) {
+    if (prec.second == tsp) return std::string(prec.first);
+  }
+
+  return "unknown";
+}
+
 LogTimestampPrecision get_default_timestamp_precision(const Config &config) {
   constexpr const char kNone[] = "";
 
   // aliases with shorter names
   constexpr const char *kLogTimestampPrecision =
-      mysql_harness::logging::kConfigOptionLogTimestampPrecision;
+      mysql_harness::logging::options::kTimestampPrecision;
   constexpr const char *kLogger = mysql_harness::logging::kConfigSectionLogger;
 
   std::string precision;

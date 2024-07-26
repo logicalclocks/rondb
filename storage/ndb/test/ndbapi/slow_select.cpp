@@ -26,6 +26,7 @@
 
 #include <NdbTick.h>
 #include <ndb_global.h>
+#include <ndb_opts.h>
 #include <NdbApi.hpp>
 #include <NdbOut.hpp>
 #include "util/require.h"
@@ -66,6 +67,7 @@ int main(void) {
   ndb_init();
 
   Ndb_cluster_connection con;
+  con.configure_tls(opt_tls_search_path, opt_mgm_tls);
   if (con.connect(12, 5, 1) != 0) {
     return 1;
   }
@@ -99,7 +101,7 @@ int main(void) {
         !g_scans[0].m_scan->setBound((Uint32)0, NdbIndexScanOperation::BoundEQ,
                                      &g_affiliateid, sizeof(g_affiliateid)));
 #if 0
-    require(!g_scans[1].m_scan->setBound((Uint32)0, 
+    require(!g_scans[1].m_scan->setBound((Uint32)0,
 					 NdbIndexScanOperation::BoundLE,
 					 &g_formatids[0],
 					 sizeof(g_formatids[0])));

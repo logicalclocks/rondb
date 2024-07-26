@@ -33,9 +33,9 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <time.h>
+#include <bit>
 
-#include "m_ctype.h"
-#include "my_bit.h"
+#include "m_string.h"
 #include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
@@ -45,6 +45,9 @@
 #include "my_io.h"
 #include "my_macros.h"
 #include "my_systime.h"  // get_date
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
 #include "print_version.h"
 #include "storage/myisam/fulltext.h"
 #include "storage/myisam/myisam_sys.h"
@@ -794,7 +797,7 @@ static void get_options(int *argc, char ***argv, MEM_ROOT *alloc) {
     if (!(set_collation = get_charset_by_name(set_collation_name, MYF(MY_WME))))
       exit(1);
 
-  myisam_block_size = (uint)1 << my_bit_log2(opt_myisam_block_size);
+  myisam_block_size = std::bit_floor<unsigned>(opt_myisam_block_size);
   return;
 } /* get options */
 

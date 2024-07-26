@@ -44,6 +44,7 @@
 #include <iostream>
 #include <sstream>
 
+#include "my_compiler.h"  // MY_COMPILER_*
 #include "mysql/harness/net_ts/impl/io_service_base.h"
 #include "mysql/harness/net_ts/impl/linux_epoll.h"
 #include "mysql/harness/net_ts/impl/socket_error.h"
@@ -74,12 +75,11 @@ class linux_epoll_io_service : public IoServiceBase {
 
   stdx::expected<void, std::error_code> open() noexcept override {
     if (is_open()) {
-      return stdx::make_unexpected(
-          make_error_code(net::socket_errc::already_open));
+      return stdx::unexpected(make_error_code(net::socket_errc::already_open));
     }
 
     auto res = impl::epoll::create();
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 
     epfd_ = *res;
 #if defined(USE_EVENTFD)
@@ -91,7 +91,7 @@ class linux_epoll_io_service : public IoServiceBase {
     }
 #endif
     auto pipe_res = impl::file::pipe(O_NONBLOCK);
-    if (!pipe_res) return stdx::make_unexpected(pipe_res.error());
+    if (!pipe_res) return stdx::unexpected(pipe_res.error());
 
     wakeup_fds_ = *pipe_res;
 
@@ -272,7 +272,7 @@ class linux_epoll_io_service : public IoServiceBase {
         b.interest_.erase(it);
       } else {
         // return ENOENT as epoll_ctl() would do
-        return stdx::make_unexpected(
+        return stdx::unexpected(
             make_error_code(std::errc::no_such_file_or_directory));
       }
 
@@ -289,7 +289,7 @@ class linux_epoll_io_service : public IoServiceBase {
       const auto it = b.interest_.find(fd);
       if (it == b.interest_.end()) {
         // return ENOENT as epoll_ctl() would do
-        return stdx::make_unexpected(
+        return stdx::unexpected(
             make_error_code(std::errc::no_such_file_or_directory));
       }
 
@@ -307,11 +307,11 @@ class linux_epoll_io_service : public IoServiceBase {
 
         const auto ctl_res =
             impl::epoll::ctl(epfd, impl::epoll::Cmd::mod, fd, &ev);
-        if (!ctl_res) return stdx::make_unexpected(ctl_res.error());
+        if (!ctl_res) return stdx::unexpected(ctl_res.error());
       } else if ((updated_fd_events & kAllEvents) == 0) {
         const auto ctl_res =
             impl::epoll::ctl(epfd, impl::epoll::Cmd::del, fd, nullptr);
-        if (!ctl_res) return stdx::make_unexpected(ctl_res.error());
+        if (!ctl_res) return stdx::unexpected(ctl_res.error());
       }
 
       interest.second = updated_fd_events;
@@ -331,7 +331,7 @@ class linux_epoll_io_service : public IoServiceBase {
       const auto it = b.interest_.find(fd);
       if (it == b.interest_.end()) {
         // return ENOENT as epoll_ctl() would do
-        return stdx::make_unexpected(
+        return stdx::unexpected(
             make_error_code(std::errc::no_such_file_or_directory));
       }
 
@@ -373,7 +373,7 @@ class linux_epoll_io_service : public IoServiceBase {
         std::cerr << "after_event_fired(" << fd << ", "
                   << std::bitset<32>(fd_events) << ") not in "
                   << std::bitset<32>(fd_interest) << std::endl;
-        return stdx::make_unexpected(
+        return stdx::unexpected(
             make_error_code(std::errc::argument_out_of_domain));
       }
 
@@ -396,12 +396,12 @@ class linux_epoll_io_service : public IoServiceBase {
 
         const auto ctl_res =
             impl::epoll::ctl(epfd, impl::epoll::Cmd::mod, fd, &ev);
-        if (!ctl_res) return stdx::make_unexpected(ctl_res.error());
+        if (!ctl_res) return stdx::unexpected(ctl_res.error());
       } else if ((updated_fd_events & kAllEvents) == 0) {
         // no interest anymore.
         const auto ctl_res =
             impl::epoll::ctl(epfd, impl::epoll::Cmd::del, fd, nullptr);
-        if (!ctl_res) return stdx::make_unexpected(ctl_res.error());
+        if (!ctl_res) return stdx::unexpected(ctl_res.error());
       }
 
       interest.second = updated_fd_events;
@@ -532,20 +532,26 @@ class linux_epoll_io_service : public IoServiceBase {
 
   stdx::expected<fd_event, std::error_code> update_fd_events(
       std::chrono::milliseconds timeout) {
-    decltype(fd_events_) evs{};
+    MY_COMPILER_DIAGNOSTIC_PUSH();
+    MY_COMPILER_GCC_DIAGNOSTIC_IGNORE("-Wmaybe-uninitialized")
+
+    // not initialized as it is write-only to by epoll::wait().
+    decltype(fd_events_) evs;
 
     auto res = impl::epoll::wait(epfd_, evs.data(), evs.size(), timeout);
+    MY_COMPILER_DIAGNOSTIC_POP();
 
-    if (!res) return stdx::make_unexpected(res.error());
+    if (!res) return stdx::unexpected(res.error());
 
     std::lock_guard lk(fd_events_mtx_);
-    fd_events_ = evs;
+    // copy the fd-events that were returned.
+    std::copy_n(evs.begin(), *res, fd_events_.begin());
 
     fd_events_processed_ = 0;
     fd_events_size_ = *res;
 
     if (fd_events_size_ == 0) {
-      return stdx::make_unexpected(make_error_code(std::errc::timed_out));
+      return stdx::unexpected(make_error_code(std::errc::timed_out));
     }
 
     for (size_t ndx{}; ndx < fd_events_size_; ++ndx) {
@@ -577,8 +583,7 @@ class linux_epoll_io_service : public IoServiceBase {
   stdx::expected<fd_event, std::error_code> poll_one(
       std::chrono::milliseconds timeout) override {
     if (!is_open()) {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::invalid_argument));
+      return stdx::unexpected(make_error_code(std::errc::invalid_argument));
     }
 
     auto ev_res = [this]() -> stdx::expected<fd_event, std::error_code> {
@@ -586,7 +591,7 @@ class linux_epoll_io_service : public IoServiceBase {
 
       if (fd_events_processed_ == fd_events_size_) {
         // no event.
-        return stdx::make_unexpected(
+        return stdx::unexpected(
             make_error_code(std::errc::no_such_file_or_directory));
       }
 
@@ -598,7 +603,7 @@ class linux_epoll_io_service : public IoServiceBase {
         ev_res = update_fd_events(timeout);
       }
 
-      if (!ev_res) return stdx::make_unexpected(ev_res.error());
+      if (!ev_res) return stdx::unexpected(ev_res.error());
     }
 
     auto ev = *ev_res;
@@ -613,7 +618,7 @@ class linux_epoll_io_service : public IoServiceBase {
       // interrupted
       on_notify();
 
-      return stdx::make_unexpected(make_error_code(std::errc::interrupted));
+      return stdx::unexpected(make_error_code(std::errc::interrupted));
     }
 
     return ev;

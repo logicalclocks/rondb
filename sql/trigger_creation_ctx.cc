@@ -28,12 +28,13 @@
 #include <assert.h>
 #include <stddef.h>
 #include <atomic>
+#include <memory>
 
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysqld_error.h"
 #include "sql/derror.h"
 #include "sql/log.h"
@@ -41,6 +42,8 @@
 #include "sql/sql_db.h"  // get_default_db_collation()
 #include "sql/sql_error.h"
 #include "sql/system_variables.h"
+
+struct CHARSET_INFO;
 
 Trigger_creation_ctx *Trigger_creation_ctx::create(
     THD *thd, const LEX_CSTRING &db_name, const LEX_CSTRING &table_name,
@@ -110,4 +113,4 @@ Object_creation_ctx *Trigger_creation_ctx::create_backup_ctx(THD *thd) const {
   return new (thd->mem_root) Trigger_creation_ctx(thd);
 }
 
-void Trigger_creation_ctx::delete_backup_ctx() { destroy(this); }
+void Trigger_creation_ctx::delete_backup_ctx() { ::destroy_at(this); }

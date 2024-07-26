@@ -166,7 +166,7 @@ class Rpl_applier_reader {
   */
   bool reopen_log_reader_if_needed();
 
-  /* reset seconds_behind_master when starting to wait for events coming */
+  /* reset seconds_behind_source when starting to wait for events coming */
   void reset_seconds_behind_master();
 #ifndef NDEBUG
   void debug_print_next_event_positions();

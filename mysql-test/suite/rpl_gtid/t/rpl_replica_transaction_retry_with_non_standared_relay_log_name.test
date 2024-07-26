@@ -36,9 +36,9 @@
 --echo #
 --echo # 1. Create source-replica topology
 --let $rpl_skip_start_slave=1
---source include/master-slave.inc
+--source include/rpl/init_source_replica.inc
 
---source include/rpl_connection_slave.inc
+--source include/rpl/connection_replica.inc
 CALL mtr.add_suppression('A replica with the same server_uuid/server_id as this replica has connected to the source.*');
 
 --echo #
@@ -61,15 +61,15 @@ CALL mtr.add_suppression('A replica with the same server_uuid/server_id as this 
 --echo #
 --echo # 5. Start replica
 --let $rpl_channel_name= 'PITR'
---source include/start_slave.inc
---source include/check_slave_is_running.inc
---source include/check_slave_no_error.inc
+--source include/rpl/start_replica.inc
+--source include/rpl/assert_replica_running.inc
+--source include/rpl/assert_replica_no_error.inc
 
 --echo #
 --echo # 6. Wait till replica apply all txns successfully
---let $slave_param= Slave_SQL_Running_State
+--let $slave_param= Replica_SQL_Running_State
 --let $slave_param_value= Replica has read all relay log; waiting for more updates
---source include/wait_for_slave_param.inc
+--source include/rpl/wait_for_replica_status.inc
 
 --echo #
 --echo # 7. Verify that there is a retry transaction warning
@@ -85,11 +85,11 @@ CALL mtr.add_suppression('A replica with the same server_uuid/server_id as this 
 --source include/remove_debug_point.inc
 
 --let $rpl_channel_name= 'PITR'
---source include/stop_slave.inc
+--source include/rpl/stop_replica.inc
 
 RESET REPLICA ALL FOR CHANNEL 'PITR';
 
 --let $rpl_channel_name=
-source include/start_slave.inc;
+source include/rpl/start_replica.inc;
 
---source include/rpl_end.inc
+--source include/rpl/deinit.inc

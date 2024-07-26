@@ -1302,9 +1302,9 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
 
     ReadFunction *readFunctionArray;
     UpdateFunction *updateFunctionArray;
-    CHARSET_INFO **charsetArray;
-    
-    Uint32* readKeyArray;
+    const CHARSET_INFO **charsetArray;
+
+    Uint32 *readKeyArray;
     /*
       Offset into Dbtup::tableDescriptor of the start of the descriptor
       words for each attribute.
@@ -3078,7 +3078,7 @@ private:
   void sendAlterTabRef(Signal *signal, Uint32 errorCode);
   void sendAlterTabConf(Signal *, Uint32 clientData = RNIL);
 
-  void handleCharsetPos(Uint32 csNumber, CHARSET_INFO **charsetArray,
+  void handleCharsetPos(Uint32 csNumber, const CHARSET_INFO **charsetArray,
                         Uint32 noOfCharsets, Uint32 &charsetIndex,
                         Uint32 &attrDes2);
   Uint32 computeTableMetaData(TablerecPtr regTabPtr, Uint32 line);

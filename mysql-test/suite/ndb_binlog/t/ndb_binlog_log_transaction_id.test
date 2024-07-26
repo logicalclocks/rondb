@@ -12,34 +12,34 @@ create table t2 (a int primary key, b int) engine=ndb;
 insert into t1 values (1,1);
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Should have 1 transaction id
 insert into t1 values (2,2);
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Should have 1 transaction id
 update t1 set b=20 where a=2;
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Multi row autocommit transaction
 --echo Should have 1 transaction id
 delete from t1;
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Multi row explicit transaction
 --echo Should have 1 transaction id
@@ -50,9 +50,9 @@ insert into t1 values (5,5);
 commit;
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Should have 1 transaction id
 begin;
@@ -62,9 +62,9 @@ delete from t1 where a=5;
 commit;
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Multi table explicit transaction
 --echo Should have 1 transaction id
@@ -75,9 +75,9 @@ insert into t2 values (8,8);
 commit;
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Multiple autocommit transactions
 --echo Should have 2 transaction ids
@@ -85,9 +85,9 @@ insert into t1 values (8,8);
 insert into t1 values (9,9);
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Multiple autocommit transactions on single row
 --echo Should have 3 transaction ids
@@ -96,9 +96,9 @@ update t1 set b=100 where a=10;
 delete from t1 where a=10;
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 --echo Multiple explicit transactions
 --echo Should have 2 transaction ids
@@ -113,9 +113,9 @@ delete from t2;
 commit;
 
 let $wait_binlog_event= COMMIT;
---source include/wait_for_binlog_event.inc
+--source include/rpl/wait_for_binlog_event.inc
 --source suite/ndb_binlog/t/ndb_binlog_get_row_extra_data.inc
-reset master;
+reset binary logs and gtids;
 
 
 drop table t1;

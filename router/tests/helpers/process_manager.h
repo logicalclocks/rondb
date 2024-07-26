@@ -199,6 +199,21 @@ class ProcessManager {
    */
   static const Path &get_origin() { return origin_dir_; }
 
+  /** @brief Gets path to the directory containing testing data
+   *         (conf files, json files).
+   */
+  static Path get_data_dir() { return data_dir_; }
+
+  /** @brief Creates a state file with a given contents and returns full path to
+   * the file
+   */
+  static std::string create_state_file(const std::string &dir_name,
+                                       const std::string &content);
+
+  /** @brief Gets path to the directory plugin dynamic librabries.
+   */
+  static const Path &get_plugin_dir() { return plugin_dir_; }
+
  protected:
   virtual ~ProcessManager() = default;
 
@@ -232,6 +247,8 @@ class ProcessManager {
   void check_exit_code(
       ProcessWrapper &process, exit_status_type exit_status = EXIT_SUCCESS,
       std::chrono::milliseconds timeout = kDefaultWaitForExitTimeout);
+
+  std::string dump(ProcessWrapper &proccess);
 
   void dump_all();
 
@@ -325,7 +342,7 @@ class ProcessManager {
       const std::string &json_file, unsigned port, int expected_exit_code = 0,
       bool debug_mode = false, uint16_t http_port = 0, uint16_t x_port = 0,
       const std::string &module_prefix = "",
-      const std::string &bind_address = "0.0.0.0",
+      const std::string &bind_address = "127.0.0.1",
       std::chrono::milliseconds wait_for_notify_ready =
           std::chrono::seconds(30),
       bool enable_ssl = false);
@@ -345,7 +362,7 @@ class ProcessManager {
   std::vector<std::string> mysql_server_mock_cmdline_args(
       const std::string &json_file, uint16_t port, uint16_t http_port = 0,
       uint16_t x_port = 0, const std::string &module_prefix = "",
-      const std::string &bind_address = "0.0.0.0", bool enable_ssl = false);
+      const std::string &bind_address = "127.0.0.1", bool enable_ssl = false);
 
   /** @brief Launches a process.
    *
@@ -418,11 +435,6 @@ class ProcessManager {
       std::chrono::milliseconds wait_notify_ready =
           std::chrono::milliseconds(-1),
       OutputResponder output_responder = kEmptyResponder);
-
-  /** @brief Gets path to the directory containing testing data
-   *         (conf files, json files).
-   */
-  const Path &get_data_dir() const { return data_dir_; }
 
   /** @brief returns a map with default [DEFAULT] section parameters
    *
@@ -511,12 +523,6 @@ class ProcessManager {
       const std::string &name = "mysqlrouter.conf",
       const std::string &extra_defaults = "",
       bool enable_debug_logging = true) const;
-
-  // returns full path to the file
-  std::string create_state_file(const std::string &dir_name,
-                                const std::string &content);
-
-  static const Path &get_plugin_dir() { return plugin_dir_; }
 
   const Path &get_mysqlrouter_exec() const { return mysqlrouter_exec_; }
 

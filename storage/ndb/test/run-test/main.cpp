@@ -41,6 +41,7 @@
 #include <util/File.hpp>
 
 #include <NdbSleep.h>
+#include <ndb_opts.h>
 #include <ndb_version.h>
 #include <vector>
 #include "my_alloc.h"  // MEM_ROOT
@@ -172,6 +173,8 @@ static struct my_option g_options[] = {
      NO_ARG, 0, 0, 0, 0, 0, 0},
     {"version", 'V', "Output version information and exit.", 0, 0, 0, GET_BOOL,
      NO_ARG, 0, 0, 0, 0, 0, 0},
+    NdbStdOpt::tls_search_path,
+    NdbStdOpt::mgm_tls,
     {"site", 256, "Site", &g_site, &g_site, 0, GET_STR, REQUIRED_ARG, 0, 0, 0,
      0, 0, 0},
     {"clusters", 256, "Cluster", &g_clusters, &g_clusters, 0, GET_STR,

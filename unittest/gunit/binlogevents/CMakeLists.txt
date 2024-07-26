@@ -42,23 +42,33 @@ SET(TESTS
   payload_event_buffer_istream
   transaction_compression
   transaction_payload_codec
+  gtid_tag
+  tsid_encoding
 )
 
 FOREACH(test ${TESTS})
   MYSQL_ADD_EXECUTABLE(${test}-t ${test}-t.cc
     ADD_TEST ${test}
-    LINK_LIBRARIES binlogstandalone_static gunit_small
+    LINK_LIBRARIES mysql_gtid mysql_binlog_event_standalone gunit_small
     COMPILE_DEFINITIONS "${DISABLE_PSI_DEFINITIONS}")
 ENDFOREACH()
 
 SET(SRC_FILES
 gtid_set-t.cc)
 
-IF(WIN32)
-  LIST(APPEND SRC_FILES $<TARGET_OBJECTS:my_nt_servc>)
-ENDIF()
-
 MYSQL_ADD_EXECUTABLE(gtid_set-t ${SRC_FILES}
   ADD_TEST gtid_set
   LINK_LIBRARIES gunit_large server_unittest_library
   COMPILE_DEFINITIONS "${DISABLE_PSI_DEFINITIONS}")
+
+IF(MSVC)
+  SET(COMPATIBILITY_TEST_OPT "/wd4996")
+ELSE()
+  SET(COMPATIBILITY_TEST_OPT "-Wno-deprecated-declarations")
+ENDIF()
+
+MYSQL_ADD_EXECUTABLE(compatibility_binlogevents-t compatibility_binlogevents-t.cc
+  ADD_TEST compatibility_binlogevents
+  LINK_LIBRARIES mysql_gtid mysql_binlog_event_standalone gunit_small
+  COMPILE_DEFINITIONS "${DISABLE_PSI_DEFINITIONS}"
+  COMPILE_OPTIONS ${COMPATIBILITY_TEST_OPT})

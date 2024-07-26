@@ -12,7 +12,7 @@
 
 --source include/have_ndb.inc
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo # Find physical binlog file name format as it varies between platforms
 CREATE TABLE check_binlog_name (a int primary key) engine = NDB;
@@ -23,7 +23,7 @@ let $binlog_name =
      FROM mysql.ndb_binlog_index ORDER BY epoch LIMIT 1`;
 #echo binlog_name: $binlog_name;
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 
 --echo # =======================================

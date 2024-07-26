@@ -1017,11 +1017,8 @@ struct trx_purge_t {
   /** The purge will not remove undo logs which are >= this view (purge view) */
   ReadView view;
 
-  /** true if view is active */
-  bool view_active;
-
   /** Count of total tasks submitted to the task queue */
-  volatile ulint n_submitted;
+  ulint n_submitted;
 
   /** Count of total tasks completed */
   std::atomic<ulint> n_completed;

@@ -17,7 +17,7 @@
 # 6. Stop the group.
 # 7. Add debug point to disable certification info garbage collection.
 #    Bootstrap M1 and join M2.
-# 8. Insert 10 rows.
+# 8. Insert 13 rows.
 # 9. Run 5 DDLs.
 # 10. Cleanup.
 ################################################################################
@@ -34,14 +34,14 @@
 --echo #    Bootstrap M1 and join M2.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_broadcast_thread_short_period';
 
 --source include/start_and_bootstrap_group_replication.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_broadcast_thread_short_period';
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_garbage_collection_ran';
@@ -53,7 +53,7 @@ SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_garbage_collection_ran';
 --echo #    Wait for garbage collector to run for every insert.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 CREATE TABLE t1(c1 INT PRIMARY KEY);
 
@@ -61,68 +61,68 @@ CREATE TABLE t1(c1 INT PRIMARY KEY);
 while($i < 6)
 {
   --let $rpl_connection_name= server2
-  --source include/rpl_connection.inc
+  --source include/connection.inc
 
   SET DEBUG_SYNC= "now WAIT_FOR signal.group_replication_certifier_garbage_collection_finished";
 
   --let $rpl_connection_name= server1
-  --source include/rpl_connection.inc
+  --source include/connection.inc
 
   --eval INSERT INTO t1 VALUES ($i)
   --inc $i
 }
---source include/rpl_sync.inc
+--source include/rpl/sync.inc
 
 --echo #################################################################
 --echo # 3. Assert sequence numbers and last_committed are correct.
 --echo #    Verify no gaps in sequence number.
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $binlog_file= server-relay-log-group_replication_applier.000002
---let $logical_timestamps= 0 0;1 2;2 3;3 4;4 5;5 6;6 7
---source include/assert_logical_timestamps.inc
+--let $logical_timestamps= 0 0;2 3;3 4;4 5;5 6;6 7
+--source include/rpl/assert_logical_timestamps.inc
 
 --echo #################################################################
 --echo # 4. Run 5 DDLs.
 --echo #    Wait for garbage collector to run for every statement.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $i=1
 while($i < 6)
 {
   --let $rpl_connection_name= server2
-  --source include/rpl_connection.inc
+  --source include/connection.inc
 
   SET DEBUG_SYNC= "now WAIT_FOR signal.group_replication_certifier_garbage_collection_finished";
 
   --let $rpl_connection_name= server1
-  --source include/rpl_connection.inc
+  --source include/connection.inc
 
   --eval CREATE TABLE tt$i(c1 INT PRIMARY KEY)
   --inc $i
 }
---source include/rpl_sync.inc
+--source include/rpl/sync.inc
 
 --echo #################################################################
 --echo # 5. Assert sequence numbers and last_committed are correct.
 --echo #    Verify no gaps in sequence number.
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $binlog_file= server-relay-log-group_replication_applier.000002
---let $logical_timestamps= 0 0;1 2;2 3;3 4;4 5;5 6;6 7;7 8;8 9;9 10;10 11;11 12
---source include/assert_logical_timestamps.inc
+--let $logical_timestamps= 0 0;2 3;3 4;4 5;5 6;6 7;7 8;8 9;9 10;10 11;11 12
+--source include/rpl/assert_logical_timestamps.inc
 
 --echo #################################################################
 --echo # 6. Stop the group.
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --source include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_garbage_collection_ran';
@@ -130,7 +130,7 @@ SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_broadcast_thread_short_perio
 SET DEBUG_SYNC= 'RESET';
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --source include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_broadcast_thread_short_period';
@@ -141,48 +141,48 @@ SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_broadcast_thread_short_perio
 --echo #    Bootstrap M1 and join M2.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 SET @@GLOBAL.DEBUG= '+d,group_replication_do_not_clear_certification_database';
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_broadcast_thread_big_period';
 --source include/start_and_bootstrap_group_replication.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 SET @@GLOBAL.DEBUG= '+d,group_replication_do_not_clear_certification_database';
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_broadcast_thread_big_period';
 --source include/start_group_replication.inc
 
 --echo #################################################################
---echo # 8. Insert 10 rows.
+--echo # 8. Insert 13 rows.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $i=6
 while($i < 16)
 {
   --let $rpl_connection_name= server1
-  --source include/rpl_connection.inc
+  --source include/connection.inc
 
   --eval INSERT INTO test.t1 VALUES ($i)
   --inc $i
 }
---source include/rpl_sync.inc
+--source include/rpl/sync.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $binlog_file= server-relay-log-group_replication_applier.000003
---let $logical_timestamps= 0 0;1 2;1 3;1 4;1 5;1 6;1 7;1 8;1 9;1 10;1 11
---source include/assert_logical_timestamps.inc
+--let $logical_timestamps= 0 0;1 3;1 4;1 5;1 6;1 7;1 8;1 9;1 10;1 11
+--source include/rpl/assert_logical_timestamps.inc
 
 --echo #################################################################
 --echo # 9. Run 5 DDLs.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $i=1
 while($i < 6)
@@ -190,33 +190,33 @@ while($i < 6)
   --eval DROP TABLE tt$i
   --inc $i
 }
---source include/rpl_sync.inc
+--source include/rpl/sync.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $binlog_file= server-relay-log-group_replication_applier.000003
---let $logical_timestamps= 0 0;1 2;1 3;1 4;1 5;1 6;1 7;1 8;1 9;1 10;1 11;11 12;12 13;13 14;14 15;15 16
---source include/assert_logical_timestamps.inc
+--let $logical_timestamps= 0 0;1 3;1 4;1 5;1 6;1 7;1 8;1 9;1 10;1 11;11 12;12 13;13 14;14 15;15 16
+--source include/rpl/assert_logical_timestamps.inc
 
 --echo #################################################################
 --echo # 10. Cleanup.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 DROP TABLE t1;
---source include/rpl_sync.inc
+--source include/rpl/sync.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --source include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG= '-d,group_replication_do_not_clear_certification_database';
 SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_broadcast_thread_big_period';
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --source include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG= '-d,group_replication_do_not_clear_certification_database';

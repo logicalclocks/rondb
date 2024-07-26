@@ -5,7 +5,7 @@
 --enable_connect_log
 
 # Clean gtid_executed so that test can execute after other tests
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo #
 --echo # BUG#21114768 -- INCORRECT BINLOG ORDER FOR CONCURRENT
@@ -47,7 +47,7 @@ reap;
 --echo # binlog.000001    1073    Query    1    1169    use `test`; DROP TRIGGER trigger_1
 --echo # That is, two statements CREATE TRIGGER trigger_t1 follows one
 --echo # after another then DROP TRIGGER.
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 
 DROP TABLE t1,t2;
 
@@ -165,7 +165,7 @@ UNLOCK TABLES;
 --echo #
 
 --enable_connect_log
-SET NAMES utf8;
+SET NAMES utf8mb3;
 CREATE TABLE t1 (f1 INT);
 
 --echo # Case 1: Test case to verify MDL locking from concurrent SHOW CREATE TRIGGER

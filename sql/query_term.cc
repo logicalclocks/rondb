@@ -262,8 +262,7 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
   std::string str;
   char buffer[256];
   while (p) {
-    Mem_root_array<MaterializePathParameters::QueryBlock> *query_blocks =
-        nullptr;
+    Mem_root_array<MaterializePathParameters::Operand> *operands = nullptr;
     Mem_root_array<AppendPathParameters> *append_children = nullptr;
     snprintf(buffer, sizeof(buffer), "AP: %p ", p);
     str.append(buffer);
@@ -286,7 +285,7 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
         break;
       case AccessPath::MATERIALIZE:
         str.append("AccessPath::MATERIALIZE ");
-        query_blocks = &p->materialize().param->query_blocks;
+        operands = &p->materialize().param->m_operands;
         str.append(p->materialize().param->table->alias);
         p = p->materialize().table_path;
         break;
@@ -300,7 +299,9 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
         break;
       case AccessPath::AGGREGATE:
         str.append("AccessPath::AGGREGATE ");
-        str.append(p->aggregate().rollup ? "ROLLUP" : "");
+        if (p->aggregate().olap != UNSPECIFIED_OLAP_TYPE) {
+          str.append(GroupByModifierString(p->aggregate().olap));
+        }
         p = p->aggregate().child;
         break;
       case AccessPath::FILTER:
@@ -374,8 +375,8 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
     ret.clear();
     str.clear();
     ++level;
-    if (query_blocks != nullptr)
-      for (MaterializePathParameters::QueryBlock subp : *query_blocks) {
+    if (operands != nullptr)
+      for (MaterializePathParameters::Operand subp : *operands) {
         dumpAccessPath(level + 1, subp.subquery_path, buf);
       }
     if (append_children != nullptr)

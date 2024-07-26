@@ -1064,7 +1064,7 @@ void runTestSuite(MYSQL &mysql, Ndb &ndb) {
       default:
         //case 6:
         {
-          IndexScanOperation root(query, "PRIMARY", 0, 1000, 
+          IndexScanOperation root(query, "PRIMARY", 0, 1000,
                                  NdbQueryOptions::ScanOrdering_descending);
           LookupOperation child(query, &root);
           runCase(mysql, ndb, query, tabName, 10*(caseNo-6), 10*(caseNo-6));
@@ -1101,6 +1101,7 @@ int main(int argc, char *argv[]) {
   mySQLExec(mysql, "use CK_DB");
   {
     Ndb_cluster_connection con(connectString);
+    con.configure_tls(opt_tls_search_path, opt_mgm_tls);
     if (con.connect(12, 5, 1) != 0) {
       ndbout << "Unable to connect to management server." << endl;
       return NDBT_ProgramExit(NDBT_FAILED);

@@ -37,15 +37,15 @@
 #include <memory>  // std::unique_ptr
 
 #include "field_types.h"  // enum_field_types
-#include "m_ctype.h"
-#include "my_base.h"  // ha_rows
+#include "my_base.h"      // ha_rows
 
 #include "my_inttypes.h"
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_time.h"
 #include "sql-common/json_dom.h"       // Json_*
+#include "sql-common/my_decimal.h"     // my_decimal_cmp
 #include "sql/histograms/value_map.h"  // Histogram_comparator
-#include "sql/my_decimal.h"            // my_decimal_cmp
 #include "sql/sql_time.h"              // calc_time_diff
 #include "template_utils.h"
 

@@ -29,7 +29,6 @@
 #include <functional>
 
 #include "lf.h"
-#include "m_ctype.h"
 #include "my_dbug.h"
 #include "my_macros.h"
 #include "my_murmur3.h"
@@ -49,6 +48,7 @@
 #include "mysql/psi/mysql_stage.h"
 #include "mysql/psi/psi_mdl.h"
 #include "mysql/service_thd_wait.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"
 #include "sql/debug_sync.h"
@@ -610,7 +610,7 @@ class MDL_lock {
   bool switch_incompatible_waiting_types_bitmap_if_needed() {
     mysql_prlock_assert_write_owner(&m_rwlock);
 
-    uint new_idx = get_incompatible_waiting_types_bitmap_idx();
+    const uint new_idx = get_incompatible_waiting_types_bitmap_idx();
     if (m_current_waiting_incompatible_idx == new_idx) return false;
     m_current_waiting_incompatible_idx = new_idx;
     return true;
@@ -1132,10 +1132,10 @@ static uint murmur3_adapter(const LF_HASH *, const uchar *key, size_t length) {
 /** Initialize the container for all MDL locks. */
 
 void MDL_map::init() {
-  MDL_key global_lock_key(MDL_key::GLOBAL, "", "");
-  MDL_key commit_lock_key(MDL_key::COMMIT, "", "");
-  MDL_key acl_cache_lock_key(MDL_key::ACL_CACHE, "", "");
-  MDL_key backup_lock_key(MDL_key::BACKUP_LOCK, "", "");
+  const MDL_key global_lock_key(MDL_key::GLOBAL, "", "");
+  const MDL_key commit_lock_key(MDL_key::COMMIT, "", "");
+  const MDL_key acl_cache_lock_key(MDL_key::ACL_CACHE, "", "");
+  const MDL_key backup_lock_key(MDL_key::BACKUP_LOCK, "", "");
 
   m_global_lock = MDL_lock::create(&global_lock_key);
   m_commit_lock = MDL_lock::create(&commit_lock_key);
@@ -1508,7 +1508,7 @@ void MDL_request::init_with_source(MDL_key::enum_mdl_namespace mdl_namespace,
                                    const char *src_file, uint src_line) {
 #if !defined(NDEBUG)
   // Make sure all I_S tables (except ndb tables) are in CAPITAL letters.
-  bool is_ndb_table = (name_arg && (strncmp(name_arg, "ndb", 3) == 0));
+  const bool is_ndb_table = (name_arg && (strncmp(name_arg, "ndb", 3) == 0));
   assert(mdl_namespace != MDL_key::TABLE ||
          my_strcasecmp(system_charset_info, "information_schema", db_arg) ||
          is_ndb_table || !name_arg ||
@@ -2396,8 +2396,10 @@ const MDL_lock::MDL_lock_strategy MDL_lock::m_object_lock_strategy = {
 bool MDL_lock::can_grant_lock(enum_mdl_type type_arg,
                               const MDL_context *requestor_ctx) const {
   bool can_grant = false;
-  bitmap_t waiting_incompat_map = incompatible_waiting_types_bitmap()[type_arg];
-  bitmap_t granted_incompat_map = incompatible_granted_types_bitmap()[type_arg];
+  const bitmap_t waiting_incompat_map =
+      incompatible_waiting_types_bitmap()[type_arg];
+  const bitmap_t granted_incompat_map =
+      incompatible_granted_types_bitmap()[type_arg];
 
   /*
     New lock request can be satisfied iff:
@@ -2480,8 +2482,8 @@ inline MDL_context *MDL_lock::get_lock_owner() const {
 
 void MDL_lock::remove_ticket(MDL_context *ctx, LF_PINS *pins,
                              Ticket_list MDL_lock::*list, MDL_ticket *ticket) {
-  bool is_obtrusive = is_obtrusive_lock(ticket->get_type());
-  bool is_singleton = mdl_locks.is_lock_object_singleton(&key);
+  const bool is_obtrusive = is_obtrusive_lock(ticket->get_type());
+  const bool is_singleton = mdl_locks.is_lock_object_singleton(&key);
 
   mysql_prlock_wrlock(&m_rwlock);
   (this->*list).remove_ticket(ticket);
@@ -2492,7 +2494,7 @@ void MDL_lock::remove_ticket(MDL_context *ctx, LF_PINS *pins,
     Once last ticket for "obtrusive" lock is removed we should clear
     HAS_OBTRUSIVE flag in m_fast_path_state as well.
   */
-  bool last_obtrusive =
+  const bool last_obtrusive =
       is_obtrusive && ((--m_obtrusive_locks_granted_waiting_count) == 0);
   /*
     If both m_granted and m_waiting lists become empty as result we also
@@ -2712,7 +2714,7 @@ bool MDL_context::try_acquire_lock(MDL_request *mdl_request) {
     */
     MDL_lock *lock = ticket->m_lock;
 
-    bool last_obtrusive =
+    const bool last_obtrusive =
         lock->is_obtrusive_lock(mdl_request->type) &&
         ((--lock->m_obtrusive_locks_granted_waiting_count) == 0);
     bool last_slow_path =
@@ -2766,7 +2768,7 @@ void MDL_context::materialize_fast_path_locks() {
     for (MDL_ticket *ticket = it++; ticket != matf; ticket = it++) {
       if (ticket->m_is_fast_path) {
         MDL_lock *lock = ticket->m_lock;
-        MDL_lock::fast_path_state_t unobtrusive_lock_increment =
+        const MDL_lock::fast_path_state_t unobtrusive_lock_increment =
             lock->get_unobtrusive_lock_increment(ticket->get_type());
         ticket->m_is_fast_path = false;
         mysql_prlock_wrlock(&lock->m_rwlock);
@@ -3087,7 +3089,7 @@ slow_path:
     This is necessary to prevent concurrent fast path acquisitions from
     invalidating the results of this method.
   */
-  bool first_obtrusive_lock =
+  const bool first_obtrusive_lock =
       (unobtrusive_lock_increment == 0) &&
       ((lock->m_obtrusive_locks_granted_waiting_count++) == 0);
   bool first_use = false;
@@ -3235,7 +3237,7 @@ bool MDL_context::clone_ticket(MDL_request *mdl_request) {
       We are cloning ticket which was acquired on "fast path".
       Let us use "fast path" to create clone as well.
     */
-    MDL_lock::fast_path_state_t unobtrusive_lock_increment =
+    const MDL_lock::fast_path_state_t unobtrusive_lock_increment =
         ticket->m_lock->get_unobtrusive_lock_increment(ticket->get_type());
 
     /*
@@ -3260,7 +3262,7 @@ bool MDL_context::clone_ticket(MDL_request *mdl_request) {
       need to take into account if new ticket corresponds to
       "obtrusive" lock.
     */
-    bool is_obtrusive = ticket->m_lock->is_obtrusive_lock(ticket->m_type);
+    const bool is_obtrusive = ticket->m_lock->is_obtrusive_lock(ticket->m_type);
     mysql_prlock_wrlock(&ticket->m_lock->m_rwlock);
     ticket->m_lock->m_granted.add_ticket(ticket);
     if (is_obtrusive) {
@@ -3639,7 +3641,7 @@ bool MDL_context::acquire_locks(MDL_request_list *mdl_requests,
                                 Timeout_type lock_wait_timeout) {
   MDL_request_list::Iterator it(*mdl_requests);
   MDL_request **p_req;
-  MDL_savepoint mdl_svp = mdl_savepoint();
+  const MDL_savepoint mdl_svp = mdl_savepoint();
   /*
     Remember the first MDL_EXPLICIT ticket so that we can release
     any new such locks taken if acquisition fails.
@@ -3746,7 +3748,7 @@ bool MDL_context::upgrade_shared_lock(MDL_ticket *mdl_ticket,
                                       enum_mdl_type new_type,
                                       Timeout_type lock_wait_timeout) {
   MDL_request mdl_new_lock_request;
-  MDL_savepoint mdl_svp = mdl_savepoint();
+  const MDL_savepoint mdl_svp = mdl_savepoint();
   bool is_new_ticket;
   MDL_lock *lock;
 
@@ -3997,7 +3999,7 @@ end:
 
   @retval true  A deadlock is found. A pointer to deadlock
                  victim is saved in the visitor.
-  @retval false
+  @retval false TBD
 */
 
 bool MDL_ticket::accept_visitor(MDL_wait_for_graph_visitor *gvisitor) {
@@ -4017,7 +4019,7 @@ bool MDL_ticket::accept_visitor(MDL_wait_for_graph_visitor *gvisitor) {
 
   @retval true  A deadlock is found. A pointer to deadlock
                 victim is saved in the visitor.
-  @retval false
+  @retval false TBD
 */
 
 bool MDL_context::visit_subgraph(MDL_wait_for_graph_visitor *gvisitor) {
@@ -4119,9 +4121,9 @@ void MDL_context::release_lock(enum_mdl_duration duration, MDL_ticket *ticket) {
       satisfied using "fast path". We can use "fast path" release
       algorithm of release for it as well.
     */
-    MDL_lock::fast_path_state_t unobtrusive_lock_increment =
+    const MDL_lock::fast_path_state_t unobtrusive_lock_increment =
         lock->get_unobtrusive_lock_increment(ticket->get_type());
-    bool is_singleton = mdl_locks.is_lock_object_singleton(&lock->key);
+    const bool is_singleton = mdl_locks.is_lock_object_singleton(&lock->key);
 
     /* We should not have "fast path" tickets for "obtrusive" lock types. */
     assert(unobtrusive_lock_increment != 0);
@@ -4552,7 +4554,7 @@ bool MDL_context::has_locks(MDL_key::enum_mdl_namespace mdl_namespace) const {
   MDL_ticket *ticket;
 
   for (int i = 0; i < MDL_DURATION_END; i++) {
-    enum_mdl_duration duration = static_cast<enum_mdl_duration>(i);
+    const enum_mdl_duration duration = static_cast<enum_mdl_duration>(i);
 
     MDL_ticket_store::List_iterator it = m_ticket_store.list_iterator(duration);
     while ((ticket = it++)) {
@@ -4646,7 +4648,7 @@ size_t MDL_ticket_store::Hash::operator()(const MDL_key *k) const {
 MDL_ticket_store::MDL_ticket_handle MDL_ticket_store::find_in_lists(
     const MDL_request &req) const {
   for (int i = 0; i < MDL_DURATION_END; i++) {
-    int di = (req.duration + i) % MDL_DURATION_END;
+    const int di = (req.duration + i) % MDL_DURATION_END;
 
     List_iterator it(m_durations[di].m_ticket_list);
 
@@ -4891,8 +4893,8 @@ MDL_ticket_store::MDL_ticket_handle MDL_ticket_store::find(
     const MDL_request &req) const {
 #ifndef NDEBUG
   if (m_count >= THRESHOLD) {
-    MDL_ticket_handle list_h = find_in_lists(req);
-    MDL_ticket_handle hash_h = find_in_hash(req);
+    const MDL_ticket_handle list_h = find_in_lists(req);
+    const MDL_ticket_handle hash_h = find_in_hash(req);
 
     assert(equivalent(list_h.m_ticket, hash_h.m_ticket, req.duration));
   }

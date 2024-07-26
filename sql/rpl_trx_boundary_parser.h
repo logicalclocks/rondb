@@ -39,7 +39,7 @@
 
 #include <stddef.h>
 
-#include "libbinlogevents/include/trx_boundary_parser.h"
+#include "mysql/binlog/event/trx_boundary_parser.h"
 
 /**
   @class Replication_transaction_boundary_parser
@@ -48,15 +48,16 @@
   event stream.
 */
 class Replication_transaction_boundary_parser
-    : public Transaction_boundary_parser {
+    : public mysql::binlog::event::Transaction_boundary_parser {
  public:
   /**
     The constructor
     @param context If this parser is used on a receiver or applier context
   */
   Replication_transaction_boundary_parser(
-      Transaction_boundary_parser::enum_trx_boundary_parser_context context)
-      : Transaction_boundary_parser(context) {}
+      mysql::binlog::event::Transaction_boundary_parser::
+          enum_trx_boundary_parser_context context)
+      : mysql::binlog::event::Transaction_boundary_parser(context) {}
   /**
     Log warnings into the error log.
 

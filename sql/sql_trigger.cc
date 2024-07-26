@@ -30,7 +30,6 @@
 #include <string>
 #include <utility>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_base.h"
 #include "my_compiler.h"
@@ -39,6 +38,7 @@
 #include "my_psi_config.h"
 #include "my_sys.h"
 #include "mysql/psi/mysql_sp.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
@@ -69,6 +69,7 @@
 #include "sql/table_trigger_dispatcher.h"  // Table_trigger_dispatcher
 #include "sql/transaction.h"               // trans_commit_stmt, trans_commit
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "thr_lock.h"
 
 namespace dd {
@@ -403,8 +404,7 @@ bool Sql_cmd_create_trigger::execute(THD *thd) {
   */
   Security_context *sctx = thd->security_context();
   if (!trust_function_creators && mysql_bin_log.is_open() &&
-      !(sctx->check_access(SUPER_ACL) ||
-        sctx->has_global_grant(STRING_WITH_LEN("SET_USER_ID")).first)) {
+      !(sctx->check_access(SUPER_ACL))) {
     my_error(ER_BINLOG_CREATE_ROUTINE_NEED_SUPER, MYF(0));
     return true;
   }

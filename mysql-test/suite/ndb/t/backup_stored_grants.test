@@ -123,12 +123,10 @@ EOF
 
 --connection default
 --let $wait_counter= 10000
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 --connection server2
 --let $wait_counter= 10000
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 # (Test E): DROP USER u@n

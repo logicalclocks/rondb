@@ -27,13 +27,17 @@
 #include "mysql/components/services/registry.h"
 
 // pfs services
+#include <mysql/components/services/mysql_server_telemetry_metrics_service.h>
 #include <mysql/components/services/mysql_server_telemetry_traces_service.h>
+#include <mysql/components/services/pfs_notification.h>
+#include <mysql/components/services/pfs_resource_group.h>
 #include <mysql/components/services/psi_cond_service.h>
 #include <mysql/components/services/psi_error_service.h>
 #include <mysql/components/services/psi_file_service.h>
 #include <mysql/components/services/psi_idle_service.h>
 #include <mysql/components/services/psi_mdl_service.h>
 #include <mysql/components/services/psi_memory_service.h>
+#include <mysql/components/services/psi_metric_service.h>
 #include <mysql/components/services/psi_mutex_service.h>
 #include <mysql/components/services/psi_rwlock_service.h>
 #include <mysql/components/services/psi_socket_service.h>
@@ -44,9 +48,6 @@
 #include <mysql/components/services/psi_thread_service.h>
 #include <mysql/components/services/psi_tls_channel_service.h>
 #include <mysql/components/services/psi_transaction_service.h>
-
-bool pfs_init_services(SERVICE_TYPE(registry_registration) * reg);
-bool pfs_deinit_services(SERVICE_TYPE(registry_registration) * reg);
 
 extern SERVICE_TYPE(psi_cond_v1)
     SERVICE_IMPLEMENTATION(performance_schema, psi_cond_v1);
@@ -62,6 +63,8 @@ extern SERVICE_TYPE(psi_mdl_v2)
     SERVICE_IMPLEMENTATION(performance_schema, psi_mdl_v2);
 extern SERVICE_TYPE(psi_memory_v2)
     SERVICE_IMPLEMENTATION(performance_schema, psi_memory_v2);
+extern SERVICE_TYPE(psi_metric_v1)
+    SERVICE_IMPLEMENTATION(performance_schema, psi_metric_v1);
 extern SERVICE_TYPE(psi_mutex_v1)
     SERVICE_IMPLEMENTATION(performance_schema, psi_mutex_v1);
 extern SERVICE_TYPE(psi_rwlock_v2)
@@ -89,5 +92,12 @@ extern SERVICE_TYPE(psi_tls_channel_v1)
 extern SERVICE_TYPE(mysql_server_telemetry_traces_v1)
     SERVICE_IMPLEMENTATION(performance_schema,
                            mysql_server_telemetry_traces_v1);
+extern SERVICE_TYPE(mysql_server_telemetry_metrics_v1)
+    SERVICE_IMPLEMENTATION(performance_schema,
+                           mysql_server_telemetry_metrics_v1);
+extern SERVICE_TYPE(pfs_notification_v3)
+    SERVICE_IMPLEMENTATION(mysql_server, pfs_notification_v3);
+extern SERVICE_TYPE(pfs_resource_group_v3)
+    SERVICE_IMPLEMENTATION(mysql_server, pfs_resource_group_v3);
 
 #endif /* PFS_SERVICES_H */

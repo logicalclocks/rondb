@@ -398,7 +398,7 @@ void vio_ssl_delete(Vio *vio) {
   }
 
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
-  ERR_remove_thread_state(0);
+  ERR_remove_thread_state(nullptr);
 #endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 
   vio_delete(vio);
@@ -633,7 +633,8 @@ static void print_ssl_session_id(SSL_SESSION *sess, const char *action) {
 
 static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
                   SSL_SESSION *ssl_session, ssl_handshake_func_t func,
-                  unsigned long *ssl_errno_holder, SSL **sslptr) {
+                  unsigned long *ssl_errno_holder, SSL **sslptr,
+                  const char *sni_servername) {
   SSL *ssl = nullptr;
   my_socket sd = mysql_socket_getfd(vio->mysql_socket);
 
@@ -643,7 +644,8 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
 #endif
 
   DBUG_TRACE;
-  DBUG_PRINT("enter", ("ptr: %p, sd: %d  ctx: %p", ptr, sd, ptr->ssl_context));
+  DBUG_PRINT("enter", ("ptr: %p, sd: " MY_SOCKET_FMT "  ctx: %p", ptr, sd,
+                       ptr->ssl_context));
 
   if (!sslptr) {
     sslptr = &ssl;
@@ -669,6 +671,20 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
       } else {
         DBUG_PRINT("info", ("reused existing session"));
       }
+    }
+
+    if (sni_servername) {
+// Check if the openssl supports SNI, and only then set the tlsext_host_name
+#if !defined(OPENSSL_NO_TLSEXT)
+      if (!SSL_set_tlsext_host_name(ssl, const_cast<char *>(sni_servername))) {
+        DBUG_PRINT("error", ("SSL_set_tlsext_host_name failure"));
+        *ssl_errno_holder = ERR_get_error();
+        return 1;
+      }
+#else
+      *ssl_errno_holder = 0;
+      return 1;
+#endif /* !def(OPENSSL_NO_TLSEXT) */
     }
 
     DBUG_PRINT("info", ("ssl: %p timeout: %ld", ssl, timeout));
@@ -770,17 +786,17 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
 int sslaccept(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
               unsigned long *ssl_errno_holder) {
   DBUG_TRACE;
-  int ret =
-      ssl_do(ptr, vio, timeout, nullptr, SSL_accept, ssl_errno_holder, nullptr);
+  int ret = ssl_do(ptr, vio, timeout, nullptr, SSL_accept, ssl_errno_holder,
+                   nullptr, nullptr);
   return ret;
 }
 
 int sslconnect(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
-               SSL_SESSION *session, unsigned long *ssl_errno_holder,
-               SSL **ssl) {
+               SSL_SESSION *session, unsigned long *ssl_errno_holder, SSL **ssl,
+               const char *sni_servername) {
   DBUG_TRACE;
-  int ret =
-      ssl_do(ptr, vio, timeout, session, SSL_connect, ssl_errno_holder, ssl);
+  int ret = ssl_do(ptr, vio, timeout, session, SSL_connect, ssl_errno_holder,
+                   ssl, sni_servername);
   return ret;
 }
 

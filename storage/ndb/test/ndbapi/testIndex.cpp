@@ -37,6 +37,7 @@
 #include <cstring>
 #include <signaldata/DumpStateOrd.hpp>
 #include "portlib/NdbSleep.h"
+#include "util/TlsKeyManager.hpp"
 
 #define CHECK(b)                                                          \
   if (!(b)) {                                                             \
@@ -2480,6 +2481,9 @@ runBug56829(NDBT_Context* ctx, NDBT_Step* step)
   const char* mgm = 0;//XXX ctx->getRemoteMgm();
   int fails = 0;
 
+  TlsKeyManager tlsKeyManager;
+  tlsKeyManager.init_mgm_client(opt_tls_search_path);
+
   char tabname[100];
   strcpy(tabname, tab.getName());
   char indname[100];
@@ -2507,7 +2511,9 @@ runBug56829(NDBT_Context* ctx, NDBT_Step* step)
              "mgm: failed to create handle");
       CHECK2(ndb_mgm_set_connectstring(h, mgm) == 0,
              ndb_mgm_get_latest_error_msg(h));
-      CHECK2(ndb_mgm_connect(h, 0, 0, 0) == 0, ndb_mgm_get_latest_error_msg(h));
+      ndb_mgm_set_ssl_ctx(h, tlsKeyManager.ctx());
+      CHECK2(ndb_mgm_connect_tls(h, 0, 0, 0, opt_mgm_tls) == 0,
+             ndb_mgm_get_latest_error_msg(h));
       g_info << "mgm: connected to " << (mgm ? mgm : "default") << endl;
 
       // make bitmask of DB nodes

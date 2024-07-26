@@ -25,7 +25,6 @@
 #define SQL_JOIN_OPTIMIZER_EXPLAIN_ACCESS_PATH_H
 
 #include <string>
-#include <vector>
 
 struct AccessPath;
 class Query_expression;

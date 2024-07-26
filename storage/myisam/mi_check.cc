@@ -61,7 +61,6 @@
 
 #include <algorithm>
 
-#include "m_ctype.h"
 #include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
@@ -71,6 +70,8 @@
 #include "my_io.h"
 #include "my_macros.h"
 #include "my_pointer_arithmetic.h"
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
 #include "storage/myisam/ftdefs.h"
 #include "storage/myisam/myisam_sys.h"
 #ifdef HAVE_SYS_MMAN_H

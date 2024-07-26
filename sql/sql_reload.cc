@@ -56,6 +56,7 @@
 #include "sql/sql_servers.h"  // servers_reload
 #include "sql/system_variables.h"
 #include "sql/table.h"
+#include "string_with_len.h"
 
 /**
   Check the privileges required to execute a FLUSH command
@@ -72,11 +73,6 @@
 bool is_reload_request_denied(THD *thd, unsigned long op_type) {
   DBUG_TRACE;
   Security_context *sctx = thd->security_context();
-
-  if ((op_type & REFRESH_HOSTS)) {
-    push_deprecated_warn(thd, "FLUSH HOSTS",
-                         "TRUNCATE TABLE performance_schema.host_cache");
-  }
   /*
     First check RELOAD and stop if it's granted.
     No need to pass DB since it's a global priv
@@ -84,6 +80,12 @@ bool is_reload_request_denied(THD *thd, unsigned long op_type) {
   if (sctx->check_access(RELOAD_ACL, thd->db().str ? thd->db().str : "", true))
     return false;
 
+  if ((op_type & REFRESH_GRANT) &&
+      !sctx->has_global_grant(STRING_WITH_LEN("FLUSH_PRIVILEGES")).first) {
+    my_error(ER_SPECIFIC_ACCESS_DENIED_ERROR, MYF(0),
+             "RELOAD or FLUSH_PRIVILEGES");
+    return true;
+  }
   if ((op_type & REFRESH_OPTIMIZER_COSTS) &&
       !sctx->has_global_grant(STRING_WITH_LEN("FLUSH_OPTIMIZER_COSTS")).first) {
     my_error(ER_SPECIFIC_ACCESS_DENIED_ERROR, MYF(0),
@@ -107,9 +109,9 @@ bool is_reload_request_denied(THD *thd, unsigned long op_type) {
     return true;
   }
 
-  op_type &=
-      ~(REFRESH_OPTIMIZER_COSTS | REFRESH_STATUS | REFRESH_USER_RESOURCES |
-        REFRESH_TABLES | REFRESH_FOR_EXPORT | REFRESH_READ_LOCK);
+  op_type &= ~(REFRESH_GRANT | REFRESH_OPTIMIZER_COSTS | REFRESH_STATUS |
+               REFRESH_USER_RESOURCES | REFRESH_TABLES | REFRESH_FOR_EXPORT |
+               REFRESH_READ_LOCK);
 
   /* if it was just the above we're good */
   if (!op_type) return false;
@@ -339,23 +341,22 @@ bool handle_reload_request(THD *thd, unsigned long options, Table_ref *tables,
       }
     }
   }
-  if (options & REFRESH_HOSTS) hostname_cache_refresh();
   if (thd && (options & REFRESH_STATUS)) refresh_status();
-  if (options & REFRESH_THREADS)
-    Per_thread_connection_handler::kill_blocked_pthreads();
-  if (options & REFRESH_MASTER) {
+  if (options & REFRESH_SOURCE) {
     assert(thd);
     tmp_write_to_binlog = 0;
     /*
-      RESET MASTER acquired global read lock (if the thread is not acquired
-      already) to make sure no transaction commits are getting executed
-      while the operation is in process. If (and only if) it is
-      acquired by RESET MASTER internal process (options will contain
-      REFRESH_READ_LOCK flag in this case), unlock the global read lock
-      in reset_master().
+      RESET BINARY LOGS AND GTIDS acquired global read lock (if the thread is
+      not acquired already) to make sure no transaction commits are getting
+      executed while the operation is in process. If (and only if) it is
+      acquired by RESET BINARY LOGS AND GTIDS internal process (options will
+      contain REFRESH_READ_LOCK flag in this case), unlock the global read lock
+      in reset_binary_logs_and_gtids().
     */
-    if (reset_master(thd, options & REFRESH_READ_LOCK)) {
-      /* NOTE: my_error() has been already called by reset_master(). */
+    if (reset_binary_logs_and_gtids(thd, options & REFRESH_READ_LOCK)) {
+      /* NOTE: my_error() has been already called by
+       * reset_binary_logs_and_gtids().
+       */
       result = true;
     }
   }

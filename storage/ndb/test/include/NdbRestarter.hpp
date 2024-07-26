@@ -30,6 +30,7 @@
 #include <BaseString.hpp>
 #include <Vector.hpp>
 #include "mgmcommon/NdbMgm.hpp"
+#include "util/TlsKeyManager.hpp"
 
 #define NDBT_NO_NODE_GROUP_ID (int(-256))
 
@@ -131,6 +132,7 @@ class NdbRestarter {
   Vector<Vector<int>> splitNodes();
 
   NdbMgmHandle handle;
+  TlsKeyManager tlsKeyManager;
 
   enum NodeSelector {
     NS_RANDOM = 0,  // Any node

@@ -27,18 +27,19 @@
 #include <stddef.h>
 #include <sys/types.h>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_file.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
+#include "nulls.h"
 #include "sql/current_thd.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"  // lc_messages_dir
@@ -66,7 +67,7 @@ static const char *ERRMSG_FILE = "errmsg.sys";
 int mysql_errno_to_builtin(uint mysql_errno) {
   int offset = 0;  // Position where the current section starts in the array.
   int i;
-  int temp_errno = (int)mysql_errno;
+  const int temp_errno = (int)mysql_errno;
 
   for (i = 0; i < NUM_SECTIONS; i++) {
     if (temp_errno >= errmsg_section_start[i] &&
@@ -131,7 +132,7 @@ static const char *error_message_fetch(int mysql_errno) {
 
   {
     server_error *sqlstate_map = &error_names_array[1];
-    int i = mysql_errno_to_builtin(mysql_errno);
+    const int i = mysql_errno_to_builtin(mysql_errno);
 
     if (i >= 0) return sqlstate_map[i].text;
   }
@@ -232,25 +233,12 @@ bool MY_LOCALE_ERRMSGS::read_texts() {
     error_messages += errmsg_section_size[i];
 
   convert_dirname(lang_path, language, NullS);
-  (void)my_load_path(lang_path, lang_path, lc_messages_dir);
+  (void)my_load_path(lang_path, lang_path, lc_messages_dir /* prefix */);
   if ((file = mysql_file_open(key_file_ERRMSG,
                               fn_format(name, ERRMSG_FILE, lang_path, "", 4),
                               O_RDONLY, MYF(0))) < 0) {
-    /*
-      Trying pre-5.5 semantics of the --language parameter.
-      It included the language-specific part, e.g.:
-
-      --language=/path/to/english/
-    */
-    if ((file = mysql_file_open(
-             key_file_ERRMSG,
-             fn_format(name, ERRMSG_FILE, lc_messages_dir, "", 4), O_RDONLY,
-             MYF(0))) < 0) {
-      LogErr(ERROR_LEVEL, ER_ERRMSG_CANT_FIND_FILE, name);
-      goto open_err;
-    }
-
-    LogErr(WARNING_LEVEL, ER_ERRMSG_LOADING_55_STYLE, lc_messages_dir);
+    LogErr(ERROR_LEVEL, ER_ERRMSG_CANT_FIND_FILE, name);
+    goto open_err;
   }
 
   // Read the header from the file

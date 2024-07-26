@@ -52,7 +52,7 @@
     [Sim96] Simmen et al: “Fundamental Techniques for Order Optimization”
 
   All three papers deal with the issue of _logical_ orderings, where any
-  row stream may follow more than one order simultaneously, as inferred
+  tuple stream may follow more than one order simultaneously, as inferred
   through functional dependencies (FDs). For instance, if we have an ordering
   (ab) but also an active FD {a} → c (c is uniquely determined by a,
   for instance because a is a primary key in the same table as c), this means
@@ -147,6 +147,7 @@
 #include "sql/sql_array.h"
 
 #include <bitset>
+#include <sstream>
 #include <string>
 
 class LogicalOrderings;
@@ -271,9 +272,9 @@ struct FunctionalDependency {
     // Must be the first in the edge list.
     DECAY,
 
-    // A standard functional dependency {a} → b; if a row tuple
+    // A standard functional dependency {a} → b; if a tuple stream
     // is ordered on all elements of a and this FD is applied,
-    // it is also ordered on b. A typical example is if {a}
+    // it is also ordered on (a,b). A typical example is if {a}
     // is an unique key in a table, and b is a column of the
     // same table. head can be empty.
     FD,
@@ -322,6 +323,7 @@ class LogicalOrderings {
   ItemHandle GetHandle(Item *item);
 
   Item *item(ItemHandle item) const { return m_items[item].item; }
+  int num_items() const { return m_items.size(); }
 
   // These are only available before Build() has been called.
 
@@ -403,10 +405,7 @@ class LogicalOrderings {
   // actual interesting order later, after the FDs have been applied). These are
   // usually at the end, but may also be deduplicated against uninteresting
   // orders, which will then be marked as interesting.
-  //
-  // trace can be nullptr; if not, it get human-readable optimizer trace
-  // appended to it.
-  void Build(THD *thd, std::string *trace);
+  void Build(THD *thd);
 
   // These are only available after Build() has been called.
   // They are stateless and used in the actual planning phase.
@@ -845,10 +844,10 @@ class LogicalOrderings {
   std::string PrintOrdering(const Ordering &ordering) const;
   std::string PrintFunctionalDependency(const FunctionalDependency &fd,
                                         bool html) const;
-  void PrintFunctionalDependencies(std::string *trace);
-  void PrintInterestingOrders(std::string *trace);
-  void PrintNFSMDottyGraph(std::string *trace) const;
-  void PrintDFSMDottyGraph(std::string *trace) const;
+  void PrintFunctionalDependencies(std::ostream *trace);
+  void PrintInterestingOrders(std::ostream *trace);
+  void PrintNFSMDottyGraph(std::ostream *trace) const;
+  void PrintDFSMDottyGraph(std::ostream *trace) const;
 };
 
 inline bool operator==(const LogicalOrderings::NFSMEdge &a,

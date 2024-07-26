@@ -449,8 +449,8 @@ void Client::on_client_addr() {
 
 void Client::on_accept() {
   DBUG_TRACE;
-  log_debug("%s: Accepted client connection from %s (sock:%i)", client_id(),
-            client_address(), m_connection->get_fd());
+  log_debug("%s: Accepted client connection from %s (sock:" MY_SOCKET_FMT ")",
+            client_id(), client_address(), m_connection->get_fd());
 
   DBUG_EXECUTE_IF("client_accept_timeout", {
     int32_t i = 0;
@@ -893,7 +893,6 @@ void Client::set_is_interactive(const bool flag) {
    The method can be called from different thread/xpl_client.
  */
 bool Client::is_handler_thd(const THD *thd) const {
-  log_debug("is_handler_thd(this:%p)", this);
   DEBUG_SYNC(const_cast<THD *>(thd), "syncpoint_is_handled_by_thd");
 
   // When accessing the session we need to hold it in

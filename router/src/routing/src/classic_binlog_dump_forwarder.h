@@ -34,6 +34,9 @@ class BinlogDumpForwarder : public ForwardingProcessor {
 
   enum class Stage {
     Command,
+
+    ForbidCommand,
+
     Connect,
     Connected,
     Response,
@@ -50,6 +53,7 @@ class BinlogDumpForwarder : public ForwardingProcessor {
 
  private:
   stdx::expected<Result, std::error_code> command();
+  stdx::expected<Result, std::error_code> forbid_command();
   stdx::expected<Result, std::error_code> connect();
   stdx::expected<Result, std::error_code> connected();
   stdx::expected<Result, std::error_code> response();

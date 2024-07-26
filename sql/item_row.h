@@ -98,7 +98,7 @@ class Item_row : public Item {
     */
     set_data_type(MYSQL_TYPE_INVALID);
   }
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   enum Type type() const override { return ROW_ITEM; }
   void illegal_method_call(const char *) const MY_ATTRIBUTE((cold));
@@ -134,7 +134,7 @@ class Item_row : public Item {
                          Query_block *removed_query_block) override;
   bool propagate_type(THD *thd, const Type_properties &type) override;
   void cleanup() override;
-  void split_sum_func(THD *thd, Ref_item_array ref_item_array,
+  bool split_sum_func(THD *thd, Ref_item_array ref_item_array,
                       mem_root_deque<Item *> *fields) override;
   table_map used_tables() const override { return used_tables_cache; }
   enum Item_result result_type() const override { return ROW_RESULT; }
@@ -145,7 +145,8 @@ class Item_row : public Item {
 
   bool walk(Item_processor processor, enum_walk walk, uchar *arg) override;
   Item *transform(Item_transformer transformer, uchar *arg) override;
-
+  Item *compile(Item_analyzer analyzer, uchar **arg_p,
+                Item_transformer transformer, uchar *arg_t) override;
   uint cols() const override { return arg_count; }
   Item *element_index(uint i) override { return items[i]; }
   Item **addr(uint i) override { return items + i; }

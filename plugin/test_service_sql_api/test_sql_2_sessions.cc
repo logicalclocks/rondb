@@ -42,6 +42,8 @@
 #include "sql_string.h" /* STRING_PSI_MEMORY_KEY */
 #include "template_utils.h"
 
+struct CHARSET_INFO;
+
 static const char *log_filename = "test_sql_2_sessions";
 
 #define STRING_BUFFER_SIZE 1024
@@ -259,8 +261,8 @@ static ulong sql_get_client_capabilities(void *) {
 static int sql_get_null(void *ctx) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
   memcpy(pctx->sql_str_value[row][col], "[NULL]", sizeof("[NULL]"));
@@ -272,12 +274,13 @@ static int sql_get_null(void *ctx) {
 static int sql_get_integer(void *ctx, longlong value) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]), "%lld", value);
+  const size_t len =
+      snprintf(pctx->sql_str_value[row][col],
+               sizeof(pctx->sql_str_value[row][col]), "%lld", value);
   pctx->sql_str_len[row][col] = len;
   pctx->sql_int_value[row][col] = value;
 
@@ -287,13 +290,13 @@ static int sql_get_integer(void *ctx, longlong value) {
 static int sql_get_longlong(void *ctx, longlong value, uint is_unsigned) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]),
-                        is_unsigned ? "%llu" : "%lld", value);
+  const size_t len = snprintf(pctx->sql_str_value[row][col],
+                              sizeof(pctx->sql_str_value[row][col]),
+                              is_unsigned ? "%llu" : "%lld", value);
 
   pctx->sql_str_len[row][col] = len;
   pctx->sql_longlong_value[row][col] = value;
@@ -305,14 +308,14 @@ static int sql_get_longlong(void *ctx, longlong value, uint is_unsigned) {
 static int sql_get_decimal(void *ctx, const decimal_t *value) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]),
-                        "%s%d.%d(%d)[%s]", value->sign ? "+" : "-", value->intg,
-                        value->frac, value->len, (char *)value->buf);
+  const size_t len = snprintf(
+      pctx->sql_str_value[row][col], sizeof(pctx->sql_str_value[row][col]),
+      "%s%d.%d(%d)[%s]", value->sign ? "+" : "-", value->intg, value->frac,
+      value->len, (char *)value->buf);
   pctx->sql_str_len[row][col] = len;
   pctx->sql_decimal_value[row][col].intg = value->intg;
   pctx->sql_decimal_value[row][col].frac = value->frac;
@@ -328,12 +331,13 @@ static int sql_get_decimal(void *ctx, const decimal_t *value) {
 static int sql_get_double(void *ctx, double value, uint32 decimals) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]), "%3.7g", value);
+  const size_t len =
+      snprintf(pctx->sql_str_value[row][col],
+               sizeof(pctx->sql_str_value[row][col]), "%3.7g", value);
 
   pctx->sql_str_len[row][col] = len;
 
@@ -346,11 +350,11 @@ static int sql_get_double(void *ctx, double value, uint32 decimals) {
 static int sql_get_date(void *ctx, const MYSQL_TIME *value) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len =
+  const size_t len =
       snprintf(pctx->sql_str_value[row][col],
                sizeof(pctx->sql_str_value[row][col]), "%s%4d-%02d-%02d",
                value->neg ? "-" : "", value->year, value->month, value->day);
@@ -372,11 +376,11 @@ static int sql_get_date(void *ctx, const MYSQL_TIME *value) {
 static int sql_get_time(void *ctx, const MYSQL_TIME *value, uint decimals) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(
+  const size_t len = snprintf(
       pctx->sql_str_value[row][col], sizeof(pctx->sql_str_value[row][col]),
       "%s%02d:%02d:%02d", value->neg ? "-" : "",
       value->day ? (value->day * 24 + value->hour) : value->hour, value->minute,
@@ -401,11 +405,11 @@ static int sql_get_time(void *ctx, const MYSQL_TIME *value, uint decimals) {
 static int sql_get_datetime(void *ctx, const MYSQL_TIME *value, uint decimals) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(
+  const size_t len = snprintf(
       pctx->sql_str_value[row][col], sizeof(pctx->sql_str_value[row][col]),
       "%s%4d-%02d-%02d %02d:%02d:%02d", value->neg ? "-" : "", value->year,
       value->month, value->day, value->hour, value->minute, value->second);
@@ -430,8 +434,8 @@ static int sql_get_string(void *ctx, const char *const value, size_t length,
                           const CHARSET_INFO *const) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
   strncpy(pctx->sql_str_value[row][col], value, length);
@@ -641,9 +645,9 @@ static void exec_test_cmd(MYSQL_SESSION session, const char *test_cmd,
   memset(&cmd, 0, sizeof(cmd));
   cmd.com_query.query = test_cmd;
   cmd.com_query.length = strlen(cmd.com_query.query);
-  int fail = command_service_run_command(session, COM_QUERY, &cmd,
-                                         &my_charset_utf8mb3_general_ci,
-                                         &sql_cbs, CS_TEXT_REPRESENTATION, ctx);
+  const int fail = command_service_run_command(
+      session, COM_QUERY, &cmd, &my_charset_utf8mb3_general_ci, &sql_cbs,
+      CS_TEXT_REPRESENTATION, ctx);
   if (fail) {
     if (!srv_session_close(session))
       LogPluginErrMsg(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
@@ -663,7 +667,7 @@ static void test_sql(void *p) {
 
   /* Opening session 1 */
   WRITE_STR("Opening Session 1\n");
-  session_1 = srv_session_open(NULL, plugin_ctx);
+  session_1 = srv_session_open(nullptr, plugin_ctx);
   if (!session_1)
     LogPluginErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, "Open session_1 failed.");
   else
@@ -677,7 +681,7 @@ static void test_sql(void *p) {
 
   /* Opening session 2 */
   WRITE_STR("\nOpening Session 2\n");
-  session_2 = srv_session_open(NULL, plugin_ctx);
+  session_2 = srv_session_open(nullptr, plugin_ctx);
   if (!session_2)
     LogPluginErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, "Open session_2 failed.");
   else

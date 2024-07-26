@@ -42,6 +42,11 @@ class SocketAuthenticator {
 
   static constexpr int AuthOk = 0;
   static const char *error(int);  // returns error message for code
+
+  static constexpr int negotiation_failed = -4, unexpected_response = -3,
+                       peer_requires_cleartext = -2, peer_requires_tls = -1,
+                       negotiate_cleartext_ok = 0, /* AuthOk */
+      negotiate_tls_ok = 1;
 };
 
 class SocketAuthSimple : public SocketAuthenticator {
@@ -50,6 +55,19 @@ class SocketAuthSimple : public SocketAuthenticator {
   ~SocketAuthSimple() override {}
   int client_authenticate(const NdbSocket &) override;
   int server_authenticate(const NdbSocket &) override;
+};
+
+class SocketAuthTls : public SocketAuthenticator {
+ public:
+  SocketAuthTls(const class TlsKeyManager *km, bool requireTls)
+      : m_tls_keys(km), tls_required(requireTls) {}
+  ~SocketAuthTls() override {}
+  int client_authenticate(const NdbSocket &) override;
+  int server_authenticate(const NdbSocket &) override;
+
+ private:
+  const class TlsKeyManager *m_tls_keys;
+  const bool tls_required;
 };
 
 #endif  // SOCKET_AUTHENTICATOR_HPP

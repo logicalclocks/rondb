@@ -4,10 +4,10 @@
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
 .\"      Date: 05/31/2024
 .\"    Manual: MySQL Database System
-.\"    Source: MySQL 8.0
+.\"    Source: MySQL 8.4
 .\"  Language: English
 .\"
-.TH "MYSQL_SECURE_INSTALLATION" "1" "05/31/2024" "MySQL 8\&.0" "MySQL Database System"
+.TH "MYSQL_SECURE_INSTALLATION" "1" "05/31/2024" "MySQL 8\&.4" "MySQL Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -553,7 +553,7 @@ T}
 T{
 Deprecated
 T}:T{
-8.0.34
+Yes
 T}
 T{
 Type
@@ -647,7 +647,7 @@ STRICT
 causes the client to produce a warning at startup and to operate in non\-FIPS mode\&.
 .sp .5v
 .RE
-As of MySQL 8\&.0\&.34, this option is deprecated\&. Expect it to be removed in a future version of MySQL\&.
+This option is deprecated\&. Expect it to be removed in a future version of MySQL\&.
 .RE
 .sp
 .RS 4
@@ -662,17 +662,11 @@ As of MySQL 8\&.0\&.34, this option is deprecated\&. Expect it to be removed in 
 .TS
 allbox tab(:);
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --tls-ciphersuites=ciphersuite_list
-T}
-T{
-Introduced
-T}:T{
-8.0.16
 T}
 T{
 Type
@@ -683,8 +677,43 @@ T}
 .sp 1
 The permissible ciphersuites for encrypted connections that use TLSv1\&.3\&. The value is a list of one or more colon\-separated ciphersuite names\&. The ciphersuites that can be named for this option depend on the SSL library used to compile MySQL\&. For details, see
 Section\ \&8.3.2, \(lqEncrypted Connection TLS Protocols and Ciphers\(rq\&.
+.RE
 .sp
-This option was added in MySQL 8\&.0\&.16\&.
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+\fB\-\-tls\-sni\-servername=\fR\fB\fIserver_name\fR\fR
+.TS
+allbox tab(:);
+lB l
+lB l.
+T{
+Command-Line Format
+T}:T{
+--tls-sni-servername=server_name
+T}
+T{
+Type
+T}:T{
+String
+T}
+.TE
+.sp 1
+When specified, the name is passed to the
+libmysqlclient
+C API library using the
+MYSQL_OPT_TLS_SNI_SERVERNAME
+option of
+mysql_options()\&. The server name is not case\-sensitive\&. To show which server name the client specified for the current session, if any, check the
+Tls_sni_server_name
+status variable\&.
+.sp
+Server Name Indication (SNI) is an extension to the TLS protocol (OpenSSL must be compiled using TLS extensions for this option to function)\&. The MySQL implementation of SNI represents the client\-side only\&.
 .RE
 .sp
 .RS 4
@@ -700,7 +729,6 @@ This option was added in MySQL 8\&.0\&.16\&.
 allbox tab(:);
 lB l
 lB l
-lB l
 lB l.
 T{
 Command-Line Format
@@ -713,7 +741,7 @@ T}:T{
 String
 T}
 T{
-Default Value (≥ 8.0.16)
+Default Value
 T}:T{
 .PP
 TLSv1,TLSv1.1,TLSv1.2,TLSv1.3
@@ -721,11 +749,6 @@ TLSv1,TLSv1.1,TLSv1.2,TLSv1.3
 .PP
 TLSv1,TLSv1.1,TLSv1.2
 (otherwise)
-T}
-T{
-Default Value (≤ 8.0.15)
-T}:T{
-TLSv1,TLSv1.1,TLSv1.2
 T}
 .TE
 .sp 1

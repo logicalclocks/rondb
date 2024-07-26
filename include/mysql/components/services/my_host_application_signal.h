@@ -39,7 +39,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 template <int signal_number, typename arg_type>
 bool my_host_application_signal(SERVICE_TYPE(registry) * registry,
                                 arg_type argument) {
-  my_service<SERVICE_TYPE(host_application_signal)> host_app(
+  const my_service<SERVICE_TYPE(host_application_signal)> host_app(
       "host_application_signal", registry);
 
   return host_app->signal(signal_number, argument);
@@ -58,7 +58,7 @@ bool my_host_application_signal(SERVICE_TYPE(registry) * registry,
 inline bool my_host_application_signal_shutdown(SERVICE_TYPE(registry) *
                                                 registry) {
   return my_host_application_signal<HOST_APPLICATION_SIGNAL_SHUTDOWN, void *>(
-      registry, NULL);
+      registry, nullptr);
 }
 
 #endif /* MY_HOST_APPLICATION_SIGNAL_H */

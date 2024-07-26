@@ -41,6 +41,7 @@
 #include "plugin/group_replication/include/plugin_handlers/group_partition_handling.h"
 #include "plugin/group_replication/include/plugin_handlers/primary_election_invocation_handler.h"
 #include "plugin/group_replication/include/plugin_handlers/read_mode_handler.h"
+#include "plugin/group_replication/include/plugin_handlers/recovery_metadata.h"
 #include "plugin/group_replication/include/plugin_handlers/remote_clone_handler.h"
 #include "plugin/group_replication/include/plugin_observers/channel_observation_manager.h"
 #include "plugin/group_replication/include/plugin_observers/group_event_observer.h"
@@ -57,6 +58,7 @@
 class Autorejoin_thread;
 class Transaction_consistency_manager;
 class Member_actions_handler;
+class Metrics_handler;
 class Consensus_leaders_handler;
 class Mysql_thread;
 
@@ -118,6 +120,8 @@ struct gr_modules {
     MESSAGE_SERVICE_HANDLER,
     BINLOG_DUMP_THREAD_KILL,
     MEMBER_ACTIONS_HANDLER,
+    METRICS_HANDLER,
+    RECOVERY_METADATA_MODULE,
     NUM_MODULES
   };
   using mask = std::bitset<NUM_MODULES>;
@@ -173,9 +177,11 @@ extern Primary_election_handler *primary_election_handler;
 extern Autorejoin_thread *autorejoin_module;
 extern Message_service_handler *message_service_handler;
 extern Member_actions_handler *member_actions_handler;
+extern Metrics_handler *metrics_handler;
 extern Mysql_thread *mysql_thread_handler;
 extern Mysql_thread *mysql_thread_handler_read_only_mode;
 extern Server_services_references *server_services_references_module;
+extern Recovery_metadata_module *recovery_metadata_module;
 
 // Auxiliary Functionality
 extern Plugin_gcs_events_handler *events_handler;
@@ -208,11 +214,13 @@ bool is_plugin_waiting_to_set_server_read_mode();
 bool check_async_channel_running_on_secondary();
 void set_enforce_update_everywhere_checks(bool option);
 void set_single_primary_mode_var(bool option);
+bool get_single_primary_mode_var();
 void set_auto_increment_handler_values();
 void reset_auto_increment_handler_values(bool force_reset = false);
 SERVICE_TYPE(registry) * get_plugin_registry();
 rpl_sidno get_group_sidno();
 rpl_sidno get_view_change_sidno();
+bool is_view_change_log_event_required();
 bool is_autorejoin_enabled();
 uint get_number_of_autorejoin_tries();
 ulonglong get_rejoin_timeout();
@@ -251,6 +259,8 @@ int get_flow_control_hold_percent_var();
 int get_flow_control_release_percent_var();
 ulong get_components_stop_timeout_var();
 ulong get_communication_stack_var();
+bool get_preemptive_garbage_collection_var();
+uint get_preemptive_garbage_collection_rows_threshold_var();
 
 // Plugin public methods
 int plugin_group_replication_init(MYSQL_PLUGIN plugin_info);

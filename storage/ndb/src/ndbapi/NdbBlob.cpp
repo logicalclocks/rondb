@@ -24,11 +24,11 @@
 */
 
 #include <NdbEnv.h>
-#include <m_ctype.h>
 #include <ndb_version.h>
 #include <cstring>
 #include <signaldata/TcKeyReq.hpp>
 #include "API.hpp"
+#include "mysql/strings/m_ctype.h"
 
 /*
  * Reading index table directly (as a table) is faster but there are

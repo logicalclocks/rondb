@@ -26,6 +26,7 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 #include <string>
@@ -58,7 +59,7 @@ class sp_cache;
 struct TABLE;
 class Table_ref;
 
-typedef ulonglong sql_mode_t;
+using sql_mode_t = uint64_t;
 template <typename T>
 class SQL_I_List;
 
@@ -399,8 +400,6 @@ void sp_finish_parsing(THD *thd);
 
 ///////////////////////////////////////////////////////////////////////////
 
-Item_result sp_map_result_type(enum enum_field_types type);
-Item::Type sp_map_item_type(enum enum_field_types type);
 uint sp_get_flags_for_command(LEX *lex);
 
 bool sp_check_name(LEX_STRING *ident);

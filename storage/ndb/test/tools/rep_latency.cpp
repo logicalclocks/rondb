@@ -87,8 +87,10 @@ int main(int argc, char **argv) {
 
     // Object representing the cluster 1
     Ndb_cluster_connection cluster1_connection(opt_connectstring1);
+    cluster1_connection.configure_tls(opt_tls_search_path, opt_mgm_tls);
     // Object representing the cluster 2
     Ndb_cluster_connection cluster2_connection(opt_connectstring2);
+    cluster2_connection.configure_tls(opt_tls_search_path, opt_mgm_tls);
 
     // connect cluster 1 and run application
     // Connect to cluster 1  management server (ndb_mgmd)

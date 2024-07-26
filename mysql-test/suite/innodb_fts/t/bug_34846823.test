@@ -1,6 +1,6 @@
 --echo #
 --echo # Bug#32831765 CREATE FULLTEXT INDEX fails with ERROR 1062 (23000):
---echo # Duplicate entry 'NULL-NULL'
+--echo # Duplicate entry 'NULL-NULL' 
 --echo #
 
 # Conditions for reproduction:

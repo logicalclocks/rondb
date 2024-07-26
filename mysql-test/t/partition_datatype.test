@@ -68,11 +68,11 @@ create table t1 (a year not null) partition by key (a);
 insert into t1 values ('2001');
 select * from t1 where a = '2001';
 drop table t1;
-create table t1 (a varchar(10) character set utf8 not null) partition by key (a);
+create table t1 (a varchar(10) character set utf8mb3 not null) partition by key (a);
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
-create table t1 (a varchar(300) character set utf8 not null) partition by key (a);
+create table t1 (a varchar(300) character set utf8mb3 not null) partition by key (a);
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
@@ -84,7 +84,7 @@ create table t1 (a varchar(300) character set latin1 not null) partition by key 
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
-create table t1 (a char(10) character set utf8 not null) partition by key (a);
+create table t1 (a char(10) character set utf8mb3 not null) partition by key (a);
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
@@ -160,11 +160,11 @@ create table t1 (a year) partition by key (a);
 insert into t1 values ('2001');
 select * from t1 where a = '2001';
 drop table t1;
-create table t1 (a varchar(10) character set utf8) partition by key (a);
+create table t1 (a varchar(10) character set utf8mb3) partition by key (a);
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
-create table t1 (a varchar(300) character set utf8) partition by key (a);
+create table t1 (a varchar(300) character set utf8mb3) partition by key (a);
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
@@ -176,7 +176,7 @@ create table t1 (a varchar(300) character set latin1) partition by key (a);
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
-create table t1 (a char(10) character set utf8) partition by key (a);
+create table t1 (a char(10) character set utf8mb3) partition by key (a);
 insert into t1 values ('abc');
 select * from t1 where a = 'abc';
 drop table t1;
@@ -412,7 +412,10 @@ ROLLBACK;
 --echo Repeat with multi-table UPDATE syntax (Bug#30787444)
 
 START TRANSACTION;
+# Different warnings with hypergraph and old optimizer.
+--disable_warnings
 UPDATE t2 STRAIGHT_JOIN (SELECT 1) AS dt SET a = TIMESTAMPADD(SECOND, 1, a);
+--enable_warnings
 SELECT COUNT(*) FROM t2 WHERE a = 0;
 SELECT * FROM t2 ORDER BY a, tz;
 COMMIT;

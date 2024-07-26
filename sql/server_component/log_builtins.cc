@@ -38,6 +38,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "log_sink_perfschema.h"
 #include "log_sink_trad.h"
 
+#include "m_string.h"
 #include "mysys_err.h"
 
 #include <mysql/components/services/log_shared.h>  // data types
@@ -52,6 +53,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "sql/mysqld.h"       // opt_log_(timestamps|error_services),
 #include "sql/sql_class.h"    // THD
 #include "sql/tztime.h"       // my_tz_OFFSET0
+#include "string_with_len.h"
 
 // Must come after sql/log.h.
 #include "mysql/components/services/log_builtins.h"
@@ -738,7 +740,7 @@ int log_line_index_by_name(log_line *ll, const char *key) {
   @retval        otherwise  pointer to the item (not a copy thereof!)
 */
 log_item *log_line_item_by_name(log_line *ll, const char *key) {
-  int i = log_line_index_by_name(ll, key);
+  const int i = log_line_index_by_name(ll, key);
   return (i < 0) ? nullptr : &ll->item[i];
 }
 
@@ -838,7 +840,7 @@ log_item *log_line_item_init(log_line *ll) {
 */
 log_item_data *log_item_set_with_key(log_item *li, log_item_type t,
                                      const char *key, uint32 alloc) {
-  int c = log_item_wellknown_by_type(t);
+  const int c = log_item_wellknown_by_type(t);
 
   li->alloc = alloc;
   if (log_item_generic_type(t)) {
@@ -1194,7 +1196,7 @@ int log_line_submit(log_line *ll) {
     if (!(ll->seen & LOG_ITEM_SYS_STRERROR) && !log_line_full(ll) &&
         (ll->seen & LOG_ITEM_SYS_ERRNO)) {
       int en;  // operating system errno
-      int n = log_line_index_by_type(ll, LOG_ITEM_SYS_ERRNO);
+      const int n = log_line_index_by_type(ll, LOG_ITEM_SYS_ERRNO);
       log_item_data *d = log_line_item_set(ll, LOG_ITEM_SYS_STRERROR);
 
       assert(n >= 0);
@@ -1221,7 +1223,7 @@ int log_line_submit(log_line *ll) {
     if (!(ll->seen & LOG_ITEM_SQL_ERRSYMBOL) && !log_line_full(ll) &&
         (ll->seen & LOG_ITEM_SQL_ERRCODE)) {
       int ec;  // MySQL error code
-      int n = log_line_index_by_type(ll, LOG_ITEM_SQL_ERRCODE);
+      const int n = log_line_index_by_type(ll, LOG_ITEM_SQL_ERRCODE);
       const char *es;
 
       assert(n >= 0);
@@ -1238,7 +1240,7 @@ int log_line_submit(log_line *ll) {
     else if (!(ll->seen & LOG_ITEM_SQL_ERRCODE) && !log_line_full(ll) &&
              (ll->seen & LOG_ITEM_SQL_ERRSYMBOL)) {
       const char *es;  // MySQL error symbol
-      int n = log_line_index_by_type(ll, LOG_ITEM_SQL_ERRSYMBOL);
+      const int n = log_line_index_by_type(ll, LOG_ITEM_SQL_ERRSYMBOL);
       int ec;
 
       assert(n >= 0);
@@ -1288,7 +1290,7 @@ int log_line_submit(log_line *ll) {
     /* normalize source line if needed */
     DBUG_EXECUTE_IF("log_error_normalize", {
       if (ll->seen & LOG_ITEM_SRC_LINE) {
-        int n = log_line_index_by_type(ll, LOG_ITEM_SRC_LINE);
+        const int n = log_line_index_by_type(ll, LOG_ITEM_SRC_LINE);
 
         if (n >= 0) {
           ll->item[n] = ll->item[ll->count - 1];
@@ -1317,9 +1319,9 @@ int log_line_submit(log_line *ll) {
       sent to the client, not the error-log, (< ER_SERVER_RANGE_START).
     */
     if (ll->seen & LOG_ITEM_SQL_ERRCODE) {
-      int n = log_line_index_by_type(ll, LOG_ITEM_SQL_ERRCODE);
+      const int n = log_line_index_by_type(ll, LOG_ITEM_SQL_ERRCODE);
       if (n >= 0) {
-        int ec = (int)ll->item[n].data.data_integer;
+        const int ec = (int)ll->item[n].data.data_integer;
         assert((ec < 1) || (ec >= EE_ERROR_FIRST && ec <= EE_ERROR_LAST) ||
                (ec >= ER_SERVER_RANGE_START));
       }
@@ -1750,7 +1752,7 @@ int log_builtins_error_stack_flush() {
           If it fails, count the failure.
         */
         if (ls->flush != nullptr) {
-          log_service_error flush_result = ls->flush(&lsi->instance);
+          const log_service_error flush_result = ls->flush(&lsi->instance);
           /*
             "Nothing done" counts as no error, as laid out in
             enum_log_service_error.
@@ -2791,7 +2793,8 @@ DEFINE_METHOD(int, log_builtins_imp::message, (int log_type, ...)) {
   @retval  0  success
 */
 DEFINE_METHOD(int, log_builtins_imp::sanitize, (log_item * li)) {
-  size_t in_len = li->data.data_string.length, out_len, len;
+  const size_t in_len = li->data.data_string.length;
+  size_t out_len, len;
   const char *in_start = li->data.data_string.str, *in_read;
   char *out_start = nullptr, *out_write;
   int nuls_found = 0;

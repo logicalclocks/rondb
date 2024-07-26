@@ -61,6 +61,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "ibuf0ibuf.h"
 #include "mysql/plugin.h"
+#include "mysql/strings/m_ctype.h"
 #include "page0zip.h"
 #include "pars0pars.h"
 #include "sql/sql_class.h" /* For THD */
@@ -570,7 +571,7 @@ static int fill_innodb_trx_from_cache(
     /* trx_wait_started */
     if (row->trx_wait_started != std::chrono::system_clock::time_point{}) {
       OK(field_store_string(fields[IDX_TRX_REQUESTED_LOCK_ID],
-                            trx_i_s_create_lock_id(row->requested_lock_row,
+                            trx_i_s_create_lock_id(*row->requested_lock_row,
                                                    lock_id, sizeof(lock_id))));
       /* field_store_string() sets it no notnull */
 
@@ -3905,9 +3906,11 @@ static int i_s_innodb_stats_fill(
 
   OK(fields[IDX_BUF_STATS_PENDING_READ]->store(info->n_pend_reads, true));
 
-  OK(fields[IDX_BUF_STATS_FLUSH_LRU]->store(info->n_pending_flush_lru, true));
+  OK(fields[IDX_BUF_STATS_FLUSH_LRU]->store(
+      info->n_pending_flush[BUF_FLUSH_LRU], true));
 
-  OK(fields[IDX_BUF_STATS_FLUSH_LIST]->store(info->n_pending_flush_list, true));
+  OK(fields[IDX_BUF_STATS_FLUSH_LIST]->store(
+      info->n_pending_flush[BUF_FLUSH_LIST], true));
 
   OK(fields[IDX_BUF_STATS_PAGE_YOUNG]->store(info->n_pages_made_young, true));
 

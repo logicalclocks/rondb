@@ -34,22 +34,12 @@ MACRO(GET_PACKAGE_FILE_NAME Var)
     SET(NEED_DASH_BETWEEN_PLATFORM_AND_MACHINE 1)
     SET(DEFAULT_PLATFORM ${CMAKE_SYSTEM_NAME})
     SET(DEFAULT_MACHINE  ${CMAKE_SYSTEM_PROCESSOR})
-    IF(SIZEOF_VOIDP EQUAL 8)
-      SET(64BIT 1)
-    ENDIF()
+    SET(64BIT 1)
 
     IF(WIN32)
       SET(NEED_DASH_BETWEEN_PLATFORM_AND_MACHINE 0)
       SET(DEFAULT_PLATFORM "win")
-      IF(64BIT)
-        SET(DEFAULT_MACHINE "x64")
-      ELSE()
-        SET(DEFAULT_MACHINE "32")
-      ENDIF()
-    ELSEIF(LINUX)
-      IF(NOT 64BIT AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
-        SET(DEFAULT_MACHINE "i686")
-      ENDIF()
+      SET(DEFAULT_MACHINE "x64")
     ELSEIF(SOLARIS)
       # SunOS 5.10=> solaris10
       STRING(REPLACE "5." "" VER "${CMAKE_SYSTEM_VERSION}")
@@ -60,9 +50,6 @@ MACRO(GET_PACKAGE_FILE_NAME Var)
       SET(DEFAULT_PLATFORM "${CMAKE_SYSTEM_NAME}${VER}")
       IF(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64")
         SET(DEFAULT_MACHINE "x86_64")
-        IF(NOT 64BIT)
-          SET(DEFAULT_MACHINE "i386")
-        ENDIF()
       ENDIF()
     ELSEIF(APPLE)
       # CMAKE_SYSTEM_PROCESSOR seems to based on 'uname -r'
@@ -98,14 +85,10 @@ MACRO(GET_PACKAGE_FILE_NAME Var)
 
       MESSAGE(STATUS "DEFAULT_PLATFORM ${DEFAULT_PLATFORM}")
 
-      IF(64BIT)
-        IF(APPLE_ARM)
-          SET(DEFAULT_MACHINE "arm64")
-        ELSE()
-          SET(DEFAULT_MACHINE "x86_64")
-        ENDIF()
+      IF(APPLE_ARM)
+        SET(DEFAULT_MACHINE "arm64")
       ELSE()
-        SET(DEFAULT_MACHINE "x86")
+        SET(DEFAULT_MACHINE "x86_64")
       ENDIF()
     ENDIF()
 
@@ -199,15 +182,47 @@ IF(MSVC)
   CONFIGURE_FILE(${MYSQL_CMAKE_SCRIPT_DIR}/versioninfo.rc.in
     ${CMAKE_BINARY_DIR}/versioninfo_dll.rc)
 
-  FUNCTION(ADD_VERSION_INFO target target_type sources_var)
+  SET(VINFO_PRODUCT_NAME "MySQL Router")
+
+  SET(FILETYPE VFT_APP)
+  CONFIGURE_FILE(${MYSQL_CMAKE_SCRIPT_DIR}/versioninfo.rc.in
+    ${CMAKE_BINARY_DIR}/router_versioninfo_exe.rc)
+
+  SET(FILETYPE VFT_DLL)
+  CONFIGURE_FILE(${MYSQL_CMAKE_SCRIPT_DIR}/versioninfo.rc.in
+    ${CMAKE_BINARY_DIR}/router_versioninfo_dll.rc)
+
+  SET(VERSION_INFO_RC_EXE_Router ${CMAKE_BINARY_DIR}/router_versioninfo_exe.rc)
+  SET(VERSION_INFO_RC_DLL_Router ${CMAKE_BINARY_DIR}/router_versioninfo_dll.rc)
+
+  # ADD_VERSION_INFO: add version info the executables/shared libraries on windows
+  #
+  # @param target       targetname [ignored]
+  # @param target_type  type of the target: SHARED|MODULE|EXE
+  # @param sources_var  caller's variable name to append the rc-files to
+  # @param component    component name
+  #
+  FUNCTION(ADD_VERSION_INFO target target_type sources_var component)
+    SET(exe_rc_file ${CMAKE_BINARY_DIR}/versioninfo_exe.rc)
+    SET(dll_rc_file ${CMAKE_BINARY_DIR}/versioninfo_dll.rc)
+
+    # Override default when VERSION_INFO_RC_[EXE|DLL]_{$component} defined
+    IF(component)
+      IF(VERSION_INFO_RC_EXE_${component})
+        SET(exe_rc_file ${VERSION_INFO_RC_EXE_${component}})
+      ENDIF()
+      IF(VERSION_INFO_RC_DLL_${component})
+        SET(dll_rc_file ${VERSION_INFO_RC_DLL_${component}})
+      ENDIF()
+    ENDIF()
+
     IF("${target_type}" MATCHES "SHARED" OR "${target_type}" MATCHES "MODULE")
-      SET(rcfile ${CMAKE_BINARY_DIR}/versioninfo_dll.rc)
+      SET(rcfile ${dll_rc_file})
     ELSEIF("${target_type}" MATCHES "EXE")
-      SET(rcfile ${CMAKE_BINARY_DIR}/versioninfo_exe.rc)
+      SET(rcfile ${exe_rc_file})
     ENDIF()
     SET(${sources_var} ${${sources_var}} ${rcfile} PARENT_SCOPE)
   ENDFUNCTION()
-
 ELSE()
   FUNCTION(ADD_VERSION_INFO)
   ENDFUNCTION()

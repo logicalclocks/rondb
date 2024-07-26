@@ -62,11 +62,11 @@ namespace impl {
 stdx::expected<void, std::error_code> unlink(const char *path_name) {
 #ifdef _WIN32
   if (-1 == ::_unlink(path_name)) {
-    return stdx::make_unexpected(last_posix_error_code());
+    return stdx::unexpected(last_posix_error_code());
   }
 #else
   if (-1 == ::unlink(path_name)) {
-    return stdx::make_unexpected(last_error_code());
+    return stdx::unexpected(last_error_code());
   }
 #endif
   return {};
@@ -75,11 +75,11 @@ stdx::expected<void, std::error_code> unlink(const char *path_name) {
 stdx::expected<void, std::error_code> rmdir(const char *path_name) {
 #ifdef _WIN32
   if (-1 == ::_rmdir(path_name)) {
-    return stdx::make_unexpected(last_posix_error_code());
+    return stdx::unexpected(last_posix_error_code());
   }
 #else
   if (-1 == ::rmdir(path_name)) {
-    return stdx::make_unexpected(last_error_code());
+    return stdx::unexpected(last_error_code());
   }
 #endif
   return {};
@@ -90,12 +90,12 @@ stdx::expected<std::string, std::error_code> getcwd() {
   std::array<char, MAX_PATH> cwd;
   if (nullptr == ::_getcwd(cwd.data(), cwd.size())) {
     // _getcwd() sets errno
-    return stdx::make_unexpected(last_posix_error_code());
+    return stdx::unexpected(last_posix_error_code());
   }
 #else
   std::array<char, PATH_MAX> cwd{};
   if (nullptr == ::getcwd(cwd.data(), cwd.size())) {
-    return stdx::make_unexpected(last_error_code());
+    return stdx::unexpected(last_error_code());
   }
 #endif
 

@@ -2,7 +2,7 @@ call mtr.add_suppression("Attempting backtrace");
 call mtr.add_suppression("allocated tablespace *., old maximum was 0");
 call mtr.add_suppression("Error in Log_event::read_log_event()");
 call mtr.add_suppression("Buffered warning: Performance schema disabled");
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 CREATE TABLE t1(a LONGBLOB) ENGINE=INNODB;
 # Test case5: Inject wrong value of crc for a log event, and
 #             then set DBUG POINT to casue the master crash.
@@ -17,5 +17,5 @@ ERROR HY000: Lost connection to MySQL server during query
 # Restart the master server
 # Test the transaction with a log event injected a wrong crc value
 # will be trimmed from the crashed binlog file
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 DROP TABLE t1;

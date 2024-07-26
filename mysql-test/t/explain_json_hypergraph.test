@@ -153,3 +153,133 @@ EXPLAIN FORMAT=TREE SELECT * FROM t1 AS a LEFT JOIN t1 AS b ON FALSE
 EXPLAIN FORMAT=JSON SELECT * FROM t1 AS a LEFT JOIN t1 AS b ON FALSE
   LEFT JOIN t1 AS c ON b.a=c.a;
 DROP TABLE t1;
+
+--echo #
+--echo # Bug#35382014: Mysqld crash: Assertion `item_name.is_set()' failed
+--echo #               in sql/item.cc
+--echo #
+
+CREATE TABLE t (a INT);
+--echo # Used to hit assertion in debug builds.
+EXPLAIN FORMAT=JSON INTO @var
+SELECT 1 + 1 AS x FROM t GROUP BY x WITH ROLLUP HAVING x = 1;
+--echo # Used to show the GROUP BY clause as "group by ``".
+SELECT JSON_UNQUOTE(JSON_EXTRACT(@var, '$.query')) AS query;
+DROP TABLE t;
+
+--echo #
+--echo # Bug#35537921 Contribution by Tencent:
+--echo # explain format=tree lost the subquery in the hash join
+--echo #
+
+CREATE TABLE t1 (a INT NOT NULL, b INT NOT NULL);
+
+let $query =
+SELECT * FROM t1 x1 JOIN t1 x2 ON x2.a=
+  (SELECT MIN(x3.a) FROM t1 x3 WHERE x1.a=x3.a);
+
+--replace_regex $elide_costs
+--eval EXPLAIN FORMAT=TREE $query
+
+--eval EXPLAIN FORMAT=JSON $query
+
+let $query =
+SELECT * FROM t1 x1 JOIN t1 x2 ON x2.a<
+  (SELECT MIN(x3.a) FROM t1 x3 WHERE x1.a=x3.a);
+
+--replace_regex $elide_costs
+--eval EXPLAIN FORMAT=TREE $query
+
+--eval EXPLAIN FORMAT=JSON $query
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#34569685 No explain output for subquery
+--echo #
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT);
+
+ANALYZE TABLE  t1;
+
+let $query =
+SELECT LAST_VALUE((SELECT x1.a FROM t1))
+OVER (PARTITION BY b) FROM t1 x1;
+
+--replace_regex $elide_costs_and_rows
+--eval EXPLAIN FORMAT=TREE $query
+
+--eval EXPLAIN FORMAT=JSON $query
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#34727172 EXPLAIN FORMAT=JSON returns invalid JSON
+--echo #              on INSERT statements with hypergraph
+--echo #
+
+CREATE TABLE t (i INT);
+INSERT INTO t VALUES (1), (2), (3);
+
+ANALYZE TABLE t;
+
+EXPLAIN FORMAT=JSON INSERT INTO t VALUES (4), (5), (6);
+EXPLAIN FORMAT=JSON REPLACE INTO t VALUES (7), (8), (9);
+
+DROP TABLE t;
+
+--echo #
+--echo # Bug#36134568 Add query type to iterator-based EXPLAIN FORMAT=JSON
+--echo #
+
+CREATE TABLE t1 (i1 INT PRIMARY KEY, i2 INT);
+CREATE TABLE t2 (i3 INT, i4 INT);
+INSERT INTO t1 VALUES (1,2), (2,3), (3,4);
+INSERT INTO t2 SELECT i2, i1 FROM t1;
+ANALYZE TABLE t1, t2;
+
+EXPLAIN FORMAT=JSON INTO @v1 SELECT * FROM t1 JOIN t2 ON i1 = i3 WHERE i2 = 2;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'select';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 SELECT * FROM t1;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'select';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 INSERT INTO t1 VALUES (4,5);
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'insert';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 INSERT INTO t1 SELECT * FROM t2;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'insert';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 UPDATE t1 SET i2 = i2 + 1 WHERE i1 = 1;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'update';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 REPLACE t1 SELECT * FROM t2;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'replace';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 DELETE FROM t1;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'delete';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 UPDATE t1, t2 SET i1 = i1 - 1, i3 = i3 + 1;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'update';
+
+SET @v1 = NULL;
+
+EXPLAIN FORMAT=JSON INTO @v1 DELETE t1, t2 FROM t1, t2;
+SELECT JSON_EXTRACT(@v1, '$.query_type') = 'delete';
+
+DROP TABLE t1, t2;
+SET @v1=NULL;

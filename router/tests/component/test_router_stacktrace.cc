@@ -107,12 +107,13 @@ TEST_F(RouterStacktraceTest, bootstrap_with_core_file) {
               ExitStatus{ExitStatus::exited_t{},
                          mysql_harness::SignalHandler::HARNESS_ABORT_EXIT})
           .wait_for_sync_point(ProcessManager::Spawner::SyncPoint::NONE)
-          .output_responder([](const std::string &) { return "somepass\n"; })
+          .output_responder([](const std::string &) { return "password\n"; })
           .spawn({
-              "--bootstrap", "127.0.0.1:" + std::to_string(mock_port),  //
-              "--directory", tmp_dir.name(),                            //
-              "--core-file",                                            //
-              "--report-host=dont.query.dns",                           //
+              "--bootstrap",
+              "username@127.0.0.1:" + std::to_string(mock_port),  //
+              "--directory", tmp_dir.name(),                      //
+              "--core-file",                                      //
+              "--report-host=dont.query.dns",                     //
           });
 
   SCOPED_TRACE("// wait for the exit");
@@ -261,7 +262,8 @@ TEST_F(RouterStacktraceTest, crash_me_via_rest_signal_abort) {
   auto writer =
       config_writer(tmp_dir.name())
           .section("rest_signal", {})
-          .section("http_server", {{"port", std::to_string(http_port)}});
+          .section("http_server", {{"bind_address", "127.0.0.1"},
+                                   {"port", std::to_string(http_port)}});
 
   // --core-file is added automatically by router_spawner()
   auto &r = router_spawner()
@@ -390,7 +392,8 @@ TEST_F(RouterStacktraceTest, crash_me_core_file_1) {
   auto writer =
       config_writer(tmp_dir.name())
           .section("rest_signal", {})
-          .section("http_server", {{"port", std::to_string(http_port)}});
+          .section("http_server", {{"bind_address", "127.0.0.1"},
+                                   {"port", std::to_string(http_port)}});
 
   auto &r = router_spawner()
                 .with_core_dump(false)  // avoid the automatic --core-file
@@ -452,7 +455,8 @@ TEST_F(RouterStacktraceTest, no_core_file) {
   auto writer =
       config_writer(tmp_dir.name())
           .section("rest_signal", {})
-          .section("http_server", {{"port", std::to_string(http_port)}});
+          .section("http_server", {{"bind_address", "127.0.0.1"},
+                                   {"port", std::to_string(http_port)}});
 
   auto &r = router_spawner()
                 .with_core_dump(false)
@@ -498,7 +502,11 @@ TEST_F(RouterStacktraceTest, no_core_file) {
   }
 
   SCOPED_TRACE("// console output has stacktrace");
+#ifdef HAVE_EXT_BACKTRACE
+  EXPECT_THAT(r.get_full_output(), ::testing::HasSubstr("signal_handler.cc"));
+#else
   EXPECT_THAT(r.get_full_output(), ::testing::HasSubstr("my_print_stacktrace"));
+#endif
 }
 
 // TS_2_2
@@ -509,7 +517,8 @@ TEST_F(RouterStacktraceTest, core_file_0) {
   auto writer =
       config_writer(tmp_dir.name())
           .section("rest_signal", {})
-          .section("http_server", {{"port", std::to_string(http_port)}});
+          .section("http_server", {{"bind_address", "127.0.0.1"},
+                                   {"port", std::to_string(http_port)}});
 
   auto &r = router_spawner()
                 .with_core_dump(false)
@@ -555,7 +564,11 @@ TEST_F(RouterStacktraceTest, core_file_0) {
   }
 
   SCOPED_TRACE("// console output has stacktrace");
+#ifdef HAVE_EXT_BACKTRACE
+  EXPECT_THAT(r.get_full_output(), ::testing::HasSubstr("signal_handler.cc"));
+#else
   EXPECT_THAT(r.get_full_output(), ::testing::HasSubstr("my_print_stacktrace"));
+#endif
 }
 
 #endif  // !defined(HAVE_ASAN) && !defined(HAVE_UBSAN)

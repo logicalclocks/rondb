@@ -27,10 +27,10 @@
 #include <fstream>
 #include <stdexcept>
 
-#include "my_dbug.h"      // NOLINT(build/include_subdir)
-#include "my_loglevel.h"  // NOLINT(build/include_subdir)
-#include "my_sys.h"       // NOLINT(build/include_subdir)
-#include "violite.h"      // NOLINT(build/include_subdir)
+#include "my_dbug.h"            // NOLINT(build/include_subdir)
+#include "my_sys.h"             // NOLINT(build/include_subdir)
+#include "mysql/my_loglevel.h"  // NOLINT(build/include_subdir)
+#include "violite.h"            // NOLINT(build/include_subdir)
 
 #include "plugin/x/tests/driver/driver_command_line_options.h"
 #include "plugin/x/tests/driver/processor/stream_processor.h"
@@ -69,7 +69,7 @@ bool parse_mysql_connstring(const std::string &connstring,
     char *tmp = tmp_buffer;
     DWORD tmp_size = sizeof(tmp_buffer);
     if (!GetUserNameA(tmp_buffer, &tmp_size)) {
-      tmp = NULL;
+      tmp = nullptr;
     }
 #else
     const char *tmp = getenv("USER");

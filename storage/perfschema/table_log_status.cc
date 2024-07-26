@@ -38,6 +38,7 @@
 #include "storage/perfschema/pfs_instr.h"
 #include "storage/perfschema/pfs_instr_class.h"
 #include "storage/perfschema/table_helper.h"
+#include "string_with_len.h"
 
 THR_LOCK table_log_status::m_table_lock;
 

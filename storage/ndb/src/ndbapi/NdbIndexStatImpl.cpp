@@ -37,7 +37,7 @@
 #include <NdbSqlUtil.hpp>
 #include <NdbTransaction.hpp>
 #include "NdbIndexStatImpl.hpp"
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 
 static const char *const g_headtable_name = NDB_INDEX_STAT_HEAD_TABLE;
 static const char *const g_sampletable_name = NDB_INDEX_STAT_SAMPLE_TABLE;

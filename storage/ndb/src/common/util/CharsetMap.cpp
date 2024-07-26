@@ -29,9 +29,9 @@
 
 #include "CharsetMap.hpp"
 #include "CharsetMapImpl.h"
-#include "m_ctype.h"
 #include "my_sys.h"
 #include "mysql.h"
+#include "mysql/strings/m_ctype.h"
 
 bool m_false_result = false;
 bool m_true_result = true;

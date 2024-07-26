@@ -3455,7 +3455,7 @@ bool BackupRestore::tuple(const TupleS &tup, Uint32 fragmentId) {
   if (!m_restore) return true;
 
   while (m_free_callback == 0) {
-    assert(m_transactions == m_parallelism);
+    assert(m_transactions.load(std::memory_order_relaxed) == m_parallelism);
     // send-poll all transactions
     // close transaction is done in callback
     m_ndb->sendPollNdb(3000, 1);
@@ -3659,7 +3659,7 @@ void BackupRestore::tuple_a(restore_callback_t *cb) {
     // Prepare transaction (the transaction is NOT yet sent to NDB)
     cb->n_bytes = n_bytes;
     cb->connection->executeAsynchPrepare(NdbTransaction::Commit, &callback, cb);
-    m_transactions++;
+    m_transactions.fetch_add(1, std::memory_order_relaxed);
     return;
   }
   restoreLogger.log_error(
@@ -3742,7 +3742,7 @@ void BackupRestore::logErrorWithLogEntry(const char* prefix, LogEntry const *le)
 void BackupRestore::cback(int result, restore_callback_t *cb) {
 #ifdef ERROR_INSERT
   if (m_error_insert == NDB_RESTORE_ERROR_INSERT_FAIL_RESTORE_TUPLE &&
-      m_transactions > 10) {
+      m_transactions.load(std::memory_order_relaxed) > 10) {
     restoreLogger.log_error(
         "Error insert NDB_RESTORE_ERROR_INSERT_FAIL_RESTORE_TUPLE");
     m_error_insert = 0;
@@ -3750,7 +3750,7 @@ void BackupRestore::cback(int result, restore_callback_t *cb) {
   }
 #endif
 
-  m_transactions--;
+  m_transactions.fetch_sub(1, std::memory_order_relaxed);
 
   if (result < 0) {
     /**
@@ -3872,7 +3872,7 @@ void BackupRestore::tuple_free() {
   if (!m_restore) return;
 
   // Poll all transactions
-  while (m_transactions) {
+  while (m_transactions.load(std::memory_order_relaxed)) {
     m_ndb->sendPollNdb(3000);
   }
 }
@@ -4184,7 +4184,7 @@ bool BackupRestore::logEntry(const LogEntry &le) {
   logEntry_a(cb);
 
   // Poll existing logentry transaction
-  while (m_transactions > 0) {
+  while (m_transactions.load(std::memory_order_relaxed) > 0) {
     m_ndb->sendPollNdb(3000);
   }
 
@@ -4449,12 +4449,12 @@ retry:
   }
 
   trans->executeAsynchPrepare(NdbTransaction::Commit, &callback_logentry, cb);
-  m_transactions++;
+  m_transactions.fetch_add(1, std::memory_order_relaxed);
   return;
 }
 
 void BackupRestore::cback_logentry(int result, restore_callback_t *cb) {
-  m_transactions--;
+  m_transactions.fetch_sub(1, std::memory_order_relaxed);
   const NdbError errobj = cb->connection->getNdbError();
   m_ndb->closeTransaction(cb->connection);
   cb->connection = NULL;

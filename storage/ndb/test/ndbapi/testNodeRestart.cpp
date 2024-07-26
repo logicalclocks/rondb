@@ -43,8 +43,8 @@
 #include <cstring>
 #include <signaldata/DumpStateOrd.hpp>
 #include "../../src/ndbapi/NdbInfo.hpp"
-#include "m_ctype.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "util/require.h"
 
 static int changeStartPartitionedTimeout(NDBT_Context *ctx, NDBT_Step *step) {
@@ -57,6 +57,7 @@ static int changeStartPartitionedTimeout(NDBT_Context *ctx, NDBT_Step *step) {
 
   do {
     NdbMgmd mgmd;
+    mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
     if (!mgmd.connect()) {
       g_err << "Failed to connect to ndb_mgmd." << endl;
       break;
@@ -5206,7 +5207,7 @@ int runIsolateMaster(NDBT_Context *ctx, NDBT_Step *step) {
   g_info << "Subscribing to MGMD events..." << endl;
 
   NdbMgmd mgmd;
-
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) {
     g_err << "Failed to connect to MGMD" << endl;
     return NDBT_FAILED;
@@ -5746,7 +5747,7 @@ int runTestScanFragWatchdog(NDBT_Context *ctx, NDBT_Step *step) {
     g_err << "Subscribing to MGMD events..." << endl;
 
     NdbMgmd mgmd;
-
+    mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
     if (!mgmd.connect()) {
       g_err << "Failed to connect to MGMD" << endl;
       break;
@@ -5909,6 +5910,7 @@ int runChangeNumLogPartsINR(NDBT_Context *ctx, NDBT_Step *step) {
   Uint32 value;
   key = CFG_DB_NO_REDOLOG_PARTS;
 
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) {
     g_err << "Failed to connect to ndb_mgmd." << endl;
     ctx->stopTest();
@@ -6045,6 +6047,7 @@ int runChangeNumLDMsNR(NDBT_Context *ctx, NDBT_Step *step) {
   keys[0] = CFG_DB_AUTO_THREAD_CONFIG;
   keys[1] = CFG_DB_NUM_CPUS;
 
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) {
     g_err << "Failed to connect to ndb_mgmd." << endl;
     ctx->stopTest();
@@ -6155,6 +6158,7 @@ int runTestScanFragWatchdogDisable(NDBT_Context *ctx, NDBT_Step *step) {
   int victim = restarter.getNode(NdbRestarter::NS_RANDOM);
   do {
     NdbMgmd mgmd;
+    mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
     if (!mgmd.connect()) {
       g_err << "Failed to connect to ndb_mgmd." << endl;
       break;
@@ -7602,6 +7606,7 @@ int runArbitrationWithApiNodeFailure(NDBT_Context *ctx, NDBT_Step *step) {
    * 1. connect new api node
    */
   Ndb_cluster_connection *cluster_connection = new Ndb_cluster_connection();
+  cluster_connection->configure_tls(opt_tls_search_path, opt_mgm_tls);
   if (cluster_connection->connect() != 0) {
     g_err << "ERROR: connect failure." << endl;
     return NDBT_FAILED;
@@ -7964,6 +7969,7 @@ int run_PLCP_many_parts(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
 
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) {
     g_err << "Failed to connect to ndb_mgmd." << endl;
     return NDBT_FAILED;
@@ -8382,6 +8388,7 @@ int runChangeDataNodeConfig(NDBT_Context *ctx, NDBT_Step *step) {
 
     // Override the config
     NdbMgmd mgmd;
+    mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
     Uint32 old_config_value = 0;
     CHECK(mgmd.change_config32(new_config_value, &old_config_value,
                                CFG_SECTION_NODE, config_var_id),
@@ -9122,6 +9129,7 @@ int runApiDetectNoFirstHeartbeat(NDBT_Context *ctx, NDBT_Step *step) {
 
   g_err << "Connect new API Node." << endl;
   Ndb_cluster_connection *cluster_connection = new Ndb_cluster_connection();
+  cluster_connection->configure_tls(opt_tls_search_path, opt_mgm_tls);
   if (cluster_connection->connect() != 0) {
     g_err << "ERROR: connect failure." << endl;
     return NDBT_FAILED;
@@ -10529,7 +10537,7 @@ int main(int argc, const char **argv) {
   // It might be interesting to have longer defaults for num
   // loops in this test
   // Just performing 100 node restarts would not be enough?
-  // We can have initialisers in the NDBT_Testcase class like 
+  // We can have initialisers in the NDBT_Testcase class like
   // this...
   testNodeRestart.setDefaultLoops(1000);
 #endif

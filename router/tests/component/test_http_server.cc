@@ -27,16 +27,15 @@
 #include <system_error>
 #include <thread>
 
-#include <event2/event.h>  // EVENT__HAVE_OPENSSL
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "config_builder.h"
 #include "dim.h"
 #include "gtest_testname.h"
+#include "http/base/uri.h"
 #include "mysql/harness/logging/registry.h"
 #include "mysql/harness/utility/string.h"
-#include "mysqlrouter/http_request.h"
 #include "mysqlrouter/rest_client.h"
 #include "router_component_test.h"
 #include "tcp_port_pool.h"
@@ -75,19 +74,6 @@ using namespace std::chrono_literals;
 const std::string kHttpBasedir(kPlaceholderHttpBaseDir);
 
 uint16_t kHttpDefaultPort{8081};
-
-static constexpr const char kSslSupportIsDisabled[]{
-    "SSL support disabled at compile-time"};
-
-static constexpr bool is_with_ssl_support() {
-  return
-#if defined(EVENT__HAVE_OPENSSL)
-      true
-#else
-      false
-#endif
-      ;
-}
 
 static void ParamPrinter(
     const std::vector<std::pair<std::string, std::string>> &fields,
@@ -131,12 +117,13 @@ struct HttpServerPlainParams {
   int http_method;
   std::string raw_uri_path;
   std::string raw_uri_query;
-  unsigned int status_code;
+  int status_code;
 
   friend void PrintTo(const HttpServerPlainParams &p, std::ostream *os) {
     if (p.expected_success) {
       ParamPrinter(
           {
+              {"test_name", ::testing::PrintToString(p.test_name)},
               {"test_scenario_id",
                ::testing::PrintToString(p.test_scenario_id)},
               {"raw_path", ::testing::PrintToString(p.raw_uri_path)},
@@ -257,9 +244,14 @@ TEST_P(HttpServerPlainTest, ensure) {
           std::vector<std::string>{mysql_harness::ConfigBuilder::build_section(
               "http_server", http_section)},
           ""))};
-  ProcessWrapper &http_server{launch_router(
-      {"-c", conf_file}, GetParam().expected_success ? 0 : EXIT_FAILURE, true,
-      false, GetParam().expected_success ? 5s : -1s)};
+
+  auto &http_server =
+      router_spawner()
+          .expected_exit_code(GetParam().expected_success ? 0 : EXIT_FAILURE)
+          .wait_for_sync_point(GetParam().expected_success
+                                   ? Spawner::SyncPoint::READY
+                                   : Spawner::SyncPoint::NONE)
+          .spawn({"-c", conf_file});
 
   if (GetParam().expected_success) {
     std::string rel_uri = GetParam().raw_uri_path;
@@ -398,6 +390,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-10",
      localhost_ipv4,
      {
+         {"bind_address", " 127.0.0.1"},
          {"port", std::string(kPlaceholder)},
      },
      true,
@@ -458,6 +451,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-16",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", "does-not-exist"},
      },
@@ -473,6 +467,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-18",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", " "},
      },
@@ -488,6 +483,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-18",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", ""},
      },
@@ -503,6 +499,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-18",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir + "/" + std::string(kSubdirWithSpace)},
      },
@@ -520,6 +517,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-20",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -535,6 +533,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-22",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -550,6 +549,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891:TS-23,WL11891::TS-15",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -565,6 +565,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-24",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -580,6 +581,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-25",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -595,6 +597,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-26",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -610,6 +613,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-27",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -627,6 +631,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-29",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -644,6 +649,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -659,6 +665,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-31",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -674,6 +681,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-31",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -689,6 +697,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL11891::TS-32",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -697,13 +706,14 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "",
      HttpMethod::Get,
      "/with_index/index.html",
-     std::string(15 * 1024, 'a'),
+     std::string(15 * 1024, 'a') + "=1",
      200},
 
     {"URI parser, double question-mark",
      "",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -719,6 +729,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
      },
@@ -726,7 +737,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "^$",
      "",
      HttpMethod::Get,
-     "/with_index/index[].html",
+     "/with_index/index%5B%5D.html",
      "",
      404},
 
@@ -736,6 +747,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL12524::TS_01",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
          {"ssl", "0"},
@@ -752,6 +764,7 @@ static const HttpServerPlainParams http_server_static_files_params[]{
      "WL12524::TS_02",
      localhost_ipv4,
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"static_folder", kHttpBasedir},
          {"ssl", "0"},
@@ -863,9 +876,7 @@ static const char kServerCertRsa1024File[]{
     "server-sha1-1024-cert.pem"};  // 1024 bit
 #endif
 
-#ifdef EVENT__HAVE_OPENSSL
 static const char kWrongServerCertCaFile[]{"ca-sha512.pem"};
-#endif
 const char kDhParams4File[]{"dhparams-4.pem"};
 const char kDhParams2048File[]{"dhparams-2048.pem"};
 
@@ -916,6 +927,7 @@ class HttpClientSecureTest
             mysql_harness::ConfigBuilder::build_section(
                 "http_server",
                 {
+                    {"bind_address", "127.0.0.1"},
                     {"port", std::to_string(http_port_)},  // port to listen on
                     {"ssl", "1"},                          // enable SSL
                     {"ssl_cert",
@@ -1069,7 +1081,7 @@ TEST_P(HttpClientSecureTest, ensure) {
     }
   });
 
-  HttpUri u;
+  ::http::base::Uri u;
   u.set_scheme("https");
   u.set_port(http_port_);
   u.set_host(http_hostname_);
@@ -1077,19 +1089,16 @@ TEST_P(HttpClientSecureTest, ensure) {
 
   IOContext io_ctx;
 
-  auto http_client = std::make_unique<HttpsClient>(io_ctx, std::move(tls_ctx),
-                                                   u.get_host(), u.get_port());
-
-  RestClient rest_client(std::move(http_client));
+  RestClient rest_client(io_ctx, std::move(tls_ctx), u);
 
   SCOPED_TRACE("// wait http port connectable");
 
-  ProcessWrapper &http_server = launch_router({"-c", conf_file_});
+  auto &http_server = router_spawner().spawn({"-c", conf_file_});
 
   ASSERT_NO_FATAL_FAILURE(check_port_ready(http_server, http_port_));
 
   SCOPED_TRACE("// GETing " + u.join());
-  auto req = rest_client.request_sync(HttpMethod::Get, u.get_path());
+  auto req = rest_client.request_sync(HttpMethod::Get, u);
   if (should_succeeed) {
     ASSERT_TRUE(req) << rest_client.error_msg();
     ASSERT_EQ(req.get_response_code(), 404);
@@ -1098,7 +1107,6 @@ TEST_P(HttpClientSecureTest, ensure) {
   }
 }
 
-#ifdef EVENT__HAVE_OPENSSL
 static const HttpClientSecureParams http_client_secure_params[]{
     //
     {"default-client-cipher", "WL12524::TS_CR_06", kServerCertCaFile,
@@ -1132,8 +1140,6 @@ INSTANTIATE_TEST_SUITE_P(
           info.param.test_name +
           (info.param.should_succeeed == false ? " fails" : " succeeds"));
     });
-
-#endif
 
 //
 // http_server, broken-config, SSL
@@ -1218,15 +1224,20 @@ TEST_P(HttpServerSecureTest, ensure) {
       mysql_harness::ConfigBuilder::build_section("http_server", http_section),
       nullptr, "mysqlrouter.conf", "", false)};
 
-  // timeout for waiting for ready notification is increased to address the case
-  // of strong dh params which takes long on overloaded CPUs
-  ProcessWrapper &http_server{
-      launch_router({"-c", conf_file},
-                    GetParam().expected_success ? EXIT_SUCCESS : EXIT_FAILURE,
-                    true, false, GetParam().expected_success ? 20s : -1s)};
+  auto &http_server =
+      router_spawner()
+          .expected_exit_code(GetParam().expected_success ? EXIT_SUCCESS
+                                                          : EXIT_FAILURE)
+          // timeout for waiting for ready notification is increased to address
+          // the case of strong dh params which takes long on overloaded CPUs
+          .wait_for_notify_ready(20s)
+          .wait_for_sync_point(GetParam().expected_success
+                                   ? Spawner::SyncPoint::READY
+                                   : Spawner::SyncPoint::NONE)
+          .spawn({"-c", conf_file});
 
   if (GetParam().expected_success) {
-    HttpUri u;
+    http::base::Uri u;
     u.set_scheme("https");
     u.set_port(http_port_);
     u.set_host(http_hostname_);
@@ -1238,16 +1249,13 @@ TEST_P(HttpServerSecureTest, ensure) {
 
     tls_ctx.ssl_ca(ssl_cert_data_dir_.join(kServerCertCaFile).str(), "");
 
-    auto http_client = std::make_unique<HttpsClient>(
-        io_ctx, std::move(tls_ctx), u.get_host(), u.get_port());
-
-    RestClient rest_client(std::move(http_client));
+    RestClient rest_client(io_ctx, std::move(tls_ctx));
 
     SCOPED_TRACE("// wait for port ready");
     ASSERT_NO_FATAL_FAILURE(check_port_ready(http_server, http_port_));
 
     SCOPED_TRACE("// GETing " + u.join());
-    auto req = rest_client.request_sync(HttpMethod::Get, u.get_path());
+    auto req = rest_client.request_sync(HttpMethod::Get, u);
     ASSERT_TRUE(req) << rest_client.error_msg();
     ASSERT_EQ(req.get_response_code(), 404);
   } else {
@@ -1278,6 +1286,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"ssl, no cert, no key",
      "WL12524::TS_CR_01",
      {
+         {"bind_address", "127.0.0.1"},        //
          {"port", std::string(kPlaceholder)},  //
          {"ssl", "1"},                         // enable SSL
      },
@@ -1287,6 +1296,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"ssl_is_hex",
      "",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "0x1"},  // hex-numbers should fail.
          {"ssl_key", std::string(kPlaceholder)},
@@ -1297,6 +1307,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"ssl=1, no cert",
      "WL12524::TS_CR_01",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},  // enable SSL
          {"ssl_key", std::string(kPlaceholder)},
@@ -1307,6 +1318,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"ssl=1, no key",
      "WL12524::TS_CR_01",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},  // enable SSL
          {"ssl_cert",
@@ -1317,6 +1329,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"ssl=1, bad cert",
      "WL12524::TS_CR_02",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key", "does-not-exist"},
@@ -1328,6 +1341,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"ssl=1, cert, some unacceptable ciphers",
      "WL12524::TS_CR_05",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1336,13 +1350,12 @@ const HttpServerSecureParams http_server_secure_params[]{
           std::string(kPlaceholderStddataDir) + "/" + kServerCertFile},
          {"ssl_cipher", "AES128-SHA:TLSv1.2"},
      },
-     // if SSL support is disabled in libevent, we should see a failure,
-     // success otherwise
-     is_with_ssl_support(),
-     is_with_ssl_support() ? "" : kSslSupportIsDisabled},
+     true,
+     ""},
     {"ssl=1, cert, only acceptable ciphers",
      "WL12524::TS_CR_07",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1351,13 +1364,12 @@ const HttpServerSecureParams http_server_secure_params[]{
           std::string(kPlaceholderStddataDir) + "/" + kServerCertFile},
          {"ssl_cipher", "ECDHE-RSA-AES128-SHA256"},
      },
-     // if SSL support is disabled in libevent, we should see a failure,
-     // success otherwise
-     is_with_ssl_support(),
-     is_with_ssl_support() ? "" : kSslSupportIsDisabled},
+     true,
+     ""},
     {"dh_param file does not exist",
      "",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1372,6 +1384,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"dh_param file is no PEM",
      "WL12524::TS_CR_08",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1386,6 +1399,7 @@ const HttpServerSecureParams http_server_secure_params[]{
     {"dh ciphers, default dh-params",
      "WL12524::TS_CR_09",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1395,13 +1409,12 @@ const HttpServerSecureParams http_server_secure_params[]{
          // force a DHE cipher that's known to the server
          {"ssl_cipher", "DHE-RSA-AES256-SHA256"},
      },
-     // if SSL support is disabled in libevent, we should see a failure,
-     // success otherwise
-     is_with_ssl_support(),
-     is_with_ssl_support() ? "" : kSslSupportIsDisabled},
+     true,
+     ""},
     {"dh ciphers, strong dh-params",
      "WL12524::TS_SR4_01,WL12524::TS_SR3_01",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1413,13 +1426,12 @@ const HttpServerSecureParams http_server_secure_params[]{
          {"ssl_dh_param",
           std::string(kPlaceholderDatadir) + "/" + kDhParams2048File},
      },
-     // if SSL support is disabled in libevent, we should see a failure,
-     // success otherwise
-     is_with_ssl_support(),
-     is_with_ssl_support() ? "" : kSslSupportIsDisabled},
+     true,
+     ""},
     {"non-dh-cipher, strong dh-params",
      "WL12524::TS_SR4_01,WL12524::TS_SR3_01",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1430,13 +1442,12 @@ const HttpServerSecureParams http_server_secure_params[]{
          {"ssl_dh_param",
           std::string(kPlaceholderDatadir) + "/" + kDhParams2048File},
      },
-     // if SSL support is disabled in libevent, we should see a failure,
-     // success otherwise
-     is_with_ssl_support(),
-     is_with_ssl_support() ? "" : kSslSupportIsDisabled},
+     true,
+     ""},
     {"dh ciphers, weak dh-params",
      "WL12524::TS_SR7_01",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1472,6 +1483,7 @@ const HttpServerSecureParams http_server_secure_params_pre_openssl_111[]{
     {"ssl_1_cert_only_unacceptable_ciphers",
      "WL12524::TS_CR_04",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1483,7 +1495,7 @@ const HttpServerSecureParams http_server_secure_params_pre_openssl_111[]{
      // connection will fail as ciphers can't be negotiated or libevent may
      // not support SSL
      false,
-     is_with_ssl_support() ? "no cipher match" : kSslSupportIsDisabled},
+     "no cipher match"},
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1502,6 +1514,7 @@ const HttpServerSecureParams http_server_secure_openssl102_plus_params[]{
     {"ssl_cert weak",
      "WL12524::TS_SR6_01",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1514,6 +1527,7 @@ const HttpServerSecureParams http_server_secure_openssl102_plus_params[]{
     {"ecdh cipher",
      "WL12524::TS_SR6_01",
      {
+         {"bind_address", "127.0.0.1"},
          {"port", std::string(kPlaceholder)},
          {"ssl", "1"},
          {"ssl_key",
@@ -1579,7 +1593,8 @@ class HttpServerAuthTest
             mysql_harness::join(
                 std::vector<std::string>{
                     mysql_harness::ConfigBuilder::build_section(
-                        "http_server", {{"port", std::to_string(http_port_)},
+                        "http_server", {{"bind_address", "127.0.0.1"},
+                                        {"port", std::to_string(http_port_)},
                                         {"require_realm", "secure"}}),
                     mysql_harness::ConfigBuilder::build_section(
                         "http_auth_backend:local",
@@ -1622,7 +1637,7 @@ class HttpServerAuthTest
  * - make a client connect to the http-server
  */
 TEST_P(HttpServerAuthTest, ensure) {
-  launch_router({"-c", conf_file_});
+  router_spawner().spawn({"-c", conf_file_});
 
   const std::string http_uri = GetParam().url;
   SCOPED_TRACE("// connecting " + http_hostname_ + ":" +
@@ -1730,10 +1745,14 @@ TEST_P(HttpServerAuthFailTest, ensure) {
 
   std::string conf_file = create_config_file(conf_dir_.name(), config_content);
 
-  ProcessWrapper &http_server{
-      launch_router({"-c", conf_file},
-                    GetParam().check_at_runtime ? EXIT_SUCCESS : EXIT_FAILURE,
-                    true, false, -1s)};
+  auto &http_server =
+      router_spawner()
+          .expected_exit_code(GetParam().check_at_runtime ? EXIT_SUCCESS
+                                                          : EXIT_FAILURE)
+          .wait_for_sync_point(GetParam().check_at_runtime
+                                   ? Spawner::SyncPoint::READY
+                                   : Spawner::SyncPoint::NONE)
+          .spawn({"-c", conf_file});
 
   if (GetParam().check_at_runtime) {
     ASSERT_NO_FATAL_FAILURE(check_port_ready(http_server, http_port_));

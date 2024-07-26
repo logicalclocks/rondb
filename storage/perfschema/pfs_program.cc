@@ -39,7 +39,8 @@
 
 #include "my_inttypes.h"
 #include "my_sys.h"
-#include "sql/mysqld.h"  //system_charset_info
+#include "mysql/strings/m_ctype.h"
+#include "sql/mysqld_cs.h"  // system_charset_info
 #include "sql_string.h"
 #include "storage/perfschema/pfs_buffer_container.h"
 #include "storage/perfschema/pfs_global.h"
@@ -238,14 +239,14 @@ search:
     pfs->m_timed = is_timed;
 
     /* Insert this record. */
-    pfs->m_lock.dirty_to_allocated(&dirty_state);
     const int res = lf_hash_insert(&program_hash, pins, &pfs);
 
     if (likely(res == 0)) {
+      pfs->m_lock.dirty_to_allocated(&dirty_state);
       return pfs;
     }
 
-    global_program_container.deallocate(pfs);
+    global_program_container.dirty_to_free(&dirty_state, pfs);
 
     if (res > 0) {
       /* Duplicate insert by another thread */
