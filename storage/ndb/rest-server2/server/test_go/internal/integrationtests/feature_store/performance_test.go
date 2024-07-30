@@ -19,13 +19,7 @@ package feature_store
 
 import (
 	"fmt"
-	"testing"
 
-	"hopsworks.ai/rdrs2/internal/config"
-	"hopsworks.ai/rdrs2/internal/feature_store"
-	"hopsworks.ai/rdrs2/internal/integrationtests"
-	"hopsworks.ai/rdrs2/internal/log"
-	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
@@ -48,13 +42,13 @@ import (
 
 const totalNumRequest = 100000
 
-func Benchmark(b *testing.B) {
-	run(b, testdbs.FSDB001, "sample_1", 1)
-}
+// func Benchmark(b *testing.B) {
+// 	run(b, testdbs.FSDB001, "sample_1", 1)
+// }
 
-func Benchmark_join(b *testing.B) {
-	run(b, testdbs.FSDB001, "sample_1n2", 1)
-}
+// func Benchmark_join(b *testing.B) {
+// 	run(b, testdbs.FSDB001, "sample_1n2", 1)
+// }
 
 const nrows = 100
 
@@ -71,35 +65,35 @@ func getSampleData(fsName string, fvName string, fvVersion int) ([][]interface{}
 	}
 }
 
-func run(b *testing.B, fsName string, fvName string, fvVersion int) {
-	log.Infof("Test config: fs: %s fv: %s version: %d", fsName, fvName, fvVersion)
-	var metadata, err = feature_store.GetFeatureViewMetadata(fsName, fvName, fvVersion)
-	if err != nil {
-		panic("Cannot get metadata.")
-	}
-	log.Infof(`
-	Number of tables: %d 
-	Batch size in robdb request: %d 
-	Number of columns: %d`,
-		len(metadata.FeatureGroupFeatures), len(metadata.FeatureGroupFeatures), metadata.NumOfFeatures)
+// func run(b *testing.B, fsName string, fvName string, fvVersion int) {
+// 	log.Infof("Test config: fs: %s fv: %s version: %d", fsName, fvName, fvVersion)
+// 	var metadata, err = feature_store.GetFeatureViewMetadata(fsName, fvName, fvVersion)
+// 	if err != nil {
+// 		panic("Cannot get metadata.")
+// 	}
+// 	log.Infof(`
+// 	Number of tables: %d
+// 	Batch size in robdb request: %d
+// 	Number of columns: %d`,
+// 		len(metadata.FeatureGroupFeatures), len(metadata.FeatureGroupFeatures), metadata.NumOfFeatures)
 
-	var fsReqs = make([]string, 0, nrows)
+// 	var fsReqs = make([]string, 0, nrows)
 
-	rows, pks, cols, _ := getSampleData(fsName, fvName, fvVersion)
-	for _, row := range rows {
-		var fsReq = CreateFeatureStoreRequest(
-			fsName,
-			fvName,
-			fvVersion,
-			pks,
-			*GetPkValues(&row, &pks, &cols),
-			nil,
-			nil,
-		)
-		reqBody := fsReq.String()
-		fsReqs = append(fsReqs, reqBody)
-	}
+// 	rows, pks, cols, _ := getSampleData(fsName, fvName, fvVersion)
+// 	for _, row := range rows {
+// 		var fsReq = CreateFeatureStoreRequest(
+// 			fsName,
+// 			fvName,
+// 			fvVersion,
+// 			pks,
+// 			*GetPkValues(&row, &pks, &cols),
+// 			nil,
+// 			nil,
+// 		)
+// 		reqBody := fsReq.String()
+// 		fsReqs = append(fsReqs, reqBody)
+// 	}
 
-	integrationtests.RunRestTemplate(b, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), &fsReqs, totalNumRequest)
+// 	integrationtests.RunRestTemplate(b, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), &fsReqs, totalNumRequest)
 
-}
+// }

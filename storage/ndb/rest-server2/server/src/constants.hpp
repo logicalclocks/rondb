@@ -32,7 +32,8 @@
 #define PING_PATH  MAKE_PATH(API_VERSION, PING)
 #define BATCH_PATH MAKE_PATH(API_VERSION, BATCH)
 
-#define PKREAD_PATH "/" API_VERSION "/{db}/{table}/" PKREAD
+#define PKREAD_PATH        "/" API_VERSION "/{db}/{table}/" PKREAD
+#define FEATURE_STORE_PATH "/" API_VERSION "/feature_store"
 
 constexpr const char *CONFIG_FILE_PATH               = "RDRS_CONFIG_FILE";
 constexpr const char *LOCALHOST                      = "localhost";
@@ -67,13 +68,24 @@ constexpr const char *LOG                            = "Log";
 constexpr const char *LEVEL                          = "Level";
 constexpr const char *INFO                           = "INFO";
 constexpr const char *TESTING                        = "Testing";
-constexpr const char *MYSQL                          = "MySQL";
+constexpr const char *MYSQL_STR                      = "MySQL";
 constexpr const char *SERVERS                        = "Servers";
 constexpr const char *USER                           = "User";
 constexpr const char *ROOT_STR                       = "root";
 constexpr const char *PASSWORD                       = "Password";
 constexpr const char *API_KEY_NAME_LOWER_CASE =
     "x-api-key";  // Drogon always receives the header as lowercase
+constexpr const char *FEATURE_STORE_NAME             = "featureStoreName";
+constexpr const char *FEATURE_VIEW_NAME              = "featureViewName";
+constexpr const char *FEATURE_VIEW_VERSION           = "featureViewVersion";
+constexpr const char *PASSED_FEATURES                = "passedFeatures";
+constexpr const char *ENTRIES                        = "entries";
+constexpr const char *METADATA_OPTIONS               = "metadataOptions";
+constexpr const char *FEATURE_NAME                   = "featureName";
+constexpr const char *FEATURE_TYPE                   = "featureType";
+constexpr const char *FEATURE_STORE_OPERATION        = "feature_store";
+
+constexpr const char *ERROR_NOT_FOUND = "Not Found";
 
 const int RESP_BUFFER_SIZE                 = 5 * 1024 * 1024;
 const int REQ_BUFFER_SIZE                  = 1024 * 1024;

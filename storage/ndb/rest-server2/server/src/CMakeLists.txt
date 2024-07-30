@@ -56,9 +56,10 @@ INCLUDE_DIRECTORIES(
 INCLUDE_DIRECTORIES(${RDRS_DROGON_INCLUDE_DIR})
 #INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_DIR})
 INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/extra/avro/avro-release-1.11.3/lang/c++/api)
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
 
-target_link_libraries(${PROJECT_NAME} base64 Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
+target_link_libraries(${PROJECT_NAME} base64 avrocpp Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
 
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME} 
    DESTINATION ${INSTALL_BINDIR} COMPONENT Development
@@ -78,6 +79,7 @@ target_include_directories(rdrs2_lib PUBLIC
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
 #target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
+target_include_directories(rdrs2_lib PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/extra/avro/avro-release-1.11.3/lang/c++/api)
 target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
 
-target_link_libraries(rdrs2_lib base64 Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
+target_link_libraries(rdrs2_lib base64 avrocpp Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string mysqlclient)

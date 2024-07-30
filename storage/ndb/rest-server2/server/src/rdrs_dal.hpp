@@ -44,8 +44,20 @@ class CRS_Status {
     initialize(http_code, 0, 0, 0, 0, message, 0, "");
   }
 
+  CRS_Status(HTTP_CODE http_code, const char *message, const std::string &error_file_name) {
+    initialize(http_code, 0, 0, 0, 0, message, 0, error_file_name.c_str());
+  }
+
+  CRS_Status(HTTP_CODE http_code, const std::string &message) {
+    initialize(http_code, 0, 0, 0, 0, message.c_str(), 0, "");
+  }
+
   CRS_Status(HTTP_CODE http_code, int error_code, const char *message) {
     initialize(http_code, 0, 0, error_code, 0, message, 0, "");
+  }
+
+  CRS_Status(HTTP_CODE http_code, int error_code, const std::string &message) {
+    initialize(http_code, 0, 0, error_code, 0, message.c_str(), 0, "");
   }
 
   CRS_Status(HTTP_CODE http_code, const char *error, const char *location) {

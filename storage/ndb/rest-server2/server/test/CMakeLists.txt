@@ -35,6 +35,11 @@ add_executable(
 	api_key_test.cpp
 )
 
+add_executable(
+  feature_store_test
+  feature_store_test.cpp
+)
+
 target_link_libraries(
 	api_key_test
 	gtest_main
@@ -44,6 +49,17 @@ target_link_libraries(
 	simdjson::simdjson
 	Jsoncpp_lib
 	pthread
+)
+
+target_link_libraries(
+  feature_store_test
+  gtest_main
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+  Drogon::Drogon
+  simdjson::simdjson
+  Jsoncpp_lib
+  pthread
 )
 
 set(RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources")
@@ -66,3 +82,7 @@ endforeach()
 configure_file("${RESOURCE_DIR}/embedded_content.hpp.in" "${GENERATED_HEADER}" @ONLY)
 
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
+
+# Add tests
+add_test(NAME api_key_test COMMAND api_key_test)
+add_test(NAME feature_store_test COMMAND feature_store_test)

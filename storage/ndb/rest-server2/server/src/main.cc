@@ -23,6 +23,7 @@
 #include "json_parser.hpp"
 #include "pk_read_ctrl.hpp"
 #include "src/api_key.hpp"
+#include "tls_util.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -36,7 +37,7 @@
 
 int main() {
   jsonParser = JSONParser();
-  apiKeyCache = std::make_shared<Cache>();
+  apiKeyCache = std::make_shared<APIKeyCache>();
   
   /*
     Order:
@@ -57,7 +58,16 @@ int main() {
   RonDBConnection rondbConnection(globalConfigs.ronDB,
                                   globalConfigs.ronDbMetaDataCluster);
 
-  if (globalConfigs.security.tls.enableTLS) {}
+  if (globalConfigs.security.tls.enableTLS) {
+    status = GenerateTLSConfig(globalConfigs.security.tls.requireAndVerifyClientCert,
+                               globalConfigs.security.tls.rootCACertFile,
+                               globalConfigs.security.tls.certificateFile,
+                               globalConfigs.security.tls.privateKeyFile);
+    if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+      errno = status.http_code;
+      exit(errno);
+    }
+  }
 
   if (globalConfigs.grpc.enable) {
     errno = ENOSYS;

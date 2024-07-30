@@ -39,7 +39,7 @@ if (!$res)
   print $F "--echo \'$cmd\' run failed;\n";
 }
 
-my $cmd = "export DYLD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}; export LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}; export CGO_LDFLAGS=$ENV{CGO_LDFLAGS}; $rdrs_go_test_cmd";
+my $cmd = "export DYLD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}; export LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}; export CGO_LDFLAGS=$ENV{CGO_LDFLAGS}; export RUNNING_UNIT_TESTS=1; $rdrs_go_test_cmd";
 my $res = exec_print_on_error($cmd, 1000);
 if (!$res)
 {

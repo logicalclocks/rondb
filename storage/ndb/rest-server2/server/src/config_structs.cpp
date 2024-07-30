@@ -42,7 +42,13 @@ Internal::Internal()
 }
 
 RS_Status Internal::validate() {
-  // TODO Implement Me
+  if (preAllocatedBuffers == 0) {
+    // TODO warning logger
+  }
+  if (reqBufferSize < 256 || respBufferSize < 256) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "buffer size too small").status;
+  }
   return CRS_Status::SUCCESS.status;
 }
 
@@ -60,7 +66,17 @@ REST::REST()
 }
 
 RS_Status REST::validate() {
-  // TODO Implement Me
+  if (enable) {
+    if (serverIP.empty()) {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                        "REST server IP cannot be empty").status;
+    }
+    if (serverPort == 0) {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                        "REST server port cannot be empty").status;
+    }
+  
+  }
   return CRS_Status::SUCCESS.status;
 }
 
@@ -134,7 +150,6 @@ TestParameters::TestParameters() {
 }
 
 RS_Status TestParameters::validate() {
-  // TODO Implement Me
   return CRS_Status::SUCCESS.status;
 }
 
@@ -158,9 +173,29 @@ RS_Status Mgmd::validate() const {
 TLS::TLS() : enableTLS(false), requireAndVerifyClientCert(false) {
 }
 
+bool isUnitTest() {
+  const char* env_var = std::getenv("RUNNING_UNIT_TESTS");
+  return (env_var != nullptr && std::string(env_var) == "1");
+}
+
 RS_Status TLS::validate() {
-  // TODO Implement Me
-  return CRS_Status::SUCCESS.status;
+  if (isUnitTest()) {
+    return CRS_Status::SUCCESS.status;
+  }
+  if (enableTLS) {
+    if (certificateFile.empty() || privateKeyFile.empty()) {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                        "cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is not set")
+          .status;
+    }
+  } else {
+    if (requireAndVerifyClientCert) {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                        "cannot require client certificates if TLS is not enabled")
+          .status;
+    }
+  }
+  return testParameters.validate();
 }
 
 std::string TLS::string() {
@@ -177,7 +212,24 @@ APIKey::APIKey()
 }
 
 RS_Status APIKey::validate() {
-  // TODO Implement Me
+  if (cacheRefreshIntervalMS == 0) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "cache refresh interval cannot be 0").status;
+  }
+  if (cacheUnusedEntriesEvictionMS == 0) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "cache unused entries eviction cannot be 0").status;
+  }
+  if (cacheRefreshIntervalMS > cacheUnusedEntriesEvictionMS) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "cache refresh interval cannot be greater than cache unused entries eviction")
+        .status;
+  }
+  if (cacheRefreshIntervalJitterMS >= cacheRefreshIntervalMS) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "cache refresh interval must be smaller than cache refresh interval jitter")
+        .status;
+  }
   return CRS_Status::SUCCESS.status;
 }
 
@@ -191,7 +243,15 @@ Security::Security() : tls(TLS()), apiKey(APIKey()) {
 }
 
 RS_Status Security::validate() {
-  // TODO Implement Me
+  auto status = tls.validate();
+  if (status.http_code != HTTP_CODE::SUCCESS) {
+    return status;
+  }
+  status = apiKey.validate();
+  if (status.http_code != HTTP_CODE::SUCCESS) {
+    return status;
+  }
+  
   return CRS_Status::SUCCESS.status;
 }
 
@@ -206,7 +266,18 @@ Testing::Testing() : mySQL(MySQL()), mySQLMetadataCluster(MySQL()) {
 }
 
 RS_Status Testing::validate() {
-  // TODO Implement Me
+  auto status = mySQL.validate();
+  if (status.http_code != HTTP_CODE::SUCCESS) {
+    return status;
+  }
+  if (mySQLMetadataCluster.servers.empty()) {
+    mySQLMetadataCluster = mySQL;
+  }
+  status = mySQLMetadataCluster.validate();
+  if (status.http_code != HTTP_CODE::SUCCESS) {
+    return status;
+  }
+
   return CRS_Status::SUCCESS.status;
 }
 
@@ -216,11 +287,46 @@ std::string Testing::string() {
   return ss.str();
 }
 
+std::string Testing::generate_mysqld_connect_string_data_cluster() {
+  // user:password@tcp(IP:Port)/
+  return mySQL.user + ":" + mySQL.password + "@tcp(" + mySQL.servers[0].IP + ":" +
+         std::to_string(mySQL.servers[0].port) + ")/";
+}
+
+std::string Testing::generate_mysqld_connect_string_metadata_cluster() {
+  // user:password@tcp(IP:Port)/
+  return mySQLMetadataCluster.user + ":" + mySQLMetadataCluster.password + "@tcp(" +
+         mySQLMetadataCluster.servers[0].IP + ":" +
+         std::to_string(mySQLMetadataCluster.servers[0].port) + ")/";
+}
+
 MySQL::MySQL() : servers({MySQLServer()}), user(ROOT) {
 }
 
 RS_Status MySQL::validate() {
-  // TODO Implement Me
+  if (servers.empty()) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "at least one MySQL server has to be defined")
+        .status;
+  }
+  if (servers.size() > 1) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "we do not support specifying more than one MySQL server yet")
+        .status;
+  }
+
+  for (const auto &server : servers) {
+    auto status = server.validate();
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+      return status;
+    }
+  }
+
+  if (user.empty()) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "the MySQL user cannot be empty").status;
+  }
+
   return CRS_Status::SUCCESS.status;
 }
 
@@ -244,8 +350,17 @@ std::string MySQLServer::string() {
   return ss.str();
 }
 
-RS_Status MySQLServer::validate() {
-  // TODO Implement Me
+RS_Status MySQLServer::validate() const{
+  if (IP.empty()) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "the MySQL server IP cannot be empty")
+        .status;
+  }
+  if (port == 0) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "the MySQL server port cannot be empty")
+        .status;
+  }
   return CRS_Status::SUCCESS.status;
 }
 

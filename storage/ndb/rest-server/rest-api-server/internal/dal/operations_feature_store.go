@@ -223,6 +223,11 @@ type ServingKey struct {
 	RequiredEntry  string
 }
 
+func (s *ServingKey) String() string {
+	return fmt.Sprintf("FeatureGroupId: %d, FeatureName: %s, Prefix: %s, Required: %t, JoinOn: %s, JoinIndex: %d, RequiredEntry: %s",
+		s.FeatureGroupId, s.FeatureName, s.Prefix, s.Required, s.JoinOn, s.JoinIndex, s.RequiredEntry)
+}
+
 func GetServingKeys(featureViewId int) ([]ServingKey, error) {
 	var servingKeySize C.int
 	servingKeySizePtr := (*C.int)(unsafe.Pointer(&servingKeySize))

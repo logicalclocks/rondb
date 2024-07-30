@@ -256,7 +256,7 @@ RS_Status PKROperation::CreateResponse() {
     } else if (op->getNdbError().classification == NdbError::NoDataFound) {
       found = false;
       resp->SetStatus(NOT_FOUND, "NOT Found");
-    } else {
+    } else {      
       //  immediately fail the entire batch
       resp->SetStatus(SERVER_ERROR, op->getNdbError().message);
       resp->Close();
@@ -362,7 +362,7 @@ RS_Status PKROperation::ValidateRequest() {
     std::unordered_map<std::string, const NdbDictionary::Column *> *nonPKCols =
         &subOpTuples[i].allNonPKCols;
 
-    if (req->PKColumnsCount() != pkCols->size()) {
+    if (req->PKColumnsCount() != pkCols->size()) {      
       RS_Status error =
           RS_CLIENT_ERROR(ERROR_013 + std::string(" Expecting: ") + std::to_string(pkCols->size()) +
                           " Got: " + std::to_string(req->PKColumnsCount()));

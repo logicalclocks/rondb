@@ -23,6 +23,7 @@
 #include "config_structs.hpp"
 #include "constants.hpp"
 #include "pk_data_structs.hpp"
+#include "feature_store_data_structs.hpp"
 
 #define SIMDJSON_VERBOSE_LOGGING 0
 #include <simdjson.h>
@@ -51,6 +52,8 @@ class JSONParser {
   RS_Status pk_parse(size_t, simdjson::padded_string_view, PKReadParams &);
   RS_Status batch_parse(size_t, simdjson::padded_string_view, std::vector<PKReadParams> &);
   RS_Status config_parse(const std::string &, AllConfigs &);
+  RS_Status feature_store_parse(size_t, simdjson::padded_string_view,
+                                feature_store_data_structs::FeatureStoreRequest &);
 };
 
 extern JSONParser jsonParser;

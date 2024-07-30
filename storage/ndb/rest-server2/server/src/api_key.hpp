@@ -22,6 +22,7 @@
 
 #include "rdrs_hopsworks_dal.h"
 #include "pk_data_structs.hpp"
+#include "cache.hpp"
 
 #include <atomic>
 #include <memory>
@@ -29,38 +30,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <thread>
 #include <chrono>
 #include <pthread.h>
-
-class ReadLock {
- public:
-  explicit ReadLock(pthread_rwlock_t &lock) : rwlock(lock) {
-    pthread_rwlock_rdlock(&rwlock);
-  }
-  ~ReadLock() {
-    pthread_rwlock_unlock(&rwlock);
-  }
-  ReadLock(const ReadLock &)            = delete;
-  ReadLock &operator=(const ReadLock &) = delete;
-
- private:
-  pthread_rwlock_t &rwlock;
-};
-
-class WriteLock {
- public:
-  explicit WriteLock(pthread_rwlock_t &lock) : rwlock(lock) {
-    pthread_rwlock_wrlock(&rwlock);
-  }
-  ~WriteLock() {
-    pthread_rwlock_unlock(&rwlock);
-  }
-  WriteLock(const WriteLock &)            = delete;
-  WriteLock &operator=(const WriteLock &) = delete;
-
- private:
-  pthread_rwlock_t &rwlock;
-};
 
 RS_Status authenticate(const std::string &apiKey, PKReadParams &params);
 
@@ -95,7 +67,7 @@ class UserDBs {
   }
 };
 
-class Cache {
+class APIKeyCache {
  public:
   std::unordered_map<std::string, std::shared_ptr<UserDBs>>
       key2UserDBsCache;  // API Key -> User Databases
@@ -103,11 +75,11 @@ class Cache {
   std::mt19937 randomGenerator;
 
  public:
-  Cache() : key2UserDBsCache(), randomGenerator(std::random_device()()) {
+  APIKeyCache() : key2UserDBsCache(), randomGenerator(std::random_device()()) {
     pthread_rwlock_init(&key2UserDBsCacheLock, nullptr);
   }
 
-  ~Cache() {
+  ~APIKeyCache() {
     cleanup();
     pthread_rwlock_destroy(&key2UserDBsCacheLock);
   }
@@ -160,6 +132,6 @@ class Cache {
   std::string to_string();
 };
 
-extern std::shared_ptr<Cache> apiKeyCache;
+extern std::shared_ptr<APIKeyCache> apiKeyCache;
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_API_KEY_HPP_

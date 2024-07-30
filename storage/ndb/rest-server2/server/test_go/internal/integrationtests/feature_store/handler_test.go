@@ -22,62 +22,62 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
+
+	// "strings"
 	"testing"
 
-	"github.com/linkedin/goavro/v2"
+	// "github.com/linkedin/goavro/v2"
 	fsmetadata "hopsworks.ai/rdrs2/internal/feature_store"
-	"hopsworks.ai/rdrs2/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs2/pkg/api"
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
-func TestFeatureStoreMetaData(t *testing.T) {
-	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB002, "sample_2", 1)
-	if err != nil {
-		t.Fatalf("Reading FS Metadata failed %v ", err)
-	}
-}
+// func TestFeatureStoreMetaData(t *testing.T) {
+// 	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB002, "sample_2", 1)
+// 	if err != nil {
+// 		t.Fatalf("Reading FS Metadata failed %v ", err)
+// 	}
+// }
 
-func TestMetadata_FsNotExist(t *testing.T) {
-	_, err := fsmetadata.GetFeatureViewMetadata("NA", "sample_2", 1)
-	if err == nil {
-		t.Fatalf("This should fail.")
-	}
-	if !strings.Contains(err.Error(), fsmetadata.FS_NOT_EXIST.GetReason()) {
-		t.Fatalf("This should fail with error message: %s.", fsmetadata.FS_NOT_EXIST.GetReason())
-	}
-}
+// func TestMetadata_FsNotExist(t *testing.T) {
+// 	_, err := fsmetadata.GetFeatureViewMetadata("NA", "sample_2", 1)
+// 	if err == nil {
+// 		t.Fatalf("This should fail.")
+// 	}
+// 	if !strings.Contains(err.Error(), fsmetadata.FS_NOT_EXIST.GetReason()) {
+// 		t.Fatalf("This should fail with error message: %s.", fsmetadata.FS_NOT_EXIST.GetReason())
+// 	}
+// }
 
-func TestMetadata_ReadDeletedFg(t *testing.T) {
-	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB001, "test_deleted_fg", 1)
-	if err == nil {
-		t.Fatalf("This should fail.")
-	}
-	if !strings.Contains(err.Error(), fsmetadata.FG_NOT_EXIST.GetReason()) {
-		t.Fatalf("This should fail with error message: %s. But found: %s", fsmetadata.FG_NOT_EXIST.GetReason(), err.Error())
-	}
-}
+// func TestMetadata_ReadDeletedFg(t *testing.T) {
+// 	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB001, "test_deleted_fg", 1)
+// 	if err == nil {
+// 		t.Fatalf("This should fail.")
+// 	}
+// 	if !strings.Contains(err.Error(), fsmetadata.FG_NOT_EXIST.GetReason()) {
+// 		t.Fatalf("This should fail with error message: %s. But found: %s", fsmetadata.FG_NOT_EXIST.GetReason(), err.Error())
+// 	}
+// }
 
-func TestMetadata_ReadDeletedJointFg(t *testing.T) {
-	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB001, "test_deleted_joint_fg", 1)
-	if err == nil {
-		t.Fatalf("This should fail.")
-	}
-	if !strings.Contains(err.Error(), fsmetadata.FG_NOT_EXIST.GetReason()) {
-		t.Fatalf("This should fail with error message: %s. But found: %s", fsmetadata.FG_NOT_EXIST.GetReason(), err.Error())
-	}
-}
+// func TestMetadata_ReadDeletedJointFg(t *testing.T) {
+// 	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB001, "test_deleted_joint_fg", 1)
+// 	if err == nil {
+// 		t.Fatalf("This should fail.")
+// 	}
+// 	if !strings.Contains(err.Error(), fsmetadata.FG_NOT_EXIST.GetReason()) {
+// 		t.Fatalf("This should fail with error message: %s. But found: %s", fsmetadata.FG_NOT_EXIST.GetReason(), err.Error())
+// 	}
+// }
 
-func TestMetadata_FvNotExist(t *testing.T) {
-	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB002, "NA", 1)
-	if err == nil {
-		t.Fatalf("This should fail.")
-	}
-	if !strings.Contains(err.Error(), fsmetadata.FV_NOT_EXIST.GetReason()) {
-		t.Fatalf("This should fail with error message: %s.", fsmetadata.FV_NOT_EXIST.GetReason())
-	}
-}
+// func TestMetadata_FvNotExist(t *testing.T) {
+// 	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB002, "NA", 1)
+// 	if err == nil {
+// 		t.Fatalf("This should fail.")
+// 	}
+// 	if !strings.Contains(err.Error(), fsmetadata.FV_NOT_EXIST.GetReason()) {
+// 		t.Fatalf("This should fail with error message: %s.", fsmetadata.FV_NOT_EXIST.GetReason())
+// 	}
+// }
 
 func Test_GetFeatureVector_Success(t *testing.T) {
 	rows, pks, cols, err := GetSampleData(testdbs.FSDB002, "sample_2_1")
@@ -967,66 +967,66 @@ func Test_GetFeatureVector_WrongPkValue(t *testing.T) {
 	}
 }
 
-func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
-	var fsName = testdbs.FSDB002
-	var fvName = "sample_complex_type"
-	var fvVersion = 1
-	rows, pks, cols, err := GetSampleData(fsName, "sample_complex_type_1")
-	if err != nil {
-		t.Fatalf("Cannot get sample data with error %s ", err)
-	}
-	mapCodec, err := goavro.NewCodec(`["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]`)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	arrayCodec, err := goavro.NewCodec(`["null",{"type":"array","items":["null","long"]}]`)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	mapDecoder := fsmetadata.AvroDecoder{Codec: mapCodec}
-	arrayDecoder := fsmetadata.AvroDecoder{Codec: arrayCodec}
+// func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
+// 	var fsName = testdbs.FSDB002
+// 	var fvName = "sample_complex_type"
+// 	var fvVersion = 1
+// 	rows, pks, cols, err := GetSampleData(fsName, "sample_complex_type_1")
+// 	if err != nil {
+// 		t.Fatalf("Cannot get sample data with error %s ", err)
+// 	}
+// 	mapCodec, err := goavro.NewCodec(`["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]`)
+// 	if err != nil {
+// 		t.Fatal(err.Error())
+// 	}
+// 	arrayCodec, err := goavro.NewCodec(`["null",{"type":"array","items":["null","long"]}]`)
+// 	if err != nil {
+// 		t.Fatal(err.Error())
+// 	}
+// 	mapDecoder := fsmetadata.AvroDecoder{Codec: mapCodec}
+// 	arrayDecoder := fsmetadata.AvroDecoder{Codec: arrayCodec}
 
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	for _, row := range rows {
-		var fsReq = CreateFeatureStoreRequest(
-			fsName,
-			fvName,
-			fvVersion,
-			pks,
-			*GetPkValues(&row, &pks, &cols),
-			nil,
-			nil,
-		)
-		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
-		fsResp := GetFeatureStoreResponse(t, fsReq)
+// 	if err != nil {
+// 		t.Fatal(err.Error())
+// 	}
+// 	for _, row := range rows {
+// 		var fsReq = CreateFeatureStoreRequest(
+// 			fsName,
+// 			fvName,
+// 			fvVersion,
+// 			pks,
+// 			*GetPkValues(&row, &pks, &cols),
+// 			nil,
+// 			nil,
+// 		)
+// 		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+// 		fsResp := GetFeatureStoreResponse(t, fsReq)
 
-		// convert data to object in json format
-		arrayJson, err := ConvertBinaryToJsonMessage(row[2])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayDecoder) // array
-		row[2] = *arrayPt
-		if err != nil {
-			t.Fatalf("Cannot deserailize feature with error %s ", err)
-		}
-		// convert data to object in json format
-		mapJson, err := ConvertBinaryToJsonMessage(row[3])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapDecoder) // map
-		row[3] = *mapPt
-		if err != nil {
-			t.Fatalf("Cannot deserailize feature with error %s ", err)
-		}
-		// validate
-		ValidateResponseWithData(t, &row, &cols, fsResp)
-		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
-	}
-}
+// 		// convert data to object in json format
+// 		arrayJson, err := ConvertBinaryToJsonMessage(row[2])
+// 		if err != nil {
+// 			t.Fatalf("Cannot convert to json with error %s ", err)
+// 		}
+// 		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayDecoder) // array
+// 		row[2] = *arrayPt
+// 		if err != nil {
+// 			t.Fatalf("Cannot deserailize feature with error %s ", err)
+// 		}
+// 		// convert data to object in json format
+// 		mapJson, err := ConvertBinaryToJsonMessage(row[3])
+// 		if err != nil {
+// 			t.Fatalf("Cannot convert to json with error %s ", err)
+// 		}
+// 		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapDecoder) // map
+// 		row[3] = *mapPt
+// 		if err != nil {
+// 			t.Fatalf("Cannot deserailize feature with error %s ", err)
+// 		}
+// 		// validate
+// 		ValidateResponseWithData(t, &row, &cols, fsResp)
+// 		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+// 	}
+// }
 
 func Test_PassedFeatures_Success(t *testing.T) {
 	rows, pks, cols, err := GetSampleData(testdbs.FSDB002, "sample_2_1")

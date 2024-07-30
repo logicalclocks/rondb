@@ -54,6 +54,7 @@ func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey
 
 func (h *Handler) Validate(request interface{}) error {
 	fsReq := request.(*api.FeatureStoreRequest)
+	fmt.Printf("Feature store request is %s", fsReq.String())
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
@@ -79,12 +80,14 @@ func (h *Handler) Validate(request interface{}) error {
 func ValidatePrimaryKey(entries *map[string]*json.RawMessage, validPrimaryKeys *map[string]bool) *feature_store.RestErrorCode {
 	// Data type check of primary key will be delegated to rondb.
 	if len(*entries) == 0 {
+		fmt.Printf("No entries found")
 		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage("No entries found")
 	}
 
 	for featureName := range *entries {
 		_, ok := (*validPrimaryKeys)[featureName]
 		if !ok {
+			fmt.Printf("Provided primary key `%s` does not belong to the set of primary key.", featureName)
 			return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("Provided primary key `%s` does not belong to the set of primary key.", featureName))
 		}
 	}
@@ -199,6 +202,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	fsReq := request.(*api.FeatureStoreRequest)
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	// fmt.Printf("metadata is %s\n", metadata.String())
 	if err != nil {
 		return err.GetStatus(), err.GetError()
 	}
@@ -246,6 +250,8 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErrorCode {
 	for _, result := range *rondbResp.Result {
 		if *result.Code != http.StatusOK && *result.Code != http.StatusNotFound {
+			fmt.Printf("Error is %s", *result.Message)
+			fmt.Printf("result is %s", result.String())
 			return TranslateRonDbError(int(*result.Code), *result.Message)
 		}
 	}
@@ -413,7 +419,11 @@ func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValue
 func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
 
 	var batchReadParams = make([]*api.PKReadParams, 0, len(metadata.FeatureGroupFeatures))
+	// fmt.Printf("Feature group features size is %d\n", len(metadata.FeatureGroupFeatures))
 	for _, fgFeature := range metadata.FeatureGroupFeatures {
+		// fmt.Printf("Feature group feature name is %s\n", fgFeature.FeatureGroupName)
+		// fmt.Printf("Feature group feature primary key map size is %d\n", len(fgFeature.PrimaryKeyMap))
+
 		testDb := fgFeature.FeatureStoreName
 		testTable := fmt.Sprintf("%s_%d", fgFeature.FeatureGroupName, fgFeature.FeatureGroupVersion)
 		var filters = make([]api.Filter, 0, len(fgFeature.Features))
@@ -430,6 +440,8 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 			}
 		}
 		for _, servingKey := range fgFeature.PrimaryKeyMap {
+			// fmt.Printf("Serving key featureName is %s\n", servingKey.FeatureName)
+			// fmt.Printf("Serving key required entry is %s\n", servingKey.RequiredEntry)
 			var pkCol = servingKey.FeatureName
 			if (*entries)[servingKey.RequiredEntry] != nil {
 				// Fill in value of required entry as original entry may not be required.
@@ -478,6 +490,17 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		var opId = feature_store.GetFeatureGroupKeyByTDFeature(fgFeature)
 		param := api.PKReadParams{DB: &testDb, Table: &testTable, Filters: &filters, ReadColumns: &columns, OperationID: &opId}
 		batchReadParams = append(batchReadParams, &param)
+	}
+	for _, param := range batchReadParams {
+		fmt.Printf("DB: %s, Table: %s", *param.DB, *param.Table)
+		for _, filter := range *param.Filters {
+			fmt.Printf("Filter: %s=%v", *filter.Column, *filter.Value)
+		}
+		for _, col := range *param.ReadColumns {
+			fmt.Printf("Column: %s", *col.Column)
+		}
+		fmt.Printf("OperationID: %s", *param.OperationID)
+		fmt.Println()
 	}
 	return &batchReadParams
 }

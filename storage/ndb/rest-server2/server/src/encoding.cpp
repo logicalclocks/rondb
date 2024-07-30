@@ -23,6 +23,7 @@
 #include "buffer_manager.hpp"
 
 #include <cstring>
+#include <string>
 
 RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void * /*respBuff*/) {
   uint32_t *buf = (uint32_t *)(reqBuff);
@@ -168,10 +169,12 @@ RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) 
 
   uint32_t responseType = buf[PK_RESP_OP_TYPE_IDX];
 
-  if (responseType != RDRS_PK_RESP_ID)
+  if (responseType != RDRS_PK_RESP_ID) {
+    std::string msg = "internal server error. Wrong response type";
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k500InternalServerError),
-                      "internal server error. Wrong response type")
+                      msg.c_str(), msg)
         .status;
+  }
 
   // some sanity checks
   uint32_t capacity   = buf[PK_RESP_CAPACITY_IDX];
@@ -182,7 +185,7 @@ RS_Status process_pkread_response(void *respBuff, PKReadResponseJSON &response) 
     message += "Buffer capacity: " + std::to_string(capacity) +
                ", data length: " + std::to_string(dataLength);
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k500InternalServerError),
-                      message.c_str())
+                      message.c_str(), message)
         .status;
   }
 

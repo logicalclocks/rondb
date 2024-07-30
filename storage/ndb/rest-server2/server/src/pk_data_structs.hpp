@@ -95,9 +95,10 @@ class PKReadResponse {
 
 class PKReadResponseJSON : public PKReadResponse {
  private:
-  drogon::HttpStatusCode code;
-  std::string operationID;
-  std::map<std::string, std::vector<char>> data;
+  drogon::HttpStatusCode code;  // json:"code"    form:"code"    binding:"required"
+  std::string operationID;      // json:"operationId"    form:"operation-id"    binding:"omitempty"
+  std::map<std::string, std::vector<char>>
+      data;  // json:"data"           form:"data"            binding:"omitempty"
 
  public:
   PKReadResponseJSON() : PKReadResponse() {
@@ -151,6 +152,101 @@ class PKReadResponseJSON : public PKReadResponse {
   std::string to_string(int, bool) const;
 
   static std::string batch_to_string(const std::vector<PKReadResponseJSON> &);
+};
+
+class PKReadResponseWithCodeJSON {
+ private:
+  std::string message;      // json:"message"    form:"message"    binding:"required"
+  PKReadResponseJSON body;  // json:"body"    form:"body"    binding:"required"
+
+ public:
+  PKReadResponseWithCodeJSON() = default;
+
+  PKReadResponseWithCodeJSON(const PKReadResponseWithCodeJSON &other) {
+    message = other.message;
+    body    = other.body;
+  }
+
+  PKReadResponseWithCodeJSON &operator=(const PKReadResponseWithCodeJSON &other) {
+    message = other.message;
+    body    = other.body;
+    return *this;
+  }
+
+  void setMessage(std::string &msg) {
+    message = msg;
+  }
+
+  void setMessage(const char *msg) {
+    message = msg;
+  }
+
+  void setBody(const PKReadResponseJSON &b) {
+    body = b;
+  }
+
+  std::string getMessage() const {
+    return message;
+  }
+
+  PKReadResponseJSON getBody() const {
+    return body;
+  }
+
+  std::string to_string() const;
+};
+
+class BatchResponseJSON {
+ private:
+  std::vector<PKReadResponseWithCodeJSON> result;  // json:"result" binding:"required"
+
+ public:
+  BatchResponseJSON() = default;
+
+  BatchResponseJSON(const BatchResponseJSON &other) : result(other.result) {
+  }
+
+  BatchResponseJSON &operator=(const BatchResponseJSON &other) {
+    if (this != &other) {
+      result = other.result;
+    }
+    return *this;
+  }
+
+  void setResult(const std::vector<PKReadResponseWithCodeJSON> &res) {
+    result = res;
+  }
+
+  std::vector<PKReadResponseWithCodeJSON> getResult() const {
+    return result;
+  }
+
+  void Init(int numSubResponses) {
+    result.resize(numSubResponses);
+  }
+
+  static PKReadResponseWithCodeJSON CreateNewSubResponse() {
+    PKReadResponseWithCodeJSON subResponse;
+    return subResponse;
+  }
+
+  void AddSubResponse(unsigned long index, const PKReadResponseWithCodeJSON &subResp) {
+    if (index >= 0 && index < result.size()) {
+      result[index] = subResp;
+    }
+  }
+
+  std::string to_string() const {
+    std::string res = "[";
+    for (size_t i = 0; i < result.size(); i++) {
+      res += result[i].to_string();
+      if (i < result.size() - 1) {
+        res += ",";
+      }
+    }
+    res += "]";
+    return res;
+  }
 };
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_

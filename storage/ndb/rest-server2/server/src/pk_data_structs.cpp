@@ -198,6 +198,8 @@ std::string PKReadParams::to_string() {
 }
 
 RS_Status PKReadParams::validate() {
+  // std::cout << "Validating PKReadParams: " << to_string() << std::endl;
+
   if (method.empty()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_METHOD, ERROR_062)
@@ -254,10 +256,12 @@ RS_Status PKReadParams::validate() {
         .status;
 
   // make sure filters is not empty
-  if (filters.empty())
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_FILTERS, ERROR_056)
-        .status;
+  // if (filters.empty()) {
+  //   std::cout << "Filters is empty" << std::endl;
+  //   return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+  //                     ERROR_CODE_INVALID_FILTERS, ERROR_056)
+  //       .status;
+  // }
 
   // make sure filter columns are valid
   for (auto &filter : filters) {
@@ -330,6 +334,7 @@ RS_Status PKReadParams::validate() {
 std::string PKReadResponseJSON::to_string() const {
   std::stringstream ss;
   ss << "{" << std::endl;
+  ss << "  \"code\": " << static_cast<int>(code) << "," << std::endl;
   ss << "  \"operationId\": \"" << operationID << "\"," << std::endl;
   ss << "  \"data\": {";
   bool first = true;
@@ -409,6 +414,15 @@ std::string PKReadResponseJSON::batch_to_string(const std::vector<PKReadResponse
     ss << response.to_string(4, true);
   }
   ss << std::endl << "  ]" << std::endl;
+  ss << "}" << std::endl;
+  return ss.str();
+}
+
+std::string PKReadResponseWithCodeJSON::to_string() const {
+  std::stringstream ss;
+  ss << "{" << std::endl;
+  ss << "  \"message\": \"" << message << "\"," << std::endl;
+  ss << "  \"body\": " << body.to_string() << std::endl;
   ss << "}" << std::endl;
   return ss.str();
 }

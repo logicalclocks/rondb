@@ -59,6 +59,22 @@ type FeatureViewMetadata struct {
 	ComplexFeatures  map[string]*AvroDecoder    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 }
 
+// Every field to string
+func (f *FeatureViewMetadata) String() string {
+	string1 := fmt.Sprintf("FeatureStoreName: %s, FeatureStoreId: %d, FeatureViewName: %s, FeatureViewId: %d, FeatureViewVersion: %d",
+		f.FeatureStoreName, f.FeatureStoreId, f.FeatureViewName, f.FeatureViewId, f.FeatureViewVersion)
+	string2 := fmt.Sprintf("PrefixFeaturesLookup: %v", f.PrefixFeaturesLookup)
+	string3 := fmt.Sprintf("FeatureGroupFeatures: %v", f.FeatureGroupFeatures)
+	string4 := fmt.Sprintf("FeatureStoreNames: %v", f.FeatureStoreNames)
+	string5 := fmt.Sprintf("NumOfFeatures: %d", f.NumOfFeatures)
+	string6 := fmt.Sprintf("FeatureIndexLookup: %v", f.FeatureIndexLookup)
+	string7 := fmt.Sprintf("PrimaryKeyMap: %v", f.PrimaryKeyMap)
+	string8 := fmt.Sprintf("PrefixPrimaryKeyMap: %v", f.PrefixPrimaryKeyMap)
+	string9 := fmt.Sprintf("JoinKeyMap: %v", f.JoinKeyMap)
+	string10 := fmt.Sprintf("ComplexFeatures: %v", f.ComplexFeatures)
+	return fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s", string1, string2, string3, string4, string5, string6, string7, string8, string9, string10)
+}
+
 type FeatureGroupFeatures struct {
 	FeatureStoreName    string
 	FeatureStoreId      int
@@ -68,6 +84,15 @@ type FeatureGroupFeatures struct {
 	JoinIndex           int
 	Features            []*FeatureMetadata
 	PrimaryKeyMap       []*dal.ServingKey
+}
+
+func (fgf *FeatureGroupFeatures) String() string {
+	string1 := fmt.Sprintf("FeatureStoreName: %s, FeatureStoreId: %d, FeatureGroupName: %s, FeatureGroupVersion: %d, FeatureGroupId: %d",
+		fgf.FeatureStoreName, fgf.FeatureStoreId, fgf.FeatureGroupName, fgf.FeatureGroupVersion, fgf.FeatureGroupId)
+	string2 := fmt.Sprintf("JoinIndex: %d", fgf.JoinIndex)
+	string3 := fmt.Sprintf("Features: %v", fgf.Features)
+	string4 := fmt.Sprintf("PrimaryKeyMap: %v", fgf.PrimaryKeyMap)
+	return fmt.Sprintf("%s\n%s\n%s\n%s", string1, string2, string3, string4)
 }
 
 type FeatureMetadata struct {
