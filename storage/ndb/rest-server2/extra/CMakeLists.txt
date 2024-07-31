@@ -15,4 +15,3 @@
 
 add_subdirectory(drogon)
 add_subdirectory(simdjson)
-add_subdirectory(avro/avro-release-1.11.3/lang/c++)

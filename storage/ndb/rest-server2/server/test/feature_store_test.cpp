@@ -29,8 +29,8 @@
 #include "rdrs_rondb_connection.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "base64.h"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/ValidSchema.hh"
 
+#include <avro/ValidSchema.hh>
 #include <drogon/HttpClient.h>
 #include <drogon/HttpTypes.h>
 #include <fstream>

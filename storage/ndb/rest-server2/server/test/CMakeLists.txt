@@ -10,8 +10,9 @@ find_package(Drogon CONFIG REQUIRED)
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR_64})
 find_package(simdjson REQUIRED)
-
 find_package(Jsoncpp REQUIRED)
+find_library(AVROCPP_LIB avrocpp REQUIRED PATHS /usr/local/lib)
+find_path(AVROCPP_INCLUDE_DIR PATHS /usr/local/include/avro)
 
 include_directories(${GMOCK_INCLUDE_DIRS})
 include_directories("../src")
@@ -83,6 +84,5 @@ configure_file("${RESOURCE_DIR}/embedded_content.hpp.in" "${GENERATED_HEADER}" @
 
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
-# Add tests
 add_test(NAME api_key_test COMMAND api_key_test)
 add_test(NAME feature_store_test COMMAND feature_store_test)

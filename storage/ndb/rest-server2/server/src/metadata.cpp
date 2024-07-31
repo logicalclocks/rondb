@@ -20,7 +20,8 @@
 #include "metadata.hpp"
 #include "operations_feature_store.hpp"
 #include "rdrs_dal.hpp"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/Exception.hh"
+
+#include <avro/Exception.hh>
 #include <tuple>
 
 namespace metadata {

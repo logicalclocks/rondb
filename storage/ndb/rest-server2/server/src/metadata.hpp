@@ -24,15 +24,15 @@
 #include "constants.hpp"
 #include "cache.hpp"
 #include "feature_store_error_code.hpp"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/Compiler.hh"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/Decoder.hh"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/Encoder.hh"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/Generic.hh"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/GenericDatum.hh"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/Specific.hh"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/Stream.hh"
-#include "storage/ndb/rest-server2/extra/avro/avro-release-1.11.3/lang/c++/api/ValidSchema.hh"
 
+#include <avro/Compiler.hh>
+#include <avro/Decoder.hh>
+#include <avro/Encoder.hh>
+#include <avro/Generic.hh>
+#include <avro/GenericDatum.hh>
+#include <avro/Specific.hh>
+#include <avro/Stream.hh>
+#include <avro/ValidSchema.hh>
 #include <string>
 #include <vector>
 #include <unordered_map>
