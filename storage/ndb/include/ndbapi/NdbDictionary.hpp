@@ -315,7 +315,7 @@ class NdbDictionary {
                                      ///< be used in array
       Bigint = NDB_TYPE_BIGINT,  ///< 64 bit. 8 byte signed integer, can be used
                                  ///< in array
-      Bigunsigned = NDB_TYPE_BIGUNSIGNED,  ///< 64 Bit. 8 byte signed integer,
+      Bigunsigned = NDB_TYPE_BIGUNSIGNED,  ///< 64 Bit. 8 byte unsigned integer,
                                            ///< can be used in array
       Float = NDB_TYPE_FLOAT,  ///< 32-bit float. 4 bytes float, can be used in
                                ///< array
