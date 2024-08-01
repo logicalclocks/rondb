@@ -1,5 +1,5 @@
 
-# Copyright (C) 2022 Hopsworks AB 
+# Copyright (C) 2022, 2024 Hopsworks AB 
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -19,16 +19,17 @@
 project (rdrclient)
 
 if(WITH_RDRS) 
-
+  SET(BOOST "$ENV{BOOST_ROOT}") 
   INCLUDE_DIRECTORIES(
     ${PROJECT_SOURCE_DIR}
     ${BASE64_INCLUDE_DIR}
+    ${BOOST}
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
     ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
     ${CMAKE_SOURCE_DIR}/include)
-  INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
+  INCLUDE_DIRECTORIES(SYSTEM)
   
   file(GLOB_RECURSE RDRS_LIB_SOURCE ${PROJECT_SOURCE_DIR}/src/*)
   
