@@ -7346,7 +7346,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       {
         if (nodeId == getOwnNodeId())
         {
-          ndbassert(globalData.ndbMtQueryWorkers > 0);
+          if (globalData.ndbMtQueryWorkers > 0)
           {
             /**
              * ReadCommittedFlag is always set in DBSPJ when Query threads are
@@ -7385,6 +7385,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
             fragPtr.p->m_next_ref = ref;
           } else {
             jam();
+            ndbassert(false);
             /**
              * We are not using query threads in this node, we can set
              * m_next_ref immediately, we can also set m_ref to the proper

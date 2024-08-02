@@ -2602,128 +2602,67 @@ void SimulatedBlock::execCONTINUE_FRAGMENTED(Signal *signal) {
 
   switch (sig->type)
   {
-  case ContinueFragmented::CONTINUE_SENDING :
-  {
-    jam();
-    Ptr<FragmentSendInfo> fragPtr;
-
-    c_segmentedFragmentSendList.first(fragPtr);  
-    for(; !fragPtr.isNull();){
+    case ContinueFragmented::CONTINUE_SENDING :
+    {
       jam();
-      Ptr<FragmentSendInfo> copyPtr = fragPtr;
+      Ptr<FragmentSendInfo> fragPtr;
 
-      c_segmentedFragmentSendList.next(fragPtr);
-
-      if (ok_to_send_fragmented(copyPtr.p))
-      {
-        jamDebug();
-        sendNextSegmentedFragment(signal, * copyPtr.p);
-      }
-
-      if(copyPtr.p->m_status == FragmentSendInfo::SendComplete){
-        jam();
-        if(copyPtr.p->m_callback.m_callbackFunction != 0) {
-          jam();
-          execute(signal, copyPtr.p->m_callback, 0);
-        }//if
-        c_segmentedFragmentSendList.release(copyPtr);
-      }
-    }
-    
-    c_linearFragmentSendList.first(fragPtr);  
-    for(; !fragPtr.isNull();){
-      jam(); 
-      Ptr<FragmentSendInfo> copyPtr = fragPtr;
-      c_linearFragmentSendList.next(fragPtr);
-      
-      if (ok_to_send_fragmented(copyPtr.p))
-      {
-        jamDebug();
-        sendNextLinearFragment(signal, * copyPtr.p);
-      }
-      if(copyPtr.p->m_status == FragmentSendInfo::SendComplete){
-        jam();
-        if(copyPtr.p->m_callback.m_callbackFunction != 0) {
-          jam();
-          execute(signal, copyPtr.p->m_callback, 0);
-        }//if
-        c_linearFragmentSendList.release(copyPtr);
-      }
-    }
-    
-    if(c_segmentedFragmentSendList.isEmpty() && 
-       c_linearFragmentSendList.isEmpty()){
-      jam();
-      c_fragSenderRunning = false;
-      return;
-    }
-    
-    sig->type = ContinueFragmented::CONTINUE_SENDING;
-    sig->line = __LINE__;
-    sendSignal(reference(),
-               GSN_CONTINUE_FRAGMENTED,
-               signal,
-               ContinueFragmented::SignalLengthSending,
-               JBB);
-    break;
-  }
-  case ContinueFragmented::CONTINUE_CLEANUP:
-  {
-    jam();
-    
-    const Uint32 callbackWords = (sizeof(Callback) + 3) >> 2;
-    /* Check length of signal */
-    ndbassert(signal->getLength() ==
-              ContinueFragmented::CONTINUE_CLEANUP_FIXED_WORDS + 
-              callbackWords);
-    
-    Callback cb;
-    memcpy(&cb, &sig->cleanup.callbackStart, callbackWords << 2);
-
-      c_segmentedFragmentSendList.first(fragPtr);
+      c_segmentedFragmentSendList.first(fragPtr);  
       for (; !fragPtr.isNull();) {
         jam();
         Ptr<FragmentSendInfo> copyPtr = fragPtr;
+
         c_segmentedFragmentSendList.next(fragPtr);
 
-        sendNextSegmentedFragment(signal, *copyPtr.p);
+        if (ok_to_send_fragmented(copyPtr.p)) {
+          jamDebug();
+          sendNextSegmentedFragment(signal, * copyPtr.p);
+        }
+
         if (copyPtr.p->m_status == FragmentSendInfo::SendComplete) {
           jam();
           if (copyPtr.p->m_callback.m_callbackFunction != 0) {
             jam();
             execute(signal, copyPtr.p->m_callback, 0);
-          }  // if
+          } //if
           c_segmentedFragmentSendList.release(copyPtr);
         }
       }
-
-      c_linearFragmentSendList.first(fragPtr);
+    
+      c_linearFragmentSendList.first(fragPtr);  
       for (; !fragPtr.isNull();) {
-        jam();
+        jam(); 
         Ptr<FragmentSendInfo> copyPtr = fragPtr;
         c_linearFragmentSendList.next(fragPtr);
-
-        sendNextLinearFragment(signal, *copyPtr.p);
+      
+        if (ok_to_send_fragmented(copyPtr.p)) {
+          jamDebug();
+          sendNextLinearFragment(signal, * copyPtr.p);
+        }
         if (copyPtr.p->m_status == FragmentSendInfo::SendComplete) {
           jam();
           if (copyPtr.p->m_callback.m_callbackFunction != 0) {
             jam();
             execute(signal, copyPtr.p->m_callback, 0);
-          }  // if
+          } //if
           c_linearFragmentSendList.release(copyPtr);
         }
       }
-
-      if (c_segmentedFragmentSendList.isEmpty() &&
+    
+      if (c_segmentedFragmentSendList.isEmpty() && 
           c_linearFragmentSendList.isEmpty()) {
         jam();
         c_fragSenderRunning = false;
         return;
       }
-
+    
       sig->type = ContinueFragmented::CONTINUE_SENDING;
       sig->line = __LINE__;
-      sendSignal(reference(), GSN_CONTINUE_FRAGMENTED, signal, 2, JBB);
+      sendSignal(reference(),
+                 GSN_CONTINUE_FRAGMENTED,
+                 signal,
+                 ContinueFragmented::SignalLengthSending,
+                 JBB);
       break;
     }
     case ContinueFragmented::CONTINUE_CLEANUP: {

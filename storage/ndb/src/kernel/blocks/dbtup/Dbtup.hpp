@@ -2093,14 +2093,13 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint16 var_pos_array[2][2 * MAX_ATTRIBUTES_IN_TABLE + 1];
     OperationrecPtr prevOpPtr;
     Dblqh *m_lqh;
-  };
 
-  Uint32 scan_op_i;
-  void* scan_rec;
-  Uint32 agg_curr_batch_size_rows;
-  Uint32 agg_curr_batch_size_bytes;
-  Uint32 agg_n_res_recs;
-};
+    Uint32 scan_op_i;
+    void* scan_rec;
+    Uint32 agg_curr_batch_size_rows;
+    Uint32 agg_curr_batch_size_bytes;
+    Uint32 agg_n_res_recs;
+  };
 
   friend struct Undo_buffer;
   Undo_buffer c_undo_buffer;

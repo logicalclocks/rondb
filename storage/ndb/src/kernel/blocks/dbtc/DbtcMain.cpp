@@ -1412,7 +1412,7 @@ void Dbtc::execSTTOR(Signal *signal) {
         DEB_RR_INIT(("(%u) RR Groups inited", instance()));
       }
       fill_distr_references(&m_distribution_handle);
-      calculate_distribution_signal(&m_distribution_handle);
+      calculate_distribution_signal(&m_distribution_handle, 1);
       if (first_instance) {
         print_static_distr_info(&m_distribution_handle);
       }

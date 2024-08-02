@@ -3730,11 +3730,6 @@ bool thr_send_threads::handle_send_trp(
       /* Timer still hasn't expired, continue waiting */
       return false;
     }
-    /**
-     * We waited for a larger payload to accumulate. We have
-     * met the limit and now cancel any further delays.
-     */
-    set_max_delay(trp_id, now, 0);  // Large packet -> Send now
   }
 
   /**
@@ -3748,7 +3743,6 @@ bool thr_send_threads::handle_send_trp(
   my_thread_yield();
 #endif
   assert(!is_enqueued(trp_id, send_instance));
-  trp_state.m_thr_no_sender = thr_no;
   NdbMutex_Unlock(send_instance->send_thread_mutex);
 
   watchdog_counter = 6;
@@ -3800,7 +3794,6 @@ bool thr_send_threads::handle_send_trp(
   my_thread_yield();
 #endif
   assert(!is_enqueued(trp_id, send_instance));
-  assert(trp_state.m_thr_no_sender == thr_no);
   if (more ||                   // ACTIVE   -> PENDING
       !check_done_trp(trp_id))  // ACTIVE-P -> PENDING
   {
@@ -6159,32 +6152,6 @@ Uint32 *mt_send_handle::getWritePtr(TrpId trp_id, Uint32 len, Uint32 prio,
   }
   *error = SEND_BUFFER_FULL;
   return 0;
-}
-
-/**
- * Acquire total send buffer size without locking and without gathering
- *
- * OJA: The usability of this function is rather questionable.
- *      m_buffered_size and m_sending_size is updated by
- *      link_thread_send_buffers(), get_bytes_to_send_iovec() and
- *      bytes_sent() - All part of performSend(). Thus, it is
- *      valid *after* a send.
- *
- *      However, checking it *before* a send in order to
- *      determine if the payload is yet too small doesn't
- *      really provide correct information of the current state.
- *      Most likely '0 will be returned if previous send succeeded.
- *
- *      A better alternative could be to add a 'min_send' argument
- *      to perform_send(), and skip sending if not '>='.
- *      (After real size is recalculated)
- */
-static Uint64 mt_get_send_buffer_bytes(TrpId trp_id) {
-  thr_repository *rep = g_thr_repository;
-  thr_repository::send_buffer *sb = &rep->m_send_buffers[trp_id];
-  const Uint64 total_send_buffer_size =
-      sb->m_buffered_size + sb->m_sending_size;
-  return total_send_buffer_size;
 }
 
 void

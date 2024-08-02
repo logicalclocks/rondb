@@ -723,39 +723,13 @@ void Thrman::execSTTOR(Signal *signal) {
         sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
       }
       sendSTTORRY(signal, true);
-      return;
-    }
-    if (instance() == m_rep_thrman_instance)
-    {
+      return; } if (instance() == m_rep_thrman_instance) {
       jam();
       initial_query_distribution(signal);
     }
     return;
-  case 2:
-  {
-    m_gain_spintime_in_us = getWakeupLatency();
-    if (instance() == m_main_thrman_instance)
-    {
-      g_eventLogger->info("Set wakeup latency to %u microseconds",
-                          m_gain_spintime_in_us);
-    }
-    set_spin_stat(0, true);
-    sendSTTORRY(signal, true);
-    return;
-  }
-  case 9:
-  {
-    if (instance() == m_rep_thrman_instance)
-    {
-      jam();
-      signal->theData[0] = ZUPDATE_QUERY_DISTRIBUTION;
-      sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
-    }
-    sendSTTORRY(signal, true);
-    return;
-  }
-  default:
-    ndbabort();
+    default:
+      ndbabort();
   }
 }
 
