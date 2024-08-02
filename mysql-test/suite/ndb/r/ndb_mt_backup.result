@@ -331,6 +331,7 @@ Backup completed
 "Restoring metadata"
 "Restoring multithreaded backup parts serially on node 1"
 "Restoring multithreaded backup parts serially on node 2"
+"Rebuilding indexes"
 "Print restored rows"
 use test;
 select * from t0 order by id;
@@ -483,6 +484,7 @@ Backup completed
 "Restoring metadata"
 "Restoring multithreaded backup parts serially on node 1"
 "Restoring multithreaded backup parts serially on node 2"
+"Rebuilding indexes"
 "Print restored rows"
 use test;
 select * from t0 order by id;

@@ -77,7 +77,7 @@ void Ndbcntr::initData() {
   m_local_lcp_id = 0;
   m_global_redo_alert_state = RedoStateRep::NO_REDO_ALERT;
   m_node_redo_alert_state = RedoStateRep::NO_REDO_ALERT;
-  for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS; i++)
+  for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS; i++)
     m_redo_alert_state[i] = RedoStateRep::NO_REDO_ALERT;
 }  // Ndbcntr::initData()
 

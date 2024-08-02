@@ -7346,7 +7346,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       {
         if (nodeId == getOwnNodeId())
         {
-          if (globalData.ndbMtQueryWorkers > 0)
+          ndbassert(globalData.ndbMtQueryWorkers > 0);
           {
             /**
              * ReadCommittedFlag is always set in DBSPJ when Query threads are

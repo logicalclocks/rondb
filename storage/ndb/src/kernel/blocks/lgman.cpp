@@ -795,7 +795,7 @@ Lgman::~Lgman() {
 void Lgman::client_lock(BlockNumber block_no, int line, SimulatedBlock *block) {
   if (isNdbMtLqh()) {
     jamBlock(block);
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
     Uint32 bno = blockToMain(block_no);
     Uint32 ino = blockToInstance(block_no);
 #endif
@@ -810,7 +810,7 @@ void Lgman::client_unlock(BlockNumber block_no, int line,
                           SimulatedBlock *block) {
   if (isNdbMtLqh()) {
     jamBlock(block);
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
     Uint32 bno = blockToMain(block_no);
     Uint32 ino = blockToInstance(block_no);
 #endif

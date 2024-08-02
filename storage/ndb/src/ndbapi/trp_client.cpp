@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2010, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -207,10 +207,12 @@ void trp_client::complete_poll() {
  * or we may choose an adaptive approach where (part of) the send
  * may be ofloaded to the send thread.
  */
-int trp_client::do_forceSend(bool forceSend) {
+int
+trp_client::do_forceSend(bool forceSend) {
+  (void)forceSend;
   flush_send_buffers();
 
-  if (forceSend) {
+  if (m_facade->m_use_poll_waiters < 16) {
     m_facade->try_send_all(m_flushed_trps_mask);
   } else {
     m_facade->do_send_adaptive(m_flushed_trps_mask);
@@ -406,7 +408,10 @@ m_facade->get_current_send_buffer_size(trp_id); Uint64 tot_send_buffer_size =
     m_facade->m_send_buffer.get_total_send_buffer_size();
   Uint64 tot_used_send_buffer_size =
     m_facade->m_send_buffer.get_total_used_send_buffer_size();
+  Uint64 max_node_send_buffer_size =
+    (Uint64)m_facade->get_registry()->getSendBufferSize(node);
   calculate_send_buffer_level(current_send_buffer_size,
+                              max_node_send_buffer_size,
                               tot_send_buffer_size,
                               tot_used_send_buffer_size,
                               0,

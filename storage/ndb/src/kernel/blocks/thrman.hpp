@@ -72,6 +72,9 @@ public:
  protected:
  private:
   /* Private variables */
+  Uint32 m_medium_send_delay;
+  Uint32 m_high_send_delay;
+  Uint32 m_current_send_delay;
   Uint32 m_num_send_threads;
   Uint32 m_num_threads;
   Uint32 m_send_thread_percentage;
@@ -83,9 +86,9 @@ public:
   bool m_tc_thread;
   bool m_ldm_thread;
 
-  const char *m_thread_name;
+  char m_thread_name[32];
+  char m_thread_description[32];
   const char *m_send_thread_name;
-  const char *m_thread_description;
   const char *m_send_thread_description;
 
   struct ndb_rusage m_last_50ms_rusage;
@@ -102,7 +105,7 @@ public:
   static const Uint32 ZCONTINUEB_CHECK_SPINTIME = 4;
   static const Uint32 ZCONTINUEB_MEASURE_CPU_DATA = 5;
   static const Uint32 ZUPDATE_QUERY_DISTRIBUTION = 6;
-  void check_weights();
+  void check_weights(Uint32*);
 
   static const Uint32 default_cpu_load = 95;
 
@@ -415,10 +418,12 @@ public:
                                     Uint32 cpu_no, Uint32 measurement_id,
                                     Uint32 online);
   void measure_cpu_data(Signal *signal);
-  void send_measure_to_rep_thrman(Signal *, MeasurementRecordPtr);
-  void update_query_distribution(Signal *);
-  void initial_query_distribution(Signal *);
-  void send_query_distribution(Uint32 *, Signal *);
+  void send_measure_to_rep_thrman(Signal*, MeasurementRecordPtr);
+  void update_query_distribution(Signal*);
+  void initial_query_distribution(Signal*);
+  void send_query_distribution(Uint32*, Signal*, bool);
+  void adjust_stored_weights(Uint32*);
+  void adjust_weights(Uint32*);
 
   struct ThrLoad {
     Uint32 m_cpu_load;

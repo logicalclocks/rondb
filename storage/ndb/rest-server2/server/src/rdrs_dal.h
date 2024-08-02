@@ -43,20 +43,6 @@ typedef struct RS_Status {
   char message[RS_STATUS_MSG_LEN];  // error message.
   int err_line_no;                  // error line number
   char err_file_name[RS_STATUS_FILE_NAME_LEN];  // error file name.
-#ifdef __cplusplus
-  RS_Status()
-      : http_code(SUCCESS), status(0), classification(0), code(0), mysql_code(0), message(""),
-        err_line_no(0), err_file_name("") {
-  }
-  RS_Status(HTTP_CODE http_code)
-      : http_code(http_code), status(0), classification(0), code(0), mysql_code(0), message(""),
-        err_line_no(0), err_file_name("") {
-  }
-  RS_Status(HTTP_CODE, const char *);
-  RS_Status(HTTP_CODE, int, const char *);
-  RS_Status(HTTP_CODE, const char *, const char *);
-  void set(HTTP_CODE, const char *);
-#endif
 } RS_Status;
 
 // Log Message
@@ -81,21 +67,6 @@ typedef enum DataReturnType {
 typedef struct RS_Buffer {
   unsigned int size;  // Buffer size
   char *buffer;       // Buffer
-#ifdef __cplusplus
-  RS_Buffer() : size(0), buffer(nullptr) {
-  }
-  explicit RS_Buffer(unsigned int buffSize) : size(buffSize), buffer(new char[buffSize]) {
-  }
-  ~RS_Buffer() {
-    delete[] buffer;
-  }
-  // Deep copy constructor and assignment operator
-  RS_Buffer(const RS_Buffer &other);
-  RS_Buffer &operator=(const RS_Buffer &other);
-  // Move constructor and move assignment operator
-  RS_Buffer(RS_Buffer &&other) noexcept;
-  RS_Buffer &operator=(RS_Buffer &&other) noexcept;
-#endif
 } RS_Buffer;
 
 typedef RS_Buffer *pRS_Buffer;

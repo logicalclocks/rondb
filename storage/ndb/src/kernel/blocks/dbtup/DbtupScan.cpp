@@ -34,6 +34,7 @@
 #include "../backup/Backup.hpp"
 #include "../dblqh/Dblqh.hpp"
 #include "Dbtup.hpp"
+#include "AggInterpreter.hpp"
 
 #define JAM_FILE_ID 408
 
@@ -306,6 +307,7 @@ void Dbtup::execACC_SCANREQ(Signal *signal) {
     scan.m_transId2 = req->transId2;
     scan.m_savePointId = req->savePointId;
     scan.m_accLockOp = RNIL;
+    scan.m_aggregation = AccScanReq::getAggregationFlag(req->requestInfo);
     scan.m_last_seen = __LINE__;
 
     // conf

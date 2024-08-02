@@ -34,22 +34,38 @@
 #include <sstream>
 
 int main() {
+  JSONParser jsonParser = JSONParser();
+  
+  /*
+    Order:
+    1. Read from ENV
+        if no ENV:
+    2. Set to defaults
+    3. Read CLI arguments
+        if no CLI:
+    4. Set to defaults
+  */
+  RS_Status status = AllConfigs::init();
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    errno = status.http_code;
+    exit(errno);
+  }
+
   // connect to rondb
-  AllConfigs::setToDefaults();
-  RonDBConnection rondbConnection(globalConfig.ronDB,
-                                  globalConfig.ronDbMetaDataCluster);
+  RonDBConnection rondbConnection(globalConfigs.ronDB,
+                                  globalConfigs.ronDbMetaDataCluster);
 
-  if (globalConfig.security.tls.enableTLS) {}
+  if (globalConfigs.security.tls.enableTLS) {}
 
-  if (globalConfig.grpc.enable) {
+  if (globalConfigs.grpc.enable) {
     errno = ENOSYS;
     exit(errno);
   }
 
-  if (globalConfig.rest.enable) {
-    drogon::app().addListener(globalConfig.rest.serverIP, globalConfig.rest.serverPort);
-    printf("Server running on %s:%d\n", globalConfig.rest.serverIP.c_str(), globalConfig.rest.serverPort);
-    drogon::app().setThreadNum(globalConfig.rest.numThreads);
+  if (globalConfigs.rest.enable) {
+    drogon::app().addListener(globalConfigs.rest.serverIP, globalConfigs.rest.serverPort);
+    printf("Server running on %s:%d\n", globalConfigs.rest.serverIP.c_str(), globalConfigs.rest.serverPort);
+    drogon::app().setThreadNum(globalConfigs.rest.numThreads);
     drogon::app().disableSession();
     drogon::app().run();
   }

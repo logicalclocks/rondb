@@ -3994,6 +3994,7 @@ void Ndbcntr::createSystableLab(Signal *signal, unsigned index) {
   w.add(DictTabInfo::SingleUserMode, (Uint32)NDB_SUM_READ_WRITE);
   w.add(DictTabInfo::HashMapObjectId, c_objectId);
   w.add(DictTabInfo::HashMapVersion, c_objectVersion);
+  w.add(DictTabInfo::HashFunctionFlag, Uint32(1));
 
   for (unsigned i = 0; i < table.columnCount; i++) {
     const SysColumn &column = table.columnList[i];
@@ -6400,7 +6401,7 @@ void Ndbcntr::sendWriteLocalSysfile_startLcp(Signal *signal, Uint32 type) {
 
 RedoStateRep::RedoAlertState Ndbcntr::get_node_redo_alert_state() {
   RedoStateRep::RedoAlertState redo_alert_state = RedoStateRep::NO_REDO_ALERT;
-  for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS; i++) {
+  for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS; i++) {
     if (m_redo_alert_state[i] > redo_alert_state) {
       jamLine(i);
       redo_alert_state = m_redo_alert_state[i];

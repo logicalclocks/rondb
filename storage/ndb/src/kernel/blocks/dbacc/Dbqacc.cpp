@@ -36,8 +36,7 @@ Dbqacc::Dbqacc(Block_context &ctx, Uint32 instanceNumber)
 
 Uint64 Dbqacc::getTransactionMemoryNeed() {
   Uint32 query_instance_count =
-    globalData.ndbMtQueryWorkers +
-    globalData.ndbMtRecoverThreads;
+    globalData.ndbMtQueryWorkers;
   Uint32 acc_scan_recs = 1;
   Uint32 acc_op_recs = 1;
 

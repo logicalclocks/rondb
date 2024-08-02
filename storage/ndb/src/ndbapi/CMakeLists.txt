@@ -44,6 +44,7 @@ ADD_CONVENIENCE_LIBRARY(ndbapi
   NdbInfoScanNodes.cpp
   NdbInfoScanVirtual.cpp
   NdbInterpretedCode.cpp
+  NdbAggregator.cpp
   NdbOperation.cpp
   NdbOperationDefine.cpp
   NdbOperationExec.cpp

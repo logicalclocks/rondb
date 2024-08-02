@@ -30,6 +30,8 @@
 #include <RefConvert.hpp>
 #include <pc.hpp>
 #include "Dbtup.hpp"
+#include "AggInterpreter.hpp"
+#include "include/my_byteorder.h"
 
 #define JAM_FILE_ID 406
 
@@ -72,7 +74,6 @@ void Dbtup::execSTORED_PROCREQ(Signal *signal) {
     handle.m_ptr[0].i = signal->theData[6];
     handle.m_cnt = 1;
     getSections(handle.m_cnt, handle.m_ptr);
-
     scanProcedure(signal,
                   regOperPtr.p,
                   storedPtr,

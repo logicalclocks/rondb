@@ -65,7 +65,7 @@ ndb$blocks	30	20
 ndb$columns	565	44
 ndb$certificates	34	44
 ndb$config_nodes	34	28
-ndb$config_params	178	120
+ndb$config_params	182	120
 ndb$config_values	344	24
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
@@ -107,8 +107,8 @@ ndb$tc_time_track_stats	384	104
 ndb$test	8000	24
 ndb$threadblock_details	124	24
 ndb$threadblocks	126	16
-ndb$threads	30	40
-ndb$threadstat	26	144
+ndb$threads	26	40
+ndb$threadstat	22	144
 ndb$transactions	5	44
 ndb$transporter_details	32	112
 ndb$transporters	32	68

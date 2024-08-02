@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
     Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
@@ -36,6 +37,7 @@
 #include "NdbIndexStat.hpp"
 #include "NdbInterpretedCode.hpp"
 #include "NdbOperation.hpp"
+#include "NdbAggregator.hpp"
 #include "NdbPool.hpp"
 #include "NdbRecAttr.hpp"
 #include "NdbScanFilter.hpp"

@@ -47,14 +47,20 @@
   } while (0)
 #endif
 
-static const struct ParseEntries m_parse_entries[] = {
-    // name     type
-    {"main", THRConfig::T_MAIN},      {"ldm", THRConfig::T_LDM},
-    {"recv", THRConfig::T_RECV},      {"rep", THRConfig::T_REP},
-    {"io", THRConfig::T_IO},          {"watchdog", THRConfig::T_WD},
-    {"tc", THRConfig::T_TC},          {"send", THRConfig::T_SEND},
-    {"idxbld", THRConfig::T_IXBLD},   {"query", THRConfig::T_QUERY},
-    {"recover", THRConfig::T_RECOVER}};
+
+static const struct ParseEntries m_parse_entries[] =
+{
+  //name     type
+  { "main",  THRConfig::T_MAIN },
+  { "ldm",   THRConfig::T_LDM  },
+  { "recv",  THRConfig::T_RECV },
+  { "rep",   THRConfig::T_REP  },
+  { "io",    THRConfig::T_IO   },
+  { "watchdog", THRConfig::T_WD},
+  { "tc",    THRConfig::T_TC   },
+  { "send",  THRConfig::T_SEND },
+  { "idxbld",THRConfig::T_IXBLD},
+};
 
 /**
  * The min and max values for T_IO (IO threads) and T_WD (watchdog threads)
@@ -66,20 +72,19 @@ static const struct ParseEntries m_parse_entries[] = {
  * There are other properties such as thread priority that can be set on those
  * thread types.
  */
-static const struct THRConfig::Entries m_entries[] = {
-    // type                min max                       exec thread   permanent
-    // default_count
-    {THRConfig::T_MAIN, 0, 1, true, true, 1},
-    {THRConfig::T_LDM, 0, MAX_NDBMT_LQH_THREADS, true, true, 1},
-    {THRConfig::T_RECV, 1, MAX_NDBMT_RECEIVE_THREADS, true, true, 1},
-    {THRConfig::T_REP, 0, 1, true, true, 1},
-    {THRConfig::T_IO, 1, 1, false, true, 1},
-    {THRConfig::T_WD, 1, 1, false, true, 1},
-    {THRConfig::T_TC, 0, MAX_NDBMT_TC_THREADS, true, true, 0},
-    {THRConfig::T_SEND, 0, MAX_NDBMT_SEND_THREADS, true, true, 0},
-    {THRConfig::T_IXBLD, 0, 1, false, false, 0},
-    {THRConfig::T_QUERY, 0, MAX_NDBMT_QUERY_THREADS, true, true, 0},
-    {THRConfig::T_RECOVER, 0, MAX_NDBMT_QUERY_THREADS, false, false, 0}};
+static const struct THRConfig::Entries m_entries[] =
+{ 
+  //type                min max                       exec thread   permanent default_count
+  { THRConfig::T_MAIN,  0, 1,                         true,         true,     1 },
+  { THRConfig::T_LDM,   0, MAX_NDBMT_LQH_WORKERS,     true,         true,     1 },
+  { THRConfig::T_RECV,  1, MAX_NDBMT_RECEIVE_THREADS, true,         true,     1 },
+  { THRConfig::T_REP,   0, 1,                         true,         true,     1 },
+  { THRConfig::T_IO,    1, 1,                         false,        true,     1 },
+  { THRConfig::T_WD,    1, 1,                         false,        true,     1 },
+  { THRConfig::T_TC,    0, MAX_NDBMT_TC_WORKERS,      true,         true,     0 },
+  { THRConfig::T_SEND,  0, MAX_NDBMT_SEND_THREADS,    true,         true,     0 },
+  { THRConfig::T_IXBLD, 0, 1,                         false,        false,    0 },
+};
 
 static const struct ParseParams m_params[] = {
     {"count", ParseParams::S_UNSIGNED},
@@ -165,12 +170,48 @@ void THRConfig::add(T_Type t, unsigned realtime, unsigned spintime) {
   if (spintime > 9000) spintime = 9000;
   tmp.m_spintime = spintime;
   tmp.m_core_bind = false;
+  tmp.m_rr_group = 0;
   m_threads[t].push_back(tmp);
 }
 
-static void computeThreadConfig(Uint32 MaxNoOfExecutionThreads,
-                                Uint32 &tcthreads, Uint32 &lqhthreads,
-                                Uint32 &sendthreads, Uint32 &recvthreads) {
+Uint32
+THRConfig::getRRGroups(Uint32 thr_no,
+                       Uint32 num_ldm_threads,
+                       Uint32 num_tc_threads,
+                       Uint32 num_recv_threads,
+                       Uint32 num_main_threads)
+{
+  if (thr_no < num_ldm_threads)
+  {
+    return m_threads[T_LDM][thr_no].m_rr_group;
+  }
+  else if (thr_no < (num_ldm_threads + num_tc_threads))
+  {
+    Uint32 inx = thr_no - num_ldm_threads;
+    return m_threads[T_TC][inx].m_rr_group;
+  }
+  else if (thr_no < (num_ldm_threads + num_tc_threads + num_recv_threads))
+  {
+    Uint32 inx = thr_no - (num_ldm_threads + num_tc_threads);
+    return m_threads[T_RECV][inx].m_rr_group;
+  }
+  else if (thr_no == (num_ldm_threads + num_tc_threads + num_recv_threads))
+  {
+    require(num_main_threads >= 1);
+    return m_threads[T_MAIN][0].m_rr_group;
+  }
+  require(num_main_threads == 2);
+  require(thr_no == (num_ldm_threads + num_tc_threads + num_recv_threads + 1));
+  return m_threads[T_REP][0].m_rr_group;
+}
+
+static
+void
+computeThreadConfig(Uint32 MaxNoOfExecutionThreads,
+                    Uint32 & tcthreads,
+                    Uint32 & lqhthreads,
+                    Uint32 & sendthreads,
+                    Uint32 & recvthreads) {
   assert(MaxNoOfExecutionThreads >= 9);
   static const struct entry {
     Uint32 M;
@@ -212,154 +253,102 @@ static void computeThreadConfig(Uint32 MaxNoOfExecutionThreads,
   recvthreads = table[P].recv;
 }
 
-static Uint32 g_num_query_threads_per_ldm = 0;
-
-void THRConfig::compute_automatic_thread_config(
-    Uint32 num_cpus, Uint32 &tc_threads, Uint32 &ldm_threads,
-    Uint32 &query_threads, Uint32 &recover_threads, Uint32 &main_threads,
-    Uint32 &rep_threads, Uint32 &send_threads, Uint32 &recv_threads) {
-  static const struct map_entry {
+void
+THRConfig::compute_automatic_thread_config(
+  Uint32 & num_cpus,
+  Uint32 & tc_threads,
+  Uint32 & ldm_threads,
+  Uint32 & main_threads,
+  Uint32 & rep_threads,
+  Uint32 & send_threads,
+  Uint32 & recv_threads)
+{
+  static const struct map_entry
+  {
     Uint32 cpu_cnt;
     Uint32 mapped_id;
-  } map_table[] = {
-      {1, 0},    {2, 1},    {3, 1},    {4, 2},    {5, 2},    {6, 3},
-      {7, 3},    {8, 4},    {9, 4},    {10, 5},   {11, 5},   {12, 6},
-      {13, 6},   {14, 7},   {15, 7},   {16, 8},   {17, 8},   {18, 9},
-      {19, 9},   {20, 10},  {21, 10},  {22, 11},  {23, 11},  {24, 12},
-      {25, 12},  {26, 13},  {27, 13},  {28, 14},  {29, 14},  {30, 15},
-      {31, 15},  {32, 16},  {33, 16},  {34, 16},  {35, 16},  {36, 17},
-      {37, 17},  {38, 17},  {39, 17},  {40, 18},  {41, 18},  {42, 18},
-      {43, 18},  {44, 19},  {45, 19},  {46, 19},  {47, 19},  {48, 20},
-      {49, 20},  {50, 20},  {51, 20},  {52, 21},  {53, 21},  {54, 21},
-      {55, 21},  {56, 22},  {57, 22},  {58, 22},  {59, 22},  {60, 23},
-      {61, 23},  {62, 23},  {63, 23},  {64, 24},  {65, 24},  {66, 24},
-      {67, 24},  {68, 24},  {69, 24},  {70, 24},  {71, 24},  {72, 25},
-      {73, 25},  {74, 25},  {75, 25},  {76, 25},  {77, 25},  {78, 25},
-      {79, 25},  {80, 26},  {81, 26},  {82, 26},  {83, 26},  {84, 26},
-      {85, 26},  {86, 26},  {87, 26},  {88, 27},  {89, 27},  {90, 27},
-      {91, 27},  {92, 27},  {93, 27},  {94, 27},  {95, 27},  {96, 28},
-      {97, 28},  {98, 28},  {99, 28},  {100, 28}, {101, 28}, {102, 28},
-      {103, 28}, {104, 29}, {105, 29}, {106, 29}, {107, 29}, {108, 29},
-      {109, 29}, {110, 29}, {111, 29}, {112, 30}, {113, 30}, {114, 30},
-      {115, 30}, {116, 30}, {117, 30}, {118, 30}, {119, 30}, {120, 31},
-      {121, 31}, {122, 31}, {123, 31}, {124, 31}, {125, 31}, {126, 31},
-      {127, 31}, {128, 32}, {129, 32}, {130, 32}, {131, 32}, {132, 32},
-      {133, 32}, {134, 32}, {135, 32}, {136, 32}, {137, 32}, {138, 32},
-      {139, 32}, {140, 33}, {141, 33}, {142, 33}, {143, 33}, {144, 33},
-      {145, 33}, {146, 33}, {147, 33}, {148, 33}, {149, 33}, {150, 33},
-      {151, 33}, {152, 34}, {153, 34}, {154, 34}, {155, 34}, {156, 34},
-      {157, 34}, {158, 34}, {159, 34}, {160, 34}, {161, 34}, {162, 34},
-      {163, 34}, {164, 35}, {165, 35}, {166, 35}, {167, 35}, {168, 35},
-      {169, 35}, {170, 35}, {171, 35}, {172, 35}, {173, 35}, {174, 35},
-      {175, 35}, {176, 36}, {177, 36}, {178, 36}, {179, 36}, {180, 36},
-      {181, 36}, {182, 36}, {183, 36}, {184, 36}, {185, 36}, {186, 36},
-      {187, 36}, {188, 37}, {189, 37}, {190, 37}, {191, 37}, {192, 37},
-      {193, 37}, {194, 37}, {195, 37}, {196, 37}, {197, 37}, {198, 37},
-      {199, 37}, {200, 38}, {201, 38}, {202, 38}, {203, 38}, {204, 38},
-      {205, 38}, {206, 38}, {207, 38}, {208, 38}, {209, 38}, {210, 38},
-      {211, 38}, {212, 39}, {213, 39}, {214, 39}, {215, 39}, {216, 39},
-      {217, 39}, {218, 39}, {219, 39}, {220, 39}, {221, 39}, {222, 39},
-      {223, 39}, {224, 40}, {225, 40}, {226, 40}, {227, 40}, {228, 40},
-      {229, 40}, {230, 40}, {231, 40}, {232, 40}, {233, 40}, {234, 40},
-      {235, 40}, {236, 40}, {237, 40}, {238, 40}, {239, 40}, {240, 41},
-      {241, 41}, {242, 41}, {243, 41}, {244, 41}, {245, 41}, {246, 41},
-      {247, 41}, {248, 41}, {249, 41}, {250, 41}, {251, 41}, {252, 41},
-      {253, 41}, {254, 41}, {255, 41}};
+  } map_table[] =
+  {
+    { 1, 0 },
+    { 2, 1 },
+    { 3, 1 },
+    { 4, 2 },
+    { 5, 2 },
+    { 6, 3 },
+    { 7, 3 },
+    { 8, 4 },
+    { 9, 4 },
+    { 10, 5 },
+    { 11, 5 },
+    { 12, 6 },
+    { 13, 6 },
+    { 14, 7 },
+    { 15, 7 },
+    { 16, 8 },
+    { 17, 8 },
+    { 18, 9 },
+    { 19, 9 },
+    { 20, 10 },
+    { 21, 10 },
+    { 22, 11 },
+    { 23, 11 },
+    { 24, 12 },
+    { 25, 12 },
+    { 26, 13 },
+    { 27, 13 },
+    { 28, 14 },
+    { 29, 14 },
+    { 30, 15 },
+    { 31, 15 },
+    { 32, 16 },
+    { 33, 16 },
+    { 34, 17 },
+    { 35, 17 },
+    { 36, 18 },
+    { 37, 18 },
+    { 38, 19 },
+    { 39, 19 },
+    { 40, 20 },
+    { 41, 20 },
+    { 42, 21 },
+    { 43, 21 },
+    { 44, 22 }
+  };
 
   static const struct entry {
     Uint32 map_id;
     Uint32 main_threads;
     Uint32 rep_threads;
     Uint32 ldm_threads;
-    Uint32 query_threads;
     Uint32 tc_threads;
     Uint32 send_threads;
     Uint32 recv_threads;
   } table[] = {
-    { 0, 0, 0, 0, 0, 0, 0, 1 }, // 1 CPU
-    { 1, 0, 0, 0, 0, 0, 0, 2 }, // 2-3 CPUs
-    { 2, 1, 0, 2, 0, 0, 0, 1 }, // 4-5 CPUs
-    { 3, 0, 0, 2, 2, 0, 1, 1 }, // 6-7 CPUs
-    { 4, 0, 0, 2, 2, 2, 1, 1 }, // 8-9 CPUs
-    { 5, 0, 0, 3, 3, 2, 1, 1 }, // 10-11 CPUs
-    { 6, 1, 0, 3, 3, 2, 1, 2 }, // 12-13 CPUs
-    { 7, 1, 0, 4, 4, 2, 1, 2 }, // 14-15 CPUs
-    { 8, 1, 0, 4, 4, 4, 1, 2 }, // 16-17 CPUs
-    { 9, 1, 0, 5, 5, 4, 1, 2 }, // 18-19 CPUs
-    { 10, 1, 1, 5, 5, 5, 1, 2 }, // 20-21 CPUs
-    { 11, 1, 1, 5, 5, 5, 2, 3 }, // 22-23 CPUs
-    { 12, 1, 1, 6, 6, 5, 2, 3 }, // 24-25 CPUs
-    { 13, 1, 1, 6, 6, 6, 2, 4 }, // 26-27 CPUs
-    { 14, 1, 1, 7, 7, 6, 2, 4 }, // 28-29 CPUs
-    { 15, 1, 1, 7, 7, 8, 2, 4 }, // 30-31 CPUs
-    { 16, 1, 1, 8, 8, 8, 2, 4 }, // 32-35 CPUs
-    { 17, 1, 1, 9, 9, 9, 2, 5 }, // 36-39 CPUs
-    { 18, 1, 1, 10, 10, 10, 3, 5 }, // 40-43 CPUs
-    { 19, 1, 1, 11, 11, 11, 3, 6 }, // 44-47 CPUs
-    { 20, 1, 1, 12, 12, 12, 4, 6 }, // 48-51 CPUs
-    { 21, 1, 1, 13, 13, 13, 4, 7 }, // 52-55 CPUs
-    { 22, 1, 1, 14, 14, 14, 5, 7 }, // 56-59 CPUs
-    { 23, 1, 1, 15, 15, 15, 5, 8 }, // 60-63 CPUs
-    { 24, 1, 1, 16, 16, 16, 6, 8 }, // 64-71 CPUs
-    { 25, 1, 1, 18, 18, 18, 7, 9 }, // 72-79 CPUs
-    { 26, 1, 1, 20, 20, 20, 8, 10 }, // 80-87 CPUs
-    { 27, 1, 1, 22, 22, 22, 9, 11 }, // 88-95 CPUs
-    { 28, 1, 1, 24, 24, 24, 10, 12 }, // 96-103 CPUs
-    { 29, 1, 1, 26, 26, 26, 11, 13 }, // 104-111 CPUs
-    { 30, 1, 1, 28, 28, 28, 12, 14 }, // 112-119 CPUs
-    { 31, 1, 1, 30, 30, 30, 13, 15 }, // 120-127 CPUs
-    { 32, 1, 1, 32, 32, 32, 14, 16 }, // 128-139 CPUs
-    { 33, 1, 1, 35, 35, 35, 15, 18 }, // 140-151 CPUs
-    { 34, 1, 1, 38, 38, 38, 17, 19 }, // 152-163 CPUs
-    { 35, 1, 1, 41, 41, 41, 18, 21 }, // 164-175 CPUs
-    { 36, 1, 1, 44, 44, 44, 20, 22 }, // 176-187 CPUs
-    { 37, 1, 1, 47, 47, 47, 21, 24 }, // 188-199 CPUs
-    { 38, 1, 1, 50, 50, 50, 23, 25 }, // 200-211 CPUs
-    { 39, 1, 1, 53, 53, 53, 24, 27 }, // 212-223 CPUs
-    { 40, 1, 1, 56, 56, 56, 26, 28 }, // 224-239 CPUs
-    { 41, 1, 1, 60, 60, 60, 28, 30 }, // 240-255 CPUs
-    { 42, 1, 1, 64, 64, 64, 30, 32 }, // 256-271 CPUs
-    { 43, 1, 1, 68, 68, 68, 32, 34 }, // 272-287 CPUs
-    { 44, 1, 1, 72, 72, 72, 34, 36 }, // 288-303 CPUs
-    { 45, 1, 1, 76, 76, 76, 36, 38 }, // 304-319 CPUs
-    { 46, 1, 1, 80, 80, 80, 38, 40 }, // 320-335 CPUs
-    { 47, 1, 1, 84, 84, 84, 40, 42 }, // 336-351 CPUs
-    { 48, 1, 1, 88, 88, 88, 42, 44 }, // 352-367 CPUs
-    { 49, 1, 1, 92, 92, 92, 44, 46 }, // 368-383 CPUs
-    { 50, 1, 1, 96, 96, 96, 46, 48 }, // 384-399 CPUs
-    { 51, 1, 1, 100, 100, 100, 48, 50 }, // 400-415 CPUs
-    { 52, 1, 1, 104, 104, 104, 50, 52 }, // 416-431 CPUs
-    { 53, 1, 1, 108, 108, 108, 52, 54 }, // 432-447 CPUs
-    { 54, 1, 1, 112, 112, 112, 54, 56 }, // 448-463 CPUs
-    { 55, 1, 1, 116, 116, 116, 56, 58 }, // 464-479 CPUs
-    { 56, 1, 1, 120, 120, 120, 58, 60 }, // 480-495 CPUs
-    { 57, 1, 1, 124, 124, 124, 60, 62 }, // 496-511 CPUs
-    { 58, 1, 1, 128, 128, 128, 62, 64 }, // 512-527 CPUs
-    { 59, 1, 1, 132, 132, 132, 64, 66 }, // 528-543 CPUs
-    { 60, 1, 1, 136, 136, 136, 66, 68 }, // 544-559 CPUs
-    { 61, 1, 1, 140, 140, 140, 68, 70 }, // 560-575 CPUs
-    { 62, 1, 1, 144, 144, 144, 70, 72 }, // 576-591 CPUs
-    { 63, 1, 1, 148, 148, 148, 72, 74 }, // 592-607 CPUs
-    { 64, 1, 1, 152, 152, 152, 74, 76 }, // 608-623 CPUs
-    { 65, 1, 1, 156, 156, 156, 76, 78 }, // 624-639 CPUs
-    { 66, 1, 1, 160, 160, 160, 78, 80 }, // 640-655 CPUs
-    { 67, 1, 1, 164, 164, 164, 80, 82 }, // 656-671 CPUs
-    { 68, 1, 1, 168, 168, 168, 82, 84 }, // 672-687 CPUs
-    { 69, 1, 1, 172, 172, 172, 84, 86 }, // 688-703 CPUs
-    { 70, 1, 1, 176, 176, 176, 86, 88 }, // 704-719 CPUs
-    { 71, 1, 1, 180, 180, 180, 88, 90 }, // 720-735 CPUs
-    { 72, 1, 1, 184, 184, 184, 90, 92 }, // 736-751 CPUs
-    { 73, 1, 1, 188, 188, 188, 92, 94 }, // 752-767 CPUs
-    { 74, 1, 1, 192, 192, 192, 94, 96 }, // 768-783 CPUs
-    { 75, 1, 1, 196, 196, 196, 96, 98 }, // 784-799 CPUs
-    { 76, 1, 1, 200, 200, 200, 98, 100 }, // 800-815 CPUs
-    { 77, 1, 1, 204, 204, 204, 100, 102 }, // 816-831 CPUs
-    { 78, 1, 1, 208, 208, 208, 102, 104 }, // 832-847 CPUs
-    { 79, 1, 1, 212, 212, 212, 104, 106 }, // 848-863 CPUs
-    { 80, 1, 1, 216, 216, 216, 106, 108 }, // 864-879 CPUs
-    { 81, 1, 1, 220, 220, 220, 108, 110 }, // 880-895 CPUs
-    { 82, 1, 1, 224, 224, 224, 110, 112 }, // 896-911 CPUs
-    { 83, 1, 1, 228, 228, 228, 112, 114 }, // 912-927 CPUs
+    { 0, 0, 0, 0, 0, 0, 1 }, // 1 CPU
+    { 1, 0, 0, 0, 0, 0, 2 }, // 2-3 CPUs
+    { 2, 0, 0, 0, 0, 1, 3 }, // 4-5 CPUs
+    { 3, 0, 0, 0, 0, 1, 5 }, // 6-7 CPUs
+    { 4, 0, 0, 4, 2, 1, 1 }, // 8-9 CPUs
+    { 5, 1, 0, 4, 3, 1, 1 }, // 10-11 CPUs
+    { 6, 1, 0, 6, 3, 1, 1 }, // 12-13 CPUs
+    { 7, 1, 0, 6, 4, 1, 2 }, // 14-15 CPUs
+    { 8, 1, 0, 8, 4, 1, 2 }, // 16-17 CPUs
+    { 9, 1, 1, 8, 4, 1, 3 }, // 18-19 CPUs
+    { 10, 1, 1, 8, 5, 2, 3 }, // 20-21 CPUs
+    { 11, 1, 1, 10, 5, 2, 3 }, // 22-23 CPUs
+    { 12, 1, 1, 10, 6, 2, 4 }, // 24-25 CPUs
+    { 13, 1, 1, 12, 6, 2, 4 }, // 26-27 CPUs
+    { 14, 1, 1, 12, 8, 2, 4 }, // 28-29 CPUs
+    { 15, 1, 1, 14, 8, 2, 4 }, // 30-31 CPUs
+    { 16, 1, 1, 16, 8, 2, 4 }, // 32-33 CPUs
+    { 17, 1, 1, 16, 9, 2, 5 }, // 34-35 CPUs
+    { 18, 1, 1, 18, 9, 2, 5 }, // 36-37 CPUs
+    { 19, 1, 1, 18, 10, 3, 5 }, // 38-39 CPUs
+    { 20, 1, 1, 20, 10, 3, 5 }, // 40-41 CPUs
+    { 21, 1, 1, 20, 11, 3, 6 }, // 42-43 CPUs
+    { 21, 1, 1, 22, 11, 3, 6 }, // 44-45 CPUs
+    { 21, 1, 1, 22, 12, 4, 6 }, // 46-47 CPUs
+    { 22, 1, 1, 24, 12, 4, 6 }, // 48
   };
   Uint32 cpu_cnt;
   if (num_cpus == 0)
@@ -370,6 +359,7 @@ void THRConfig::compute_automatic_thread_config(
       cpu_cnt = hwinfo->cpu_cnt_max;
       cpu_cnt = MIN(cpu_cnt, MAX_USED_NUM_CPUS);
     }
+    num_cpus = cpu_cnt;
 #if 0
     /* Consistency check of above tables */
     Uint32 expected_map_id = 0;
@@ -425,7 +415,6 @@ void THRConfig::compute_automatic_thread_config(
      * as recover thread, thus we can decrease the amount of recover
      * threads with the amount of LDM threads.
      */
-    g_num_query_threads_per_ldm = 1;
   }
   else
   {
@@ -434,46 +423,38 @@ void THRConfig::compute_automatic_thread_config(
 
   require(cpu_cnt > 0);
   Uint32 used_map_id;
-  if (cpu_cnt >= 256)
+  if (cpu_cnt > 48)
   {
-    used_map_id = 42;
-    Uint32 extra_map_id = (cpu_cnt - 256) / 16;
-    used_map_id += extra_map_id;
-    used_map_id = MIN(used_map_id, 83);
+    main_threads = 1;
+    rep_threads = 1;
+    ldm_threads = cpu_cnt / 2;
+    tc_threads = cpu_cnt / 4;
+    recv_threads = cpu_cnt / 8;
+    send_threads = cpu_cnt / 12;
+
+    Uint32 rem_threads = cpu_cnt -
+      (ldm_threads + 2 + tc_threads + recv_threads + send_threads);
+    ldm_threads += rem_threads;
+    if ((ldm_threads & 1) == 1)
+    {
+      /* Balanced Round Robin groups */
+      ldm_threads--;
+      tc_threads++;
+    }
   }
   else
   {
     used_map_id = map_table[cpu_cnt - 1].mapped_id;
-  }
-  main_threads = table[used_map_id].main_threads;
-  rep_threads = table[used_map_id].rep_threads;
-  ldm_threads = table[used_map_id].ldm_threads;
-  query_threads = table[used_map_id].query_threads;
-  tc_threads = table[used_map_id].tc_threads;
-  send_threads = table[used_map_id].send_threads;
-  recv_threads = table[used_map_id].recv_threads;
-  ldm_threads += query_threads;
-  query_threads = 0;
-
-  recover_threads = cpu_cnt - ldm_threads;
-
-  if (cpu_cnt < 5)
-  {
-    main_threads = 0;
-    recover_threads = 0;
-    ldm_threads = 0;
-    recv_threads = cpu_cnt;
-  }
-
-  Uint32 tot_threads = main_threads;
-  tot_threads += rep_threads;
-  tot_threads += ldm_threads;
-  tot_threads += tc_threads;
-  tot_threads += recv_threads;
-
-  if (tot_threads > NDBMT_MAX_BLOCK_INSTANCES) {
-    /* Have to ensure total number of block instances are not beyond limit */
-    recover_threads -= (tot_threads - NDBMT_MAX_BLOCK_INSTANCES);
+    main_threads = table[used_map_id].main_threads;
+    rep_threads = table[used_map_id].rep_threads;
+    ldm_threads = table[used_map_id].ldm_threads;
+    tc_threads = table[used_map_id].tc_threads;
+    send_threads = table[used_map_id].send_threads;
+    recv_threads = table[used_map_id].recv_threads;
+    if (cpu_cnt % 2 != 0)
+    {
+      tc_threads++;
+    }
   }
 }
 
@@ -490,36 +471,56 @@ THRConfig::get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads)
   }
 }
 
-int THRConfig::do_parse(unsigned realtime, unsigned spintime, unsigned num_cpus,
-                        unsigned &num_rr_groups) {
+int
+THRConfig::do_parse_auto(unsigned realtime,
+                         unsigned spintime,
+                         unsigned num_cpus,
+                         unsigned &num_rr_groups,
+                         bool use_tc_threads,
+                         bool use_ldm_threads) {
   Uint32 tc_threads = 0;
   Uint32 ldm_threads = 0;
-  Uint32 query_threads = 0;
-  Uint32 recover_threads = 0;
   Uint32 main_threads = 0;
   Uint32 rep_threads = 0;
   Uint32 send_threads = 0;
   Uint32 recv_threads = 0;
+  Uint32 config_num_cpus = num_cpus;
   compute_automatic_thread_config(num_cpus,
                                   tc_threads,
                                   ldm_threads,
-                                  query_threads,
-                                  recover_threads,
                                   main_threads,
                                   rep_threads,
                                   send_threads,
                                   recv_threads);
+  if (!use_tc_threads)
+  {
+    recv_threads += tc_threads;
+    tc_threads = 0;
+  }
+  if (!use_ldm_threads)
+  {
+    /**
+     * No LDM threads is equal to only recv threads, thus
+     * also no TC and main threads is implied by this.
+     */
+    recv_threads += ldm_threads;
+    ldm_threads = 0;
+    recv_threads += tc_threads;
+    tc_threads = 0;
+    recv_threads += main_threads;
+    main_threads = 0;
+    recv_threads += rep_threads;
+    rep_threads = 0;
+  }
   g_eventLogger->info("Auto thread config uses:\n"
                       " %u LDM+Query threads,\n"
                       " %u tc threads,\n"
-                      " %u Recover threads,\n"
                       " %u main threads,\n"
                       " %u rep threads,\n"
                       " %u recv threads,\n"
                       " %u send threads",
                       ldm_threads,
                       tc_threads,
-                      recover_threads,
                       main_threads,
                       rep_threads,
                       recv_threads,
@@ -555,48 +556,169 @@ int THRConfig::do_parse(unsigned realtime, unsigned spintime, unsigned num_cpus,
   for (Uint32 i = 0; i < tc_threads; i++) {
     add(T_TC, realtime, spintime);
   }
-  if (recover_threads > query_threads)
-  {
-    Uint32 num_recover_threads_only = recover_threads - query_threads;
-    for (Uint32 i = 0; i < num_recover_threads_only; i++) {
-      add(T_RECOVER, realtime, spintime);
-    }
-  }
   for (Uint32 i = 0; i < send_threads; i++) {
     add(T_SEND, realtime, spintime);
   }
   for (Uint32 i = 0; i < recv_threads; i++) {
     add(T_RECV, realtime, spintime);
   }
+  Uint32 num_query_instances =
+    ldm_threads +
+    tc_threads +
+    recv_threads +
+    main_threads +
+    rep_threads;
+  Uint32 calc_num_cpus = num_query_instances + send_threads;
+  require(calc_num_cpus <= num_cpus);
+
   struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
-  if (hwinfo->is_cpuinfo_available && num_cpus == 0) {
+  if (hwinfo->is_cpuinfo_available && config_num_cpus == 0) {
     /**
      * With CPU information available we will perform CPU locking as well
      * in an automated fashion. We have prepared the HW information such
      * that we can simply assign the CPUs from the CPU map.
+     *
+     * We will assign 2 LDM threads, next 2 non-LDM threads and continue
+     * like that. The idea is that the 2 LDM threads will share the same
+     * CPU core if it is running on a hyperthreaded CPU. If it is running
+     * on a CPU with a single CPU per core it won't matter so much how
+     * we distribute threads inside L3 caches, it only matters which
+     * L3 cache the CPUs belong to.
+     *
+     * We also need to ensure that we have a balance between Round Robin
+     * groups. Thus for example if we have 2 Round Robin groups and 10
+     * LDM threads, then it is important that we have 5 LDM threads in
+     * each Round Robin groups. This means that some LDM threads might
+     * need to be mixed with some main and rep threads and other threads.
+     * This only applies when we use automatic thread configuration without
+     * setting NumCPUs. When setting NumCPUs we simply spread on Round
+     * Robin groups in an even fashion since there is no knowledge of
+     * which L3 cache a Round Robin group belongs to.
      */
-    Uint32 thread_ldm_type = T_LDM;
-    if (ldm_threads == 0)
-    {
-      thread_ldm_type = T_RECV;
-    }
-    Uint32 num_query_threads_per_ldm = g_num_query_threads_per_ldm;
     num_rr_groups =
-      Ndb_CreateCPUMap(ldm_threads, num_query_threads_per_ldm);
+      Ndb_CreateCPUMap(num_query_instances);
+    Uint32 count_ldm_threads = ldm_threads;
+    Uint32 count_tc_threads = tc_threads;
+    Uint32 count_main_threads = main_threads;
+    Uint32 count_rep_threads = rep_threads;
+    Uint32 count_recv_threads = recv_threads;
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
-    Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
-    Uint32 num_database_threads = ldm_threads;
-    if (num_database_threads == 0)
+    Uint32 rr_group = 0;
+    Uint32 next_cpu_id = Ndb_GetFirstCPUInMap(rr_group);
+
+    /**
+     * Calculate the number of LDM threads that will share CPU core with
+     * another LDM thread and how many will share with other threads to
+     * ensure balanced usage of Round Robin groups.
+     */
+    Uint32 num_ldms_per_rr_group = ldm_threads / num_rr_groups;
+    Uint32 odd_ldms_per_rr_group = num_ldms_per_rr_group & 1;
+    Uint32 num_only_ldm_groups =
+      num_ldms_per_rr_group - odd_ldms_per_rr_group;
+    Uint32 num_only_ldms_in_group = 2 * num_only_ldm_groups;
+    assert(num_only_ldms_in_group <= count_ldm_threads);
+
+    for (Uint32 i = 0; i < num_cpus; i++)
     {
-      num_database_threads = recv_threads;
-      recv_threads = 0;
-    }
-    for (Uint32 i = 0; i < num_database_threads; i++)
-    {
+      Uint32 thread_type = T_SEND; // T_SEND silences compiler
+      Uint32 inx = RNIL;
+      Uint32 odd = (i & 1) == 1;
+      if (i != 0)
+      {
+        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id, rr_group);
+      }
+      if (num_only_ldms_in_group > 0)
+      {
+        thread_type = T_LDM;
+        count_ldm_threads--;
+        num_only_ldms_in_group--;
+        inx = count_ldm_threads;
+      }
+      else
+      {
+        /**
+         * We want to balance the CPU load on the non-LDM CPU cores and
+         * similarly we want to achieve a balanced load on the Round Robin
+         * groups.
+         *
+         * To achieve this we ensure that if a LDM thread shares a CPU core
+         * with another non-LDM thread it will be a TC thread.
+         *
+         * We ensure that the main and rep thread is on different CPU cores
+         * and also on different Round Robin groups if there is more than
+         * one Round Robin group.
+         *
+         * For the rest we mix a TC thread and a receive thread in each CPU
+         * core and thus we should have a fairly good balance also on
+         * Round Robin groups.
+         */
+        if (odd)
+        {
+          if (count_main_threads > 0)
+          {
+            thread_type = T_MAIN;
+            count_main_threads--;
+            inx = count_main_threads;
+          }
+          else if (count_rep_threads > 0)
+          {
+            thread_type = T_REP;
+            count_rep_threads--;
+            inx = count_rep_threads;
+          }
+          else if (count_tc_threads > 0)
+          {
+            thread_type = T_TC;
+            count_tc_threads--;
+            inx = count_tc_threads;
+          }
+          else if (count_recv_threads > 0)
+          {
+            thread_type = T_RECV;
+            count_recv_threads--;
+            inx = count_recv_threads;
+          }
+          else
+          {
+            /* Send thread handled in non-odd part */
+            odd = false;
+          }
+        }
+        if (!odd)
+        {
+          if (count_ldm_threads > 0)
+          {
+            thread_type = T_LDM;
+            count_ldm_threads--;
+            inx = count_ldm_threads;
+          }
+          else if (count_recv_threads > 0)
+          {
+            thread_type = T_RECV;
+            count_recv_threads--;
+            inx = count_recv_threads;
+          }
+          else if (count_tc_threads > 0)
+          {
+            thread_type = T_TC;
+            count_tc_threads--;
+            inx = count_tc_threads;
+          }
+          else
+          {
+            require(send_threads > 0);
+            thread_type = T_SEND;
+            send_threads--;
+            inx = send_threads;
+          }
+        }
+      }
+      require(inx != RNIL);
       require(next_cpu_id != Uint32(RNIL));
-      m_threads[thread_ldm_type][i].m_bind_no = next_cpu_id;
-      m_threads[thread_ldm_type][i].m_bind_type = T_Thread::B_CPU_BIND;
-      m_threads[thread_ldm_type][i].m_core_bind = true;
+      m_threads[thread_type][inx].m_bind_no = next_cpu_id;
+      m_threads[thread_type][inx].m_bind_type = T_Thread::B_CPU_BIND;
+      m_threads[thread_type][inx].m_core_bind = false;
+      m_threads[thread_type][inx].m_rr_group = rr_group;
 
       Uint32 core_cpu_ids[MAX_NUM_CPUS];
       Uint32 num_core_cpus = 0;
@@ -605,97 +727,80 @@ int THRConfig::do_parse(unsigned realtime, unsigned spintime, unsigned num_cpus,
                         num_core_cpus);
       if (num_core_cpus >= 2)
       {
-        Uint32 neighbour_cpu = core_cpu_ids[0];
-        if (neighbour_cpu == next_cpu_id)
-        {
-          neighbour_cpu = core_cpu_ids[1];
-        }
-        m_threads[thread_ldm_type][i].m_shared_cpu_id = neighbour_cpu;
-      }
-      next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-    }
-    for (Uint32 i = 0; i < num_database_threads; i++)
-    {
-      Uint32 my_cpu_id = m_threads[thread_ldm_type][i].m_bind_no;
-      for (Uint32 j = i; j < ldm_threads; j++)
-      {
-        if (m_threads[thread_ldm_type][i].m_shared_cpu_id != Uint32(~0) &&
-            m_threads[thread_ldm_type][i].m_shared_cpu_id == my_cpu_id)
-        {
-          m_threads[thread_ldm_type][i].m_shared_instance = j + 1;
-          m_threads[thread_ldm_type][j].m_shared_instance = i + 1;
-        }
+        /* First CPU in core list is always our own CPU id */
+        Uint32 neighbour_cpu = core_cpu_ids[1];
+        m_threads[thread_type][inx].m_shared_cpu_id = neighbour_cpu;
       }
     }
-
-    Uint32 tc_count = 0;
-    Uint32 main_count = 0;
-    Uint32 send_count = 0;
-    Uint32 rep_count = 0;
-    Uint32 recv_count = 0;
-
-    Uint32 max_threads = 0;
-    max_threads = MAX(max_threads, tc_threads);
-    max_threads = MAX(max_threads, main_threads);
-    max_threads = MAX(max_threads, send_threads);
-    max_threads = MAX(max_threads, rep_threads);
-    max_threads = MAX(max_threads, recv_threads);
-    for (Uint32 i = 0; i < max_threads; i++)
+    /**
+     * This code is used to discover where we have the shared
+     * instance (if one exists).
+     *
+     * The shared instance is used as the second option after
+     * selecting the LQH block.
+     */
+    Uint32 thread_type = T_LDM;
+    Uint32 num_ldm_threads = ldm_threads;
+    if (num_ldm_threads == 0)
     {
-      require(next_cpu_id != Uint32(RNIL));
-      if (tc_count < tc_threads)
+      thread_type = T_RECV;
+      num_ldm_threads = recv_threads;
+    }
+    for (Uint32 i = 0; i < num_ldm_threads; i++)
+    {
+      if (m_threads[thread_type][i].m_shared_cpu_id != Uint32(~0))
       {
-        m_threads[T_TC][i].m_bind_no = next_cpu_id;
-        m_threads[T_TC][i].m_bind_type = T_Thread::B_CPU_BIND;
-        m_threads[T_TC][i].m_core_bind = true;
-        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-      }
-      if (main_count < main_threads)
-      {
-        main_count++;
-        require(next_cpu_id != Uint32(RNIL));
-        m_threads[T_MAIN][i].m_bind_no = next_cpu_id;
-        m_threads[T_MAIN][i].m_bind_type = T_Thread::B_CPU_BIND;
-        m_threads[T_MAIN][i].m_core_bind = true;
-        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-      }
-      if (send_count < send_threads)
-      {
-        send_count++;
-        require(next_cpu_id != Uint32(RNIL));
-        m_threads[T_SEND][i].m_bind_no = next_cpu_id;
-        m_threads[T_SEND][i].m_bind_type = T_Thread::B_CPU_BIND;
-        m_threads[T_SEND][i].m_core_bind = true;
-        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-      }
-      if (rep_count < rep_threads)
-      {
-        rep_count++;
-        require(next_cpu_id != Uint32(RNIL));
-        m_threads[T_REP][i].m_bind_no = next_cpu_id;
-        m_threads[T_REP][i].m_bind_type = T_Thread::B_CPU_BIND;
-        m_threads[T_REP][i].m_core_bind = true;
-        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-      }
-      if (recv_count < recv_threads)
-      {
-        recv_count++;
-        require(next_cpu_id != Uint32(RNIL));
-        m_threads[T_RECV][i].m_bind_no = next_cpu_id;
-        m_threads[T_RECV][i].m_bind_type = T_Thread::B_CPU_BIND;
-        m_threads[T_RECV][i].m_core_bind = true;
-        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
+        Uint32 shared_cpu_id = m_threads[thread_type][i].m_shared_cpu_id;
+        Uint32 inx = 0;
+        for (Uint32 j = 0; j < ldm_threads; j++, inx++)
+        {
+          if (m_threads[T_LDM][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < tc_threads; j++, inx++)
+        {
+          if (m_threads[T_TC][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < recv_threads; j++, inx++)
+        {
+          if (m_threads[T_RECV][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < main_threads; j++, inx++)
+        {
+          if (m_threads[T_MAIN][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
+        for (Uint32 j = 0; j < rep_threads; j++, inx++)
+        {
+          if (m_threads[T_REP][j].m_bind_no == shared_cpu_id)
+          {
+            m_threads[thread_type][i].m_shared_instance = inx;
+          }
+        }
       }
     }
   } else {
-    num_rr_groups = Ndb_GetRRGroups(ldm_threads);
+    num_rr_groups = Ndb_GetRRGroups(num_query_instances);
   }
   return 0;
 }
 
-int THRConfig::do_parse(unsigned MaxNoOfExecutionThreads,
-                        unsigned __ndbmt_lqh_threads, unsigned __ndbmt_classic,
-                        unsigned realtime, unsigned spintime) {
+int
+THRConfig::do_parse_classic(unsigned MaxNoOfExecutionThreads,
+                            unsigned __ndbmt_lqh_threads,
+                            unsigned __ndbmt_classic,
+                            unsigned realtime,
+                            unsigned spintime) {
   /**
    * This is old ndbd.cpp : get_multithreaded_config
    */
@@ -1222,7 +1327,6 @@ int THRConfig::handle_spec(const char *str, unsigned realtime,
         !(type == T_LDM ||
           type == T_TC ||
           type == T_RECV ||
-          type == T_QUERY ||
           type == T_MAIN ||
           type == T_REP))
     {
@@ -1325,8 +1429,10 @@ int THRConfig::do_validate_thread_counts() {
   return 0;
 }
 
-int THRConfig::do_parse(const char *ThreadConfig, unsigned realtime,
-                        unsigned spintime) {
+int
+THRConfig::do_parse_thrconfig(const char * ThreadConfig,
+                              unsigned realtime,
+                              unsigned spintime) {
   int ret = handle_spec(ThreadConfig, realtime, spintime);
   if (ret != 0) return ret;
 
@@ -1404,7 +1510,7 @@ TAPTEST(thr_config) {
   ndb_init();
   {
     THRConfig tmp;
-    OK(tmp.do_parse(8, 0, 0, 0, 0) == 0);
+    OK(tmp.do_parse_classic(8, 0, 0, 0, 0) == 0);
   }
 
   /**
@@ -1492,22 +1598,25 @@ TAPTEST(thr_config) {
 
     for (Uint32 i = 0; ok[i]; i++) {
       THRConfig tmp;
-      int res = tmp.do_parse(ok[i], 0, 0);
-      printf("do_parse(%s) => %s - %s\n", ok[i], res == 0 ? "OK" : "FAIL",
-             res == 0 ? tmp.getConfigString() : tmp.getErrorMessage());
+      int res = tmp.do_parse_thrconfig(ok[i], 0, 0);
+      printf("do_parse_thrconfig(%s) => %s - %s\n", ok[i],
+             res == 0 ? "OK" : "FAIL",
+             res == 0 ? tmp.getConfigString() :
+             tmp.getErrorMessage());
       OK(res == 0);
       {
         BaseString out(tmp.getConfigString());
         THRConfig check;
-        OK(check.do_parse(out.c_str(), 0, 0) == 0);
+        OK(check.do_parse_thrconfig(out.c_str(), 0, 0) == 0);
         OK(strcmp(out.c_str(), check.getConfigString()) == 0);
       }
     }
 
     for (Uint32 i = 0; fail[i]; i++) {
       THRConfig tmp;
-      int res = tmp.do_parse(fail[i], 0, 0);
-      printf("do_parse(%s) => %s - %s\n", fail[i], res == 0 ? "OK" : "FAIL",
+      int res = tmp.do_parse_thrconfig(fail[i], 0, 0);
+      printf("do_parse_thrconfig(%s) => %s - %s\n", fail[i],
+             res == 0 ? "OK" : "FAIL",
              res == 0 ? "" : tmp.getErrorMessage());
       OK(res != 0);
     }
@@ -1638,9 +1747,9 @@ TAPTEST(thr_config) {
 
     for (unsigned i = 0; t[i]; i += 4) {
       THRConfig tmp;
-      tmp.setLockExecuteThreadToCPU(t[i + 0]);
-      const int _res = tmp.do_parse(t[i + 1], 0, 0);
-      const int expect_res = strcmp(t[i + 2], "OK") == 0 ? 0 : -1;
+      tmp.setLockExecuteThreadToCPU(t[i+0]);
+      const int _res = tmp.do_parse_thrconfig(t[i+1], 0, 0);
+      const int expect_res = strcmp(t[i+2], "OK") == 0 ? 0 : -1;
       const int res = _res == expect_res ? 0 : -1;
       int ok = expect_res == 0 ? strcmp(tmp.getConfigString(), t[i + 3]) == 0
                                : strcmp(tmp.getErrorMessage(), t[i + 3]) == 0;

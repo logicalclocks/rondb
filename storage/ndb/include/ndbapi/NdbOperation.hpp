@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1455,6 +1456,8 @@ class NdbOperation {
   Uint32 theInterpretedSize;  // Size of interpretation
   Uint32 theFinalUpdateSize;  // Size of final updates for interpretation
   Uint32 theFinalReadSize;    // Size of final reads for interpretation
+
+  Uint32 theAggregationSize;  // Size of aggregation program
 
   Uint8 theStartIndicator;   // Indicator of whether start operation
   Uint8 theCommitIndicator;  // Indicator of whether commit operation

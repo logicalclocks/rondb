@@ -52,6 +52,8 @@
 #include <NdbTransaction.hpp>
 #include <NdbWaitGroup.hpp>
 #include "NdbIndexStatImpl.hpp"
+#include <NdbInterpretedCode.hpp>
+#include <NdbAggregator.hpp>
 
 #include <NdbEventOperation.hpp>
 #include "NdbEventOperationImpl.hpp"

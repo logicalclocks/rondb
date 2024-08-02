@@ -18,6 +18,9 @@
  */
 
 #include "log.hpp"
+#include "rdrs_dal.hpp"
+
+#include <sstream>
 
 LogConfig::LogConfig() {
   this->level      = "warn";
@@ -25,4 +28,15 @@ LogConfig::LogConfig() {
   this->maxSizeMb  = 100;
   this->maxBackups = 10;
   this->maxAge     = 30;
+}
+
+RS_Status LogConfig::validate() {
+  // TODO Implement Me
+  return CRS_Status().status;
+}
+
+std::string LogConfig::string() {
+  std::stringstream ss;
+  ss << "level: " << this->level;
+  return ss.str();
 }

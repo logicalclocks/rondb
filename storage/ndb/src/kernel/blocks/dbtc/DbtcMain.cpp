@@ -5371,7 +5371,7 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
       if (nodeId == getOwnNodeId())
       {
         Uint32 instance_no = refToInstance(TBRef);
-        ndbrequire(globalData.ndbMtQueryWorkers > 0);
+        ndbassert(globalData.ndbMtQueryWorkers > 0);
         jam();
         TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
       }
@@ -5863,9 +5863,10 @@ bool Dbtc::CommitAckMarker::insert_in_commit_ack_marker(Dbtc *tc,
   LocalCommitAckMarkerBuffer tmp(pool, this->theDataBuffer);
   return tmp.append(&item, (Uint32)1);
 }
-bool Dbtc::CommitAckMarker::insert_in_commit_ack_marker_all(Dbtc *tc,
-                                                            NodeId node_id) {
-  for (Uint32 ikey = 1; ikey <= MAX_NDBMT_LQH_THREADS; ikey++) {
+bool
+Dbtc::CommitAckMarker::insert_in_commit_ack_marker_all(Dbtc *tc,
+                                                       NodeId node_id) {
+  for (Uint32 ikey = 1; ikey <= MAX_NDBMT_LQH_WORKERS; ikey++) {
     if (!insert_in_commit_ack_marker(tc, ikey, node_id)) return false;
   }
   return true;
@@ -7158,7 +7159,7 @@ Uint32 Dbtc::sendCommitLqh(Signal *signal, TcConnectRecord *const regTcPtr,
   Uint32 len = 5;
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceNo > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceNo > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     memcpy(&signal->theData[0], &Tdata[0], len << 2);
@@ -7657,7 +7658,7 @@ Uint32 Dbtc::sendCompleteLqh(Signal *signal, TcConnectRecord *const regTcPtr,
 
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceNo > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceNo > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     memcpy(&signal->theData[0], &Tdata[0], len << 2);
@@ -7861,7 +7862,7 @@ Uint32 Dbtc::sendFireTrigReqLqh(Signal *signal, Ptr<TcConnectRecord> regTcPtr,
   req->pass = pass;
   Uint32 len = FireTrigReq::SignalLength;
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
-  if (instanceNo > MAX_NDBMT_LQH_THREADS) {
+  if (instanceNo > MAX_NDBMT_LQH_WORKERS) {
     memcpy(signal->theData, Tdata, len << 2);
     BlockReference lqhRef = numberToRef(DBLQH, instanceNo, Tnode);
     sendSignal(lqhRef, GSN_FIRE_TRIG_REQ, signal, len, JBB);
@@ -8101,7 +8102,7 @@ void Dbtc::sendRemoveMarker(Signal *signal, NodeId nodeId, Uint32 instanceKey,
   Tdata[2] = transid2;
   Uint32 len = 3;
   Uint32 instanceNo = getInstanceNo(nodeId, instanceKey);
-  if (instanceNo > MAX_NDBMT_LQH_THREADS) {
+  if (instanceNo > MAX_NDBMT_LQH_WORKERS) {
     jam();
     // first word omitted
     memcpy(&signal->theData[0], &Tdata[1], (len - 1) << 2);
@@ -10974,6 +10975,7 @@ void Dbtc::logScanTimeout(Signal *signal, ScanFragRecPtr scanFragPtr,
   bool keyinfo = ScanFragReq::getKeyinfoFlag(scanPtr.p->scanRequestInfo);
   bool range = ScanFragReq::getRangeScanFlag(scanPtr.p->scanRequestInfo);
   bool nodisk = ScanFragReq::getNoDiskFlag(scanPtr.p->scanRequestInfo);
+  bool aggregation = ScanFragReq::getAggregationFlag(scanPtr.p->scanRequestInfo);
 
   Uint32 runningCount = 0, deliveredCount = 0, queuedCount = 0;
   {
@@ -10991,20 +10993,31 @@ void Dbtc::logScanTimeout(Signal *signal, ScanFragRecPtr scanFragPtr,
     for (queued.first(ptr); !ptr.isNull(); queued.next(ptr)) queuedCount++;
   }
 
-  g_eventLogger->info(
-      "TC %u : Scan timeout "
-      "[0x%08x 0x%08x] state %u tab %u dist %u ri 0x%x "
-      " (%s%s%s%s%s%s) frags r %u d %u q %u "
-      "frag state %u, fid %u node %u instance %u",
-      instance(), apiPtr.p->transid[0], apiPtr.p->transid[1],
-      scanPtr.p->scanState, scanPtr.p->scanTableref,
-      scanPtr.p->m_scan_dist_key_flag, scanPtr.p->scanRequestInfo,
-      (rc ? "rc " : ""), (lockmode ? "lm 1 " : "lm 0 "),
-      (holdlock ? "hl 1 " : "hl 0 "), (keyinfo ? "ki " : ""),
-      (range ? "range " : ""), (nodisk ? "nodisk " : "disk "), runningCount,
-      deliveredCount, queuedCount, scanFragPtr.p->scanFragState,
-      scanFragPtr.p->lqhScanFragId, refToNode(scanFragPtr.p->lqhBlockref),
-      refToInstance(scanFragPtr.p->lqhBlockref));
+  g_eventLogger->info("TC %u : Scan timeout "
+                      "[0x%08x 0x%08x] state %u tab %u dist %u ri 0x%x "
+                      " (%s%s%s%s%s%s%s) frags r %u d %u q %u "
+                      "frag state %u, fid %u node %u instance %u",
+                      instance(),
+                      apiPtr.p->transid[0],
+                      apiPtr.p->transid[1],
+                      scanPtr.p->scanState,
+                      scanPtr.p->scanTableref,
+                      scanPtr.p->m_scan_dist_key_flag,
+                      scanPtr.p->scanRequestInfo,
+                      (rc?"rc ":""),
+                      (lockmode?"lm 1 ":"lm 0 "),
+                      (holdlock?"hl 1 ":"hl 0 "),
+                      (keyinfo?"ki ":""),
+                      (range?"range ":""),
+                      (nodisk?"nodisk ":"disk "),
+                      (aggregation?"aggregation ":"noaggregation "),
+                      runningCount,
+                      deliveredCount,
+                      queuedCount,
+                      scanFragPtr.p->scanFragState,
+                      scanFragPtr.p->lqhScanFragId,
+                      refToNode(scanFragPtr.p->lqhBlockref),
+                      refToInstance(scanFragPtr.p->lqhBlockref));
 }
 
 /*--------------------------------------------------------------------------*/
@@ -15322,6 +15335,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   ScanFragReq::setTupScanFlag(tmp, ScanTabReq::getTupScanFlag(ri));
   ScanFragReq::setNoDiskFlag(tmp, ScanTabReq::getNoDiskFlag(ri));
   ScanFragReq::setMultiFragFlag(tmp, ScanTabReq::getMultiFragFlag(ri));
+  ScanFragReq::setAggregationFlag(tmp, ScanTabReq::getAggregation(ri));
+
   if (unlikely(ScanTabReq::getViaSPJFlag(ri))) {
     jam();
     scanptr.p->m_scan_block_no = DBSPJ;
@@ -17283,7 +17298,7 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
         ref = numberToRef(blockNo, instance_no, nodeId);
         if (nodeId == getOwnNodeId()) {
           jam();
-          ndbrequire(globalData.ndbMtQueryWorkers > 0);
+          ndbassert(globalData.ndbMtQueryWorkers > 0);
           ref = get_scan_fragreq_ref(&m_distribution_handle, instance_no);
           check_blockref(ref);
           scanFragP.p->lqhBlockref = ref;
@@ -24331,6 +24346,7 @@ void Dbtc::execUPD_QUERY_DIST_ORD(Signal *signal) {
    * distribution of the signals received in distribute_signal.
    */
   jam();
+  Uint32 low_load = signal->theData[0];
   DistributionHandler *dist_handle = &m_distribution_handle;
   ndbrequire(signal->getNoOfSections() == 1);
   SegmentedSectionPtr ptr;
@@ -24341,7 +24357,7 @@ void Dbtc::execUPD_QUERY_DIST_ORD(Signal *signal) {
   memset(dist_handle->m_weights, 0, sizeof(dist_handle->m_weights));
   copy(dist_handle->m_weights, ptr);
   releaseSections(handle);
-  calculate_distribution_signal(dist_handle);
+  calculate_distribution_signal(dist_handle, low_load);
 #ifdef DEBUG_SCHED_STATS
   if (instance() == 1) {
     print_debug_sched_stats(dist_handle);

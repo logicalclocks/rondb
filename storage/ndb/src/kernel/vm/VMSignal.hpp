@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -69,7 +69,9 @@ struct NodeReceiverGroup {
   
   NodeReceiverGroup &operator=(BlockReference ref);
   
-  Uint32 m_block;
+  Uint16 m_block;
+  Uint16 m_node;
+  Uint32 m_num_nodes;
   NodeBitmask m_nodes;
 };
 
@@ -182,38 +184,53 @@ inline void Signal::setTrace(Uint32 t) { header.theTrace = t; }
 
 inline Uint32 Signal::getNoOfSections() const { return header.m_noOfSections; }
 
-inline NodeReceiverGroup::NodeReceiverGroup() : m_block(0) { m_nodes.clear(); }
+inline
+NodeReceiverGroup::NodeReceiverGroup() : m_block(0) {
+  m_nodes.clear();
+  m_num_nodes = 0;
+  m_node = 0;
+}
 
 inline NodeReceiverGroup::NodeReceiverGroup(Uint32 blockRef) {
   m_nodes.clear();
   m_block = refToBlock(blockRef);
-  m_nodes.set(refToNode(blockRef));
+  m_node = refToNode(blockRef);
+  m_nodes.set(m_node);
+
+  m_num_nodes = 1;
 }
 
 inline NodeReceiverGroup::NodeReceiverGroup(Uint32 blockNo,
                                             const NodeBitmask &nodes) {
   m_block = blockNo;
   m_nodes = nodes;
+  m_num_nodes = 2; // Node group indicator
 }
 
 inline NodeReceiverGroup::NodeReceiverGroup(Uint32 blockNo,
                                             const NdbNodeBitmask &nodes) {
   m_block = blockNo;
   m_nodes = nodes;
+  m_num_nodes = 2;
+  m_node = 0;
 }
 
 inline NodeReceiverGroup::NodeReceiverGroup(Uint32 blockNo,
                                             const SignalCounter &nodes) {
   m_block = blockNo;
   m_nodes = nodes.m_nodes;
+  m_node = 0;
+  m_num_nodes = 2; // Node group indicator
 }
 
 inline NodeReceiverGroup &NodeReceiverGroup::operator=(
     BlockReference blockRef) {
   m_nodes.clear();
   m_block = refToBlock(blockRef);
-  m_nodes.set(refToNode(blockRef));
-  return *this;
+  m_node = refToNode(blockRef);
+  m_nodes.set(m_node);
+  m_num_nodes = 1;
+  return * this;
 }
 
 inline SectionHandle::SectionHandle(SimulatedBlock *b) : m_cnt(0), m_block(b) {}

@@ -628,6 +628,10 @@ private:
   const char *m_tls_search_path;
   int m_tls_node_type;
   int m_mgm_tls_level;
+
+  /* Calculate max poll waiters */
+  volatile Uint32 m_max_poll_waiters;
+  Uint32 m_use_poll_waiters;
 };
 
 inline void TransporterFacade::lock_poll_mutex() {

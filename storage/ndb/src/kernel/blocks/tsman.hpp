@@ -230,7 +230,7 @@ public:
   Lgman *m_lgman;
   SimulatedBlock *m_tup;
 
-  mutable NdbMutex *m_client_mutex[MAX_NDBMT_LQH_THREADS + 1];
+  mutable NdbMutex *m_client_mutex[MAX_NDBMT_LQH_WORKERS + 1];
   NdbMutex *m_alloc_extent_mutex;
   void client_lock() const;
   void client_unlock() const;

@@ -45,6 +45,7 @@
 #include "../dblqh/Dblqh.hpp"
 #include "AttributeOffset.hpp"
 #include "Dbtup.hpp"
+#include "AggInterpreter.hpp"
 
 #define JAM_FILE_ID 422
 
@@ -179,7 +180,10 @@ void Dbtup::copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
   }
 }
 
-Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId, bool interpretedFlag) {
+Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
+                           bool interpretedFlag,
+                           void* scan_rec)
+{
   /* Get stored procedure */
   StoredProcPtr storedPtr;
   storedPtr.i = storedProcId;
@@ -229,6 +233,59 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId, bool interpretedFlag) {
       pos += paramLen;
     }
     cinBuffer[4] = paramLen;
+    // Moz
+    if (scan_rec != nullptr) {
+      // TODO doublecheck prepare_fragptr.p->fragTableId and
+      // prepare_fragptr.p->fragmentId with ScanRecord
+      Dblqh::ScanRecord* scan_rec_ptr =
+                        reinterpret_cast<Dblqh::ScanRecord*>(scan_rec);
+      if (scan_rec_ptr->m_aggregation &&
+          scan_rec_ptr->m_agg_interpreter == nullptr) {
+        /*
+         * Initialize agg_interpreter resources
+         * 1. get 1st program word to verify Magic number
+         */
+        ndbrequire(reader.getWord(pos));
+        ndbrequire((*(pos) >> 16) == 0x0721);
+        Uint32 proc_len = *(pos) & 0xFFFF;
+        ndbrequire(intmax_t{readerLen - proc_len} == (pos - cinBuffer));
+        Uint32 proc_start = (pos - cinBuffer);
+        pos++;
+
+        // 2. get remaining program words
+        ndbrequire(reader.getWords(pos, proc_len - 1));
+        ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
+
+        // 3. construct agg_interpreter
+#ifdef MOZ_AGG_MALLOC
+        /*
+         * Use Ndbd_mem_manager
+         */
+        // Uint32 allocPageRef = 0;
+        // void* page_ptr = m_ctx.m_mm.alloc_page(RT_DBTUP_PAGE,
+        //                                 &allocPageRef,
+        //                                 Ndbd_mem_manager::NDB_ZONE_LE_30,
+        //                                 true);
+
+        void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_DATAMEM,
+                                             getThreadId(), false);
+        if (page_ptr == nullptr) {
+          g_eventLogger->error("Alloc mem for pushdown aggregation interpreter failed");
+        }
+        ndbrequire(page_ptr != nullptr);
+        ndbrequire(page_ptr != nullptr);
+        scan_rec_ptr->m_agg_interpreter =
+          new(page_ptr) AggInterpreter(&cinBuffer[proc_start], proc_len, false,
+                              prepare_fragptr.p->fragmentId/*,
+                              &m_ctx.m_mm, page_ptr, allocPageRef*/);
+#else
+        scan_rec_ptr->m_agg_interpreter =
+          new AggInterpreter(&cinBuffer[proc_start], proc_len, false,
+                              prepare_fragptr.p->fragmentId);
+#endif // MOZ_AGG_MALLOC
+        ndbrequire(scan_rec_ptr->m_agg_interpreter->Init());
+      }
+    }
   } else {
     jam();
     ndbassert(storedPtr.p->storedParamNo == 0);
@@ -1197,6 +1254,10 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.read_length = 0;
   req_struct.last_row = false;
   req_struct.m_is_lcp = false;
+  // MOZ Aggregation batch
+  req_struct.agg_curr_batch_size_rows = 0;
+  req_struct.agg_curr_batch_size_bytes = 0;
+  req_struct.agg_n_res_recs = 0;
 
   if (unlikely(trans_state != TRANS_IDLE)) {
     TUPKEY_abort(&req_struct, 39);
@@ -1234,6 +1295,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_row_id.m_page_no = RNIL;
     req_struct.m_row_id.m_page_idx = ZNIL;
 #endif
+    req_struct.scan_rec = lqhScanPtrP;
   } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
@@ -1261,6 +1323,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     const Uint32 row_id_page_idx = tupKeyReq->m_row_id_page_idx;
     req_struct.m_row_id.m_page_no = row_id_page_no;
     req_struct.m_row_id.m_page_idx = row_id_page_idx;
+    req_struct.scan_rec = nullptr;
   }
   req_struct.m_deferred_constraints = deferred_constraints;
   req_struct.m_disable_fk_checks = disable_fk_checks;
@@ -1907,6 +1970,9 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
   tupKeyConf->lastRow = last_row;
   tupKeyConf->rowid = Rcreate_rowid;
   tupKeyConf->noExecInstructions = RnoExecInstructions;
+  tupKeyConf->agg_batch_size_rows = req_struct->agg_curr_batch_size_rows;
+  tupKeyConf->agg_batch_size_bytes = req_struct->agg_curr_batch_size_bytes;
+  tupKeyConf->agg_n_res_recs = req_struct->agg_n_res_recs;
   set_tuple_state(regOperPtr, TUPLE_PREPARED);
   set_trans_state(regOperPtr, trans_state);
 }
@@ -3747,8 +3813,63 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
      *    It adds the words directly to req_struct->log_size
      *    This is used for ANYVALUE and interpreted delete.
      */
-    req_struct->log_size += RlogSize;
-    sendReadAttrinfo(signal, req_struct, RattroutCounter);
+    req_struct->log_size+= RlogSize;
+
+    if (req_struct->scan_rec != nullptr) {
+      Dblqh::ScanRecord* scan_rec_ptr =
+                    reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
+      // Moz
+      if (scan_rec_ptr->m_aggregation == true) {
+        ndbrequire(scan_rec_ptr->m_agg_interpreter != nullptr);
+        /*
+         * update req_struct->read_length here, which will update the
+         * Dblqh::ScanRecord::m_curr_batch_size_bytes later in the
+         * Dblqh::scanTupkeyConfLab, even we don't use that variable
+         * to decide whether reaches batch limitation. For aggregation,
+         * we use Dblqh::ScanRecord::m_agg_curr_batch_size_bytes.
+         * req_struct->read_length would be updated in ProcessRec().
+         */
+        int ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct);
+        if (ret != 0) {
+          return TUPKEY_abort(req_struct, ret);
+        }
+        uint32_t res_len = scan_rec_ptr->m_agg_interpreter->
+                                    PrepareAggResIfNeeded(signal, false);
+        if (res_len != 0) {
+          ndbrequire(req_struct->agg_curr_batch_size_rows == 0);
+          ndbrequire(req_struct->agg_curr_batch_size_bytes == 0);
+          req_struct->agg_curr_batch_size_rows = 1;
+          req_struct->agg_curr_batch_size_bytes = res_len * sizeof(Uint32);
+          /*
+           * NEW:
+           * We don't need to update req_struct->read_length here.
+           * Instead, we update req_struct->agg_curr_batch_size_bytes,
+           * it would return to LQH by TupKeyConf from returnTUPKEYCONF(),
+           * which will finally update scanPtr->m_agg_curr_batch_size_bytes.
+           * And we use scanPtr->m_agg_curr_batch_size_bytes to indicate
+           * the batch size for aggregation.
+           *
+           * OLD COMMENT:
+           * We need to req_struct->read_length here, which will update
+           * the Dblqh::ScanRecord::m_curr_batch_size_bytes later in
+           * the Dblqh::scanTupkeyConfLab
+           * // req_struct->read_length = res_len;
+          */
+          TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
+          transIdAI->connectPtr = req_struct->tc_operation_ptr;
+          transIdAI->transId[0] = req_struct->trans_id1;
+          transIdAI->transId[1] = req_struct->trans_id2;
+          SendAggregationResult(signal, res_len, req_struct->rec_blockref);
+        }
+        req_struct->agg_n_res_recs = scan_rec_ptr->
+                                      m_agg_interpreter->NumOfResRecords();
+      } else {
+        sendReadAttrinfo(signal, req_struct, RattroutCounter);
+      }
+    } else {
+      sendReadAttrinfo(signal, req_struct, RattroutCounter);
+    }
+
     if (RlogSize > 0) {
       return sendLogAttrinfo(signal, req_struct, RlogSize, regOperPtr);
     }
@@ -3756,6 +3877,39 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   } else {
     return TUPKEY_abort(req_struct, 22);
   }
+}
+
+void Dbtup::SendAggregationResult(Signal* signal, Uint32 res_len,
+                                 BlockReference api_blockref) {
+  ndbassert(refToMain(api_blockref) != 32770);
+  const Uint32 nodeId= refToNode(api_blockref);
+
+  bool connectedToNode= getNodeInfo(nodeId).m_connected;
+  const Uint32 type= getNodeInfo(nodeId).m_type;
+  const bool is_api= (type >= NodeInfo::API && type <= NodeInfo::MGM);
+  ndbrequire(is_api);
+  ndbrequire(nodeId != getOwnNodeId());
+  ndbrequire(connectedToNode);
+
+
+  // if (res_len <= TransIdAI::DataLength)
+  // {
+  //   jamDebug();
+  //   ndbassert(buffer->packetLenTA == 0);
+  //   if (dataBuf != &signal->theData[TransIdAI::HeaderLength])
+  //   {
+  //     MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength],
+  //                      &signal->theData[25], res_len);
+  //   }
+  //   sendSignal(api_blockref, GSN_TRANSID_AI, signal,
+  //       TransIdAI::HeaderLength+22, JBB);
+  // } else {
+    LinearSectionPtr ptr[3];
+    ptr[0].p= const_cast<Uint32*>(&signal->theData[25]);
+    ptr[0].sz= res_len;
+    sendSignal(api_blockref, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+  // }
 }
 
 /* ---------------------------------------------------------------- */

@@ -20,6 +20,7 @@
 #include "connection.hpp"
 #include "config_structs.hpp"
 #include "rdrs_dal.h"
+#include "rdrs_dal.hpp"
 
 #include <drogon/HttpTypes.h>
 
@@ -77,19 +78,19 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
 
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
     return ret;
-  return RS_Status();
+  return CRS_Status().status;
 }
 
 RS_Status RonDBConnection::shutdown_rondb_connection() noexcept {
   RS_Status ret = shutdown_connection();
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
     return ret;
-  return RS_Status();
+  return CRS_Status().status;
 }
 
 RS_Status RonDBConnection::rondb_reconnect() noexcept {
   RS_Status ret = reconnect();
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
     return ret;
-  return RS_Status();
+  return CRS_Status().status;
 }

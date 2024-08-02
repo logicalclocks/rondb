@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -102,27 +103,6 @@ static int print_head(const char *filename, const SchemaFile *sf) {
 }
 
 inline Uint32 table_version_minor(Uint32 ver) { return ver >> 24; }
-
-static int print_old(const char *filename, const SchemaFile *sf, Uint32 sz) {
-  int retcode = 0;
-
-  if (print_head(filename, sf) != 0) retcode = 1;
-
-  for (Uint32 i = 0; i < sf->NoOfTableEntries; i++) {
-    SchemaFile::TableEntry_old te = sf->TableEntries_old[i];
-    if (allflag || (te.m_tableState != SchemaFile::SF_UNUSED)) {
-      if (!checkonly)
-        ndbout << "Table " << i << ":"
-               << " State = " << te.m_tableState
-               << " version = " << table_version_major(te.m_tableVersion) << "("
-               << table_version_minor(te.m_tableVersion) << ")"
-               << " type = " << te.m_tableType
-               << " noOfPages = " << te.m_noOfPages << " gcp: " << te.m_gcp
-               << endl;
-    }
-  }
-  return retcode;
-}
 
 static int print(const char *filename, const SchemaFile *xsf, Uint32 sz) {
   int retcode = 0;
@@ -258,10 +238,7 @@ int main(int argc, char **argv) {
 
     SchemaFile *sf = (SchemaFile *)&buf[0];
     int ret;
-    if (sf->NdbVersion < NDB_SF_VERSION_5_0_6)
-      ret = print_old(filename, sf, sz);
-    else
-      ret = print(filename, sf, sz);
+    ret = print(filename, sf, sz);
 
     if (ret != 0) {
       ndbout << filename << ": check failed"

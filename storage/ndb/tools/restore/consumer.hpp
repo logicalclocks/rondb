@@ -41,7 +41,7 @@ class BackupConsumer {
   virtual bool table(const TableS &) { return true; }
   virtual bool fk(Uint32 tableType, const void *) { return true; }
   virtual bool endOfTables() { return true; }
-  virtual bool endOfTablesFK() { return true; }
+  virtual bool endOfTablesFK(bool at_rebuild) { return true; }
   virtual bool tuple(const TupleS &, Uint32 fragId) { return true; }
   virtual void tuple_free() {}
   virtual void endOfTuples() {}
@@ -179,6 +179,7 @@ class RestoreThreadData {
   Uint32 m_part_id;
   int m_result;
   bool m_restore_meta;
+  bool m_disable_indexes;
   NdbThread *m_thread;
   Vector<BackupConsumer *> m_consumers;
   RestoreThreadData(Uint32 part_id)

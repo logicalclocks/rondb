@@ -97,6 +97,7 @@ ADD_STATIC_LIBRARY(ndbblocks
   dbtup/DbtupVarAlloc.cpp
   dbtup/Undo_buffer.cpp
   dbtup/tuppage.cpp
+  dbtup/AggInterpreter.cpp
   dbtux/Dbqtux.cpp
   dbtux/DbqtuxProxy.cpp
   dbtux/DbtuxBuild.cpp

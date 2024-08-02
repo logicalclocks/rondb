@@ -6,6 +6,7 @@
 --source include/full_result_diff.inc
 --source include/not_asan.inc
 --source suite/ndb/include/have_connectorj.inc
+--source include/not_parallel.inc
 
 # Check for Windows; set path separator; skip test if TLS is required
 # (Bug#35645569 Cluster/J cannot use TLS on Windows)

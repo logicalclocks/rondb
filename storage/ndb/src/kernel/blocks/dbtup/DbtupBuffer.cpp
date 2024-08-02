@@ -31,6 +31,8 @@
 #include <pc.hpp>
 #include <signaldata/TransIdAI.hpp>
 #include "Dbtup.hpp"
+#include "../dblqh/Dblqh.hpp"
+#include "AggInterpreter.hpp"
 
 #define JAM_FILE_ID 410
 
@@ -445,4 +447,44 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   ptr[0].sz = ToutBufIndex;
   sendSignal(routeBlockref, GSN_TRANSID_AI_R, signal,
              TransIdAI::HeaderLength + 1, JBB, ptr, 1);
+}
+
+void Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
+                            void* lqhScanRecord) {
+  const Dblqh::TcConnectionrec* lqhOpPtrP =
+                              (Dblqh::TcConnectionrec*)lqhTcConnectrec;
+  // Moz
+  Dblqh::ScanRecord* lqhScanPtrP = (Dblqh::ScanRecord*)lqhScanRecord;
+  ndbrequire(lqhScanPtrP->m_aggregation == true &&
+             lqhScanPtrP->m_agg_interpreter != nullptr);
+  uint32_t res_len = lqhScanPtrP->m_agg_interpreter->PrepareAggResIfNeeded(signal, true);
+  lqhScanPtrP->m_agg_n_res_recs = lqhScanPtrP->m_agg_interpreter->NumOfResRecords(true);
+  if (res_len != 0) {
+    ndbrequire(lqhScanPtrP->m_agg_n_res_recs == 0);
+    TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = lqhScanPtrP->scanApiOpPtr;
+    transIdAI->transId[0] = lqhOpPtrP->transid[0];
+    transIdAI->transId[1] = lqhOpPtrP->transid[1];
+    ndbrequire(lqhScanPtrP->m_agg_curr_batch_size_bytes == 0);
+    ndbrequire(lqhScanPtrP->m_agg_curr_batch_size_rows == 0);
+    lqhScanPtrP->m_agg_curr_batch_size_bytes = res_len * sizeof(Uint32);
+    lqhScanPtrP->m_agg_curr_batch_size_rows = 1;
+    SendAggregationResult(signal, res_len, lqhScanPtrP->scanApiBlockref);
+  }
+  // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+  if (lqhScanPtrP->m_agg_interpreter->frag_id() == 0) {
+    fprintf(stderr, "End-scan, send at last, res_len: %u,"
+        " trans[0]: %u, trans[2]: %u, connectPtr: %u, blockref: %u"
+        ", size_rows[%u, %u], size_bytes: [%u, %u], n_res_recs: %u\n",
+        /*scan.m_tableId, scan.m_fragId, */res_len,
+        lqhOpPtrP->transid[0], lqhOpPtrP->transid[1],
+        lqhScanPtrP->scanApiOpPtr, lqhScanPtrP->scanApiBlockref,
+        lqhScanPtrP->m_agg_curr_batch_size_rows,
+        lqhScanPtrP->m_curr_batch_size_rows,
+        lqhScanPtrP->m_agg_curr_batch_size_bytes,
+        lqhScanPtrP->m_curr_batch_size_bytes,
+        lqhScanPtrP->m_agg_n_res_recs);
+  }
+#endif // MOZ_AGG_DEBUG
 }

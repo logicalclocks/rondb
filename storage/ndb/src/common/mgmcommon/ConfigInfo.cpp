@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3745,7 +3745,7 @@ static bool checkThreadConfig(InitConfigFileParser::Context &ctx,
   if (auto_thread_config) {
     ;
   } else if (ctx.m_currentSection->get("ThreadConfig", &thrconfig)) {
-    int ret = tmp.do_parse(thrconfig, realtimeScheduler, spinTimer);
+    int ret = tmp.do_parse_thrconfig(thrconfig, realtimeScheduler, spinTimer);
     if (ret) {
       ctx.reportError("Unable to parse ThreadConfig: %s",
                       tmp.getErrorMessage());
@@ -3764,8 +3764,8 @@ static bool checkThreadConfig(InitConfigFileParser::Context &ctx,
       ctx.reportWarning("ThreadConfig overrides __ndbmt_classic");
     }
   } else if (maxExecuteThreads || lqhThreads || classic) {
-    int ret = tmp.do_parse(maxExecuteThreads, lqhThreads, classic,
-                           realtimeScheduler, spinTimer);
+    int ret = tmp.do_parse_classic(
+        maxExecuteThreads, lqhThreads, classic, realtimeScheduler, spinTimer);
     if (ret) {
       ctx.reportError("Unable to set thread configuration: %s",
                       tmp.getErrorMessage());

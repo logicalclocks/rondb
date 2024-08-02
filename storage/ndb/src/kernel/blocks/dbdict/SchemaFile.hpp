@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,10 +44,7 @@
 #define NDB_SF_PAGE_ENTRIES 127
 
 // 160 pages = 20320 objects
-#define NDB_SF_MAX_PAGES 160
-
-// versions where format changed
-#define NDB_SF_VERSION_5_0_6 MAKE_VERSION(5, 0, 6)
+#define OLD_NDB_SF_MAX_PAGES                160
 
 // One page in schema file.
 struct SchemaFile {

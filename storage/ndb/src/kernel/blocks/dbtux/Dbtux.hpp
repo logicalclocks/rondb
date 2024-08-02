@@ -58,7 +58,7 @@
 #include <signaldata/TuxMaint.hpp>
 
 // debug
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
 #include <NdbOut.hpp>
 #include <OutputStream.hpp>
 #endif
@@ -419,6 +419,9 @@ private:
       Uint32 nextList;
     };
     Uint32 prevList;
+
+    // Aggregation
+    Uint32 m_aggregation;
     ScanOp();
   };
   static constexpr Uint32 DBTUX_SCAN_OPERATION_TRANSIENT_POOL_INDEX = 0;
@@ -1540,7 +1543,7 @@ inline int Dbtux::cmpSearchKey(TuxCtx &ctx, const KeyDataC &searchKey,
   // compare cnt attributes from each
   Uint32 num_eq;
   int ret = searchKey.cmp(entryKey, cnt, num_eq);
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   if (debugFlags & DebugMaint) {
     tuxDebugOut << "cmpSearchKey: ret:" << ret;
     tuxDebugOut << " search:"
@@ -1558,7 +1561,7 @@ inline int Dbtux::cmpSearchBound(TuxCtx &ctx, const KeyBoundC &searchBound,
   // compare cnt attributes from each
   Uint32 num_eq;
   int ret = searchBound.cmp(entryKey, cnt, num_eq);
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   if (debugFlags & DebugScan) {
     tuxDebugOut << "cmpSearchBound: res:" << ret;
     tuxDebugOut << " search:"

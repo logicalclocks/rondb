@@ -1202,7 +1202,7 @@ Trpman::distribute_signal(SignalHeader * const header,
 {
   DistributionHandler *handle = &m_distribution_handle;
   Uint32 gsn = header->theVerId_signalNumber;
-  ndbrequire(globalData.ndbMtQueryWorkers > 0);
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   ndbrequire(m_distribution_handler_inited);
   if (unlikely(gsn == GSN_ABORT))
   {
@@ -1245,10 +1245,11 @@ void Trpman::execUPD_QUERY_DIST_ORD(Signal *signal) {
    * These weights are used to create an array used for a quick round robin
    * distribution of the signals received in distribute_signal.
    */
+  Uint32 low_load = signal->theData[0];
   DistributionHandler *dist_handle = &m_distribution_handle;
   if (!m_distribution_handler_inited) {
     fill_distr_references(dist_handle);
-    calculate_distribution_signal(dist_handle);
+    calculate_distribution_signal(dist_handle, low_load);
     m_distribution_handler_inited = true;
   }
   ndbrequire(signal->getNoOfSections() == 1);
@@ -1260,7 +1261,7 @@ void Trpman::execUPD_QUERY_DIST_ORD(Signal *signal) {
   memset(dist_handle->m_weights, 0, sizeof(dist_handle->m_weights));
   copy(dist_handle->m_weights, ptr);
   releaseSections(handle);
-  calculate_distribution_signal(dist_handle);
+  calculate_distribution_signal(dist_handle, low_load);
 }
 
 TrpmanProxy::TrpmanProxy(Block_context &ctx) : LocalProxy(TRPMAN, ctx) {

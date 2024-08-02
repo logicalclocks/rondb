@@ -1958,7 +1958,7 @@ int do_restore(RestoreThreadData *thrdata) {
 
   if (!thrdata->m_restore_meta) {
     /**
-     * Only thread 1 is allowed to restore metadata objects. restore_meta
+     * Only thread 1 is allowed to restore metadata objects. m_restore_meta
      * flag is set to true on thread 1, which causes consumer-restore to
      * actually restore the metadata objects,
      * e.g. g_consumer->object(tablespace) restores the tablespace
@@ -1975,6 +1975,21 @@ int do_restore(RestoreThreadData *thrdata) {
      * thread 1 arrives at barrier. When thread 1 completes metadata restore,
      * it arrives at barrier, opening barrier and allowing all threads to
      * proceed to next restore-phase.
+     *
+     * Since it's possible to set --disable-indexes without setting
+     * --restore-meta, we need to check for this flag as well, so that other
+     * threads wait while thread 1 changes the schema, even if those changes are
+     * only to drop indexes.
+     *
+     * Note that there is an if block below with the opposite condition:
+     *     `if (thrdata->m_restore_meta || thrdata->m_disable_indexes)`
+     * The two blocks represent the same sync point. We have two possible cases:
+     * 1) at least one of --restore-meta and --disable-indexes is set. Thread 1
+     *    will only enter the second if block. The other threads will only enter
+     *    this block, thereby waiting until thread 1 arrives at the second block.
+     * 2) Neither --restore-meta nor --disable-indexes is set. The above
+     *    condition evaluates to true in all threads, so all threads sync up at
+     *    this point before continuing. No thread will wait at the second block.
      */
     if (!thrdata->m_barrier->wait()) {
       ga_error_thread = thrdata->m_part_id;
@@ -2420,7 +2435,12 @@ int do_restore(RestoreThreadData *thrdata) {
      * Index rebuild should not be allowed to start until all threads have
      * finished restoring data and epoch values are sorted out.
      * Wait until all threads have arrived at barrier, then allow all
-     * threads to continue. Thread 1 will then rebuild indices, while all
+     * threads to continue. For multi-threaded restore, this ensures that all
+     * data is restored before index rebuild starts. For single-threaded
+     * restore, it does not, since the backup parts will execute serially with
+     * ineffective barriers, starting with number 1. In order to ensure data
+     * restore finishes before index rebuild starts even with single-threaded
+     * restore, we use the thread with highest id to rebuild indices, while all
      * other threads do nothing.
      */
     if (!thrdata->m_barrier->wait()) {

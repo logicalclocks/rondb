@@ -653,6 +653,8 @@ class Dbdict : public SimulatedBlock {
     Uint32 word[NDB_SF_PAGE_SIZE_IN_WORDS];
   };
 
+  Uint32 m_max_schema_objects;
+  Uint32 m_ndb_sf_max_pages;
   CArray<SchemaPageRecord> c_schemaPageRecordArray;
 
   unsigned g_trace;
@@ -798,7 +800,7 @@ class Dbdict : public SimulatedBlock {
       return false;
     }
 
-#if defined VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -1526,7 +1528,7 @@ class Dbdict : public SimulatedBlock {
     static const uint MaxInternalReqs =
         MAX_NDB_NODES +               /* restartCreateObj() forward to Master */
         1 +                           /* SUMA SUB_CREATE_REQ */
-        (2 * MAX_NDBMT_LQH_THREADS) + /* Backup - 1 LCP + 1 Backup per LDM
+        (2 * MAX_NDBMT_LQH_WORKERS) + /* Backup - 1 LCP + 1 Backup per LDM
                                          instance */
         1;                            /* Trix Index stat */
 
@@ -1617,10 +1619,15 @@ class Dbdict : public SimulatedBlock {
   void modifySchemaFileAtRestart(XSchemaFile *xsf);
   void computeChecksum(XSchemaFile *, Uint32 pageNo);
   bool validateChecksum(const XSchemaFile *);
-  SchemaFile::TableEntry *getTableEntry(Uint32 tableId);
-  SchemaFile::TableEntry *getTableEntry(XSchemaFile *, Uint32 tableId);
+  SchemaFile::TableEntry * getTableEntry(Uint32 tableId,
+                                         bool forUpdate = false);
+  SchemaFile::TableEntry * getTableEntry(XSchemaFile *,
+                                         Uint32 tableId,
+                                         bool forUpdate = false);
   const SchemaFile::TableEntry *getTableEntry(const XSchemaFile *, Uint32);
 
+  Uint32 m_first_updated_table_entry;
+  Uint32 m_last_updated_table_entry;
   Uint32 computeChecksum(const Uint32 *src, Uint32 len);
 
   void doGET_TABINFOREQ(Signal *signal);
@@ -1691,7 +1698,7 @@ class Dbdict : public SimulatedBlock {
     return ok;
   }
 
-#if defined VM_TRACE
+#if defined(VM_TRACE)
   template <Uint32 sz>
   inline const char*
   copyRope(const LcRopeHandle& rh)
@@ -4348,9 +4355,6 @@ class Dbdict : public SimulatedBlock {
   /* ------------------------------------------------------------ */
   // Read/Write Schema and Table files
   /* ------------------------------------------------------------ */
-  void updateSchemaState(Signal *signal, Uint32 tableId,
-                         SchemaFile::TableEntry *, Callback *,
-                         bool savetodisk = 1, bool dicttrans = 0);
   void startWriteSchemaFile(Signal *signal);
   void openSchemaFile(Signal *signal, Uint32 fileNo, Uint32 fsPtr,
                       bool writeFlag, bool newFile);
@@ -4384,8 +4388,6 @@ class Dbdict : public SimulatedBlock {
   void readSchemaConf(Signal *signal, FsConnectRecordPtr fsPtr);
   void readSchemaRef(Signal *signal, FsConnectRecordPtr fsPtr);
   void closeReadSchemaConf(Signal *signal, FsConnectRecordPtr fsPtr);
-  bool convertSchemaFileTo_5_0_6(XSchemaFile *);
-  bool convertSchemaFileTo_6_4(XSchemaFile *);
 
   /* ------------------------------------------------------------ */
   // Get table definitions

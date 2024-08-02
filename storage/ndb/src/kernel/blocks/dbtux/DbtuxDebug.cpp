@@ -170,7 +170,7 @@ void Dbtux::execDUMP_STATE_ORD(Signal *signal) {
   }
 #endif
 
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#if defined(VM_TRACE)|| defined(ERROR_INSERT)
   if (signal->theData[0] == DumpStateOrd::SchemaResourceSnapshot)
   {
     RSS_AP_SNAPSHOT_SAVE(c_indexPool);
@@ -204,7 +204,7 @@ void Dbtux::execDUMP_STATE_ORD(Signal *signal) {
 #endif
 }
 
-#ifdef VM_TRACE
+#if defined (VM_TRACE)
 
 void Dbtux::printTree(Signal *signal, Frag &frag, NdbOut &out) {
   TreeHead &tree = frag.m_tree;

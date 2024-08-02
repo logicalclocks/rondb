@@ -115,7 +115,7 @@ create table test.t1 (a varchar(20) not null,
 --error 1
 --exec $NDB_RESTORE -b $the_backup_id -n 1 -r --exclude-missing-columns --allow-pk-changes $NDB_BACKUPS-$the_backup_id  > $NDB_TOOLS_OUTPUT 2>&1 
 --let $check_file=$NDB_TOOLS_OUTPUT
---let $check_pattern=structure incompatible
+--let $check_pattern=Missing column(%) in backup is primary key or not nullable or defaulted in DB
 --source suite/ndb/include/ndb_check_file_contains.inc
 
 drop table test.t1;
@@ -135,7 +135,7 @@ create table test.t1 (a varchar(20) not null,
 --error 1
 --exec $NDB_RESTORE -b $the_backup_id -n 1 -r --exclude-missing-columns --allow-pk-changes $NDB_BACKUPS-$the_backup_id 2>&1  > $NDB_TOOLS_OUTPUT 2>&1 
 --let $check_file=$NDB_TOOLS_OUTPUT
---let $check_pattern=structure incompatible
+--let $check_pattern=Missing column(%) in backup is primary key or not nullable or defaulted in DB
 --source suite/ndb/include/ndb_check_file_contains.inc
 
 drop table test.t1;

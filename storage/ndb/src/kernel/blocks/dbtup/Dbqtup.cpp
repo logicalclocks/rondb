@@ -36,8 +36,7 @@ Dbqtup::Dbqtup(Block_context &ctx, Uint32 instanceNumber)
 
 Uint64 Dbqtup::getTransactionMemoryNeed() {
   Uint32 query_instance_count =
-    globalData.ndbMtQueryWorkers +
-    globalData.ndbMtRecoverThreads;
+    globalData.ndbMtQueryWorkers;
   Uint32 tup_scan_recs = 1;
   Uint32 tup_op_recs = 1;
   Uint32 tup_sp_recs = 1;

@@ -29,12 +29,19 @@ RDRS_LIB_DIR?=$(PWD)/../../../../build/library_output_directory
 
 # Configuration to use for testing
 # testing using mtr: $(PWD)/resources/config/config_mtr.json
-RDRS_CONFIG_FILE?=$(PWD)/resources/config/config_dockertest.json
+# testing using docker: $(PWD)/resources/config/config_dockertest.json
+RDRS_CONFIG_FILE?=$(PWD)/resources/config/config_mtr.json
 
 # Testing. Override this to run a single test. e.g.
 # make test RDRS_CONFIG_FILE=`pwd`/resources/config/config_mtr.json TEST_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/pkread TEST=TestDataTypesBlobs/blob1 
 TEST?=Test
 TEST_PACKAGE?=./...
+
+# Benchmarks. Override this to run a benchmarks in different packages
+# make bench RDRS_CONFIG_FILE=`pwd`/resources/config/config_mtr.json BENCH_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/pkread BENCHMARK=Benchmark
+BENCHMARK?=Benchmark
+BENCHMARK_DURATION?=10
+BENCHMARK_PACKAGE?=hopsworks.ai/rdrs/internal/integrationtests/pkread
 
 # code coverage 
 COVERAGE_OUTPUT_FILE?=./coverage.out
@@ -83,22 +90,20 @@ test:
 	export CGO_LDFLAGS=${MY_CGO_LDFLAGS} && \
 	go test -v -p 1 -run $(TEST) -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg  $(TEST_PACKAGE) `go list $(TEST_PACKAGE) | grep -v cmd`
 
-# Run specific benchmark (remove profiling for better performance):
-# go test -v \
-# 	-bench BenchmarkSimple \
-# 	-run=xxx \
-# 	-benchmem \
-# 	-benchtime=10s \
-# 	-cpuprofile cpu.out \
-# 	-memprofile mem.out \
-# 	hopsworks.ai/rdrs/internal/integrationtests/ping
+bench:
+	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
+	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
+	export RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) && \
+	export CGO_LDFLAGS=${MY_CGO_LDFLAGS} && \
+	go test -v \
+		-test.bench $(BENCHMARK) \
+		-test.run=thisexpressionwontmatchanytest \
+		-benchmem \
+		-benchtime=$(BENCHMARK_DURATION)s \
+		-cpuprofile cpu.out \
+		-memprofile mem.out \
+		$(BENCHMARK_PACKAGE)
 
-# Run specific unit test:
-# go test \
-# 	-run TestPing \
-# 	-cpuprofile cpu.out \
-# 	-memprofile mem.out \
-# 	hopsworks.ai/rdrs/internal/integrationtests/ping
 
 # Otherwise use e.g. `go tool pprof cpu.out` for an interactive CLI
 create-profiling-pdfs:

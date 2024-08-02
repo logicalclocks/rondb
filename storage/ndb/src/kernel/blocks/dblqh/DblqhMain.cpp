@@ -105,6 +105,7 @@
 
 #include "../backup/Backup.hpp"
 #include "../dbtux/Dbtux.hpp"
+#include "../dbtup/AggInterpreter.hpp"
 
 /**
  * overload handling...
@@ -149,6 +150,14 @@
 //#define DEBUG_PARALLEL_COPY_EXTRA 1
 //#define DEBUG_PARALLEL_COPY 1
 //#define DEBUG_HASH 1
+//#define DEBUG_NEW_FRAG 1
+//#define DEBUG_MUTEX_STATS 1
+#endif
+
+#ifdef DEBUG_NEW_FRAG
+#define DEB_NEW_FRAG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_NEW_FRAG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -1415,21 +1424,21 @@ void Dblqh::sttor_startphase1(Signal *signal) {
     m_lock_tup_page_mutex = NdbMutex_Create();
   }
   if (instance() == 1 &&
-      !m_is_query_block &&
-      (globalData.ndbMtRecoverThreads +
-       globalData.ndbMtQueryWorkers) > 0)
+      !m_is_query_block)
   {
     jam();
     m_restore_mutex = NdbMutex_Create();
     ndbrequire(m_restore_mutex != 0);
-    m_num_recover_active =
-        (Uint32 *)ndbd_malloc(sizeof(Uint32) * (MAX_NDBMT_QUERY_THREADS + 1));
-    memset(m_num_recover_active, 0,
-           sizeof(Uint32) * (MAX_NDBMT_QUERY_THREADS + 1));
-    m_instance_recover_active =
-        (Uint32 *)ndbd_malloc(sizeof(Uint32) * (MAX_NDBMT_LQH_THREADS + 1));
-    memset(m_instance_recover_active, 0,
-           sizeof(Uint32) * (MAX_NDBMT_LQH_THREADS + 1));
+    m_num_recover_active = (Uint32*) ndbd_malloc(sizeof(Uint32) *
+                                       (MAX_NDBMT_QUERY_WORKERS + 1));
+    memset(m_num_recover_active,
+           0,
+           sizeof(Uint32) * (MAX_NDBMT_QUERY_WORKERS + 1));
+    m_instance_recover_active = (Uint32*) ndbd_malloc(sizeof(Uint32) *
+                                       (MAX_NDBMT_LQH_WORKERS + 1));
+    memset(m_instance_recover_active,
+           0,
+           sizeof(Uint32) * (MAX_NDBMT_LQH_WORKERS + 1));
     /**
      * The number of active instances is tracked when we are using query
      * threads and recover threads. The reason is that we want to enable
@@ -1450,10 +1459,10 @@ void Dblqh::sttor_startphase1(Signal *signal) {
   if (!m_is_query_block)
   {
     jam();
-    Uint32 num_restore_threads = 1 + (
-      (globalData.ndbMtRecoverThreads +
+    Uint32 num_restore_threads =
+      (globalData.ndbMtQueryWorkers +
        (globalData.ndbMtLqhWorkers - 1)) /
-      globalData.ndbMtLqhWorkers);
+      globalData.ndbMtLqhWorkers;
     m_num_restore_threads = num_restore_threads;
   }
 
@@ -3166,11 +3175,20 @@ void Dblqh::execLQHFRAGREQ(Signal* signal)
     ndbrequire(fragptr.p->lqhInstanceKey == (req->logPartId + 1));
     LogPartRecord *logPartPtrP = get_log_part_record(fragptr.p->lqhInstanceKey);
     fragptr.p->m_log_part_ptr_p = logPartPtrP;
-    DEB_COMMITTED_WORDS(
-        ("(%u) FragId: %u, instKey: %u, logPart: %u,"
-         " phys_log_part: %u, logPartPtrI: %u",
-         instance(), req->fragId, fragptr.p->lqhInstanceKey,
-         logPartPtrP->logPartNo, logPartPtrP->logPartNo, logPartPtrP->ptrI));
+    DEB_COMMITTED_WORDS(("(%u) FragId: %u, instKey: %u, logPart: %u,"
+                         " phys_log_part: %u, logPartPtrI: %u",
+                         instance(),
+                         req->fragId,
+                         fragptr.p->lqhInstanceKey,
+                         logPartPtrP->logPartNo,
+                         logPartPtrP->logPartNo,
+                         logPartPtrP->ptrI));
+    DEB_NEW_FRAG(("(%u) tab(%u,%u), instKey: %u, logPart: %u",
+                  instance(),
+                  tabptr.i,
+                  req->fragId,
+                  fragptr.p->lqhInstanceKey,
+                  req->logPartId));
   }
 
   /* Init per-frag op counters */
@@ -5965,7 +5983,7 @@ void Dblqh::sendCommitLqh(Signal *signal, BlockReference alqhBlockref,
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     /* No send packed support in these cases */
@@ -6018,7 +6036,7 @@ void Dblqh::sendCompleteLqh(Signal *signal, BlockReference alqhBlockref,
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
 #ifndef UNPACKED_COMMIT_SIGNALS
-  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_WORKERS))
 #endif
   {
     /* No send packed support in these cases */
@@ -6066,7 +6084,7 @@ void Dblqh::sendCommittedTc(Signal *signal, BlockReference atcBlockref,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS) {
+  if (instanceKey > MAX_NDBMT_TC_WORKERS) {
     /* No send packed support in these cases */
     jam();
     signal->theData[0] = regTcPtr->clientConnectrec;
@@ -6111,7 +6129,7 @@ void Dblqh::sendCompletedTc(Signal *signal, BlockReference atcBlockref,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS) {
+  if (instanceKey > MAX_NDBMT_TC_WORKERS) {
     /* No handling of send packed in those cases */
     jam();
     signal->theData[0] = regTcPtr->clientConnectrec;
@@ -6168,14 +6186,14 @@ void Dblqh::sendLqhkeyconfTc(Signal *signal, BlockReference atcBlockref,
   }
   if (block == getDBLQH())
   {
-    if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+    if (instanceKey <= MAX_NDBMT_LQH_WORKERS)
     {
       container = &Thostptr.p->lqh_pack[instanceKey];
     } else {
       send_packed = false;
     }
   } else if (block == DBTC) {
-    if (instanceKey <= MAX_NDBMT_TC_THREADS) {
+    if (instanceKey <= MAX_NDBMT_TC_WORKERS) {
       container = &Thostptr.p->tc_pack[instanceKey];
     } else {
       send_packed = false;
@@ -6207,10 +6225,10 @@ void Dblqh::sendLqhkeyconfTc(Signal *signal, BlockReference atcBlockref,
     container->noOfPackedWords += LqhKeyConf::SignalLength;
 
     if (block == getDBLQH()) {
-      if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+      if (instanceKey <= MAX_NDBMT_LQH_WORKERS)
         Thostptr.p->lqh_pack_mask.set(instanceKey);
     } else if (block == DBTC) {
-      if (instanceKey <= MAX_NDBMT_TC_THREADS)
+      if (instanceKey <= MAX_NDBMT_TC_WORKERS)
         Thostptr.p->tc_pack_mask.set(instanceKey);
     }
   } else {
@@ -7242,7 +7260,6 @@ static inline Uint32 getProgramWordCount(SegmentedSectionPtr attrInfo) {
  * DEBUG_MUTEX_STATS do we print it unconditionally, otherwise it is
  * printed only if activating debug printouts from command line.
  */
-//#define DEBUG_MUTEX_STATS 1
 #ifdef DEBUG_MUTEX_STATS
 #define DEB_PRINT_MUTEX_STATS(arglist) \
   do {                                 \
@@ -7286,46 +7303,85 @@ Dblqh::send_connect_debug(Signal *signal)
 void
 Dblqh::print_fragment_mutex_stats(Signal *signal)
 {
+  if (m_scan_frag_access != 0 ||
+      m_scan_frag_access_contended != 0 ||
+      m_scan_frag_access_spintime != 0 ||
+      m_scan_frag_access_waittime != 0 ||
+      m_scan_frag_access_spinloops != 0 ||
+      m_scan_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]SCAN access: %u"
                          ", SCAN contention: %u"
-                         ", SCAN spintime: %llu"
+                         ", SCAN spintime: %llu us"
+                         ", SCAN waittime: %llu us"
                          ", SCAN spinloops: %llu"
                          ", SCAN cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
                          instance(),
                          m_scan_frag_access,
                          m_scan_frag_access_contended,
-                         m_scan_frag_access_spintime,
+                         m_scan_frag_access_spintime / Uint64(1000),
+                         m_scan_frag_access_waittime / Uint64(1000),
                          m_scan_frag_access_spinloops,
                          m_scan_frag_access_cond_waits));
+  }
+  if (m_read_key_frag_access != 0 ||
+      m_read_key_frag_access_contended != 0 ||
+      m_read_key_frag_access_spintime != 0 ||
+      m_read_key_frag_access_waittime != 0 ||
+      m_read_key_frag_access_spinloops != 0 ||
+      m_read_key_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]RKey access: %u"
                          ", RKey contention: %u"
-                         ", RKey spintime: %llu"
+                         ", RKey spintime: %llu us"
+                         ", RKey waittime: %llu us"
                          ", RKey spinloops: %llu"
                          ", RKey cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
                          instance(),
                          m_read_key_frag_access,
                          m_read_key_frag_access_contended,
-                         m_read_key_frag_access_spintime,
+                         m_read_key_frag_access_spintime / Uint64(1000),
+                         m_read_key_frag_access_waittime / Uint64(1000),
                          m_read_key_frag_access_spinloops,
                          m_read_key_frag_access_cond_waits));
+  }
+  if (m_write_key_frag_access != 0 ||
+      m_write_key_frag_access_contended != 0 ||
+      m_write_key_frag_access_spintime != 0 ||
+      m_write_key_frag_access_waittime != 0 ||
+      m_write_key_frag_access_spinloops != 0 ||
+      m_write_key_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]WKey access: %u"
                          ", WKey contention: %u"
-                         ", WKey spintime: %llu"
+                         ", WKey spintime: %llu us"
+                         ", WKey waittime: %llu us"
                          ", WKey spinloops: %llu"
                          ", WKey cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
                          instance(),
                          m_write_key_frag_access,
                          m_write_key_frag_access_contended,
-                         m_write_key_frag_access_spintime,
+                         m_write_key_frag_access_spintime / Uint64(1000),
+                         m_write_key_frag_access_waittime / Uint64(1000),
                          m_write_key_frag_access_spinloops,
                          m_write_key_frag_access_cond_waits));
+  }
+  if (m_exclusive_frag_access != 0 ||
+      m_exclusive_frag_access_contended != 0 ||
+      m_upgrade_frag_access != 0 ||
+      m_exclusive_frag_access_spintime != 0 ||
+      m_exclusive_frag_access_waittime != 0 ||
+      m_exclusive_frag_access_spinloops != 0 ||
+      m_exclusive_frag_access_cond_waits != 0)
+  {
   DEB_PRINT_MUTEX_STATS(("%s[%u]EXCL access: %u"
                          ", EXCL contention: %u"
                          ", UP->EXCL access: %u"
-                         ", EXCL spintime: %llu"
+                         ", EXCL spintime: %llu us"
+                         ", EXCL waittime: %llu us"
                          ", EXCL spinloops: %llu"
                          ", EXCL cond waits: %u",
                          m_is_query_block ? "query" : "ldm",
@@ -7333,9 +7389,11 @@ Dblqh::print_fragment_mutex_stats(Signal *signal)
                          m_exclusive_frag_access,
                          m_exclusive_frag_access_contended,
                          m_upgrade_frag_access,
-                         m_exclusive_frag_access_spintime,
+                         m_exclusive_frag_access_spintime / Uint64(1000),
+                         m_exclusive_frag_access_waittime / Uint64(1000),
                          m_exclusive_frag_access_spinloops,
                          m_exclusive_frag_access_cond_waits));
+  }
   send_print_mutex_stats(signal);
 }
 
@@ -7343,21 +7401,25 @@ void Dblqh::send_print_mutex_stats(Signal *signal) {
   m_scan_frag_access = 0;
   m_scan_frag_access_contended = 0;
   m_scan_frag_access_spintime = 0;
+  m_scan_frag_access_waittime = 0;
   m_scan_frag_access_spinloops = 0;
   m_scan_frag_access_cond_waits = 0;
   m_read_key_frag_access = 0;
   m_read_key_frag_access_contended = 0;
   m_read_key_frag_access_spintime = 0;
+  m_read_key_frag_access_waittime = 0;
   m_read_key_frag_access_spinloops = 0;
   m_read_key_frag_access_cond_waits = 0;
   m_write_key_frag_access = 0;
   m_write_key_frag_access_contended = 0;
   m_write_key_frag_access_spintime = 0;
+  m_write_key_frag_access_waittime = 0;
   m_write_key_frag_access_spinloops = 0;
   m_write_key_frag_access_cond_waits = 0;
   m_exclusive_frag_access = 0;
   m_exclusive_frag_access_contended = 0;
   m_exclusive_frag_access_spintime = 0;
+  m_exclusive_frag_access_waittime = 0;
   m_exclusive_frag_access_spinloops = 0;
   m_exclusive_frag_access_cond_waits = 0;
   m_upgrade_frag_access = 0;
@@ -7663,29 +7725,35 @@ void Dblqh::downgrade_exclusive_to_read_key(Fragrecord *fragPtrP) {
 }
 
 void Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP) {
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  bool first = true;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
   m_scan_frag_access++;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
+  m_fragment_lock_status = FRAGMENT_LOCKED_IN_SCAN_MODE;
   NdbMutex_Lock(&fragPtrP->frag_mutex);
-  DEB_FRAGMENT_LOCK(fragPtrP);
-  while (!is_scan_condition_ready(fragPtrP))
+  if (is_scan_condition_ready(fragPtrP))
   {
-    if (unlikely(!first))
-    {
-      goto scan_cond_wait;
-    }
-    m_scan_frag_access_contended++;
-#ifdef NDB_HAVE_CPU_PAUSE
+    fragPtrP->m_concurrent_scan_count++;
+    DEB_FRAGMENT_LOCK(fragPtrP);
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    m_fragment_lock_status = FRAGMENT_LOCKED_IN_SCAN_MODE;
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_scan_frag_access_contended++;
+  do
+  {
+#ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     /**
      * We wait a bit extra before moving into the spin loop.
@@ -7698,10 +7766,10 @@ void Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP) {
        * had to wait multiple times.
        */
       spin_loops++;
-      num_spins++;
       for (Uint32 i = 0; i < num_spins; i++) {
         NdbSpin();  // ~1us
       }
+      num_spins++;
       /**
        * Acquire mutex in a less active manner to ensure that
        * the waiters for exclusive access have a bit of
@@ -7710,17 +7778,19 @@ void Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP) {
        */
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_scan_condition_ready(fragPtrP)) {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_READ_SPIN_TIME) {
         break;
       }
     } while (true);
+    spin_time += elapsed;
     /**
-     * We have spun for more than 30 microseconds and still
+     * We have spun for more than 60 microseconds and still
      * haven't got access. We will go to sleep and wait to
      * be woken up instead.
      *
@@ -7733,112 +7803,117 @@ void Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP) {
       goto got_lock;
     }
 #endif
-  scan_cond_wait:
     jam();
-    first = false;
     fragPtrP->m_cond_read_waiters++;
     m_scan_frag_access_cond_waits++;
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_read_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     jam();
     fragPtrP->m_cond_read_waiters--;
-  }
+  } while (!is_scan_condition_ready(fragPtrP));
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
   fragPtrP->m_concurrent_scan_count++;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
-  jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_SCAN_MODE;
-  m_scan_frag_access_spintime += elapsed;
+  m_scan_frag_access_spintime += spin_time;
+  m_scan_frag_access_waittime += wait_time;
   m_scan_frag_access_spinloops += spin_loops;
+  jam();
 }
 
 void Dblqh::handle_acquire_read_key_frag_access(Fragrecord *fragPtrP,
                                                 bool hold_lock,
                                                 bool check_exclusive_waiters) {
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  bool first = true;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
   m_read_key_frag_access++;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
   if (!hold_lock) {
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
   }
-  while (!is_read_key_condition_ready(fragPtrP, check_exclusive_waiters)) {
-    if (unlikely(!first)) {
-      goto read_key_cond_wait;
-    }
-    m_read_key_frag_access_contended++;
-#ifdef NDB_HAVE_CPU_PAUSE
+  if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters)) {
+    fragPtrP->m_concurrent_read_key_count++;
+    DEB_FRAGMENT_LOCK(fragPtrP);
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_read_key_frag_access_contended++;
+  do
+  {
+#ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     do {
       spin_loops++;
-      num_spins++;
       for (Uint32 i = 0; i < num_spins; i++) {
         NdbSpin();
       }
+      num_spins++;
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters)) {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_READ_SPIN_TIME) {
         break;
       }
     } while (true);
+    spin_time += elapsed;
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     if (is_read_key_condition_ready(fragPtrP, check_exclusive_waiters)) {
       goto got_lock;
     }
 #endif
-  read_key_cond_wait:
     jam();
-    first = false;
     fragPtrP->m_cond_read_waiters++;
     m_read_key_frag_access_cond_waits++;
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_read_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     fragPtrP->m_cond_read_waiters--;
     jam();
-  }
+  } while (!is_read_key_condition_ready(fragPtrP, check_exclusive_waiters));
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
   fragPtrP->m_concurrent_read_key_count++;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
-  jam();
-  m_read_key_frag_access_spintime += elapsed;
+  m_read_key_frag_access_spintime += spin_time;
+  m_read_key_frag_access_waittime += wait_time;
   m_read_key_frag_access_spinloops += spin_loops;
+  jam();
 }
 
 void Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
                                                  bool hold_lock) {
   m_write_key_frag_access++;
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
-  bool first = true;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
   if (!hold_lock) {
     NdbMutex_Lock(&fragPtrP->frag_mutex);
@@ -7848,32 +7923,52 @@ void Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
    * Both write key and exclusive is restricted to happen from owning
    * LDM thread, thus cannot happen concurrently.
    */
-  while (!is_write_key_condition_ready(fragPtrP)) {
-    if (unlikely(!first)) {
-      goto cond_write_key_wait;
-    }
-    m_write_key_frag_access_contended++;
+  if (is_write_key_condition_ready(fragPtrP)) {
+    fragPtrP->m_spin_write_key_waiters = 0;
+    fragPtrP->m_cond_write_key_waiters = 0;
+    ndbrequire(fragPtrP->m_write_key_locked == false);
+    fragPtrP->m_write_key_locked = true;
+    DEB_FRAGMENT_LOCK(fragPtrP);
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    m_fragment_lock_status = FRAGMENT_LOCKED_IN_WRITE_KEY_MODE;
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_write_key_frag_access_contended++;
+  do
+  {
     ndbrequire(fragPtrP->m_cond_write_key_waiters == 0);
     fragPtrP->m_cond_write_key_waiters = 1;
 #ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_spin_write_key_waiters == 0);
     fragPtrP->m_spin_write_key_waiters = 1;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     do {
-      num_spins++;
       spin_loops++;
       for (Uint32 i = 0; i < num_spins; i++) {
         NdbSpin();
       }
+      num_spins++;
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_write_key_condition_ready(fragPtrP)) {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_WRITE_SPIN_TIME) {
         /**
          * Time out is discovered outside of mutex, before
@@ -7888,10 +7983,8 @@ void Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
         break;
       }
     } while (true);
-#else
-    m_write_key_frag_access_contended++;
+    spin_time += elapsed;
 #endif
-  cond_write_key_wait:
     /* Holding the mutex when arriving here. */
     jam();
     fragPtrP->m_spin_write_key_waiters = 0;
@@ -7899,9 +7992,12 @@ void Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_write_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     jam();
-    first = false;
-  }
+  } while (!is_write_key_condition_ready(fragPtrP));
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
@@ -7911,30 +8007,41 @@ got_lock:
   fragPtrP->m_write_key_locked = true;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
-  jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_WRITE_KEY_MODE;
-  m_write_key_frag_access_spintime += elapsed;
+  m_write_key_frag_access_spintime += spin_time;
+  m_write_key_frag_access_waittime += wait_time;
   m_write_key_frag_access_spinloops += spin_loops;
+  jam();
 }
 
 void Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
                                                  bool hold_lock) {
   m_exclusive_frag_access++;
-  Uint64 elapsed = 0;
-  Uint64 spin_loops = 0;
-  Uint32 num_spins = 0;
-  NDB_TICKS now;
-  NDB_TICKS start_time;
-  (void)now;
-  (void)start_time;
-  (void)num_spins;
-  bool first = true;
   ndbrequire(!DictTabInfo::isOrderedIndex(fragPtrP->tableType));
   if (!hold_lock) {
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
   }
-  while (!is_exclusive_condition_ready(fragPtrP)) {
+  if (is_exclusive_condition_ready(fragPtrP)) {
+    ndbrequire(fragPtrP->m_exclusive_locked == false);
+    fragPtrP->m_exclusive_locked = true;
+    fragPtrP->m_cond_exclusive_waiters = 0;
+    fragPtrP->m_spin_exclusive_waiters = 0;
+    DEB_FRAGMENT_LOCK(fragPtrP);
+    NdbMutex_Unlock(&fragPtrP->frag_mutex);
+    m_fragment_lock_status = FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE;
+    jamDebug();
+    return;
+  }
+  NDB_TICKS start_spin_time;
+  NDB_TICKS now;
+  (void)now;
+  Uint64 wait_time = 0;
+  Uint64 spin_loops = 0;
+  Uint64 spin_time = 0;
+  DEB_FRAGMENT_LOCK(fragPtrP);
+  m_exclusive_frag_access_contended++;
+  do {
     /**
      * There are readers currently busy with the fragment. We need to
      * wait for those to complete their task before we can get our
@@ -7947,17 +8054,16 @@ void Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
      * We only perform spinning on platforms that actually support
      * spinning in some fashion.
      */
-    if (unlikely(!first)) {
-      goto cond_exclusive_wait;
-    }
-    m_exclusive_frag_access_contended++;
     ndbrequire(fragPtrP->m_cond_exclusive_waiters == 0);
     fragPtrP->m_cond_exclusive_waiters = 1;
 #ifdef NDB_HAVE_CPU_PAUSE
+    Uint32 num_spins = 1;
+    Uint64 elapsed = 0;
+    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_spin_exclusive_waiters == 0);
     fragPtrP->m_spin_exclusive_waiters = 1;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
-    start_time = NdbTick_getCurrentTicks();
+    start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
     do {
       /**
@@ -7967,18 +8073,19 @@ void Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
        *
        * When we come here we will not hold the mutex.
        */
-      num_spins++;
       spin_loops++;
       for (Uint32 i = 0; i < num_spins; i++) {
         NdbSpin();  // ~1us
       }
+      num_spins++;
       NdbMutex_Lock(&fragPtrP->frag_mutex);
       if (is_exclusive_condition_ready(fragPtrP)) {
+        spin_time += elapsed;
         goto got_lock;
       }
       NdbMutex_Unlock(&fragPtrP->frag_mutex);
       now = NdbTick_getCurrentTicks();
-      elapsed = NdbTick_Elapsed(start_time, now).microSec();
+      elapsed = NdbTick_Elapsed(start_spin_time, now).nanoSec();
       if (elapsed > LOCK_WRITE_SPIN_TIME) {
         /**
          * Time out is discovered outside of mutex, before
@@ -7993,10 +8100,8 @@ void Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
         break;
       }
     } while (true);
-#else
-    m_exclusive_frag_access_contended++;
+    spin_time += elapsed;
 #endif
-  cond_exclusive_wait:
     /* Holding the mutex when arriving here. */
     jam();
     fragPtrP->m_spin_exclusive_waiters = 0;
@@ -8004,9 +8109,12 @@ void Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
     DEB_FRAGMENT_LOCK(fragPtrP);
     NdbCondition_Wait(&fragPtrP->frag_write_cond, &fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
+    start_spin_time = now;
+    now = NdbTick_getCurrentTicks();
+    waited = NdbTick_Elapsed(start_spin_time, now).nanoSec();
+    wait_time += waited;
     jam();
-    first = false;
-  }
+  } while (!is_exclusive_condition_ready(fragPtrP));;
 #ifdef NDB_HAVE_CPU_PAUSE
 got_lock:
 #endif
@@ -8018,7 +8126,8 @@ got_lock:
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
   jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE;
-  m_exclusive_frag_access_spintime += elapsed;
+  m_exclusive_frag_access_spintime += spin_time;
+  m_exclusive_frag_access_waittime += wait_time;
   m_exclusive_frag_access_spinloops += spin_loops;
 }
 
@@ -9333,8 +9442,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     regTcPtr->currTupAiLen = saveAttrInfo ? regTcPtr->totReclenAi : 0;
   }  // if
   ndbassert(regTcPtr->totReclenAi == regTcPtr->currReclenAi);
-  if (qt_likely((globalData.ndbMtQueryWorkers > 0) &&
-      refToMain(regTcPtr->clientBlockref) != getRESTORE()))
+  if (refToMain(regTcPtr->clientBlockref) != getRESTORE())
   {
     acquire_frag_prepare_key_access(fragptr.p, regTcPtr);
   }
@@ -12389,7 +12497,7 @@ void Dblqh::sendFireTrigConfTc(Signal *signal, BlockReference atcBlockref,
   Uint32 instanceKey = refToInstance(atcBlockref);
 
   ndbassert(refToMain(atcBlockref) == DBTC);
-  if (instanceKey > MAX_NDBMT_TC_THREADS) {
+  if (instanceKey > MAX_NDBMT_TC_WORKERS) {
     jam();
     memcpy(signal->theData, Tdata, 4 * FireTrigConf::SignalLength);
     sendSignal(atcBlockref, GSN_FIRE_TRIG_CONF, signal,
@@ -15646,7 +15754,7 @@ void Dblqh::setup_key_pointers(Uint32 tcIndex, bool acquire_lock) {
   ndbrequire(Magic::check_ptr(tcConnectptr.p));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->accConnectPtrP));
-  if (qt_likely((globalData.ndbMtQueryWorkers > 0) && acquire_lock))
+  if (acquire_lock)
   {
     acquire_frag_prepare_key_access(fragPtr.p, tcConnectptr.p);
   }
@@ -15781,8 +15889,10 @@ void Dblqh::setup_scan_pointers_from_tc_con(TcConnectionrecPtr tcConnectptr,
   ndbrequire(Magic::check_ptr(loc_scanptr.p));
   if (likely(loc_scanptr.p->scanStoredProcId != RNIL)) {
     jamDebug();
-    Uint32 storedProcLen = c_tup->copyAttrinfo(loc_scanptr.p->scanStoredProcId,
-                                               bool(tcConnectptr.p->opExec));
+    Uint32 storedProcLen =
+      c_tup->copyAttrinfo(loc_scanptr.p->scanStoredProcId,
+                          bool(tcConnectptr.p->opExec),
+                          loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
@@ -15845,8 +15955,10 @@ void Dblqh::setup_scan_pointers(Uint32 scanPtrI, Uint32 line) {
   if (likely(loc_scanptr.p->scanStoredProcId != RNIL))
   {
     jamDebug();
-    Uint32 storedProcLen = c_tup->copyAttrinfo(
-        loc_scanptr.p->scanStoredProcId, bool(loc_tcConnectptr.p->opExec));
+    Uint32 storedProcLen =
+      c_tup->copyAttrinfo(loc_scanptr.p->scanStoredProcId,
+                          bool(loc_tcConnectptr.p->opExec),
+                          loc_scanptr.p);
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
@@ -16228,10 +16340,25 @@ void Dblqh::scanNextLoopLab(Signal *signal, Uint32 clientPtrI, Uint32 accOpPtr,
   signal->theData[2] = scanFlag;
 
   ndbrequire(is_scan_ok(scanPtr, fragstatus));
+  // Moz statemach
+  ndbrequire(!scanPtr->m_aggregation ||
+             (scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN ||
+             scanPtr->scanState == ScanRecord::WAIT_SCAN_NEXTREQ));
   scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
   scanPtr->scan_lastSeen = __LINE__;
   if (unlikely(in_send_next_scan == 0)) {
-    send_next_NEXT_SCANREQ(signal, block, f, scanPtr, clientPtrI);
+    // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+    bool print = (fragPtr->fragId == 0 && scanPtr->m_aggregation);
+#else
+    bool print = false;
+#endif // MOZ_AGG_DEBUG
+    send_next_NEXT_SCANREQ(signal,
+                           block,
+                           f,
+                           scanPtr,
+                           clientPtrI,
+                           print);
     return;
   }
   /**
@@ -16254,9 +16381,22 @@ void Dblqh::scanNextLoopLab(Signal *signal, Uint32 clientPtrI, Uint32 accOpPtr,
   m_in_send_next_scan = 2;
 }  // Dblqh::scanNextLoopLab()
 
-void Dblqh::scanLockReleasedLab(Signal *signal,
-                                TcConnectionrec *const regTcPtr) {
-  ScanRecord *const scanPtr = scanptr.p;
+void Dblqh::scanLockReleasedLab(Signal* signal,
+                                TcConnectionrec* const regTcPtr)
+{
+  ScanRecord * const scanPtr = scanptr.p;
+  // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+  {
+  FragrecordPtr regFragptr;
+  regFragptr.i = regTcPtr->fragmentptr;
+  ndbrequire(c_fragment_pool.getPtr(regFragptr));
+  if (regFragptr.p->fragId == 0) {
+    // g_eventLogger->info("MOZ %u : %u",
+    //           scanPtr->scanReleaseCounter, scanPtr->m_curr_batch_size_rows);
+  }
+  }
+#endif // MOZ_AGG_DEBUG
   if (scanPtr->scanReleaseCounter == scanPtr->m_curr_batch_size_rows) {
     if ((scanPtr->scanErrorCounter > 0) ||
         (scanPtr->scanCompletedStatus == ZTRUE)) {
@@ -16266,11 +16406,22 @@ void Dblqh::scanLockReleasedLab(Signal *signal,
       closeScanLab(signal, regTcPtr);
     } else if (scanPtr->m_last_row && !scanPtr->scanLockHold) {
       jam();
+      /*
+       * Moz
+       * TODO (Zhao)
+       * Seems there's no need to do something for pushdown
+       * aggregation
+       */
       closeScanLab(signal, regTcPtr);
     } else if (scanPtr->check_scan_batch_completed() &&
                scanPtr->scanLockHold != ZTRUE) {
       jam();
       scanPtr->scan_lastSeen = __LINE__;
+      /*
+       * Moz
+       * Here is where we send the scanfragconf to TC
+       * when pushdown aggregation finishes a batch.
+       */
       sendScanFragConf(signal, ZFALSE, regTcPtr);
     } else {
       jam();
@@ -16293,6 +16444,23 @@ void Dblqh::scanLockReleasedLab(Signal *signal,
     the record we didn't want, but now we are returning all found records to
     the API.
     */
+
+    /*
+     * Moz
+     * In pushdown aggregation mode, before we send
+     * scanfragconf to TC, we need to make sure that
+     * there is no agg results cached in aggregation
+     * interpreter.
+     * See more details at Dblqh::scanTupkeyConfLab(),
+     * search for [MOZ-COMMENT] there.
+     */
+    if (scanPtr->m_aggregation) {
+      // TODO (Zhao)
+      // double check: 0 : 1 ?
+      // ndbrequire(scanPtr->m_agg_n_res_recs == 0);
+      g_eventLogger->info("scanPtr->m_agg_n_res_recs: %u",
+                         scanPtr->m_agg_n_res_recs);
+    }
     scanPtr->scan_lastSeen = __LINE__;
     sendScanFragConf(signal, ZFALSE, regTcPtr);
   } else {
@@ -16312,8 +16480,20 @@ void Dblqh::scanReleaseLocksLab(Signal *signal,
   ndbrequire(is_scan_ok(scanPtr, fragstatus));
   check_send_scan_hb_rep(signal, scanPtr, regTcPtr);
   while (true) {
-    const Uint32 sig1 = get_acc_ptr_from_scan_record(
-        scanPtr, scanPtr->scanReleaseCounter - 1, false);
+    Uint32 tmp = 0;
+    // Moz
+    if (!scanPtr->m_aggregation) {
+      tmp =
+        get_acc_ptr_from_scan_record(scanPtr,
+                                     scanPtr->scanReleaseCounter-1,
+                                     false);
+    } else {
+      tmp =
+        get_acc_ptr_from_scan_record(scanPtr,
+                                     0,
+                                     false);
+    }
+    const Uint32 sig1 = tmp;
     const Uint32 sig0 = scanPtr->scanAccPtr;
     SimulatedBlock *block = scanPtr->scanBlock;
     ExecFunction f = scanPtr->scanFunction_NEXT_SCANREQ;
@@ -17093,6 +17273,10 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
     initScanTc(scanFragReq, transid1, transid2, fragId, ZNIL, senderBlockRef,
                tcConnectptr);
     regTcPtr->opExec = (1 ^ ScanFragReq::getNotInterpretedFlag(reqinfo));
+    if (ScanFragReq::getAggregationFlag(reqinfo)) {
+      ndbrequire(regTcPtr->opExec);
+      regTcPtr->opAgg = 1;
+    }
     {
       const Uint32 applRef = scanFragReq->resultRef;
 
@@ -17234,6 +17418,9 @@ void Dblqh::continueAfterReceivingAllAiLab(
     return;
   }
 
+  // Moz statemach
+  ndbrequire(!scanPtr->m_aggregation ||
+             scanPtr->scanState == ScanRecord::SCAN_FREE);
   scanPtr->scanState = ScanRecord::WAIT_ACC_SCAN;
   AccScanReq *req = (AccScanReq *)&signal->theData[0];
 
@@ -17243,6 +17430,7 @@ void Dblqh::continueAfterReceivingAllAiLab(
   AccScanReq::setReadCommittedFlag(requestInfo, scanPtr->readCommitted);
   AccScanReq::setDescendingFlag(requestInfo, scanPtr->descending);
   AccScanReq::setStatScanFlag(requestInfo, scanPtr->statScan);
+  AccScanReq::setAggregationFlag(requestInfo, scanPtr->m_aggregation);
 
   if (refToMain(regTcPtr->clientBlockref) == getBACKUP()) {
     if (scanPtr->lcpScan) {
@@ -17383,7 +17571,8 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
-      c_tup->copyAttrinfo(storedProcId, bool(regTcPtr->opExec));
+      c_tup->copyAttrinfo(storedProcId, bool(regTcPtr->opExec),
+                          scanPtr);
       storedProcConfScanLab(signal, tcConnectptr);
       return;
     } else {
@@ -17406,7 +17595,8 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       // Advance to next parameter in the attrInfo
       c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
     }
-    c_tup->copyAttrinfo(scanPtr->scanStoredProcId, bool(regTcPtr->opExec));
+    c_tup->copyAttrinfo(scanPtr->scanStoredProcId, bool(regTcPtr->opExec),
+                        scanPtr);
     storedProcConfScanLab(signal, tcConnectptr);
     return;
   }
@@ -17473,11 +17663,30 @@ void Dblqh::storedProcConfScanLab(Signal *signal,
     signal->theData[1] = RNIL;
     signal->theData[2] = NextScanReq::ZSCAN_NEXT;
     signal->theData[0] = sig0;
+    // Moz statemach
+    ndbrequire(!scanPtr->m_aggregation ||
+               scanPtr->scanState == ScanRecord::WAIT_ACC_SCAN);
     scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
     scanPtr->scan_lastSeen = __LINE__;
+    // MOZ DEBUG PRINT
+    bool print = false;
+#ifdef MOZ_AGG_DEBUG
+    {
+    FragrecordPtr regFragptr;
+    regFragptr.i = tcConnectptr.p->fragmentptr;
+    ndbrequire(c_fragment_pool.getPtr(regFragptr));
+    if (regFragptr.p->fragId == 0 && scanPtr->m_aggregation) {
+      print = true;
+    }
+    }
+#endif // MOZ_AGG_DEBUG
     if (likely(in_send_next_scan == 0)) {
-      send_next_NEXT_SCANREQ(signal, block, f, scanPtr,
-                             tcConnectptr.p->clientConnectrec);
+      send_next_NEXT_SCANREQ(signal,
+                             block,
+                             f,
+                             scanPtr,
+                             tcConnectptr.p->clientConnectrec,
+                             print);
       return;
     }
     ndbassert(in_send_next_scan == 1);
@@ -17772,8 +17981,15 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
     jamDebug();
     check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
     scanPtr->scan_check_lcp_stop = 0;
-    set_acc_ptr_in_scan_record(scanPtr, scanPtr->m_curr_batch_size_rows,
-                               accOpPtr);
+    if (!scanPtr->m_aggregation) {
+      set_acc_ptr_in_scan_record(scanPtr,
+                                 scanPtr->m_curr_batch_size_rows,
+                                 accOpPtr);
+    } else {
+      set_acc_ptr_in_scan_record(scanPtr,
+                                 0,
+                                 accOpPtr);
+    }
 
     if (unlikely(signal->getLength() == NextScanConf::SignalLengthNoKeyInfo)) {
       /**
@@ -17872,6 +18088,9 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
 
     if (fragId == RNIL && !scanPtr->scanLockHold) {
       jamDebug();
+      if (scanPtr->m_aggregation) {
+        c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr);
+      }
       closeScanLab(signal, tcConnectptr.p);
       return;
     }
@@ -18147,8 +18366,13 @@ void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
 
   regTcPtr->transactionState = TcConnectionrec::SCAN_STATE_USED;
 
+  // Moz
   const Uint32 rows = scanPtr->m_curr_batch_size_rows;
-  const Uint32 accOpPtr = get_acc_ptr_from_scan_record(scanPtr, rows, false);
+  Uint32 tmp = scanPtr->m_aggregation ?
+                  get_acc_ptr_from_scan_record(scanPtr, 0, false) :
+                  get_acc_ptr_from_scan_record(scanPtr, rows, false);
+
+  const Uint32 accOpPtr= tmp;
   if (accOpPtr != (Uint32)-1) {
     c_acc->execACCKEY_ORD_no_ptr(signal, accOpPtr);
     jamEntry();
@@ -18175,7 +18399,33 @@ void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
     // Inform API about keyinfo len as well
     read_len += sendKeyinfo20(signal, scanPtr, regTcPtr);
   }  // if
-  ndbrequire(scanPtr->m_curr_batch_size_rows < MAX_PARALLEL_OP_PER_SCAN);
+
+  if (!scanPtr->m_aggregation) {
+    /*
+     * Moz
+     * In aggregation mode, since we don't follow batch strategy 100%,
+     * in the situation which has small group, m_curr_batch_size_rows
+     * could be bigger than MAX_PARALLEL_OP_PER_SCAN
+     */
+    ndbrequire(scanPtr->m_curr_batch_size_rows < MAX_PARALLEL_OP_PER_SCAN);
+  } else {
+    if (conf->agg_batch_size_bytes) {
+      ndbrequire(conf->agg_batch_size_rows == 1);
+      /*
+       * Moz
+       * conf->agg_batch_size_bytes > 0 only happens
+       * in groupby mode and reaches the aggregation
+       * batch limitation. so here conf->agg_n_res_recs
+       * would be 1
+       */
+      ndbrequire(conf->agg_n_res_recs == 1);
+      ndbrequire(scanPtr->m_agg_curr_batch_size_bytes == 0);
+      ndbrequire(scanPtr->m_agg_curr_batch_size_rows == 0);
+    }
+    scanPtr->m_agg_curr_batch_size_bytes = conf->agg_batch_size_bytes;
+    scanPtr->m_agg_curr_batch_size_rows = conf->agg_batch_size_rows;
+    scanPtr->m_agg_n_res_recs = conf->agg_n_res_recs;
+  }
   scanPtr->m_exec_direct_batch_size_words += read_len;
   scanPtr->m_curr_batch_size_bytes += read_len * sizeof(Uint32);
   scanPtr->m_curr_batch_size_rows = rows + 1;
@@ -18194,7 +18444,21 @@ void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
     }
   }
 
-  if (scanPtr->check_scan_batch_completed() || last_row) {
+  // MOZ DEBUG PRINT
+  bool print = false;
+#ifdef MOZ_AGG_DEBUG
+  {
+  FragrecordPtr regFragptr;
+  regFragptr.i = regTcPtr->fragmentptr;
+  ndbrequire(c_fragment_pool.getPtr(regFragptr));
+  if (regFragptr.p->fragId == 0 && scanPtr->m_aggregation) {
+    print = true;
+  }
+  }
+#endif // MOZ_AGG_DEBUG
+  // TODO (Zhao) Skip here for pushdown aggregation
+  // (DONE!)
+  if (scanPtr->check_scan_batch_completed(print) || last_row) {
     if (scanPtr->scanLockHold == ZTRUE) {
       jam();
       scanPtr->scan_lastSeen = __LINE__;
@@ -18216,9 +18480,16 @@ void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
   } else {
     jamDebug();
     scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT_COMMIT;
-    Uint32 accOpPtr = get_acc_ptr_from_scan_record(
-        scanPtr, scanPtr->m_curr_batch_size_rows - 1, false);
-    scanNextLoopLab(signal, regTcPtr->clientConnectrec, accOpPtr, scanPtr,
+    // Moz DEBUG
+    Uint32 index = scanPtr->m_aggregation ? 0 :
+                   scanPtr->m_curr_batch_size_rows-1;
+    Uint32 accOpPtr= get_acc_ptr_from_scan_record(scanPtr,
+					   index,
+					   false);
+    scanNextLoopLab(signal,
+                    regTcPtr->clientConnectrec,
+                    accOpPtr,
+                    scanPtr,
                     fragptr.p);
     return;
   }
@@ -18256,7 +18527,12 @@ void Dblqh::scanTupkeyRefLab(Signal *signal,
   }
 
   Uint32 rows = scanPtr->m_curr_batch_size_rows;
-  Uint32 accOpPtr = get_acc_ptr_from_scan_record(scanPtr, rows, false);
+  Uint32 accOpPtr = (Uint32)-1;
+  if (!scanPtr->m_aggregation) {
+    accOpPtr = get_acc_ptr_from_scan_record(scanPtr, rows, false);
+  } else {
+    accOpPtr = get_acc_ptr_from_scan_record(scanPtr, 0, false);
+  }
   if (accOpPtr != (Uint32)-1) {
     c_acc->execACCKEY_ORD_no_ptr(signal, accOpPtr);
     jamEntryDebug();
@@ -18307,7 +18583,28 @@ void Dblqh::scanTupkeyRefLab(Signal *signal,
   // 'time_passed' is in slices of 10ms
   const Uint32 time_passed = cLqhTimeOutCount - tcConnectptr.p->tcTimer;
   if (unlikely(rows && time_passed > 1) &&
-      (refToMain(scanPtr->scanApiBlockref) != DBSPJ || time_passed > 10)) {
+      (refToMain(scanPtr->scanApiBlockref) != DBSPJ || time_passed > 10 ) &&
+      (!scanPtr->m_aggregation || scanPtr->m_agg_n_res_recs == 0)) {
+    /* Moz explains up if
+     * [MOZ-COMMENT]
+     * In pushdown aggregation mode, if we are using filter, then time_pased &&
+     * rows > 0 could be true, but it doesn't represent that there are no
+     * remaining  aggregation results left in the aggregation_interpreter since
+     * the agg batch size limitation hasn't been reached and the results are
+     * cached in interpreter temporarily, if we don't skip here, it would send
+     * a scanfragconf to TC and the completed ops in scanfragconf is 0, it
+     * seems that if the TC received all scanfragconf with ops=0 from all
+     * fragments, TC would regard the scan process is completed(but actually
+     * it isn't in this situation) and tell completed status to API, API would
+     * stop without waiting for the remaining results, which could cause
+     * incorrect error in the final results.
+     *
+     * We can simply just check scanPtr->m_aggregation here to make aggregation
+     * scan skip this if. But I would like to introduce an extra one
+     * scanPtr->m_agg_n_res_recs to achieve this,
+     * which can help us trace and show more details of aggregation scan process.
+     */
+
     /* -----------------------------------------------------------------------
      *  WE NEED TO ENSURE THAT WE DO NOT SEARCH FOR THE NEXT TUPLE FOR A
      *  LONG TIME WHILE WE KEEP A LOCK ON A FOUND TUPLE. WE RATHER REPORT
@@ -18319,6 +18616,15 @@ void Dblqh::scanTupkeyRefLab(Signal *signal,
     scanPtr->scanReleaseCounter = rows + 1;
     scanReleaseLocksLab(signal, tcConnectptr.p);
     return;
+  } else {
+    // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+    if (scanPtr->m_aggregation && scanPtr->m_agg_n_res_recs > 0 &&
+        scanPtr->m_agg_interpreter->frag_id() == 0) {
+      g_eventLogger->info("Moz-SKIP send scanfragconf, scanPtr->m_agg_n_res_recs: %u",
+              scanPtr->m_agg_n_res_recs);
+    }
+#endif // MOZ_AGG_DEBUG
   }
   scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT_COMMIT;
   scanPtr->scan_acc_index--;
@@ -18338,6 +18644,10 @@ void Dblqh::closeScanLab(Signal *signal, TcConnectionrec *regTcPtr) {
   Fragrecord::FragStatus fragstatus = regFragPtr.p->fragStatus;
   ExecFunction f = scanPtr->scanFunction_NEXT_SCANREQ;
 
+  // Moz statemach
+  ndbrequire(!scanPtr->m_aggregation ||
+             (scanPtr->scanState == ScanRecord::WAIT_SCAN_NEXTREQ ||
+             scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN));
   scanPtr->scanState = ScanRecord::WAIT_CLOSE_SCAN;
   scanPtr->scan_lastSeen = __LINE__;
   scanPtr->scan_check_lcp_stop = 0;
@@ -18564,12 +18874,14 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq, Uint32 aiLen,
   const Uint32 rangeScan = ScanFragReq::getRangeScanFlag(reqinfo);
   const Uint32 prioAFlag = ScanFragReq::getPrioAFlag(reqinfo);
   const Uint32 firstMatch = ScanFragReq::getFirstMatchFlag(reqinfo);
+  const Uint32 aggregation = ScanFragReq::getAggregationFlag(reqinfo);
 
   scanPtr->scanLockMode = scanLockMode;
   scanPtr->readCommitted = readCommitted;
   scanPtr->rangeScan = rangeScan;
   scanPtr->prioAFlag = prioAFlag;
   scanPtr->m_first_match_flag = firstMatch;
+  scanPtr->m_aggregation = aggregation;
 
   const Uint32 descending = ScanFragReq::getDescendingFlag(reqinfo);
   Uint32 tupScan = ScanFragReq::getTupScanFlag(reqinfo);
@@ -18843,6 +19155,7 @@ void Dblqh::initScanTc(const ScanFragReq *req, Uint32 transid1, Uint32 transid2,
   regTcPtr->m_dealloc_data.m_dealloc_ref_count = RNIL;
   regTcPtr->operation = ZREAD;
   regTcPtr->opExec = 0;  // Default 'not interpret', set later if needed
+  regTcPtr->opAgg = 0; // set it with opExec later
   regTcPtr->abortState = TcConnectionrec::ABORT_IDLE;
   // set TcConnectionrec::OP_SAVEATTRINFO so that a
   // "old" scan (short signals) update currTupAiLen which is checked
@@ -19041,6 +19354,29 @@ void Dblqh::init_release_scanrec(ScanRecord *scanPtr) {
   scanPtr->scanType = ScanRecord::ST_IDLE;
   scanPtr->scanTcWaiting = 0;
   scanPtr->scan_lastSeen = __LINE__;
+  // Moz reset aggregation variables
+  scanPtr->m_aggregation = false;
+  scanPtr->m_agg_curr_batch_size_rows = 0;
+  scanPtr->m_agg_curr_batch_size_bytes = 0;
+  scanPtr->m_agg_n_res_recs = 0;
+  // Moz release aggregation interpreter
+  if (scanPtr->m_agg_interpreter != nullptr) {
+    AggInterpreter* ptr = scanPtr->m_agg_interpreter;
+    /*
+     * TODO (Zhao)
+     * potential crash here.
+     * gb_map may be non-empty if API closes scan
+     * while lqh is processing. double check here.
+     * (CHECKED).
+     */
+    ndbrequire(ptr->gb_map()->empty());
+#ifdef MOZ_AGG_MALLOC
+    AggInterpreter::Destruct(ptr);
+#else
+    delete ptr;
+#endif // MOZ_AGG_MALLOC
+    scanPtr->m_agg_interpreter = nullptr;
+  }
 }
 
 /* ------------------------------------------------------------------------
@@ -19185,9 +19521,13 @@ Uint32 Dblqh::sendKeyinfo20(Signal *signal, ScanRecord *scanP,
  * deep into the stack which otherwise can happen when we use multiple
  * ranges.
  */
-void Dblqh::send_next_NEXT_SCANREQ(Signal *signal, SimulatedBlock *block,
-                                   ExecFunction f, ScanRecord *const scanPtr,
-                                   Uint32 clientPtrI) {
+void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
+                                   SimulatedBlock* block,
+                                   ExecFunction f,
+                                   ScanRecord * const scanPtr,
+                                   Uint32 clientPtrI,
+                                   bool debug_print)
+{
   (void)clientPtrI;
   /**
    * We have a number of different cases here. There are normal
@@ -19245,6 +19585,10 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal *signal, SimulatedBlock *block,
 #define ZMICROS_TO_WAIT_IN_JBB_WITH_MARGIN 500
 #define ZROWS_PER_MICRO 2
 #define ZMIN_SCAN_WITH_CONCURRENCY 0U
+
+#ifndef MOZ_AGG_DEBUG
+  (void)debug_print;
+#endif // !MOZ_AGG_DEBUG
 
   Uint32 prioAFlag = scanPtr->prioAFlag;
   Uint32 cnf_max_scan_direct_count = c_max_scan_direct_count;
@@ -19313,6 +19657,15 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal *signal, SimulatedBlock *block,
       if (!max_words_reached && tot_scan_direct_count < tot_scan_limit &&
           prim_tab_fragptr.p->m_cond_write_key_waiters == 0 &&
           prim_tab_fragptr.p->m_cond_exclusive_waiters == 0) {
+        jamDebug();
+        // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+        if (debug_print) {
+          g_eventLogger->info("No-break, max_scan_direct_count: %u, scan_direct_count: %u, "
+            "tot_scan_direct_count: %u, tot_scan_limit: %u",
+            max_scan_direct_count, scan_direct_count, tot_scan_direct_count, tot_scan_limit);
+        }
+#endif // MOZ_AGG_DEBUG
         scan_direct_count = 1;
         m_tot_scan_direct_count = tot_scan_direct_count;
         /**
@@ -19320,6 +19673,14 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal *signal, SimulatedBlock *block,
          * NEXT_SCANREQ as a direct signal.
          */
       } else {
+        // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+        if (debug_print) {
+          g_eventLogger->info("Realtime-break, max_scan_direct_count: %u, scan_direct_count: %u, "
+            "tot_scan_direct_count: %u, tot_scan_limit: %u",
+            max_scan_direct_count, scan_direct_count, tot_scan_direct_count, tot_scan_limit);
+        }
+#endif // MOZ_AGG_DEBUG
         scanPtr->m_exec_direct_batch_size_words = 0;
         BlockReference resultRef = scanPtr->scanApiBlockref;
 
@@ -19329,6 +19690,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal *signal, SimulatedBlock *block,
            * Insert scan into TUX index node to ensure we get back to correct
            * position after real-time break.
            */
+          jamDebug();
           c_tux->relinkScan(__LINE__);
         }
         /* Early release to ensure waiters can quickly get started */
@@ -19369,6 +19731,12 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal *signal, SimulatedBlock *block,
     }
     jamDebug();
     m_scan_direct_count = scan_direct_count + 1;
+    // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+    if (debug_print) {
+      g_eventLogger->info("m_scan_direct_count: %u", m_scan_direct_count);
+    }
+#endif // MOZ_AGG_DEBUG
     m_in_send_next_scan = 1;
     /**
      * To ensure that the scheduler behave differently with more
@@ -19400,9 +19768,81 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal *signal, SimulatedBlock *block,
 void Dblqh::sendScanFragConf(Signal *signal, Uint32 scanCompleted,
                              const TcConnectionrec *const regTcPtr) {
   jamDebug();
-  ScanRecord *const scanPtr = scanptr.p;
-  const Uint32 completed_ops = scanPtr->m_curr_batch_size_rows;
-  const Uint32 total_len = scanPtr->m_curr_batch_size_bytes / sizeof(Uint32);
+  ScanRecord * const scanPtr = scanptr.p;
+  // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+  bool print = false;
+  {
+    FragrecordPtr regFragptr;
+    regFragptr.i = regTcPtr->fragmentptr;
+    ndbrequire(c_fragment_pool.getPtr(regFragptr));
+    if (regFragptr.p->fragId == 0 && scanPtr->m_aggregation) {
+      print = true;
+      ndbrequire(regFragptr.p->fragId == scanPtr->m_agg_interpreter->frag_id());
+      g_eventLogger->info("MOZ sendScanFragConf, rows:[%u, %u], bytes: [%u, %u], n_res_recs: %u",
+                                    scanPtr->m_agg_curr_batch_size_rows,
+                                    scanPtr->m_curr_batch_size_rows,
+                                    scanPtr->m_agg_curr_batch_size_bytes,
+                                    scanPtr->m_curr_batch_size_bytes,
+                                    scanPtr->m_agg_n_res_recs);
+    }
+  }
+#endif // MOZ_AGG_DEBUG
+  /*
+   * Moz
+   * In pushdown aggregation mode, before we send
+   * scanfragconf to TC, we need to make sure that
+   * there is no agg results cached in aggregation
+   * interpreter.
+   * See more details at Dblqh::scanTupkeyConfLab(),
+   * search for [MOZ-COMMENT] there.
+   */
+  if (scanPtr->m_aggregation) {
+    /*
+     * Moz
+     * In groupby mode, sendScanFragConf when:
+     *  1. batch complete: scanPtr->m_agg_interpreter->NumOfResRecords()
+     *     will at least return 1 even group by hash is empty
+     *  2. scan complete: scanPtr->m_agg_interpreter->NumOfResRecords()
+     *     will return 0;
+     * In non-group mode:
+     *  1. never reach batch complete
+     *  2. scan complete: scanPtr->m_agg_interpreter->NumOfResRecords()
+     *     will return 0;
+     *
+     * Exception:
+     * If an error happened on other fragment's aggregation interpreter,
+     * this function will be invoked by Dblqh::closeScanLab(). In this situation,
+     * since it is in a error handling process, the scanState is WAIT_CLOSE_SCAN
+     * and m_agg_n_res_recs can be bigger than 1.
+     */
+    ndbrequire(scanPtr->scanState == Dblqh::ScanRecord::WAIT_CLOSE_SCAN ||
+               (scanPtr->m_agg_n_res_recs == 0 ||
+               scanPtr->m_agg_n_res_recs == 1));
+  }
+  // Moz
+  // Make sure that we send correct m_curr_batch_size_XXX, otherwise
+  // the API cannot start to parse the TRANSID_AI message
+  Uint32 tmp_completed_ops = scanPtr->m_aggregation ?
+                                    scanPtr->m_agg_curr_batch_size_rows :
+                                    scanPtr->m_curr_batch_size_rows;
+  Uint32 tmp_total_len = scanPtr->m_aggregation ?
+                                scanPtr->m_agg_curr_batch_size_bytes :
+                                scanPtr->m_curr_batch_size_bytes;
+  ndbassert((scanPtr->m_agg_curr_batch_size_bytes % sizeof(Uint32)) == 0);
+  if (scanPtr->m_aggregation) {
+    /*
+     * Moz
+     * TODO (Zhao)
+     * potential crash here? double check.
+     * 1. API quits while scanning. scanPtr->scanState == WAIT_CLOSE_SCAN
+     * and scanPtr->m_agg_curr_batch_size_bytes maybe 0.
+     */
+    ndbassert(scanPtr->m_agg_curr_batch_size_bytes ||
+           scanPtr->scanState == ScanRecord::WAIT_CLOSE_SCAN);
+  }
+  const Uint32 completed_ops= tmp_completed_ops;
+  const Uint32 total_len= tmp_total_len / sizeof(Uint32);
 
   ndbassert((scanPtr->m_curr_batch_size_bytes % sizeof(Uint32)) == 0);
 
@@ -19432,8 +19872,28 @@ void Dblqh::sendScanFragConf(Signal *signal, Uint32 scanCompleted,
 
   if (!scanPtr->scanLockHold) {
     jamDebug();
+    // Moz DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+    if (print) {
+      g_eventLogger->info("reset rows: [%u, %u], bytes: [%u, %u], n_res_recs: %u",
+                                  scanPtr->m_agg_curr_batch_size_rows,
+                                  scanPtr->m_curr_batch_size_rows,
+                                  scanPtr->m_agg_curr_batch_size_bytes,
+                                  scanPtr->m_curr_batch_size_bytes,
+                                  scanPtr->m_agg_n_res_recs);
+    }
+#endif // MOZ_AGG_DEBUG
     scanPtr->m_curr_batch_size_rows = 0;
     scanPtr->m_curr_batch_size_bytes= 0;
+    scanPtr->m_agg_curr_batch_size_rows = 0;
+    scanPtr->m_agg_curr_batch_size_bytes= 0;
+    scanPtr->m_agg_n_res_recs = 0;
+    // Moz statemach
+    ndbrequire(!scanPtr->m_aggregation ||
+               (scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN ||
+               scanPtr->scanState == ScanRecord::WAIT_ACC_SCAN ||
+               (scanPtr->scanState == ScanRecord::WAIT_CLOSE_SCAN &&
+                scanCompleted == ZSCAN_FRAG_CLOSED)));
     if (!scanCompleted)
     {
       scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
@@ -26682,7 +27142,8 @@ void Dblqh::execSTART_FRAGREQ(Signal *signal) {
   Uint32 fragId = startFragReq->fragId;
 
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-  if (!getFragmentrec(fragId)) {
+  if (!getFragmentrec(fragId))
+  {
     startFragRefLab(signal);
     return;
   }  // if
@@ -26710,7 +27171,7 @@ void Dblqh::execSTART_FRAGREQ(Signal *signal) {
   /**
    * Always printSTART_FRAG_REQ (for debugging) if ERROR_INSERT is set
    */
-  doprint = true;
+  doprint = false;
 #endif
 #ifdef DEBUG_LCP
   doprint = true;
@@ -26864,7 +27325,8 @@ Uint32 Dblqh::get_recover_thread_instance() {
    * we return 0, otherwise we return the instance number of the recover
    * thread we can use (instance number 0 is the proxy instance).
    */
-  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads =
+    (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
   if (num_recover_threads == 0)
   {
     return 0;
@@ -26887,9 +27349,11 @@ void Dblqh::completed_restore(Uint32 instance) {
    * A restore of a fragment has completed, we release the recover thread
    * for someone else to use.
    */
+  Uint32 num_recover_threads =
+    (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
   ndbrequire(instance > globalData.ndbMtLqhWorkers);
   instance -= globalData.ndbMtLqhWorkers;
-  ndbrequire(instance <= globalData.ndbMtRecoverThreads);
+  ndbrequire(instance <= num_recover_threads);
   Uint32 *num_recover_active = c_restore_mutex_lqh->m_num_recover_active;
   NdbMutex_Lock(c_restore_mutex_lqh->m_restore_mutex);
   ndbrequire(num_recover_active[instance] == 1);
@@ -26906,7 +27370,8 @@ bool Dblqh::instance_completed_restore(Uint32 instance) {
    * false. This is used to send a signal to the recover threads to
    * log output about its restore operations.
    */
-  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads =
+    (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
   if (num_recover_threads == 0)
   {
     jam();
@@ -36370,6 +36835,19 @@ void TraceLCP::restore(SimulatedBlock &lqh, Signal *sig) {
 #endif
 #endif
 
+Dblqh::ScanRecord::~ScanRecord() {
+
+  AggInterpreter* ptr = m_agg_interpreter;
+  if (ptr != nullptr) {
+#ifdef MOZ_AGG_MALLOC
+    AggInterpreter::Destruct(ptr);
+#else
+    delete ptr;
+#endif // MOZ_AGG_MALLOC
+  }
+  m_agg_interpreter = nullptr;
+}
+
 void Dblqh::writeDbgInfoPageHeader(LogPageRecordPtr logP,
                                    LogFileRecord *logFilePtrP,
                                    LogPartRecord *logPartPtrP, Uint32 place,
@@ -37000,7 +37478,8 @@ void Dblqh::mark_end_of_lcp_restore(Signal *signal) {
      * All LDM threads are done. Now time to also report
      * restore rates performed by Recover threads.
      */
-    Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
+    Uint32 num_recover_threads =
+      (globalData.ndbMtQueryWorkers - globalData.ndbMtLqhWorkers);
     for (Uint32 i = 1; i <= num_recover_threads; i++)
     {
       Uint32 instance = globalData.ndbMtLqhWorkers + i;
@@ -37205,7 +37684,7 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
    * path as the first ABORT signal. Thus we only check the query threads
    * here.
    */
-  ndbrequire(globalData.ndbMtQueryWorkers > 0);
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
   {
     jam();
@@ -37236,14 +37715,8 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
 void
 Dblqh::set_up_qt_our_rr_group()
 {
-  if (globalData.ndbMtQueryWorkers == 0)
-  {
-    /* Not used in this case. */
-    return;
-  }
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   /* Round Robin group information is static variables in SimulatedBlock */
-  ndbrequire(globalData.ndbMtQueryThreads == 0);
-  ndbrequire(globalData.ndbMtLqhWorkers == globalData.ndbMtQueryWorkers);
   Uint32 first_qt_thr_no = getFirstQueryThreadId();
   m_num_qt_our_rr_group = 0;
   Uint32 our_rr_group = m_rr_group[instance() - 1];

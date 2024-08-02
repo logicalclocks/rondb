@@ -94,7 +94,7 @@ void Dbinfo::execREAD_CONFIG_REQ(Signal *signal) {
   const THRConfigApplier &thr_cf =
       globalEmulatorData.theConfiguration->m_thr_config;
   counts.threads.send = globalData.ndbMtSendThreads;
-  counts.threads.db = thr_cf.getThreadCount() + globalData.ndbMtRecoverThreads;
+  counts.threads.db = thr_cf.getThreadCount();
   counts.threads.ldm = thr_cf.getThreadCount(THRConfig::T_LDM);
   counts.cpus = Ndb_GetHWInfo(false)->cpu_cnt;
 

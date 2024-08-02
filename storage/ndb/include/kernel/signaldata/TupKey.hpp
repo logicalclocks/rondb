@@ -130,7 +130,7 @@ class TupKeyConf {
                               Uint16 receiverBlockNo);
 
  public:
-  static constexpr Uint32 SignalLength = 7;
+  static constexpr Uint32 SignalLength = 10;
 
  private:
   /**
@@ -144,6 +144,10 @@ class TupKeyConf {
   Uint32 rowid;
   // Number of interpreter instructions executed.
   Uint32 noExecInstructions;
+  // return Aggregation batch info
+  Uint32 agg_batch_size_rows;
+  Uint32 agg_batch_size_bytes;
+  Uint32 agg_n_res_recs;
 };
 
 class TupKeyRef {

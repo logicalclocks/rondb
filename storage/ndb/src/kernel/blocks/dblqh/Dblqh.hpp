@@ -71,6 +71,14 @@ class FsReadWriteReq;
 #undef DEBUG_USAGE_COUNT
 //#define DEBUG_USAGE_COUNT 1
 
+/*
+ * Moz
+ * Turn on the MOZ_AGG_DEBUG
+ * to trace lqh behaviors on partition 0
+ */
+#undef MOZ_AGG_DEBUG
+// #define MOZ_AGG_DEBUG 1
+
 #ifdef DBLQH_C
 // Constants
 /* ------------------------------------------------------------------------- */
@@ -470,6 +478,7 @@ class FsReadWriteReq;
  *  - LOG
  */
 
+class AggInterpreter;
 class Dblqh : public SimulatedBlock {
   friend class DblqhProxy;
   friend class Backup;
@@ -518,7 +527,7 @@ class Dblqh : public SimulatedBlock {
     Uint32 prevList;
   };
   typedef Ptr<CopyFragRecord> CopyFragRecordPtr;
-#define ZCOPYFRAGREC_FILE_SIZE MAX_NDBMT_LQH_THREADS
+#define ZCOPYFRAGREC_FILE_SIZE MAX_NDBMT_LQH_WORKERS
   typedef ArrayPool<CopyFragRecord> CopyFragRecord_pool;
   typedef DLFifoList<CopyFragRecord_pool> CopyFragRecord_fifo;
 
@@ -594,11 +603,16 @@ class Dblqh : public SimulatedBlock {
       scanType(ST_IDLE),
       m_takeOverRefCount(0),
       m_reserved(0),
-      m_send_early_hbrep(0)
+      m_send_early_hbrep(0),
+      m_aggregation(0),
+      m_agg_curr_batch_size_rows(0),
+      m_agg_curr_batch_size_bytes(0),
+      m_agg_n_res_recs(0),
+      m_agg_interpreter(nullptr)
     {
     }
 
-    ~ScanRecord() {}
+    ~ScanRecord();
 
     Uint64 fragPtrI;
     enum ScanState {
@@ -647,8 +661,8 @@ class Dblqh : public SimulatedBlock {
 
     Uint32 m_exec_direct_batch_size_words;
 
-    bool check_scan_batch_completed() const;
-
+    bool check_scan_batch_completed(bool print = false) const;
+    
     UintR copyPtr;
     union {
       Uint32 nextPool;
@@ -710,6 +724,22 @@ class Dblqh : public SimulatedBlock {
     Uint8 prioAFlag;
     Uint8 m_first_match_flag;
     Uint8 m_send_early_hbrep;
+    // Aggregation
+    Uint8 m_aggregation;
+    Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
+                                       // batch completed", which means either
+                                       // size of group map in aggregation
+                                       // interpreter reached limitation or the
+                                       // scan process on this fragment done, so
+                                       // it's going to send aggregation results
+                                       // to API
+    Uint32 m_agg_curr_batch_size_bytes; // [0, non-0], same as up.
+    Uint32 m_agg_n_res_recs; // [0, non-0], non-0 indicates that some aggregation
+                             // results are cached in the interpreter which hasn't
+                             // been send to the API. We use this variable to make sure
+                             // that we won't send a scanfragconf with 0 completed_ops
+                             // to the TC, which could cause incorrect aggregation result.
+    AggInterpreter* m_agg_interpreter;
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -737,8 +767,8 @@ class Dblqh : public SimulatedBlock {
 //#define DEBUG_FRAGMENT_LOCK 1
 #define LOCK_LINE_MASK 2047
 //#define LOCK_LINE_MASK 511
-#define LOCK_READ_SPIN_TIME 30
-#define LOCK_WRITE_SPIN_TIME 40
+#define LOCK_READ_SPIN_TIME 60
+#define LOCK_WRITE_SPIN_TIME 60
 #ifdef DEBUG_FRAGMENT_LOCK
 #define DEB_FRAGMENT_LOCK(frag) debug_fragment_lock(frag, __LINE__)
 #else
@@ -1274,10 +1304,10 @@ class Dblqh : public SimulatedBlock {
   typedef Ptr<GcpRecord> GcpRecordPtr;
 
   struct HostRecord {
-    Bitmask<(MAX_NDBMT_LQH_THREADS + 1 + 31) / 32> lqh_pack_mask;
-    Bitmask<(MAX_NDBMT_TC_THREADS + 1 + 31) / 32> tc_pack_mask;
-    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_THREADS + 1];
-    struct PackedWordsContainer tc_pack[MAX_NDBMT_TC_THREADS + 1];
+    Bitmask<(MAX_NDBMT_LQH_WORKERS+1+31)/32> lqh_pack_mask;
+    Bitmask<(MAX_NDBMT_TC_WORKERS+1+31)/32> tc_pack_mask;
+    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_WORKERS+1];
+    struct PackedWordsContainer tc_pack[MAX_NDBMT_TC_WORKERS+1];
     Uint8 inPackedList;
     Uint8 nodestatus;
   };
@@ -2836,6 +2866,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 nextSeqNoReplica;
     Uint8 opSimple;
     Uint8 opExec;
+    Uint8 opAgg;
     Uint8 operation;
     Uint8 m_reorg;
     Uint8 reclenAiLqhkey;
@@ -3267,7 +3298,7 @@ private:
                               SimulatedBlock* block,
                               ExecFunction f,
                               ScanRecord * const scanPtr,
-                              Uint32 clientPtrI);
+                              Uint32 clientPtrI, bool debug_print = false);
 
   void initCopyrec(Signal *signal);
   void initCopyTc(Signal *signal, Operation_t, TcConnectionrec *);
@@ -4695,24 +4726,28 @@ public:
   Uint32 m_scan_frag_access_cond_waits;
   Uint64 m_scan_frag_access_spinloops;
   Uint64 m_scan_frag_access_spintime;
+  Uint64 m_scan_frag_access_waittime;
 
   Uint32 m_read_key_frag_access;
   Uint32 m_read_key_frag_access_contended;
   Uint32 m_read_key_frag_access_cond_waits;
   Uint64 m_read_key_frag_access_spinloops;
   Uint64 m_read_key_frag_access_spintime;
+  Uint64 m_read_key_frag_access_waittime;
 
   Uint32 m_write_key_frag_access;
   Uint32 m_write_key_frag_access_contended;
   Uint32 m_write_key_frag_access_cond_waits;
   Uint64 m_write_key_frag_access_spinloops;
   Uint64 m_write_key_frag_access_spintime;
+  Uint64 m_write_key_frag_access_waittime;
 
   Uint32 m_exclusive_frag_access;
   Uint32 m_exclusive_frag_access_contended;
   Uint32 m_exclusive_frag_access_cond_waits;
   Uint64 m_exclusive_frag_access_spinloops;
   Uint64 m_exclusive_frag_access_spintime;
+  Uint64 m_exclusive_frag_access_waittime;
 
   Uint32 m_upgrade_frag_access;
 
@@ -4994,31 +5029,23 @@ public:
 #endif
   void lock_alloc_operation()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Lock(&alloc_operation_mutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Lock(&alloc_operation_mutex);
   }
   void unlock_alloc_operation()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Unlock(&alloc_operation_mutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Unlock(&alloc_operation_mutex);
   }
   void lock_take_over_hash()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Lock(&c_scanTakeOverMutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Lock(&c_scanTakeOverMutex);
   }
   void unlock_take_over_hash()
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Unlock(&c_scanTakeOverMutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Unlock(&c_scanTakeOverMutex);
   }
   Uint32 m_first_qt_thr_no;
   Uint32 m_num_qt_our_rr_group;
@@ -5126,7 +5153,44 @@ inline bool Dblqh::is_restore_phase_done() {
   return (csrExecUndoLogState != EULS_IDLE);
 }
 
-inline bool Dblqh::ScanRecord::check_scan_batch_completed() const {
+inline
+bool
+Dblqh::ScanRecord::check_scan_batch_completed(bool print) const {
+  // Moz
+#ifndef MOZ_AGG_DEBUG
+  (void)print;
+#endif // !MOZ_AGG_DEBUG
+  // Don't break aggregation
+  if (m_aggregation == true) {
+    /*
+     * if m_agg_curr_batch_size_bytes != 0, means some aggregation
+     * results have been sent to API as a batch because of group hash
+     * is going to be full. so we return true here to make sure that we
+     * call sendScanFragConf to send GSN_SCAN_FRAGCONF to TC
+     */
+    if (m_agg_curr_batch_size_bytes) {
+      // MOZ DEBUG PRINT
+#ifdef MOZ_AGG_DEBUG
+      if (print) {
+        g_eventLogger->info("CHECK batch complete:true, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
+            m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
+            m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
+            m_agg_n_res_recs);
+      }
+#endif // MOZ_AGG_DEBUG
+      return true;
+    } else {
+#ifdef MOZ_AGG_DEBUG
+      if (print) {
+        g_eventLogger->info("CHECK batch complete:false, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
+            m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
+            m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
+            m_agg_n_res_recs);
+      }
+#endif // MOZ_AGG_DEBUG
+      return false;
+    }
+  }
   Uint32 max_rows = m_max_batch_size_rows;
   Uint32 max_bytes = m_max_batch_size_bytes;
 
@@ -5347,68 +5411,57 @@ inline bool Dblqh::is_exclusive_condition_ready(Fragrecord *fragPtrP) {
 inline void
 Dblqh::upgrade_to_write_key_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_write_key_frag_access(fragptr.p);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_write_key_frag_access(fragptr.p);
 }
 
 inline void
 Dblqh::upgrade_to_exclusive_frag_access_no_return()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_exclusive_frag_access(fragptr.p);
-    m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_exclusive_frag_access(fragptr.p);
+  m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
 }
 
 inline void
 Dblqh::upgrade_to_exclusive_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_exclusive_frag_access(fragptr.p);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_exclusive_frag_access(fragptr.p);
 }
 
 inline void
 Dblqh::upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_upgrade_to_exclusive_frag_access(fragPtrP);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_upgrade_to_exclusive_frag_access(fragPtrP);
 }
 
 inline void
 Dblqh::downgrade_from_exclusive_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_downgrade_from_exclusive_frag_access(fragptr.p);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_downgrade_from_exclusive_frag_access(fragptr.p);
 }
 
 inline void
 Dblqh::downgrade_from_exclusive_frag_access(Fragrecord *fragPtrP)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_downgrade_from_exclusive_frag_access(fragPtrP);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_downgrade_from_exclusive_frag_access(fragPtrP);
 }
 
 inline void
 Dblqh::acquire_frag_commit_access_write_key()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   {
     Fragrecord *fragPtrP = fragptr.p;
     if (m_fragment_lock_status == FRAGMENT_UNLOCKED) {
@@ -5440,7 +5493,8 @@ Dblqh::acquire_frag_commit_access_write_key()
 inline void
 Dblqh::acquire_frag_commit_access_exclusive()
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   {
     jamDebug();
     Fragrecord *fragPtrP = fragptr.p;
@@ -5459,15 +5513,15 @@ inline void
 Dblqh::acquire_frag_abort_access(Fragrecord *fragPtrP,
                                   TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_acquire_frag_abort_access(fragPtrP, regTcPtr);
-  }
+  jamDebug();
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  handle_acquire_frag_abort_access(fragPtrP, regTcPtr);
 }
 
 inline void Dblqh::acquire_frag_prepare_key_access(Fragrecord *fragPtrP,
-                                                   TcConnectionrec *regTcPtr) {
+                                                   TcConnectionrec *regTcPtr)
+{
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   if (is_write_key_frag_access(regTcPtr)) {
     /**
      * Prepare for upgrade to write key fragment access, this will
@@ -5493,6 +5547,7 @@ inline void Dblqh::acquire_frag_prepare_key_access(Fragrecord *fragPtrP,
     handle_acquire_read_key_frag_access(fragPtrP, true, false);
     m_fragment_lock_status = FRAGMENT_LOCKED_IN_RK_REFRESH_MODE;
   } else {
+    jamDebug();
     handle_acquire_read_key_frag_access(fragPtrP, false, true);
     m_fragment_lock_status = FRAGMENT_LOCKED_IN_READ_KEY_MODE;
   }
@@ -5502,7 +5557,7 @@ inline void
 Dblqh::acquire_frag_scan_access(Fragrecord *fragPtrP,
                                        TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   {
     if (m_fragment_lock_status == FRAGMENT_UNLOCKED)
     {
@@ -5519,11 +5574,9 @@ inline void
 Dblqh::acquire_frag_scan_access_new(Fragrecord *fragPtrP,
                                     TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-  {
-    jamDebug();
-    handle_acquire_scan_frag_access(fragPtrP);
-  }
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
+  jamDebug();
+  handle_acquire_scan_frag_access(fragPtrP);
 }
 
 inline void Dblqh::reset_old_fragment_lock_status() {

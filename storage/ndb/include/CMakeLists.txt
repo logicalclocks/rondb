@@ -98,6 +98,7 @@ SET(NDB_NDBAPI_HEADERS
   ndbapi/NdbIndexStat.hpp
   ndbapi/ndberror.h
   ndbapi/NdbInterpretedCode.hpp
+  ndbapi/NdbAggregator.hpp
   )
 
 SET(NDB_MGMAPI_HEADERS

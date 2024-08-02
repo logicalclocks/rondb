@@ -1543,8 +1543,8 @@ class Dbtc : public SimulatedBlock {
   /* SYSTEM                                               */
   /********************************************************/
   struct HostRecord {
-    Bitmask<(MAX_NDBMT_LQH_THREADS + 1 + 31) / 32> lqh_pack_mask;
-    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_THREADS + 1];
+    Bitmask<(MAX_NDBMT_LQH_WORKERS+1+31)/32> lqh_pack_mask;
+    struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_WORKERS+1];
     struct PackedWordsContainer packTCKEYCONF;
     HostState hostStatus;
     LqhTransState lqhTransStatus;

@@ -1,6 +1,6 @@
 #
 # This file is part of the RonDB REST API Server
-# Copyright (c) 2022 Hopsworks AB
+# Copyright (c) 2024 Hopsworks AB
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,253 +18,696 @@ openapi: 3.0.0
 info:
   description: |
     RonDB Key-Value REST API
-    [http://rondb.com](http://rondb.com) 
-  version: "1.0.0"
+    [http://rondb.com](http://rondb.com)
+  version: 0.1.0
   title: RonDB KV API
   license:
     name: Apache 2.0
-    url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
 servers:
-  # Added by API Auto Mocking Plugin
-  - description: SwaggerHub API Auto Mocking
-    url: https://virtserver.swaggerhub.com/rondb/RonDB2/1.0.0/
+  - url: https://localhost:5406/0.1.0
+    description: Local Development Server
+  - url: https://virtserver.swaggerhub.com/SIYAOL641/RonDB-REST/0.1.0
+    description: SwaggerHub API Auto Mocking
 tags:
-  - name: db-ops
-    description: Database operations
+  - name: pk-read-ops
+    description: Single/batch primary key read operations
     externalDocs:
       description: Find out more
-      url: 'http://rondb.com'
-  - name: table-ops
-    description: Simple and batch operations for single table
+      url: http://rondb.com
+  - name: feature-store-ops
+    description: Retrieve a single/batch feature vector from a feature view
     externalDocs:
       description: Find out more
-      url: 'http://rondb.com'
-  - name: multi-table-ops
-    description: Batch operation that span across multiple table
+      url: http://rondb.com
+  - name: server-ops
+    description: Get server statistics or health information
     externalDocs:
       description: Find out more
-      url: 'http://rondb.com'
-  - name: authentication
-    description: Operations for authenticating the user
-    externalDocs:
-      description: Find out more
-      url: 'http://rondb.com'
-
-paths:      
-#---------------------------------------------------------------------------------
+      url: http://rondb.com
+paths:
   /{db}/{table}/pk-read:
     parameters:
-    - name: db
-      in: path
-      description: Database name
-      required: true
-      schema:
-        type: string
-      example: database_name
-    - name: table
-      in: path
-      description: Table name
-      required: true
-      schema:
-        type: string 
-      example: table_name
-    get:
-      tags:
-        - table-ops
-      parameters:
-        - name: filter
-          in: query
-          style: form
-          explode: false
-          description: >
-            An array of filter columns. If the table's primary key consists of one column
-            then add a filter object like **[{"column": "employee_id", "value": 1234 }]**, or if the primary 
-            key contain multiple columns then add all the primary key columns in the filter object, 
-            for example, **[{"column": "item_id", "value": 1234 }, {"column": "order_id", "value": 5678 }]**
-          required: true
-          schema:
-            $ref: '#/components/schemas/PKFilter' 
-        - name: read-column
-          in: query
-          description: An array containing the names of the cloumns that are read from the database and returned to the user. If this parameter is not supplied then the entire row, that is, all the table columns are read from the database. 
-          required: false
-          schema:
-            $ref: '#/components/schemas/ReadColumns' 
-        - name: transaction-id
-          in: query
-          description: Transaction id. This is an ID returned by the *POST /transaction* API
-          required: false
-          schema:
-            type: number
-          
-      responses:
-        '200':
-          description: Successful primary key operation(s)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Row'
-        '400':
-          description: Bad request. Invalid database or table name.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Status'
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Status'
-        '404':
-          description: Not Found. Database or the table does not exist
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Status' 
-#---------------------------------------------------------------------------------
-  /batch:
+      - $ref: "#/components/parameters/APIKeyParam"
+      - name: db
+        in: path
+        description: Database name
+        required: true
+        schema:
+          type: string
+        example: db004
+      - name: table
+        in: path
+        description: Table name
+        required: true
+        schema:
+          type: string
+        example: int_table
     post:
       tags:
-        - table-ops
+        - pk-read-ops
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PKReadRequest"
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Row"
+        "400":
+          description: Bad Request. The error message will contain more information about which part of the request is invalid. For example, if incomplete primary key is specified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/BadRequest"
+              examples:
+                incompletePrimaryKey:
+                  summary: Incomplete Primary Key
+                  value: "Bad request. Incomplete primary key specified."
+                invalidFormat:
+                  summary: Invalid Format
+                  value: "Bad request. The request format is invalid."
+        "401":
+          description: Access denied due to invalid API KEY.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/Unauthorized"
+              examples:
+                invalidApiKey:
+                  summary: Invalid API Key
+                  value: "Access denied due to invalid API KEY."
+        "500":
+          description: Server Error. For example, database failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/ServerError"
+              examples:
+                databaseFailure:
+                  summary: Database Failure
+                  value: "Server Error. Database failure."
+  /batch:
+    parameters:
+      - $ref: "#/components/parameters/APIKeyParam"
+    post:
+      tags:
+        - pk-read-ops
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BatchRequest'            
+              $ref: "#/components/schemas/BatchRequest"
       responses:
-        '200':
-          description: Successful batch operation
+        "200":
+          description: OK. The batch operation was executed and an array of sub-responses is returned. Each sub response contains its own status code. For example, some suboperations may return code 200 while other may return code 404.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BatchResponse'
-        '400':
-          description: Bad request. Invalid database or table name.
+                $ref: "#/components/schemas/BatchResponse"
+        "400":
+          description: Bad Request. The error message will contain more information about which part of the request is invalid. For example, if incomplete primary key is specified.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Status'
-        '401':
-          description: Unauthorized
+                $ref: "#/components/responses/BadRequest"
+              examples:
+                incompletePrimaryKey:
+                  summary: Incomplete Primary Key
+                  value: "Bad request. Incomplete primary key specified."
+                invalidFormat:
+                  summary: Invalid Format
+                  value: "Bad request. The request format is invalid."
+        "401":
+          description: Access denied due to invalid API KEY.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Status'
-                
-#---------------------------------------------------------------------------------    
+                $ref: "#/components/responses/Unauthorized"
+              examples:
+                invalidApiKey:
+                  summary: Invalid API Key
+                  value: "Access denied due to invalid API KEY."
+        "500":
+          description: Server Error. For example, database failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/ServerError"
+              examples:
+                databaseFailure:
+                  summary: Database Failure
+                  value: "Server Error. Database failure."
+  /feature_store:
+    parameters:
+      - $ref: "#/components/parameters/APIKeyParam"
+    post:
+      tags:
+        - feature-store-ops
+      summary: Retrieve a single feature vector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeatureStoreRequest"
+      responses:
+        "200":
+          description: A single feature vector response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeatureStoreResponse"
+        "400":
+          description: Requested metadata does not exist / Error in pk or passed feature value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/BadRequest"
+              examples:
+                pkFeatureError:
+                  summary: Response with pk/pass feature error
+                  value:
+                    code: 12
+                    message: "Wrong primay-key column. Column: ts"
+                    reason: "Incorrect primary key."
+                featureStoreNotExist:
+                  summary: Feature store does not exist
+                  value:
+                    code: 2
+                    message: ""
+                    reason: "Feature store does not exist."
+                pkValueNoMatch:
+                  summary: Pk value no match
+                  value:
+                    features:
+                      - 9876543
+                      - null
+                      - null
+                      - null
+                    metadata: null
+                    status: MISSING
+        "401":
+          description: Access denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/Unauthorized"
+              examples:
+                invalidApiKey:
+                  summary: Invalid API Key
+                  value: "Access unshared feature store failed."
+        "500":
+          description: Failed to read feature store metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/ServerError"
+              examples:
+                serverError:
+                  summary: Failed to read feature store metadata
+                  value: "Failed to read feature store metadata."
+  /batch_feature_store:
+    parameters:
+      - $ref: "#/components/parameters/APIKeyParam"
+    post:
+      tags:
+        - feature-store-ops
+      summary: Retrieve batch feature vectors
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchFeatureStoreRequest"
+      responses:
+        "200":
+          description: Batch feature vectors response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchFeatureStoreResponse"
+        "400":
+          description: Requested metadata does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/BadRequest"
+              examples:
+                partialFailure:
+                  summary: Response with partial failure
+                  value:
+                    features:
+                      - - 81
+                        - id81
+                        - "2022-01-29 00:00:00"
+                        - 6
+                      - null
+                      - - 51
+                        - id51
+                        - "2022-01-10 00:00:00"
+                        - 49
+                    metadata: null
+                    status:
+                      - COMPLETE
+                      - ERROR
+                      - COMPLETE
+        "401":
+          description: Access denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/Unauthorized"
+              examples:
+                invalidApiKey:
+                  summary: Invalid API Key
+                  value: "Access unshared feature store failed."
+        "500":
+          description: Failed to read feature store metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/responses/ServerError"
+              examples:
+                serverError:
+                  summary: Failed to read feature store metadata
+                  value: "Failed to read feature store metadata."
+  /stat:
+    parameters:
+      - $ref: "#/components/parameters/APIKeyParam"
+    get:
+      tags:
+        - server-ops
+      summary: Retrieve server statistics
+      description: Returns statistics about the server's memory and RonDB usage.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  MemoryStats:
+                    type: object
+                    properties:
+                      AllocationsCount:
+                        type: integer
+                      DeallocationsCount:
+                        type: integer
+                      BuffersCount:
+                        type: integer
+                      FreeBuffers:
+                        type: integer
+                  RonDBStats:
+                    type: object
+                    properties:
+                      NdbObjectsCreationCount:
+                        type: integer
+                      NdbObjectsDeletionCount:
+                        type: integer
+                      NdbObjectsTotalCount:
+                        type: integer
+                      NdbObjectsFreeCount:
+                        type: integer
+                      NdbConnectionState:
+                        type: integer
+  /health:
+    parameters:
+      - $ref: "#/components/parameters/APIKeyParam"
+    get:
+      tags:
+        - server-ops
+      summary: Check server health
+      description: Returns the health status of the server as a numeric code. 0 indicates healthy.
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "0"
 components:
+  parameters:
+    APIKeyParam:
+      in: header
+      name: X-API-KEY
+      schema:
+        type: string
+      required: true
+      description: Hopsworks API Keys for authentication and authorization
+      example: bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub
   schemas:
-#---------------------------------------------------------------------------------        
-    Status:
-      type: object
-      required:
-        - ok
-      properties:
-        ok:
-          type: boolean
-        message:
-          type: string
-      example:    
-        { ok: false, message: "Something went wrong"}
-    PKFilter:
+    Filters:
+      description: An array of filter columns. This is an array of objects one for each column that forms the primary key.
       type: array
       items:
         type: object
         required:
           - column
           - value
-      example: [
-        {
-          column: "pk_column_1_name", 
-          value: 1234
-        },
-        {
-          pk_column_2: "pk_column_2_name",
-          value: "some value"
-        }
-      ]
+      example:
+        - column: id0
+          value: 0
+        - column: id1
+          value: 0
     ReadColumns:
+      description: This is used to perform projections. If it is omitted, all the columns of the table will be read.
       type: array
       items:
-        type: string
-      example: [ "table_column_name_1", "table_column_name_2", "table_column_name_3"]      
+        type: object
+      example:
+        - column: col0
+          dataReturnType: default
+        - column: col1
+          dataReturnType: default
     Row:
       type: object
-      required: 
-        - columns
-        - values
+      required:
+        - operationId
+        - data
       properties:
-        operation-id:
-          type: number
-        columns:
-          type: array
-          items:
-            type: string      
-        values:
-          type: array
-          items:
-            anyOf:
-              - type: string
-              - type: number
-              - type: integer
-              - type: boolean
-      example: { columns:["col1", "col2", "cold3"], values:["data1", 1234, false]}
+        operationId:
+          type: string
+          example: ABC123
+        data:
+          type: object
+          additionalProperties: true
+          example:
+            col0: 123
+            col1: 456
+    PKReadRequest:
+      type: object
+      properties:
+        filters:
+          $ref: "#/components/schemas/Filters"
+        readColumns:
+          $ref: "#/components/schemas/ReadColumns"
+        operationId:
+          type: string
+          description: It is a *string* parameter and it can be up to 64 characters long.
+      required:
+        - filters
     BatchRequest:
-      type: array
-      items:
-        type: object
-        required:
-          - method
-          - relative-url
-#          - body   uncomment it later when we support batching post operations
-        properties:
-          method:
-            type: string
-            enum: [GET] # later add post put delete when these API are available
-          relative-url:
-            type: string
-        example: [
-          {
-            method: "GET",
-            relative-url: "/database-name-1/table-name-1/pk-read?filter[column]=pk_column_1_name&filter[value]=1234&filter[pk_column_2]=pk_column_2_name&filter[value]=some value&read-columns=table_column_name_1&read-columns=table_column_name_2&read-columns=table_column_name_3"
-          },
-           {
-            method: "GET",
-            relative-url: "/database-name-2/table-name-1/pk-read?filter[column]=pk_column_1_name&filter[value]=1234&filter[pk_column_2]=pk_column_2_name&filter[value]=some value&read-columns=table_column_name_1&read-columns=table_column_name_2&read-columns=table_column_name_3"
-          }
-        ]
-    BatchResponse:
-      type: array
-      items: 
-        type: object
-        required:
-          - code
-          - body
-        properties:
-          code:
-            type: number
-          body:
+      type: object
+      required:
+        - operations
+      properties:
+        operations:
+          type: array
+          items:
             type: object
-            required: 
-              - columns
-              - values
+            required:
+              - method
+              - relative-url
+              - body
             properties:
-              operation-id:
-                type: number
-              columns:
-                type: array
-                items:
-                  type: string      
-              values:
-                type: array
-                items:
-                  anyOf:
-                    - type: string
-                    - type: number
-                    - type: integer
-                    - type: boolean
-            example: [
-              { columns:["col1", "col2", "cold3"], values:["data1", 1234, false]},
-              { columns:["col1", "col2", "cold3"], values:["data1", 1234, false]}
-              ]
+              method:
+                type: string
+                enum:
+                  - POST
+              relative-url:
+                type: string
+              body:
+                type: object
+                properties:
+                  filters:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - column
+                        - value
+                      properties:
+                        column:
+                          type: string
+                        value:
+                          type: string
+                  readColumns:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - column
+                        - dataReturnType
+                      properties:
+                        column:
+                          type: string
+                        dataReturnType:
+                          type: string
+                          enum:
+                            - default
+                  operationId:
+                    type: string
+          example:
+            - method: POST
+              relative-url: "my_database_1/my_table_1/pk-read"
+              body:
+                filters:
+                  - column: "id0"
+                    value: "0"
+                  - column: "id1"
+                    value: "0"
+                readColumns:
+                  - column: "col0"
+                    dataReturnType: "default"
+                  - column: "col1"
+                    dataReturnType: "default"
+                operationId: "1"
+            - method: POST
+              relative-url: "my_database_2/my_table_2/pk-read"
+              body:
+                filters:
+                  - column: "id0"
+                    value: "1"
+                  - column: "id1"
+                    value: "1"
+    BatchResponse:
+      type: object
+      required:
+        - result
+      properties:
+        result:
+          type: array
+          items:
+            type: object
+            required:
+              - code
+              - body
+            properties:
+              code:
+                type: integer
+              body:
+                type: object
+                properties:
+                  operationId:
+                    type: string
+                    nullable: true
+                  data:
+                    type: object
+                    additionalProperties:
+                      anyOf:
+                        - type: string
+                        - type: number
+                        - type: boolean
+          example:
+            - code: 200
+              body:
+                operationId: "1"
+                data:
+                  col0: 0
+                  col1: 0
+            - code: 200
+              body:
+                data:
+                  col0: 1
+                  col1: 1
+    FeatureStoreRequest:
+      type: object
+      properties:
+        featureStoreName:
+          type: string
+          example: fsdb002
+        featureViewName:
+          type: string
+          example: sample_2
+        featureViewVersion:
+          type: integer
+          example: 1
+        passedFeatures:
+          description: Optional. Map of feature name as key and feature value as value. This overwrites feature values in the response.
+          type: object
+        entries:
+          description: Map of serving key of feature view as key and value of serving key as value. Serving key are a set of the primary key of feature groups which are included in the feature view query. If feature groups are joint with prefix, the primary key needs to be attached with prefix.
+          type: object
+          example:
+            "id1": 36
+        metadataOptions:
+          description: "Optional. Map of metadataoption as key and boolean as value. Default metadata option is false. Metadata is returned on request. Metadata options available: 1. featureName 2. featureType"
+          type: object
+          properties:
+            featureName:
+              type: boolean
+            featureType:
+              type: boolean
+      required:
+        - featureStoreName
+        - featureViewName
+        - featureViewVersion
+        - entries
+    FeatureStoreResponse:
+      type: object
+      properties:
+        features:
+          type: array
+          items:
+            type: object
+          example:
+            - 36
+            - "2022-01-24"
+            - "int24"
+            - "str14"
+        metadata:
+          type: array
+          items:
+            $ref: "#/components/schemas/FeatureMetadata"
+          example:
+            - featureName: "id1"
+              featureType: "bigint"
+            - featureName: "ts"
+              featureType: "date"
+            - featureName: "data1"
+              featureType: "string"
+            - featureName: "data2"
+              featureType: "string"
+        status:
+          type: string
+          enum: [COMPLETE, MISSING]
+    BatchFeatureStoreRequest:
+      type: object
+      required:
+        - featureStoreName
+        - featureViewName
+        - featureViewVersion
+        - entries
+      properties:
+        featureStoreName:
+          type: string
+          example: fsdb002
+        featureViewName:
+          type: string
+          example: sample_2
+        featureViewVersion:
+          type: integer
+          example: 1
+        passedFeatures:
+          description: Optional. Each items is a map of feature name as key and feature value as value. This overwrites feature values in the response. If provided, its size and order has to be equal to the size of entries. Item can be null.
+          type: array
+          items:
+            type: object
+          example: []
+        entries:
+          description: Each items is a map of serving key as key and value of serving key as value. Serving key of feature view.
+          type: array
+          items:
+            type: object
+          example:
+            - id1: 16
+            - id1: 36
+            - id1: 71
+            - id1: 48
+            - id1: 29
+
+        requestId:
+          type: string
+          nullable: true
+          example:
+        metadataOptions:
+          description: "Optional. Map of metadataoption as key and boolean as value. Default metadata option is false. Metadata is returned on request. Metadata options available: 1. featureName 2. featureType"
+          type: object
+          properties:
+            featureName:
+              type: boolean
+            featureType:
+              type: boolean
+
+    BatchFeatureStoreResponse:
+      type: object
+      properties:
+        features:
+          type: array
+          items:
+            type: array
+            items:
+              anyOf:
+                - type: string
+                - type: number
+                - type: boolean
+        metadata:
+          type: array
+          items:
+            $ref: "#/components/schemas/FeatureMetadata"
+        status:
+          type: array
+          items:
+            type: string
+            enum: [COMPLETE, ERROR, MISSING]
+      example:
+        features:
+          - - 16
+            - "2022-01-27"
+            - int31
+            - str24
+          - - 36
+            - "2022-01-24"
+            - int24
+            - str14
+          - - 71
+            - "2022-01-22"
+            - int3
+            - str97
+          - - 48
+            - "2022-01-26"
+            - int92
+            - str31
+          - - 29
+            - "2022-01-03"
+            - int53
+            - str91
+        metadata:
+          - featureName: id1
+            featureType: bigint
+          - featureName: ts
+            featureType: date
+          - featureName: data1
+            featureType: string
+          - featureName: data2
+            featureType: string
+        status:
+          - COMPLETE
+          - COMPLETE
+          - COMPLETE
+          - COMPLETE
+          - COMPLETE
+
+    FeatureMetadata:
+      type: object
+      properties:
+        featureName:
+          type: string
+        featureType:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Bad request. Invalid input parameters.
+    Unauthorized:
+      description: Access denied. Unauthorized access attempt.
+    ServerError:
+      description: Internal Server Error. Failed to process the request.

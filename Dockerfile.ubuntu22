@@ -160,6 +160,9 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 ARG RELEASE_FINAL_CLUSTERJ
 ENV RELEASE_FINAL_CLUSTERJ_ARG=${RELEASE_FINAL_CLUSTERJ:+-f}
 
+ARG IS_PUBLIC_RELEASE
+ENV IS_PUBLIC_RELEASE_ARG=${IS_PUBLIC_RELEASE:+-p}
+
 RUN --mount=type=bind,source=.,target=rondb-src,readonly=false \
     --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2210-bin \
     --mount=type=cache,target=/root/.cache/go-build,id=ubuntu22-rondb2210-golang \
@@ -168,7 +171,9 @@ RUN --mount=type=bind,source=.,target=rondb-src,readonly=false \
     -b rondb-bin \
     -o rondb-tarball \
     -j $THREADS_ARG \
-    $DEPLOY_ARG $RELEASE_ARG $RELEASE_FINAL_CLUSTERJ_ARG
+    $DEPLOY_ARG $RELEASE_ARG \
+    $RELEASE_FINAL_CLUSTERJ_ARG \
+    $IS_PUBLIC_RELEASE_ARG
 
 # run with --output <output-folder>
 FROM scratch AS get-package-all

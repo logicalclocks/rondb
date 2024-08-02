@@ -203,6 +203,21 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 
 #define ZTOO_MANY_BITS_ERROR 791
 
+/*
+ * Moz
+ * Aggregation interpreter errors start from 1860
+ */
+#define ZAGG_MATH_OVERFLOW 1860
+#define ZAGG_COL_TYPE_UNSUPPORTED 1861
+#define ZAGG_DECIMAL_PARSE_OVERFLOW 1862
+#define ZAGG_DECIMAL_PARSE_ERROR 1863
+#define ZAGG_DECIMAL_CONV_OVERFLOW 1864
+#define ZAGG_DECIMAL_CONV_ERROR 1865
+#define ZAGG_LOAD_COL_WRONG_TYPE 1866
+#define ZAGG_LOAD_CONST_WRONG_TYPE 1867
+#define ZAGG_WRONG_OPERATION 1868
+#define ZAGG_OTHER_ERROR 1869
+
 /* SOME WORD POSITIONS OF FIELDS IN SOME HEADERS */
 
 #define ZTH_MM_FREE 3                     /* PAGE STATE, TUPLE HEADER PAGE WITH FREE AREA      */
@@ -256,10 +271,12 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #endif
 
 class Dbtux;
+class AggInterpreter;
 
 class Dbtup : public SimulatedBlock {
   friend class DbtupProxy;
   friend class Suma;
+  friend class AggInterpreter;
 
  public:
   struct KeyReqStruct;
@@ -477,7 +494,8 @@ struct Fragoperrec {
       m_transId1(0),
       m_transId2(0),
       m_savePointId(0),
-      m_accLockOp(RNIL)
+      m_accLockOp(RNIL),
+      m_aggregation(0)
     {}
 
     enum State {
@@ -534,6 +552,9 @@ struct Fragoperrec {
       Uint32 nextList;
     };
     Uint32 prevList;
+
+    // Aggregation
+    Uint32 m_aggregation;
   };
   static constexpr Uint32 DBTUP_SCAN_OPERATION_TRANSIENT_POOL_INDEX = 3;
   typedef Ptr<ScanOp> ScanOpPtr;
@@ -842,21 +863,17 @@ struct Fragrecord {
   void acquire_frag_page_map_mutex(Fragrecord *fragPtrP,
                                    EmulatedJamBuffer *jamBuf)
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      thrjam(jamBuf);
-      ndbrequire(!m_is_in_query_thread);
-      NdbMutex_Lock(&fragPtrP->tup_frag_page_map_mutex);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    thrjam(jamBuf);
+    ndbrequire(!m_is_in_query_thread);
+    NdbMutex_Lock(&fragPtrP->tup_frag_page_map_mutex);
   }
   void release_frag_page_map_mutex(Fragrecord *fragPtrP,
                                    EmulatedJamBuffer *jamBuf)
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
-    {
-      NdbMutex_Unlock(&fragPtrP->tup_frag_page_map_mutex);
-      thrjam(jamBuf);
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    NdbMutex_Unlock(&fragPtrP->tup_frag_page_map_mutex);
+    thrjam(jamBuf);
   }
   void acquire_frag_page_map_mutex_read(EmulatedJamBuffer *jamBuf)
   {
@@ -888,7 +905,7 @@ struct Fragrecord {
                           Uint32 logicalPageId,
                           EmulatedJamBuffer *jamBuf)
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     {
       ndbrequire(!m_is_in_query_thread);
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
@@ -901,12 +918,12 @@ struct Fragrecord {
                           Uint32 logicalPageId,
                           EmulatedJamBuffer *jamBuf)
   {
-    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     {
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
       NdbMutex_Unlock(&fragPtrP->tup_frag_mutex[hash]);
       thrjamDebug(jamBuf);
-      thrjamLine(jamBuf, hash);
+      thrjamLineDebug(jamBuf, hash);
     }
   }
   void acquire_frag_mutex_read(Fragrecord *fragPtrP,
@@ -2078,6 +2095,13 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Dblqh *m_lqh;
   };
 
+  Uint32 scan_op_i;
+  void* scan_rec;
+  Uint32 agg_curr_batch_size_rows;
+  Uint32 agg_curr_batch_size_bytes;
+  Uint32 agg_n_res_recs;
+};
+
   friend struct Undo_buffer;
   Undo_buffer c_undo_buffer;
 
@@ -2718,10 +2742,15 @@ private:
   void sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
                         Uint32 TnoOfData);
 
-  //------------------------------------------------------------------
-  //------------------------------------------------------------------
-  int sendLogAttrinfo(Signal *signal, KeyReqStruct *req_struct, Uint32 TlogSize,
-                      Operationrec *regOperPtr);
+  void SendAggregationResult(Signal* signal, Uint32 res_len,
+                             BlockReference api_blockref);
+
+//------------------------------------------------------------------
+//------------------------------------------------------------------
+  int sendLogAttrinfo(Signal* signal,
+                      KeyReqStruct *req_struct,
+                      Uint32 TlogSize,
+                      Operationrec * regOperPtr);
 
   //------------------------------------------------------------------
   //------------------------------------------------------------------
@@ -3096,12 +3125,15 @@ private:
 
   void flush_read_buffer(KeyReqStruct *, const Uint32 *outBuf, Uint32 resultRef,
                          Uint32 resultData, Uint32 routeRef);
-
- public:
-  Uint32 copyAttrinfo(Uint32 storedProcId, bool interpretedFlag);
+public:
+  Uint32 copyAttrinfo(Uint32 storedProcId,
+                      bool interpretedFlag,
+                      void* scan_rec = nullptr);
   void copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
   void nextAttrInfoParam(Uint32 storedProcId);
+
+  void SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
   /**
    * Used by Restore...
    */
@@ -4563,14 +4595,6 @@ inline void Dbtup::copy_change_mask_info(const Tablerec *tablePtrP,
                           (dst_cols - src_cols));
   }
 }
-
-inline
-bool
-Dbtup::primaryKey(Tablerec* const regTabPtr, Uint32 attrId)
-{
-  Uint32 attrDescriptor = regTabPtr->tabDescriptor[(attrId * ZAD_SIZE)];
-  return (bool)AttributeDescriptor::getPrimaryKey(attrDescriptor);
-}//Dbtup::primaryKey()
 
 inline
 void

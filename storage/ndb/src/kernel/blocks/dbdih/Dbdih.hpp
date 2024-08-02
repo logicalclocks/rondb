@@ -2106,7 +2106,7 @@ class Dbdih : public SimulatedBlock {
   void emptyverificbuffer(Signal *, Uint32 q, bool aContintueB);
   void emptyverificbuffer_check(Signal *, Uint32, Uint32);
 
-  DIVERIFY_queue c_diverify_queue[MAX_NDBMT_TC_THREADS];
+  DIVERIFY_queue c_diverify_queue[MAX_NDBMT_TC_WORKERS];
   Uint32 c_diverify_queue_cnt;
 
   /*------------------------------------------------------------------------*/
