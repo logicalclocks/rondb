@@ -1,8 +1,28 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
- *
- * Author: Zhao Song
- */
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+*/
+
 #include "config.h"
 
 #ifdef _WIN32
@@ -581,7 +601,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
         double agg_3 = item[2].value.val_double;
         double agg_4 = item[3].value.val_double;
         {
-          MYSQL_RES *res;
+          MYSQL_RES *res = nullptr;
           MYSQL_ROW row;
           std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CCHAR=") +
             "'" +
@@ -591,6 +611,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
             value_cmedium +
             " GROUP BY CCHAR, CMEDIUMINT";
           if (mysql_real_query(&mysql, sql.data(), sql.length())) {
+            ;
           } else {
             res = mysql_store_result(&mysql);
             assert(res != nullptr);
@@ -606,7 +627,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
                    agg_3 - std::stod(row[2]) < -1.0) ||
                   (agg_4 - std::stod(row[3]) > 1.0 ||
                    agg_4 - std::stod(row[3]) < -1.0)) {
-                fprintf(stderr, "Catch [%s, %d] -> %lu, %lf, %lf, %lf : %lu, %lf, %lf, %lf\n",
+                fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf : %lu, %lf, %lf, %lf\n",
                     value_cchar.c_str(), cmedium,
                     agg_1, agg_2, agg_3, agg_4,
                     std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]));
@@ -654,12 +675,12 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
         switch (result.type()) {
           case NdbDictionary::Column::Bigint:
             fprintf(stderr,
-                " (type: %u, is_null: %u, data: %ld)",
+                " (type: %u, is_null: %u, data: %lld)",
                 result.type(), result.is_null(), result.data_int64());
             break;
           case NdbDictionary::Column::Bigunsigned:
             fprintf(stderr,
-                " (type: %u, is_null: %u, data: %lu)",
+                " (type: %u, is_null: %u, data: %llu)",
                 result.type(), result.is_null(), result.data_uint64());
             break;
           case NdbDictionary::Column::Double:
@@ -670,7 +691,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
           case NdbDictionary::Column::Undefined:
             // Aggregation on empty table or all rows are filtered out.
             fprintf(stderr,
-                " (type: %u, is_null: %u, data: %ld)",
+                " (type: %u, is_null: %u, data: %lld)",
                 result.type(), result.is_null(), result.data_int64());
             break;
           default:
@@ -834,7 +855,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
       double agg_3 = item[2].value.val_double;
       double agg_4 = item[3].value.val_double;
       {
-        MYSQL_RES *res;
+        MYSQL_RES *res = nullptr;
         MYSQL_ROW row;
         std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CMEDIUMINT >= 6 AND CMEDIUMINT < 8 AND CCHAR=") +
           "'" +
@@ -844,6 +865,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
           value_cmedium +
           " GROUP BY CCHAR, CMEDIUMINT";
         if (mysql_real_query(&mysql, sql.data(), sql.length())) {
+          ;
         } else {
           res = mysql_store_result(&mysql);
           assert(res != nullptr);
@@ -859,7 +881,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
                  agg_3 - std::stod(row[2]) < -1.0) ||
                 (agg_4 - std::stod(row[3]) > 1.0 ||
                  agg_4 - std::stod(row[3]) < -1.0)) {
-              fprintf(stderr, "Catch [%s, %d] -> %lu, %lf, %lf, %lf: %lu, %lf, %lf, %lf\n",
+              fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf: %lu, %lf, %lf, %lf\n",
                   value_cchar.c_str(), cmedium,
                   agg_1, agg_2, agg_3, agg_4,
                   std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]));
@@ -903,12 +925,12 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
       switch (result.type()) {
         case NdbDictionary::Column::Bigint:
           fprintf(stderr,
-              " (type: %u, is_null: %u, data: %ld)",
+              " (type: %u, is_null: %u, data: %lld)",
               result.type(), result.is_null(), result.data_int64());
           break;
         case NdbDictionary::Column::Bigunsigned:
           fprintf(stderr,
-              " (type: %u, is_null: %u, data: %lu)",
+              " (type: %u, is_null: %u, data: %llu)",
               result.type(), result.is_null(), result.data_uint64());
           break;
         case NdbDictionary::Column::Double:
@@ -919,7 +941,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
         case NdbDictionary::Column::Undefined:
           // Aggregation on empty table or all rows are filtered out.
           fprintf(stderr,
-              " (type: %u, is_null: %u, data: %ld)",
+              " (type: %u, is_null: %u, data: %lld)",
               result.type(), result.is_null(), result.data_int64());
           break;
         default:
