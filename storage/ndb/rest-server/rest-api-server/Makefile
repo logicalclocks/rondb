@@ -41,8 +41,13 @@ COVERAGE_OUTPUT_FILE?=./coverage.out
 COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S), Linux)
+	ALLOW_MULTIPLE_DEFINITION := ,--allow-multiple-definition
+endif
+
 #CGO_LDFLAGS
-MY_CGO_LDFLAGS?="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,--allow-multiple-definition,-rpath,../lib -Wl,-rpath,${RDRS_LIB_DIR}  -lrdrclient"
+MY_CGO_LDFLAGS := "-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib${ALLOW_MULTIPLE_DEFINITION} -Wl,-rpath,${RDRS_LIB_DIR}  -lrdrclient"
 
 all: rdrs
 
