@@ -68,9 +68,9 @@ func TestMain(m *testing.M) {
 
 	executable := testutils.GetExecutablePath()
 	args := []string{
-		"--root-ca-cert", conf.Security.TLS.RootCACertFile,
-		"--cert-file", conf.Security.TLS.CertificateFile,
-		"--key-file", conf.Security.TLS.PrivateKeyFile,
+		"--root-ca-cert", config.GetAll().Security.TLS.RootCACertFile,
+		"--cert-file", config.GetAll().Security.TLS.CertificateFile,
+		"--key-file", config.GetAll().Security.TLS.PrivateKeyFile,
 	}
 
 	cmd := exec.Command(executable, args...)

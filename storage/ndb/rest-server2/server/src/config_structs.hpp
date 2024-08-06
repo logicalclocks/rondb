@@ -54,6 +54,7 @@ class GRPC {
   RS_Status validate();
   GRPC();
   GRPC(bool, std::string, uint16_t);
+  std::string string();
 };
 
 class REST {

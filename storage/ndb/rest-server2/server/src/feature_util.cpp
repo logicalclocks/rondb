@@ -55,10 +55,11 @@ DeserialiseComplexFeature(const std::vector<char> &value, const metadata::AvroDe
 
   auto nativeJson = ConvertAvroToJson(native, decoder.getSchema());
   if (std::get<1>(nativeJson).code != HTTP_CODE::SUCCESS) {
-    return {{}, std::make_shared<RestErrorCode>("Failed to convert Avro to JSON.",
-                                                static_cast<int>(drogon::k500InternalServerError))};
+    return {{},
+            std::make_shared<RestErrorCode>("Failed to convert Avro to JSON.",
+                                            static_cast<int>(drogon::k500InternalServerError))};
   }
- 
+
   return {std::get<0>(nativeJson), nullptr};
 }
 
@@ -75,12 +76,13 @@ void AppendBytesToVector(std::vector<char> &vec, const std::vector<uint8_t> &byt
   vec.insert(vec.end(), bytes.begin(), bytes.end());
 }
 
-std::tuple<std::vector<char>, RS_Status> ConvertAvroToJson(const avro::GenericDatum &datum, const avro::ValidSchema &schema) {
+std::tuple<std::vector<char>, RS_Status> ConvertAvroToJson(const avro::GenericDatum &datum,
+                                                           const avro::ValidSchema &schema) {
   std::vector<char> result;
 
   std::ostringstream oss;
   std::unique_ptr<avro::OutputStream> out = avro::ostreamOutputStream(oss);
-  avro::EncoderPtr jsonEncoder = avro::jsonEncoder(schema);
+  avro::EncoderPtr jsonEncoder            = avro::jsonEncoder(schema);
   jsonEncoder->init(*out);
   avro::encode(*jsonEncoder, datum);
   jsonEncoder->flush();

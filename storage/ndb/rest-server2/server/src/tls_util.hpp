@@ -26,9 +26,6 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
-std::tuple<std::shared_ptr<X509_STORE>, RS_Status> appendCertToPool(const std::string &certFile,
-                                                                    X509_STORE *store);
-std::tuple<std::shared_ptr<X509_STORE>, RS_Status> TrustedCAs(const std::string &rootCACertFile);
 RS_Status GenerateTLSConfig(bool requireClientCert, const std::string &rootCACertFile,
                             const std::string &certFile, const std::string &privateKeyFile);
 

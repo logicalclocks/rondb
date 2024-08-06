@@ -507,13 +507,61 @@ RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &c
     // to a string buffer. It causes a performance penalty.
     std::string_view keyv = field.unescaped_key();
     if (keyv == GRPC_STR) {
-      // We expect no grpc object here
-      // Set the grpc.enable to be true
-      // so that in main it exits
-      configsStruct.grpc.enable = true;
-      return CRS_Status::SUCCESS.status;
-    }
-    if (keyv == REST_STR) {
+      simdjson::ondemand::object grpcObj;
+      auto grpcVal = field.value();
+      if (!grpcVal.is_null()) {
+        error = grpcVal.get(grpcObj);
+        if (error != simdjson::SUCCESS) {
+          return handle_simdjson_error(error, doc, currentLocation);
+        }
+        auto enableVal = grpcObj[ENABLE];
+        if (enableVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+        } else if (enableVal.error() != simdjson::SUCCESS) {
+          return handle_simdjson_error(enableVal.error(), doc, currentLocation);
+        } else {
+          if (!enableVal.is_null()) {
+            bool enable = false;
+            error       = enableVal.get(enable);
+            if (error != simdjson::SUCCESS) {
+              return handle_simdjson_error(error, doc, currentLocation);
+            }
+            if (enable) {
+              configsStruct.grpc.enable = true;
+
+              auto ipVal = grpcObj[IP];
+              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+              } else if (ipVal.error() != simdjson::SUCCESS) {
+                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
+              } else {
+                if (!ipVal.is_null()) {
+                  std::string_view ip = LOCALHOST;
+                  error               = ipVal.get(ip);
+                  if (error != simdjson::SUCCESS) {
+                    return handle_simdjson_error(error, doc, currentLocation);
+                  }
+                  configsStruct.grpc.serverIP = ip;
+                }
+              }
+
+              auto portVal = grpcObj[PORT];
+              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+              } else if (portVal.error() != simdjson::SUCCESS) {
+                return handle_simdjson_error(portVal.error(), doc, currentLocation);
+              } else {
+                if (!portVal.is_null()) {
+                  uint64_t port = DEFAULT_GRPC_PORT;
+                  error         = portVal.get(port);
+                  if (error != simdjson::SUCCESS) {
+                    return handle_simdjson_error(error, doc, currentLocation);
+                  }
+                  configsStruct.grpc.serverPort = port;
+                }
+              }
+            }
+          }
+        }
+      }
+    } else if (keyv == REST_STR) {
       simdjson::ondemand::object restObj;
       auto restVal = field.value();
       if (!restVal.is_null()) {
@@ -521,18 +569,50 @@ RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &c
         if (error != simdjson::SUCCESS) {
           return handle_simdjson_error(error, doc, currentLocation);
         }
-        auto portVal = restObj[SERVER_PORT];
-        if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (portVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(portVal.error(), doc, currentLocation);
+        auto enableVal = restObj[ENABLE];
+        if (enableVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+        } else if (enableVal.error() != simdjson::SUCCESS) {
+          return handle_simdjson_error(enableVal.error(), doc, currentLocation);
         } else {
-          if (!portVal.is_null()) {
-            uint64_t port = DEFAULT_REST_PORT;
-            error         = portVal.get(port);
+          if (!enableVal.is_null()) {
+            bool enable = false;
+            error       = enableVal.get(enable);
             if (error != simdjson::SUCCESS) {
               return handle_simdjson_error(error, doc, currentLocation);
             }
-            configsStruct.rest.serverPort = port;
+            if (enable) {
+              configsStruct.rest.enable = true;
+
+              auto ipVal = restObj[IP];
+              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+              } else if (ipVal.error() != simdjson::SUCCESS) {
+                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
+              } else {
+                if (!ipVal.is_null()) {
+                  std::string_view ip = LOCALHOST;
+                  error               = ipVal.get(ip);
+                  if (error != simdjson::SUCCESS) {
+                    return handle_simdjson_error(error, doc, currentLocation);
+                  }
+                  configsStruct.rest.serverIP = ip;
+                }
+              }
+
+              auto portVal = restObj[PORT];
+              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+              } else if (portVal.error() != simdjson::SUCCESS) {
+                return handle_simdjson_error(portVal.error(), doc, currentLocation);
+              } else {
+                if (!portVal.is_null()) {
+                  uint64_t port = DEFAULT_REST_PORT;
+                  error         = portVal.get(port);
+                  if (error != simdjson::SUCCESS) {
+                    return handle_simdjson_error(error, doc, currentLocation);
+                  }
+                  configsStruct.rest.serverPort = port;
+                }
+              }
+            }
           }
         }
       }

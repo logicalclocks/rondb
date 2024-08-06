@@ -47,7 +47,8 @@ RS_Status Internal::validate() {
   }
   if (reqBufferSize < 256 || respBufferSize < 256) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "buffer size too small").status;
+                      "buffer size too small")
+        .status;
   }
   return CRS_Status::SUCCESS.status;
 }
@@ -69,15 +70,28 @@ RS_Status REST::validate() {
   if (enable) {
     if (serverIP.empty()) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        "REST server IP cannot be empty").status;
+                        "REST server IP cannot be empty")
+          .status;
     }
     if (serverPort == 0) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        "REST server port cannot be empty").status;
+                        "REST server port cannot be empty")
+          .status;
     }
-  
   }
   return CRS_Status::SUCCESS.status;
+}
+
+std::string GRPC::string() {
+  std::stringstream ss;
+  ss << "enable: " << enable << ", serverIP: " << serverIP << ", serverPort: " << serverPort;
+  return ss.str();
+}
+
+std::string GRPC::string() {
+  std::stringstream ss;
+  ss << "enable: " << enable << ", serverIP: " << serverIP << ", serverPort: " << serverPort;
+  return ss.str();
 }
 
 std::string REST::string() {
@@ -174,7 +188,7 @@ TLS::TLS() : enableTLS(false), requireAndVerifyClientCert(false) {
 }
 
 bool isUnitTest() {
-  const char* env_var = std::getenv("RUNNING_UNIT_TESTS");
+  const char *env_var = std::getenv("RUNNING_UNIT_TESTS");
   return (env_var != nullptr && std::string(env_var) == "1");
 }
 
@@ -214,11 +228,13 @@ APIKey::APIKey()
 RS_Status APIKey::validate() {
   if (cacheRefreshIntervalMS == 0) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "cache refresh interval cannot be 0").status;
+                      "cache refresh interval cannot be 0")
+        .status;
   }
   if (cacheUnusedEntriesEvictionMS == 0) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "cache unused entries eviction cannot be 0").status;
+                      "cache unused entries eviction cannot be 0")
+        .status;
   }
   if (cacheRefreshIntervalMS > cacheUnusedEntriesEvictionMS) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -324,7 +340,8 @@ RS_Status MySQL::validate() {
 
   if (user.empty()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "the MySQL user cannot be empty").status;
+                      "the MySQL user cannot be empty")
+        .status;
   }
 
   return CRS_Status::SUCCESS.status;
@@ -350,7 +367,7 @@ std::string MySQLServer::string() {
   return ss.str();
 }
 
-RS_Status MySQLServer::validate() const{
+RS_Status MySQLServer::validate() const {
   if (IP.empty()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       "the MySQL server IP cannot be empty")
@@ -461,7 +478,6 @@ RS_Status AllConfigs::set_from_file(const std::string &configFile) {
 
   // Parse config file
   RS_Status status = jsonParser.config_parse(configStr, newConfigs);
-  std::cout << newConfigs.string() << std::endl;
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     return status;
@@ -483,6 +499,7 @@ std::string AllConfigs::string() {
   std::lock_guard<std::mutex> lock(globalConfigsMutex);
   std::stringstream ss;
   ss << "REST: " << rest.string() << std::endl;
+  ss << "GRPC: " << grpc.string() << std::endl;
   ss << "RonDB: " << ronDB.string() << std::endl;
   ss << "Security: " << security.string() << std::endl;
   ss << "Log: " << log.string() << std::endl;

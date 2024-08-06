@@ -53,6 +53,7 @@ constexpr const char *DATA_RETURN_TYPE               = "dataReturnType";
 constexpr const char *OPERATION_ID                   = "operationId";
 constexpr const char *GRPC_STR                       = "GRPC";
 constexpr const char *REST_STR                       = "REST";
+constexpr const char *ENABLE                         = "enable";
 constexpr const char *SERVER_PORT                    = "ServerPort";
 constexpr const char *RONDB                          = "RonDB";
 constexpr const char *MGMDS                          = "Mgmds";

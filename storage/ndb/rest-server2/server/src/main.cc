@@ -36,6 +36,24 @@
 #include <sstream>
 
 int main(int argc, char *argv[]) {
+  jsonParser = JSONParser();
+  apiKeyCache = std::make_shared<APIKeyCache>();
+  
+  /*
+    Order:
+    1. Read from ENV
+        if no ENV:
+    2. Set to defaults
+    3. Read CLI arguments
+        if no CLI:
+    4. Set to defaults
+  */
+  RS_Status status = AllConfigs::init();
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    errno = status.http_code;
+    exit(errno);
+  }
+  
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--root-ca-cert") == 0) {
       if (i + 1 < argc) {
@@ -60,31 +78,10 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-  jsonParser = JSONParser();
-  apiKeyCache = std::make_shared<APIKeyCache>();
-  
-  /*
-    Order:
-    1. Read from ENV
-        if no ENV:
-    2. Set to defaults
-    3. Read CLI arguments
-        if no CLI:
-    4. Set to defaults
-  */
-  RS_Status status = AllConfigs::init();
-  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    errno = status.http_code;
-    exit(errno);
-  }
 
   // connect to rondb
   RonDBConnection rondbConnection(globalConfigs.ronDB,
                                   globalConfigs.ronDbMetaDataCluster);
-
-  std::cout << "Connected to RonDB" << std::endl;
-  std::cout << "globalConfigs.security.tls.enableTLS: " << globalConfigs.security.tls.enableTLS << std::endl;
-
   if (globalConfigs.security.tls.enableTLS) {
     status = GenerateTLSConfig(globalConfigs.security.tls.requireAndVerifyClientCert,
                                globalConfigs.security.tls.rootCACertFile,
