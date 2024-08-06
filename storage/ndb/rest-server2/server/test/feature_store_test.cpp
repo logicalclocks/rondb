@@ -588,7 +588,11 @@ void testConvertAvroToJson(const std::string &schema, const std::vector<uint8_t>
     FAIL() << "Failed to convert avro to json with error: " << err.message;
   }
 
-  auto actual = ConvertAvroToJson(native);
+  auto [actual, status] = ConvertAvroToJson(native, decoder.getSchema());
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to convert avro to json with error: " << status.message;
+  }
+
   std::string actualStr(actual.begin(), actual.end());
   std::string expectedStr(expectedJson.begin(), expectedJson.end());
 
@@ -742,20 +746,17 @@ TEST_F(FeatureStoreTest, TestConvertAvroToJsonCpx) {
 
   avro::GenericDatum datum(cpxSchema);
   avro::decode(*d, datum);
-  std::cout << "Type: " << datum.type() << std::endl;
-  if (datum.type() == avro::AVRO_RECORD) {
-    const avro::GenericRecord &r = datum.value<avro::GenericRecord>();
-    std::cout << "Field-count: " << r.fieldCount() << std::endl;
-    if (r.fieldCount() == 2) {
-      const avro::GenericDatum &f0 = r.fieldAt(0);
-      if (f0.type() == avro::AVRO_DOUBLE) {
-        std::cout << "Real: " << f0.value<double>() << std::endl;
-      }
-      const avro::GenericDatum &f1 = r.fieldAt(1);
-      if (f1.type() == avro::AVRO_DOUBLE) {
-        std::cout << "Imaginary: " << f1.value<double>() << std::endl;
-      }
-    }
+  EXPECT_EQ(datum.type(), avro::AVRO_RECORD);
+  const avro::GenericRecord &r = datum.value<avro::GenericRecord>();
+  EXPECT_EQ(r.fieldCount(), 2);
+  if (r.fieldCount() == 2) {
+    const avro::GenericDatum &f0 = r.fieldAt(0);
+    EXPECT_EQ(f0.type(), avro::AVRO_DOUBLE);
+    EXPECT_EQ(f0.value<double>(), 100.23);
+
+    const avro::GenericDatum &f1 = r.fieldAt(1);
+    EXPECT_EQ(f1.type(), avro::AVRO_DOUBLE);
+    EXPECT_EQ(f1.value<double>(), 105.77);
   }
 }
 
@@ -775,7 +776,9 @@ TEST_F(FeatureStoreTest, TestConvertAvroToJsonSimple) {
   try {
     auto result              = decoder.decode(buf);
     std::string expectedJson = R"({"next":{"LongList":{"next":{"LongList":{"next":null}}}}})";
-    std::string resultJson   = datumToJson(result, decoder.getSchema());
+    auto [resultBytes, status] = ConvertAvroToJson(result, decoder.getSchema());
+    std::string resultJson   = std::string(resultBytes.begin(), resultBytes.end());
+
     ASSERT_EQ(resultJson, expectedJson);
   } catch (const std::exception &e) {
     FAIL() << "Failed to decode avro: " << e.what();

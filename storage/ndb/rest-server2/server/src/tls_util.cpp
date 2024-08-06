@@ -83,16 +83,23 @@ std::tuple<std::shared_ptr<X509_STORE>, RS_Status> TrustedCAs(const std::string 
 
 RS_Status GenerateTLSConfig(bool requireClientCert, const std::string &rootCACertFile,
                             const std::string &certFile, const std::string &privateKeyFile) {
+  std::cout << "Setting up TLS" << std::endl;
   auto &httpApp = drogon::app();
-
+  std::cout << "Before setting SSL files" << std::endl;
+  
   httpApp.setSSLFiles(certFile, privateKeyFile);
+  std::cout << "Cert File: " << certFile << std::endl;
 
   if (requireClientCert) {
     httpApp.setSSLConfigCommands({{"VerifyMode", "Require"}});
+    std::cout << "Client Cert Required" << std::endl;
   }
+
+  std::cout << "Root CA Cert File: " << rootCACertFile << std::endl;
 
   if (!rootCACertFile.empty()) {
     auto [rootCAs, status] = TrustedCAs(rootCACertFile);
+    std::cout << "Root CAs: " << rootCAs << std::endl;
     if (status.code != drogon::k200OK) {
       return status;
     }

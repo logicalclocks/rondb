@@ -1,5 +1,8 @@
 #include "feature_util.hpp"
+#include "avro/Stream.hh"
 #include <drogon/HttpTypes.h>
+#include <memory>
+#include <simdjson.h>
 #include <vector>
 
 std::string base64_decode(const std::string &encoded_string) {
@@ -50,8 +53,13 @@ DeserialiseComplexFeature(const std::vector<char> &value, const metadata::AvroDe
             std::make_shared<RestErrorCode>(e.what(), static_cast<int>(drogon::k400BadRequest))};
   }
 
-  std::vector<char> nativeJson = ConvertAvroToJson(native);
-  return {nativeJson, nullptr};
+  auto nativeJson = ConvertAvroToJson(native, decoder.getSchema());
+  if (std::get<1>(nativeJson).code != HTTP_CODE::SUCCESS) {
+    return {{}, std::make_shared<RestErrorCode>("Failed to convert Avro to JSON.",
+                                                static_cast<int>(drogon::k500InternalServerError))};
+  }
+ 
+  return {std::get<0>(nativeJson), nullptr};
 }
 
 template <typename T> void AppendToVector(std::vector<char> &vec, const T &value) {
@@ -67,77 +75,25 @@ void AppendBytesToVector(std::vector<char> &vec, const std::vector<uint8_t> &byt
   vec.insert(vec.end(), bytes.begin(), bytes.end());
 }
 
-std::vector<char> ConvertAvroToJson(const avro::GenericDatum &datum) {
+std::tuple<std::vector<char>, RS_Status> ConvertAvroToJson(const avro::GenericDatum &datum, const avro::ValidSchema &schema) {
   std::vector<char> result;
 
-  switch (datum.type()) {
-  case avro::AVRO_RECORD: {
-    const auto &record = datum.value<avro::GenericRecord>();
-    for (size_t i = 0; i < record.fieldCount(); ++i) {
-      const auto &field = record.fieldAt(i);
-      auto field_data   = ConvertAvroToJson(field);
-      result.insert(result.end(), field_data.begin(), field_data.end());
-    }
-    break;
-  }
-  case avro::AVRO_ARRAY: {
-    const auto &array = datum.value<avro::GenericArray>();
-    for (const auto &item : array.value()) {
-      auto item_data = ConvertAvroToJson(item);
-      result.insert(result.end(), item_data.begin(), item_data.end());
-    }
-    break;
-  }
-  case avro::AVRO_MAP: {
-    const auto &map = datum.value<avro::GenericMap>();
-    for (const auto &item : map.value()) {
-      AppendStringToVector(result, item.first);
-      auto item_data = ConvertAvroToJson(item.second);
-      result.insert(result.end(), item_data.begin(), item_data.end());
-    }
-    break;
-  }
-  case avro::AVRO_STRING: {
-    const auto &str = datum.value<std::string>();
-    AppendStringToVector(result, str);
-    break;
-  }
-  case avro::AVRO_INT: {
-    int32_t value = datum.value<int32_t>();
-    AppendToVector(result, value);
-    break;
-  }
-  case avro::AVRO_LONG: {
-    int64_t value = datum.value<int64_t>();
-    AppendToVector(result, value);
-    break;
-  }
-  case avro::AVRO_FLOAT: {
-    float value = datum.value<float>();
-    AppendToVector(result, value);
-    break;
-  }
-  case avro::AVRO_DOUBLE: {
-    double value = datum.value<double>();
-    AppendToVector(result, value);
-    break;
-  }
-  case avro::AVRO_BOOL: {
-    bool value = datum.value<bool>();
-    AppendToVector(result, value);
-    break;
-  }
-  case avro::AVRO_BYTES: {
-    const auto &bytes = datum.value<std::vector<uint8_t>>();
-    AppendBytesToVector(result, bytes);
-    break;
-  }
-  case avro::AVRO_NULL:
-    // No data to append for null values
-    break;
-  default:
-    throw std::runtime_error("Unsupported Avro type");
+  std::ostringstream oss;
+  std::unique_ptr<avro::OutputStream> out = avro::ostreamOutputStream(oss);
+  avro::EncoderPtr jsonEncoder = avro::jsonEncoder(schema);
+  jsonEncoder->init(*out);
+  avro::encode(*jsonEncoder, datum);
+  jsonEncoder->flush();
+
+  std::string jsonStr = oss.str();
+
+  simdjson::ondemand::parser parser;
+  simdjson::padded_string padded_json = simdjson::padded_string(jsonStr);
+  simdjson::ondemand::document doc;
+  auto error = parser.iterate(padded_json).get(doc);
+  if (error != 0U) {
+    return {{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to parse JSON").status};
   }
 
-  return result;
+  return {{jsonStr.begin(), jsonStr.end()}, CRS_Status().status};
 }

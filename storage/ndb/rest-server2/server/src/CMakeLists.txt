@@ -10,7 +10,7 @@ file(GLOB_RECURSE SRC
 	*.h
 )
 add_executable(${PROJECT_NAME} ${SRC})
-add_dependencies(${PROJECT_NAME} DROGON_IS_BUILD SIMDJSON_IS_BUILD)
+add_dependencies(${PROJECT_NAME} DROGON_IS_BUILD SIMDJSON_IS_BUILD AVRO_IS_BUILD)
 
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_DROGON_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_DROGON_CMAKE_MODULES_DIR_64})
@@ -18,6 +18,17 @@ find_package(Drogon CONFIG REQUIRED)
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR_64})
 find_package(simdjson REQUIRED)
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR})
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR_64})
+find_package(avrocpp REQUIRED)
+find_library(AVROCPP_LIB
+  NAMES avrocpp
+  PATHS ${RDRS_AVRO_LIB_DIR}
+)
+
+if (NOT AVROCPP_LIB)
+  message(FATAL_ERROR "Avro library not found in ${RDRS_AVRO_LIB_DIR}")
+endif()
 
 find_package(Jsoncpp REQUIRED)
 find_package(Threads REQUIRED)
@@ -57,6 +68,7 @@ INCLUDE_DIRECTORIES(${RDRS_DROGON_INCLUDE_DIR})
 #INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_DIR})
 INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
+INCLUDE_DIRECTORIES(${RDRS_AVRO_INCLUDE_DIR})
 
 target_link_libraries(${PROJECT_NAME} base64 avrocpp Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
 
@@ -80,5 +92,4 @@ target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_AVRO_INCLUDE_DIR})
 target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
-
 target_link_libraries(rdrs2_lib base64 avrocpp Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string mysqlclient)

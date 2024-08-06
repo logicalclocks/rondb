@@ -57,14 +57,14 @@ avro::GenericDatum AvroDecoder::decode(const std::vector<uint8_t> &inData) const
 std::tuple<avro::GenericDatum, std::vector<uint8_t>, RS_Status>
 AvroDecoder::NativeFromBinary(const std::vector<uint8_t> &buf) {
   try {
-    std::cout << "Schema: " << schema.toJson() << std::endl;
-    std::cout << "Buffer size: " << buf.size() << std::endl;
+    // std::cout << "Schema: " << schema.toJson() << std::endl;
+    // std::cout << "Buffer size: " << buf.size() << std::endl;
     auto inStream            = avro::memoryInputStream(buf.data(), buf.size());
     avro::DecoderPtr decoder = avro::binaryDecoder();
     decoder->init(*inStream);
 
     avro::GenericDatum datum(schema);
-    std::cout << "Starting decode..." << std::endl;
+    // std::cout << "Starting decode..." << std::endl;
     avro::decode(*decoder, datum);
 
     auto bytesRead = inStream->byteCount();

@@ -10,9 +10,14 @@ find_package(Drogon CONFIG REQUIRED)
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR_64})
 find_package(simdjson REQUIRED)
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR})
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR_64})
+find_package(avrocpp REQUIRED)
+find_library(AVROCPP_LIB
+  NAMES avrocpp
+  PATHS ${${RDRS_AVRO_LIB_DIR}}
+)
 find_package(Jsoncpp REQUIRED)
-find_library(AVROCPP_LIB avrocpp REQUIRED PATHS /usr/local/lib)
-find_path(AVROCPP_INCLUDE_DIR PATHS /usr/local/include/avro)
 
 include_directories(${GMOCK_INCLUDE_DIRS})
 include_directories("../src")
@@ -29,6 +34,7 @@ INCLUDE_DIRECTORIES(
 INCLUDE_DIRECTORIES(${RDRS_DROGON_INCLUDE_DIR})
 #INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_DIR})
 INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
+INCLUDE_DIRECTORIES(${RDRS_AVRO_INCLUDE_DIR})
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
 
 add_executable(
@@ -55,6 +61,7 @@ target_link_libraries(
 target_link_libraries(
   feature_store_test
   gtest_main
+  ${AVROCPP_LIB}
   rdrs2_lib
   ${GTEST_LIBRARIES}
   Drogon::Drogon

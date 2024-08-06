@@ -35,7 +35,31 @@
 #include <thread>
 #include <sstream>
 
-int main() {
+int main(int argc, char *argv[]) {
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--root-ca-cert") == 0) {
+      if (i + 1 < argc) {
+        globalConfigs.security.tls.rootCACertFile = argv[++i];
+      } else {
+        std::cerr << "Error: --root-ca-cert option requires one argument." << std::endl;
+        return 1;
+      }
+    } else if (strcmp(argv[i], "--cert-file") == 0) {
+      if (i + 1 < argc) {
+        globalConfigs.security.tls.certificateFile = argv[++i];
+      } else {
+        std::cerr << "Error: --cert-file option requires one argument." << std::endl;
+        return 1;
+      }
+    } else if (strcmp(argv[i], "--key-file") == 0) {
+      if (i + 1 < argc) {
+        globalConfigs.security.tls.privateKeyFile = argv[++i];
+      } else {
+        std::cerr << "Error: --key-file option requires one argument." << std::endl;
+        return 1;
+      }
+    }
+  }
   jsonParser = JSONParser();
   apiKeyCache = std::make_shared<APIKeyCache>();
   
@@ -58,6 +82,9 @@ int main() {
   RonDBConnection rondbConnection(globalConfigs.ronDB,
                                   globalConfigs.ronDbMetaDataCluster);
 
+  std::cout << "Connected to RonDB" << std::endl;
+  std::cout << "globalConfigs.security.tls.enableTLS: " << globalConfigs.security.tls.enableTLS << std::endl;
+
   if (globalConfigs.security.tls.enableTLS) {
     status = GenerateTLSConfig(globalConfigs.security.tls.requireAndVerifyClientCert,
                                globalConfigs.security.tls.rootCACertFile,
@@ -75,7 +102,7 @@ int main() {
   }
 
   if (globalConfigs.rest.enable) {
-    drogon::app().addListener(globalConfigs.rest.serverIP, globalConfigs.rest.serverPort);
+    drogon::app().addListener(globalConfigs.rest.serverIP, globalConfigs.rest.serverPort, globalConfigs.security.tls.enableTLS, globalConfigs.security.tls.certificateFile, globalConfigs.security.tls.privateKeyFile);
     printf("Server running on %s:%d\n", globalConfigs.rest.serverIP.c_str(), globalConfigs.rest.serverPort);
     drogon::app().setThreadNum(globalConfigs.rest.numThreads);
     drogon::app().disableSession();
