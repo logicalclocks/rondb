@@ -27,9 +27,9 @@
 #include <assert.h>
 #include <cstring>
 #include "AggregationAPICompiler.hpp"
-#define UINT_MAX ((uint)0xffffffff)
 using std::endl;
 using std::max;
+using std::runtime_error;
 
 AggregationAPICompiler::AggregationAPICompiler
     (std::function<const char*(uint)> column_idx_to_name,
@@ -61,11 +61,56 @@ AggregationAPICompiler::getStatus()
  * program.
  */
 
+// Detecting signed integer overlow for the biggest datatype is not trivial.
+bool
+int64_add_overflow(Int64 x, Int64 y)
+{
+  bool x_neg = x < 0;
+  bool y_neg = y < 0;
+  if (x_neg != y_neg)
+    return false;
+  // Signed addition overflow is undefined behaviour, so we must detect it
+  // before performing a calculation that could trigger it. We use unsigned
+  // addition to calculate a result under modular arithmetic with no undefined
+  // behaviour, then use this result to detect overflow.
+  Int64 result = Int64(Uint64(x) + Uint64(y));
+  bool result_neg = result < 0;
+  return x_neg != result_neg;
+}
+bool
+int64_sub_overflow(Int64 x, Int64 y)
+{
+  if (y == INT64_MIN)
+  {
+    // y cannot be negated
+    if (x == INT64_MAX)
+    {
+      // x cannot be incremented, but at this code path we know the values for
+      // both x and y.
+      return true;
+    }
+    // Both x and y can be incremented. Doing so will preserve the difference
+    // and guarantee that y can be negated.
+    x++; y++;
+  }
+  // y can be negated.
+  return int64_add_overflow(x, -y);
+}
+bool
+int64_mul_overflow(Int64 x, Int64 y)
+{
+    if (x > 0 && y > 0 && x > INT64_MAX / y) return true;
+    if (x < 0 && y > 0 && x < INT64_MIN / y) return true;
+    if (x > 0 && y < 0 && y < INT64_MIN / x) return true;
+    if (x < 0 && y < 0 && x < INT64_MAX / y) return true;
+    return false;
+}
+
 AggregationAPICompiler::Expr*
 AggregationAPICompiler::new_expr(ExprOp op,
                                  Expr* left,
                                  Expr* right,
-                                 uint idx)
+                                 Uint32 idx)
 {
   if (m_status == Status::FAILED)
   {
@@ -113,30 +158,51 @@ AggregationAPICompiler::new_expr(ExprOp op,
       e.eval_left_first = false;
     }
   }
-  // Constant folding
+  // Integer constant folding
   if (left != NULL &&
       left->op == ExprOp::LoadConstantInt &&
       right != NULL &&
-      right->op == ExprOp::LoadConstantInt)
+      right->op == ExprOp::LoadConstantInt &&
+      op != ExprOp::Div)
   {
-    long int arg1 = m_constants[left->idx].long_int;
-    long int arg2 = m_constants[right->idx].long_int;
-    long int result = 0;
+    Int64 arg1 = m_constants[left->idx].int_64;
+    Int64 arg2 = m_constants[right->idx].int_64;
+    Int64 result = 0;
     switch (op)
     {
     case ExprOp::Add:
+      if (int64_add_overflow(arg1, arg2)) {
+        m_err << "Overflow when attempting to fold constant expression (" << arg1 << " + " << arg2 << ").\n";
+        throw runtime_error("Overflow in integer constant folding.");
+      }
       result = arg1 + arg2;
       break;
     case ExprOp::Minus:
+      if (int64_sub_overflow(arg1, arg2)) {
+        m_err << "Overflow when attempting to fold constant expression (" << arg1 << " - " << arg2 << ").\n";
+        throw runtime_error("Overflow in integer constant folding.");
+      }
       result = arg1 - arg2;
       break;
     case ExprOp::Mul:
+      if (int64_mul_overflow(arg1, arg2)) {
+        m_err << "Overflow when attempting to fold constant expression (" << arg1 << " * " << arg2 << ").\n";
+        throw runtime_error("Overflow in integer constant folding.");
+      }
       result = arg1 * arg2;
       break;
-    case ExprOp::Div:
+    case ExprOp::DivInt:
+      if (arg2 == 0) {
+        m_err << "Divide by zero when attempting to fold constant expression (" << arg1 << " DIV " << arg2 << ").\n";
+        throw runtime_error("Divide by zero in integer constant folding.");
+      }
       result = arg1 / arg2;
       break;
     case ExprOp::Rem:
+      if (arg2 == 0) {
+        m_err << "Divide by zero when attempting to fold constant expression (" << arg1 << " % " << arg2 << ").\n";
+        throw runtime_error("Divide by zero in integer constant folding.");
+      }
       result = arg1 % arg2;
       break;
     default:
@@ -147,7 +213,7 @@ AggregationAPICompiler::new_expr(ExprOp op,
     return new_expr(ExprOp::LoadConstantInt, 0, 0, m_constants.size() - 1);
   }
   // Deduplication
-  for (uint i=0; i<m_exprs.size(); i++)
+  for (Uint32 i=0; i<m_exprs.size(); i++)
   {
     Expr* other = &m_exprs[i];
     if (e.op == other->op &&
@@ -173,13 +239,13 @@ AggregationAPICompiler::new_expr(ExprOp op,
   return &m_exprs.last_item();
 }
 
-int
+Uint32
 AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
                                 AggregationAPICompiler::Expr* expr)
 {
   if (m_status == Status::FAILED)
   {
-    return -1;
+    return -1; // todo can't return -1 due to return type.
   }
   assert(m_exprs.has_item(expr));
   assert(m_status == Status::PROGRAMMING ||
@@ -189,7 +255,7 @@ AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
   agg.agg_type = agg_type;
   agg.expr = expr;
   // Deduplication
-  for (uint i=0; i<m_aggs.size(); i++)
+  for (Uint32 i=0; i<m_aggs.size(); i++)
   {
     AggExpr* other = &m_aggs[i];
     if (agg.agg_type == other->agg_type &&
@@ -207,7 +273,7 @@ AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
 }
 
 AggregationAPICompiler::Expr*
-AggregationAPICompiler::Load(uint col_idx)
+AggregationAPICompiler::Load(Uint32 col_idx)
 {
   if (m_status == Status::FAILED)
   {
@@ -218,16 +284,16 @@ AggregationAPICompiler::Load(uint col_idx)
 }
 
 AggregationAPICompiler::Expr*
-AggregationAPICompiler::ConstantInteger(long int long_int)
+AggregationAPICompiler::ConstantInteger(Int64 int_64)
 {
-  for (uint idx = 0; idx < m_constants.size(); idx++)
+  for (Uint32 idx = 0; idx < m_constants.size(); idx++)
   {
-    if (m_constants[idx].long_int == long_int)
+    if (m_constants[idx].int_64 == int_64)
     {
       return new_expr(ExprOp::LoadConstantInt, 0, 0, idx);
     }
   }
-  m_constants.push({long_int});
+  m_constants.push({int_64});
   return new_expr(ExprOp::LoadConstantInt, 0, 0, m_constants.size() - 1);
 }
 
@@ -244,13 +310,13 @@ AggregationAPICompiler::public_arithmetic_expression_helper(ExprOp op,
   return new_expr(op, x, y, 0);
 }
 
-int
+Uint32
 AggregationAPICompiler::public_aggregate_function_helper(AggType agg_type,
                                                          Expr* x)
 {
   if (m_status == Status::FAILED)
   {
-    return -1;
+    throw runtime_error("Tried compile aggregate after compilation already failed"); //todo should this be an abort? It used to be return -1, with a signed data type.
   }
   return new_agg(agg_type, x);
 }
@@ -274,7 +340,7 @@ AggregationAPICompiler::public_aggregate_function_helper(AggType agg_type,
 void
 AggregationAPICompiler::svm_init()
 {
-  for (uint i=0; i<REGS; i++)
+  for (Uint32 i=0; i<REGS; i++)
   {
     r[i] = NULL;
   }
@@ -299,8 +365,8 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
                                     bool is_first_compilation)
 {
   SVMInstrType type = instr->type;
-  uint dest = instr->dest;
-  uint src = instr->src;
+  Uint32 dest = instr->dest;
+  Uint32 src = instr->src;
   switch (type)
   {
   case SVMInstrType::Load:
@@ -327,7 +393,7 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
 
 // svm_use communicates to the compiler when a value is used in a calculation
 void
-AggregationAPICompiler::svm_use(uint reg, bool is_first_compilation)
+AggregationAPICompiler::svm_use(Uint32 reg, bool is_first_compilation)
 {
   Expr* value = r[reg];
   assert(value != NULL);
@@ -365,18 +431,18 @@ AggregationAPICompiler::compile()
   assert_status(PROGRAMMING);
   m_status = Status::COMPILING;
   svm_init();
-  for (uint i=0; i<REGS; i++)
+  for (Uint32 i=0; i<REGS; i++)
   {
     m_locked[i] = 0;
   }
-  for (uint i=0; i<m_exprs.size(); i++)
+  for (Uint32 i=0; i<m_exprs.size(); i++)
   {
     Expr* e = &m_exprs[i];
     assert(0 < e->usage || e->op == ExprOp::LoadConstantInt);
     assert(e->program_usage == 0);
     assert(e->has_been_compiled == false);
   }
-  for (uint i=0; i<m_aggs.size(); i++)
+  for (Uint32 i=0; i<m_aggs.size(); i++)
   {
     bool res = compile(&m_aggs[i], i);
     if (!res)
@@ -386,7 +452,7 @@ AggregationAPICompiler::compile()
       return false;
     }
   }
-  for (uint i=0; i<m_exprs.size(); i++)
+  for (Uint32 i=0; i<m_exprs.size(); i++)
   {
     assert(m_exprs[i].usage == m_exprs[i].program_usage);
   }
@@ -394,8 +460,8 @@ AggregationAPICompiler::compile()
   m_status = Status::COMPILED;
   // Assert correctness
   svm_init();
-  uint next_aggregate = 0;
-  for (uint i=0; i<m_program.size(); i++)
+  Uint32 next_aggregate = 0;
+  for (Uint32 i=0; i<m_program.size(); i++)
   {
     svm_execute(&m_program[i], false);
     switch (m_program[i].type)
@@ -411,10 +477,10 @@ AggregationAPICompiler::compile()
 #undef AGG_CASE
 
 bool
-AggregationAPICompiler::compile(AggExpr* agg, int idx)
+AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
 {
   assert_status(COMPILING);
-  uint reg;
+  Uint32 reg;
   if (!compile(agg->expr, &reg))
   {
     return false;
@@ -426,11 +492,11 @@ AggregationAPICompiler::compile(AggExpr* agg, int idx)
 // This function is the most central and brittle part in the compiler. Test
 // changes thoroughly!
 bool
-AggregationAPICompiler::compile(Expr* expr, uint* reg)
+AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
 {
   assert_status(COMPILING);
   // If the value already exists in a register then use that.
-  for (int i=0; i<REGS; i++)
+  for (Uint32 i=0; i<REGS; i++)
   {
     if (r[i] == expr)
     {
@@ -444,7 +510,7 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
   // argument.
   if (expr->op == ExprOp::Load)
   {
-    if (!seize_register(reg, UINT_MAX))
+    if (!seize_register(reg, UINT32_MAX))
     {
       return false;
     }
@@ -454,7 +520,7 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
   }
   if (expr->op == ExprOp::LoadConstantInt)
   {
-    if (!seize_register(reg, UINT_MAX))
+    if (!seize_register(reg, UINT32_MAX))
     {
       return false;
     }
@@ -463,7 +529,7 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
     return true;
   }
   // The rest of the logic is about arithmetic operations and optimization.
-  uint dest=0, src=0;
+  Uint32 dest=0, src=0;
   if (expr->left == expr->right)
   {
     if (!compile(expr->left, &dest))
@@ -519,7 +585,7 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
     // Destination holds a value that we'll need later.
     // Before writing to destination, try to save a copy.
     bool copy_already_exists = false;
-    for (uint i=0; i<REGS; i++)
+    for (Uint32 i=0; i<REGS; i++)
     {
       if (i != dest && r[i] == expr->left)
       {
@@ -529,7 +595,7 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
     }
     if (!copy_already_exists)
     {
-      uint new_reg;
+      Uint32 new_reg;
       if (seize_register(&new_reg,
                         estimated_cost_of_recalculating(expr->left, dest)))
       {
@@ -545,9 +611,9 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
   {
     // Destination register is not writable after removing our locks, so we
     // need to select another destination register.
-    uint new_dest;
+    Uint32 new_dest;
     bool copy_already_exists = false;
-    for (uint i=0; i<REGS; i++)
+    for (Uint32 i=0; i<REGS; i++)
     {
       if (r[i] == expr->left && m_locked[i] == 0)
       {
@@ -558,7 +624,7 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
     }
     if (!copy_already_exists)
     {
-      if (!seize_register(&new_dest, UINT_MAX))
+      if (!seize_register(&new_dest, UINT32_MAX))
       {
         return false;
       }
@@ -592,17 +658,17 @@ AggregationAPICompiler::compile(Expr* expr, uint* reg)
   recalculation no larger than max_cost.
  */
 bool
-AggregationAPICompiler::seize_register(uint* reg, uint max_cost)
+AggregationAPICompiler::seize_register(Uint32* reg, Uint32 max_cost)
 {
   assert_status(COMPILING);
-  uint cost[REGS];
-  uint min_cost = UINT_MAX;
-  uint ret = 0;
-  for (uint i=0; i<REGS; i++)
+  Uint32 cost[REGS];
+  Uint32 min_cost = UINT32_MAX;
+  Uint32 ret = 0;
+  for (Uint32 i=0; i<REGS; i++)
   {
     if (m_locked[i])
     {
-      cost[i] = UINT_MAX;
+      cost[i] = UINT32_MAX;
     }
     else if (r[i] == NULL)
     {
@@ -639,13 +705,13 @@ AggregationAPICompiler::seize_register(uint* reg, uint max_cost)
  */
 uint
 AggregationAPICompiler::estimated_cost_of_recalculating(Expr* expr,
-                                                        uint without_using_reg)
+                                                        Uint32 without_using_reg)
 {
   if (expr == NULL)
   {
     return 0;
   }
-  for (uint i=0; i<REGS; i++)
+  for (Uint32 i=0; i<REGS; i++)
   {
     if (i == without_using_reg)
     {
@@ -667,8 +733,8 @@ AggregationAPICompiler::estimated_cost_of_recalculating(Expr* expr,
 
 void
 AggregationAPICompiler::pushInstr(SVMInstrType type,
-                                  uint dest,
-                                  uint src,
+                                  Uint32 dest,
+                                  Uint32 src,
                                   bool is_first_compilation)
 {
   assert_status(COMPILING);
@@ -684,8 +750,8 @@ AggregationAPICompiler::pushInstr(SVMInstrType type,
       case AggType::Name: instr = SVMInstrType::Name; break;
 void
 AggregationAPICompiler::pushInstr(AggType type,
-                                  uint dest,
-                                  uint src,
+                                  Uint32 dest,
+                                  Uint32 src,
                                   bool is_first_compilation)
 {
   assert_status(COMPILING);
@@ -704,8 +770,8 @@ AggregationAPICompiler::pushInstr(AggType type,
 #define OP_CASE(Name) case ExprOp::Name: instr = SVMInstrType::Name; break;
 void
 AggregationAPICompiler::pushInstr(ExprOp op,
-                                  uint dest,
-                                  uint src,
+                                  Uint32 dest,
+                                  Uint32 src,
                                   bool is_first_compilation)
 {
   assert_status(COMPILING);
@@ -746,24 +812,24 @@ AggregationAPICompiler::dead_code_elimination()
   // track of what registers will be used later. At end of program, where we
   // begin traversing, no registers will be used later.
   bool reg_needed[REGS];
-  for (uint i=0; i<REGS; i++)
+  for (Uint32 i=0; i<REGS; i++)
   {
     reg_needed[i] = false;
   }
   bool* instr_useful = m_aalloc->alloc<bool>(m_program.size());
-  for (uint i=0; i<m_program.size(); i++)
+  for (Uint32 i=0; i<m_program.size(); i++)
   {
     instr_useful[i] = false;
   }
   bool dead_code_found = false;
-  for (uint mark = m_program.size(); mark > 0; mark--)
+  for (Uint32 mark = m_program.size(); mark > 0; mark--)
   {
-    uint idx = mark - 1;
+    Uint32 idx = mark - 1;
     Instr* instr = &m_program[idx];
     bool this_instr_is_useful;
     SVMInstrType type = instr->type;
-    uint dest = instr->dest;
-    uint src = instr->src;
+    Uint32 dest = instr->dest;
+    Uint32 src = instr->src;
     // reg_needed specifies what registers are needed *after* this
     // instruction. For this instruction type, use reg_needed to determine
     // whether the instructon does useful work, then adjust reg_needed to
@@ -811,7 +877,7 @@ AggregationAPICompiler::dead_code_elimination()
     DynamicArray<Instr> old_program = m_program;
     m_program.truncate();
     svm_init();
-    for (uint i=0; i<old_program.size(); i++)
+    for (Uint32 i=0; i<old_program.size(); i++)
     {
       if (instr_useful[i])
       {
@@ -840,7 +906,7 @@ AggregationAPICompiler::print_aggregates()
 {
   assert_status(COMPILED);
   m_out << "Aggregations:\n";
-  for (uint i=0; i<m_aggs.size(); i++)
+  for (Uint32 i=0; i<m_aggs.size(); i++)
   {
     m_out << 'A' << i << '=';
     print_aggregate(i);
@@ -855,7 +921,7 @@ AggregationAPICompiler::print_aggregates()
     m_out << ')'; \
     break;
 void
-AggregationAPICompiler::print_aggregate(int idx)
+AggregationAPICompiler::print_aggregate(Uint32 idx)
 {
   switch (m_aggs[idx].agg_type)
   {
@@ -878,7 +944,7 @@ AggregationAPICompiler::print_program()
   svm_init();
   m_out << "Aggregation program (" << m_program.size() << " instructions):\n"
         << "Instr. DEST SRC DESCRIPTION\n";
-  for (uint i=0; i<m_program.size(); i++)
+  for (Uint32 i=0; i<m_program.size(); i++)
   {
     print(&m_program[i]);
     svm_execute(&m_program[i], false);
@@ -914,7 +980,7 @@ AggregationAPICompiler::print(Expr* expr)
   }
   if (expr->op == AggregationAPICompiler::ExprOp::LoadConstantInt)
   {
-    m_out << m_constants[expr->idx].long_int;
+    m_out << m_constants[expr->idx].int_64;
     return;
   }
   m_out << '(';
@@ -925,7 +991,8 @@ AggregationAPICompiler::print(Expr* expr)
   case ExprOp::Minus: m_out << " - "; break;
   case ExprOp::Mul: m_out << " * "; break;
   case ExprOp::Div: m_out << " / "; break;
-  case ExprOp::Rem: m_out << " %% "; break;
+  case ExprOp::DivInt: m_out << " DIV "; break;
+  case ExprOp::Rem: m_out << " % "; break;
   default:
     // Unknown operation
     abort();
@@ -934,9 +1001,9 @@ AggregationAPICompiler::print(Expr* expr)
   m_out << ')';
 }
 
-DEFINE_FORMATTER(s5, char*, {
+DEFINE_FORMATTER(s6, char*, {
   os << value;
-  for (int i = strlen(value); i < 5; i++) os << ' ';
+  for (Uint32 i = strlen(value); i < 6; i++) os << ' ';
 })
 DEFINE_FORMATTER(d2, uint, {
   if (value < 10) os << '0';
@@ -946,7 +1013,7 @@ DEFINE_FORMATTER(d2, uint, {
 #define OPERATOR_CASE(Name) \
   case SVMInstrType::Name: \
     assert_reg(dest); assert_reg(src); \
-    m_out << s5(#Name) << "  r" << d2(dest) << "  r" << d2(src) << " r" << \
+    m_out << s6(#Name) << " r" << d2(dest) << "  r" << d2(src) << " r" << \
       d2(dest) << ":"; \
     print(r[dest]); \
     m_out << ' ' << relstr_##Name << "= r" << d2(src) << ':'; \
@@ -956,19 +1023,20 @@ DEFINE_FORMATTER(d2, uint, {
   case SVMInstrType::Name: \
     assert(dest < m_aggs.size()); \
     assert_reg(src); \
-    m_out << s5(#Name) << "  A" << d2(dest) << "  r" << d2(src) << " A" << \
+    m_out << s6(#Name) << " A" << d2(dest) << "  r" << d2(src) << " A" << \
       d2(dest) << ":" << ucasestr_##Name << " <- r" << d2(src) << ':'; \
     print(r[src]); \
     break;
 void
 AggregationAPICompiler::print(Instr* instr)
 {
-  uint dest = instr->dest;
-  uint src = instr->src;
+  Uint32 dest = instr->dest;
+  Uint32 src = instr->src;
   static const char* relstr_Add = "+";
   static const char* relstr_Minus = "-";
   static const char* relstr_Mul = "*";
   static const char* relstr_Div = "/";
+  static const char* relstr_DivInt = "DIV";
   static const char* relstr_Rem = "%";
   static const char* ucasestr_Sum = "SUM";
   static const char* ucasestr_Min = "MIN";
@@ -984,7 +1052,7 @@ AggregationAPICompiler::print(Instr* instr)
   case SVMInstrType::LoadConstantInteger:
     assert_reg(dest);
     m_out << "LoadI  r" << d2(dest) << "  I" << d2(src) << " r" << d2(dest) <<
-      " = I" << d2(src) << ':' << m_constants[src].long_int;
+      " = I" << d2(src) << ':' << m_constants[src].int_64;
     break;
   case SVMInstrType::Mov:
     assert_reg(dest); assert_reg(src);

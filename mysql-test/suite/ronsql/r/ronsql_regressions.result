@@ -1,2 +1,26 @@
 Regression tests for bugs found during development of pushdown aggregation and
 RonSQL.
+No GROUP BY crashes data node
+CREATE TABLE tbl (a SMALLINT UNSIGNED NOT NULL) ENGINE=NDB;
+INSERT INTO tbl VALUES (0), (1), (2), (3), (4), (5);
+== Query ==
+SELECT sum(a) FROM tbl WHERE a < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT sum(a) FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+DROP TABLE tbl;

@@ -26,6 +26,7 @@
 #define PING        "ping"
 #define PKREAD      "pk-read"
 #define BATCH       "batch"
+#define RONSQL      "ronsql"
 
 #define MAKE_PATH(version, endpoint) "/" version "/" endpoint
 
@@ -33,6 +34,7 @@
 #define BATCH_PATH MAKE_PATH(API_VERSION, BATCH)
 
 #define PKREAD_PATH              "/" API_VERSION "/{db}/{table}/" PKREAD
+#define RONSQL_PATH "/" API_VERSION "/" RONSQL
 #define FEATURE_STORE_PATH       "/" API_VERSION "/feature_store"
 #define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/batch_feature_store"
 
@@ -55,6 +57,12 @@ constexpr const char *INFO                           = "INFO";
 constexpr const char *ROOT_STR                       = "root";
 constexpr const char *API_KEY_NAME_LOWER_CASE =
     "x-api-key";  // Drogon always receives the header as lowercase
+constexpr const char *QUERY                          = "query";
+constexpr const char *DATABASE                       = "database";
+constexpr const char *EXPLAIN_MODE                   = "explainMode";
+constexpr const char *DEFAULT_EXPLAIN_MODE           = "ALLOW";
+constexpr const char *OUTPUT_FORMAT                  = "outputFormat";
+constexpr const char *DEFAULT_OUTPUT_FORMAT          = "JSON";
 constexpr const char *FEATURE_STORE_NAME       = "featureStoreName";
 constexpr const char *FEATURE_VIEW_NAME        = "featureViewName";
 constexpr const char *FEATURE_VIEW_VERSION     = "featureViewVersion";

@@ -88,7 +88,6 @@ group by
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 #todo:
-# - Client-side evaluation of DATE_SUB and INTERVAL (1-2d).
 # - Wait for DECIMAL support in NdbAggregator.
 
 

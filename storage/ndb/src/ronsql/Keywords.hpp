@@ -22,14 +22,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef keywords_hpp
-#define keywords_hpp 1
+#ifndef STORAGE_NDB_SRC_RONSQL_KEYWORDS_HPP
+#define STORAGE_NDB_SRC_RONSQL_KEYWORDS_HPP 1
 
 #include "RonSQLParser.y.hpp"
 
 #define kwdef(KEYWORD) { # KEYWORD, T_ ## KEYWORD }
 
-static const struct { const char* text; const int value; } keywords_implemented_in_ronsql[] =
+static const struct { const char* text; const TokenKind value; } keywords_implemented_in_ronsql[] =
 {
   kwdef(AND),
   kwdef(AS),
@@ -45,6 +45,7 @@ static const struct { const char* text; const int value; } keywords_implemented_
   kwdef(DAY_MINUTE),
   kwdef(DAY_SECOND),
   kwdef(DESC),
+  kwdef(DIV),
   kwdef(EXPLAIN),
   kwdef(EXTRACT),
   kwdef(FROM),
@@ -81,10 +82,10 @@ static const struct { const char* text; const int value; } keywords_implemented_
 #undef kwdef
 
 // Keep this in sync with the line `[a-z_]{1,18} {` in RonSQLLexer.l
-static const int max_strlen_for_keyword_implemented_in_ronsql = 18;
+static const Uint32 max_strlen_for_keyword_implemented_in_ronsql = 18;
 
-static const int number_of_keywords_implemented_in_ronsql =
-  sizeof(keywords_implemented_in_ronsql) / sizeof(keywords_implemented_in_ronsql[0]);
+static const Uint32 number_of_keywords_implemented_in_ronsql =
+  ARRAY_LEN(keywords_implemented_in_ronsql);
 
 static const char* keywords_defined_in_mysql[] =
 {
@@ -115,6 +116,7 @@ static const char* keywords_defined_in_mysql[] =
   "AT",
   "ATTRIBUTE",
   "AUTHENTICATION",
+  "AUTO",
   "AUTOEXTEND_SIZE",
   "AUTO_INCREMENT",
   "AVG",
@@ -122,6 +124,7 @@ static const char* keywords_defined_in_mysql[] =
   "BACKUP",
   "BEFORE",
   "BEGIN",
+  "BERNOULLI",
   "BETWEEN",
   "BIGINT",
   "BINARY",
@@ -337,6 +340,7 @@ static const char* keywords_defined_in_mysql[] =
   "GROUP_CONCAT",
   "GROUP_INDEX",
   "GROUP_REPLICATION",
+  "GTIDS",
   "GTID_ONLY",
   "HANDLER",
   "HASH",
@@ -436,6 +440,7 @@ static const char* keywords_defined_in_mysql[] =
   "LOCK",
   "LOCKED",
   "LOCKS",
+  "LOG",
   "LOGFILE",
   "LOGS",
   "LONG",
@@ -444,6 +449,7 @@ static const char* keywords_defined_in_mysql[] =
   "LOOP",
   "LOOSESCAN",
   "LOW_PRIORITY",
+  "MANUAL",
   "MASTER",
   "MASTER_AUTO_POSITION",
   "MASTER_BIND",
@@ -581,8 +587,10 @@ static const char* keywords_defined_in_mysql[] =
   "OWNER",
   "PACK_KEYS",
   "PAGE",
+  "PARALLEL",
   "PARSER",
   "PARSE_GCOL_EXPR",
+  "PARSE_TREE",
   "PARTIAL",
   "PARTITION",
   "PARTITIONING",
@@ -618,6 +626,7 @@ static const char* keywords_defined_in_mysql[] =
   "PROXY",
   "PURGE",
   "QB_NAME",
+  "QUALIFY",
   "QUARTER",
   "QUERY",
   "QUICK",
@@ -697,6 +706,7 @@ static const char* keywords_defined_in_mysql[] =
   "ROW_FORMAT",
   "ROW_NUMBER",
   "RTREE",
+  "S3",
   "SAVEPOINT",
   "SCHEDULE",
   "SCHEMA",
@@ -828,6 +838,7 @@ static const char* keywords_defined_in_mysql[] =
   "SYSTEM_USER",
   "TABLE",
   "TABLES",
+  "TABLESAMPLE",
   "TABLESPACE",
   "TABLE_CHECKSUM",
   "TABLE_NAME",
@@ -923,7 +934,7 @@ static const char* keywords_defined_in_mysql[] =
   "ZONE",
 };
 
-static const int number_of_keywords_defined_in_mysql =
-  sizeof(keywords_defined_in_mysql) / sizeof(keywords_defined_in_mysql[0]);
+static const Uint32 number_of_keywords_defined_in_mysql =
+  ARRAY_LEN(keywords_defined_in_mysql);
 
 #endif

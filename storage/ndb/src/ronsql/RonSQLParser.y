@@ -120,7 +120,8 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 /* This defines the datatype for an AST node. This includes lexer tokens. */
 %union
 {
-  int ival;
+  TokenKind tokenkindval;
+  Int64 bival;
   float fval;
   bool bval;
   LexString str;
@@ -137,12 +138,12 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
   AggregationAPICompiler::Expr* arith_expr;
 }
 
-%token<ival> T_INT
+%token<bival> T_INT
 %token<fval> T_FLOAT
 %token T_COUNT T_MAX T_MIN T_SUM T_AVG T_LEFT T_RIGHT
 %token T_EXPLAIN T_SELECT T_FROM T_GROUP T_BY T_ORDER T_ASC T_DESC T_AS T_WHERE
 %token T_SEMICOLON
-%token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_DIVIDE T_MODULO T_BITWISE_XOR T_EXCLAMATION
+%token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
 
 /*
@@ -177,7 +178,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %left T_BITWISE_AND
 %left T_BITSHIFT_LEFT T_BITSHIFT_RIGHT
 %left T_PLUS T_MINUS
-%left T_MULTIPLY T_DIVIDE T_MODULO
+%left T_MULTIPLY T_SLASH T_DIV T_MODULO
 %left T_BITWISE_XOR
 %precedence T_EXCLAMATION
  // %left T_INTERVAL per spec, but bison claims it's useless.
@@ -195,7 +196,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<orderby_cols> orderby_opt orderby orderby_cols orderby_col
 %type<output> output nonaliased_output
 %type<outputs_linked_list> outputlist
-%type<ival> aggfun interval_type
+%type<tokenkindval> aggfun interval_type
 %type<arith_expr> arith_expr
 %type<conditional_expression> where_opt cond_expr
 
@@ -212,6 +213,19 @@ selectstatement:
     context->ast_root.where_expression = $6;
     context->ast_root.groupby_columns = $7;
     context->ast_root.orderby_columns = $8;
+    /*
+     * These asserts make sure the definition of TokenKind matches both the
+     * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
+     * type of enum rsqlp_tokentype in RonSQLzparser.y.hpp.
+     *
+     * These asserts needs to end up inside rsqlp_parse() in the generated
+     * RonSQLParser.y.cpp in order to access the definition of yychar. Putting
+     * them inside any rule definition will do that.
+     */
+    static_assert(std::is_same<TokenKind, std::underlying_type_t<rsqlp_token_kind_t>>::value,
+                  "Problem with TokenKind or rsqlp_token_kind_t definition");
+    static_assert(std::is_same<TokenKind, decltype(yychar)>::value,
+                  "Problem with TokenKind or yychar definition");
   }
 
 explain_opt:
@@ -285,7 +299,8 @@ arith_expr:
 | arith_expr T_PLUS arith_expr          { $$ = context->get_agg()->Add($1, $3); }
 | arith_expr T_MINUS arith_expr         { $$ = context->get_agg()->Minus($1, $3); }
 | arith_expr T_MULTIPLY arith_expr      { $$ = context->get_agg()->Mul($1, $3); }
-| arith_expr T_DIVIDE arith_expr        { $$ = context->get_agg()->Div($1, $3); }
+| arith_expr T_SLASH arith_expr         { $$ = context->get_agg()->Div($1, $3); }
+| arith_expr T_DIV arith_expr           { $$ = context->get_agg()->DivInt($1, $3); }
 | arith_expr T_MODULO arith_expr        { $$ = context->get_agg()->Rem($1, $3); }
 
 identifier:
@@ -323,7 +338,8 @@ cond_expr:
 | cond_expr T_PLUS cond_expr            { init_cond($$, $1, T_PLUS, $3); }
 | cond_expr T_MINUS cond_expr           { init_cond($$, $1, T_MINUS, $3); }
 | cond_expr T_MULTIPLY cond_expr        { init_cond($$, $1, T_MULTIPLY, $3); }
-| cond_expr T_DIVIDE cond_expr          { init_cond($$, $1, T_DIVIDE, $3); }
+| cond_expr T_SLASH cond_expr           { init_cond($$, $1, T_SLASH, $3); }
+| cond_expr T_DIV cond_expr             { init_cond($$, $1, T_DIV, $3); }
 | cond_expr T_MODULO cond_expr          { init_cond($$, $1, T_MODULO, $3); }
 | cond_expr T_BITWISE_XOR cond_expr     { init_cond($$, $1, T_BITWISE_XOR, $3); }
 | T_EXCLAMATION cond_expr               { init_cond($$, $2, T_EXCLAMATION, NULL); }
@@ -389,14 +405,20 @@ void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t scanner, const char *s)
   // Get the location of the last lexer match. This is not the same as the last
   // token, but lex_end should match with the end of the last token.
   char* lex_begin = rsqlp_get_text(scanner);
-  uint lex_len = rsqlp_get_leng(scanner);
+  int len_int = rsqlp_get_leng(scanner); /* datatype matches int yyget_leng
+                                          * (yyscan_t yyscanner) in
+                                          * RonDBSQLLexer.l.cpp generated by
+                                          * build_lexer.sh
+                                          */
+  assert(len_int >= 0);
+  size_t lex_len = size_t(len_int);
   char* lex_end = lex_begin + lex_len;
   // Get the location of the error as computed by bison. This is generally
   // correct, but in the case of unexpected end of input, bison claims that the
   // last token is problematic even though it's not.
   char* loc_begin = yylloc->begin;
   char* loc_end = yylloc->end;
-  uint loc_len = loc_end - loc_begin;
+  size_t loc_len = loc_end - loc_begin;
   // If lexer has read no tokens after the error location, then use the error
   // location provided by bison.
   if (loc_end == lex_end)

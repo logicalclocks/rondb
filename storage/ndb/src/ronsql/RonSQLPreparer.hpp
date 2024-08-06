@@ -22,8 +22,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef RonSQLPreparer_hpp_included
-#define RonSQLPreparer_hpp_included 1
+#ifndef STORAGE_NDB_SRC_RONSQL_RONSQLPREPARER_HPP
+#define STORAGE_NDB_SRC_RONSQL_RONSQLPREPARER_HPP 1
 
 #include <cstddef>
 #include <cstdint>
@@ -55,6 +55,25 @@ struct raw_value
   Uint32 len = 0;
 };
 
+/*
+  NdbAPI is not consistent wrt to the datatype used for attrId. For example,
+    int NdbDictionary::Column::getAttrId() const
+  returns a signed attrId while
+    inline const NdbColumnImpl *NdbTableImpl::getColumn(unsigned attrId) const
+  requires an unsigned attrId. There are also
+    int NdbScanFilter::cmp(BinaryCondition cond, int ColId, const void *val,
+                           Uint32 len)
+    int NdbScanFilter::isnotnull(int AttrId)
+  that require a signed attrId and
+    bool NdbAggregator::GroupBy(Int32 col_id)
+    bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id)
+  that require Int32. Here we use a typedef to label, but not solve, this
+  particular mess. This allows us to handle negative return values indicating
+  failure.
+ */
+// todo Change to Uint32 and handle int return values by checking non-negative and then convert
+typedef Int32 NdbAttrId;
+
 class RonSQLPreparer
 {
 public:
@@ -74,6 +93,7 @@ public:
     LEX_UNEXPECTED_EOI_IN_SINGLE_QUOTED_STRING,
     LEX_ILLEGAL_TOKEN,
     LEX_UNEXPECTED_EOI_IN_QUOTED_IDENTIFIER,
+    LEX_LITERAL_INTEGER_TOO_BIG,
     TOO_LONG_UNALIASED_OUTPUT,
     PARSER_ERROR,
   };
@@ -89,21 +109,21 @@ public:
     RonSQLPreparer& m_parser;
     ErrState m_err_state = ErrState::NONE;
     const char* m_err_pos = NULL;
-    uint m_err_len = 0;
+    size_t m_err_len = 0;
   public:
     Context(RonSQLPreparer& parser):
       m_parser(parser)
     {}
-    void set_err_state(ErrState state, char* err_pos, uint err_len);
+    void set_err_state(ErrState state, char* err_pos, size_t err_len);
     AggregationAPICompiler* get_agg();
     ArenaAllocator* get_allocator();
-    uint column_name_to_idx(LexCString);
+    Uint32 column_name_to_idx(LexCString);
     SelectStatement ast_root;
   };
 private:
   // m_conf is a value rather than a pointer to prevent the caller from altering
   // it during the lifetime of RonSQLPreparer.
-  ExecutionParameters m_conf;
+  RonSQLExecParams m_conf;
   enum class Status
   {
     BEGIN,
@@ -115,28 +135,29 @@ private:
   ArenaAllocator* m_aalloc;
   Context m_context;
   DynamicArray<LexCString> m_columns;
-  int32_t* m_column_attrId_map = NULL;
+  NdbAttrId* m_column_attrId_map = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
   yyscan_t m_scanner;
   YY_BUFFER_STATE m_buf;
+  bool m_do_explain = false;
 
   // Index scan
   bool m_do_index_scan = false;
   class IndexScanConfig
   {
   public:
-    uint col_idx;
+    Uint32 col_idx;
     struct Range
     {
       enum class Type { NONE, INCLUSIVE, EXCLUSIVE };
       Type ltype;
-      long lvalue;
+      Int64 lvalue;
       Type htype;
-      long hvalue;
+      Int64 hvalue;
     };
     Range* ranges;
-    uint range_count;
+    Uint32 range_count;
     ConditionalExpression* filter;
   };
   DynamicArray<IndexScanConfig> m_index_scan_config_candidates;
@@ -154,15 +175,16 @@ private:
 
   // Functions used in preparation phase
 public:
-  RonSQLPreparer(ExecutionParameters conf);
+  RonSQLPreparer(RonSQLExecParams conf);
 private:
   void configure();
   void parse();
-  bool has_width(uint pos);
+  bool has_width(size_t pos);
   void load();
   void generate_index_scan_config_candidates();
   void choose_index_scan_config();
   void compile();
+  void determine_explain();
 
   // Functions used in execution phase
 public:

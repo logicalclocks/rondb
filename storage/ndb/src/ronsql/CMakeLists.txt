@@ -59,5 +59,6 @@ TARGET_LINK_LIBRARIES(ronsql_cli ronsql)
 TARGET_LINK_LIBRARIES(ronsql_cli ndbclient_so)
 TARGET_LINK_LIBRARIES(ronsql_cli mytime) # Needed for DATE_SUB etc.
 
-# todo check that KeywordsUnitTest is not included in tarball
+# todo check that unit tests are not included in tarball
 NDB_ADD_TEST(KeywordsUnitTest KeywordsUnitTest.cpp LIBS ronsql ndbclient_so)
+NDB_ADD_TEST(OverflowUnitTest OverflowUnitTest.cpp LIBS ronsql ndbclient_so)

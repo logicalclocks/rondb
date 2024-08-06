@@ -22,11 +22,12 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef ArenaAllocator_hpp_included
-#define ArenaAllocator_hpp_included 1
+#ifndef STORAGE_NDB_SRC_RONSQL_ARENAALLOCATOR_HPP
+#define STORAGE_NDB_SRC_RONSQL_ARENAALLOCATOR_HPP 1
 
 #include <assert.h>
 #include <stdexcept>
+#include "ndb_types.h"
 
 using std::byte;
 
@@ -51,31 +52,31 @@ private:
   static const size_t OVERHEAD = offsetof(struct Page, data);
   static_assert(OVERHEAD < DEFAULT_PAGE_SIZE, "default page size too small");
   struct Page* m_current_page = NULL;
-  uintptr_t m_point = 0;
-  uintptr_t m_stop = 0;
+  UintPtr m_point = 0;
+  UintPtr m_stop = 0;
 # ifdef ARENA_ALLOCATOR_DEBUG
-  unsigned long int m_allocated_by_us = sizeof(ArenaAllocator);
-  unsigned long int m_allocated_by_user = 0;
+  Uint64 m_allocated_by_us = sizeof(ArenaAllocator);
+  Uint64 m_allocated_by_user = 0;
 # endif
   byte m_initial_stack_allocated_page[INITIAL_PAGE_SIZE];
 public:
   ArenaAllocator();
   ~ArenaAllocator();
   void* alloc_bytes(size_t size, size_t alignment);
-  template<typename T> inline T* alloc(uint items);
+  template<typename T> inline T* alloc(Uint32 items);
   void* realloc_bytes(const void* ptr, size_t size, size_t original_size, size_t alignment);
-  template<typename T> inline T* realloc(const T* ptr, uint items, uint original_items);
+  template<typename T> inline T* realloc(const T* ptr, Uint32 items, Uint32 original_items);
 };
 
 template <typename T>
 inline T*
-ArenaAllocator::alloc(uint items)
+ArenaAllocator::alloc(Uint32 items)
 {
   return static_cast<T*>(alloc_bytes(items * sizeof(T), alignof(T)));
 }
 template <typename T>
 inline T*
-ArenaAllocator::realloc(const T* ptr, uint items, uint original_items)
+ArenaAllocator::realloc(const T* ptr, Uint32 items, Uint32 original_items)
 {
   return static_cast<T*>
     (realloc_bytes

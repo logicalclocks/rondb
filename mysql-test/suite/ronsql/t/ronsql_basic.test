@@ -67,18 +67,167 @@ GROUP BY cchar;|
 
 
 
-# --echo Division:
-# todo fix in NdbAggregator.
-# let $QUERY=
-# SELECT cchar as char_gr
-#      , max(14 / 3 + 18 / 5 * sint16)
-#      , sum(14 / 3 + 18 / 5 * cfloat + uint8)
-#      , max(sint8 + 3)
-#      , max((sint8 + 3) / sint8)
-# FROM api_scan
-# WHERE sint8 > 1
-# GROUP BY cchar;|
-# --source suite/ronsql/include/ronsql_compare.inc
+
+--echo Simple mul and modulu integer operations:
+let $QUERY=
+SELECT sint8
+     , count(sint16  *  sint8 ) as t1_count
+     , count(sint32  *  sint16) as t2_count
+     , count(sint32  %  sint24) as t3_count
+     , count(uint32  %  uint24) as t4_count
+     , min(  sint16  *  sint8 ) as t1_min
+     , min(  sint32  *  sint16) as t2_min
+     , min(  sint32  %  sint24) as t3_min
+     , min(  uint32  %  uint24) as t4_min
+     , max(  sint16  *  sint8 ) as t1_max
+     , max(  sint32  *  sint16) as t2_max
+     , max(  sint32  %  sint24) as t3_max
+     , max(  uint32  %  uint24) as t4_max
+FROM api_scan
+WHERE (sint8 >= -20 and sint8 < 5
+       or sint8 > 97 and sint8 <= 113)
+GROUP BY sint8;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo Division:
+let $QUERY=
+SELECT cchar as char_gr
+     , max(14 / 3 + 18 / 5 * sint16)
+     , sum(14 / 3 + 18 / 5 * cfloat + uint8)
+     , max(sint8 + 3)
+     , max((sint8 + 3) / sint8)
+FROM api_scan
+WHERE sint8 > 1
+GROUP BY cchar;|
+#todo Remove this canonicalization when DECIMAL is fixed
+--let $canonicalization_script=s/(\.[0-9])666666666[78]\t/\1667\t/;s/(\t2\.5)\$/\1000/;s/(\.[0-9]{6})[0-9]{3,6}\t/\1\t/g;
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo DIV and integer operations:
+let $QUERY=
+SELECT cchar as char_gr
+     , max(14 DIV 3)
+     , max((sint8 + 3) DIV sint8)
+     , min((sint8 + 3) DIV sint8)
+     , min(14 DIV 3 + 18 DIV 5 * sint16)
+     , max(14 DIV 3 + 18 DIV 5 * sint16)
+     , sum(14 DIV 3 + 18 DIV 5 * sint16)
+     , sum(14 DIV 3)
+     , sum(18 DIV 5)
+     , sum(sint16)
+     , sum(18 DIV 5 * sint16)
+FROM api_scan
+WHERE sint8 <= 1
+GROUP BY cchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo DIV and float operations:
+let $QUERY=
+SELECT cchar as char_gr
+     , count(cfloat DIV 5)                 as t1_count
+     , count(13517565273271354 DIV cfloat) as t2_count
+     , count(cfloat  DIV  1234 * cfloat)   as t3_count
+     , count(cdouble DIV (1234 * cfloat))  as t4_count
+     , min(  cfloat DIV 5)                 as t1_min
+     , min(  13517565273271354 DIV cfloat) as t2_min
+     , min(  cfloat  DIV  1234 * cfloat)   as t3_min
+     , min(  cdouble DIV (1234 * cfloat))  as t4_min
+     , max(  cfloat DIV 5)                 as t1_max
+     , max(  13517565273271354 DIV cfloat) as t2_max
+     , max(  cfloat  DIV  1234 * cfloat)   as t3_max
+     , max(  cdouble DIV (1234 * cfloat))  as t4_max
+     , sum(  cfloat DIV 5)                 as t1_sum
+     , sum(  13517565273271354 DIV cfloat) as t2_sum
+     , sum(  cfloat  DIV  1234 * cfloat)   as t3_sum
+     , sum(  cdouble DIV (1234 * cfloat))  as t4_sum
+FROM api_scan
+WHERE sint8 <= 1
+GROUP BY cchar;|
+#todo Remove this canonicalization when DECIMAL is fixed
+--let $canonicalization_script=s/\t-0\t/\t0\t/;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo More integer division:
+let $QUERY=
+SELECT sint8
+     , count(sint32 DIV sint16) as t1_count
+     , count(sint16 DIV sint8 ) as t2_count
+     , count(sint24 DIV sint16) as t3_count
+     , count(uint24 DIV uint16) as t4_count
+     , min(  sint32 DIV sint16) as t1_min
+     , min(  sint16 DIV sint8 ) as t2_min
+     , min(  sint24 DIV sint16) as t3_min
+     , min(  uint24 DIV uint16) as t4_min
+     , max(  sint32 DIV sint16) as t1_max
+     , max(  sint16 DIV sint8 ) as t2_max
+     , max(  sint24 DIV sint16) as t3_max
+     , max(  uint24 DIV uint16) as t4_max
+     , sum(  sint32 DIV sint16) as t1_sum
+     , sum(  sint16 DIV sint8 ) as t2_sum
+     , sum(  sint24 DIV sint16) as t3_sum
+     , sum(  uint24 DIV uint16) as t4_sum
+FROM api_scan
+WHERE (sint8 >= -20 and sint8 < 5
+       or sint8 > 97 and sint8 <= 113)
+GROUP BY sint8;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Mixed Division:
+let $QUERY=
+SELECT sint8
+     , min( sint32 DIV  sint16  /   sint8 ) as a1t
+     , min((sint32 DIV  sint16) /   sint8 ) as a2t
+     , min( sint32 DIV (sint16  /   sint8)) as a3t
+     , sum( sint32 /    sint16  DIV sint8 ) as b1t
+     , sum((sint32 /    sint16) DIV sint8 ) as b2t
+     , sum( sint32 /   (sint16  DIV sint8)) as b3t
+     , max( uint24 + sint32 / (uint32 % sint32 DIV uint16)) as c
+FROM api_scan
+WHERE (sint8 >= -20 and sint8 < 5
+       or sint8 > 97 and sint8 <= 109)
+      and (sint32 < -100000 or sint32 > 100000)
+GROUP BY sint8;|
+#todo Remove this canonicalization when DECIMAL is fixed
+--let $canonicalization_script=s/\t/\.0000\t/g;s/(\.[0-9]+)\.(0000\t)/\1\2/g;s/(\.[0-9])[0-9]*(\t|\$)/\1\2/g;s/2524649312/2524649310/;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Mixed integer operations:
+let $QUERY=
+SELECT sint8
+     , min( sint32 DIV  sint16  *   sint8 ) as a1
+     , min((sint32 DIV  sint16) *   sint8 ) as a2
+     , min( sint32 DIV (sint16  *   sint8)) as a3
+     , sum( sint32 *    sint16  DIV sint8 ) as b1
+     , sum((sint32 *    sint16) DIV sint8 ) as b2
+     , sum( sint32 *   (sint16  DIV sint8)) as b3
+     , max( sint24 - sint8 * (sint32 % sint24 DIV sint16)) as c1
+     , max( uint24 + uint8 * (uint32 % uint24 DIV uint16)) as c2
+FROM api_scan
+WHERE (sint8 >= -20 and sint8 < 5
+       or sint8 > 97 and sint8 <= 113)
+GROUP BY sint8;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Simple DIV operations with NULL:
+let $QUERY=
+SELECT sint8
+     , count(sint16 DIV ( sint8      % 2)) as odd_count
+     , count(sint16 DIV ((sint8 + 1) % 2)) as evn_count
+     , min(  sint16 DIV ( sint8      % 2)) as odd_min
+     , min(  sint16 DIV ((sint8 + 1) % 2)) as evn_min
+     , max(  sint16 DIV ( sint8      % 2)) as odd_max
+     , max(  sint16 DIV ((sint8 + 1) % 2)) as evn_max
+     , sum(  sint16 DIV ( sint8      % 2)) as odd_sum
+     , sum(  sint16 DIV ((sint8 + 1) % 2)) as evn_sum
+FROM api_scan
+WHERE (sint8 >= -20 and sint8 < 5
+       or sint8 > 97 and sint8 <= 113)
+GROUP BY sint8;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 
 

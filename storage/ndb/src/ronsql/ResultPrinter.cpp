@@ -33,13 +33,12 @@ using std::endl;
 using std::max;
 using std::runtime_error;
 
-#define not_implemented() not_implemented_helper(__FILE__, __LINE__)
-#define not_implemented_helper(file, line) \
-  throw runtime_error(file ":" #line ": Not implemented")
+#define feature_not_implemented(description) \
+  throw runtime_error("RonSQL feature not implemented: " description)
 
 DEFINE_FORMATTER(quoted_identifier, LexCString, {
   os.put('`');
-  for (uint i = 0; i < value.len; i++)
+  for (Uint32 i = 0; i < value.len; i++)
   {
     char ch = value.str[i];
     if (ch == '`')
@@ -58,7 +57,7 @@ static float convert_result_to_float(NdbAggregator::Result result);
 ResultPrinter::ResultPrinter(ArenaAllocator* aalloc,
                              struct SelectStatement* query,
                              DynamicArray<LexCString>* column_names,
-                             ExecutionParameters::QueryOutputFormat output_format,
+                             RonSQLExecParams::OutputFormat output_format,
                              std::basic_ostream<char>* err):
   m_aalloc(aalloc),
   m_query(query),
@@ -74,13 +73,13 @@ ResultPrinter::ResultPrinter(ArenaAllocator* aalloc,
   assert(aalloc != NULL);
   switch (output_format)
   {
-  case ExecutionParameters::QueryOutputFormat::JSON_UTF8:
+  case RonSQLExecParams::OutputFormat::JSON:
     break;
-  case ExecutionParameters::QueryOutputFormat::JSON_ASCII:
+  case RonSQLExecParams::OutputFormat::JSON_ASCII:
     break;
-  case ExecutionParameters::QueryOutputFormat::TSV:
+  case RonSQLExecParams::OutputFormat::TEXT:
     break;
-  case ExecutionParameters::QueryOutputFormat::TSV_DATA:
+  case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
     break;
   default:
     abort();
@@ -107,7 +106,7 @@ ResultPrinter::compile()
   // Populate and validate m_outputs, an array of the SELECT expressions.
   // Calculate number_of_aggregates.
   // Populate m_col_idx_groupby_map.
-  uint number_of_aggregates = 0;
+  Uint32 number_of_aggregates = 0;
   {
     struct Outputs* o = m_query->outputs;
     while(o != NULL)
@@ -116,10 +115,10 @@ ResultPrinter::compile()
       switch (o->type)
       {
       case Outputs::Type::COLUMN:
-        for (uint i = 0; ; i++)
+        for (Uint32 i = 0; ; i++)
         {
           // Validate that the column appears in the GROUP BY clause
-          uint col_idx = o->column.col_idx;
+          Uint32 col_idx = o->column.col_idx;
           if (i >= m_groupby_cols.size())
           {
             assert(m_column_names->size() > col_idx);
@@ -165,7 +164,7 @@ ResultPrinter::compile()
   m_regs_g = m_aalloc->alloc<NdbAggregator::Column>(m_groupby_cols.size());
   m_regs_a = m_aalloc->alloc<NdbAggregator::Result>(number_of_aggregates);
   // Create a correct but non-optimized program
-  for (uint i = 0; i < m_groupby_cols.size(); i++)
+  for (Uint32 i = 0; i < m_groupby_cols.size(); i++)
   {
     Cmd cmd;
     cmd.type = Cmd::Type::STORE_GROUP_BY_COLUMN;
@@ -178,7 +177,7 @@ ResultPrinter::compile()
     cmd.type = Cmd::Type::END_OF_GROUP_BY_COLUMNS;
     m_program.push(cmd);
   }
-  for (uint i = 0; i < number_of_aggregates; i++)
+  for (Uint32 i = 0; i < number_of_aggregates; i++)
   {
     Cmd cmd;
     cmd.type = Cmd::Type::STORE_AGGREGATE;
@@ -193,25 +192,25 @@ ResultPrinter::compile()
   }
   switch (m_output_format)
   {
-  case ExecutionParameters::QueryOutputFormat::TSV:
+  case RonSQLExecParams::OutputFormat::TEXT:
     m_json_output = false;
     m_utf8_output = true;
     m_tsv_output = true;
     m_tsv_headers = true;
     break;
-  case ExecutionParameters::QueryOutputFormat::TSV_DATA:
+  case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
     m_json_output = false;
     m_utf8_output = true;
     m_tsv_output = true;
     m_tsv_headers = false;
     break;
-  case ExecutionParameters::QueryOutputFormat::JSON_UTF8:
+  case RonSQLExecParams::OutputFormat::JSON:
     m_json_output = true;
     m_utf8_output = true;
     m_tsv_output = false;
     m_tsv_headers = false;
     break;
-  case ExecutionParameters::QueryOutputFormat::JSON_ASCII:
+  case RonSQLExecParams::OutputFormat::JSON_ASCII:
     m_json_output = true;
     m_utf8_output = false;
     m_tsv_output = false;
@@ -220,7 +219,7 @@ ResultPrinter::compile()
   default:
     abort();
   }
-  for (uint i = 0; i < m_outputs.size(); i++)
+  for (Uint32 i = 0; i < m_outputs.size(); i++)
   {
     {
       Cmd cmd;
@@ -319,10 +318,10 @@ ResultPrinter::optimize()
 
 void
 ResultPrinter::print_result(NdbAggregator* aggregator,
-                            std::basic_ostream<char>* query_output_stream)
+                            std::basic_ostream<char>* out_stream)
 {
-  assert(query_output_stream != NULL);
-  std::ostream& out = *query_output_stream;
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
   if (m_json_output)
   {
     out << '[';
@@ -354,7 +353,7 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
       {
         // Print the column names.
         bool first_column = true;
-        for (uint i = 0; i < m_outputs.size(); i++)
+        for (Uint32 i = 0; i < m_outputs.size(); i++)
         {
           Outputs* o = m_outputs[i];
           if (first_column) first_column = false; else out << '\t';
@@ -381,7 +380,7 @@ DEFINE_FORMATTER(d2, uint, {
 inline void
 ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& out)
 {
-  for (uint cmd_index = 0; cmd_index < m_program.size(); cmd_index++)
+  for (Uint32 cmd_index = 0; cmd_index < m_program.size(); cmd_index++)
   {
     Cmd& cmd = m_program[cmd_index];
     switch (cmd.type)
@@ -427,15 +426,24 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
     case Cmd::Type::PRINT_GROUP_BY_COLUMN:
       {
         NdbAggregator::Column column = m_regs_g[cmd.print_group_by_column.reg_g];
+        if(column.is_null())
+        {
+          out << "NULL"; // todo Fix for JSON output format
+          break;
+        }
         switch (column.type())
         {
         case NdbDictionary::Column::Type::Undefined:     ///< Undefined. Since this is a result, it means SQL NULL.
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Undefined (NULL)");
         case NdbDictionary::Column::Type::Tinyint:       ///< 8 bit. 1 byte signed integer
-          out << column.data_int8();
+          // Int8 is ultimately defined in terms a char, so we need to type case
+          // in order to print as an integer.
+          out << Int32(column.data_int8());
           break;
         case NdbDictionary::Column::Type::Tinyunsigned:  ///< 8 bit. 1 byte unsigned integer
-          out << column.data_uint8();
+          // Uint8 is ultimately defined in terms a char, so we need to type case
+          // in order to print as an integer.
+          out << Uint32(column.data_uint8());
           break;
         case NdbDictionary::Column::Type::Smallint:      ///< 16 bit. 2 byte signed integer
           out << column.data_int16();
@@ -462,17 +470,17 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:         ///< 32-bit float. 4 bytes float
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Float");
         case NdbDictionary::Column::Type::Double:        ///< 64-bit float. 8 byte float
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Double");
         case NdbDictionary::Column::Type::Olddecimal:    ///< MySQL < 5.0 signed decimal,  Precision, Scale
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Olddecimal");
         case NdbDictionary::Column::Type::Olddecimalunsigned:
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Olddecimalunsigned");
         case NdbDictionary::Column::Type::Decimal:       ///< MySQL >= 5.0 signed decimal,  Precision, Scale
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Decimal");
         case NdbDictionary::Column::Type::Decimalunsigned:
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Decimalunsigned");
         case NdbDictionary::Column::Type::Char:          ///< Len. A fixed array of 1-byte chars
           {
             LexString content = LexString{ column.data(), column.byte_size() };
@@ -514,43 +522,43 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             break;
           }
         case NdbDictionary::Column::Type::Binary:        ///< Len
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Binary");
         case NdbDictionary::Column::Type::Varbinary:     ///< Length bytes: 1, Max: 255
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Varbinary");
         case NdbDictionary::Column::Type::Datetime:      ///< Precision down to 1 sec (sizeof(Datetime) == 8 bytes )
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Datetime");
         case NdbDictionary::Column::Type::Date:          ///< Precision down to 1 day(sizeof(Date) == 4 bytes )
           {
-            uint date = column.data_uint32();
-            uint year = date >> 9;
-            uint month = (date >> 5) & 0xf;
-            uint day = date & 0x1f;
+            Uint32 date = column.data_uint32();
+            Uint32 year = date >> 9;
+            Uint32 month = (date >> 5) & 0xf;
+            Uint32 day = date & 0x1f;
             out << year << "-" << d2(month) << "-" << d2(day);
             // todo There must be a function somewhere that does this, but I can't find it. Maybe in my_time.cc.
             break;
           }
         case NdbDictionary::Column::Type::Blob:          ///< Binary large object (see NdbBlob)
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Blob");
         case NdbDictionary::Column::Type::Text:          ///< Text blob
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Text");
         case NdbDictionary::Column::Type::Bit:           ///< Bit, length specifies no of bits
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Bit");
         case NdbDictionary::Column::Type::Longvarchar:   ///< Length bytes: 2, little-endian
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Longvarchar");
         case NdbDictionary::Column::Type::Longvarbinary: ///< Length bytes: 2, little-endian
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
         case NdbDictionary::Column::Type::Time:          ///< Time without date
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Time");
         case NdbDictionary::Column::Type::Year:          ///< Year 1901-2155 (1 byte)
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Year");
         case NdbDictionary::Column::Type::Timestamp:     ///< Unix time
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Timestamp");
         case NdbDictionary::Column::Type::Time2:         ///< 3 bytes + 0-3 fraction
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Time2");
         case NdbDictionary::Column::Type::Datetime2:     ///< 5 bytes plus 0-3 fraction
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Datetime2");
         case NdbDictionary::Column::Type::Timestamp2:    ///< 4 bytes + 0-3 fraction
-          not_implemented();
+          feature_not_implemented("Print GROUP BY column of type Timestamp2");
         default:
           abort(); // Unknown type
         }
@@ -559,6 +567,11 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
     case Cmd::Type::PRINT_AGGREGATE:
       {
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
+        if(result.is_null())
+        {
+          out << "NULL";
+          break;
+        }
         // todo conform format for sum(int) to mysql CLI
         switch (result.type())
         {
@@ -576,7 +589,6 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
                                 m_tsv_output);
           break;
         case NdbDictionary::Column::Undefined:
-          // Already handled above
           abort();
           break;
         default:
@@ -790,22 +802,22 @@ convert_result_to_float(NdbAggregator::Result result)
 }
 
 void
-ResultPrinter::explain(std::basic_ostream<char>* explain_output_stream)
+ResultPrinter::explain(std::basic_ostream<char>* out_stream)
 {
-  std::ostream& out = *explain_output_stream;
+  std::ostream& out = *out_stream;
   const char* format_description = "";
   switch(m_output_format)
   {
-  case ExecutionParameters::QueryOutputFormat::JSON_UTF8:
+  case RonSQLExecParams::OutputFormat::JSON:
     format_description = "UTF-8 encoded JSON";
     break;
-  case ExecutionParameters::QueryOutputFormat::JSON_ASCII:
+  case RonSQLExecParams::OutputFormat::JSON_ASCII:
     format_description = "ASCII encoded JSON";
     break;
-  case ExecutionParameters::QueryOutputFormat::TSV:
+  case RonSQLExecParams::OutputFormat::TEXT:
     format_description = "mysql-style tab separated";
     break;
-  case ExecutionParameters::QueryOutputFormat::TSV_DATA:
+  case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
     format_description = "mysql-style tab separated, header-less";
     break;
   default:

@@ -3,7 +3,38 @@
 
 ===== dbt3-1.10: queries/mysql/1_2.sql =====
 == Query ==
-
+select
+        sum(l_orderkey),
+        sum(l_partkey),
+        sum(l_suppkey),
+        sum(l_linenumber),
+        sum(l_quantity),
+        sum(l_extendedprice),
+        l_discount,
+        sum(l_tax),
+        l_returnflag,
+        l_linestatus,
+        l_shipDATE,
+        l_commitDATE,
+        l_receiptDATE,
+        l_shipinstruct,
+        l_shipmode,
+        l_comment,
+        count(*)
+from
+        lineitem
+where
+        l_shipDATE <= date_sub('1998-12-01', interval 90 day)
+group by
+        l_discount,
+        l_returnflag,
+        l_linestatus,
+        l_shipDATE,
+        l_commitDATE,
+        l_receiptDATE,
+        l_shipinstruct,
+        l_shipmode,
+        l_comment;
 
 Number of output lines, including header: 5
 

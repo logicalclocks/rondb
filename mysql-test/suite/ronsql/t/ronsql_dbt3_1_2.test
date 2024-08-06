@@ -77,7 +77,7 @@ order by
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 #todo:
-# - EXPLAIN and make sure it does and index scan
+# - EXPLAIN and make sure it does an index scan
 # - Conform output format for aggregation over DECIMAL. Probably, we first need to remove convert-to-double shortcut in NdbAggregator.
 
 

@@ -1,205 +1,211 @@
 ===== Null byte at beginning =====
 Input contains null byte at position 0.
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Null byte in identifier =====
 Input contains null byte at position 8.
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Null byte at end =====
 Input contains null byte at position 17.
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Illegal UTF-8 byte =====
 Syntax error in SQL statement: Bytes 0xf8-0xff are illegal in UTF-8.
 > select aú from tbl;
 !         ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Illegal 0xc0 UTF-8 byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select aÀ from tbl;
 !         ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Illegal 0xc1 UTF-8 byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select aÁ from tbl;
 !         ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 overlong 2-byte sequence =====
 Syntax error in SQL statement: Overlong UTF-8 encoding.
 > select aÁ¡ from tbl;
 !         ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 overlong 3-byte sequence =====
 Syntax error in SQL statement: Overlong UTF-8 encoding.
 > select aàƒ¶ from tbl;
 !         ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too high code point (U+123456) =====
 Syntax error in SQL statement: Unicode code points above U+10FFFF are invalid.
 > select `aô£‘–` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Surrogate (U+dead) =====
 Syntax error in SQL statement: Unicode code points U+D800 -- U+DFFF are invalid, as they correspond to UTF-16 surrogate pairs.
 > select `aíº­` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Non-BMP UTF-8 in identifier =====
 Syntax error in SQL statement: Unicode code points above U+FFFF are not allowed in MySQL identifiers.
 > select `að “—` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unimplemented keyword used as unquoted identifier =====
 Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
 > select zone from tbl;
 !        ^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Incomplete escape sequence in single-quoted string =====
 Syntax error in SQL statement: Incomplete escape sequence in single-quoted string
 > select a from tbl where 'hello\
 !                               ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected EOI in single-quoted string =====
 Syntax error in SQL statement: Unexpected end of input inside single-quoted string
 > select a from tbl where 'hello
 !                         ^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Illegal token =====
 Syntax error in SQL statement: Illegal token
 > select #a from tbl;
 !        ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== EOI inside quoted identifier =====
 Syntax error in SQL statement: Unexpected end of input inside quoted identifier
 > select `a
 !        ^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== EOI inside escaped identifier =====
 Syntax error in SQL statement: Unexpected end of input inside quoted identifier
 > select `bc``de
 !        ^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 2-byte sequence with illegal 2nd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `aÃ` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 2-byte sequence at EOI with 2nd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `tableÃ
 !                       ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence with illegal 2nd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `aá` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence with illegal 3rd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `aáš` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence at EOI with 2nd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `tableá
 !                       ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence at EOI with 3rd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `tableáš
 !                       ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence with illegal 2nd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `að` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence with illegal 3rd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `að ` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence with illegal 4th byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `að “` from tbl;
 !          ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence at EOI with 2nd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `tableð
 !                       ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence at EOI with 3rd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `tableð 
 !                       ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence at EOI with 4th byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `tableð “
 !                       ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Rogue UTF-8 continuation byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select a‰ from tbl;
 !         ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Empty input =====
 Syntax error in SQL statement: Empty input
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Invalid token at beginning =====
 Syntax error in SQL statement: Illegal token
 > select a from tbl;
 ! ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Control character in unquoted identifier =====
 Syntax error in SQL statement: Illegal token
 > select a from tbl;
 !         ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Invalid token at end =====
 Syntax error in SQL statement: Illegal token
 > select a from tbl;
 !                   ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected end of input =====
 Syntax error in SQL statement: Unexpected end of input
 > select a from tbl
 !                  ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
+===== Unexpected end of input at newline =====
+Syntax error in SQL statement: Unexpected end of input
+> select a from tbl
+> 
+! ^
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected at this point =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bcde` from tbl;
 !          ^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected before newline =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bcde`
 !          ^^^^^^
 > from tbl;
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected after newline =====
 Syntax error in SQL statement: Unexpected at this point
 > select a
 > `bcde` from tbl;
 ! ^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected with ending newline =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bcde` from tbl;
 !          ^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected with newline at start =====
 Syntax error in SQL statement: Unexpected at this point
 > 
 > select a `bcde` from tbl;
 !          ^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected containing newline =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bc
 !          ^^^
 > de` from tbl;
 ! ^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected containing two newlines =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `b
@@ -208,125 +214,130 @@ Syntax error in SQL statement: Unexpected at this point
 ! ^^
 > e` from tbl;
 ! ^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected escaped identifier =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bc``de` from tbl;
 !          ^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Two escaped identifiers, 1st unexpected =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bc``de` from `fg``h``i`;
 !          ^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Two escaped identifiers, 2nd unexpected =====
 Syntax error in SQL statement: Unexpected at this point
 > select a, `bc``de` from tbl `fg``h``i`;
 !                             ^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Error marker alignment after 2-byte UTF-8 characters =====
 Syntax error in SQL statement: Unexpected at this point
 > select a
 >       ,rÃ¤ksmÃ¶rgÃ¥s rÃ¤ksmÃ¶rgÃ¥s
 !                   ^^^^^^^^^^
 > from tbl;
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Error marker alignment after 3-byte UTF-8 character =====
 Syntax error in SQL statement: Unexpected at this point
 > select a
 >       ,áš±ab áš±ab
 !            ^^^
 > from tbl;
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Incomplete escape sequence in single-quoted string =====
 Syntax error in SQL statement: Incomplete escape sequence in single-quoted string
 > select a from tbl where 'word\
 !                              ^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Unexpected end of input inside single-quoted string =====
 Syntax error in SQL statement: Unexpected end of input inside single-quoted string
 > select a from tbl where 'word
 !                         ^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== date_add not supported in output =====
 Syntax error in SQL statement: Unexpected at this point
 > select date_add(col1, interval 1 day) from tbl;
 !        ^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Parser stack exhausted =====
-Caught exception: Parser stack exceeded its maximum depth.
+ronsql_cli caught exception: Parser stack exceeded its maximum depth.
 ===== Too long unquoted identifier in column name =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in column name =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in column name, although characters < 64 =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÃ¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶Ã¶` from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted alias =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a as aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;
 !             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long quoted alias =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a as `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;
 !             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted identifier in WHERE =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl where aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 !                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in WHERE =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl where `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
 !                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted identifier in GROUP BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl group by aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in GROUP BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl group by `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted identifier in ORDER BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl ORDER BY aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in ORDER BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl ORDER BY `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Too long unaliased select expression =====
 Syntax error in SQL statement: Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.
 > select max ((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))) from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Caught exception: Syntax error.
+ronsql_cli caught exception: Syntax error.
 ===== Select a column that is not in group by clause =====
 Syntax error: SELECT expression refers to ungrouped column `b` outside of aggregate function.
 You can either add this column to the GROUP BY clause, or use it within an aggregate function e.g. Sum(`b`).
-Caught exception: Ungrouped column in non-aggregated SELECT expression.
+ronsql_cli caught exception: Ungrouped column in non-aggregated SELECT expression.
 ===== Non-aggregation query =====
 This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries.
-Caught exception: Not an aggregate query.
+ronsql_cli caught exception: Not an aggregate query.
 ===== Non-aggregation query with GROUP BY =====
 This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries.
-Caught exception: Not an aggregate query.
+ronsql_cli caught exception: Not an aggregate query.
+===== Too big integer constant =====
+Syntax error in SQL statement: Literal integer too big.
+> select sum(a) from tbl where a < 9223372036854775808;
+!                                  ^^^^^^^^^^^^^^^^^^^
+ronsql_cli caught exception: Syntax error.
 ===== Simple =====
 Query parse tree:
 SELECT
@@ -346,8 +357,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== Arithmetics =====
 Query parse tree:
@@ -395,8 +406,8 @@ Count  A03  r02 A03:COUNT <- r02:(((`b` / `c`) / `f`) + (((`d` * `e`) / `f`) * (
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 28 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 17 instructions.
 
 ===== Quoted ID =====
 Query parse tree:
@@ -433,8 +444,8 @@ Min    A01  r00 A01:MIN <- r00:((`e``e` + `f`) / (`g` - `h`))
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 28 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 17 instructions.
 
 ===== UTF-8 2-byte character in unquoted identifier =====
 Query parse tree:
@@ -455,8 +466,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== UTF-8 2-byte character in quoted identifier =====
 Query parse tree:
@@ -477,8 +488,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== UTF-8 3-byte character in unquoted identifier =====
 Query parse tree:
@@ -499,8 +510,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== UTF-8 3-byte character in quoted identifier =====
 Query parse tree:
@@ -521,8 +532,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== Control character in quoted identifier =====
 Query parse tree:
@@ -543,8 +554,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== Select and group by with different quotation =====
 Query parse tree:
@@ -574,8 +585,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 28 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 17 instructions.
 
 ===== has_item regression =====
 Query parse tree:
@@ -631,8 +642,8 @@ Min    A02  r00 A02:MIN <- r00:((`ee` + `f`) / (`g` - `h`))
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 18 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 11 instructions.
 
 ===== Alias =====
 Query parse tree:
@@ -667,8 +678,8 @@ Count  A00  r01 A00:COUNT <- r01:(`h` + (`i` / `j``j`))
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 29 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 18 instructions.
 
 ===== Integer constants =====
 Query parse tree:
@@ -697,8 +708,8 @@ Max    A01  r00 A01:MAX <- r00:(`col3` - 792)
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 18 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 11 instructions.
 
 ===== Avg =====
 Query parse tree:
@@ -733,8 +744,8 @@ Min    A03  r00 A03:MIN <- r00:`col2`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 37 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 22 instructions.
 
 ===== Count all =====
 Query parse tree:
@@ -773,8 +784,8 @@ Min    A04  r00 A04:MIN <- r00:`col2`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 42 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 25 instructions.
 
 ===== Condition =====
 Query parse tree:
@@ -817,8 +828,8 @@ Max    A01  r00 A01:MAX <- r00:`col3`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 23 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 14 instructions.
 
 ===== Complex operator precedence =====
 Query parse tree:
@@ -939,8 +950,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== Single quoted strings =====
 Query parse tree:
@@ -965,8 +976,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== Compound strings =====
 Query parse tree:
@@ -989,8 +1000,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== date_add =====
 Query parse tree:
@@ -1019,8 +1030,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== date_sub =====
 Query parse tree:
@@ -1049,8 +1060,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== extract =====
 Query parse tree:
@@ -1077,8 +1088,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== order by =====
 Query parse tree:
@@ -1101,8 +1112,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== group and order by 2 columns =====
 Query parse tree:
@@ -1129,8 +1140,8 @@ Max    A00  r00 A00:MAX <- r00:`col3`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 18 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 11 instructions.
 
 ===== order by ASC/DESC =====
 Query parse tree:
@@ -1156,8 +1167,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== Unimplemented keyword used as quoted identifier =====
 Query parse tree:
@@ -1178,8 +1189,8 @@ Max    A00  r00 A00:MAX <- r00:`b`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 13 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
 
 ===== Negation =====
 Query parse tree:
@@ -1244,8 +1255,8 @@ Count  A04  r00 A04:COUNT <- r00:(`a` - (0 - (0 - (`b` - 1))))
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 33 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 20 instructions.
 
 ===== Almost too long unaliased select expression =====
 Query parse tree:
@@ -1262,8 +1273,8 @@ Max    A00  r00 A00:MAX <- r00:`a`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 8 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
 
 ===== Aliased expression that would be too long without alias =====
 Query parse tree:
@@ -1280,8 +1291,8 @@ Max    A00  r00 A00:MAX <- r00:`a`
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 8 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
 
 ===== Compiler test 1 =====
 Query parse tree:
@@ -1367,8 +1378,8 @@ Count  A08  r01 A08:COUNT <- r01:(`apples` + (`apples` + `apples`))
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 56 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 33 instructions.
 
 ===== Compiler test 2 =====
 Query parse tree:
@@ -1439,8 +1450,8 @@ Sum    A06  r00 A06:SUM <- r00:((((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) 
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 38 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 23 instructions.
 
 ===== dbt3-1.10/queries/mysql/1_2.sql =====
 Query parse tree:
@@ -1508,6 +1519,55 @@ Count  A08  r06 A08:COUNT <- r06:1
 Execute as table scan.
 (There is no NDB connection, but this can be determined based on the WHERE clause.)
 
-Output in UTF-8 encoded JSON format.
-The program for post-processing and output has 54 instructions.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 33 instructions.
+
+===== Complex aggregation with % and DIV =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`min(a+b-c%d*e/f-543*g DIV h)`
+   = A0:Min((((`a` + `b`) - (((`c` % `d`) * `e`) / `f`)) - ((543 * `g`) DIV `h`)))
+  Out_2:`sum(a%b DIV c%d DIV e%f)`
+   = A1:Sum((((((`a` % `b`) DIV `c`) % `d`) DIV `e`) % `f`))
+FROM tbl
+GROUP BY
+  C0:`col1`
+
+Aggregation program (27 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`a`
+Load   r01  C02 r01 = C02:`b`
+Mov    r02  r00 r02 = r00:`a`
+Add    r00  r01 r00:`a` += r01:`b`
+Load   r03  C03 r03 = C03:`c`
+Load   r04  C04 r04 = C04:`d`
+Mov    r05  r03 r05 = r03:`c`
+Rem    r03  r04 r03:`c` %= r04:`d`
+Load   r06  C05 r06 = C05:`e`
+Mul    r03  r06 r03:(`c` % `d`) *= r06:`e`
+Load   r07  C06 r07 = C06:`f`
+Div    r03  r07 r03:((`c` % `d`) * `e`) /= r07:`f`
+Minus  r00  r03 r00:(`a` + `b`) -= r03:(((`c` % `d`) * `e`) / `f`)
+LoadI  r03  I00 r03 = I00:543
+Load   r01  C07 r01 = C07:`g`
+Mul    r03  r01 r03:543 *= r01:`g`
+Load   r01  C08 r01 = C08:`h`
+DivInt r03  r01 r03:(543 * `g`) DIV= r01:`h`
+Minus  r00  r03 r00:((`a` + `b`) - (((`c` % `d`) * `e`) / `f`)) -= r03:((543 * `g`) DIV `h`)
+Min    A00  r00 A00:MIN <- r00:(((`a` + `b`) - (((`c` % `d`) * `e`) / `f`)) - ((543 * `g`) DIV `h`))
+Load   r00  C02 r00 = C02:`b`
+Rem    r02  r00 r02:`a` %= r00:`b`
+DivInt r02  r05 r02:(`a` % `b`) DIV= r05:`c`
+Rem    r02  r04 r02:((`a` % `b`) DIV `c`) %= r04:`d`
+DivInt r02  r06 r02:(((`a` % `b`) DIV `c`) % `d`) DIV= r06:`e`
+Rem    r02  r07 r02:((((`a` % `b`) DIV `c`) % `d`) DIV `e`) %= r07:`f`
+Sum    A01  r02 A01:SUM <- r02:(((((`a` % `b`) DIV `c`) % `d`) DIV `e`) % `f`)
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 11 instructions.
 

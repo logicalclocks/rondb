@@ -93,11 +93,12 @@
 #include <stdio.h>
 #include "RonSQLParser.y.hpp"
 #include "Keywords.hpp"
-#define YY_DECL int yylex(RSQLP_STYPE* yylval_param, RSQLP_LTYPE* yylloc_param, yyscan_t yyscanner)
+#define YY_DECL TokenKind yylex(RSQLP_STYPE* yylval_param, RSQLP_LTYPE* yylloc_param, yyscan_t yyscanner)
+#define rsqlp_leng     ({ assert(yyleng >= 0); size_t(yyleng); })
 #define lloc_this_rule() do \
   { \
     yylloc->begin = yytext; \
-    yylloc->end = yytext + yyleng; \
+    yylloc->end = yytext + rsqlp_leng; \
   } while (0)
 #define keyword(token) do { \
   lloc_this_rule(); \
@@ -241,13 +242,30 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
 [ \t\r\n] ; // ignore whitespace
 
 [0-9]+\.[0-9]+ {
+  char hold_char = yytext[rsqlp_leng];
+  yytext[rsqlp_leng] = char(0);
   yylval->fval = atof(yytext);
+  yytext[rsqlp_leng] = hold_char;
   lloc_this_rule();
   return T_FLOAT;
 }
 
 [0-9]+ {
-  yylval->ival = atoi(yytext);
+  if (rsqlp_leng > 19) {
+    return_err_for_this_rule(LITERAL_INTEGER_TOO_BIG);
+  }
+  if (rsqlp_leng == 19) {
+    constexpr const char* maxInt64Str = "9223372036854775807";
+    for (Uint32 i = 0; i < 19; i++) {
+      if (yytext[i] > maxInt64Str[i]) {
+        return_err_for_this_rule(LITERAL_INTEGER_TOO_BIG);
+      }
+    }
+  }
+  char hold_char = yytext[rsqlp_leng];
+  yytext[rsqlp_leng] = char(0);
+  yylval->bival = atoll(yytext); // todo Is this portable?
+  yytext[rsqlp_leng] = hold_char;
   lloc_this_rule();
   return T_INT;
 }
@@ -263,7 +281,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
 "+"       keyword(PLUS);
 ","       keyword(COMMA);
 "-"       keyword(MINUS);
-"/"       keyword(DIVIDE);
+"/"       keyword(SLASH);
 ";"       keyword(SEMICOLON);
 "<"       keyword(LT);
 "<<"      keyword(BITSHIFT_LEFT);
@@ -278,28 +296,31 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
 "||"      keyword(OR);
 
 [a-z_]{1,18} {
-  assert(yyleng <= max_strlen_for_keyword_implemented_in_ronsql);
+  // The max keyword length needs to be hard-coded in the rule regexp above.
+  static_assert(18 == max_strlen_for_keyword_implemented_in_ronsql);
+  assert(rsqlp_leng <= max_strlen_for_keyword_implemented_in_ronsql);
   lloc_this_rule();
   // This rule matches all keywords that use [a-z_] characters and some unquoted identifiers.
   //
   // Create an upper-case c-string
-  char cword[19];
-  memcpy(cword, yytext, yyleng);
-  cword[yyleng] = char(0); // The difference between char(0) and '\0' is that
+  char cword[max_strlen_for_keyword_implemented_in_ronsql + 1];
+  memcpy(cword, yytext, rsqlp_leng);
+  cword[rsqlp_leng] = char(0); // The difference between char(0) and '\0' is that
                            // the former escapes post-editing, see
                            // build_lexer.sh.
-  for (int i = 0; i < yyleng; i++)
+  for (Uint32 i = 0; i < rsqlp_leng; i++)
   {
     cword[i] &= 0xdf; // This works for uppercasing [A-Za-z_] but not digits. So
                       // far, no implemented keyword has digits.
   }
   // Binary search for cword in keywords_implemented_in_ronsql list, returning
   // value if found
-  int low = 0;
-  int high = number_of_keywords_implemented_in_ronsql - 1;
+  // Variables low, high and mid need to be signed since `high = mid - 1` below can result in a negative value.
+  Int32 low = 0;
+  Int32 high = (Int32)number_of_keywords_implemented_in_ronsql - 1;
   while (low <= high)
   {
-    int mid = (low + high) / 2;
+    Int32 mid = (low + high) / 2;
     int cmp = strcmp(cword, keywords_implemented_in_ronsql[mid].text);
     if (cmp < 0)
     {
@@ -334,7 +355,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
   high = number_of_keywords_defined_in_mysql - 1;
   while (low <= high)
   {
-    int mid = (low + high) / 2;
+    Uint32 mid = (low + high) / 2;
     int cmp = strcmp(cword, keywords_defined_in_mysql[mid]);
     if (cmp < 0)
     {
@@ -351,8 +372,8 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
   }
   // cword is not a keyword, therefore it is an unquoted identifier.
   // todo: Decide whether to disallow unquoted identifiers altogether.
-  yylval->str = LexString{yytext, size_t(yyleng)};
-  if (yyleng > 64)
+  yylval->str = LexString{yytext, rsqlp_leng};
+  if (rsqlp_leng > 64)
   {
     // return_err(TOO_LONG_IDENTIFIER);
     // However, this should not happen since the rule only matches up to 18
@@ -374,9 +395,10 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
   * rules matching with equal length, flex selects the one mentioned first. So,
   * since the keywords are defined first, they take precedence.
   */
-  yylval->str = LexString{yytext, size_t(yyleng)};
+  // todo Do we need to check that it is not a reserved keyword?
+  yylval->str = LexString{yytext, rsqlp_leng};
   lloc_this_rule();
-  if (yyleng > 64)
+  if (rsqlp_leng > 64)
   {
     return_err(TOO_LONG_IDENTIFIER);
   }
@@ -389,7 +411,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
   yylloc->begin = yytext;
 }
 <QUOTED_IDENTIFIER>{QUOTED_IDENTIFIER_CHARACTER_EXCEPT_BACKTICK}+ {
-  yylval->str = yylval->str.concat(LexString{ yytext, size_t(yyleng) },
+  yylval->str = yylval->str.concat(LexString{ yytext, rsqlp_leng },
                                    context->get_allocator());
 }
 <QUOTED_IDENTIFIER>`` {
@@ -397,7 +419,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
                                    context->get_allocator());
 }
 <QUOTED_IDENTIFIER>` {
-  yylloc->end = yytext + yyleng;
+  yylloc->end = yytext + rsqlp_leng;
   BEGIN(INITIAL);
   if (yylval->str.len > 64)
   {
@@ -422,7 +444,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
   yylloc->begin = yytext;
 }
 <SINGLE_QUOTED_STRING>{SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH}+ {
-  yylval->str = yylval->str.concat(LexString{ yytext, size_t(yyleng) },
+  yylval->str = yylval->str.concat(LexString{ yytext, rsqlp_leng },
                                    context->get_allocator());
 }
 <SINGLE_QUOTED_STRING>\047\047 {
@@ -430,7 +452,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
                                    context->get_allocator());
 }
 <SINGLE_QUOTED_STRING>\047 {
-  yylloc->end = yytext + yyleng;
+  yylloc->end = yytext + rsqlp_leng;
   BEGIN(INITIAL);
   return T_STRING;
 }

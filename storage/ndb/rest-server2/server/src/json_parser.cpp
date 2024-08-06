@@ -803,6 +803,33 @@ RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &c
   return CRS_Status::SUCCESS.status;
 }
 
+// todo-ronsql Should we conform to the rest of RDRS by capitalizing these JSON keys?
+DEFINE_STRUCT_PARSER(RonSQLParams,
+                     ELEMENT(query,        query)
+                     ELEMENT(database,     database)
+                     ELEMENT(explainMode,  explainMode)
+                     ELEMENT(outputFormat, outputFormat)
+                     ELEMENT(operationId,  operationId)
+                     )
+
+RS_Status JSONParser::ronsql_parse(size_t threadId, simdjson::padded_string_view reqBody,
+                                   RonSQLParams &reqStruct) {
+  try {
+    try {
+      doc[threadId] = parser[threadId].iterate(reqBody).value();
+      parse(reqStruct, doc[threadId].get_object());
+      assert_end_of_doc(doc[threadId]);
+    }
+    catch (simdjson::simdjson_error& e) {
+      throw ConfigParseError(simdjson::error_message(e.error()));
+    }
+  }
+  catch (ConfigParseError& e) {
+    return handle_parse_error(e, reqBody, doc[threadId]);
+  }
+  return CRS_Status::SUCCESS.status;
+}
+
 RS_Status
 JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view reqBody,
                                 feature_store_data_structs::FeatureStoreRequest &reqStruct) {

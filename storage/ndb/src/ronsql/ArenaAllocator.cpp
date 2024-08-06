@@ -27,8 +27,8 @@
 
 ArenaAllocator::ArenaAllocator()
 {
-  m_point = reinterpret_cast<uintptr_t>(m_initial_stack_allocated_page);
-  m_stop = reinterpret_cast<uintptr_t>(m_initial_stack_allocated_page) + INITIAL_PAGE_SIZE;
+  m_point = reinterpret_cast<UintPtr>(m_initial_stack_allocated_page);
+  m_stop = reinterpret_cast<UintPtr>(m_initial_stack_allocated_page) + INITIAL_PAGE_SIZE;
 }
 
 ArenaAllocator::~ArenaAllocator()
@@ -52,8 +52,8 @@ ArenaAllocator::~ArenaAllocator()
  * `ptr <= aligned && aligned % align == 0`. This is similar in purpose to
  * std::align, but non-destructive. Note that `align` must be a power of two.
  */
-inline uintptr_t
-aligned(size_t align, uintptr_t ptr)
+inline UintPtr
+aligned(size_t align, UintPtr ptr)
 {
   return (ptr - 1u + align) & -align;
 }
@@ -62,7 +62,7 @@ void*
 ArenaAllocator::alloc_bytes(size_t size, size_t alignment)
 {
   m_point = aligned(alignment, m_point);
-  uintptr_t new_point = m_point + size;
+  UintPtr new_point = m_point + size;
   if (new_point > m_stop)
   {
     if (0x40000000 <= 2 * size + OVERHEAD)
@@ -85,8 +85,8 @@ ArenaAllocator::alloc_bytes(size_t size, size_t alignment)
 #   endif
     new_page->next = m_current_page;
     m_current_page = new_page;
-    m_point = reinterpret_cast<uintptr_t>(new_page->data);
-    m_stop = reinterpret_cast<uintptr_t>(new_page) + m_page_size;
+    m_point = reinterpret_cast<UintPtr>(new_page->data);
+    m_stop = reinterpret_cast<UintPtr>(new_page) + m_page_size;
     m_point = aligned(alignment, m_point);
     new_point = m_point + size;
     assert(new_point < m_stop);

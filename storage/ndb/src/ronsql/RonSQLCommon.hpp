@@ -22,8 +22,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef RonSQLCommon_hpp_included
-#define RonSQLCommon_hpp_included 1
+#ifndef STORAGE_NDB_SRC_RONSQL_RONSQLCOMMON_HPP
+#define STORAGE_NDB_SRC_RONSQL_RONSQLCOMMON_HPP 1
 
 #include "Ndb.hpp"
 #include "NdbOperation.hpp"
@@ -31,47 +31,49 @@
 #include "ArenaAllocator.hpp"
 #include "LexString.hpp"
 
-struct ExecutionParameters
+#define ARRAY_LEN(x) (sizeof(x) / sizeof(x[0]))
+
+typedef Int32 TokenKind; /* The type of the T_* values used to indicate token
+                          * type. These values are also used in the parse tree.
+                          */
+
+struct RonSQLExecParams
 {
   char* sql_buffer = NULL;
   size_t sql_len = 0;
-  ArenaAllocator* aalloc;
+  ArenaAllocator* aalloc = NULL;
   Ndb* ndb = NULL;
-  enum class ExecutionMode
+  enum class ExplainMode
   {
-    ALLOW_BOTH_QUERY_AND_EXPLAIN, // Explain if EXPLAIN keyword is present in
-                                  // SQL code, otherwise query.
-    ALLOW_QUERY_ONLY,             // Throw an exception if EXPLAIN keyword is
-                                  // present in SQL code, otherwise query.
-    ALLOW_EXPLAIN_ONLY,           // Explain if EXPLAIN keyword is present in
-                                  // SQL code, otherwise throw an exception.
-    QUERY_OVERRIDE,               // Query regardless of whether EXPLAIN keyword
-                                  // is present in SQL code.
-    EXPLAIN_OVERRIDE,             // Explain regardless of whether EXPLAIN
-                                  // keyword is present in SQL code.
+             // SELECT causes: | EXPLAIN SELECT causes: | Ndb connection required:
+    ALLOW,   // SELECT         | EXPLAIN SELECT         | Yes
+    FORBID,  // SELECT         | Exception              | Yes
+    REQUIRE, // Exception      | EXPLAIN SELECT         | No
+    REMOVE,  // SELECT         | SELECT                 | Yes
+    FORCE,   // EXPLAIN SELECT | EXPLAIN SELECT         | No
   };
-  ExecutionMode mode = ExecutionMode::ALLOW_BOTH_QUERY_AND_EXPLAIN;
-  std::basic_ostream<char>* query_output_stream = NULL;
-  enum class QueryOutputFormat
+  ExplainMode explain_mode = ExplainMode::ALLOW;
+  std::basic_ostream<char>* out_stream = NULL;
+  enum class OutputFormat
   {
-    JSON_UTF8,  // Output a JSON representation of the result set. Characters
-                // with code point U+0080 and above are encoded as UTF-8.
-    JSON_ASCII, // Output a JSON representation of the result set. Characters
-                // with code point U+0080 and above are encoded using \u escape
-                // sequences, meaning the output stream will only contain ASCII
-                // characters 0x00 to 0x7f.
-    TSV,        // Mimic mysql tab-separated output with headers
-    TSV_DATA,   // Mimic mysql tab-separated output without headers
+    JSON,          // Output a JSON representation of the result set or EXPLAIN
+                   // output. Characters with code point U+0080 and above are
+                   // encoded as UTF-8.
+    JSON_ASCII,    // Output a JSON representation of the result set or EXPLAIN
+                   // output. Characters with code point U+007f and above are
+                   // encoded using \u escape sequences, meaning the output stream
+                   // will only contain ASCII characters 0x0a, 0x20 -- 0x7e.
+    TEXT,          // For query output, mimic mysql tab-separated output with
+                   // headers. For EXPLAIN output, use a plain text format.
+    TEXT_NOHEADER, // Same as TEXT, except suppress the header line for query
+                   // output.
   };
-  QueryOutputFormat query_output_format = QueryOutputFormat::JSON_UTF8;
-  std::basic_ostream<char>* explain_output_stream = NULL;
-  enum class ExplainOutputFormat
-  {
-    TEXT,
-    JSON_UTF8, // See comment above
-  };
-  ExplainOutputFormat explain_output_format = ExplainOutputFormat::TEXT;
-  std::basic_ostream<char>* err_output_stream = NULL;
+  OutputFormat output_format = OutputFormat::JSON;
+  std::basic_ostream<char>* err_stream = NULL;
+  const char* operation_id = NULL; // Only used with RDRS
+  bool* do_explain = NULL; // If not NULL, use this to inform the caller whether
+                           // we EXPLAIN. This is needed by RDRS to determine
+                           // content type.
 };
 
 // Forward declaration used in struct Outputs below
@@ -93,19 +95,19 @@ struct Outputs
   {
     struct
     {
-      uint col_idx;
+      Uint32 col_idx;
     } column;
     struct
     {
-      int fun;
+      TokenKind fun;
       AggregationAPICompiler_Expr* arg;
-      uint agg_index;
+      Uint32 agg_index;
     } aggregate;
     struct
     {
       AggregationAPICompiler_Expr* arg;
-      uint agg_index_sum;
-      uint agg_index_count;
+      Uint32 agg_index_sum;
+      Uint32 agg_index_count;
     } avg;
   };
   struct Outputs* next;
@@ -113,7 +115,7 @@ struct Outputs
 
 struct ConditionalExpression
 {
-  int op;
+  TokenKind op;
   union
   {
     struct
@@ -121,8 +123,8 @@ struct ConditionalExpression
       struct ConditionalExpression* left;
       struct ConditionalExpression* right;
     } args;
-    uint col_idx;
-    long int constant_integer;
+    Uint32 col_idx;
+    Int64 constant_integer;
     struct
     {
       struct ConditionalExpression* arg;
@@ -131,11 +133,11 @@ struct ConditionalExpression
     struct
     {
       struct ConditionalExpression* arg;
-      int interval_type;
+      TokenKind interval_type;
     } interval;
     struct
     {
-      int interval_type;
+      TokenKind interval_type;
       struct ConditionalExpression* arg;
     } extract;
     LexString string;
@@ -144,13 +146,13 @@ struct ConditionalExpression
 
 struct GroupbyColumns
 {
-  uint col_idx;
+  Uint32 col_idx;
   struct GroupbyColumns* next;
 };
 
 struct OrderbyColumns
 {
-  uint col_idx;
+  Uint32 col_idx;
   bool ascending;
   struct OrderbyColumns* next;
 };

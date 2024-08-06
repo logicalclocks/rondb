@@ -30,35 +30,35 @@
 using std::cerr;
 using std::cout;
 using std::endl;
+typedef int ExitCode;
 
 struct Config
 {
   bool help = false;
-  ExecutionParameters params;
+  RonSQLExecParams params;
   bool time_info = false;
   const char* connectstring = NULL;
   const char* database = NULL;
 };
 
 static void print_help(const char* argv0);
-static int parse_cmdline_arguments(int argc, char** argv, Config& config);
+static ExitCode parse_cmdline_arguments(int argc, char** argv, Config& config);
 static void read_stdin(ArenaAllocator* aalloc, char** buffer, size_t* buffer_len);
-static int run_ronsql(ExecutionParameters& params);
+static ExitCode run_ronsql(RonSQLExecParams& params);
 
-int
+ExitCode
 main(int argc, char** argv)
 {
   Config config;
-  ExecutionParameters& params = config.params;
+  RonSQLExecParams& params = config.params;
   ArenaAllocator aalloc;
   params.aalloc = &aalloc;
-  params.query_output_stream = &cout;
-  params.explain_output_stream = &cout;
-  params.err_output_stream = &cerr;
-  params.query_output_format = isatty(fileno(stdin)) && isatty(fileno(stdout))
-    ? ExecutionParameters::QueryOutputFormat::JSON_UTF8
-    : ExecutionParameters::QueryOutputFormat::TSV;
-  int exit_code = 0;
+  params.out_stream = &cout;
+  params.err_stream = &cerr;
+  params.output_format = isatty(fileno(stdin)) && isatty(fileno(stdout))
+    ? RonSQLExecParams::OutputFormat::JSON
+    : RonSQLExecParams::OutputFormat::TEXT;
+  ExitCode exit_code = 0;
 
   // Parse command-line arguments
   exit_code = parse_cmdline_arguments(argc, argv, config);
@@ -152,36 +152,32 @@ print_help(const char* argv0)
     "  -D, --database name           Database name. Required if --connect-string is\n"
     "                                given.\n"
     "  -e, --execute query           Execute query and output results.\n"
-    "  -s, --silent                  Set query output format to TSV if stdin and\n"
-    "                                stdout are both ttys, otherwise to TSV_DATA.\n"
+    "  -s, --silent                  Set query output format to TEXT if stdin and\n"
+    "                                stdout are both ttys, otherwise to\n"
+    "                                TEXT_NOHEADER.\n"
     "Options specific to RonSQL:\n"
     "  --execute-file <FILE>         Execute query from file.\n"
     "  --connect-string <STRING>     Ndb connection string (If not given, then no\n"
     "                                connection is made. Without a connection,\n"
     "                                queries are not supported and explain output\n"
-    "                                will be somewhat limited. Execution mode must be\n"
-    "                                set to either ALLOW_EXPLAIN_ONLY or\n"
-    "                                EXPLAIN_OVERRIDE.)\n"
-    // See RonSQLCommon.hpp for comment about execution mode
-    "  --execution-mode <MODE>       Set execution mode. <MODE> can be one of:\n"
-    "                                - ALLOW_BOTH_QUERY_AND_EXPLAIN (default)\n"
-    "                                - ALLOW_QUERY_ONLY\n"
-    "                                - ALLOW_EXPLAIN_ONLY\n"
-    "                                - QUERY_OVERRIDE\n"
-    "                                - EXPLAIN_OVERRIDE\n"
-    // See RonSQLCommon.hpp for comment about query output format
-    "  --query-output-format <FMT>   Set query output format. <FMT> can be one of:\n"
-    "                                - JSON_UTF8, default if stdin and stdout are\n"
-    "                                  both ttys, i.e. the same case where mysql\n"
-    "                                  defaults to formatted table output.\n"
+    "                                will be somewhat limited. Explain mode must be\n"
+    "                                set to either REQUIRE or FORCE.\n"
+    // See RonSQLCommon.hpp for comment about explain mode
+    "  --explain-mode <MODE>         Set explain mode. <MODE> can be one of:\n"
+    "                                - ALLOW (default)\n"
+    "                                - FORBID\n"
+    "                                - REQUIRE\n"
+    "                                - REMOVE\n"
+    "                                - FORCE\n"
+    // See RonSQLCommon.hpp for comment about output format
+    "  --output-format <FMT>         Set query output format. <FMT> can be one of:\n"
+    "                                - JSON, default if stdin and stdout are both\n"
+    "                                  ttys, i.e. the same case where mysql defaults\n"
+    "                                  to formatted table output.\n"
     "                                - JSON_ASCII\n"
-    "                                - TSV, default if stdin or stdout is not a tty.\n"
-    "                                  This mimics mysql behavior."
-    "                                - TSV_DATA\n"
-    // See RonSQLCommon.hpp for comment about explain output format
-    "  --explain-output-format <FMT> Set explain output format. <FMT> can be one of:\n"
-    "                                - TEXT (default)\n"
-    "                                - JSON_UTF8\n"
+    "                                - TEXT, default if stdin or stdout is not a tty.\n"
+    "                                  This mimics mysql behavior.\n"
+    "                                - TEXT_NOHEADER\n"
     ;
 }
 
@@ -192,19 +188,18 @@ print_help(const char* argv0)
     return 1; \
   } while (0);
 
-static int
+static ExitCode
 parse_cmdline_arguments(int argc, char** argv, Config& config)
 {
-  ExecutionParameters& params = config.params;
-  int opt;
+  RonSQLExecParams& params = config.params;
+  int opt; // datatype to matches getopt_long
 
   // Unique values for long-only options
   enum {
     OPT_EXECUTE_FILE = 256,
     OPT_CONNECT_STRING,
-    OPT_EXECUTION_MODE,
-    OPT_QUERY_OUTPUT_FORMAT,
-    OPT_EXPLAIN_OUTPUT_FORMAT,
+    OPT_EXPLAIN_MODE,
+    OPT_OUTPUT_FORMAT,
   };
 
   static struct option long_options[] = {
@@ -215,9 +210,8 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
     {"silent", required_argument, 0, 's'},
     {"execute-file", required_argument, 0, OPT_EXECUTE_FILE},
     {"connect-string", required_argument, 0, OPT_CONNECT_STRING},
-    {"execution-mode", required_argument, 0, OPT_EXECUTION_MODE},
-    {"query-output-format", required_argument, 0, OPT_QUERY_OUTPUT_FORMAT},
-    {"explain-output-format", required_argument, 0, OPT_EXPLAIN_OUTPUT_FORMAT},
+    {"explain-mode", required_argument, 0, OPT_EXPLAIN_MODE},
+    {"output-format", required_argument, 0, OPT_OUTPUT_FORMAT},
     {0, 0, 0, 0}
   };
 
@@ -242,7 +236,7 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
       {
         static_assert(sizeof(char) == 1);
         char* sql_query = optarg;
-        uint sql_query_len = strlen(sql_query);
+        size_t sql_query_len = strlen(sql_query);
         size_t parse_len = sql_query_len + 2;
         char* parse_str = params.aalloc->alloc<char>(parse_len);
         memcpy(parse_str, sql_query, sql_query_len);
@@ -253,9 +247,9 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
       }
       break;
     case 's':
-      params.query_output_format = isatty(fileno(stdin)) && isatty(fileno(stdout))
-        ? ExecutionParameters::QueryOutputFormat::TSV
-        : ExecutionParameters::QueryOutputFormat::TSV_DATA;
+      params.output_format = isatty(fileno(stdin)) && isatty(fileno(stdout))
+        ? RonSQLExecParams::OutputFormat::TEXT
+        : RonSQLExecParams::OutputFormat::TEXT_NOHEADER;
       break;
     case OPT_EXECUTE_FILE:
       if (params.sql_buffer != NULL)
@@ -292,39 +286,31 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
       }
       break;
     case OPT_CONNECT_STRING: config.connectstring = optarg; break;
-    case OPT_EXECUTION_MODE:
-      if (strcmp(optarg, "ALLOW_BOTH_QUERY_AND_EXPLAIN") == 0)
-        params.mode = ExecutionParameters::ExecutionMode::ALLOW_BOTH_QUERY_AND_EXPLAIN;
-      else if (strcmp(optarg, "ALLOW_QUERY_ONLY") == 0)
-        params.mode = ExecutionParameters::ExecutionMode::ALLOW_QUERY_ONLY;
-      else if (strcmp(optarg, "ALLOW_EXPLAIN_ONLY") == 0)
-        params.mode = ExecutionParameters::ExecutionMode::ALLOW_EXPLAIN_ONLY;
-      else if (strcmp(optarg, "QUERY_OVERRIDE") == 0)
-        params.mode = ExecutionParameters::ExecutionMode::QUERY_OVERRIDE;
-      else if (strcmp(optarg, "EXPLAIN_OVERRIDE") == 0)
-        params.mode = ExecutionParameters::ExecutionMode::EXPLAIN_OVERRIDE;
+    case OPT_EXPLAIN_MODE:
+      if (strcmp(optarg, "ALLOW") == 0)
+        params.explain_mode = RonSQLExecParams::ExplainMode::ALLOW;
+      else if (strcmp(optarg, "FORBID") == 0)
+        params.explain_mode = RonSQLExecParams::ExplainMode::FORBID;
+      else if (strcmp(optarg, "REQUIRE") == 0)
+        params.explain_mode = RonSQLExecParams::ExplainMode::REQUIRE;
+      else if (strcmp(optarg, "REMOVE") == 0)
+        params.explain_mode = RonSQLExecParams::ExplainMode::REMOVE;
+      else if (strcmp(optarg, "FORCE") == 0)
+        params.explain_mode = RonSQLExecParams::ExplainMode::FORCE;
       else
-        ARG_FAIL("Invalid execution mode.");
+        ARG_FAIL("Invalid explain mode.");
       break;
-    case OPT_QUERY_OUTPUT_FORMAT:
-      if (strcmp(optarg, "JSON_UTF8") == 0)
-        params.query_output_format = ExecutionParameters::QueryOutputFormat::JSON_UTF8;
+    case OPT_OUTPUT_FORMAT:
+      if (strcmp(optarg, "JSON") == 0)
+        params.output_format = RonSQLExecParams::OutputFormat::JSON;
       else if (strcmp(optarg, "JSON_ASCII") == 0)
-        params.query_output_format = ExecutionParameters::QueryOutputFormat::JSON_ASCII;
-      else if (strcmp(optarg, "TSV") == 0)
-        params.query_output_format = ExecutionParameters::QueryOutputFormat::TSV;
-      else if (strcmp(optarg, "TSV_DATA") == 0)
-        params.query_output_format = ExecutionParameters::QueryOutputFormat::TSV_DATA;
+        params.output_format = RonSQLExecParams::OutputFormat::JSON_ASCII;
+      else if (strcmp(optarg, "TEXT") == 0)
+        params.output_format = RonSQLExecParams::OutputFormat::TEXT;
+      else if (strcmp(optarg, "TEXT_NOHEADER") == 0)
+        params.output_format = RonSQLExecParams::OutputFormat::TEXT_NOHEADER;
       else
         ARG_FAIL("Invalid query output format.");
-      break;
-    case OPT_EXPLAIN_OUTPUT_FORMAT:
-      if (strcmp(optarg, "TEXT") == 0)
-        params.explain_output_format = ExecutionParameters::ExplainOutputFormat::TEXT;
-      else if (strcmp(optarg, "JSON_UTF8") == 0)
-        params.explain_output_format = ExecutionParameters::ExplainOutputFormat::JSON_UTF8;
-      else
-        ARG_FAIL("Invalid explain output format.");
       break;
     default:
       ARG_FAIL("Invalid option.");
@@ -346,9 +332,9 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
 static void
 read_stdin(ArenaAllocator* aalloc, char** buffer, size_t* buffer_len)
 {
-  uint alloclen = 1024;
+  size_t alloclen = 1024;
   char* buf = aalloc->alloc<char>(alloclen);
-  uint contentlen = 0;
+  size_t contentlen = 0;
   while (true)
   {
     assert(contentlen < alloclen);
@@ -360,7 +346,7 @@ read_stdin(ArenaAllocator* aalloc, char** buffer, size_t* buffer_len)
     {
       break;
     }
-    int error = ferror(stdin);
+    int error = ferror(stdin); // datatype matches ferror
     if (error)
     {
       throw std::runtime_error("Error reading from stdin.");
@@ -382,8 +368,8 @@ read_stdin(ArenaAllocator* aalloc, char** buffer, size_t* buffer_len)
   *buffer_len = contentlen + 2;
 }
 
-static int
-run_ronsql(ExecutionParameters& params)
+static ExitCode
+run_ronsql(RonSQLExecParams& params)
 {
   try
   {
@@ -393,14 +379,14 @@ run_ronsql(ExecutionParameters& params)
   }
   catch (RonSQLPreparer::TemporaryError& e)
   {
-    cerr << "Caught temporary error: " << e.what() << endl;
+    cerr << "ronsql_cli caught temporary error: " << e.what() << endl;
     // Use exit code 3 to distinguish temporary errors.
     // Avoid exit code 2 as it is used by e.g. bash.
       return 3;
   }
   catch (std::runtime_error& e)
   {
-    cerr << "Caught exception: " << e.what() << endl;
+    cerr << "ronsql_cli caught exception: " << e.what() << endl;
     return 1;
   }
   // Unreachable

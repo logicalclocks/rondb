@@ -22,8 +22,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef ResultPrinter_hpp_included
-#define ResultPrinter_hpp_included 1
+#ifndef STORAGE_NDB_SRC_RONSQL_RESULTPRINTER_HPP
+#define STORAGE_NDB_SRC_RONSQL_RESULTPRINTER_HPP 1
 
 #include "NdbAggregator.hpp"
 
@@ -40,7 +40,7 @@ private:
   ArenaAllocator* m_aalloc;
   struct SelectStatement* m_query;
   DynamicArray<LexCString>* m_column_names;
-  ExecutionParameters::QueryOutputFormat m_output_format;
+  RonSQLExecParams::OutputFormat m_output_format;
   std::basic_ostream<char>* m_err;
 
   // Program
@@ -63,26 +63,26 @@ private:
     {
       struct
       {
-        uint reg_g;
-        uint group_by_idx; // Only used for assertions
+        Uint32 reg_g;
+        Uint32 group_by_idx; // Only used for assertions
       } store_group_by_column;
       struct
       {
-        uint reg_a;
-        uint agg_index; // Only used for assertions
+        Uint32 reg_a;
+        Uint32 agg_index; // Only used for assertions
       } store_aggregate;
       struct
       {
-        uint reg_g;
+        Uint32 reg_g;
       } print_group_by_column;
       struct
       {
-        uint reg_a;
+        Uint32 reg_a;
       } print_aggregate;
       struct
       {
-        uint reg_a_sum;
-        uint reg_a_count;
+        Uint32 reg_a_sum;
+        Uint32 reg_a_count;
       } print_avg;
       struct
       {
@@ -112,11 +112,11 @@ public:
   ResultPrinter(ArenaAllocator* aalloc,
                 struct SelectStatement* query,
                 DynamicArray<LexCString>* column_names,
-                ExecutionParameters::QueryOutputFormat output_format,
+                RonSQLExecParams::OutputFormat output_format,
                 std::basic_ostream<char>* err);
   void print_result(NdbAggregator* aggregator,
-                    std::basic_ostream<char>* query_output_stream);
-  void explain(std::basic_ostream<char>* explain_output_stream);
+                    std::basic_ostream<char>* out_stream);
+  void explain(std::basic_ostream<char>* out_stream);
 };
 
 #endif

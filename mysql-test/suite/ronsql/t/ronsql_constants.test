@@ -1,0 +1,70 @@
+--source include/have_ndb.inc
+
+--let PARSE_TEST=$RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE 2>&1 -e
+
+--echo ===== Max Int64 integer constant =====
+--exec $PARSE_TEST 'select sum(9223372036854775807) from tbl;'
+--exec $PARSE_TEST 'select sum(-9223372036854775807) from tbl;'
+--exec $PARSE_TEST 'select sum(-9223372036854775807-1) from tbl;'
+
+--echo ===== Integer folding =====
+--exec $PARSE_TEST 'select sum(((45 % 3) + (67 DIV 8) * 7 - -8) / 5) from tbl;'
+
+--echo ===== Too big integer constant =====
+--error 1
+--exec $PARSE_TEST 'select sum(9223372036854775808) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum(-9223372036854775808) from tbl;'
+
+--echo ===== Overflow in integer constant folding =====
+--error 1
+--exec $PARSE_TEST 'select sum(-9223372036854775807-2) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum(922337203685477580*11) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum(-922337203685477580*11) from tbl;'
+
+--echo ===== Divide by zero in integer constant folding =====
+--error 1
+--exec $PARSE_TEST 'select sum(9223372036854775807 DIV 0) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum((-9223372036854775807-1) DIV 0) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum((4+5) DIV 0) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum(1 DIV 0) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum(1 % 0) from tbl;'
+
+CREATE TABLE tbl (sint8 TINYINT NULL) ENGINE=NDB;
+INSERT INTO tbl (sint8) VALUES (7);
+
+--echo Integer constant folding:
+DELIMITER |;
+let $QUERY=
+SELECT sum( 9223372036854775807)
+     , sum(-9223372036854775807-1)
+     , sum(-9223372036854775807  +  123456)
+     , sum( 9223372036854775807  -  123456)
+     , sum(  922337203685477580  *  10)
+     , sum( -922337203685477580  *  10)
+     , sum( 9223372036854775807 DIV 10)
+     , sum(-9223372036854775807 DIV 10)
+     , sum( 9223372036854775807  %  10)
+     , sum(-9223372036854775807  %  10)
+     , sum( 123456)
+     , sum(-123456-1)
+     , sum(-123456  +  123456)
+     , sum( 123456  -  123456)
+     , sum( 123456  *  10)
+     , sum(-123456  *  10)
+     , sum( 123456 DIV 10)
+     , sum(-123456 DIV 10)
+     , sum( 123456  %  10)
+     , sum(-123456  %  10)
+FROM tbl;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Cleanup
+DELIMITER ;|
+DROP TABLE tbl;

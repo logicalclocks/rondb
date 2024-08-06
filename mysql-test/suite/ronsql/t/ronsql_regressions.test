@@ -3,7 +3,7 @@
 --echo Regression tests for bugs found during development of pushdown aggregation and
 --echo RonSQL.
 
-#todo: Fix and uncomment
+#todo: Fix and uncomment after implementing DECIMAL-based aggregation
 #--echo uint64/int64 overflow crashes data node and/or produces the wrong result
 ## Rows with testcase=1 and testcase=2 produces wrong result.
 ## Rows with testcase=3 crashes the data node.
@@ -28,14 +28,24 @@
 #--source suite/ronsql/include/ronsql_compare.inc
 #DROP TABLE tbl;
 
-#todo: Fix and uncomment
-#--echo No GROUP BY crashes data node
-#CREATE TABLE tbl (a SMALLINT UNSIGNED NOT NULL) ENGINE=NDB;
-#INSERT INTO tbl VALUES (0), (1), (2), (3), (4), (5);
-## Without GROUP BY, with WHERE
-#--let $QUERY=SELECT sum(a) FROM tbl WHERE a < 5;
-#--source suite/ronsql/include/ronsql_compare.inc
-## Without GROUP BY, without WHERE
-#--let $QUERY=SELECT sum(a) FROM tbl;
+--echo No GROUP BY crashes data node
+CREATE TABLE tbl (a SMALLINT UNSIGNED NOT NULL) ENGINE=NDB;
+INSERT INTO tbl VALUES (0), (1), (2), (3), (4), (5);
+# Without GROUP BY, with WHERE
+--let $QUERY=SELECT sum(a) FROM tbl WHERE a < 5;
+--source suite/ronsql/include/ronsql_compare.inc
+# Without GROUP BY, without WHERE
+--let $QUERY=SELECT sum(a) FROM tbl;
+--source suite/ronsql/include/ronsql_compare.inc
+DROP TABLE tbl;
+
+#todo: Fix and uncomment after implementing DECIMAL-based aggregation
+#--echo Wrong result with DIV
+#CREATE TABLE tbl (
+#  sint8 TINYINT NOT NULL,
+#  sint16 SMALLINT NOT NULL,
+#  sint24 MEDIUMINT NOT NULL) ENGINE=NDB;
+#INSERT INTO tbl VALUES (-13, 22106, -1);
+#let $QUERY=SELECT min(sint8 DIV (sint24 / sint16)) FROM tbl;
 #--source suite/ronsql/include/ronsql_compare.inc
 #DROP TABLE tbl;

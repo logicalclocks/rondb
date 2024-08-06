@@ -22,8 +22,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef define_formatter_hpp_included
-#define define_formatter_hpp_included 1
+#ifndef STORAGE_NDB_SRC_RONSQL_DEFINE_FORMATTER_HPP
+#define STORAGE_NDB_SRC_RONSQL_DEFINE_FORMATTER_HPP 1
 
 /*
  * The DEFINE_FORMATTER macro is used to define a custom formatter for
@@ -94,10 +94,11 @@ template<typename T>using  DEFINE_FORMATTER__addconst_t =
 // is one issue: A formatter is essentially an overload for operator<<, which
 // will be dispatched/selected based on the type returned by the formatter.
 // Therefore, the return type of each formatter, i.e. combination of formatter
-// name and value type, has to be distinct. We define a wrapper class for this purpose. We need a unique name for each such
-// class. DEFINE_FORMATTER__GENSYM is a helper macro that generates a unique
-// identifier given a prefix. It needs two levels of indirection in order to
-// correctly expand before concatenating. For example:
+// name and value type, has to be distinct. We define a wrapper class for this
+// purpose. We need a unique name for each such class. DEFINE_FORMATTER__GENSYM
+// is a helper macro that generates a unique identifier given a prefix. It needs
+// two levels of indirection in order to correctly expand before concatenating.
+// For example:
 //   DEFINE_FORMATTER__GENSYM(hello)
 //   => DEFINE_FORMATTER__CONCAT1(hello, __COUNTER__)
 //   => DEFINE_FORMATTER__CONCAT2(hello, 7)

@@ -92,7 +92,8 @@ target_link_libraries(${PROJECT_NAME}
                       ${RDRS_CRYPTO_LIBRARY}
                       ndbclient_so
                       ndbgeneral
-                      rdrs_string)
+                      rdrs_string
+                      ronsql)
 
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME} 
    DESTINATION ${INSTALL_BINDIR} COMPONENT Development
@@ -115,6 +116,7 @@ target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_AVRO_INCLUDE_DIR})
 target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
 
+# todo-ronsql is ronsql needed for rdrs2_lib? It's used in ../test/api_key_test
 target_link_libraries(rdrs2_lib
                       base64
                       ${AVROCPP_LIBRARIES}
@@ -127,4 +129,5 @@ target_link_libraries(rdrs2_lib
                       ndbclient_so
                       ndbgeneral
                       rdrs_string
-                      mysqlclient)
+                      mysqlclient
+                      ronsql)

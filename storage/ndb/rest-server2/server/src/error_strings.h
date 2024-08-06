@@ -116,6 +116,10 @@ constexpr char ERROR_063[]                    = "Field validation for 'RelativeU
 constexpr int ERROR_CODE_INVALID_RELATIVE_URL = 63;
 constexpr char ERROR_064[]                    = "Field validation for 'Body' failed";
 constexpr int ERROR_CODE_INVALID_BODY         = 64;
+constexpr char ERROR_065[]                    = "RonSQL temporary error";
+constexpr int ERROR_CODE_RONSQL_TEMPORARY     = 65;
+constexpr char ERROR_066[]                    = "RonSQL general error";
+constexpr int ERROR_CODE_RONSQL_PERMANENT     = 66;
 #endif
 
 #ifdef __cplusplus

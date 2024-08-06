@@ -30,10 +30,10 @@
 --let XF4=`SELECT char(0xf4)`
 --let XFA=`SELECT char(0xfa)`
 
---let PARSE_TEST=$RONSQL_CLI_EXE --query-output-format JSON_UTF8 --execution-mode=EXPLAIN_OVERRIDE 2>&1 -e
+--let PARSE_TEST=$RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE 2>&1 -e
 --let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
 --let REMOVE_TRAILING_NEWLINE_IN_QUERY_FILE=perl -i -pe 'chomp if eof' $QUERY_FILE
---let PARSE_TEST_QUERY_FILE=$RONSQL_CLI_EXE --query-output-format JSON_UTF8 --execution-mode=EXPLAIN_OVERRIDE 2>&1 --execute-file $QUERY_FILE
+--let PARSE_TEST_QUERY_FILE=$RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE 2>&1 --execute-file $QUERY_FILE
 --let REPLACE_CAPITAL_N_WITH_NULL_IN_QUERY_FILE=perl -i -pe 's/N/\0/g' $QUERY_FILE
 
 
@@ -210,7 +210,13 @@ EOF
 --error 1
 --exec $PARSE_TEST 'select a from tbl'
 
-# todo If the above still works, add Unexpected end of input at newline
+--echo ===== Unexpected end of input at newline =====
+--write_file $QUERY_FILE
+select a from tbl
+EOF
+--error 1
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
 
 --echo ===== Unexpected at this point =====
 --error 1
@@ -388,6 +394,10 @@ EOF
 --echo ===== Non-aggregation query with GROUP BY =====
 --error 1
 --exec $PARSE_TEST 'select a from tbl group by a;'
+
+--echo ===== Too big integer constant =====
+--error 1
+--exec $PARSE_TEST 'select sum(a) from tbl where a < 9223372036854775808;'
 
 # Test successes
 
@@ -585,6 +595,17 @@ group by
 order by
         l_returnflag,
         l_linestatus;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== Complex aggregation with % and DIV =====
+--write_file $QUERY_FILE
+select col1
+      ,min(a+b-c%d*e/f-543*g DIV h)
+      ,sum(a%b DIV c%d DIV e%f)
+from tbl
+group by col1;
 EOF
 --exec $PARSE_TEST_QUERY_FILE
 --remove_file $QUERY_FILE

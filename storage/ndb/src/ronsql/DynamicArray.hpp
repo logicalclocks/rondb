@@ -22,8 +22,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef DynamicArray_hpp_included
-#define DynamicArray_hpp_included 1
+#ifndef STORAGE_NDB_SRC_RONSQL_DYNAMICARRAY_HPP
+#define STORAGE_NDB_SRC_RONSQL_DYNAMICARRAY_HPP 1
 
 #include "ArenaAllocator.hpp"
 
@@ -48,13 +48,13 @@ private:
    * we'll know before we create any DynamicArray. Especially the BITS parameter
    * has a significant impact on memory use.
    */
-  static const uint INITIAL_PAGES_CAPACITY = 8;
-  static const uint BITS = 5;
-  static const uint ITEMS_PER_PAGE = (1 << BITS);
-  static const uint IDX_MASK = (1<<BITS)-1;
+  static const Uint32 INITIAL_PAGES_CAPACITY = 8;
+  static const Uint32 BITS = 5;
+  static const Uint32 ITEMS_PER_PAGE = (1 << BITS);
+  static const Uint32 IDX_MASK = (1<<BITS)-1;
   T** pages;
-  uint item_count;
-  uint pages_capacity;
+  Uint32 item_count;
+  Uint32 pages_capacity;
   ArenaAllocator* allocator;
 public:
   DynamicArray(ArenaAllocator* alloc) :
@@ -79,15 +79,15 @@ public:
       // overflow_error inherits from runtime_error.
       throw std::overflow_error("DynamicArray::push: item count overflow");
     }
-    uint page = (item_count >> BITS);
-    uint idx = item_count & IDX_MASK;
+    Uint32 page = (item_count >> BITS);
+    Uint32 idx = item_count & IDX_MASK;
     if (idx == 0)
     {
       if (page >= pages_capacity)
       {
-        uint newCapacity = (INITIAL_PAGES_CAPACITY) > (pages_capacity * 2)
-                           ? (INITIAL_PAGES_CAPACITY)
-                           : (pages_capacity * 2);
+        Uint32 newCapacity = (INITIAL_PAGES_CAPACITY) > (pages_capacity * 2)
+                             ? (INITIAL_PAGES_CAPACITY)
+                             : (pages_capacity * 2);
         T** newPages = allocator->alloc<T*>(newCapacity);
         if (pages_capacity > 0)
         {
@@ -104,12 +104,12 @@ public:
   /*
    * Item access by index
    */
-  T& operator[](uint index)
+  T& operator[](Uint32 index)
   {
     assert(index < item_count);
     return pages[index >> BITS][index & IDX_MASK];
   }
-  const T& operator[](uint index) const
+  const T& operator[](Uint32 index) const
   {
     assert(0 <= index && index < item_count);
     return pages[index >> BITS][index & IDX_MASK];
@@ -117,7 +117,7 @@ public:
   /*
    * Return the number of items in the array.
    */
-  uint size() const
+  Uint32 size() const
   {
     return item_count;
   }
@@ -127,12 +127,12 @@ public:
    */
   bool has_item(T* item)
   {
-    uint lastPage = (item_count-1) >> BITS;
-    for (uint page = 0; page <= lastPage; page++)
+    Uint32 lastPage = (item_count-1) >> BITS;
+    for (Uint32 page = 0; page <= lastPage; page++)
     {
       if (pages[page] <= item && item < pages[page] + ITEMS_PER_PAGE)
       {
-        uint idx = item - pages[page];
+        Uint32 idx = item - pages[page];
         T* wouldBe = &pages[page][idx];
         return ((page << BITS) | idx) < item_count && wouldBe == item;
       }
@@ -144,7 +144,7 @@ public:
    */
   T& last_item()
   {
-    uint index = item_count-1;
+    Uint32 index = item_count-1;
     return pages[index >> BITS][index & IDX_MASK];
   }
   /*
