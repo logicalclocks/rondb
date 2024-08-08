@@ -20,6 +20,8 @@ jobs:
     env:
       REPO_HOPSWORKS_HOSTNAME: repo.hops.works
       REPO_HOPSWORKS_USER: repo_upload
+      # The corresponding public key is added to the authorized_keys of the
+      # repo_upload user on the repo.hops.works server
       SSH_PRIVATE_KEY: ${{ secrets.REPO_UPLOAD_SSH_PRIVATE_KEY }}
 
     steps:
