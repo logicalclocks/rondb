@@ -31,9 +31,20 @@ jobs:
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H $REPO_HOPSWORKS_HOSTNAME >> ~/.ssh/known_hosts
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          REPO_PUBLIC_KEY="repo.hops.works ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvVvdl0/YDPeKNbg0AnCQQcFIXJV2WhuxcgQsjwj2+l"
+
+          # Check if known_hosts file exists, if not create it
+          KNOWN_HOSTS_FILE="~/.ssh/known_hosts"
+          if [ ! -f "$KNOWN_HOSTS_FILE" ]; then
+            touch "$KNOWN_HOSTS_FILE"
+            chmod 644 "$KNOWN_HOSTS_FILE"
+          fi
+
+          # Add the host key to the known_hosts file if it is not already present
+          grep -qxF "$REPO_PUBLIC_KEY" "$KNOWN_HOSTS_FILE" || echo "$REPO_PUBLIC_KEY" >> "$KNOWN_HOSTS_FILE"
 
       - run: cat ./MYSQL_VERSION
 
