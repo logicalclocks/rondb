@@ -22,6 +22,7 @@
 #include "db_operations/pk/pkr_operation.hpp"
 #include "error_strings.h"
 #include "logger.hpp"
+#include "rdrs_dal.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "retry_handler.hpp"
 #include "status.hpp"
@@ -192,3 +193,5 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
 void register_callbacks(Callbacks cbs) {
   RDRSLogger::setLogCallBackFns(cbs);
 }
+
+CRS_Status CRS_Status::SUCCESS = CRS_Status(HTTP_CODE::SUCCESS);

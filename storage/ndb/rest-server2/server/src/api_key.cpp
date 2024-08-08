@@ -22,13 +22,9 @@
 #include "pk_data_structs.hpp"
 #include "rdrs_dal.hpp"
 
-#include <boost/thread/lock_types.hpp>
-#include <boost/thread/pthread/shared_mutex.hpp>
 #include <chrono>
-#include <cstddef>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <openssl/evp.h>
 #include <pthread.h>
 #include <thread>
@@ -51,7 +47,7 @@ RS_Status Cache::validate_api_key_format(const std::string &apiKey) {
   if (splits.size() != 2 || splits[0].length() != 16 || splits[1].length() < 1) {
     return CRS_Status(HTTP_CODE::CLIENT_ERROR, "the apikey has an incorrect format").status;
   }
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::validate_api_key(const std::string &apiKey, const std::initializer_list<std::string>& dbs) {
@@ -61,7 +57,7 @@ RS_Status Cache::validate_api_key(const std::string &apiKey, const std::initiali
   }
 
   if (dbs.size() == 0) {
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   // Authenticates only using the the cache. No request sent to backend
@@ -77,7 +73,7 @@ RS_Status Cache::validate_api_key(const std::string &apiKey, const std::initiali
            ", allowed access: " + std::string(allowedAccess ? "true" : "false"))
               .c_str()).status;
     }
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   // Update the cache by fetching the API key from backend
@@ -96,7 +92,7 @@ RS_Status Cache::validate_api_key(const std::string &apiKey, const std::initiali
                          .c_str()).status;
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey, const std::initializer_list<std::string>& dbs) {
@@ -106,7 +102,7 @@ RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey, const std:
   }
 
   if (dbs.size() == 0) {
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   HopsworksAPIKey key;
@@ -129,7 +125,7 @@ RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey, const std:
     }
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::cleanup() {
@@ -144,7 +140,7 @@ RS_Status Cache::cleanup() {
 
   key2UserDBsCache = std::unordered_map<std::string, std::shared_ptr<UserDBs>>();
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::update_cache(const std::string &apiKey) {
@@ -172,7 +168,7 @@ RS_Status Cache::update_cache(const std::string &apiKey) {
     // Double-check pattern in case another thread has already updated the cache
     if (key2UserDBsCache.find(apiKey) ==
         key2UserDBsCache.end()) {  // the entry still does not exists. insert a new row
-      auto udbs                = std::shared_ptr<UserDBs>(new UserDBs());
+      auto udbs                = std::shared_ptr<UserDBs>(new UserDBs()); // Copy constructor deleted
       udbs->refreshInterval    = refresh_interval_with_jitter();
       key2UserDBsCache[apiKey] = udbs;
       start_update_ticker(apiKey, key2UserDBsCache[apiKey]);
@@ -181,14 +177,14 @@ RS_Status Cache::update_cache(const std::string &apiKey) {
     key2UserDBsCache[apiKey]->refCount++;
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::update_record(std::vector<std::string> dbs,
                                UserDBs *udbs) {
   // caller holds the lock
   if (udbs->evicted) {
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   std::unordered_map<std::string, bool> dbsMap;
@@ -199,7 +195,7 @@ RS_Status Cache::update_record(std::vector<std::string> dbs,
   udbs->userDBs     = dbsMap;
   udbs->lastUpdated = std::chrono::system_clock::now();
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::chrono::system_clock::time_point Cache::last_used(const std::string &apiKey) {
@@ -229,7 +225,7 @@ RS_Status Cache::start_update_ticker(const std::string &apiKey,
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::cache_entry_updater(const std::string &apiKey,
@@ -281,7 +277,7 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
 
     if (udbs->evicted) {
       // no need for cleanup as evicter cleans up
-      return CRS_Status().status;
+      return CRS_Status::SUCCESS.status;
     }
 
     pthread_rwlock_rdlock(&udbs->rowLock);
@@ -293,6 +289,7 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
       if (udbs->refCount <= 0) {
         udbs->evicted = true;
         key2UserDBsCache.erase(apiKey);
+        // TODO debug logger that cache entry removed
       } else {
         continue;
       }
@@ -300,7 +297,7 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
     }
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::find_and_validate(const std::string &apiKey, bool &keyFoundInCache,
@@ -336,7 +333,7 @@ RS_Status Cache::find_and_validate(const std::string &apiKey, bool &keyFoundInCa
   }
   allowedAccess = true;
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::find_and_validate_again(const std::string &apiKey, bool &keyFoundInCache,
@@ -377,7 +374,7 @@ RS_Status Cache::find_and_validate_again(const std::string &apiKey, bool &keyFou
   // Decrement the reference count
   userDBs->refCount--;
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::authenticate_user(const std::string &apiKey, HopsworksAPIKey &key) {
@@ -401,7 +398,7 @@ RS_Status Cache::authenticate_user(const std::string &apiKey, HopsworksAPIKey &k
     return CRS_Status(HTTP_CODE::CLIENT_ERROR, "bad API key").status;
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::get_user_databases(HopsworksAPIKey &key, std::vector<std::string> &dbs) {
@@ -409,7 +406,7 @@ RS_Status Cache::get_user_databases(HopsworksAPIKey &key, std::vector<std::strin
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::get_user_projects(int uid, std::vector<std::string> &dbs) {
@@ -427,7 +424,7 @@ RS_Status Cache::get_user_projects(int uid, std::vector<std::string> &dbs) {
     free(projects[i]);
   }
   free(projects);
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status Cache::get_api_key(const std::string &userKey, HopsworksAPIKey &key) {
@@ -435,7 +432,7 @@ RS_Status Cache::get_api_key(const std::string &userKey, HopsworksAPIKey &key) {
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::vector<std::string> split(const std::string &str, char delim) {

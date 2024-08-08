@@ -235,10 +235,8 @@ void test_load(const std::shared_ptr<Cache>& cache, const AllConfigs& conf) {
 
 	bool pass = true;
 	int failCount = 0;
-	int count = 0;
 	for (int i = 0; i < numOps; ++i) {
 		bool val = ch.pop();
-		count++;
 		if (!val) {
 			pass = false;
 			failCount++;
@@ -374,10 +372,8 @@ void test_load_with_bad_keys(const std::shared_ptr<Cache>& cache, const AllConfi
 
 	bool pass = true;
 	int failCount = 0;
-	int count = 0;
 	for (int i = 0; i < numOps; ++i) {
 		bool val = ch.pop();
-		count++;
 		if (!val) {
 			pass = false;
 			failCount++;

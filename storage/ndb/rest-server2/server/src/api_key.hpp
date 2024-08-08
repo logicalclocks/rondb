@@ -21,7 +21,6 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_API_KEY_HPP_
 
 #include "rdrs_hopsworks_dal.h"
-#include "config_structs.hpp"
 #include "pk_data_structs.hpp"
 
 #include <atomic>
@@ -30,14 +29,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <boost/thread/lock_types.hpp>
-#include <boost/thread/pthread/shared_mutex.hpp>
-#include <boost/thread/shared_mutex.hpp>
-#include <thread>
 #include <chrono>
-#include <future>
-#include <iostream>
-#include <map>
 #include <pthread.h>
 
 class ReadLock {

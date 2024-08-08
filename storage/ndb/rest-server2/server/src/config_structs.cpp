@@ -43,7 +43,7 @@ Internal::Internal()
 
 RS_Status Internal::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 GRPC::GRPC() : enable(false), serverIP(DEFAULT_ROUTE), serverPort(DEFAULT_GRPC_PORT) {
@@ -51,7 +51,7 @@ GRPC::GRPC() : enable(false), serverIP(DEFAULT_ROUTE), serverPort(DEFAULT_GRPC_P
 
 RS_Status GRPC::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 REST::REST()
@@ -61,7 +61,7 @@ REST::REST()
 
 RS_Status REST::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string REST::string() {
@@ -135,7 +135,7 @@ TestParameters::TestParameters() {
 
 RS_Status TestParameters::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 Mgmd::Mgmd() : IP(LOCALHOST), port(MGMD_DEFAULT_PORT) {
@@ -160,7 +160,7 @@ TLS::TLS() : enableTLS(false), requireAndVerifyClientCert(false) {
 
 RS_Status TLS::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string TLS::string() {
@@ -178,7 +178,7 @@ APIKey::APIKey()
 
 RS_Status APIKey::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string APIKey::string() {
@@ -192,7 +192,7 @@ Security::Security() : tls(TLS()), apiKey(APIKey()) {
 
 RS_Status Security::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string Security::string() {
@@ -207,7 +207,7 @@ Testing::Testing() : mySQL(MySQL()), mySQLMetadataCluster(MySQL()) {
 
 RS_Status Testing::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string Testing::string() {
@@ -221,7 +221,7 @@ MySQL::MySQL() : servers({MySQLServer()}), user(ROOT) {
 
 RS_Status MySQL::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string MySQL::string() {
@@ -246,7 +246,7 @@ std::string MySQLServer::string() {
 
 RS_Status MySQLServer::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string RonDB::generate_Mgmd_connect_string() {
@@ -305,7 +305,7 @@ RS_Status AllConfigs::validate() {
     return status;
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status AllConfigs::set_all(AllConfigs newConfigs) {
