@@ -49,4 +49,34 @@ class FeatureStoreCtrl : public drogon::HttpController<FeatureStoreCtrl> {
 
 extern metadata::FeatureViewMetaDataCache fvMetaCache;
 
+std::shared_ptr<RestErrorCode>
+ValidatePrimaryKey(const std::unordered_map<std::string, std::vector<char>> &entries,
+                   const std::unordered_map<std::string, std::string> &features);
+std::shared_ptr<RestErrorCode>
+ValidatePassedFeatures(const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
+                       const std::unordered_map<std::string, metadata::FeatureMetadata> &features);
+std::shared_ptr<RestErrorCode> ValidateFeatureType(const std::vector<char> &feature,
+                                                   const std::string &featureType);
+std::string mapFeatureTypeToJsonType(const std::string &featureType);
+std::tuple<std::string, std::shared_ptr<RestErrorCode>>
+getJsonType(const std::vector<char> &jsonString);
+std::shared_ptr<RestErrorCode> checkRondbResponse(const BatchResponseJSON &rondbResp);
+std::shared_ptr<std::vector<feature_store_data_structs::FeatureMetadata>>
+GetFeatureMetadata(const metadata::FeatureViewMetadata &metadata,
+                   const feature_store_data_structs::MetadataRequest &metaRequest);
+std::shared_ptr<RestErrorCode> TranslateRonDbError(int code, const std::string &err);
+std::tuple<std::vector<std::vector<char>>, feature_store_data_structs::FeatureStatus,
+           std::shared_ptr<RestErrorCode>>
+GetFeatureValues(const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
+                 const std::unordered_map<std::string, std::vector<char>> &entries,
+                 const metadata::FeatureViewMetadata &featureView);
+std::vector<PKReadParams>
+GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
+                     const std::unordered_map<std::string, std::vector<char>> &entries);
+void FillPassedFeatures(
+std::vector<std::vector<char>> &features,
+const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
+const std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
+const std::unordered_map<std::string, int> &indexLookup);
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_CTRL_HPP_

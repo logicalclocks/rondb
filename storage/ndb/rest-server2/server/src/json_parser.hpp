@@ -54,6 +54,8 @@ class JSONParser {
   RS_Status config_parse(const std::string &, AllConfigs &);
   RS_Status feature_store_parse(size_t, simdjson::padded_string_view,
                                 feature_store_data_structs::FeatureStoreRequest &);
+  RS_Status batch_feature_store_parse(size_t, simdjson::padded_string_view,
+                                      feature_store_data_structs::BatchFeatureStoreRequest &);
 };
 
 extern JSONParser jsonParser;

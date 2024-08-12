@@ -222,7 +222,6 @@ Bad Request e.g pk name,value pair for FG2 not provided or the corresponding col
                         "id1": 29
                 }
         ],
-        "requestId": null,
         "metadataOptions": {
                 "featureName": true,
                 "featureType": true

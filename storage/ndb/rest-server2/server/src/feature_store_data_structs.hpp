@@ -41,6 +41,57 @@ class MetadataRequest {
   }
 };
 
+// Request of multiple feature vectors and optional metadata
+class BatchFeatureStoreRequest {
+ public:
+  std::string featureStoreName;  // json:"featureStoreName" binding:"required"
+  std::string featureViewName;   // json:"featureViewName" binding:"required"
+  int featureViewVersion;        // json:"featureViewVersion" binding:"required"
+  // Client provided feature map for overwriting feature value
+  std::vector<std::unordered_map<std::string, std::vector<char>>>
+      passedFeatures;  // json:"passedFeatures"
+  // Serving key of feature view
+  std::vector<std::unordered_map<std::string, std::vector<char>>>
+      entries;                     // json:"entries" binding:"required"
+  // Client requested metadata
+  MetadataRequest metadataRequest;  // json:"metadataOptions"
+  std::string to_string() const {
+    std::ostringstream oss;
+    oss << "BatchFeatureStoreRequest {"
+        << "\n  featureStoreName: " << featureStoreName
+        << "\n  featureViewName: " << featureViewName
+        << "\n  featureViewVersion: " << featureViewVersion << "\n  passedFeatures: {";
+    for (const auto &passedFeature : passedFeatures) {
+      oss << "\n    {";
+      for (const auto &[key, value] : passedFeature) {
+        oss << "\n      " << key << ": [";
+        for (char c : value) {
+          oss << c;
+        }
+        oss << "]";
+      }
+      oss << "\n    }";
+    }
+    oss << "\n  }"
+        << "\n  entries: {";
+    for (const auto &entry : entries) {
+      oss << "\n    {";
+      for (const auto &[key, value] : entry) {
+        oss << "\n      " << key << ": [";
+        for (char c : value) {
+          oss << c;
+        }
+        oss << "]";
+      }
+      oss << "\n    }";
+    }
+    oss << "\n  }"
+        << "\n  metadataRequest: " << metadataRequest.to_string() << "\n}";
+    return oss.str();
+  }
+};
+
+// Request of a signle feature vector and optional metadata
 class FeatureStoreRequest {
  public:
   std::string featureStoreName;  // json:"featureStoreName" binding:"required"
@@ -79,18 +130,6 @@ class FeatureStoreRequest {
         << "\n  metadataRequest: " << metadataRequest.to_string() << "\n}";
     return oss.str();
   }
-};
-
-class BatchFeatureStoreRequest {
- public:
-  std::string featureStoreName;  // json:"featureStoreName" binding:"required"
-  std::string featureViewName;   // json:"featureViewName" binding:"required"
-  int featureViewVersion;        // json:"featureViewVersion" binding:"required"
-  std::vector<std::unordered_map<std::string, std::vector<char>>>
-      passedFeatures;  // json:"passedFeatures"
-  std::vector<std::unordered_map<std::string, std::vector<char>>>
-      entities;                     // json:"entities" binding:"required"
-  MetadataRequest metadataRequest;  // json:"metadataOptions"
 };
 
 class FeatureMetadata {

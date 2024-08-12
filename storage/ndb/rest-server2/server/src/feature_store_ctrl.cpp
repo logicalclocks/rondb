@@ -41,22 +41,6 @@
 #include <vector>
 
 metadata::FeatureViewMetaDataCache fvMetaCache;
-std::shared_ptr<RestErrorCode>
-ValidatePrimaryKey(const std::unordered_map<std::string, std::vector<char>> &entries,
-                   const std::unordered_map<std::string, std::string> &features);
-std::shared_ptr<RestErrorCode>
-ValidatePassedFeatures(const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
-                       const std::unordered_map<std::string, metadata::FeatureMetadata> &features);
-std::shared_ptr<RestErrorCode> ValidateFeatureType(const std::vector<char> &feature,
-                                                   const std::string &featureType);
-std::string mapFeatureTypeToJsonType(const std::string &featureType);
-std::tuple<std::string, std::shared_ptr<RestErrorCode>>
-getJsonType(const std::vector<char> &jsonString);
-std::shared_ptr<RestErrorCode> checkRondbResponse(const BatchResponseJSON &rondbResp);
-std::shared_ptr<std::vector<feature_store_data_structs::FeatureMetadata>>
-GetFeatureMetadata(const metadata::FeatureViewMetadata &metadata,
-                   const feature_store_data_structs::MetadataRequest &metaRequest);
-std::shared_ptr<RestErrorCode> TranslateRonDbError(int code, const std::string &err);
 
 std::shared_ptr<RestErrorCode>
 ValidatePrimaryKey(const std::unordered_map<std::string, std::vector<char>> &entries,
@@ -424,7 +408,7 @@ void FeatureStoreCtrl::featureStore(
     return;
   }
 
-  std::cout << reqStruct.to_string() << std::endl;
+  // std::cout << reqStruct.to_string() << std::endl;
 
   // Validate
   auto [metadata, err] = fvMetaCache.Get(reqStruct.featureStoreName, reqStruct.featureViewName,

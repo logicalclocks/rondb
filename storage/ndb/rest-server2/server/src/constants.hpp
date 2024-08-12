@@ -34,6 +34,7 @@
 
 #define PKREAD_PATH        "/" API_VERSION "/{db}/{table}/" PKREAD
 #define FEATURE_STORE_PATH "/" API_VERSION "/feature_store"
+#define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/batch_feature_store"
 
 constexpr const char *CONFIG_FILE_PATH               = "RDRS_CONFIG_FILE";
 constexpr const char *LOCALHOST                      = "localhost";
@@ -85,6 +86,7 @@ constexpr const char *METADATA_OPTIONS               = "metadataOptions";
 constexpr const char *FEATURE_NAME                   = "featureName";
 constexpr const char *FEATURE_TYPE                   = "featureType";
 constexpr const char *FEATURE_STORE_OPERATION        = "feature_store";
+constexpr const char* SEQUENCE_SEPARATOR = "#";
 
 constexpr const char *ERROR_NOT_FOUND = "Not Found";
 
