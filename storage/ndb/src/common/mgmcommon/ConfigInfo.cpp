@@ -382,17 +382,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_NO_TABLES, "MaxNoOfTables", DB_TOKEN,
      "Total number of tables stored in the database", ConfigInfo::CI_USED,
-     false, ConfigInfo::CI_INT, "0", "8", STR_VALUE(NDB_MAX_TABLES)},
+     false, ConfigInfo::CI_INT, "0", "8", STR_VALUE(1000000000)},
 
     {CFG_DB_NO_ORDERED_INDEXES, "MaxNoOfOrderedIndexes", DB_TOKEN,
      "Total number of ordered indexes that can be defined in the system",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "128", "0",
-     STR_VALUE(MAX_INT_RNIL)},
+     STR_VALUE(1000000000)},
 
     {CFG_DB_NO_UNIQUE_HASH_INDEXES, "MaxNoOfUniqueHashIndexes", DB_TOKEN,
      "Total number of unique hash indexes that can be defined in the system",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
-     STR_VALUE(MAX_INT_RNIL)},
+     STR_VALUE(1000000000)},
 
     {CFG_DB_NO_INDEX_OPS, "MaxNoOfConcurrentIndexOperations", DB_TOKEN,
      "TransactionMemory", ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT,
@@ -447,7 +447,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_MAX_SEND_DELAY, "MaxSendDelay", DB_TOKEN,
      "Max number of microseconds to delay sending in ndbmtd",
-     ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT, "0", "0", "11000"},
+     ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT, "125", "0", "1000"},
 
     {CFG_DB_SCHED_SPIN_TIME, "SchedulerSpinTimer", DB_TOKEN,
      "Number of microseconds to execute in scheduler before sleeping",
@@ -569,6 +569,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT64, "0", "1M", "16384G"},
 
   /* RonDB additions */
+
+  {
+    CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
+    "MaxNoOfSchemaObjects",
+    DB_TOKEN,
+    "Max number of schema objects stored in the schema file",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    STR_VALUE(OLD_NDB_MAX_TABLES),
+    STR_VALUE(OLD_NDB_MAX_TABLES),
+    STR_VALUE(MAX_INT_RNIL) },
+
   {
     CFG_DB_AUTO_MEMORY_CONFIG,
     "AutomaticMemoryConfig",
