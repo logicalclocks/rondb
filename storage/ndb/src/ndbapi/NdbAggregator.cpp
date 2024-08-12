@@ -113,7 +113,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       if (need_merge) {
         for (Uint32 i = 0; i < n_agg_results; i++) {
           assert(((res[i].type == NDB_TYPE_BIGINT &&
-                  res[i].is_unsigned == agg_res_ptr[i].is_unsigned) ||
+                  (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
+                   agg_res_ptr[i].is_null)) ||
                   res[i].type == NDB_TYPE_DOUBLE) &&
                   res[i].type == agg_res_ptr[i].type);
           if (res[i].is_null) {
@@ -223,7 +224,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
                          &data_buf[parse_pos/* + (gb_cols_len >> 2)*/]);
     for (Uint32 i = 0; i < n_agg_results; i++) {
       assert((((res[i].type == NDB_TYPE_BIGINT &&
-              res[i].is_unsigned == agg_res_ptr[i].is_unsigned) ||
+              (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
+               agg_res_ptr[i].is_null)) ||
               res[i].type == NDB_TYPE_DOUBLE) &&
               res[i].type == agg_res_ptr[i].type) ||
               agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||

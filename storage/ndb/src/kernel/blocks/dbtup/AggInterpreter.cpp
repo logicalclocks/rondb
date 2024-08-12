@@ -329,7 +329,7 @@ static Int32 Sum(const Register& a, AggResItem* res, bool print) {
 
 static Int32 Max(const Register& a, AggResItem* res, bool print) {
   assert(a.type != NDB_TYPE_UNDEFINED);
-  if (res->type == NDB_TYPE_UNDEFINED) {
+  if (res->type == NDB_TYPE_UNDEFINED || res->is_null) {
     // Agg result first initialized
     *res = a;
     if (print) {
@@ -402,7 +402,7 @@ static Int32 Max(const Register& a, AggResItem* res, bool print) {
 
 static Int32 Min(const Register& a, AggResItem* res, bool print) {
   assert(a.type != NDB_TYPE_UNDEFINED);
-  if (res->type == NDB_TYPE_UNDEFINED) {
+  if (res->type == NDB_TYPE_UNDEFINED || res->is_null) {
     // Agg result first initialized
     *res = a;
     if (print) {
