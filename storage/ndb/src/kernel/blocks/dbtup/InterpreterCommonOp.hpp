@@ -58,6 +58,12 @@ int32_t RegPlusReg(const Register& a, const Register& b, Register* res) {
     SetRegisterNull(res);
     // Set the result type to be the resolved one
     res->type = res_type;
+    // If we're doing Plus on two integer values, must set is_unsigned
+    // correctly
+    if (res_type == NDB_TYPE_BIGINT) {
+      // Set the result is_unsigned correctly even the result value is NULL
+      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+    }
     // NULL
     return 1;
   }
@@ -170,6 +176,12 @@ int32_t RegMinusReg(const Register& a, const Register& b,
     SetRegisterNull(res);
     // Set the result type to be the resolved one
     res->type = res_type;
+    // If we're doing Minus on two integer values, must set is_unsigned
+    // correctly
+    if (res_type == NDB_TYPE_BIGINT) {
+      // Set the result is_unsigned correctly even the result value is NULL
+      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+    }
     // NULL
     return 1;
   }
@@ -283,6 +295,12 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
     SetRegisterNull(res);
     // Set the result type to be the resolved one
     res->type = res_type;
+    // If we're doing MUL on two integer values, must set is_unsigned
+    // correctly
+    if (res_type == NDB_TYPE_BIGINT) {
+      // Set the result is_unsigned correctly even the result value is NULL
+      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+    }
     // NULL
     return 1;
   }
@@ -295,7 +313,10 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
     uint64_t res_val1;
 
     if (val0 == 0 || val1 == 0) {
+      res->value.val_int64 = 0;
       res->type = res_type;
+      // Set the result is_unsigned correctly even the result value is 0
+      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
       return 0;
     }
 
@@ -505,6 +526,12 @@ int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
     res->type = res_type;
     if (is_div_int) {
       res->type = NDB_TYPE_BIGINT;
+      // If we're doing DIV on two integer values, must set is_unsigned
+      // correctly
+      if (a.type == NDB_TYPE_BIGINT && b.type == NDB_TYPE_BIGINT) {
+        // Set the result is_unsigned correctly even the result value is NULL
+        res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+      }
     }
     // NULL
     return 1;
@@ -525,7 +552,8 @@ int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
     if (val1 == 0) {
       // Divide by zero
       SetRegisterNull(res);
-      res->is_unsigned = res_unsigned;
+      // Set the result is_unsigned correctly even the result value is NULL
+      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
     } else {
       uval0 = static_cast<uint64_t>(val0_negative &&
           val0 != LLONG_MIN ? -val0 : val0);
@@ -579,6 +607,7 @@ int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
       SetRegisterNull(res);
       if (is_div_int) {
         res_type = NDB_TYPE_BIGINT;
+        assert(!(a.is_unsigned | b.is_unsigned));
       }
     } else {
       double res_val = val0 / val1;
@@ -627,6 +656,12 @@ int32_t RegModReg(const Register& a, const Register& b, Register* res) {
     SetRegisterNull(res);
     // Set the result type to be the resolved one
     res->type = res_type;
+    // If we're doing MOD on two integer values, must set is_unsigned
+    // correctly
+    if (res_type == NDB_TYPE_BIGINT) {
+      // Set the result is_unsigned correctly even the result value is NULL
+      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
+    }
     // NULL
     return 1;
   }
@@ -644,7 +679,8 @@ int32_t RegModReg(const Register& a, const Register& b, Register* res) {
     if (val1 == 0) {
       // Divide by zero
       SetRegisterNull(res);
-      res->is_unsigned = res_unsigned;
+      // Set the result is_unsigned correctly even the result value is NULL
+      res->is_unsigned = (a.is_unsigned | b.is_unsigned);
     } else {
       uval0 = static_cast<uint64_t>(val0_negative &&
           val0 != LLONG_MIN ? -val0 : val0);
