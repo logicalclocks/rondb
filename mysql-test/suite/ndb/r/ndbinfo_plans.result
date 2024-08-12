@@ -62,11 +62,9 @@ index_columns	20	80
 ndb$acc_operations	15	64
 ndb$backup_id	1	20
 ndb$blocks	30	20
-ndb$columns	565	44
 ndb$certificates	34	44
+ndb$columns	571	44
 ndb$config_nodes	34	28
-ndb$config_params	182	120
-ndb$config_values	344	24
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
 ndb$dbtc_apiconnect_state	26	52
@@ -77,7 +75,7 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	807	52
+ndb$error_messages	823	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
@@ -102,7 +100,7 @@ ndb$table_map	100	36
 ndb$table_memory_usage	100	44
 ndb$table_replicas	800	64
 ndb$table_replicas_all	400	64
-ndb$tables	53	40
+ndb$tables	54	40
 ndb$tc_time_track_stats	384	104
 ndb$test	8000	24
 ndb$threadblock_details	124	24
@@ -118,7 +116,7 @@ CALL populate_sizes();
 SELECT table_name, est_rows, actual_rows from rowcounts
 WHERE table_name = "ndb$config_values";
 table_name	est_rows	actual_rows
-ndb$config_values	334	334
+ndb$config_values	348	358
 ## Note:
 ## the estimate for config_values relies on a constant in NdbinfoTables.cpp
 ## which must be manually maintained in order for the test to pass.
