@@ -421,16 +421,16 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
                   "data_size: %u, is_null: %u. 4B: %x %x %x %x.",
               ahOut->getAttributeId(), ahOut->getByteSize(), ahOut->getDataSize(),
               ahOut->isNULL(),
-              *((uint8_t*)ahOut->getDataPtr()),
-              *((uint8_t*)ahOut->getDataPtr() + 1),
-              *((uint8_t*)ahOut->getDataPtr() + 2),
-              *((uint8_t*)ahOut->getDataPtr() + 3));
+              *((Uint8*)ahOut->getDataPtr()),
+              *((Uint8*)ahOut->getDataPtr() + 1),
+              *((Uint8*)ahOut->getDataPtr() + 2),
+              *((Uint8*)ahOut->getDataPtr() + 3));
           /* Example of print
           if (ahOut->isNULL()) {
             g_eventLogger->info("VALUE: [NULL]");
           } else {
-            int32_t tmp_val;
-            uint32_t tmp_uval;
+            Int32 tmp_val;
+            Uint32 tmp_uval;
             switch (attributeId) {
               case 0:
                 g_eventLogger->info("VALUE: %d", *(int32*)ahOut->getDataPtr());

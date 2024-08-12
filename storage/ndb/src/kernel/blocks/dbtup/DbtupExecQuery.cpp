@@ -3833,7 +3833,7 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         if (ret != 0) {
           return TUPKEY_abort(req_struct, ret);
         }
-        uint32_t res_len = scan_rec_ptr->m_agg_interpreter->
+        Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
                                     PrepareAggResIfNeeded(signal, false);
         if (res_len != 0) {
           ndbrequire(req_struct->agg_curr_batch_size_rows == 0);

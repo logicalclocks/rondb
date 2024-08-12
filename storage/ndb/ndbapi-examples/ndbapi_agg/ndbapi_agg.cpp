@@ -596,7 +596,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
             sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12));
 
         AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
-        uint64_t agg_1 = item[0].value.val_uint64;
+        Uint64 agg_1 = item[0].value.val_uint64;
         double agg_2 = item[1].value.val_double;
         double agg_3 = item[2].value.val_double;
         double agg_4 = item[3].value.val_double;

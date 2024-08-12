@@ -33,16 +33,16 @@
 #include "decimal.h"
 #include "Dbtup.hpp"
 
-uint32_t AggInterpreter::g_buf_len_ = READ_BUF_WORD_SIZE;
-uint32_t AggInterpreter::g_result_header_size_ = 3 * sizeof(uint32_t);
-uint32_t AggInterpreter::g_result_header_size_per_group_ = sizeof(uint32_t);
+Uint32 AggInterpreter::g_buf_len_ = READ_BUF_WORD_SIZE;
+Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
+Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 
 bool AggInterpreter::Init() {
   if (inited_) {
     return true;
   }
 
-  uint32_t value = 0;
+  Uint32 value = 0;
 
   /*
    * 1. Double check the magic num and  total length of program.
@@ -66,10 +66,10 @@ bool AggInterpreter::Init() {
     assert(n_gb_cols_ <= MAX_AGG_N_GROUPBY_COLS);
     gb_cols_ = gb_cols_buf_;
 #else
-    gb_cols_ = new uint32_t[n_gb_cols_];
+    gb_cols_ = new Uint32[n_gb_cols_];
 #endif // MOZ_AGG_MALLOC
 
-    uint32_t i = 0;
+    Uint32 i = 0;
     while (i < n_gb_cols_ && cur_pos_ < prog_len_) {
       gb_cols_[i++] = prog_[cur_pos_++];
     }
@@ -90,7 +90,7 @@ bool AggInterpreter::Init() {
 #else
     agg_results_ = new AggResItem[n_agg_results_];
 #endif // MOZ_AGG_MALLOC
-    uint32_t i = 0;
+    Uint32 i = 0;
     while (i < n_agg_results_) {
       agg_results_[i].type = NDB_TYPE_UNDEFINED;
       agg_results_[i].value.val_int64 = 0;
@@ -186,10 +186,10 @@ static DataType AlignedType(DataType type) {
 static void PrintValue(const AggResItem* res, char* log_buf) {
   if (res->type == NDB_TYPE_BIGINT) {
     if (res->is_unsigned) {
-      sprintf(log_buf + strlen(log_buf), "[%lu, %d, %d, %d]",
+      sprintf(log_buf + strlen(log_buf), "[%llu, %d, %d, %d]",
           res->value.val_uint64, res->type, res->is_unsigned, res->is_null);
     } else {
-      sprintf(log_buf + strlen(log_buf), "[%ld, %d, %d, %d]",
+      sprintf(log_buf + strlen(log_buf), "[%lld, %d, %d, %d]",
           res->value.val_int64, res->type, res->is_unsigned, res->is_null);
     }
   } else {
@@ -200,7 +200,7 @@ static void PrintValue(const AggResItem* res, char* log_buf) {
   g_eventLogger->info("%s", log_buf);
 }
 
-static int32_t Sum(const Register& a, AggResItem* res, bool print) {
+static Int32 Sum(const Register& a, AggResItem* res, bool print) {
   assert(a.type != NDB_TYPE_UNDEFINED);
   if (res->type == NDB_TYPE_UNDEFINED) {
     // Agg result first initialized
@@ -233,35 +233,35 @@ static int32_t Sum(const Register& a, AggResItem* res, bool print) {
   }
 
   if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = res->value.val_int64;
-    int64_t res_val = static_cast<uint64_t>(val0) + static_cast<uint64_t>(val1);
+    Int64 val0 = a.value.val_int64;
+    Int64 val1 = res->value.val_int64;
+    Int64 res_val = static_cast<Uint64>(val0) + static_cast<Uint64>(val1);
     bool res_unsigned = false;
 
     if (a.is_unsigned) {
       if (res->is_unsigned || val1 >= 0) {
-        if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)val1)) {
+        if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
           // overflows;
           return -1;
         } else {
           res_unsigned = true;
         }
       } else {
-        if ((uint64_t)val0 > (uint64_t)(LLONG_MAX)) {
+        if ((Uint64)val0 > (Uint64)(LLONG_MAX)) {
           res_unsigned = true;
         }
       }
     } else {
       if (res->is_unsigned) {
         if (val0 >= 0) {
-          if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)val1)) {
+          if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
             // overflows;
             return -1;
           } else {
             res_unsigned = true;
           }
         } else {
-          if ((uint64_t)val1 > (uint64_t)(LLONG_MAX)) {
+          if ((Uint64)val1 > (Uint64)(LLONG_MAX)) {
             res_unsigned = true;
           }
         }
@@ -285,7 +285,7 @@ static int32_t Sum(const Register& a, AggResItem* res, bool print) {
     }
     if ((unsigned_flag && !res_unsigned && res_val < 0) ||
         (!unsigned_flag && res_unsigned &&
-         (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
+         (Uint64)res_val > (Uint64)LLONG_MAX)) {
       return -1;
     } else {
       if (unsigned_flag) {
@@ -327,7 +327,7 @@ static int32_t Sum(const Register& a, AggResItem* res, bool print) {
   return 0;
 }
 
-static int32_t Max(const Register& a, AggResItem* res, bool print) {
+static Int32 Max(const Register& a, AggResItem* res, bool print) {
   assert(a.type != NDB_TYPE_UNDEFINED);
   if (res->type == NDB_TYPE_UNDEFINED) {
     // Agg result first initialized
@@ -371,16 +371,16 @@ static int32_t Max(const Register& a, AggResItem* res, bool print) {
         res->value.val_uint64 = a.value.val_uint64;
       } else {
         res->value.val_uint64 = a.value.val_uint64 >
-                static_cast<uint64_t>(res->value.val_int64) ?
+                static_cast<Uint64>(res->value.val_int64) ?
                 a.value.val_uint64 :
-                static_cast<uint64_t>(res->value.val_int64);
+                static_cast<Uint64>(res->value.val_int64);
       }
       res->is_unsigned = true;
     } else {
       assert(!a.is_unsigned && res->is_unsigned);
       if (a.value.val_int64 < 0) {
       } else {
-        res->value.val_uint64 = static_cast<uint64_t>(a.value.val_int64) >
+        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64) >
                                 res->value.val_uint64;
       }
     }
@@ -400,7 +400,7 @@ static int32_t Max(const Register& a, AggResItem* res, bool print) {
   return 0;
 }
 
-static int32_t Min(const Register& a, AggResItem* res, bool print) {
+static Int32 Min(const Register& a, AggResItem* res, bool print) {
   assert(a.type != NDB_TYPE_UNDEFINED);
   if (res->type == NDB_TYPE_UNDEFINED) {
     // Agg result first initialized
@@ -443,9 +443,9 @@ static int32_t Min(const Register& a, AggResItem* res, bool print) {
       if (res->value.val_int64 < 0) {
       } else {
         res->value.val_uint64 = a.value.val_uint64 <
-                static_cast<uint64_t>(res->value.val_int64) ?
+                static_cast<Uint64>(res->value.val_int64) ?
                 a.value.val_uint64 :
-                static_cast<uint64_t>(res->value.val_int64);
+                static_cast<Uint64>(res->value.val_int64);
         res->is_unsigned = true;
       }
     } else {
@@ -454,9 +454,9 @@ static int32_t Min(const Register& a, AggResItem* res, bool print) {
         res->value.val_int64 = a.value.val_int64;
         res->is_unsigned = false;
       } else {
-        res->value.val_uint64 = static_cast<uint64_t>(a.value.val_int64) <
+        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64) <
                                 res->value.val_uint64 ?
-                                static_cast<uint64_t>(a.value.val_int64) :
+                                static_cast<Uint64>(a.value.val_int64) :
                                 res->value.val_uint64;
       }
     }
@@ -476,7 +476,7 @@ static int32_t Min(const Register& a, AggResItem* res, bool print) {
   return 0;
 }
 
-static int32_t Count(const Register& a, AggResItem* res, bool print) {
+static Int32 Count(const Register& a, AggResItem* res, bool print) {
   assert(a.type != NDB_TYPE_UNDEFINED);
   if (res->type == NDB_TYPE_UNDEFINED) {
     // Agg result first initialized
@@ -514,7 +514,7 @@ static int32_t Count(const Register& a, AggResItem* res, bool print) {
  * Failure: RETURN 1860+ by aggregation interpreter
  *          Others returned by readAttributes
  */
-int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
+Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct) {
   // assert(inited_);
   // assert(req_struct->read_length == 0);
@@ -530,7 +530,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
 
     AttributeHeader* header = nullptr;
     buf_pos_ = 0;
-    for (uint32_t i = 0; i < n_gb_cols_; i++) {
+    for (Uint32 i = 0; i < n_gb_cols_; i++) {
       int ret = block_tup->readAttributes(req_struct, &(gb_cols_[i]), 1,
                     buf_ + buf_pos_, g_buf_len_ - buf_pos_);
       // assert(ret >= 0);
@@ -542,7 +542,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
       buf_pos_ += (1 + header->getDataSize());
     }
 
-    uint32_t len_in_char = buf_pos_ * sizeof(uint32_t);
+    Uint32 len_in_char = buf_pos_ * sizeof(Uint32);
     GBHashEntry entry{reinterpret_cast<char*>(buf_), len_in_char};
     auto iter = gb_map_->find(entry);
     if (iter != gb_map_->end()) {
@@ -567,7 +567,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
        * indicate batch limitation
        */
       req_struct->read_length = (len_in_char +
-                       n_agg_results_ * sizeof(AggResItem)) / sizeof(int32_t);
+                       n_agg_results_ * sizeof(AggResItem)) / sizeof(Int32);
 
       // we use result_size_ to decide whether need to send some aggregation
       // results to API.
@@ -588,11 +588,11 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
       gb_map_->insert(std::make_pair<GBHashEntry, GBHashEntry>(
                       std::move(new_entry), std::move(
             GBHashEntry{agg_rec + len_in_char,
-            static_cast<uint32_t>(n_agg_results_ * sizeof(AggResItem))})));
+            static_cast<Uint32>(n_agg_results_ * sizeof(AggResItem))})));
       n_groups_ = gb_map_->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
-      for (uint32_t i = 0; i < n_agg_results_; i++) {
+      for (Uint32 i = 0; i < n_agg_results_; i++) {
         agg_res_ptr[i].type = agg_results_[i].type;
       }
     }
@@ -600,33 +600,33 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
     agg_res_ptr = agg_results_;
   }
 
-  uint32_t col_index;
+  Uint32 col_index;
 
-  uint32_t value;
+  Uint32 value;
   DataType type;
   bool is_unsigned;
-  uint32_t reg_index;
+  Uint32 reg_index;
 
-  uint32_t reg_index2;
+  Uint32 reg_index2;
 
-  uint32_t agg_index;
+  Uint32 agg_index;
 
-  const uint32_t* attrDescriptor = nullptr;
+  const Uint32* attrDescriptor = nullptr;
 
-  int32_t decimal_info = 0;
-  int32_t precision = 0;
-  int32_t scale = 0;
+  Int32 decimal_info = 0;
+  Int32 precision = 0;
+  Int32 scale = 0;
   decimal_t decimal;
   decimal.buf = decimal_buf_;
-  int32_t dec_ret = E_DEC_OK;
-  uint8_t* dec_buf_ptr = nullptr;
+  Int32 dec_ret = E_DEC_OK;
+  Uint8* dec_buf_ptr = nullptr;
   longlong dec_val_ll = 0;
   ulonglong dec_val_ull = 0;
 
-  uint32_t exec_pos = agg_prog_start_pos_;
+  Uint32 exec_pos = agg_prog_start_pos_;
   while (exec_pos < prog_len_) {
     value = prog_[exec_pos++];
-    uint8_t op = (value & 0xFC000000) >> 26;
+    Uint8 op = (value & 0xFC000000) >> 26;
     int ret = 0;
     buf_pos_ = 0;
     AttributeHeader* header = nullptr;
@@ -731,7 +731,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
         switch (type) {
           case NDB_TYPE_TINYINT:
             registers_[reg_index].value.val_int64 =
-                *reinterpret_cast<int8_t*>(&buf_[buf_pos_ + 1]);
+                *reinterpret_cast<Int8*>(&buf_[buf_pos_ + 1]);
             // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_TINYINT %ld",
             //     registers_[reg_index].value.val_int64);
             break;
@@ -761,7 +761,7 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             break;
           case NDB_TYPE_TINYUNSIGNED:
             registers_[reg_index].value.val_uint64 =
-                *reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
+                *reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
             // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_TINYUNSIGNED %lu",
             //     registers_[reg_index].value.val_uint64);
             break;
@@ -808,18 +808,18 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             precision = decimal_info >> 16;
             scale = decimal_info & 0xFFFF;
             exec_pos += 1;
-            assert(static_cast<uint32_t>(decimal_bin_size(precision, scale)) ==
+            assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
                 AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
-            // memset(decimal.buf, 0, sizeof(int32_t) * DECIMAL_BUFF_LENGTH);
+            // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
             decimal.len = AttributeDescriptor::getSizeInBytes(attrDescriptor[0]);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
                       &decimal, precision, scale);
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
-              for (uint32_t i = 0;
+              for (Uint32 i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
@@ -844,10 +844,10 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
-              for (uint32_t i = 0;
+              for (Uint32 i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
@@ -875,18 +875,18 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             precision = decimal_info >> 16;
             scale = decimal_info & 0xFFFF;
             exec_pos += 1;
-            assert(static_cast<uint32_t>(decimal_bin_size(precision, scale)) ==
+            assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
                 AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
-            // memset(decimal.buf, 0, sizeof(int32_t) * DECIMAL_BUFF_LENGTH);
+            // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
             decimal.len = AttributeDescriptor::getSizeInBytes(attrDescriptor[0]);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
                       &decimal, precision, scale);
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
-              for (uint32_t i = 0;
+              for (Uint32 i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
@@ -913,10 +913,10 @@ int32_t AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<uint8_t*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
-              for (uint32_t i = 0;
+              for (Uint32 i = 0;
                   i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
@@ -1035,7 +1035,7 @@ void AggInterpreter::Print() {
   if (n_gb_cols_) {
     if (gb_map_) {
       sprintf(log_buf, "Group by columns: [");
-      for (uint32_t i = 0; i < n_gb_cols_; i++) {
+      for (Uint32 i = 0; i < n_gb_cols_; i++) {
         if (i != n_gb_cols_ - 1) {
           sprintf(log_buf + strlen(log_buf), "%u ", gb_cols_[i] >> 16);
         } else {
@@ -1051,7 +1051,7 @@ void AggInterpreter::Print() {
       for (auto iter = gb_map_->begin(); iter != gb_map_->end(); iter++) {
         int pos = 0;
         sprintf(log_buf, "(");
-        for (uint32_t i = 0; i < n_gb_cols_; i++) {
+        for (Uint32 i = 0; i < n_gb_cols_; i++) {
           if (i != n_gb_cols_ - 1) {
             sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter->first.ptr + pos);
           } else {
@@ -1060,7 +1060,7 @@ void AggInterpreter::Print() {
         }
 
         AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
-        for (uint32_t i = 0; i < n_agg_results_; i++) {
+        for (Uint32 i = 0; i < n_agg_results_; i++) {
           sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
                   item[i].is_unsigned, item[i].is_null);
           if (item[i].is_null) {
@@ -1068,7 +1068,7 @@ void AggInterpreter::Print() {
           } else {
             switch (item[i].type) {
               case NDB_TYPE_BIGINT:
-                sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
+                sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
                 break;
               case NDB_TYPE_DOUBLE:
                 sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
@@ -1084,7 +1084,7 @@ void AggInterpreter::Print() {
   } else {
     AggResItem* item = agg_results_;
     log_buf[0] = '\0';
-    for (uint32_t i = 0; i < n_agg_results_; i++) {
+    for (Uint32 i = 0; i < n_agg_results_; i++) {
       sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
               item[i].is_unsigned, item[i].is_null);
       if (item[i].is_null) {
@@ -1092,7 +1092,7 @@ void AggInterpreter::Print() {
       } else {
         switch (item[i].type) {
           case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
+            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
             break;
           case NDB_TYPE_DOUBLE:
             sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
@@ -1117,8 +1117,8 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
   log_buf[0] = '\0';
 
   while (iter1 != in1->gb_map_->end() && iter2 != in2->gb_map_->end()) {
-    uint32_t len1 = iter1->first.len;
-    uint32_t len2 = iter2->first.len;
+    Uint32 len1 = iter1->first.len;
+    Uint32 len2 = iter2->first.len;
 #ifdef NDEBUG
     (void)len2;
 #endif // NDEBUG
@@ -1128,7 +1128,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
     if (ret < 0) {
       int pos = 0;
       sprintf(log_buf + strlen(log_buf), "(");
-      for (uint32_t i = 0; i < in1->n_gb_cols_; i++) {
+      for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
         if (i != in1->n_gb_cols_ - 1) {
           sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
         } else {
@@ -1136,7 +1136,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
         }
       }
       AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-      for (uint32_t i = 0; i < in1->n_agg_results_; i++) {
+      for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
         sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
             item[i].is_unsigned, item[i].is_null);
         if (item[i].is_null) {
@@ -1144,7 +1144,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
         } else {
           switch (item[i].type) {
             case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
+              sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
               break;
             case NDB_TYPE_DOUBLE:
               sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
@@ -1160,7 +1160,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
     } else if (ret > 0) {
       int pos = 0;
       sprintf(log_buf + strlen(log_buf), "(");
-      for (uint32_t i = 0; i < in2->n_gb_cols_; i++) {
+      for (Uint32 i = 0; i < in2->n_gb_cols_; i++) {
         if (i != in2->n_gb_cols_ - 1) {
           sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
         } else {
@@ -1168,7 +1168,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
         }
       }
       AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-      for (uint32_t i = 0; i < in2->n_agg_results_; i++) {
+      for (Uint32 i = 0; i < in2->n_agg_results_; i++) {
         sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
             item[i].is_unsigned, item[i].is_null);
         if (item[i].is_null) {
@@ -1176,7 +1176,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
         } else {
           switch (item[i].type) {
             case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
+              sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
               break;
             case NDB_TYPE_DOUBLE:
               sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
@@ -1192,7 +1192,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
     } else {
       int pos = 0;
       sprintf(log_buf + strlen(log_buf), "(");
-      for (uint32_t i = 0; i < in1->n_gb_cols_; i++) {
+      for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
         if (i != in1->n_gb_cols_ - 1) {
           sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
         } else {
@@ -1204,7 +1204,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
       AggResItem result;
       // NOTICE: Need to define agg_ops[] first.
       Uint32 agg_ops[32];
-      for (uint32_t i = 0; i < in1->n_agg_results_; i++) {
+      for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
         assert(((item1[i].type == NDB_TYPE_BIGINT &&
                 item1[i].is_unsigned == item2[i].is_unsigned) ||
                 item1[i].type == NDB_TYPE_DOUBLE) &&
@@ -1286,7 +1286,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
         } else {
           switch (result.type) {
             case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15ld]", result.value.val_int64);
+              sprintf(log_buf + strlen(log_buf), "[%15lld]", result.value.val_int64);
               break;
             case NDB_TYPE_DOUBLE:
               sprintf(log_buf + strlen(log_buf), "[%31.16f]", result.value.val_double);
@@ -1305,7 +1305,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
   while (iter1 != in1->gb_map_->end()) {
     int pos = 0;
     sprintf(log_buf + strlen(log_buf), "(");
-    for (uint32_t i = 0; i < in1->n_gb_cols_; i++) {
+    for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
       if (i != in1->n_gb_cols_ - 1) {
         sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
       } else {
@@ -1313,7 +1313,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
       }
     }
     AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-    for (uint32_t i = 0; i < in1->n_agg_results_; i++) {
+    for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
       sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
           item[i].is_unsigned, item[i].is_null);
       if (item[i].is_null) {
@@ -1321,7 +1321,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
       } else {
         switch (item[i].type) {
           case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
+            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
             break;
           case NDB_TYPE_DOUBLE:
             sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
@@ -1337,7 +1337,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
   while (iter2 != in2->gb_map_->end()) {
     int pos = 0;
     sprintf(log_buf + strlen(log_buf), "(");
-    for (uint32_t i = 0; i < in2->n_gb_cols_; i++) {
+    for (Uint32 i = 0; i < in2->n_gb_cols_; i++) {
       if (i != in2->n_gb_cols_ - 1) {
         sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
       } else {
@@ -1345,7 +1345,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
       }
     }
     AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-    for (uint32_t i = 0; i < in2->n_agg_results_; i++) {
+    for (Uint32 i = 0; i < in2->n_agg_results_; i++) {
       sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
           item[i].is_unsigned, item[i].is_null);
       if (item[i].is_null) {
@@ -1353,7 +1353,7 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
       } else {
         switch (item[i].type) {
           case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15ld]", item[i].value.val_int64);
+            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
             break;
           case NDB_TYPE_DOUBLE:
             sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
@@ -1370,9 +1370,9 @@ void AggInterpreter::MergePrint(const AggInterpreter* in1,
 }
 
 
-uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
+Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   // Limitation
-  uint32_t total_size = result_size_ +
+  Uint32 total_size = result_size_ +
                   (gb_map_ ?
                    gb_map_->size() * g_result_header_size_per_group_ : 0) +
                   g_result_header_size_;
@@ -1386,7 +1386,7 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     return 0;
   }
   Uint32* data_buf = (&signal->theData[25]);
-  uint32_t pos = 0;
+  Uint32 pos = 0;
   assert(n_gb_cols_ < 0xFFFF);
   assert(n_agg_results_ < 0xFFFF);
 
@@ -1429,28 +1429,28 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
    * Moz
    * Validation
    */
-  uint32_t data_len = pos;
-  uint32_t parse_pos = 0;
+  Uint32 data_len = pos;
+  Uint32 parse_pos = 0;
 
   while (parse_pos < data_len) {
     AttributeHeader agg_checker_ah(data_buf[parse_pos++]);
     assert(agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT &&
            agg_checker_ah.getByteSize() == 0x0721);
-    uint32_t n_gb_cols = data_buf[parse_pos] >> 16;
-    uint32_t n_agg_results = data_buf[parse_pos++] & 0xFFFF;
-    uint32_t n_res_items = data_buf[parse_pos++];
+    Uint32 n_gb_cols = data_buf[parse_pos] >> 16;
+    Uint32 n_agg_results = data_buf[parse_pos++] & 0xFFFF;
+    Uint32 n_res_items = data_buf[parse_pos++];
     // g_eventLogger->info("Moz, GB cols: %u, AGG results: %u, RES items: %u",
     //         n_gb_cols, n_agg_results, n_res_items);
 
     if (n_gb_cols) {
       // char log_buf[128];
-      for (uint32_t i = 0; i < n_res_items; i++) {
-        uint32_t gb_cols_len = data_buf[parse_pos] >> 16;
-        uint32_t agg_res_len = data_buf[parse_pos++] & 0xFFFF;
+      for (Uint32 i = 0; i < n_res_items; i++) {
+        Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
+        Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
         // remove compile warnings
         (void)gb_cols_len;
         (void)agg_res_len;
-        for (uint32_t j = 0; j < n_gb_cols; j++) {
+        for (Uint32 j = 0; j < n_gb_cols; j++) {
           AttributeHeader ah(data_buf[parse_pos++]);
           // sprintf(log_buf,
           //     "[id: %u, sizeB: %u, sizeW: %u, gb_len: %u, "
@@ -1459,13 +1459,13 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
           //     ah.getDataSize(), gb_cols_len, agg_res_len);
           assert(ah.getDataPtr() != &data_buf[parse_pos]);
           // char* ptr = (char*)(&data_buf[parse_pos]);
-          // for (uint32_t i = 0; i < ah.getByteSize(); i++) {
+          // for (Uint32 i = 0; i < ah.getByteSize(); i++) {
           //   sprintf(log_buf + strlen(log_buf), " %x", ptr[i]);
           // }
           parse_pos += ah.getDataSize();
           // sprintf(log_buf + strlen(log_buf), "]");
         }
-        for (uint32_t i = 0; i < n_agg_results; i++) {
+        for (Uint32 i = 0; i < n_agg_results; i++) {
           // AggResItem* ptr = (AggResItem*)(&data_buf[parse_pos]);
           // sprintf(log_buf + strlen(log_buf), "(type: %u, is_unsigned: %u, is_null: %u, value: ",
           //         ptr->type, ptr->is_unsigned, ptr->is_null);
@@ -1488,8 +1488,8 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       assert(n_gb_cols == 0);
       assert(n_agg_results == n_agg_results_);
       assert(n_res_items == 0);
-      uint32_t gb_cols_len = data_buf[parse_pos] >> 16;
-      uint32_t agg_res_len = data_buf[parse_pos++] & 0xFFFF;
+      Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
+      Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
       assert(gb_cols_len == 0);
       assert(agg_res_len == n_agg_results_ * sizeof(AggResItem));
       parse_pos += (agg_res_len >> 2);
@@ -1500,7 +1500,7 @@ uint32_t AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   return pos;
 }
 
-uint32_t AggInterpreter::NumOfResRecords(bool last_time) {
+Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
   /*
    * Moz
    * NumOfResRecords is called after PrepareAggResIfNeeded
@@ -1548,7 +1548,7 @@ uint32_t AggInterpreter::NumOfResRecords(bool last_time) {
 }
 
 #ifdef MOZ_AGG_MALLOC
-char* AggInterpreter::MemAlloc(uint32_t len) {
+char* AggInterpreter::MemAlloc(Uint32 len) {
   if (alloc_len_ + len >= MAX_AGG_RESULT_BATCH_BYTES) {
     return nullptr;
   } else {
@@ -1564,7 +1564,7 @@ void AggInterpreter::Destruct(AggInterpreter* ptr) {
   }
   /*
   Ndbd_mem_manager* _mm = ptr->mm();
-  uint32_t _page_ref = ptr->page_ref();
+  Uint32 _page_ref = ptr->page_ref();
   _mm->release_page(RT_DBTUP_PAGE, _page_ref);
   */
   lc_ndbd_pool_free(ptr);

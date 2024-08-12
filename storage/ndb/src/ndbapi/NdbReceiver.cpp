@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1049,28 +1050,28 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
      * Validation
      * Aggregation result
      */
-    uint32_t parse_pos = 0;
-    const uint32_t* data_buf = aDataPtr;
+    Uint32 parse_pos = 0;
+    const Uint32* data_buf = aDataPtr;
 
     AttributeHeader agg_checker_ah(data_buf[parse_pos++]);
     assert(agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT &&
         agg_checker_ah.getByteSize() == 0x0721);
-    uint32_t n_gb_cols = data_buf[parse_pos] >> 16;
-    uint32_t n_agg_results = data_buf[parse_pos++] & 0xFFFF;
-    uint32_t n_res_items = data_buf[parse_pos++];
+    Uint32 n_gb_cols = data_buf[parse_pos] >> 16;
+    Uint32 n_agg_results = data_buf[parse_pos++] & 0xFFFF;
+    Uint32 n_res_items = data_buf[parse_pos++];
     // fprintf(stderr, "Moz, GB cols: %u, AGG results: %u, RES items: %u\n",
     //     n_gb_cols, n_agg_results, n_res_items);
 
     if (n_gb_cols) {
-      for (uint32_t i = 0; i < n_res_items; i++) {
-        uint32_t gb_cols_len = data_buf[parse_pos] >> 16;
-        uint32_t agg_res_len = data_buf[parse_pos++] & 0xFFFF;
-        uint32_t len = 0;
-        for (uint32_t j = 0; j < n_gb_cols; j++) {
+      for (Uint32 i = 0; i < n_res_items; i++) {
+        Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
+        Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
+        Uint32 len = 0;
+        for (Uint32 j = 0; j < n_gb_cols; j++) {
           AttributeHeader ah(data_buf[parse_pos++]);
 
           {
-            len += sizeof(AttributeHeader) + ah.getDataSize() * sizeof (int32_t);
+            len += sizeof(AttributeHeader) + ah.getDataSize() * sizeof (Int32);
             if (j == n_gb_cols - 1) {
               len += sizeof(AggResItem) * n_agg_results;
               assert(gb_cols_len + agg_res_len == len);
@@ -1083,13 +1084,13 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
           //     ah.getDataSize(), gb_cols_len, agg_res_len);
           // assert(ah.getDataPtr() != &data_buf[parse_pos]);
           // const char* ptr = (const char*)(&data_buf[parse_pos]);
-          // for (uint32_t i = 0; i < ah.getByteSize(); i++) {
+          // for (Uint32 i = 0; i < ah.getByteSize(); i++) {
           //   fprintf(stderr, " %x", ptr[i]);
           // }
           parse_pos += ah.getDataSize();
           // fprintf(stderr, "]");
         }
-        for (uint32_t i = 0; i < n_agg_results; i++) {
+        for (Uint32 i = 0; i < n_agg_results; i++) {
           // const AggResItem* ptr = (const AggResItem*)(&data_buf[parse_pos]);
           // fprintf(stderr, "(type: %u, is_unsigned: %u, is_null: %u, value: ",
           //     ptr->type, ptr->is_unsigned, ptr->is_null);
@@ -1109,8 +1110,8 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
         // fprintf(stderr, "\n");
       }
     } else {
-      uint32_t gb_cols_len = data_buf[parse_pos] >> 16;
-      uint32_t agg_res_len = data_buf[parse_pos++] & 0xFFFF;
+      Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
+      Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
       assert(gb_cols_len == 0);
       /*
        * Moz
@@ -1118,7 +1119,7 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
        * in the final version.
        */
       (void)agg_res_len;
-      for (uint32_t i = 0; i < n_agg_results; i++) {
+      for (Uint32 i = 0; i < n_agg_results; i++) {
           parse_pos += (sizeof(AggResItem) >> 2);
       }
     }
@@ -1257,7 +1258,7 @@ int NdbReceiver::handle_rec_attrs(NdbRecAttr *rec_attr_list,
          */
         assert(attrSize == 0x0721);
         // aLength here is in word size...
-        currRecAttr->receive_data(aDataPtr, aLength * sizeof(uint32_t));
+        currRecAttr->receive_data(aDataPtr, aLength * sizeof(Uint32));
         aDataPtr += aLength;
         aLength = 0;
 

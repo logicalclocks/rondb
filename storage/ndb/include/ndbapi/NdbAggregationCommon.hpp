@@ -68,13 +68,13 @@ enum InterpreterRegisters {
 };
 
 union DataValue {
-  int64_t val_int64;
-  uint64_t val_uint64;
+  Int64 val_int64;
+  Uint64 val_uint64;
   double val_double;
   void* val_ptr;
 };
 
-typedef uint32_t DataType;
+typedef Uint32 DataType;
 struct Register {
   DataType type;
   DataValue value;
@@ -91,13 +91,13 @@ struct GBColInfo {
 
 struct GBHashEntry {
   char *ptr;
-  uint32_t len;
+  Uint32 len;
 };
 
 struct GBHashEntryCmp {
   bool operator() (const GBHashEntry& n1, const GBHashEntry& n2) const {
-    uint32_t len = n1.len > n2.len ?
-                    n2.len : n1.len;
+    Uint32 len = n1.len > n2.len ?
+                  n2.len : n1.len;
 
     int ret = memcmp(n1.ptr, n2.ptr, len);
     if (ret == 0) {
@@ -107,6 +107,5 @@ struct GBHashEntryCmp {
     }
   }
 };
-
 
 #endif  // NDBAGGREGATIONCOMMON_H_
