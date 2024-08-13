@@ -22,42 +22,6 @@ find_package(simdjson REQUIRED)
 find_package(Jsoncpp REQUIRED)
 find_package(Threads REQUIRED)
 
-find_package(Boost REQUIRED)
-
-if(Boost_FOUND)
-  find_package(Boost COMPONENTS thread QUIET)
-
-  if(NOT Boost_THREAD_FOUND)
-    message(STATUS "Required Boost components not found. Compiling them now.")
-
-	set(BOOST_ROOT $ENV{BOOST_ROOT})
-
-  execute_process(
-    COMMAND ./bootstrap.sh
-    WORKING_DIRECTORY ${BOOST_ROOT}
-    RESULT_VARIABLE BOOTSTRAP_RESULT
-  )
-
-  if(NOT BOOTSTRAP_RESULT EQUAL "0")
-    message(FATAL_ERROR "Bootstrap of Boost failed. Please check your BOOST_ROOT path and permissions.")
-  endif()
-
-  execute_process(
-    COMMAND ./b2
-    WORKING_DIRECTORY ${BOOST_ROOT}
-    RESULT_VARIABLE B2_RESULT
-  )
-
-  if(NOT B2_RESULT EQUAL "0")
-    message(FATAL_ERROR "Building and installing Boost failed.")
-  endif()
-
-    find_package(Boost COMPONENTS thread REQUIRED)
-  endif()
-else()
-  message(FATAL_ERROR "Boost is not found. Please make sure BOOST_ROOT is set to your Boost installation.")
-endif()
-
 IF(CRYPTO_CUSTOM_LIBRARY) 
   SET(RDRS_CRYPTO_LIBRARY ${CRYPTO_CUSTOM_LIBRARY})
 ELSE()
@@ -95,7 +59,7 @@ INCLUDE_DIRECTORIES(${RDRS_DROGON_INCLUDE_DIR})
 INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
 
-target_link_libraries(${PROJECT_NAME} Boost::thread base64 Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
+target_link_libraries(${PROJECT_NAME} base64 Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
 
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME} 
    DESTINATION ${INSTALL_BINDIR} COMPONENT Development
@@ -118,4 +82,4 @@ target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
 target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
 
-target_link_libraries(rdrs2_lib Boost::thread base64 Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
+target_link_libraries(rdrs2_lib base64 Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
