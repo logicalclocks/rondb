@@ -182,9 +182,10 @@ class FeatureStoreResponse {
 
 class BatchFeatureStoreResponse {
  public:
-  std::vector<std::vector<std::string>> features;  // json:"features"
+  std::vector<std::vector<std::vector<char>>> features;  // json:"features"
   std::vector<FeatureMetadata> metadata;           // json:"metadata"
   std::vector<FeatureStatus> status;               // json:"status"
+  std::string to_string() const;
 };
 
 }  // namespace feature_store_data_structs

@@ -61,8 +61,8 @@ std::string mapFeatureTypeToJsonType(const std::string &featureType);
 std::tuple<std::string, std::shared_ptr<RestErrorCode>>
 getJsonType(const std::vector<char> &jsonString);
 std::shared_ptr<RestErrorCode> checkRondbResponse(const BatchResponseJSON &rondbResp);
-std::shared_ptr<std::vector<feature_store_data_structs::FeatureMetadata>>
-GetFeatureMetadata(const metadata::FeatureViewMetadata &metadata,
+std::vector<feature_store_data_structs::FeatureMetadata>
+GetFeatureMetadata(const std::shared_ptr<metadata::FeatureViewMetadata> &metadata,
                    const feature_store_data_structs::MetadataRequest &metaRequest);
 std::shared_ptr<RestErrorCode> TranslateRonDbError(int code, const std::string &err);
 std::tuple<std::vector<std::vector<char>>, feature_store_data_structs::FeatureStatus,
@@ -78,5 +78,6 @@ std::vector<std::vector<char>> &features,
 const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
 const std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
 const std::unordered_map<std::string, int> &indexLookup);
+RS_Status process_responses(std::vector<RS_Buffer> &respBuffs, BatchResponseJSON &response);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_CTRL_HPP_

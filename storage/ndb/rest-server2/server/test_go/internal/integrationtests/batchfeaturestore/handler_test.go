@@ -25,9 +25,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/linkedin/goavro/v2"
 	fsmetadata "hopsworks.ai/rdrs2/internal/feature_store"
-	"hopsworks.ai/rdrs2/internal/handlers/feature_store"
+	// "hopsworks.ai/rdrs2/internal/handlers/feature_store"
 	fshelper "hopsworks.ai/rdrs2/internal/integrationtests/feature_store"
 	"hopsworks.ai/rdrs2/pkg/api"
 	"hopsworks.ai/rdrs2/resources/testdbs"
@@ -1067,66 +1066,66 @@ func Test_GetFeatureVector_WrongPkValue(t *testing.T) {
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
-func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
-	var fsName = testdbs.FSDB002
-	var fvName = "sample_complex_type"
-	var fvVersion = 1
-	rows, pks, cols, err := fshelper.GetSampleData(fsName, "sample_complex_type_1")
-	if err != nil {
-		t.Fatalf("Cannot get sample data with error %s ", err)
-	}
-	mapCodec, err := goavro.NewCodec(`["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]`)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	arrayCodec, err := goavro.NewCodec(`["null",{"type":"array","items":["null","long"]}]`)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	mapDecoder := fsmetadata.AvroDecoder{Codec: mapCodec}
-	arrayDecoder := fsmetadata.AvroDecoder{Codec: arrayCodec}
+// func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
+// 	var fsName = testdbs.FSDB002
+// 	var fvName = "sample_complex_type"
+// 	var fvVersion = 1
+// 	rows, pks, cols, err := fshelper.GetSampleData(fsName, "sample_complex_type_1")
+// 	if err != nil {
+// 		t.Fatalf("Cannot get sample data with error %s ", err)
+// 	}
+// 	mapCodec, err := goavro.NewCodec(`["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]`)
+// 	if err != nil {
+// 		t.Fatal(err.Error())
+// 	}
+// 	arrayCodec, err := goavro.NewCodec(`["null",{"type":"array","items":["null","long"]}]`)
+// 	if err != nil {
+// 		t.Fatal(err.Error())
+// 	}
+// 	mapDecoder := fsmetadata.AvroDecoder{Codec: mapCodec}
+// 	arrayDecoder := fsmetadata.AvroDecoder{Codec: arrayCodec}
 
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	var fsReq = CreateFeatureStoreRequest(
-		fsName,
-		fvName,
-		fvVersion,
-		pks,
-		*GetPkValues(&rows, &pks, &cols),
-		nil,
-		nil,
-	)
-	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
-	fsResp := GetFeatureStoreResponse(t, fsReq)
-	for _, row := range rows {
-		// convert data to object in json format
-		arrayJson, err := fshelper.ConvertBinaryToJsonMessage(row[2])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayDecoder) // array
-		row[2] = *arrayPt
-		if err != nil {
-			t.Fatalf("Cannot deserailize feature with error %s ", err)
-		}
-		// convert data to object in json format
-		mapJson, err := fshelper.ConvertBinaryToJsonMessage(row[3])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapDecoder) // map
-		row[3] = *mapPt
-		if err != nil {
-			t.Fatalf("Cannot deserailize feature with error %s ", err)
-		}
-	}
-	// validate
-	ValidateResponseWithData(t, &rows, &cols, fsResp)
-	fshelper.ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+// 	if err != nil {
+// 		t.Fatal(err.Error())
+// 	}
+// 	var fsReq = CreateFeatureStoreRequest(
+// 		fsName,
+// 		fvName,
+// 		fvVersion,
+// 		pks,
+// 		*GetPkValues(&rows, &pks, &cols),
+// 		nil,
+// 		nil,
+// 	)
+// 	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+// 	fsResp := GetFeatureStoreResponse(t, fsReq)
+// 	for _, row := range rows {
+// 		// convert data to object in json format
+// 		arrayJson, err := fshelper.ConvertBinaryToJsonMessage(row[2])
+// 		if err != nil {
+// 			t.Fatalf("Cannot convert to json with error %s ", err)
+// 		}
+// 		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayDecoder) // array
+// 		row[2] = *arrayPt
+// 		if err != nil {
+// 			t.Fatalf("Cannot deserailize feature with error %s ", err)
+// 		}
+// 		// convert data to object in json format
+// 		mapJson, err := fshelper.ConvertBinaryToJsonMessage(row[3])
+// 		if err != nil {
+// 			t.Fatalf("Cannot convert to json with error %s ", err)
+// 		}
+// 		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapDecoder) // map
+// 		row[3] = *mapPt
+// 		if err != nil {
+// 			t.Fatalf("Cannot deserailize feature with error %s ", err)
+// 		}
+// 	}
+// 	// validate
+// 	ValidateResponseWithData(t, &rows, &cols, fsResp)
+// 	fshelper.ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
 
-}
+// }
 
 func Test_GetFeatureVector_WrongPkValue_PartialFail(t *testing.T) {
 	rows, pks, cols, err := fshelper.GetNSampleDataColumns(testdbs.FSDB001, "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})

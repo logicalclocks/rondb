@@ -142,4 +142,53 @@ FeatureStatus fromString(const std::string &status) {
   }
   // TODO
 }
+
+std::string BatchFeatureStoreResponse::to_string() const {
+  std::string res = "{";
+  res += "\"features\": [";
+  for (const auto &feature : features) {
+    res += "[";
+    for (const auto &entry : feature) {
+      if (entry.empty())
+        res += "null";
+      else
+        res += std::string(entry.begin(), entry.end());
+      res += ",";
+    }
+    if (!feature.empty()) {
+      res.pop_back();
+    }
+    res += "],";
+  }
+  if (!features.empty()) {
+    res.pop_back();
+  }
+  res += "],";
+  res += "\"metadata\": [";
+  for (const auto &metadata : metadata) {
+    res += "{";
+    res += "\"featureName\": \"" + metadata.name + "\",";
+    if (metadata.type.empty()) {
+      res += "\"featureType\": null";
+    } else {
+      res += "\"featureType\": \"" + metadata.type + "\"";
+    }
+    res += "},";
+  }
+  if (!metadata.empty()) {
+    res.pop_back();
+  }
+  res += "],";
+  res += "\"status\": [";
+  for (const auto &status : status) {
+    res += "\"" + toString(status) + "\",";
+  }
+  if (!status.empty()) {
+    res.pop_back();
+  }
+  res += "]";
+  res += "}";
+  return res;
+}
+
 }  // namespace feature_store_data_structs
