@@ -44,8 +44,6 @@ var HopsworksData string
 //go:embed fixed/hopsworks_40_schema.sql
 var HopsworksSchema string
 
-// go:embed fixed/hopsworks_34.sql
-// var HopsworksScheme string
 var HopsworksScheme string = HopsworksSchema + HopsworksData
 
 const HOPSWORKS_DB_NAME = "hopsworks"
