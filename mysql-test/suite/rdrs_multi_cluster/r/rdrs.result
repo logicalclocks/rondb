@@ -13,4 +13,4 @@ Note	####	Storing MySQL user name or password information in the master info rep
 Clean-up rdrs_config.json file
 Clean-up have_rdrs_result.inc file
 Clean-up run_rdrs_unit_test.result file
-include/rpl_end.inc
+include/rpl/deinit.inc

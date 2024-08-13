@@ -56,4 +56,4 @@ DROP DATABASE IF EXISTS hopsworks;
 --enable_warnings
 --enable_query_log
 
---source include/rpl_end.inc
+--source include/rpl/deinit.inc
