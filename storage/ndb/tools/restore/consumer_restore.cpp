@@ -2373,7 +2373,7 @@ bool BackupRestore::table_compatible_check(TableS &tableS) {
            (col_in_kernel->getDefaultValue() == NULL))) {
         restoreLogger.log_error(
             "Missing column(%s.%s) in backup "
-            " is primary key or not nullable or defaulted in DB",
+            "is primary key or not nullable or defaulted in DB",
             tableS.m_dictTable->getName(), col_in_kernel->getName());
         return false;
       }
