@@ -37,13 +37,11 @@ SET(TESTS
   group_replication_member_version
   group_replication_mysql_version_gcs_protocol_map
   group_replication_gcs_mysql_network_provider
+  group_replication_certifier_auto
   )
 
 FOREACH(test ${TESTS})
   SET(SRC_FILES ${test}-t.cc)
-  IF(WIN32)
-    LIST(APPEND SRC_FILES ../../../sql/nt_servc.cc)
-  ENDIF()
 
   MYSQL_ADD_EXECUTABLE(${test}-t ${SRC_FILES}
     ADD_TEST ${test}
@@ -54,6 +52,7 @@ FOREACH(test ${TESTS})
     server_unittest_library
     mysqlclient
     mysqlgcs
+    mysql_gtid
     )
 ENDFOREACH()
 

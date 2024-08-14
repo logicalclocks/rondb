@@ -644,6 +644,9 @@ Ndb_cluster_connection_impl::~Ndb_cluster_connection_impl() {
     m_nodes_proximity_mutex = nullptr;
   }
 
+  free(const_cast<char *>(m_tls_search_path));
+  m_tls_search_path = nullptr;
+
   if (m_event_add_drop_mutex) NdbMutex_Destroy(m_event_add_drop_mutex);
   m_event_add_drop_mutex = nullptr;
 
@@ -899,6 +902,19 @@ void Ndb_cluster_connection_impl::set_data_node_neighbour(Uint32 node) {
   NdbMutex_Unlock(m_nodes_proximity_mutex);
 }
 
+void Ndb_cluster_connection_impl::configure_tls(const char *searchPath,
+                                                int mgm_level) {
+  m_tls_search_path = strdup(searchPath);
+
+  m_config_retriever->init_mgm_tls(m_tls_search_path, ::Node::Type::Client,
+                                   mgm_level);
+  m_transporter_facade->api_configure_tls(m_tls_search_path, mgm_level);
+}
+
+const char *Ndb_cluster_connection_impl::get_tls_certificate_path() const {
+  return m_transporter_facade->get_tls_certificate_path();
+}
+
 void Ndb_cluster_connection_impl::set_name(const char *name) {
   NdbMgmHandle h = m_config_retriever->get_mgmHandle();
   ndb_mgm_set_name(h, name);
@@ -940,7 +956,7 @@ int Ndb_cluster_connection_impl::init_nodes_vector(
   ndb_mgm_configuration_iterator iter(config, CFG_SECTION_CONNECTION);
 
   for (iter.first(); iter.valid(); iter.next()) {
-    Uint32 nodeid1, nodeid2, remoteNodeId, group = 5;
+    Uint32 nodeid1, nodeid2, tlsReq, remoteNodeId, group = 5;
     const char *remoteHostName = nullptr;
     if (iter.get(CFG_CONNECTION_NODE_1, &nodeid1)) continue;
     if (iter.get(CFG_CONNECTION_NODE_2, &nodeid2)) continue;
@@ -974,6 +990,11 @@ int Ndb_cluster_connection_impl::init_nodes_vector(
          * decrease it by 1.
          */
       case CONNECTION_TYPE_TCP: {
+        // check for TLS requirement
+        tlsReq = 0;
+        iter.get(CFG_TCP_REQUIRE_TLS, &tlsReq);
+        if (tlsReq) m_tls_requirement = true;
+
         // connecting through localhost
         // check if config_hostname is local
         // check if in same location domain
@@ -1308,6 +1329,15 @@ void Ndb_cluster_connection_impl::do_test() {
   delete[] nodes;
 }
 
+void Ndb_cluster_connection::configure_tls(const char *searchPath,
+                                           int mgmTlsLevel) {
+  m_impl.configure_tls(searchPath, mgmTlsLevel);
+}
+
+const char *Ndb_cluster_connection::get_tls_certificate_path() const {
+  return m_impl.get_tls_certificate_path();
+}
+
 void Ndb_cluster_connection::set_data_node_neighbour(Uint32 node) {
   m_impl.set_data_node_neighbour(node);
 }
@@ -1344,11 +1374,9 @@ int Ndb_cluster_connection_impl::connect(int no_retries,
 
     // the allocNodeId function will connect if not connected
     int alloc_error = 0;
-    Uint32 nodeId = m_config_retriever->allocNodeId(no_retries,
-                                                   retry_delay_in_seconds,
-                                                   verbose, alloc_error);
-    if (!nodeId)
-    {
+    Uint32 nodeId = m_config_retriever->allocNodeId(
+        no_retries, retry_delay_in_seconds, verbose, alloc_error);
+    if (!nodeId) {
       // Failed to allocate nodeid from mgmt server, find out
       // the cause and set proper error message
 
@@ -1379,9 +1407,18 @@ int Ndb_cluster_connection_impl::connect(int no_retries,
       DBUG_RETURN(-1);
     }
 
-    if (m_transporter_facade->start_instance(nodeId, config.get()) < 0) {
+    int r_start = m_transporter_facade->start_instance(nodeId, config.get(),
+                                                       m_tls_requirement);
+    if (r_start == -2) {
+      m_latest_error = 2;
+      m_latest_error_msg.assign(
+          "TLS is required but this node does not have a valid certificate");
+    }
+
+    if (r_start < 0) {
       DBUG_RETURN(-1);
     }
+
     // NOTE! The config generation used by this API node could also be sent to
     // the cluster in same way as other properties with setProcessInfoUri()
     m_transporter_facade->theClusterMgr->setProcessInfoUri(
@@ -1688,8 +1725,8 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
             best_usage = nodes_arr[i].hint_count;
           } else if (nodes_arr[i].adjusted_group == best_score) {
             Uint32 usage = nodes_arr[i].hint_count;
-            if (candidate_node == primary_node)
-            {
+            if (candidate_node == primary_node ||
+                best_usage - usage < HINT_COUNT_HALF) {
               /**
                * hint_count may wrap, for this calculation it is assumed that
                * the two counts should be near each other, and so if the
@@ -1698,21 +1735,6 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
               best_idx = i;
               best_node = candidate_node;
               best_usage = usage;
-            }
-            else
-            {
-              if (best_usage - usage < HINT_COUNT_HALF &&
-                  best_node != primary_node)
-              {
-                /**
-                 * hint_count may wrap, for this calculation it is assummed that
-                 * the two counts should be near each other, and so if the
-                 * difference is small above, best_usage is greater than usage.
-                 */
-                best_idx = i;
-                best_node = candidate_node;
-                best_usage = usage;
-              }
             }
           }
           break;

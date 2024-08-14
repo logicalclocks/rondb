@@ -30,6 +30,7 @@
 #include <NdbOut.hpp>
 #include "NDBT_Output.hpp"
 #include "NdbToolsProgramExitCodes.hpp"
+#include "portlib/ssl_applink.h"
 
 // stats options
 static const char *_dbname = 0;
@@ -91,6 +92,7 @@ static int doconnect() {
   int ret = 0;
   do {
     g_ncc = new Ndb_cluster_connection(opt_ndb_connectstring);
+    g_ncc->configure_tls(opt_tls_search_path, opt_mgm_tls);
     g_ncc->set_name("ndb_index_stat");
 
     CHK2(g_ncc->connect(opt_connect_retries - 1, opt_connect_retry_delay, 1) ==
@@ -486,6 +488,8 @@ static struct my_option my_long_options[] = {
     NdbStdOpt::ndb_nodeid,
     NdbStdOpt::connect_retry_delay,
     NdbStdOpt::connect_retries,
+    NdbStdOpt::tls_search_path,
+    NdbStdOpt::mgm_tls,
     NDB_STD_OPT_DEBUG
     // stats options
     {"database", 'd', "Name of database table is in", &_dbname, nullptr,

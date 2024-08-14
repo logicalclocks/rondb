@@ -2422,15 +2422,8 @@ run_again:
     }
   }
 
-  /* We update table statistics only if it is a DELETE or UPDATE
-  that changes indexed columns, UPDATEs that change only non-indexed
-  columns would not affect statistics. */
-  if (node->is_delete || !(node->cmpl_info & UPD_NODE_NO_ORD_CHANGE)) {
-    row_update_statistics_if_needed(prebuilt->table);
-  }
-
+  row_update_statistics_if_needed(prebuilt->table);
   trx->op_info = "";
-
   return err;
 
 error:
@@ -4789,8 +4782,9 @@ bool row_prebuilt_t::skip_concurrency_ticket() const {
 
   /* Skip concurrency ticket while implicitly updating GTID table. This is to
   avoid deadlock otherwise possible with low innodb_thread_concurrency.
-  Session: RESET MASTER -> FLUSH LOGS -> get innodb ticket -> wait for GTID
-  flush GTID Background: Write to GTID table -> wait for innodb ticket. */
+  Session: RESET BINARY LOGS AND GTIDS -> FLUSH LOGS -> get innodb ticket
+           -> wait for GTID flush GTID
+  Background: Write to GTID table -> wait for innodb ticket. */
   auto thd = trx->mysql_thd;
   if (thd == nullptr) {
     thd = current_thd;

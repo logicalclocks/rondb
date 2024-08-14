@@ -89,8 +89,8 @@ for batch in t/* ; do
 
   echo "=====================================" >> var/ft_test.log
   $MYSQLD $OPTS --basedir=$BASE --pid-file=$PID \
-                --language=$ROOT/share/english \
-                --skip-grant-tables --skip-innodb \
+                --lc-messages-dir=$ROOT/share \
+                --skip-grant-tables \
                 --skip-networking --tmpdir=$DATA >> var/ft_test.log 2>&1 &
 
   sleep $DELAY

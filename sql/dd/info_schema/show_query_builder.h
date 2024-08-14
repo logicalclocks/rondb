@@ -26,6 +26,7 @@
 
 #include "lex_string.h"
 #include "sql/mem_root_array.h"
+#include "sql/parse_location.h"
 
 class Item;
 class PT_derived_table;
@@ -35,9 +36,6 @@ class PT_table_reference;
 class Query_block;
 class String;
 class THD;
-struct YYLTYPE;
-
-typedef YYLTYPE POS;
 
 namespace dd {
 namespace info_schema {
@@ -247,7 +245,7 @@ class Select_lex_builder {
   bool add_to_select_item_list(Item *expr);
 
  private:
-  // Parser current position represented by YYLTYPE
+  // Parser current position represented by POS
   const POS *m_pos;
 
   // Current thread

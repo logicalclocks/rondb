@@ -1,6 +1,7 @@
 var common_stmts = require("common_statements");
 
 var select_port = common_stmts.get("select_port");
+var router_show_cipher_status = common_stmts.get("router_show_cipher_status");
 
 var events = {};
 
@@ -17,7 +18,17 @@ function increment_event(event_name) {
 
 ({
   stmts: function(stmt) {
-    if (stmt === select_port.stmt) {
+    if (stmt == router_show_cipher_status.stmt) {
+      return {
+        "result": {
+          "columns": [
+            {"type": "STRING", "name": "Variable_name"},
+            {"type": "STRING", "name": "Value"}
+          ],
+          "rows": [["Ssl_cipher", mysqld.session.ssl_cipher]]
+        }
+      };
+    } else if (stmt === select_port.stmt) {
       increment_event(statement_sql_select);
 
       return select_port;
@@ -88,7 +99,46 @@ function increment_event(event_name) {
         -1) {
       increment_event(statement_sql_set_option);
 
-      return {ok: {status: 1 << 14}};
+      // the trackers that are needed for connection-sharing.
+      return {
+        ok: {
+          session_trackers: [
+            {
+              type: "system_variable",
+              name: "session_track_system_variables",
+              value: "*"
+            },
+            {
+              type: "system_variable",
+              name: "session_track_gtids",
+              value: "OWN_GTID"
+            },
+            {
+              type: "system_variable",
+              name: "session_track_transaction_info",
+              value: "CHARACTERISTICS"
+            },
+            {
+              type: "system_variable",
+              name: "session_track_state_change",
+              value: "ON"
+            },
+            {
+              type: "system_variable",
+              name: "session_track_schema",
+              value: "ON"
+            },
+            {
+              type: "trx_characteristics",
+              value: "",
+            },
+          ]
+        }
+      };
+    } else if (stmt === "SET @block_me = 1") {
+      increment_event(statement_sql_set_option);
+
+      return {ok: {}};
     } else {
       increment_event(statement_unknown_command);
 

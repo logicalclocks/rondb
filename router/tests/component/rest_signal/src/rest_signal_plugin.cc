@@ -39,7 +39,7 @@
 #include "mysql/harness/plugin_config.h"
 #include "mysql/harness/utility/string.h"  // ::join()
 
-#include "mysqlrouter/http_server_component.h"
+#include "mysqlrouter/component/http_server_component.h"
 #include "mysqlrouter/rest_api_component.h"
 
 #include "rest_signal_abort.h"
@@ -52,11 +52,11 @@ class RestRouterPluginConfig : public mysql_harness::BasePluginConfig {
   explicit RestRouterPluginConfig(const mysql_harness::ConfigSection *section)
       : mysql_harness::BasePluginConfig(section) {}
 
-  std::string get_default(const std::string & /* option */) const override {
+  std::string get_default(std::string_view /* option */) const override {
     return {};
   }
 
-  bool is_required(const std::string & /* option */) const override {
+  bool is_required(std::string_view /* option */) const override {
     return false;
   }
 };
@@ -199,6 +199,7 @@ mysql_harness::Plugin REST_SIGNAL_EXPORT harness_plugin_rest_signal = {
     nullptr,  // stop
     true,     // declares_readiness
     0,
+    nullptr,
     nullptr,
 };
 }

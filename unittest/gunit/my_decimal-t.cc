@@ -32,7 +32,8 @@
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_macros.h"
-#include "sql/my_decimal.h"
+#include "mysql/strings/dtoa.h"
+#include "sql-common/my_decimal.h"
 #include "unittest/gunit/test_utils.h"
 
 namespace my_decimal_unittest {

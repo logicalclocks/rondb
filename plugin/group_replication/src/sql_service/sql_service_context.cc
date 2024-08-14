@@ -25,6 +25,8 @@
 
 #include "my_dbug.h"
 
+struct CHARSET_INFO;
+
 int Sql_service_context::start_result_metadata(uint ncols, uint,
                                                const CHARSET_INFO *resultcs) {
   DBUG_TRACE;

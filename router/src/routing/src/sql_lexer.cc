@@ -31,23 +31,22 @@
 #include <cstring>  // memcpy
 #include <mutex>
 
-#include <iostream>
-
 #include "lex_string.h"  // LEX_STRING
-#include "m_ctype.h"     // my_charset_...
 #include "my_compiler.h"
-#include "my_dbug.h"        // DBUG_SET
-#include "my_inttypes.h"    // uchar, uint, ...
-#include "my_sys.h"         // strmake_root
-#include "mysql_version.h"  // MYSQL_VERSION_ID
+#include "my_dbug.h"                // DBUG_SET
+#include "my_inttypes.h"            // uchar, uint, ...
+#include "my_sys.h"                 // strmake_root
+#include "mysql/strings/m_ctype.h"  // my_charset_...
+#include "mysql_version.h"          // MYSQL_VERSION_ID
+#include "sql/lex.h"
 #include "sql/lexer_yystype.h"
 #include "sql/sql_digest_stream.h"
 #include "sql/sql_lex_hash.h"
 #include "sql/sql_yacc.h"
 #include "sql/system_variables.h"
-#include "sql_chars.h"  // my_lex_states
 #include "sql_lexer_input_stream.h"
 #include "sql_lexer_thd.h"
+#include "strings/sql_chars.h"  // my_lex_states
 
 // class THD;
 
@@ -257,9 +256,9 @@ void Lex_input_stream::body_utf8_append_literal(THD *thd, const LEX_STRING *txt,
   m_cpp_utf8_processed_ptr = end_ptr;
 }
 
-void Lex_input_stream::add_digest_token(uint token, Lexer_yystype *yylval) {
+void Lex_input_stream::add_digest_token(uint token, Lexer_yystype *lval) {
   if (m_digest != nullptr) {
-    m_digest = digest_add_token(m_digest, token, yylval);
+    m_digest = digest_add_token(m_digest, token, lval);
   }
 }
 
@@ -655,7 +654,7 @@ static int lex_one_token(Lexer_yystype *yylval, THD *thd) {
         yylval->lex_str.length = lip->yytoklen;
         return (NCHAR_STRING);
 
-      case MY_LEX_IDENT_OR_DOLLAR_QUOTE:
+      case MY_LEX_IDENT_OR_DOLLAR_QUOTED_TEXT:
         state = MY_LEX_IDENT;
         push_deprecated_warn_no_replacement(
             lip->m_thd, "$ as the first character of an unquoted identifier");
@@ -1260,19 +1259,6 @@ static int lex_one_token(Lexer_yystype *yylval, THD *thd) {
   }
 }
 
-bool lex_init(void) {
-  DBUG_TRACE;
-
-  for (CHARSET_INFO **cs = all_charsets;
-       cs < all_charsets + array_elements(all_charsets) - 1; cs++) {
-    if (*cs && (*cs)->ctype && is_supported_parser_charset(*cs)) {
-      if (init_state_maps(*cs)) return true;  // OOM
-    }
-  }
-
-  return false;
-}
-
 std::once_flag lexer_init;
 
 SqlLexer::SqlLexer(THD *session) : session_{session} {
@@ -1280,8 +1266,6 @@ SqlLexer::SqlLexer(THD *session) : session_{session} {
     my_init();
 
     get_collation_number("latin1");  // init the charset subsystem
-
-    lex_init();  // init the state-maps for the parser
   });
 }
 
@@ -1291,6 +1275,37 @@ SqlLexer::iterator::iterator(THD *session) : session_(session) {
     token_ = next_token();
   }
 }
+
+#if 0
+
+// for debugging.
+std::ostream &operator<<(std::ostream &oss, SqlLexer::iterator::Token tkn) {
+  for (size_t ndx{}; ndx < sizeof(symbols) / sizeof(symbols[0]); ++ndx) {
+    auto sym = symbols[ndx];
+
+    if (sym.tok == tkn.id) {
+      oss << "sym[" << std::string_view(sym.name, sym.length) << "]";
+      return oss;
+    }
+  }
+
+  if (tkn.id >= 32 && tkn.id < 127) {
+    oss << (char)tkn.id;
+  } else if (tkn.id == IDENT || tkn.id == IDENT_QUOTED) {
+    oss << std::quoted(tkn.text, '`');
+  } else if (tkn.id == TEXT_STRING) {
+    oss << std::quoted(tkn.text);
+  } else if (tkn.id == NUM) {
+    oss << tkn.text;
+  } else if (tkn.id == ABORT_SYM) {
+    oss << "<ABORT>";
+  } else if (tkn.id == END_OF_INPUT) {
+    oss << "<END>";
+  }
+
+  return oss;
+}
+#endif
 
 SqlLexer::iterator::Token SqlLexer::iterator::next_token() {
   const auto token_id = lex_one_token(&st, session_);

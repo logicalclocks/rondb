@@ -46,7 +46,7 @@ static void add_if_set(rapidjson::Document &json_doc,
 }
 
 bool RestRoutingConfig::on_handle_request(
-    HttpRequest &req, const std::string & /* base_path */,
+    http::base::Request &req, const std::string & /* base_path */,
     const std::vector<std::string> &path_matches) {
   if (!ensure_no_params(req)) return true;
 
@@ -58,7 +58,7 @@ bool RestRoutingConfig::on_handle_request(
     return true;
   }
 
-  auto out_hdrs = req.get_output_headers();
+  auto &out_hdrs = req.get_output_headers();
   out_hdrs.add("Content-Type", "application/json");
 
 #if 0
@@ -103,7 +103,6 @@ bool RestRoutingConfig::on_handle_request(
                inst.get_destination_replicaset_name());
     add_if_set(json_doc, "socket", inst.get_socket());
     add_if_set(json_doc, "routingStrategy", inst.get_routing_strategy());
-    add_if_set(json_doc, "mode", inst.get_mode());
   }
   send_json_document(req, HttpStatusCode::Ok, json_doc);
 

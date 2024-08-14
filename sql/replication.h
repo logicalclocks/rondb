@@ -24,7 +24,8 @@
 #ifndef REPLICATION_H
 #define REPLICATION_H
 
-#include "my_thread_local.h"         // my_thread_id
+#include "my_thread_local.h"  // my_thread_id
+#include "mysql/gtid/tag_plain.h"
 #include "mysql/psi/mysql_thread.h"  // mysql_mutex_t
 #include "rpl_context.h"
 #include "sql/handler.h"  // enum_tx_isolation
@@ -103,10 +104,6 @@ typedef struct Trans_context_info {
   ulong binlog_checksum_options;  // enum values in enum
                                   // enum_binlog_checksum_alg
   ulong binlog_format;            // enum values in enum enum_binlog_format
-  // enum values in enum_transaction_write_set_hashing_algorithm
-  ulong transaction_write_set_extraction;
-  ulong mi_repository_type;   // enum values in enum_info_repository
-  ulong rli_repository_type;  // enum values in enum_info_repository
   // enum values in enum_mts_parallel_type
   ulong parallel_applier_type;
   ulong parallel_applier_workers;
@@ -120,9 +117,16 @@ typedef struct Trans_context_info {
   This represents the GTID context of the transaction.
  */
 typedef struct Trans_gtid_info {
-  ulong type;         // enum values in enum_gtid_type
-  int sidno;          // transaction sidno
-  long long int gno;  // transaction gno
+  /// transaction specified TSID, filled in the after-commit hook
+  mysql::gtid::Tsid_plain tsid;
+  /// enum values in enum_gtid_type
+  ulong type;
+  /// transaction sidno
+  int sidno;
+  /// transaction gno
+  long long int gno;
+  /// defined tag for automatic GTIDs, propagated in the before-commit hook
+  mysql::gtid::Tag_plain automatic_tag;
 } Trans_gtid_info;
 
 class Binlog_cache_storage;
@@ -208,6 +212,9 @@ typedef struct Trans_param {
     TRANSACTION' block of 'CREATE TABLE ... AS SELECT' event.
   */
   bool is_create_table_as_query_block;
+
+  /// pointer to server THD
+  THD *thd;
 } Trans_param;
 
 /**
@@ -408,6 +415,7 @@ typedef struct Server_state_observer {
   after_recovery_t after_recovery;
   before_server_shutdown_t before_server_shutdown;
   after_server_shutdown_t after_server_shutdown;
+  /* TODO To be removed in WL#16215 */
   after_dd_upgrade_t after_dd_upgrade_from_57;
 } Server_state_observer;
 
@@ -556,8 +564,8 @@ typedef int (*after_send_event_t)(Binlog_transmit_param *param,
 /**
   This callback is called after resetting master status
 
-  This is called when executing the command RESET MASTER, and is
-  used to reset status variables added by observers.
+  This is called when executing the command RESET BINARY LOGS AND GTIDS,
+  and is used to reset status variables added by observers.
 
   @param param Observer common parameter
 
@@ -701,7 +709,7 @@ typedef int (*after_queue_event_t)(Binlog_relay_IO_param *param,
                                    unsigned long event_len, uint32 flags);
 
 /**
-  This callback is called after reset slave relay log IO status
+  This callback is called after reset replica relay log IO status
 
   @param param Observer common parameter
 

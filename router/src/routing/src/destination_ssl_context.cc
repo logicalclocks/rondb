@@ -69,6 +69,14 @@ void DestinationTlsContext::ciphers(const std::string &ciphers) {
   ciphers_ = ciphers;
 }
 
+void DestinationTlsContext::client_key_and_cert_file(std::string key,
+                                                     std::string cert) {
+  std::lock_guard<std::mutex> lk(mtx_);
+
+  key_file_ = std::move(key);
+  cert_file_ = std::move(cert);
+}
+
 TlsClientContext *DestinationTlsContext::get(const std::string &dest_id,
                                              const std::string &hostname) {
   std::lock_guard<std::mutex> lk(mtx_);
@@ -76,12 +84,18 @@ TlsClientContext *DestinationTlsContext::get(const std::string &dest_id,
   const auto it = tls_contexts_.find(dest_id);
   if (it == tls_contexts_.end()) {
     // not found
-    auto res =
-        tls_contexts_.emplace(dest_id, std::make_unique<TlsClientContext>());
+    auto res = tls_contexts_.emplace(
+        dest_id, std::make_unique<TlsClientContext>(
+                     TlsVerify::PEER, session_cache_mode_,
+                     ssl_session_cache_size_, ssl_session_cache_timeout_));
     auto *tls_ctx = res.first->second.get();
 
     if (!ciphers_.empty()) tls_ctx->cipher_list(ciphers_);
     if (!curves_.empty()) tls_ctx->curves_list(curves_);
+
+    if (!key_file_.empty() && !cert_file_.empty()) {
+      tls_ctx->load_key_and_cert(key_file_, cert_file_);
+    }
 
     switch (ssl_verify_) {
       case SslVerify::kDisabled:

@@ -27,8 +27,8 @@
 #    10. in the end the slave should not have open temp tables.
 #  
 
---source include/set_privilege_checks_user_as_system_user.inc
-source include/master-slave.inc;
+--source include/rpl/set_privilege_checks_user_as_system_user.inc
+source include/rpl/init_source_replica.inc;
 source include/have_binlog_format_mixed.inc;
 source include/have_myisam.inc;
 
@@ -56,7 +56,7 @@ CREATE TEMPORARY TABLE t2_tmp (a int);
 ALTER TABLE t1_tmp ADD COLUMN c INT;
 
 -- echo ### assertion: assert that slave has no temp table opened.
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 SHOW STATUS LIKE 'Replica_open_temp_tables';
 
 -- connection master
@@ -74,7 +74,7 @@ DROP TEMPORARY TABLE t2_tmp;
 # assertion: assert that statement is now logged as STMT.
 INSERT INTO t1 VALUES (2);
 
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
 -- echo ### assertion: assert that slave has no temporary tables opened
 SHOW STATUS LIKE 'Replica_open_temp_tables';
@@ -84,17 +84,17 @@ SHOW STATUS LIKE 'Replica_open_temp_tables';
 # action: drop remaining tables
 DROP TABLE t3, t1;
 
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
--- source include/show_binlog_events.inc
+-- source include/rpl/deprecated/show_binlog_events.inc
 
 --echo
 --echo # Bug#55478 Row events wrongly apply on the temporary table of the same name
 --echo # ==========================================================================
 connection master;
 
-let $binlog_file= query_get_value(SHOW MASTER STATUS, File, 1);
-let $binlog_start= query_get_value(SHOW MASTER STATUS, Position, 1);
+let $binlog_file= query_get_value(SHOW BINARY LOG STATUS, File, 1);
+let $binlog_start= query_get_value(SHOW BINARY LOG STATUS, Position, 1);
 
 --echo # The statement should be binlogged
 CREATE TEMPORARY TABLE t1(c1 INT) ENGINE=InnoDB;
@@ -102,17 +102,17 @@ CREATE TEMPORARY TABLE t1(c1 INT) ENGINE=InnoDB;
 --echo
 --echo # Case 1: CREATE TABLE t1 ... SELECT
 --echo # ----------------------------------
-let $binlog_file= query_get_value(SHOW MASTER STATUS, File, 1);
-let $binlog_start= query_get_value(SHOW MASTER STATUS, Position, 1);
+let $binlog_file= query_get_value(SHOW BINARY LOG STATUS, File, 1);
+let $binlog_start= query_get_value(SHOW BINARY LOG STATUS, Position, 1);
 
 --echo
 --echo # The statement generates row events on t1. And the rows events should
 --echo # be inserted into the base table on slave.
 CREATE TABLE t1 ENGINE=MyISAM SELECT rand();
 
-source include/show_binlog_events.inc;
-let $binlog_file= query_get_value(SHOW MASTER STATUS, File, 1);
-let $binlog_start= query_get_value(SHOW MASTER STATUS, Position, 1);
+source include/rpl/deprecated/show_binlog_events.inc;
+let $binlog_file= query_get_value(SHOW BINARY LOG STATUS, File, 1);
+let $binlog_start= query_get_value(SHOW BINARY LOG STATUS, Position, 1);
 
 --echo
 --echo # Case 2: DROP TEMPORARY TABLE in a transacation
@@ -133,9 +133,9 @@ DROP TEMPORARY TABLE t1;
 INSERT INTO t1 VALUES(Rand());
 COMMIT;
 
-source include/show_binlog_events.inc;
+source include/rpl/deprecated/show_binlog_events.inc;
 
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
 --echo # Compare the base table.
 --let $diff_tables= master:t1, slave:t1
@@ -145,6 +145,6 @@ source include/show_binlog_events.inc;
 connection master;
 DROP TABLE t1;
 
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
---source include/rpl_end.inc
+--source include/rpl/deinit.inc

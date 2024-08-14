@@ -6,7 +6,7 @@
 --echo # Bug 83003: Using temporary tables on slaves increases GTID sequence number
 --echo #
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 --source include/count_sessions.inc
 --connect (con1,localhost,root,,)
 
@@ -19,5 +19,5 @@ CREATE TEMPORARY TABLE temp_non_trx(a INT) ENGINE=MyISAM;
 --connection default
 --source include/wait_until_count_sessions.inc
 
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 

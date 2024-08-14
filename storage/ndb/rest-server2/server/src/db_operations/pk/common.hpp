@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -39,11 +39,10 @@ typedef struct ColRec {
 /**
  * Set up read operation
  * @param col information of column that we're querying
- * @param transaction
  * @param request the incoming request from the REST API server
- * @param colIdx
- * @param[out] primaryKeysCols
- * @param[out] primaryKeySizes
+ * @param colIdx Column id
+ * @param primaryKeyCol [out] Primary key column
+ * @param primaryKeySize [out] Primary key size
  * @return the REST API status of performing the operation
  *
  * @return status

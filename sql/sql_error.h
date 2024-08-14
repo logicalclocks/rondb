@@ -30,12 +30,12 @@
 #include <sys/types.h>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_alloc.h"
 #include "my_compiler.h"
 
 #include "my_inttypes.h"
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h" /* MYSQL_ERRMSG_SIZE */
 #include "sql/sql_list.h"
 #include "sql/sql_plist.h" /* I_P_List */
@@ -150,7 +150,7 @@ class Sql_condition {
   /**
     Set the condition message test.
     @param message_text  Message text, expressed in the character set derived
-                         from the server --language option
+                         from the server --lc-messages option
   */
   void set_message_text(const char *message_text);
 
@@ -194,7 +194,7 @@ class Sql_condition {
   /** SQL CURSOR_NAME condition item. */
   String m_cursor_name;
 
-  /** Message text, expressed in the character set implied by --language. */
+  /** Message text, expressed in the character set implied by --lc-messages. */
   String m_message_text;
 
   /** MySQL extension, MYSQL_ERRNO condition item. */

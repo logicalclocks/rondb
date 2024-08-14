@@ -3,11 +3,6 @@
 # server has been dropped
 --disable_result_log
 --disable_query_log
-# Just in case, if someone enabled reconnects before waiting for disconnect,
-# and happened to set the `.expect` file to "restart", not "wait", the server
-# can restart in meantime before we notice it, and since the reconnect will do
-# its job, we will never notice the connection is down.
---disable_reconnect
 let $counter= 500;
 if ($disconnect_timeout)
 {
@@ -24,7 +19,7 @@ while (!$mysql_errno)
   {
     if ($show_rpl_debug_info)
     {
-      --source include/show_rpl_debug_info.inc
+      --source include/rpl/debug/show_debug_info.inc
       --echo current_connectio= $CURRENT_CONNECTION
     }
     --die Server failed to dissapear

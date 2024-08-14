@@ -32,14 +32,8 @@
 #include <stdexcept>
 #include <typeinfo>
 
+#include "mysql/harness/net_ts/internet.h"
 #include "mysql/harness/stdx/attribute.h"
-
-#define SKIP_GIT_TESTS(COND)                                       \
-  if (COND) {                                                      \
-    std::cout << "[  SKIPPED ] Tests using Git repository skipped" \
-              << std::endl;                                        \
-    return;                                                        \
-  }
 
 #define HARNESS_TEST_THROW_LIKE_(statement, expected_exception,                \
                                  expected_message, fail)                       \
@@ -170,7 +164,14 @@ void init_windows_sockets();
  *
  * @returns true if the selected port can be bind to, false otherwise
  */
-[[nodiscard]] bool is_port_bindable(const uint16_t port);
+[[nodiscard]] stdx::expected<void, std::error_code> is_port_bindable(
+    const uint16_t port);
+
+[[nodiscard]] stdx::expected<void, std::error_code> is_port_bindable(
+    const net::ip::tcp::endpoint &ep);
+
+[[nodiscard]] stdx::expected<void, std::error_code> is_port_bindable(
+    net::io_context &io_ctx, const net::ip::tcp::endpoint &ep);
 
 /** @brief Check if a given unix socket can be bind to.
  *
@@ -258,21 +259,6 @@ std::string get_file_output(const std::string &file_name,
 // need to return void to be able to use ASSERT_ macros
 void connect_client_and_query_port(unsigned router_port, std::string &out_port,
                                    bool should_fail = false);
-
-/**
- * Add a "<key>=<value>" line in a configuration file in a given config section.
- *
- * @param config_path configuration file path
- * @param section_name configuration section name
- * @param key part of configuration to be added
- * @param value part of configuration to be added
- *
- * @retval true config line inserted successfully
- * @retval false config line not inserted
- */
-bool add_line_to_config_file(const std::string &config_path,
-                             const std::string &section_name,
-                             const std::string &key, const std::string &value);
 
 /**
  * Wait for the nth occurrence of the log_regex in the log_file with timeout

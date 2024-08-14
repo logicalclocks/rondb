@@ -27,6 +27,8 @@
 #ifndef MgmtSrvr_H
 #define MgmtSrvr_H
 
+#include <atomic>
+
 #include "Config.hpp"
 #include "ConfigSubscriber.hpp"
 
@@ -89,6 +91,8 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
    */
   enum LogMode { In, Out, InOut, Off };
 
+  enum TlsStats { accepted, upgraded, current, tls, authfail };
+
   /**
      @struct MgmtOpts
      @brief Options used to control how the management server is started
@@ -107,10 +111,14 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
     int print_full_config;
     const char *configdir;
     int verbose;
-    MgmtOpts() : configdir(MYSQLCLUSTERDIR) {}
     int reload;
     int initial;
     NodeBitmask nowait_nodes;
+    const char *tls_search_path;
+    int mgm_tls;
+
+    MgmtOpts()
+        : configdir(MYSQLCLUSTERDIR), tls_search_path(NDB_TLS_SEARCH_PATH) {}
   };
 
   MgmtSrvr();                  // Not implemented
@@ -138,6 +146,7 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
  private:
   /* Functions used from 'start' */
   bool start_transporter(const Config *);
+  bool get_connection_config(const Config *);
   bool start_mgm_service(const Config *);
   bool connect_to_self(void);
   bool is_node_active();
@@ -330,6 +339,9 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
    */
   const char *getErrorText(int errorCode, char *buf, int buf_sz);
 
+  void tls_stat_increment(unsigned int idx);
+  void tls_stat_decrement(unsigned int idx);
+
  private:
   void config_changed(NodeId, const Config *) override;
   void setClusterLog(const Config *conf);
@@ -450,6 +462,16 @@ private:
 
   class ConfigManager *m_config_manager;
 
+  const char *m_tls_search_path{nullptr};
+
+  int m_client_tls_req;       // TLS requirement level as MGM client ...
+  bool m_require_tls{false};  // ... and as MGM server.
+  bool m_require_cert{false};
+
+  struct ssl_ctx_st *ssl_ctx() {
+    return theFacade->get_registry()->getTlsKeyManager()->ctx();
+  }
+
   bool m_need_restart;
 
   ndb_sockaddr m_connect_address[MAX_NODES];
@@ -513,6 +535,9 @@ private:
 
   void show_variables(NdbOut &out = ndbout);
 
+  bool require_tls() const { return m_require_tls; }
+  bool require_cert() const { return m_require_tls || m_require_cert; }
+
  private:
   class NodeIdReservations {
     struct Reservation {
@@ -563,6 +588,8 @@ public:
   bool alloc_node_id_impl(NodeId &nodeid, ndb_mgm_node_type type,
                           const ndb_sockaddr *client_addr, int &error_code,
                           BaseString &error_string, Uint32 timeout_s = 20);
+
+  std::atomic<uint32_t> m_tls_stats[5]{0};
 
  public:
   /*

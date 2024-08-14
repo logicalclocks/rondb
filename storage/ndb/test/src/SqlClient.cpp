@@ -264,7 +264,7 @@ bool SqlClient::runQuery(const char *sql, const Properties &args,
         break;
     }
   }
-  if (mysql_stmt_bind_param(stmt, bind_param.get())) {
+  if (mysql_stmt_bind_named_param(stmt, bind_param.get(), params, nullptr)) {
     report_error("Failed to bind param");
     mysql_stmt_close(stmt);
     return false;

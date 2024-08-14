@@ -1,6 +1,6 @@
 #
 # Bug#32831765 CREATE FULLTEXT INDEX fails with ERROR 1062 (23000):
-# Duplicate entry 'NULL-NULL'
+# Duplicate entry 'NULL-NULL' 
 #
 CREATE TABLE tt (
 `col1` varchar(255) DEFAULT NULL,

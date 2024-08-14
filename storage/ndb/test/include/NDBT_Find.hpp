@@ -48,4 +48,9 @@ void NDBT_find_ndb_mgmd(BaseString &path);
 */
 void NDBT_find_ndbd(BaseString &path);
 
+/*
+  Wrapper to find ndb_sign_keys in a test environment
+*/
+void NDBT_find_sign_keys(BaseString &path);
+
 #endif

@@ -140,6 +140,7 @@ Description: nodejs
 /usr/bin/ndb_select_all
 /usr/bin/ndb_select_count
 /usr/bin/ndb_show_tables
+/usr/bin/ndb_sign_keys
 /usr/bin/ndb_size.pl
 /usr/bin/ndb_top
 /usr/bin/ndb_waiter
@@ -170,6 +171,7 @@ Description: nodejs
 /usr/share/man/man1/ndb_select_all.1*
 /usr/share/man/man1/ndb_select_count.1*
 /usr/share/man/man1/ndb_show_tables.1*
+/usr/share/man/man1/ndb_sign_keys.1*
 /usr/share/man/man1/ndb_size.pl.1*
 /usr/share/man/man1/ndb_top.1*
 /usr/share/man/man1/ndb_waiter.1*

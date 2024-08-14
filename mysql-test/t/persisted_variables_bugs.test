@@ -29,17 +29,17 @@ USE bug27374791;
 CREATE TABLE T( i int);
 # Get rid of previous tests binlog
 --disable_query_log
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 --enable_query_log
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 BEGIN;
 INSERT INTO T values (9);
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 SET PERSIST max_connections=31;
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 RESET PERSIST;
 # There should be no COMMIT event in binlog
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 
 # cleanup
 SET GLOBAL max_connections=DEFAULT;
@@ -224,7 +224,7 @@ CREATE TABLE t(a CHAR (1))ENGINE=InnoDB;
 RESET PERSIST size;
 --error ER_BAD_FIELD_ERROR
 SELECT JSON_OBJECTAGG(id,x) FROM t;
-RESET SLAVE;
+RESET REPLICA;
 # cleanup
 DROP DATABASE bug27903874;
 
@@ -359,11 +359,11 @@ RESET PERSIST;
 --echo #
 
 --echo # should report warning
-SET GLOBAL avoid_temporal_upgrade=TRUE;
+SET GLOBAL delayed_insert_limit=100;
 --echo # should report warning
-SET PERSIST_ONLY avoid_temporal_upgrade=TRUE;
+SET PERSIST_ONLY delayed_insert_limit=100;
 --echo # should report warning
-SET PERSIST avoid_temporal_upgrade=TRUE;
+SET PERSIST delayed_insert_limit=100;
 
 --let $ofile= $MYSQLTEST_VARDIR/tmp/server_log.err
 
@@ -372,9 +372,9 @@ SET PERSIST avoid_temporal_upgrade=TRUE;
 --replace_result $MYSQLTEST_VARDIR tmp_dir
 --source include/restart_mysqld_no_echo.inc
 
---let $assert_text= Assert that there is a warning at bootstrap when setting --avoid_temporal_upgrade
+--let $assert_text= Assert that there is a warning at bootstrap when setting --delayed_insert_limit
 --let $assert_file= $MYSQLTEST_VARDIR/tmp/server_log.err
---let $assert_select= '@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+--let $assert_select= '@@delayed_insert_limit' is deprecated and will be removed in a future release.
 --let $assert_count= 1
 --source include/assert_grep.inc
 
@@ -476,45 +476,45 @@ RESET PERSIST;
 --echo # PERSISTED OPTIONS
 --echo #
 
-SET PERSIST transaction_write_set_extraction='XXHASH64';
-SET PERSIST avoid_temporal_upgrade=TRUE;
+SET PERSIST temptable_use_mmap=FALSE;
+SET PERSIST delayed_insert_limit=100;
 
 --let LOG_ERR=$MYSQLTEST_VARDIR/tmp/myerror.err
 --let $restart_parameters=restart:--log_error=$LOG_ERR --no-console
 --replace_result $LOG_ERR LOG_ERR
 --source include/restart_mysqld.inc
 
---let $assert_text= Assert that there is a warning at bootstrap when setting transaction_write_set_extraction
+--let $assert_text= Assert that there is a warning at bootstrap when setting temptable_use_mmap
 --let $assert_file= $LOG_ERR
---let $assert_select= '@@transaction_write_set_extraction' is deprecated and will be removed in a future release.
+--let $assert_select= 'temptable_use_mmap' is deprecated and will be removed in a future release.
 --let $assert_count= 1
 --source include/assert_grep.inc
 
---let $assert_text= Assert that there is a warning at bootstrap when setting avoid_temporal_upgrade
+--let $assert_text= Assert that there is a warning at bootstrap when setting delayed_insert_limit
 --let $assert_file= $LOG_ERR
---let $assert_select= '@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+--let $assert_select= '@@delayed_insert_limit' is deprecated and will be removed in a future release.
 --let $assert_count= 1
 --source include/assert_grep.inc
 
 RESET PERSIST;
 --remove_file $LOG_ERR
 
-SET PERSIST_ONLY transaction_write_set_extraction='XXHASH64';
-SET PERSIST_ONLY avoid_temporal_upgrade=TRUE;
+SET PERSIST_ONLY temptable_use_mmap=FALSE;
+SET PERSIST_ONLY delayed_insert_limit=100;
 
 --let $restart_parameters=restart:--log_error=$LOG_ERR --no-console
 --replace_result $LOG_ERR LOG_ERR
 --source include/restart_mysqld.inc
 
---let $assert_text= Assert that there is a warning at bootstrap when setting transaction_write_set_extraction
+--let $assert_text= Assert that there is a warning at bootstrap when setting temptable_use_mmap
 --let $assert_file= $LOG_ERR
---let $assert_select= '@@transaction_write_set_extraction' is deprecated and will be removed in a future release.
+--let $assert_select= 'temptable_use_mmap' is deprecated and will be removed in a future release.
 --let $assert_count= 1
 --source include/assert_grep.inc
 
---let $assert_text= Assert that there is a warning at bootstrap when setting avoid_temporal_upgrade
+--let $assert_text= Assert that there is a warning at bootstrap when setting delayed_insert_limit
 --let $assert_file= $LOG_ERR
---let $assert_select= '@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+--let $assert_select= '@@delayed_insert_limit' is deprecated and will be removed in a future release.
 --let $assert_count= 1
 --source include/assert_grep.inc
 
@@ -549,6 +549,21 @@ RESET PERSIST test_component.bool_ro_sys_var;
 RESET PERSIST replica_preserve_commit_order;
 SET GLOBAL replica_preserve_commit_order = DEFAULT;
 UNINSTALL COMPONENT "file://component_test_sys_var_service";
+
+
+--echo #
+--echo # Bug #34897517: Can't set report_host to NULL
+--echo #
+
+--error ER_NULL_CANT_BE_PERSISTED_FOR_READONLY
+SET PERSIST_ONLY report_host = NULL;
+
+--error ER_NULL_CANT_BE_PERSISTED_FOR_READONLY
+SET PERSIST_ONLY report_host = DEFAULT;
+
+SET PERSIST ssl_crl = NULL;
+RESET PERSIST ssl_crl;
+SET GLOBAL ssl_crl = DEFAULT;
 
 
 --echo # End of the 8.0 tests

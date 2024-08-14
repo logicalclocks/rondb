@@ -23,11 +23,15 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include <sys/types.h>
+
+#include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <utility>
 
-#include <m_ctype.h>                  /* Character set */
 #include <my_alloc.h>                 /* MEM_ROOT */
 #include <my_default.h>               /* print_defaults */
 #include <my_getopt.h>                /* Options handling */
@@ -39,12 +43,16 @@
 #include <print_version.h>            /* print_version */
 #include <typelib.h>                  /* find_type_or_exit */
 #include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
+#include "m_string.h"
+#include "mysql/strings/m_ctype.h" /* Character set */
+#include "nulls.h"
+#include "template_utils.h"
 
 #include "options.h"
 #include "utilities.h"
 
 /* TLS variables */
-#include "sslopt-vars.h"
+#include "client/include/sslopt-vars.h"
 
 namespace options {
 
@@ -72,6 +80,7 @@ enum migration_options {
   OPT_SERVER_PUBLIC_KEY,
   OPT_SSL_SESSION_DATA,
   OPT_SSL_SESSION_DATA_CONTINUE_ON_FAILED_REUSE,
+  OPT_TLS_SNI_SERVERNAME,
   /* Add new value above this */
   OPT_LAST
 };
@@ -92,7 +101,7 @@ char *Options::s_socket = nullptr;
 bool Options::s_tty_password = false;
 
 /* Caching sha2 password variables */
-#include "caching_sha2_passwordopt-vars.h"
+#include "client/include/caching_sha2_passwordopt-vars.h"
 
 /** Options group */
 static const char *load_default_groups[] = {"mysql_migrate_keyring", nullptr};
@@ -155,9 +164,9 @@ static struct my_option my_long_options[] = {
      nullptr, nullptr, nullptr, GET_PASSWORD, OPT_ARG, 0, 0, 0, nullptr, 0,
      nullptr},
 /* TLS options */
-#include "sslopt-longopts.h"
+#include "client/include/sslopt-longopts.h"
 /* Caching sha2 password options */
-#include "caching_sha2_passwordopt-longopts.h"
+#include "client/include/caching_sha2_passwordopt-longopts.h"
     {"verbose", 'v', "Write more.", nullptr, nullptr, nullptr, GET_NO_ARG,
      NO_ARG, 0, 0, 0, nullptr, 0, nullptr},
     /* Must be the last one */
@@ -210,7 +219,7 @@ bool get_one_option(int optid, const struct my_option *opt, char *argument) {
         Options::s_tty_password = true;
       break;
 /* Handle TLS options */
-#include "sslopt-case.h"
+#include "client/include/sslopt-case.h"
   }
   return false;
 }
@@ -267,9 +276,9 @@ bool process_options(int *argc, char ***argv, int &exit_code) {
   }
   my_getopt_use_args_separator = false;
 
-  bool save_skip_unknown = my_getopt_skip_unknown;
+  const bool save_skip_unknown = my_getopt_skip_unknown;
   my_getopt_skip_unknown = true;
-  bool ret = get_options(*argc, *argv, exit_code);
+  const bool ret = get_options(*argc, *argv, exit_code);
   my_getopt_skip_unknown = save_skip_unknown;
   return ret;
 }
@@ -332,7 +341,6 @@ Mysql_connection::Mysql_connection(bool connect) : ok_(false), mysql(nullptr) {
   if (!mysql_real_connect(mysql, Options::s_hostname, Options::s_username,
                           Options::s_password, NullS, Options::s_port,
                           Options::s_socket, CLIENT_REMEMBER_OPTIONS)) {
-    mysql->reconnect = true;
     log_error << "Failed to connect to server. Received error: "
               << mysql_error(mysql) << std::endl;
     return;

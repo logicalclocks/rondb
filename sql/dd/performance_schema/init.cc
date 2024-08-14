@@ -31,9 +31,9 @@
 #include <vector>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "my_dbug.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/thread_type.h"
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/bootstrap.h"                   // bootstrap::run_bootstrap_thread

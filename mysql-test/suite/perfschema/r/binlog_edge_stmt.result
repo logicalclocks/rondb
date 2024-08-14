@@ -1,7 +1,7 @@
 set binlog_format=statement;
 Warnings:
 Warning	1287	'@@binlog_format' is deprecated and will be removed in a future release.
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 drop database if exists my_replicated_db;
 call mtr.add_suppression("Unsafe statement written to the binary log using statement format since BINLOG_FORMAT = STATEMENT");
 create database my_replicated_db;
@@ -110,7 +110,7 @@ drop table if exists marker_end;
 Warnings:
 Note	1051	Unknown table 'test.marker_end'
 drop database my_replicated_db;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	drop database if exists my_replicated_db
 binlog.000001	#	Query	#	#	BEGIN

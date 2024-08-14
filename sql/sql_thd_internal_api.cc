@@ -48,6 +48,7 @@
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_socket.h"
 #include "mysql/thread_type.h"
+#include "nulls.h"
 #include "sql/binlog.h"       // mysql_bin_log
 #include "sql/current_thd.h"  // current_thd
 #include "sql/mysqld.h"
@@ -62,6 +63,7 @@
 #include "sql/transaction_info.h"
 #include "violite.h"
 
+struct CHARSET_INFO;
 struct mysql_cond_t;
 struct mysql_mutex_t;
 
@@ -124,7 +126,7 @@ void thd_init(THD *thd, char *stack_start) {
 
   if (!thd->system_thread) {
     DBUG_PRINT("info",
-               ("init new connection. thd: %p fd: %d", thd,
+               ("init new connection. thd: %p fd: " MY_SOCKET_FMT, thd,
                 mysql_socket_getfd(
                     thd->get_protocol_classic()->get_vio()->mysql_socket)));
   }
@@ -231,12 +233,17 @@ void thd_increment_bytes_sent(size_t length) {
   if (likely(thd != nullptr)) { /* current_thd==NULL when close_connection()
                                 calls net_send_error() */
     thd->status_var.bytes_sent += length;
+    global_aggregated_stats.get_shard(thd->thread_id()).bytes_sent += length;
   }
 }
 
 void thd_increment_bytes_received(size_t length) {
   THD *thd = current_thd;
-  if (likely(thd != nullptr)) thd->status_var.bytes_received += length;
+  if (likely(thd != nullptr)) {
+    thd->status_var.bytes_received += length;
+    global_aggregated_stats.get_shard(thd->thread_id()).bytes_received +=
+        length;
+  }
 }
 
 partition_info *thd_get_work_part_info(THD *thd) { return thd->work_part_info; }
@@ -254,7 +261,7 @@ LEX_CSTRING thd_query_unsafe(THD *thd) {
 
 size_t thd_query_safe(THD *thd, char *buf, size_t buflen) {
   mysql_mutex_lock(&thd->LOCK_thd_query);
-  LEX_CSTRING query_string = thd->query();
+  const LEX_CSTRING query_string = thd->query();
   size_t len = std::min(buflen - 1, query_string.length);
   if (len > 0) strncpy(buf, query_string.str, len);
   buf[len] = '\0';
@@ -325,8 +332,8 @@ bool is_mysql_datadir_path(const char *path) {
   char mysql_data_dir[FN_REFLEN], path_dir[FN_REFLEN];
   convert_dirname(path_dir, path, NullS);
   convert_dirname(mysql_data_dir, mysql_unpacked_real_data_home, NullS);
-  size_t mysql_data_home_len = dirname_length(mysql_data_dir);
-  size_t path_len = dirname_length(path_dir);
+  const size_t mysql_data_home_len = dirname_length(mysql_data_dir);
+  const size_t path_len = dirname_length(path_dir);
 
   if (path_len < mysql_data_home_len) return true;
 
@@ -347,8 +354,9 @@ int mysql_tmpfile_path(const char *path, const char *prefix) {
 #ifdef _WIN32
   mode |= O_TRUNC | O_SEQUENTIAL;
 #endif
-  File fd = mysql_file_create_temp(PSI_NOT_INSTRUMENTED, filename, path, prefix,
-                                   mode, UNLINK_FILE, MYF(MY_WME));
+  const File fd =
+      mysql_file_create_temp(PSI_NOT_INSTRUMENTED, filename, path, prefix, mode,
+                             UNLINK_FILE, MYF(MY_WME));
   return fd;
 }
 

@@ -1,0 +1,7 @@
+--source suite/ndb_tls/include/check_openssl.inc
+--source suite/ndbcluster/basic.test
+
+## Expect all encrypted links
+#
+SELECT count(*) from ndbinfo.transporters
+WHERE status = 'CONNECTED' AND encrypted = 0;

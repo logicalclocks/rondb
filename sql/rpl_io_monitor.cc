@@ -468,7 +468,8 @@ int Source_IO_monitor::connect_senders(THD *thd,
 
     if (is_monitor_killed(thd, nullptr)) return 1;
 
-    if (ER_RPL_ASYNC_EXECUTING_QUERY == err) {
+    if (err == ER_RPL_ASYNC_GET_GROUP_MEMBERSHIP_DETAILS_ERROR ||
+        err == ER_RPL_ASYNC_MONITOR_IO_THD_FETCH_GROUP_MAJORITY_ERROR) {
       continue;
     }
 
@@ -594,6 +595,11 @@ bool Source_IO_monitor::check_connection_and_run_query(
   if (conn_single_server != nullptr && conn_single_server->is_connected())
     std::tie(query_failed, std::ignore) = execute_query(
         conn_single_server, enum_sql_query_tag::QUERY_SERVER_SELECT_ONE);
+  if (query_failed != 0 && conn_single_server != nullptr) {
+    Async_conn_failover_manager::log_error_for_async_executing_query_failure(
+        ER_RPL_ASYNC_CHECK_CONNECTION_ERROR, conn_single_server->get_mysql(),
+        mi);
+  }
   delete conn_single_server;
   conn_single_server = nullptr;
   return !query_failed;
@@ -819,12 +825,11 @@ Source_IO_monitor::get_online_members(
   auto qtag{enum_sql_query_tag::CONFIG_MODE_QUORUM_MONITOR};
   std::tie(error, quorum_list) = execute_query(conn, qtag);
   if (error != 0) {
-    LogErr(WARNING_LEVEL, ER_RPL_ASYNC_EXECUTING_QUERY,
-           "The Monitor IO thread failed to detect if the source belongs to "
-           "the group majority",
-           host.c_str(), port, "", channel.c_str());
-    return std::make_tuple(ER_RPL_ASYNC_EXECUTING_QUERY,
-                           conn_member_needs_to_change, conn_member_quorum_lost,
+    longlong sql_errno{ER_RPL_ASYNC_MONITOR_IO_THD_FETCH_GROUP_MAJORITY_ERROR};
+    Async_conn_failover_manager::log_error_for_async_executing_query_failure(
+        sql_errno, const_cast<Mysql_connection *>(conn)->get_mysql(), mi);
+    return std::make_tuple(sql_errno, conn_member_needs_to_change,
+                           conn_member_quorum_lost,
                            conn_member_quorum_lost_details);
   }
 
@@ -841,20 +846,18 @@ Source_IO_monitor::get_online_members(
     MYSQL_RES_VAL sender_membership_res{};
     std::tie(error, sender_membership_res) = execute_query(conn, qtag);
 
-    /* Simulate that sources are 5.7 servers. */
-    DBUG_EXECUTE_IF("rpl_acf_simulate_57_source", error = ER_BAD_FIELD_ERROR;);
     if (error == ER_BAD_FIELD_ERROR) {
       qtag = enum_sql_query_tag::GR_MEMBER_ALL_DETAILS_FETCH_FOR_57;
       std::tie(error, sender_membership_res) = execute_query(conn, qtag);
     }
 
     if (error != 0) {
-      LogErr(WARNING_LEVEL, ER_RPL_ASYNC_EXECUTING_QUERY,
-             "The Monitor IO thread failed to get group membership details",
-             host.c_str(), port, "", channel.c_str());
-      return std::make_tuple(
-          ER_RPL_ASYNC_EXECUTING_QUERY, conn_member_needs_to_change,
-          conn_member_quorum_lost, conn_member_quorum_lost_details);
+      longlong sql_errno{ER_RPL_ASYNC_GET_GROUP_MEMBERSHIP_DETAILS_ERROR};
+      Async_conn_failover_manager::log_error_for_async_executing_query_failure(
+          sql_errno, const_cast<Mysql_connection *>(conn)->get_mysql(), mi);
+      return std::make_tuple(sql_errno, conn_member_needs_to_change,
+                             conn_member_quorum_lost,
+                             conn_member_quorum_lost_details);
     }
 
     /*
@@ -1123,7 +1126,7 @@ static bool restart_io_thread(THD *thd, const std::string &channel_name,
   }
 
   int thread_mask = 0;
-  thread_mask |= SLAVE_IO;
+  thread_mask |= REPLICA_IO;
   thd->set_skip_readonly_check();
 
   if (terminate_slave_threads(mi, thread_mask, rpl_stop_replica_timeout,

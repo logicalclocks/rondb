@@ -459,34 +459,34 @@ char **BaseString::argify(const char *argv0, const char *src) {
       else if (iswhite(*src))
 		break;
 
-	    /* Actually copy characters */
-	    *dst++ = *src++;
-	}
-	
-	/* Make sure the string is properly terminated */
-	*dst++ = '\0';
-	src++;
-
-        {
-          char *t = strdup(begin);
-      if (t == nullptr) {
-            delete[] tmp;
-        for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
-            errno = ENOMEM;
-            return nullptr;
-          }
-      if (vargv.push_back(t)) {
-            free(t);
-            delete[] tmp;
-        for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
-            return nullptr;
-          }
-        }
+      /* Actually copy characters */
+      *dst++ = *src++;
     }
+
+    /* Make sure the string is properly terminated */
+    *dst++ = '\0';
+    src++;
+
+    {
+      char *t = strdup(begin);
+      if (t == nullptr) {
+        delete[] tmp;
+        for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
+        errno = ENOMEM;
+        return nullptr;
+      }
+      if (vargv.push_back(t)) {
+        free(t);
+        delete[] tmp;
+        for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
+        return nullptr;
+      }
+    }
+  }
 end:
-    
-    delete[] tmp;
-  if (vargv.push_back(NULL)) {
+
+  delete[] tmp;
+  if (vargv.push_back(nullptr)) {
     for (unsigned i = 0; i < vargv.size(); i++) free(vargv[i]);
       return nullptr;
     }

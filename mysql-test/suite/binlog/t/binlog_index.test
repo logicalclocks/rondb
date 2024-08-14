@@ -17,7 +17,7 @@ call mtr.add_suppression('MYSQL_BIN_LOG::purge_logs failed to clean registers be
 let $old=`select @@debug`;
 let $saved_binlog_error_action=`SELECT @@GLOBAL.binlog_error_action`;
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 let $MYSQLD_DATADIR= `select @@datadir`;
 let $INDEX=$MYSQLD_DATADIR/binlog.index;
@@ -30,7 +30,7 @@ flush logs;
 flush logs;
 flush logs;
 
-source include/show_binary_logs.inc;
+source include/rpl/deprecated/show_binary_logs.inc;
 remove_file $MYSQLD_DATADIR/binlog.000001;
 
 --echo # Create a dedicated user to demonstrate the BINLOG_ADMIN privilege
@@ -52,13 +52,13 @@ DROP USER binlog_admin@localhost;
 disconnect con1;
 
 --echo *** must show a list starting from the 'TO' argument of PURGE ***
-source include/show_binary_logs.inc;
+source include/rpl/deprecated/show_binary_logs.inc;
 
 #
 # testing purge binary logs BEFORE
 #
 
-reset master;
+reset binary logs and gtids;
 
 flush logs;
 flush logs;
@@ -73,14 +73,14 @@ eval purge binary logs BEFORE '$date';
 --enable_query_log
 
 --echo *** must show one record, of the active binlog, left in the index file after PURGE ***
-source include/show_binary_logs.inc;
+source include/rpl/deprecated/show_binary_logs.inc;
 
 #
 # testing a fatal error
 # Turning a binlog file into a directory must be a portable setup
 # 
 
-reset master;
+reset binary logs and gtids;
 
 flush logs;
 flush logs;
@@ -95,7 +95,7 @@ replace_regex /\.[\\\/]binlog/binlog/;
 show warnings;
 rmdir $MYSQLD_DATADIR/binlog.000001;
 --disable_warnings
-reset master;
+reset binary logs and gtids;
 --enable_warnings
 
 --echo # crash_purge_before_update_index
@@ -106,7 +106,6 @@ SET SESSION debug="+d,crash_purge_before_update_index";
 --error 2013
 purge binary logs TO 'binlog.000002';
 
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 file_exists $MYSQLD_DATADIR/binlog.000001;
@@ -126,7 +125,6 @@ SET SESSION debug="+d,crash_purge_non_critical_after_update_index";
 --error 2013
 purge binary logs TO 'binlog.000004';
 
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 --error 1
@@ -149,7 +147,6 @@ SET SESSION debug="+d,crash_purge_critical_after_update_index";
 --error 2013
 purge binary logs TO 'binlog.000006';
 
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 --error 1
@@ -172,7 +169,6 @@ SET SESSION debug="+d,crash_create_non_critical_before_update_index";
 --error 2013
 flush logs;
 
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 file_exists $MYSQLD_DATADIR/binlog.000008;
@@ -190,7 +186,6 @@ SET SESSION debug="+d,crash_create_critical_before_update_index";
 --error 2013
 flush logs;
 
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 file_exists $MYSQLD_DATADIR/binlog.000009;
@@ -210,7 +205,6 @@ SET SESSION debug="+d,crash_create_after_update_index";
 --error 2013
 flush logs;
 
---enable_reconnect
 --source include/wait_until_connected_again.inc
 
 file_exists $MYSQLD_DATADIR/binlog.000010;
@@ -280,32 +274,32 @@ SELECT @index;
 #
 # WL#5493
 # Test case6 verifies if the index file has the correct data,
-# i.e. if binlog file name is added after the master restarts
+# i.e. if binlog file name is added after the source restarts
 # when setting DEBUG POINT before renaming index file. 
 #
 # Test case7 verifies if the index file has the correct data,
-# i.e. if binlog file name is added after the master restarts
+# i.e. if binlog file name is added after the source restarts
 # when setting DEBUG POINT after renaming index file.
 #
 # Test case8 verifies if the index file has the correct data,
 # i.e. if requested binlog file names are removed after the
-# master restarts when setting DEBUG POINT after purging index
+# source restarts when setting DEBUG POINT after purging index
 # file.
 #
 # Test case9 verifies if the index file has the correct data,
 # i.e. if requested binlog file names are removed after the
-# master restarts when setting DEBUG POINT before purging index
+# source restarts when setting DEBUG POINT before purging index
 # file.
 #
 # Test case10 verifies if the index file has the correct data,
 # i.e. although requested binlog file names are not removed
-# after the master restarts when injecting a fault to the
+# after the source restarts when injecting a fault to the
 # temp file in the process of purging the index file.
 #
 
 -- echo # Test case6: Set DEBUG POINT before rename index file when
 -- echo #             appending a binlog file name to index file.
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 file_exists $MYSQLD_DATADIR/binlog.000013;
 --error 1
 file_exists $MYSQLD_DATADIR/binlog.000014;
@@ -318,15 +312,13 @@ SET SESSION debug="+d,crash_create_before_rename_index_file";
 flush logs;
 
 -- source include/wait_until_disconnected.inc
--- enable_reconnect
--- echo # Restart the master server
+-- echo # Restart the source server
 -- exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
 -- source include/wait_until_connected_again.inc
--- disable_reconnect
 
 -- echo # Test if the index file has the correct data,
 -- echo # i.e. binlog file name is added.
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 file_exists $MYSQLD_DATADIR/binlog.000014;
 file_exists $MYSQLD_DATADIR/binlog.000015;
 --error 1
@@ -342,15 +334,13 @@ SET SESSION debug="+d,crash_create_after_rename_index_file";
 flush logs;
 
 -- source include/wait_until_disconnected.inc
--- enable_reconnect
--- echo # Restart the master server
+-- echo # Restart the source server
 -- exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
 -- source include/wait_until_connected_again.inc
--- disable_reconnect
 
 -- echo # Test if the index file has the correct data,
 -- echo # i.e. binlog file name is added.
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 file_exists $MYSQLD_DATADIR/binlog.000016;
 file_exists $MYSQLD_DATADIR/binlog.000017;
 --error 1
@@ -359,7 +349,7 @@ file_exists $MYSQLD_DATADIR/binlog.000018;
 -- echo # Test case8: Set DEBUG POINT after rename index file when
 -- echo #             purging the index file.
 
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 # Write file to make mysql-test-run.pl expect crash and restart
 SET SESSION debug="+d,crash_create_after_rename_index_file";
 -- exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
@@ -368,15 +358,13 @@ SET SESSION debug="+d,crash_create_after_rename_index_file";
 purge binary logs TO 'binlog.000010';
 
 -- source include/wait_until_disconnected.inc
--- enable_reconnect
--- echo # Restart the master server
+-- echo # Restart the source server
 -- exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
 -- source include/wait_until_connected_again.inc
--- disable_reconnect
 
 -- echo # Test if the index file has the correct data,
 -- echo # i.e. requested binlog file names are removed.
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 -- error 1
 file_exists $MYSQLD_DATADIR/binlog.000008;
 -- error 1
@@ -386,7 +374,7 @@ file_exists $MYSQLD_DATADIR/binlog.000010;
 -- echo # Test case9: Set DEBUG POINT befor rename index file when
 -- echo #             purging the index file.
 
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 # Write file to make mysql-test-run.pl expect crash and restart
 SET SESSION debug="+d,crash_create_before_rename_index_file";
 -- exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
@@ -395,15 +383,13 @@ SET SESSION debug="+d,crash_create_before_rename_index_file";
 purge binary logs TO 'binlog.000012';
 
 -- source include/wait_until_disconnected.inc
--- enable_reconnect
--- echo # Restart the master server
+-- echo # Restart the source server
 -- exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
 -- source include/wait_until_connected_again.inc
--- disable_reconnect
 
 -- echo # Test if the index file has the correct data,
 -- echo # i.e. requested binlog file names are removed.
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 -- error 1
 file_exists $MYSQLD_DATADIR/binlog.000010;
 -- error 1
@@ -413,7 +399,7 @@ file_exists $MYSQLD_DATADIR/binlog.000012;
 -- echo # Test case10: Inject a fault to copy part content to the temp file
 -- echo #              when purging the index file.
 
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 # Write file to make mysql-test-run.pl expect crash and restart
 SET SESSION debug="+d,fault_injection_copy_part_file";
 -- exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
@@ -422,14 +408,12 @@ SET SESSION debug="+d,fault_injection_copy_part_file";
 purge binary logs TO 'binlog.000014';
 
 -- source include/wait_until_disconnected.inc
--- enable_reconnect
--- echo # Restart the master server
+-- echo # Restart the source server
 -- exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
 -- source include/wait_until_connected_again.inc
--- disable_reconnect
 
 -- echo # Test the index file is complete, although is not purged successfully.
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 file_exists $MYSQLD_DATADIR/binlog.000012;
 file_exists $MYSQLD_DATADIR/binlog.000013;
 file_exists $MYSQLD_DATADIR/binlog.000014;
@@ -452,7 +436,7 @@ call mtr.add_suppression("failed to update the index file");
 
 -- echo # Test the index file is complete, although is not purged successfully.
 -- echo # Also this will indicate that binary logging is not disabled.
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 file_exists $MYSQLD_DATADIR/binlog.000012;
 file_exists $MYSQLD_DATADIR/binlog.000013;
 file_exists $MYSQLD_DATADIR/binlog.000014;
@@ -468,7 +452,7 @@ FLUSH LOGS;
 --error ER_NO_BINARY_LOGGING
 SHOW BINARY LOGS;
 --source include/restart_mysqld.inc
---source include/show_binary_logs.inc
+--source include/rpl/deprecated/show_binary_logs.inc
 CREATE TABLE t1(i INT);
 SET GLOBAL binlog_error_action='IGNORE_ERROR';
 SET SESSION debug="+d,force_index_file_delete_failure";
@@ -486,7 +470,7 @@ INSERT INTO t1 VALUES (12);
 SHOW BINARY LOGS;
 
 --source include/restart_mysqld.inc
--- source include/show_binary_logs.inc
+-- source include/rpl/deprecated/show_binary_logs.inc
 DROP TABLE t1;
 eval SET SESSION debug="$old";
 -- echo # Test case11: Ends
@@ -521,8 +505,8 @@ eval SET SESSION debug="$old";
 
 eval SET GLOBAL binlog_error_action= $saved_binlog_error_action;
 
-# Reset Master deletes all binary log files listed in the index file, resets
+# Reset Source deletes all binary log files listed in the index file, resets
 # the binary log index file to be empty and creates a new binary log file.
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo End of tests

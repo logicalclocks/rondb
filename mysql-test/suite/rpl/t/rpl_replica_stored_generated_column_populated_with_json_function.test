@@ -56,20 +56,20 @@
 
 --echo #
 --echo # 0. Create source-replica topology
---source include/master-slave.inc
+--source include/rpl/init_source_replica.inc
 
 --echo # Store the initial values
 --let $sysvars_to_save = [ "SESSION.binlog_row_image" ]
 --source include/save_sysvars.inc
 
---source include/rpl_connection_slave.inc
+--source include/rpl/connection_replica.inc
 --let $_pk_key_check_value = `SELECT require_table_primary_key_check FROM performance_schema.replication_applier_configuration WHERE channel_name = ""`
 
 --echo # Setup and test each case and verify the result
 --let $case = 1
 while ($case <= 7)
 {
-  --source include/rpl_connection_master.inc
+  --source include/rpl/connection_source.inc
 
   if ($case == 1) {
     --echo #
@@ -124,26 +124,26 @@ while ($case <= 7)
     --echo #
     --echo # $case. Create table on the replica with an an extra stored
     --echo #        column and binlog_row_image = 'MINIMAL'
-    --source include/rpl_connection_master.inc
-    --source include/disable_binlog.inc
+    --source include/rpl/connection_source.inc
+    --source include/rpl/disable_binlog.inc
     CREATE TABLE `log_data` (
       `id` INT UNSIGNED NOT NULL,
       `data` MEDIUMTEXT NOT NULL,
       PRIMARY KEY (`id`)
     ) ENGINE = InnoDB;
-    --source include/restore_binlog.inc
+    --source include/rpl/restore_binlog.inc
 
-    --source include/rpl_connection_slave.inc
-    --source include/disable_binlog.inc
+    --source include/rpl/connection_replica.inc
+    --source include/rpl/disable_binlog.inc
     CREATE TABLE `log_data` (
       `id` INT UNSIGNED NOT NULL,
       `data` MEDIUMTEXT NOT NULL,
       `gcol` JSON GENERATED ALWAYS AS (json_extract(`data`,'$.x')) STORED,
       PRIMARY KEY (`id`)
     ) ENGINE = InnoDB;
-    --source include/restore_binlog.inc
+    --source include/rpl/restore_binlog.inc
 
-    --source include/rpl_connection_master.inc
+    --source include/rpl/connection_source.inc
     SET @@SESSION.binlog_row_image = 'MINIMAL';
   }
   if ($case == 6) {
@@ -151,12 +151,12 @@ while ($case <= 7)
     --echo # $case. The replica has REQUIRE_TABLE_PRIMARY_KEY_CHECK = GENERATE,
     --echo #        then create table on the source without keys
     --echo #        and binlog_row_image = 'MINIMAL'
-    --source include/rpl_connection_slave.inc
-    --source include/stop_slave.inc
+    --source include/rpl/connection_replica.inc
+    --source include/rpl/stop_replica.inc
     CHANGE REPLICATION SOURCE TO REQUIRE_TABLE_PRIMARY_KEY_CHECK = GENERATE;
-    --source include/start_slave.inc
+    --source include/rpl/start_replica.inc
 
-    --source include/rpl_connection_master.inc
+    --source include/rpl/connection_source.inc
     SET @@SESSION.binlog_row_image = 'MINIMAL';
     CREATE TABLE `log_data` (
       `id` INT UNSIGNED NOT NULL,
@@ -170,13 +170,13 @@ while ($case <= 7)
     --echo #        then create table on the source without keys
     --echo #        and binlog_row_image = 'FULL'
 
-    --source include/rpl_connection_slave.inc
+    --source include/rpl/connection_replica.inc
     --let $row_count = `SELECT COUNT(*) FROM performance_schema.replication_applier_configuration WHERE require_table_primary_key_check = 'GENERATE'`
     --let $assert_text = require_table_primary_key_check in performance_schema.replication_applier_configuration is set to GENERATE
     --let $assert_cond = $row_count = 1
     --source include/assert.inc
 
-    --source include/rpl_connection_master.inc
+    --source include/rpl/connection_source.inc
     SET @@SESSION.binlog_row_image='FULL';
     CREATE TABLE `log_data` (
       `id` INT UNSIGNED NOT NULL,
@@ -188,7 +188,7 @@ while ($case <= 7)
   --echo #
   --echo # $case.1. Insert row on the source
   INSERT INTO log_data (id, data) VALUES(1, '{"x":"aaa"}');
-  --source include/sync_slave_sql_with_master.inc
+  --source include/rpl/sync_to_replica.inc
   --echo # verify that log_data has the correct values in the replica
   --let $row_count = `SELECT COUNT(*) FROM log_data WHERE id = 1 AND data = '{"x":"aaa"}' AND gcol = 'aaa';`
   --let $assert_text = The table contains a row with generated column populated
@@ -198,20 +198,20 @@ while ($case <= 7)
   --echo #
   --echo # $case.2. Update row on the source and ensure that row is
   --echo #          updated on the replica
-  --source include/rpl_connection_master.inc
+  --source include/rpl/connection_source.inc
   UPDATE log_data SET data = '{}';
 
-  --source include/sync_slave_sql_with_master.inc
+  --source include/rpl/sync_to_replica.inc
   --echo # verify that log_data has the correct values in the replica
   --let $row_count= `SELECT COUNT(*) FROM log_data WHERE id =1 AND data = '{}' AND gcol IS NULL;`
   --let $assert_text = The table contains a row with generated column updated to null
   --let $assert_cond = $row_count = 1
   --source include/assert.inc
 
-  --source include/rpl_connection_master.inc
+  --source include/rpl/connection_source.inc
   UPDATE log_data SET data='{"x":"a"}';
 
-  --source include/sync_slave_sql_with_master.inc
+  --source include/rpl/sync_to_replica.inc
   --echo # verify that log_data has the correct values in the replica
   --let $row_count= `SELECT COUNT(*) FROM log_data WHERE id = 1 AND data = '{"x":"a"}' AND gcol = 'a';`
   --let $assert_text= The table contains a row with generated column updated
@@ -221,10 +221,10 @@ while ($case <= 7)
   --echo #
   --echo # $case.3. Delete row on the source and ensure that row is
   --echo #          deleted on the replica
-  --source include/rpl_connection_master.inc
+  --source include/rpl/connection_source.inc
   DELETE FROM log_data WHERE data = '{"x":"a"}';
 
-  --source include/sync_slave_sql_with_master.inc
+  --source include/rpl/sync_to_replica.inc
   --echo # verify that log_data has the correct values in the replica
   --let $row_count= `SELECT COUNT(*) FROM log_data WHERE id = 1;`
   --let $assert_text= The table doesn't contain any row
@@ -232,21 +232,21 @@ while ($case <= 7)
   --source include/assert.inc
 
   --echo # Clean up
-  --source include/rpl_connection_master.inc
+  --source include/rpl/connection_source.inc
   DROP TABLE log_data;
-  --source include/sync_slave_sql_with_master.inc
+  --source include/rpl/sync_to_replica.inc
 
   --inc $case
 }
 
 --echo #
 --echo # 6. Clean up
---source include/rpl_connection_slave.inc
---source include/stop_slave_sql.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/stop_replica.inc
 --replace_result $_pk_key_check_value PRIMARY_KEY_CHECK_VALUE
 --eval CHANGE REPLICATION SOURCE TO REQUIRE_TABLE_PRIMARY_KEY_CHECK = $_pk_key_check_value
---source include/start_slave_sql.inc
+--source include/rpl/start_replica.inc
 
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 --source include/restore_sysvars.inc
---source include/rpl_end.inc
+--source include/rpl/deinit.inc

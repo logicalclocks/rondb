@@ -31,13 +31,16 @@
 #include <string>
 
 #include "mysql/harness/config_parser.h"
+#include "mysql/harness/dynamic_config.h"
 #include "mysql/harness/loader.h"
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/plugin.h"
 #include "mysql/harness/plugin_config.h"
+#include "mysql/harness/section_config_exposer.h"
 #include "mysql/harness/utility/string.h"  // ::join()
 
-#include "mysqlrouter/http_server_component.h"
+#include "mysqlrouter/component/http_server_component.h"
+#include "mysqlrouter/http_constants.h"
 #include "mysqlrouter/rest_api_component.h"
 #include "mysqlrouter/rest_routing_export.h"
 #include "mysqlrouter/supported_rest_options.h"
@@ -76,11 +79,11 @@ class RestRoutingPluginConfig : public mysql_harness::BasePluginConfig {
     GET_OPTION_CHECKED(require_realm, section, "require_realm", StringOption{});
   }
 
-  std::string get_default(const std::string & /* option */) const override {
+  std::string get_default(std::string_view /* option */) const override {
     return {};
   }
 
-  bool is_required(const std::string &option) const override {
+  bool is_required(std::string_view option) const override {
     if (option == kRequireRealm) return true;
     return false;
   }
@@ -1207,6 +1210,46 @@ static std::array<const char *, 2> required = {{
     "rest_api",
 }};
 
+namespace {
+
+class RestRoutingConfigExposer : public mysql_harness::SectionConfigExposer {
+ public:
+  using DC = mysql_harness::DynamicConfig;
+  RestRoutingConfigExposer(const bool initial,
+                           const RestRoutingPluginConfig &plugin_config,
+                           const mysql_harness::ConfigSection &default_section)
+      : mysql_harness::SectionConfigExposer(
+            initial, default_section,
+            DC::SectionId{"rest_configs", kSectionName}),
+        plugin_config_(plugin_config) {}
+
+  void expose() override {
+    expose_option("require_realm", plugin_config_.require_realm,
+                  std::string(kHttpDefaultAuthRealmName));
+  }
+
+ private:
+  const RestRoutingPluginConfig &plugin_config_;
+};
+
+}  // namespace
+
+static void expose_configuration(mysql_harness::PluginFuncEnv *env,
+                                 const char * /*key*/, bool initial) {
+  const mysql_harness::AppInfo *info = get_app_info(env);
+
+  if (!info->config) return;
+
+  for (const mysql_harness::ConfigSection *section : info->config->sections()) {
+    if (section->name == kSectionName) {
+      RestRoutingPluginConfig config{section};
+      RestRoutingConfigExposer(initial, config,
+                               info->config->get_default_section())
+          .expose();
+    }
+  }
+}
+
 extern "C" {
 mysql_harness::Plugin REST_ROUTING_EXPORT harness_plugin_rest_routing = {
     mysql_harness::PLUGIN_ABI_VERSION,       // abi-version
@@ -1226,5 +1269,6 @@ mysql_harness::Plugin REST_ROUTING_EXPORT harness_plugin_rest_routing = {
     true,     // declares_readiness
     rest_plugin_supported_options.size(),
     rest_plugin_supported_options.data(),
+    expose_configuration,
 };
 }

@@ -26,6 +26,7 @@
 
 #include <ndb_global.h>
 #include <cstring>
+#include "openssl/ssl.h"
 #include "util/require.h"
 
 #include "ConfigManager.hpp"
@@ -69,6 +70,7 @@
 #include <signaldata/TamperOrd.hpp>
 #include <signaldata/TestOrd.hpp>
 #include "NdbTCP.h"
+#include "portlib/ndb_openssl_version.h"
 #include "portlib/ndb_sockaddr.h"
 
 #include <NdbConfig.h>
@@ -105,10 +107,11 @@ int g_errorInsert = 0;
 #define DEBUG_FPRINTF(a)
 #endif
 
-void *
-MgmtSrvr::logLevelThread_C(void* m)
-{
-  MgmtSrvr *mgm = (MgmtSrvr*)m;
+static constexpr bool openssl_version_ok =
+    (OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL);
+
+void *MgmtSrvr::logLevelThread_C(void *m) {
+  MgmtSrvr *mgm = (MgmtSrvr *)m;
   mgm->logLevelThreadRun();
   return 0;
 }
@@ -234,6 +237,8 @@ MgmtSrvr::MgmtSrvr(const MgmtOpts &opts)
       m_local_config(NULL),
       _ownReference(0),
       m_config_manager(NULL),
+      m_tls_search_path(opts.tls_search_path),
+      m_client_tls_req(opts.mgm_tls),
       m_need_restart(false),
       theFacade(NULL),
       _isStopThread(false),
@@ -359,6 +364,13 @@ bool MgmtSrvr::init() {
     g_eventLogger->error("Failed to start MgmtSrvr as node is deactivated");
     DBUG_RETURN(false);
   }
+
+  theFacade = new TransporterFacade(0);
+  if (theFacade == 0) {
+    g_eventLogger->error("Could not create TransporterFacade.");
+    DBUG_RETURN(false);
+  }
+
   DBUG_RETURN(true);
 }
 
@@ -373,16 +385,8 @@ MgmtSrvr::is_node_active()
   return (bool)is_active;
 }
 
-bool
-MgmtSrvr::start_transporter(const Config* config)
-{
+bool MgmtSrvr::start_transporter(const Config *config) {
   DBUG_ENTER("MgmtSrvr::start_transporter");
-
-  theFacade = new TransporterFacade(0);
-  if (theFacade == 0) {
-    g_eventLogger->error("Could not create TransporterFacade.");
-    DBUG_RETURN(false);
-  }
 
   assert(_blockNumber == 0);  // Blocknumber shouldn't been allocated yet
 
@@ -406,7 +410,10 @@ MgmtSrvr::start_transporter(const Config* config)
    */
   m_config_manager->set_facade(theFacade);
 
-  if (theFacade->start_instance(_ownNodeId, config->m_configuration) < 0) {
+  int r = theFacade->start_instance(_ownNodeId, config->m_configuration,
+                                    require_cert());
+  if (r < 0) {
+    require(r != -2); /* TLS certificate required but not found */
     g_eventLogger->error("Failed to start transporter");
     delete theFacade;
     theFacade = 0;
@@ -428,8 +435,8 @@ MgmtSrvr::start_transporter(const Config* config)
   DBUG_RETURN(true);
 }
 
-bool MgmtSrvr::start_mgm_service(const Config *config) {
-  DBUG_ENTER("MgmtSrvr::start_mgm_service");
+bool MgmtSrvr::get_connection_config(const Config *config) {
+  DBUG_ENTER("MgmtSrvr::get_connection_config");
 
   assert(m_port == 0);
   {
@@ -452,7 +459,27 @@ bool MgmtSrvr::start_mgm_service(const Config *config) {
       g_eventLogger->error("PortNumber not defined for node %d", _ownNodeId);
       DBUG_RETURN(false);
     }
+
+    // Find the TLS requirement level
+    Uint32 requireCert = 0;
+    Uint32 requireTls = 0;
+
+    iter.get(CFG_MGM_REQUIRE_TLS, &requireTls);
+    iter.get(CFG_NODE_REQUIRE_CERT, &requireCert);
+
+    if ((requireTls || requireCert) && !openssl_version_ok) {
+      g_eventLogger->error(
+          "Unsupported OpenSSL 1.0.x. This server does not support TLS.");
+      DBUG_RETURN(false);
+    }
+    m_require_tls = requireTls;
+    m_require_cert = requireCert;
   }
+  DBUG_RETURN(true);
+}
+
+bool MgmtSrvr::start_mgm_service(const Config *config) {
+  DBUG_ENTER("MgmtSrvr::start_mgm_service");
 
   unsigned short port = m_port;
   DBUG_PRINT("info", ("Using port %d", port));
@@ -534,6 +561,28 @@ bool MgmtSrvr::start_mgm_service(const Config *config) {
 bool MgmtSrvr::start() {
   DBUG_ENTER("MgmtSrvr::start");
 
+  /* Configure TlsKeyManager */
+  require(m_tls_search_path);
+  theFacade->mgm_configure_tls(m_tls_search_path, m_client_tls_req);
+
+  if (!get_connection_config(m_local_config)) {
+    g_eventLogger->error("Shutting down. Failed read config.");
+    DBUG_RETURN(false);
+  }
+
+  /* Check for required certificate */
+  if (require_cert()) {
+    TlsKeyManager stubKeyManager;
+    stubKeyManager.init(m_tls_search_path, 0, NODE_TYPE_MGM);
+    if (!stubKeyManager.ctx()) {
+      g_eventLogger->error(
+          openssl_version_ok
+              ? "This node does not have a valid TLS certificate."
+              : "This version of OpenSSL is not supported.");
+      DBUG_RETURN(false);
+    }
+  }
+
   /* Start transporter */
   if (!start_transporter(m_local_config)) {
     g_eventLogger->error("Failed to start transporter!");
@@ -546,6 +595,10 @@ bool MgmtSrvr::start() {
     g_eventLogger->error("Failed to start management service!");
     DBUG_RETURN(false);
   }
+
+  g_eventLogger->info(
+      require_tls() ? "This server will require all MGM clients to use TLS"
+                    : "Not requiring TLS");
 
   /* Use local MGM port for TransporterRegistry */
   if (!connect_to_self()) {
@@ -1159,7 +1212,8 @@ int MgmtSrvr::sendStopMgmd(NodeId nodeId,
   NdbMgmHandle h = ndb_mgm_create_handle();
   if (h && connect_string.length() > 0) {
     ndb_mgm_set_connectstring(h, connect_string.c_str());
-    if (ndb_mgm_connect(h, 1, 0, 0)) {
+    ndb_mgm_set_ssl_ctx(h, ssl_ctx());
+    if (ndb_mgm_connect_tls(h, 1, 0, 0, m_client_tls_req)) {
       DBUG_PRINT("info", ("failed ndb_mgm_connect"));
       ndb_mgm_destroy_handle(&h);
       return SEND_OR_RECEIVE_FAILED;
@@ -4914,7 +4968,8 @@ bool MgmtSrvr::connect_to_self() {
              m_port);
   ndb_mgm_set_connectstring(mgm_handle, buf.c_str());
 
-  if (ndb_mgm_connect(mgm_handle, 0, 0, 0) < 0) {
+  ndb_mgm_set_ssl_ctx(mgm_handle, ssl_ctx());
+  if (ndb_mgm_connect_tls(mgm_handle, 0, 0, 0, m_client_tls_req) < 0) {
     g_eventLogger->warning("%d %s", ndb_mgm_get_latest_error(mgm_handle),
                            ndb_mgm_get_latest_error_desc(mgm_handle));
     ndb_mgm_destroy_handle(&mgm_handle);
@@ -5318,6 +5373,14 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
   ss.unlock();
 
   return true;
+}
+
+void MgmtSrvr::tls_stat_increment(unsigned int idx) {
+  if (idx < sizeof(m_tls_stats)) m_tls_stats[idx]++;
+}
+
+void MgmtSrvr::tls_stat_decrement(unsigned int idx) {
+  if (idx < sizeof(m_tls_stats)) m_tls_stats[idx]--;
 }
 
 template class MutexVector<NodeId>;

@@ -37,12 +37,16 @@
 #include <errmsg.h>
 #include <mysql.h>
 
+#include "configuration_update_schema.h"
 #include "dim.h"
 #include "group_replication_metadata.h"
+#include "log_suppressor.h"
+#include "mysql/harness/dynamic_config.h"
 #include "mysql/harness/event_state_tracker.h"
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/utility/string.h"  // string_format
 #include "mysqld_error.h"
+#include "mysqlrouter/cluster_metadata_instance_attributes.h"
 #include "mysqlrouter/mysql_session.h"
 #include "mysqlrouter/uri.h"
 #include "mysqlrouter/utils.h"  // string_format
@@ -50,87 +54,15 @@
 #include "router_config.h"  // MYSQL_ROUTER_VERSION
 #include "tcp_address.h"
 
+using metadata_cache::LogSuppressor;
 using mysql_harness::EventStateTracker;
 using mysql_harness::logging::LogLevel;
 using mysqlrouter::ClusterType;
+using mysqlrouter::InstanceType;
 using mysqlrouter::MySQLSession;
 using mysqlrouter::sqlstring;
 using namespace std::string_literals;
 IMPORT_LOG_FUNCTIONS()
-
-// helper class - helps to log the warning about the instance only when the
-// warning condition changes
-struct LogSuppressor {
-  static LogSuppressor &instance() {
-    static LogSuppressor instance_;
-    return instance_;
-  }
-
-  std::string get_warning_hidden(const std::string &instance_uuid) const {
-    if (warnings_.count(instance_uuid) == 0) {
-      return "";
-    }
-
-    return warnings_.at(instance_uuid).warning_hidden;
-  }
-
-  void set_warning_hidden(const std::string &instance_uuid,
-                          const std::string &warning) {
-    warnings_[instance_uuid].warning_hidden = warning;
-  }
-
-  std::string get_warning_disconnect_existing_sessions_when_hidden(
-      const std::string &instance_uuid) {
-    if (warnings_.count(instance_uuid) == 0) {
-      return "";
-    }
-
-    return warnings_.at(instance_uuid)
-        .warning_disconnect_existing_sessions_when_hidden;
-  }
-
-  void set_warning_disconnect_existing_sessions_when_hidden(
-      const std::string &instance_uuid, const std::string &warning) {
-    warnings_[instance_uuid].warning_disconnect_existing_sessions_when_hidden =
-        warning;
-  }
-
-  std::string get_warning_depracated_metadata_version(
-      const std::string &instance_uuid) {
-    if (warnings_.count(instance_uuid) == 0) {
-      return "";
-    }
-
-    return warnings_.at(instance_uuid).warning_deprecated_metadata_version;
-  }
-
-  void set_warning_depracated_metadata_version(const std::string &instance_uuid,
-                                               const std::string &warning) {
-    warnings_[instance_uuid].warning_deprecated_metadata_version = warning;
-  }
-
- private:
-  struct instance_warnings {
-    /* warning about the incorrect JSON for _hidden in the metadata from the
-     * last query */
-    std::string warning_hidden;
-
-    /* last warning about the incorrect JSON for
-     * _disconnect_existing_sessions_when_hidden from the last query */
-    std::string warning_disconnect_existing_sessions_when_hidden;
-
-    /* instance has a deprecated metadata version */
-    std::string warning_deprecated_metadata_version;
-  };
-
-  // the key in the map is the instance_id
-  std::map<std::string, instance_warnings> warnings_;
-
-  // singleton
-  LogSuppressor() = default;
-  LogSuppressor(const LogSuppressor &) = delete;
-  LogSuppressor &operator=(const LogSuppressor &) = delete;
-};
 
 /**
  * Return a string representation of the input character string.
@@ -252,25 +184,8 @@ ClusterMetadata::get_and_check_metadata_schema_version(
   if (!metadata_schema_version_is_compatible(
           mysqlrouter::kRequiredRoutingMetadataSchemaVersion, version)) {
     throw metadata_cache::metadata_error(mysql_harness::utility::string_format(
-        "Unsupported metadata schema on %s. Expected Metadata Schema version "
-        "compatible to %s, got %s",
-        session.get_address().c_str(),
-        to_string(mysqlrouter::kRequiredRoutingMetadataSchemaVersion).c_str(),
-        to_string(version).c_str()));
-  }
-
-  if (metadata_schema_version_is_deprecated(version)) {
-    const auto instance = session.get_address();
-    const auto message =
-        "Instance '" + instance +
-        "': " + mysqlrouter::get_metadata_schema_deprecated_msg(version);
-
-    auto &log_suppressor = LogSuppressor::instance();
-    if (message !=
-        log_suppressor.get_warning_depracated_metadata_version(instance)) {
-      log_warning("%s", message.c_str());
-      log_suppressor.set_warning_depracated_metadata_version(instance, message);
-    }
+        "Instance '%s': %s", session.get_address().c_str(),
+        mysqlrouter::get_metadata_schema_uncompatible_msg(version).c_str()));
   }
 
   return version;
@@ -351,38 +266,27 @@ bool ClusterMetadata::update_router_attributes(
   // MetadataUpgradeInProgressException
   get_and_check_metadata_schema_version(*connection);
 
-  sqlstring query;
-  if (get_cluster_type() == ClusterType::GR_V1) {
-    query =
-        "UPDATE mysql_innodb_cluster_metadata.routers "
-        "SET attributes = "
-        "JSON_SET(JSON_SET(JSON_SET(JSON_SET(JSON_SET(JSON_SET( "
-        "IF(attributes IS NULL, '{}', attributes), "
-        "'$.version', ?), "
-        "'$.RWEndpoint', ?), "
-        "'$.ROEndpoint', ?), "
-        "'$.RWXEndpoint', ?), "
-        "'$.ROXEndpoint', ?), "
-        "'$.MetadataUser', ?) "
-        "WHERE router_id = ?";
-  } else {
-    query =
-        "UPDATE mysql_innodb_cluster_metadata.v2_routers "
-        "SET version = ?, last_check_in = NOW(), attributes = "
-        "JSON_SET(JSON_SET(JSON_SET(JSON_SET(JSON_SET( "
-        "IF(attributes IS NULL, '{}', attributes), "
-        "'$.RWEndpoint', ?), "
-        "'$.ROEndpoint', ?), "
-        "'$.RWXEndpoint', ?), "
-        "'$.ROXEndpoint', ?), "
-        "'$.MetadataUser', ?) "
-        "WHERE router_id = ?";
-  }
+  sqlstring query =
+      "UPDATE mysql_innodb_cluster_metadata.v2_routers "
+      "SET version = ?, last_check_in = NOW(), attributes = "
+      "JSON_SET(JSON_SET(JSON_SET(JSON_SET(JSON_SET(JSON_SET(JSON_SET( "
+      "IF(attributes IS NULL, '{}', attributes), "
+      "'$.RWEndpoint', ?), "
+      "'$.ROEndpoint', ?), "
+      "'$.RWSplitEndpoint', ?), "
+      "'$.RWXEndpoint', ?), "
+      "'$.ROXEndpoint', ?), "
+      "'$.MetadataUser', ?), "
+      "'$.Configuration', CAST(? as JSON)) "
+      "WHERE router_id = ?";
 
   const auto &ra{router_attributes};
   query << MYSQL_ROUTER_VERSION << ra.rw_classic_port << ra.ro_classic_port
-        << ra.rw_x_port << ra.ro_x_port << ra.metadata_user_name << router_id
-        << sqlstring::end;
+        << ra.rw_split_classic_port << ra.rw_x_port << ra.ro_x_port
+        << ra.metadata_user_name
+        << mysql_harness::DynamicConfig::instance().get_json_as_string(
+               mysql_harness::DynamicConfig::ValueType::ConfiguredValue)
+        << router_id << sqlstring::end;
 
   connection->execute(query);
 
@@ -394,9 +298,6 @@ bool ClusterMetadata::update_router_attributes(
 bool ClusterMetadata::update_router_last_check_in(
     const metadata_cache::metadata_server_t &rw_server,
     const unsigned router_id) {
-  // only relevant to for metadata V2
-  if (get_cluster_type() == ClusterType::GR_V1) return true;
-
   auto connection = std::make_unique<MySQLSession>(
       std::make_unique<MySQLSession::LoggingStrategyDebugLogger>());
   if (!do_connect(*connection, rw_server)) {
@@ -470,10 +371,19 @@ static std::string get_limit_target_cluster_clause(
 }
 
 ClusterMetadata::auth_credentials_t ClusterMetadata::fetch_auth_credentials(
+    const metadata_cache::metadata_server_t &md_server,
     const mysqlrouter::TargetCluster &target_cluster) {
   ClusterMetadata::auth_credentials_t auth_credentials;
-  if (!metadata_connection_) {
-    return auth_credentials;
+
+  auto connection = std::make_unique<MySQLSession>(
+      std::make_unique<MySQLSession::LoggingStrategyDebugLogger>());
+  if (!do_connect(*connection, md_server)) {
+    log_debug(
+        "Could not connect to the metadata server '%s' when trying to fetch "
+        "auth credentials",
+        md_server.str().c_str());
+
+    return {};
   }
 
   const std::string query =
@@ -481,7 +391,7 @@ ClusterMetadata::auth_credentials_t ClusterMetadata::fetch_auth_credentials(
       "FROM mysql_innodb_cluster_metadata.v2_router_rest_accounts WHERE "
       "cluster_id="s +
       get_limit_target_cluster_clause(target_cluster, get_cluster_type(),
-                                      *metadata_connection_);
+                                      *connection.get());
 
   auto result_processor =
       [&auth_credentials](const MySQLSession::Row &row) -> bool {
@@ -506,7 +416,7 @@ ClusterMetadata::auth_credentials_t ClusterMetadata::fetch_auth_credentials(
     return true;
   };
 
-  metadata_connection_->query(query, result_processor);
+  connection->query(query, result_processor);
   return auth_credentials;
 }
 
@@ -526,117 +436,77 @@ std::optional<metadata_cache::metadata_server_t>
 ClusterMetadata::find_rw_server(
     const std::vector<metadata_cache::ManagedCluster> &clusters) {
   for (auto &cluster : clusters) {
-    if (cluster.is_primary && !cluster.is_invalidated) {
+    if (cluster.is_primary && cluster.has_quorum && !cluster.is_invalidated)
       return find_rw_server(cluster.members);
-    }
   }
 
   return {};
 }
 
-/**
- * @brief Returns value fo the bool tag set in the attributes
- *
- * @param attributes    string containing JSON with the attributes
- * @param name          name of the tag to be fetched
- * @param default_value value to be returned if the given tag is missing or
- * invalid or if the JSON string is invalid
- * @param[out] out_warning  output parameter where the function sets the
- * descriptive warning in case there was a JSON parsing error
- *
- * @note the function always sets out_warning to "" at the beginning
- *
- * @return value of the bool tag
- */
-static bool get_bool_tag(const std::string_view &attributes,
-                         const std::string_view &name, bool default_value,
-                         std::string &out_warning) {
-  out_warning = "";
-  if (attributes.empty()) return default_value;
-
-  rapidjson::Document json_doc;
-  json_doc.Parse(attributes.data(), attributes.size());
-
-  if (!json_doc.IsObject()) {
-    out_warning = "not a valid JSON object";
-    return default_value;
-  }
-
-  const auto tags_it = json_doc.FindMember("tags");
-  if (tags_it == json_doc.MemberEnd()) {
-    return default_value;
-  }
-
-  if (!tags_it->value.IsObject()) {
-    out_warning = "tags - not a valid JSON object";
-    return default_value;
-  }
-
-  const auto tags = tags_it->value.GetObject();
-
-  const auto it = tags.FindMember(rapidjson::Value{name.data(), name.size()});
-
-  if (it == tags.MemberEnd()) {
-    return default_value;
-  }
-
-  if (!it->value.IsBool()) {
-    out_warning = "tags." + std::string(name) + " not a boolean";
-    return default_value;
-  }
-
-  return it->value.GetBool();
-}
-
-bool get_hidden(const std::string &attributes, std::string &out_warning) {
-  return get_bool_tag(attributes, metadata_cache::kNodeTagHidden,
-                      metadata_cache::kNodeTagHiddenDefault, out_warning);
-}
-
-bool get_disconnect_existing_sessions_when_hidden(const std::string &attributes,
-                                                  std::string &out_warning) {
-  return get_bool_tag(attributes, metadata_cache::kNodeTagDisconnectWhenHidden,
-                      metadata_cache::kNodeTagDisconnectWhenHiddenDefault,
-                      out_warning);
-}
-
 void set_instance_attributes(metadata_cache::ManagedInstance &instance,
                              const std::string &attributes) {
-  std::string warning;
   auto &log_suppressor = LogSuppressor::instance();
 
   instance.attributes = attributes;
 
-  instance.hidden = get_hidden(attributes, warning);
-  // we want to log the warning only when it's changing
-  if (warning !=
-      log_suppressor.get_warning_hidden(instance.mysql_server_uuid)) {
-    if (!warning.empty()) {
-      log_warning("Error parsing _hidden from attributes JSON string: %s",
-                  warning.c_str());
-    } else {
-      log_warning("Successfully parsed _hidden from attributes JSON string");
-    }
-    log_suppressor.set_warning_hidden(instance.mysql_server_uuid, warning);
+  const auto default_instance_type = instance.type;
+  const auto type_attr = mysqlrouter::InstanceAttributes::get_instance_type(
+      attributes, default_instance_type);
+
+  if (type_attr) {
+    instance.type = type_attr.value();
   }
 
-  instance.disconnect_existing_sessions_when_hidden =
-      get_disconnect_existing_sessions_when_hidden(attributes, warning);
   // we want to log the warning only when it's changing
-  if (warning !=
-      log_suppressor.get_warning_disconnect_existing_sessions_when_hidden(
-          instance.mysql_server_uuid)) {
-    if (!warning.empty()) {
-      log_warning(
-          "Error parsing _disconnect_existing_sessions_when_hidden from "
-          "attributes JSON string: %s",
-          warning.c_str());
-    } else {
-      log_warning(
-          "Successfully parsed _disconnect_existing_sessions_when_hidden from "
-          "attributes JSON string");
-    }
-    log_suppressor.set_warning_disconnect_existing_sessions_when_hidden(
-        instance.mysql_server_uuid, warning);
+  const std::string message =
+      type_attr
+          ? "Successfully parsed instance_type from attributes JSON string"
+          : "Error parsing instance_type from attributes JSON string: " +
+                type_attr.error();
+
+  log_suppressor.log_message(LogSuppressor::MessageId::kInstanceType,
+                             instance.mysql_server_uuid, message, !type_attr);
+
+  if (instance.type == mysqlrouter::InstanceType::ReadReplica) {
+    instance.mode = metadata_cache::ServerMode::ReadOnly;
   }
+
+  const auto hidden_attr = mysqlrouter::InstanceAttributes::get_hidden(
+      attributes, mysqlrouter::kNodeTagHiddenDefault);
+
+  instance.hidden =
+      hidden_attr ? hidden_attr.value() : mysqlrouter::kNodeTagHiddenDefault;
+
+  // we want to log the warning only when it's changing
+  const std::string message2 =
+      hidden_attr ? "Successfully parsed _hidden from attributes JSON string"
+                  : "Error parsing _hidden from attributes JSON string: " +
+                        hidden_attr.error();
+
+  log_suppressor.log_message(LogSuppressor::MessageId::kHidden,
+                             instance.mysql_server_uuid, message2,
+                             !hidden_attr);
+
+  const auto disconnect_existing_sessions_when_hidden_attr = mysqlrouter::
+      InstanceAttributes::get_disconnect_existing_sessions_when_hidden(
+          attributes, mysqlrouter::kNodeTagDisconnectWhenHiddenDefault);
+
+  instance.disconnect_existing_sessions_when_hidden =
+      disconnect_existing_sessions_when_hidden_attr
+          ? disconnect_existing_sessions_when_hidden_attr.value()
+          : mysqlrouter::kNodeTagDisconnectWhenHiddenDefault;
+
+  // we want to log the warning only when it's changing
+  const std::string message3 =
+      disconnect_existing_sessions_when_hidden_attr
+          ? "Successfully parsed _disconnect_existing_sessions_when_hidden "
+            "from attributes JSON string"
+          : "Error parsing _disconnect_existing_sessions_when_hidden from "
+            "attributes JSON string: " +
+                disconnect_existing_sessions_when_hidden_attr.error();
+
+  log_suppressor.log_message(
+      LogSuppressor::MessageId::kDisconnectExistingSessionsWhenHidden,
+      instance.mysql_server_uuid, message3,
+      !disconnect_existing_sessions_when_hidden_attr);
 }

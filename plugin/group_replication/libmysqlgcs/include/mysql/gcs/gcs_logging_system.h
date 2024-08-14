@@ -456,7 +456,7 @@ class Gcs_default_logger : public Logger_interface {
   /**
     Default logger initialization method.
 
-    @retval GCS_OK
+    @returns GCS_OK
   */
 
   enum_gcs_error initialize() override;
@@ -464,7 +464,7 @@ class Gcs_default_logger : public Logger_interface {
   /**
     Default logger finalization method.
 
-    @retval GCS_OK
+    @returns GCS_OK
   */
 
   enum_gcs_error finalize() override;
@@ -515,7 +515,7 @@ class Gcs_default_debugger {
   /**
     Default debugger initialization method.
 
-    @retval GCS_OK
+    @returns GCS_OK
   */
 
   enum_gcs_error initialize();
@@ -523,7 +523,7 @@ class Gcs_default_debugger {
   /**
     Default debugger finalization method.
 
-    @retval GCS_OK
+    @returns GCS_OK
   */
 
   enum_gcs_error finalize();

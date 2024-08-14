@@ -28,10 +28,10 @@
 --echo # Initialization
 --echo #
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 CREATE TABLE t1 (c INT);
 
---let $binlog_file = query_get_value(SHOW MASTER STATUS, File, 1)
+--let $binlog_file = query_get_value(SHOW BINARY LOG STATUS, File, 1)
 FLUSH BINARY LOGS;
 --replace_column 2 SIZE
 SHOW BINARY LOGS;
@@ -43,7 +43,7 @@ SHOW BINARY LOGS;
 --echo #
 
 --let $rpl_connection_name = default
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --eval PURGE BINARY LOGS TO '$binlog_file'
 --let $statement_connection = con1
@@ -78,6 +78,6 @@ UNLOCK INSTANCE;
 --echo #
 
 --let $rpl_connection_name = default
---source include/rpl_connection.inc
+--source include/connection.inc
 
 DROP TABLE t1;

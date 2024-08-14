@@ -2041,6 +2041,9 @@ Config *ConfigManager::load_config(void) const {
 Config *ConfigManager::fetch_config(void) {
   DBUG_ENTER("ConfigManager::fetch_config");
 
+  m_config_retriever.init_mgm_tls(m_opts.tls_search_path, Node::Type::MGMD,
+                                  m_opts.mgm_tls);
+
   while (true) {
     /* Loop until config loaded from other mgmd(s) */
     char buf[128];

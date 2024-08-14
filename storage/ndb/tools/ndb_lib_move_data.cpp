@@ -28,7 +28,7 @@
 #include <NdbOut.hpp>
 #include <ndb_lib_move_data.hpp>
 #include "NdbToolsProgramExitCodes.hpp"
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "portlib/NdbTick.h"
 #include "util/require.h"
 

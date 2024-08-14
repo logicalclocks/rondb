@@ -207,7 +207,11 @@ done:
 int SocketClient::authenticate(const NdbSocket &secureSocket) {
   assert(m_auth);
   int r = m_auth->client_authenticate(secureSocket);
-  if (r != SocketAuthenticator::AuthOk) {
+  if (r < SocketAuthenticator::AuthOk) {
+    if (r != SocketAuthenticator::negotiation_failed) {
+      g_eventLogger->error("Socket authentication failed: %s\n",
+                           m_auth->error(r));
+    }
     secureSocket.shutdown();  // Make it unusable, caller should close
   }
   return r;

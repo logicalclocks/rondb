@@ -87,6 +87,8 @@ SET(GCS_XCOM_TESTS
   xcom/gcs_xcom_network_provider
   xcom/gcs_xcom_network_provider_manager
   xcom/gcs_xcom_xcom_single_writer
+  xcom/gcs_xcom_statistics_manager
+  xcom/gcs_xcom_statistics_storage_impl
 )
 
 # When binding using IPv6 the way XCom does (dual stack IPv4/IPv6), it
@@ -120,6 +122,8 @@ FOREACH(tpath ${GCS_INTERFACE_TESTS} ${GCS_XCOM_TESTS})
     MY_TARGET_LINK_OPTIONS(${test}-t "/ignore:4217 /ignore:4286")
   ENDIF()
 ENDFOREACH()
+
+DOWNGRADE_STRINGOP_WARNINGS(gcs_allowlist-t)
 
 IF(MY_COMPILER_IS_CLANG)
   STRING_APPEND(CMAKE_CXX_FLAGS " -Wno-deprecated")

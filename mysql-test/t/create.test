@@ -267,7 +267,7 @@ create table t1(`a ` int);
 # Test for Bug #3481 
 #   "Parser permits multiple commas without syntax error"
 #
-
+SET restrict_fk_on_non_standard_key=OFF;
 --error 1064
 create table t1 (a int,);
 --error 1064
@@ -282,6 +282,7 @@ create table t1 (,b int);
 create table t1 (a int, key(a));
 create table t2 (b int, foreign key(b) references t1(a), key(b));
 drop table if exists t2,t1;
+SET restrict_fk_on_non_standard_key=ON;
 
 #
 # Test for CREATE TABLE .. LIKE ..
@@ -543,7 +544,7 @@ create table t2(test.t2.name int);
 #
 # Bug #12537: UNION produces longtext instead of varchar
 #
-CREATE TABLE t1 (f1 VARCHAR(255) CHARACTER SET utf8);
+CREATE TABLE t1 (f1 VARCHAR(255) CHARACTER SET utf8mb3);
 CREATE TABLE t2 AS SELECT LEFT(f1,171) AS f2 FROM t1 UNION SELECT LEFT(f1,171) AS f2 FROM t1;
 DESC t2;
 DROP TABLE t1,t2;
@@ -591,7 +592,7 @@ drop table t1;
 
 # BUG#14139
 create table t1 (
-  a varchar(112) charset utf8 collate utf8_bin not null,
+  a varchar(112) charset utf8mb3 COLLATE utf8mb3_bin not null,
   primary key (a)
 ) select 'test' as a ;
 #--warning 1364
@@ -609,7 +610,7 @@ insert into t2 values(111);
 
 #--warning 1364
 create table t1 ( 
-  a varchar(12) charset utf8 collate utf8_bin not null, 
+  a varchar(12) charset utf8mb3 COLLATE utf8mb3_bin not null, 
   b int not null, primary key (a)
 ) select a, 1 as b from t2 ;
 show create table t1;
@@ -617,7 +618,7 @@ drop table t1;
 
 #--warning 1364
 create table t1 ( 
-  a varchar(12) charset utf8 collate utf8_bin not null, 
+  a varchar(12) charset utf8mb3 COLLATE utf8mb3_bin not null, 
   b int not null, primary key (a)
 ) select a, 1 as c from t2 ;
 show create table t1;
@@ -625,7 +626,7 @@ drop table t1;
 
 #--warning 1364
 create table t1 ( 
-  a varchar(12) charset utf8 collate utf8_bin not null, 
+  a varchar(12) charset utf8mb3 COLLATE utf8mb3_bin not null, 
   b int null, primary key (a)
 ) select a, 1 as c from t2 ;
 show create table t1;
@@ -633,7 +634,7 @@ drop table t1;
 
 #--warning 1364
 create table t1 ( 
-  a varchar(12) charset utf8 collate utf8_bin not null,
+  a varchar(12) charset utf8mb3 COLLATE utf8mb3_bin not null,
   b int not null, primary key (a)
 ) select 'a' as a , 1 as b from t2 ;
 show create table t1;
@@ -641,7 +642,7 @@ drop table t1;
 
 #--warning 1364
 create table t1 ( 
-  a varchar(12) charset utf8 collate utf8_bin,
+  a varchar(12) charset utf8mb3 COLLATE utf8mb3_bin,
   b int not null, primary key (a)
 ) select 'a' as a , 1 as b from t2 ;
 show create table t1;
@@ -655,7 +656,7 @@ insert into t1 values (1,1,1, 1,1,1, 1,1,1);
 
 #--warning 1364
 create table t2 ( 
-  a1 varchar(12) charset utf8 collate utf8_bin not null,
+  a1 varchar(12) charset utf8mb3 COLLATE utf8mb3_bin not null,
   a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int,
   primary key (a1)
 ) select a1,a2,a3,a4,a5,a6,a7,a8,a9 from t1 ;
@@ -663,7 +664,7 @@ drop table t2;
 
 #--warning 1364
 create table t2 ( 
-  a1 varchar(12) charset utf8 collate utf8_bin,
+  a1 varchar(12) charset utf8mb3 COLLATE utf8mb3_bin,
   a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int
 ) select a1,a2,a3,a4,a5,a6,a7,a8,a9 from t1;
 
@@ -676,7 +677,7 @@ insert into t1 values (1,1,1, 1,1,1, 1,1,1);
 
 #--warning 1364
 create table t2 ( 
-  a1 varchar(12) charset utf8 collate utf8_bin not null,
+  a1 varchar(12) charset utf8mb3 COLLATE utf8mb3_bin not null,
   a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int,
   primary key (a1)
 ) select a1,a2,a3,a4,a5,a6,a7,a8,a9 from t1 ;
@@ -966,7 +967,7 @@ SHOW CREATE DATABASE aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 # Bug#21432 Database/Table name limited to 64 bytes, not chars, problems with multi-byte
 #
-set names utf8;
+set names utf8mb3;
 
 create database имя_базы_в_кодировке_утф8_длиной_больше_чем_45;
 use имя_базы_в_кодировке_утф8_длиной_больше_чем_45;
@@ -1105,8 +1106,8 @@ CREATE TABLE t1(
   c1 INT DEFAULT 12 COMMENT 'column1',
   c2 INT NULL COMMENT 'column2',
   c3 INT NOT NULL COMMENT 'column3',
-  c4 VARCHAR(255) CHARACTER SET utf8 NOT NULL DEFAULT 'a',
-  c5 VARCHAR(255) COLLATE utf8_unicode_ci NULL DEFAULT 'b',
+  c4 VARCHAR(255) CHARACTER SET utf8mb3 NOT NULL DEFAULT 'a',
+  c5 VARCHAR(255) COLLATE utf8mb3_unicode_ci NULL DEFAULT 'b',
   c6 VARCHAR(255))
   COLLATE latin1_bin;
 
@@ -1908,13 +1909,13 @@ SET SESSION show_create_table_verbosity= @saved_show_create_table_verbosity;
 --echo # Bug#27592803: ASSERTION FAILED: RC == TYPE_OK,
 --echo #
 --echo # Make sure that it is possible to create enums using binary string
---echo # values that are not valid utf8
+--echo # values that are not valid utf8mb3
 
 CREATE TABLE t0(a ENUM('aaa', 'bbb', 'ccc') BYTE);
 SHOW CREATE TABLE t0;
 SHOW COLUMNS FROM t0;
 
---echo # Tables t1 and t2 uses a binary value that is legal as utf8, so they
+--echo # Tables t1 and t2 uses a binary value that is legal as utf8mb3, so they
 --echo # would not trigger an assert.
 CREATE TABLE t1(a ENUM( b'1001001'));
 SHOW CREATE TABLE t1;
@@ -1924,7 +1925,7 @@ CREATE TABLE t2(a ENUM( b'1001001') BYTE);
 SHOW CREATE TABLE t2;
 SHOW COLUMNS FROM t2;
 
---echo # Tables t3 - t6 contains binary values that are not valid utf8
+--echo # Tables t3 - t6 contains binary values that are not valid utf8mb3
 --echo # which would previously result in assert. With the fix we get the hex
 --echo # representation of the binary value instead.
 CREATE TABLE t3(a ENUM( b'10010010') BYTE);
@@ -2373,7 +2374,13 @@ DROP TABLE t1;
 
 CREATE TABLE t1 AS SELECT @max_error_count UNION SELECT 'a';
 SHOW CREATE TABLE t1;
+
+# The testcase produces different results when binlogging is turned
+# off, cf. Bug#35328161 Inconsequent type derivation when using
+# @variable and binlog off.
+# Accept both results until the bug is fixed.
 CREATE TABLE t2 AS SELECT @max_error_count UNION SELECT 'a';
+--replace_regex /\ text/ longtext/
 SHOW CREATE TABLE t2;
 DROP TABLE t1, t2;
 

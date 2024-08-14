@@ -709,10 +709,6 @@ extern bool validate_user_plugins;
 /* Function Declarations */
 
 /* sql_authentication */
-
-int set_default_auth_plugin(char *plugin_name, size_t plugin_name_length);
-std::string get_default_autnetication_plugin_name();
-
 void acl_log_connect(const char *user, const char *host, const char *auth_as,
                      const char *db, THD *thd,
                      enum enum_server_command command);
@@ -789,10 +785,11 @@ bool mysql_grant(THD *thd, const char *db, List<LEX_USER> &list,
                  bool grant_all_current_privileges, LEX_GRANT_AS *grant_as);
 bool mysql_routine_grant(THD *thd, Table_ref *table, bool is_proc,
                          List<LEX_USER> &user_list, Access_bitmask rights,
-                         bool revoke, bool write_to_binlog);
+                         bool revoke, bool write_to_binlog,
+                         bool all_current_privileges);
 int mysql_table_grant(THD *thd, Table_ref *table, List<LEX_USER> &user_list,
-                      List<LEX_COLUMN> &column_list,
-                      Access_bitmask Access_bitmask, bool revoke);
+                      List<LEX_COLUMN> &column_list, Access_bitmask rights,
+                      bool revoke, bool all_current_privileges);
 bool check_grant(THD *thd, Access_bitmask want_access, Table_ref *tables,
                  bool any_combination_will_do, uint number, bool no_errors);
 bool check_grant_column(THD *thd, GRANT_INFO *grant, const char *db_name,

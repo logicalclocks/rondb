@@ -37,6 +37,8 @@ public interface ClusterConnection {
 
     public Db createDb(String database, boolean defaultDatabase, int maxTransactions);
 
+    public void configureTls(String searchPath, int requirement);
+
     public void waitUntilReady(int connectTimeoutBefore, int connectTimeoutAfter);
 
     public void closing();

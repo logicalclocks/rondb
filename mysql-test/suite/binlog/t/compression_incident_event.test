@@ -21,11 +21,11 @@ call mtr.add_suppression("An incident event has been written to the binary log w
 
 CREATE TABLE t1(c1 INT PRIMARY KEY, data TEXT(30000));
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 --eval TRUNCATE $pfs_table
 
 --let $pattern_to_match = $MYSQLTEST_VARDIR/mysqld.1/data/*binlog*.0*
---source include/rpl_log_file_max_number.inc
+--source include/rpl/log_file_max_number.inc
 --let $max_log_file_before_incident = $log_file_max_number
 
 --let $debug_point=binlog_compression_inject_incident
@@ -68,7 +68,7 @@ echo $evt;
 --source include/assert.inc
 
 # assert the log file number increased, this shows that binlog was rotated
---source include/rpl_log_file_max_number.inc
+--source include/rpl/log_file_max_number.inc
 --let $max_log_file_after_incident = $log_file_max_number
 --let $assert_text = incident rotated binlog
 --let $assert_cond = $max_log_file_before_incident + 1 = $max_log_file_after_incident
@@ -78,5 +78,5 @@ echo $evt;
 DROP TABLE t1;
 --replace_result $saved_binlog_transaction_compression_session SAVED
 --eval SET SESSION binlog_transaction_compression = $saved_binlog_transaction_compression_session
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 --eval TRUNCATE $pfs_table

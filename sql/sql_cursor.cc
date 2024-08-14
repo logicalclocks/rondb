@@ -27,6 +27,7 @@
 #include <sys/types.h>
 
 #include <algorithm>
+#include <memory>
 #include <utility>  // move
 
 #include "memory_debugging.h"
@@ -113,7 +114,9 @@ class Query_result_materialize final : public Query_result_union {
  public:
   Query_result_materialize(Query_result *result_arg)
       : Query_result_union(), m_result(result_arg) {}
-  ~Query_result_materialize() override { destroy(m_cursor); }
+  ~Query_result_materialize() override {
+    if (m_cursor != nullptr) ::destroy_at(m_cursor);
+  }
   void set_result(Query_result *result_arg) {
     m_result = result_arg;
     if (m_cursor != nullptr) {
@@ -187,9 +190,10 @@ bool mysql_open_cursor(THD *thd, Query_result *result,
   Query_result_materialize *result_materialize = nullptr;
   LEX *lex = thd->lex;
 
-  Sql_cmd_dml *sql_cmd = lex->m_sql_cmd != nullptr && lex->m_sql_cmd->is_dml()
-                             ? down_cast<Sql_cmd_dml *>(lex->m_sql_cmd)
-                             : nullptr;
+  Sql_cmd_dml *sql_cmd =
+      lex->m_sql_cmd != nullptr && lex->m_sql_cmd->sql_cmd_type() == SQL_CMD_DML
+          ? down_cast<Sql_cmd_dml *>(lex->m_sql_cmd)
+          : nullptr;
 
   // Only DML statements may have assigned a cursor.
   if (sql_cmd == nullptr) {
@@ -211,7 +215,7 @@ bool mysql_open_cursor(THD *thd, Query_result *result,
        materialization exists, reuse this object.
   */
   if (!sql_cmd->is_prepared()) {
-    Prepared_stmt_arena_holder ps_arena_holder(thd);
+    const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
     result_materialize = new (thd->mem_root) Query_result_materialize(result);
     if (result_materialize == nullptr) return true;
@@ -231,7 +235,7 @@ bool mysql_open_cursor(THD *thd, Query_result *result,
   thd->m_statement_psi = nullptr;
   DBUG_EXECUTE_IF("bug33218625_kill_injection", thd->killed = THD::KILL_QUERY;);
 
-  bool rc = mysql_execute_command(thd);
+  const bool rc = mysql_execute_command(thd);
 
   thd->m_digest = parent_digest;
   DEBUG_SYNC(thd, "after_table_close");
@@ -472,7 +476,7 @@ bool Query_result_materialize::prepare(THD *thd,
   if (create_result_table(thd, *unit->get_unit_column_types(), false,
                           thd->variables.option_bits | TMP_TABLE_ALL_COLUMNS,
                           "", false, false)) {
-    destroy(m_cursor);
+    ::destroy_at(m_cursor);
     return true;
   }
   m_cursor->set_table(table);

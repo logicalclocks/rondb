@@ -308,6 +308,24 @@ INSERT INTO I_S_published_schema
 INSERT INTO I_S_published_schema
   VALUES ('80030', '80030', 1,
         '4399948df993b3a2084c4a6dd80d76e38b2ff874e68b7e33a16b907eeb090ff0');
+INSERT INTO I_S_published_schema
+  VALUES ('80033', '80033', 0,
+        'c333c8c86a522163d7dfd9121417b019a03c9e45a6ca0d3028cf308b6821b4c9');
+INSERT INTO I_S_published_schema
+  VALUES ('80033', '80033', 1,
+        '72835eb0d7b55036758ea2e959dbaef990f8e27cb3daf7d9bcb216e7a896bd42');
+INSERT INTO I_S_published_schema
+  VALUES ('80200', '80200', 0,
+        '80cd7a12f36b11669995027be4b5118e5e3659ee2dcd25597bfdb83c72972d3d');
+INSERT INTO I_S_published_schema
+  VALUES ('80200', '80200', 1,
+        '043975d2bcbbf7eed996b8917c41b14363c2c2904658355a414d3ebbb96a8f2b');
+INSERT INTO I_S_published_schema
+  VALUES ('80400', '80400', 0,
+        'c2333deaa11365b6843097602e964c6e337bfc3005bfe159eca99286aa29ea0c');
+INSERT INTO I_S_published_schema
+  VALUES ('80400', '80400', 1,
+        'fedb1d31841a81321ec0c95d672b80929c0772fc357e30eedfb561a755f8c137');
 
 LET $checksum_version = `SELECT IF(ISNULL(mysqld_version), "0", i_s_version)
                   FROM I_S_published_schema i RIGHT OUTER JOIN whole_schema w
@@ -389,7 +407,7 @@ let $assert_cond = "[SELECT COUNT(i_s_version)
                        AND lctn = @@global.lower_case_file_system
                        AND i_s_version = \'$current_i_s_version\']" >= 1;
 let $assert_text = The schema checksum corresponds to
-                       IS_VERSION $current_i_s_version stored on on disk.;
+                       IS_VERSION $current_i_s_version stored on disk.;
 --source include/assert.inc
 
 # Make sure that the I_S version stored on disk is the latest known I_S version

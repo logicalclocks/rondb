@@ -29,35 +29,6 @@
 #include <optional>
 #include <string>
 
-/**
- * a nullable SQL value.
- *
- * For now, supports NULL and strings.
- *
- * Note: In the future, may switch to std::variant<> or
- * similar to cover more types if needed.
- */
-class Value {
- public:
-  using value_type = std::optional<std::string>;
-
-  Value(value_type v) : value_{std::move(v)} {}
-
-  value_type value() const { return value_; }
-
-  /**
-   * "NULL" or the quoted string.
-   */
-  std::string to_string() const;
-
- private:
-  value_type value_;
-};
-
-inline bool operator==(const Value &a, const Value &b) {
-  return a.value() == b.value();
-}
-
-inline bool operator!=(const Value &a, const Value &b) { return !(a == b); }
+std::string sql_value_to_string(const std::optional<std::string> &val);
 
 #endif

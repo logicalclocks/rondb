@@ -696,6 +696,25 @@ class PFS_buffer_scalable_container {
     return nullptr;
   }
 
+  void dirty_to_free(pfs_dirty_state *dirty_state, value_type *safe_pfs) {
+    /* Find the containing page */
+    PFS_opaque_container_page *opaque_page = safe_pfs->m_page;
+    auto *page = reinterpret_cast<array_type *>(opaque_page);
+
+    /* Mark the object free */
+    safe_pfs->m_lock.dirty_to_free(dirty_state);
+
+    /* Flag the containing page as not full. */
+    if (page->m_full.load()) {
+      page->m_full.store(false);
+    }
+
+    /* Flag the overall container as not full. */
+    if (m_full.load()) {
+      m_full.store(false);
+    }
+  }
+
   void deallocate(value_type *safe_pfs) {
     /* Find the containing page */
     PFS_opaque_container_page *opaque_page = safe_pfs->m_page;
@@ -1104,7 +1123,7 @@ class PFS_buffer_scalable_iterator {
 template <class T>
 class PFS_buffer_processor {
  public:
-  virtual ~PFS_buffer_processor<T>() = default;
+  virtual ~PFS_buffer_processor() = default;
   virtual void operator()(T *element) = 0;
 };
 

@@ -176,7 +176,7 @@ int main(int argc, char *argv[]) {
     print_query(out, query);
   }
 
-  fprintf(out, "NULL\n};\n");
+  fprintf(out, "nullptr\n};\n");
 
   fclose(in);
   fclose(out);

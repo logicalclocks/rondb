@@ -8,13 +8,13 @@ call mtr.add_suppression("Unsafe statement written to the binary log using state
 enable_query_log;
 
 -- disable_query_log
-reset master; # get rid of previous tests binlog
+reset binary logs and gtids; # get rid of previous tests binlog
 -- enable_query_log
 
 --disable_warnings
 drop table if exists t1;
 --enable_warnings
-reset master;
+reset binary logs and gtids;
 
 #
 # Bug #26842: master binary log contains invalid queries - replication fails
@@ -27,6 +27,6 @@ set @a=99; execute s using @a;
 prepare s from "insert into t1 select 100 limit ?";
 set @a=100; execute s using @a;
 --let $mask_binlog_commit_events= 1
-source include/show_binlog_events.inc;
+source include/rpl/deprecated/show_binlog_events.inc;
 --let $mask_binlog_commit_events= 0
 drop table t1;

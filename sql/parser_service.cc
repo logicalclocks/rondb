@@ -27,7 +27,6 @@
 #include <new>
 
 #include "lex_string.h"
-#include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sqlcommand.h"
@@ -57,6 +56,7 @@
 #include "sql/system_variables.h"
 #include "sql/transaction.h"  // trans_commit_stmt
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "template_utils.h"
 
 /**
@@ -88,7 +88,7 @@ class Service_visitor : public Select_lex_visitor {
       case Item::DECIMAL_ITEM:
       case Item::REAL_ITEM:
       case Item::NULL_ITEM:
-      case Item::VARBIN_ITEM:
+      case Item::HEX_BIN_ITEM:
       case Item::CACHE_ITEM:
         return m_processor(item, m_arg);
       default:
@@ -123,7 +123,7 @@ class Plugin_error_handler : public Internal_error_handler {
   bool handle_condition(THD *, uint sql_errno_u, const char *sqlstate,
                         Sql_condition::enum_severity_level *,
                         const char *msg) override {
-    int sql_errno = static_cast<int>(sql_errno_u);
+    const int sql_errno = static_cast<int>(sql_errno_u);
     if (m_handle_error != nullptr)
       return m_handle_error(sql_errno, sqlstate, msg, m_state) != 0;
     return false;
@@ -222,10 +222,10 @@ void mysql_parser_join_thread(my_thread_handle *thread_id) {
 void mysql_parser_set_current_database(MYSQL_THD thd,
                                        const MYSQL_LEX_STRING db) {
   if (db.length == 0) {
-    LEX_CSTRING db_const = {nullptr, 0};
+    const LEX_CSTRING db_const = {nullptr, 0};
     thd->set_db(db_const);
   } else {
-    LEX_CSTRING db_const = {db.str, db.length};
+    const LEX_CSTRING db_const = {db.str, db.length};
     thd->set_db(db_const);
   }
 }
@@ -262,10 +262,10 @@ int mysql_parser_parse(MYSQL_THD thd, const MYSQL_LEX_STRING query,
     thd->lex->context_analysis_only |= CONTEXT_ANALYSIS_ONLY_PREPARE;
   }
 
-  Plugin_error_handler error_handler(thd, handle_condition,
-                                     condition_handler_state);
+  const Plugin_error_handler error_handler(thd, handle_condition,
+                                           condition_handler_state);
 
-  int parse_status = parse_sql(thd, &parser_state, nullptr);
+  const int parse_status = parse_sql(thd, &parser_state, nullptr);
 
   /*
     Handled conditions are thrown away at this point - they are supposedly

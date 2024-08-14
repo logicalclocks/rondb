@@ -27,16 +27,24 @@
 #include <gtest/gtest.h>
 
 #include "exit_status.h"
+#include "mysql/harness/stdx/expected_ostream.h"
 #include "mysqlrouter/mysql_session.h"
 #include "mysqlxclient.h"
 #include "mysqlxclient/xerror.h"
 #include "mysqlxclient/xrow.h"
+#include "router/src/routing/tests/mysql_client.h"
 #include "router_component_test.h"
 #include "router_config.h"
+#include "stdx_expected_no_error.h"
 #include "tcp_port_pool.h"
 
 using namespace std::chrono_literals;
 using namespace std::string_literals;
+
+std::ostream &operator<<(std::ostream &os, MysqlError e) {
+  os << e.sql_state() << " (" << e.value() << ") " << e.message();
+  return os;
+}
 
 const char *xcl_column_type_to_string(xcl::Column_type type) {
   switch (type) {
@@ -242,6 +250,7 @@ TEST_F(MockServerCLITestBase, classic_many_connections) {
   std::map<std::string, std::string> config{
       {"--module-prefix", get_data_dir().str()},
       {"--filename", get_data_dir().join("my_port.js").str()},
+      {"--bind-address", "127.0.0.1"},
       {"--port", std::to_string(bind_port)},
   };
 
@@ -268,7 +277,7 @@ TEST_F(MockServerCLITestBase, classic_many_connections) {
 
   for (auto &sess : classic_sessions) {
     try {
-      sess.connect("127.0.0.1", bind_port, "root", "fake-pass", "", "");
+      sess.connect("127.0.0.1", bind_port, "username", "password", "", "");
     } catch (const std::exception &e) {
       FAIL() << e.what();
     }
@@ -334,8 +343,8 @@ static std::string replace_placeholders(
 
 static void classic_protocol_connect_ok(
     const std::string &host, uint16_t port,
-    const std::string &username = "someuser",
-    const std::string &password = "somepass") {
+    const std::string &username = "username",
+    const std::string &password = "password") {
   mysqlrouter::MySQLSession sess;
 
   sess.connect(host, port,
@@ -366,8 +375,8 @@ static void classic_protocol_connect_fail(const std::string &host,
 }
 
 static void x_protocol_connect_ok(const std::string &host, uint16_t port,
-                                  const std::string &username = "someuser",
-                                  const std::string &password = "somepass") {
+                                  const std::string &username = "username",
+                                  const std::string &password = "password") {
   auto sess = xcl::create_session();
   ASSERT_THAT(
       sess->set_mysql_option(
@@ -399,6 +408,7 @@ TEST_P(MockServerConnectOkTest, classic_protocol) {
     }
   }
 
+  cmdline_args.emplace_back("--bind-address=127.0.0.1");
   cmdline_args.emplace_back("--port");
   cmdline_args.push_back(std::to_string(bind_port));
 
@@ -418,6 +428,7 @@ TEST_P(MockServerConnectOkTest, x_protocol) {
       {"datadir", get_data_dir().str()},
       {"certdir", SSL_TEST_DATA_DIR},
       {"hostname", "127.0.0.1"},
+      {"bind_address", "127.0.0.1"},
   };
 
   std::vector<std::string> cmdline_args{"--logging-folder",
@@ -431,6 +442,7 @@ TEST_P(MockServerConnectOkTest, x_protocol) {
     }
   }
 
+  cmdline_args.emplace_back("--bind-address=127.0.0.1");
   // set the classic port even though we don't use it.
   // otherwise it defaults to bind to port 3306 which may lead to "Address
   // already in use"
@@ -612,13 +624,14 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
          "--filename", "@datadir@/mock_server_require_password.js",  //
          "--module-prefix", "@datadir@",                             //
          "--port", "@port@",                                         //
+         "--bind-address", "127.0.0.1",                              //
          "--verbose",                                                //
      },
      [](const std::map<std::string, std::string> &config) {
        auto host = config.at("hostname");
        auto port = atol(config.at("port").c_str());
-       const char username[] = "someuser";
-       const char password[] = "somepass";
+       const char username[] = "username";
+       const char password[] = "password";
 
        mysqlrouter::MySQLSession sess;
 
@@ -646,6 +659,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_cert.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--ssl-mode", "required",                                   //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                    //
@@ -656,12 +670,13 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      [](const std::map<std::string, std::string> &config) {
        classic_protocol_connect_fail(config.at("hostname"),
                                      atol(config.at("port").c_str()),
-                                     "someuser", "somepass", 1045);
+                                     "username", "password", 1045);
      }},
     {"auth_wrong_password",
      {
          "--filename", "@datadir@/mock_server_require_password.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--ssl-mode", "preferred",                                  //
          "--ssl-key", "@certdir@/server-key.pem",                    //
@@ -671,12 +686,13 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      [](const std::map<std::string, std::string> &config) {
        classic_protocol_connect_fail(config.at("hostname"),
                                      atol(config.at("port").c_str()),
-                                     "someuser", "wrongpass", 1045);
+                                     "username", "wrongpass", 1045);
      }},
     {"auth_wrong_username",
      {
          "--filename", "@datadir@/mock_server_require_username.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--ssl-mode", "preferred",                                  //
          "--ssl-key", "@certdir@/server-key.pem",                    //
@@ -693,6 +709,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/my_port.js",       //
          "--module-prefix", "@datadir@",             //
+         "--bind-address", "127.0.0.1",              //
          "--port", "@port@",                         //
          "--ssl-mode", "preferred",                  //
          "--ssl-key", "@certdir@/server-key.pem",    //
@@ -708,8 +725,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
            replace_placeholders("@certdir@/crl-client-key.pem", config));
 
        sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                    "someuser",  // user
-                    "somepass",  // pass
+                    "username",  // user
+                    "password",  // pass
                     "",          // socket
                     ""           // schema
        );
@@ -718,6 +735,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_cert.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--ssl-mode", "required",                                   //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                    //
@@ -735,8 +753,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -749,6 +767,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_issuer.js",  //
          "--module-prefix", "@datadir@",                               //
+         "--bind-address", "127.0.0.1",                                //
          "--port", "@port@",                                           //
          "--ssl-mode", "required",                                     //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                      //
@@ -766,8 +785,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -779,6 +798,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_subject.js",  //
          "--module-prefix", "@datadir@",                                //
+         "--bind-address", "127.0.0.1",                                 //
          "--port", "@port@",                                            //
          "--ssl-mode", "required",                                      //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                       //
@@ -795,8 +815,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -809,6 +829,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_subject.js",  //
          "--module-prefix", "@datadir@",                                //
+         "--bind-address", "127.0.0.1",                                 //
          "--port", "@port@",                                            //
          "--ssl-mode", "required",                                      //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                       //
@@ -827,8 +848,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -843,6 +864,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_subject.js",  //
          "--module-prefix", "@datadir@",                                //
+         "--bind-address", "127.0.0.1",                                 //
          "--port", "@port@",                                            //
          "--ssl-mode", "required",                                      //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                       //
@@ -862,8 +884,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -881,6 +903,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_subject.js",  //
          "--module-prefix", "@datadir@",                                //
+         "--bind-address", "127.0.0.1",                                 //
          "--port", "@port@",                                            //
          "--ssl-mode", "required",                                      //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                       //
@@ -899,8 +922,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -915,6 +938,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_subject.js",  //
          "--module-prefix", "@datadir@",                                //
+         "--bind-address", "127.0.0.1",                                 //
          "--port", "@port@",                                            //
          "--ssl-mode", "required",                                      //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                       //
@@ -939,8 +963,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -956,6 +980,7 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_cert_verify_subject.js",  //
          "--module-prefix", "@datadir@",                                //
+         "--bind-address", "127.0.0.1",                                 //
          "--port", "@port@",                                            //
          "--ssl-mode", "required",                                      //
          "--ssl-ca", "@certdir@/crl-ca-cert.pem",                       //
@@ -986,8 +1011,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
 
        try {
          sess.connect(config.at("hostname"), atol(config.at("port").c_str()),
-                      "someuser",  // user
-                      "somepass",  // pass
+                      "username",  // user
+                      "password",  // pass
                       "",          // socket
                       ""           // schema
          );
@@ -998,15 +1023,16 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
      }},
     {"xproto_mysqlsh_select_connection_id",
      {
-         "--filename", "@datadir@/tls_endpoint.js",      //
-         "--module-prefix", "@datadir@",                 //
-         "--port", "@port@",                             //
-         "--xport", "@xport@",                           //
-         "--ssl-mode", "required",                       //
-         "--ssl-ca", "@certdir@/crl-ca-cert.pem",        //
-         "--ssl-key", "@certdir@/crl-server-key.pem",    //
-         "--ssl-cert", "@certdir@/crl-server-cert.pem",  //
-         "--tls-version", "TLSv1.2",                     //
+         "--filename",      "@datadir@/tls_endpoint.js",      //
+         "--module-prefix", "@datadir@",                      //
+         "--bind-address",  "127.0.0.1",                      //
+         "--port",          "@port@",                         //
+         "--xport",         "@xport@",                        //
+         "--ssl-mode",      "required",                       //
+         "--ssl-ca",        "@certdir@/crl-ca-cert.pem",      //
+         "--ssl-key",       "@certdir@/crl-server-key.pem",   //
+         "--ssl-cert",      "@certdir@/crl-server-cert.pem",  //
+         "--tls-version",   "TLSv1.2",                        //
      },
      [](const std::map<std::string, std::string> &config) {
        auto sess = xcl::create_session();
@@ -1017,8 +1043,8 @@ const MockServerConnectTestParam mock_server_connect_test_param[] = {
            ::testing::Truly([](const xcl::XError &xerr) { return !xerr; }));
        ASSERT_THAT(
            sess->connect(config.at("hostname").c_str(),
-                         atol(config.at("xport").c_str()), "someuser",
-                         "somepass", ""),
+                         atol(config.at("xport").c_str()), "username",
+                         "password", ""),
            ::testing::Truly([](auto const &err) { return err.error() == 0; }));
        xcl::XError xerr;
        auto query_result = sess->execute_sql(
@@ -1076,6 +1102,7 @@ TEST_P(MockServerCoreTest, check) {
 
   std::map<std::string, std::string> config{
       {"http_port", std::to_string(port_pool_.get_next_available())},
+      {"bind_address", "127.0.0.1"},
       {"port", std::to_string(port_pool_.get_next_available())},
       {"xport", std::to_string(port_pool_.get_next_available())},
       {"datadir", get_data_dir().str()},
@@ -1117,6 +1144,7 @@ const MockServerCoreTestParam mock_server_core_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_require_password.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--core-file",                                              //
      },
@@ -1125,6 +1153,7 @@ const MockServerCoreTestParam mock_server_core_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_require_password.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--core-file", "0",                                         //
      },
@@ -1133,6 +1162,7 @@ const MockServerCoreTestParam mock_server_core_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_require_password.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--core-file", "1",                                         //
      },
@@ -1141,6 +1171,7 @@ const MockServerCoreTestParam mock_server_core_test_param[] = {
      {
          "--filename", "@datadir@/mock_server_require_password.js",  //
          "--module-prefix", "@datadir@",                             //
+         "--bind-address", "127.0.0.1",                              //
          "--port", "@port@",                                         //
          "--core-file", "abc",                                       //
      },
@@ -1149,6 +1180,105 @@ const MockServerCoreTestParam mock_server_core_test_param[] = {
 
 INSTANTIATE_TEST_SUITE_P(Spec, MockServerCoreTest,
                          ::testing::ValuesIn(mock_server_core_test_param),
+                         [](const auto &info) { return info.param.test_name; });
+
+// session-tracker
+
+struct MockServerCommandTestParam {
+  const char *test_name;
+
+  std::function<void(MysqlClient &cli)> checker;
+};
+
+class MockServerCommandTest
+    : public RouterComponentTest,
+      public ::testing::WithParamInterface<MockServerCommandTestParam> {};
+
+TEST_P(MockServerCommandTest, check) {
+  auto mysql_server_mock_path = get_mysqlserver_mock_exec().str();
+
+  ASSERT_THAT(mysql_server_mock_path, ::testing::StrNe(""));
+
+  auto port = port_pool_.get_next_available();
+  auto xport = port_pool_.get_next_available();
+
+  SCOPED_TRACE("// start mock-server");
+  spawner(mysql_server_mock_path)
+      .with_core_dump(true)
+      .spawn({
+          "--logging-folder",
+          get_test_temp_dir_name(),
+          "--module-prefix",
+          get_data_dir().str(),
+          "--bind-address=127.0.0.1",
+          "--port",
+          std::to_string(port),
+          "--xport",
+          std::to_string(xport),
+          "--filename",
+          get_data_dir().join("session_tracker.js").str(),
+      });
+
+  MysqlClient cli;
+  ASSERT_NO_ERROR(cli.connect("127.0.0.1", port));
+
+  GetParam().checker(cli);
+}
+
+const MockServerCommandTestParam mock_server_command_test_param[] = {
+    {
+        "use_schema",
+        [](auto &cli) {
+          ASSERT_NO_ERROR(cli.query("USE some_schema"));
+          EXPECT_THAT(cli.session_trackers(),
+                      ::testing::ElementsAre(std::make_tuple(
+                          SESSION_TRACK_SCHEMA, "some_schema")));
+        },
+    },
+    {
+        "set_sysvars",
+        [](auto &cli) {
+          ASSERT_NO_ERROR(cli.query("SET sysvar1=1, sysvar2=2"));
+          EXPECT_THAT(
+              cli.session_trackers(),
+              // key, value, key, value, ...
+              ::testing::ElementsAre(
+                  std::make_tuple(SESSION_TRACK_SYSTEM_VARIABLES, "sysvar_a"),
+                  std::make_tuple(SESSION_TRACK_SYSTEM_VARIABLES, "1"),
+                  std::make_tuple(SESSION_TRACK_SYSTEM_VARIABLES, "sysvar_b"),
+                  std::make_tuple(SESSION_TRACK_SYSTEM_VARIABLES, "2")));
+        },
+    },
+    {
+        "gtid",
+        [](auto &cli) {
+          ASSERT_NO_ERROR(cli.query("INSERT ..."));
+          EXPECT_THAT(cli.session_trackers(),
+                      ::testing::ElementsAre(std::make_tuple(
+                          SESSION_TRACK_GTIDS,
+                          "3E11FA47-71CA-11E1-9E33-C80AA9429562:1")));
+        },
+    },
+    {
+        "uservar",
+        [](auto &cli) {
+          ASSERT_NO_ERROR(cli.query("INSERT @user_var"));
+          EXPECT_THAT(
+              cli.session_trackers(),
+              ::testing::ElementsAre(
+                  std::make_tuple(SESSION_TRACK_STATE_CHANGE, "1"),
+                  std::make_tuple(SESSION_TRACK_GTIDS,
+                                  "3E11FA47-71CA-11E1-9E33-C80AA9429562:2"),
+                  std::make_tuple(SESSION_TRACK_TRANSACTION_CHARACTERISTICS,
+                                  ""),
+                  std::make_tuple(SESSION_TRACK_TRANSACTION_STATE,
+                                  "________")));
+        },
+    },
+};
+
+INSTANTIATE_TEST_SUITE_P(Spec, MockServerCommandTest,
+                         ::testing::ValuesIn(mock_server_command_test_param),
                          [](const auto &info) { return info.param.test_name; });
 
 int main(int argc, char *argv[]) {

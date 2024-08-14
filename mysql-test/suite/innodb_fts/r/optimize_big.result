@@ -147,9 +147,6 @@ SET GLOBAL innodb_ft_num_word_optimize=10000;
 OPTIMIZE TABLE book;
 Table	Op	Msg_type	Msg_text
 test.book	optimize	status	OK
-OPTIMIZE TABLE book;
-Table	Op	Msg_type	Msg_text
-test.book	optimize	status	OK
 CALL find('they');
 heading
 SELECT count(*) FROM INFORMATION_SCHEMA.INNODB_FT_DELETED;

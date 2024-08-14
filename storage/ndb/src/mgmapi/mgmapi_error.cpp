@@ -39,6 +39,12 @@ const struct Ndb_Mgm_Error_Msg ndb_mgm_error_msgs[] = {
     {NDB_MGM_COULD_NOT_CONNECT_TO_SOCKET, "Could not connect to socket"},
     {NDB_MGM_ILLEGAL_BIND_ADDRESS, "Illegal bind address"},
 
+    /* Authorization Failure */
+    {NDB_MGM_NOT_AUTHORIZED, "Not Authorized"},
+    {NDB_MGM_AUTH_REQUIRES_TLS, "Not Authorized: TLS Required"},
+    {NDB_MGM_AUTH_REQUIRES_CLIENT_CERT,
+     "Not Authorized: Valid TLS Certificate Required"},
+
     /* Service errors - Start/Stop Node or System */
     {NDB_MGM_START_FAILED, "Start failed"},
     {NDB_MGM_STOP_FAILED, "Stop failed"},

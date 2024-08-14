@@ -5,15 +5,15 @@ Note	####	Storing MySQL user name or password information in the connection meta
 [connection server1]
 [connection server1]
 SET sql_log_bin = 0;
-include/gtid_utils.inc
+include/rpl/gtid_utils.inc
 SET sql_log_bin = 1;
 [connection server2]
 SET sql_log_bin = 0;
-include/gtid_utils.inc
+include/rpl/gtid_utils.inc
 SET sql_log_bin = 1;
 [connection server3]
 SET sql_log_bin = 0;
-include/gtid_utils.inc
+include/rpl/gtid_utils.inc
 SET sql_log_bin = 1;
 
 ############################################################
@@ -23,11 +23,12 @@ SET @group_replication_view_change_uuid_save= @@GLOBAL.group_replication_view_ch
 SET GLOBAL group_replication_view_change_uuid = "c0dec0de-c0de-c0de-c0de-c0dec0dec0de";
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 include/start_and_bootstrap_group_replication.inc
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 include/assert.inc [GTID_EXECUTED must have one transaction of view change]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -41,11 +42,12 @@ SET @group_replication_view_change_uuid_save= @@GLOBAL.group_replication_view_ch
 SET GLOBAL group_replication_view_change_uuid = "c0dec0de-c0de-c0de-c0de-c0dec0dec0de";
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 include/start_group_replication.inc
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 include/assert.inc [GTID_EXECUTED must have two transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -59,7 +61,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 # 3. Confirm server 1 has same GTID_EXECUTED as server 2
 [connection server1]
 include/assert.inc [GTID_EXECUTED must have two transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -76,11 +78,12 @@ SET @group_replication_view_change_uuid_save= @@GLOBAL.group_replication_view_ch
 SET GLOBAL group_replication_view_change_uuid = "c0dec0de-c0de-c0de-c0de-c0dec0dec0de";
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 include/start_group_replication.inc
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 include/assert.inc [GTID_EXECUTED must have three transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -97,7 +100,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 # 5. Confirm server 1 has same GTID_EXECUTED than server 3
 [connection server1]
 include/assert.inc [GTID_EXECUTED must have three transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -113,7 +116,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 # 6. Confirm server 2 has same GTID_EXECUTED than server 3
 [connection server2]
 include/assert.inc [GTID_EXECUTED must have three transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -131,7 +134,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 [connection server3]
 include/stop_group_replication.inc
 include/assert.inc [GTID_EXECUTED must have three transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -149,7 +152,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 [connection server2]
 include/stop_group_replication.inc
 include/assert.inc [GTID_EXECUTED must have three transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -169,7 +172,7 @@ include/start_group_replication.inc
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 include/assert.inc [GTID_EXECUTED must have four transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -189,7 +192,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 # 10. Confirm server 1 has same GTID_EXECUTED as server 2
 [connection server1]
 include/assert.inc [GTID_EXECUTED must have four transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -212,7 +215,7 @@ include/start_group_replication.inc
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 include/assert.inc [GTID_EXECUTED must have five transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -234,7 +237,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 # 12. Confirm server 1 has same GTID_EXECUTED than server 3
 [connection server1]
 include/assert.inc [GTID_EXECUTED must have five transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -256,7 +259,7 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 # 13. Confirm server 2 has same GTID_EXECUTED than server 3
 [connection server2]
 include/assert.inc [GTID_EXECUTED must have five transactions of view changes]
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 server-binary-log.000001	#	Previous_gtids	#	#	
 server-binary-log.000001	#	Gtid	#	#	SET @@SESSION.GTID_NEXT= 'Gtid_set'
@@ -279,9 +282,10 @@ server-binary-log.000001	#	Query	#	#	COMMIT
 # 14. Cleanup
 [connection server1]
 SET sql_log_bin = 0;
-include/gtid_utils_end.inc
+include/rpl/gtid_utils_end.inc
 SET sql_log_bin = 1;
 include/stop_group_replication.inc
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
 SET @@GLOBAL.group_replication_view_change_uuid= @group_replication_view_change_uuid_save;
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
@@ -290,17 +294,19 @@ Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 [connection server2]
 SET sql_log_bin = 0;
-include/gtid_utils_end.inc
+include/rpl/gtid_utils_end.inc
 SET sql_log_bin = 1;
 include/stop_group_replication.inc
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
 SET @@GLOBAL.group_replication_view_change_uuid= @group_replication_view_change_uuid_save;
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 [connection server3]
 SET sql_log_bin = 0;
-include/gtid_utils_end.inc
+include/rpl/gtid_utils_end.inc
 SET sql_log_bin = 1;
 include/stop_group_replication.inc
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
 SET @@GLOBAL.group_replication_view_change_uuid= @group_replication_view_change_uuid_save;
 Warnings:
 Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.

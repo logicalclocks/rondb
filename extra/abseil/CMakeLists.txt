@@ -69,6 +69,9 @@ SET(ABSL_PROPAGATE_CXX_STD ON)
 IF(MSVC AND NOT WIN32_CLANG)
   SET(absl_BUILD_SHARED_LIBS ON)
 ENDIF()
+IF(LINUX)
+  SET(absl_BUILD_SHARED_LIBS ON)
+ENDIF()
 
 IF(MSVC AND (FPROFILE_GENERATE OR FPROFILE_USE))
   # The use of CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS is incompatible with
@@ -91,5 +94,12 @@ ENDIF()
 
 MACRO(do_not_install)
 ENDMACRO()
+
+# Avoid ODR violations when running protoc for grpc.
+# This broke group replication.
+IF(UNIX)
+#  STRING_APPEND(CMAKE_C_FLAGS   " -fvisibility=hidden")
+#  STRING_APPEND(CMAKE_CXX_FLAGS " -fvisibility=hidden")
+ENDIF()
 
 ADD_SUBDIRECTORY(abseil-cpp-20230802.1)

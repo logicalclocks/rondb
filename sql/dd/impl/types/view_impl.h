@@ -48,8 +48,6 @@ class Weak_object;
 class Object_table;
 }  // namespace dd
 
-struct CHARSET_INFO;
-
 namespace dd {
 
 ///////////////////////////////////////////////////////////////////////////

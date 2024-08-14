@@ -1969,8 +1969,8 @@ void Suma::execDUMP_STATE_ORD(Signal *signal) {
           for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++) {
             jam();
             cnt++;
-            infoEvent("  Subscriber [ %x %u %u ]", ptr.p->m_senderRef,
-                      ptr.p->m_senderData, subPtr.i);
+            infoEvent("  Subscriber [ %x %u %x %u ]", ptr.p->m_senderRef,
+                      ptr.p->m_senderData, ptr.p->m_requestInfo, subPtr.i);
           }
         }
 
@@ -2063,8 +2063,8 @@ void Suma::execDUMP_STATE_ORD(Signal *signal) {
         Local_Subscriber_list list(c_subscriberPool, subPtr.p->m_subscribers);
         for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++) {
           jam();
-          infoEvent("  Subscriber [ %x %u %u ]", ptr.p->m_senderRef,
-                    ptr.p->m_senderData, subPtr.i);
+          infoEvent("  Subscriber [ %x %u %x %u ]", ptr.p->m_senderRef,
+                    ptr.p->m_senderData, ptr.p->m_requestInfo, subPtr.i);
         }
       }
 
@@ -3429,6 +3429,10 @@ void Suma::execSUB_START_REQ(Signal *signal) {
   Uint32 senderData = req->senderData;
   Uint32 subscriberData = req->subscriberData;
   Uint32 subscriberRef = req->subscriberRef;
+  Uint32 requestInfo = 0;
+  if (signal->getLength() > SubStartReq::SignalLengthWithoutRequestInfo) {
+    requestInfo = req->requestInfo;
+  }
   SubscriptionData::Part part = (SubscriptionData::Part)req->part;
   (void)part;  // TODO validate part
 
@@ -3553,6 +3557,7 @@ void Suma::execSUB_START_REQ(Signal *signal) {
   // setup subscriber record
   subbPtr.p->m_senderRef = subscriberRef;
   subbPtr.p->m_senderData = subscriberData;
+  subbPtr.p->m_requestInfo = requestInfo;
 
   subOpPtr.p->m_opType = SubOpRecord::R_SUB_START_REQ;
   subOpPtr.p->m_subPtrI = subPtr.i;
@@ -4957,6 +4962,29 @@ void Suma::execFIRE_TRIG_ORD_L(Signal *signal) {
   release_trigger_page(ldm_instance, pageId++, chunkId, page_count);
 }
 
+/**
+ * Apply the subscriber filters using the anyValue.
+ * Return true if deemed to discard, false to keep.
+ */
+bool Suma::applyAnyValueFilters(Uint32 requestInfo, Uint32 anyValue) const {
+  constexpr Uint32 ANYVALUE_RESERVED_BIT = 0x80000000;
+  constexpr Uint32 ANYVALUE_NOLOGGING_VALUE = 0x8000007f;
+
+  // No-logging filter
+  const bool no_logging =
+      requestInfo & SubStartReq::FILTER_ANYVALUE_MYSQL_NO_LOGGING;
+  if (no_logging && (anyValue == ANYVALUE_NOLOGGING_VALUE)) return true;
+
+  // No-replica-updates filter
+  const bool no_replica_updates =
+      requestInfo & SubStartReq::FILTER_ANYVALUE_MYSQL_NO_REPLICA_UPDATES;
+  if (no_replica_updates && ((anyValue & ANYVALUE_RESERVED_BIT) == 0) &&
+      ((anyValue & ~ANYVALUE_RESERVED_BIT) != 0))
+    return true;
+
+  return false;
+}
+
 void Suma::sendBatchedSUB_TABLE_DATA(Signal *signal,
                                      const Subscriber_list::Head subscribers,
                                      LinearSectionPtr lsptr[], Uint32 nptr) {
@@ -4964,9 +4992,15 @@ void Suma::sendBatchedSUB_TABLE_DATA(Signal *signal,
   SubTableData *data = (SubTableData *)signal->getDataPtrSend();
   ConstLocal_Subscriber_list list(c_subscriberPool, subscribers);
   SubscriberPtr subbPtr;
+
   for (list.first(subbPtr); !subbPtr.isNull(); list.next(subbPtr)) {
     jam();
     data->senderData = subbPtr.p->m_senderData;
+
+    // filter anyValue through subscriber options
+    if (applyAnyValueFilters(subbPtr.p->m_requestInfo, data->anyValue))
+      continue;
+
     const Uint32 version =
         getNodeInfo(refToNode(subbPtr.p->m_senderRef)).m_version;
     if (ndbd_frag_sub_table_data(version)) {
@@ -6520,6 +6554,7 @@ void Suma::copySubscriber(Signal *signal, Ptr<Subscription> subPtr,
     req->part = SubscriptionData::TableData;
     req->subscriberData = ptr.p->m_senderData;
     req->subscriberRef = ptr.p->m_senderRef;
+    req->requestInfo = ptr.p->m_requestInfo;
 
     sendSignal(c_restart.m_ref, GSN_SUB_START_REQ, signal,
                SubStartReq::SignalLength, JBB);

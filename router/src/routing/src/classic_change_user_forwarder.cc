@@ -43,6 +43,7 @@
 #include "mysql/harness/stdx/expected.h"
 #include "mysql/harness/tls_error.h"
 #include "mysqld_error.h"  // mysql-server error-codes
+#include "router_require.h"
 
 IMPORT_LOG_FUNCTIONS()
 
@@ -92,6 +93,12 @@ ChangeUserForwarder::process() {
       return connected();
     case Stage::Response:
       return response();
+    case Stage::FetchUserAttrs:
+      return fetch_user_attrs();
+    case Stage::FetchUserAttrsDone:
+      return fetch_user_attrs_done();
+    case Stage::SendAuthOk:
+      return send_auth_ok();
     case Stage::Ok:
       return ok();
     case Stage::Error:
@@ -105,24 +112,24 @@ ChangeUserForwarder::process() {
 
 stdx::expected<Processor::Result, std::error_code>
 ChangeUserForwarder::command() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
   auto msg_res = ClassicFrame::recv_msg<
       classic_protocol::borrowed::message::client::ChangeUser>(
-      src_channel, src_protocol, src_protocol->server_capabilities());
+      src_channel, src_protocol, src_protocol.server_capabilities());
   if (!msg_res) {
     if (msg_res.error().category() ==
         make_error_code(classic_protocol::codec_errc::invalid_input)
             .category()) {
       // a codec error.
 
-      discard_current_msg(src_channel, src_protocol);
+      discard_current_msg(src_conn);
 
       auto send_res = ClassicFrame::send_msg<
           classic_protocol::borrowed::message::server::Error>(
-          src_channel, src_protocol, {1047, "Unknown command", "08S01"});
+          src_conn, {1047, "Unknown command", "08S01"});
       if (!send_res) return send_client_failed(send_res.error());
 
       stage(Stage::Done);
@@ -131,19 +138,23 @@ ChangeUserForwarder::command() {
     return recv_client_failed(msg_res.error());
   }
 
-  src_protocol->username(std::string(msg_res->username()));
-  src_protocol->schema(std::string(msg_res->schema()));
-  src_protocol->attributes(std::string(msg_res->attributes()));
-  src_protocol->password(std::nullopt);
-  src_protocol->auth_method_name(std::string(msg_res->auth_method_name()));
-
-  discard_current_msg(src_channel, src_protocol);
-
   if (auto &tr = tracer()) {
     tr.trace(Tracer::Event().stage("change_user::command"));
   }
 
-  auto &server_conn = connection()->socket_splicer()->server_conn();
+  src_protocol.username(std::string(msg_res->username()));
+  src_protocol.schema(std::string(msg_res->schema()));
+  src_protocol.attributes(std::string(msg_res->attributes()));
+  src_protocol.password(std::nullopt);
+  src_protocol.auth_method_name(std::string(msg_res->auth_method_name()));
+
+  discard_current_msg(src_conn);
+
+  // disable the tracer for change-user as the previous users
+  // 'ROUTER SET trace = 1' should influence _this_ users change-user
+  connection()->events().active(false);
+
+  auto &server_conn = connection()->server_conn();
   if (!server_conn.is_open()) {
     stage(Stage::Connect);
   } else {
@@ -153,7 +164,8 @@ ChangeUserForwarder::command() {
         connection(), true /* in-handshake */,
         [this](const classic_protocol::message::server::Error &err) {
           reconnect_error(err);
-        }));
+        },
+        nullptr));
 
     stage(Stage::Response);
   }
@@ -173,52 +185,51 @@ ChangeUserForwarder::connect() {
   //
   // don't use LazyConnector here as it would call authenticate with the old
   // user and then switch to the new one in a 2nd ChangeUser.
-  return socket_reconnect_start();
+  return socket_reconnect_start(nullptr);
 }
 
 stdx::expected<Processor::Result, std::error_code>
 ChangeUserForwarder::connected() {
-  auto &server_conn = connection()->socket_splicer()->server_conn();
-  auto *server_protocol = connection()->server_protocol();
+  auto &server_conn = connection()->server_conn();
+  auto &server_protocol = server_conn.protocol();
 
   if (!server_conn.is_open()) {
-    auto *socket_splicer = connection()->socket_splicer();
-    auto *src_channel = socket_splicer->client_channel();
-    auto *src_protocol = connection()->client_protocol();
+    auto &src_conn = connection()->client_conn();
 
     // take the client::command from the connection.
-    auto recv_res =
-        ClassicFrame::ensure_has_full_frame(src_channel, src_protocol);
+    auto recv_res = ClassicFrame::ensure_has_full_frame(src_conn);
     if (!recv_res) return recv_client_failed(recv_res.error());
 
-    discard_current_msg(src_channel, src_protocol);
+    discard_current_msg(src_conn);
 
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("change_user::connect::error"));
     }
 
     stage(Stage::Done);
-    return reconnect_send_error_msg(src_channel, src_protocol);
+    return reconnect_send_error_msg(src_conn);
   }
 
   if (auto &tr = tracer()) {
     tr.trace(Tracer::Event().stage("change_user::connected"));
   }
 
-  if (server_protocol->server_greeting()) {
+  if (server_protocol.server_greeting()) {
     // from pool.
     connection()->push_processor(std::make_unique<ChangeUserSender>(
         connection(), true,
         [this](const classic_protocol::message::server::Error &err) {
           reconnect_error(err);
-        }));
+        },
+        nullptr));
   } else {
     // connector, but not greeted yet.
     connection()->push_processor(std::make_unique<ServerGreetor>(
         connection(), true,
         [this](const classic_protocol::message::server::Error &err) {
           reconnect_error(err);
-        }));
+        },
+        nullptr));
   }
 
   stage(Stage::Response);
@@ -227,18 +238,85 @@ ChangeUserForwarder::connected() {
 
 stdx::expected<Processor::Result, std::error_code>
 ChangeUserForwarder::response() {
-  if (!connection()->authenticated()) {
-    auto *socket_splicer = connection()->socket_splicer();
-    auto *src_channel = socket_splicer->client_channel();
-    auto *src_protocol = connection()->client_protocol();
+  auto &dst_conn = connection()->client_conn();
 
+  if (!connection()->authenticated()) {
     stage(Stage::Error);
 
-    return reconnect_send_error_msg(src_channel, src_protocol);
+    return reconnect_send_error_msg(dst_conn);
   }
 
-  stage(Stage::Ok);
+  stage(Stage::FetchUserAttrs);
   return Result::Again;
+}
+
+stdx::expected<Processor::Result, std::error_code>
+ChangeUserForwarder::fetch_user_attrs() {
+  if (!connection()->context().router_require_enforce()) {
+    stage(Stage::SendAuthOk);
+    return Result::Again;
+  }
+
+  if (auto &tr = tracer()) {
+    tr.trace(Tracer::Event().stage("connect::fetch_user_attrs"));
+  }
+
+  RouterRequireFetcher::push_processor(
+      connection(), required_connection_attributes_fetcher_result_);
+
+  stage(Stage::FetchUserAttrsDone);
+  return Result::Again;
+}
+
+stdx::expected<Processor::Result, std::error_code>
+ChangeUserForwarder::fetch_user_attrs_done() {
+  auto &dst_conn = connection()->client_conn();
+  auto &dst_channel = dst_conn.channel();
+
+  if (auto &tr = tracer()) {
+    tr.trace(Tracer::Event().stage("connect::fetch_user_attrs::done"));
+  }
+
+  if (!required_connection_attributes_fetcher_result_) {
+    auto send_res =
+        ClassicFrame::send_msg<classic_protocol::message::server::Error>(
+            dst_conn, {1045, "Access denied", "28000"});
+    if (!send_res) return stdx::unexpected(send_res.error());
+
+    stage(Stage::Error);
+    return Result::Again;
+  }
+
+  auto enforce_res = RouterRequire::enforce(
+      dst_channel, *required_connection_attributes_fetcher_result_);
+  if (!enforce_res) {
+    auto send_res =
+        ClassicFrame::send_msg<classic_protocol::message::server::Error>(
+            dst_conn, {1045, "Access denied", "28000"});
+    if (!send_res) return stdx::unexpected(send_res.error());
+
+    stage(Stage::Error);
+    return Result::SendToClient;
+  }
+
+  stage(Stage::SendAuthOk);
+
+  return Result::Again;
+}
+
+stdx::expected<Processor::Result, std::error_code>
+ChangeUserForwarder::send_auth_ok() {
+  auto &dst_conn = connection()->client_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  // tell the client that everything is ok.
+  auto send_res =
+      ClassicFrame::send_msg<classic_protocol::borrowed::message::server::Ok>(
+          dst_conn, {0, 0, dst_protocol.status_flags(), 0});
+  if (!send_res) return stdx::unexpected(send_res.error());
+
+  stage(Stage::Ok);
+  return Result::SendToClient;
 }
 
 stdx::expected<Processor::Result, std::error_code> ChangeUserForwarder::ok() {
@@ -246,22 +324,15 @@ stdx::expected<Processor::Result, std::error_code> ChangeUserForwarder::ok() {
     tr.trace(Tracer::Event().stage("change_user::ok"));
   }
 
-  // allow connection sharing again.
-  connection()->connection_sharing_allowed_reset();
-
-  // clear the warnings
-  connection()->execution_context().diagnostics_area().warnings().clear();
-
-  // clear the prepared statements.
-  connection()->client_protocol()->prepared_statements().clear();
+  connection()->reset_to_initial();
 
   if (connection()->context().connection_sharing() &&
       connection()->greeting_from_router()) {
     // if connection sharing is enabled in the config, enable the
     // session-tracker.
     connection()->push_processor(std::make_unique<QuerySender>(connection(), R"(
-SET @@SESSION.session_track_schema           = 'ON',
-    @@SESSION.session_track_system_variables = '*',
+SET @@SESSION.session_track_system_variables = '*',
+    @@SESSION.session_track_schema           = 'ON',
     @@SESSION.session_track_transaction_info = 'CHARACTERISTICS',
     @@SESSION.session_track_gtids            = 'OWN_GTID',
     @@SESSION.session_track_state_change     = 'ON')"));
@@ -280,10 +351,8 @@ ChangeUserForwarder::error() {
     tr.trace(Tracer::Event().stage("change_user::error"));
   }
 
-  auto *socket_splicer = connection()->socket_splicer();
-
   // after the error the server will close the server connection.
-  auto &server_conn = socket_splicer->server_conn();
+  auto &server_conn = connection()->server_conn();
 
   (void)server_conn.close();
 

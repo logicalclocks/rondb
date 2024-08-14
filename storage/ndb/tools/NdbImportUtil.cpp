@@ -30,8 +30,8 @@
 #include <time.h>
 
 #include <NdbDictionaryImpl.hpp>
-#include "m_ctype.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 
 #include <inttypes.h>
 #include <Vector.hpp>

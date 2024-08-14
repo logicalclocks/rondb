@@ -31,7 +31,8 @@ revoke CREATE TEMPORARY TABLES on mysqltest.* from mysqltest_1@localhost;
 show grants for mysqltest_1@localhost;
 grant ALL PRIVILEGES on mysqltest.* to mysqltest_1@localhost with GRANT OPTION;
 flush privileges;
-show grants for mysqltest_1@localhost;
+--let $user = mysqltest_1@localhost
+--source include/show_grants.inc
 revoke LOCK TABLES, ALTER on mysqltest.* from mysqltest_1@localhost;
 show grants for mysqltest_1@localhost;
 revoke all privileges on mysqltest.* from mysqltest_1@localhost;
@@ -60,7 +61,7 @@ show grants for mysqltest_1@localhost;
 select table_priv,column_priv from mysql.tables_priv where user="mysqltest_1";
 REVOKE select (a), update on t1 from mysqltest_1@localhost;
 show grants for mysqltest_1@localhost;
-REVOKE select,update,insert,insert (a) on t1 from mysqltest_1@localhost;
+REVOKE select,insert,insert (a) on t1 from mysqltest_1@localhost;
 show grants for mysqltest_1@localhost;
 GRANT select,references on t1 to mysqltest_1@localhost;
 select table_priv,column_priv from mysql.tables_priv where user="mysqltest_1";
@@ -133,29 +134,31 @@ flush privileges;
 create user drop_user@localhost, drop_user2@localhost;
 create table t1 (a int);
 grant ALL PRIVILEGES on *.* to drop_user2@localhost with GRANT OPTION;
-show grants for drop_user2@localhost;
+--let $user = drop_user2@localhost
+--source include/show_grants.inc
 revoke all privileges, grant option from drop_user2@localhost;
 
 grant ALL PRIVILEGES on *.* to drop_user@localhost with GRANT OPTION;
 grant ALL PRIVILEGES on test.* to drop_user@localhost with GRANT OPTION;
 grant select(a) on test.t1 to drop_user@localhost;
-show grants for drop_user@localhost;
+--let $user = drop_user@localhost
+--source include/show_grants.inc
 
 #
 # Bug#3086 SHOW GRANTS doesn't follow ANSI_QUOTES
 #
 set sql_mode=ansi_quotes;
-show grants for drop_user@localhost;
+--source include/show_grants.inc
 set sql_mode=default;
 
 set sql_quote_show_create=0;
-show grants for drop_user@localhost;
+--source include/show_grants.inc
 set sql_mode="ansi_quotes";
-show grants for drop_user@localhost;
+--source include/show_grants.inc
 set sql_quote_show_create=1;
-show grants for drop_user@localhost;
+--source include/show_grants.inc
 set sql_mode="";
-show grants for drop_user@localhost;
+--source include/show_grants.inc
 
 revoke all privileges, grant option from drop_user@localhost;
 show grants for drop_user@localhost;
@@ -505,12 +508,13 @@ set names koi8r;
 create database ��;
 grant select on ��.* to root@localhost;
 select hex(Db) from mysql.db where Db='��';
-show grants for root@localhost;
+--let $user = root@localhost
+--source include/show_grants.inc
 flush privileges;
-show grants for root@localhost;
+--source include/show_grants.inc
 drop database ��;
 revoke select on ��.* from root@localhost;
-show grants for root@localhost;
+--source include/show_grants.inc
 set names latin1;
 
 #
@@ -676,8 +680,10 @@ grant select on mysqltest.* to mysqltest_8@'';
 grant update on t1 to mysqltest_8@'';
 grant update (a) on t1 to mysqltest_8@'';
 grant all privileges on mysqltest.* to mysqltest_8;
-show grants for mysqltest_8@'';
-show grants for mysqltest_8;
+--let $user = mysqltest_8@''
+--source include/show_grants.inc
+--let $user = mysqltest_8
+--source include/show_grants.inc
 --sorted_result
 select * from  information_schema.user_privileges
 where grantee like "'mysqltest_8'%";
@@ -686,8 +692,10 @@ select * from t1;
 disconnect conn5;
 connection master;
 flush privileges;
-show grants for mysqltest_8@'';
-show grants for mysqltest_8;
+--let $user = mysqltest_8@''
+--source include/show_grants.inc
+--let $user = mysqltest_8
+--source include/show_grants.inc
 drop user mysqltest_8@'';
 --error ER_NONEXISTING_GRANT
 show grants for mysqltest_8@'';
@@ -696,7 +704,7 @@ show grants for mysqltest_8;
 select * from  information_schema.user_privileges
 where grantee like "'mysqltest_8'%";
 drop user mysqltest_8;
---replace_result $MASTER_MYSOCK MASTER_SOCKET $MASTER_MYPORT MASTER_PORT
+--replace_result $MASTER_MYSOCK SOURCE_SOCKET $MASTER_MYPORT SOURCE_PORT
 --error ER_ACCESS_DENIED_ERROR
 connect (conn6,localhost,mysqltest_8,,);
 connection master;
@@ -1565,11 +1573,11 @@ drop database mysqltest1;
 #
 # Bug#21432 Database/Table name limited to 64 bytes, not chars, problems with multi-byte
 #
---character_set utf8
-set names utf8;
+--character_set utf8mb3
+set names utf8mb3;
 create user юзер_юзер@localhost;
 grant select on test.* to юзер_юзер@localhost;
---execw $MYSQL --default-character-set=utf8 --user=юзер_юзер -e "select user()"
+--execw $MYSQL --default-character-set=utf8mb3 --user=юзер_юзер -e "select user()"
 revoke all on test.* from юзер_юзер@localhost;
 drop user юзер_юзер@localhost;
 --error ER_WRONG_STRING_LENGTH
@@ -1804,19 +1812,20 @@ GRANT ALL ON * TO mysqltest_1;
 
 CREATE USER mysqltest_1;
 GRANT ALL ON *.* TO mysqltest_1;
-SHOW GRANTS FOR mysqltest_1;
+--let $user = mysqltest_1
+--source include/show_grants.inc
 DROP USER mysqltest_1;
 
 USE test;
 
 CREATE USER mysqltest_1;
 GRANT ALL ON * TO mysqltest_1;
-SHOW GRANTS FOR mysqltest_1;
+--source include/show_grants.inc
 DROP USER mysqltest_1;
 
 CREATE USER mysqltest_1;
 GRANT ALL ON *.* TO mysqltest_1;
-SHOW GRANTS FOR mysqltest_1;
+--source include/show_grants.inc
 DROP USER mysqltest_1;
 
 connection default;
@@ -2488,8 +2497,8 @@ REVOKE EXECUTE ON PROCEDURE p1 FROM user_name_len_40_01234567890123456789012@loc
 --error ER_WRONG_STRING_LENGTH
 DROP USER user_name_len_40_01234567890123456789012@localhost;
 
---character_set utf8
-set names utf8;
+--character_set utf8mb3
+set names utf8mb3;
 
 # 16 characters user name
 CREATE USER очень_длинный_юз@localhost;

@@ -24,6 +24,7 @@
 #include "storage/ndb/plugin/ndb_dd_upgrade_table.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <unordered_set>
 
@@ -124,7 +125,7 @@ class Table_upgrade_guard {
 
     free_table_share(m_table->s);
 
-    destroy(m_handler);
+    if (m_handler != nullptr) ::destroy_at(m_handler);
   }
 };
 
@@ -398,8 +399,7 @@ bool migrate_table_to_dd(THD *thd, Ndb_dd_client *dd_client,
 
   // Check presence of old data types, always check for "temporal upgrade"
   // since it's not possible to upgrade such tables
-  const bool check_temporal_upgrade = true;
-  const int error = check_table_for_old_types(&table, check_temporal_upgrade);
+  const int error = check_table_for_old_types(&table);
   if (error) {
     if (error == HA_ADMIN_NEEDS_DUMP_UPGRADE) {
       thd_ndb->push_warning(ER_TABLE_NEEDS_DUMP_UPGRADE,

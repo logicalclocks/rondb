@@ -82,8 +82,7 @@ class RDRSRonDBConnection {
    * Return resource back to the pool.
    *
    * @param ndb_object ndb objct
-   * @param stauts of last operation performed using this ndb object. it can be null
-   * @return void
+   * @param status of last operation performed using this ndb object. it can be null
    */
   void ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *status);
 
@@ -110,7 +109,7 @@ class RDRSRonDBConnection {
  private:
   /**
    * Purge. Delete all Ndb objects and shutdown connection
-   * @paran end. If true then it will also free the memory
+   * @param end If true then it will also free the memory
    * used to store nodeIds and connection string
    *
    */

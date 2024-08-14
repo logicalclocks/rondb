@@ -47,3 +47,30 @@ leak:sasl_client_add_plugin
 
 # The GSS API plugin for SASL has leaks.
 leak:gss_acquire_cred_from
+
+# Memory leak due to JDK's assumption on object lifetime
+leak:java.lang.ProcessImpl*init
+
+# ndb_sign_keys leaks in some error-exit situations
+leak:ndb_sign_keys
+
+# Internal leak in libprotobuf-lite
+# google::protobuf::internal::InitSCCImpl()
+leak:libprotobuf-lite.so
+
+# Bug#36170703 ndb api tools leak with TLS required on data nodes 
+# Suppress leak detection for them until leak is found.
+leak:ndb_blob_tool
+leak:ndb_config
+leak:ndb_delete_all
+leak:ndb_desc
+leak:ndb_drop_index
+leak:ndb_drop_table
+leak:ndb_import
+leak:ndb_index_stat
+leak:ndb_move_data
+leak:ndb_restore
+leak:ndb_select_all
+leak:ndb_select_count
+leak:ndb_show_tables
+leak:ndb_sign_keys

@@ -3,16 +3,14 @@
 connect (master,127.0.0.1,root,,test,MASTER_MYPORT);
 connect (slave,127.0.0.1,root,,test,SLAVE_MYPORT);
 connection master;
-reset master;
-show master status;
+reset binary logs and gtids;
+show binary log status;
 File	Position	Binlog_Do_DB	Binlog_Ignore_DB	Executed_Gtid_Set
 master-bin.000001	#	<Binlog_Do_DB>	<Binlog_Ignore_DB>	<Executed_Gtid_Set>
 connection slave;
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA;
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='127.0.0.1';
-Master-Host: 127.0.0.1
+Source-Host: 127.0.0.1
 disconnect slave;
 disconnect master;
 connection default;
@@ -20,16 +18,14 @@ connection default;
 connect (master,0:0:0:0:0:FFFF:127.0.0.1,root,,test,MASTER_MYPORT);
 connect (slave,0:0:0:0:0:FFFF:127.0.0.1,root,,test,SLAVE_MYPORT);
 connection master;
-reset master;
-show master status;
+reset binary logs and gtids;
+show binary log status;
 File	Position	Binlog_Do_DB	Binlog_Ignore_DB	Executed_Gtid_Set
 master-bin.000001	#	<Binlog_Do_DB>	<Binlog_Ignore_DB>	<Executed_Gtid_Set>
 connection slave;
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA;
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='0:0:0:0:0:FFFF:127.0.0.1';
-Master-Host: 0:0:0:0:0:FFFF:127.0.0.1
+Source-Host: 0:0:0:0:0:FFFF:127.0.0.1
 disconnect slave;
 disconnect master;
 connection default;
@@ -37,16 +33,14 @@ connection default;
 connect (master,0000:0000:0000:0000:0000:FFFF:127.0.0.1,root,,test,MASTER_MYPORT);
 connect (slave,0000:0000:0000:0000:0000:FFFF:127.0.0.1,root,,test,SLAVE_MYPORT);
 connection master;
-reset master;
-show master status;
+reset binary logs and gtids;
+show binary log status;
 File	Position	Binlog_Do_DB	Binlog_Ignore_DB	Executed_Gtid_Set
 master-bin.000001	#	<Binlog_Do_DB>	<Binlog_Ignore_DB>	<Executed_Gtid_Set>
 connection slave;
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA;
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='0000:0000:0000:0000:0000:FFFF:127.0.0.1';
-Master-Host: 0000:0000:0000:0000:0000:FFFF:127.0.0.1
+Source-Host: 0000:0000:0000:0000:0000:FFFF:127.0.0.1
 disconnect slave;
 disconnect master;
 connection default;
@@ -54,16 +48,14 @@ connection default;
 connect (master,0:0000:0000:0:0000:FFFF:127.0.0.1,root,,test,MASTER_MYPORT);
 connect (slave,0:0000:0000:0:0000:FFFF:127.0.0.1,root,,test,SLAVE_MYPORT);
 connection master;
-reset master;
-show master status;
+reset binary logs and gtids;
+show binary log status;
 File	Position	Binlog_Do_DB	Binlog_Ignore_DB	Executed_Gtid_Set
 master-bin.000001	#	<Binlog_Do_DB>	<Binlog_Ignore_DB>	<Executed_Gtid_Set>
 connection slave;
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA;
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='0:0000:0000:0:0000:FFFF:127.0.0.1';
-Master-Host: 0:0000:0000:0:0000:FFFF:127.0.0.1
+Source-Host: 0:0000:0000:0:0000:FFFF:127.0.0.1
 disconnect slave;
 disconnect master;
 connection default;
@@ -71,16 +63,14 @@ connection default;
 connect (master,0::0000:FFFF:127.0.0.1,root,,test,MASTER_MYPORT);
 connect (slave,0::0000:FFFF:127.0.0.1,root,,test,SLAVE_MYPORT);
 connection master;
-reset master;
-show master status;
+reset binary logs and gtids;
+show binary log status;
 File	Position	Binlog_Do_DB	Binlog_Ignore_DB	Executed_Gtid_Set
 master-bin.000001	#	<Binlog_Do_DB>	<Binlog_Ignore_DB>	<Executed_Gtid_Set>
 connection slave;
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA;
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='0::0000:FFFF:127.0.0.1';
-Master-Host: 0::0000:FFFF:127.0.0.1
+Source-Host: 0::0000:FFFF:127.0.0.1
 disconnect slave;
 disconnect master;
 connection default;
@@ -88,16 +78,14 @@ connection default;
 connect (master,::FFFF:127.0.0.1,root,,test,MASTER_MYPORT);
 connect (slave,::FFFF:127.0.0.1,root,,test,SLAVE_MYPORT);
 connection master;
-reset master;
-show master status;
+reset binary logs and gtids;
+show binary log status;
 File	Position	Binlog_Do_DB	Binlog_Ignore_DB	Executed_Gtid_Set
 master-bin.000001	#	<Binlog_Do_DB>	<Binlog_Ignore_DB>	<Executed_Gtid_Set>
 connection slave;
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA;
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='::FFFF:127.0.0.1';
-Master-Host: ::FFFF:127.0.0.1
+Source-Host: ::FFFF:127.0.0.1
 disconnect slave;
 disconnect master;
 connection default;
@@ -105,21 +93,19 @@ connection default;
 connect (master,127.0.0.1,root,,test,MASTER_MYPORT);
 connect (slave,127.0.0.1,root,,test,SLAVE_MYPORT);
 connection master;
-reset master;
-show master status;
+reset binary logs and gtids;
+show binary log status;
 File	Position	Binlog_Do_DB	Binlog_Ignore_DB	Executed_Gtid_Set
 master-bin.000001	#	<Binlog_Do_DB>	<Binlog_Ignore_DB>	<Executed_Gtid_Set>
 connection slave;
-reset slave;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
-Master-Host: ::FFFF:127.0.0.1
+RESET REPLICA;
+Source-Host: ::FFFF:127.0.0.1
 change replication source to source_host='::FFFF:127.0.0.1';
-Master-Host: ::FFFF:127.0.0.1
+Source-Host: ::FFFF:127.0.0.1
 change replication source to source_host='127.0.0.1';
-Master-Host: 127.0.0.1
+Source-Host: 127.0.0.1
 change replication source to source_host='0:0000:0000:0:0000:FFFF:127.0.0.1';
-Master-Host: 0:0000:0000:0:0000:FFFF:127.0.0.1
+Source-Host: 0:0000:0000:0:0000:FFFF:127.0.0.1
 CHANGE REPLICATION SOURCE TO SOURCE_HOST='127.0.0.1', SOURCE_USER='root';
 Warnings:
 Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.

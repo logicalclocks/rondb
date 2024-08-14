@@ -25,11 +25,11 @@
 
 #include <stddef.h>
 
-#include "libbinlogevents/include/compression/factory.h"
-#include "libbinlogevents/include/control_events.h"  // Transaction_payload_event
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_sqlcommand.h"
+#include "mysql/binlog/event/compression/factory.h"
+#include "mysql/binlog/event/control_events.h"  // Transaction_payload_event
 #include "sql/binlog/group_commit/bgc_ticket_manager.h"  // Bgc_ticket_manager
 #include "sql/binlog_ostream.h"
 #include "sql/psi_memory_resource.h"  // memory_resource
@@ -39,7 +39,7 @@
 #include "sql/system_variables.h"
 
 Session_consistency_gtids_ctx::Session_consistency_gtids_ctx()
-    : m_sid_map(nullptr),
+    : m_tsid_map(nullptr),
       m_gtid_set(nullptr),
       m_listener(nullptr),
       m_curr_session_track_gtids(SESSION_TRACK_GTIDS_OFF) {}
@@ -50,9 +50,9 @@ Session_consistency_gtids_ctx::~Session_consistency_gtids_ctx() {
     m_gtid_set = nullptr;
   }
 
-  if (m_sid_map) {
-    delete m_sid_map;
-    m_sid_map = nullptr;
+  if (m_tsid_map) {
+    delete m_tsid_map;
+    m_tsid_map = nullptr;
   }
 }
 
@@ -83,10 +83,10 @@ bool Session_consistency_gtids_ctx::notify_after_transaction_commit(
 
      NOTE: in the future optimize to collect deltas instead maybe.
     */
-    global_sid_lock->wrlock();
+    global_tsid_lock->wrlock();
     res = m_gtid_set->add_gtid_set(gtid_state->get_executed_gtids()) !=
           RETURN_STATUS_OK;
-    global_sid_lock->unlock();
+    global_tsid_lock->unlock();
 
     if (!res) notify_ctx_change_listener();
   }
@@ -118,14 +118,14 @@ bool Session_consistency_gtids_ctx::notify_after_gtid_executed_update(
     } else if (gtid.sidno > 0)  // only one gtid
     {
       /*
-        Note that the interface is such that m_sid_map must contain
+        Note that the interface is such that m_tsid_map must contain
         sidno before we add the gtid to m_gtid_set.
 
-        Thus, to avoid relying on global_sid_map and thus contributing
+        Thus, to avoid relying on global_tsid_map and thus contributing
         to increased contention, we arrange for sidnos on the local
         sid map.
       */
-      rpl_sidno local_set_sidno = m_sid_map->add_sid(thd->owned_sid);
+      rpl_sidno local_set_sidno = m_tsid_map->add_tsid(thd->owned_tsid);
 
       assert(!m_gtid_set->contains_gtid(local_set_sidno, gtid.gno));
       res = m_gtid_set->ensure_sidno(local_set_sidno) != RETURN_STATUS_OK;
@@ -162,10 +162,10 @@ void Session_consistency_gtids_ctx::register_ctx_change_listener(
     Session_consistency_gtids_ctx::Ctx_change_listener *listener, THD *thd) {
   assert(m_listener == nullptr || m_listener == listener);
   if (m_listener == nullptr) {
-    assert(m_sid_map == nullptr && m_gtid_set == nullptr);
+    assert(m_tsid_map == nullptr && m_gtid_set == nullptr);
     m_listener = listener;
-    m_sid_map = new Sid_map(nullptr);
-    m_gtid_set = new Gtid_set(m_sid_map);
+    m_tsid_map = new Tsid_map(nullptr);
+    m_gtid_set = new Gtid_set(m_tsid_map);
 
     /*
      Caches the value at startup if needed. This is called during THD::init,
@@ -183,11 +183,11 @@ void Session_consistency_gtids_ctx::unregister_ctx_change_listener(
 
   if (m_gtid_set) delete m_gtid_set;
 
-  if (m_sid_map) delete m_sid_map;
+  if (m_tsid_map) delete m_tsid_map;
 
   m_listener = nullptr;
   m_gtid_set = nullptr;
-  m_sid_map = nullptr;
+  m_tsid_map = nullptr;
 }
 
 Last_used_gtid_tracker_ctx::Last_used_gtid_tracker_ctx() {
@@ -196,8 +196,10 @@ Last_used_gtid_tracker_ctx::Last_used_gtid_tracker_ctx() {
 
 Last_used_gtid_tracker_ctx::~Last_used_gtid_tracker_ctx() = default;
 
-void Last_used_gtid_tracker_ctx::set_last_used_gtid(const Gtid &gtid) {
+void Last_used_gtid_tracker_ctx::set_last_used_gtid(
+    const Gtid &gtid, const mysql::gtid::Tsid &tsid) {
   (*m_last_used_gtid).set(gtid.sidno, gtid.gno);
+  m_last_used_tsid = tsid;
 }
 
 void Last_used_gtid_tracker_ctx::get_last_used_gtid(Gtid &gtid) {
@@ -205,17 +207,23 @@ void Last_used_gtid_tracker_ctx::get_last_used_gtid(Gtid &gtid) {
   gtid.gno = (*m_last_used_gtid).gno;
 }
 
-Transaction_compression_ctx::Transaction_compression_ctx(PSI_memory_key key)
-    : m_managed_buffer_sequence(Grow_calculator_t(), psi_memory_resource(key)) {
+void Last_used_gtid_tracker_ctx::get_last_used_tsid(mysql::gtid::Tsid &tsid) {
+  tsid = m_last_used_tsid;
 }
+
+Transaction_compression_ctx::Transaction_compression_ctx(PSI_memory_key key)
+    : m_managed_buffer_memory_resource(psi_memory_resource(key)),
+      m_managed_buffer_sequence(Grow_calculator_t(),
+                                m_managed_buffer_memory_resource) {}
 
 Transaction_compression_ctx::Compressor_ptr_t
 Transaction_compression_ctx::get_compressor(THD *thd) {
-  auto ctype = (binary_log::transaction::compression::type)
+  auto ctype = (mysql::binlog::event::compression::type)
                    thd->variables.binlog_trx_compression_type;
 
   if (m_compressor == nullptr || (m_compressor->get_type_code() != ctype)) {
-    m_compressor = Compressor_ptr_t(Factory_t::build_compressor(ctype));
+    m_compressor = Compressor_ptr_t(
+        Factory_t::build_compressor(ctype, m_managed_buffer_memory_resource));
   }
   return m_compressor;
 }
@@ -290,7 +298,6 @@ std::pair<bool, bool> Binlog_group_commit_ctx::aggregate_rotate_settings(
 }
 
 void Rpl_thd_context::init() {
-  m_dependency_tracker_ctx.set_last_session_sequence_number(0);
   m_tx_rpl_delegate_stage_status = TX_RPL_STAGE_INIT;
 }
 

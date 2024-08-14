@@ -28,6 +28,7 @@
 
 // session_track as used by message::server::Ok and message::server::Eof
 
+#include <span>
 #include <string>
 
 namespace classic_protocol {
@@ -205,6 +206,16 @@ class TransactionState {
         stmt_unsafe_{stmt_unsafe},
         resultset_{resultset},
         locked_tables_{locked_tables} {}
+
+  constexpr TransactionState(std::span<char, 8> val)
+      : trx_type_{val[0]},
+        read_unsafe_{val[1]},
+        read_trx_{val[2]},
+        write_unsafe_{val[3]},
+        write_trx_{val[4]},
+        stmt_unsafe_{val[5]},
+        resultset_{val[6]},
+        locked_tables_{val[7]} {}
 
   constexpr char trx_type() const noexcept { return trx_type_; }
   constexpr char read_unsafe() const noexcept { return read_unsafe_; }

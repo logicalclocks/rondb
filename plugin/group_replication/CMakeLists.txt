@@ -30,6 +30,9 @@ SET(GROUP_REPLICATION_SOURCES
   src/auto_increment.cc
   src/autorejoin.cc
   src/certifier.cc
+  src/certification/certified_gtid.cc
+  src/certification/gtid_generator.cc
+  src/certification/gtid_generator_for_sidno.cc
   src/compatibility_module.cc
   src/consistency_manager.cc
   src/delayed_plugin_initialization.cc
@@ -39,6 +42,8 @@ SET(GROUP_REPLICATION_SOURCES
   src/gcs_operations.cc
   src/gcs_plugin_messages.cc
   src/gcs_view_modification_notifier.cc
+  src/gr_compression.cc
+  src/gr_decompression.cc
   src/group_actions/communication_protocol_action.cc
   src/group_actions/group_action.cc
   src/group_actions/group_action_coordinator.cc
@@ -68,6 +73,7 @@ SET(GROUP_REPLICATION_SOURCES
   src/plugin_handlers/group_partition_handling.cc
   src/plugin_handlers/member_actions_handler.cc
   src/plugin_handlers/member_actions_handler_configuration.cc
+  src/plugin_handlers/metrics_handler.cc
   src/plugin_handlers/offline_mode_handler.cc
   src/plugin_handlers/primary_election_invocation_handler.cc
   src/plugin_handlers/primary_election_primary_process.cc
@@ -75,6 +81,8 @@ SET(GROUP_REPLICATION_SOURCES
   src/plugin_handlers/primary_election_utils.cc
   src/plugin_handlers/primary_election_validation_handler.cc
   src/plugin_handlers/read_mode_handler.cc
+  src/plugin_handlers/recovery_metadata.cc
+  src/plugin_handlers/recovery_metadata_joiner_information.cc
   src/plugin_handlers/remote_clone_handler.cc
   src/plugin_handlers/server_ongoing_transactions_handler.cc
   src/plugin_handlers/stage_monitor_handler.cc
@@ -82,6 +90,8 @@ SET(GROUP_REPLICATION_SOURCES
   src/plugin_messages/group_service_message.cc
   src/plugin_messages/group_validation_message.cc
   src/plugin_messages/recovery_message.cc
+  src/plugin_messages/recovery_metadata_message.cc
+  src/plugin_messages/recovery_metadata_message_compressed_parts.cc
   src/plugin_messages/single_primary_message.cc
   src/plugin_messages/sync_before_execution_message.cc
   src/plugin_messages/transaction_message.cc
@@ -90,8 +100,10 @@ SET(GROUP_REPLICATION_SOURCES
   src/plugin_observers/channel_observation_manager.cc
   src/plugin_observers/group_event_observer.cc
   src/plugin_observers/group_transaction_observation_manager.cc
+  src/plugin_observers/recovery_metadata_observer.cc
   src/plugin_variables/recovery_endpoints.cc
   src/plugin_psi.cc
+  src/plugin_status_variables.cc
   src/plugin_utils.cc
   src/ps_information.cc
   src/recovery.cc
@@ -125,6 +137,12 @@ SET(GMS_LISTENER_SERVICE_TEST_SOURCES
   src/services/notification/impl/gms_listener_test.cc
 )
 
+MY_CHECK_CXX_COMPILER_WARNING("-Wextra-semi" HAS_WARN_FLAG)
+IF(HAS_WARN_FLAG)
+  ADD_COMPILE_FLAGS(${GMS_LISTENER_SERVICE_TEST_SOURCES}
+    COMPILE_FLAGS " ${HAS_WARN_FLAG}")
+ENDIF()
+
 # Allow both WITHOUT_GROUP_REPLICATION=1 and WITH_GROUP_REPLICATION=0 to be
 # specified.
 # Furthermore, the MYSQL_ADD_PLUGIN will replace them with
@@ -156,13 +174,17 @@ IF ((NOT (DEFINED WITHOUT_GROUP_REPLICATION AND WITHOUT_GROUP_REPLICATION)) AND
       src/gcs_mysql_network_provider.cc
       src/replication_threads_api.cc
       src/plugin_psi.cc
+      src/certification/gtid_generator.cc
+      src/certification/gtid_generator_for_sidno.cc
     )
     SET_TARGET_PROPERTIES(gr_unit_test_resource
       PROPERTIES COMPILE_DEFINITIONS "DISABLE_PSI_MUTEX"
       )
-    TARGET_COMPILE_FEATURES(gr_unit_test_resource PUBLIC cxx_std_17)
+    TARGET_COMPILE_FEATURES(gr_unit_test_resource PUBLIC cxx_std_20)
     TARGET_LINK_LIBRARIES(gr_unit_test_resource extra::rapidjson)
     TARGET_LINK_LIBRARIES(gr_unit_test_resource ext::zlib)
+    TARGET_LINK_LIBRARIES(gr_unit_test_resource ext::libprotobuf-lite)
+    TARGET_LINK_LIBRARIES(gr_unit_test_resource ${GR_PROTOBUF_LITE_LIB})
     ADD_DEPENDENCIES(gr_unit_test_resource GenError)
   ENDIF()
 
@@ -180,6 +202,12 @@ ENDIF()
 
 ADD_DEFINITIONS(-DLOG_COMPONENT_TAG="group_replication")
 
+GET_TARGET_PROPERTY(lib_type ext::libprotobuf-lite TYPE)
+IF((SOLARIS OR LINUX) AND lib_type STREQUAL "STATIC_LIBRARY")
+  SET(LINK_WHOLE_ARCHIVE "-Wl,--whole-archive")
+  SET(LINK_NO_WHOLE_ARCHIVE "-Wl,--no-whole-archive")
+ENDIF()
+
 # declare the plugin itself
 MYSQL_ADD_PLUGIN(group_replication
   ${GROUP_REPLICATION_SOURCES}
@@ -187,11 +215,13 @@ MYSQL_ADD_PLUGIN(group_replication
   LINK_LIBRARIES
   ext::lz4
   ext::zlib
-  ${SSL_LIBRARIES}
-  ext::libprotobuf-lite
+  ext::zstd
+  OpenSSL::SSL OpenSSL::Crypto
+  ${LINK_WHOLE_ARCHIVE} ext::libprotobuf-lite ${LINK_NO_WHOLE_ARCHIVE}
   ${GR_PROTOBUF_LITE_LIB}
   mysqlgcs
   extra::rapidjson
+  mysql_gtid
   MODULE_ONLY
   MODULE_OUTPUT_NAME "group_replication"
   )

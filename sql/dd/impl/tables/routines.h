@@ -32,6 +32,8 @@
 #include "sql/dd/string_type.h"
 #include "sql/dd/types/routine.h"  // dd::Routine
 
+struct CHARSET_INFO;
+
 namespace dd {
 class Object_key;
 class Routine_name_key;

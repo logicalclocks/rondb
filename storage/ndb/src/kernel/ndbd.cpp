@@ -46,7 +46,6 @@
 
 #include <TransporterRegistry.hpp>
 
-#include <ConfigRetriever.hpp>
 #include <LogLevel.hpp>
 
 #if defined NDB_SOLARIS
@@ -59,7 +58,12 @@
 #include <LogBuffer.hpp>
 #include <OutputStream.hpp>
 
+#include "util/ndb_openssl3_compat.h"
+
 #define JAM_FILE_ID 484
+
+static constexpr bool openssl_version_ok =
+    (OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL);
 
 static void systemInfo(const Configuration &config, const LogLevel &logLevel) {
 #ifdef _WIN32
@@ -874,7 +878,8 @@ void stop_async_log_func(NdbThread *thr, ThreadData &thr_args) {
 void ndbd_run(bool foreground, int report_fd, const char *connect_str,
               int force_nodeid, const char *bind_address, bool no_start,
               bool initial, bool initialstart, unsigned allocated_nodeid,
-              int connect_retries, int connect_delay, size_t logbuffer_size) {
+              int connect_retries, int connect_delay, size_t logbuffer_size,
+              const char *tls_search_path, int mgm_tls_req) {
   log_memusage("ndbd_run");
   LogBuffer *logBuf = new LogBuffer(logbuffer_size);
   BufferedOutputStream *ndbouts_bufferedoutputstream =
@@ -977,7 +982,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   */
   theConfig->fetch_configuration(connect_str, force_nodeid, bind_address,
                                  allocated_nodeid, connect_retries,
-                                 connect_delay);
+                                 connect_delay, tls_search_path, opt_mgm_tls);
 
   /**
     Set the NDB DataDir, this is where we will locate log files and data
@@ -1014,6 +1019,34 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
       (globalData.ndbMtTcWorkers + globalData.ndbMtLqhWorkers)
        * 128 * Uint64(GLOBAL_PAGE_SIZE);
     theConfig->setupMemoryConfiguration(min_transmem_bytes);
+  }
+
+  /* Find TLS key and certificate */
+  globalTransporterRegistry.init_tls(tls_search_path, NODE_TYPE_DB,
+                                     opt_mgm_tls);
+
+  /* Check TLS configuration */
+  const ndb_mgm_configuration_iterator *p =
+      globalEmulatorData.theConfiguration->getOwnConfigIterator();
+  require(p != nullptr);
+
+  Uint32 requireCert = 0, requireTls = 0;
+  ndb_mgm_get_int_parameter(p, CFG_NODE_REQUIRE_CERT, &requireCert);
+  ndb_mgm_get_int_parameter(p, CFG_DB_REQUIRE_TLS, &requireTls);
+
+  if ((requireCert || requireTls) && !globalTransporterRegistry.hasTlsCert()) {
+    if (openssl_version_ok)
+      g_eventLogger->error(
+          "Shutting down. This node does not have a valid TLS certificate.");
+    else
+      g_eventLogger->error(
+          "Shutting down. This version of OpenSSL is not supported.");
+    stop_async_log_func(log_threadvar, thread_args);
+    ndbd_exit(-1);
+  }
+
+  if (requireTls) {
+    g_eventLogger->info("This node will require TLS for all connections.");
   }
 
   /**
@@ -1054,10 +1087,6 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   }
   g_eventLogger->info("Memory Allocation for global memory pools Completed");
   log_memusage("Global memory pools allocated");
-
-  const ndb_mgm_configuration_iterator *p =
-      globalEmulatorData.theConfiguration->getOwnConfigIterator();
-  require(p != nullptr);
 
   bool have_password_option =
       g_filesystem_password_state.have_password_option();
@@ -1190,15 +1219,13 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   }
   // Re-use the mgm handle as a transporter
   g_eventLogger->info("Reuse connection to NDB management server");
-  if(!globalTransporterRegistry.connect_client(
-		 theConfig->get_config_retriever()->get_mgmHandlePtr()))
-      ERROR_SET(fatal, NDBD_EXIT_CONNECTION_SETUP_FAILED,
-                "Failed to convert mgm connection to a transporter",
-                __FILE__);
-  g_eventLogger->info("Start transporter clients");
-  NdbThread* pTrp = globalTransporterRegistry.start_clients();
-  if (pTrp == 0)
-  {
+  if (!globalTransporterRegistry.connect_client(
+          theConfig->get_mgm_handle_ptr()))
+    ERROR_SET(fatal, NDBD_EXIT_CONNECTION_SETUP_FAILED,
+              "Failed to convert mgm connection to a transporter", __FILE__);
+  NdbThread *pTrp = globalTransporterRegistry.start_clients();
+  if (pTrp == 0) {
+    g_eventLogger->info("globalTransporterRegistry.start_clients() failed");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }

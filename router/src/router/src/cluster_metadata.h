@@ -26,7 +26,7 @@
 #ifndef ROUTER_CLUSTER_METADATA_INCLUDED
 #define ROUTER_CLUSTER_METADATA_INCLUDED
 
-#include "mysqlrouter/router_export.h"
+#include "mysqlrouter/router_cluster_export.h"
 
 #include <stdexcept>
 
@@ -106,8 +106,9 @@ class ClusterMetadata {
   virtual void update_router_info(
       const uint32_t router_id, const std::string &cluster_id,
       const std::string &target_cluster, const std::string &rw_endpoint,
-      const std::string &ro_endpoint, const std::string &rw_x_endpoint,
-      const std::string &ro_x_endpoint, const std::string &username) = 0;
+      const std::string &ro_endpoint, const std::string &rw_split_endpoint,
+      const std::string &rw_x_endpoint, const std::string &ro_x_endpoint,
+      const std::string &username) = 0;
 
   virtual std::vector<std::string> get_routing_mode_queries() = 0;
 
@@ -140,6 +141,8 @@ class ClusterMetadata {
   virtual std::string get_cluster_type_specific_id() = 0;
 
   virtual ClusterInfo fetch_metadata_servers() = 0;
+
+  virtual InstanceType fetch_current_instance_type() = 0;
 
   virtual std::vector<std::string> get_grant_statements(
       const std::string &new_accounts) const = 0;
@@ -182,44 +185,6 @@ class ClusterMetadataGR : public ClusterMetadata {
       override;
 };
 
-class ClusterMetadataGRV1 : public ClusterMetadataGR {
- public:
-  ClusterMetadataGRV1(const MetadataSchemaVersion &schema_version,
-                      MySQLSession *mysql,
-                      mysql_harness::SocketOperationsBase *sockops =
-                          mysql_harness::SocketOperations::instance())
-      : ClusterMetadataGR(schema_version, mysql, sockops) {}
-
-  ~ClusterMetadataGRV1() override = default;
-
-  mysqlrouter::ClusterType get_type() override {
-    return mysqlrouter::ClusterType::GR_V1;
-  }
-
-  ClusterInfo fetch_metadata_servers() override;
-
-  std::vector<std::string> get_routing_mode_queries() override;
-
-  void verify_router_id_is_ours(
-      const uint32_t router_id,
-      const std::string &hostname_override = "") override;
-
-  void update_router_info(
-      const uint32_t router_id, const std::string &cluster_id,
-      const std::string &target_cluster, const std::string &rw_endpoint,
-      const std::string &ro_endpoint, const std::string &rw_x_endpoint,
-      const std::string &ro_x_endpoint, const std::string &username) override;
-
-  uint32_t register_router(const std::string &router_name, const bool overwrite,
-                           const std::string &hostname_override = "") override;
-
-  std::vector<std::string> get_grant_statements(
-      const std::string &new_accounts) const override;
-
- protected:
-  uint64_t query_cluster_count() override;
-};
-
 class ClusterMetadataGRV2 : public ClusterMetadataGR {
  public:
   ClusterMetadataGRV2(const MetadataSchemaVersion &schema_version,
@@ -238,14 +203,17 @@ class ClusterMetadataGRV2 : public ClusterMetadataGR {
 
   std::vector<std::string> get_routing_mode_queries() override;
 
+  InstanceType fetch_current_instance_type() override;
+
   void verify_router_id_is_ours(
       uint32_t router_id, const std::string &hostname_override = "") override;
 
   void update_router_info(
       const uint32_t router_id, const std::string &cluster_id,
       const std::string &target_cluster, const std::string &rw_endpoint,
-      const std::string &ro_endpoint, const std::string &rw_x_endpoint,
-      const std::string &ro_x_endpoint, const std::string &username) override;
+      const std::string &ro_endpoint, const std::string &rw_split_endpoint,
+      const std::string &rw_x_endpoint, const std::string &ro_x_endpoint,
+      const std::string &username) override;
 
   uint32_t register_router(const std::string &router_name, const bool overwrite,
                            const std::string &hostname_override = "") override;
@@ -294,8 +262,9 @@ class ClusterMetadataGRInClusterSet : public ClusterMetadataGRV2 {
   void update_router_info(
       const uint32_t router_id, const std::string &cluster_id,
       const std::string &target_cluster, const std::string &rw_endpoint,
-      const std::string &ro_endpoint, const std::string &rw_x_endpoint,
-      const std::string &ro_x_endpoint, const std::string &username) override;
+      const std::string &ro_endpoint, const std::string &rw_split_endpoint,
+      const std::string &rw_x_endpoint, const std::string &ro_x_endpoint,
+      const std::string &username) override;
 
  protected:
   TargetClusterType target_cluster_type_;
@@ -322,6 +291,10 @@ class ClusterMetadataAR : public ClusterMetadata {
 
   ClusterInfo fetch_metadata_servers() override;
 
+  InstanceType fetch_current_instance_type() override {
+    return InstanceType::AsyncMember;
+  }
+
   std::string get_cluster_type_specific_id() override;
 
   uint64_t get_view_id(
@@ -335,8 +308,9 @@ class ClusterMetadataAR : public ClusterMetadata {
   void update_router_info(
       const uint32_t router_id, const std::string &cluster_id,
       const std::string &target_cluster, const std::string &rw_endpoint,
-      const std::string &ro_endpoint, const std::string &rw_x_endpoint,
-      const std::string &ro_x_endpoint, const std::string &username) override;
+      const std::string &ro_endpoint, const std::string &rw_split_endpoint,
+      const std::string &rw_x_endpoint, const std::string &ro_x_endpoint,
+      const std::string &username) override;
 
   uint32_t register_router(const std::string &router_name, const bool overwrite,
                            const std::string &hostname_override = "") override;
@@ -351,7 +325,7 @@ class ClusterMetadataAR : public ClusterMetadata {
   uint64_t query_cluster_count() override;
 };
 
-std::unique_ptr<ClusterMetadata> ROUTER_LIB_EXPORT
+std::unique_ptr<ClusterMetadata> ROUTER_CLUSTER_EXPORT
 create_metadata(const MetadataSchemaVersion &schema_version,
                 MySQLSession *mysql, const OptionsMap &options = {},
                 mysql_harness::SocketOperationsBase *sockops =

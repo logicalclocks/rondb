@@ -114,6 +114,7 @@ int main(int argc, const char **argv) {
   myRandom48Init((long)NdbTick_CurrentMillisecond());
 
   Ndb_cluster_connection con;
+  con.configure_tls(opt_tls_search_path, opt_mgm_tls);
   if (con.connect(12, 5, 1)) {
     return NDBT_ProgramExit(NDBT_FAILED);
   }
@@ -333,7 +334,7 @@ int run_scan() {
       int tot = g_paramters[P_ROWS].value;
       int row = rand() % tot;
       NdbInterpretedCode* ic= new NdbInterpretedCode(g_table);
-      NdbScanFilter filter(ic);   
+      NdbScanFilter filter(ic);
       filter.begin(NdbScanFilter::AND);
       filter.eq(0, row);
       filter.end();

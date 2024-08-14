@@ -28,6 +28,7 @@
 #include <tuple>
 
 #include "my_pointer_arithmetic.h"
+#include "mysql/strings/m_ctype.h"  // CHARSET_INFO.
 #include "sql/item_func.h"
 #include "sql/mysqld.h"  // make_unique_destroy_only
 #include "sql/regexp/regexp_engine.h"
@@ -35,6 +36,8 @@
 #include "template_utils.h"
 
 namespace regexp {
+
+CHARSET_INFO *regexp_lib_charset = nullptr;
 
 /**
   When dealing with the binary character set, we tell ICU that we're using
@@ -83,7 +86,7 @@ static bool EvalExprToCharset(Item *expr, std::u16string *out, int skip = 0) {
     */
     my_error(ER_REGEXP_INDEX_OUTOFBOUNDS_ERROR, MYF(0));
     out->clear();
-    return false;
+    return true;
   }
   if (expr->collation.collation != regexp_lib_charset) {
     // Character set conversion is called for.

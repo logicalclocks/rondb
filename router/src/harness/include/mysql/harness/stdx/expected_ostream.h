@@ -93,7 +93,7 @@ template <class E>
 inline std::enable_if_t<impl::is_to_stream_writable<std::ostream, E>::value,
                         std::ostream &>
 operator<<(std::ostream &os, const stdx::unexpected<E> &res) {
-  os << res.value();
+  os << res.error();
 
   return os;
 }

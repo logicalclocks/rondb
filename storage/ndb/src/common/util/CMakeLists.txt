@@ -47,6 +47,7 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   NdbPack.cpp
   NdbSocket.cpp
   NdbSqlUtil.cpp
+  NodeCertificate.cpp
   ndb_az31.cpp
   ndb_ndbxfrm1.cpp
   ndb_openssl3_compat.cpp
@@ -62,6 +63,7 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   SocketAuthenticator.cpp
   SocketClient.cpp
   SocketServer.cpp
+  TlsKeyManager.cpp
   Vector.cpp
   basename.cpp
   cstrbuf.cpp
@@ -80,14 +82,12 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   LINK_LIBRARIES ndbtrace ndbportlib ext::zlib mysys
 )
 
-# Exclude ndbgeneral_objlib from PGO on Windows to avoid linker error LNK1248
-EXCLUDE_FROM_MSVC_PGO(ndbgeneral_objlib)
-
 # Cyclic dependencies for ndbgeneral.
 SET_TARGET_PROPERTIES(ndbgeneral PROPERTIES LINK_INTERFACE_MULTIPLICITY 3)
 
 FOREACH(tests BaseString Bitmask SparseBitmask Parser HashMap2 LinkedStack
-        ndb_zlib cstrbuf span)
+    NodeCertificate
+    TlsKeyManager ndb_zlib cstrbuf span)
   NDB_ADD_TEST("${tests}-t" "${tests}.cpp" LIBS ndbgeneral)
 ENDFOREACH(tests)
 
@@ -102,6 +102,11 @@ ENDIF()
 
 NDB_ADD_TEST(ndb_version-t version.cpp LIBS ndbgeneral)
 
+SET_PROPERTY(SOURCE ndb_opts.cpp
+             PROPERTY COMPILE_DEFINITIONS
+             NDB_TLS_SEARCH_PATH="${WITH_NDB_TLS_SEARCH_PATH}")
+
+
 FOREACH(tests
     NdbPack
     mysql_utils_test
@@ -114,6 +119,8 @@ FOREACH(tests
     testProp
     testSecureSocket
     testConfigValues
+    testTlsKeyManager
+    testNdbProcess
     )
   NDB_ADD_TEST("${tests}-t" "${tests}.cpp" LIBS ndbmgmapi ndbgeneral ndbportlib)
 ENDFOREACH(tests)

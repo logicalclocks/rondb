@@ -35,13 +35,14 @@
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/plugin.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"
 #include "sql/current_thd.h"
@@ -454,96 +455,98 @@ void delegates_update_lock_type() {
   Add observer plugins to the thd->lex list, after each statement, all
   plugins add to thd->lex will be automatically unlocked.
  */
-#define FOREACH_OBSERVER(r, f, args)                                   \
-  r = 0;                                                               \
-  Prealloced_array<plugin_ref, 8> plugins(PSI_NOT_INSTRUMENTED);       \
-  read_lock();                                                         \
-  Observer_info_iterator iter = observer_info_iter();                  \
-  Observer_info *info = iter++;                                        \
-  bool replication_optimize_for_static_plugin_config =                 \
-      this->use_spin_lock_type();                                      \
-  for (; info; info = iter++) {                                        \
-    plugin_ref plugin = (replication_optimize_for_static_plugin_config \
-                             ? info->plugin                            \
-                             : my_plugin_lock(0, &info->plugin));      \
-    if (!plugin) {                                                     \
-      /* plugin is not initialized or deleted, this is not an error */ \
-      continue;                                                        \
-    }                                                                  \
-    if (!replication_optimize_for_static_plugin_config)                \
-      plugins.push_back(plugin);                                       \
-    if (((Observer *)info->observer)->f &&                             \
-        ((Observer *)info->observer)->f args) {                        \
-      r = 1;                                                           \
-      LogEvent()                                                       \
-          .prio(ERROR_LEVEL)                                           \
-          .errcode(ER_RPL_PLUGIN_FUNCTION_FAILED)                      \
-          .subsys(LOG_SUBSYSTEM_TAG)                                   \
-          .function(#f)                                                \
-          .message("Run function '" #f "' in plugin '%s' failed",      \
-                   info->plugin_int->name.str);                        \
-      break;                                                           \
-    }                                                                  \
-  }                                                                    \
-  unlock();                                                            \
-  /*                                                                   \
-     Unlock plugins should be done after we released the Delegate lock \
-     to avoid possible deadlock when this is the last user of the      \
-     plugin, and when we unlock the plugin, it will try to             \
-     deinitialize the plugin, which will try to lock the Delegate in   \
-     order to remove the observers.                                    \
-  */                                                                   \
-  if (!plugins.empty()) plugin_unlock_list(0, &plugins[0], plugins.size());
+#define FOREACH_OBSERVER(r, f, args)                                    \
+  r = 0;                                                                \
+  Prealloced_array<plugin_ref, 8> plugins(PSI_NOT_INSTRUMENTED);        \
+  read_lock();                                                          \
+  Observer_info_iterator iter = observer_info_iter();                   \
+  Observer_info *info = iter++;                                         \
+  bool replication_optimize_for_static_plugin_config =                  \
+      this->use_spin_lock_type();                                       \
+  for (; info; info = iter++) {                                         \
+    plugin_ref plugin = (replication_optimize_for_static_plugin_config  \
+                             ? info->plugin                             \
+                             : my_plugin_lock(nullptr, &info->plugin)); \
+    if (!plugin) {                                                      \
+      /* plugin is not initialized or deleted, this is not an error */  \
+      continue;                                                         \
+    }                                                                   \
+    if (!replication_optimize_for_static_plugin_config)                 \
+      plugins.push_back(plugin);                                        \
+    if (((Observer *)info->observer)->f &&                              \
+        ((Observer *)info->observer)->f args) {                         \
+      r = 1;                                                            \
+      LogEvent()                                                        \
+          .prio(ERROR_LEVEL)                                            \
+          .errcode(ER_RPL_PLUGIN_FUNCTION_FAILED)                       \
+          .subsys(LOG_SUBSYSTEM_TAG)                                    \
+          .function(#f)                                                 \
+          .message("Run function '" #f "' in plugin '%s' failed",       \
+                   info->plugin_int->name.str);                         \
+      break;                                                            \
+    }                                                                   \
+  }                                                                     \
+  unlock();                                                             \
+  /*                                                                    \
+     Unlock plugins should be done after we released the Delegate lock  \
+     to avoid possible deadlock when this is the last user of the       \
+     plugin, and when we unlock the plugin, it will try to              \
+     deinitialize the plugin, which will try to lock the Delegate in    \
+     order to remove the observers.                                     \
+  */                                                                    \
+  if (!plugins.empty())                                                 \
+    plugin_unlock_list(nullptr, &plugins[0], plugins.size());
 
-#define FOREACH_OBSERVER_ERROR_OUT(r, f, args, out)                    \
-  r = 0;                                                               \
-  Prealloced_array<plugin_ref, 8> plugins(PSI_NOT_INSTRUMENTED);       \
-  read_lock();                                                         \
-  Observer_info_iterator iter = observer_info_iter();                  \
-  Observer_info *info = iter++;                                        \
-                                                                       \
-  bool replication_optimize_for_static_plugin_config =                 \
-      this->use_spin_lock_type();                                      \
-  int error_out = 0;                                                   \
-  for (; info; info = iter++) {                                        \
-    plugin_ref plugin = (replication_optimize_for_static_plugin_config \
-                             ? info->plugin                            \
-                             : my_plugin_lock(0, &info->plugin));      \
-    if (!plugin) {                                                     \
-      /* plugin is not initialized or deleted, this is not an error */ \
-      continue;                                                        \
-    }                                                                  \
-    if (!replication_optimize_for_static_plugin_config)                \
-      plugins.push_back(plugin);                                       \
-                                                                       \
-    if (nullptr == ((Observer *)info->observer)->f) {                  \
-      continue;                                                        \
-    }                                                                  \
-    bool hook_error = false;                                           \
-    hook_error = ((Observer *)info->observer)->f(args, error_out);     \
-                                                                       \
-    out += error_out;                                                  \
-    if (hook_error) {                                                  \
-      r = 1;                                                           \
-      LogEvent()                                                       \
-          .prio(ERROR_LEVEL)                                           \
-          .errcode(ER_RPL_PLUGIN_FUNCTION_FAILED)                      \
-          .subsys(LOG_SUBSYSTEM_TAG)                                   \
-          .function(#f)                                                \
-          .message("Run function '" #f "' in plugin '%s' failed",      \
-                   info->plugin_int->name.str);                        \
-      break;                                                           \
-    }                                                                  \
-  }                                                                    \
-  unlock();                                                            \
-  /*                                                                   \
-     Unlock plugins should be done after we released the Delegate lock \
-     to avoid possible deadlock when this is the last user of the      \
-     plugin, and when we unlock the plugin, it will try to             \
-     deinitialize the plugin, which will try to lock the Delegate in   \
-     order to remove the observers.                                    \
-  */                                                                   \
-  if (!plugins.empty()) plugin_unlock_list(0, &plugins[0], plugins.size());
+#define FOREACH_OBSERVER_ERROR_OUT(r, f, args, out)                     \
+  r = 0;                                                                \
+  Prealloced_array<plugin_ref, 8> plugins(PSI_NOT_INSTRUMENTED);        \
+  read_lock();                                                          \
+  Observer_info_iterator iter = observer_info_iter();                   \
+  Observer_info *info = iter++;                                         \
+                                                                        \
+  bool replication_optimize_for_static_plugin_config =                  \
+      this->use_spin_lock_type();                                       \
+  int error_out = 0;                                                    \
+  for (; info; info = iter++) {                                         \
+    plugin_ref plugin = (replication_optimize_for_static_plugin_config  \
+                             ? info->plugin                             \
+                             : my_plugin_lock(nullptr, &info->plugin)); \
+    if (!plugin) {                                                      \
+      /* plugin is not initialized or deleted, this is not an error */  \
+      continue;                                                         \
+    }                                                                   \
+    if (!replication_optimize_for_static_plugin_config)                 \
+      plugins.push_back(plugin);                                        \
+                                                                        \
+    if (nullptr == ((Observer *)info->observer)->f) {                   \
+      continue;                                                         \
+    }                                                                   \
+    bool hook_error = false;                                            \
+    hook_error = ((Observer *)info->observer)->f(args, error_out);      \
+                                                                        \
+    out += error_out;                                                   \
+    if (hook_error) {                                                   \
+      r = 1;                                                            \
+      LogEvent()                                                        \
+          .prio(ERROR_LEVEL)                                            \
+          .errcode(ER_RPL_PLUGIN_FUNCTION_FAILED)                       \
+          .subsys(LOG_SUBSYSTEM_TAG)                                    \
+          .function(#f)                                                 \
+          .message("Run function '" #f "' in plugin '%s' failed",       \
+                   info->plugin_int->name.str);                         \
+      break;                                                            \
+    }                                                                   \
+  }                                                                     \
+  unlock();                                                             \
+  /*                                                                    \
+     Unlock plugins should be done after we released the Delegate lock  \
+     to avoid possible deadlock when this is the last user of the       \
+     plugin, and when we unlock the plugin, it will try to              \
+     deinitialize the plugin, which will try to lock the Delegate in    \
+     order to remove the observers.                                     \
+  */                                                                    \
+  if (!plugins.empty())                                                 \
+    plugin_unlock_list(nullptr, &plugins[0], plugins.size());
 
 static bool se_before_commit(THD *, plugin_ref plugin, void *arg) {
   handlerton *hton = plugin_data<handlerton *>(plugin);
@@ -564,6 +567,7 @@ int Trans_delegate::before_commit(THD *thd, bool all,
   param.thread_id = thd->thread_id();
   param.gtid_info.type = thd->variables.gtid_next.type;
   param.gtid_info.sidno = thd->variables.gtid_next.gtid.sidno;
+  param.gtid_info.automatic_tag = thd->variables.gtid_next.automatic_tag;
   param.gtid_info.gno = thd->variables.gtid_next.gtid.gno;
   param.trx_cache_log = trx_cache_log;
   param.stmt_cache_log = stmt_cache_log;
@@ -579,6 +583,7 @@ int Trans_delegate::before_commit(THD *thd, bool all,
       ((thd->lex->sql_command == SQLCOM_CREATE_TABLE &&
         !thd->lex->query_block->field_list_is_empty()) ||
        thd->m_transactional_ddl.inited());
+  param.thd = thd;
 
   bool is_real_trans =
       (all || !thd->get_transaction()->is_active(Transaction_ctx::SESSION));
@@ -741,10 +746,6 @@ static void prepare_transaction_context(THD *thd,
   // Extracting the global mutable value of binlog checksum
   ctx_info.binlog_checksum_options = binlog_checksum_options;
 
-  // Extracting the session value of transaction_write_set_extraction
-  ctx_info.transaction_write_set_extraction =
-      thd->variables.transaction_write_set_extraction;
-
   // Extracting transaction isolation level
   ctx_info.tx_isolation = thd->tx_isolation;
 }
@@ -814,6 +815,10 @@ int Trans_delegate::after_commit(THD *thd, bool all) {
   param.gtid_info.sidno = gtid.sidno;
   param.gtid_info.gno = gtid.gno;
 
+  mysql::gtid::Tsid tsid;
+  thd->rpl_thd_ctx.last_used_gtid_tracker_ctx().get_last_used_tsid(tsid);
+  param.gtid_info.tsid = mysql::gtid::Tsid_plain(tsid);
+
   bool is_real_trans =
       (all || !thd->get_transaction()->is_active(Transaction_ctx::SESSION));
   if (is_real_trans) param.flags |= TRANS_IS_REAL_TRANS;
@@ -867,6 +872,7 @@ int Trans_delegate::trans_begin(THD *thd, int &out) {
   param.hold_timeout = thd->variables.net_wait_timeout;
   param.server_id = thd->server_id;
   param.rpl_channel_type = thd->rpl_thd_ctx.get_rpl_channel_type();
+  param.thd = thd;
 
   int ret = 0;
   thd->rpl_thd_ctx.set_tx_rpl_delegate_stage_status(
@@ -1357,13 +1363,13 @@ static bool is_show_status(enum_sql_command sql_command) {
     case SQLCOM_SHOW_ENGINE_STATUS:
     case SQLCOM_SHOW_ENGINE_MUTEX:
     case SQLCOM_SHOW_PROCESSLIST:
-    case SQLCOM_SHOW_MASTER_STAT:
-    case SQLCOM_SHOW_SLAVE_STAT:
+    case SQLCOM_SHOW_BINLOG_STATUS:
+    case SQLCOM_SHOW_REPLICA_STATUS:
     case SQLCOM_SHOW_CHARSETS:
     case SQLCOM_SHOW_COLLATIONS:
     case SQLCOM_SHOW_BINLOGS:
     case SQLCOM_SHOW_OPEN_TABLES:
-    case SQLCOM_SHOW_SLAVE_HOSTS:
+    case SQLCOM_SHOW_REPLICAS:
     case SQLCOM_SHOW_BINLOG_EVENTS:
     case SQLCOM_SHOW_WARNS:
     case SQLCOM_SHOW_ERRORS:

@@ -28,13 +28,16 @@
   JSON_DOCUMENT_MAX_DEPTH levels.
 */
 
-#include "my_rapidjson_size_t.h"  // IWYU pragma: keep
-#include "sql-common/json_error_handler.h"
-
-#include <rapidjson/reader.h>
-#include <functional>
+#include <cstddef>
 #include <string>
 #include <utility>
+
+#include "my_rapidjson_size_t.h"  // IWYU pragma: keep
+
+#include <rapidjson/encodings.h>
+#include <rapidjson/reader.h>
+
+#include "sql-common/json_error_handler.h"
 
 /**
   Check if the depth of a JSON document exceeds the maximum supported
@@ -46,7 +49,9 @@
                      exceeded
   @return true if the maximum depth is exceeded, false otherwise
 */
-bool check_json_depth(size_t depth, const JsonDocumentDepthHandler &handler);
+bool check_json_depth(size_t depth, const JsonErrorHandler &handler);
+bool check_json_depth(size_t depth,
+                      const JsonSerializationErrorHandler &handler);
 
 /**
   This class implements a handler for use with rapidjson::Reader when
@@ -70,7 +75,7 @@ class Syntax_check_handler : public rapidjson::BaseReaderHandler<> {
   bool EndArray(rapidjson::SizeType);
 
   bool too_deep_error_raised() const { return m_too_deep_error_raised; }
-  explicit Syntax_check_handler(JsonDocumentDepthHandler m_depth_handler);
+  explicit Syntax_check_handler(JsonErrorHandler m_depth_handler);
 
  private:
   size_t m_depth{0};  ///< The current depth of the document
@@ -78,7 +83,7 @@ class Syntax_check_handler : public rapidjson::BaseReaderHandler<> {
   bool m_too_deep_error_raised{false};
   /// Pointer to a function that should handle error occurred when depth is
   /// exceeded.
-  JsonDocumentDepthHandler m_depth_handler{nullptr};
+  JsonErrorHandler m_depth_handler{nullptr};
 };
 
 /**
@@ -100,7 +105,7 @@ class Syntax_check_handler : public rapidjson::BaseReaderHandler<> {
 */
 bool is_valid_json_syntax(const char *text, size_t length, size_t *error_offset,
                           std::string *error_message,
-                          const JsonDocumentDepthHandler &depth_handler);
+                          const JsonErrorHandler &depth_handler);
 
 /**
   Extract a readable error from a rapidjson reader and return it to the

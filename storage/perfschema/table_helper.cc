@@ -36,6 +36,7 @@
 
 #include "my_compiler.h"
 
+#include "m_string.h"
 #include "my_macros.h"
 #include "my_thread.h"
 #include "sql-common/json_dom.h"
@@ -53,6 +54,8 @@
 #include "storage/perfschema/pfs_setup_object.h"
 #include "storage/perfschema/pfs_user.h"
 #include "storage/perfschema/pfs_variable.h"
+
+struct CHARSET_INFO;
 
 /* TINYINT TYPE */
 void set_field_tiny(Field *f, long value) {
@@ -2072,6 +2075,22 @@ bool PFS_key_event_name::match_view(uint view) {
     default:
       return false;
   }
+}
+
+bool PFS_key_meter_name::match(PFS_meter_class *pfs) {
+  PFS_meter_class *safe_class = sanitize_meter_class(pfs);
+  if (unlikely(safe_class == nullptr)) {
+    return false;
+  }
+  return do_match(false, safe_class->m_meter, safe_class->m_meter_length);
+}
+
+bool PFS_key_metric_name::match(PFS_metric_class *pfs) {
+  PFS_metric_class *safe_class = sanitize_metric_class(pfs);
+  if (unlikely(safe_class == nullptr)) {
+    return false;
+  }
+  return do_match(false, safe_class->m_metric, safe_class->m_metric_length);
 }
 
 bool PFS_key_user::match(const PFS_thread *pfs) {

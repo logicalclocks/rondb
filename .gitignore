@@ -7,9 +7,6 @@ TAGS
 TAGS_sorted_by_file
 **/.DS_Store
 
-# googletest files
-source_downloads
-
 # Vim swap files
 [._]*.s[a-v][a-z]
 [._]*.sw[a-p]
@@ -41,3 +38,4 @@ build
 .cproject
 .project
 .settings/
+

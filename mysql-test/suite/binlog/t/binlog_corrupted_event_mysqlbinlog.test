@@ -30,7 +30,7 @@
 --source include/have_binlog_format_row.inc
 
 --echo # Init: Clear binary logs from previous tests.
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo ==== R1: Error for corrupted file ====
 
@@ -41,7 +41,7 @@ CREATE TABLE t (a INT);
 --source include/remove_debug_point.inc
 
 --echo # Verify that mysqlbinlog fails
---source include/save_binlog_position.inc
+--source include/rpl/save_binlog_file_position.inc
 --let $assert_command = $MYSQL_BINLOG --force-if-open $binlog_fullpath 2>&1
 --let $assert_regex = ERROR: Could not read entry at offset .*: Error in log format or read error 1..*ERROR: corrupted data in log event
 --let $assert_status = 1
@@ -53,14 +53,14 @@ FLUSH BINARY LOGS;
 
 --echo # Clean up.
 DROP TABLE t;
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo ==== R2.1: No error for truncated file when IN_USE flag is set ====
 
 --echo # Create a truncated binary log.
 CREATE TABLE t (a INT);
 
---source include/save_binlog_position.inc
+--source include/rpl/save_binlog_file_position.inc
 --let $in_filename = $binlog_fullpath
 --let $out_filename = $in_filename.tmp
 --let $file_start_pos = 0
@@ -82,14 +82,14 @@ if ($have_windows) {
 --echo # Clean up.
 --remove_file $binlog_fullpath.tmp
 DROP TABLE t;
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo ==== R2.2: Error for truncated file when IN_USE flag is not set ====
 
 --echo # Create a truncated binary log.
 CREATE TABLE t (a INT);
 
---source include/save_binlog_position.inc
+--source include/rpl/save_binlog_file_position.inc
 FLUSH BINARY LOGS;
 
 --let $in_filename = $binlog_fullpath
@@ -108,4 +108,4 @@ FLUSH BINARY LOGS;
 --echo # Clean up.
 --remove_file $binlog_fullpath.tmp
 DROP TABLE t;
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;

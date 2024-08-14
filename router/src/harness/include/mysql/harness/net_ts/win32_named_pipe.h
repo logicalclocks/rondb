@@ -118,8 +118,7 @@ class basic_named_pipe_impl_base {
     // TODO: once the io-context has support for OVERLAPPED IO on windows
     // a full implemenantation can be done.
 
-    return stdx::make_unexpected(
-        make_error_code(std::errc::function_not_supported));
+    return stdx::unexpected(make_error_code(std::errc::function_not_supported));
   }
 
   stdx::expected<native_handle_type, std::error_code> release() {
@@ -182,8 +181,7 @@ class basic_named_pipe_impl : public basic_named_pipe_impl_base {
   stdx::expected<void, std::error_code> assign(
       const protocol_type &protocol, const native_handle_type &native_handle) {
     if (is_open()) {
-      return stdx::make_unexpected(
-          make_error_code(net::socket_errc::already_open));
+      return stdx::unexpected(make_error_code(net::socket_errc::already_open));
     }
     protocol_ = protocol;
     native_handle_ = native_handle;
@@ -198,7 +196,7 @@ class basic_named_pipe_impl : public basic_named_pipe_impl_base {
         SetNamedPipeHandleState(native_handle_, &wait_mode, nullptr, nullptr);
 
     if (!success) {
-      return stdx::make_unexpected(win32::last_error_code());
+      return stdx::unexpected(win32::last_error_code());
     }
 
     return {};
@@ -206,8 +204,7 @@ class basic_named_pipe_impl : public basic_named_pipe_impl_base {
 
   stdx::expected<void, std::error_code> connect(const endpoint_type &ep) {
     if (is_open()) {
-      return stdx::make_unexpected(
-          make_error_code(net::socket_errc::already_open));
+      return stdx::unexpected(make_error_code(net::socket_errc::already_open));
     }
 
     using clock_type = std::chrono::steady_clock;
@@ -217,7 +214,7 @@ class basic_named_pipe_impl : public basic_named_pipe_impl_base {
     do {
       native_handle_ =
           CreateFile(TEXT(ep.path().c_str()), GENERIC_READ | GENERIC_WRITE, 0,
-                     NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 
       if (native_handle_ == impl::named_pipe::kInvalidHandle) {
         auto const error_code = win32::last_error_code();
@@ -231,7 +228,7 @@ class basic_named_pipe_impl : public basic_named_pipe_impl_base {
           continue;
         }
 
-        return stdx::make_unexpected(error_code);
+        return stdx::unexpected(error_code);
       } else
         break;
     } while (true);
@@ -297,8 +294,8 @@ class basic_named_pipe : private basic_named_pipe_impl<Protocol> {
          ++bufcur) {
       DWORD numRead{0};
       if (!ReadFile(native_handle(), bufcur->data(), bufcur->size(), &numRead,
-                    NULL)) {
-        return stdx::make_unexpected(win32::last_error_code());
+                    nullptr)) {
+        return stdx::unexpected(win32::last_error_code());
       }
 
       transferred += numRead;
@@ -322,8 +319,8 @@ class basic_named_pipe : private basic_named_pipe_impl<Protocol> {
       DWORD written{0};
 
       if (!WriteFile(native_handle(), bufcur->data(), bufcur->size(), &written,
-                     NULL)) {
-        return stdx::make_unexpected(win32::last_error_code());
+                     nullptr)) {
+        return stdx::unexpected(win32::last_error_code());
       }
 
       transferred += written;
@@ -396,8 +393,7 @@ class basic_named_pipe_socket : public basic_named_pipe<Protocol> {
 
   stdx::expected<void, std::error_code> open() {
     if (is_open()) {
-      return stdx::make_unexpected(
-          make_error_code(net::socket_errc::already_open));
+      return stdx::unexpected(make_error_code(net::socket_errc::already_open));
     }
 
     return {};
@@ -526,14 +522,12 @@ class basic_named_pipe_acceptor : public basic_named_pipe_impl<Protocol> {
   stdx::expected<void, std::error_code> bind(const endpoint_type &ep,
                                              int flags = 0) {
     if (ep.path().empty()) {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::invalid_argument));
+      return stdx::unexpected(make_error_code(std::errc::invalid_argument));
     }
 
     // already bound.
     if (!ep_.path().empty()) {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::invalid_argument));
+      return stdx::unexpected(make_error_code(std::errc::invalid_argument));
     }
 
     ep_ = ep;
@@ -547,11 +541,11 @@ class basic_named_pipe_acceptor : public basic_named_pipe_impl<Protocol> {
           TEXT(ep_.path().c_str()), PIPE_ACCESS_DUPLEX,
           protocol.type() | protocol.protocol() | PIPE_REJECT_REMOTE_CLIENTS |
               flags,
-          back_log_, 1024 * 16, 1024 * 16, NMPWAIT_USE_DEFAULT_WAIT, NULL);
+          back_log_, 1024 * 16, 1024 * 16, NMPWAIT_USE_DEFAULT_WAIT, nullptr);
 
       if (handle == impl::named_pipe::kInvalidHandle) {
         auto ec = win32::last_error_code();
-        return stdx::make_unexpected(ec);
+        return stdx::unexpected(ec);
       }
 
       native_handle(handle);
@@ -566,12 +560,10 @@ class basic_named_pipe_acceptor : public basic_named_pipe_impl<Protocol> {
   stdx::expected<void, std::error_code> listen(
       int back_log = PIPE_UNLIMITED_INSTANCES) {
     if (back_log <= 0) {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::invalid_argument));
+      return stdx::unexpected(make_error_code(std::errc::invalid_argument));
     }
     if (back_log > PIPE_UNLIMITED_INSTANCES) {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::invalid_argument));
+      return stdx::unexpected(make_error_code(std::errc::invalid_argument));
     }
 
     back_log_ = back_log;
@@ -589,15 +581,16 @@ class basic_named_pipe_acceptor : public basic_named_pipe_impl<Protocol> {
    * @retval std::errc::invalid_argument if no endpoint bound.
    */
   stdx::expected<socket_type, std::error_code> accept() {
+    using ret_type = stdx::expected<socket_type, std::error_code>;
+
     // not bound.
     if (ep_.path().empty()) {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::invalid_argument));
+      return stdx::unexpected(make_error_code(std::errc::invalid_argument));
     }
 
     const auto protocol = protocol_type();
 
-    const bool connected = ConnectNamedPipe(native_handle(), NULL);
+    const bool connected = ConnectNamedPipe(native_handle(), nullptr);
     if (!connected) {
       auto last_ec = win32::last_error_code();
 
@@ -610,14 +603,15 @@ class basic_named_pipe_acceptor : public basic_named_pipe_impl<Protocol> {
       // ERROR_NO_DATA too, it just means the pipe is already closed, but quite
       // likely readable.
       if (last_ec == ec_pipe_connected || last_ec == ec_no_data) {
-        return {std::in_place, get_executor().context(), protocol,
-                native_handle()};
+        return ret_type{std::in_place, get_executor().context(), protocol,
+                        native_handle()};
       }
 
-      return stdx::make_unexpected(last_ec);
+      return stdx::unexpected(last_ec);
     }
 
-    return {std::in_place, get_executor().context(), protocol, native_handle()};
+    return ret_type{std::in_place, get_executor().context(), protocol,
+                    native_handle()};
   }
 
   stdx::expected<endpoint_type, std::error_code> local_endpoint() const {

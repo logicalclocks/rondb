@@ -27,10 +27,10 @@
 
 #include <string.h>
 
-#include "m_ctype.h"  // my_charset_latin1
 #include "my_alloc.h"
 #include "my_dbug.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"  // my_charset_latin1
 #include "sql/sql_class.h"
 #include "sql/sql_const.h"
 #include "sql_string.h"
@@ -84,8 +84,8 @@ ulonglong find_set(const TYPELIB *lib, const char *str, size_t length,
         for (; pos != end && *pos != field_separator; pos++)
           ;
       var_len = (uint)(pos - start);
-      uint find = cs ? find_type2(lib, start, var_len, cs)
-                     : find_type(lib, start, var_len, false);
+      const uint find = cs ? find_type2(lib, start, var_len, cs)
+                           : find_type(lib, start, var_len, false);
       if (!find && *err_len == 0)  // report the first error with length > 0
       {
         *err_pos = start;
@@ -333,14 +333,22 @@ LEX_STRING *make_lex_string_root(MEM_ROOT *mem_root, const char *str,
 
 bool lex_string_strmake(MEM_ROOT *mem_root, LEX_STRING *lex_str,
                         const char *str, size_t length) {
-  if (!(lex_str->str = strmake_root(mem_root, str, length))) return true;
+  lex_str->str = strmake_root(mem_root, str, length);
+  if (lex_str->str == nullptr) {
+    lex_str->length = 0;
+    return true;
+  }
   lex_str->length = length;
   return false;
 }
 
 bool lex_string_strmake(MEM_ROOT *mem_root, LEX_CSTRING *lex_str,
                         const char *str, size_t length) {
-  if (!(lex_str->str = strmake_root(mem_root, str, length))) return true;
+  lex_str->str = strmake_root(mem_root, str, length);
+  if (lex_str->str == nullptr) {
+    lex_str->length = 0;
+    return true;
+  }
   lex_str->length = length;
   return false;
 }

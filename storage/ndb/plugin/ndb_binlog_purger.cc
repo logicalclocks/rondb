@@ -26,12 +26,14 @@
 // Implements
 #include "storage/ndb/plugin/ndb_binlog_purger.h"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "my_dbug.h"
+#include "nulls.h"          // NullS
 #include "sql/handler.h"    // ISO_READ_COMMITTED
 #include "sql/sql_class.h"  // THD
 #include "storage/ndb/plugin/ndb_local_connection.h"
@@ -75,10 +77,9 @@ void Ndb_binlog_purger::submit_purge_binlog_file(void *session,
   std::unique_lock files_lock(m_purge_files_lock);
 
   // Don't allow adding existing filename
-  if (std::any_of(begin(m_purge_files), end(m_purge_files),
-                  [filename](const auto &request) {
-                    return request.filename == filename;
-                  })) {
+  if (std::ranges::any_of(m_purge_files, [filename](const auto &request) {
+        return request.filename == filename;
+      })) {
     log_info("Binlog file '%s' was already submitted for purge, skipping",
              filename.c_str());
     return;
@@ -95,10 +96,9 @@ void Ndb_binlog_purger::wait_purge_completed_for_session(void *session) {
 
   m_purge_files_finished_cond.wait(files_lock, [this, session]() {
     return is_stop_requested() ||
-           std::none_of(begin(m_purge_files), end(m_purge_files),
-                        [session](const auto &request) {
-                          return request.session == session;
-                        });
+           std::ranges::none_of(m_purge_files, [session](const auto &request) {
+             return request.session == session;
+           });
   });
 }
 
@@ -124,15 +124,8 @@ void Ndb_binlog_purger::find_and_delete_orphan_purged_rows() {
   //   existing: [ "binlog.000001", "binlog.000002", ... ]
   //
   auto not_existing_filter = [&existing](std::string_view file) {
-    // Check if string ends with another string, to be replaced by
-    // std::string_view::ends_with() in higher versions
-    auto ends_with = [](const std::string_view &a, const std::string_view &b) {
-      return a.size() >= b.size() &&
-             a.compare(a.size() - b.size(), std::string_view::npos, b) == 0;
-    };
-
     for (const auto &e : existing) {
-      if (ends_with(file, e)) {
+      if (file.ends_with(e)) {
         return false;  // Keep
       }
     }

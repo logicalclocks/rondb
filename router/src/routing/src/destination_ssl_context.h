@@ -28,18 +28,25 @@
 
 #include "mysqlrouter/routing_export.h"
 
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <string>
 
 #include "mysql/harness/tls_client_context.h"
-#include "ssl_mode.h"  // SslVerify
+#include "mysqlrouter/ssl_mode.h"  // SslVerify
 
 /**
  * TlsClientContext per destination.
  */
 class ROUTING_EXPORT DestinationTlsContext {
  public:
+  DestinationTlsContext(bool session_cache_mode, size_t ssl_session_cache_size,
+                        unsigned int ssl_session_cache_timeout)
+      : session_cache_mode_(session_cache_mode),
+        ssl_session_cache_size_(ssl_session_cache_size),
+        ssl_session_cache_timeout_(ssl_session_cache_timeout) {}
+
   /**
    * set SslVerify.
    */
@@ -76,6 +83,11 @@ class ROUTING_EXPORT DestinationTlsContext {
   void ciphers(const std::string &ciphers);
 
   /**
+   * set client-key and its cert.
+   */
+  void client_key_and_cert_file(std::string key, std::string cert);
+
+  /**
    * get a TlsClientContent for a destination.
    *
    * If no TlsClientContext exists for the destination, creates a
@@ -110,9 +122,16 @@ class ROUTING_EXPORT DestinationTlsContext {
   std::string curves_;
   std::string ciphers_;
 
+  std::string cert_file_;
+  std::string key_file_;
+
   std::map<std::string, std::unique_ptr<TlsClientContext>> tls_contexts_;
 
   std::mutex mtx_;
+
+  bool session_cache_mode_{true};
+  size_t ssl_session_cache_size_{};
+  std::chrono::seconds ssl_session_cache_timeout_{std::chrono::seconds(0)};
 };
 
 #endif

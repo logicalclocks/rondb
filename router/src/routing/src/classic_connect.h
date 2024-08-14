@@ -39,12 +39,14 @@ class ConnectProcessor : public Processor {
   ConnectProcessor(
       MysqlRoutingClassicConnectionBase *conn,
       std::function<void(const classic_protocol::message::server::Error &err)>
-          on_error)
+          on_error,
+      TraceEvent *parent_event)
       : Processor(conn),
-        io_ctx_{conn->socket_splicer()->client_conn().connection()->io_ctx()},
+        io_ctx_{conn->client_conn().connection()->io_ctx()},
         destinations_{conn->current_destinations()},
         destinations_it_{destinations_.begin()},
-        on_error_(std::move(on_error)) {}
+        on_error_(std::move(on_error)),
+        parent_event_(parent_event) {}
 
   using server_protocol_type = net::ip::tcp;
 
@@ -84,6 +86,9 @@ class ConnectProcessor : public Processor {
   stdx::expected<Processor::Result, std::error_code> connected();
   stdx::expected<Processor::Result, std::error_code> error();
 
+  void assign_server_side_connection_after_pool(
+      ConnectionPool::ServerSideConnection server_conn);
+
   Stage stage_{Stage::InitDestination};
 
   net::io_context &io_ctx_;
@@ -106,6 +111,11 @@ class ConnectProcessor : public Processor {
       on_error_;
 
   std::chrono::steady_clock::time_point connect_started_;
+
+  TraceEvent *parent_event_;
+  TraceEvent *trace_event_connect_{nullptr};
+  TraceEvent *trace_event_socket_connect_{nullptr};
+  TraceEvent *trace_event_socket_from_pool_{nullptr};
 };
 
 #endif

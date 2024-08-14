@@ -30,7 +30,9 @@
 
 class ResetConnectionSender : public Processor {
  public:
-  using Processor::Processor;
+  ResetConnectionSender(MysqlRoutingClassicConnectionBase *conn,
+                        TraceEvent *parent_event)
+      : Processor(conn), parent_event_(parent_event) {}
 
   enum class Stage {
     Command,
@@ -50,6 +52,9 @@ class ResetConnectionSender : public Processor {
   stdx::expected<Result, std::error_code> ok();
 
   Stage stage_{Stage::Command};
+
+  TraceEvent *parent_event_{};
+  TraceEvent *trace_event_command_{};
 };
 
 #endif

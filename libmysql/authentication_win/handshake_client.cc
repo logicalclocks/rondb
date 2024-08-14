@@ -69,7 +69,7 @@ class Handshake_client : public Handshake {
 
 Handshake_client::Handshake_client(Connection &con, const char *target,
                                    size_t len)
-    : Handshake(SSP_NAME, CLIENT), m_service_name(NULL), m_con(con) {
+    : Handshake(SSP_NAME, CLIENT), m_service_name(nullptr), m_con(con) {
   if (!target || 0 == len) return;
 
   // Convert received UPN to internal WCHAR representation.
@@ -145,8 +145,8 @@ int Handshake_client::write_packet(Blob &data) {
 
   if (m_round == 1 && data.len() > 254) {
     len2 = data.len() - 254;
-    DBUG_PRINT("info", ("Splitting first packet of length %lu"
-                        ", %lu bytes will be sent in a second part",
+    DBUG_PRINT("info", ("Splitting first packet of length %zu"
+                        ", %zu bytes will be sent in a second part",
                         data.len(), len2));
     /*
       Store in byte 255 the number of 512b blocks that are needed to
@@ -182,7 +182,7 @@ int Handshake_client::write_packet(Blob &data) {
   // Write second part if it is present.
   if (len2) {
     data[254] = saved_byte;
-    Blob data2(data.ptr() + 254, len2);
+    const Blob data2(data.ptr() + 254, len2);
     DBUG_PRINT("info", ("Sending second part of data"));
     DBUG_DUMP("info", data2.ptr(), data2.len());
     ret = m_con.write(data2);
@@ -264,21 +264,21 @@ Blob Handshake_client::process_data(const Blob &data) {
 
   ret = InitializeSecurityContextW(
       &m_cred,
-      m_round == 1 ? NULL : &m_sctx,  // partial context
-      m_service_name,                 // service name
-      ASC_REQ_ALLOCATE_MEMORY,        // requested attributes
-      0,                              // reserved
-      SECURITY_NETWORK_DREP,          // data representation
-      m_round == 1 ? NULL : &input,   // input data
-      0,                              // reserved
-      &m_sctx,                        // context
-      &m_output,                      // output data
-      &m_atts,                        // attributes
-      &m_expire);                     // expire date
+      m_round == 1 ? nullptr : &m_sctx,  // partial context
+      m_service_name,                    // service name
+      ASC_REQ_ALLOCATE_MEMORY,           // requested attributes
+      0,                                 // reserved
+      SECURITY_NETWORK_DREP,             // data representation
+      m_round == 1 ? nullptr : &input,   // input data
+      0,                                 // reserved
+      &m_sctx,                           // context
+      &m_output,                         // output data
+      &m_atts,                           // attributes
+      &m_expire);                        // expire date
 
   if (process_result(ret)) {
     DBUG_PRINT("error",
-               ("InitializeSecurityContext() failed with error %X", ret));
+               ("InitializeSecurityContext() failed with error %lX", ret));
     return Blob();
   }
 
@@ -442,19 +442,19 @@ int win_auth_handshake_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql) {
 
   // Read initial packet from server containing service name.
 
-  Blob service_name = con.read();
+  const Blob service_name = con.read();
 
   if (con.error() || service_name.is_null()) {
     ERROR_LOG(ERROR, ("Error reading initial packet"));
     return CR_ERROR;
   }
-  DBUG_PRINT("info", ("Got initial packet of length %d", service_name.len()));
+  DBUG_PRINT("info", ("Got initial packet of length %zu", service_name.len()));
 
   // Create authentication handshake context using the given service name.
 
-  Handshake_client hndshk(con,
-                          service_name[0] ? (char *)service_name.ptr() : NULL,
-                          service_name.len());
+  Handshake_client hndshk(
+      con, service_name[0] ? (char *)service_name.ptr() : nullptr,
+      service_name.len());
   if (hndshk.error()) {
     ERROR_LOG(ERROR, ("Could not create authentication handshake context"));
     return CR_ERROR;

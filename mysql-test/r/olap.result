@@ -306,18 +306,17 @@ CONCAT(':',product,':')	SUM(profit)	AVG(profit)
 :TV:	600	120.00000
 NULL	7785	519.00000
 SELECT product, country_id , year, SUM(profit) FROM t1
-GROUP BY product, country_id, year WITH CUBE;
-ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'WITH CUBE' at line 2
+GROUP BY CUBE (product, country_id, year);
+ERROR HY000: Secondary engine operation failed. Reason: "No secondary engine defined for at least one of the query tables".
 EXPLAIN SELECT product, country_id , year, SUM(profit) FROM t1
-GROUP BY product, country_id, year WITH CUBE;
-ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'WITH CUBE' at line 2
+GROUP BY CUBE (product, country_id, year);
+ERROR HY000: Secondary engine operation failed. Reason: "No secondary engine defined for at least one of the query tables".
 SELECT product, country_id , year, SUM(profit) FROM t1
-GROUP BY product, country_id, year WITH CUBE UNION ALL
+GROUP BY CUBE (product, country_id, year)
+UNION ALL
 SELECT product, country_id , year, SUM(profit) FROM t1
-GROUP BY product, country_id, year WITH ROLLUP;
-ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'WITH CUBE UNION ALL
-SELECT product, country_id , year, SUM(profit) FROM t1
-GROUP' at line 2
+GROUP BY ROLLUP (product, country_id, year);
+ERROR HY000: Secondary engine operation failed. Reason: "No secondary engine defined for at least one of the query tables".
 drop table t1,t2;
 CREATE TABLE t1 (i int);
 INSERT INTO t1 VALUES(100);
@@ -830,7 +829,7 @@ EXPLAIN
             -> Sort: t1.a, t2.b
                 -> Stream results  (cost=0.8 rows=2)
                     -> Inner hash join (no condition)  (cost=0.8 rows=2)
-                        -> Index scan on t1 using PRIMARY  (cost=0.45 rows=2)
+                        -> Covering index scan on t1 using PRIMARY  (cost=0.45 rows=2)
                         -> Hash
                             -> Table scan on t2  (cost=0.35 rows=1)
 
@@ -2334,13 +2333,22 @@ SELECT DISTINCT i1, i2, GROUPING(i1), GROUPING(i2) FROM t GROUP BY i1, i2 WITH R
 ERROR HY000: Expression #3 of ORDER BY clause is not in SELECT list, contains aggregate function; this is incompatible with DISTINCT
 DROP TABLE t;
 #
+# Bug#36039905: Assertion `table_num_to_node_num[table_num] != -1' failed
+#
+CREATE TABLE t(x INT);
+SELECT 1 FROM t AS t1, t AS t2,
+(SELECT DISTINCT GROUPING(t3.x) FROM t AS t3, t AS t4
+GROUP BY ROLLUP(t3.x)) AS dt;
+1
+DROP TABLE t;
+#
 # Bug#35856247: Assertion Item_ref::walk at sql/item.h
 #
 CREATE TABLE t(x TEXT);
 INSERT INTO t VALUES ('a'), ('b'), ('b');
 PREPARE ps FROM
 'SELECT dt.x, COUNT(*) FROM t, LATERAL (SELECT x) AS dt
-   GROUP BY dt.x WITH ROLLUP';
+   GROUP BY ROLLUP(dt.x)';
 EXECUTE ps;
 x	COUNT(*)
 NULL	3
@@ -2358,10 +2366,24 @@ DROP TABLE t;
 # Query_block::check_column_privileges at sql/sql_select.cc
 #
 CREATE TABLE t(i INTEGER);
-PREPARE ps FROM 'SELECT 1+2 AS x FROM t GROUP BY x WITH ROLLUP HAVING x <= 9';
+PREPARE ps FROM 'SELECT 1+2 AS x FROM t GROUP BY ROLLUP(x) HAVING x <= 9';
 EXECUTE ps;
 x
 EXECUTE ps;
 x
 DROP PREPARE ps;
 DROP TABLE t;
+#
+# Bug#36257081: Assertion `!OrderItemsReferenceUnavailableTables
+#               ( path, used_tables_before_repla
+#
+CREATE TABLE t1 (f1 JSON);
+CREATE VIEW v1 AS SELECT 1;
+SELECT 1
+FROM t1, LATERAL (SELECT f1 AS f2
+FROM v1
+GROUP BY CUBE(f2)) AS dt1
+GROUP BY CUBE(f2);
+ERROR HY000: Secondary engine operation failed. Reason: "No secondary engine defined for at least one of the query tables".
+DROP VIEW v1;
+DROP TABLE t1;

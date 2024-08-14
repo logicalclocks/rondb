@@ -636,6 +636,11 @@ void Gcs_xcom_app_cfg::set_network_namespace_manager(
   if (the_app_xcom_cfg) the_app_xcom_cfg->network_ns_manager = ns_mgr;
 }
 
+void Gcs_xcom_app_cfg::set_statists_storage_implementation(
+    Xcom_statistics_storage_interface *stats_storage) {
+  if (the_app_xcom_cfg) the_app_xcom_cfg->statistics_storage = stats_storage;
+}
+
 bool Gcs_xcom_app_cfg::set_identity(node_address *identity) {
   bool constexpr kError = true;
   bool constexpr kSuccess = false;
@@ -899,17 +904,7 @@ bool Gcs_xcom_proxy_base::xcom_add_node(connection_descriptor &con,
 
 bool Gcs_xcom_proxy_base::test_xcom_tcp_connection(std::string &host,
                                                    xcom_port port) {
-  connection_descriptor *con = xcom_client_open_connection(host, port);
-
-  bool const could_connect_to_local_xcom = (con->fd != -1);
-  bool could_disconnect_from_local_xcom = false;
-  if (could_connect_to_local_xcom) {
-    could_disconnect_from_local_xcom = xcom_client_close_connection(con);
-  }
-
-  free(con);
-
-  return could_connect_to_local_xcom && could_disconnect_from_local_xcom;
+  return ::is_able_to_connect_to_node(host.c_str(), port);
 }
 
 bool Gcs_xcom_proxy_base::initialize_network_manager() {

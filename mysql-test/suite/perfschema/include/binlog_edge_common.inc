@@ -15,7 +15,7 @@
 # SHOW ERRORS will print in the
 # test .result file the exact outcome.
 
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --disable_warnings
 drop database if exists my_replicated_db;
@@ -140,7 +140,7 @@ drop table if exists marker_end;
 
 drop database my_replicated_db;
 
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 
 # Restore performance_schema.setup_actors, damaged by this script
 

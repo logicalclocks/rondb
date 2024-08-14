@@ -41,6 +41,7 @@ use warnings;
 
 use lib "lib";
 use lib "../internal/cloud/mysql-test/lib";
+use lib "../internal/mysql-test/lib";
 
 use Cwd;
 use Cwd 'abs_path';
@@ -80,6 +81,7 @@ require "lib/mtr_process.pl";
 
 our $secondary_engine_support = eval 'use mtr_secondary_engine; 1';
 our $primary_engine_support = eval 'use mtr_external_engine; 1';
+our $external_language_support = eval 'use mtr_external_language; 1';
 
 # Global variable to keep track of completed test cases
 my $completed = [];
@@ -117,6 +119,7 @@ my $opt_platform_exclude;
 my $opt_ps_protocol;
 my $opt_report_features;
 my $opt_skip_core;
+my $opt_skip_suite;
 my $opt_skip_test_list;
 my $opt_sp_protocol;
 my $opt_start;
@@ -133,6 +136,7 @@ my $opt_user_args;
 my $opt_valgrind_path;
 my $opt_view_protocol;
 my $opt_wait_all;
+my $opt_telemetry;
 
 my $opt_build_thread  = $ENV{'MTR_BUILD_THREAD'}  || "auto";
 my $opt_colored_diff  = $ENV{'MTR_COLORED_DIFF'}  || 0;
@@ -332,11 +336,11 @@ our $default_vardir;
 our $excluded_string;
 our $exe_libtool;
 our $exe_mysql;
-our $exe_mysql_ssl_rsa_setup;
 our $exe_mysql_migrate_keyring;
 our $exe_mysql_keyring_encryption_test;
 our $exe_mysqladmin;
 our $exe_mysqltest;
+our $exe_mysql_test_event_tracking;
 our $exe_openssl;
 our $glob_mysql_test_dir;
 our $mysql_version_extra;
@@ -476,6 +480,14 @@ sub main {
     add_secondary_engine_suite();
   }
 
+  $external_language_support =
+    ($external_language_support and find_plugin("component_mle", "plugin_output_directory")) ? 1 : 0;
+
+  if ($external_language_support) {
+    # Append external language test suite to list of default suites if found.
+    add_external_language_suite();
+  }
+
   if ($opt_gcov) {
     gcov_prepare($basedir);
   }
@@ -539,8 +551,12 @@ sub main {
       # Scan all sub-directories for available test suites.
       # The variable $opt_suites is updated by get_all_suites()
       find(\&get_all_suites, "$glob_mysql_test_dir");
-      find({ wanted => \&get_all_suites, follow => 1 }, "$basedir/internal")
+      find({ wanted => \&get_all_suites, follow => 1 },
+	   "$basedir/internal/mysql-test")
         if (-d "$basedir/internal");
+      find({ wanted => \&get_all_suites, follow => 1 },
+           "$basedir/internal/cloud/mysql-test")
+        if (-d "$basedir/internal/cloud");
 
       if ($suite_set == 1) {
         # Run only with non-default suites
@@ -575,6 +591,19 @@ sub main {
     my $opt_do_suite_reg = init_pattern($opt_do_suite, "--do-suite");
     for my $suite (split(",", $opt_suites)) {
       if ($opt_do_suite_reg and not $suite =~ /$opt_do_suite_reg/) {
+        remove_suite_from_list($suite);
+      }
+    }
+
+    # Removing ',' at the end of $opt_suites if exists
+    $opt_suites =~ s/,$//;
+  }
+
+  # Skip suites which match the --skip-suite filter
+  if ($opt_skip_suite) {
+    my $opt_skip_suite_reg = init_pattern($opt_skip_suite, "--skip-suite");
+    for my $suite (split(",", $opt_suites)) {
+      if ($opt_skip_suite_reg and $suite =~ /$opt_skip_suite_reg/) {
         remove_suite_from_list($suite);
       }
     }
@@ -732,7 +761,7 @@ sub main {
   if ($secondary_engine_support) {
     secondary_engine_offload_count_report_init();
     # Create virtual environment
-    create_virtual_env($bindir);
+    find_ml_driver($bindir);
     reserve_secondary_ports();
   }
 
@@ -926,11 +955,6 @@ sub main {
   # Cleanup the build thread id files
   remove_redundant_thread_id_file_locations();
   clean_unique_id_dir();
-
-  # Cleanup the secondary engine environment
-  if ($secondary_engine_support) {
-    clean_virtual_env();
-  }
 
   print_total_times($opt_parallel) if $opt_report_times;
 
@@ -1598,6 +1622,7 @@ sub print_global_resfile {
   resfile_global("suite-opt",        $opt_suite_opt);
   resfile_global("suite-timeout",    $opt_suite_timeout);
   resfile_global("summary-report",   $opt_summary_report);
+  resfile_global("telemetry",        $opt_telemetry        ? 1 : 0);
   resfile_global("test-progress",    $opt_test_progress    ? 1 : 0);
   resfile_global("testcase-timeout", $opt_testcase_timeout);
   resfile_global("tmpdir",           $opt_tmpdir);
@@ -1668,6 +1693,7 @@ sub command_line_setup {
     'skip-im'                            => \&ignore_option,
     'skip-ndbcluster|skip-ndb'           => \$opt_skip_ndbcluster,
     'skip-rpl'                           => \&collect_option,
+    'skip-suite=s'                       => \$opt_skip_suite,
     'skip-sys-schema'                    => \$opt_skip_sys_schema,
     'skip-test=s'                        => \&collect_option,
     'start-from=s'                       => \&collect_option,
@@ -1798,6 +1824,7 @@ sub command_line_setup {
     'stress=s'              => \$opt_stress,
     'suite-opt=s'           => \$opt_suite_opt,
     'suite-timeout=i'       => \$opt_suite_timeout,
+    'telemetry'             => \$opt_telemetry,
     'testcase-timeout=i'    => \$opt_testcase_timeout,
     'timediff'              => \&report_option,
     'timer!'                => \&report_option,
@@ -2223,7 +2250,7 @@ sub command_line_setup {
     mtr_report("Turning on valgrind for all executables");
     $opt_valgrind        = 1;
     $opt_valgrind_mysqld = 1;
-    # Enable this when mysqlpump and mysqlbinlog are fixed.
+    # Enable this when mysqlbinlog is fixed.
     # $opt_valgrind_clients = 1;
     $opt_valgrind_mysqltest        = 1;
     $opt_valgrind_secondary_engine = 1;
@@ -2343,7 +2370,56 @@ sub command_line_setup {
   check_fips_support();
 }
 
+# For OpenSSL 3 we need to parse this output:
+# openssl list -providers
+# Providers:
+#   base
+#     name: OpenSSL Base Provider
+#     version: 3.0.9
+#     status: active
+#   fips
+#     name: OpenSSL FIPS Provider
+#     version: 3.0.9
+#     status: active
 sub check_fips_support() {
+  # For OpenSSL 3, ask openssl about providers.
+  my $openssl_args;
+  mtr_init_args(\$openssl_args);
+  mtr_add_arg($openssl_args, "version");
+  my $openssl_cmd = join(" ", $exe_openssl, @$openssl_args);
+  my $openssl_result = `$openssl_cmd`;
+  if($openssl_result =~ /^OpenSSL 3./) {
+    mtr_init_args(\$openssl_args);
+    mtr_add_arg($openssl_args, "list");
+    mtr_add_arg($openssl_args, "-providers");
+    $openssl_cmd = join(" ", $exe_openssl, @$openssl_args);
+    $openssl_result = `$openssl_cmd`;
+    my $fips_active = 0;
+    my $fips_seen = 0;
+    foreach my $line (split('\n', $openssl_result)) {
+      # printf "line $line\n";
+      if ($line =~ "name:") {
+	if ($line =~ "FIPS") {
+	  $fips_seen = 1;
+	} else {
+	  $fips_seen = 0;
+	}
+      } elsif ($line =~ "status:") {
+	if ($fips_seen and $line =~ "active") {
+	  $fips_active = 1;
+	}
+      }
+    }
+    # printf "fips_active $fips_active\n";
+    if ($fips_active) {
+      $ENV{'OPENSSL3_FIPS_ACTIVE'} = 1;
+    } else {
+      $ENV{'OPENSSL3_FIPS_ACTIVE'} = 0;
+    }
+  } else {
+    $ENV{'OPENSSL3_FIPS_ACTIVE'} = 0;
+  }
+
   # Run $exe_mysqltest to see if FIPS mode is supported.
   my $args;
   mtr_init_args(\$args);
@@ -2719,12 +2795,15 @@ sub executable_setup () {
   # Look for the client binaries
   $exe_mysqladmin = mtr_exe_exists("$path_client_bindir/mysqladmin");
   $exe_mysql      = mtr_exe_exists("$path_client_bindir/mysql");
-  $exe_mysql_ssl_rsa_setup =
-    mtr_exe_exists("$path_client_bindir/mysql_ssl_rsa_setup");
   $exe_mysql_migrate_keyring =
     mtr_exe_exists("$path_client_bindir/mysql_migrate_keyring");
   $exe_mysql_keyring_encryption_test =
     mtr_exe_exists("$path_client_bindir/mysql_keyring_encryption_test");
+
+  # Look for mysql_test_event_tracking binary
+  $exe_mysql_test_event_tracking = my_find_bin($bindir,
+                [ "runtime_output_directory", "bin" ],
+                "mysql_test_event_tracking", NOT_REQUIRED);
 
   # For custom OpenSSL builds, look for the my_openssl executable.
   $exe_openssl =
@@ -2735,13 +2814,19 @@ sub executable_setup () {
   if (!$exe_openssl) {
     if (IS_MAC) {
       # We use homebrew, rather than macOS SSL.
-      # TODO(tdidriks) add an option to mysqltest to see whether we are using
-      # openssl@1.1 or openssl@3
+      # Use the openssl symlink, which will point to something like
+      # ../Cellar/openssl@1.1/1.1.1t or ../Cellar/openssl@3/3.0.8
       my $machine_hw_name = `uname -m`;
       if ($machine_hw_name =~ "arm64") {
-	$exe_openssl = "/opt/homebrew/opt/" . "openssl\@1.1" . "/bin/openssl";
+	$exe_openssl =
+	  my_find_bin("/opt/homebrew/opt/",
+		      ["openssl/bin", "openssl\@1.1/bin"], "openssl",
+		      NOT_REQUIRED);
       } else {
-	$exe_openssl = "/usr/local/opt/" . "openssl\@1.1" . "/bin/openssl";
+	$exe_openssl =
+	  my_find_bin("/usr/local/opt/",
+		      ["openssl/bin", "openssl\@1.1/bin"], "openssl",
+		      NOT_REQUIRED);
       }
     } else {
       # We could use File::Which('openssl'),
@@ -2927,34 +3012,6 @@ sub mysqlxtest_arguments() {
   return mtr_args2str($exe, @$args);
 }
 
-sub mysql_pump_arguments ($) {
-  my ($group_suffix) = @_;
-  my $exe = mtr_exe_exists("$path_client_bindir/mysqlpump");
-
-  my $args;
-  mtr_init_args(\$args);
-  if ($opt_valgrind_clients) {
-    valgrind_client_arguments($args, \$exe);
-  }
-
-  mtr_add_arg($args, "--defaults-file=%s",         $path_config_file);
-  mtr_add_arg($args, "--defaults-group-suffix=%s", $group_suffix);
-  client_debug_arg($args, "mysqlpump-$group_suffix");
-  return mtr_args2str($exe, @$args);
-}
-
-sub mysqlpump_arguments () {
-  my $exe = mtr_exe_exists("$path_client_bindir/mysqlpump");
-
-  my $args;
-  mtr_init_args(\$args);
-  if ($opt_valgrind_clients) {
-    valgrind_client_arguments($args, \$exe);
-  }
-
-  return mtr_args2str($exe, @$args);
-}
-
 sub mysqlbackup_arguments () {
   my $exe =
     mtr_exe_maybe_exists(vs_config_dirs('runtime_output_directory',
@@ -3090,9 +3147,7 @@ sub get_all_suites {
   #     'engines/funcs' and 'engines/iuds'
   my $suite_name = $1
     if ($File::Find::name =~ /mysql\-test[\/\\]suite[\/\\](.*)[\/\\]t$/ or
-       $File::Find::name =~ /mysql\-test[\/\\]suite[\/\\]([^\/\\]*).*/     or
-       $File::Find::name =~ /plugin[\/\\](.*)[\/\\]tests[\/\\]mtr[\/\\]t$/ or
-       $File::Find::name =~ /components[\/\\](.*)[\/\\]tests[\/\\]mtr[\/\\]t$/);
+       $File::Find::name =~ /mysql\-test[\/\\]suite[\/\\]([^\/\\]*).*/);
   return if not defined $suite_name;
 
   # Skip extracting suite name if the path is already processed
@@ -3202,6 +3257,7 @@ sub environment_setup {
       ndb_select_all
       ndb_select_count
       ndb_show_tables
+      ndb_sign_keys
       ndb_waiter
       ndbxfrm
       ndb_secretsfile_reader
@@ -3273,17 +3329,14 @@ sub environment_setup {
   $ENV{'MYSQL_DUMP'}          = mysqldump_arguments(".1");
   $ENV{'MYSQL_DUMP_SLAVE'}    = mysqldump_arguments(".2");
   $ENV{'MYSQL_IMPORT'}        = client_arguments("mysqlimport");
-  $ENV{'MYSQL_PUMP'}          = mysql_pump_arguments(".1");
-  $ENV{'MYSQLPUMP'}           = mysqlpump_arguments();
   $ENV{'MYSQL_SHOW'}          = client_arguments("mysqlshow");
   $ENV{'MYSQL_SLAP'}          = mysqlslap_arguments();
   $ENV{'MYSQL_SLAVE'}         = client_arguments("mysql", ".2");
-  $ENV{'MYSQL_SSL_RSA_SETUP'} = $exe_mysql_ssl_rsa_setup;
-  $ENV{'MYSQL_UPGRADE'}       = client_arguments("mysql_upgrade");
   $ENV{'MYSQLADMIN'}          = native_path($exe_mysqladmin);
   $ENV{'MYSQLXTEST'}          = mysqlxtest_arguments();
   $ENV{'MYSQL_MIGRATE_KEYRING'} = $exe_mysql_migrate_keyring;
   $ENV{'MYSQL_KEYRING_ENCRYPTION_TEST'} = $exe_mysql_keyring_encryption_test;
+  $ENV{'MYSQL_TEST_EVENT_TRACKING'} = $exe_mysql_test_event_tracking;
   $ENV{'PATH_CONFIG_FILE'}    = $path_config_file;
   $ENV{'MYSQL_CLIENT_BIN_PATH'}    = $path_client_bindir;
   $ENV{'MYSQLBACKUP_PLUGIN_DIR'} = mysqlbackup_plugin_dir()
@@ -3391,16 +3444,6 @@ sub environment_setup {
     mtr_exe_exists("$path_client_bindir/mysql_tzinfo_to_sql");
   $ENV{'MYSQL_TZINFO_TO_SQL'} = native_path($exe_mysql_tzinfo_to_sql);
 
-  # lz4_decompress
-  my $exe_lz4_decompress =
-    mtr_exe_maybe_exists("$path_client_bindir/lz4_decompress");
-  $ENV{'LZ4_DECOMPRESS'} = native_path($exe_lz4_decompress);
-
-  # zlib_decompress
-  my $exe_zlib_decompress =
-    mtr_exe_maybe_exists("$path_client_bindir/zlib_decompress");
-  $ENV{'ZLIB_DECOMPRESS'} = native_path($exe_zlib_decompress);
-
   # Create an environment variable to make it possible
   # to detect that the hypergraph optimizer is being used from test cases
   $ENV{'HYPERGRAPH_TEST'} = $opt_hypergraph;
@@ -3424,7 +3467,7 @@ sub environment_setup {
     ",print_suppressions=0"
     if $opt_sanitize;
 
-  $ENV{'ASAN_OPTIONS'} = "suppressions=${glob_mysql_test_dir}/asan.supp"
+  $ENV{'ASAN_OPTIONS'} = "suppressions=\"${glob_mysql_test_dir}/asan.supp\""
     . ",detect_stack_use_after_return=false"
     if $opt_sanitize;
 
@@ -3572,6 +3615,11 @@ sub setup_vardir() {
   # Create var/tmp and tmp - they might be different
   mkpath("$opt_vardir/tmp");
   mkpath($opt_tmpdir) if ($opt_tmpdir ne "$opt_vardir/tmp");
+
+  if (defined $opt_debugger and $opt_debugger =~ /rr/) {
+    $ENV{'_RR_TRACE_DIR'} = $opt_vardir . "/rr_trace";
+    mtr_report("RR recording for server is enabled. For replay, execute: \"rr replay $opt_vardir\/rr_trace/mysqld-N\"");
+  }
 
   # On some operating systems, there is a limit to the length of a
   # UNIX domain socket's path far below PATH_MAX. Don't allow that
@@ -3773,7 +3821,7 @@ sub check_ndbcluster_support ($) {
   # Add RonDB test suites
   $DEFAULT_SUITES .= "," if $DEFAULT_SUITES;
   $DEFAULT_SUITES .= "ndb,ndb_binlog,rpl_ndb,ndb_rpl,ndbcluster,ndb_ddl,".
-                     "gcol_ndb,json_ndb,ndb_opt";
+                     "gcol_ndb,json_ndb,ndb_opt,ndb_tls";
   # Increase the suite timeout when running with default ndb suites
   $opt_suite_timeout *= 2;
   return;
@@ -4383,6 +4431,11 @@ sub mysql_install_db {
 
   # Add procedures for checking server is restored after testcase
   mtr_tofile($bootstrap_sql_file, mtr_grab_file("include/mtr_check.sql"));
+
+  if($opt_telemetry) {
+    # Pre install the telemetry component
+    mtr_tofile($bootstrap_sql_file, mtr_grab_file("include/mtr_telemetry.sql"));
+  }
 
   if (defined $init_file) {
     # Append the contents of the init-file to the end of bootstrap.sql
@@ -6311,9 +6364,9 @@ sub mysqld_arguments ($$$) {
   my $mysqld     = shift;
   my $extra_opts = shift;
 
-  my @options = ("--no-defaults",   "--defaults-extra-file",
-                 "--defaults-file", "--login-path",
-                 "--print-defaults");
+  my @options = ("--no-defaults",    "--defaults-extra-file",
+                 "--defaults-file",  "--login-path",
+                 "--print-defaults", "--no-login-paths");
 
   arrange_option_files_options($args, $mysqld, $extra_opts, @options);
 
@@ -7557,6 +7610,10 @@ sub debugger_arguments {
     # Set exe to debuggername
     $$exe = $debugger;
 
+  } elsif ($debugger =~ /rr/) {
+    unshift(@$$args, "$$exe");
+    unshift(@$$args, "record");
+    $$exe = $debugger;
   } else {
     mtr_error("Unknown argument \"$debugger\" passed to --debugger");
   }
@@ -8142,6 +8199,7 @@ Misc options
   suite-timeout=MINUTES Max test suite run time (default $opt_suite_timeout).
   summary-report=FILE   Generate a plain text file of the test summary only,
                         suitable for sending by email.
+  telemetry             Pre install the telemetry component
   testcase-timeout=MINUTES
                         Max test case run time (default $opt_testcase_timeout).
   timediff              With --timestamp, also print time passed since

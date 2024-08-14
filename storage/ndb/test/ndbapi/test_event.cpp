@@ -38,6 +38,7 @@
 #include <UtilTransactions.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include "../src/kernel/ndbd.hpp"
+#include "NdbMgmd.hpp"
 #include "util/require.h"
 
 #define CHK(b, e)                                                         \
@@ -2410,6 +2411,7 @@ int runBug33793(NDBT_Context *ctx, NDBT_Step *step) {
 
 static int cc(Ndb_cluster_connection **ctx, Ndb **ndb) {
   Ndb_cluster_connection *xncc = new Ndb_cluster_connection;
+  xncc->configure_tls(opt_tls_search_path, opt_mgm_tls);
   int ret;
   if ((ret = xncc->connect(30, 1, 0)) != 0) {
     delete xncc;
@@ -5287,9 +5289,9 @@ int runSlowGCPCompleteAck(NDBT_Context *ctx, NDBT_Step *step) {
   return result;
 }
 
-#include "NdbMgmd.hpp"
 int runGetLogEventParsable(NDBT_Context *ctx, NDBT_Step *step) {
   NdbMgmd mgmd;
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) return NDBT_FAILED;
 
   int filter[] = {15, NDB_MGM_EVENT_CATEGORY_INFO, 0};
@@ -5395,11 +5397,12 @@ int runGetLogEventParsable(NDBT_Context *ctx, NDBT_Step *step) {
 int runGetLogEventPretty(NDBT_Context *ctx, NDBT_Step *step) {
   NdbMgmd mgmd;
 
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
   if (!mgmd.connect()) return NDBT_FAILED;
 
   int filter[] = {15, NDB_MGM_EVENT_CATEGORY_INFO, 0};
-  NdbSocket my_fd{ndb_socket_create_from_native(
-      ndb_mgm_listen_event(mgmd.handle(), filter))};
+  NdbSocket my_fd =
+      ndb_mgm_listen_event_internal(mgmd.handle(), filter, 0, true);
 
   if (!my_fd.is_valid()) {
     ndbout << "FAILED: could not listen to event" << endl;

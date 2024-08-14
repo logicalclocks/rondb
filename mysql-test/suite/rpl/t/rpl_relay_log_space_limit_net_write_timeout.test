@@ -76,7 +76,7 @@
 --source include/have_binlog_format_row.inc
 
 --let $rpl_skip_start_slave=1
---source include/master-slave.inc
+--source include/rpl/init_source_replica.inc
 
 --echo
 --echo # 1. Create a table
@@ -115,16 +115,16 @@ CALL gen_transactions(5, 3, 104857600);
 --echo # 3. Run replication
 --echo
 
---source include/rpl_connection_slave.inc
---source include/start_slave.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
 
 --echo
 --echo # 4. Synchronize source and replica servers
 --echo
 
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 --let $slave_timeout=3600
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
 --echo
 --echo # 5. Check Pass condition 1: the number of connects to the source
@@ -141,7 +141,7 @@ CALL gen_transactions(5, 3, 104857600);
 --echo # Clean up
 --echo
 
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 DROP TABLE t;
 DROP PROCEDURE gen_transactions;
---source include/rpl_end.inc
+--source include/rpl/deinit.inc

@@ -26,8 +26,10 @@
 #ifndef MYSQLROUTER_CLUSTER_METADATA_INCLUDED
 #define MYSQLROUTER_CLUSTER_METADATA_INCLUDED
 
-#include "mysqlrouter/router_export.h"
+#include "mysqlrouter/router_cluster_export.h"
 
+#include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -75,15 +77,15 @@ struct MetadataSchemaVersion {
   }
 };
 
-std::string ROUTER_LIB_EXPORT to_string(const MetadataSchemaVersion &version);
+std::string ROUTER_CLUSTER_EXPORT
+to_string(const MetadataSchemaVersion &version);
 
 // Semantic version numbers that this Router version supports for bootstrap mode
-constexpr MetadataSchemaVersion kRequiredBootstrapSchemaVersion[]{{1, 0, 0},
-                                                                  {2, 0, 0}};
+constexpr MetadataSchemaVersion kRequiredBootstrapSchemaVersion[]{{2, 0, 0}};
 
 // Semantic version number that this Router version supports for routing mode
 constexpr MetadataSchemaVersion kRequiredRoutingMetadataSchemaVersion[]{
-    {1, 0, 0}, {2, 0, 0}};
+    {2, 0, 0}};
 
 // Version that introduced views and support for ReplicaSet cluster type
 constexpr MetadataSchemaVersion kNewMetadataVersion{2, 0, 0};
@@ -94,24 +96,21 @@ constexpr MetadataSchemaVersion kClusterSetsMetadataVersion{2, 1, 0};
 // Version that will be is set while the metadata is being updated
 constexpr MetadataSchemaVersion kUpgradeInProgressMetadataVersion{0, 0, 0};
 
-MetadataSchemaVersion ROUTER_LIB_EXPORT
+MetadataSchemaVersion ROUTER_CLUSTER_EXPORT
 get_metadata_schema_version(MySQLSession *mysql);
 
-bool ROUTER_LIB_EXPORT metadata_schema_version_is_compatible(
+bool ROUTER_CLUSTER_EXPORT metadata_schema_version_is_compatible(
     const mysqlrouter::MetadataSchemaVersion &required,
     const mysqlrouter::MetadataSchemaVersion &available);
 
-bool ROUTER_LIB_EXPORT metadata_schema_version_is_deprecated(
-    const mysqlrouter::MetadataSchemaVersion &version);
-
-std::string ROUTER_LIB_EXPORT get_metadata_schema_deprecated_msg(
+std::string ROUTER_CLUSTER_EXPORT get_metadata_schema_uncompatible_msg(
     const mysqlrouter::MetadataSchemaVersion &version);
 
 // throws std::logic_error, MySQLSession::Error
-bool ROUTER_LIB_EXPORT check_group_replication_online(MySQLSession *mysql);
+bool ROUTER_CLUSTER_EXPORT check_group_replication_online(MySQLSession *mysql);
 
 // throws MySQLSession::Error, std::logic_error, std::out_of_range
-bool ROUTER_LIB_EXPORT check_group_has_quorum(MySQLSession *mysql);
+bool ROUTER_CLUSTER_EXPORT check_group_has_quorum(MySQLSession *mysql);
 
 template <size_t N>
 bool metadata_schema_version_is_compatible(
@@ -139,24 +138,23 @@ std::string to_string(const mysqlrouter::MetadataSchemaVersion (&version)[N]) {
 }
 
 enum class ClusterType {
-  GR_V1, /* based on Group Replication (metadata 1.x) */
   GR_V2, /* based on Group Replication (metadata 2.x) */
   GR_CS, /* based on Group Replication, part of ClusterSet (metadata 2.1+) */
   RS_V2  /* ReplicaSet (metadata 2.x) */
 };
 
-ClusterType ROUTER_LIB_EXPORT
+ClusterType ROUTER_CLUSTER_EXPORT
 get_cluster_type(const MetadataSchemaVersion &schema_version,
                  MySQLSession *mysql, unsigned int router_id = 0);
 
-std::string ROUTER_LIB_EXPORT to_string(const ClusterType cluster_type);
+std::string ROUTER_CLUSTER_EXPORT to_string(const ClusterType cluster_type);
 
 class MetadataUpgradeInProgressException : public std::exception {};
 
-stdx::expected<void, std::string> ROUTER_LIB_EXPORT
+stdx::expected<void, std::string> ROUTER_CLUSTER_EXPORT
 setup_metadata_session(MySQLSession &session);
 
-bool ROUTER_LIB_EXPORT is_part_of_cluster_set(MySQLSession *mysql);
+bool ROUTER_CLUSTER_EXPORT is_part_of_cluster_set(MySQLSession *mysql);
 
 class TargetCluster {
  public:
@@ -190,6 +188,32 @@ class TargetCluster {
   InvalidatedClusterRoutingPolicy invalidated_cluster_routing_policy_{
       InvalidatedClusterRoutingPolicy::DropAll};
 };
+
+constexpr const std::string_view kNodeTagHidden{"_hidden"};
+constexpr const std::string_view kNodeTagDisconnectWhenHidden{
+    "_disconnect_existing_sessions_when_hidden"};
+
+constexpr const bool kNodeTagHiddenDefault{false};
+constexpr const bool kNodeTagDisconnectWhenHiddenDefault{true};
+
+enum class InstanceType { GroupMember, AsyncMember, ReadReplica, Unsupported };
+
+std::optional<InstanceType> ROUTER_CLUSTER_EXPORT
+str_to_instance_type(const std::string &);
+
+std::string ROUTER_CLUSTER_EXPORT to_string(const InstanceType);
+std::string ROUTER_CLUSTER_EXPORT
+to_string(const TargetCluster::InvalidatedClusterRoutingPolicy);
+
+constexpr const std::chrono::milliseconds kDefaultMetadataTTLCluster{500};
+constexpr const std::chrono::milliseconds
+    kDefaultMetadataTTLClusterGRNotificationsON =
+        std::chrono::milliseconds(60 * 1000);
+constexpr const std::chrono::milliseconds kDefaultMetadataTTLClusterSet{
+    5000};  // default TTL for ClusterSet is 5 seconds regardless if GR
+            // Notifications are used or not
+const bool kDefaultUseGRNotificationsCluster = false;
+const bool kDefaultUseGRNotificationsClusterSet = true;
 
 }  // namespace mysqlrouter
 #endif

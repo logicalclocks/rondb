@@ -38,6 +38,7 @@ MYSQL_ADD_EXECUTABLE(
   ${PROTOC_PLUGIN_SRC}
   SKIP_INSTALL
 )
+DOWNGRADE_STRINGOP_WARNINGS(xprotocol_plugin)
 
 TARGET_LINK_LIBRARIES(
   xprotocol_plugin
@@ -62,12 +63,9 @@ IF(MY_COMPILER_IS_GNU)
   MY_TARGET_LINK_OPTIONS(xprotocol_plugin "-Wl,--no-as-needed -lpthread")
 ENDIF()
 
-SET(PROTOC_PLUGIN_GENERATED_HDR
-  "xprotocol_tags.h"
-)
-
 ADD_CUSTOM_COMMAND(
-  OUTPUT "${MYSQLX_GENERATE_DIR}/${PROTOC_PLUGIN_GENERATED_HDR}"
+  OUTPUT "${MYSQLX_GENERATE_DIR}/xprotocol_tags.h"
+         "${MYSQLX_GENERATE_DIR}/encoding_descriptors.h"
   COMMAND ${PROTOBUF_PROTOC_EXECUTABLE}
   ARGS --plugin=protoc-gen-yplg=$<TARGET_FILE:xprotocol_plugin>
        --yplg_out "${MYSQLX_GENERATE_DIR}"
@@ -83,7 +81,11 @@ ADD_CUSTOM_COMMAND(
 MY_ADD_CUSTOM_TARGET(xprotocol_tags
   DEPENDS
   xprotocol_plugin
-  "${MYSQLX_GENERATE_DIR}/${PROTOC_PLUGIN_GENERATED_HDR}"
+  "${MYSQLX_GENERATE_DIR}/xprotocol_tags.h"
+  "${MYSQLX_GENERATE_DIR}/encoding_descriptors.h"
   SOURCES
-  "${MYSQLX_GENERATE_DIR}/${PROTOC_PLUGIN_GENERATED_HDR}"
+  "${MYSQLX_GENERATE_DIR}/xprotocol_tags.h"
+  "${MYSQLX_GENERATE_DIR}/encoding_descriptors.h"
 )
+
+ADD_DEPENDENCIES(clang_tidy_prerequisites xprotocol_tags)

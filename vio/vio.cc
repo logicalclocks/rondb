@@ -45,6 +45,7 @@
 #include "mysql/psi/mysql_socket.h"
 #include "mysql/psi/psi_memory.h"  // IWYU pragma: keep
 #include "mysql/service_mysql_alloc.h"
+#include "string_with_len.h"
 #include "template_utils.h"
 #include "vio/vio_priv.h"
 
@@ -210,7 +211,8 @@ Vio &Vio::operator=(Vio &&vio) {
 
 static bool vio_init(Vio *vio, enum enum_vio_type type, my_socket sd,
                      uint flags) {
-  DBUG_PRINT("enter vio_init", ("type: %d sd: %d  flags: %d", type, sd, flags));
+  DBUG_PRINT("enter vio_init",
+             ("type: %d sd: " MY_SOCKET_FMT " flags: %d", type, sd, flags));
 
   mysql_socket_setfd(&vio->mysql_socket, sd);
 
@@ -426,7 +428,7 @@ Vio *mysql_socket_vio_new(MYSQL_SOCKET mysql_socket, enum_vio_type type,
   Vio *vio;
   my_socket sd = mysql_socket_getfd(mysql_socket);
   DBUG_TRACE;
-  DBUG_PRINT("enter", ("sd: %d", sd));
+  DBUG_PRINT("enter", ("sd: " MY_SOCKET_FMT, sd));
 
   if ((vio = internal_vio_create(flags))) {
     if (vio_init(vio, type, sd, flags)) {
@@ -444,7 +446,7 @@ Vio *vio_new(my_socket sd, enum enum_vio_type type, uint flags) {
   Vio *vio;
   MYSQL_SOCKET mysql_socket = MYSQL_INVALID_SOCKET;
   DBUG_TRACE;
-  DBUG_PRINT("enter", ("sd: %d", sd));
+  DBUG_PRINT("enter", ("sd: " MY_SOCKET_FMT, sd));
 
   mysql_socket_setfd(&mysql_socket, sd);
   vio = mysql_socket_vio_new(mysql_socket, type, flags);
@@ -464,10 +466,10 @@ Vio *vio_new_win32pipe(HANDLE hPipe) {
     }
 
     /* Create an object for event notification. */
-    vio->overlapped.hEvent = CreateEvent(NULL, false, false, NULL);
-    if (vio->overlapped.hEvent == NULL) {
+    vio->overlapped.hEvent = CreateEvent(nullptr, false, false, nullptr);
+    if (vio->overlapped.hEvent == nullptr) {
       internal_vio_delete(vio);
-      return NULL;
+      return nullptr;
     }
     vio->hPipe = hPipe;
   }

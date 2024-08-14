@@ -26,6 +26,9 @@
 
 #include <string.h>
 
+#include <memory>
+
+#include "m_string.h"
 #include "my_alloc.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -45,6 +48,8 @@
 #include "sql/system_variables.h"
 #include "sql/table.h"
 #include "sql/trigger.h"  // Trigger
+
+struct CHARSET_INFO;
 
 namespace dd {
 
@@ -346,7 +351,7 @@ bool load_triggers(THD *thd, MEM_ROOT *mem_root, const char *schema_name,
     if (trigger_to_add == nullptr) return true;
 
     if (triggers->push_back(trigger_to_add, mem_root)) {
-      destroy(trigger_to_add);
+      ::destroy_at(trigger_to_add);
       return true;
     }
   }

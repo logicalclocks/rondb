@@ -31,7 +31,10 @@
 #include <OutputStream.hpp>
 #include "NdbImport.hpp"
 #include "NdbImportUtil.hpp"
+#include "portlib/ssl_applink.h"
+#include "util/TlsKeyManager.hpp"
 #include "util/require.h"
+
 // STL
 #include <string>
 
@@ -66,228 +69,210 @@ static NdbOut g_err(g_err_out);
 
 static NdbImport::Opt g_opt;
 
-static struct my_option
-my_long_options[] =
-{
-  NdbStdOpt::usage,
-  NdbStdOpt::help,
-  NdbStdOpt::version,
-  NdbStdOpt::ndb_connectstring,
-  NdbStdOpt::mgmd_host,
-  NdbStdOpt::connectstring,
-  NdbStdOpt::ndb_nodeid,
-  NdbStdOpt::connect_retry_delay,
-  NdbStdOpt::connect_retries,
-  NDB_STD_OPT_DEBUG
-  { "connections", NDB_OPT_NOSHORT,
-    "Number of cluster connections to create."
-    " If option --ndb-nodeid=N is given then this number of consecutive"
-    " API nodes starting at N must exist",
-    &g_opt.m_connections, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_connections, 0, 0, 0, 0, 0 },
-  { "table", 't',
-   "Name of the table where to import the data."
-   "Default is the basename from the input csv file name",
-   &g_opt.m_table, nullptr, 0,
-   GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "state-dir", NDB_OPT_NOSHORT,
-    "Where to write state files (t1.res etc)."
-    " Default is \".\" (currect directory)",
-    &g_opt.m_state_dir, nullptr, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "keep-state", NDB_OPT_NOSHORT,
-    "By default state files are removed when the job completes"
-    " successfully, except if there were any rejects (within allowed limit)"
-    " then *.rej is kept. This option keeps all state files",
-    &g_opt.m_keep_state, nullptr, 0,
-    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
-  { "stats", NDB_OPT_NOSHORT,
-    "Save performance related options and internal statistics into"
-    " additional state files with suffixes .sto and .stt. The files"
-    " are kept also on successful completion",
-    &g_opt.m_stats, nullptr, 0,
-    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
-  { "input-type", NDB_OPT_NOSHORT,
-    "Input type: csv,random"
-    " (random is a test option)",
-    &g_opt.m_input_type, nullptr, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "input-workers", NDB_OPT_NOSHORT,
-    "Number of threads processing input",
-    &g_opt.m_input_workers, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_input_workers, 0, 0, 0, 0, 0 },
-  { "output-type", NDB_OPT_NOSHORT,
-    "Output type: ndb,null"
-    " (null is a test option)",
-    &g_opt.m_output_type, nullptr, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "output-workers", NDB_OPT_NOSHORT,
-    "Number of threads processing output or relaying db ops",
-    &g_opt.m_output_workers, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_output_workers, 0, 0, 0, 0, 0 },
-  { "db-workers", NDB_OPT_NOSHORT,
-    "Number of threads PER datanode executing db ops",
-    &g_opt.m_db_workers, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_db_workers, 0, 0, 0, 0, 0 },
-  { "ignore-lines", NDB_OPT_NOSHORT,
-    "Ignore given number of initial lines in input file."
-    " Used to skip a non-data header."
-    " To continue with an aborted job use --resume instead",
-    &g_opt.m_ignore_lines, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_ignore_lines, 0, 0, 0, 0, 0 },
-  { "max-rows", NDB_OPT_NOSHORT,
-    "Limit number of rows proccessed."
-    " Mainly a test option. Default 0 means no limit."
-    " More rows may be processed",
-    &g_opt.m_max_rows, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_max_rows, 0, 0, 0, 0, 0 },
-  { "continue", NDB_OPT_NOSHORT,
+static struct my_option my_long_options[] = {
+    NdbStdOpt::usage,
+    NdbStdOpt::help,
+    NdbStdOpt::version,
+    NdbStdOpt::ndb_connectstring,
+    NdbStdOpt::mgmd_host,
+    NdbStdOpt::connectstring,
+    NdbStdOpt::ndb_nodeid,
+    NdbStdOpt::connect_retry_delay,
+    NdbStdOpt::connect_retries,
+    NdbStdOpt::tls_search_path,
+    NdbStdOpt::mgm_tls,
+    NDB_STD_OPT_DEBUG{
+        "connections", NDB_OPT_NOSHORT,
+        "Number of cluster connections to create."
+        " If option --ndb-nodeid=N is given then this number of consecutive"
+        " API nodes starting at N must exist",
+        &g_opt.m_connections, nullptr, 0, GET_UINT, REQUIRED_ARG,
+        g_opt.m_connections, 0, 0, 0, 0, 0},
+    {"table", 't',
+     "Name of the table where to import the data."
+     "Default is the basename from the input csv file name",
+     &g_opt.m_table, nullptr, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"state-dir", NDB_OPT_NOSHORT,
+     "Where to write state files (t1.res etc)."
+     " Default is \".\" (currect directory)",
+     &g_opt.m_state_dir, nullptr, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"keep-state", NDB_OPT_NOSHORT,
+     "By default state files are removed when the job completes"
+     " successfully, except if there were any rejects (within allowed limit)"
+     " then *.rej is kept. This option keeps all state files",
+     &g_opt.m_keep_state, nullptr, 0, GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0},
+    {"stats", NDB_OPT_NOSHORT,
+     "Save performance related options and internal statistics into"
+     " additional state files with suffixes .sto and .stt. The files"
+     " are kept also on successful completion",
+     &g_opt.m_stats, nullptr, 0, GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0},
+    {"input-type", NDB_OPT_NOSHORT,
+     "Input type: csv,random"
+     " (random is a test option)",
+     &g_opt.m_input_type, nullptr, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"input-workers", NDB_OPT_NOSHORT, "Number of threads processing input",
+     &g_opt.m_input_workers, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_input_workers, 0, 0, 0, 0, 0},
+    {"output-type", NDB_OPT_NOSHORT,
+     "Output type: ndb,null"
+     " (null is a test option)",
+     &g_opt.m_output_type, nullptr, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"output-workers", NDB_OPT_NOSHORT,
+     "Number of threads processing output or relaying db ops",
+     &g_opt.m_output_workers, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_output_workers, 0, 0, 0, 0, 0},
+    {"db-workers", NDB_OPT_NOSHORT,
+     "Number of threads PER datanode executing db ops", &g_opt.m_db_workers,
+     nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_db_workers, 0, 0, 0, 0, 0},
+    {"ignore-lines", NDB_OPT_NOSHORT,
+     "Ignore given number of initial lines in input file."
+     " Used to skip a non-data header."
+     " To continue with an aborted job use --resume instead",
+     &g_opt.m_ignore_lines, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_ignore_lines, 0, 0, 0, 0, 0},
+    {"max-rows", NDB_OPT_NOSHORT,
+     "Limit number of rows proccessed."
+     " Mainly a test option. Default 0 means no limit."
+     " More rows may be processed",
+     &g_opt.m_max_rows, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_max_rows, 0,
+     0, 0, 0, 0},
+    {"continue", NDB_OPT_NOSHORT,
     "continue is no longer supported, we will always stop at failure",
-    &g_opt.m_continue, nullptr, 0,
-    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
-  { "use-write", NDB_OPT_NOSHORT,
-    "Use Write instead of Insert",
-    &g_opt.m_use_write, &g_opt.m_use_write, 0,
-    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
-  { "resume", NDB_OPT_NOSHORT,
+     &g_opt.m_continue, nullptr, 0, GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0},
+    { "use-write", NDB_OPT_NOSHORT,
+      "Use Write instead of Insert",
+      &g_opt.m_use_write, &g_opt.m_use_write, 0,
+      GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
+    {"resume", NDB_OPT_NOSHORT,
     "resume is not supported, the error handling is too unsafe",
-    &g_opt.m_resume, nullptr, 0,
-    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
-  { "monitor", NDB_OPT_NOSHORT,
-    "Periodically print status of running job if something has changed"
-    " (status, rejected rows, temporary errors)."
-    " Value 0 disables. Value 1 prints any change seen."
-    " Higher values reduce status printing exponentially"
-    " up to some pre-defined limit",
-    &g_opt.m_monitor, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_monitor, 0, 0, 0, 0, 0 },
-  { "use-auto-increment", NDB_OPT_NOSHORT,
-    "Ignore value in CSV file for auto increment fields, "
-    " instead use an automatically incremented value",
-    &g_opt.m_use_auto_increment, &g_opt.m_use_auto_increment, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_ai_increment, 0, 0, 0, 0, 0 },
-  { "ai-prefetch-sz", NDB_OPT_NOSHORT,
-    "For table with an auto inc (including hidden) PK,"
-    " specify number of autoincrement values"
-    " that are prefetched. See mysqld",
-    &g_opt.m_ai_prefetch_sz, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_ai_prefetch_sz, 0, 0, 0, 0, 0 },
-  { "ai-increment", NDB_OPT_NOSHORT,
-    "For table with an auto inc (including hidden) PK,"
-    " specify autoincrement increment."
-    " See mysqld",
-    &g_opt.m_ai_increment, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_ai_increment, 0, 0, 0, 0, 0 },
-  { "ai-offset", NDB_OPT_NOSHORT,
-    "For table with an auto inc (including hidden) PK,"
-    " specify autoincrement offset."
-    " See mysqld",
-    &g_opt.m_ai_offset, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_ai_offset, 0, 0, 0, 0, 0 },
-  { "no-asynch", NDB_OPT_NOSHORT,
-    "Run db ops as batches under single trans."
-    " Used for performance comparison and does not support all features"
-    " e.g. detecting individual rejected rows",
-    &g_opt.m_no_asynch, nullptr, 0,
-    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
-  { "no-hint", NDB_OPT_NOSHORT,
-    "Do not use distribution key hint to select db node (TC)",
-    &g_opt.m_no_hint, nullptr, 0,
-    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
-  { "pagesize", NDB_OPT_NOSHORT,
-    "Align I/O buffers to given size",
-    &g_opt.m_pagesize, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_pagesize, 0, 0, 0, 0, 0 },
-  { "pagecnt", NDB_OPT_NOSHORT,
-    "Size of I/O buffers as multiple of pagesize."
-    " CSV input worker allocates a double sized buffer",
-    &g_opt.m_pagecnt, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_pagecnt, 0, 0, 0, 0, 0 },
-  { "pagebuffer", NDB_OPT_NOSHORT,
-    "Size of I/O buffers in bytes. Rounded up to pagesize and"
-    " overrides pagecnt",
-    &g_opt.m_pagebuffer, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_pagebuffer, 0, 0, 0, 0, 0 },
-  { "rowbatch", NDB_OPT_NOSHORT,
-    "Limit rows in row queues (0 no limit)",
-    &g_opt.m_rowbatch, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "rowbytes", NDB_OPT_NOSHORT,
-    "Limit bytes in row queues (0 no limit)",
-    &g_opt.m_rowbytes, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_rowbytes, 0, 0, 0, 0, 0 },
-  { "opbatch", NDB_OPT_NOSHORT,
-    "A db execution batch is a set of transactions and operations"
-    " sent to NDB kernel."
-    " This option limits NDB operations (including blob operations)"
-    " in a db execution batch.  Therefore it also limits number"
-    " of asynch transactions."
-    " Value 0 is not valid",
-    &g_opt.m_opbatch, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_opbatch, 0, 0, 0, 0, 0 },
-  { "opbytes", NDB_OPT_NOSHORT,
-    "Limit bytes in db execution batch (0 no limit)",
-    &g_opt.m_opbytes, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "polltimeout", NDB_OPT_NOSHORT,
-    "Millisecond timeout in one poll for completed asynch transactions."
-    " Polls continue until all are completed or an error has occurred",
-    &g_opt.m_polltimeout, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_polltimeout, 0, 0, 0, 0, 0 },
-  { "temperrors", NDB_OPT_NOSHORT,
-    "Limit temporary NDB errors. Default is 0 which means that any"
-    " temporary error is fatal."
-    " The errors are counted per db execution batch, not per individual"
-    " operations, and do not cause rows to be rejected",
-    &g_opt.m_temperrors, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_temperrors, 0, 0, 0, 0, 0 },
-  { "tempdelay", NDB_OPT_NOSHORT,
-    "Number of milliseconds to sleep between temporary errors",
-    &g_opt.m_tempdelay, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_tempdelay, 0, 0, 0, 0, 0 },
-  { "rowswait", NDB_OPT_NOSHORT,
-    "Number of milliseconds a worker waits for a signal that new rows"
-    " can be processed",
-    &g_opt.m_rowswait, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_rowswait, 0, 0, 0, 0, 0 },
-  { "idlespin", NDB_OPT_NOSHORT,
-    "Number of times to re-try before idlesleep",
-    &g_opt.m_idlespin, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_idlespin, 0, 0, 0, 0, 0 },
-  { "idlesleep", NDB_OPT_NOSHORT,
-    "Number of milliseconds to sleep waiting for more to do."
-    " Cause can be row queues stall (see --rowswait) or"
-    " e.g. passing control between CSV workers",
-    &g_opt.m_idlesleep, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_idlesleep, 0, 0, 0, 0, 0 },
-  { "checkloop", NDB_OPT_NOSHORT,
-    "A job and its diagnostics team periodically check for"
-    " progress from lower levels. This option gives number of"
-    " milliseconds to wait between such checks."
-    " High values may cause data structures (rowmaps) to grow too much."
-    " Low values may interfere too much with the workers",
-    &g_opt.m_checkloop, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_checkloop, 0, 0, 0, 0, 0 },
-  { "alloc-chunk", NDB_OPT_NOSHORT,
-    "Number of free rows to alloc (seize) at a time."
-    " Higher values reduce mutexing but also may reduce parallelism",
-    &g_opt.m_alloc_chunk, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_alloc_chunk, 0, 0, 0, 0, 0 },
-  { "rejects", NDB_OPT_NOSHORT,
-    "Limit number of rejected rows (rows with permanent error) in data load."
-    " Default is 0 which means that any rejected row causes a fatal error."
-    " The row(s) exceeding the limit are also added to *.rej."
-    " The limit is per current run (not all --resume'd runs)",
-    &g_opt.m_rejects, nullptr, 0,
-    GET_UINT, REQUIRED_ARG, g_opt.m_rejects, 0, 0, 0, 0, 0 },
-  { "fields-terminated-by", NDB_OPT_NOSHORT,
-    "See MySQL LOAD DATA."
-    " This and other CSV controls are scanned for escapes"
-    " including \\\\,\\n,\\r,\\t",
-    &g_opt.m_optcsv.m_fields_terminated_by, nullptr, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "fields-enclosed-by", NDB_OPT_NOSHORT,
-    "See MySQL LOAD DATA."
+     &g_opt.m_resume, nullptr, 0, GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0},
+    {"monitor", NDB_OPT_NOSHORT,
+     "Periodically print status of running job if something has changed"
+     " (status, rejected rows, temporary errors)."
+     " Value 0 disables. Value 1 prints any change seen."
+     " Higher values reduce status printing exponentially"
+     " up to some pre-defined limit",
+     &g_opt.m_monitor, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_monitor, 0,
+     0, 0, 0, 0},
+    { "use-auto-increment", NDB_OPT_NOSHORT,
+      "Ignore value in CSV file for auto increment fields, "
+      " instead use an automatically incremented value",
+      &g_opt.m_use_auto_increment, &g_opt.m_use_auto_increment, 0,
+      GET_UINT, REQUIRED_ARG, g_opt.m_ai_increment, 0, 0, 0, 0, 0 },
+    {"ai-prefetch-sz", NDB_OPT_NOSHORT,
+     "For table with an auto inc (including hidden) PK,"
+     " specify number of autoincrement values"
+     " that are prefetched. See mysqld",
+     &g_opt.m_ai_prefetch_sz, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_ai_prefetch_sz, 0, 0, 0, 0, 0},
+    {"ai-increment", NDB_OPT_NOSHORT,
+     "For table with an auto inc (including hidden) PK,"
+     " specify autoincrement increment."
+     " See mysqld",
+     &g_opt.m_ai_increment, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_ai_increment, 0, 0, 0, 0, 0},
+    {"ai-offset", NDB_OPT_NOSHORT,
+     "For table with an auto inc (including hidden) PK,"
+     " specify autoincrement offset."
+     " See mysqld",
+     &g_opt.m_ai_offset, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_ai_offset,
+     0, 0, 0, 0, 0},
+    {"no-asynch", NDB_OPT_NOSHORT,
+     "Run db ops as batches under single trans."
+     " Used for performance comparison and does not support all features"
+     " e.g. detecting individual rejected rows",
+     &g_opt.m_no_asynch, nullptr, 0, GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0},
+    {"no-hint", NDB_OPT_NOSHORT,
+     "Do not use distribution key hint to select db node (TC)",
+     &g_opt.m_no_hint, nullptr, 0, GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0},
+    {"pagesize", NDB_OPT_NOSHORT, "Align I/O buffers to given size",
+     &g_opt.m_pagesize, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_pagesize, 0,
+     0, 0, 0, 0},
+    {"pagecnt", NDB_OPT_NOSHORT,
+     "Size of I/O buffers as multiple of pagesize."
+     " CSV input worker allocates a double sized buffer",
+     &g_opt.m_pagecnt, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_pagecnt, 0,
+     0, 0, 0, 0},
+    {"pagebuffer", NDB_OPT_NOSHORT,
+     "Size of I/O buffers in bytes. Rounded up to pagesize and"
+     " overrides pagecnt",
+     &g_opt.m_pagebuffer, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_pagebuffer, 0, 0, 0, 0, 0},
+    {"rowbatch", NDB_OPT_NOSHORT, "Limit rows in row queues (0 no limit)",
+     &g_opt.m_rowbatch, nullptr, 0, GET_UINT, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"rowbytes", NDB_OPT_NOSHORT, "Limit bytes in row queues (0 no limit)",
+     &g_opt.m_rowbytes, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_rowbytes, 0,
+     0, 0, 0, 0},
+    {"opbatch", NDB_OPT_NOSHORT,
+     "A db execution batch is a set of transactions and operations"
+     " sent to NDB kernel."
+     " This option limits NDB operations (including blob operations)"
+     " in a db execution batch.  Therefore it also limits number"
+     " of asynch transactions."
+     " Value 0 is not valid",
+     &g_opt.m_opbatch, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_opbatch, 0,
+     0, 0, 0, 0},
+    {"opbytes", NDB_OPT_NOSHORT,
+     "Limit bytes in db execution batch (0 no limit)", &g_opt.m_opbytes,
+     nullptr, 0, GET_UINT, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"polltimeout", NDB_OPT_NOSHORT,
+     "Millisecond timeout in one poll for completed asynch transactions."
+     " Polls continue until all are completed or an error has occurred",
+     &g_opt.m_polltimeout, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_polltimeout, 0, 0, 0, 0, 0},
+    {"temperrors", NDB_OPT_NOSHORT,
+     "Limit temporary NDB errors. Default is 0 which means that any"
+     " temporary error is fatal."
+     " The errors are counted per db execution batch, not per individual"
+     " operations, and do not cause rows to be rejected",
+     &g_opt.m_temperrors, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_temperrors, 0, 0, 0, 0, 0},
+    {"tempdelay", NDB_OPT_NOSHORT,
+     "Number of milliseconds to sleep between temporary errors",
+     &g_opt.m_tempdelay, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_tempdelay,
+     0, 0, 0, 0, 0},
+    {"rowswait", NDB_OPT_NOSHORT,
+     "Number of milliseconds a worker waits for a signal that new rows"
+     " can be processed",
+     &g_opt.m_rowswait, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_rowswait, 0,
+     0, 0, 0, 0},
+    {"idlespin", NDB_OPT_NOSHORT, "Number of times to re-try before idlesleep",
+     &g_opt.m_idlespin, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_idlespin, 0,
+     0, 0, 0, 0},
+    {"idlesleep", NDB_OPT_NOSHORT,
+     "Number of milliseconds to sleep waiting for more to do."
+     " Cause can be row queues stall (see --rowswait) or"
+     " e.g. passing control between CSV workers",
+     &g_opt.m_idlesleep, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_idlesleep,
+     0, 0, 0, 0, 0},
+    {"checkloop", NDB_OPT_NOSHORT,
+     "A job and its diagnostics team periodically check for"
+     " progress from lower levels. This option gives number of"
+     " milliseconds to wait between such checks."
+     " High values may cause data structures (rowmaps) to grow too much."
+     " Low values may interfere too much with the workers",
+     &g_opt.m_checkloop, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_checkloop,
+     0, 0, 0, 0, 0},
+    {"alloc-chunk", NDB_OPT_NOSHORT,
+     "Number of free rows to alloc (seize) at a time."
+     " Higher values reduce mutexing but also may reduce parallelism",
+     &g_opt.m_alloc_chunk, nullptr, 0, GET_UINT, REQUIRED_ARG,
+     g_opt.m_alloc_chunk, 0, 0, 0, 0, 0},
+    {"rejects", NDB_OPT_NOSHORT,
+     "Limit number of rejected rows (rows with permanent error) in data load."
+     " Default is 0 which means that any rejected row causes a fatal error."
+     " The row(s) exceeding the limit are also added to *.rej."
+     " The limit is per current run (not all --resume'd runs)",
+     &g_opt.m_rejects, nullptr, 0, GET_UINT, REQUIRED_ARG, g_opt.m_rejects, 0,
+     0, 0, 0, 0},
+    {"fields-terminated-by", NDB_OPT_NOSHORT,
+     "See MySQL LOAD DATA."
+     " This and other CSV controls are scanned for escapes"
+     " including \\\\,\\n,\\r,\\t",
+     &g_opt.m_optcsv.m_fields_terminated_by, nullptr, 0, GET_STR, REQUIRED_ARG,
+     0, 0, 0, 0, 0, 0},
+    {"fields-enclosed-by", NDB_OPT_NOSHORT,
+     "See MySQL LOAD DATA."
      " For CSV input this is same as --fields-optionally-enclosed-by",
      &g_opt.m_optcsv.m_fields_enclosed_by, nullptr, 0, GET_STR, REQUIRED_ARG, 0,
      0, 0, 0, 0, 0},

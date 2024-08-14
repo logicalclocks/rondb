@@ -47,16 +47,16 @@
   Kindahl.
 */
 
+#include "my_bitmap.h"
+
 #include <string.h>
 #include <sys/types.h>
 #include <algorithm>
+#include <bit>
 
-#include "my_bit.h"
-#include "my_bitmap.h"
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_macros.h"
 #include "my_sys.h"
 #include "mysql/service_mysql_alloc.h"
 #include "mysys/mysys_priv.h"
@@ -140,8 +140,8 @@ static inline uint get_first_not_set(uint32 value, uint word_pos) {
 bool bitmap_init(MY_BITMAP *map, my_bitmap_map *buf, uint n_bits) {
   DBUG_TRACE;
   if (!buf) {
-    uint size_in_bytes = bitmap_buffer_size(n_bits);
-    uint extra = 0;
+    const uint size_in_bytes = bitmap_buffer_size(n_bits);
+    const uint extra = 0;
 
     if (!(buf = (my_bitmap_map *)my_malloc(key_memory_MY_BITMAP_bitmap,
                                            size_in_bytes + extra, MYF(MY_WME))))
@@ -178,8 +178,8 @@ void bitmap_free(MY_BITMAP *map) {
 
 bool bitmap_test_and_set(MY_BITMAP *map, uint bitmap_bit) {
   uchar *value = ((uchar *)map->bitmap) + (bitmap_bit / 8);
-  uchar bit = 1 << ((bitmap_bit)&7);
-  uchar res = (*value) & bit;
+  const uchar bit = 1 << ((bitmap_bit)&7);
+  const uchar res = (*value) & bit;
   *value |= bit;
   return res;
 }
@@ -216,7 +216,7 @@ void bitmap_set_prefix(MY_BITMAP *map, uint prefix_size) {
 }
 
 bool bitmap_is_prefix(const MY_BITMAP *map, uint prefix_size) {
-  uint prefix_bits = prefix_size % 32;
+  const uint prefix_bits = prefix_size % 32;
   my_bitmap_map *word_ptr = map->bitmap, last_word;
   my_bitmap_map *end_prefix = word_ptr + prefix_size / 32;
   assert(word_ptr && prefix_size <= map->n_bits);
@@ -335,8 +335,8 @@ bool bitmap_is_valid(const MY_BITMAP *map) {
 void bitmap_intersect(MY_BITMAP *to, const MY_BITMAP *from) {
   assert(to->bitmap && from->bitmap);
 
-  uint to_length = no_words_in_map(to);
-  uint from_length = no_words_in_map(from);
+  const uint to_length = no_words_in_map(to);
+  const uint from_length = no_words_in_map(from);
   uint min_length = std::min(to_length, from_length);
 
   // Clear bits in 'to' not set in 'from'
@@ -370,7 +370,7 @@ void bitmap_intersect(MY_BITMAP *to, const MY_BITMAP *from) {
 */
 
 void bitmap_set_above(MY_BITMAP *map, uint from_byte, bool use_bit) {
-  uchar use_byte = use_bit ? 0xff : 0;
+  const uchar use_byte = use_bit ? 0xff : 0;
   uchar *to = (uchar *)map->bitmap + from_byte;
   uchar *end = (uchar *)map->bitmap + (map->n_bits + 7) / 8;
 
@@ -420,10 +420,10 @@ uint bitmap_bits_set(const MY_BITMAP *map) {
   assert(map->bitmap);
   assert(map->n_bits > 0);
 
-  for (; data_ptr < end; data_ptr++) res += my_count_bits_uint32(*data_ptr);
+  for (; data_ptr < end; data_ptr++) res += std::popcount(*data_ptr);
 
   /*Reset last bits to zero*/
-  res += my_count_bits_uint32(*map->last_word_ptr & ~map->last_word_mask);
+  res += std::popcount(*map->last_word_ptr & ~map->last_word_mask);
   return res;
 }
 

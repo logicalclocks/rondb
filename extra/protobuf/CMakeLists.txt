@@ -70,10 +70,15 @@ IF(MSVC AND (FPROFILE_GENERATE OR FPROFILE_USE))
          "${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO}")
 ENDIF()
 
-# Suppress linker warnings generated as a consequence of combining
-# CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS with __declspec(dllexport)
 IF(MSVC)
+  # Suppress linker warnings generated as a consequence of combining
+  # CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS with __declspec(dllexport)
   STRING(APPEND CMAKE_SHARED_LINKER_FLAGS " /IGNORE:4197")
+
+  # When using cmake < 3.18 we get:
+  # LINK : warning LNK4044: unrecognized option
+  SET(protobuf_HAVE_LD_VERSION_SCRIPT OFF)
+  SET(protobuf_HAVE_LD_VERSION_SCRIPT OFF CACHE INTERNAL "")
 ENDIF()
 
 DISABLE_MISSING_PROFILE_WARNING()
@@ -169,7 +174,8 @@ ELSE()
   # so use static libs instead.
   IF(CMAKE_CXX_FLAGS MATCHES "-static-libgcc")
     SET(protobuf_BUILD_SHARED_LIBS OFF CACHE INTERNAL "")
-  ELSE()
+  ELSEIF(NOT DEFINED protobuf_BUILD_SHARED_LIBS)
+    # Do not redefine to ON if already set to OFF
     SET(protobuf_BUILD_SHARED_LIBS ON CACHE INTERNAL "")
   ENDIF()
 ENDIF()

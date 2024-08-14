@@ -255,10 +255,10 @@ DEFINE_BOOL_METHOD(mysql_security_context_imp::get,
       } else if (!strcmp(name, "external_user")) {
         *((MYSQL_LEX_CSTRING *)inout_pvalue) = ctx->external_user();
       } else if (!strcmp(name, "privilege_super")) {
-        bool checked = ctx->check_access(SUPER_ACL);
+        const bool checked = ctx->check_access(SUPER_ACL);
         *((bool *)inout_pvalue) = checked ? true : false;
       } else if (!strcmp(name, "privilege_execute")) {
-        bool checked = ctx->check_access(EXECUTE_ACL);
+        const bool checked = ctx->check_access(EXECUTE_ACL);
         *((bool *)inout_pvalue) = checked ? true : false;
       } else
         return true; /* invalid option */
@@ -318,7 +318,7 @@ DEFINE_BOOL_METHOD(mysql_security_context_imp::set,
       LEX_CSTRING *value = (LEX_CSTRING *)pvalue;
       ctx->assign_proxy_user(value->str, value->length);
     } else if (!strcmp(name, "privilege_super")) {
-      char value = *(char *)pvalue;
+      const char value = *(char *)pvalue;
       if (value)
         ctx->set_master_access(ctx->master_access() | (SUPER_ACL),
                                ctx->restrictions());
@@ -326,7 +326,7 @@ DEFINE_BOOL_METHOD(mysql_security_context_imp::set,
         ctx->set_master_access(ctx->master_access() & ~(SUPER_ACL),
                                ctx->restrictions());
     } else if (!strcmp(name, "privilege_execute")) {
-      char value = *(char *)pvalue;
+      const char value = *(char *)pvalue;
       if (value)
         ctx->set_master_access(ctx->master_access() | (EXECUTE_ACL),
                                ctx->restrictions());

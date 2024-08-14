@@ -29,13 +29,12 @@
 #include <utility>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_dbug.h"
 #include "my_hostname.h"  // HOSTNAME_LENGTH
 #include "mysql_com.h"    // USERNAME_LENGTH
 #include "sql/auth/auth_common.h"
 #include "sql/auth/partial_revokes.h"
+#include "sql/mysqld_cs.h"
 #include "sql/sql_const.h"
 #include "sql_string.h"
 
@@ -93,6 +92,14 @@ class Security_context {
   void get_active_roles(THD *, List<LEX_USER> &);
   void checkout_access_maps(void);
   Access_bitmask db_acl(LEX_CSTRING db, bool use_pattern_scan = true) const;
+  static Access_bitmask check_db_level_access(THD *thd,
+                                              const Security_context *sctx,
+                                              const char *host, const char *ip,
+                                              const char *user, const char *db,
+                                              size_t db_len,
+                                              bool db_is_pattern = false);
+  Access_bitmask check_db_level_access(THD *thd, const char *db, size_t db_len,
+                                       bool db_is_pattern = false) const;
   Access_bitmask procedure_acl(LEX_CSTRING db, LEX_CSTRING procedure_name);
   Access_bitmask function_acl(LEX_CSTRING db, LEX_CSTRING procedure_name);
   Access_bitmask table_acl(LEX_CSTRING db, LEX_CSTRING table);

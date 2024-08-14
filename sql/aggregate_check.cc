@@ -210,6 +210,13 @@ bool Group_check::check_query(THD *thd) {
     if (check_expression(thd, select->having_cond(), false)) goto err;
   }
 
+  // Validate QUALIFY condition
+  if (select->qualify_cond()) {
+    number_in_list = 1;
+    place = "QUALIFY clause";
+    if (check_expression(thd, select->qualify_cond(), false)) goto err;
+  }
+
   // Validate windows' ORDER BY and PARTITION BY clauses.
   char buff[STRING_BUFFER_USUAL_SIZE];
   {
@@ -363,7 +370,7 @@ bool Group_check::is_fd_on_source(Item *item) {
     }
   }
 
-  if (select->olap != UNSPECIFIED_OLAP_TYPE) {
+  if (select->is_non_primitive_grouped()) {
     /*
       - the syntactical transformation of ROLLUP is to make a union of
       queries, and in each such query, some group column references are
@@ -617,7 +624,7 @@ void Group_check::add_to_source_of_mat_table(Item_field *item_field,
   Query_block *const mat_query_block =
       mat_query_expression->first_query_block();
   if (mat_query_expression->is_set_operation() ||
-      mat_query_block->olap != UNSPECIFIED_OLAP_TYPE)
+      mat_query_block->is_non_primitive_grouped())
     return;  // If UNION, EXCEPT, INTERSECT or ROLLUP, no FD
   // Grab Group_check for this subquery.
   Group_check *mat_gc = nullptr;
@@ -1151,7 +1158,7 @@ void Group_check::to_opt_trace(THD *thd) {
   if (fd.empty() && !whole_tables_fd) return;
   Opt_trace_context *ctx = &thd->opt_trace;
   if (!ctx->is_started()) return;
-  Opt_trace_object trace_wrapper(ctx);
+  const Opt_trace_object trace_wrapper(ctx);
   Opt_trace_object trace_fds(ctx, "functional_dependencies_of_GROUP_columns");
   to_opt_trace2(ctx, &trace_fds);
 }
@@ -1177,7 +1184,7 @@ void Group_check::to_opt_trace2(Opt_trace_context *ctx,
       parent->add("all_group_expressions", true);
   }
   if (!mat_tables.empty()) {
-    Opt_trace_array array(ctx, "searched_in_materialized_tables");
+    const Opt_trace_array array(ctx, "searched_in_materialized_tables");
     for (uint j = 0; j < mat_tables.size(); j++) {
       Opt_trace_object trace_wrapper(ctx);
       mat_tables.at(j)->to_opt_trace2(ctx, &trace_wrapper);

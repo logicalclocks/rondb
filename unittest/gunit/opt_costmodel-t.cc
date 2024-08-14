@@ -28,6 +28,7 @@
 #include "lex_string.h"
 #include "sql/opt_costconstantcache.h"
 #include "sql/opt_costmodel.h"
+#include "string_with_len.h"
 #include "unittest/gunit/fake_table.h"
 #include "unittest/gunit/test_utils.h"
 
@@ -78,11 +79,11 @@ TEST_F(CostModelTest, CostModelServer) {
 
   // Create and initialize the server cost model
   Cost_model_server cm;
-  cm.init();
+  cm.init(Optimizer::kOriginal);
 
   // Create and initialize a cost constant object that will be used
   // for verifying default values for cost constants
-  const Server_cost_constants default_server_cost;
+  const Server_cost_constants default_server_cost(Optimizer::kOriginal);
 
   // Test row evaluate cost
   EXPECT_EQ(cm.row_evaluate_cost(1.0), default_server_cost.row_evaluate_cost());
@@ -132,14 +133,14 @@ TEST_F(CostModelTest, CostModelTable) {
 
   // Create and initialize a cost model table object
   Cost_model_server cost_model_server;
-  cost_model_server.init();
+  cost_model_server.init(Optimizer::kOriginal);
   Cost_model_table cm;
   cm.init(&cost_model_server, &table);
 
   // Create and initialize a cost constant object that will be used
   // for verifying default values for cost constants
-  const Server_cost_constants default_server_cost;
-  const SE_cost_constants default_engine_cost;
+  const Server_cost_constants default_server_cost(Optimizer::kOriginal);
+  const SE_cost_constants default_engine_cost(Optimizer::kOriginal);
 
   // Test row evaluate cost
   EXPECT_EQ(cm.row_evaluate_cost(1.0), default_server_cost.row_evaluate_cost());

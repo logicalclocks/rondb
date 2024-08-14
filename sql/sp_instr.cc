@@ -28,9 +28,9 @@
 #include <algorithm>
 #include <atomic>
 #include <functional>
+#include <memory>
 
 #include "debug_sync.h"  // DEBUG_SYNC
-#include "m_ctype.h"
 #include "my_command.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
@@ -39,6 +39,7 @@
 #include "mysql/components/services/log_shared.h"
 #include "mysql/plugin.h"
 #include "mysql/psi/mysql_statement.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"  // Prealloced_array
@@ -75,6 +76,7 @@
 #include "sql/transaction_info.h"
 #include "sql/trigger.h"  // Trigger
 #include "sql/trigger_def.h"
+#include "string_with_len.h"
 #include "unsafe_string_append.h"
 
 class Cmp_splocal_locations {
@@ -356,7 +358,10 @@ bool sp_lex_instr::execute_expression(THD *thd, uint *nextp) {
       return true;
     }
   }
-  if (open_and_lock_tables(thd, m_lex->query_tables, 0)) {
+  if (open_tables_for_query(thd, m_lex->query_tables, 0)) {
+    return true;
+  }
+  if (lock_tables(thd, m_lex->query_tables, m_lex->table_count, 0)) {
     return true;
   }
 
@@ -388,7 +393,7 @@ bool sp_lex_instr::reset_lex_and_exec_core(THD *thd, uint *nextp,
     It's merged with the saved parent's value at the exit of this func.
   */
 
-  unsigned int parent_unsafe_rollback_flags =
+  const unsigned int parent_unsafe_rollback_flags =
       thd->get_transaction()->get_unsafe_rollback_flags(Transaction_ctx::STMT);
   thd->get_transaction()->reset_unsafe_rollback_flags(Transaction_ctx::STMT);
 
@@ -521,8 +526,11 @@ bool sp_lex_instr::reset_lex_and_exec_core(THD *thd, uint *nextp,
     STMT_EXECUTED means the statement has been prepared and executed before,
     but some error occurred during table open or execution).
   */
-  bool reprepare_error = error && thd->is_error() &&
-                         thd->get_stmt_da()->mysql_errno() == ER_NEED_REPREPARE;
+  const bool reprepare_error =
+      error && thd->is_error() &&
+      (thd->get_stmt_da()->mysql_errno() == ER_NEED_REPREPARE ||
+       thd->get_stmt_da()->mysql_errno() == ER_PREPARE_FOR_PRIMARY_ENGINE ||
+       thd->get_stmt_da()->mysql_errno() == ER_PREPARE_FOR_SECONDARY_ENGINE);
 
   // Unless there is an error, execution must have started (and completed)
   assert(error || m_lex->is_exec_started());
@@ -595,7 +603,7 @@ LEX *sp_lex_instr::parse_expr(THD *thd, sp_head *sp) {
     initiated. Also set the statement query arena to the lex mem_root.
   */
   MEM_ROOT *execution_mem_root = thd->mem_root;
-  Query_arena parse_arena(&m_lex_mem_root, thd->stmt_arena->get_state());
+  const Query_arena parse_arena(&m_lex_mem_root, thd->stmt_arena->get_state());
 
   thd->mem_root = &m_lex_mem_root;
   thd->stmt_arena->set_query_arena(parse_arena);
@@ -700,15 +708,24 @@ LEX *sp_lex_instr::parse_expr(THD *thd, sp_head *sp) {
 
 bool sp_lex_instr::validate_lex_and_execute_core(THD *thd, uint *nextp,
                                                  bool open_tables) {
+  // Remember if the general log was temporarily disabled when repreparing the
+  // statement for a secondary engine.
+  bool general_log_temporarily_disabled = false;
+
   Reprepare_observer reprepare_observer;
+
+  thd->set_secondary_engine_optimization(
+      Secondary_engine_optimization::PRIMARY_TENTATIVELY);
+
+  auto scope_guard = create_scope_guard(
+      [thd] { thd->set_secondary_engine_statement_context(nullptr); });
 
   while (true) {
     DBUG_EXECUTE_IF("simulate_bug18831513", { invalidate(); });
     if (is_invalid() || (m_lex->has_udf() && !m_first_execution)) {
       free_lex();
       LEX *lex = parse_expr(thd, thd->sp_runtime_ctx->sp);
-
-      if (!lex) return true;
+      if (lex == nullptr) return true;
 
       set_lex(lex, true);
 
@@ -743,46 +760,107 @@ bool sp_lex_instr::validate_lex_and_execute_core(THD *thd, uint *nextp,
 
     thd->push_reprepare_observer(stmt_reprepare_observer);
 
-    bool rc = reset_lex_and_exec_core(thd, nextp, open_tables);
+    const bool rc = reset_lex_and_exec_core(thd, nextp, open_tables);
 
     thd->pop_reprepare_observer();
 
+    /*
+      Re-enable the general log if it was temporarily disabled while repreparing
+      and executing a statement for a secondary engine.
+    */
+    if (general_log_temporarily_disabled) {
+      thd->variables.option_bits &= ~OPTION_LOG_OFF;
+      general_log_temporarily_disabled = false;
+    }
+
     m_first_execution = false;
 
+    // Exit immediately if  execution is successful
     if (!rc) return false;
 
-    /*
-      Here is why we need all the checks below:
-        - if the reprepare observer is not set, we've got an error, which should
-          be raised to the user;
-        - if we've got fatal error, it should be raised to the user;
-        - if our thread got killed during execution, the error should be raised
-          to the user;
-        - if we've got an error, different from ER_NEED_REPREPARE, we need to
-          raise it to the user;
-    */
-    if (stmt_reprepare_observer == nullptr || thd->is_fatal_error() ||
-        thd->killed || thd->get_stmt_da()->mysql_errno() != ER_NEED_REPREPARE) {
+    // Exit if a fatal error has occurred or statement execution was killed.
+    if (thd->is_fatal_error() || thd->is_killed()) {
       return true;
     }
-    /*
-      Reprepare_observer ensures that the statement is retried a maximum number
-      of times, to avoid an endless loop.
-    */
-    assert(stmt_reprepare_observer->is_invalidated());
-    if (!stmt_reprepare_observer->can_retry()) {
-      /*
-        Reprepare_observer sets error status in DA but Sql_condition is not
-        added. Please check Reprepare_observer::report_error(). Pushing
-        Sql_condition for ER_NEED_REPREPARE here.
-      */
-      Diagnostics_area *da = thd->get_stmt_da();
-      da->push_warning(thd, da->mysql_errno(), da->returned_sqlstate(),
-                       Sql_condition::SL_ERROR, da->message_text());
-      return true;
-    }
+    int my_errno = thd->get_stmt_da()->mysql_errno();
 
-    thd->clear_error();
+    if (my_errno != ER_NEED_REPREPARE &&
+        my_errno != ER_PREPARE_FOR_PRIMARY_ENGINE &&
+        my_errno != ER_PREPARE_FOR_SECONDARY_ENGINE) {
+      if (m_lex->m_sql_cmd != nullptr &&
+          thd->secondary_engine_optimization() ==
+              Secondary_engine_optimization::SECONDARY &&
+          !m_lex->unit->is_executed()) {
+        if (!thd->is_secondary_engine_forced()) {
+          /*
+            Some error occurred during resolving or optimization in
+            the secondary engine, and secondary engine execution is not forced.
+            Retry execution of the statement in the primary engine.
+          */
+          thd->clear_error();
+          thd->set_secondary_engine_optimization(
+              Secondary_engine_optimization::PRIMARY_ONLY);
+          invalidate();
+          // Disable the general log. The query was written to the general log
+          // in the first attempt to execute it. No need to write it twice.
+          if ((thd->variables.option_bits & OPTION_LOG_OFF) == 0) {
+            thd->variables.option_bits |= OPTION_LOG_OFF;
+            general_log_temporarily_disabled = true;
+          }
+          continue;
+        }
+      }
+      assert(thd->is_error());
+      return true;
+    }
+    if (my_errno == ER_NEED_REPREPARE) {
+      /*
+        Reprepare observer is not set for the first execution of the stored
+        routine. This is because the first execution will both prepare and
+        execute the statement. However, when executing a prepared statement, we
+        can expect ER_NEED_REPREPARE to be set during the first execution of the
+        stored routine. In this case, we would need to report the error to the
+        user.
+      */
+      if (stmt_reprepare_observer == nullptr) return true;
+      /*
+        Reprepare_observer ensures that the statement is retried
+        a maximum number of times, to avoid an endless loop.
+      */
+      assert(stmt_reprepare_observer->is_invalidated());
+      if (!stmt_reprepare_observer->can_retry()) {
+        /*
+          Reprepare_observer sets error status in DA but Sql_condition is not
+          added. Please check Reprepare_observer::report_error(). Pushing
+          Sql_condition for ER_NEED_REPREPARE here.
+        */
+        Diagnostics_area *da = thd->get_stmt_da();
+        da->push_warning(thd, da->mysql_errno(), da->returned_sqlstate(),
+                         Sql_condition::SL_ERROR, da->message_text());
+        assert(thd->is_error());
+        return true;
+      }
+      thd->clear_error();
+    } else {
+      assert(my_errno == ER_PREPARE_FOR_PRIMARY_ENGINE ||
+             my_errno == ER_PREPARE_FOR_SECONDARY_ENGINE);
+      assert(thd->secondary_engine_optimization() ==
+             Secondary_engine_optimization::PRIMARY_TENTATIVELY);
+      thd->clear_error();
+      if (my_errno == ER_PREPARE_FOR_SECONDARY_ENGINE) {
+        thd->set_secondary_engine_optimization(
+            Secondary_engine_optimization::SECONDARY);
+      } else {
+        thd->set_secondary_engine_optimization(
+            Secondary_engine_optimization::PRIMARY_ONLY);
+      }
+      // Disable the general log. The query was written to the general log in
+      // the first attempt to execute it. No need to write it twice.
+      if ((thd->variables.option_bits & OPTION_LOG_OFF) == 0) {
+        thd->variables.option_bits |= OPTION_LOG_OFF;
+        general_log_temporarily_disabled = true;
+      }
+    }
     invalidate();
   }
 }
@@ -803,7 +881,8 @@ void sp_lex_instr::free_lex() {
   /* Prevent endless recursion. */
   m_lex->sphead = nullptr;
   lex_end(m_lex);
-  destroy(m_lex->result);
+  if (m_lex->result != nullptr) ::destroy_at(m_lex->result);
+  m_lex->set_secondary_engine_execution_context(nullptr);
   m_lex->destroy();
   delete (st_lex_local *)m_lex;
 
@@ -826,7 +905,7 @@ void sp_lex_instr::cleanup_before_parsing(THD *thd) {
 }
 
 void sp_lex_instr::get_query(String *sql_query) const {
-  LEX_CSTRING expr_query = get_expr_query();
+  const LEX_CSTRING expr_query = get_expr_query();
 
   if (!expr_query.str) {
     sql_query->length(0);
@@ -983,7 +1062,7 @@ bool sp_instr_stmt::exec_core(THD *thd, uint *nextp) {
 
   assert(lex->m_sql_cmd == nullptr || lex->m_sql_cmd->is_part_of_sp());
 
-  bool rc = mysql_execute_command(thd);
+  const bool rc = mysql_execute_command(thd);
 
   lex->set_sp_current_parsing_ctx(nullptr);
   lex->sphead = nullptr;
@@ -1061,7 +1140,7 @@ bool sp_instr_set_trigger_field::exec_core(THD *thd, uint *nextp) {
   */
   if (thd->is_strict_mode() && !thd->lex->is_ignore())
     thd->push_internal_handler(&strict_handler);
-  bool error = m_trigger_field->set_value(thd, &m_value_item);
+  const bool error = m_trigger_field->set_value(thd, &m_value_item);
   if (thd->is_strict_mode() && !thd->lex->is_ignore())
     thd->pop_internal_handler();
   return error;

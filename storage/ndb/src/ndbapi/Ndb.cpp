@@ -62,7 +62,7 @@ NdbTransaction *Ndb::doConnect(Uint32 tConNode, Uint32 instance) {
       //****************************************************************************
       DBUG_RETURN(getConnectedNdbTransaction(tConNode, instance));
     } else if (TretCode < 0) {
-      DBUG_RETURN(NULL);
+      DBUG_RETURN(nullptr);
     } else if (TretCode != 0) {
       tAnyAlive = 1;
     }  // if
@@ -84,7 +84,7 @@ NdbTransaction *Ndb::doConnect(Uint32 tConNode, Uint32 instance) {
         //****************************************************************************
         DBUG_RETURN(getConnectedNdbTransaction(tNode, anyInstance));
       } else if (TretCode < 0) {
-        DBUG_RETURN(NULL);
+        DBUG_RETURN(nullptr);
       } else if (TretCode != 0) {
         tAnyAlive = 1;
       }  // if
@@ -110,7 +110,7 @@ NdbTransaction *Ndb::doConnect(Uint32 tConNode, Uint32 instance) {
         //****************************************************************************
         DBUG_RETURN(getConnectedNdbTransaction(tNode, anyInstance));
       } else if (TretCode < 0) {
-        DBUG_RETURN(NULL);
+        DBUG_RETURN(nullptr);
       } else if (TretCode != 0) {
         tAnyAlive = 1;
       }  // if
@@ -127,9 +127,7 @@ NdbTransaction *Ndb::doConnect(Uint32 tConNode, Uint32 instance) {
     ndbout << "TretCode = " << TretCode << endl;
 #endif
     theError.code = 4006;
-  }
-  else
-  {
+  } else {
     theImpl->m_transporter_facade->is_cluster_completely_unavailable(
       theError.code,
       __LINE__);
@@ -790,7 +788,7 @@ NdbTransaction *Ndb::startTransaction(const NdbDictionary::Table *table,
                         (long)(trans ? trans->getTransactionId() : 0)));
     DBUG_RETURN(trans);
   }
-  DBUG_RETURN(NULL);
+  DBUG_RETURN(nullptr);
 }
 
 NdbTransaction *Ndb::startTransaction(Uint32 nodeId, Uint32 instanceId) {
@@ -807,7 +805,7 @@ NdbTransaction *Ndb::startTransaction(Uint32 nodeId, Uint32 instanceId) {
                         (long)(trans ? trans->getTransactionId() : 0)));
     DBUG_RETURN(trans);
   }
-  DBUG_RETURN(NULL);
+  DBUG_RETURN(nullptr);
 }
 
 NdbTransaction *Ndb::startTransaction(const NdbDictionary::Table *table,
@@ -868,7 +866,7 @@ NdbTransaction *Ndb::startTransaction(const NdbDictionary::Table *table,
       DBUG_RETURN(trans);
     }
   } else {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }  // if
 }  // Ndb::startTransaction()
 
@@ -897,11 +895,11 @@ NdbTransaction *Ndb::hupp(NdbTransaction *pBuddyTrans) {
     Uint32 nodeId = pBuddyTrans->getConnectedNodeId();
     NdbTransaction *pCon = startTransactionLocal(
         aPriority, nodeId, refToInstance(pBuddyTrans->m_tcRef));
-    if (pCon == nullptr) DBUG_RETURN(NULL);
+    if (pCon == nullptr) DBUG_RETURN(nullptr);
 
     if (pCon->getConnectedNodeId() != nodeId) {
       // We could not get a connection to the desired node
-      // release the connection and return NULL
+      // release the connection and return nullptr
       closeTransaction(pCon);
       theImpl->decClientStat( TransStartCount, 1 ); /* Correct stats */
       theError.code = 4042;
@@ -913,7 +911,7 @@ NdbTransaction *Ndb::hupp(NdbTransaction *pBuddyTrans) {
                         (long)(pCon ? pCon->getTransactionId() : 0)));
     DBUG_RETURN(pCon);
   } else {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }  // if
 }  // Ndb::hupp()
 
@@ -936,27 +934,27 @@ NdbTransaction *Ndb::startTransactionLocal(Uint32 aPriority, Uint32 nodeId,
   DBUG_EXECUTE_IF("ndb_start_transaction_fail", {
     /* Cluster failure */
     theError.code = 4009;
-    DBUG_RETURN(0);
+    DBUG_RETURN(nullptr);
   };);
 #endif
 
   if (unlikely(theRemainingStartTransactions == 0)) {
     theError.code = 4006;
-    DBUG_RETURN(0);
+    DBUG_RETURN(nullptr);
   }
 
   NdbTransaction *tConnection;
   Uint64 tFirstTransId = theFirstTransId;
   tConnection = doConnect(nodeId, instance);
   if (tConnection == nullptr) {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }  // if
 
   theRemainingStartTransactions--;
   NdbTransaction *tConNext = theTransactionList;
   if (tConnection->init()) {
     theError.code = tConnection->theError.code;
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
   theTransactionList = tConnection;  // into a transaction list.
   tConnection->next(tConNext);       // Add the active connection object
@@ -1023,7 +1021,7 @@ void Ndb::closeTransaction(NdbTransaction *aConnection) {
 
   if (aConnection == nullptr) {
 //-----------------------------------------------------
-// closeTransaction called on NULL pointer, destructive
+// closeTransaction called on nullptr pointer, destructive
 // application behaviour.
 //-----------------------------------------------------
 #ifdef VM_TRACE
@@ -2177,7 +2175,7 @@ const char *Ndb::getNdbErrorDetail(const NdbError &err, char *buff,
   /* If err has non-null details member, prepare a string containing
    * those details
    */
-  if (!buff) DBUG_RETURN(NULL);
+  if (!buff) DBUG_RETURN(nullptr);
 
   if (err.details != nullptr) {
     DBUG_PRINT("info", ("err.code is %u", err.code));
@@ -2204,7 +2202,7 @@ const char *Ndb::getNdbErrorDetail(const NdbError &err, char *buff,
               false);  // FullyQualified names
           if (rc) {
             DBUG_PRINT("info", ("listObjects call 1 failed with rc %u", rc));
-            DBUG_RETURN(NULL);
+            DBUG_RETURN(nullptr);
           }
 
           DBUG_PRINT("info",
@@ -2242,7 +2240,7 @@ const char *Ndb::getNdbErrorDetail(const NdbError &err, char *buff,
 
           if (rc) {
             DBUG_PRINT("info", ("listObjects call 2 failed with rc %u", rc));
-            DBUG_RETURN(NULL);
+            DBUG_RETURN(nullptr);
           }
 
           DBUG_PRINT("info",
@@ -2282,13 +2280,13 @@ const char *Ndb::getNdbErrorDetail(const NdbError &err, char *buff,
            * Strange - perhaps it's been dropped?
            */
           DBUG_PRINT("info", ("Table id %u not found", primTableObjectId));
-          DBUG_RETURN(NULL);
+          DBUG_RETURN(nullptr);
         } else {
           /* Index not found from id - strange.
            * Perhaps it has been dropped?
            */
           DBUG_PRINT("info", ("Index id %u not found", indexObjectId));
-          DBUG_RETURN(NULL);
+          DBUG_RETURN(nullptr);
         }
       }
       case 255:   /* ZFK_NO_PARENT_ROW_EXISTS - Insert/Update failure */
@@ -2308,7 +2306,7 @@ const char *Ndb::getNdbErrorDetail(const NdbError &err, char *buff,
                                             true);  // FullyQualified names
         if (rc) {
           DBUG_PRINT("info", ("listObjects call 1 failed with rc %u", rc));
-          DBUG_RETURN(NULL);
+          DBUG_RETURN(nullptr);
         }
 
         DBUG_PRINT("info", ("Retrieved details for %u foreign keys",
@@ -2329,7 +2327,7 @@ const char *Ndb::getNdbErrorDetail(const NdbError &err, char *buff,
         }
 
         DBUG_PRINT("info", ("Foreign key id %u not found", foreignKeyId));
-        DBUG_RETURN(NULL);
+        DBUG_RETURN(nullptr);
       }
       default: {
         /* Unhandled details type */
@@ -2338,7 +2336,7 @@ const char *Ndb::getNdbErrorDetail(const NdbError &err, char *buff,
   }
 
   DBUG_PRINT("info", ("No details string for this error"));
-  DBUG_RETURN(NULL);
+  DBUG_RETURN(nullptr);
 }
 
 void Ndb::setCustomData(void *_customDataPtr) {

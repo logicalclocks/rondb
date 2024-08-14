@@ -29,11 +29,13 @@
   Object names (declarations).
 */
 
+#include <assert.h>
 #include <string.h>
 
-#include "m_ctype.h"
 #include "my_hostname.h"  // HOSTNAME_LENGTH
-#include "mysql_com.h"    // NAME_LEN
+#include "my_inttypes.h"
+#include "mysql/strings/m_ctype.h"
+#include "mysql_com.h"  // NAME_LEN
 
 /* Not used yet. */
 #define ROLENAME_CHAR_LENGTH 32
@@ -45,9 +47,9 @@ class Field;
 template <int max_length>
 struct PFS_any_name {
  public:
-  PFS_any_name<max_length>() { m_length = 0; }
+  PFS_any_name() { m_length = 0; }
 
-  PFS_any_name<max_length>(const PFS_any_name<max_length> &other) {
+  PFS_any_name(const PFS_any_name &other) {
     assert(other.m_length <= max_length);
 
     if (0 < other.m_length && other.m_length <= max_length) {

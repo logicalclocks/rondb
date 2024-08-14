@@ -29,6 +29,9 @@
 
 #include "storage/perfschema/pfs_column_values.h"
 
+#include "lex_string.h"
+#include "string_with_len.h"
+
 LEX_CSTRING PERFORMANCE_SCHEMA_str = {STRING_WITH_LEN("performance_schema")};
 
 LEX_CSTRING mutex_instrument_prefix = {STRING_WITH_LEN("wait/synch/mutex")};
@@ -70,3 +73,7 @@ LEX_CSTRING builtin_memory_instrument_prefix = {
 LEX_CSTRING memory_instrument_prefix = {STRING_WITH_LEN("memory")};
 
 LEX_CSTRING error_class_name = {STRING_WITH_LEN("error")};
+
+LEX_CSTRING meter_instrument_prefix = {STRING_WITH_LEN("meter")};
+
+LEX_CSTRING metric_instrument_prefix = {STRING_WITH_LEN("metric")};

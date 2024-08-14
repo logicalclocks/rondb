@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -84,7 +84,7 @@ class PKRRequest {
   /**
    * Get PK column name
    *
-   * @param n. index
+   * @param n index
    * @return PK column name
    */
   const char *PKName(Uint32 n);
@@ -92,7 +92,7 @@ class PKRRequest {
   /**
    * Get length of PK column value
    *
-   * @param n. index
+   * @param n index
    * @return PK length of the string
    */
   Uint16 PKValueLen(Uint32 n);
@@ -100,7 +100,7 @@ class PKRRequest {
   /**
    * Get PK column value.
    *
-   * @param n. index
+   * @param n index
    * @return PK c-string for column value
    */
   const char *PKValueCStr(Uint32 n);
@@ -108,9 +108,9 @@ class PKRRequest {
   /**
    * Get PK column value
    *
-   * @param n[in]. index
-   * @param col[in]. ndb column
-   * @param data[out]. data
+   * @param index [in] index
+   * @param col [in] ndb column
+   * @param data [out] data
    * @return 0 if successfull
    */
   int PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, void **data);
@@ -124,7 +124,7 @@ class PKRRequest {
   /**
    * Get read column name
    *
-   * @param n. index
+   * @param n index
    * @return read column name
    */
   const char *ReadColumnName(const Uint32 n);
@@ -132,7 +132,7 @@ class PKRRequest {
   /**
    * Get read column data return type
    *
-   * @param n. index
+   * @param n index
    * @return return data type
    */
   DataReturnType ReadColumnReturnType(const Uint32 n);

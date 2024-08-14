@@ -724,8 +724,9 @@ static void trx_resurrect_table_ids(trx_t *trx, const trx_undo_ptr_t *undo_ptr,
   // Since resurrecting a transaction can take a long time, progress is logged
   // at regular intervals to the error log. The debug value is provided for
   // testing
-  auto const progress_log_interval =
-      DBUG_EVALUATE_IF("resurrect_logs", 1s, 30s);
+  auto const progress_log_interval = 30s;
+  const bool progress_log_debug =
+      DBUG_EVALUATE_IF("resurrect_logs", true, false);
 
   do {
     ulint type;
@@ -756,7 +757,7 @@ static void trx_resurrect_table_ids(trx_t *trx, const trx_undo_ptr_t *undo_ptr,
     auto now = std::chrono::steady_clock::now();
     auto time_diff = now - last_progress_log_time;
 
-    if (time_diff >= progress_log_interval) {
+    if (time_diff >= progress_log_interval || progress_log_debug) {
       ib::info(ER_IB_RESURRECT_RECORD_PROGRESS, n_undo_recs, n_undo_pages);
       last_progress_log_time = now;
     }
@@ -2563,34 +2564,18 @@ void trx_print_low(FILE *f,
 
   const auto trx_state = trx->state.load(std::memory_order_relaxed);
 
-  switch (trx_state) {
-    case TRX_STATE_NOT_STARTED:
-      fputs(", not started", f);
-      break;
-    case TRX_STATE_FORCED_ROLLBACK:
-      fputs(", forced rollback", f);
-      break;
-    case TRX_STATE_ACTIVE:
-      fprintf(f, ", ACTIVE %lu sec",
-              (ulong)std::chrono::duration_cast<std::chrono::seconds>(
-                  std::chrono::system_clock::now() -
-                  trx->start_time.load(std::memory_order_relaxed))
-                  .count());
-      break;
-    case TRX_STATE_PREPARED:
-      fprintf(f, ", ACTIVE (PREPARED) %lu sec",
-              (ulong)std::chrono::duration_cast<std::chrono::seconds>(
-                  std::chrono::system_clock::now() -
-                  trx->start_time.load(std::memory_order_relaxed))
-                  .count());
-      break;
-    case TRX_STATE_COMMITTED_IN_MEMORY:
-      fputs(", COMMITTED IN MEMORY", f);
-      break;
-    default:
-      fprintf(f, ", state %lu", static_cast<ulong>(trx_state));
-      ut_d(ut_error);
-      ut_o(break);
+  if (const char *const state_string = trx_state_string(trx_state)) {
+    fprintf(f, ", %s", state_string);
+  } else {
+    fprintf(f, ", state %d", to_int(trx_state));
+  }
+
+  if (trx_state == TRX_STATE_ACTIVE || trx_state == TRX_STATE_PREPARED) {
+    unsigned long secs = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now() -
+                             trx->start_time.load(std::memory_order_relaxed))
+                             .count();
+    fprintf(f, " %lu sec", secs);
   }
 
   /* prevent a race condition */

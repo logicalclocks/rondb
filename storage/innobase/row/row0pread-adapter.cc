@@ -77,7 +77,7 @@ void Parallel_reader_adapter::set(row_prebuilt_t *prebuilt) {
   m_mysql_row.m_max_len = static_cast<ulong>(prebuilt->mysql_row_len);
 
   m_parallel_reader.set_start_callback(
-      [=](Parallel_reader::Thread_ctx *reader_thread_ctx) {
+      [this, prebuilt](Parallel_reader::Thread_ctx *reader_thread_ctx) {
         if (reader_thread_ctx->get_state() == Parallel_reader::State::THREAD) {
           return init(reader_thread_ctx, prebuilt);
         } else {
@@ -86,7 +86,7 @@ void Parallel_reader_adapter::set(row_prebuilt_t *prebuilt) {
       });
 
   m_parallel_reader.set_finish_callback(
-      [=](Parallel_reader::Thread_ctx *reader_thread_ctx) {
+      [this](Parallel_reader::Thread_ctx *reader_thread_ctx) {
         if (reader_thread_ctx->get_state() == Parallel_reader::State::THREAD) {
           return end(reader_thread_ctx);
         } else {

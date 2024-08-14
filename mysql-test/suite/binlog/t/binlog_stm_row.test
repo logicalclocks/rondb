@@ -10,7 +10,7 @@ CALL mtr.add_suppression("Unsafe statement written to the binary log using state
 
 # Get rid of previous tests binlog
 --disable_query_log
-reset master;
+reset binary logs and gtids;
 --enable_query_log
 
 #
@@ -110,7 +110,7 @@ SELECT RELEASE_LOCK('Bug#34306');
 --echo # default
 
 --echo # Show binlog events
-source include/show_binlog_events.inc;
+source include/rpl/deprecated/show_binlog_events.inc;
 
 DROP TABLE t1;
 DROP TABLE t2;

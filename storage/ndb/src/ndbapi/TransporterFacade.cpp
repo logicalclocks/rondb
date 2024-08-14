@@ -445,7 +445,8 @@ TransporterFacade::set_error_print(bool val)
  */
 
 int TransporterFacade::start_instance(NodeId nodeId,
-                                      const ndb_mgm_configuration *conf) {
+                                      const ndb_mgm_configuration *conf,
+                                      bool tls_required) {
   DBUG_ENTER("TransporterFacade::start_instance");
 
   assert(theOwnTrpId == 0);
@@ -464,6 +465,15 @@ int TransporterFacade::start_instance(NodeId nodeId,
 
   if (!theTransporterRegistry->init(nodeId)) {
     DBUG_RETURN(-1);
+  }
+
+  theTransporterRegistry->init_tls(m_tls_search_path, m_tls_node_type,
+                                   m_mgm_tls_level);
+
+  if (tls_required && !theTransporterRegistry->getTlsKeyManager()->ctx()) {
+    delete theTransporterRegistry;
+    theTransporterRegistry = nullptr;
+    DBUG_RETURN(-2);
   }
 
   if (theClusterMgr == nullptr) {
@@ -1507,7 +1517,9 @@ TransporterFacade::TransporterFacade(GlobalDictCache *cache)
       m_send_thread_mutex(nullptr),
       m_send_thread_cond(nullptr),
       m_send_thread_nodes(),
-      m_has_data_trps() {
+      m_has_data_trps(),
+      m_tls_search_path(NDB_TLS_SEARCH_PATH),
+      m_tls_node_type(NODE_TYPE_API) {
   DBUG_ENTER("TransporterFacade::TransporterFacade");
   thePollMutex = NdbMutex_CreateWithName("PollMutex");
   sendPerformedLastInterval = 0;
@@ -1610,6 +1622,18 @@ void TransporterFacade::set_up_node_active_in_send_buffers(
     m_active_trps.set(trp_ids[0]);
   }
   DBUG_VOID_RETURN;
+}
+
+void TransporterFacade::configure_tls(const char *searchPath, int nodeType,
+                                      int mgmTlsRequirement) {
+  assert(searchPath);
+  m_tls_search_path = searchPath;
+  m_tls_node_type = nodeType;
+  m_mgm_tls_level = mgmTlsRequirement;
+}
+
+const char *TransporterFacade::get_tls_certificate_path() const {
+  return theTransporterRegistry->getTlsKeyManager()->cert_path();
 }
 
 bool TransporterFacade::configure(NodeId nodeId,

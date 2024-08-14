@@ -39,8 +39,8 @@ Compression_stats::ZERO_TRX_ROW() {
   return instance;
 }
 
-Compression_stats::Compression_stats(
-    log_type log, binary_log::transaction::compression::type t)
+Compression_stats::Compression_stats(log_type log,
+                                     mysql::binlog::event::compression::type t)
     : m_log_type(log),
       m_type(t),
       m_counter_transactions(0),
@@ -66,7 +66,7 @@ Compression_stats::~Compression_stats() { destroy(); }
 
 log_type Compression_stats::get_log_type() const { return m_log_type; }
 
-binary_log::transaction::compression::type Compression_stats::get_type() const {
+mysql::binlog::event::compression::type Compression_stats::get_type() const {
   return m_type;
 }
 
@@ -243,11 +243,11 @@ Transaction_compression::~Transaction_compression() {
 
 void Transaction_compression::init() {
   DBUG_TRACE;
-  auto comp_types = std::set<binary_log::transaction::compression::type>();
+  auto comp_types = std::set<mysql::binlog::event::compression::type>();
   auto log_types = std::set<binlog::monitoring::log_type>();
 
-  comp_types.insert(binary_log::transaction::compression::type::NONE);
-  comp_types.insert(binary_log::transaction::compression::type::ZSTD);
+  comp_types.insert(mysql::binlog::event::compression::type::NONE);
+  comp_types.insert(mysql::binlog::event::compression::type::ZSTD);
 
   log_types.insert(binlog::monitoring::log_type::BINARY);
   log_types.insert(binlog::monitoring::log_type::RELAY);
@@ -273,9 +273,9 @@ void Transaction_compression::reset() {
 }
 
 void Transaction_compression::update(
-    log_type log_type, binary_log::transaction::compression::type comp_type,
+    log_type log_type, mysql::binlog::event::compression::type comp_type,
     Gtid &gtid, uint64_t transaction_timestamp, uint64_t comp_bytes,
-    uint64_t uncomp_bytes, Sid_map *sid_map) {
+    uint64_t uncomp_bytes, Tsid_map *tsid_map) {
   DBUG_TRACE;
   Gtid_specification spec;
   char gtid_buf[Gtid::MAX_TEXT_LENGTH + 1];
@@ -283,12 +283,12 @@ void Transaction_compression::update(
     spec.set_anonymous();
   else
     spec.set(gtid);
-  auto gtid_buf_len = spec.to_string(sid_map, gtid_buf, true);
+  auto gtid_buf_len = spec.to_string(tsid_map, gtid_buf, true);
   std::string gtid_string(gtid_buf, gtid_buf_len);
 
 #ifndef NDEBUG
   auto key = std::make_pair<binlog::monitoring::log_type &,
-                            binary_log::transaction::compression::type &>(
+                            mysql::binlog::event::compression::type &>(
       log_type, comp_type);
 
   assert(m_stats.find(key) != m_stats.end() && m_stats[key] != nullptr);

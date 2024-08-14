@@ -52,10 +52,7 @@ class MySQLClassicProtocol : public ProtocolBase {
   void encode_error(const ErrorResponse &msg) override;
 
   // throws std::system_error
-  void encode_ok(const uint64_t affected_rows = 0,
-                 const uint64_t last_insert_id = 0,
-                 const uint16_t server_status = 0,
-                 const uint16_t warning_count = 0) override;
+  void encode_ok(const OkResponse &msg) override;
 
   // throws std::system_error
   void encode_resultset(const ResultsetResponse &response) override;
@@ -125,7 +122,8 @@ class MySQLServerMockSessionClassic : public MySQLServerMockSession {
   void send_response_then_disconnect();
   void finish();
 
-  bool authenticate(const std::vector<uint8_t> &client_auth_method_data);
+  stdx::expected<void, ErrorResponse> authenticate(
+      const std::vector<uint8_t> &client_auth_method_data);
 
   MySQLClassicProtocol protocol_;
 

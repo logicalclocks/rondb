@@ -37,6 +37,7 @@
 #include "my_getopt.h"
 #include "my_sys.h"
 #include "print_version.h"
+#include "str2int.h"
 #include "welcome_copyright_notice.h"
 
 static const char *INFILE = "errmsg.h";
@@ -126,7 +127,8 @@ int main(int argc, char *argv[]) {
           if (!str2int(err, 10, (long)0, (long)65536, &err_code)) return 1;
 
           fprintf(outfile, "%s, ", err);
-          fprintf(outfile, "\"%s\", 0, 0, 0},\n", ER_CLIENT(err_code));
+          fprintf(outfile, "\"%s\", nullptr, nullptr, 0},\n",
+                  ER_CLIENT(err_code));
         }
 
         count++;

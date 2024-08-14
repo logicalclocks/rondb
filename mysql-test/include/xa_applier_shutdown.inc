@@ -105,16 +105,12 @@ if ($restart_connection) {
   # handled separately. In this case, the default connection simply waits until
   # it can reconnect after the server starts.
 
-  --connection default
-  --disable_reconnect
-
   --connect ($restart_connection, localhost, root,,)
   --connection $restart_connection
   --source include/restart_mysqld.inc
   --disconnect $restart_connection
 
   --connection default
-  --enable_reconnect
   --source include/wait_until_connected_again.inc
 }
 

@@ -73,7 +73,7 @@ MACRO(MYSQL_ADD_COMPONENT component_arg)
     MESSAGE(FATAL_ERROR "Unknown component type ${target}")
   ENDIF()
 
-  ADD_VERSION_INFO(${target} ${kind} SOURCES)
+  ADD_VERSION_INFO(${target} ${kind} SOURCES "")
   ADD_LIBRARY(${target} ${kind} ${SOURCES})
 
   TARGET_COMPILE_DEFINITIONS(${target} PUBLIC MYSQL_COMPONENT)
@@ -90,6 +90,7 @@ MACRO(MYSQL_ADD_COMPONENT component_arg)
   ADD_DEPENDENCIES(${target} GenError)
 
   IF (ARG_MODULE_ONLY)
+    SET_TARGET_PROPERTIES(${target} PROPERTIES OUTPUT_NAME "${target}")
     # Store all components in the same directory, for easier testing.
     SET_TARGET_PROPERTIES(${target} PROPERTIES
       LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugin_output_directory
@@ -105,16 +106,11 @@ MACRO(MYSQL_ADD_COMPONENT component_arg)
 
     # To hide the component symbols in the shared object
     IF(UNIX)
-      IF(MY_COMPILER_IS_CLANG AND WITH_UBSAN)
-        # nothing, clang/ubsan gets confused
-        UNSET(COMPONENT_COMPILE_VISIBILITY CACHE)
-      ELSE()
-        # Use this also for component libraries and tests.
-        SET(COMPONENT_COMPILE_VISIBILITY
-          "-fvisibility=hidden" CACHE INTERNAL
-          "Use -fvisibility=hidden for components" FORCE)
-        TARGET_COMPILE_OPTIONS(${target} PRIVATE "-fvisibility=hidden")
-      ENDIF()
+      # Use this also for component libraries and tests.
+      SET(COMPONENT_COMPILE_VISIBILITY
+        "-fvisibility=hidden" CACHE INTERNAL
+        "Use -fvisibility=hidden for components" FORCE)
+      TARGET_COMPILE_OPTIONS(${target} PRIVATE "-fvisibility=hidden")
     ENDIF()
 
     IF(NOT ARG_SKIP_INSTALL)

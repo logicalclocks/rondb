@@ -59,7 +59,7 @@
 #define PFS_MAX_MUTEX_CLASS 350
 #endif
 #ifndef PFS_MAX_RWLOCK_CLASS
-#define PFS_MAX_RWLOCK_CLASS 60
+#define PFS_MAX_RWLOCK_CLASS 100
 #endif
 #ifndef PFS_MAX_COND_CLASS
 #define PFS_MAX_COND_CLASS 150
@@ -83,7 +83,13 @@
 #define PFS_STATEMENTS_STACK_SIZE 10
 #endif
 #ifndef PFS_MAX_MEMORY_CLASS
-#define PFS_MAX_MEMORY_CLASS 450
+#define PFS_MAX_MEMORY_CLASS 470
+#endif
+#ifndef PFS_MAX_METER_CLASS
+#define PFS_MAX_METER_CLASS 30
+#endif
+#ifndef PFS_MAX_METRIC_CLASS
+#define PFS_MAX_METRIC_CLASS 600
 #endif
 
 #ifndef PFS_MAX_GLOBAL_SERVER_ERRORS
@@ -276,6 +282,18 @@ struct PFS_global_param {
   */
   ulong m_memory_class_sizing;
 
+  /**
+    Maximum number of instrumented meter classes.
+    @sa meter_class_lost.
+  */
+  ulong m_meter_class_sizing;
+
+  /**
+    Maximum number of instrumented metric classes.
+    @sa metric_class_lost.
+  */
+  ulong m_metric_class_sizing;
+
   long m_metadata_lock_sizing;
 
   long m_max_digest_length;
@@ -376,18 +394,6 @@ void init_pfs_instrument_array();
   Process one PFS_INSTRUMENT configuration string.
 */
 int add_pfs_instr_to_array(const char *name, const char *value);
-
-/**
-  Register/unregister notification service.
-*/
-int register_pfs_notification_service();
-int unregister_pfs_notification_service();
-
-/**
-  Register/unregister resource group service.
-*/
-int register_pfs_resource_group_service();
-int unregister_pfs_resource_group_service();
 
 /**
   Shutdown the performance schema.

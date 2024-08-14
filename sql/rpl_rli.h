@@ -34,19 +34,18 @@
 #include <vector>
 
 #include "lex_string.h"
-#include "libbinlogevents/include/binlog_event.h"
-#include "m_string.h"
 #include "map_helpers.h"
 #include "my_bitmap.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_psi_config.h"
 #include "my_sys.h"
+#include "mysql/binlog/event/binlog_event.h"
 #include "mysql/components/services/bits/mysql_cond_bits.h"
 #include "mysql/components/services/bits/mysql_mutex_bits.h"
 #include "mysql/components/services/bits/psi_mutex_bits.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/thread_type.h"
 #include "prealloced_array.h"  // Prealloced_array
@@ -64,6 +63,7 @@
 #include "sql/sql_class.h"    // THD
 #include "sql/system_variables.h"
 #include "sql/table.h"
+#include "strmake.h"
 
 class Commit_order_manager;
 class Master_info;
@@ -72,7 +72,7 @@ class Rpl_info_handler;
 class Slave_committed_queue;
 class Slave_worker;
 class String;
-struct LEX_MASTER_INFO;
+struct LEX_SOURCE_INFO;
 struct db_worker_hash_entry;
 
 extern uint sql_replica_skip_counter;
@@ -87,8 +87,8 @@ typedef struct slave_job_item {
 
 /**
   This class is used to store the type and value for
-  Assign_gtids_to_anonymous_transactions parameter of Change master command on
-  slave.
+  Assign_gtids_to_anonymous_transactions parameter of Change replication source
+  command on slave.
 */
 class Assign_gtids_to_anonymous_transactions_info {
  public:
@@ -100,7 +100,7 @@ class Assign_gtids_to_anonymous_transactions_info {
     of replica which is the server where this transformation of anonymous to
     gtid event happens. UUID: Anonymous gtid events will be converted to Gtid
     event & the UUID used while create GTIDs will be the one specified via
-    Change master command to the parameter
+    Change replication source command to the parameter
     ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS
   */
   enum class enum_type { AGAT_OFF = 1, AGAT_LOCAL, AGAT_UUID };
@@ -143,7 +143,7 @@ Relay_log_info is initialized from a repository, i.e. table or file, if there is
 one. Otherwise, data members are initialized with defaults by calling
 init_relay_log_info().
 
-The relay.info table/file shall be updated whenever: (i) the relay log file
+The applier metadata shall be updated whenever: (i) the relay log file
 is rotated, (ii) SQL Thread is stopped, (iii) while processing a Xid_log_event,
 (iv) after a Query_log_event (i.e. commit or rollback) and (v) after processing
 any statement written to the binary log without a transaction context.
@@ -285,7 +285,7 @@ class Relay_log_info : public Rpl_info {
 
   /**
     Stores the information related to the ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS
-    parameter of CHANGE MASTER
+    parameter of CHANGE REPLICATION SOURCE
   */
   Assign_gtids_to_anonymous_transactions_info
       m_assign_gtids_to_anonymous_transactions_info;
@@ -340,7 +340,7 @@ class Relay_log_info : public Rpl_info {
   /* The following variables are safe to read any time */
 
   /*
-    When we restart slave thread we need to have access to the previously
+    When we restart replica thread we need to have access to the previously
     created temporary tables. Modified only on init/end and by the SQL
     thread, read only by SQL thread.
   */
@@ -762,6 +762,9 @@ class Relay_log_info : public Rpl_info {
   /* Flag that ensures the retrieved GTID set is initialized only once. */
   bool gtid_retrieved_initialized;
 
+  /// Flag that ensures the relay log is sanitized only once.
+  bool relay_log_sanitized = false;
+
   /**
     Stores information on the last processed transaction or the transaction
     that is currently being processed.
@@ -834,13 +837,13 @@ class Relay_log_info : public Rpl_info {
  public:
   bool is_relay_log_truncated() { return m_relay_log_truncated; }
 
-  Sid_map *get_sid_map() { return gtid_set->get_sid_map(); }
+  Tsid_map *get_tsid_map() { return gtid_set->get_tsid_map(); }
 
-  Checkable_rwlock *get_sid_lock() { return get_sid_map()->get_sid_lock(); }
+  Checkable_rwlock *get_tsid_lock() { return get_tsid_map()->get_tsid_lock(); }
 
   void add_logged_gtid(rpl_sidno sidno, rpl_gno gno) {
-    get_sid_lock()->assert_some_lock();
-    assert(sidno <= get_sid_map()->get_max_sidno());
+    get_tsid_lock()->assert_some_lock();
+    assert(sidno <= get_tsid_map()->get_max_sidno());
     gtid_set->ensure_sidno(sidno);
     gtid_set->_add_gtid(sidno, gno);
   }
@@ -888,7 +891,7 @@ class Relay_log_info : public Rpl_info {
 
   /**
     Flag that the group_master_log_pos is invalid. This may occur
-    (for example) after CHANGE MASTER TO RELAY_LOG_POS.  This will
+    (for example) after CHANGE REPLICATION SOURCE TO RELAY_LOG_POS.  This will
     be unset after the first event has been executed and the
     group_master_log_pos is valid again.
 
@@ -919,7 +922,7 @@ class Relay_log_info : public Rpl_info {
 
   /**
     Reset the delay.
-    This is used by RESET SLAVE to clear the delay.
+    This is used by RESET REPLICA to clear the delay.
   */
   void clear_sql_delay() { sql_delay = 0; }
 
@@ -928,13 +931,14 @@ class Relay_log_info : public Rpl_info {
     skipping one or more events in the master log that have caused
     errors, and have been manually applied by DBA already.
   */
-  volatile uint32 slave_skip_counter;
-  volatile ulong abort_pos_wait; /* Incremented on change master */
+  std::atomic<uint32> slave_skip_counter;
+  std::atomic<ulong>
+      abort_pos_wait; /* Incremented on change replication source */
   mysql_mutex_t log_space_lock;
   mysql_cond_t log_space_cond;
 
   /*
-     Condition and its parameters from START SLAVE UNTIL clause.
+     Condition and its parameters from START REPLICA UNTIL clause.
 
      UNTIL condition is tested with is_until_satisfied() method that is
      called by exec_relay_log_event(). is_until_satisfied() caches the result
@@ -1184,7 +1188,7 @@ class Relay_log_info : public Rpl_info {
   */
   bool workers_array_initialized;
 
-  volatile ulong pending_jobs;
+  std::atomic<ulong> pending_jobs;
   mysql_mutex_t pending_jobs_lock;
   mysql_cond_t pending_jobs_cond;
   mysql_mutex_t exit_count_lock;  // mutex of worker exit count
@@ -1224,7 +1228,7 @@ class Relay_log_info : public Rpl_info {
      are experiencing and is used as a parameter to compute a nap time for
      Coordinator in order to avoid reaching WQ limits.
   */
-  volatile long mts_wq_excess_cnt;
+  std::atomic<long> mts_wq_excess_cnt;
   long mts_worker_underrun_level;   // % of WQ size at which W is considered
                                     // hungry
   ulong mts_coordinator_basic_nap;  // C sleeps to avoid WQs overrun
@@ -1274,9 +1278,11 @@ class Relay_log_info : public Rpl_info {
   /*
     MTS statistics:
   */
+  long mts_online_stat_curr;      // counter to decide on generating
+                                  // ER_RPL_MTA_STATISTICS message
   ulonglong mts_events_assigned;  // number of events (statements) scheduled
   ulonglong mts_groups_assigned;  // number of groups (transactions) scheduled
-  volatile ulong
+  std::atomic<ulong>
       mts_wq_overrun_cnt;   // counter of all mts_wq_excess_cnt increments
   ulong wq_size_waits_cnt;  // number of times C slept due to WQ:s oversize
   /*
@@ -1304,6 +1310,8 @@ class Relay_log_info : public Rpl_info {
   struct timespec stats_begin;  // applier's bootstrap time
 
   time_t mts_last_online_stat;
+  /// Last moment in time the MTA printed a coordinator waited stats
+  time_t mta_coordinator_has_waited_stat;
   /* end of MTS statistics */
 
   /**
@@ -1542,8 +1550,8 @@ class Relay_log_info : public Rpl_info {
     (if necessary), calculating the received GTID set for the channel and
     storing the updated rli object configuration into the repository.
 
-    When this function is called in a change master process and the change
-    master procedure will purge all the relay log files later, there is no
+    When this function is called in a change replication source process and the
+    change procedure will purge all the relay log files later, there is no
     reason to try to calculate the received GTID set of the channel based on
     existing relay log files (they will be purged). Allowing reads to existing
     relay log files at this point may lead to put the server in a state where
@@ -1551,13 +1559,13 @@ class Relay_log_info : public Rpl_info {
     replication log files was ON and the keyring plugin is not available
     anymore.
 
-    @param skip_received_gtid_set_recovery When true, skips the received GTID
-                                           set recovery.
+    @param skip_received_gtid_set_and_relaylog_recovery When true, skips the
+    received GTID set and relay log recovery.
 
     @retval 0 Success.
     @retval 1 Error.
   */
-  int rli_init_info(bool skip_received_gtid_set_recovery = false);
+  int rli_init_info(bool skip_received_gtid_set_and_relaylog_recovery = false);
   void end_info();
 
   /** No flush options given to relay log flush */
@@ -1669,7 +1677,7 @@ class Relay_log_info : public Rpl_info {
 
     This does not actually sleep; it only sets the state of this
     Relay_log_info object to delaying so that the correct state can be
-    reported by SHOW SLAVE STATUS and SHOW PROCESSLIST.
+    reported by SHOW REPLICA STATUS and SHOW PROCESSLIST.
 
     Requires rli->data_lock.
 
@@ -1830,12 +1838,12 @@ class Relay_log_info : public Rpl_info {
     commit time. Exceptionally, if a server in the replication chain does not
     support the commit timestamps in Gtid_log_event, the delay is applied per
     event and is based on the event timestamp.
-    This is set with CHANGE MASTER TO MASTER_DELAY=X.
+    This is set with CHANGE REPLICATION SOURCE TO SOURCE_DELAY=X.
 
     Guarded by data_lock.  Initialized by the client thread executing
-    START SLAVE.  Written by client threads executing CHANGE MASTER TO
-    MASTER_DELAY=X.  Read by SQL thread and by client threads
-    executing SHOW SLAVE STATUS.  Note: must not be written while the
+    START REPLICA.  Written by client threads executing CHANGE REPLICATION
+    SOURCE TO SOURCE_DELAY=X.  Read by SQL thread and by client threads
+    executing SHOW REPLICA STATUS.  Note: must not be written while the
     slave SQL thread is running, since the SQL thread reads it without
     a lock when executing flush_info().
   */
@@ -1844,43 +1852,47 @@ class Relay_log_info : public Rpl_info {
   /**
     During a delay, specifies the point in time when the delay ends.
 
-    This is used for the SQL_Remaining_Delay column in SHOW SLAVE STATUS.
+    This is used for the SQL_Remaining_Delay column in SHOW REPLICA STATUS.
 
     Guarded by data_lock. Written by the sql thread.  Read by client
-    threads executing SHOW SLAVE STATUS.
+    threads executing SHOW REPLICA STATUS.
   */
   time_t sql_delay_end;
 
   uint32 m_flags;
 
   /*
-    Before the MASTER_DELAY parameter was added (WL#344), relay_log.info
+    Historically, the number of entires in applier metadata was the number
+    of lines in applier metadata file. Since WL#13959, applier metadata can
+    be stored only in table, but the notion of number of line is still
+    preserved.
+    Before the SOURCE_DELAY parameter was added (WL#344), applier metadata
     had 4 lines. Now it has 5 lines.
   */
-  static const int LINES_IN_RELAY_LOG_INFO_WITH_DELAY = 5;
+  static const int APPLIER_METADATA_LINES_WITH_DELAY = 5;
 
   /*
-    Before the WL#5599, relay_log.info had 5 lines. Now it has 6 lines.
+    Before the WL#5599, applier metadata had 5 lines. Now it has 6 lines.
   */
-  static const int LINES_IN_RELAY_LOG_INFO_WITH_WORKERS = 6;
+  static const int APPLIER_METADATA_LINES_WITH_WORKERS = 6;
 
   /*
-    Before the Id was added (BUG#2334346), relay_log.info
+    Before the Id was added (BUG#2334346), applier metadata
     had 6 lines. Now it has 7 lines.
   */
-  static const int LINES_IN_RELAY_LOG_INFO_WITH_ID = 7;
+  static const int APPLIER_METADATA_LINES_WITH_ID = 7;
 
   /*
-    Add a channel in the slave relay log info
+    Add a channel in the applier metadata
   */
-  static const int LINES_IN_RELAY_LOG_INFO_WITH_CHANNEL = 8;
+  static const int APPLIER_METADATA_LINES_WITH_CHANNEL = 8;
 
   /*
-    Represents line number in relay_log.info to save PRIVILEGE_CHECKS_USERNAME.
-    It is username part of PRIVILEGES_CHECKS_USER column in
-    performance_schema.replication_applier_configuration.
+    Represents entry id in applier metadata to save
+    PRIVILEGE_CHECKS_USERNAME. It is username part of PRIVILEGES_CHECKS_USER
+    column in performance_schema.replication_applier_configuration.
   */
-  static const int LINES_IN_RELAY_LOG_INFO_WITH_PRIV_CHECKS_USERNAME = 9;
+  static const int APPLIER_METADATA_LINES_WITH_PRIV_CHECKS_USERNAME = 9;
 
   /*
     Maximum length of PRIVILEGE_CHECKS_USERNAME.
@@ -1888,11 +1900,11 @@ class Relay_log_info : public Rpl_info {
   static const int PRIV_CHECKS_USERNAME_LENGTH = 32;
 
   /*
-    Represents line number in relay_log.info to save PRIVILEGE_CHECKS_HOSTNAME.
-    It is hostname part of PRIVILEGES_CHECKS_USER column in
-    performance_schema.replication_applier_configuration.
+    Represents entry id in applier metadata to save
+    PRIVILEGE_CHECKS_HOSTNAME. It is hostname part of PRIVILEGES_CHECKS_USER
+    column in performance_schema.replication_applier_configuration.
   */
-  static const int LINES_IN_RELAY_LOG_INFO_WITH_PRIV_CHECKS_HOSTNAME = 10;
+  static const int APPLIER_METADATA_LINES_WITH_PRIV_CHECKS_HOSTNAME = 10;
 
   /*
     Maximum length of PRIVILEGE_CHECKS_USERNAME.
@@ -1900,38 +1912,42 @@ class Relay_log_info : public Rpl_info {
   static const int PRIV_CHECKS_HOSTNAME_LENGTH = 255;
 
   /*
-    Represents line number in relay_log.info to save REQUIRE_ROW_FORMAT
+    Represents entry id in applier metadata to save REQUIRE_ROW_FORMAT
   */
-  static const int LINES_IN_RELAY_LOG_INFO_WITH_REQUIRE_ROW_FORMAT = 11;
+  static const int APPLIER_METADATA_LINES_WITH_REQUIRE_ROW_FORMAT = 11;
 
   /*
-    Represents line number in relay_log.info to save
+    Represents entry id in applier metadata to save
     REQUIRE_TABLE_PRIMARY_KEY_CHECK
   */
-  static const int
-      LINES_IN_RELAY_LOG_INFO_WITH_REQUIRE_TABLE_PRIMARY_KEY_CHECK = 12;
+  static const int APPLIER_METADATA_LINES_WITH_REQUIRE_TABLE_PRIMARY_KEY_CHECK =
+      12;
 
   /*
-    Represent line number in relay_log.info to save
+    Represent entry id in applier metadata to save
     ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_TYPE.
   */
   static const int
-      LINES_IN_RELAY_LOG_INFO_WITH_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_TYPE =
+      APPLIER_METADATA_LINES_WITH_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_TYPE =
           13;
 
   /*
-    Represent line number in relay_log.info to save
+    Represent entry id in applier metadata to save
     ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_VALUE.
   */
   static const int
-      LINES_IN_RELAY_LOG_INFO_WITH_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_VALUE =
+      APPLIER_METADATA_LINES_WITH_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_VALUE =
           14;
   /*
-    Total lines in relay_log.info.
+    Total lines in applier metadata.
     This has to be updated every time a member is added or removed.
+    Historically, the number of entires in applier metadata was the number
+    of lines in applier metadata file. Since WL#13959, applier metadata can
+    be stored only in table, but the notion of number of line is still
+    preserved.
   */
-  static const int MAXIMUM_LINES_IN_RELAY_LOG_INFO_FILE =
-      LINES_IN_RELAY_LOG_INFO_WITH_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_VALUE;
+  static const int MAXIMUM_APPLIER_METADATA_LINES =
+      APPLIER_METADATA_LINES_WITH_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_VALUE;
 
   bool read_info(Rpl_info_handler *from) override;
   bool write_info(Rpl_info_handler *to) override;
@@ -1988,7 +2004,7 @@ class Relay_log_info : public Rpl_info {
   */
   bool m_allow_drop_write_set;
 
-  /* The object stores and handles START SLAVE UNTIL option */
+  /* The object stores and handles START REPLICA UNTIL option */
   Until_option *until_option;
 
  public:
@@ -2052,17 +2068,21 @@ class Relay_log_info : public Rpl_info {
     return until_option != nullptr &&
            until_option->is_satisfied_after_dispatching_event();
   }
+  bool is_until_satisfied_all_transactions_read_from_relay_log() {
+    return until_option != nullptr &&
+           until_option->is_satisfied_all_transactions_read_from_relay_log();
+  }
   /**
    Initialize until option object when starting slave.
 
    @param[in] thd The thread object of current session.
-   @param[in] master_param the parameters of START SLAVE.
+   @param[in] master_param the parameters of START REPLICA.
 
    @return int
      @retval 0      Succeeds to initialize until option object.
      @retval <> 0   A defined error number is return if any error happens.
    */
-  int init_until_option(THD *thd, const LEX_MASTER_INFO *master_param);
+  int init_until_option(THD *thd, const LEX_SOURCE_INFO *master_param);
 
   /**
     Detaches the engine ha_data from THD. The fact
@@ -2172,7 +2192,7 @@ bool is_mts_db_partitioned(Relay_log_info *rli);
   @return true  when the event is already committed transactional DDL
 */
 inline bool is_committed_ddl(Log_event *ev) {
-  return ev->get_type_code() == binary_log::QUERY_EVENT &&
+  return ev->get_type_code() == mysql::binlog::event::QUERY_EVENT &&
          /* has been already committed */
          static_cast<Query_log_event *>(ev)->has_ddl_committed;
 }
@@ -2217,7 +2237,7 @@ inline bool is_atomic_ddl_commit_on_slave(THD *thd) {
              ? (rli->is_transactional() &&
                 /* has not yet committed */
                 (rli->current_event->get_type_code() ==
-                     binary_log::QUERY_EVENT &&
+                     mysql::binlog::event::QUERY_EVENT &&
                  !static_cast<Query_log_event *>(rli->current_event)
                       ->has_ddl_committed) &&
                 /* unless slave binlogger identified non-atomic */

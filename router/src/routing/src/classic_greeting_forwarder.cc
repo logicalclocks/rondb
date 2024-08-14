@@ -28,10 +28,12 @@
 #include <cctype>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <random>  // uniform_int_distribution
 #include <sstream>
 #include <system_error>
 
+#include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
@@ -47,6 +49,7 @@
 #include "classic_connection_base.h"
 #include "classic_frame.h"
 #include "classic_lazy_connect.h"
+#include "classic_query_sender.h"
 #include "harness_assert.h"
 #include "hexify.h"
 #include "mysql/harness/logging/logger.h"
@@ -56,8 +59,13 @@
 #include "mysql/harness/tls_error.h"
 #include "mysqld_error.h"  // mysql-server error-codes
 #include "mysqlrouter/classic_protocol_constants.h"
+#include "mysqlrouter/classic_protocol_message.h"
 #include "mysqlrouter/connection_base.h"
-#include "sql/server_component/mysql_command_services_imp.h"
+#include "openssl_msg.h"
+#include "openssl_version.h"
+#include "processor.h"
+#include "router_require.h"
+#include "tls_content_type.h"
 #include "tracer.h"
 
 IMPORT_LOG_FUNCTIONS()
@@ -108,35 +116,35 @@ static std::optional<std::string> scramble_them_all(
   }
 }
 
-static void ssl_info_cb(const SSL *ssl, int where, int ret) {
-  auto *conn = reinterpret_cast<MysqlRoutingClassicConnectionBase *>(
-      SSL_get_app_data(ssl));
+static void ssl_msg_cb(int write_p, int version, int content_type,
+                       const void *buf, size_t len, SSL *ssl [[maybe_unused]],
+                       void *arg) {
+  if (arg == nullptr) return;
+
+  auto *conn = static_cast<MysqlRoutingClassicConnectionBase *>(arg);
 
   auto &tr = conn->tracer();
   if (!tr) return;
 
-  if ((where & SSL_CB_LOOP) != 0) {
-    tr.trace(
-        Tracer::Event().stage("tls::state: "s + SSL_state_string_long(ssl)));
-  } else if ((where & SSL_CB_ALERT) != 0) {
-    tr.trace(Tracer::Event().stage("tls::alert: "s +
-                                   SSL_alert_type_string_long(ret) + "::"s +
-                                   SSL_alert_desc_string_long(ret)));
-  } else if ((where & SSL_CB_EXIT) != 0) {
-    if (ret == 0) {
-      tr.trace(Tracer::Event().stage(
-          "tls::state: "s + SSL_state_string_long(ssl) + " <failed>"s));
-    } else if (ret < 0) {
-      switch (SSL_get_error(ssl, ret)) {
-        case SSL_ERROR_WANT_READ:
-        case SSL_ERROR_WANT_WRITE:
-          break;
-        default:
-          tr.trace(Tracer::Event().stage("tls"s + SSL_state_string_long(ssl) +
-                                         " <error>"s));
-      }
-    }
-  }
+  if (content_type == SSL3_RT_HEADER) return;
+#ifdef SSL3_RT_INNER_CONTENT_TYPE
+  if (content_type == SSL3_RT_INNER_CONTENT_TYPE) return;
+#endif
+
+  tr.trace(Tracer::Event().stage(
+      "tls::" + std::string(write_p == 0 ? "client" : "server") +
+      "::msg: " + openssl_msg_version_to_string(version).value_or("") + " " +
+      openssl_msg_content_type_to_string(content_type).value_or("") + "::" +
+      openssl_msg_content_to_string(
+          content_type, static_cast<const unsigned char *>(buf), len)
+          .value_or("")
+#if 0
+      +
+      "\n" +
+      mysql_harness::hexify(
+          std::string_view(static_cast<const char *>(buf), len))
+#endif
+          ));
 }
 
 static void adjust_supported_capabilities(
@@ -179,11 +187,11 @@ static void adjust_supported_capabilities(
 }
 
 static stdx::expected<size_t, std::error_code> send_ssl_connection_error_msg(
-    Channel *dst_channel, ClassicProtocolState *dst_protocol,
+    MysqlRoutingClassicConnectionBase::ClientSideConnection &conn,
     std::string_view msg) {
   return ClassicFrame::send_msg<
       classic_protocol::borrowed::message::server::Error>(
-      dst_channel, dst_protocol, {CR_SSL_CONNECTION_ERROR, msg});
+      conn, {CR_SSL_CONNECTION_ERROR, msg});
 }
 
 /**
@@ -216,7 +224,7 @@ static stdx::expected<size_t, std::error_code> classic_proto_append_attribute(
       classic_protocol::encode(classic_protocol::wire::VarString(key), {},
                                net::dynamic_buffer(attrs_buf));
   if (!encode_res) {
-    return encode_res.get_unexpected();
+    return stdx::unexpected(encode_res.error());
   }
 
   size_t encoded_bytes = encode_res.value();
@@ -225,7 +233,7 @@ static stdx::expected<size_t, std::error_code> classic_proto_append_attribute(
       classic_protocol::encode(classic_protocol::wire::VarString(value), {},
                                net::dynamic_buffer(attrs_buf));
   if (!encode_res) {
-    return encode_res.get_unexpected();
+    return stdx::unexpected(encode_res.error());
   }
 
   encoded_bytes += encode_res.value();
@@ -251,7 +259,7 @@ classic_proto_verify_connection_attributes(const std::string &attrs) {
     const auto decode_res =
         classic_protocol::decode<classic_protocol::wire::VarString>(attr_buf,
                                                                     {});
-    if (!decode_res) return decode_res.get_unexpected();
+    if (!decode_res) return stdx::unexpected(decode_res.error());
 
     const auto bytes_read = decode_res->first;
     const auto kv = decode_res->second;
@@ -264,7 +272,7 @@ classic_proto_verify_connection_attributes(const std::string &attrs) {
 
   // if the last key doesn't have a value, fail
   if (!is_key || net::buffer_size(attr_buf) != 0) {
-    return stdx::make_unexpected(make_error_code(std::errc::invalid_argument));
+    return stdx::unexpected(make_error_code(std::errc::invalid_argument));
   }
 
   return {};
@@ -285,12 +293,12 @@ classic_proto_decode_and_add_connection_attributes(
     const std::vector<std::pair<std::string, std::string>> &extra_attributes) {
   // add attributes if they are sane.
   const auto verify_res = classic_proto_verify_connection_attributes(attrs);
-  if (!verify_res) return verify_res.get_unexpected();
+  if (!verify_res) return stdx::unexpected(verify_res.error());
 
   for (const auto &attr : extra_attributes) {
     const auto append_res =
         classic_proto_append_attribute(attrs, attr.first, attr.second);
-    if (!append_res) return append_res.get_unexpected();
+    if (!append_res) return stdx::unexpected(append_res.error());
   }
 
   return {attrs};
@@ -333,6 +341,8 @@ stdx::expected<Processor::Result, std::error_code> ServerGreetor::process() {
     case Stage::ServerGreetingSent:
       return Result::Done;
     case Stage::Ok:
+      trace_span_end(trace_event_greeting_);
+
       connection()->authenticated(true);
       return Result::Done;
   }
@@ -347,15 +357,18 @@ stdx::expected<Processor::Result, std::error_code> ServerGreetor::error() {
                  .direction(Tracer::Event::Direction::kServerClose));
   }
 
+  trace_span_end(trace_event_greeting_, TraceEvent::StatusCode::kError);
+
   // reset the server connection.
   //
   // - close the connection
   // - reset all protocol state.
   // - reset all channel state
 
-  connection()->socket_splicer()->server_conn() = {
-      nullptr, nullptr, connection()->context().dest_ssl_mode(),
-      std::make_unique<ClassicProtocolState>()};
+  connection()->server_conn() = {
+      nullptr, connection()->context().dest_ssl_mode(),
+      MysqlRoutingClassicConnectionBase::ServerSideConnection::
+          protocol_state_type()};
 
   // force a connection close after the error-msg was sent.
   connection()->authenticated(false);
@@ -365,15 +378,20 @@ stdx::expected<Processor::Result, std::error_code> ServerGreetor::error() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::server_greeting() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto src_channel = socket_splicer->server_channel();
-  auto src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_protocol = src_conn.protocol();
 
-  auto read_res =
-      ClassicFrame::ensure_has_msg_prefix(src_channel, src_protocol);
+  if (trace_event_greeting_ == nullptr) {
+    trace_event_greeting_ = trace_span(parent_event_, "mysql/greeting");
+
+    trace_event_server_greeting_ =
+        trace_span(trace_event_greeting_, "mysql/server_greeting");
+  }
+
+  auto read_res = ClassicFrame::ensure_has_msg_prefix(src_conn);
   if (!read_res) return recv_server_failed(read_res.error());
 
-  uint8_t msg_type = src_protocol->current_msg_type().value();
+  uint8_t msg_type = src_protocol.current_msg_type().value();
 
   namespace message = classic_protocol::message;
 
@@ -392,19 +410,27 @@ ServerGreetor::server_greeting() {
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::server_greeting_error() {
-  connection()->server_protocol()->handshake_state(
+  connection()->server_conn().protocol().handshake_state(
       ClassicProtocolState::HandshakeState::kFinished);
 
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->server_channel();
-  auto *src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
 
   auto msg_res = ClassicFrame::recv_msg<
-      classic_protocol::borrowed::message::server::Error>(src_channel,
-                                                          src_protocol);
+      classic_protocol::borrowed::message::server::Error>(src_conn);
   if (!msg_res) return recv_client_failed(msg_res.error());
 
   auto msg = *msg_res;
+
+  if (auto &tr = tracer()) {
+    tr.trace(Tracer::Event().stage("server::greeting::error: " +
+                                   std::to_string(msg.error_code())));
+  }
+
+  if (auto *ev = trace_event_server_greeting_) {
+    trace_span_end(ev, TraceEvent::StatusCode::kError);
+  }
+
+  trace_span_end(trace_event_greeting_, TraceEvent::StatusCode::kError);
 
   stage(Stage::Error);
 
@@ -415,33 +441,31 @@ ServerGreetor::server_greeting_error() {
   on_error_(
       {msg.error_code(), std::string(msg.message()), std::string("08004")});
 
-  discard_current_msg(src_channel, src_protocol);
+  discard_current_msg(src_conn);
 
   return Result::Again;
 }
 
 // called after server connection is established.
 void ServerGreetor::client_greeting_server_adjust_caps(
-    ClassicProtocolState *src_protocol, ClassicProtocolState *dst_protocol) {
-  auto client_caps = src_protocol->client_capabilities();
+    ClassicProtocolState &src_protocol, ClassicProtocolState &dst_protocol) {
+  auto client_caps = src_protocol.client_capabilities();
 
-  if (!src_protocol->shared_capabilities().test(
+  if (!src_protocol.shared_capabilities().test(
           classic_protocol::capabilities::pos::ssl)) {
     auto attrs_res = classic_proto_decode_and_add_connection_attributes(
-        src_protocol->attributes(), connection()
-                                        ->socket_splicer()
-                                        ->client_conn()
-                                        .initial_connection_attributes());
+        src_protocol.attributes(),
+        connection()->client_conn().initial_connection_attributes());
 
     // client hasn't set the SSL cap, this is the real client greeting
-    auto attrs = attrs_res.value_or(src_protocol->attributes());
+    auto attrs = attrs_res.value_or(src_protocol.attributes());
 
-    dst_protocol->sent_attributes(attrs);
-    src_protocol->sent_attributes(attrs);
+    dst_protocol.sent_attributes(attrs);
+    src_protocol.sent_attributes(attrs);
 
-    auto client_greeting_msg = src_protocol->client_greeting().value();
+    auto client_greeting_msg = src_protocol.client_greeting().value();
     client_greeting_msg.attributes(attrs);
-    dst_protocol->client_greeting(client_greeting_msg);
+    dst_protocol.client_greeting(client_greeting_msg);
   }
 
   switch (connection()->dest_ssl_mode()) {
@@ -456,7 +480,7 @@ void ServerGreetor::client_greeting_server_adjust_caps(
     case SslMode::kPreferred:
       // config says: communication to server should be encrypted if server
       // supports it.
-      if (dst_protocol->server_capabilities().test(
+      if (dst_protocol.server_capabilities().test(
               classic_protocol::capabilities::pos::ssl)) {
         client_caps.set(classic_protocol::capabilities::pos::ssl);
       }
@@ -468,7 +492,7 @@ void ServerGreetor::client_greeting_server_adjust_caps(
       harness_assert_this_should_not_execute();
       break;
   }
-  dst_protocol->client_capabilities(client_caps);
+  dst_protocol.client_capabilities(client_caps);
 }
 
 /**
@@ -478,17 +502,17 @@ void ServerGreetor::client_greeting_server_adjust_caps(
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::server_greeting_greeting() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto src_channel = socket_splicer->server_channel();
-  auto src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
-  auto dst_channel = socket_splicer->client_channel();
-  auto dst_protocol = connection()->client_protocol();
+  auto &dst_conn = connection()->client_conn();
+  auto &dst_protocol = dst_conn.protocol();
 
   const auto msg_res =
       ClassicFrame::recv_msg<classic_protocol::message::server::Greeting>(
           src_channel, src_protocol, {/* no shared caps yet */});
-  if (!msg_res) return msg_res.get_unexpected();
+  if (!msg_res) return stdx::unexpected(msg_res.error());
 
 #if defined(DEBUG_STATE)
   log_debug("client-ssl-mode=%s, server-ssl-mode=%s",
@@ -499,20 +523,25 @@ ServerGreetor::server_greeting_greeting() {
   auto server_greeting_msg = *msg_res;
 
   // engage the "send-client-greeting-on-early-client-abort"
-  connection()->server_protocol()->handshake_state(
+  connection()->server_conn().protocol().handshake_state(
       ClassicProtocolState::HandshakeState::kServerGreeting);
 
   auto caps = server_greeting_msg.capabilities();
 
-  src_protocol->server_capabilities(caps);
-  src_protocol->server_greeting(server_greeting_msg);
+  src_protocol.server_capabilities(caps);
+  src_protocol.server_greeting(server_greeting_msg);
 
   if (auto &tr = tracer()) {
     tr.trace(Tracer::Event().stage("server::greeting::greeting"));
   }
 
-  auto msg = src_protocol->server_greeting().value();
+  if (auto *ev = trace_event_server_greeting_) {
+    ev->attrs.emplace_back(
+        "mysql.remote.connection_id",
+        static_cast<int64_t>(server_greeting_msg.connection_id()));
+  }
 
+  auto msg = src_protocol.server_greeting().value();
 #if 0
   std::cerr << __LINE__ << ": proto-version: " << (int)msg.protocol_version()
             << "\n";
@@ -525,8 +554,8 @@ ServerGreetor::server_greeting_greeting() {
 #endif
 
   if (!server_ssl_mode_is_satisfied(connection()->dest_ssl_mode(),
-                                    src_protocol->server_capabilities())) {
-    discard_current_msg(src_channel, src_protocol);
+                                    src_protocol.server_capabilities())) {
+    discard_current_msg(src_conn);
 
     // destination does not support TLS, but config requires encryption.
     log_debug(
@@ -543,7 +572,7 @@ ServerGreetor::server_greeting_greeting() {
     }
 
     auto send_res = send_ssl_connection_error_msg(
-        dst_channel, dst_protocol,
+        dst_conn,
         "SSL connection error: SSL is required by router, but the "
         "server doesn't support it");
     if (!send_res) {
@@ -557,35 +586,37 @@ ServerGreetor::server_greeting_greeting() {
   }
 
   // the server side's auth-method-data
-  src_protocol->auth_method_data(msg.auth_method_data());
+  src_protocol.auth_method_data(msg.auth_method_data());
 
-  if (!dst_protocol->server_greeting()) {
-    discard_current_msg(src_channel, src_protocol);
+  if (!dst_protocol.server_greeting()) {
+    discard_current_msg(src_conn);
     // client doesn't have server greeting yet, send it the server's.
 
-    auto caps = src_protocol->server_capabilities();
+    auto caps = src_protocol.server_capabilities();
 
     adjust_supported_capabilities(connection()->source_ssl_mode(),
                                   connection()->dest_ssl_mode(), caps);
 
     // update the client side's auth-method-data.
-    dst_protocol->auth_method_data(msg.auth_method_data());
-    dst_protocol->server_capabilities(caps);
-    dst_protocol->seq_id(0xff);  // will be incremented by 1
+    dst_protocol.auth_method_data(msg.auth_method_data());
+    dst_protocol.server_capabilities(caps);
+    dst_protocol.seq_id(0xff);  // will be incremented by 1
 
     msg.capabilities(caps);
 
     auto send_res =
         ClassicFrame::send_msg<classic_protocol::message::server::Greeting>(
-            dst_channel, dst_protocol, msg);
+            dst_conn, msg);
     if (!send_res) return send_client_failed(send_res.error());
 
-    dst_protocol->server_greeting(msg);
+    dst_protocol.server_greeting(msg);
+
+    trace_span_end(trace_event_greeting_, TraceEvent::StatusCode::kOk);
 
     stage(Stage::ServerGreetingSent);  // hand over to the ServerFirstConnector
     return Result::SendToClient;
   } else {
-    discard_current_msg(src_channel, src_protocol);
+    discard_current_msg(src_conn);
 
     stage(Stage::ClientGreeting);
     return Result::Again;
@@ -594,14 +625,15 @@ ServerGreetor::server_greeting_greeting() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::client_greeting() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_protocol = src_conn.protocol();
 
-  bool server_supports_tls = dst_protocol->server_capabilities().test(
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  bool server_supports_tls = dst_protocol.server_capabilities().test(
       classic_protocol::capabilities::pos::ssl);
-  bool client_uses_tls = src_protocol->shared_capabilities().test(
+  bool client_uses_tls = src_protocol.shared_capabilities().test(
       classic_protocol::capabilities::pos::ssl);
 
   if (connection()->dest_ssl_mode() == SslMode::kAsClient && client_uses_tls &&
@@ -620,8 +652,7 @@ ServerGreetor::client_greeting() {
 
     // send back to the client
     const auto send_res = send_ssl_connection_error_msg(
-        src_channel, src_protocol,
-        "SSL connection error: Requirements can not be satisfied");
+        src_conn, "SSL connection error: Requirements can not be satisfied");
     if (!send_res) return send_client_failed(send_res.error());
 
     return Result::SendToClient;
@@ -634,7 +665,13 @@ ServerGreetor::client_greeting() {
   //
   // src_protocol->shared_caps must be used here as the ->client_caps may
   // contain more than what the router advertised.
-  auto client_caps = src_protocol->shared_capabilities();
+  auto client_caps = src_protocol.shared_capabilities();
+
+  if (connection()->context().connection_sharing()) {
+    client_caps.set(classic_protocol::capabilities::pos::session_track)
+        .set(classic_protocol::capabilities::pos::
+                 text_result_with_session_tracking);
+  }
 
   switch (connection()->dest_ssl_mode()) {
     case SslMode::kDisabled:
@@ -666,20 +703,23 @@ ServerGreetor::client_greeting() {
   // will not be part of the client's caps.
   const auto with_schema_pos =
       classic_protocol::capabilities::pos::connect_with_schema;
-  if (src_protocol->schema().empty()) {
+  if (src_protocol.schema().empty()) {
     client_caps.reset(with_schema_pos);
   } else {
     client_caps.set(with_schema_pos);
   }
 
-  dst_protocol->client_capabilities(client_caps);
-  dst_protocol->auth_method_name(src_protocol->auth_method_name());
-  dst_protocol->username(src_protocol->username());
-  dst_protocol->attributes(src_protocol->attributes());
+  dst_protocol.client_capabilities(client_caps);
+  dst_protocol.auth_method_name(src_protocol.auth_method_name());
+  dst_protocol.username(src_protocol.username());
+  dst_protocol.attributes(src_protocol.attributes());
 
   connection()->on_handshake_received();
 
-  if (dst_protocol->shared_capabilities().test(
+  trace_event_client_greeting_ =
+      trace_span(trace_event_greeting_, "mysql/client_greeting");
+
+  if (dst_protocol.shared_capabilities().test(
           classic_protocol::capabilities::pos::ssl)) {
     stage(Stage::ClientGreetingStartTls);
   } else {
@@ -691,35 +731,35 @@ ServerGreetor::client_greeting() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::client_greeting_start_tls() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_protocol = connection()->server_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
+  auto &src_conn = connection()->client_conn();
+  auto &src_protocol = src_conn.protocol();
 
-  if (!src_protocol->client_greeting()) {
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  if (!src_protocol.client_greeting()) {
     return send_server_failed(make_error_code(std::errc::invalid_argument));
   }
 
-  auto initial_client_greeting_msg = src_protocol->client_greeting().value();
+  auto initial_client_greeting_msg = src_protocol.client_greeting().value();
 
   // setting username == "" leads to a short, switch-to-ssl
   // client::Greeting.
   auto send_res = ClassicFrame::send_msg<
       classic_protocol::borrowed::message::client::Greeting>(
-      dst_channel, dst_protocol,
-      {
-          dst_protocol->client_capabilities(),
-          initial_client_greeting_msg.max_packet_size(),
-          initial_client_greeting_msg.collation(),
-          "",  // username
-          "",  // auth_method_data
-          "",  // schema
-          "",  // auth_method_name
-          ""   // attributes
-      });
+      dst_conn, {
+                    dst_protocol.client_capabilities(),
+                    initial_client_greeting_msg.max_packet_size(),
+                    initial_client_greeting_msg.collation(),
+                    "",  // username
+                    "",  // auth_method_data
+                    "",  // schema
+                    "",  // auth_method_name
+                    ""   // attributes
+                });
   if (!send_res) return send_server_failed(send_res.error());
 
-  connection()->server_protocol()->handshake_state(
+  connection()->server_conn().protocol().handshake_state(
       ClassicProtocolState::HandshakeState::kClientGreeting);
 
   if (auto &tr = tracer()) {
@@ -754,38 +794,38 @@ ServerGreetor::client_greeting_start_tls() {
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::client_greeting_full() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
-  auto *dst_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
-  auto client_greeting_msg = src_protocol->client_greeting().value();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  auto client_greeting_msg = src_protocol.client_greeting().value();
 
   const auto attrs_res = classic_proto_decode_and_add_connection_attributes(
-      src_protocol->attributes(),
-      vector_splice(
-          socket_splicer->client_conn().initial_connection_attributes(),
-          client_ssl_connection_attributes(src_channel->ssl())));
+      src_protocol.attributes(),
+      vector_splice(src_conn.initial_connection_attributes(),
+                    client_ssl_connection_attributes(src_channel.ssl())));
   if (!attrs_res) {
     auto ec = attrs_res.error();
     // if decode/append fails forward the attributes as is. The server should
     // fail too.
     //
-    if (src_protocol->client_capabilities().test(
+    if (src_protocol.client_capabilities().test(
             classic_protocol::capabilities::pos::connect_attributes)) {
       log_warning("%d: decoding connection attributes failed [ignored]: (%s) ",
                   __LINE__, ec.message().c_str());
     }
   }
 
-  client_greeting_msg.capabilities(dst_protocol->client_capabilities());
-  client_greeting_msg.username(src_protocol->username());
-  client_greeting_msg.schema(src_protocol->schema());
+  client_greeting_msg.capabilities(dst_protocol.client_capabilities());
+  client_greeting_msg.username(src_protocol.username());
+  client_greeting_msg.schema(src_protocol.schema());
 
-  auto attrs = attrs_res.value_or(src_protocol->attributes());
-  dst_protocol->sent_attributes(attrs);
-  src_protocol->sent_attributes(attrs);
+  auto attrs = attrs_res.value_or(src_protocol.attributes());
+  dst_protocol.sent_attributes(attrs);
+  src_protocol.sent_attributes(attrs);
 
   client_greeting_msg.attributes(attrs);
 
@@ -793,24 +833,24 @@ ServerGreetor::client_greeting_full() {
     tr.trace(Tracer::Event().stage("client::greeting::plain"));
   }
 
-  if (src_protocol->password().has_value()) {
+  if (src_protocol.password().has_value()) {
     // scramble with the server's auth-data to trigger a fast-auth.
 
-    auto pwd = *(src_protocol->password());
+    auto pwd = *(src_protocol.password());
 
     // if the password set and not empty, rehash it.
     if (!pwd.empty()) {
       if (auto scramble_res = scramble_them_all(
               client_greeting_msg.auth_method_name(),
               strip_trailing_null(
-                  dst_protocol->server_greeting()->auth_method_data()),
+                  dst_protocol.server_greeting()->auth_method_data()),
               pwd)) {
         client_greeting_msg.auth_method_data(*scramble_res);
       }
     }
-  } else if (src_protocol->auth_method_name() ==
+  } else if (src_protocol.auth_method_name() ==
                  AuthCachingSha2Password::kName &&
-             !src_channel->ssl() && connection()->greeting_from_router()) {
+             !src_channel.ssl() && connection()->greeting_from_router()) {
     // the client tried the fast-auth path and scrambled it with the router's
     // nonce.
     //
@@ -820,13 +860,13 @@ ServerGreetor::client_greeting_full() {
     // contains the server's nonce.
     client_greeting_msg.auth_method_name("switch_me_if_you_can");
   } else {
-    dst_protocol->auth_method_name(src_protocol->auth_method_name());
+    dst_protocol.auth_method_name(src_protocol.auth_method_name());
   }
 
-  return ClassicFrame::send_msg(dst_channel, dst_protocol, client_greeting_msg)
+  return ClassicFrame::send_msg(dst_conn, client_greeting_msg)
       .and_then(
           [this](auto /* sent */) -> stdx::expected<Result, std::error_code> {
-            connection()->server_protocol()->handshake_state(
+            connection()->server_conn().protocol().handshake_state(
                 ClassicProtocolState::HandshakeState::kClientGreeting);
 
             stage(Stage::InitialResponse);
@@ -836,36 +876,58 @@ ServerGreetor::client_greeting_full() {
       .or_else([this](auto err) { return send_server_failed(err); });
 }
 
-static stdx::expected<SSL_CTX *, std::error_code> get_dest_ssl_ctx(
+static stdx::expected<TlsClientContext *, std::error_code> get_dest_ssl_ctx(
     MySQLRoutingContext &ctx, const std::string &id) {
   return mysql_harness::make_tcp_address(id).and_then(
-      [&ctx,
-       &id](const auto &addr) -> stdx::expected<SSL_CTX *, std::error_code> {
-        return ctx.dest_ssl_ctx(id, addr.address())->get();
+      [&ctx, &id](const auto &addr)
+          -> stdx::expected<TlsClientContext *, std::error_code> {
+        return ctx.dest_ssl_ctx(id, addr.address());
       });
 }
 
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::tls_connect_init() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *dst_channel = socket_splicer->server_channel();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_channel = dst_conn.channel();
+  // auto &dst_protocol = dst_conn.protocol();
 
-  auto ssl_ctx_res = get_dest_ssl_ctx(connection()->context(),
-                                      connection()->get_destination_id());
-  if (!ssl_ctx_res || ssl_ctx_res.value() == nullptr) {
+  auto tls_client_ctx_res = get_dest_ssl_ctx(
+      connection()->context(), connection()->get_destination_id());
+  if (!tls_client_ctx_res || tls_client_ctx_res.value() == nullptr ||
+      (*tls_client_ctx_res)->get() == nullptr) {
     // shouldn't happen. But if it does, close the connection.
     log_warning("failed to create SSL_CTX");
 
     return send_server_failed(make_error_code(std::errc::invalid_argument));
   }
-  dst_channel->init_ssl(*ssl_ctx_res);
 
-  SSL_set_app_data(dst_channel->ssl(), connection());
-  SSL_set_info_callback(dst_channel->ssl(), ssl_info_cb);
+  auto *tls_client_ctx = *tls_client_ctx_res;
+  auto *ssl_ctx = tls_client_ctx->get();
 
-  // when a connection is taken from the pool for this client-connection, make
-  // sure it is TLS again.
+  dst_channel.init_ssl(ssl_ctx);
+
+  SSL_set_app_data(dst_channel.ssl(), connection());
+
+  SSL_set_msg_callback(dst_channel.ssl(), ssl_msg_cb);
+  SSL_set_msg_callback_arg(dst_channel.ssl(), connection());
+
+  // when a connection is taken from the pool for this client-connection ...
+
+  // ... ensure it is TLS again.
   connection()->requires_tls(true);
+
+  // ... ensure it has/hasn't a client cert.
+  connection()->requires_client_cert(SSL_get_certificate(dst_channel.ssl()) !=
+                                     nullptr);
+
+  trace_event_tls_connect_ =
+      trace_span(trace_event_client_greeting_, "mysql/tls_connect");
+
+  tls_client_ctx->get_session().and_then(
+      [&](auto *sess) -> stdx::expected<void, std::error_code> {
+        SSL_set_session(dst_channel.ssl(), sess);
+        return {};
+      });
 
   stage(Stage::TlsConnect);
   return Result::Again;
@@ -873,14 +935,13 @@ ServerGreetor::tls_connect_init() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::tls_connect() {
-  auto *socket_splicer = connection()->socket_splicer();
+  auto &src_conn = connection()->client_conn();
 
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_channel = dst_conn.channel();
 
   {
-    const auto flush_res = dst_channel->flush_from_recv_buf();
+    const auto flush_res = dst_channel.flush_from_recv_buf();
     if (!flush_res) {
       auto ec = flush_res.error();
       log_fatal_error_code("tls_connect::recv::flush() failed", ec);
@@ -889,16 +950,16 @@ ServerGreetor::tls_connect() {
     }
   }
 
-  if (!dst_channel->tls_init_is_finished()) {
+  if (!dst_channel.tls_init_is_finished()) {
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("tls::connect"));
     }
 
-    const auto res = dst_channel->tls_connect();
+    const auto res = dst_channel.tls_connect();
     if (!res) {
       if (res.error() == TlsErrc::kWantRead) {
         {
-          const auto flush_res = dst_channel->flush_to_send_buf();
+          const auto flush_res = dst_channel.flush_to_send_buf();
           if (!flush_res &&
               (flush_res.error() !=
                make_error_condition(std::errc::operation_would_block))) {
@@ -909,7 +970,7 @@ ServerGreetor::tls_connect() {
           }
         }
 
-        if (!dst_channel->send_buffer().empty()) {
+        if (!dst_channel.send_buffer().empty()) {
           return Result::SendToServer;
         }
 
@@ -930,9 +991,8 @@ ServerGreetor::tls_connect() {
         }
 
         const auto send_res = send_ssl_connection_error_msg(
-            src_channel, src_protocol,
-            "connecting to destination failed with TLS error: " +
-                res.error().message());
+            src_conn, "connecting to destination failed with TLS error: " +
+                          res.error().message());
         if (!send_res) {
           auto ec = send_res.error();
           log_fatal_error_code("sending error failed", ec);
@@ -952,15 +1012,26 @@ ServerGreetor::tls_connect() {
   }
 
   if (auto &tr = tracer()) {
-    auto *ssl = dst_channel->ssl();
+    auto *ssl = dst_channel.ssl();
     std::ostringstream oss;
     oss << "tls::connect::ok: " << SSL_get_version(ssl);
     oss << " using " << SSL_get_cipher_name(ssl);
+#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(3, 0, 0)
+    oss << " and " << OBJ_nid2ln(SSL_get_negotiated_group(ssl));
+#endif
 
     if (SSL_session_reused(ssl) != 0) {
       oss << ", session_reused";
     }
     tr.trace(Tracer::Event().stage(oss.str()));
+  }
+
+  if (auto *ev = trace_event_tls_connect_) {
+    auto *ssl = dst_channel.ssl();
+    ev->attrs.emplace_back("tls.version", SSL_get_version(ssl));
+    ev->attrs.emplace_back("tls.cipher", SSL_get_cipher_name(ssl));
+    ev->attrs.emplace_back("tls.session_reused", SSL_session_reused(ssl) != 0);
+    trace_span_end(trace_event_tls_connect_);
   }
 
   stage(Stage::ClientGreetingAfterTls);
@@ -973,65 +1044,69 @@ ServerGreetor::tls_connect() {
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::client_greeting_after_tls() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
-  auto *dst_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
-  auto client_greeting_msg = *src_protocol->client_greeting();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  auto client_greeting_msg = *src_protocol.client_greeting();
 
   const auto attrs_res = classic_proto_decode_and_add_connection_attributes(
-      src_protocol->attributes(),
-      vector_splice(
-          socket_splicer->client_conn().initial_connection_attributes(),
-          client_ssl_connection_attributes(src_channel->ssl())));
+      src_protocol.attributes(),
+      vector_splice(src_conn.initial_connection_attributes(),
+                    client_ssl_connection_attributes(src_channel.ssl())));
   if (!attrs_res) {
     auto ec = attrs_res.error();
     // if decode/append fails forward the attributes as is. The server should
     // fail too.
     //
-    if (src_protocol->client_capabilities().test(
+    if (src_protocol.client_capabilities().test(
             classic_protocol::capabilities::pos::connect_attributes)) {
       log_warning("%d: decoding connection attributes failed [ignored]: (%s) ",
                   __LINE__, ec.message().c_str());
     }
   }
 
-  dst_protocol->username(src_protocol->username());
+  dst_protocol.username(src_protocol.username());
 
-  auto attrs = attrs_res.value_or(src_protocol->attributes());
-  dst_protocol->sent_attributes(attrs);
-  src_protocol->sent_attributes(attrs);
+  auto attrs = attrs_res.value_or(src_protocol.attributes());
+  dst_protocol.sent_attributes(attrs);
+  src_protocol.sent_attributes(attrs);
 
   client_greeting_msg.attributes(attrs);
 
-  client_greeting_msg.username(src_protocol->username());
-  client_greeting_msg.schema(src_protocol->schema());
-  client_greeting_msg.capabilities(dst_protocol->client_capabilities());
+  client_greeting_msg.username(src_protocol.username());
+  client_greeting_msg.schema(src_protocol.schema());
+  client_greeting_msg.capabilities(dst_protocol.client_capabilities());
 
   if (auto &tr = tracer()) {
     tr.trace(Tracer::Event().stage("client::greeting (tls)"));
   }
 
-  if (src_protocol->password().has_value()) {
+  if (auto *ev = trace_event_client_greeting_) {
+    ev->attrs.emplace_back("db.name", client_greeting_msg.schema());
+  }
+
+  if (src_protocol.password().has_value()) {
     // scramble with the server's auth-data to trigger a fast-auth.
 
-    auto pwd = *(src_protocol->password());
+    auto pwd = *(src_protocol.password());
 
     // if the password set and not empty, rehash it.
     if (!pwd.empty()) {
       if (auto scramble_res = scramble_them_all(
               client_greeting_msg.auth_method_name(),
               strip_trailing_null(
-                  dst_protocol->server_greeting()->auth_method_data()),
+                  dst_protocol.server_greeting()->auth_method_data()),
               pwd)) {
         client_greeting_msg.auth_method_data(*scramble_res);
       }
     }
-  } else if (src_protocol->auth_method_name() ==
+  } else if (src_protocol.auth_method_name() ==
                  AuthCachingSha2Password::kName &&
-             !src_channel->ssl() && connection()->greeting_from_router()) {
+             !src_channel.ssl() && connection()->greeting_from_router()) {
     // the client tried the fast-auth path and scrambled it with the router's
     // nonce.
     //
@@ -1042,9 +1117,9 @@ ServerGreetor::client_greeting_after_tls() {
     client_greeting_msg.auth_method_name("switch_me_if_you_can");
   }
 
-  dst_protocol->auth_method_name(src_protocol->auth_method_name());
+  dst_protocol.auth_method_name(src_protocol.auth_method_name());
 
-  return ClassicFrame::send_msg(dst_channel, dst_protocol, client_greeting_msg)
+  return ClassicFrame::send_msg(dst_conn, client_greeting_msg)
       .and_then(
           [this](auto /* unused */) -> stdx::expected<Result, std::error_code> {
             stage(Stage::InitialResponse);
@@ -1056,12 +1131,16 @@ ServerGreetor::client_greeting_after_tls() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::initial_response() {
-  const auto *src_protocol = connection()->client_protocol();
+  trace_span_end(trace_event_client_greeting_);
+
+  auto &src_conn = connection()->client_conn();
+  // auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
   connection()->push_processor(std::make_unique<AuthForwarder>(
       connection(),
       // password was requested already.
-      src_protocol->password() && !src_protocol->password()->empty()));
+      src_protocol.password() && !src_protocol.password()->empty()));
 
   stage(Stage::FinalResponse);
   return Result::Again;
@@ -1070,19 +1149,18 @@ ServerGreetor::initial_response() {
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::final_response() {
   // ERR|OK|EOF|other
-  auto *socket_splicer = connection()->socket_splicer();
-  auto src_channel = socket_splicer->server_channel();
-  auto src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
   // ensure the recv_buf has at last frame-header (+ msg-byte)
-  auto read_res =
-      ClassicFrame::ensure_has_msg_prefix(src_channel, src_protocol);
+  auto read_res = ClassicFrame::ensure_has_msg_prefix(src_conn);
   if (!read_res) return recv_server_failed(read_res.error());
 
-  connection()->server_protocol()->handshake_state(
+  connection()->server_conn().protocol().handshake_state(
       ClassicProtocolState::HandshakeState::kFinished);
 
-  const uint8_t msg_type = src_protocol->current_msg_type().value();
+  const uint8_t msg_type = src_protocol.current_msg_type().value();
 
   enum class Msg {
     Ok = ClassicFrame::cmd_byte<classic_protocol::message::server::Ok>(),
@@ -1099,10 +1177,10 @@ ServerGreetor::final_response() {
   }
 
   // if there is another packet, dump its payload for now.
-  auto &recv_buf = src_channel->recv_plain_view();
+  const auto &recv_buf = src_channel.recv_plain_view();
 
   // get as much data of the current frame from the recv-buffers to log it.
-  (void)ClassicFrame::ensure_has_full_frame(src_channel, src_protocol);
+  (void)ClassicFrame::ensure_has_full_frame(src_conn);
 
   log_debug(
       "received unexpected message from server after a client::Greeting:\n%s",
@@ -1115,27 +1193,34 @@ ServerGreetor::final_response() {
  * router<-server: auth error.
  */
 stdx::expected<Processor::Result, std::error_code> ServerGreetor::auth_error() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->server_channel();
-  auto *src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
 
   auto msg_res = ClassicFrame::recv_msg<
-      classic_protocol::borrowed::message::server::Error>(src_channel,
-                                                          src_protocol);
+      classic_protocol::borrowed::message::server::Error>(src_conn);
   if (!msg_res) return recv_client_failed(msg_res.error());
 
   auto msg = *msg_res;
 
   if (auto &tr = tracer()) {
-    tr.trace(Tracer::Event().stage("server::auth::error"));
+    tr.trace(Tracer::Event().stage("server::auth::error: " +
+                                   std::to_string(msg.error_code())));
   }
+
+  trace_span_end(trace_event_greeting_, TraceEvent::StatusCode::kError);
 
   stage(Stage::Error);
 
   on_error_({msg.error_code(), std::string(msg.message()),
              std::string(msg.sql_state())});
 
-  discard_current_msg(src_channel, src_protocol);
+  discard_current_msg(src_conn);
+
+  if (auto *ssl = connection()->server_conn().channel().ssl()) {
+    // shutdown the ssl-session to allow tls-resumption of the session.
+    //
+    // The socket will be closed in ::error().
+    SSL_shutdown(ssl);
+  }
 
   return Result::Again;
 }
@@ -1144,14 +1229,15 @@ stdx::expected<Processor::Result, std::error_code> ServerGreetor::auth_error() {
  * server-side: auth is ok.
  */
 stdx::expected<Processor::Result, std::error_code> ServerGreetor::auth_ok() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->server_channel();
-  auto *src_protocol = connection()->server_protocol();
-  auto *dst_protocol = connection()->client_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_protocol = src_conn.protocol();
+
+  auto &dst_conn = connection()->client_conn();
+  auto &dst_protocol = dst_conn.protocol();
 
   auto msg_res =
       ClassicFrame::recv_msg<classic_protocol::borrowed::message::server::Ok>(
-          src_channel, src_protocol);
+          src_conn);
   if (!msg_res) return recv_server_failed(msg_res.error());
 
   if (auto &tr = tracer()) {
@@ -1162,27 +1248,22 @@ stdx::expected<Processor::Result, std::error_code> ServerGreetor::auth_ok() {
 
   if (!msg.session_changes().empty()) {
     (void)connection()->track_session_changes(
-        net::buffer(msg.session_changes()),
-        src_protocol->shared_capabilities());
+        net::buffer(msg.session_changes()), src_protocol.shared_capabilities());
   }
 
-  dst_protocol->status_flags(msg.status_flags());
+  dst_protocol.status_flags(msg.status_flags());
 
   // if the server accepted the schema, track it.
-  if (src_protocol->shared_capabilities().test(
+  if (src_protocol.shared_capabilities().test(
           classic_protocol::capabilities::pos::connect_with_schema)) {
-    src_protocol->schema(dst_protocol->schema());
+    src_protocol.schema(dst_protocol.schema());
   } else {
-    src_protocol->schema("");
+    src_protocol.schema("");
   }
 
   stage(Stage::Ok);
 
-  if (in_handshake_) {
-    return forward_server_to_client();
-  }
-
-  discard_current_msg(src_channel, src_protocol);
+  discard_current_msg(src_conn);
   return Result::Again;
 }
 
@@ -1211,22 +1292,19 @@ stdx::expected<Processor::Result, std::error_code>
 ServerFirstConnector::connect() {
   stage(Stage::ServerGreeting);
 
-  return socket_reconnect_start();
+  return socket_reconnect_start(nullptr);
 }
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstConnector::server_greeting() {
-  auto *socket_splicer = connection()->socket_splicer();
-
   // ConnectProcessor either:
   //
   // - closes the connection and sends an error to the client, or
   // - keeps the connection open.
-  auto &server_conn = socket_splicer->server_conn();
+  auto &server_conn = connection()->server_conn();
 
   if (!server_conn.is_open()) {
-    auto *src_channel = socket_splicer->client_channel();
-    auto *src_protocol = connection()->client_protocol();
+    auto &src_conn = connection()->client_conn();
 
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("connect::error"));
@@ -1234,7 +1312,7 @@ ServerFirstConnector::server_greeting() {
 
     stage(Stage::Error);
 
-    return reconnect_send_error_msg(src_channel, src_protocol);
+    return reconnect_send_error_msg(src_conn);
   }
 
   if (auto &tr = tracer()) {
@@ -1249,7 +1327,8 @@ ServerFirstConnector::server_greeting() {
       connection(), false,
       [this](const classic_protocol::message::server::Error &err) {
         this->reconnect_error(err);
-      }));
+      },
+      nullptr));
 
   return Result::Again;
 }
@@ -1259,19 +1338,31 @@ ServerFirstConnector::server_greeting() {
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstConnector::server_greeted() {
-  auto *socket_splicer = connection()->socket_splicer();
-
-  auto &server_conn = socket_splicer->server_conn();
+  auto &server_conn = connection()->server_conn();
 
   if (!server_conn.is_open()) {
-    auto *src_channel = socket_splicer->client_channel();
-    auto *src_protocol = connection()->client_protocol();
+    auto &src_conn = connection()->client_conn();
+
+    auto ec = reconnect_error();
+
+    if (connect_error_is_transient(ec) &&
+        std::chrono::steady_clock::now() <
+            started_ + connection()->context().connect_retry_timeout()) {
+      stage(Stage::Connect);
+
+      connection()->connect_timer().expires_after(kConnectRetryInterval);
+      connection()->connect_timer().async_wait([this](std::error_code ec) {
+        if (ec) return;
+
+        connection()->resume();
+      });
+
+      return Result::Suspend;
+    }
 
     stage(Stage::Error);
 
     if (log_level_is_handled(mysql_harness::logging::LogLevel::kDebug)) {
-      auto ec = reconnect_error();
-
       // RouterRoutingTest.RoutingTooManyServerConnections expects this
       // message.
       log_debug(
@@ -1280,7 +1371,7 @@ ServerFirstConnector::server_greeted() {
           ec.error_code(), ec.message().c_str());
     }
 
-    return reconnect_send_error_msg(src_channel, src_protocol);
+    return reconnect_send_error_msg(src_conn);
   }
 
   stage(Stage::Ok);
@@ -1316,6 +1407,10 @@ ServerFirstAuthenticator::process() {
       return auth_error();
     case Stage::AuthOk:
       return auth_ok();
+    case Stage::FetchUserAttrs:
+      return fetch_user_attrs();
+    case Stage::FetchUserAttrsDone:
+      return fetch_user_attrs_done();
 
       // the two exit-stages:
       // - Error
@@ -1332,27 +1427,25 @@ ServerFirstAuthenticator::process() {
 
 // called after server connection is established.
 void ServerFirstAuthenticator::client_greeting_server_adjust_caps(
-    ClassicProtocolState *src_protocol, ClassicProtocolState *dst_protocol) {
-  auto client_caps = src_protocol->client_capabilities();
+    ClassicProtocolState &src_protocol, ClassicProtocolState &dst_protocol) {
+  auto client_caps = src_protocol.client_capabilities();
 
-  if (!src_protocol->shared_capabilities().test(
+  if (!src_protocol.shared_capabilities().test(
           classic_protocol::capabilities::pos::ssl)) {
-    auto client_greeting_msg = src_protocol->client_greeting().value();
+    auto client_greeting_msg = src_protocol.client_greeting().value();
 
     auto attrs_res = classic_proto_decode_and_add_connection_attributes(
-        src_protocol->attributes(), connection()
-                                        ->socket_splicer()
-                                        ->client_conn()
-                                        .initial_connection_attributes());
+        src_protocol.attributes(),
+        connection()->client_conn().initial_connection_attributes());
 
-    auto attrs = attrs_res.value_or(src_protocol->attributes());
-    dst_protocol->sent_attributes(attrs);
-    src_protocol->sent_attributes(attrs);
+    auto attrs = attrs_res.value_or(src_protocol.attributes());
+    dst_protocol.sent_attributes(attrs);
+    src_protocol.sent_attributes(attrs);
 
     client_greeting_msg.attributes(attrs);
 
     // client hasn't set the SSL cap, this is the real client greeting
-    dst_protocol->client_greeting(client_greeting_msg);
+    dst_protocol.client_greeting(client_greeting_msg);
   }
 
   switch (connection()->dest_ssl_mode()) {
@@ -1367,7 +1460,7 @@ void ServerFirstAuthenticator::client_greeting_server_adjust_caps(
     case SslMode::kPreferred:
       // config says: communication to server should be encrypted if server
       // supports it.
-      if (dst_protocol->server_capabilities().test(
+      if (dst_protocol.server_capabilities().test(
               classic_protocol::capabilities::pos::ssl)) {
         client_caps.set(classic_protocol::capabilities::pos::ssl);
       }
@@ -1379,22 +1472,23 @@ void ServerFirstAuthenticator::client_greeting_server_adjust_caps(
       harness_assert_this_should_not_execute();
       break;
   }
-  dst_protocol->client_capabilities(client_caps);
+  dst_protocol.client_capabilities(client_caps);
 }
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::client_greeting() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_protocol = src_conn.protocol();
 
-  const bool server_supports_tls = dst_protocol->server_capabilities().test(
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  const bool server_supports_tls = dst_protocol.server_capabilities().test(
       classic_protocol::capabilities::pos::ssl);
-  const bool client_uses_tls = src_protocol->shared_capabilities().test(
+  const bool client_uses_tls = src_protocol.shared_capabilities().test(
       classic_protocol::capabilities::pos::ssl);
   const bool client_is_secure =
-      client_uses_tls || socket_splicer->client_conn().is_secure_transport();
+      client_uses_tls || src_conn.is_secure_transport();
 
   if (connection()->dest_ssl_mode() == SslMode::kAsClient && client_uses_tls &&
       !server_supports_tls) {
@@ -1403,8 +1497,7 @@ ServerFirstAuthenticator::client_greeting() {
 
     // send back to the client
     const auto send_res = send_ssl_connection_error_msg(
-        src_channel, src_protocol,
-        "SSL connection error: Requirements can not be satisfied");
+        src_conn, "SSL connection error: Requirements can not be satisfied");
     if (!send_res) return send_client_failed(send_res.error());
 
     stage(Stage::Error);
@@ -1418,7 +1511,7 @@ ServerFirstAuthenticator::client_greeting() {
   //
   // src_protocol->shared_caps must be used here as the ->client_caps may
   // contain more than what the router advertised.
-  auto client_caps = src_protocol->shared_capabilities();
+  auto client_caps = src_protocol.shared_capabilities();
 
   switch (connection()->dest_ssl_mode()) {
     case SslMode::kDisabled:
@@ -1445,16 +1538,16 @@ ServerFirstAuthenticator::client_greeting() {
       return recv_client_failed(make_error_code(std::errc::invalid_argument));
   }
 
-  dst_protocol->client_capabilities(client_caps);
-  dst_protocol->auth_method_name(src_protocol->auth_method_name());
-  dst_protocol->username(src_protocol->username());
-  dst_protocol->attributes(src_protocol->attributes());
+  dst_protocol.client_capabilities(client_caps);
+  dst_protocol.auth_method_name(src_protocol.auth_method_name());
+  dst_protocol.username(src_protocol.username());
+  dst_protocol.attributes(src_protocol.attributes());
 
   // the client greeting was received and will be forwarded to the server
   // soon.
   connection()->on_handshake_received();
 
-  if (dst_protocol->shared_capabilities().test(
+  if (dst_protocol.shared_capabilities().test(
           classic_protocol::capabilities::pos::ssl)) {
     stage(Stage::ClientGreetingStartTls);
 
@@ -1467,38 +1560,38 @@ ServerFirstAuthenticator::client_greeting() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::client_greeting_start_tls() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_protocol = connection()->server_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
+  auto &src_conn = connection()->client_conn();
+  auto &src_protocol = src_conn.protocol();
 
-  if (!src_protocol->client_greeting()) {
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  if (!src_protocol.client_greeting()) {
     return send_server_failed(make_error_code(std::errc::invalid_argument));
   }
 
-  auto initial_client_greeting_msg = src_protocol->client_greeting().value();
+  auto initial_client_greeting_msg = src_protocol.client_greeting().value();
 
   // use the shared capabilities of the client<->router connection as basis
-  auto client_caps = src_protocol->shared_capabilities();
+  auto client_caps = src_protocol.shared_capabilities();
 
   client_caps.set(classic_protocol::capabilities::pos::ssl);
 
-  dst_protocol->client_capabilities(client_caps);
+  dst_protocol.client_capabilities(client_caps);
 
   // setting username == "" leads to a short, switch-to-ssl
   // client::Greeting.
   auto send_res = ClassicFrame::send_msg<
       classic_protocol::borrowed::message::client::Greeting>(
-      dst_channel, dst_protocol,
-      {
-          client_caps, initial_client_greeting_msg.max_packet_size(),
-          initial_client_greeting_msg.collation(),
-          "",  // username
-          "",  // auth_method_data
-          "",  // schema
-          "",  // auth_method_name
-          ""   // attributes
-      });
+      dst_conn, {
+                    client_caps, initial_client_greeting_msg.max_packet_size(),
+                    initial_client_greeting_msg.collation(),
+                    "",  // username
+                    "",  // auth_method_data
+                    "",  // schema
+                    "",  // auth_method_name
+                    ""   // attributes
+                });
   if (!send_res) return send_server_failed(send_res.error());
 
   if (connection()->source_ssl_mode() == SslMode::kPassthrough) {
@@ -1508,9 +1601,9 @@ ServerFirstAuthenticator::client_greeting_start_tls() {
 
     // whatever happens next is encrypted and will not be treated as
     // connection-error.
-    connection()->client_protocol()->handshake_state(
+    connection()->client_conn().protocol().handshake_state(
         ClassicProtocolState::HandshakeState::kFinished);
-    connection()->server_protocol()->handshake_state(
+    connection()->server_conn().protocol().handshake_state(
         ClassicProtocolState::HandshakeState::kFinished);
 
     stage(Stage::TlsForwardInit);
@@ -1549,58 +1642,58 @@ ServerFirstAuthenticator::client_greeting_full() {
     tr.trace(Tracer::Event().stage("client::greeting (full)"));
   }
 
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
-  auto *dst_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
-  auto client_greeting_msg = src_protocol->client_greeting().value();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  auto client_greeting_msg = src_protocol.client_greeting().value();
 
   const auto attrs_res = classic_proto_decode_and_add_connection_attributes(
-      src_protocol->attributes(),
-      vector_splice(
-          socket_splicer->client_conn().initial_connection_attributes(),
-          client_ssl_connection_attributes(src_channel->ssl())));
+      src_protocol.attributes(),
+      vector_splice(src_conn.initial_connection_attributes(),
+                    client_ssl_connection_attributes(src_channel.ssl())));
   if (!attrs_res) {
     auto ec = attrs_res.error();
     // if decode/append fails forward the attributes as is. The server should
     // fail too.
     //
-    if (src_protocol->client_capabilities().test(
+    if (src_protocol.client_capabilities().test(
             classic_protocol::capabilities::pos::connect_attributes)) {
       log_warning("%d: decoding connection attributes failed [ignored]: (%s) ",
                   __LINE__, ec.message().c_str());
     }
   }
 
-  auto attrs = attrs_res.value_or(src_protocol->attributes());
-  dst_protocol->sent_attributes(attrs);
-  src_protocol->sent_attributes(attrs);
+  auto attrs = attrs_res.value_or(src_protocol.attributes());
+  dst_protocol.sent_attributes(attrs);
+  src_protocol.sent_attributes(attrs);
 
-  client_greeting_msg.capabilities(dst_protocol->client_capabilities());
+  client_greeting_msg.capabilities(dst_protocol.client_capabilities());
   client_greeting_msg.attributes(attrs);
 
-  if (src_protocol->password().has_value()) {
+  if (src_protocol.password().has_value()) {
     // scramble with the server's auth-data to trigger a fast-auth.
 
-    auto pwd = *(src_protocol->password());
+    auto pwd = *(src_protocol.password());
 
     // if the password set and not empty, rehash it.
     if (!pwd.empty()) {
       if (auto scramble_res = scramble_them_all(
               client_greeting_msg.auth_method_name(),
               strip_trailing_null(
-                  dst_protocol->server_greeting()->auth_method_data()),
+                  dst_protocol.server_greeting()->auth_method_data()),
               pwd)) {
         client_greeting_msg.auth_method_data(*scramble_res);
       }
     }
   }
 
-  dst_protocol->auth_method_name(src_protocol->auth_method_name());
+  dst_protocol.auth_method_name(src_protocol.auth_method_name());
 
-  return ClassicFrame::send_msg(dst_channel, dst_protocol, client_greeting_msg)
+  return ClassicFrame::send_msg(dst_conn, client_greeting_msg)
       .and_then(
           [this](auto /* unused */) -> stdx::expected<Result, std::error_code> {
             stage(Stage::InitialResponse);
@@ -1610,22 +1703,22 @@ ServerFirstAuthenticator::client_greeting_full() {
       .or_else([this](auto err) { return send_server_failed(err); });
 }
 
-static TlsErrc forward_tls(Channel *src_channel, Channel *dst_channel) {
+static TlsErrc forward_tls(Channel &src_channel, Channel &dst_channel) {
   // at least the TLS record header.
   const size_t tls_header_size{5};
   const size_t tls_type_offset{5};
 
-  src_channel->read_to_plain(tls_header_size);
+  src_channel.read_to_plain(tls_header_size);
 
-  const auto &plain = src_channel->recv_plain_view();
+  const auto &plain = src_channel.recv_plain_view();
   while (plain.size() >= tls_header_size) {
     // plain is TLS traffic.
     const uint8_t tls_content_type = plain[0];
     const uint16_t tls_payload_size = (plain[3] << 8) | plain[4];
 
     if (plain.size() < tls_header_size + tls_payload_size) {
-      src_channel->read_to_plain(tls_header_size + tls_payload_size -
-                                 plain.size());
+      src_channel.read_to_plain(tls_header_size + tls_payload_size -
+                                plain.size());
     }
 
     if (plain.size() < tls_header_size + tls_payload_size) {
@@ -1633,7 +1726,7 @@ static TlsErrc forward_tls(Channel *src_channel, Channel *dst_channel) {
       return TlsErrc::kWantRead;
     }
 
-    const auto write_res = dst_channel->write(
+    const auto write_res = dst_channel.write(
         net::buffer(plain.subspan(0, tls_header_size + tls_payload_size)));
     if (!write_res) return TlsErrc::kWantWrite;
 
@@ -1641,11 +1734,11 @@ static TlsErrc forward_tls(Channel *src_channel, Channel *dst_channel) {
     if (static_cast<TlsContentType>(tls_content_type) ==
             TlsContentType::kAlert &&
         plain.size() > tls_type_offset && plain[tls_type_offset] == 0x02) {
-      src_channel->is_tls(false);
-      dst_channel->is_tls(false);
+      src_channel.is_tls(false);
+      dst_channel.is_tls(false);
     }
 
-    src_channel->consume_plain(*write_res);
+    src_channel.consume_plain(*write_res);
   }
 
   // want more
@@ -1659,11 +1752,10 @@ class SendProcessor : public Processor {
       : Processor(conn) {}
 
   stdx::expected<Result, std::error_code> process() override {
-    auto *socket_splicer = connection()->socket_splicer();
-    auto *dst_channel = toServer ? socket_splicer->server_channel()
-                                 : socket_splicer->client_channel();
+    auto &dst_channel = toServer ? connection()->server_conn().channel()
+                                 : connection()->client_conn().channel();
 
-    if (dst_channel->send_buffer().empty()) return Result::Done;
+    if (dst_channel.send_buffer().empty()) return Result::Done;
 
     return toServer ? Result::SendToServer : Result::SendToClient;
   }
@@ -1677,26 +1769,30 @@ ServerFirstAuthenticator::tls_forward() {
 
         switch (*result) {
           case AwaitClientOrServerProcessor::AwaitResult::ClientReadable: {
-            auto *socket_splicer = connection()->socket_splicer();
-            auto *src_channel = socket_splicer->client_channel();
-            auto *dst_channel = socket_splicer->server_channel();
+            auto &src_conn = connection()->client_conn();
+            auto &src_channel = src_conn.channel();
+
+            auto &dst_conn = connection()->server_conn();
+            auto &dst_channel = dst_conn.channel();
 
             forward_tls(src_channel, dst_channel);
 
-            if (!dst_channel->send_buffer().empty()) {
+            if (!dst_channel.send_buffer().empty()) {
               connection()->push_processor(
                   std::make_unique<SendProcessor<true>>(connection()));
             }
             return;
           }
           case AwaitClientOrServerProcessor::AwaitResult::ServerReadable: {
-            auto *socket_splicer = connection()->socket_splicer();
-            auto *src_channel = socket_splicer->server_channel();
-            auto *dst_channel = socket_splicer->client_channel();
+            auto &src_conn = connection()->server_conn();
+            auto &src_channel = src_conn.channel();
+
+            auto &dst_conn = connection()->client_conn();
+            auto &dst_channel = dst_conn.channel();
 
             forward_tls(src_channel, dst_channel);
 
-            if (!dst_channel->send_buffer().empty()) {
+            if (!dst_channel.send_buffer().empty()) {
               connection()->push_processor(
                   std::make_unique<SendProcessor<false>>(connection()));
             }
@@ -1713,16 +1809,18 @@ ServerFirstAuthenticator::tls_forward() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::tls_forward_init() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->client_channel();
-  auto *dst_channel = socket_splicer->server_channel();
+  auto &src_conn = connection()->client_conn();
+  auto &src_channel = src_conn.channel();
 
-  dst_channel->is_tls(true);
-  src_channel->is_tls(true);
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_channel = dst_conn.channel();
+
+  dst_channel.is_tls(true);
+  src_channel.is_tls(true);
 
   // if there is already data in the recv-buffer, forward that.
   forward_tls(src_channel, dst_channel);
-  if (!dst_channel->send_buffer().empty()) {
+  if (!dst_channel.send_buffer().empty()) {
     return Result::SendToServer;
   }
 
@@ -1732,23 +1830,43 @@ ServerFirstAuthenticator::tls_forward_init() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::tls_connect_init() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *dst_channel = socket_splicer->server_channel();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_channel = dst_conn.channel();
 
-  auto ssl_ctx_res = get_dest_ssl_ctx(connection()->context(),
-                                      connection()->get_destination_id());
-  if (!ssl_ctx_res || ssl_ctx_res.value() == nullptr) {
+  auto tls_client_ctx_res = get_dest_ssl_ctx(
+      connection()->context(), connection()->get_destination_id());
+  if (!tls_client_ctx_res || tls_client_ctx_res.value() == nullptr ||
+      (*tls_client_ctx_res)->get() == nullptr) {
     // shouldn't happen. But if it does, close the connection.
     log_warning("failed to create SSL_CTX");
 
     return send_server_failed(make_error_code(std::errc::invalid_argument));
   }
-  dst_channel->init_ssl(*ssl_ctx_res);
 
-  SSL_set_app_data(dst_channel->ssl(), connection());
-  SSL_set_info_callback(dst_channel->ssl(), ssl_info_cb);
+  auto *tls_client_ctx = *tls_client_ctx_res;
+  auto *ssl_ctx = tls_client_ctx->get();
 
+  dst_channel.init_ssl(ssl_ctx);
+
+  SSL_set_app_data(dst_channel.ssl(), connection());
+
+  SSL_set_msg_callback(dst_channel.ssl(), ssl_msg_cb);
+  SSL_set_msg_callback_arg(dst_channel.ssl(), connection());
+
+  // when a connection is taken from the pool for this client-connection ...
+
+  // ... ensure it is TLS again.
   connection()->requires_tls(true);
+
+  // ... ensure it has/hasn't a client cert.
+  connection()->requires_client_cert(SSL_get_certificate(dst_channel.ssl()) !=
+                                     nullptr);
+
+  tls_client_ctx->get_session().and_then(
+      [&](auto *sess) -> stdx::expected<void, std::error_code> {
+        SSL_set_session(dst_channel.ssl(), sess);
+        return {};
+      });
 
   stage(Stage::TlsConnect);
   return Result::Again;
@@ -1756,14 +1874,13 @@ ServerFirstAuthenticator::tls_connect_init() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::tls_connect() {
-  auto *socket_splicer = connection()->socket_splicer();
+  auto &src_conn = connection()->client_conn();
 
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_channel = dst_conn.channel();
 
   {
-    const auto flush_res = dst_channel->flush_from_recv_buf();
+    const auto flush_res = dst_channel.flush_from_recv_buf();
     if (!flush_res) {
       auto ec = flush_res.error();
       log_fatal_error_code("tls_connect::recv::flush() failed", ec);
@@ -1772,17 +1889,17 @@ ServerFirstAuthenticator::tls_connect() {
     }
   }
 
-  if (!dst_channel->tls_init_is_finished()) {
+  if (!dst_channel.tls_init_is_finished()) {
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("tls::connect"));
     }
 
-    const auto res = dst_channel->tls_connect();
+    const auto res = dst_channel.tls_connect();
 
     if (!res) {
       if (res.error() == TlsErrc::kWantRead) {
         {
-          const auto flush_res = dst_channel->flush_to_send_buf();
+          const auto flush_res = dst_channel.flush_to_send_buf();
           if (!flush_res &&
               (flush_res.error() !=
                make_error_condition(std::errc::operation_would_block))) {
@@ -1793,7 +1910,7 @@ ServerFirstAuthenticator::tls_connect() {
           }
         }
 
-        if (!dst_channel->send_buffer().empty()) {
+        if (!dst_channel.send_buffer().empty()) {
           return Result::SendToServer;
         }
         return Result::RecvFromServer;
@@ -1804,9 +1921,8 @@ ServerFirstAuthenticator::tls_connect() {
         // - no shared cipher
 
         const auto send_res = send_ssl_connection_error_msg(
-            src_channel, src_protocol,
-            "connecting to destination failed with TLS error: " +
-                res.error().message());
+            src_conn, "connecting to destination failed with TLS error: " +
+                          res.error().message());
         if (!send_res) {
           auto ec = send_res.error();
           log_fatal_error_code("sending error failed", ec);
@@ -1819,7 +1935,7 @@ ServerFirstAuthenticator::tls_connect() {
         }
 
         // close the server-socket as no futher communication is expected.
-        (void)socket_splicer->server_conn().close();
+        (void)connection()->server_conn().close();
 
         stage(Stage::Error);
         return Result::SendToClient;
@@ -1828,10 +1944,13 @@ ServerFirstAuthenticator::tls_connect() {
   }
 
   if (auto &tr = tracer()) {
-    auto *ssl = dst_channel->ssl();
+    auto *ssl = dst_channel.ssl();
     std::ostringstream oss;
     oss << "tls::connect::ok: " << SSL_get_version(ssl);
     oss << " using " << SSL_get_cipher_name(ssl);
+#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(3, 0, 0)
+    oss << " and " << OBJ_nid2ln(SSL_get_negotiated_group(ssl));
+#endif
 
     if (SSL_session_reused(ssl) != 0) {
       oss << ", session_reused";
@@ -1851,60 +1970,60 @@ ServerFirstAuthenticator::client_greeting_after_tls() {
     tr.trace(Tracer::Event().stage("client::greeting(first)"));
   }
 
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->client_channel();
-  auto *src_protocol = connection()->client_protocol();
-  auto *dst_channel = socket_splicer->server_channel();
-  auto *dst_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
-  auto client_greeting_msg = *src_protocol->client_greeting();
+  auto &dst_conn = connection()->server_conn();
+  auto &dst_protocol = dst_conn.protocol();
+
+  auto client_greeting_msg = *src_protocol.client_greeting();
 
   const auto attrs_res = classic_proto_decode_and_add_connection_attributes(
-      src_protocol->attributes(),
-      vector_splice(
-          socket_splicer->client_conn().initial_connection_attributes(),
-          client_ssl_connection_attributes(src_channel->ssl())));
+      src_protocol.attributes(),
+      vector_splice(src_conn.initial_connection_attributes(),
+                    client_ssl_connection_attributes(src_channel.ssl())));
   if (!attrs_res) {
     auto ec = attrs_res.error();
     // if decode/append fails forward the attributes as is. The server should
     // fail too.
     //
-    if (src_protocol->client_capabilities().test(
+    if (src_protocol.client_capabilities().test(
             classic_protocol::capabilities::pos::connect_attributes)) {
       log_warning("%d: decoding connection attributes failed [ignored]: (%s) ",
                   __LINE__, ec.message().c_str());
     }
   }
 
-  dst_protocol->username(client_greeting_msg.username());
+  dst_protocol.username(client_greeting_msg.username());
 
-  auto attrs = attrs_res.value_or(src_protocol->attributes());
-  dst_protocol->sent_attributes(attrs);
-  src_protocol->sent_attributes(attrs);
+  auto attrs = attrs_res.value_or(src_protocol.attributes());
+  dst_protocol.sent_attributes(attrs);
+  src_protocol.sent_attributes(attrs);
 
   // the client's attributes, as they are sent to the server.
 
-  client_greeting_msg.capabilities(dst_protocol->client_capabilities());
+  client_greeting_msg.capabilities(dst_protocol.client_capabilities());
   client_greeting_msg.attributes(attrs);
 
-  if (src_protocol->password().has_value()) {
+  if (src_protocol.password().has_value()) {
     // scramble with the server's auth-data to trigger a fast-auth.
 
-    auto pwd = *(src_protocol->password());
+    auto pwd = *(src_protocol.password());
 
     // if the password set and not empty, rehash it.
     if (!pwd.empty()) {
       if (auto scramble_res = scramble_them_all(
               client_greeting_msg.auth_method_name(),
               strip_trailing_null(
-                  dst_protocol->server_greeting()->auth_method_data()),
+                  dst_protocol.server_greeting()->auth_method_data()),
               pwd)) {
         client_greeting_msg.auth_method_data(*scramble_res);
       }
     }
   }
 
-  return ClassicFrame::send_msg(dst_channel, dst_protocol, client_greeting_msg)
+  return ClassicFrame::send_msg(dst_conn, client_greeting_msg)
       .and_then(
           [this](auto /* unused */) -> stdx::expected<Result, std::error_code> {
             stage(Stage::InitialResponse);
@@ -1916,12 +2035,13 @@ ServerFirstAuthenticator::client_greeting_after_tls() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::initial_response() {
-  const auto *src_protocol = connection()->client_protocol();
+  auto &src_conn = connection()->client_conn();
+  auto &src_protocol = src_conn.protocol();
 
   connection()->push_processor(std::make_unique<AuthForwarder>(
       connection(),
       // password was requested already.
-      src_protocol->password() && !src_protocol->password()->empty()));
+      src_protocol.password() && !src_protocol.password()->empty()));
 
   stage(Stage::FinalResponse);
   return Result::Again;
@@ -1930,19 +2050,18 @@ ServerFirstAuthenticator::initial_response() {
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::final_response() {
   // ERR|OK|EOF|other
-  auto *socket_splicer = connection()->socket_splicer();
-  auto src_channel = socket_splicer->server_channel();
-  auto src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
   // ensure the recv_buf has at last frame-header (+ msg-byte)
-  auto read_res =
-      ClassicFrame::ensure_has_msg_prefix(src_channel, src_protocol);
+  auto read_res = ClassicFrame::ensure_has_msg_prefix(src_conn);
   if (!read_res) return recv_server_failed(read_res.error());
 
-  connection()->server_protocol()->handshake_state(
+  connection()->server_conn().protocol().handshake_state(
       ClassicProtocolState::HandshakeState::kFinished);
 
-  const uint8_t msg_type = src_protocol->current_msg_type().value();
+  const uint8_t msg_type = src_protocol.current_msg_type().value();
 
   enum class Msg {
     Ok = ClassicFrame::cmd_byte<classic_protocol::message::server::Ok>(),
@@ -1959,10 +2078,10 @@ ServerFirstAuthenticator::final_response() {
   }
 
   // if there is another packet, dump its payload for now.
-  auto &recv_buf = src_channel->recv_plain_view();
+  const auto &recv_buf = src_channel.recv_plain_view();
 
   // get as much data of the current frame from the recv-buffers to log it.
-  (void)ClassicFrame::ensure_has_full_frame(src_channel, src_protocol);
+  (void)ClassicFrame::ensure_has_full_frame(src_conn);
 
   log_debug(
       "received unexpected message from server after a client::Greeting:\n%s",
@@ -1976,9 +2095,9 @@ ServerFirstAuthenticator::final_response() {
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::auth_error() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->server_channel();
-  auto *src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_channel = src_conn.channel();
+  auto &src_protocol = src_conn.protocol();
 
   auto msg_res = ClassicFrame::recv_msg<
       classic_protocol::borrowed::message::server::Error>(src_channel,
@@ -1988,7 +2107,8 @@ ServerFirstAuthenticator::auth_error() {
   auto msg = *msg_res;
 
   if (auto &tr = tracer()) {
-    tr.trace(Tracer::Event().stage("server::auth::error"));
+    tr.trace(Tracer::Event().stage("server::auth::error: " +
+                                   std::to_string(msg.error_code())));
   }
 
   stage(Stage::Error);  // close the server connection after the Error msg was
@@ -2005,13 +2125,12 @@ ServerFirstAuthenticator::auth_error() {
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::auth_ok() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->server_channel();
-  auto *src_protocol = connection()->server_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_protocol = src_conn.protocol();
 
   auto msg_res =
       ClassicFrame::recv_msg<classic_protocol::borrowed::message::server::Ok>(
-          src_channel, src_protocol);
+          src_conn);
   if (!msg_res) return recv_server_failed(msg_res.error());
 
   if (auto &tr = tracer()) {
@@ -2022,11 +2141,74 @@ ServerFirstAuthenticator::auth_ok() {
 
   if (!msg.session_changes().empty()) {
     (void)connection()->track_session_changes(
-        net::buffer(msg.session_changes()),
-        src_protocol->shared_capabilities());
+        net::buffer(msg.session_changes()), src_protocol.shared_capabilities());
+  }
+
+  if (connection()->context().router_require_enforce()) {
+    discard_current_msg(src_conn);
+
+    // fetch the user-vars.
+
+    stage(Stage::FetchUserAttrs);
+
+    return Result::Again;
   }
 
   stage(Stage::Ok);
 
   return forward_server_to_client();
+}
+
+stdx::expected<Processor::Result, std::error_code>
+ServerFirstAuthenticator::fetch_user_attrs() {
+  if (auto &tr = tracer()) {
+    tr.trace(Tracer::Event().stage("server::fetch_user_attrs"));
+  }
+
+  RouterRequireFetcher::push_processor(
+      connection(), required_connection_attributes_fetcher_result_);
+
+  stage(Stage::FetchUserAttrsDone);
+  return Result::Again;
+}
+
+stdx::expected<Processor::Result, std::error_code>
+ServerFirstAuthenticator::fetch_user_attrs_done() {
+  auto &dst_conn = connection()->client_conn();
+  auto &dst_channel = dst_conn.channel();
+  auto &dst_protocol = dst_conn.protocol();
+
+  if (auto &tr = tracer()) {
+    tr.trace(Tracer::Event().stage("server::fetch_user_attrs::done"));
+  }
+
+  if (!required_connection_attributes_fetcher_result_) {
+    auto send_res = ClassicFrame::send_msg<
+        classic_protocol::borrowed::message::server::Error>(
+        dst_conn, {1045, "Access denied", "28000"});
+    if (!send_res) return stdx::unexpected(send_res.error());
+
+    stage(Stage::Error);
+    return Result::SendToClient;
+  }
+
+  auto enforce_res = RouterRequire::enforce(
+      dst_channel, *required_connection_attributes_fetcher_result_);
+  if (!enforce_res) {
+    auto send_res = ClassicFrame::send_msg<
+        classic_protocol::borrowed::message::server::Error>(
+        dst_conn, {1045, "Access denied", "28000"});
+    if (!send_res) return stdx::unexpected(send_res.error());
+
+    stage(Stage::Error);
+    return Result::SendToClient;
+  }
+
+  auto send_res =
+      ClassicFrame::send_msg<classic_protocol::borrowed::message::server::Ok>(
+          dst_conn, {0, 0, dst_protocol.status_flags(), 0});
+  if (!send_res) return stdx::unexpected(send_res.error());
+
+  stage(Stage::Ok);
+  return Result::SendToClient;
 }

@@ -7,7 +7,7 @@ create table t2 (a int key) engine=ndb;
 # Rename table to later verify that the system restart did not fail
 alter table t2 rename t1;
 # System restart
-reset master;
+reset binary logs and gtids;
 # Wait for 'server1' to complete setup and get out of read-only mode
 # Wait for 'server2' to complete setup and get out of read-only mode
 # Insert data into t1
@@ -18,12 +18,12 @@ a
 1
 # Verify that the replication API is working properly.
 # The binlog should have the insert event.
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Incident	#	#	#1 (LOST_EVENTS)
 binlog.000001	#	Rotate	#	#	binlog.000002;pos=POS
-PURGE MASTER LOGS TO 'binlog.000002';
-include/show_binlog_events.inc
+PURGE BINARY LOGS TO 'binlog.000002';
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000002	#	Query	#	#	BEGIN
 binlog.000002	#	Table_map	#	#	table_id: # (test.t1)

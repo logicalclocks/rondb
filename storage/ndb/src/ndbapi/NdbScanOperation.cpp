@@ -2641,13 +2641,13 @@ NdbRecAttr *NdbScanOperation::getValue_NdbRecord_scan(
   }
 
   res = insertATTRINFOHdr_NdbRecord(attrInfo->m_attrId, 0);
-  if (res == -1) DBUG_RETURN(NULL);
+  if (res == -1) DBUG_RETURN(nullptr);
 
   theInitialReadSize = theTotalCurrAI_Len - AttrInfo::SectionSizeInfoLength;
   ra = theReceiver.getValue(attrInfo, aValue);
   if (!ra) {
     setErrorCodeAbort(4000);
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
   theErrorLine++;
   DBUG_RETURN(ra);

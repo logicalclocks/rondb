@@ -146,10 +146,10 @@ static int NdbMutex_InitWithName_local(NdbMutex *pNdbMutex, const char *name,
     pthread_mutexattr_destroy(&t);
   }
 #else
-    if (shared)
-      result = 1;
-    else 
-      result = native_mutex_init(p, 0);
+  if (shared)
+    result = 1;
+  else
+    result = native_mutex_init(p, nullptr);
 #endif
 #endif
 

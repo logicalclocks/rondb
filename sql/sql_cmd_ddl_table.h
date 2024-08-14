@@ -47,7 +47,7 @@ class Table_ref;
   * OPTIMIZE TABLE
   * REPAIR TABLE
 */
-class Sql_cmd_ddl_table : public Sql_cmd {
+class Sql_cmd_ddl_table : public Sql_cmd_ddl {
  public:
   explicit Sql_cmd_ddl_table(Alter_info *alter_info);
 
@@ -70,7 +70,8 @@ class Sql_cmd_create_table final : public Sql_cmd_ddl_table {
     return SQLCOM_CREATE_TABLE;
   }
 
-  const MYSQL_LEX_CSTRING *eligible_secondary_storage_engine() const override;
+  const MYSQL_LEX_CSTRING *eligible_secondary_storage_engine(
+      THD *thd) const override;
 
   bool execute(THD *thd) override;
   bool prepare(THD *thd) override;
@@ -98,6 +99,15 @@ class Sql_cmd_create_index final : public Sql_cmd_create_or_drop_index_base {
   enum_sql_command sql_command_code() const override {
     return SQLCOM_CREATE_INDEX;
   }
+};
+
+class Sql_cmd_drop_table final : public Sql_cmd_ddl {
+ public:
+  enum_sql_command sql_command_code() const override {
+    return SQLCOM_DROP_TABLE;
+  }
+
+  bool execute(THD *thd [[maybe_unused]]) override { return false; }
 };
 
 class Sql_cmd_drop_index final : public Sql_cmd_create_or_drop_index_base {

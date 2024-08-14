@@ -244,6 +244,7 @@ end:
   mysql_mutex_lock(&m_run_lock);
   m_transaction_monitor_thd_state.set_running();
   mysql_cond_broadcast(&m_run_cond);
+  mysql_mutex_unlock(&m_run_lock);
 
   m_mysql_new_transaction_control->stop();
 
@@ -255,7 +256,12 @@ end:
 #endif /* HAVE_PSI_THREAD_INTERFACE */
 
   // main_loop
-  while (!m_abort && !thd->is_killed()) {
+  while (!thd->is_killed()) {
+    mysql_mutex_lock(&m_run_lock);
+    if (m_abort) {
+      mysql_mutex_unlock(&m_run_lock);
+      break;
+    }
     time_now = SteadyClock::now();
     /**
       If time has elapsed disconnect the client connections running the
@@ -292,6 +298,7 @@ end:
         mysql_cond_timedwait(&m_run_cond, &m_run_lock, &abstime);
       }
     }
+    mysql_mutex_unlock(&m_run_lock);
     /**
       1. Refresh time_now.
       2. Disconnect the clients only once.
@@ -332,6 +339,7 @@ end:
   global_thd_manager_remove_thd(thd);
   delete thd;
   my_thread_end();
+  mysql_mutex_lock(&m_run_lock);
   m_transaction_monitor_thd_state.set_terminated();
   mysql_cond_broadcast(&m_run_cond);  // Unblock terminate
   mysql_mutex_unlock(&m_run_lock);

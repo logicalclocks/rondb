@@ -81,7 +81,9 @@ void WalkAccessPaths(AccessPathPtr path, JoinPtr join,
   }
   switch (path->type) {
     case AccessPath::TABLE_SCAN:
+    case AccessPath::SAMPLE_SCAN:
     case AccessPath::INDEX_SCAN:
+    case AccessPath::INDEX_DISTANCE_SCAN:
     case AccessPath::REF:
     case AccessPath::REF_OR_NULL:
     case AccessPath::EQ_REF:
@@ -164,12 +166,12 @@ void WalkAccessPaths(AccessPathPtr path, JoinPtr join,
     case AccessPath::MATERIALIZE:
       WalkAccessPaths(path->materialize().table_path, join, cross_query_blocks,
                       std::forward<Func &&>(func), post_order_traversal);
-      for (const MaterializePathParameters::QueryBlock &query_block :
-           path->materialize().param->query_blocks) {
+      for (const MaterializePathParameters::Operand &operand :
+           path->materialize().param->m_operands) {
         if (cross_query_blocks == WalkAccessPathPolicy::ENTIRE_TREE ||
             (cross_query_blocks == WalkAccessPathPolicy::ENTIRE_QUERY_BLOCK &&
-             query_block.join == join)) {
-          WalkAccessPaths(query_block.subquery_path, query_block.join,
+             operand.join == join)) {
+          WalkAccessPaths(operand.subquery_path, operand.join,
                           cross_query_blocks, std::forward<Func &&>(func),
                           post_order_traversal);
         }
@@ -266,8 +268,13 @@ void WalkTablesUnderAccessPath(AccessPath *root_path, Func &&func,
         switch (path->type) {
           case AccessPath::TABLE_SCAN:
             return func(path->table_scan().table);
+          case AccessPath::SAMPLE_SCAN:
+            // SampleScan can be executed only in the secondary engine.
+            return false; /* LCOV_EXCL_LINE */
           case AccessPath::INDEX_SCAN:
             return func(path->index_scan().table);
+          case AccessPath::INDEX_DISTANCE_SCAN:
+            return func(path->index_distance_scan().table);
           case AccessPath::REF:
             return func(path->ref().table);
           case AccessPath::REF_OR_NULL:
@@ -294,8 +301,6 @@ void WalkTablesUnderAccessPath(AccessPath *root_path, Func &&func,
             return func(path->dynamic_index_range_scan().table);
           case AccessPath::STREAM:
             return func(path->stream().table);
-          case AccessPath::MATERIALIZE:
-            return func(path->materialize().param->table);
           case AccessPath::MATERIALIZED_TABLE_FUNCTION:
             return func(path->materialized_table_function().table);
           case AccessPath::ALTERNATIVE:
@@ -322,6 +327,7 @@ void WalkTablesUnderAccessPath(AccessPath *root_path, Func &&func,
           case AccessPath::FILTER:
           case AccessPath::HASH_JOIN:
           case AccessPath::LIMIT_OFFSET:
+          case AccessPath::MATERIALIZE:
           case AccessPath::MATERIALIZE_INFORMATION_SCHEMA_TABLE:
           case AccessPath::NESTED_LOOP_JOIN:
           case AccessPath::NESTED_LOOP_SEMIJOIN_WITH_DUPLICATE_REMOVAL:

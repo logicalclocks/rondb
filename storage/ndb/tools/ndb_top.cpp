@@ -41,11 +41,12 @@
 #include <mysql.h>
 #include <signal.h>
 #include <unistd.h>
-#include "../../../client/client_priv.h"
+#include "client/include/client_priv.h"
 #include "map_helpers.h"
 #include "my_default.h"
 #include "my_getopt.h"
 #include "mysql/service_mysql_alloc.h"
+#include "nulls.h"
 #include "welcome_copyright_notice.h" /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 #define require(a)         \

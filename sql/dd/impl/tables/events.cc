@@ -25,8 +25,8 @@
 
 #include <new>
 
-#include "m_ctype.h"
 #include "m_string.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "sql/dd/impl/raw/object_keys.h"       // dd::Global_name_key
 #include "sql/dd/impl/raw/raw_record.h"        // dd::Raw_record
@@ -84,7 +84,7 @@ Events::Events() {
   m_target_def.add_field(FIELD_ENDS, "FIELD_ENDS", "ends DATETIME");
   m_target_def.add_field(
       FIELD_STATUS, "FIELD_STATUS",
-      "status ENUM('ENABLED', 'DISABLED', 'SLAVESIDE_DISABLED') NOT NULL");
+      "status ENUM('ENABLED', 'DISABLED', 'REPLICA_SIDE_DISABLED') NOT NULL");
   m_target_def.add_field(FIELD_ON_COMPLETION, "FIELD_ON_COMPLETION",
                          "on_completion ENUM('DROP', 'PRESERVE') NOT NULL");
   m_target_def.add_field(FIELD_CREATED, "FIELD_CREATED",

@@ -22,6 +22,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "plugin/group_replication/include/udf/udf_multi_primary.h"
+#include "m_string.h"
 #include "plugin/group_replication/include/group_actions/multi_primary_migration_action.h"
 #include "plugin/group_replication/include/plugin.h"
 #include "plugin/group_replication/include/udf/udf_utils.h"
@@ -113,6 +114,12 @@ static bool group_replication_switch_to_multi_primary_mode_init(
     return true;
   }
   if (Charset_service::set_return_value_charset(initid)) return true;
+
+  if (get_preemptive_garbage_collection_var()) {
+    std::snprintf(message, MYSQL_ERRMSG_SIZE,
+                  preemptive_garbage_collection_enabled_str);
+    return true;
+  }
 
   initid->maybe_null = false;
   udf_counter.succeeded();

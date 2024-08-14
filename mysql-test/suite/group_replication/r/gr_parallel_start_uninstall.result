@@ -7,18 +7,20 @@ Note	####	Storing MySQL user name or password information in the connection meta
 # 1. Bootstrap M1.
 [connection server1]
 include/start_and_bootstrap_group_replication.inc
+CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY);
 
 # 2. Set parameters for server 2 for start gr.
 [connection server2]
-RESET SLAVE ALL FOR CHANNEL 'group_replication_recovery';
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA ALL FOR CHANNEL 'group_replication_recovery';
 SET @saved_group_replication_group_seeds = @@GLOBAL.group_replication_group_seeds;
 SET @saved_group_replication_local_address = @@GLOBAL.group_replication_local_address;
 SET GLOBAL group_replication_group_name= "GROUP_REPLICATION_GROUP_NAME";
 SET @debug_save= @@GLOBAL.DEBUG;
 
 # 3. Check parallel UNINSTALL with START GR.
+[connection server1]
+INSERT INTO t1 VALUES (1);
+[connection server2]
 SET @@GLOBAL.DEBUG='+d,group_replication_wait_on_start';
 SET @@GLOBAL.DEBUG='+d,group_replication_hold_stop_before_leave_the_group';
 START GROUP_REPLICATION USER='root' , PASSWORD='';;
@@ -36,6 +38,9 @@ Warning	1620	Plugin is busy and will be uninstalled on shutdown
 include/assert.inc [group_replication plugin is uninstalled]
 # 4. START GR without credentials it should fail.
 #    Credentials deleted by UNINSTALL.
+[connection server1]
+INSERT INTO t1 VALUES (2);
+[connection server2]
 SET @@GLOBAL.DEBUG= @debug_save;
 SET DEBUG_SYNC = "reset";
 SET GLOBAL super_read_only= FALSE;
@@ -54,6 +59,9 @@ SET @@GLOBAL.group_replication_recovery_reconnect_interval = @saved_group_replic
 SET @@GLOBAL.group_replication_recovery_retry_count = @saved_gr_recovery_retry_count;
 
 # 5. Check parallel START GR with UNINSTALL.
+[connection server1]
+INSERT INTO t1 VALUES (3);
+[connection server2]
 SET @@GLOBAL.DEBUG='+d,group_replication_hold_stop_before_leave_the_group';
 UNINSTALL PLUGIN group_replication;;
 [connection server_2_1]
@@ -79,10 +87,14 @@ call mtr.add_suppression("Error while starting the group replication incremental
 call mtr.add_suppression("The server was automatically set into read only mode after an error was detected.");
 call mtr.add_suppression("Skipping leave operation: concurrent attempt to leave the group is on-going.");
 call mtr.add_suppression("The server was automatically set into read only mode after an error was detected.");
+call mtr.add_suppression("The server was automatically set into offline mode after an error was detected.");
 call mtr.add_suppression("Plugin 'group_replication' has ref_count=1 after deinitialization.");
 SET SESSION sql_log_bin = 1;
 CHANGE REPLICATION SOURCE TO SOURCE_USER='root' FOR CHANNEL 'group_replication_recovery';
 Warnings:
 Note	1759	Sending passwords in plain text without SSL/TLS is extremely insecure.
 Note	1760	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+DROP TABLE t1;
+[connection server1]
+DROP TABLE t1;
 include/group_replication_end.inc

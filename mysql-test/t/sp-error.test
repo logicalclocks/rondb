@@ -825,13 +825,10 @@ begin
   return 5;
 end|
 --error ER_STMT_NOT_ALLOWED_IN_SF_OR_TRG
-create function bug8409() returns int begin reset master;
+create function bug8409() returns int begin reset binary logs and gtids;
 return 1; end|
 --error ER_STMT_NOT_ALLOWED_IN_SF_OR_TRG
-create function bug8409() returns int begin reset slave;
-return 1; end|
---error ER_STMT_NOT_ALLOWED_IN_SF_OR_TRG
-create function bug8409() returns int begin flush hosts;
+create function bug8409() returns int begin RESET REPLICA;
 return 1; end|
 --error ER_STMT_NOT_ALLOWED_IN_SF_OR_TRG
 create function bug8409() returns int begin flush privileges;
@@ -857,7 +854,7 @@ return 1; end|
 # BUG#9529: Stored Procedures: No Warning on truncation of procedure name
 #           during creation.
 # BUG#17015: Routine name truncation not an error
-#            When we started using utf8 for mysql.proc, this limit appeared
+#            When we started using utf8mb3 for mysql.proc, this limit appeared
 #            to be higher, but in reality the names were truncated.
 --error ER_TOO_LONG_IDENT
 create procedure bug9529_901234567890123456789012345678901234567890123456789012345()
@@ -869,7 +866,7 @@ create procedure bug17015_012345678901234567890123456789012345678901234567890123
 begin
 end|
 
---replace_column 5 '0000-00-00 00:00:00' 6 '0000-00-00 00:00:00'
+--replace_column 6 '0000-00-00 00:00:00' 7 '0000-00-00 00:00:00'
 show procedure status like 'bug17015%'|
 drop procedure bug17015_0123456789012345678901234567890123456789012345678901234|
 
@@ -1447,7 +1444,7 @@ create procedure mysqltest2.p1() select version();
 --error ER_NO_DB_ERROR 
 create procedure p2() select version();
 use mysqltest2;
---replace_column 5 '0000-00-00 00:00:00' 6 '0000-00-00 00:00:00'
+--replace_column 6 '0000-00-00 00:00:00' 7 '0000-00-00 00:00:00'
 show procedure status like 'p1';
 drop database mysqltest2;
 use test;
@@ -1558,7 +1555,7 @@ create procedure `x `.bug15658() select 1;
 # This should work
 create procedure ` bug15658`() select 1;
 call ` bug15658`();
---replace_column 5 '0000-00-00 00:00:00' 6 '0000-00-00 00:00:00'
+--replace_column 6 '0000-00-00 00:00:00' 7 '0000-00-00 00:00:00'
 show procedure status like '%bug15658';
 drop procedure ` bug15658`;
 
@@ -3687,7 +3684,7 @@ drop function mysqltest111111111122222222223333333333444444444455555555556666666
 --disable_query_log
 
 SET @orig_character_set_client = @@character_set_client;
-SET character_set_client = utf8;
+SET character_set_client = utf8mb3;
 
 --echo # Case 1. Test case to verify length of stored routine name length.
 let $object_name_64= oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo;

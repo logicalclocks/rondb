@@ -31,6 +31,7 @@
 
 #include "plugin/x/src/config/config.h"
 #include "plugin/x/src/module_mysqlx.h"
+#include "plugin/x/src/mysql_variables.h"
 #include "plugin/x/src/ssl_context.h"
 #include "plugin/x/src/variables/system_variables.h"
 #include "plugin/x/src/xpl_log.h"
@@ -53,8 +54,7 @@ Ssl_context_builder::get_mysqld_ssl_config() const {
   result.m_ssl_crl = Plugin_system_variables::get_system_variable("ssl_crl");
   result.m_ssl_crlpath =
       Plugin_system_variables::get_system_variable("ssl_crlpath");
-  result.m_have_ssl =
-      Plugin_system_variables::get_system_variable("have_ssl") == "YES";
+  result.m_have_ssl = mysqld::have_ssl();
 
   return result;
 }

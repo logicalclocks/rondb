@@ -17,7 +17,7 @@
 
 
 # Configure replication and start replicating
---source suite/ndb_rpl/ndb_master-slave.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
 
 CREATE TABLE t1 (
   a INT PRIMARY KEY
@@ -38,7 +38,7 @@ while($i < $COLUMNS)
   inc $i;
 }
 
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
 --echo # Show replica settings
 --echo # - small binlog, auto purge on and purge after one second
@@ -104,8 +104,8 @@ if (`SELECT COUNT(*) FROM mysql.ndb_binlog_index
 }
 
 # Cleanup
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 DROP TABLE t1;
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
---source include/rpl_end.inc
+--source include/rpl/deinit.inc

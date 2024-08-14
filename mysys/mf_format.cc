@@ -41,6 +41,8 @@
 #include "my_io.h"
 #include "my_macros.h"
 #include "my_sys.h"
+#include "nulls.h"
+#include "strmake.h"
 
 /**
   Formats a filename with possible replace of directory of extension
@@ -76,7 +78,7 @@ char *fn_format(char *to, const char *name, const char *dir,
   DBUG_TRACE;
   assert(name != nullptr);
   assert(extension != nullptr);
-  DBUG_PRINT("enter", ("name: %s  dir: %s  extension: %s  flag: %d", name, dir,
+  DBUG_PRINT("enter", ("name: %s  dir: %s  extension: %s  flag: %u", name, dir,
                        extension, flag));
 
   /* Copy and skip directory */

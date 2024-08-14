@@ -560,8 +560,8 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
             globalTransporterRegistry.get_status_slowdown().get(nodeId));
         row.write_uint32(globalTransporterRegistry.get_slowdown_count(nodeId));
 
-        /* TLS, not available until 8.3 -> is_encrypted=false*/
-        row.write_uint32(false);
+        /* TLS */
+        row.write_uint32(globalTransporterRegistry.is_encrypted_link(trpId));
 
         /* Send buffer bytes/pages usage */
         row.write_uint64(
@@ -613,7 +613,6 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
           rnode++;
           continue;
         }
-
         switch (getNodeInfo(rnode).m_type) {
           default: {
             jam();
@@ -621,6 +620,7 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
             Uint64 bytes_received = 0;
             Uint32 connect_count = 0;
             Uint32 perform_state = 0;
+            Uint32 is_encrypted = 0;
             ndb_sockaddr conn_addr;
 
             // Aggregate information over all (multi?) transporters
@@ -636,6 +636,7 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
               // Not aggregated, will be the same for all trps;
               conn_addr = globalTransporterRegistry.get_connect_address(trpId);
               perform_state = globalTransporterRegistry.getPerformState(trpId);
+              is_encrypted = globalTransporterRegistry.is_encrypted_link(trpId);
             }
 
             Ndbinfo::Row row(signal, req);
@@ -668,6 +669,10 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
                 globalTransporterRegistry.get_status_slowdown().get(rnode));
             row.write_uint32(
                 globalTransporterRegistry.get_slowdown_count(rnode));
+
+            /* TLS */
+            row.write_uint32(is_encrypted);
+
             ndbinfo_send_row(signal, req, row, rl);
             break;
           }
@@ -685,6 +690,29 @@ void Trpman::execDBINFO_SCANREQ(Signal *signal) {
         }
       }
       break;
+    }
+    case Ndbinfo::CERTIFICATES_TABLEID: {
+      TlsKeyManager *keyMgr = globalTransporterRegistry.getTlsKeyManager();
+      int peer_node_id = cursor->data[0];
+      cert_table_entry entry;
+      while (keyMgr->iterate_cert_table(peer_node_id, &entry)) {
+        jam();
+        Ndbinfo::Row row(signal, req);
+
+        row.write_uint32(getOwnNodeId());
+        row.write_uint32(peer_node_id);
+        row.write_string(entry.name);
+        row.write_string(entry.serial);
+        row.write_uint32(entry.expires);
+
+        ndbinfo_send_row(signal, req, row, rl);
+
+        if (rl.need_break(req)) {
+          jam();
+          ndbinfo_send_scan_break(signal, req, rl, peer_node_id);
+          return;
+        }
+      }
     }
 
     default:

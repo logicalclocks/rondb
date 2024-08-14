@@ -42,10 +42,17 @@ Cost_model_server::~Cost_model_server() {
   }
 }
 
-void Cost_model_server::init() {
+void Cost_model_server::init(Optimizer optimizer) {
   if (cost_constant_cache && m_server_cost_constants == nullptr) {
     // Get the current set of cost constants
-    m_cost_constants = cost_constant_cache->get_cost_constants();
+    switch (optimizer) {
+      case Optimizer::kOriginal:
+        m_cost_constants = cost_constant_cache->get_cost_constants();
+        break;
+      case Optimizer::kHypergraph:
+        m_cost_constants = cost_constant_cache->get_cost_constants_hypergraph();
+        break;
+    }
     assert(m_cost_constants != nullptr);
 
     // Get the cost constants for server operations
@@ -96,7 +103,7 @@ double Cost_model_table::page_read_cost_index(uint index, double pages) const {
   assert(m_initialized);
   assert(pages >= 0.0);
 
-  double in_mem = m_table->file->index_in_memory_estimate(index);
+  const double in_mem = m_table->file->index_in_memory_estimate(index);
 
   const double pages_in_mem = pages * in_mem;
   const double pages_on_disk = pages - pages_in_mem;

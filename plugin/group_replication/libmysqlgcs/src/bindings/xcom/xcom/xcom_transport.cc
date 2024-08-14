@@ -57,6 +57,7 @@
 #include "xcom/xcom_detector.h"
 #include "xcom/xcom_memory.h"
 #include "xcom/xcom_msg_queue.h"
+#include "xcom/xcom_scope_guard.h"
 #include "xcom/xcom_statistics.h"
 #include "xcom/xcom_transport.h"
 #include "xcom/xcom_vp_str.h"
@@ -130,6 +131,18 @@ connection_descriptor *open_new_local_connection(const char *server,
   return retval;
 }
 /* purecov: end */
+
+bool is_able_to_connect_to_node(const char *server, const xcom_port port) {
+  connection_descriptor *new_conn{nullptr};
+
+  Xcom_scope_guard cleanup_guard([&]() { free(new_conn); });
+
+  if (new_conn = open_new_connection(server, port, 1000); new_conn->fd == -1) {
+    return false;
+  }
+
+  return !static_cast<bool>(close_open_connection(new_conn));
+}
 
 result set_nodelay(int fd) {
   int n = 1;
@@ -520,7 +533,7 @@ static inline int old_proto_knows(xcom_proto x_proto [[maybe_unused]],
 }
 
 static xdrproc_t pax_msg_func[] = {
-    reinterpret_cast<xdrproc_t>(0),
+    nullptr,
     reinterpret_cast<xdrproc_t>(xdr_pax_msg_1_0),
     reinterpret_cast<xdrproc_t>(xdr_pax_msg_1_1),
     reinterpret_cast<xdrproc_t>(xdr_pax_msg_1_2),

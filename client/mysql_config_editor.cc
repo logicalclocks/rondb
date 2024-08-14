@@ -39,7 +39,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
-#include "client/client_priv.h"
+#include "client/include/client_priv.h"
 #include "my_aes.h"
 #include "my_byteorder.h"
 #include "my_compiler.h"
@@ -51,6 +51,7 @@
 #include "my_rnd.h"
 #include "mysql/service_mysql_alloc.h"
 #include "mysys/my_default_priv.h"
+#include "nulls.h"
 #include "print_version.h"
 #include "welcome_copyright_notice.h"
 

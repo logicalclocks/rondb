@@ -4,10 +4,10 @@
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
 .\"      Date: 05/31/2024
 .\"    Manual: MySQL Database System
-.\"    Source: MySQL 8.0
+.\"    Source: MySQL 8.4
 .\"  Language: English
 .\"
-.TH "INNOCHECKSUM" "1" "05/31/2024" "MySQL 8\&.0" "MySQL Database System"
+.TH "INNOCHECKSUM" "1" "05/31/2024" "MySQL 8\&.4" "MySQL Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -1117,11 +1117,7 @@ T}
 .sp 1
 Log output for the
 \fBinnochecksum\fR
-tool\&. A log file name must be provided\&. Log output contains checksum values for each tablespace page\&. For uncompressed tables, LSN values are also provided\&. The
-\fB\-\-log\fR
-replaces the
-\fB\-\-debug\fR
-option, which was available in earlier releases\&. Example usage:
+tool\&. A log file name must be provided\&. Log output contains checksum values for each tablespace page\&. For uncompressed tables, LSN values are also provided\&. Example usage:
 .sp
 .if n \{\
 .RS 4

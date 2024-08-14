@@ -29,6 +29,8 @@
 
 #include "storage/ndb/plugin/ha_ndbcluster_cond.h"
 
+#include <memory>
+
 #include "my_dbug.h"
 #include "sql/current_thd.h"
 #include "sql/item.h"          // Item
@@ -37,6 +39,8 @@
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ndb_log.h"
 #include "storage/ndb/plugin/ndb_thd.h"
+
+struct CHARSET_INFO;
 
 /**
  * The SqlScanFilter is a regular NdbScanFilter, except that it
@@ -318,7 +322,7 @@ class Ndb_value : public Ndb_item {
   <field> LIKE <string>|<func>, but not <string>|<func> LIKE <field>).
  */
 class Ndb_expect_stack {
-  static const uint MAX_EXPECT_ITEMS = Item::VIEW_FIXER_ITEM + 1;
+  static const uint MAX_EXPECT_ITEMS = Item::VALUES_COLUMN_ITEM + 1;
   static const uint MAX_EXPECT_FIELD_TYPES = MYSQL_TYPE_GEOMETRY + 1;
   static const uint MAX_EXPECT_FIELD_RESULTS = DECIMAL_RESULT + 1;
   static constexpr Uint32 NO_LENGTH = UINT32_MAX;
@@ -341,7 +345,7 @@ class Ndb_expect_stack {
                     MAX_EXPECT_FIELD_RESULTS);
   }
   ~Ndb_expect_stack() {
-    if (next) destroy(next);
+    if (next != nullptr) ::destroy_at(next);
     next = nullptr;
   }
   void push(Ndb_expect_stack *expect_next) { next = expect_next; }
@@ -355,7 +359,7 @@ class Ndb_expect_stack {
       other_field = next->other_field;
       collation = next->collation;
       next = next->next;
-      destroy(expect_next);
+      ::destroy_at(expect_next);
     }
   }
 
@@ -475,7 +479,7 @@ class Ndb_rewrite_context {
   Ndb_rewrite_context(const Item_func *func)
       : func_item(func), left_hand_item(nullptr), count(0) {}
   ~Ndb_rewrite_context() {
-    if (next) destroy(next);
+    if (next != nullptr) ::destroy_at(next);
   }
   const Item_func *func_item;
   const Item *left_hand_item;
@@ -503,7 +507,7 @@ class Ndb_cond_traverse_context {
         skip(0),
         rewrite_stack(nullptr) {}
   ~Ndb_cond_traverse_context() {
-    if (rewrite_stack) destroy(rewrite_stack);
+    if (rewrite_stack != nullptr) ::destroy_at(rewrite_stack);
   }
 
   inline void expect_field_from_table(table_map tables) {
@@ -739,7 +743,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
           // Pop rewrite stack
           context->rewrite_stack = rewrite_context->next;
           rewrite_context->next = nullptr;
-          destroy(rewrite_context);
+          ::destroy_at(rewrite_context);
         }
       }
       DBUG_PRINT("info",
@@ -769,19 +773,19 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
           /*
             Item value can be evaluated right away, and its value used in the
             condition, instead of the Item-expression. Note that this will
-            also catch the INT_, STRING_, REAL_, DECIMAL_ and VARBIN_ITEM,
+            also catch the INT_, STRING_, REAL_, DECIMAL_ and HEX_BIN_ITEM,
             as well as any CACHE_ITEM and FIELD_ITEM referring 'other' tables.
           */
 #ifndef NDEBUG
           String str;
           item->print(current_thd, &str, QT_ORDINARY);
 #endif
-          if (item->type() == Item::VARBIN_ITEM) {
-            // VARBIN_ITEM is special as no similar VARBIN_RESULT type is
+          if (item->type() == Item::HEX_BIN_ITEM) {
+            // HEX_BIN_ITEM is special as no similar HEX_BIN_RESULT type is
             // defined, so it needs to be explicitly handled here.
-            DBUG_PRINT("info", ("VARBIN_ITEM 'VALUE' expression: '%s'",
+            DBUG_PRINT("info", ("HEX_BIN_ITEM 'VALUE' expression: '%s'",
                                 str.c_ptr_safe()));
-            if (context->expecting(Item::VARBIN_ITEM)) {
+            if (context->expecting(Item::HEX_BIN_ITEM)) {
               ndb_item = new (*THR_MALLOC) Ndb_value(item);
               if (context->expecting_no_field_result()) {
                 // We have not seen the field argument referring this table yet
@@ -1065,7 +1069,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                     case STRING_RESULT:
                       // Expect char string or binary string
                       context->expect_only(Item::STRING_ITEM);
-                      context->expect(Item::VARBIN_ITEM);
+                      context->expect(Item::HEX_BIN_ITEM);
                       context->expect_collation(
                           field_item->collation.collation);
                       /*
@@ -1084,7 +1088,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                       break;
                     case INT_RESULT:
                       context->expect_only(Item::INT_ITEM);
-                      context->expect(Item::VARBIN_ITEM);
+                      context->expect(Item::HEX_BIN_ITEM);
                       break;
                     case DECIMAL_RESULT:
                       context->expect_only(Item::DECIMAL_ITEM);
@@ -1144,7 +1148,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                 context->expect(Item::INT_ITEM);
                 context->expect(Item::REAL_ITEM);
                 context->expect(Item::DECIMAL_ITEM);
-                context->expect(Item::VARBIN_ITEM);
+                context->expect(Item::HEX_BIN_ITEM);
                 context->expect_field_from_table(this_or_param_table);
                 context->expect_no_field_result();
                 break;
@@ -1157,7 +1161,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                 context->expect(Item::INT_ITEM);
                 context->expect(Item::REAL_ITEM);
                 context->expect(Item::DECIMAL_ITEM);
-                context->expect(Item::VARBIN_ITEM);
+                context->expect(Item::HEX_BIN_ITEM);
                 context->expect_field_from_table(this_or_param_table);
                 context->expect_no_field_result();
                 break;
@@ -1170,7 +1174,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                 context->expect(Item::INT_ITEM);
                 context->expect(Item::REAL_ITEM);
                 context->expect(Item::DECIMAL_ITEM);
-                context->expect(Item::VARBIN_ITEM);
+                context->expect(Item::HEX_BIN_ITEM);
                 context->expect_field_from_table(this_or_param_table);
                 context->expect_no_field_result();
                 // Enum can only be compared by equality.
@@ -1185,7 +1189,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                 context->expect(Item::INT_ITEM);
                 context->expect(Item::REAL_ITEM);
                 context->expect(Item::DECIMAL_ITEM);
-                context->expect(Item::VARBIN_ITEM);
+                context->expect(Item::HEX_BIN_ITEM);
                 context->expect_field_from_table(this_or_param_table);
                 context->expect_no_field_result();
                 // Enum can only be compared by equality.
@@ -1200,7 +1204,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                 context->expect(Item::INT_ITEM);
                 context->expect(Item::REAL_ITEM);
                 context->expect(Item::DECIMAL_ITEM);
-                context->expect(Item::VARBIN_ITEM);
+                context->expect(Item::HEX_BIN_ITEM);
                 context->expect_field_from_table(this_or_param_table);
                 context->expect_no_field_result();
                 // Enum can only be compared by equality.
@@ -1215,7 +1219,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
                 context->expect(Item::REAL_ITEM);
                 context->expect(Item::DECIMAL_ITEM);
                 context->expect(Item::INT_ITEM);
-                context->expect(Item::VARBIN_ITEM);
+                context->expect(Item::HEX_BIN_ITEM);
                 context->expect_field_from_table(this_or_param_table);
                 context->expect_no_field_result();
                 // Enum can only be compared by equality.
@@ -1362,7 +1366,7 @@ static void ndb_serialize_cond(const Item *item, void *arg) {
           case Item::STRING_ITEM:
           case Item::INT_ITEM:
           case Item::REAL_ITEM:
-          case Item::VARBIN_ITEM:
+          case Item::HEX_BIN_ITEM:
           case Item::DECIMAL_ITEM:
           case Item::CACHE_ITEM:
             assert(false);  // Expression folded under 'used_tables'

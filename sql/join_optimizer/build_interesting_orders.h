@@ -27,8 +27,6 @@
 #include "sql/join_optimizer/interesting_orders.h"
 #include "sql/join_optimizer/node_map.h"
 
-#include <string>
-
 class Item_func_match;
 template <class T>
 class Mem_root_array;
@@ -42,6 +40,15 @@ struct TABLE;
 // interesting ordering or an ordering homogenized from one. It also includes
 // orderings that are used for sort-for-grouping, i.e. for GROUP BY,
 // PARTITION BY or DISTINCT.
+//
+// "Sort-ahead" means explicitly sorting rows (by adding a SORT access path) in
+// a way that could become beneficial to an operation later in the query
+// processing. The sort-ahead could come immediately before the operation that
+// can benefit from it (like a SORT on the GROUP BY columns just before the
+// AGGREGATE access path), or it can be further down in the access path tree if
+// all the intermediate access paths preserve the ordering (like sorting the
+// outer table of a nested loop join in order to satisfy the ordering
+// requirements of GROUP BY or ORDER BY after the join).
 struct SortAheadOrdering {
   // Pointer to an ordering in LogicalOrderings.
   int ordering_idx;
@@ -96,6 +103,17 @@ struct ActiveIndexInfo {
                                reverse_order_without_extended_key_parts = 0;
 };
 
+// A spatial index that we can use in a knn query to get an interesting
+// ordering.
+struct SpatialDistanceScanInfo {
+  TABLE *table;
+  int key_idx;
+  LogicalOrderings::StateIndex forward_order = 0;
+  // MBR coordinates to be passed to QUICK_RANGE.
+  // QUICK_RANGE needs at least one extra byte at the end (TODO:fix that).
+  double coordinates[5];
+};
+
 // A full-text index that we can use in the query, either for index lookup or
 // for scanning along to get an interesting order.
 struct FullTextIndexInfo {
@@ -118,7 +136,8 @@ void BuildInterestingOrders(
     Mem_root_array<SortAheadOrdering> *sort_ahead_orderings,
     int *order_by_ordering_idx, int *group_by_ordering_idx,
     int *distinct_ordering_idx, Mem_root_array<ActiveIndexInfo> *active_indexes,
-    Mem_root_array<FullTextIndexInfo> *fulltext_searches, std::string *trace);
+    Mem_root_array<SpatialDistanceScanInfo> *spatial_indexes,
+    Mem_root_array<FullTextIndexInfo> *fulltext_searches);
 
 // Build an ORDER * that we can give to Filesort. It is only suitable for
 // sort-ahead, since it assumes no temporary tables have been inserted.

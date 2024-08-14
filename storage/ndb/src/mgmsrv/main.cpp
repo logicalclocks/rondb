@@ -42,6 +42,7 @@
 #include <NdbAutoPtr.hpp>
 #include <ndb_mgmclient.hpp>
 #include <portlib/NdbDir.hpp>
+#include "portlib/ssl_applink.h"
 
 #include <EventLogger.hpp>
 #include <LogBuffer.hpp>
@@ -103,81 +104,70 @@ static const char* opt_logname = "MgmtSrvr";
 static const char* opt_service_name = 0;
 static const char* opt_nowait_nodes = 0;
 
-static struct my_option my_long_options[] =
-{
-  NdbStdOpt::usage,
-  NdbStdOpt::help,
-  NdbStdOpt::version,
-  NdbStdOpt::ndb_connectstring,
-  NdbStdOpt::ndb_nodeid,
-  NdbStdOpt::mgmd_host,
-  NdbStdOpt::connectstring,
-  NDB_STD_OPT_DEBUG
-  { "config-file", 'f', "Specify cluster configuration file",
-    &opts.config_filename, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "print-full-config", 'P', "Print full config and exit",
-    &opts.print_full_config, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "daemon", 'd', "Run ndb_mgmd in daemon mode (default)",
-    &opts.daemon, nullptr, nullptr, GET_BOOL, NO_ARG,
-    1, 0, 0, 0, 0, 0 },
-  { "interactive", NDB_OPT_NOSHORT,
-    "Run interactive. Not supported but provided for testing purposes",
-    &opts.interactive,nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "no-nodeid-checks", NDB_OPT_NOSHORT, "Do not provide any node id checks",
-    &opts.no_nodeid_checks, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "nodaemon", NDB_OPT_NOSHORT,
-    "Don't run as daemon, but don't read from stdin",
-    &opts.non_interactive, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "mycnf", NDB_OPT_NOSHORT, "Read cluster config from my.cnf",
-    &opts.mycnf, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "bind-address", NDB_OPT_NOSHORT, "Local bind address",
-    &opts.bind_address, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "cluster-config-suffix", NDB_OPT_NOSHORT, "Override defaults-group-suffix "
-    "when reading cluster_config sections in my.cnf.",
-    &opts.cluster_config_suffix, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "configdir", NDB_OPT_NOSHORT,
-    "Directory for the binary configuration files (alias for --config-dir)",
-    &opts.configdir, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "config-dir", NDB_OPT_NOSHORT,
-    "Directory for the binary configuration files",
-    &opts.configdir, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "config-cache", NDB_OPT_NOSHORT,
-    "Enable configuration cache and change management",
-    &opts.config_cache, nullptr, nullptr, GET_BOOL, NO_ARG,
-    1, 0, 1, 0, 0, 0 },
-  { "verbose", 'v', "Write more log messages",
-    &opts.verbose,nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 1, 0, 0, 0 },
-  { "reload", NDB_OPT_NOSHORT,
-    "Reload config from config.ini or my.cnf if it has changed on startup",
-    &opts.reload, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 1, 0, 0, 0 },
-  { "initial", NDB_OPT_NOSHORT,
-    "Delete all binary config files and start from config.ini or my.cnf",
-    &opts.initial, nullptr, nullptr, GET_BOOL, NO_ARG,
-    0, 0, 1, 0, 0, 0 },
-  { "service-name", NDB_OPT_NOSHORT,
-    "Service name sets the file prefix on various files and directories",
-    &opt_service_name, nullptr, nullptr,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr },
-  { "log-name", NDB_OPT_NOSHORT,
-    "Name to use when logging messages for this node",
-    &opt_logname, nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
-  { "nowait-nodes", NDB_OPT_NOSHORT,
-    "Nodes that will not be waited for during start",
-    &opt_nowait_nodes,nullptr, nullptr, GET_STR, REQUIRED_ARG,
-    0, 0, 0, 0, 0, 0 },
+static struct my_option my_long_options[] = {
+    NdbStdOpt::usage,
+    NdbStdOpt::help,
+    NdbStdOpt::version,
+    NdbStdOpt::ndb_connectstring,
+    NdbStdOpt::ndb_nodeid,
+    NdbStdOpt::mgmd_host,
+    NdbStdOpt::connectstring,
+    NdbStdOpt::tls_search_path,
+    NdbStdOpt::mgm_tls,
+    NDB_STD_OPT_DEBUG{"config-file", 'f', "Specify cluster configuration file",
+                      &opts.config_filename, nullptr, nullptr, GET_STR,
+                      REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"print-full-config", 'P', "Print full config and exit",
+     &opts.print_full_config, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0,
+     0},
+    {"daemon", 'd', "Run ndb_mgmd in daemon mode (default)", &opts.daemon,
+     nullptr, nullptr, GET_BOOL, NO_ARG, 1, 0, 0, 0, 0, 0},
+    {"interactive", NDB_OPT_NOSHORT,
+     "Run interactive. Not supported but provided for testing purposes",
+     &opts.interactive, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"no-nodeid-checks", NDB_OPT_NOSHORT, "Do not provide any node id checks",
+     &opts.no_nodeid_checks, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0,
+     0},
+    {"nodaemon", NDB_OPT_NOSHORT,
+     "Don't run as daemon, but don't read from stdin", &opts.non_interactive,
+     nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"mycnf", NDB_OPT_NOSHORT, "Read cluster config from my.cnf", &opts.mycnf,
+     nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"bind-address", NDB_OPT_NOSHORT, "Local bind address", &opts.bind_address,
+     nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"cluster-config-suffix", NDB_OPT_NOSHORT,
+     "Override defaults-group-suffix "
+     "when reading cluster_config sections in my.cnf.",
+     &opts.cluster_config_suffix, nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0,
+     0, 0, 0, 0},
+    {"configdir", NDB_OPT_NOSHORT,
+     "Directory for the binary configuration files (alias for --config-dir)",
+     &opts.configdir, nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0,
+     0},
+    {"config-dir", NDB_OPT_NOSHORT,
+     "Directory for the binary configuration files", &opts.configdir, nullptr,
+     nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"config-cache", NDB_OPT_NOSHORT,
+     "Enable configuration cache and change management", &opts.config_cache,
+     nullptr, nullptr, GET_BOOL, NO_ARG, 1, 0, 1, 0, 0, 0},
+    {"verbose", 'v', "Write more log messages", &opts.verbose, nullptr, nullptr,
+     GET_BOOL, NO_ARG, 0, 0, 1, 0, 0, 0},
+    {"reload", NDB_OPT_NOSHORT,
+     "Reload config from config.ini or my.cnf if it has changed on startup",
+     &opts.reload, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 1, 0, 0, 0},
+    {"initial", NDB_OPT_NOSHORT,
+     "Delete all binary config files and start from config.ini or my.cnf",
+     &opts.initial, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 1, 0, 0, 0},
+    { "service-name", NDB_OPT_NOSHORT,
+      "Service name sets the file prefix on various files and directories",
+      &opt_service_name, nullptr, nullptr,
+      GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr },
+    {"log-name", NDB_OPT_NOSHORT,
+     "Name to use when logging messages for this node", &opt_logname, nullptr,
+     nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"nowait-nodes", NDB_OPT_NOSHORT,
+     "Nodes that will not be waited for during start", &opt_nowait_nodes,
+     nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
 #if defined VM_TRACE || defined ERROR_INSERT
     {"error-insert", NDB_OPT_NOSHORT, "Start with error insert variable set",
      &g_errorInsert, nullptr, nullptr, GET_INT, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
@@ -277,6 +267,7 @@ static void mgmd_run() {
 
   /* Start mgm services */
   if (!mgm->start()) {
+    logBufLocalLog->stop();
     delete mgm;
     mgmd_exit(1);
   }
@@ -288,7 +279,8 @@ static void mgmd_run() {
       con_str.appfmt("host=%s %d", opts.bind_address, port);
     else
       con_str.appfmt("localhost:%d", port);
-    Ndb_mgmclient com(con_str.c_str(), "ndb_mgm> ", 1, 5);
+    Ndb_mgmclient com(con_str.c_str(), "ndb_mgm> ", 1, 5, opt_tls_search_path,
+                      CLIENT_TLS_RELAXED);
     while (!g_StopServer) {
       if (!read_and_execute(&com, "ndb_mgm> ", 1)) g_StopServer = true;
     }
@@ -426,15 +418,8 @@ static int mgmd_main(int argc, char **argv) {
   {
     NdbConfig_SetServiceName(opt_service_name);
   }
-  if (opts.bind_address)
-  {
-    int len = strlen(opts.bind_address);
-    if ((opts.bind_address[0] == '[') && (opts.bind_address[len - 1] == ']')) {
-      opts.bind_address = strdup(opts.bind_address + 1);
-    } else {
-      opts.bind_address = strdup(opts.bind_address);
-    }
-  }
+  opts.tls_search_path = opt_tls_search_path;
+  opts.mgm_tls = opt_mgm_tls;
 
   /* Setup use of event logger */
   g_eventLogger->setCategory(opt_logname);

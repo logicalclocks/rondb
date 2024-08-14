@@ -42,12 +42,14 @@
 #include "mock_server_rest_client.h"
 #include "mock_server_testutils.h"
 #include "mysql/harness/logging/registry.h"
+#include "mysql/harness/stdx/ranges.h"     // enumerate
 #include "mysql/harness/utility/string.h"  // ::join
 #include "mysqlrouter/mysql_session.h"
 #include "mysqlrouter/rest_client.h"
 #include "rest_api_testutils.h"
 #include "router_component_test.h"
 #include "router_component_testutils.h"  // make_bad_connection
+#include "tcp_address.h"
 #include "tcp_port_pool.h"
 #include "test/helpers.h"
 #include "test/temp_directory.h"
@@ -134,8 +136,7 @@ TEST_P(RestRoutingApiTest, ensure_openapi) {
 
   auto config_sections = get_restapi_config("rest_routing", userfile,
                                             GetParam().request_authentication);
-  size_t i = 0;
-  for (const auto &route_name : route_names) {
+  for (const auto [i, route_name] : stdx::views::enumerate(route_names)) {
     // let's make "_" route a metadata cache one, all other are static
     const std::string destinations =
         (route_name == "_") ? "metadata-cache://test/default?role=PRIMARY"
@@ -152,34 +153,41 @@ TEST_P(RestRoutingApiTest, ensure_openapi) {
             {"max_connect_errors", "3"},
             {"max_connections", "1000"},
         }));
-    ++i;
   }
 
   // create a "dead" metadata-cache referenced by the routing "_" to check
   // route/health isActive == 0
   const std::string keyring_username = "mysql_router1_user";
   config_sections.push_back(mysql_harness::ConfigBuilder::build_section(
-      "metadata_cache:test",
-      {
-          {"router_id", "3"},
-          {"user", keyring_username},
-          {"metadata_cluster", "test"},
-          // 198.51.100.0/24 is a reserved address block, it could not be
-          // connected to. https://tools.ietf.org/html/rfc5737#section-4
-          {"bootstrap_server_addresses", "mysql://198.51.100.1"},
-          //"ttl", "0.5"
-      }));
+      "metadata_cache:test", {
+                                 {"router_id", "1"},
+                                 {"user", keyring_username},
+                                 {"metadata_cluster", "test"},
+                                 //"ttl", "0.5"
+                             }));
 
   std::map<std::string, std::string> default_section = get_DEFAULT_defaults();
   init_keyring(default_section, conf_dir_.name());
+
+  // 198.51.100.0/24 is a reserved address block, it could not be
+  // connected to. https://tools.ietf.org/html/rfc5737#section-4
+  const auto state_file = create_state_file(
+      get_test_temp_dir_name(),
+      create_state_file_content(
+          {mysql_harness::TCPAddress("198.51.100.1", 3060)}, "uuid", "", 0));
+  default_section["dynamic_state"] = state_file;
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, ""),
       &default_section, "mysqlrouter.conf", "connect_timeout=1")};
 
   SCOPED_TRACE("// starting router");
-  ProcessWrapper &http_server =
-      launch_router({"-c", conf_file}, EXIT_SUCCESS, true, false, -1s);
+  auto &http_server =
+      router_spawner()
+          // wait for the signal-handler to be ready.
+          // Router will be reach "READY" as metadata-cache is dead.
+          .wait_for_sync_point(Spawner::SyncPoint::RUNNING)
+          .spawn({"-c", conf_file});
 
   // doesn't really matter which file we use here, we are not going to do any
   // queries
@@ -962,8 +970,10 @@ TEST_F(RestRoutingApiTest, routing_api_no_auth) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 
@@ -986,8 +996,10 @@ TEST_F(RestRoutingApiTest, invalid_realm) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 
@@ -1030,8 +1042,10 @@ TEST_F(RestRoutingApiTest, rest_routing_section_twice) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 
@@ -1054,8 +1068,10 @@ TEST_F(RestRoutingApiTest, rest_routing_section_has_key) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 
@@ -1064,22 +1080,6 @@ TEST_F(RestRoutingApiTest, rest_routing_section_has_key) {
                                  "  init 'rest_routing' failed: [rest_routing] "
                                  "section does not expect a key, found 'A'"))
       << router_output;
-}
-
-static std::string get_server_addr_list(const std::vector<uint16_t> &ports) {
-  std::string result;
-  bool use_comma = false;
-
-  for (const auto &port : ports) {
-    if (use_comma) {
-      result += ",";
-    } else {
-      use_comma = true;
-    }
-    result += "mysql://localhost:" + std::to_string(port);
-  }
-
-  return result;
 }
 
 class RestRoutingApiTestCluster : public RestRoutingApiTest {};
@@ -1100,7 +1100,7 @@ TEST_P(RestRoutingApiTestCluster, ensure_openapi_cluster) {
   std::vector<uint16_t> node_classic_ports;
   uint16_t first_node_http_port{0};
   const std::string json_metadata =
-      get_data_dir().join("metadata_dynamic_nodes.js").str();
+      get_data_dir().join("metadata_dynamic_nodes_v2_gr.js").str();
   for (size_t i = 0; i < 3; ++i) {
     node_classic_ports.push_back(port_pool_.get_next_available());
     if (i == 0) first_node_http_port = port_pool_.get_next_available();
@@ -1113,7 +1113,7 @@ TEST_P(RestRoutingApiTestCluster, ensure_openapi_cluster) {
   ASSERT_TRUE(MockServerRestClient(first_node_http_port)
                   .wait_for_rest_endpoint_ready());
 
-  set_mock_metadata(first_node_http_port, "",
+  set_mock_metadata(first_node_http_port, "uuid",
                     classic_ports_to_gr_nodes(node_classic_ports), 0,
                     classic_ports_to_cluster_nodes(node_classic_ports));
 
@@ -1150,22 +1150,26 @@ TEST_P(RestRoutingApiTestCluster, ensure_openapi_cluster) {
   const std::string keyring_username = "mysql_router1_user";
   config_sections.push_back(mysql_harness::ConfigBuilder::build_section(
       "metadata_cache:test", {
-                                 {"router_id", "3"},
+                                 {"router_id", "1"},
                                  {"user", keyring_username},
                                  {"metadata_cluster", "test"},
-                                 {"bootstrap_server_addresses",
-                                  get_server_addr_list(node_classic_ports)},
                              }));
 
   auto default_section = get_DEFAULT_defaults();
   init_keyring(default_section, conf_dir_.name());
 
+  const auto state_file = create_state_file(
+      get_test_temp_dir_name(),
+      create_state_file_content("uuid", "", node_classic_ports, 0));
+  default_section["dynamic_state"] = state_file;
+
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, ""),
       &default_section)};
 
-  ProcessWrapper &http_server =
-      launch_router({"-c", conf_file}, EXIT_SUCCESS, true, false, -1s);
+  auto &http_server = router_spawner()
+                          .wait_for_sync_point(Spawner::SyncPoint::RUNNING)
+                          .spawn({"-c", conf_file});
 
   // wait for both (rw and ro) routes being available
   for (size_t i = 0; i < 2; ++i) {

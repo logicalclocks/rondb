@@ -34,6 +34,10 @@ ADD_CUSTOM_COMMAND(OUTPUT mysql_server_mock_schema.cc mysql_server_mock_schema.h
                      "SqlQueryJsonSchema"
                    DEPENDS mysql_server_mock_schema.js)
 
+ADD_CUSTOM_TARGET(mysql_server_mock_schema
+  DEPENDS mysql_server_mock_schema.cc mysql_server_mock_schema.h
+  )
+ADD_DEPENDENCIES(clang_tidy_prerequisites mysql_server_mock_schema)
 
 SET(common_libraries)
 SET(math_libraries)
@@ -58,6 +62,11 @@ SET(MOCK_SERVER_HTTP_CLIENT_SRCS
     mock_server_rest_client.cc)
 
 # disable compiler warnings in duktape
+MY_CHECK_CXX_COMPILER_WARNING("-Wunused-but-set-variable" HAS_WARN_FLAG)
+IF(HAS_WARN_FLAG)
+  ADD_COMPILE_FLAGS(${DUKTAPE_SRCS} COMPILE_FLAGS "${HAS_WARN_FLAG}")
+ENDIF()
+
 MY_CHECK_CXX_COMPILER_WARNING("-Wunused-function" HAS_WARN_FLAG)
 IF(HAS_WARN_FLAG)
   ADD_COMPILE_FLAGS(${DUKTAPE_SRCS} COMPILE_FLAGS "${HAS_WARN_FLAG}")
@@ -157,11 +166,13 @@ add_harness_plugin(mock_server
     router_mysqlxmessages
     harness_stdx
     harness-library
-    router_lib
+    router_utils
+    io_component
     harness_tls
   )
 ADD_DEPENDENCIES(mock_server
   GenError
+  mysql_server_mock_schema
   )
 
 TARGET_INCLUDE_DIRECTORIES(mock_server SYSTEM PUBLIC

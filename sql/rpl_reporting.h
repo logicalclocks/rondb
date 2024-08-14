@@ -31,9 +31,9 @@
 
 #include "my_compiler.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_systime.h"  //my_getsystime
 #include "mysql/components/services/bits/mysql_mutex_bits.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_mutex.h"
 
 /**
@@ -42,6 +42,7 @@
 #define MAX_SLAVE_ERRMSG 1024
 
 class THD;
+struct Gtid_specification;
 
 /**
    Mix-in to handle the message logging and reporting for relay log
@@ -52,7 +53,7 @@ class THD;
  */
 class Slave_reporting_capability {
  public:
-  /** lock used to synchronize m_last_error on 'SHOW SLAVE STATUS' **/
+  /** lock used to synchronize m_last_error on 'SHOW REPLICA STATUS' **/
   mutable mysql_mutex_t err_lock;
   /**
      Constructor.
@@ -63,7 +64,7 @@ class Slave_reporting_capability {
 
   /**
      Writes a message and, if it's an error message, to Last_Error
-     (which will be displayed by SHOW SLAVE STATUS).
+     (which will be displayed by SHOW REPLICA STATUS).
 
      @param level       The severity level
      @param err_code    The error code
@@ -73,12 +74,17 @@ class Slave_reporting_capability {
   */
   virtual void report(loglevel level, int err_code, const char *msg, ...) const
       MY_ATTRIBUTE((format(printf, 4, 5)));
+
+  virtual void report(loglevel level, int err_code,
+                      const Gtid_specification *gtid_next, const char *msg,
+                      ...) const MY_ATTRIBUTE((format(printf, 5, 6)));
+
   void va_report(loglevel level, int err_code, const char *prefix_msg,
                  const char *msg, va_list v_args) const
       MY_ATTRIBUTE((format(printf, 5, 0)));
 
   /**
-     Clear errors. They will not show up under <code>SHOW SLAVE
+     Clear errors. They will not show up under <code>SHOW REPLICA
      STATUS</code>.
    */
   void clear_error() {
@@ -154,6 +160,11 @@ class Slave_reporting_capability {
                          va_list v_args) const
       MY_ATTRIBUTE((format(printf, 4, 0)));
 
+  virtual void do_report(loglevel level, int err_code,
+                         const Gtid_specification *gtid_next, const char *msg,
+                         va_list v_args) const
+      MY_ATTRIBUTE((format(printf, 5, 0)));
+
   /**
      Last error produced by the I/O or SQL thread respectively.
    */
@@ -168,6 +179,13 @@ class Slave_reporting_capability {
 };
 
 inline void Slave_reporting_capability::do_report(loglevel level, int err_code,
+                                                  const char *msg,
+                                                  va_list v_args) const {
+  va_report(level, err_code, nullptr, msg, v_args);
+}
+
+inline void Slave_reporting_capability::do_report(loglevel level, int err_code,
+                                                  const Gtid_specification *,
                                                   const char *msg,
                                                   va_list v_args) const {
   va_report(level, err_code, nullptr, msg, v_args);

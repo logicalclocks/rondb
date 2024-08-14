@@ -336,20 +336,21 @@ class NetworkInterfaceResults {
     std::string out;
 
     // first, call it with 0 to get the buffer length
-    auto out_len =
-        WideCharToMultiByte(CP_UTF8, 0, ws.data(), ws.size(), nullptr, 0, 0, 0);
+    auto out_len = WideCharToMultiByte(CP_UTF8, 0, ws.data(), ws.size(),
+                                       nullptr, 0, nullptr, nullptr);
 
     if (0 == out_len) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           std::error_code(GetLastError(), std::system_category()));
     }
 
     out.resize(out_len);
 
-    out_len = WideCharToMultiByte(CP_UTF8, 0, ws.data(), ws.size(),
-                                  &out.front(), out.capacity(), 0, 0);
+    out_len =
+        WideCharToMultiByte(CP_UTF8, 0, ws.data(), ws.size(), &out.front(),
+                            out.capacity(), nullptr, nullptr);
     if (0 == out_len) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           std::error_code(GetLastError(), std::system_category()));
     }
 
@@ -413,7 +414,7 @@ class NetworkInterfaceResolver {
         ::GetAdaptersAddresses(AF_UNSPEC, 0, nullptr, nullptr, &ifs_size);
 
     if (res != ERROR_BUFFER_OVERFLOW) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           std::error_code{static_cast<int>(res), std::system_category()});
     }
 
@@ -422,7 +423,7 @@ class NetworkInterfaceResolver {
 
     res = ::GetAdaptersAddresses(AF_UNSPEC, 0, nullptr, ifs.get(), &ifs_size);
     if (ERROR_SUCCESS != res) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           std::error_code{static_cast<int>(res), std::system_category()});
     }
 
@@ -431,7 +432,7 @@ class NetworkInterfaceResolver {
     ifaddrs *ifs = nullptr;
 
     if (-1 == ::getifaddrs(&ifs)) {
-      return stdx::make_unexpected(net::impl::socket::last_error_code());
+      return stdx::unexpected(net::impl::socket::last_error_code());
     }
 
     return NetworkInterfaceResults{ifs};

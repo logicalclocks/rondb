@@ -9,7 +9,7 @@
 # functions are being used prior to invoking this script, JSON functions
 # can't be cleared within this script). If using replication
 # infra-structure, `include/destroy_json_functions.inc` will be already
-# included by `include/rpl_end.inc`.
+# included by `include/rpl/deinit.inc`.
 #
 # ==== Usage ====
 #
@@ -23,7 +23,6 @@
 #     for instance:
 #
 #     let $sysvars_to_save = [
-#         "GLOBAL.transaction_write_set_extraction",
 #         "GLOBAL.replica_preserve_commit_order",
 #         "SESSION.binlog_row_image"
 #     ];

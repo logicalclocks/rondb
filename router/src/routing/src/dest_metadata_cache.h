@@ -34,6 +34,7 @@
 #include "mysql_routing.h"
 #include "mysqlrouter/datatypes.h"
 #include "mysqlrouter/metadata_cache.h"
+#include "mysqlrouter/routing_export.h"
 #include "mysqlrouter/uri.h"
 #include "tcp_address.h"
 
@@ -46,13 +47,13 @@ class DestMetadataCacheGroup final
   enum ServerRole { Primary, Secondary, PrimaryAndSecondary };
 
   /** @brief Constructor */
-  DestMetadataCacheGroup(
-      net::io_context &io_ctx_, const std::string &metadata_cache,
-      const routing::RoutingStrategy routing_strategy,
-      const mysqlrouter::URIQuery &query, const Protocol::Type protocol,
-      const routing::AccessMode access_mode = routing::AccessMode::kUndefined,
-      metadata_cache::MetadataCacheAPIBase *cache_api =
-          metadata_cache::MetadataCacheAPI::instance());
+  DestMetadataCacheGroup(net::io_context &io_ctx_,
+                         const std::string &metadata_cache,
+                         const routing::RoutingStrategy routing_strategy,
+                         const mysqlrouter::URIQuery &query,
+                         const Protocol::Type protocol,
+                         metadata_cache::MetadataCacheAPIBase *cache_api =
+                             metadata_cache::MetadataCacheAPI::instance());
 
   /** @brief Copy constructor */
   DestMetadataCacheGroup(const DestMetadataCacheGroup &other) = delete;
@@ -137,9 +138,9 @@ class DestMetadataCacheGroup final
    *     [routing:metadata_read_only]
    *     ..
    *     destination =
-   * metadata_cache:///cluster_name/replicaset_name?allow_primary_reads=yes
+   * metadata_cache:///cluster_name/replicaset_name?role=PRIMARY_AND_SECONDARY
    *
-   * The 'allow_primary_reads' is part of uri_query_.
+   * The 'role' is part of uri_query_.
    */
   const mysqlrouter::URIQuery uri_query_;
 
@@ -160,19 +161,18 @@ class DestMetadataCacheGroup final
    * secondaries (false).
    *
    */
-  std::pair<AllowedNodes, bool> get_available(
+  std::pair<metadata_cache::cluster_nodes_list_t, bool> get_available(
       const metadata_cache::cluster_nodes_list_t &instances,
       bool for_new_connections = true) const;
 
-  AllowedNodes get_available_primaries(
+  metadata_cache::cluster_nodes_list_t get_available_primaries(
       const metadata_cache::cluster_nodes_list_t &managed_servers) const;
 
-  Destinations balance(const AllowedNodes &all_replicaset_nodes,
-                       bool primary_fallback);
+  Destinations balance(
+      const metadata_cache::cluster_nodes_list_t &all_replicaset_nodes,
+      bool primary_fallback);
 
   routing::RoutingStrategy routing_strategy_;
-
-  routing::AccessMode access_mode_;
 
   ServerRole server_role_;
 
@@ -204,6 +204,11 @@ class DestMetadataCacheGroup final
 
   // MUST take the RouteDestination Mutex
   size_t start_pos_{};
+  size_t ro_start_pos_{};
+  size_t rw_start_pos_{};
 };
+
+ROUTING_EXPORT DestMetadataCacheGroup::ServerRole get_server_role_from_uri(
+    const mysqlrouter::URIQuery &uri);
 
 #endif  // ROUTING_DEST_METADATA_CACHE_INCLUDED

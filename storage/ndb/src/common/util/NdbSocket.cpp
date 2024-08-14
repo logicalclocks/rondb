@@ -29,16 +29,14 @@
 
 #include "debugger/EventLogger.hpp"
 #include "portlib/NdbTick.h"
-
+#include "portlib/ndb_openssl_version.h"
 #include "util/NdbSocket.h"
+#include "util/ndb_openssl3_compat.h"
 #include "util/require.h"
 #include "util/socket_io.h"
 
-#include "portlib/ndb_openssl_version.h"
-
 static constexpr bool openssl_version_ok =
-    ((OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL) ||
-     (OPENSSL_VERSION_NUMBER == UBUNTU18_OPENSSL_VER_ID));
+    (OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL);
 
 /* Utility Functions */
 
@@ -129,44 +127,29 @@ int NdbSocket::set_nonblocking(int on) const {
 
 /* NdbSocket private instance methods */
 
-// ssl_close
-void NdbSocket::ssl_close() {
-  Guard guard(mutex);
-  require(ssl != nullptr);
-  ndb_socket_nonblock(s, false);  // set blocking BIO
-  SSL_shutdown(ssl);              // wait for close
-  SSL_free(ssl);
-  ssl = nullptr;
-}
-
 #if OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL
 
 static void log_ssl_error(const char *fn_name) {
-  char buffer[512];
-  int code;
-  while ((code = ERR_get_error()) != 0) {
-    ERR_error_string_n(code, buffer, sizeof(buffer));
-    g_eventLogger->error("NDB TLS %s: %s", fn_name, buffer);
+  const int code = ERR_peek_last_error();
+  if (ERR_GET_REASON(code) == SSL_R_UNEXPECTED_EOF_WHILE_READING) {
+    /*
+     * "unexpected eof while reading" are in general expected to happen now and
+     * then when network or peer breaks - logging is suppressed to limit
+     * harmless noise.
+     */
+    while (ERR_get_error() != 0) /* clear queued errors */
+      ;
+    return;
   }
-}
-
-bool NdbSocket::ssl_handshake() {
-  /* Check for non-blocking socket (see set_nonblocking): */
-  if (SSL_get_mode(ssl) & SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER) return false;
-  assert(SSL_get_mode(ssl) & SSL_MODE_AUTO_RETRY);
-
-  int r = SSL_do_handshake(ssl);
-  if (r == 1) return true;
-
-  int err = SSL_get_error(ssl, r);
-  require(err != SSL_ERROR_WANT_READ);  // always use blocking I/O for handshake
-  require(err != SSL_ERROR_WANT_WRITE);
-  const char *desc = SSL_is_server(ssl) ? "handshake failed in server"
-                                        : "handshake failed in client";
-
-  log_ssl_error(desc);
-  close();
-  return false;
+  char buffer[512];
+  ERR_error_string_n(code, buffer, sizeof(buffer));
+  g_eventLogger->error("NDB TLS %s: %s", fn_name, buffer);
+#if defined(VM_TRACE) || !defined(NDEBUG) || defined(ERROR_INSERT)
+  /* Check that there is at least one error in queue. */
+  require(ERR_get_error() != 0);
+#endif
+  while (ERR_get_error() != 0) /* clear queued errors */
+    ;
 }
 
 /* This is only used by read & write routines */
@@ -196,6 +179,50 @@ static ssize_t handle_ssl_error(int err, const char *fn) {
   }
 }
 
+bool NdbSocket::ssl_handshake() {
+  /* Check for non-blocking socket (see set_nonblocking): */
+  if (SSL_get_mode(ssl) & SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER) return false;
+  assert(SSL_get_mode(ssl) & SSL_MODE_AUTO_RETRY);
+
+  int r = SSL_do_handshake(ssl);
+  if (r == 1) return true;
+
+  int err = SSL_get_error(ssl, r);
+  require(err != SSL_ERROR_WANT_READ);  // always use blocking I/O for handshake
+  require(err != SSL_ERROR_WANT_WRITE);
+  const char *desc = SSL_is_server(ssl) ? "handshake failed in server"
+                                        : "handshake failed in client";
+
+  handle_ssl_error(err, desc);
+  close();
+  return false;
+}
+
+// ssl_close
+void NdbSocket::ssl_close() {
+  Guard guard(mutex);
+  require(ssl != nullptr);
+  if (SSL_is_init_finished(ssl)) {
+    const int mode = SSL_get_shutdown(ssl);
+    if (!(mode & SSL_SENT_SHUTDOWN)) {
+      /*
+       * Do not call SSL_shutdown again if it already been called in
+       * NdbSocket::shutdown. In that case it could block waiting on
+       * SSL_RECEIVED_SHUTDOWN.
+       */
+      int r = SSL_shutdown(ssl);
+      if (r < 0) {
+        // Clear errors
+        int err = SSL_get_error(ssl, r);
+        Debug_Log("SSL_shutdown(): ERR %d", err);
+        handle_ssl_error(err, "SSL_close");
+      }
+    }
+  }
+  SSL_free(ssl);
+  ssl = nullptr;
+}
+
 bool NdbSocket::update_keys(bool req_peer) const {
   if (ssl && (SSL_version(ssl) == TLS1_3_VERSION)) {
     Guard guard(mutex);
@@ -223,7 +250,14 @@ int NdbSocket::ssl_shutdown() const {
   {
     Guard guard(mutex);
     require(ssl != nullptr);
-    ndb_socket_nonblock(s, false);  // set blocking BIO
+    /*
+     * SSL_is_init_finished may return false if either TLS handshake have not
+     * finished, or an unexpected eof was seen.
+     */
+    if (!SSL_is_init_finished(ssl)) return 0;
+    const int mode = SSL_get_shutdown(ssl);
+    assert(!(mode & SSL_SENT_SHUTDOWN));
+    if (unlikely(mode & SSL_SENT_SHUTDOWN)) return 0;
     const int r = SSL_shutdown(ssl);
     if (r >= 0) return 0;
     err = SSL_get_error(ssl, r);
@@ -235,15 +269,25 @@ int NdbSocket::ssl_shutdown() const {
 ssize_t NdbSocket::ssl_recv(char *buf, size_t len) const {
   bool r;
   size_t nread = 0;
+  int err;
   {
-    Guard guard(mutex);
-    if (unlikely(ssl == nullptr || SSL_get_shutdown(ssl))) return 0;
-
+    if (NdbMutex_Trylock(mutex)) {
+      return TLS_BUSY_TRY_AGAIN;
+    }
+    if (unlikely(ssl == nullptr ||
+                 SSL_get_shutdown(ssl) & SSL_RECEIVED_SHUTDOWN)) {
+      NdbMutex_Unlock(mutex);
+      return 0;
+    }
     r = SSL_read_ex(ssl, buf, len, &nread);
+    if (r) {
+      NdbMutex_Unlock(mutex);
+      return nread;
+    }
+    err = SSL_get_error(ssl, r);
+    NdbMutex_Unlock(mutex);
   }
 
-  if (r) return nread;
-  int err = SSL_get_error(ssl, r);
   Debug_Log("SSL_read(%zd): ERR %d", len, err);
   return handle_ssl_error(err, "SSL_read");
 }
@@ -251,15 +295,18 @@ ssize_t NdbSocket::ssl_recv(char *buf, size_t len) const {
 ssize_t NdbSocket::ssl_peek(char *buf, size_t len) const {
   bool r;
   size_t nread = 0;
+  int err;
   {
     Guard guard(mutex);
-    if (unlikely(ssl == nullptr || SSL_get_shutdown(ssl))) return 0;
+    if (unlikely(ssl == nullptr ||
+                 SSL_get_shutdown(ssl) & SSL_RECEIVED_SHUTDOWN))
+      return 0;
 
     r = SSL_peek_ex(ssl, buf, len, &nread);
+    if (r) return nread;
+    err = SSL_get_error(ssl, r);
   }
 
-  if (r) return nread;
-  int err = SSL_get_error(ssl, r);
   Debug_Log("SSL_peek(%zd): ERR %d", len, err);
   return handle_ssl_error(err, "SSL_peek");
 }
@@ -270,11 +317,19 @@ ssize_t NdbSocket::ssl_send(const char *buf, size_t len) const {
 
   /* Locked section */
   {
-    Guard guard(mutex);
-    if (unlikely(ssl == nullptr || SSL_get_shutdown(ssl))) return -1;
-
-    if (SSL_write_ex(ssl, buf, len, &nwrite)) return nwrite;
+    if (NdbMutex_Trylock(mutex)) {
+      return TLS_BUSY_TRY_AGAIN;
+    }
+    if (unlikely(ssl == nullptr || SSL_get_shutdown(ssl) & SSL_SENT_SHUTDOWN)) {
+      NdbMutex_Unlock(mutex);
+      return -1;
+    }
+    if (SSL_write_ex(ssl, buf, len, &nwrite)) {
+      NdbMutex_Unlock(mutex);
+      return nwrite;
+    }
     err = SSL_get_error(ssl, 0);
+    NdbMutex_Unlock(mutex);
   }
 
   require(err != SSL_ERROR_WANT_READ);
@@ -290,6 +345,7 @@ bool NdbSocket::key_update_pending() const { return false; }
 ssize_t NdbSocket::ssl_recv(char *, size_t) const { return too_old; }
 ssize_t NdbSocket::ssl_peek(char *, size_t) const { return too_old; }
 ssize_t NdbSocket::ssl_send(const char *, size_t) const { return too_old; }
+void NdbSocket::ssl_close() {}
 int NdbSocket::ssl_shutdown() const { return -1; }
 #endif
 

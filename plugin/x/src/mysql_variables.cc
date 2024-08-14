@@ -28,6 +28,9 @@
 #include <mysql/plugin.h>
 
 #include "sql/mysqld.h"
+#include "sql/ssl_acceptor_context_operator.h"
+
+struct CHARSET_INFO;
 
 namespace mysqld {
 
@@ -38,6 +41,16 @@ const char *get_my_localhost() { return my_localhost; }
 
 const CHARSET_INFO *get_default_charset() {
   return &my_charset_utf8mb4_0900_ai_ci;
+}
+
+sigset_t get_mysqld_signal_mask() { return mysqld_signal_mask; }
+
+bool have_ssl() {
+  if (mysql_main != nullptr) {
+    Lock_and_access_ssl_acceptor_context context(mysql_main);
+    if (context.have_ssl()) return true;
+  }
+  return false;
 }
 
 }  // namespace mysqld

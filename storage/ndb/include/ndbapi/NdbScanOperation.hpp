@@ -473,8 +473,9 @@ class NdbScanOperation : public NdbOperation {
    */
   const NdbOperation *lockCurrentTuple(
       NdbTransaction *takeOverTrans, const NdbRecord *result_rec,
-      char *result_row = 0, const unsigned char *result_mask = 0,
-      const NdbOperation::OperationOptions *opts = 0, Uint32 sizeOfOptions = 0);
+      char *result_row = nullptr, const unsigned char *result_mask = nullptr,
+      const NdbOperation::OperationOptions *opts = nullptr,
+      Uint32 sizeOfOptions = 0);
 
   /*
    * Update the current tuple, NdbRecord version.
@@ -484,8 +485,9 @@ class NdbScanOperation : public NdbOperation {
    */
   const NdbOperation *updateCurrentTuple(
       NdbTransaction *takeOverTrans, const NdbRecord *attr_rec,
-      const char *attr_row, const unsigned char *mask = 0,
-      const NdbOperation::OperationOptions *opts = 0, Uint32 sizeOfOptions = 0);
+      const char *attr_row, const unsigned char *mask = nullptr,
+      const NdbOperation::OperationOptions *opts = nullptr,
+      Uint32 sizeOfOptions = 0);
 
   /* Delete the current tuple. NdbRecord version.
    * The tuple can be read before being deleted.  Specify the columns to read
@@ -495,8 +497,9 @@ class NdbScanOperation : public NdbOperation {
    */
   const NdbOperation *deleteCurrentTuple(
       NdbTransaction *takeOverTrans, const NdbRecord *result_rec,
-      char *result_row = 0, const unsigned char *result_mask = 0,
-      const NdbOperation::OperationOptions *opts = 0, Uint32 sizeOfOptions = 0);
+      char *result_row = nullptr, const unsigned char *result_mask = nullptr,
+      const NdbOperation::OperationOptions *opts = nullptr,
+      Uint32 sizeOfOptions = 0);
 
   /**
    * Get NdbTransaction object for this scan operation
@@ -515,7 +518,8 @@ class NdbScanOperation : public NdbOperation {
                    NdbOperation::Type aType = NdbOperation::TableScan);
   ~NdbScanOperation() override;
 
-  NdbRecAttr *getValue_impl(const NdbColumnImpl *, char *aValue = 0) override;
+  NdbRecAttr *getValue_impl(const NdbColumnImpl *,
+                            char *aValue = nullptr) override;
   NdbRecAttr *getValue_NdbRecord_scan(const NdbColumnImpl *, char *aValue);
   NdbRecAttr *getValue_NdbRecAttr_scan(const NdbColumnImpl *, char *aValue);
 
@@ -751,7 +755,7 @@ inline int NdbScanOperation::deleteCurrentTuple() {
 
 inline int NdbScanOperation::deleteCurrentTuple(NdbTransaction *takeOverTrans) {
   void *res = takeOverScanOp(NdbOperation::DeleteRequest, takeOverTrans);
-  if (res == 0) return -1;
+  if (res == nullptr) return -1;
   return 0;
 }
 

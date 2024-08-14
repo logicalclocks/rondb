@@ -28,7 +28,7 @@
 #include <NDBT.hpp>
 #include <NDBT_Table.hpp>
 #include <NDBT_Tables.hpp>
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "util/require.h"
 
 /* ******************************************************* */

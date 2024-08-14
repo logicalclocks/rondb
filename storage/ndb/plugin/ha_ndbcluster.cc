@@ -37,9 +37,11 @@
 #include <sstream>
 #include <string>
 
-#include "m_ctype.h"
 #include "my_config.h"  // WORDS_BIGENDIAN
 #include "my_dbug.h"
+#include "mysql/psi/mysql_thread.h"
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
 #include "sql/current_thd.h"
 #include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/derror.h"      // ER_THD
@@ -67,6 +69,7 @@
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
 #include "storage/ndb/plugin/ndb_anyvalue.h"
+#include "storage/ndb/plugin/ndb_applier.h"
 #include "storage/ndb/plugin/ndb_binlog_client.h"
 #include "storage/ndb/plugin/ndb_binlog_extra_row_info.h"
 #include "storage/ndb/plugin/ndb_binlog_thread.h"
@@ -108,6 +111,8 @@
 #include "storage/ndb/src/common/util/parse_mask.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
+#include "string_with_len.h"
+#include "strxnmov.h"
 #include "template_utils.h"
 
 typedef NdbDictionary::Column NDBCOL;
@@ -143,6 +148,9 @@ static bool opt_ndb_read_backup;
 static ulong opt_ndb_data_node_neighbour;
 static bool opt_ndb_fully_replicated;
 static ulong opt_ndb_row_checksum;
+
+char *opt_ndb_tls_search_path;
+ulong opt_ndb_mgm_tls_level;
 
 // The version where ndbcluster uses DYNAMIC by default when creating columns
 static const ulong NDB_VERSION_DYNAMIC_IS_DEFAULT = 50711;
@@ -1971,7 +1979,7 @@ NDB_INDEX_DATA::Attrid_map::Attrid_map(const KEY *key_info,
 /**
    @brief Create Attrid_map for mapping the columns of KEY to a NDB table.
    @param key_info key to create mapping for
-   @param index NDB table definition
+   @param table NDB table definition
  */
 NDB_INDEX_DATA::Attrid_map::Attrid_map(const KEY *key_info,
                                        const NdbDictionary::Table *table) {
@@ -11808,9 +11816,10 @@ inline void ha_ndbcluster::release_key_fields() {
   @note This function is called in several different contexts:
    - By same thread which opened or have used NDB before. In this
      case both THD and Thd_ndb is available.
-   - By thread which executes FLUSH TABLES or RESET SOURCE and thus closes all
-     cached table definitions (and thus the related ha_ndbcluster instance). In
-     this case only THD is available since thread hasn't used NDB before.
+   - By thread which executes FLUSH TABLES or RESET BINARY LOGS AND GTIDS
+     and thus closes all  cached table definitions (and thus the related
+     ha_ndbcluster instance).
+     In this case only THD is available since thread hasn't used NDB before.
    - By thread handling SIGHUP which closes all cached table definitions. In
      this case there isn't even a THD available (this is intentional).
 
@@ -14267,7 +14276,7 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
           // Remove the FILTER operation, keep the estimated rows/cost.
           // (Used for explain only, query plan is already decided)
           param.child->set_num_output_rows(subpath->num_output_rows());
-          param.child->cost = subpath->cost;
+          param.child->set_cost(subpath->cost());
           *subpath = std::move(*param.child);
         }
         return true;
@@ -14333,9 +14342,9 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
         break;
       }
       case AccessPath::MATERIALIZE: {
-        for (const MaterializePathParameters::QueryBlock &query_block :
-             subpath->materialize().param->query_blocks) {
-          AccessPath *subquery = query_block.subquery_path;
+        for (const MaterializePathParameters::Operand &operand :
+             subpath->materialize().param->m_operands) {
+          AccessPath *subquery = operand.subquery_path;
           assert(!has_pushed_members_outside_of_branch(subquery, join));
         }
         break;
@@ -14894,7 +14903,6 @@ enum row_type ha_ndbcluster::get_partition_row_type(const dd::Table *, uint) {
   those into. Create mappings.
 
 */
-
 static int create_table_set_up_partition_info(partition_info *part_info,
                                               NdbDictionary::Table &ndbtab,
                                               Ndb_table_map &colIdMap) {
@@ -14914,15 +14922,26 @@ static int create_table_set_up_partition_info(partition_info *part_info,
       col->setPartitionKey(true);
     }
   } else {
-    if (!current_thd->variables.new_mode) {
-      push_warning_printf(current_thd, Sql_condition::SL_WARNING,
-                          ER_ILLEGAL_HA_CREATE_OPTION,
-                          ER_THD(current_thd, ER_ILLEGAL_HA_CREATE_OPTION),
-                          ndbcluster_hton_name,
-                          "LIST, RANGE and HASH partition disabled by default,"
-                          " use --new option to enable");
-      return HA_ERR_UNSUPPORTED;
-    }
+    auto partition_type_description = [](partition_type pt) {
+      switch (pt) {
+        case partition_type::RANGE:
+          return "PARTITION BY RANGE";
+        case partition_type::HASH:
+          return "PARTITION BY HASH";
+        case partition_type::LIST:
+          return "PARTITION BY LIST";
+        default:
+          assert(false);
+          return "PARTITION BY <type>";
+      }
+    };
+
+    push_warning_printf(
+        current_thd, Sql_condition::SL_WARNING,
+        ER_WARN_DEPRECATED_ENGINE_SYNTAX_NO_REPLACEMENT,
+        ER_THD(current_thd, ER_WARN_DEPRECATED_ENGINE_SYNTAX_NO_REPLACEMENT),
+        partition_type_description(part_info->part_type), ndbcluster_hton_name);
+
     /*
        Create a shadow field for those tables that have user defined
        partitioning. This field stores the value of the partition
@@ -16148,7 +16167,7 @@ bool ha_ndbcluster::prepare_inplace_alter_table(
 
   if (alter_data->dbname_guard.change_database_failed()) {
     thd_ndb->set_ndb_error(ndb->getNdbError(), "Failed to change database");
-    destroy(alter_data);
+    ::destroy_at(alter_data);
     return true;
   }
 
@@ -16159,7 +16178,7 @@ bool ha_ndbcluster::prepare_inplace_alter_table(
 
   if (!alter_data->schema_dist_client.prepare(dbname, tabname)) {
     // Release alter_data early as there is nothing to abort
-    destroy(alter_data);
+    ::destroy_at(alter_data);
     ha_alter_info->handler_ctx = nullptr;
     print_error(HA_ERR_NO_CONNECTION, MYF(0));
     return true;
@@ -16588,7 +16607,7 @@ bool ha_ndbcluster::abort_inplace_alter_table(
   // NOTE! There is nothing informing participants that the prepared
   // schema distribution has been aborted
 
-  destroy(alter_data);
+  ::destroy_at(alter_data);
   ha_alter_info->handler_ctx = nullptr;
 
   // Unpin the NDB_SHARE of the altered table
@@ -16615,7 +16634,7 @@ void ha_ndbcluster::notify_table_changed(Alter_inplace_info *alter_info) {
                   name);
   }
 
-  destroy(alter_data);
+  ::destroy_at(alter_data);
   alter_info->handler_ctx = nullptr;
 }
 
@@ -17667,6 +17686,22 @@ static MYSQL_SYSVAR_STR(
     nullptr  /* default */
 );
 
+static MYSQL_SYSVAR_STR(tls_search_path,         /* name */
+                        opt_ndb_tls_search_path, /* var */
+                        PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+                        "Directory containing NDB Cluster TLS Private Keys",
+                        NULL, NULL, NDB_TLS_SEARCH_PATH);
+
+static const char *tls_req_levels[] = {"relaxed", "strict", NullS};
+
+static TYPELIB mgm_tls_typelib = {array_elements(tls_req_levels) - 1, "",
+                                  tls_req_levels, nullptr};
+
+static MYSQL_SYSVAR_ENUM(mgm_tls, opt_ndb_mgm_tls_level,
+                         PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+                         "MGM TLS Requirement level", nullptr, nullptr, 0,
+                         &mgm_tls_typelib);
+
 static const int MIN_ACTIVATION_THRESHOLD = 0;
 static const int MAX_ACTIVATION_THRESHOLD = 16;
 
@@ -18014,6 +18049,21 @@ static MYSQL_SYSVAR_BOOL(log_empty_update,         /* name */
                          0        /* default */
 );
 
+static int ndb_log_orig_check(THD *thd, SYS_VAR *sys_var, void *save,
+                              st_mysql_value *value) {
+  int r = check_func_bool(thd, sys_var, save, value);
+  if (r == 0) {
+    if (!opt_log_replica_updates) {
+      push_warning_printf(thd, Sql_condition::SL_WARNING,
+                          ER_WRONG_VALUE_FOR_VAR,
+                          "Variable 'ndb_log_orig' can't be changed when "
+                          "'log_replica_updates' is OFF");
+      return 1;
+    }
+  }
+  return r;
+}
+
 bool opt_ndb_log_orig;
 static MYSQL_SYSVAR_BOOL(
     log_orig,         /* name */
@@ -18022,9 +18072,9 @@ static MYSQL_SYSVAR_BOOL(
     "Log originating server id and epoch in ndb_binlog_index. Each epoch "
     "may in this case have multiple rows in ndb_binlog_index, one for "
     "each originating epoch.",
-    nullptr, /* check func. */
-    nullptr, /* update func. */
-    0        /* default */
+    ndb_log_orig_check, /* check func. */
+    nullptr,            /* update func. */
+    0                   /* default */
 );
 
 bool opt_ndb_log_bin;
@@ -18059,15 +18109,30 @@ static MYSQL_SYSVAR_BOOL(log_empty_epochs,                 /* name */
                          0                                 /* default */
 );
 
+static int ndb_log_apply_status_check(THD *thd, SYS_VAR *sys_var, void *save,
+                                      st_mysql_value *value) {
+  int r = check_func_bool(thd, sys_var, save, value);
+  if (r == 0) {
+    if (!opt_log_replica_updates) {
+      push_warning_printf(
+          thd, Sql_condition::SL_WARNING, ER_WRONG_VALUE_FOR_VAR,
+          "Variable 'ndb_log_apply_status' can't be changed when "
+          "'log_replica_updates' is OFF");
+      return 1;
+    }
+  }
+  return r;
+}
+
 bool opt_ndb_log_apply_status;
 static MYSQL_SYSVAR_BOOL(
     log_apply_status,         /* name */
     opt_ndb_log_apply_status, /* var */
     PLUGIN_VAR_OPCMDARG,
     "Log ndb_apply_status updates from Master in the Binlog",
-    nullptr, /* check func. */
-    nullptr, /* update func. */
-    0        /* default */
+    ndb_log_apply_status_check, /* check func. */
+    nullptr,                    /* update func. */
+    0                           /* default */
 );
 
 bool opt_ndb_log_transaction_id;
@@ -18517,6 +18582,8 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(optimization_delay),
     MYSQL_SYSVAR(index_stat_enable),
     MYSQL_SYSVAR(index_stat_option),
+    MYSQL_SYSVAR(tls_search_path),
+    MYSQL_SYSVAR(mgm_tls),
     MYSQL_SYSVAR(table_no_logging),
     MYSQL_SYSVAR(table_temporary),
     MYSQL_SYSVAR(log_bin),

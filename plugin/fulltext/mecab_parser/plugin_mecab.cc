@@ -24,6 +24,7 @@
 #include "my_config.h"
 
 #include "my_compiler.h"
+#include "mysql/strings/m_ctype.h"
 
 MY_COMPILER_DIAGNOSTIC_PUSH()
 // include/mecab.h:1384:22: warning: empty paragraph passed to '@param' command
@@ -37,14 +38,15 @@ MY_COMPILER_DIAGNOSTIC_POP()
 #include <mysql/components/my_service.h>
 #include <mysql/components/services/log_builtins.h>
 
+#include "m_string.h"
 #include "mysqld_error.h"
 #include "storage/innobase/include/fts0tokenize.h"
 
 /* We are following InnoDB coding guidelines. */
 
 /** Global mecab objects shared by all threads. */
-static MeCab::Model *mecab_model = NULL;
-static MeCab::Tagger *mecab_tagger = NULL;
+static MeCab::Model *mecab_model = nullptr;
+static MeCab::Tagger *mecab_tagger = nullptr;
 
 /** Mecab charset. */
 static char mecab_charset[64];
@@ -110,7 +112,7 @@ static int mecab_parser_plugin_init(void *) {
   and we need fill "--rcfile=" first, otherwise, it'll
   report error when calling MeCab::createModel(). */
   rcfile_arg += "--rcfile=";
-  if (mecab_rc_file != NULL) {
+  if (mecab_rc_file != nullptr) {
     rcfile_arg += mecab_rc_file;
   }
 
@@ -121,18 +123,18 @@ static int mecab_parser_plugin_init(void *) {
 
   mecab_model = MeCab::createModel(rcfile_arg.c_str());
 
-  if (mecab_model == NULL) {
+  if (mecab_model == nullptr) {
     LogErr(ERROR_LEVEL, ER_MECAB_FAILED_TO_CREATE_MODEL, MeCab::getLastError());
     deinit_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs);
     return (1);
   }
 
   mecab_tagger = mecab_model->createTagger();
-  if (mecab_tagger == NULL) {
+  if (mecab_tagger == nullptr) {
     LogErr(ERROR_LEVEL, ER_MECAB_FAILED_TO_CREATE_TRIGGER,
            MeCab::getLastError());
     delete mecab_model;
-    mecab_model = NULL;
+    mecab_model = nullptr;
     deinit_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs);
     return (1);
   }
@@ -143,10 +145,10 @@ static int mecab_parser_plugin_init(void *) {
     LogErr(ERROR_LEVEL, ER_MECAB_UNSUPPORTED_CHARSET, mecab_dict->charset);
 
     delete mecab_tagger;
-    mecab_tagger = NULL;
+    mecab_tagger = nullptr;
 
     delete mecab_model;
-    mecab_model = NULL;
+    mecab_model = nullptr;
 
     deinit_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs);
     return (1);
@@ -157,13 +159,13 @@ static int mecab_parser_plugin_init(void *) {
 }
 
 /** MeCab parser plugin deinit
-@retval	0 */
+@retval	0 always*/
 static int mecab_parser_plugin_deinit(void *) {
   delete mecab_tagger;
-  mecab_tagger = NULL;
+  mecab_tagger = nullptr;
 
   delete mecab_model;
-  mecab_model = NULL;
+  mecab_model = nullptr;
 
   deinit_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs);
   return (0);
@@ -180,8 +182,8 @@ static int mecab_parser_plugin_deinit(void *) {
 static int mecab_parse(MeCab::Lattice *mecab_lattice,
                        MYSQL_FTPARSER_PARAM *param, char *doc, int len,
                        MYSQL_FTPARSER_BOOLEAN_INFO *bool_info) {
-  static MYSQL_FTPARSER_BOOLEAN_INFO token_info = {FT_TOKEN_WORD, 0, 0, 0, 0, 0,
-                                                   ' ',           0};
+  static MYSQL_FTPARSER_BOOLEAN_INFO token_info = {
+      FT_TOKEN_WORD, 0, 0, 0, 0, 0, ' ', nullptr};
   int position = 0;
   int token_num = 0;
   int ret = 0;
@@ -201,26 +203,26 @@ static int mecab_parse(MeCab::Lattice *mecab_lattice,
   }
 
   if (param->mode == MYSQL_FTPARSER_FULL_BOOLEAN_INFO) {
-    for (const MeCab::Node *node = mecab_lattice->bos_node(); node != NULL;
+    for (const MeCab::Node *node = mecab_lattice->bos_node(); node != nullptr;
          node = node->next) {
       token_num += 1;
     }
 
     /* If the term has more than one token, convert it to a phrase.*/
-    if (bool_info->quot == NULL && token_num > 1) {
+    if (bool_info->quot == nullptr && token_num > 1) {
       term_converted = true;
 
       bool_info->type = FT_TOKEN_LEFT_PAREN;
       bool_info->quot = reinterpret_cast<char *>(1);
 
-      ret = param->mysql_add_word(param, NULL, 0, bool_info);
+      ret = param->mysql_add_word(param, nullptr, 0, bool_info);
       if (ret != 0) {
         return (ret);
       }
     }
   }
 
-  for (const MeCab::Node *node = mecab_lattice->bos_node(); node != NULL;
+  for (const MeCab::Node *node = mecab_lattice->bos_node(); node != nullptr;
        node = node->next) {
     bool_info->position = position;
     position += node->rlength;
@@ -232,9 +234,9 @@ static int mecab_parse(MeCab::Lattice *mecab_lattice,
 
   if (term_converted) {
     bool_info->type = FT_TOKEN_RIGHT_PAREN;
-    ret = param->mysql_add_word(param, NULL, 0, bool_info);
+    ret = param->mysql_add_word(param, nullptr, 0, bool_info);
 
-    assert(bool_info->quot == NULL);
+    assert(bool_info->quot == nullptr);
     bool_info->type = FT_TOKEN_WORD;
   }
 
@@ -246,9 +248,9 @@ static int mecab_parse(MeCab::Lattice *mecab_lattice,
 @retval	0	on success
 @retval	1	on failure. */
 static int mecab_parser_parse(MYSQL_FTPARSER_PARAM *param) {
-  MeCab::Lattice *mecab_lattice = NULL;
-  MYSQL_FTPARSER_BOOLEAN_INFO bool_info = {FT_TOKEN_WORD, 0, 0, 0, 0, 0,
-                                           ' ',           0};
+  MeCab::Lattice *mecab_lattice = nullptr;
+  MYSQL_FTPARSER_BOOLEAN_INFO bool_info = {FT_TOKEN_WORD, 0,      0, 0, 0, 0,
+                                           ' ',           nullptr};
   int ret = 0;
 
   /* Mecab supports utf8mb4/utf8mb3, eucjpms(ujis) and cp932(sjis). */
@@ -280,7 +282,7 @@ static int mecab_parser_parse(MYSQL_FTPARSER_PARAM *param) {
 
   /* Create mecab lattice for parsing */
   mecab_lattice = mecab_model->createLattice();
-  if (mecab_lattice == NULL) {
+  if (mecab_lattice == nullptr) {
     LogErr(ERROR_LEVEL, ER_MECAB_CREATE_LATTICE_FAILED, MeCab::getLastError());
     return (1);
   }
@@ -288,10 +290,10 @@ static int mecab_parser_parse(MYSQL_FTPARSER_PARAM *param) {
   /* Allocate a new string with '\0' in the end to avoid
   valgrind error "Invalid read of size 1" in mecab. */
   assert(param->length >= 0);
-  int doc_length = param->length;
+  const int doc_length = param->length;
   char *doc = reinterpret_cast<char *>(malloc(doc_length + 1));
 
-  if (doc == NULL) {
+  if (doc == nullptr) {
     my_error(ER_OUTOFMEMORY, MYF(0), doc_length);
     return (1);
   }
@@ -309,7 +311,7 @@ static int mecab_parser_parse(MYSQL_FTPARSER_PARAM *param) {
     case MYSQL_FTPARSER_FULL_BOOLEAN_INFO:
       uchar *start = reinterpret_cast<uchar *>(doc);
       uchar *end = start + doc_length;
-      FT_WORD word = {NULL, 0, 0};
+      FT_WORD word = {nullptr, 0, 0};
 
       while (fts_get_word(param->cs, &start, end, &word, &bool_info)) {
         /* Don't convert term with wildcard. */
@@ -336,19 +338,19 @@ static int mecab_parser_parse(MYSQL_FTPARSER_PARAM *param) {
 
 /** Fulltext MeCab Parser Descriptor*/
 static struct st_mysql_ftparser mecab_parser_descriptor = {
-    MYSQL_FTPARSER_INTERFACE_VERSION, mecab_parser_parse, 0, 0};
+    MYSQL_FTPARSER_INTERFACE_VERSION, mecab_parser_parse, nullptr, nullptr};
 
 /* MeCab plugin status variables */
 static SHOW_VAR mecab_status[] = {
     {"mecab_charset", mecab_charset, SHOW_CHAR, SHOW_SCOPE_GLOBAL},
-    {0, 0, enum_mysql_show_type(0), SHOW_SCOPE_GLOBAL}};
+    {nullptr, nullptr, enum_mysql_show_type(0), SHOW_SCOPE_GLOBAL}};
 
 static MYSQL_SYSVAR_STR(rc_file, mecab_rc_file,
                         PLUGIN_VAR_READONLY | PLUGIN_VAR_NOPERSIST,
-                        "MECABRC file path", NULL, NULL, NULL);
+                        "MECABRC file path", nullptr, nullptr, nullptr);
 
 /* MeCab plugin system variables */
-static SYS_VAR *mecab_system_variables[] = {MYSQL_SYSVAR(rc_file), NULL};
+static SYS_VAR *mecab_system_variables[] = {MYSQL_SYSVAR(rc_file), nullptr};
 
 /* MeCab plugin descriptor */
 mysql_declare_plugin(mecab_parser){
@@ -359,11 +361,11 @@ mysql_declare_plugin(mecab_parser){
     "Mecab Full-Text Parser for Japanese", /*!< description*/
     PLUGIN_LICENSE_GPL,                    /*!< license	*/
     mecab_parser_plugin_init,              /*!< init function (when loaded)*/
-    NULL,                                  /*!< check uninstall function*/
+    nullptr,                               /*!< check uninstall function*/
     mecab_parser_plugin_deinit, /*!< deinit function (when unloaded)*/
     0x0001,                     /*!< version	*/
     mecab_status,               /*!< status variables	*/
     mecab_system_variables,     /*!< system variables	*/
-    NULL,
+    nullptr,
     0,
 } mysql_declare_plugin_end;

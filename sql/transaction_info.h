@@ -35,6 +35,7 @@
 #include "sql/rpl_transaction_ctx.h"            // Rpl_transaction_ctx
 #include "sql/rpl_transaction_write_set_ctx.h"  // Transaction_write_set_ctx
 #include "sql/xa.h"                             // XID_STATE
+#include "strmake.h"
 
 class Ha_trx_info;
 class Ha_trx_info_list;
@@ -125,11 +126,11 @@ class Transaction_ctx {
       return m_unsafe_rollback_flags;
     }
     void set_unsafe_rollback_flags(unsigned int flags) {
-      DBUG_PRINT("debug", ("set_unsafe_rollback_flags: %d", flags));
+      DBUG_PRINT("debug", ("set_unsafe_rollback_flags: %u", flags));
       m_unsafe_rollback_flags = flags;
     }
     void add_unsafe_rollback_flags(unsigned int flags) {
-      DBUG_PRINT("debug", ("add_unsafe_rollback_flags: %d", flags));
+      DBUG_PRINT("debug", ("add_unsafe_rollback_flags: %u", flags));
       m_unsafe_rollback_flags |= flags;
     }
     void reset_unsafe_rollback_flags() {

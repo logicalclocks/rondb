@@ -41,13 +41,13 @@
 #include "mysql/harness/tls_context.h"
 #include "mysql/harness/tls_server_context.h"
 #include "mysql_router_thread.h"
+#include "mysqlrouter/base_protocol.h"
 #include "mysqlrouter/datatypes.h"
 #include "mysqlrouter/destination.h"
 #include "mysqlrouter/routing.h"
-#include "protocol/base_protocol.h"
+#include "mysqlrouter/ssl_mode.h"
 #include "routing_config.h"
 #include "shared_quarantine_handler.h"
-#include "ssl_mode.h"
 #include "tcp_address.h"
 
 /**
@@ -112,6 +112,10 @@ class MySQLRoutingContext {
                                      1000};
   }
 
+  std::chrono::milliseconds connect_retry_timeout() const {
+    return routing_config_.connect_retry_timeout;
+  }
+
   const mysql_harness::TCPAddress &get_bind_address() const {
     return routing_config_.bind_address;
   }
@@ -160,6 +164,23 @@ class MySQLRoutingContext {
 
   std::chrono::milliseconds connection_sharing_delay() const {
     return routing_config_.connection_sharing_delay;
+  }
+
+  routing::AccessMode access_mode() const {
+    return routing_config_.access_mode;
+  }
+
+  bool wait_for_my_writes() const { return routing_config_.wait_for_my_writes; }
+
+  std::chrono::seconds wait_for_my_writes_timeout() const {
+    return routing_config_.wait_for_my_writes_timeout;
+  }
+
+  std::string dest_ssl_key() const { return routing_config_.dest_ssl_key; }
+  std::string dest_ssl_cert() const { return routing_config_.dest_ssl_cert; }
+
+  bool router_require_enforce() const {
+    return routing_config_.router_require_enforce;
   }
 
  private:

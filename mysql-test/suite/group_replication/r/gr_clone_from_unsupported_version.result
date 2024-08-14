@@ -7,14 +7,14 @@ Note	####	Storing MySQL user name or password information in the connection meta
 ############################################################
 # 1. Install clone plugin on server1.
 #    Commit some data and then purge all binary logs.
-#    Bootstrap a group on server1 with version 8.0.36.
+#    Bootstrap a group on server1 with version 8.3.0.
 [connection server1]
 INSTALL PLUGIN clone SONAME 'CLONE_PLUGIN';
 CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 INSERT INTO t1 VALUES (1);
 INSERT INTO t1 VALUES (2);
 SET sql_log_bin = 0;
-include/gtid_utils.inc
+include/rpl/gtid_utils.inc
 SET sql_log_bin = 1;
 FLUSH BINARY LOGS;
 PURGE BINARY LOGS TO 'CURRENT_BINLOG_FILE';
@@ -27,7 +27,7 @@ include/start_and_bootstrap_group_replication.inc
 #    Start GR, cloning is the option chosen as recovery
 #    from binary logs is not possible.
 #    Member will move to ERROR state since cloning is not possible from
-#    version 8.0.36
+#    version 8.3.0
 [connection server2]
 INSTALL PLUGIN clone SONAME 'CLONE_PLUGIN';
 SET @gr_recovery_retry_count_save = @@GLOBAL.group_replication_recovery_retry_count;
@@ -48,7 +48,7 @@ SET SESSION sql_log_bin=0;
 call mtr.add_suppression("Cannot replicate to server with server_uuid*");
 SET SESSION sql_log_bin=1;
 DROP TABLE t1;
-include/gtid_utils_end.inc
+include/rpl/gtid_utils_end.inc
 UNINSTALL PLUGIN clone;
 include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG='-d,group_replication_version_clone_not_supported';

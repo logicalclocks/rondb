@@ -53,7 +53,9 @@ IMPORT_LOG_FUNCTIONS()
 // TODO: possibly this should be made into a configurable option
 static const auto kPrimaryFailoverTimeout = 10s;
 
-static const std::set<std::string> supported_params{
+// we keep the allow_primary_reads on this list even though we no longer support
+// it, so that we give more specific error message for it
+static constexpr std::array supported_params{
     "role", "allow_primary_reads", "disconnect_on_promoted_to_primary",
     "disconnect_on_metadata_unavailable"};
 
@@ -67,6 +69,7 @@ const constexpr std::array<
         {"PRIMARY_AND_SECONDARY",
          DestMetadataCacheGroup::ServerRole::PrimaryAndSecondary},
     }};
+}
 
 DestMetadataCacheGroup::ServerRole get_server_role_from_uri(
     const mysqlrouter::URIQuery &uri) {
@@ -103,19 +106,6 @@ DestMetadataCacheGroup::ServerRole get_server_role_from_uri(
   return role_it->second;
 }
 
-std::string get_server_role_name(
-    const DestMetadataCacheGroup::ServerRole role) {
-  auto role_it =
-      std::find_if(known_roles.begin(), known_roles.end(),
-                   [role](const auto &p) { return p.second == role; });
-
-  if (role_it == known_roles.end()) {
-    return "unknown";
-  }
-
-  return std::string{role_it->first};
-}
-
 routing::RoutingStrategy get_default_routing_strategy(
     const DestMetadataCacheGroup::ServerRole role) {
   switch (role) {
@@ -126,27 +116,6 @@ routing::RoutingStrategy get_default_routing_strategy(
   }
 
   return routing::RoutingStrategy::kUndefined;
-}
-
-/** @brief check that mode (if present) is correct for the role */
-bool mode_is_valid(const routing::AccessMode mode,
-                   const DestMetadataCacheGroup::ServerRole role) {
-  // no mode given, that's ok, nothing to check
-  if (mode == routing::AccessMode::kUndefined) {
-    return true;
-  }
-
-  switch (role) {
-    case DestMetadataCacheGroup::ServerRole::Primary:
-      return mode == routing::AccessMode::kReadWrite;
-    case DestMetadataCacheGroup::ServerRole::Secondary:
-    case DestMetadataCacheGroup::ServerRole::PrimaryAndSecondary:
-      return mode == routing::AccessMode::kReadOnly;
-    default:;  //
-               /* fall-through, no access mode is valid for that role */
-  }
-
-  return false;
 }
 
 // throws:
@@ -184,7 +153,7 @@ bool get_disconnect_on_promoted_to_primary(
   auto check_option_allowed = [&]() {
     if (role != DestMetadataCacheGroup::ServerRole::Secondary) {
       throw std::runtime_error("Option '" + kOptionName +
-                               "' is valid only for mode=SECONDARY");
+                               "' is valid only for role=SECONDARY");
     }
   };
 
@@ -202,8 +171,6 @@ bool get_disconnect_on_metadata_unavailable(const mysqlrouter::URIQuery &uri) {
                            check_option_allowed);
 }
 
-}  // namespace
-
 #ifndef DOXYGEN_SHOULD_SKIP_THIS
 // doxygen confuses 'const mysqlrouter::URIQuery &query' with
 // 'std::map<std::string, std::string>'
@@ -211,13 +178,11 @@ DestMetadataCacheGroup::DestMetadataCacheGroup(
     net::io_context &io_ctx, const std::string &metadata_cache,
     const routing::RoutingStrategy routing_strategy,
     const mysqlrouter::URIQuery &query, const Protocol::Type protocol,
-    const routing::AccessMode access_mode,
     metadata_cache::MetadataCacheAPIBase *cache_api)
     : RouteDestination(io_ctx, protocol),
       cache_name_(metadata_cache),
       uri_query_(query),
       routing_strategy_(routing_strategy),
-      access_mode_(access_mode),
       server_role_(get_server_role_from_uri(query)),
       cache_api_(cache_api),
       disconnect_on_promoted_to_primary_(
@@ -228,10 +193,11 @@ DestMetadataCacheGroup::DestMetadataCacheGroup(
 }
 #endif
 
-std::pair<AllowedNodes, bool> DestMetadataCacheGroup::get_available(
+std::pair<metadata_cache::cluster_nodes_list_t, bool>
+DestMetadataCacheGroup::get_available(
     const metadata_cache::cluster_nodes_list_t &instances,
     bool for_new_connections) const {
-  AllowedNodes result;
+  metadata_cache::cluster_nodes_list_t result;
 
   bool primary_fallback{false};
   if (routing_strategy_ == routing::RoutingStrategy::kRoundRobinWithFallback) {
@@ -243,9 +209,11 @@ std::pair<AllowedNodes, bool> DestMetadataCacheGroup::get_available(
         [&](const metadata_cache::ManagedInstance &i) {
           if (for_new_connections && query_quarantined_destinations_callback_) {
             return i.mode == metadata_cache::ServerMode::ReadOnly &&
-                   !i.hidden && !query_quarantined_destinations_callback_(i);
+                   !i.hidden && !i.ignore &&
+                   !query_quarantined_destinations_callback_(i);
           } else {
-            return i.mode == metadata_cache::ServerMode::ReadOnly && !i.hidden;
+            return i.mode == metadata_cache::ServerMode::ReadOnly &&
+                   !i.hidden && !i.ignore;
           }
         });
 
@@ -260,6 +228,7 @@ std::pair<AllowedNodes, bool> DestMetadataCacheGroup::get_available(
   }
 
   for (const auto &it : instances) {
+    if (it.ignore) continue;
     if (for_new_connections) {
       // for new connections skip (do not include) the node if it is hidden - it
       // is not allowed
@@ -270,30 +239,25 @@ std::pair<AllowedNodes, bool> DestMetadataCacheGroup::get_available(
       if (it.hidden && it.disconnect_existing_sessions_when_hidden) continue;
     }
 
-    auto port = (protocol_ == Protocol::Type::kXProtocol) ? it.xport : it.port;
-
     // role=PRIMARY_AND_SECONDARY
     if ((server_role_ == ServerRole::PrimaryAndSecondary) &&
         (it.mode == metadata_cache::ServerMode::ReadWrite ||
          it.mode == metadata_cache::ServerMode::ReadOnly)) {
-      result.emplace_back(mysql_harness::TCPAddress(it.host, port),
-                          it.mysql_server_uuid);
+      result.emplace_back(it);
       continue;
     }
 
     // role=SECONDARY
     if (server_role_ == ServerRole::Secondary &&
         it.mode == metadata_cache::ServerMode::ReadOnly) {
-      result.emplace_back(mysql_harness::TCPAddress(it.host, port),
-                          it.mysql_server_uuid);
+      result.emplace_back(it);
       continue;
     }
 
     // role=PRIMARY
     if ((server_role_ == ServerRole::Primary || primary_fallback) &&
         it.mode == metadata_cache::ServerMode::ReadWrite) {
-      result.emplace_back(mysql_harness::TCPAddress(it.host, port),
-                          it.mysql_server_uuid);
+      result.emplace_back(it);
       continue;
     }
   }
@@ -301,18 +265,16 @@ std::pair<AllowedNodes, bool> DestMetadataCacheGroup::get_available(
   return {result, primary_fallback};
 }
 
-AllowedNodes DestMetadataCacheGroup::get_available_primaries(
+metadata_cache::cluster_nodes_list_t
+DestMetadataCacheGroup::get_available_primaries(
     const metadata_cache::cluster_nodes_list_t &managed_servers) const {
-  AllowedNodes result;
+  metadata_cache::cluster_nodes_list_t result;
 
   for (const auto &it : managed_servers) {
-    if (it.hidden) continue;
-
-    auto port = (protocol_ == Protocol::Type::kXProtocol) ? it.xport : it.port;
+    if (it.hidden || it.ignore) continue;
 
     if (it.mode == metadata_cache::ServerMode::ReadWrite) {
-      result.emplace_back(mysql_harness::TCPAddress(it.host, port),
-                          it.mysql_server_uuid);
+      result.emplace_back(it);
     }
   }
 
@@ -322,66 +284,24 @@ AllowedNodes DestMetadataCacheGroup::get_available_primaries(
 void DestMetadataCacheGroup::init() {
   // check if URI does not contain parameters that we don't understand
   for (const auto &uri_param : uri_query_) {
-    if (supported_params.count(uri_param.first) == 0) {
+    if (std::find(supported_params.begin(), supported_params.end(),
+                  uri_param.first) == supported_params.end()) {
       throw std::runtime_error(
           "Unsupported 'metadata-cache' parameter in URI: '" + uri_param.first +
           "'");
     }
   }
 
-  // if the routing strategy is set we don't allow mode to be set
-  if (routing_strategy_ != routing::RoutingStrategy::kUndefined &&
-      access_mode_ != routing::AccessMode::kUndefined) {
-    throw std::runtime_error(
-        "option 'mode' is not allowed together with 'routing_strategy' option");
-  }
-
-  bool routing_strategy_default{false};
   // if the routing_strategy is not set we go with the default based on the role
   if (routing_strategy_ == routing::RoutingStrategy::kUndefined) {
     routing_strategy_ = get_default_routing_strategy(server_role_);
-    routing_strategy_default = true;
   }
 
-  // check that mode (if present) is correct for the role
-  // we don't actually use it but support it for backward compatibility
-  // and parity with STANDALONE routing destinations
-  if (!mode_is_valid(access_mode_, server_role_)) {
-    throw std::runtime_error(
-        "mode '" + routing::get_access_mode_name(access_mode_) +
-        "' is not valid for 'role=" + get_server_role_name(server_role_) + "'");
-  }
-
-  // this is for backward compatibility
-  // old(allow_primary_reads + role=SECONDARY) = new
-  // (role=PRIMARY_AND_SECONDARY)
   auto query_part = uri_query_.find("allow_primary_reads");
   if (query_part != uri_query_.end()) {
-    if (server_role_ != ServerRole::Secondary) {
-      throw std::runtime_error(
-          "allow_primary_reads is supported only for SECONDARY routing");
-    }
-    if (!routing_strategy_default) {
-      throw std::runtime_error(
-          "allow_primary_reads is only supported for backward compatibility: "
-          "without routing_strategy but with mode defined, use "
-          "role=PRIMARY_AND_SECONDARY instead");
-    }
-    auto value = query_part->second;
-    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
-    if (value == "yes") {
-      server_role_ = ServerRole::PrimaryAndSecondary;
-    } else if (value == "no") {
-      // it's a default but we allow it for consistency
-    } else {
-      throw std::runtime_error(
-          "Invalid value for allow_primary_reads option: '" +
-          query_part->second + "'");
-    }
-
-    log_warning(
-        "allow_primary_reads is deprecated, use role=PRIMARY_AND_SECONDARY "
-        "instead");
+    throw std::runtime_error(
+        "allow_primary_reads is no longer supported, use "
+        "role=PRIMARY_AND_SECONDARY instead");
   }
 
   // validate routing strategy:
@@ -428,10 +348,12 @@ class MetadataCacheDestination : public Destination {
  public:
   MetadataCacheDestination(std::string id, std::string addr, uint16_t port,
                            DestMetadataCacheGroup *balancer,
-                           std::string server_uuid)
+                           std::string server_uuid,
+                           mysqlrouter::ServerMode server_mode)
       : Destination(std::move(id), std::move(addr), port),
         balancer_{balancer},
-        server_uuid_{std::move(server_uuid)} {}
+        server_uuid_{std::move(server_uuid)},
+        server_mode_{server_mode} {}
 
   void connect_status(std::error_code ec) override {
     last_ec_ = ec;
@@ -454,10 +376,14 @@ class MetadataCacheDestination : public Destination {
 
   std::error_code last_error_code() const { return last_ec_; }
 
+  mysqlrouter::ServerMode server_mode() const override { return server_mode_; }
+
  private:
   DestMetadataCacheGroup *balancer_;
 
   std::string server_uuid_;
+
+  mysqlrouter::ServerMode server_mode_;
 
   std::error_code last_ec_;
 };
@@ -532,62 +458,181 @@ void DestMetadataCacheGroup::advance(size_t n) {
   start_pos_ += n;
 }
 
-Destinations DestMetadataCacheGroup::balance(const AllowedNodes &available,
-                                             bool primary_fallback) {
+Destinations DestMetadataCacheGroup::balance(
+    const metadata_cache::cluster_nodes_list_t &available,
+    bool primary_fallback) {
   Destinations dests;
+
+  auto from_instance = [this](const auto &dest) {
+    mysql_harness::TCPAddress addr(
+        dest.host,
+        (protocol_ == Protocol::Type::kXProtocol) ? dest.xport : dest.port);
+
+    return std::make_unique<MetadataCacheDestination>(
+        addr.str(), addr.address(), addr.port(), this, dest.mysql_server_uuid,
+        dest.mode);
+  };
 
   std::lock_guard<std::mutex> lk(mutex_update_);
 
   switch (routing_strategy_) {
     case routing::RoutingStrategy::kFirstAvailable: {
       for (auto const &dest : available) {
-        dests.push_back(std::make_unique<MetadataCacheDestination>(
-            dest.address.str(), dest.address.address(), dest.address.port(),
-            this, dest.id));
+        dests.push_back(from_instance(dest));
       }
 
       break;
     }
     case routing::RoutingStrategy::kRoundRobinWithFallback:
     case routing::RoutingStrategy::kRoundRobin: {
+      if (available.empty()) break;
+
       const auto sz = available.size();
       const auto end = available.end();
       const auto begin = available.begin();
 
-      auto cur = begin;
+      // start pos moves forward with each call to balance().
+      //
+      // ensure it wraps around.
 
       if (start_pos_ >= sz) start_pos_ = 0;
+      if (rw_start_pos_ >= sz) rw_start_pos_ = 0;
+      if (ro_start_pos_ >= sz) ro_start_pos_ = 0;
 
-      // move iterator forward and remember the position as 'last'
-      std::advance(cur, start_pos_);
-      auto last = cur;
-
-      // for start_pos == 2:
+      // Goal:
       //
-      // 0 1 2 3 4 x
-      // ^   ^     ^
-      // |   |     `- end
-      // |   `- last|cur
-      // `- begin
-
-      // from last to end;
+      // - writes round-robins over read-write-servers
+      // - reads  round-robins over read-only servers
       //
-      // dests = [2 3 4]
-      for (; cur != end; ++cur) {
-        dests.push_back(std::make_unique<MetadataCacheDestination>(
-            cur->address.str(), cur->address.address(), cur->address.port(),
-            this, cur->id));
+      // Example:
+      //
+      // available  = [ W1, R1, R2, W2, R3 ]
+      // writers    = [ W1, W2 ]
+      // readers    = [ R1, R2, R3 ]
+      //
+      // Each group is rotated independently and then appened
+      // depending on the server-mode of the current "start_pos".
+      //
+      // input:         -> output         (auth, write, read)
+      //
+      // W1 R1 R2 W2 R3 -> W1 W2 R1 R2 R3 (a: W1, w: W1, r: R1)
+      // R1 R2 W2 R3 W1 -> R2 R3 R1 W2 W1 (a: R2: w: W2, r: R2)
+      // R2 W2 R3 W1 R1 -> R3 R1 R2 W1 W2 (a: R3: w: W1, r: R3)
+      // W2 R3 W1 R1 R2 -> W2 W1 R1 R2 R3 (a: W2: w: W2, r: R1)
+      // R3 W1 R1 R2 W2 -> R2 R3 R1 W1 W2 (a: R2: w: W1, r: R2)
+      // W1 R1 R2 W2 R3 -> W2 W1 R3 R1 R2 (a: W2: w: W2, r: R3)
+      //
+      // ^^- start-pos -> initial-server-mode.
+
+      //
+      const auto initial_server_mode = available[start_pos_].mode;
+
+      auto &initial_server_mode_start_pos =
+          initial_server_mode == mysqlrouter::ServerMode::ReadOnly
+              ? ro_start_pos_
+              : rw_start_pos_;
+
+      auto &other_server_mode_start_pos =
+          initial_server_mode == mysqlrouter::ServerMode::ReadOnly
+              ? rw_start_pos_
+              : ro_start_pos_;
+
+      {
+        if (initial_server_mode_start_pos >= sz) {
+          initial_server_mode_start_pos = 0;
+        }
+
+        // move iterator forward and remember the position as 'last'
+        auto cur = begin;
+        std::advance(cur, initial_server_mode_start_pos);
+        auto last = cur;
+
+        auto pos = initial_server_mode_start_pos;
+        bool is_first{true};
+
+        // for start_pos == 2:
+        //
+        // 0 1 2 3 4 x
+        // ^   ^     ^
+        // |   |     `- end
+        // |   `- last|cur
+        // `- begin
+
+        // from last to end;
+        //
+        // dests = [2 3 4]
+        for (; cur != end; ++cur, ++pos) {
+          if (cur->mode == initial_server_mode) {
+            if (is_first) {
+              initial_server_mode_start_pos = pos;
+              is_first = false;
+            }
+            dests.push_back(from_instance(*cur));
+          }
+        }
+
+        // from begin to before-last
+        //
+        // dests = [2 3 4] + [0 1]
+        for (cur = begin, pos = 0; cur != last; ++cur, ++pos) {
+          if (cur->mode == initial_server_mode) {
+            if (is_first) {
+              initial_server_mode_start_pos = pos;
+              is_first = false;
+            }
+            dests.push_back(from_instance(*cur));
+          }
+        }
+
+        if (++initial_server_mode_start_pos >= sz) {
+          initial_server_mode_start_pos = 0;
+        }
       }
 
-      // from begin to before-last
-      //
-      // dests = [2 3 4] + [0 1]
-      for (cur = begin; cur != last; ++cur) {
-        dests.push_back(std::make_unique<MetadataCacheDestination>(
-            cur->address.str(), cur->address.address(), cur->address.port(),
-            this, cur->id));
-      }
+      // ... and now the other server-mode set:
+      {
+        if (other_server_mode_start_pos >= sz) {
+          other_server_mode_start_pos = 0;
+        }
 
+        // move iterator forward and remember the position as 'last'
+        auto cur = begin;
+        std::advance(cur, other_server_mode_start_pos);
+        auto last = cur;
+
+        auto pos = other_server_mode_start_pos;
+        bool is_first{true};
+
+        // from last to end;
+        //
+        // dests = [2 3 4]
+        for (; cur != end; ++cur, ++pos) {
+          if (cur->mode != initial_server_mode) {
+            if (is_first) {
+              other_server_mode_start_pos = pos;
+              is_first = false;
+            }
+            dests.push_back(from_instance(*cur));
+          }
+        }
+
+        // from begin to before-last
+        //
+        // dests = [2 3 4] + [0 1]
+        for (cur = begin, pos = 0; cur != last; ++cur, ++pos) {
+          if (cur->mode != initial_server_mode) {
+            if (is_first) {
+              other_server_mode_start_pos = pos;
+              is_first = false;
+            }
+            dests.push_back(from_instance(*cur));
+          }
+        }
+
+        if (++other_server_mode_start_pos >= sz) {
+          other_server_mode_start_pos = 0;
+        }
+      }
       // NOTE: AsyncReplicasetTest.SecondaryAdded from
       // routertest_component_async_replicaset depends on the start_pos_ is
       // capped here.
@@ -631,11 +676,9 @@ Destinations DestMetadataCacheGroup::balance(const AllowedNodes &available,
 Destinations DestMetadataCacheGroup::destinations() {
   if (!cache_api_->is_initialized()) return {};
 
-  AllowedNodes available;
-  bool primary_failover;
   const auto &all_replicaset_nodes = cache_api_->get_cluster_nodes();
 
-  std::tie(available, primary_failover) = get_available(all_replicaset_nodes);
+  auto [available, primary_failover] = get_available(all_replicaset_nodes);
 
   return balance(available, primary_failover);
 }
@@ -659,7 +702,9 @@ DestMetadataCacheGroup::AddrVector DestMetadataCacheGroup::get_destinations()
 
   AddrVector addresses;
   for (const auto &dest : available) {
-    addresses.emplace_back(dest.address);
+    addresses.emplace_back(dest.host, protocol_ == Protocol::Type::kXProtocol
+                                          ? dest.xport
+                                          : dest.port);
   }
 
   return addresses;
@@ -681,11 +726,25 @@ void DestMetadataCacheGroup::on_instances_change(
   const std::string reason =
       md_servers_reachable ? "metadata change" : "metadata unavailable";
 
-  const auto &nodes_for_new_connections =
-      get_available(instances, /*for_new_connections=*/true).first;
+  auto from_instances = [this](const auto &dests) {
+    std::vector<AvailableDestination> result;
 
-  const auto &nodes_for_existing_connections =
-      get_available(instances, /*for_new_connections=*/false).first;
+    for (auto &dest : dests) {
+      mysql_harness::TCPAddress addr(
+          dest.host,
+          (protocol_ == Protocol::Type::kXProtocol) ? dest.xport : dest.port);
+
+      result.emplace_back(addr, dest.mysql_server_uuid);
+    }
+
+    return result;
+  };
+
+  auto nodes_for_new_connections = from_instances(
+      get_available(instances, /*for_new_connections=*/true).first);
+
+  auto nodes_for_existing_connections = from_instances(
+      get_available(instances, /*for_new_connections=*/false).first);
 
   std::lock_guard<std::mutex> lock(allowed_nodes_change_callbacks_mtx_);
 
@@ -730,11 +789,28 @@ void DestMetadataCacheGroup::on_md_refresh(
     const bool nodes_changed,
     const metadata_cache::ClusterTopology &cluster_topology) {
   const auto instances = cluster_topology.get_all_members();
-  const auto &available_nodes =
-      get_available(instances, /*for_new_connections=*/true).first;
+
+  auto from_instances = [this](const auto &dests) {
+    std::vector<AvailableDestination> result;
+
+    for (auto &dest : dests) {
+      mysql_harness::TCPAddress addr(
+          dest.host,
+          (protocol_ == Protocol::Type::kXProtocol) ? dest.xport : dest.port);
+
+      result.emplace_back(addr, dest.mysql_server_uuid);
+    }
+
+    return result;
+  };
+
+  const auto available_nodes = from_instances(
+      get_available(instances, /*for_new_connections=*/true).first);
+
   std::lock_guard<std::mutex> lock(md_refresh_callback_mtx_);
-  if (md_refresh_callback_)
+  if (md_refresh_callback_) {
     md_refresh_callback_(nodes_changed, available_nodes);
+  }
 }
 
 void DestMetadataCacheGroup::start(const mysql_harness::PluginFuncEnv *env) {

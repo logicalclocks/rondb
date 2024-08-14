@@ -170,7 +170,7 @@ c-1020=w	filler
 c-1021=w	filler
 c-1022=w	filler
 c-1023=w	filler
-create table t4 (a varchar(10), b int, c char(10), filler char(200),
+create table t4 (a varchar(10), b int, c char(12), filler char(200),
 key idx1 (a, b, c)) charset utf8mb4;
 insert into t4 (filler) select concat('NULL-', 15-a) from t2 order by a limit 15;
 insert into t4 (a,b,c,filler) 
@@ -185,7 +185,7 @@ explain
 select * from t4 where a IS NULL and b IS NULL and (c IS NULL or c='no-such-row1'
                                                       or c='no-such-row2');
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t4	NULL	range	idx1	idx1	89	NULL	16	100.00	Using index condition
+1	SIMPLE	t4	NULL	range	idx1	idx1	97	NULL	17	100.00	Using index condition
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t4`.`a` AS `a`,`test`.`t4`.`b` AS `b`,`test`.`t4`.`c` AS `c`,`test`.`t4`.`filler` AS `filler` from `test`.`t4` where ((`test`.`t4`.`a` is null) and (`test`.`t4`.`b` is null) and ((`test`.`t4`.`c` is null) or (`test`.`t4`.`c` = 'no-such-row1') or (`test`.`t4`.`c` = 'no-such-row2')))
 select * from t4 where a IS NULL and b IS NULL and (c IS NULL or c='no-such-row1'
@@ -209,7 +209,7 @@ NULL	NULL	NULL	NULL-1
 explain 
 select * from t4 where (a ='b-1' or a='bb-1') and b IS NULL and (c='c-1' or c='cc-2');
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t4	NULL	range	idx1	idx1	89	NULL	32	100.00	Using index condition
+1	SIMPLE	t4	NULL	range	idx1	idx1	97	NULL	32	100.00	Using index condition
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t4`.`a` AS `a`,`test`.`t4`.`b` AS `b`,`test`.`t4`.`c` AS `c`,`test`.`t4`.`filler` AS `filler` from `test`.`t4` where (((`test`.`t4`.`a` = 'b-1') or (`test`.`t4`.`a` = 'bb-1')) and (`test`.`t4`.`b` is null) and ((`test`.`t4`.`c` = 'c-1') or (`test`.`t4`.`c` = 'cc-2')))
 select * from t4 where (a ='b-1' or a='bb-1') and b IS NULL and (c='c-1' or c='cc-2');
@@ -312,7 +312,7 @@ col4 tinyint(3) unsigned NOT NULL DEFAULT '0',
 PRIMARY KEY (ID),
 KEY (key1),
 KEY (key2)
-) AUTO_INCREMENT=6 DEFAULT CHARSET=utf8;
+) AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb3;
 Warnings:
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
@@ -320,7 +320,7 @@ Warning	1681	Integer display width is deprecated and will be removed in a future
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 INSERT INTO t1 VALUES
 (1,NULL,1130,NULL,'Hello',NULL,100,'bodyandsubject',0),
 (2,NULL,1130,NULL,'bye',NULL,100,'bodyandsubject',0),
@@ -650,7 +650,7 @@ INSERT INTO t3
 SELECT a, 'MySQL' FROM ten;
 CREATE TABLE t4 (
 pk int(11) NOT NULL,
-c1_key varchar(10) CHARACTER SET utf8 NOT NULL,
+c1_key varchar(10) CHARACTER SET utf8mb3 NOT NULL,
 c2 varchar(10) NOT NULL,
 c3 varchar(10) NOT NULL,
 PRIMARY KEY (pk),
@@ -658,7 +658,7 @@ KEY k1 (c1_key)
 ) charset latin1;
 Warnings:
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE t5 (
 pk INTEGER NOT NULL,
 c1 VARCHAR(10) NOT NULL,

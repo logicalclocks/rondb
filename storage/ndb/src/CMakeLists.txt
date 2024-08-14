@@ -66,6 +66,9 @@ ELSE()
   LIST(APPEND LIBS_TO_LINK ext::zlib)
 ENDIF()
 
+IF(WITH_EXT_BACKTRACE)
+  LIST(APPEND LIBS_TO_MERGE backtrace)
+ENDIF()
 
 MESSAGE(STATUS "LIBS_TO_MERGE ${LIBS_TO_MERGE}")
 
@@ -76,7 +79,7 @@ ENDIF()
 MERGE_CONVENIENCE_LIBRARIES(ndbclient_static ${LIBS_TO_MERGE}
   ${SKIP_INSTALL_NDBCLIENT_STATIC}
   COMPONENT Development
-  LINK_LIBRARIES ${SSL_LIBRARIES} ${LIBS_TO_LINK}
+  LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto ${LIBS_TO_LINK}
   )
 
 IF(NOT WITH_NDB)
@@ -189,8 +192,10 @@ IF(NOT WIN32)
     "${CMAKE_SHARED_LIBRARY_C_FLAGS} ${ndbclient_so_link_flags}")
   IF(LINK_FLAG_NO_UNDEFINED)
     STRING_APPEND(ndbclient_so_link_flags " ${LINK_FLAG_NO_UNDEFINED}")
-    STRING_APPEND(ndbclient_so_link_flags
-      " -Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/libndbclient.ver")
+    IF(LINUX)
+      STRING_APPEND(ndbclient_so_link_flags
+        " -Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/libndbclient.ver")
+    ENDIF()
   ENDIF()
   IF(SOLARIS)
     STRING_APPEND(ndbclient_so_link_flags " ${CMAKE_CXX_LINK_FLAGS}")

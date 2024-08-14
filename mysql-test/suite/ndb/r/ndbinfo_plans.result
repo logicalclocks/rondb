@@ -5,7 +5,7 @@ use ndbinfo;
 ##
 ## ndb$tables
 select count(*) from ndb$tables;
-count(*)	53
+count(*)	54
 explain select count(*) from ndb$tables;
 id	1
 select_type	SIMPLE
@@ -45,12 +45,12 @@ Select tables optimized away
 NULL
 
 ## Information schema reveals row counts as seen by optimizer
-## (but filter out cpu-related tables where results are not predictable)
 set ndbinfo_show_hidden=1;
 SELECT table_name, table_rows, avg_row_length
   FROM information_schema.tables
   WHERE table_schema='ndbinfo' AND table_type = 'BASE TABLE'
   AND table_name not like '%cpu%'
+  AND table_name not in ('ndb$config_params', 'ndb$config_values')
   ORDER BY table_name;
 TABLE_NAME	TABLE_ROWS	AVG_ROW_LENGTH
 blobs	10	84
@@ -63,6 +63,7 @@ ndb$acc_operations	15	64
 ndb$backup_id	1	20
 ndb$blocks	30	20
 ndb$columns	565	44
+ndb$certificates	34	44
 ndb$config_nodes	34	28
 ndb$config_params	178	120
 ndb$config_values	344	24
@@ -110,10 +111,19 @@ ndb$threads	30	40
 ndb$threadstat	26	144
 ndb$transactions	5	44
 ndb$transporter_details	32	112
-ndb$transporters	32	64
+ndb$transporters	32	68
 
-## List the tables where estimated size equals actual size.
 CALL populate_sizes();
+
+SELECT table_name, est_rows, actual_rows from rowcounts
+WHERE table_name = "ndb$config_values";
+table_name	est_rows	actual_rows
+ndb$config_values	334	334
+## Note:
+## the estimate for config_values relies on a constant in NdbinfoTables.cpp
+## which must be manually maintained in order for the test to pass.
+##
+## List the tables where estimated size equals actual size.
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
 count(*)
 28

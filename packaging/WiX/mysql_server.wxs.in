@@ -44,7 +44,7 @@
     <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable"/>
 
     <!-- Upgrade -->
-    <Upgrade Id="@UPGRADE_ID@">
+    <Upgrade Id="@UPGRADE_CODE@">
       <?if '@PATCH_VERSION@' != '0'?>
       <UpgradeVersion 
         Minimum="@MAJOR_VERSION@.@MINOR_VERSION@.0"
@@ -58,8 +58,6 @@
       <UpgradeVersion 
         Minimum="@MAJOR_VERSION@.@MINOR_VERSION@.@PATCH_VERSION@"
         IncludeMinimum="no"
-        Maximum="@MAJOR_VERSION@.@MINOR_VERSION@.999"
-        IncludeMaximum="no"
         OnlyDetect="yes"
         Property="NEWERVERSIONDETECTED" />
     </Upgrade>
@@ -120,6 +118,18 @@
     <SetProperty Before="QtRemoveService" Sequence="execute" Id="QtRemoveService" Value="&quot;cmd.exe&quot; /S /V:ON /C &quot;echo off&amp;set &quot;d=[INSTALLDIR]&quot;&amp;FOR /f &quot;skip=1&quot; %s in ('wmic service where ^'pathname like &quot;%!d:\=\\!%&quot;^' get name ^| findstr /r &quot;^.$&quot;') do ((for /L %k IN (1,1,20) do wmic service where 'name=&quot;%s&quot; and started=&quot;true&quot;' call stopservice | FIND /v &quot;No Instance&quot;&gt;NUL&amp;&amp;timeout /t 5 /nobreak&gt;NUL)&amp;sc delete %s&gt;NUL)&quot;" />
 
     <!-- UI -->
+    <?if "@BUNDLE_MYSQL_CONFIGURATOR@" != "" ?>
+    <!-- Properties used by the UI -->
+    <Property Id="LAUNCHPRODUCT" Value="1"/>
+    <!-- Custom actions used by the UI -->
+    <CustomAction Id="LaunchConfigurator" BinaryRef="Wix4UtilCA_X86" DllEntry="WixShellExec" Execute="immediate" Return="check" Impersonate="yes" />
+    <Property Id="WixShellExecTarget" Value="[#F.bin_mysql_configurator.exe]"/>
+    <CustomAction Id="RemoveConfigArtifacts"  FileRef="F.bin_mysql_configurator.exe" ExeCommand="--removenoshow" Execute="deferred" Return="ignore" Impersonate="no" />
+    <InstallExecuteSequence>
+      <Custom Action="RemoveConfigArtifacts" After="InstallInitialize" Condition="(NOT UPGRADINGPRODUCTCODE) AND (REMOVE=&quot;ALL&quot;) AND UILevel &gt; 2" />
+    </InstallExecuteSequence>
+    <?endif?>
+
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR"></Property>
     <UIRef Id="@CPACK_WIX_UI@" />
     <UIRef Id="WixUI_ErrorProgressText" />
@@ -135,6 +145,11 @@
     <Icon 
       Id="Icon.MysqlCmdShell" 
       SourceFile='@CMAKE_CURRENT_SOURCE_DIR@/mysqlcommandlineshell.ico' />
+    <?if "@BUNDLE_MYSQL_CONFIGURATOR@" != "" ?>
+      <Icon 
+        Id="Icon.MysqlConfigurator" 
+        SourceFile='@CMAKE_CURRENT_SOURCE_DIR@/MySQLConfigurator.ico' />
+    <?endif?>
     <Property
       Id="ARPPRODUCTICON"
       Value="icon.ico" />

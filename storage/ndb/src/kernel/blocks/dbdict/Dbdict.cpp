@@ -28,8 +28,8 @@
 #include <algorithm>
 #include <cstring>
 #include <utility>
-#include "m_ctype.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 
 #define DBDICT_C
 #include "Dbdict.hpp"
@@ -17674,6 +17674,10 @@ void Dbdict::execSUB_START_REQ(Signal *signal) {
     subbPtr.p->m_subscriptionKey = req->subscriptionKey;
     subbPtr.p->m_subscriberRef = req->subscriberRef;
     subbPtr.p->m_subscriberData = req->subscriberData;
+    subbPtr.p->m_requestInfo = 0;
+    if (signal->getLength() > SubStartReq::SignalLengthWithoutRequestInfo) {
+      subbPtr.p->m_requestInfo = req->requestInfo;
+    }
     std::memset(subbPtr.p->m_buckets_per_ng, 0,
                 sizeof(subbPtr.p->m_buckets_per_ng));
   }

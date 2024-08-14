@@ -26,8 +26,9 @@
 #include <assert.h>
 #include <new>
 
-#include "my_loglevel.h"
+#include "my_dbug.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysqld_error.h"
 #include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/impl/cache/cache_element.h"
@@ -105,7 +106,8 @@ void Shared_multi_map<T>::remove(Cache_element<T> *element, Autolocker *lock) {
   lock->auto_delete(element->object());
 
   // Reuse the element if there is room for it.
-  if (!pool_capacity_exceeded())
+  if (DBUG_EVALUATE_IF("simulate_dd_elements_cache_full", false, true) &&
+      !pool_capacity_exceeded())
     m_element_pool.push_back(element);
   else
     lock->auto_delete(element);
@@ -115,7 +117,9 @@ void Shared_multi_map<T>::remove(Cache_element<T> *element, Autolocker *lock) {
 template <typename T>
 void Shared_multi_map<T>::rectify_free_list(Autolocker *lock) {
   mysql_mutex_assert_owner(&m_lock);
-  while (map_capacity_exceeded() && m_free_list.length() > 0) {
+  while ((DBUG_EVALUATE_IF("simulate_dd_elements_cache_full", true, false) ||
+          map_capacity_exceeded()) &&
+         m_free_list.length() > 0) {
     Cache_element<T> *e = m_free_list.get_lru();
     assert(e && e->object());
     m_free_list.remove(e);
@@ -173,10 +177,15 @@ MDL_request *lock_request(THD *, const schema_map_t &, const T *) {
 template <>
 MDL_request *lock_request(THD *thd, const schema_map_t &schema_map,
                           const Abstract_table *object) {
+  // Since the object in this case comes from the m_map, any element in the map
+  // that was nullptr would be inconsistent. In such a situation,
+  // a crash might be more appropriate.
+  assert(object != nullptr);
+
   // Fetch the schema to get hold of the schema name.
   const schema_map_t::const_iterator schema_name =
       schema_map.find(object->schema_id());
-  if (schema_name == schema_map.end() || object == nullptr) return nullptr;
+  if (schema_name == schema_map.end()) return nullptr;
 
   MDL_request *request = new (thd->mem_root) MDL_request;
   if (request == nullptr) return nullptr;

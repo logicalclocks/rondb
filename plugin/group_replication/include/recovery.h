@@ -30,20 +30,26 @@
 #include <string>
 
 #include "plugin/group_replication/include/applier.h"
+#include "plugin/group_replication/include/plugin_messages/recovery_metadata_message.h"
 #include "plugin/group_replication/include/plugin_observers/channel_observation_manager.h"
 #include "plugin/group_replication/include/recovery_state_transfer.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_communication_interface.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_control_interface.h"
 
-/* The possible policies used on recovery when applying cached transactions */
-enum enum_recovery_completion_policies {
-  RECOVERY_POLICY_WAIT_CERTIFIED =
-      0,                          // Wait for the certification of transactions
-  RECOVERY_POLICY_WAIT_EXECUTED,  // Wait for the execution of transactions
-};
-
 class Recovery_module {
  public:
+  /* The error status for Recovery Metadata received. */
+  enum class enum_recovery_metadata_error {
+    // Metadata received without error.
+    RECOVERY_METADATA_RECEIVED_NO_ERROR,
+    // Time-out waiting for Metadata.
+    RECOVERY_METADATA_RECEIVED_TIMEOUT_ERROR,
+    // Recovery aborted.
+    RECOVERY_METADATA_RECOVERY_ABORTED_ERROR,
+    // Error fetching metadata.
+    RECOVERY_METADATA_RECEIVED_ERROR
+  };
+
   /**
     Recovery_module constructor
 
@@ -70,14 +76,13 @@ class Recovery_module {
     @note this method only returns when the recovery thread is already running
 
     @param group_name          the joiner's group name
-    @param rec_view_id         the new view id
+    @param view_id             the view id to use for the recovery.
 
     @return the operation status
       @retval 0      OK
       @retval !=0    Error
   */
-  int start_recovery(const std::string &group_name,
-                     const std::string &rec_view_id);
+  int start_recovery(const std::string &group_name, const std::string &view_id);
 
   /**
     Recovery thread main execution method.
@@ -271,16 +276,6 @@ class Recovery_module {
     recovery_state_transfer.set_stop_wait_timeout(timeout);
   }
 
-  /**
-    Sets recovery threshold policy on what to wait when handling transactions
-    @param completion_policy  if recovery shall wait for execution
-                              or certification
-  */
-  void set_recovery_completion_policy(
-      enum_recovery_completion_policies completion_policy) {
-    this->recovery_completion_policy = completion_policy;
-  }
-
   /** Set a public key file*/
   void set_recovery_public_key_path(const char *public_key_path) {
     if (public_key_path != nullptr)
@@ -324,7 +319,64 @@ class Recovery_module {
   */
   int check_recovery_thread_status();
 
+  // Recovery Metadata related function and variables - start
+  /**
+    Awakes recovery thd, waiting for the donor to send recovery metadata.
+    If send recovery metadata fails it sets the error, so that waiting recovery
+    thd unblocks and stops with error, otherwise on successful receive of
+    recovery metadata it awakes waiting recovery thd without error.
+
+    @param error  Error status in recovery metadata fetching.
+  */
+  void awake_recovery_metadata_suspension(bool error = false);
+
+  /**
+    Suspend recovery thd, so that member can wait to receive the recovery
+    metadata.
+  */
+  void suspend_recovery_metadata();
+
+  /**
+    Set the recovery metadata message.
+
+    @param[in] recovery_metadata_message  the recovery metadata message pointer.
+
+    @return the error status
+      @retval true   Error
+      @retval false  Success
+  */
+  bool set_recovery_metadata_message(
+      Recovery_metadata_message *recovery_metadata_message);
+
+  /**
+    Delete recovery metadata object.
+  */
+  void delete_recovery_metadata_message();
+
+  /**
+    Return the flag which determine if VCLE is enabled.
+
+    @return the status which determine if VCLE is enabled.
+  */
+  bool is_vcle_enable();
+
+  /**
+    Set the View ID on which the joiner joined.
+
+    @param  is_vcle_enabled  the flag determine if View_change_log_event
+                             is enabled.
+  */
+  void set_vcle_enabled(bool is_vcle_enabled);
+
  private:
+  /** Flag to determine if recovery should use VCLE */
+  bool m_is_vcle_enable{false};
+
+  /** Recovery metadata received on group members. */
+  Recovery_metadata_message *m_recovery_metadata_message{nullptr};
+
+  // Recovery Metadata related function and variables - end
+
   /** Sets the thread context */
   void set_recovery_thread_context();
 
@@ -352,6 +404,14 @@ class Recovery_module {
   */
   void notify_group_recovery_end();
 
+  /**
+    Starts a wait process until the recovery metadata is successfully send by
+    the donor.
+
+    @return the error status. Check enum_recovery_metadata_error for details.
+  */
+  enum_recovery_metadata_error wait_for_recovery_metadata_gtid_executed();
+
   // recovery thread variables
   my_thread_handle recovery_pthd;
   THD *recovery_thd;
@@ -370,15 +430,40 @@ class Recovery_module {
   /* Recovery abort flag */
   bool recovery_aborted;
 
+  /*
+    The replication until condition that can be applied to
+    channels for the recovery.
+  */
+  enum_channel_until_condition m_until_condition{CHANNEL_UNTIL_VIEW_ID};
+
+  /*
+    The maximum time till which recovery thread will wait for recovery metadata
+    from sender.
+  */
+  unsigned int m_max_metadata_wait_time;
+
   // run conditions and locks
   mysql_mutex_t run_lock;
   mysql_cond_t run_cond;
 
-  /* Recovery strategy when waiting for the cache transaction handling*/
-  enum_recovery_completion_policies recovery_completion_policy;
-
   /* The return value from state transfer operation*/
   State_transfer_status m_state_transfer_return;
+
+  /* Recovery metadata receive status. */
+  bool m_recovery_metadata_received{false};
+
+  /** Error while fetching Recovery metadata. */
+  bool m_recovery_metadata_received_error{false};
+
+  /** Recovery metadata receive error status. */
+  enum_recovery_metadata_error m_recovery_metadata_error_status;
+
+  // condition and lock used to suspend/awake the recovery module
+  /* The lock for suspending/wait for the awake of the recovery module */
+  mysql_mutex_t m_recovery_metadata_receive_lock;
+
+  /* The condition for suspending/wait for the awake of the recovery module */
+  mysql_cond_t m_recovery_metadata_receive_waiting_condition;
 };
 
 #endif /* RECOVERY_INCLUDE */

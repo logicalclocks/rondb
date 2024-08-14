@@ -50,11 +50,13 @@
 #include "my_thread_local.h"
 #include "mysys/my_static.h"
 #include "mysys_err.h"
+#include "nulls.h"
+#include "strmake.h"
 #if defined(_WIN32)
 #include <direct.h>
 #include <dos.h>
 
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #endif
 
 /* Gets current working directory in buff.
@@ -137,7 +139,7 @@ int test_if_hard_path(const char *dir_name) {
     return (home_dir != NullS && test_if_hard_path(home_dir));
   if (dir_name[0] == FN_LIBCHAR) return (true);
 #ifdef FN_DEVCHAR
-  return (strchr(dir_name, FN_DEVCHAR) != 0);
+  return (strchr(dir_name, FN_DEVCHAR) != nullptr);
 #else
   return false;
 #endif

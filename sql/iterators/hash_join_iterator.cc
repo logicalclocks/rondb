@@ -23,9 +23,10 @@
 
 #include "sql/iterators/hash_join_iterator.h"
 
-#include <assert.h>
 #include <algorithm>
 #include <atomic>
+#include <bit>
+#include <cassert>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -34,7 +35,7 @@
 
 #include "field_types.h"
 #include "my_alloc.h"
-#include "my_bit.h"
+#include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "my_xxhash.h"
@@ -50,7 +51,6 @@
 #include "sql/system_variables.h"
 #include "sql/table.h"
 
-using hash_join_buffer::LoadBufferRowIntoTableBuffers;
 using hash_join_buffer::LoadImmutableStringIntoTableBuffers;
 
 // An arbitrary hash value for the empty string, to avoid the hash function
@@ -66,8 +66,8 @@ HashJoinIterator::HashJoinIterator(
     table_map tables_to_get_rowid_for, size_t max_memory_available,
     const std::vector<HashJoinCondition> &join_conditions,
     bool allow_spill_to_disk, JoinType join_type,
-    const Mem_root_array<Item *> &extra_conditions, bool probe_input_batch_mode,
-    uint64_t *hash_table_generation)
+    const Mem_root_array<Item *> &extra_conditions, HashJoinInput first_input,
+    bool probe_input_batch_mode, uint64_t *hash_table_generation)
     : RowIterator(thd),
       m_state(State::READING_ROW_FROM_PROBE_ITERATOR),
       m_hash_table_generation(hash_table_generation),
@@ -85,6 +85,14 @@ HashJoinIterator::HashJoinIterator(
                         join_conditions.data() + join_conditions.size()),
       m_chunk_files_on_disk(thd->mem_root, kMaxChunks),
       m_estimated_build_rows(estimated_build_rows),
+      // For (LEFT)OUTER and ANTI-join we may have to return rows even if the
+      // build input is empty. Therefore we check the probe input for emptiness
+      // first. If 'probe' is empty, there is no need to read from 'build',
+      // while the converse is not the case.
+      m_first_input(
+          (join_type == JoinType::OUTER || join_type == JoinType::ANTI)
+              ? HashJoinInput::kProbe
+              : first_input),
       m_probe_input_batch_mode(probe_input_batch_mode),
       m_allow_spill_to_disk(allow_spill_to_disk),
       m_join_type(join_type) {
@@ -144,7 +152,68 @@ bool HashJoinIterator::InitProbeIterator() {
   return false;
 }
 
+bool HashJoinIterator::ReadFirstProbeRow() {
+  assert(m_first_input == HashJoinInput::kProbe);
+  m_state = State::READING_ROW_FROM_PROBE_ITERATOR;
+
+  if (InitProbeIterator()) {
+    return true;
+  }
+
+  const int result = m_probe_input->Read();
+  if (result == 1) {
+    return true;
+
+  } else if (result == -1) {
+    m_state = State::END_OF_ROWS;
+    return false;
+
+  } else {
+    assert(result == 0);
+    m_probe_row_read = true;
+    // Prepare to read the build input into the hash map.
+    PrepareForRequestRowId(m_build_input_tables.tables(),
+                           m_tables_to_get_rowid_for);
+
+    return false;
+  }
+}
+
+bool HashJoinIterator::InitHashTable() {
+  if (BuildHashTable()) {
+    return true;
+  }
+
+  if (m_hash_table_generation != nullptr) {
+    m_last_hash_table_generation = *m_hash_table_generation;
+  }
+
+  if (m_state == State::END_OF_ROWS) {
+    // BuildHashTable() decided that the join is done (the build input is
+    // empty, and we are in an inner-/semijoin. Anti-/outer join must output
+    // NULL-complemented rows from the probe input).
+    return false;
+  }
+
+  if (m_join_type == JoinType::ANTI && m_join_conditions.empty() &&
+      m_extra_condition == nullptr && !m_row_buffer.empty()) {
+    // For degenerate antijoins, we know we will never output anything
+    // if there's anything in the hash table, so we can end right away.
+    // (We also don't need to read more than one row, but
+    // CreateHashJoinAccessPath() has already added a LIMIT 1 for us
+    // in this case.)
+    m_state = State::END_OF_ROWS;
+  }
+
+  return false;
+}
+
 bool HashJoinIterator::Init() {
+  // If Init() is called multiple times (e.g., if hash join is inside a
+  // dependent subquery), we must clear the NULL row flag, as it may have been
+  // set by the previous execution of this hash join.
+  m_build_input->SetNullRowFlag(/*is_null_row=*/false);
+
   // If we are entirely in-memory and the JOIN we are part of hasn't been
   // asked to clear its hash tables since last time, we can reuse the table
   // without having to rebuild it. This is useful if we are on the right side
@@ -175,13 +244,15 @@ bool HashJoinIterator::Init() {
     }
   }
 
-  // Prepare to read the build input into the hash map.
-  PrepareForRequestRowId(m_build_input_tables.tables(),
-                         m_tables_to_get_rowid_for);
-  if (m_build_input->Init()) {
-    assert(thd()->is_error() ||
-           thd()->killed);  // my_error should have been called.
-    return true;
+  if (m_first_input == HashJoinInput::kBuild) {
+    // Prepare to read the build input into the hash map.
+    PrepareForRequestRowId(m_build_input_tables.tables(),
+                           m_tables_to_get_rowid_for);
+    if (m_build_input->Init()) {
+      assert(thd()->is_error() ||
+             thd()->killed);  // my_error should have been called.
+      return true;
+    }
   }
 
   // We always start out by doing everything in memory.
@@ -231,35 +302,36 @@ bool HashJoinIterator::Init() {
   PrepareForRequestRowId(m_probe_input_tables.tables(),
                          m_tables_to_get_rowid_for);
 
-  // Build the hash table
-  if (BuildHashTable()) {
-    assert(thd()->is_error() ||
+  if (m_first_input == HashJoinInput::kProbe) {
+    const bool error = [&]() {
+      if (ReadFirstProbeRow()) {
+        return true;
+      } else if (m_state == State::END_OF_ROWS) {
+        return false;
+      } else {
+        return m_build_input->Init() || InitHashTable();
+      }
+    }();
+
+    assert(!error || thd()->is_error() ||
            thd()->killed);  // my_error should have been called.
-    return true;
-  }
-  if (m_hash_table_generation != nullptr) {
-    m_last_hash_table_generation = *m_hash_table_generation;
-  }
 
-  if (m_state == State::END_OF_ROWS) {
-    // BuildHashTable() decided that the join is done (the build input is
-    // empty, and we are in an inner-/semijoin. Anti-/outer join must output
-    // NULL-complemented rows from the probe input).
-    return false;
-  }
+    if (m_state == State::END_OF_ROWS || error) {
+      m_probe_input->EndPSIBatchModeIfStarted();
+    }
 
-  if (m_join_type == JoinType::ANTI && m_join_conditions.empty() &&
-      m_extra_condition == nullptr && !m_row_buffer.empty()) {
-    // For degenerate antijoins, we know we will never output anything
-    // if there's anything in the hash table, so we can end right away.
-    // (We also don't need to read more than one row, but
-    // CreateHashJoinAccessPath() has already added a LIMIT 1 for us
-    // in this case.)
-    m_state = State::END_OF_ROWS;
-    return false;
-  }
+    return error;
 
-  return InitProbeIterator();
+  } else {  // Start with 'build' input.
+    if (InitHashTable()) {
+      assert(thd()->is_error() ||
+             thd()->killed);  // my_error should have been called.
+
+      return true;
+    }
+
+    return m_state == State::END_OF_ROWS ? false : InitProbeIterator();
+  }
 }
 
 // Construct a join key from a list of join conditions, where the join key from
@@ -391,7 +463,7 @@ static bool InitializeChunkFiles(size_t estimated_rows_produced_by_join,
   // Ensure that the number of chunks is always a power of two. This allows
   // us to do some optimizations when calculating which chunk a row should
   // be placed in.
-  const size_t num_chunks_pow_2 = my_round_up_to_next_power(num_chunks);
+  const size_t num_chunks_pow_2 = std::bit_ceil(num_chunks);
 
   assert(chunk_pairs != nullptr && chunk_pairs->empty());
   chunk_pairs->resize(num_chunks_pow_2);
@@ -443,11 +515,6 @@ bool HashJoinIterator::BuildHashTable() {
   }
 
   const bool reject_duplicate_keys = RejectDuplicateKeys();
-
-  // If Init() is called multiple times (e.g., if hash join is inside an
-  // dependent subquery), we must clear the NULL row flag, as it may have been
-  // set by the previous executing of this hash join.
-  m_build_input->SetNullRowFlag(/*is_null_row=*/false);
 
   PFSBatchMode batch_mode(m_build_input.get());
   for (;;) {  // Termination condition within loop.
@@ -567,19 +634,14 @@ bool HashJoinIterator::ReadNextHashJoinChunk() {
   // it works like this; if we are at the end of the build chunk, move to the
   // next. If not, keep reading from the same chunk pair. We also move to the
   // next pair of chunk files if the probe chunk file is empty.
-  bool move_to_next_chunk = false;
-  if (m_current_chunk == -1) {
-    // We are before the first chunk, so move to the next.
-    move_to_next_chunk = true;
-  } else if (m_build_chunk_current_row >=
-             m_chunk_files_on_disk[m_current_chunk].build_chunk.num_rows()) {
-    // We are done reading all the rows from the build chunk.
-    move_to_next_chunk = true;
-  } else if (m_chunk_files_on_disk[m_current_chunk].probe_chunk.num_rows() ==
-             0) {
-    // The probe chunk file is empty.
-    move_to_next_chunk = true;
-  }
+  const bool move_to_next_chunk =
+      // We are before the first chunk, so move to the next.
+      m_current_chunk == -1 ||
+      // We are done reading all the rows from the build chunk.
+      m_build_chunk_current_row >=
+          m_chunk_files_on_disk[m_current_chunk].build_chunk.NumRows() ||
+      // The probe chunk file is empty.
+      m_chunk_files_on_disk[m_current_chunk].probe_chunk.NumRows() == 0;
 
   if (move_to_next_chunk) {
     m_current_chunk++;
@@ -604,7 +666,7 @@ bool HashJoinIterator::ReadNextHashJoinChunk() {
       m_chunk_files_on_disk[m_current_chunk].build_chunk;
 
   const bool reject_duplicate_keys = RejectDuplicateKeys();
-  for (; m_build_chunk_current_row < build_chunk.num_rows();
+  for (; m_build_chunk_current_row < build_chunk.NumRows();
        ++m_build_chunk_current_row) {
     // Read the next row from the chunk file, and put it in the in-memory row
     // buffer. If the buffer goes full, do the probe phase against the rows we
@@ -651,7 +713,7 @@ bool HashJoinIterator::ReadNextHashJoinChunk() {
   m_probe_chunk_current_row = 0;
   SetReadingProbeRowState();
 
-  if (m_build_chunk_current_row < build_chunk.num_rows() &&
+  if (m_build_chunk_current_row < build_chunk.NumRows() &&
       m_join_type != JoinType::INNER) {
     // The build chunk did not fit into memory, causing us to refill the hash
     // table once the probe input is consumed. If we don't take any special
@@ -672,8 +734,9 @@ bool HashJoinIterator::ReadNextHashJoinChunk() {
 
 bool HashJoinIterator::ReadRowFromProbeIterator() {
   assert(m_current_chunk == -1);
+  const int result = m_probe_row_read ? 0 : m_probe_input->Read();
+  m_probe_row_read = false;
 
-  int result = m_probe_input->Read();
   if (result == 1) {
     assert(thd()->is_error() ||
            thd()->killed);  // my_error should have been called.
@@ -754,7 +817,7 @@ bool HashJoinIterator::ReadRowFromProbeChunkFile() {
   // that row into the record buffer of the probe input table.
   HashJoinChunk &current_probe_chunk =
       m_chunk_files_on_disk[m_current_chunk].probe_chunk;
-  if (m_probe_chunk_current_row >= current_probe_chunk.num_rows()) {
+  if (m_probe_chunk_current_row >= current_probe_chunk.NumRows()) {
     // No more rows in the current probe chunk, so load the next chunk of
     // build rows into the hash table.
     if (m_write_to_probe_row_saving) {
@@ -794,7 +857,7 @@ bool HashJoinIterator::ReadRowFromProbeRowSavingFile() {
   // Read one row from the probe row saving file, and put that row into the
   // record buffer of the probe input table.
   if (m_probe_row_saving_read_file_current_row >=
-      m_probe_row_saving_read_file.num_rows()) {
+      m_probe_row_saving_read_file.NumRows()) {
     // We are done reading all the rows from the probe row saving file. If probe
     // row saving is still enabled, we have a new set of rows in the probe row
     // saving write file.
@@ -884,6 +947,8 @@ void HashJoinIterator::LookupProbeRowInHashTable() {
 }
 
 int HashJoinIterator::ReadJoinedRow() {
+  DBUG_EXECUTE_IF("kill_query_in_hash_join_iterator",
+                  thd()->killed = THD::KILL_QUERY;);
   if (m_current_row == nullptr) {
     // Signal that we have reached the end of hash table entries. Let the caller
     // determine which state we end up in.
@@ -954,8 +1019,12 @@ int HashJoinIterator::ReadNextJoinedRowFromHashTable() {
     // we return a row.
     if (res == 0) {
       passes_extra_conditions = JoinedRowPassesExtraConditions();
-      if (thd()->is_error() || thd()->killed) {
+      if (thd()->is_error()) {
         // Evaluation of extra conditions raised an error, so abort the join.
+        return 1;
+      }
+      if (thd()->killed) {
+        thd()->send_kill_message();
         return 1;
       }
 

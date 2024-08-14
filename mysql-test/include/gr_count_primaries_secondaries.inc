@@ -35,21 +35,19 @@ while ($_i)
 {
   # connect to the server
   --let $rpl_connection_name=server$_i
-  --source include/rpl_connection.inc
+  --source include/connection.inc
 
   let $_has_no_errors= `SELECT count(*) FROM performance_schema.replication_group_members
          WHERE MEMBER_ID = @@server_uuid AND
          MEMBER_STATE != "ERROR"`;
 
-  let $_is_primary= `SELECT COUNT(*)=1 FROM performance_schema.global_status
-                            WHERE VARIABLE_NAME = "group_replication_primary_member" AND
-                            VARIABLE_VALUE = @@server_uuid`;
+  let $_is_primary= `SELECT COUNT(*)=1 FROM performance_schema.replication_group_members
+                     WHERE MEMBER_ROLE="PRIMARY" AND
+                           MEMBER_ID=@@server_uuid`;
 
-  let $_is_secondary= `SELECT COUNT(*)=1 FROM performance_schema.global_status
-                            WHERE VARIABLE_NAME = "group_replication_primary_member" AND
-                            VARIABLE_VALUE != @@server_uuid AND
-                            VARIABLE_VALUE != ""`;
-
+  let $_is_secondary= `SELECT COUNT(*)=1 FROM performance_schema.replication_group_members
+                       WHERE MEMBER_ROLE="SECONDARY" AND
+                             MEMBER_ID=@@server_uuid`;
   if ($_has_no_errors)
   {
     if ($_is_primary)
@@ -68,7 +66,7 @@ while ($_i)
 }
 
 --let $rpl_connection_name=$_saved_current_connection
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --let $include_filename= group_replication_wait_until_role.inc
 --source include/end_include_file.inc

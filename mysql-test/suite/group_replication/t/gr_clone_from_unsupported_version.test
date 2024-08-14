@@ -7,12 +7,12 @@
 # 0. The test requires two servers: M1 and M2.
 # 1. Install clone plugin on server1.
 #    Commit some data and then purge all binary logs.
-#    Bootstrap a group on server1 with version 8.0.36.
+#    Bootstrap a group on server1 with version 8.3.0.
 # 2. Install clone plugin on server2.
 #    Start GR, cloning is the option chosen as recovery
 #    from binary logs is not possible.
 #    Member will move to ERROR state since cloning is not possible from
-#    version 8.0.36
+#    version 8.3.0
 # 3. Cleanup
 #
 
@@ -30,10 +30,10 @@
 --echo ############################################################
 --echo # 1. Install clone plugin on server1.
 --echo #    Commit some data and then purge all binary logs.
---echo #    Bootstrap a group on server1 with version 8.0.36.
+--echo #    Bootstrap a group on server1 with version 8.3.0.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 # Install the clone plugin
 --replace_result $CLONE_PLUGIN CLONE_PLUGIN
@@ -46,11 +46,11 @@ INSERT INTO t1 VALUES (2);
 
 # Purge binary logs.
 SET sql_log_bin = 0;
---source include/gtid_utils.inc
+--source include/rpl/gtid_utils.inc
 SET sql_log_bin = 1;
 
 FLUSH BINARY LOGS;
---let $server_binlog_file_cur= query_get_value(SHOW MASTER STATUS, File, 1)
+--let $server_binlog_file_cur= query_get_value(SHOW BINARY LOG STATUS, File, 1)
 --replace_result $server_binlog_file_cur CURRENT_BINLOG_FILE
 --eval PURGE BINARY LOGS TO '$server_binlog_file_cur'
 
@@ -67,11 +67,11 @@ SET @@GLOBAL.DEBUG='+d,group_replication_version_clone_not_supported';
 --echo #    Start GR, cloning is the option chosen as recovery
 --echo #    from binary logs is not possible.
 --echo #    Member will move to ERROR state since cloning is not possible from
---echo #    version 8.0.36
+--echo #    version 8.3.0
 
 # Install the clone plugin
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --replace_result $CLONE_PLUGIN CLONE_PLUGIN
 --eval INSTALL PLUGIN clone SONAME '$CLONE_PLUGIN'
@@ -96,22 +96,21 @@ SET @@GLOBAL.group_replication_clone_threshold = @gr_clone_threshold_save;
 --echo
 --echo ############################################################
 --echo # 3. Cleanup.
-
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 SET SESSION sql_log_bin=0;
 call mtr.add_suppression("Cannot replicate to server with server_uuid*");
 SET SESSION sql_log_bin=1;
 
 DROP TABLE t1;
---source include/gtid_utils_end.inc
+--source include/rpl/gtid_utils_end.inc
 
 UNINSTALL PLUGIN clone;
 --source include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG='-d,group_replication_version_clone_not_supported';
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 UNINSTALL PLUGIN clone;
 

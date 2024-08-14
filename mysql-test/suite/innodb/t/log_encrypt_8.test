@@ -1,20 +1,23 @@
+--source include/have_component_keyring_file.inc
 --echo #
 --echo # 35289234 - Can't disable encryption once redo log encryption is enabled
 --echo #
 
---source include/no_valgrind_without_big.inc
---source include/have_innodb_max_16k.inc
+--source suite/component_keyring_file/inc/setup_component.inc
+--let $restart_parameters= restart: --innodb_redo_log_encrypt=ON $PLUGIN_DIR_OPT
+--replace_result $MYSQL_TMP_DIR MYSQL_TMP_DIR $PLUGIN_DIR_OPT --plugin-dir=PLUGIN_DIR_OPT
+--replace_regex /\.dll/.so/
+--source include/restart_mysqld.inc
+
 
 --disable_query_log
-call mtr.add_suppression("\\[Warning\\] .* Ignoring tablespace .* because it could not be opened");
-call mtr.add_suppression("\\[Error\\] .* Encryption can't find master key, please check the keyring plugin is loaded.");
-call mtr.add_suppression("\\[ERROR\\] .* Failed to find tablespace for table `\.\.*`\.`\.\.*` in the cache.");
-call mtr.add_suppression("\\[ERROR\\] .* Operating system error number 2 in a file operation.");
-call mtr.add_suppression("\\[ERROR\\] .* The error means the system cannot find the path specified.");
-call mtr.add_suppression("\\[ERROR\\] .* Could not find a valid tablespace file for");
-call mtr.add_suppression("\\[ERROR\\] .* If you are installing InnoDB, remember that you must create directories yourself, InnoDB does not create them.");
-call mtr.add_suppression("\\[ERROR\\] .* Can't set redo log files to be encrypted.");
+call mtr.add_suppression("\\[Error\\] .*MY-\\d+.* Can't generate new master key for tablespace encryption, please check the keyring plugin is loaded.");
+call mtr.add_suppression("\\[Error\\] .*MY-\\d+.* Encryption can't find master key, please check the keyring plugin is loaded.");
+call mtr.add_suppression("\\[ERROR\\] .*MY-\\d+.* Can't set redo log files to be encrypted.");
+call mtr.add_suppression("You need to use --log-bin to make --binlog-format work");
 --enable_query_log
+
+SHOW VARIABLES LIKE "%innodb_redo_log_encrypt%";
 
 CREATE TABLE t1(c1 INT, c2 char(20)) ENGINE = InnoDB;
 
@@ -40,19 +43,25 @@ INSERT INTO t1 select * from t1;
 SELECT * FROM t1 ORDER BY c1 LIMIT 10;
 
 SET GLOBAL innodb_redo_log_encrypt=OFF;
+
+--echo Do a slow shutdowm
 --source include/shutdown_innodb_clean.inc
 
-#Remove the key ring file
---remove_file $MYSQL_TMP_DIR/mysecret_keyring1
+# Remove local manifest file for current server instance
+--source include/keyring_tests/helper/instance_remove_manifest.inc
 
+# Remove keyring file
+--source include/keyring_tests/helper/local_keyring_file_remove.inc
 
-# Restart with no encryption
-let $restart_parameters = restart:--innodb_redo_log_encrypt=OFF;
+# Remove local keyring config
+--source include/keyring_tests/helper/local_keyring_remove_config.inc
+
+--echo  Restart with no encryption and no key_ring
+let $restart_parameters = restart:;
 --source include/start_mysqld.inc
+
+SHOW VARIABLES LIKE "%innodb_redo_log_encrypt%";
 
 SELECT * FROM t1 ORDER BY c1 LIMIT 10;
 DROP TABLE t1;
-
---let $restart_parameters = restart:
---source include/restart_mysqld.inc
 

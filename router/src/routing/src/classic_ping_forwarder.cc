@@ -39,6 +39,10 @@ stdx::expected<Processor::Result, std::error_code> PingForwarder::process() {
       return connect();
     case Stage::Connected:
       return connected();
+    case Stage::Forward:
+      return forward();
+    case Stage::ForwardDone:
+      return forward_done();
     case Stage::Response:
       return response();
     case Stage::Ok:
@@ -55,14 +59,23 @@ stdx::expected<Processor::Result, std::error_code> PingForwarder::command() {
     tr.trace(Tracer::Event().stage("ping::command"));
   }
 
-  auto &server_conn = connection()->socket_splicer()->server_conn();
+  connection()->execution_context().diagnostics_area().warnings().clear();
+  connection()->events().clear();
+
+  trace_event_command_ = trace_command(prefix());
+
+  trace_event_connect_and_forward_command_ =
+      trace_connect_and_forward_command(trace_event_command_);
+
+  auto &server_conn = connection()->server_conn();
   if (!server_conn.is_open()) {
     stage(Stage::Connect);
-    return Result::Again;
   } else {
-    stage(Stage::Response);
-    return forward_client_to_server();
+    trace_event_forward_command_ =
+        trace_forward_command(trace_event_connect_and_forward_command_);
+    stage(Stage::Forward);
   }
+  return Result::Again;
 }
 
 stdx::expected<Processor::Result, std::error_code> PingForwarder::connect() {
@@ -71,48 +84,65 @@ stdx::expected<Processor::Result, std::error_code> PingForwarder::connect() {
   }
 
   stage(Stage::Connected);
-  return mysql_reconnect_start();
+  return mysql_reconnect_start(trace_event_connect_and_forward_command_);
 }
 
 stdx::expected<Processor::Result, std::error_code> PingForwarder::connected() {
-  auto &server_conn = connection()->socket_splicer()->server_conn();
+  auto &server_conn = connection()->server_conn();
   if (!server_conn.is_open()) {
-    auto *socket_splicer = connection()->socket_splicer();
-    auto *src_channel = socket_splicer->client_channel();
-    auto *src_protocol = connection()->client_protocol();
+    auto &src_conn = connection()->client_conn();
 
     // take the client::command from the connection.
-    auto recv_res =
-        ClassicFrame::ensure_has_full_frame(src_channel, src_protocol);
+    auto recv_res = ClassicFrame::ensure_has_full_frame(src_conn);
     if (!recv_res) return recv_client_failed(recv_res.error());
 
-    discard_current_msg(src_channel, src_protocol);
+    discard_current_msg(src_conn);
 
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("ping::connect::error"));
     }
 
+    trace_span_end(trace_event_connect_and_forward_command_);
+    trace_command_end(trace_event_command_);
+
     stage(Stage::Done);
-    return reconnect_send_error_msg(src_channel, src_protocol);
+    return reconnect_send_error_msg(src_conn);
   }
 
   if (auto &tr = tracer()) {
     tr.trace(Tracer::Event().stage("ping::connected"));
   }
-  stage(Stage::Response);
+
+  trace_event_forward_command_ =
+      trace_forward_command(trace_event_connect_and_forward_command_);
+
+  stage(Stage::Forward);
+  return Result::Again;
+}
+
+stdx::expected<Processor::Result, std::error_code> PingForwarder::forward() {
+  stage(Stage::ForwardDone);
   return forward_client_to_server();
 }
 
-stdx::expected<Processor::Result, std::error_code> PingForwarder::response() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto src_channel = socket_splicer->server_channel();
-  auto src_protocol = connection()->server_protocol();
+stdx::expected<Processor::Result, std::error_code>
+PingForwarder::forward_done() {
+  stage(Stage::Response);
 
-  auto read_res =
-      ClassicFrame::ensure_has_msg_prefix(src_channel, src_protocol);
+  trace_span_end(trace_event_forward_command_);
+  trace_span_end(trace_event_connect_and_forward_command_);
+
+  return Result::Again;
+}
+
+stdx::expected<Processor::Result, std::error_code> PingForwarder::response() {
+  auto &src_conn = connection()->server_conn();
+  auto &src_protocol = src_conn.protocol();
+
+  auto read_res = ClassicFrame::ensure_has_msg_prefix(src_conn);
   if (!read_res) return recv_server_failed(read_res.error());
 
-  const uint8_t msg_type = src_protocol->current_msg_type().value();
+  const uint8_t msg_type = src_protocol.current_msg_type().value();
 
   enum class Msg {
     Ok = ClassicFrame::cmd_byte<classic_protocol::message::server::Ok>(),
@@ -128,18 +158,19 @@ stdx::expected<Processor::Result, std::error_code> PingForwarder::response() {
     tr.trace(Tracer::Event().stage("ping::response"));
   }
 
-  return stdx::make_unexpected(make_error_code(std::errc::bad_message));
+  return stdx::unexpected(make_error_code(std::errc::bad_message));
 }
 
 stdx::expected<Processor::Result, std::error_code> PingForwarder::ok() {
-  auto *socket_splicer = connection()->socket_splicer();
-  auto *src_channel = socket_splicer->server_channel();
-  auto *src_protocol = connection()->server_protocol();
-  auto *dst_protocol = connection()->client_protocol();
+  auto &src_conn = connection()->server_conn();
+  auto &src_protocol = src_conn.protocol();
+
+  auto &dst_conn = connection()->client_conn();
+  auto &dst_protocol = dst_conn.protocol();
 
   auto msg_res =
       ClassicFrame::recv_msg<classic_protocol::borrowed::message::server::Ok>(
-          src_channel, src_protocol);
+          src_conn);
   if (!msg_res) return recv_server_failed(msg_res.error());
 
   auto msg = *msg_res;
@@ -148,9 +179,34 @@ stdx::expected<Processor::Result, std::error_code> PingForwarder::ok() {
     tr.trace(Tracer::Event().stage("ping::ok"));
   }
 
-  dst_protocol->status_flags(msg.status_flags());
+  dst_protocol.status_flags(msg.status_flags());
+
+  if (auto *ev = trace_span(trace_event_command_, "mysql/response")) {
+    ClassicFrame::trace_set_attributes(ev, src_protocol, msg);
+
+    trace_span_end(ev);
+  }
+
+  trace_command_end(trace_event_command_);
+
+  // fetch the warnings in case of connection-sharing.
+  if (msg.warning_count() > 0) connection()->diagnostic_area_changed(true);
 
   stage(Stage::Done);
+
+  if (!connection()->events().empty()) {
+    msg.warning_count(msg.warning_count() + 1);
+  }
+
+  if (!connection()->events().empty() ||
+      !message_can_be_forwarded_as_is(src_protocol, dst_protocol, msg)) {
+    auto send_res = ClassicFrame::send_msg(dst_conn, msg);
+    if (!send_res) return stdx::unexpected(send_res.error());
+
+    discard_current_msg(src_conn);
+
+    return Result::SendToClient;
+  }
 
   return forward_server_to_client();
 }

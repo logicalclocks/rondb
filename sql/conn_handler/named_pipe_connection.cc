@@ -32,6 +32,7 @@
 #include "connection_handler_manager.h"  // Connection_handler_manager
 #include "init_net_server_extension.h"   // init_net_server_extension
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/strings/int2str.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"      // global_system_variables
 #include "sql/named_pipe.h"  // create_server_named_pipe.
@@ -66,7 +67,7 @@ class Channel_info_named_pipe : public Channel_info {
   THD *create_thd() override {
     THD *thd = Channel_info::create_thd();
 
-    if (thd != NULL) {
+    if (thd != nullptr) {
       init_net_server_extension(thd);
       thd->security_context()->set_host_ptr(my_localhost, strlen(my_localhost));
     }
@@ -87,7 +88,7 @@ class Channel_info_named_pipe : public Channel_info {
 ///////////////////////////////////////////////////////////////////////////
 
 bool Named_pipe_listener::setup_listener() {
-  m_connect_overlapped.hEvent = CreateEvent(NULL, true, false, NULL);
+  m_connect_overlapped.hEvent = CreateEvent(nullptr, true, false, nullptr);
   if (!m_connect_overlapped.hEvent) {
     LogErr(ERROR_LEVEL, ER_CONN_PIP_CANT_CREATE_EVENT, GetLastError());
     return true;
@@ -116,7 +117,7 @@ Channel_info *Named_pipe_listener::listen_for_connection_event() {
     fConnected =
         GetOverlappedResult(m_pipe_handle, &m_connect_overlapped, &bytes, true);
   }
-  if (connection_events_loop_aborted()) return NULL;
+  if (connection_events_loop_aborted()) return nullptr;
   if (!fConnected) fConnected = GetLastError() == ERROR_PIPE_CONNECTED;
   if (!fConnected) {
     CloseHandle(m_pipe_handle);
@@ -130,19 +131,19 @@ Channel_info *Named_pipe_listener::listen_for_connection_event() {
         NMPWAIT_USE_DEFAULT_WAIT, mp_sa_pipe_security);
     mysql_rwlock_unlock(&LOCK_named_pipe_full_access_group);
     if (m_pipe_handle == INVALID_HANDLE_VALUE) {
-      DWORD last_error_num = GetLastError();
+      const DWORD last_error_num = GetLastError();
       FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS |
                         FORMAT_MESSAGE_MAX_WIDTH_MASK,
-                    NULL, last_error_num,
+                    nullptr, last_error_num,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                    sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                    sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
       LogErr(ERROR_LEVEL, ER_CONN_PIP_CANT_CREATE_PIPE, last_error_msg);
-      return NULL;
+      return nullptr;
     } else {
       /* A new pipe has been successfully created, it's not connected yet so
          return NULL to spin around and wait for connection on it.
       */
-      return NULL;
+      return nullptr;
     }
   }
   HANDLE hConnectedPipe = m_pipe_handle;
@@ -156,23 +157,23 @@ Channel_info *Named_pipe_listener::listen_for_connection_event() {
       mp_sa_pipe_security);
   mysql_rwlock_unlock(&LOCK_named_pipe_full_access_group);
   if (m_pipe_handle == INVALID_HANDLE_VALUE) {
-    DWORD last_error_num = GetLastError();
+    const DWORD last_error_num = GetLastError();
     FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS |
                       FORMAT_MESSAGE_MAX_WIDTH_MASK,
-                  NULL, last_error_num,
+                  nullptr, last_error_num,
                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                  sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                  sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
     LogErr(ERROR_LEVEL, ER_CONN_PIP_CANT_CREATE_PIPE, last_error_msg);
     m_pipe_handle = hConnectedPipe;
-    return NULL;  // We have to try again
+    return nullptr;  // We have to try again
   }
 
   Channel_info *channel_info =
       new (std::nothrow) Channel_info_named_pipe(hConnectedPipe);
-  if (channel_info == NULL) {
+  if (channel_info == nullptr) {
     DisconnectNamedPipe(hConnectedPipe);
     CloseHandle(hConnectedPipe);
-    return NULL;
+    return nullptr;
   }
   return channel_info;
 }
@@ -208,26 +209,26 @@ bool Named_pipe_listener::update_named_pipe_full_access_group(
 
   // Set the DACL for the existing "listener" named pipe instance...
   if (m_pipe_handle != INVALID_HANDLE_VALUE) {
-    PACL pdacl = NULL;
+    PACL pdacl = nullptr;
     BOOL dacl_present_in_descriptor = FALSE;
     BOOL dacl_defaulted = FALSE;
     if (!GetSecurityDescriptorDacl(p_new_sa->lpSecurityDescriptor,
                                    &dacl_present_in_descriptor, &pdacl,
                                    &dacl_defaulted) ||
         !dacl_present_in_descriptor) {
-      DWORD last_error_num = GetLastError();
+      const DWORD last_error_num = GetLastError();
       FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                    NULL, last_error_num,
+                    nullptr, last_error_num,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                    sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                    sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
       log_message(LOG_TYPE_ERROR, LOG_ITEM_LOG_PRIO, (longlong)ERROR_LEVEL,
                   LOG_ITEM_LOG_LOOKUP, ER_NPIPE_CANT_CREATE,
                   "GetSecurityDescriptorDacl failed", last_error_msg);
       return true;
     }
-    DWORD res =
-        SetSecurityInfo(m_pipe_handle, SE_KERNEL_OBJECT,
-                        DACL_SECURITY_INFORMATION, NULL, NULL, pdacl, NULL);
+    const DWORD res = SetSecurityInfo(m_pipe_handle, SE_KERNEL_OBJECT,
+                                      DACL_SECURITY_INFORMATION, nullptr,
+                                      nullptr, pdacl, nullptr);
     if (res != ERROR_SUCCESS) {
       char num_buff[20];
       longlong10_to_str(res, num_buff, 10);
@@ -249,11 +250,11 @@ void Named_pipe_listener::close_listener() {
   /* Create connection to the handle named pipe handler to break the loop */
   HANDLE temp;
   if ((temp = CreateFile(m_pipe_path_name, NAMED_PIPE_EVERYONE_PERMISSIONS, 0,
-                         NULL, OPEN_EXISTING, 0, NULL)) !=
+                         nullptr, OPEN_EXISTING, 0, nullptr)) !=
       INVALID_HANDLE_VALUE) {
     WaitNamedPipe(m_pipe_path_name, 1000);
     DWORD dwMode = PIPE_READMODE_BYTE | PIPE_WAIT;
-    SetNamedPipeHandleState(temp, &dwMode, NULL, NULL);
+    SetNamedPipeHandleState(temp, &dwMode, nullptr, nullptr);
     CancelIo(temp);
     DisconnectNamedPipe(temp);
     CloseHandle(temp);

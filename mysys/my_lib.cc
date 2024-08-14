@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <algorithm>
+#include <memory>
 #include <new>
 
 #include "m_string.h"
@@ -68,12 +69,13 @@ typedef Prealloced_array<FILEINFO, 100> Entries_array;
 
 void my_dirend(MY_DIR *buffer) {
   DBUG_TRACE;
-  if (buffer) {
+  if (buffer != nullptr) {
     Entries_array *array = pointer_cast<Entries_array *>(
-        (char *)buffer + ALIGN_SIZE(sizeof(MY_DIR)));
+        pointer_cast<char *>(buffer) + ALIGN_SIZE(sizeof(MY_DIR)));
     array->~Entries_array();
-    destroy((MEM_ROOT *)((char *)buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
-                         ALIGN_SIZE(sizeof(Entries_array))));
+    ::destroy_at(pointer_cast<MEM_ROOT *>(pointer_cast<char *>(buffer) +
+                                          ALIGN_SIZE(sizeof(MY_DIR)) +
+                                          ALIGN_SIZE(sizeof(Entries_array))));
     my_free(buffer);
   }
 } /* my_dirend */
@@ -185,7 +187,7 @@ static char *directory_file_name(char *dst, const char *src) {
 
 MY_DIR *my_dir(const char *path, myf MyFlags) {
   char *buffer;
-  MY_DIR *result = 0;
+  MY_DIR *result = nullptr;
   FILEINFO finfo;
   Entries_array *dir_entries_storage;
   MEM_ROOT *names_storage;
@@ -193,10 +195,10 @@ MY_DIR *my_dir(const char *path, myf MyFlags) {
   ushort mode;
   char tmp_path[FN_REFLEN], *tmp_file, attrib;
   __int64 handle = -1;
-  void *rawmem = NULL;
+  void *rawmem = nullptr;
 
   DBUG_TRACE;
-  DBUG_PRINT("my", ("path: '%s' stat: %d  MyFlags: %d", path, MyFlags));
+  DBUG_PRINT("my", ("path: '%s' MyFlags: %d", path, MyFlags));
 
   /* Put LIB-CHAR as last path-character if not there */
   tmp_file = tmp_path;
@@ -255,7 +257,7 @@ MY_DIR *my_dir(const char *path, myf MyFlags) {
         finfo.mystat->st_mode = mode;
         finfo.mystat->st_mtime = ((uint32)find.time_write);
       } else
-        finfo.mystat = NULL;
+        finfo.mystat = nullptr;
 
       if (dir_entries_storage->push_back(finfo)) goto error;
     } while (_findnext(handle, &find) == 0);

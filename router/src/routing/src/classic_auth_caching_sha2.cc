@@ -40,7 +40,7 @@ std::optional<std::string> AuthCachingSha2Password::scramble(
 
 stdx::expected<size_t, std::error_code>
 AuthCachingSha2Password::send_public_key_request(
-    Channel *dst_channel, ClassicProtocolState *dst_protocol) {
+    Channel &dst_channel, ClassicProtocolState &dst_protocol) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,
       classic_protocol::borrowed::message::client::AuthMethodData{
@@ -48,8 +48,8 @@ AuthCachingSha2Password::send_public_key_request(
 }
 
 stdx::expected<size_t, std::error_code>
-AuthCachingSha2Password::send_public_key(Channel *dst_channel,
-                                         ClassicProtocolState *dst_protocol,
+AuthCachingSha2Password::send_public_key(Channel &dst_channel,
+                                         ClassicProtocolState &dst_protocol,
                                          const std::string &public_key) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,
@@ -58,7 +58,7 @@ AuthCachingSha2Password::send_public_key(Channel *dst_channel,
 
 stdx::expected<size_t, std::error_code>
 AuthCachingSha2Password::send_plaintext_password_request(
-    Channel *dst_channel, ClassicProtocolState *dst_protocol) {
+    Channel &dst_channel, ClassicProtocolState &dst_protocol) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,
       classic_protocol::borrowed::message::server::AuthMethodData{
@@ -67,7 +67,7 @@ AuthCachingSha2Password::send_plaintext_password_request(
 
 stdx::expected<size_t, std::error_code>
 AuthCachingSha2Password::send_plaintext_password(
-    Channel *dst_channel, ClassicProtocolState *dst_protocol,
+    Channel &dst_channel, ClassicProtocolState &dst_protocol,
     const std::string &password) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,
@@ -77,7 +77,7 @@ AuthCachingSha2Password::send_plaintext_password(
 
 stdx::expected<size_t, std::error_code>
 AuthCachingSha2Password::send_encrypted_password(
-    Channel *dst_channel, ClassicProtocolState *dst_protocol,
+    Channel &dst_channel, ClassicProtocolState &dst_protocol,
     const std::string &encrypted) {
   return ClassicFrame::send_msg(
       dst_channel, dst_protocol,

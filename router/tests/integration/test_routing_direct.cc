@@ -36,6 +36,7 @@
 #include <system_error>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 
 #include <gmock/gmock-matchers.h>
 #include <gmock/gmock-more-matchers.h>
@@ -62,7 +63,6 @@
 #include "mysqlrouter/classic_protocol_codec_message.h"
 #include "mysqlrouter/classic_protocol_frame.h"
 #include "mysqlrouter/classic_protocol_message.h"
-#include "mysqlrouter/http_request.h"
 #include "mysqlrouter/utils.h"
 #include "openssl_version.h"  // ROUTER_OPENSSL_VERSION
 #include "process_launcher.h"
@@ -136,11 +136,11 @@ static std::vector<std::vector<std::vector<std::string>>> result_as_vector(
 static stdx::expected<std::vector<std::vector<std::string>>, MysqlError>
 query_one_result(MysqlClient &cli, std::string_view stmt) {
   auto cmd_res = cli.query(stmt);
-  if (!cmd_res) return stdx::make_unexpected(cmd_res.error());
+  if (!cmd_res) return stdx::unexpected(cmd_res.error());
 
   auto results = result_as_vector(*cmd_res);
   if (results.size() != 1) {
-    return stdx::make_unexpected(MysqlError{1, "Too many results", "HY000"});
+    return stdx::unexpected(MysqlError{1, "Too many results", "HY000"});
   }
 
   return results.front();
@@ -151,24 +151,24 @@ template <size_t N>
 stdx::expected<std::array<std::string, N>, MysqlError> query_one(
     MysqlClient &cli, std::string_view stmt) {
   auto cmd_res = cli.query(stmt);
-  if (!cmd_res) return stdx::make_unexpected(cmd_res.error());
+  if (!cmd_res) return stdx::unexpected(cmd_res.error());
 
   auto results = std::move(*cmd_res);
 
   auto res_it = results.begin();
   if (res_it == results.end()) {
-    return stdx::make_unexpected(MysqlError(1, "No results", "HY000"));
+    return stdx::unexpected(MysqlError(1, "No results", "HY000"));
   }
 
   if (res_it->field_count() != N) {
-    return stdx::make_unexpected(
+    return stdx::unexpected(
         MysqlError(1, "field-count doesn't match", "HY000"));
   }
 
   auto rows = res_it->rows();
   auto rows_it = rows.begin();
   if (rows_it == rows.end()) {
-    return stdx::make_unexpected(MysqlError(1, "No rows", "HY000"));
+    return stdx::unexpected(MysqlError(1, "No rows", "HY000"));
   }
 
   std::array<std::string, N> out;
@@ -178,12 +178,12 @@ stdx::expected<std::array<std::string, N>, MysqlError> query_one(
 
   ++rows_it;
   if (rows_it != rows.end()) {
-    return stdx::make_unexpected(MysqlError(1, "Too many rows", "HY000"));
+    return stdx::unexpected(MysqlError(1, "Too many rows", "HY000"));
   }
 
   ++res_it;
   if (res_it != results.end()) {
-    return stdx::make_unexpected(MysqlError(1, "Too many results", "HY000"));
+    return stdx::unexpected(MysqlError(1, "Too many results", "HY000"));
   }
 
   return out;
@@ -195,7 +195,7 @@ static stdx::expected<uint64_t, std::error_code> from_string(
   uint64_t num;
   auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), num);
 
-  if (ec != std::errc{}) return stdx::make_unexpected(make_error_code(ec));
+  if (ec != std::errc{}) return stdx::unexpected(make_error_code(ec));
 
   return num;
 }
@@ -204,17 +204,16 @@ static stdx::expected<uint64_t, std::error_code> from_string(
 static stdx::expected<std::vector<std::pair<std::string, uint32_t>>, MysqlError>
 changed_event_counters_impl(MysqlClient &cli, std::string_view stmt) {
   auto query_res = cli.query(stmt);
-  if (!query_res) return stdx::make_unexpected(query_res.error());
+  if (!query_res) return stdx::unexpected(query_res.error());
 
   auto query_it = query_res->begin();
 
   if (!(query_it != query_res->end())) {
-    return stdx::make_unexpected(MysqlError(1234, "No resultset", "HY000"));
+    return stdx::unexpected(MysqlError(1234, "No resultset", "HY000"));
   }
 
   if (2 != query_it->field_count()) {
-    return stdx::make_unexpected(
-        MysqlError(1234, "Expected two fields", "HY000"));
+    return stdx::unexpected(MysqlError(1234, "Expected two fields", "HY000"));
   }
 
   std::vector<std::pair<std::string, uint32_t>> events;
@@ -222,7 +221,7 @@ changed_event_counters_impl(MysqlClient &cli, std::string_view stmt) {
   for (auto row : query_it->rows()) {
     auto num_res = from_string(row[1]);
     if (!num_res) {
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           MysqlError(1234,
                      "converting " + std::string(row[1] ? row[1] : "<NULL>") +
                          " to an <uint32_t> failed",
@@ -430,7 +429,8 @@ class SharedRouter {
                      {"backend", "file"},
                      {"filename", userfile},
                  })
-        .section("http_server", {{"port", std::to_string(rest_port_)}});
+        .section("http_server", {{"bind_address", "127.0.0.1"},
+                                 {"port", std::to_string(rest_port_)}});
 
     for (const auto &param : connection_params) {
       auto port_key =
@@ -455,7 +455,8 @@ class SharedRouter {
 
             {"client_ssl_key", SSL_TEST_DATA_DIR "/server-key-sha512.pem"},
             {"client_ssl_cert", SSL_TEST_DATA_DIR "/server-cert-sha512.pem"},
-            {"connection_sharing", "0"},
+            {"connection_sharing", "0"},  //
+            {"connect_retry_timeout", "0"},
       });
     }
 
@@ -503,14 +504,13 @@ class SharedRouter {
 
     if (auto *v = JsonPointer(pointer).Get(json_doc)) {
       if (!v->IsInt()) {
-        return stdx::make_unexpected(
-            make_error_code(std::errc::invalid_argument));
+        return stdx::unexpected(make_error_code(std::errc::invalid_argument));
       }
       return v->GetInt();
     } else {
       std::cerr << json_doc << "\n";
 
-      return stdx::make_unexpected(
+      return stdx::unexpected(
           make_error_code(std::errc::no_such_file_or_directory));
     }
   }
@@ -532,12 +532,12 @@ class SharedRouter {
     const auto end_time = clock_type::now() + timeout;
     do {
       auto int_res = num_connections(param);
-      if (!int_res) return stdx::make_unexpected(int_res.error());
+      if (!int_res) return stdx::unexpected(int_res.error());
 
       if (*int_res == expected_value) return {};
 
       if (clock_type::now() > end_time) {
-        return stdx::make_unexpected(make_error_code(std::errc::timed_out));
+        return stdx::unexpected(make_error_code(std::errc::timed_out));
       }
 
       std::this_thread::sleep_for(kIdleServerConnectionsSleepTime);
@@ -581,6 +581,7 @@ class TestEnv : public ::testing::Environment {
         if (s->mysqld_failed_to_start()) {
           GTEST_SKIP() << "mysql-server failed to start.";
         }
+        s->setup_mysqld_accounts();
       }
     }
   }
@@ -605,7 +606,13 @@ class TestEnv : public ::testing::Environment {
     }
 
     for (auto &s : shared_servers_) {
-      if (s != nullptr) delete s;
+      if (s != nullptr) {
+        if (::testing::Test::HasFailure()) {
+          s->process_manager().dump_logs();
+        }
+
+        delete s;
+      }
 
       s = nullptr;
     }
@@ -656,12 +663,12 @@ SharedRouter *TestWithSharedRouter::shared_router_ = nullptr;
 static stdx::expected<unsigned long, MysqlError> fetch_connection_id(
     MysqlClient &cli) {
   auto query_res = cli.query("SELECT connection_id()");
-  if (!query_res) return query_res.get_unexpected();
+  if (!query_res) return stdx::unexpected(query_res.error());
 
   // get the first field, of the first row of the first resultset.
   for (const auto &result : *query_res) {
     if (result.field_count() == 0) {
-      return stdx::make_unexpected(MysqlError(1, "not a resultset", "HY000"));
+      return stdx::unexpected(MysqlError(1, "not a resultset", "HY000"));
     }
 
     for (auto row : result.rows()) {
@@ -671,7 +678,7 @@ static stdx::expected<unsigned long, MysqlError> fetch_connection_id(
     }
   }
 
-  return stdx::make_unexpected(MysqlError(1, "no rows", "HY000"));
+  return stdx::unexpected(MysqlError(1, "no rows", "HY000"));
 }
 
 class ConnectionTestBase : public RouterComponentTest {
@@ -723,65 +730,6 @@ class ConnectionTestBase : public RouterComponentTest {
 class ConnectionTest : public ConnectionTestBase,
                        public ::testing::WithParamInterface<ConnectionParam> {};
 
-// check that CMD_KILL opens a new connection to the server.
-TEST_P(ConnectionTest, classic_protocol_kill_zero) {
-  SCOPED_TRACE("// connecting to server");
-  MysqlClient cli;
-
-  cli.username("root");
-  cli.password("");
-
-  ASSERT_NO_ERROR(
-      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
-
-  SCOPED_TRACE("// killing connection 0");
-  {
-    auto kill_res = cli.kill(0);
-    ASSERT_ERROR(kill_res);
-    EXPECT_EQ(kill_res.error().value(), 1094) << kill_res.error();
-    // unknown thread id.
-  }
-
-  SCOPED_TRACE("// ping after kill");
-
-  // nothing was killed and PING should just work.
-  ASSERT_NO_ERROR(cli.ping());
-}
-
-TEST_P(ConnectionTest, classic_protocol_kill_current_connection) {
-  SCOPED_TRACE("// connecting to server");
-  MysqlClient cli;
-
-  cli.username("root");
-  cli.password("");
-
-  ASSERT_NO_ERROR(
-      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
-
-  auto connection_id_res = fetch_connection_id(cli);
-  ASSERT_NO_ERROR(connection_id_res);
-
-  auto connection_id = connection_id_res.value();
-
-  SCOPED_TRACE("// killing connection " + std::to_string(connection_id));
-  {
-    auto kill_res = cli.kill(connection_id);
-    ASSERT_ERROR(kill_res);
-    EXPECT_EQ(kill_res.error().value(), 1317) << kill_res.error();
-    // Query execution was interrupted
-  }
-
-  EXPECT_NO_ERROR(shared_router()->wait_for_num_connections(GetParam(), 0, 1s));
-
-  SCOPED_TRACE("// ping after kill");
-  {
-    auto ping_res = cli.ping();
-    ASSERT_ERROR(ping_res);
-    EXPECT_EQ(ping_res.error().value(), 2013) << ping_res.error();
-    // Lost connection to MySQL server during query
-  }
-}
-
 TEST_P(ConnectionTest, classic_protocol_wait_timeout) {
   SCOPED_TRACE("// connecting to server");
   MysqlClient cli;
@@ -794,7 +742,8 @@ TEST_P(ConnectionTest, classic_protocol_wait_timeout) {
 
   ASSERT_NO_ERROR(cli.query("SET wait_timeout = 1"));
 
-  EXPECT_NO_ERROR(shared_router()->wait_for_num_connections(GetParam(), 0, 2s));
+  EXPECT_NO_ERROR(
+      shared_router()->wait_for_num_connections(GetParam(), 0, 10s));
 
   SCOPED_TRACE("// ping after kill");
   {
@@ -856,39 +805,6 @@ TEST_P(ConnectionTest, classic_protocol_list_dbs) {
       cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
 
   ASSERT_NO_ERROR(cli.list_dbs());
-}
-
-TEST_P(ConnectionTest, classic_protocol_list_fields_succeeds) {
-  SCOPED_TRACE("// connecting to server");
-  MysqlClient cli;
-
-  cli.username("root");
-  cli.password("");
-  cli.use_schema("mysql");
-
-  ASSERT_NO_ERROR(
-      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
-
-  auto cmd_res = cli.list_fields("user");
-  ASSERT_NO_ERROR(cmd_res);
-}
-
-TEST_P(ConnectionTest, classic_protocol_list_fields_fails) {
-  SCOPED_TRACE("// connecting to server");
-  MysqlClient cli;
-
-  cli.username("root");
-  cli.password("");
-  cli.use_schema("mysql");
-
-  ASSERT_NO_ERROR(
-      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
-
-  {
-    auto cmd_res = cli.list_fields("does_not_exist");
-    ASSERT_ERROR(cmd_res);
-    EXPECT_EQ(cmd_res.error().value(), 1146) << cmd_res.error();
-  }
 }
 
 TEST_P(ConnectionTest, classic_protocol_change_user_native_empty) {
@@ -1281,22 +1197,25 @@ TEST_P(ConnectionTest, classic_protocol_statistics) {
   EXPECT_NO_ERROR(cli.stat());
 }
 
-TEST_P(ConnectionTest, classic_protocol_refresh) {
+// COM_DEBUG -> mysql_dump_debug_info.
+TEST_P(ConnectionTest, classic_protocol_debug_succeeds) {
   SCOPED_TRACE("// connecting to server");
   MysqlClient cli;
 
-  cli.username("root");
-  cli.password("");
+  auto account = SharedServer::admin_account();
+  cli.username(account.username);
+  cli.password(account.password);
 
   ASSERT_NO_ERROR(
       cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
 
-  EXPECT_NO_ERROR(cli.refresh());
+  EXPECT_NO_ERROR(cli.dump_debug_info());
 
-  EXPECT_NO_ERROR(cli.refresh());
+  EXPECT_NO_ERROR(cli.dump_debug_info());
 }
 
-TEST_P(ConnectionTest, classic_protocol_refresh_fail) {
+// COM_DEBUG -> mysql_dump_debug_info.
+TEST_P(ConnectionTest, classic_protocol_debug_fails) {
   SCOPED_TRACE("// connecting to server");
   MysqlClient cli;
 
@@ -1306,12 +1225,16 @@ TEST_P(ConnectionTest, classic_protocol_refresh_fail) {
 
   ASSERT_NO_ERROR(
       cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
+  {
+    auto res = cli.dump_debug_info();
+    ASSERT_ERROR(res);
+    EXPECT_EQ(res.error().value(), 1227);  // access denied, you need SUPER
+  }
 
   {
-    auto cmd_res = cli.refresh();
-    ASSERT_ERROR(cmd_res);
-
-    EXPECT_EQ(cmd_res.error().value(), 1227);  // Access Denied
+    auto res = cli.dump_debug_info();
+    ASSERT_ERROR(res);
+    EXPECT_EQ(res.error().value(), 1227);  // access denied, you need SUPER
   }
 }
 
@@ -2216,17 +2139,20 @@ TEST_P(ConnectionTest, classic_protocol_prepare_execute) {
   ASSERT_NO_ERROR(
       cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
 
+  SCOPED_TRACE("// prepare");
   auto res = cli.prepare("SELECT ?");
   ASSERT_NO_ERROR(res);
 
   auto stmt = std::move(res.value());
 
+  SCOPED_TRACE("// bind_params");
   std::array<MYSQL_BIND, 1> params{
       NullParam{},
   };
   ASSERT_NO_ERROR(stmt.bind_params(params));
 
-  // execute again to trigger a StmtExecute with new-params-bound = 1.
+  SCOPED_TRACE(
+      "// execute again to trigger a StmtExecute with new-params-bound = 1.");
   {
     auto exec_res = stmt.execute();
     ASSERT_NO_ERROR(exec_res);
@@ -2236,7 +2162,8 @@ TEST_P(ConnectionTest, classic_protocol_prepare_execute) {
     }
   }
 
-  // execute again to trigger a StmtExecute with new-params-bound = 0.
+  SCOPED_TRACE(
+      "// execute again to trigger a StmtExecute with new-params-bound = 0.");
   {
     auto exec_res = stmt.execute();
     ASSERT_NO_ERROR(exec_res);
@@ -2352,7 +2279,7 @@ TEST_P(ConnectionTest, classic_protocol_prepare_append_data_execute) {
   };
   {
     auto bind_res = stmt.bind_params(params);
-    EXPECT_TRUE(bind_res) << bind_res.error();
+    ASSERT_NO_ERROR(bind_res) << bind_res.error();
   }
 
   // a..b..c..d
@@ -2360,30 +2287,30 @@ TEST_P(ConnectionTest, classic_protocol_prepare_append_data_execute) {
   // longdata: c_string with len
   {
     auto append_res = stmt.append_param_data(0, "a", 1);
-    EXPECT_TRUE(append_res) << append_res.error();
+    ASSERT_NO_ERROR(append_res);
   }
 
   // longdata: string_view
   {
     auto append_res = stmt.append_param_data(0, "b"sv);
-    EXPECT_TRUE(append_res) << append_res.error();
+    ASSERT_NO_ERROR(append_res);
   }
 
   // longdata: string_view from std::string
   {
     auto append_res = stmt.append_param_data(0, std::string("c"));
-    EXPECT_TRUE(append_res) << append_res.error();
+    ASSERT_NO_ERROR(append_res);
   }
 
   // longdata: string_view from c-string
   {
     auto append_res = stmt.append_param_data(0, "d");
-    EXPECT_TRUE(append_res) << append_res.error();
+    ASSERT_NO_ERROR(append_res);
   }
 
   {
     auto exec_res = stmt.execute();
-    EXPECT_TRUE(exec_res) << exec_res.error();
+    ASSERT_NO_ERROR(exec_res);
 
     // may contain multi-resultset
     size_t results{0};
@@ -2416,7 +2343,7 @@ TEST_P(ConnectionTest, classic_protocol_prepare_append_data_execute) {
   // execute again
   {
     auto exec_res = stmt.execute();
-    EXPECT_TRUE(exec_res) << exec_res.error();
+    ASSERT_NO_ERROR(exec_res);
   }
 }
 
@@ -2726,7 +2653,7 @@ TEST_P(ConnectionTest, classic_protocol_binlog_dump) {
       cli.query("SET @source_binlog_checksum=@@global.binlog_checksum"));
 
   // purge the logs
-  ASSERT_NO_ERROR(cli.query("RESET MASTER"));
+  ASSERT_NO_ERROR(cli.query("RESET BINARY LOGS AND GTIDS"));
 
   {
     MYSQL_RPL rpl{};
@@ -3386,10 +3313,10 @@ TEST_P(ConnectionTest, classic_protocol_server_greeting_error) {
 
       auto connect_res = admin_cli.connect(shared_router()->host(),
                                            shared_router()->port(GetParam()));
-      if (!connect_res) return stdx::make_unexpected(connect_res.error());
+      if (!connect_res) return stdx::unexpected(connect_res.error());
 
       auto query_res = admin_cli.query("SET GLOBAL max_connections = DEFAULT");
-      if (!query_res) return stdx::make_unexpected(query_res.error());
+      if (!query_res) return stdx::unexpected(query_res.error());
 
       return {};
     };
@@ -3539,6 +3466,228 @@ TEST_P(ConnectionTest, classic_protocol_charset_after_connect) {
 
     EXPECT_THAT(*cmd_res,
                 ElementsAre(ElementsAre("latin1", "latin1_swedish_ci")));
+  }
+}
+
+TEST_P(ConnectionTest, classic_protocol_router_trace_set_fails) {
+  RecordProperty("Worklog", "15582");
+  RecordProperty("RequirementId", "FR2");
+  RecordProperty("Requirement",
+                 "If connection pooling is not active, or the query is sent "
+                 "via other commands (e.g. `COM_STMT_PREPARE`) the behaviour "
+                 "MUST not change.");
+
+  RecordProperty("Description",
+                 "check that `ROUTER SET trace = 1` fails via `COM_QUERY`");
+
+  MysqlClient cli;
+
+  auto account = SharedServer::native_empty_password_account();
+
+  cli.username(account.username);
+  cli.password(account.password);
+
+  ASSERT_NO_ERROR(
+      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
+
+  {
+    auto cmd_res = cli.query("ROUTER SET trace = 1");
+    ASSERT_ERROR(cmd_res);
+
+    EXPECT_EQ(cmd_res.error().value(), 1064) << cmd_res.error();
+  }
+}
+
+TEST_P(ConnectionTest, classic_protocol_query_attribute_router_trace_ignored) {
+  RecordProperty("Worklog", "15582");
+  RecordProperty("RequirementId", "FR2");
+  RecordProperty("Requirement",
+                 "If connection pooling is not active, or the query is sent "
+                 "via other commands (e.g. `COM_STMT_PREPARE`) the behaviour "
+                 "MUST not change.");
+
+  RecordProperty("Description",
+                 "check that query attributes starting with `router.` are "
+                 "forwarded as is and don't generate a trace.");
+
+  MysqlClient cli;
+
+  auto account = SharedServer::native_empty_password_account();
+
+  cli.username(account.username);
+  cli.password(account.password);
+
+  ASSERT_NO_ERROR(
+      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
+
+  {
+    uint8_t tiny_one{1};
+    std::array<MYSQL_BIND, 1> params{};
+    params[0] = {};
+    params[0].buffer = &tiny_one;
+    params[0].buffer_length = sizeof(tiny_one);
+    params[0].buffer_type = MYSQL_TYPE_TINY;
+    std::array<const char *, 1> param_names{{"router.trace"}};
+
+    auto cmd_res = cli.query("DO 1", params, param_names);
+    ASSERT_NO_ERROR(cmd_res);
+
+    auto warning_count_res = cli.warning_count();
+    ASSERT_NO_ERROR(warning_count_res);
+    EXPECT_EQ(*warning_count_res, 0);
+  }
+}
+
+TEST_P(ConnectionTest, classic_protocol_replay_session_trackers) {
+  RecordProperty("Description", "check if system-variables can be replayed.");
+
+  MysqlClient cli;
+
+  auto account = SharedServer::caching_sha2_empty_password_account();
+
+  cli.username(account.username);
+  cli.password(account.password);
+
+  ASSERT_NO_ERROR(
+      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
+
+  auto session_vars_res =
+      query_one_result(cli,
+                       "SELECT * "
+                       "  FROM performance_schema.session_variables "
+                       " ORDER BY VARIABLE_NAME");
+  ASSERT_NO_ERROR(session_vars_res);
+  auto session_vars = *session_vars_res;
+
+  for (auto var : session_vars) {
+    // Avoid Bug#36241614
+    //
+    // If server is built with -DWITH_DEBUG=1,
+    //
+    //   SET @@SESSION.innodb_interpreter_output="The Default Value"
+    //
+    // crashes the server.
+    if (var[0] == "innodb_interpreter_output") {
+      continue;
+    }
+
+    std::ostringstream oss;
+    oss << "SET @@SESSION." << std::quoted(var[0], '`') << "=";
+
+    if (var[1].empty()) {
+      if (var[0] == "innodb_ft_user_stopword_table") {
+        oss << "NULL";
+      } else {
+        oss << "''";
+      }
+    } else {
+      // check if the string needs to be replayed as number or as string.
+      auto needs_quotation = [](std::string_view s) -> bool {
+        if (s.empty()) return true;  // -> ""
+
+        // std::from_chars(double) would have worked here, but GCC 10 doesn't
+        // provide that.
+        const char *start = s.data();
+        const char *const end = start + s.size();
+
+        // skip initial sign as the number may be a uint64_t or a int64_t
+        if (*start == '-' || *start == '+') ++start;
+
+        uint64_t num;
+        auto is_numeric = std::from_chars(start, end, num);
+
+        if (is_numeric.ec == std::errc{}) {
+          if (is_numeric.ptr == end) return false;  // 10 -> 10
+
+          if (*is_numeric.ptr != '.') return true;  // 10abc -> "10abc"
+
+          start = is_numeric.ptr + 1;
+          is_numeric = std::from_chars(start, end, num);
+
+          if (is_numeric.ec == std::errc{} && is_numeric.ptr == end) {
+            return false;  // 10.12 -> 10.12
+          }
+        }
+
+        return true;  // abc -> "abc"
+      };
+
+      if (needs_quotation(var[1])) {
+        oss << std::quoted(var[1]);
+      } else {
+        oss << var[1];
+      }
+    }
+
+    SCOPED_TRACE("// " + oss.str());
+
+    auto set_var_res = query_one_result(cli, oss.str());
+
+    if (!set_var_res) {
+      EXPECT_THAT(set_var_res.error().value(),
+                  ::testing::AnyOf(1227,  // super sys-var
+                                   1229,  // global sys-var
+                                   1238,  // read-only
+                                   1621   // is read-only, use SET GLOBAL
+                                   ))
+          << set_var_res.error();
+    } else {
+      EXPECT_NO_ERROR(set_var_res);
+    }
+  }
+}
+
+TEST_P(ConnectionTest, classic_protocol_session_vars_nullable) {
+  RecordProperty("Description", "check if system-variables can be replayed.");
+
+  MysqlClient cli;
+
+  auto account = SharedServer::caching_sha2_empty_password_account();
+
+  cli.username(account.username);
+  cli.password(account.password);
+
+  ASSERT_NO_ERROR(
+      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
+
+  auto session_vars_res =
+      query_one_result(cli,
+                       "SELECT * "
+                       "  FROM performance_schema.session_variables "
+                       " ORDER BY VARIABLE_NAME");
+  ASSERT_NO_ERROR(session_vars_res);
+  auto session_vars = *session_vars_res;
+
+  for (auto var : session_vars) {
+    std::ostringstream oss;
+    oss << "SET @@SESSION." << std::quoted(var[0], '`') << "="
+        << "NULL";
+
+    SCOPED_TRACE("// " + oss.str());
+
+    auto set_var_res = query_one_result(cli, oss.str());
+
+    if (!set_var_res) {
+      EXPECT_THAT(set_var_res.error().value(),
+                  ::testing::AnyOf(1227,  // super sys-var
+                                   1229,  // global sys-var
+                                   1231,  // not nullable
+                                   1232,  // NULL is invalid-argument
+                                   1238   // read-only
+                                   ))
+          << set_var_res.error();
+    } else {
+      EXPECT_NO_ERROR(set_var_res);
+
+      // ensure that no new nullable sys-vars are added.
+      EXPECT_THAT(
+          var[0],
+          testing::AnyOf("debug_set_operations_secondary_overflow_at",  // debug
+                         "character_set_results",                       //
+                         "innodb_ft_user_stopword_table",               //
+                         "innodb_interpreter_output",                   // debug
+                         "session_track_system_variables"));
+    }
   }
 }
 

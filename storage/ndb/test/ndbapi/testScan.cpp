@@ -2474,6 +2474,7 @@ int runScanApiDisconnect(NDBT_Context *ctx, NDBT_Step *step) {
     char connectString[200];
     Ndb_cluster_connection conn2(
         pCC->get_connectstring(connectString, NDB_ARRAY_SIZE(connectString)));
+    conn2.configure_tls(opt_tls_search_path, opt_mgm_tls);
     if (conn2.connect() != 0) {
       g_err << "Failed to connect to cluster : " << conn2.get_latest_error_msg()
             << endl;

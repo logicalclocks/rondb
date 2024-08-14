@@ -156,7 +156,7 @@ int table_replication_connection_configuration::rnd_next() {
   for (m_pos.set_at(&m_next_pos);
        m_pos.m_index < channel_map.get_max_channels(); m_pos.next()) {
     mi = channel_map.get_mi_at_pos(m_pos.m_index);
-    if (mi && mi->host[0]) {
+    if (channel_map.is_channel_configured(mi)) {
       make_row(mi);
       m_next_pos.set_after(&m_pos);
       channel_map.unlock();
@@ -210,7 +210,7 @@ int table_replication_connection_configuration::index_next() {
        m_pos.next()) {
     mi = channel_map.get_mi_at_pos(m_pos.m_index);
 
-    if (mi && mi->host[0]) {
+    if (channel_map.is_channel_configured(mi)) {
       if (m_opened_index->match(mi)) {
         res = make_row(mi);
         m_next_pos.set_after(&m_pos);
@@ -410,11 +410,11 @@ int table_replication_connection_configuration::read_row_values(
           set_field_varchar_utf8mb4(f, m_row.tls_version,
                                     m_row.tls_version_length);
           break;
-        case 19: /** master_public_key_path */
+        case 19: /** source_public_key_path */
           set_field_varchar_utf8mb4(f, m_row.public_key_path,
                                     m_row.public_key_path_length);
           break;
-        case 20: /** get_master_public_key */
+        case 20: /** get_source_public_key */
           set_field_enum(f, m_row.get_public_key);
           break;
         case 21: /** network_namespace */

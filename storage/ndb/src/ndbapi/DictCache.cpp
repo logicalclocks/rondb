@@ -195,7 +195,7 @@ NdbTableImpl *GlobalDictCache::get(const BaseString &name, int *error) {
     versions = new Vector<TableVersion>(2);
     if (versions == nullptr) {
       *error = -1;
-      DBUG_RETURN(0);
+      DBUG_RETURN(nullptr);
     }
     m_tableHash.insertKey(name.c_str(), len, 0, versions);
   }
@@ -241,10 +241,10 @@ NdbTableImpl *GlobalDictCache::get(const BaseString &name, int *error) {
   tmp.m_refCount = 1;  // The one retrieving it
   if (versions->push_back(tmp)) {
     *error = -1;
-    DBUG_RETURN(0);
+    DBUG_RETURN(nullptr);
   }
   DBUG_PRINT("info", ("No table found"));
-  DBUG_RETURN(0);
+  DBUG_RETURN(nullptr);
 }
 
 NdbTableImpl *GlobalDictCache::put(const BaseString &name, NdbTableImpl *tab) {

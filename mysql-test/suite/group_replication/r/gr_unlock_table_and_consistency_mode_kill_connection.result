@@ -20,12 +20,11 @@ SET GLOBAL super_read_only= TRUE;
 # 3. INSERT row in M1. Stop GR on M1. M2 will be become primary.
 #    M2 will wait for pending transaction due to LOCK.
 [connection server1]
-SET @@SESSION.group_replication_consistency= BEFORE_ON_PRIMARY_FAILOVER;
 INSERT INTO t1 VALUES (1);
 include/stop_group_replication.inc
 
 # 4. UNLOCK table on M2.
-#    UNLOCK statement will be blocked due to consistency
+#    UNLOCK statement will be blocked due to default consistency
 #    BEFORE_ON_PRIMARY_FAILOVER
 [connection server2]
 UNLOCK TABLES;;
@@ -43,7 +42,7 @@ SET @@SESSION.group_replication_consistency= @group_replication_consistency_save
 KILL CONNECTION CONNECTION_ID;
 [connection server2]
 ERROR HY000: Lost connection to MySQL server during query
-include/rpl_reconnect.inc
+include/rpl/reconnect.inc
 
 # 6. Cleanup
 [connection server1]

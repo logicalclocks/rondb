@@ -55,6 +55,7 @@ Group_member_info::Group_member_info(PSI_mutex_key psi_mutex_key_arg)
       recovery_endpoints("DEFAULT"),
       m_view_change_uuid("AUTOMATIC"),
       m_allow_single_leader(false),
+      m_preemptive_garbage_collection(PREEMPTIVE_GARBAGE_COLLECTION_DEFAULT),
 #ifndef NDEBUG
       skip_encode_default_table_encryption(false),
       m_skip_encode_view_change_uuid(false),
@@ -74,7 +75,8 @@ Group_member_info::Group_member_info(
     bool has_enforces_update_everywhere_checks, uint member_weight_arg,
     uint lower_case_table_names_arg, bool default_table_encryption_arg,
     const char *recovery_endpoints_arg, const char *view_change_uuid_arg,
-    bool allow_single_leader, PSI_mutex_key psi_mutex_key_arg)
+    bool allow_single_leader, bool preemptive_garbage_collection,
+    PSI_mutex_key psi_mutex_key_arg)
     : Plugin_gcs_message(CT_MEMBER_INFO_MESSAGE),
       hostname(hostname_arg),
       port(port_arg),
@@ -96,6 +98,7 @@ Group_member_info::Group_member_info(
       m_view_change_uuid(view_change_uuid_arg ? view_change_uuid_arg
                                               : "AUTOMATIC"),
       m_allow_single_leader(allow_single_leader),
+      m_preemptive_garbage_collection(preemptive_garbage_collection),
 #ifndef NDEBUG
       skip_encode_default_table_encryption(false),
       m_skip_encode_view_change_uuid(false),
@@ -140,6 +143,8 @@ Group_member_info::Group_member_info(Group_member_info &other)
       m_group_action_running_name(other.get_group_action_running_name()),
       m_group_action_running_description(
           other.get_group_action_running_description()),
+      m_preemptive_garbage_collection(
+          other.get_preemptive_garbage_collection()),
 #ifndef NDEBUG
       skip_encode_default_table_encryption(false),
       m_skip_encode_view_change_uuid(false),
@@ -164,6 +169,7 @@ Group_member_info::Group_member_info(const uchar *data, size_t len,
       recovery_endpoints("DEFAULT"),
       m_view_change_uuid("AUTOMATIC"),
       m_allow_single_leader(false),
+      m_preemptive_garbage_collection(PREEMPTIVE_GARBAGE_COLLECTION_DEFAULT),
 #ifndef NDEBUG
       skip_encode_default_table_encryption(false),
       m_skip_encode_view_change_uuid(false),
@@ -190,7 +196,7 @@ void Group_member_info::update(
     bool has_enforces_update_everywhere_checks, uint member_weight_arg,
     uint lower_case_table_names_arg, bool default_table_encryption_arg,
     const char *recovery_endpoints_arg, const char *view_change_uuid_arg,
-    bool allow_single_leader) {
+    bool allow_single_leader, bool preemptive_garbage_collection) {
   MUTEX_LOCK(lock, &update_lock);
 
   hostname.assign(hostname_arg);
@@ -228,6 +234,7 @@ void Group_member_info::update(
 
   m_view_change_uuid.assign(view_change_uuid_arg);
   m_allow_single_leader = allow_single_leader;
+  m_preemptive_garbage_collection = preemptive_garbage_collection;
 }
 
 void Group_member_info::update(Group_member_info &other) {
@@ -261,6 +268,7 @@ void Group_member_info::update(Group_member_info &other) {
   m_group_action_running_name.assign(other.get_group_action_running_name());
   m_group_action_running_description.assign(
       other.get_group_action_running_description());
+  m_preemptive_garbage_collection = other.get_preemptive_garbage_collection();
 #ifndef NDEBUG
   skip_encode_default_table_encryption =
       other.skip_encode_default_table_encryption;
@@ -381,6 +389,11 @@ void Group_member_info::encode_payload(
                                m_group_action_running_description.c_str(),
                                m_group_action_running_description.length());
   }
+
+  char preemptive_garbage_collection_aux =
+      m_preemptive_garbage_collection ? '1' : '0';
+  encode_payload_item_char(buffer, PIT_PREEMPTIVE_GARBAGE_COLLECTION,
+                           preemptive_garbage_collection_aux);
 }
 
 void Group_member_info::decode_payload(const unsigned char *buffer,
@@ -453,7 +466,6 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
       case PIT_CONFLICT_DETECTION_ENABLE:
         if (slider + payload_item_length <= end) {
           unsigned char conflict_detection_enable_aux = *slider;
-          slider += payload_item_length;
           conflict_detection_enable =
               (conflict_detection_enable_aux == '1') ? true : false;
         }
@@ -462,7 +474,6 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
       case PIT_MEMBER_WEIGHT:
         if (slider + payload_item_length <= end) {
           uint16 member_weight_aux = uint2korr(slider);
-          slider += payload_item_length;
           member_weight = (uint)member_weight_aux;
         }
         break;
@@ -470,7 +481,6 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
       case PIT_LOWER_CASE_TABLE_NAME:
         if (slider + payload_item_length <= end) {
           uint16 lower_case_table_names_aux = uint2korr(slider);
-          slider += payload_item_length;
           lower_case_table_names =
               static_cast<uint>(lower_case_table_names_aux);
         }
@@ -479,7 +489,6 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
       case PIT_GROUP_ACTION_RUNNING:
         if (slider + payload_item_length <= end) {
           unsigned char is_action_running_aux = *slider;
-          slider += payload_item_length;
           group_action_running = (is_action_running_aux == '1') ? true : false;
         }
         break;
@@ -487,7 +496,6 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
       case PIT_PRIMARY_ELECTION_RUNNING:
         if (slider + payload_item_length <= end) {
           unsigned char is_election_running_aux = *slider;
-          slider += payload_item_length;
           primary_election_running =
               (is_election_running_aux == '1') ? true : false;
         }
@@ -502,7 +510,6 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
       case PIT_DEFAULT_TABLE_ENCRYPTION:
         if (slider + payload_item_length <= end) {
           unsigned char default_table_encryption_aux = *slider;
-          slider += payload_item_length;
           default_table_encryption =
               (default_table_encryption_aux == '1') ? true : false;
         }
@@ -511,28 +518,24 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
         if (slider + payload_item_length <= end) {
           purged_gtid_set.assign(reinterpret_cast<const char *>(slider),
                                  static_cast<size_t>(payload_item_length));
-          slider += payload_item_length;
         }
         break;
       case PIT_RECOVERY_ENDPOINTS:
         if (slider + payload_item_length <= end) {
           recovery_endpoints.assign(reinterpret_cast<const char *>(slider),
                                     static_cast<size_t>(payload_item_length));
-          slider += payload_item_length;
         }
         break;
       case PIT_VIEW_CHANGE_UUID:
         if (slider + payload_item_length <= end) {
           m_view_change_uuid.assign(reinterpret_cast<const char *>(slider),
                                     static_cast<size_t>(payload_item_length));
-          slider += payload_item_length;
         }
         break;
 
       case PIT_ALLOW_SINGLE_LEADER:
         if (slider + payload_item_length <= end) {
           unsigned char allow_single_leader_aux = *slider;
-          slider += payload_item_length;
           m_allow_single_leader =
               (allow_single_leader_aux == '1') ? true : false;
         }
@@ -542,7 +545,6 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
           m_group_action_running_name.assign(
               reinterpret_cast<const char *>(slider),
               static_cast<size_t>(payload_item_length));
-          slider += payload_item_length;
         }
         break;
       case PIT_GROUP_ACTION_RUNNING_DESCRIPTION:
@@ -550,10 +552,19 @@ void Group_member_info::decode_payload(const unsigned char *buffer,
           m_group_action_running_description.assign(
               reinterpret_cast<const char *>(slider),
               static_cast<size_t>(payload_item_length));
-          slider += payload_item_length;
+        }
+        break;
+      case PIT_PREEMPTIVE_GARBAGE_COLLECTION:
+        if (slider + payload_item_length <= end) {
+          unsigned char preemptive_garbage_collection_aux = *slider;
+          m_preemptive_garbage_collection =
+              (preemptive_garbage_collection_aux == '1') ? true : false;
         }
         break;
     }
+
+    // Seek to next payload item.
+    slider += payload_item_length;
   }
 }
 
@@ -651,6 +662,19 @@ std::string Group_member_info::get_gtid_retrieved() {
 uint Group_member_info::get_write_set_extraction_algorithm() {
   MUTEX_LOCK(lock, &update_lock);
   return write_set_extraction_algorithm;
+}
+
+const char *Group_member_info::get_write_set_extraction_algorithm_name() {
+  switch (get_write_set_extraction_algorithm()) {
+    case HASH_ALGORITHM_OFF:
+      return "OFF";
+    case HASH_ALGORITHM_MURMUR32:
+      return "MURMUR32";
+    case HASH_ALGORITHM_XXHASH64:
+      return "XXHASH64";
+    default:
+      return "UNKNOWN ALGORITHM";
+  }
 }
 
 ulonglong Group_member_info::get_gtid_assignment_block_size() {
@@ -875,6 +899,11 @@ void Group_member_info::set_view_change_uuid(const char *view_change_cnf) {
   m_view_change_uuid.assign(view_change_cnf);
 }
 
+bool Group_member_info::get_preemptive_garbage_collection() {
+  MUTEX_LOCK(lock, &update_lock);
+  return m_preemptive_garbage_collection;
+}
+
 bool Group_member_info::comparator_group_member_uuid(Group_member_info *m1,
                                                      Group_member_info *m2) {
   return m1->has_lower_uuid(m2);
@@ -1046,6 +1075,22 @@ bool Group_member_info_manager::get_group_member_info_by_member_id(
   }
 
   return true;
+}
+
+std::pair<bool, std::string>
+Group_member_info_manager::get_group_member_uuid_from_member_id(
+    const Gcs_member_identifier &id) {
+  std::pair<bool, std::string> result{true, ""};
+  mysql_mutex_lock(&update_lock);
+
+  Group_member_info *member = get_group_member_info_by_member_id_internal(id);
+  if (member != nullptr) {
+    result.first = false;
+    result.second = member->get_uuid();
+  }
+
+  mysql_mutex_unlock(&update_lock);
+  return result;
 }
 
 Group_member_info::Group_member_status
@@ -1597,10 +1642,10 @@ bool Group_member_info_manager_message::get_pit_data(
         *pit_length = payload_item_length;
         return false;
       }
-      slider += payload_item_length;
-    } else {
-      slider += payload_item_length;
     }
+
+    // Seek to next payload item.
+    slider += payload_item_length;
   }
 
   return true;

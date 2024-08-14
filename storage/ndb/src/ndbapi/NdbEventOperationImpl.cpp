@@ -30,7 +30,7 @@
 #include <cstring>
 #include <vector>
 #include "API.hpp"
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "util/require.h"
 
 #include <AttributeHeader.hpp>
@@ -97,7 +97,8 @@ NdbEventOperationImpl::NdbEventOperationImpl(NdbEventOperation &f, Ndb *ndb,
       m_state(EO_ERROR),
       m_oid(~(Uint32)0),
       m_stop_gci(),
-      m_allow_empty_update(false) {
+      m_allow_empty_update(false),
+      m_requestInfo{0} {
   DBUG_TRACE;
   init();
 }
@@ -110,7 +111,8 @@ NdbEventOperationImpl::NdbEventOperationImpl(Ndb *theNdb, NdbEventImpl *evnt)
       m_state(EO_ERROR),
       m_oid(~(Uint32)0),
       m_stop_gci(),
-      m_allow_empty_update(false) {
+      m_allow_empty_update(false),
+      m_requestInfo{0} {
   DBUG_TRACE;
   init();
 }
@@ -144,7 +146,6 @@ void NdbEventOperationImpl::init() {
   m_data_item = nullptr;
 
   m_custom_data = nullptr;
-  m_has_error = 1;
 
   // we should lookup id in Dictionary, TODO
   // also make sure we only have one listener on each event
@@ -160,9 +161,6 @@ void NdbEventOperationImpl::init() {
 #endif
   m_ref_count = 0;
   DBUG_PRINT("info", ("m_ref_count = 0 for op: %p", this));
-
-  m_has_error = 0;
-
   DBUG_PRINT("exit", ("this: %p  oid: %u", this, m_oid));
 }
 
@@ -203,13 +201,13 @@ NdbRecAttr *NdbEventOperationImpl::getValue(const char *colName, char *aValue,
                                             int n) {
   DBUG_ENTER("NdbEventOperationImpl::getValue");
   if (m_state != EO_CREATED) {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   NdbColumnImpl *tAttrInfo = m_eventImpl->m_tableImpl->getColumn(colName);
 
   if (tAttrInfo == nullptr) {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   DBUG_RETURN(NdbEventOperationImpl::getValue(tAttrInfo, aValue, n));
@@ -238,7 +236,7 @@ NdbRecAttr *NdbEventOperationImpl::getValue(const NdbColumnImpl *tAttrInfo,
   if (tAttr == nullptr) {
     exit(-1);
     // setErrorCodeAbort(4000);
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   /**********************************************************************
@@ -250,7 +248,7 @@ NdbRecAttr *NdbEventOperationImpl::getValue(const NdbColumnImpl *tAttrInfo,
     // setErrorCodeAbort(4000);
     m_ndb->releaseRecAttr(tAttr);
     exit(-1);
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
   // theErrorLine++;
 
@@ -283,7 +281,7 @@ NdbRecAttr *NdbEventOperationImpl::getValue(const NdbColumnImpl *tAttrInfo,
         tAttr->release();                 // do I need to do this?
         m_ndb->releaseRecAttr(tAttr);
         exit(-1);
-        DBUG_RETURN(NULL);
+        DBUG_RETURN(nullptr);
       }
       // this is it, between p and p_next
       p->next(tAttr);
@@ -299,13 +297,13 @@ NdbBlob *NdbEventOperationImpl::getBlobHandle(const char *colName, int n) {
   assert(m_mergeEvents);
 
   if (m_state != EO_CREATED) {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   NdbColumnImpl *tAttrInfo = m_eventImpl->m_tableImpl->getColumn(colName);
 
   if (tAttrInfo == nullptr) {
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   NdbBlob *bh = getBlobHandle(tAttrInfo, n);
@@ -360,13 +358,13 @@ NdbBlob *NdbEventOperationImpl::getBlobHandle(const NdbColumnImpl *tAttrInfo,
           dict.getBlobEvent(*this->m_eventImpl, tAttrInfo->m_column_no);
       if (blobEvnt == nullptr) {
         m_error.code = dict.m_error.code;
-        DBUG_RETURN(NULL);
+        DBUG_RETURN(nullptr);
       }
 
       // create blob event operation
       tBlobOp =
           m_ndb->theEventBuffer->createEventOperationImpl(blobEvnt, m_error);
-      if (tBlobOp == nullptr) DBUG_RETURN(NULL);
+      if (tBlobOp == nullptr) DBUG_RETURN(nullptr);
 
       // pointer to main table op
       tBlobOp->theMainOp = this;
@@ -385,14 +383,14 @@ NdbBlob *NdbEventOperationImpl::getBlobHandle(const NdbColumnImpl *tAttrInfo,
   tBlob = m_ndb->getNdbBlob();
   if (tBlob == nullptr) {
     m_error.code = m_ndb->getNdbError().code;
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   // calls getValue on inline and blob part
   if (tBlob->atPrepare(this, tBlobOp, tAttrInfo, n) == -1) {
     m_error.code = tBlob->getNdbError().code;
     m_ndb->releaseNdbBlob(tBlob);
-    DBUG_RETURN(NULL);
+    DBUG_RETURN(nullptr);
   }
 
   // add to list end
@@ -436,7 +434,7 @@ Uint32 NdbEventOperationImpl::get_blob_part_no(bool hasDist) {
    data are stored
 
    @param blob           The blob column to print
-   @param event_buf_data Pointer to first event data buffer
+   @param event_data_buf Pointer to first event data buffer
    @param hasDist        Some variability for fuziness
    @param part_start     Number of the first blob part requested
    @param part_count     Count of blob parts requested
@@ -1697,7 +1695,7 @@ NdbEventOperation *NdbEventBuffer::nextEvent2() {
     deleteUsedEventOperations(m_latest_poll_GCI);
     NdbMutex_Unlock(m_mutex);
   }
-  DBUG_RETURN_EVENT(0);
+  DBUG_RETURN_EVENT(nullptr);
 }
 
 bool NdbEventBuffer::isConsistent(Uint64 &gci) {
@@ -1738,7 +1736,7 @@ NdbEventOperationImpl *NdbEventBuffer::getEpochEventOperations(
       event_types = gci_op.event_types;
       cumulative_any_value = gci_op.cumulative_any_value;
       filtered_any_value = gci_op.filtered_any_value;
-      DBUG_PRINT("info", ("gci: %u  op: %p  event_types: 0x%lx"
+      DBUG_PRINT("info", ("gci: %u  op: %p  event_types: 0x%lx "
                           "cumulative_any_value: 0x%lx "
                           "reference: '0x%x %s'",
                           (unsigned)epoch->m_gci.getGCI(), gci_op.op,
@@ -3162,7 +3160,7 @@ void *NdbEventBuffer::alloc(Uint32 sz) {
     if (unlikely(memptr == nullptr)) {
       // Expect to always be able to alloc from empty mem block
       crashMemAllocError("::alloc(): alloc from empty MemoryBlock failed");
-      DBUG_RETURN(NULL);
+      DBUG_RETURN(nullptr);
     }
   }
 
@@ -3232,7 +3230,7 @@ EventMemoryBlock *NdbEventBuffer::expand_memory_blocks() {
     if (unlikely(memptr == MAP_FAILED))
 #else
     void *memptr = malloc(sz);
-    if (unlikely(memptr == NULL))
+    if (unlikely(memptr == nullptr))
 #endif
     {
 #ifdef VM_TRACE

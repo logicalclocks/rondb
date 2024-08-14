@@ -31,13 +31,13 @@
 #include <string_view>
 #include <utility>
 
-#include "libbinlogevents/include/binlog_event.h"  // enum_binlog_checksum_alg
-#include "m_string.h"                              // llstr
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
 #include "my_sharedlib.h"
 #include "my_sys.h"
+#include "mysql/binlog/event/binlog_event.h"  // enum_binlog_checksum_alg
+#include "mysql/binlog/event/trx_boundary_parser.h"
 #include "mysql/components/services/bits/mysql_cond_bits.h"
 #include "mysql/components/services/bits/mysql_mutex_bits.h"
 #include "mysql/components/services/bits/psi_cond_bits.h"
@@ -62,7 +62,7 @@ class Log_event;
 class Master_info;
 class Relay_log_info;
 class Rows_log_event;
-class Sid_map;
+class Tsid_map;
 class THD;
 class Transaction_boundary_parser;
 class binlog_cache_data;
@@ -82,9 +82,9 @@ typedef int64 query_id_t;
 
 /*
   Maximum allowed unique log filename extension for
-  RESET MASTER TO command - 2 Billion
+  RESET BINARY LOGS AND GTIDS command - 2 Billion
  */
-#define MAX_ALLOWED_FN_EXT_RESET_MASTER 2000000000
+#define MAX_ALLOWED_FN_EXT_RESET_BIN_LOGS 2000000000
 
 struct Binlog_user_var_event {
   user_var_entry *user_var_event;
@@ -301,7 +301,7 @@ class MYSQL_BIN_LOG : public TC_LOG {
   /**
    * Read binary log stream header and Format_desc event from
    * binlog_file_reader. Check for LOG_EVENT_BINLOG_IN_USE_F flag.
-   * @param[in] binlog_file_reader
+   * @param[in] binlog_file_reader a Binlog_file_reader
    * @return true - LOG_EVENT_BINLOG_IN_USE_F is set
    *         false - LOG_EVENT_BINLOG_IN_USE_F is not set or an error occurred
    *                 while reading log events
@@ -318,6 +318,10 @@ class MYSQL_BIN_LOG : public TC_LOG {
   const char *generate_name(const char *log_name, const char *suffix,
                             char *buff);
   bool is_open() const { return atomic_log_state != LOG_CLOSED; }
+
+  /// @brief Obtains the list of logs from the index file
+  /// @return List of log filenames
+  std::pair<std::list<std::string>, mysql::utils::Error> get_filename_list();
 
   /* This is relay log */
   bool is_relay_log;
@@ -356,7 +360,7 @@ class MYSQL_BIN_LOG : public TC_LOG {
     (A)    - checksum algorithm descriptor value
     FD.(A) - the value of (A) in FD
   */
-  binary_log::enum_binlog_checksum_alg relay_log_checksum_alg;
+  mysql::binlog::event::enum_binlog_checksum_alg relay_log_checksum_alg;
 
   MYSQL_BIN_LOG(uint *sync_period, bool relay_log = false);
   ~MYSQL_BIN_LOG() override;
@@ -438,15 +442,15 @@ class MYSQL_BIN_LOG : public TC_LOG {
     of all lost GTIDs in the binary log, and stores each set in
     respective argument.
 
-    @param gtid_set Will be filled with all GTIDs in this binary/relay
+    @param all_gtids Will be filled with all GTIDs in this binary/relay
     log.
-    @param lost_groups Will be filled with all GTIDs in the
+    @param lost_gtids Will be filled with all GTIDs in the
     Previous_gtids_log_event of the first binary log that has a
     Previous_gtids_log_event. This is requested to binary logs but not
     to relay logs.
     @param verify_checksum If true, checksums will be checked.
     @param need_lock If true, LOCK_log, LOCK_index, and
-    global_sid_lock->wrlock are acquired; otherwise they are asserted
+    global_tsid_lock->wrlock are acquired; otherwise they are asserted
     to be taken already.
     @param [out] trx_parser  This will be used to return the actual
     relaylog transaction parser state because of the possibility
@@ -458,11 +462,11 @@ class MYSQL_BIN_LOG : public TC_LOG {
     @param is_server_starting True if the server is starting.
     @return false on success, true on error.
   */
-  bool init_gtid_sets(Gtid_set *gtid_set, Gtid_set *lost_groups,
-                      bool verify_checksum, bool need_lock,
-                      Transaction_boundary_parser *trx_parser,
-                      Gtid_monitoring_info *partial_trx,
-                      bool is_server_starting = false);
+  bool init_gtid_sets(
+      Gtid_set *all_gtids, Gtid_set *lost_gtids, bool verify_checksum,
+      bool need_lock,
+      mysql::binlog::event::Transaction_boundary_parser *trx_parser,
+      Gtid_monitoring_info *partial_trx, bool is_server_starting = false);
 
   void set_previous_gtid_set_relaylog(Gtid_set *previous_gtid_set_param) {
     assert(is_relay_log);
@@ -756,18 +760,18 @@ class MYSQL_BIN_LOG : public TC_LOG {
     event was written to the log.
     @param need_lock_index If true, LOCK_index is acquired; otherwise
     LOCK_index must be taken by the caller.
-    @param need_sid_lock If true, the read lock on global_sid_lock
+    @param need_tsid_lock If true, the read lock on global_tsid_lock
     will be acquired.  Otherwise, the caller must hold the read lock
-    on global_sid_lock.
+    on global_tsid_lock.
     @param extra_description_event The master's FDE to be written by the I/O
     thread while creating a new relay log file. This should be NULL for
     binary log files.
     @param new_index_number The binary log file index number to start from
-    after the RESET MASTER TO command is called.
+    after the RESET BINARY LOGS AND GTIDS command is called.
   */
   bool open_binlog(const char *log_name, const char *new_name,
                    ulong max_size_arg, bool null_created_arg,
-                   bool need_lock_index, bool need_sid_lock,
+                   bool need_lock_index, bool need_tsid_lock,
                    Format_description_log_event *extra_description_event,
                    uint32 new_index_number = 0);
   bool open_index_file(const char *index_file_name_arg, const char *log_name,
@@ -854,6 +858,8 @@ class MYSQL_BIN_LOG : public TC_LOG {
 
  private:
   bool after_write_to_relay_log(Master_info *mi);
+
+ public:
   /**
    * Truncte log file and clear LOG_EVENT_BINLOG_IN_USE_F when update is set.
    * @param[in] log_name name of the log file to be trunacted
@@ -867,10 +873,38 @@ class MYSQL_BIN_LOG : public TC_LOG {
   bool truncate_update_log_file(const char *log_name, my_off_t valid_pos,
                                 my_off_t binlog_size, bool update);
 
- public:
   void make_log_name(char *buf, const char *log_ident);
   bool is_active(const char *log_file_name) const;
-  int remove_logs_from_index(LOG_INFO *linfo, bool need_update_threads);
+
+  /// @brief Remove logs from index file, except files between 'start' and
+  /// 'last'
+  /// @details To make it crash safe, we copy the content of the index file
+  /// from index_file_start_offset recorded in log_info to a
+  /// crash safe index file first and then move the crash
+  /// safe index file to the index file.
+  /// @param start_log_info         Metadata of the first log to be kept
+  ///                               in the index file
+  /// @param need_update_threads    If we want to update the log coordinates
+  ///                               of all threads. False for relay logs,
+  ///                               true otherwise.
+  /// @param last_log_info Metadata of the last log to be kept in the index
+  /// file; nullptr means that all logs after start_log_info will be kept
+  /// @retval
+  ///   0    ok
+  /// @retval
+  ///   LOG_INFO_IO    Got IO error while reading/writing file
+  int remove_logs_outside_range_from_index(LOG_INFO *start_log_info,
+                                           bool need_update_threads,
+                                           LOG_INFO *last_log_info = nullptr);
+  /// @brief Remove logs from index file except logs between first and last
+  /// @param first Filename of the first relay log to be kept in index file
+  /// @param last Filename of the last relay log to be kept in index file
+
+  /// @retval 0 OK
+  /// @retval LOG_INFO_IO    Got IO error while reading/writing file
+  /// @retval LOG_INFO_EOF   Could not find requested log file (first or last)
+  int remove_logs_outside_range_from_index(const std::string &first,
+                                           const std::string &last);
   int rotate(bool force_rotate, bool *check_purge);
 
   /**
@@ -952,6 +986,7 @@ class MYSQL_BIN_LOG : public TC_LOG {
   inline char *get_log_fname() { return log_file_name; }
   const char *get_name() const { return name; }
   inline mysql_mutex_t *get_log_lock() { return &LOCK_log; }
+  inline mysql_mutex_t *get_index_lock() { return &LOCK_index; }
   inline mysql_mutex_t *get_commit_lock() { return &LOCK_commit; }
   inline mysql_mutex_t *get_after_commit_lock() { return &LOCK_after_commit; }
   inline mysql_cond_t *get_log_cond() { return &update_cond; }
@@ -1019,11 +1054,11 @@ class MYSQL_BIN_LOG : public TC_LOG {
   void unlock_binlog_end_pos() { mysql_mutex_unlock(&LOCK_binlog_end_pos); }
 
   /**
-    Deep copy global_sid_map and gtid_executed.
-    Both operations are done under LOCK_commit and global_sid_lock
+    Deep copy global_tsid_map and gtid_executed.
+    Both operations are done under LOCK_commit and global_tsid_lock
     protection.
 
-    @param[out] sid_map  The Sid_map to which global_sid_map will
+    @param[out] tsid_map  The Tsid_map to which global_tsid_map will
                          be copied.
     @param[out] gtid_set The Gtid_set to which gtid_executed will
                          be copied.
@@ -1032,7 +1067,7 @@ class MYSQL_BIN_LOG : public TC_LOG {
       @retval 0      OK
       @retval !=0    Error
   */
-  int get_gtid_executed(Sid_map *sid_map, Gtid_set *gtid_set);
+  int get_gtid_executed(Tsid_map *tsid_map, Gtid_set *gtid_set);
 
  public:
   /**

@@ -36,10 +36,10 @@
 #include "my_inttypes.h"
 #include "mysql/udf_registration_types.h"
 #include "sql-common/json_dom.h"  // Json_wrapper
-#include "sql/current_thd.h"      // current_thd
-#include "sql/item.h"             // Cached_item, ...
-#include "sql/my_decimal.h"
-#include "sql/sql_class.h"  // THD
+#include "sql-common/my_decimal.h"
+#include "sql/current_thd.h"  // current_thd
+#include "sql/item.h"         // Cached_item, ...
+#include "sql/sql_class.h"    // THD
 #include "sql/system_variables.h"
 #include "sql/thr_malloc.h"
 #include "sql_string.h"
@@ -96,7 +96,9 @@ bool Cached_item_str::cmp() {
 Cached_item_json::Cached_item_json(Item *item_arg)
     : Cached_item(item_arg), m_value(new (*THR_MALLOC) Json_wrapper()) {}
 
-Cached_item_json::~Cached_item_json() { destroy(m_value); }
+Cached_item_json::~Cached_item_json() {
+  if (m_value != nullptr) ::destroy_at(m_value);
+}
 
 /**
   Compare the new JSON value in member 'item' with the previous value.
@@ -134,7 +136,7 @@ bool Cached_item_json::cmp() {
 
 bool Cached_item_real::cmp() {
   DBUG_TRACE;
-  double nr = item->val_real();
+  const double nr = item->val_real();
   DBUG_PRINT("info", ("old: %f, new: %f", value, nr));
   if (item->null_value) {
     if (null_value) return false;
@@ -150,7 +152,7 @@ bool Cached_item_real::cmp() {
 
 bool Cached_item_int::cmp() {
   DBUG_TRACE;
-  longlong nr = item->val_int();
+  const longlong nr = item->val_int();
   DBUG_PRINT("info", ("old: 0x%.16llx, new: 0x%.16llx", (ulonglong)value,
                       (ulonglong)nr));
   if (item->null_value) {
@@ -167,7 +169,7 @@ bool Cached_item_int::cmp() {
 
 bool Cached_item_temporal::cmp() {
   DBUG_TRACE;
-  longlong nr = item->val_temporal_by_field_type();
+  const longlong nr = item->val_temporal_by_field_type();
   DBUG_PRINT("info", ("old: %lld, new: %lld", value, nr));
   if (item->null_value) {
     if (null_value) return false;

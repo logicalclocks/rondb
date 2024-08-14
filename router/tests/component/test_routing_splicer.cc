@@ -41,12 +41,14 @@
 #include "mysql/harness/net_ts/impl/socket.h"
 #include "mysql/harness/string_utils.h"  // split_string
 #include "mysqlrouter/mysql_session.h"
+#include "mysqlrouter/ssl_mode.h"
 #include "mysqlxclient.h"
 #include "mysqlxclient/xerror.h"
 #include "mysqlxclient/xsession.h"
 #include "plugin/x/client/mysqlxclient/xerror.h"
-#include "router/src/routing/src/ssl_mode.h"
+#include "router/src/routing/tests/mysql_client.h"
 #include "router_component_test.h"  // ProcessManager
+#include "router_component_testutils.h"
 
 using namespace std::string_literals;
 using namespace std::chrono_literals;
@@ -155,15 +157,20 @@ TEST_F(SplicerTest, invalid_metadata) {
               "metadata_cache:somecluster",
               {
                   {"user", "mysql_router1_user"},
-                  {"bootstrap_server_addresses",
-                   "mysql://127.0.0.1:" + std::to_string(server_port)},
                   {"metadata_cluster", "test"},
+                  {"router_id", "1"},
               }),
       },
       "");
 
   auto default_section = get_DEFAULT_defaults();
   init_keyring(default_section, conf_dir_.name());
+
+  const auto state_file = create_state_file(
+      conf_dir_.name(),
+      create_state_file_content("uuid", "", {server_port}, 0));
+  default_section["dynamic_state"] = state_file;
+
   auto conf_file =
       create_config_file(conf_dir_.name(), config, &default_section);
 

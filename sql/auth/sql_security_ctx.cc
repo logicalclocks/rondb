@@ -30,7 +30,6 @@
 #include <utility>
 #include <vector>
 
-#include "m_ctype.h"
 #include "mf_wcomp.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -38,6 +37,7 @@
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"
@@ -48,6 +48,8 @@
 #include "sql/mysqld.h"
 #include "sql/sql_class.h"
 #include "sql/table.h"
+#include "string_with_len.h"
+#include "strmake.h"
 
 extern bool initialized;
 
@@ -352,9 +354,9 @@ int Security_context::activate_role(LEX_CSTRING role, LEX_CSTRING role_host,
                        create_authid_from(role, role_host));
   /* silently ignore requests of activating an already active role */
   if (res != m_active_roles.end()) return 0;
-  LEX_CSTRING dup_role = {
+  const LEX_CSTRING dup_role = {
       my_strdup(PSI_NOT_INSTRUMENTED, role.str, MYF(MY_WME)), role.length};
-  LEX_CSTRING dup_role_host = {
+  const LEX_CSTRING dup_role_host = {
       my_strdup(PSI_NOT_INSTRUMENTED, role_host.str, MYF(MY_WME)),
       role_host.length};
   if (validate_access && !check_if_granted_role(priv_user(), priv_host(),
@@ -490,6 +492,9 @@ void Security_context::get_active_roles(THD *thd, List<LEX_USER> &list) {
   database name like db1name to match against wild card
   db entry db_name/db%name.
 
+  @note  This function should not be used outside ACL subsystem code (sql/auth).
+  Use check_db_level_access() instead.
+
   @param [in] db               Name of the database
   @param [in] use_pattern_scan Flag to treat database name as pattern
 
@@ -501,7 +506,7 @@ Access_bitmask Security_context::db_acl(LEX_CSTRING db,
   DBUG_TRACE;
   if (m_acl_map == nullptr || db.length == 0) return 0;
 
-  std::string key(db.str, db.length);
+  const std::string key(db.str, db.length);
   Db_access_map::iterator found_acl_it = m_acl_map->db_acls()->find(key);
   if (found_acl_it == m_acl_map->db_acls()->end()) {
     Db_access_map::iterator it = m_acl_map->db_wild_acls()->begin();
@@ -528,6 +533,55 @@ Access_bitmask Security_context::db_acl(LEX_CSTRING db,
     DBUG_PRINT("info", ("Found exact match for db %s", key.c_str()));
     return filter_access(found_acl_it->second, key);
   }
+}
+
+/**
+  Checks if any database level privileges are granted to the current session
+  either directly or through active roles.
+
+  @param [in] thd           Thread handler
+  @param [in] sctx          Security context
+  @param [in] host          Host name
+  @param [in] ip            Ip
+  @param [in] user          User name
+  @param [in] db            Database name
+  @param [in] db_len        Database name length
+  @param [in] db_is_pattern Flag to treat db name as pattern
+
+  @returns DB level privileges granted
+*/
+
+Access_bitmask Security_context::check_db_level_access(
+    THD *thd, const Security_context *sctx, const char *host, const char *ip,
+    const char *user, const char *db, size_t db_len, bool db_is_pattern) {
+  Access_bitmask db_access;
+  if (sctx && sctx->get_num_active_roles()) {
+    db_access = sctx->db_acl({db, db_len}, db_is_pattern);
+    DBUG_PRINT("info", ("check_access using db-level privilege for %s. "
+                        "ACL: %" PRIu32,
+                        db, db_access));
+  } else {
+    db_access = acl_get(thd, host, ip, user, db, db_is_pattern);
+  }
+  return db_access;
+}
+
+/**
+  Checks if any database level privileges are granted to the current session
+  either directly or through active roles.
+
+  @param [in] thd           Thread handler
+  @param [in] db            Database name
+  @param [in] db_len        Database name length
+  @param [in] db_is_pattern Flag to treat db name as pattern
+
+  @returns DB level privileges granted
+*/
+
+Access_bitmask Security_context::check_db_level_access(
+    THD *thd, const char *db, size_t db_len, bool db_is_pattern) const {
+  return check_db_level_access(thd, this, m_host.ptr(), m_ip.ptr(), m_priv_user,
+                               db, db_len, db_is_pattern);
 }
 
 Access_bitmask Security_context::procedure_acl(LEX_CSTRING db,
@@ -582,7 +636,7 @@ Grant_table_aggregate Security_context::table_and_column_acls(
 
 Access_bitmask Security_context::table_acl(LEX_CSTRING db, LEX_CSTRING table) {
   if (m_acl_map == nullptr) return 0;
-  Grant_table_aggregate aggr = table_and_column_acls(db, table);
+  const Grant_table_aggregate aggr = table_and_column_acls(db, table);
   return filter_access(aggr.table_access, db.str ? db.str : "");
 }
 
@@ -650,7 +704,7 @@ std::pair<bool, bool> Security_context::has_global_grant(const char *priv,
   /* server started with --skip-grant-tables */
   if (!initialized || m_is_skip_grants_user) return std::make_pair(true, true);
 
-  std::string privilege(priv, priv_len);
+  const std::string privilege(priv, priv_len);
 
   if (m_acl_map == nullptr) {
     THD *thd = m_thd ? m_thd : current_thd;
@@ -661,8 +715,8 @@ std::pair<bool, bool> Security_context::has_global_grant(const char *priv,
     }
     Acl_cache_lock_guard acl_cache_lock(thd, Acl_cache_lock_mode::READ_MODE);
     if (!acl_cache_lock.lock(false)) return std::make_pair(false, false);
-    Role_id key(&m_priv_user[0], m_priv_user_length, &m_priv_host[0],
-                m_priv_host_length);
+    const Role_id key(&m_priv_user[0], m_priv_user_length, &m_priv_host[0],
+                      m_priv_host_length);
     User_to_dynamic_privileges_map::iterator it, it_end;
     std::tie(it, it_end) = get_dynamic_privileges_map()->equal_range(key);
     it = std::find(it, it_end, privilege);
@@ -1207,7 +1261,7 @@ bool Security_context::has_table_access(Access_bitmask priv,
     acls = db_acl(db);
     if (priv & acls) return true;
 
-    Grant_table_aggregate aggr = table_and_column_acls(db, table_name);
+    const Grant_table_aggregate aggr = table_and_column_acls(db, table_name);
     acls = aggr.table_access | aggr.cols;
     if (priv & acls) return true;
   } else {

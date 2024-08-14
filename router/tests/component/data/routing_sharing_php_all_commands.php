@@ -74,6 +74,10 @@ mysqli_real_connect($mysqli->wrapped_,
 
 ?>
 
+# ROUTER SET trace = 1
+
+<?php if ($with_sharing) print(md($mysqli->query("ROUTER SET trace = 1"))); ?>
+
 # autocommit
 
 <?= md($mysqli->autocommit(1)) ?>
@@ -143,12 +147,23 @@ $res[0][0] == "phpt" or throw new Exception("expected SCHEMA to be set");
 
 # query
 
+<?php if ($with_sharing) print(md($mysqli->query("ROUTER SET trace = 1"))); ?>
 <?= md($mysqli->query("DO 1")) ?>
 
 ## `SHOW WARNINGS`
 
 <?php
 {
-  $warn_res = result_as_array($mysqli->query("SHOW WARNINGS"));
-  count($warn_res) == 0 or throw new Exception("expected row-count == 0, got " . count($warn_res));
+  $trace_res = result_as_array($mysqli->query("SHOW WARNINGS"));
+  if ($with_sharing) {
+    count($trace_res) > 0 or throw new Exception("expected row-count > 0, got " . count($trace_res));
+  
+    # last element.
+    $trace_row = array_slice($trace_res, -1)[0];
+    print(markdown_code($trace_row[2], "json"));
+  
+    $trace = json_decode($trace_row[2]);
+    ($trace->{"attributes"}->{"mysql.sharing_blocked"} == false) or 
+      throw new Exception("expected sharing to be allowed.");
+  }
 }

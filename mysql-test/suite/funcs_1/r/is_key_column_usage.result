@@ -89,6 +89,7 @@ def	mysql	PRIMARY	def	mysql	func	name
 def	mysql	PRIMARY	def	mysql	global_grants	HOST
 def	mysql	PRIMARY	def	mysql	global_grants	PRIV
 def	mysql	PRIMARY	def	mysql	global_grants	USER
+def	mysql	PRIMARY	def	mysql	gtid_executed	gtid_tag
 def	mysql	PRIMARY	def	mysql	gtid_executed	interval_start
 def	mysql	PRIMARY	def	mysql	gtid_executed	source_uuid
 def	mysql	PRIMARY	def	mysql	help_category	help_category_id
@@ -275,6 +276,8 @@ def	performance_schema	PRIMARY	def	performance_schema	setup_actors	ROLE
 def	performance_schema	PRIMARY	def	performance_schema	setup_actors	USER
 def	performance_schema	PRIMARY	def	performance_schema	setup_consumers	NAME
 def	performance_schema	PRIMARY	def	performance_schema	setup_instruments	NAME
+def	performance_schema	PRIMARY	def	performance_schema	setup_meters	NAME
+def	performance_schema	PRIMARY	def	performance_schema	setup_metrics	NAME
 def	performance_schema	PRIMARY	def	performance_schema	setup_threads	NAME
 def	performance_schema	PRIMARY	def	performance_schema	socket_instances	OBJECT_INSTANCE_BEGIN
 def	performance_schema	PRIMARY	def	performance_schema	socket_summary_by_event_name	EVENT_NAME

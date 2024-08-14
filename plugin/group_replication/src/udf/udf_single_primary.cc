@@ -22,9 +22,11 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "plugin/group_replication/include/udf/udf_single_primary.h"
+#include "m_string.h"
 #include "plugin/group_replication/include/group_actions/primary_election_action.h"
 #include "plugin/group_replication/include/plugin.h"
 #include "plugin/group_replication/include/udf/udf_utils.h"
+#include "string_with_len.h"
 
 static char *group_replication_set_as_primary(UDF_INIT *, UDF_ARGS *args,
                                               char *result,
@@ -373,6 +375,12 @@ static bool group_replication_switch_to_single_primary_mode_init(
   if (Charset_service::set_return_value_charset(initid) ||
       Charset_service::set_args_charset(args))
     return true;
+
+  if (get_preemptive_garbage_collection_var()) {
+    std::snprintf(message, MYSQL_ERRMSG_SIZE,
+                  preemptive_garbage_collection_enabled_str);
+    return true;
+  }
 
   initid->maybe_null = false;
   udf_counter.succeeded();

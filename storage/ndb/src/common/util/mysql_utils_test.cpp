@@ -37,6 +37,7 @@
 #include "dbug_utils.hpp"
 #include "decimal_utils.hpp"
 
+#include "decimal.h"
 #include "my_sys.h"
 #include "mysql.h"
 

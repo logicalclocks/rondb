@@ -37,6 +37,7 @@
 #include <Vector.hpp>
 #include "my_getopt.h"
 #include "portlib/NdbTick.h"
+#include "portlib/ssl_applink.h"
 #include "util/ndb_openssl_evp.h"  // ndb_openssl_evp::library_init()
 #include "util/require.h"
 
@@ -44,6 +45,7 @@
 #include "consumer_printer.hpp"
 #include "consumer_restore.hpp"
 #include "my_alloc.h"
+#include "nulls.h"
 
 #include <NdbThread.h>
 
@@ -272,6 +274,8 @@ static struct my_option my_long_options[] = {
     NdbStdOpt::ndb_nodeid,
     NdbStdOpt::connect_retry_delay,
     NdbStdOpt::connect_retries,
+    NdbStdOpt::tls_search_path,
+    NdbStdOpt::mgm_tls,
     NDB_STD_OPT_DEBUG{
         "timestamp_printouts", NDB_OPT_NOSHORT,
         "Add a timestamp to the logger messages info, error and debug",
@@ -1639,6 +1643,7 @@ static void init_restore() {
       exitHandler(NdbToolsProgramExitCode::FAILED);
     }
     g_cluster_connection->set_name(g_options.c_str());
+    g_cluster_connection->configure_tls(opt_tls_search_path, opt_mgm_tls);
     if (g_cluster_connection->connect(opt_connect_retries - 1,
                                       opt_connect_retry_delay, 1) != 0) {
       err << "Could not connect to cluster: '"

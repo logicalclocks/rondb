@@ -39,7 +39,7 @@
 #include "mysqlrouter/rest_api_utils.h"
 
 bool RestConnectionPoolStatus::on_handle_request(
-    HttpRequest &req, const std::string & /* base_path */,
+    http::base::Request &req, const std::string & /* base_path */,
     const std::vector<std::string> &path_matches) {
   if (!ensure_no_params(req)) return true;
 
@@ -50,15 +50,18 @@ bool RestConnectionPoolStatus::on_handle_request(
     return true;
   }
 
-  auto out_hdrs = req.get_output_headers();
+  auto &out_hdrs = req.get_output_headers();
   out_hdrs.add("Content-Type", "application/json");
 
   rapidjson::Document json_doc;
   {
     rapidjson::Document::AllocatorType &allocator = json_doc.GetAllocator();
 
-    json_doc.SetObject().AddMember<uint64_t>(
-        "idleServerConnections", inst->current_pooled_connections(), allocator);
+    json_doc.SetObject()
+        .AddMember<uint64_t>("idleServerConnections",
+                             inst->current_pooled_connections(), allocator)
+        .AddMember<uint64_t>("stashedServerConnections",
+                             inst->current_stashed_connections(), allocator);
   }
   send_json_document(req, HttpStatusCode::Ok, json_doc);
 

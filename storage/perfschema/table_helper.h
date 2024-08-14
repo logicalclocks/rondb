@@ -48,6 +48,7 @@
 #include "storage/perfschema/pfs_stat.h"
 #include "storage/perfschema/pfs_timer.h"
 
+struct CHARSET_INFO;
 struct PFS_host;
 struct PFS_user;
 struct PFS_account;
@@ -1468,6 +1469,24 @@ class PFS_key_event_name : public PFS_key_string<PFS_MAX_INFO_NAME_LENGTH> {
   bool match(const PFS_file *pfs);
   bool match(const PFS_socket *pfs);
   bool match_view(uint view);
+};
+
+class PFS_key_meter_name : public PFS_key_string<PFS_MAX_INFO_NAME_LENGTH> {
+ public:
+  explicit PFS_key_meter_name(const char *name) : PFS_key_string(name) {}
+
+  ~PFS_key_meter_name() override = default;
+
+  bool match(PFS_meter_class *pfs);
+};
+
+class PFS_key_metric_name : public PFS_key_string<PFS_MAX_INFO_NAME_LENGTH> {
+ public:
+  explicit PFS_key_metric_name(const char *name) : PFS_key_string(name) {}
+
+  ~PFS_key_metric_name() override = default;
+
+  bool match(PFS_metric_class *pfs);
 };
 
 class PFS_key_user : public PFS_key_string<USERNAME_LENGTH> {

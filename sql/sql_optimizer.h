@@ -1049,15 +1049,15 @@ class JOIN {
     WHERE 1=2). This will normally yield no output rows, but if we have implicit
     aggregation, it might yield a single one.
    */
-  void create_access_paths_for_zero_rows();
+  AccessPath *create_access_paths_for_zero_rows() const;
 
  private:
   void create_access_paths_for_index_subquery();
 
   /** @{ Helpers for create_access_paths. */
   AccessPath *create_root_access_path_for_join();
-  AccessPath *attach_access_paths_for_having_and_limit(AccessPath *path);
-  AccessPath *attach_access_path_for_update_or_delete(AccessPath *path);
+  AccessPath *attach_access_paths_for_having_and_limit(AccessPath *path) const;
+  AccessPath *attach_access_path_for_update_or_delete(AccessPath *path) const;
   /** @} */
 
   /**
@@ -1110,10 +1110,6 @@ bool optimize_cond(THD *thd, Item **conds, COND_EQUAL **cond_equal,
 Item *substitute_for_best_equal_field(THD *thd, Item *cond,
                                       COND_EQUAL *cond_equal,
                                       JOIN_TAB **table_join_idx);
-bool build_equal_items(THD *thd, Item *cond, Item **retcond,
-                       COND_EQUAL *inherited, bool do_inherit,
-                       mem_root_deque<Table_ref *> *join_list,
-                       COND_EQUAL **cond_equal_ref);
 bool is_indexed_agg_distinct(JOIN *join,
                              mem_root_deque<Item_field *> *out_args);
 Key_use_array *create_keyuse_for_table(

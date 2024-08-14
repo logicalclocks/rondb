@@ -1,6 +1,6 @@
 # Check that the hidden generated column is not included in the binlog
 # regardless of binlog_row_image
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 SET @start_row_image_value = @@session.binlog_row_image;
 CREATE TABLE t1 (col1 INT, col2 INT NOT NULL, col3 INT, col4 INT, UNIQUE INDEX ((ABS(col2))));
 SET @@session.binlog_row_image = MINIMAL;
@@ -14,7 +14,7 @@ INSERT INTO t1 VALUES (100, 200, 300, 400), (200, 300, 400, 500);
 UPDATE t1 SET col1 = 200 WHERE ABS(col2) = 200;
 DROP TABLE t1;
 FLUSH LOGS;
-include/mysqlbinlog.inc
+include/rpl/mysqlbinlog.inc
 ### INSERT INTO `test`.`t1`
 ### SET
 ###   @1=1
@@ -81,7 +81,7 @@ include/mysqlbinlog.inc
 ###   @2=200
 ###   @3=300
 ###   @4=400
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 # Check that when the only unique NOT NULL index is a functional index,
 # the binary log contains a full before-image regardless of
 # binlog_row_image.
@@ -100,7 +100,7 @@ UPDATE t1 SET col2 = 4 WHERE ABS(col1) = 1;
 DROP TABLE t1;
 FLUSH LOGS;
 SET @@session.binlog_row_image = @start_row_image_value;
-include/mysqlbinlog.inc
+include/rpl/mysqlbinlog.inc
 ### INSERT INTO `test`.`t1`
 ### SET
 ###   @1=1

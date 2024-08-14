@@ -28,9 +28,9 @@
 
 #include "lex_string.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysqld_error.h"
 #include "sql/dd/cache/dictionary_client.h"  // dd::cache::Dictionary_client
 #include "sql/dd/impl/utils.h"
@@ -45,6 +45,8 @@
 #include "sql/tztime.h"  // Time_zone
 #include "sql_string.h"
 
+struct CHARSET_INFO;
+
 namespace dd {
 
 static const char *failsafe_object = "Event status option";
@@ -55,8 +57,8 @@ int get_old_status(Event::enum_event_status event_status) {
       return Event_parse_data::ENABLED;
     case Event::ES_DISABLED:
       return Event_parse_data::DISABLED;
-    case Event::ES_SLAVESIDE_DISABLED:
-      return Event_parse_data::SLAVESIDE_DISABLED;
+    case Event::ES_REPLICA_SIDE_DISABLED:
+      return Event_parse_data::REPLICA_SIDE_DISABLED;
   }
 
   /* purecov: begin deadcode */
@@ -82,8 +84,8 @@ static Event::enum_event_status get_enum_event_status(int event_status) {
       return Event::ES_ENABLED;
     case Event_parse_data::DISABLED:
       return Event::ES_DISABLED;
-    case Event_parse_data::SLAVESIDE_DISABLED:
-      return Event::ES_SLAVESIDE_DISABLED;
+    case Event_parse_data::REPLICA_SIDE_DISABLED:
+      return Event::ES_REPLICA_SIDE_DISABLED;
   }
 
   /* purecov: begin deadcode */

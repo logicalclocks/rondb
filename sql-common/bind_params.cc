@@ -37,6 +37,7 @@
 #include "mysql.h"
 #include "mysql/service_mysql_alloc.h"
 #include "mysqld_error.h"
+#include "nulls.h"
 #include "sql_common.h"
 
 /*
@@ -55,7 +56,7 @@
 */
 
 static bool my_realloc_str(NET *net, ulong length) {
-  ulong buf_length = (ulong)(net->write_pos - net->buff);
+  const ulong buf_length = (ulong)(net->write_pos - net->buff);
   bool res = false;
   DBUG_TRACE;
   if (buf_length + length > net->max_packet) {
@@ -96,7 +97,7 @@ constexpr int MAX_DATETIME_REP_LENGTH =
 /* Store type of parameter in network buffer. */
 
 static void store_param_type(unsigned char **pos, MYSQL_BIND *param) {
-  uint typecode = param->buffer_type | (param->is_unsigned ? 32768 : 0);
+  const uint typecode = param->buffer_type | (param->is_unsigned ? 32768 : 0);
   int2store(*pos, typecode);
   *pos += 2;
 }
@@ -112,7 +113,7 @@ static void store_param_type(unsigned char **pos, MYSQL_BIND *param) {
   DESCRIPTION
     These functions are invoked from mysql_stmt_execute() by
     MYSQL_BIND::store_param_func pointer. This pointer is set once per
-    many executions in mysql_stmt_bind_param(). The caller must ensure
+    many executions in mysql_stmt_bind_named_param(). The caller must ensure
     that network buffer have enough capacity to store parameter
     (MYSQL_BIND::buffer_length contains needed number of bytes).
 */
@@ -122,37 +123,37 @@ static void store_param_tinyint(NET *net, MYSQL_BIND *param) {
 }
 
 static void store_param_short(NET *net, MYSQL_BIND *param) {
-  short value = *(short *)param->buffer;
+  const short value = *(short *)param->buffer;
   int2store(net->write_pos, value);
   net->write_pos += 2;
 }
 
 static void store_param_int32(NET *net, MYSQL_BIND *param) {
-  int32 value = *(int32 *)param->buffer;
+  const int32 value = *(int32 *)param->buffer;
   int4store(net->write_pos, value);
   net->write_pos += 4;
 }
 
 static void store_param_int64(NET *net, MYSQL_BIND *param) {
-  longlong value = *(longlong *)param->buffer;
+  const longlong value = *(longlong *)param->buffer;
   int8store(net->write_pos, value);
   net->write_pos += 8;
 }
 
 static void store_param_float(NET *net, MYSQL_BIND *param) {
-  float value = *(float *)param->buffer;
+  const float value = *(float *)param->buffer;
   float4store(net->write_pos, value);
   net->write_pos += 4;
 }
 
 static void store_param_double(NET *net, MYSQL_BIND *param) {
-  double value = *(double *)param->buffer;
+  const double value = *(double *)param->buffer;
   float8store(net->write_pos, value);
   net->write_pos += 8;
 }
 
 static void store_param_time(NET *net, MYSQL_BIND *param) {
-  MYSQL_TIME *tm = (MYSQL_TIME *)param->buffer;
+  const MYSQL_TIME *tm = (MYSQL_TIME *)param->buffer;
   uchar buff[MAX_TIME_REP_LENGTH], *pos;
   uint length;
 
@@ -189,7 +190,7 @@ static void net_store_datetime(NET *net, MYSQL_TIME *tm) {
   pos[6] = static_cast<std::uint8_t>(tm->second);
   int4store(pos + 7, static_cast<std::uint32_t>(tm->second_part));
   if (tm->time_type == MYSQL_TIMESTAMP_DATETIME_TZ) {
-    int tzd = tm->time_zone_displacement;
+    const int tzd = tm->time_zone_displacement;
     assert(tzd % SECS_PER_MIN == 0);
     assert(std::abs(tzd) <= MAX_TIME_ZONE_HOURS * SECS_PER_HOUR);
     int2store(pos + 11, static_cast<std::uint16_t>(tzd / SECS_PER_MIN));
@@ -205,7 +206,7 @@ static void net_store_datetime(NET *net, MYSQL_TIME *tm) {
 
   buff[0] = length_byte;
 
-  size_t buffer_length = length_byte + 1;
+  const size_t buffer_length = length_byte + 1;
   memcpy(net->write_pos, buff, buffer_length);
   net->write_pos += buffer_length;
 }
@@ -222,9 +223,10 @@ static void store_param_datetime(NET *net, MYSQL_BIND *param) {
 }
 
 static void store_param_str(NET *net, MYSQL_BIND *param) {
-  /* param->length is always set in mysql_stmt_bind_param */
-  ulong length = *param->length;
+  /* param->length is always set in mysql_stmt_bind_named_param */
+  const ulong length = *param->length;
   uchar *to = net_store_length(net->write_pos, length);
+  assert(param->buffer != nullptr);
   memcpy(to, param->buffer, length);
   net->write_pos = to + length;
 }
@@ -244,7 +246,7 @@ static void store_param_str(NET *net, MYSQL_BIND *param) {
 
 static void store_param_null(NET *net, MYSQL_BIND *param,
                              my_off_t null_pos_ofs) {
-  uint pos = param->param_number;
+  const uint pos = param->param_number;
   net->buff[pos / 8 + null_pos_ofs] |= (uchar)(1 << (pos & 7));
 }
 
@@ -283,6 +285,55 @@ static bool store_param(NET *net, MYSQL_BIND *param, my_off_t null_pos_ofs) {
   return false;
 }
 
+/*
+  Iterates bind parameters array in following order:
+   - first iterate unnamed parameters
+   - next iterate named parameters
+*/
+class bind_params_iterator {
+ public:
+  bind_params_iterator(MYSQL_BIND *params, const char **names,
+                       unsigned int count)
+      : m_params(params),
+        m_names(names),
+        m_count(count),
+        m_pos(0),
+        m_scan_named(false) {}
+
+  // return false when no more items, array index returned by reference on
+  // success
+  bool next(unsigned int &idx) {
+    // 1st scan pass iterates unnamed params only
+    // 2nd scan pass iterates named params only
+    while (true) {
+      for (unsigned int i = m_pos; i < m_count; i++) {
+        const bool is_named = (m_names != nullptr && m_names[i] != nullptr);
+        if (m_scan_named == is_named) {
+          idx = i;
+          m_pos = i + 1;
+          return true;
+        }
+      }
+      // finish if 2nd pass done
+      if (m_scan_named) break;
+      // else start 2nd pass
+      m_scan_named = true;
+      m_pos = 0;
+    }
+
+    return false;  // no more items
+  }
+
+ protected:
+  // input
+  MYSQL_BIND *m_params;
+  const char **m_names;
+  unsigned int m_count;
+  // state
+  unsigned int m_pos;
+  bool m_scan_named;
+};
+
 /**
   Serialize the query parameters.
 
@@ -314,8 +365,7 @@ bool mysql_int_serialize_param_data(
     uchar send_types_to_server, bool send_named_params,
     bool send_parameter_set_count, bool send_parameter_count_when_zero) {
   uint null_count;
-  MYSQL_BIND *param, *param_end;
-  const char **names_ptr = names;
+  MYSQL_BIND *param;
   my_off_t null_pos_ofs;
   DBUG_TRACE;
 
@@ -352,7 +402,6 @@ bool mysql_int_serialize_param_data(
     }
     memset(net->write_pos, 0, null_count);
     net->write_pos += null_count;
-    param_end = params + param_count;
 
     /* In case if buffers (type) altered, indicate to server */
     *(net->write_pos)++ = send_types_to_server;
@@ -362,16 +411,20 @@ bool mysql_int_serialize_param_data(
         return true;
       }
       /*
-        Store types of parameters in first in first package
+        Store types of parameters in first package
         that is sent to the server.
       */
-      for (param = params; param < param_end; param++) {
+      bind_params_iterator it(params, names, param_count);
+      unsigned int idx;
+
+      while (it.next(idx)) {
+        param = &params[idx];
         store_param_type(&net->write_pos, param);
         if (send_named_params) {
           const char *name = nullptr;
           size_t len = 0;
           if (names) {
-            name = *names_ptr++;
+            name = names[idx];
             len = name ? strlen(name) : 0;
           }
           my_realloc_str(net, len + net_length_size(len));
@@ -382,7 +435,11 @@ bool mysql_int_serialize_param_data(
       }
     }
 
-    for (param = params; param < param_end; param++) {
+    bind_params_iterator it(params, names, param_count);
+    unsigned int idx;
+
+    while (it.next(idx)) {
+      param = &params[idx];
       /* check if mysql_stmt_send_long_data() was used */
       if (param->long_data_used)
         param->long_data_used = false; /* Clear for next execute call */

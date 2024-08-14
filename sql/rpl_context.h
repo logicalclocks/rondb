@@ -27,13 +27,14 @@
 #include <sys/types.h>
 #include <memory>
 
-#include "libbinlogevents/include/compression/compressor.h"  // binary_log::transaction::compression::Compressor
-#include "libbinlogevents/include/nodiscard.h"
-#include "my_inttypes.h"  // IWYU pragma: keep
+#include "my_inttypes.h"                                // IWYU pragma: keep
+#include "mysql/binlog/event/compression/compressor.h"  // mysql::binlog::event::compression::Compressor
+#include "mysql/binlog/event/nodiscard.h"
 
-#include "libbinlogevents/include/compression/factory.h"
+#include "mysql/binlog/event/compression/factory.h"
 #include "sql/binlog/group_commit/bgc_ticket.h"
 #include "sql/memory/aligned_atomic.h"
+#include "sql/psi_memory_key.h"
 #include "sql/resource_blocker.h"  // resource_blocker::User
 #include "sql/system_variables.h"
 
@@ -41,7 +42,7 @@
 #include <vector>
 
 class Gtid_set;
-class Sid_map;
+class Tsid_map;
 class THD;
 struct Gtid;
 
@@ -82,9 +83,9 @@ class Session_consistency_gtids_ctx {
 
  private:
   /*
-   Local sid_map to enable a lock free m_gtid_set.
+   Local tsid_map to enable a lock free m_gtid_set.
    */
-  Sid_map *m_sid_map;
+  Tsid_map *m_tsid_map;
 
   /**
     Set holding the transaction identifiers of the gtids
@@ -143,7 +144,7 @@ class Session_consistency_gtids_ctx {
   Session_consistency_gtids_ctx();
 
   /**
-    The destructor. Deletes the m_gtid_set and the sid_map.
+    The destructor. Deletes the m_gtid_set and the tsid_map.
   */
   virtual ~Session_consistency_gtids_ctx();
 
@@ -223,26 +224,6 @@ class Session_consistency_gtids_ctx {
       const Session_consistency_gtids_ctx &rsc);
 };
 
-/*
-  This object encapsulates the state kept between transactions of the same
-  client in order to compute logical timestamps based on WRITESET_SESSION.
-*/
-class Dependency_tracker_ctx {
- public:
-  Dependency_tracker_ctx() : m_last_session_sequence_number(0) {}
-
-  void set_last_session_sequence_number(int64 sequence_number) {
-    m_last_session_sequence_number = sequence_number;
-  }
-
-  int64 get_last_session_sequence_number() {
-    return m_last_session_sequence_number;
-  }
-
- private:
-  int64 m_last_session_sequence_number;
-};
-
 /**
   This class tracks the last used GTID per session.
 */
@@ -255,8 +236,9 @@ class Last_used_gtid_tracker_ctx {
    Set the last used GTID the session.
 
    @param[in]  gtid  the used gtid.
+   @param[in]  sid   the used sid.
   */
-  void set_last_used_gtid(const Gtid &gtid);
+  void set_last_used_gtid(const Gtid &gtid, const mysql::gtid::Tsid &sid);
 
   /**
    Get the last used GTID the session.
@@ -265,18 +247,28 @@ class Last_used_gtid_tracker_ctx {
   */
   void get_last_used_gtid(Gtid &gtid);
 
+  /**
+   Get the last used TSID of the session.
+
+   @param[out]  tsid the used tsid.
+  */
+  void get_last_used_tsid(mysql::gtid::Tsid &tsid);
+
  private:
   std::unique_ptr<Gtid> m_last_used_gtid;
+  mysql::gtid::Tsid m_last_used_tsid;
 };
 
 class Transaction_compression_ctx {
-  using Compressor_t = binary_log::transaction::compression::Compressor;
-  using Grow_calculator_t = mysqlns::buffer::Grow_calculator;
-  using Factory_t = binary_log::transaction::compression::Factory;
+  using Compressor_t = mysql::binlog::event::compression::Compressor;
+  using Grow_calculator_t =
+      mysql::binlog::event::compression::buffer::Grow_calculator;
+  using Factory_t = mysql::binlog::event::compression::Factory;
 
  public:
   using Compressor_ptr_t = std::shared_ptr<Compressor_t>;
   using Managed_buffer_sequence_t = Compressor_t::Managed_buffer_sequence_t;
+  using Memory_resource_t = mysql::binlog::event::resource::Memory_resource;
 
   explicit Transaction_compression_ctx(PSI_memory_key key);
 
@@ -291,6 +283,7 @@ class Transaction_compression_ctx {
   Managed_buffer_sequence_t &managed_buffer_sequence();
 
  private:
+  Memory_resource_t m_managed_buffer_memory_resource;
   Managed_buffer_sequence_t m_managed_buffer_sequence;
   Compressor_ptr_t m_compressor;
 };
@@ -440,7 +433,6 @@ class Rpl_thd_context {
 
  private:
   Session_consistency_gtids_ctx m_session_gtids_ctx;
-  Dependency_tracker_ctx m_dependency_tracker_ctx;
   Last_used_gtid_tracker_ctx m_last_used_gtid_tracker_ctx;
   Transaction_compression_ctx m_transaction_compression_ctx;
   /** Manages interaction and keeps context w.r.t `Bgc_ticket_manager` */
@@ -453,9 +445,8 @@ class Rpl_thd_context {
   Rpl_thd_context &operator=(const Rpl_thd_context &rsc);
 
  public:
-  Rpl_thd_context()
-      : m_transaction_compression_ctx(
-            0),  // todo: specify proper key instead of 0
+  Rpl_thd_context(PSI_memory_key transaction_compression_ctx)
+      : m_transaction_compression_ctx(transaction_compression_ctx),
         rpl_channel_type(NO_CHANNEL_INFO) {}
 
   /**
@@ -466,10 +457,6 @@ class Rpl_thd_context {
 
   inline Session_consistency_gtids_ctx &session_gtids_ctx() {
     return m_session_gtids_ctx;
-  }
-
-  inline Dependency_tracker_ctx &dependency_tracker_ctx() {
-    return m_dependency_tracker_ctx;
   }
 
   inline Last_used_gtid_tracker_ctx &last_used_gtid_tracker_ctx() {

@@ -23,15 +23,15 @@
 
 #include "sql/sql_check_constraint.h"
 
-#include "libbinlogevents/include/binlog_event.h"  // UNDEFINED_SERVER_VERSION
-#include "m_ctype.h"                               // CHARSET_INFO
-#include "my_inttypes.h"                           // MYF, uchar
-#include "my_sys.h"                                // my_error
-#include "mysql/thread_type.h"                     // SYSTEM_THREAD_SLAVE_*
-#include "mysql_com.h"                             // NAME_CHAR_LEN
-#include "mysqld_error.h"                          // ER_*
-#include "sql/create_field.h"                      // Create_field
-#include "sql/enum_query_type.h"                   // QT_*
+#include "my_inttypes.h"                      // MYF, uchar
+#include "my_sys.h"                           // my_error
+#include "mysql/binlog/event/binlog_event.h"  // UNDEFINED_SERVER_VERSION
+#include "mysql/strings/m_ctype.h"            // CHARSET_INFO
+#include "mysql/thread_type.h"                // SYSTEM_THREAD_SLAVE_*
+#include "mysql_com.h"                        // NAME_CHAR_LEN
+#include "mysqld_error.h"                     // ER_*
+#include "sql/create_field.h"                 // Create_field
+#include "sql/enum_query_type.h"              // QT_*
 #include "sql/field.h"             // pre_validate_value_generator_expr
 #include "sql/item.h"              // Item, Item_field
 #include "sql/sql_class.h"         // THD
@@ -85,7 +85,7 @@ bool Sql_check_constraint_spec::pre_validate() {
 
 void Sql_check_constraint_spec::print_expr(THD *thd, String &out) {
   out.length(0);
-  Sql_mode_parse_guard parse_guard(thd);
+  const Sql_mode_parse_guard parse_guard(thd);
   auto flags = enum_query_type(QT_NO_DB | QT_NO_TABLE | QT_FORCE_INTRODUCERS);
   check_expr->print(thd, &out, flags);
 }
@@ -117,7 +117,7 @@ bool check_constraint_expr_refers_to_only_column(Item *check_expr,
                    (uchar *)&fields);
 
   // Expression does not refer to any columns.
-  if (fields.empty()) return false;
+  if (fields.empty()) return true;
 
   for (Item_field *cur_item : fields) {
     // Expression refers to some other column.

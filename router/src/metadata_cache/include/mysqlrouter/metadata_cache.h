@@ -55,7 +55,6 @@ constexpr const uint16_t kDefaultMetadataPort{32275};
 constexpr const std::string_view kDefaultMetadataAddress{"127.0.0.1:32275"};
 constexpr const std::string_view kDefaultMetadataUser{""};
 constexpr const std::string_view kDefaultMetadataPassword{""};
-constexpr const std::chrono::milliseconds kDefaultMetadataTTL{500};
 constexpr const std::chrono::milliseconds kDefaultAuthCacheTTL{
     std::chrono::seconds{-1}};
 constexpr const std::chrono::milliseconds kDefaultAuthCacheRefreshInterval{
@@ -66,10 +65,6 @@ constexpr const unsigned int kDefaultConnectTimeout{
     mysqlrouter::MySQLSession::kDefaultConnectTimeout};
 constexpr const unsigned int kDefaultReadTimeout{
     mysqlrouter::MySQLSession::kDefaultReadTimeout};
-
-constexpr const std::string_view kNodeTagHidden{"_hidden"};
-constexpr const std::string_view kNodeTagDisconnectWhenHidden{
-    "_disconnect_existing_sessions_when_hidden"};
 
 /** @class metadata_error
  * Class that represents all the exceptions that are thrown while fetching the

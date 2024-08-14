@@ -116,8 +116,7 @@ bool Query_result_union::send_data(THD *thd,
                   nullptr, false))
     return true; /* purecov: inspected */
 
-  if (table->is_union_or_table() && !check_unique_constraint(table))
-    return false;
+  if (table->is_union_or_table() && !check_unique_fields(table)) return false;
 
   const int error = table->file->ha_write_row(table->record[0]);
   if (!error) {
@@ -219,13 +218,19 @@ bool Query_result_union::create_result_table(
     tmp_table_param.force_hash_field_for_unique = true;
   }
 
+  const bool use_setop_hashing =
+      op != nullptr &&
+      (op->term_type() == QT_EXCEPT || op->term_type() == QT_INTERSECT) &&
+      thd_arg->optimizer_switch_flag(OPTIMIZER_SWITCH_HASH_SET_OPERATIONS);
+
   if (!(table = create_tmp_table(thd_arg, &tmp_table_param, visible_fields,
                                  nullptr, is_union_distinct, true, options,
                                  HA_POS_ERROR, table_alias)))
     return true;
   if (create_table) {
     table->file->ha_extra(HA_EXTRA_IGNORE_DUP_KEY);
-    if (table->hash_field) table->file->ha_index_init(0, false);
+    if (table->hash_field != nullptr && !use_setop_hashing)
+      table->file->ha_index_init(0, false);
   }
   return false;
 }
@@ -494,7 +499,7 @@ bool Query_expression::prepare_query_term(THD *thd, Query_term *qt,
       // by calling Item_aggregate_type::join_types including setting
       // nullability.  This works correctly for UNION, but not if we have
       // INTERSECT and/or EXCEPT in the tree of set operations. We can only do
-      // it correctly here prepare_query_term since this visits the tree
+      // it correctly here in prepare_query_term since this visits the tree
       // recursively as required by the rules.
       //
       Mem_root_array<bool> child_nullable(thd->mem_root, nullable.size(),
@@ -541,10 +546,15 @@ bool Query_expression::prepare_query_term(THD *thd, Query_term *qt,
       for (auto f : qb->visible_fields()) {
         f->set_nullable(nullable[idx]);
         assert(f->type() == Item::FIELD_ITEM);
-        if (nullable[idx])
+        if (nullable[idx]) {
           down_cast<Item_field *>(f)->field->clear_flag(NOT_NULL_FLAG);
-        else
-          down_cast<Item_field *>(f)->field->set_flag(NOT_NULL_FLAG);
+        } else {
+          if (qt->term_type() == QT_UNION)
+            down_cast<Item_field *>(f)->field->set_flag(NOT_NULL_FLAG);
+          // don't set NOT_NULL_FLAG for INTERSECT, EXCEPT since we may need
+          // to store a NULL value for this field during hashing even though the
+          // logical result of the set operation can not be NULL.
+        }
         idx++;
       }
 
@@ -1080,7 +1090,7 @@ bool Query_expression::optimize(THD *thd, TABLE *materialize_destination,
     assert(!is_simple());
     const bool calc_found_rows =
         (first_query_block()->active_options() & OPTION_FOUND_ROWS);
-    m_query_blocks_to_materialize = set_operation()->setup_materialize_set_op(
+    m_operands = set_operation()->setup_materialize_set_op(
         thd, materialize_destination,
         /*union_distinct_only=*/false, calc_found_rows);
   } else {
@@ -1197,8 +1207,7 @@ bool Query_expression::force_create_iterators(THD *thd) {
   @param thd      session state
   @param qt       query term for which we want to create a materialized access
                   path
-  @param query_blocks
-                  the constituent blocks we want to materialize
+  @param operands the constituent operands (query blocks) we want to materialize
   @param dest     the destination temporary (materialized) table
   @param limit    If not HA_POS_ERROR, the maximum number of rows allowed in
                   the materialized table
@@ -1206,17 +1215,17 @@ bool Query_expression::force_create_iterators(THD *thd) {
 */
 static AccessPath *add_materialized_access_path(
     THD *thd, Query_term *qt,
-    Mem_root_array<MaterializePathParameters::QueryBlock> &query_blocks,
-    TABLE *dest, ha_rows limit = HA_POS_ERROR) {
+    Mem_root_array<MaterializePathParameters::Operand> &operands, TABLE *dest,
+    ha_rows limit = HA_POS_ERROR) {
   AccessPath *path = qt->query_block()->join->root_access_path();
-  path = NewMaterializeAccessPath(thd, std::move(query_blocks),
+  path = NewMaterializeAccessPath(thd, std::move(operands),
                                   /*invalidators=*/nullptr, dest, path,
                                   /*cte=*/nullptr, /*unit=*/nullptr,
                                   /*ref_slice=*/-1,
                                   /*rematerialize=*/true, limit,
                                   /*reject_multiple_rows=*/false);
   EstimateMaterializeCost(thd, path);
-  return MoveCompositeIteratorsFromTablePath(path, *qt->query_block());
+  return MoveCompositeIteratorsFromTablePath(thd, path, *qt->query_block());
 }
 
 /**
@@ -1251,7 +1260,7 @@ AccessPath *make_set_op_access_path(
       } else {
         TABLE *const dest =
             qts->m_children[0]->setop_query_result_union()->table;
-        Mem_root_array<MaterializePathParameters::QueryBlock> query_blocks =
+        Mem_root_array<MaterializePathParameters::Operand> query_blocks =
             qts->setup_materialize_set_op(
                 thd, dest, union_all_subpaths != nullptr, calc_found_rows);
         const bool push_limit_down =
@@ -1294,18 +1303,18 @@ AccessPath *make_set_op_access_path(
                                               &join->tmp_table_param, dest,
                                               /*ref_slice=*/-1);
           param.join = join;
-          CopyBasicProperties(*join->root_access_path(), param.path);
+          CopyBasicProperties(*child_path, param.path);
           union_all_subpaths->push_back(param);
         }
       } else if (parent != nullptr) {
         assert(union_all_subpaths == nullptr);
         TABLE *const dest = qts->setop_query_result_union()->table;
-        MaterializePathParameters::QueryBlock param =
+        MaterializePathParameters::Operand param =
             qts->query_block()->setup_materialize_query_block(path, dest);
-        Mem_root_array<MaterializePathParameters::QueryBlock> query_blocks(
+        Mem_root_array<MaterializePathParameters::Operand> operands(
             thd->mem_root);
-        query_blocks.push_back(std::move(param));
-        path = add_materialized_access_path(thd, parent, query_blocks, dest);
+        operands.push_back(std::move(param));
+        path = add_materialized_access_path(thd, parent, operands, dest);
       }
     } break;
 
@@ -1315,19 +1324,19 @@ AccessPath *make_set_op_access_path(
                                      calc_found_rows);
       if (parent == nullptr) return path;
       TABLE *const dest = qts->setop_query_result_union()->table;
-      MaterializePathParameters::QueryBlock param =
+      MaterializePathParameters::Operand param =
           qts->query_block()->setup_materialize_query_block(path, dest);
-      Mem_root_array<MaterializePathParameters::QueryBlock> query_blocks(
+      Mem_root_array<MaterializePathParameters::Operand> operands(
           thd->mem_root);
-      query_blocks.push_back(std::move(param));
-      path = add_materialized_access_path(thd, parent, query_blocks, dest);
+      operands.push_back(std::move(param));
+      path = add_materialized_access_path(thd, parent, operands, dest);
     } break;
 
     case QT_QUERY_BLOCK: {
       TABLE *const dest = qt->setop_query_result_union()->table;
-      Mem_root_array<MaterializePathParameters::QueryBlock> query_blocks =
+      Mem_root_array<MaterializePathParameters::Operand> operands =
           parent->setup_materialize_set_op(thd, dest, false, calc_found_rows);
-      path = add_materialized_access_path(thd, parent, query_blocks, dest);
+      path = add_materialized_access_path(thd, parent, operands, dest);
     } break;
 
     default:
@@ -1345,21 +1354,20 @@ AccessPath *make_set_op_access_path(
 
   @returns materialization parameter
 */
-MaterializePathParameters::QueryBlock
-Query_block::setup_materialize_query_block(AccessPath *child_path,
-                                           TABLE *dst_table) {
+MaterializePathParameters::Operand Query_block::setup_materialize_query_block(
+    AccessPath *child_path, TABLE *dst_table) const {
   ConvertItemsToCopy(*join->fields, dst_table->visible_field_ptr(),
                      &join->tmp_table_param);
 
-  MaterializePathParameters::QueryBlock query_block;
-  query_block.subquery_path = child_path;
-  query_block.select_number = select_number;
-  query_block.join = join;
-  query_block.disable_deduplication_by_hash_field = false;
-  query_block.copy_items = true;
-  query_block.temp_table_param = &join->tmp_table_param;
-  query_block.is_recursive_reference = recursive_reference;
-  return query_block;
+  MaterializePathParameters::Operand operand;
+  operand.subquery_path = child_path;
+  operand.select_number = select_number;
+  operand.join = join;
+  operand.disable_deduplication_by_hash_field = false;
+  operand.copy_items = true;
+  operand.temp_table_param = &join->tmp_table_param;
+  operand.is_recursive_reference = recursive_reference != nullptr;
+  return operand;
 }
 
 /**
@@ -1376,12 +1384,11 @@ Query_block::setup_materialize_query_block(AccessPath *child_path,
                     if true, calculate rows found
    @returns array of materialization parameters
 */
-Mem_root_array<MaterializePathParameters::QueryBlock>
+Mem_root_array<MaterializePathParameters::Operand>
 Query_term_set_op::setup_materialize_set_op(THD *thd, TABLE *dst_table,
                                             bool union_distinct_only,
                                             bool calc_found_rows) {
-  Mem_root_array<MaterializePathParameters::QueryBlock> query_blocks(
-      thd->mem_root);
+  Mem_root_array<MaterializePathParameters::Operand> operands(thd->mem_root);
 
   int64 idx = -1;
   for (Query_term *term : m_children) {
@@ -1397,7 +1404,7 @@ Query_term_set_op::setup_materialize_set_op(THD *thd, TABLE *dst_table,
       child_path =
           make_set_op_access_path(thd, nullptr, term, nullptr, calc_found_rows);
 
-    MaterializePathParameters::QueryBlock param =
+    MaterializePathParameters::Operand param =
         term->query_block()->setup_materialize_query_block(child_path,
                                                            dst_table);
     param.m_first_distinct = m_first_distinct;
@@ -1405,13 +1412,13 @@ Query_term_set_op::setup_materialize_set_op(THD *thd, TABLE *dst_table,
     param.m_total_operands = m_children.size();
     param.disable_deduplication_by_hash_field =
         (has_mixed_distinct_operators() && !activate_deduplication);
-    query_blocks.push_back(std::move(param));
+    operands.push_back(std::move(param));
 
     if (idx == m_last_distinct && idx > 0 && union_distinct_only)
       // The rest will be done by appending.
       break;
   }
-  return query_blocks;
+  return operands;
 }
 
 void Query_expression::create_access_paths(THD *thd) {
@@ -1717,11 +1724,11 @@ bool Query_expression::ExecuteIteratorQuery(THD *thd) {
     return query_result->send_eof(thd);
   }
 
-  if (item) {
-    item->reset_value_registration();
+  if (item != nullptr) {
+    item->reset_has_values();
 
-    if (item->assigned()) {
-      item->assigned(false);  // Prepare for re-execution of this unit
+    if (item->is_value_assigned()) {
+      item->reset_value_assigned();  // Prepare for re-execution of this unit
       item->reset();
     }
   }
@@ -1787,6 +1794,9 @@ bool Query_expression::ExecuteIteratorQuery(THD *thd) {
         return true;
       }
       thd->get_stmt_da()->inc_current_row_for_condition();
+
+      DBUG_EXECUTE_IF("simulate_partial_result_set_scenario",
+                      my_error(ER_UNKNOWN_ERROR, MYF(0)););
     }
 
     // NOTE: join_cleanup must be done before we send EOF, so that we get the
@@ -1842,7 +1852,7 @@ void Query_expression::cleanup(bool full) {
     clear_root_access_path();
   }
 
-  m_query_blocks_to_materialize.clear();
+  m_operands.clear();
 
   for (auto qt : query_terms<QTC_PRE_ORDER>()) {
     if (qt->term_type() == QT_QUERY_BLOCK && slave == nullptr)
@@ -2070,7 +2080,7 @@ void Query_block::cleanup(bool full) {
     if (full) {
       assert(join->query_block == this);
       join->destroy();
-      ::destroy(join);
+      ::destroy_at(join);
       join = nullptr;
     } else
       join->cleanup();

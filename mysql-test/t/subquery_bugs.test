@@ -1195,6 +1195,7 @@ WHERE t3.pk+6 NOT IN (
     table1s.col_int_unique AS field4 FROM t2 AS table1s);
 
 --skip_if_hypergraph  # Depends on the query plan.
+--replace_regex $elide_costs
 eval explain format = tree $query;
 eval $query;
 
@@ -1950,55 +1951,76 @@ DROP TABLE t;
 SELECT(SELECT SIN(a.c7)),c7;
 
 --echo #
---echo # Bug#35877600: Assertion failure at handler::ha_index_end() at handler.cc
+--echo # Bug#34940790: Item_func_st_srid_observer::val_int():
+--echo #               Assertion `is_nullable()' failed.
+--echo #
+SELECT CAST(NULL < ANY (VALUES ROW(1), ROW(2)) AS SIGNED);
+
+--echo #
+--echo # Bug#35168738: Result diff seen with hypergraph off and on
+--echo #               (different number of rows)
+--echo #
+CREATE TABLE t (x INT);
+SELECT 1 WHERE 7 IN
+(SELECT COUNT(*) FROM t AS t1, t AS t2 WHERE t1.x = t2.x AND t1.x < t2.x);
+DROP TABLE t;
+
+--echo #
+--echo # Bug#32932636: HYPERGRAPH: ASSERTION `STRATEGY ==
+--echo # SUBQUERY_STRATEGY::CANDIDATE_FOR_IN2EXISTS_OR_MAT' FAILED.
+--echo #
+CREATE TABLE t (a INT);
+INSERT INTO t VALUES (1), (2), (3);
+SELECT NULL IN (SELECT (a IN (SELECT a FROM t)) FROM t);
+DROP TABLE t;
+
+--echo #
+--echo # Bug#35240913 Assertion `path->cost >= 0.0' failed.
 --echo #
 
-let $q1 = CREATE TABLE t( c0 int AUTO_INCREMENT primary key;
-let $n= 1;
-while ($n<100)
-{
-  let $q1 = $q1 , c$n CHAR(50);
-  inc $n;
-}
-let $q1 = $q1) ENGINE InnoDB;
---eval $q1
-let $n=2;
-while ($n<100)
-{
-  let $q2 = $q2 , c$n;
-  let $q3 = $q3 , $n;
-  inc $n;
-}
-let $q4 = INSERT INTO t(c1 $q2 ) SELECT c0 $q2 from t;
-let $q2 = INSERT INTO t(c1 $q2);
-let $q3 = values(1 $q3);
-let $q2 = $q2 $q3;
---eval $q2
-let $n=9;
-while ($n>0)
-{
-  --eval $q4
-  dec $n;
-}
-let $n=0;
-let $n1=0;
-while($n1<199)
-{
-  while ($n<100)
-  {
-    if($n1<199)
-    {
-    let $q5 = $q5 c$n AS col$n1,;
-    }
-    inc $n;
-    inc $n1;
-  }
-  let $n=0;
-}
-let $query = SELECT * FROM (SELECT $q5 c99 AS col199 FROM t UNION SELECT $q5 c99 AS col199 FROM t) t1;
-SELECT @@log_error_verbosity INTO @old_val;
-SET GLOBAL log_error_verbosity = 1;
---ERROR 1118
---eval $query
-SET GLOBAL log_error_verbosity = @old_val;
-drop table t;
+SET @old_opt_switch=@@optimizer_switch;
+
+SET optimizer_switch='batched_key_access=on,mrr_cost_based=off';
+
+CREATE TABLE num (n INT);
+INSERT INTO num VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+
+CREATE TABLE t1 (a INT, KEY(a), b INT, c INT);
+INSERT INTO t1 SELECT k, k, k FROM (SELECT x1.n+x2.n*10 k FROM num x1, num x2) d1;
+ANALYZE TABLE t1;
+
+--skip_if_hypergraph  # Depends on the query plan.
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t1 x0 WHERE x0.c IN
+  (SELECT MAX(x2.c) FROM t1 x1 JOIN t1 x2 ON x1.b=x2.a);
+
+DROP TABLE num, t1;
+
+SET @@optimizer_switch=@old_opt_switch;
+
+--echo #
+--echo # Bug #35535934: Subquery in Semi-join inner expressions causes assert...
+--echo #
+
+CREATE TABLE t(id INT, id2 INT, PRIMARY KEY (id));
+INSERT INTO t VALUES (1, 1), (2, 2), (3, 1), (4, 2);
+ANALYZE TABLE t;
+
+SELECT * FROM t t1 WHERE EXISTS
+  (SELECT t2.id FROM t t2 WHERE
+    t1.id = (SELECT id2 FROM t t3 WHERE t2.id = t3.id));
+
+DROP TABLE t;
+
+--echo #
+--echo # Bug#35944739: Assertion failure at CreateIteratorFromAccessPath
+--echo #               in access_path.cc
+--echo #
+
+CREATE TABLE t(i INT, KEY (i));
+INSERT INTO t VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10);
+ANALYZE TABLE t;
+--sorted_result
+SELECT 1 AS x FROM t
+WHERE i IN (SELECT i FROM (TABLE t) AS dt WHERE i < 2) GROUP BY x WITH ROLLUP;
+DROP TABLE t;

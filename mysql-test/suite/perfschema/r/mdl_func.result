@@ -336,14 +336,6 @@ create table t1 (a int);
 LOCK TABLE t1 READ;
 "---- Marker 6 ----"
 execute dump_metadata_locks;
-OBJECT_TYPE	COLUMN STATISTICS
-OBJECT_SCHEMA	test
-OBJECT_NAME	t1
-COLUMN_NAME	a
-LOCK_TYPE	SHARED_READ
-LOCK_DURATION	STATEMENT
-LOCK_STATUS	GRANTED
-OWNER_THREAD_ID	USER1
 OBJECT_TYPE	FUNCTION
 OBJECT_SCHEMA	test
 OBJECT_NAME	thread_id_name
@@ -388,14 +380,6 @@ execute dump_waits_history_long;
 LOCK TABLE t1 write;;
 "---- Marker 7 ----"
 execute dump_metadata_locks;
-OBJECT_TYPE	COLUMN STATISTICS
-OBJECT_SCHEMA	test
-OBJECT_NAME	t1
-COLUMN_NAME	a
-LOCK_TYPE	SHARED_READ
-LOCK_DURATION	STATEMENT
-LOCK_STATUS	GRANTED
-OWNER_THREAD_ID	USER1
 OBJECT_TYPE	FUNCTION
 OBJECT_SCHEMA	test
 OBJECT_NAME	thread_id_name
@@ -1082,6 +1066,8 @@ Performance_schema_index_stat_lost	0
 Performance_schema_locker_lost	0
 Performance_schema_memory_classes_lost	0
 Performance_schema_metadata_lock_lost	0
+Performance_schema_meter_lost	0
+Performance_schema_metric_lost	0
 Performance_schema_mutex_classes_lost	0
 Performance_schema_mutex_instances_lost	0
 Performance_schema_nested_statement_lost	0

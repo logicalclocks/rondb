@@ -24,10 +24,12 @@
 #ifndef DD_UPGRADE_IMPL__SERVER_H_INCLUDED
 #define DD_UPGRADE_IMPL__SERVER_H_INCLUDED
 
+#include <stdint.h>
 #include <stdio.h>
 
 #include <set>
 
+#include "my_inttypes.h"
 #include "my_sys.h"  // ErrorHandlerFunctionPointer
 #include "sql/dd/string_type.h"
 #include "sql/error_handler.h"  // Internal_error_handler
@@ -35,7 +37,9 @@
 class THD;
 class Time_zone;
 
-using sql_mode_t = ulonglong;
+struct CHARSET_INFO;
+
+using sql_mode_t = uint64_t;
 
 namespace dd {
 class Routine;
@@ -101,6 +105,7 @@ class Upgrade_error_counter {
   bool has_errors();
   bool has_too_many_errors();
   Upgrade_error_counter operator++(int);
+  Upgrade_error_counter operator--(int);
 };
 
 /**
@@ -116,6 +121,7 @@ class Syntax_error_handler : public Internal_error_handler {
   bool handle_condition(THD *, uint sql_errno, const char *,
                         Sql_condition::enum_severity_level *,
                         const char *msg) override;
+  void reset_last_condition();
 
   static bool has_too_many_errors();
   static bool has_errors();
@@ -144,6 +150,20 @@ class Routine_event_context_guard {
   Routine_event_context_guard(THD *thd);
   ~Routine_event_context_guard();
 };
+
+/**
+  Maintain a file named "mysql_upgrade_history" in the data directory.
+
+  The file will contain one entry for each upgrade. The format is structured
+  text on JSON format.
+
+  Errors will be written as warnings to the error log; if we e.g. fail to
+  open the upgrade history file, we will not abort the server since this file
+  is not considered a critical feature of the server.
+
+  @param initialize   If this is the initialization of the data directory.
+*/
+void update_upgrade_history_file(bool initialize);
 
 /**
   Performs validation on server metadata.

@@ -175,6 +175,7 @@ class Transporter {
   Uint32 get_max_send_buffer() const { return m_max_send_buffer; }
 
   Uint32 get_connect_count() const { return m_connect_count; }
+  bool is_encrypted() const { return m_encrypted; }
 
   void inc_overload_count() { m_overload_count++; }
   Uint32 get_overload_count() const { return m_overload_count; }
@@ -216,8 +217,9 @@ class Transporter {
               bool checksum, bool signalId, Uint32 max_send_buffer,
               bool _presend_checksum, Uint32 spintime);
 
-  virtual bool configure(const TransporterConfiguration* conf);
-  virtual bool configure_derived(const TransporterConfiguration* conf) = 0;
+  virtual bool configure(const TransporterConfiguration *conf);
+  virtual bool configure_derived(const TransporterConfiguration *conf) = 0;
+  void use_tls_client_auth();
 
   /**
    * Blocking, for max timeOut milli seconds
@@ -294,7 +296,7 @@ class Transporter {
   NdbSocket theSocket;
 
  private:
-  SocketClient *m_socket_client;
+  SocketClient *m_socket_client{nullptr};
   ndb_sockaddr m_connect_address;
 
   virtual bool send_is_possible(int timeout_millisec) const = 0;
@@ -320,6 +322,8 @@ protected:
   Uint32 m_timeOutMillis;
   bool m_connected;  // Are we connected
   TransporterType m_type;
+  bool m_require_tls;  // Configured mode
+  bool m_encrypted;    // Actual: true only if current connection is secure.
 
   /**
    * Statistics

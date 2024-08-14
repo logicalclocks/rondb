@@ -29,9 +29,9 @@
 #include <string>
 
 #include "mysql/harness/filesystem.h"  // Path
-#include "mysqlrouter/routing.h"       // RoutingStrategy, AccessMode
-#include "protocol/protocol.h"         // Protocol::Type
-#include "ssl_mode.h"
+#include "mysqlrouter/routing.h"       // RoutingStrategy, Mode
+#include "mysqlrouter/ssl_mode.h"
+#include "protocol/protocol.h"  // Protocol::Type
 #include "tcp_address.h"
 
 /**
@@ -45,8 +45,6 @@ class RoutingConfig {
   mysql_harness::TCPAddress bind_address;  //!< IP address to bind to
   mysql_harness::Path named_socket;  //!< unix domain socket path to bind to
   int connect_timeout{};             //!< connect-timeout in seconds
-  routing::AccessMode mode{
-      routing::AccessMode::kUndefined};  //!< read-only/read-write
   routing::RoutingStrategy routing_strategy{
       routing::RoutingStrategy::kUndefined};  //!< routing strategy (next-avail,
                                               //!< ...)
@@ -62,8 +60,17 @@ class RoutingConfig {
   std::string source_ssl_cipher;     //!< allowed TLS ciphers
   std::string source_ssl_curves;     //!< allowed TLS curves
   std::string source_ssl_dh_params;  //!< DH params
+  std::string
+      source_ssl_ca_file;  //!< CA file to used to verify sources' identity
+  std::string source_ssl_ca_dir;  //!< directory of CA files used to verify
+                                  //!< sources' identity
+  std::string
+      source_ssl_crl_file;  //!< CRL file used to check revoked certificates
+  std::string source_ssl_crl_dir;  //!< directory of CRL files
 
   SslMode dest_ssl_mode{};      //!< SslMode of the server side connection.
+  std::string dest_ssl_cert;    //!< Cert file
+  std::string dest_ssl_key;     //!< Key file
   SslVerify dest_ssl_verify{};  //!< How to verify the server-side cert.
   std::string dest_ssl_cipher;  //!< allowed TLS ciphers
   std::string
@@ -80,6 +87,34 @@ class RoutingConfig {
       connection_sharing_delay{};  //!< delay before an idling connection is
                                    //!< moved to the pool and connection sharing
                                    //!< is allowed.
+
+  bool client_ssl_session_cache_mode{true};
+  size_t client_ssl_session_cache_size{};
+  unsigned int client_ssl_session_cache_timeout{};
+
+  bool server_ssl_session_cache_mode{true};
+  size_t server_ssl_session_cache_size{};
+  unsigned int server_ssl_session_cache_timeout{};
+
+  std::chrono::milliseconds
+      connect_retry_timeout{};  //!< timeout of retrying after a transient
+                                //!< connect-failure.
+  routing::AccessMode access_mode{
+      routing::AccessMode::kUndefined};  //!< read_write,read_only,auto
+
+  bool wait_for_my_writes;
+  std::chrono::seconds
+      wait_for_my_writes_timeout{};  //!< how long to wait for writes to be
+                                     //!< applied before reads.
+
+  /*
+   * read the users routing_require attribute from
+   *
+   *   information_schema.user_attributes
+   *
+   * and enforce them.
+   */
+  bool router_require_enforce{true};
 };
 
 #endif  // ROUTING_CONFIG_INCLUDED

@@ -121,7 +121,7 @@ static inline ndb_socket_t ndb_accept(ndb_socket_t s, ndb_sockaddr *addr) {
   ndb_sockaddr::storage_type sa;
   socklen_t salen = sizeof(sa);
   socket_t sock = accept(s.s, &sa.common, &salen);
-  if (sock != -1 && addr != nullptr) {
+  if (sock != INVALID_SOCKET && addr != nullptr) {
     *addr = ndb_sockaddr(&sa.common, salen);
   }
   s = ndb_socket_create_from_native(sock);

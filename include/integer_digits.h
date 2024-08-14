@@ -31,6 +31,8 @@
 #include <limits>
 #include <type_traits>
 
+#include "mysql/attribute.h"
+
 /**
   @file
 
@@ -70,6 +72,7 @@ class TwoDigitWriter {
   @param[in,out] to the destination string
   @return pointer to the character just after the last digit
 */
+MY_ATTRIBUTE((visibility("default")))
 inline char *write_two_digits(int value, char *to) {
   static constexpr TwoDigitWriter writer;
   return writer.Write(value, to);

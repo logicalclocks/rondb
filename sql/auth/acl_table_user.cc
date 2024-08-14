@@ -30,18 +30,17 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "field_types.h"   /* MYSQL_TYPE_ENUM, MYSQL_TYPE_JSON */
 #include "lex_string.h"    /* LEX_CSTRING */
-#include "m_ctype.h"       /* my_charset_* */
-#include "m_string.h"      /* STRING_WITH_LEN */
 #include "my_base.h"       /* HA_ERR_* */
 #include "my_dbug.h"       /* DBUG macros */
 #include "my_inttypes.h"   /* MYF, uchar, longlong, ulonglong */
-#include "my_loglevel.h"   /* WARNING_LEVEL, loglevel, ERROR_LEVEL */
 #include "my_sqlcommand.h" /* SQLCOM_ALTER_USER, SQLCOM_GRANT */
 #include "my_sys.h"        /* my_error */
 #include "mysql/components/services/bits/psi_bits.h" /* PSI_NOT_INSTRUMENTED */
 #include "mysql/components/services/log_builtins.h"  /* for LogEvent, LogErr */
+#include "mysql/my_loglevel.h"                       /* WARNING_LEVEL */
 #include "mysql/plugin.h" /* st_mysql_plugin, MYSQL_AUTHENTICATION_PLUGIN */
 #include "mysql/plugin_auth.h"      /* st_mysql_auth */
+#include "mysql/strings/m_ctype.h"  /* my_charset_* */
 #include "mysql_time.h"             /* MYSQL_TIME, MYSQL_TIMESTAMP_ERROR */
 #include "mysqld_error.h"           /* ER_* */
 #include "prealloced_array.h"       /* Prealloced_array */
@@ -71,6 +70,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "sql/table.h"            /* TABLE, TABLE_SHARE, ... */
 #include "sql/tztime.h"           /* Time_zone */
 #include "sql_string.h"           /* String */
+#include "string_with_len.h"      /* STRING_WITH_LEN */
 #include "template_utils.h"       /* down_cast */
 #include "typelib.h"              /* TYPELIB */
 #include "violite.h"              /* SSL_* */
@@ -258,7 +258,7 @@ bool Acl_user_attributes::deserialize_password_lock(
         return true;
       const Json_int *password_lock_time_days =
           down_cast<const Json_int *>(password_lock_time_days_dom);
-      longlong val = password_lock_time_days->value();
+      const longlong val = password_lock_time_days->value();
       if (val < -1 || val > INT_MAX) return true;
       m_password_lock.password_lock_time_days = val;
     }
@@ -272,7 +272,7 @@ bool Acl_user_attributes::deserialize_password_lock(
       }
       const Json_int *failed_login_attempts =
           down_cast<const Json_int *>(failed_login_attempts_dom);
-      longlong val = failed_login_attempts->value();
+      const longlong val = failed_login_attempts->value();
       if (val < 0 || val > UINT_MAX) {
         m_password_lock.password_lock_time_days = 0;
         return true;
@@ -495,7 +495,7 @@ Acl_table_user_writer::~Acl_table_user_writer() {
 */
 Acl_table_user_writer_status Acl_table_user_writer::driver() {
   bool builtin_plugin = false;
-  bool update_password = (m_what_to_update.m_what & PLUGIN_ATTR);
+  const bool update_password = (m_what_to_update.m_what & PLUGIN_ATTR);
   Table_op_error_code error;
   LEX *lex = m_thd->lex;
   Acl_table_user_writer_status return_value;
@@ -579,7 +579,7 @@ Acl_table_user_writer_status Acl_table_user_writer::driver() {
     @retval true  Error positioning table.
 */
 bool Acl_table_user_writer::setup_table(int &error, bool &builtin_plugin) {
-  bool update_password = (m_what_to_update.m_what & PLUGIN_ATTR);
+  const bool update_password = (m_what_to_update.m_what & PLUGIN_ATTR);
 
   switch (m_operation) {
     case Acl_table_operation::OP_INSERT:
@@ -621,7 +621,7 @@ bool Acl_table_user_writer::setup_table(int &error, bool &builtin_plugin) {
           now.
         */
         if (m_revoke_grant) {
-          bool ret = report_missing_user_grant_message(
+          const bool ret = report_missing_user_grant_message(
               m_thd, false, m_combo->user.str, m_combo->host.str, nullptr,
               ER_NONEXISTING_GRANT);
           /*
@@ -858,7 +858,7 @@ bool Acl_table_user_writer::update_privileges(
     Acl_table_user_writer_status &return_value) {
   if (m_what_to_update.m_what & ACCESS_RIGHTS_ATTR) {
     /* Update table columns with new privileges */
-    char what = m_revoke_grant ? 'N' : 'Y';
+    const char what = m_revoke_grant ? 'N' : 'Y';
     Field **tmp_field;
     Access_bitmask priv;
     for (tmp_field = m_table->field + 2, priv = SELECT_ACL;
@@ -980,7 +980,7 @@ bool Acl_table_user_writer::update_ssl_properties() {
 */
 bool Acl_table_user_writer::update_user_resources() {
   if (m_what_to_update.m_what & RESOURCE_ATTR) {
-    USER_RESOURCES mqh = m_thd->lex->mqh;
+    const USER_RESOURCES mqh = m_thd->lex->mqh;
     if (mqh.specified_limits & USER_RESOURCES::QUERIES_PER_HOUR)
       m_table->field[m_table_schema->max_questions_idx()]->store(
           (longlong)mqh.questions, true);
@@ -1432,7 +1432,7 @@ void Acl_table_user_reader::reset_acl_user(ACL_USER &user) {
   @param [out] user ACL_USER structure
 */
 void Acl_table_user_reader::read_account_name(ACL_USER &user) {
-  bool check_no_resolve = specialflag & SPECIAL_NO_RESOLVE;
+  const bool check_no_resolve = specialflag & SPECIAL_NO_RESOLVE;
   user.host.update_hostname(
       get_field(&m_mem_root, m_table->field[m_table_schema->host_idx()]));
   user.user =
@@ -1654,7 +1654,7 @@ bool Acl_table_user_reader::read_plugin_info(
           g_cached_authentication_plugins->get_cached_plugin_ref(
               PLUGIN_MYSQL_NATIVE_PASSWORD);
       if (native_plugin) {
-        uint password_len = password ? strlen(password) : 0;
+        const uint password_len = password ? strlen(password) : 0;
         st_mysql_auth *auth = (st_mysql_auth *)plugin_decl(native_plugin)->info;
         if (auth->validate_authentication_string(password, password_len) == 0) {
           // auth_string takes precedence over password
@@ -1899,7 +1899,7 @@ bool Acl_table_user_reader::read_user_attributes(ACL_USER &user) {
       }
 
       // 1. Read additional password
-      std::string additional_password =
+      const std::string additional_password =
           user_attributes.get_additional_password();
       if (additional_password.length()) {
         user.credentials[SECOND_CRED].m_auth_string.length =
@@ -1956,9 +1956,10 @@ bool Acl_table_user_reader::read_user_attributes(ACL_USER &user) {
   @param [in] user ACL_USER structure
 */
 void Acl_table_user_reader::add_row_to_acl_users(ACL_USER &user) {
-  LEX_CSTRING auth = {user.credentials[PRIMARY_CRED].m_auth_string.str,
-                      user.credentials[PRIMARY_CRED].m_auth_string.length};
-  LEX_CSTRING second_auth = {
+  const LEX_CSTRING auth = {
+      user.credentials[PRIMARY_CRED].m_auth_string.str,
+      user.credentials[PRIMARY_CRED].m_auth_string.length};
+  const LEX_CSTRING second_auth = {
       user.credentials[SECOND_CRED].m_auth_string.str,
       user.credentials[SECOND_CRED].m_auth_string.length};
   LEX_ALTER password_life;
@@ -2166,9 +2167,9 @@ int replace_user_table(THD *thd, TABLE *table, LEX_USER *combo,
   if (!(return_value.error || return_value.skip_cache_update)) {
     bool old_row_exists = (user_table.get_operation_mode() ==
                            acl_table::Acl_table_operation::OP_UPDATE);
-    bool builtin_plugin =
+    const bool builtin_plugin =
         auth_plugin_is_built_in(combo->first_factor_auth_info.plugin.str);
-    bool update_password = (what_to_update.m_what & PLUGIN_ATTR);
+    const bool update_password = (what_to_update.m_what & PLUGIN_ATTR);
 
     /*
       Convert the time when the password was changed from timeval
@@ -2389,7 +2390,7 @@ bool read_user_application_user_metadata_from_table(
   }
   auto attributes_dom = Json_dom::parse(
       attributes_field, strlen(attributes_field), [](const char *, size_t) {},
-      JsonDocumentDefaultDepthHandler);
+      JsonDepthErrorHandler);
   table->file->ha_index_end();
   if (attributes_dom == nullptr ||
       attributes_dom->json_type() != enum_json_type::J_OBJECT) {
@@ -2401,9 +2402,8 @@ bool read_user_application_user_metadata_from_table(
       json_ob->get(acl_table::attribute_type_to_str
                        [acl_table::User_attribute_type::METADATA]);
   if (metadata_dom == nullptr) return false;  // success but out string is empty
-  Json_wrapper wr(metadata_dom, true);
-  wr.to_string(metadata_str, true, __FUNCTION__,
-               JsonDocumentDefaultDepthHandler);
+  const Json_wrapper wr(metadata_dom, true);
+  wr.to_string(metadata_str, true, __FUNCTION__, JsonDepthErrorHandler);
   if (!mode_no_backslash_escapes) double_the_backslash(metadata_str);
   return false;
 }

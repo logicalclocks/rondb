@@ -25,10 +25,11 @@
   @file include/multi_factor_passwordopt-vars.h
 */
 
-#include "multi_factor_passwordopt-vars.h"
+#include "client/include/multi_factor_passwordopt-vars.h"
 #include "my_getopt.h"
 #include "mysql.h"
 #include "mysql/service_mysql_alloc.h"  // my_free, my_strdup
+#include "nulls.h"
 
 char *opt_password[MAX_AUTH_FACTORS] = {nullptr};
 bool tty_password[MAX_AUTH_FACTORS] = {false};

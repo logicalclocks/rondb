@@ -52,18 +52,19 @@
 #include <utility>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "map_helpers.h"
 #include "my_bitmap.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_pointer_arithmetic.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
+#include "nulls.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"         // check_table_access
 #include "sql/dd/types/abstract_table.h"  // dd::enum_table_type
@@ -76,7 +77,7 @@
 #include "sql/mdl.h"
 #include "sql/protocol.h"
 #include "sql/psi_memory_key.h"
-#include "sql/sql_audit.h"  // mysql_audit_table_access_notify
+#include "sql/sql_audit.h"  // mysql_event_tracking_table_access_notify
 #include "sql/sql_base.h"   // close_thread_tables
 #include "sql/sql_class.h"
 #include "sql/sql_const.h"
@@ -387,8 +388,6 @@ bool Sql_cmd_handler_read::execute(THD *thd) {
   TABLE *table, *backup_open_tables;
   MYSQL_LOCK *lock;
   Protocol *protocol = thd->get_protocol();
-  char buff[MAX_FIELD_WIDTH];
-  String buffer(buff, sizeof(buff), system_charset_info);
   int error, keyno = -1;
   uint num_rows;
   uchar *key = nullptr;
@@ -558,7 +557,7 @@ retry:
       Privilege check not needed since all columns are selected and checked
       by insert_fields().
     */
-    Column_privilege_tracker column_privilege(thd, 0);
+    const Column_privilege_tracker column_privilege(thd, 0);
 
     if (table->query_id != thd->query_id) cond->cleanup();  // File was reopened
     if ((!cond->fixed && cond->fix_fields(thd, &cond)) || cond->check_cols(1))
@@ -599,7 +598,7 @@ retry:
                   DBUG_SET("-d,simulate_net_write_failure"););
   if (res) goto err;
 
-  if (mysql_audit_table_access_notify(thd, hash_tables)) goto err;
+  if (mysql_event_tracking_table_access_notify(thd, hash_tables)) goto err;
 
   /*
     In ::external_lock InnoDB resets the fields which tell it that
@@ -686,7 +685,7 @@ retry:
           Privilege check not needed since all columns are selected and checked
           by insert_fields().
         */
-        Column_privilege_tracker column_privilege(thd, 0);
+        const Column_privilege_tracker column_privilege(thd, 0);
 
         auto it_ke = m_key_expr->begin();
         key_part_map keypart_map;
@@ -703,7 +702,7 @@ retry:
             goto err;
           }
           old_map = dbug_tmp_use_all_columns(table, table->write_set);
-          type_conversion_status conv_status =
+          const type_conversion_status conv_status =
               item->save_in_field(key_part->field, true);
           dbug_tmp_restore_column_map(table->write_set, old_map);
           /*
@@ -749,9 +748,10 @@ retry:
       goto ok;
     }
     thd->inc_examined_row_count(1);
-    if (cond && !cond->val_int()) {
+    if (cond != nullptr) {
+      const bool result = cond->val_int();
       if (thd->is_error()) goto err;
-      continue;
+      if (!result) continue;
     }
     if (num_rows >= offset_limit_cnt) {
       protocol->start_row();

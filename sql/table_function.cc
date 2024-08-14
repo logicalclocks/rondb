@@ -29,15 +29,16 @@
 #include <utility>
 
 #include "field_types.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_sys.h"
 #include "mysql/components/services/bits/psi_bits.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"
 #include "sql-common/json_dom.h"
+#include "sql-common/json_error_handler.h"
 #include "sql-common/json_path.h"
+#include "sql/current_thd.h"
 #include "sql/error_handler.h"
 #include "sql/field.h"
 #include "sql/handler.h"
@@ -53,6 +54,7 @@
 #include "sql/table.h"
 #include "sql/thd_raii.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 
 /******************************************************************************
   Implementation of Table_function
@@ -127,7 +129,7 @@ bool Table_function_json::init_json_table_col_lists(uint *nest_idx,
     This need to be set up once per statement, as it doesn't change between
     EXECUTE calls.
   */
-  Prepared_stmt_arena_holder ps_arena_holder(current_thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(current_thd);
 
   while ((col = li++)) {
     String buffer;
@@ -163,7 +165,7 @@ bool Table_function_json::init_json_table_col_lists(uint *nest_idx,
           Json_dom_ptr dom;  //@< we'll receive a DOM here
           JsonParseDefaultErrorHandler parse_handler("JSON_TABLE", 0);
           if (parse_json(*default_string, &dom, true, parse_handler,
-                         JsonDocumentDefaultDepthHandler) ||
+                         JsonDepthErrorHandler) ||
               (col->sql_type != MYSQL_TYPE_JSON && !dom->is_scalar())) {
             my_error(ER_INVALID_DEFAULT, MYF(0), col->field_name);
             return true;
@@ -177,7 +179,7 @@ bool Table_function_json::init_json_table_col_lists(uint *nest_idx,
           Json_dom_ptr dom;  //@< we'll receive a DOM here
           JsonParseDefaultErrorHandler parse_handler("JSON_TABLE", 0);
           if (parse_json(*default_string, &dom, true, parse_handler,
-                         JsonDocumentDefaultDepthHandler) ||
+                         JsonDepthErrorHandler) ||
               (col->sql_type != MYSQL_TYPE_JSON && !dom->is_scalar())) {
             my_error(ER_INVALID_DEFAULT, MYF(0), col->field_name);
             return true;
@@ -757,7 +759,9 @@ bool Table_function_json::print(const THD *thd, String *str,
           str->append(')'));
 }
 
-table_map Table_function_json::used_tables() { return source->used_tables(); }
+table_map Table_function_json::used_tables() const {
+  return source->used_tables();
+}
 
 void Table_function_json::do_cleanup() {
   source->cleanup();

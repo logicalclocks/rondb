@@ -69,14 +69,14 @@
 --source include/have_binlog_format_row.inc
 
 --let $rpl_skip_start_slave=1
---source include/master-slave.inc
+--source include/rpl/init_source_replica.inc
 
 --echo
 --echo # 1. Start the receiver
 --echo
 
---source include/rpl_connection_slave.inc
---source include/start_slave_io.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_receiver.inc
 
 --echo
 --echo # 2. Create a table
@@ -84,14 +84,14 @@
 --echo #    transaction
 --echo
 
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 CREATE TABLE t (a LONGBLOB) ENGINE = InnoDB;
 INSERT INTO t VALUES (REPEAT('a', 1000));
---source include/sync_slave_io_with_master.inc
+--source include/rpl/sync_to_replica_received.inc
 FLUSH RELAY LOGS;
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 INSERT INTO t VALUES (REPEAT('a', 1000));
---source include/sync_slave_io_with_master.inc
+--source include/rpl/sync_to_replica_received.inc
 FLUSH RELAY LOGS;
 
 --echo
@@ -99,43 +99,43 @@ FLUSH RELAY LOGS;
 --echo #    will block the receiver
 --echo
 
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 INSERT INTO t VALUES (REPEAT('a', 10000));
 
 --echo
 --echo # 5. Run replication applier
 --echo
 
---source include/rpl_connection_slave.inc
+--source include/rpl/connection_replica.inc
 --let $wait_condition=SELECT COUNT(*)=1 FROM performance_schema.threads WHERE name='thread/sql/replica_io' AND processlist_state= 'Waiting for the replica SQL thread to free relay log space'
 --source include/wait_condition.inc
---source include/start_slave_sql.inc
+--source include/rpl/start_applier.inc
 
 --echo
 --echo # 6. Synchronize source and replica servers
 --echo
 
---source include/rpl_connection_master.inc
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/connection_source.inc
+--source include/rpl/sync_to_replica.inc
 
 --echo
 --echo # 7. Execute a transaction that cannot fit into the relay log space
 --echo #    limit. After purging relay log, the limit is ignored.
 --echo
 
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 INSERT INTO t VALUES (REPEAT('a', 15000));
 
 --echo
 --echo # 8. Synchronize source and replica servers
 --echo
 
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
 --echo
 --echo # Clean up
 --echo
 
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 DROP TABLE t;
---source include/rpl_end.inc
+--source include/rpl/deinit.inc

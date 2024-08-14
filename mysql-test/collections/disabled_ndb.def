@@ -16,7 +16,7 @@
 ndb_big.smoke : BUG#29110705 Not ready for automated testing yet.
 
 # ndb_rpl suite tests
-ndb_rpl.ndb_rpl_binlog_format_errors       : BUG#26078612 PB2 TEST FAILURE
+ndb_rpl.ndb_rpl_binlog_format_errors       : BUG#29776083 EXPLICIT BINLOG INJECTION WITH SELF LOGGING ENGINES IS BROKEN
 
 # ndb suite tests
 ndb.ndb_insert            : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOES NOT FAIL
@@ -25,11 +25,12 @@ ndb.ndb_parallel_undo_log : BUG#28794807 FIX NDB.NDB_PARALLEL_UNDO_LOG TESTCASE 
 ndb.ndb_read_balance      : WL#12345678 Unstable results
 ndb.ndb_basic_3rpl_2ng    : WL#12345678 Only intended for start-and-exit
 ndb.ndb_restore_encrypted_backups :BUG#11761083 NDB : MYSQLD DEFAULT VALUES IN FRM EMBEDDED IN BACKUP NOT ENDIAN-CONVERTE
-ndb.ndb_76_inplace_upgrade : WL#12345678 No interest in upgrade from 7.6
-ndb.ndb_76_inplace_upgrade_triggers : WL#12345678 No interest in upgrade from 7.6
 ndb.ndb_restore_schema_tolerance : WL#12345678 Needs fixing since RonDB changes of ndb_restore
 ndb.ndb_multi_mgmd : WL#12345678 Needs to be looked into
 ndb.ndb_suma_handover     : Bug#35539093 Error insert 13048 never hit in ndb.ndb_suma_handover 
+
+# ndb_tls suite tests
+ndb_tls.clusterj  @windows: Bug#35645569 Cluster/J on Windows needs OpenSSL Applink
 
 # Failure to acquire MDL lock properly during drop database with uppercase
 # database name, affects lower_case_table_names=2 platform

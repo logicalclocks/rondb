@@ -306,8 +306,7 @@ static const byte infimum_supremum_compact[] = {
 @param[in]      comp            nonzero=compact page format
 @param[in]      page_type       page type
 @return pointer to the page */
-static page_t *page_create_low(buf_block_t *block, ulint comp,
-                               page_type_t page_type) {
+page_t *page_create_low(buf_block_t *block, ulint comp, page_type_t page_type) {
   page_t *page;
 
   static_assert(PAGE_BTR_IBUF_FREE_LIST + FLST_BASE_NODE_SIZE <= PAGE_DATA,
@@ -821,13 +820,13 @@ static inline void page_delete_rec_list_write_log(
 
 /** Parses a log record of a record list end or start deletion.
  @return end of log record or NULL */
-byte *page_parse_delete_rec_list(
+const byte *page_parse_delete_rec_list(
     mlog_id_t type,      /*!< in: MLOG_LIST_END_DELETE,
                          MLOG_LIST_START_DELETE,
                          MLOG_COMP_LIST_END_DELETE or
                          MLOG_COMP_LIST_START_DELETE */
-    byte *ptr,           /*!< in: buffer */
-    byte *end_ptr,       /*!< in: buffer end */
+    const byte *ptr,     /*!< in: buffer */
+    const byte *end_ptr, /*!< in: buffer end */
     buf_block_t *block,  /*!< in/out: buffer block or NULL */
     dict_index_t *index, /*!< in: record descriptor */
     mtr_t *mtr)          /*!< in: mtr or NULL */
@@ -1529,7 +1528,7 @@ void page_rec_print(const rec_t *rec, const ulint *offsets) {
   rec_validate(rec, offsets);
 }
 
-#ifdef UNIV_BTR_PRINT
+#ifdef UNIV_DEBUG
 /** This is used to print the contents of the directory for
  debugging purposes. */
 void page_dir_print(page_t *page, /*!< in: index page */
@@ -1578,25 +1577,26 @@ void page_print_list(
   page_cur_t cur;
   ulint count;
   ulint n_recs;
-  mem_heap_t *heap = NULL;
+  mem_heap_t *heap = nullptr;
   ulint offsets_[REC_OFFS_NORMAL_SIZE];
   ulint *offsets = offsets_;
   rec_offs_init(offsets_);
 
   ut_a(page_is_comp(page) == dict_table_is_comp(index->table));
 
-  fprint(stderr,
-         "--------------------------------\n"
-         "PAGE RECORD LIST\n"
-         "Page address %p\n",
-         page);
+  fprintf(stderr,
+          "--------------------------------\n"
+          "PAGE RECORD LIST\n"
+          "Page address %p\n",
+          page);
 
   n_recs = page_get_n_recs(page);
 
   page_cur_set_before_first(block, &cur);
   count = 0;
   for (;;) {
-    offsets = rec_get_offsets(cur.rec, index, offsets, ULINT_UNDEFINED, &heap);
+    offsets = rec_get_offsets(cur.rec, index, offsets, ULINT_UNDEFINED,
+                              UT_LOCATION_HERE, &heap);
     page_rec_print(cur.rec, offsets);
 
     if (count == pr_n) {
@@ -1617,8 +1617,8 @@ void page_print_list(
     page_cur_move_to_next(&cur);
 
     if (count + pr_n >= n_recs) {
-      offsets =
-          rec_get_offsets(cur.rec, index, offsets, ULINT_UNDEFINED, &heap);
+      offsets = rec_get_offsets(cur.rec, index, offsets, ULINT_UNDEFINED,
+                                UT_LOCATION_HERE, &heap);
       page_rec_print(cur.rec, offsets);
     }
     count++;
@@ -1670,7 +1670,7 @@ void page_print(buf_block_t *block,  /*!< in: index page */
   page_dir_print(page, dn);
   page_print_list(block, index, rn);
 }
-#endif /* UNIV_BTR_PRINT */
+#endif /* UNIV_DEBUG */
 #endif /* !UNIV_HOTBACKUP */
 
 /** The following is used to validate a record on a page. This function
@@ -2123,7 +2123,8 @@ bool page_is_spatial_non_leaf(const rec_t *rec, dict_index_t *index) {
   return (dict_index_is_spatial(index) && !page_is_leaf(page_align(rec)));
 }
 
-bool page_validate(const page_t *page, dict_index_t *index) {
+bool page_validate(const page_t *page, dict_index_t *index,
+                   bool check_min_rec) {
   const page_dir_slot_t *slot;
   mem_heap_t *heap;
   byte *buf;
@@ -2260,32 +2261,34 @@ bool page_validate(const page_t *page, dict_index_t *index) {
 
     /* REC_INFO_MIN_REC_FLAG must be set only for first record on first non-leaf
     page on a level. */
-    if (rec_is_min_rec_flag_set(rec, page_is_comp(page))) {
-      if (!page_rec_is_user_rec(rec) ||
-          !(is_first_non_leaf_page && page_rec_is_first(rec, page))) {
-        ib::error(ER_CHECK_TABLE_MIN_REC_FLAG_SET, (unsigned long int)page_no,
-                  (unsigned long int)btr_page_get_level(page), index->name(),
-                  index->table_name);
-        DBUG_EXECUTE_IF(
-            "check_table_set_wrong_min_bit", ut_ad(page_is_comp(page));
-            rec_set_info_bits_new(
-                const_cast<rec_t *>(rec),
-                rec_get_info_bits(rec, true) & ~REC_INFO_MIN_REC_FLAG););
-        goto func_exit;
-      }
-    } else {
-      if (is_first_non_leaf_page && page_rec_is_user_rec(rec) &&
-          page_rec_is_first(rec, page)) {
-        ib::error(ER_CHECK_TABLE_MIN_REC_FLAG_NOT_SET,
-                  (unsigned long int)page_no,
-                  (unsigned long int)btr_page_get_level(page), index->name(),
-                  index->table_name);
-        DBUG_EXECUTE_IF(
-            "check_table_reset_correct_min_bit", ut_ad(page_is_comp(page));
-            rec_set_info_bits_new(
-                const_cast<rec_t *>(rec),
-                rec_get_info_bits(rec, true) | REC_INFO_MIN_REC_FLAG););
-        goto func_exit;
+    if (check_min_rec) {
+      if (rec_is_min_rec_flag_set(rec, page_is_comp(page))) {
+        if (!page_rec_is_user_rec(rec) ||
+            !(is_first_non_leaf_page && page_rec_is_first(rec, page))) {
+          ib::error(ER_CHECK_TABLE_MIN_REC_FLAG_SET, (unsigned long int)page_no,
+                    (unsigned long int)btr_page_get_level(page), index->name(),
+                    index->table_name);
+          DBUG_EXECUTE_IF(
+              "check_table_set_wrong_min_bit", ut_ad(page_is_comp(page));
+              rec_set_info_bits_new(
+                  const_cast<rec_t *>(rec),
+                  rec_get_info_bits(rec, true) & ~REC_INFO_MIN_REC_FLAG););
+          goto func_exit;
+        }
+      } else {
+        if (is_first_non_leaf_page && page_rec_is_user_rec(rec) &&
+            page_rec_is_first(rec, page)) {
+          ib::error(ER_CHECK_TABLE_MIN_REC_FLAG_NOT_SET,
+                    (unsigned long int)page_no,
+                    (unsigned long int)btr_page_get_level(page), index->name(),
+                    index->table_name);
+          DBUG_EXECUTE_IF(
+              "check_table_reset_correct_min_bit", ut_ad(page_is_comp(page));
+              rec_set_info_bits_new(
+                  const_cast<rec_t *>(rec),
+                  rec_get_info_bits(rec, true) | REC_INFO_MIN_REC_FLAG););
+          goto func_exit;
+        }
       }
     }
 

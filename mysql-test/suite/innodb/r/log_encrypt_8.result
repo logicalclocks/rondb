@@ -1,6 +1,16 @@
 #
 # 35289234 - Can't disable encryption once redo log encryption is enabled
 #
+# ----------------------------------------------------------------------
+# Setup
+# Creating local configuration file for keyring component: component_keyring_file
+# Creating manifest file for current MySQL server instance
+# Re-starting mysql server with manifest file
+# ----------------------------------------------------------------------
+# restart: --innodb_redo_log_encrypt=ON --plugin-dir=PLUGIN_DIR_OPT
+SHOW VARIABLES LIKE "%innodb_redo_log_encrypt%";
+Variable_name	Value
+innodb_redo_log_encrypt	ON
 CREATE TABLE t1(c1 INT, c2 char(20)) ENGINE = InnoDB;
 SHOW CREATE TABLE t1;
 Table	Create Table
@@ -37,8 +47,16 @@ c1	c2
 0	aaaaa
 0	aaaaa
 SET GLOBAL innodb_redo_log_encrypt=OFF;
+Do a slow shutdowm
 SET GLOBAL innodb_fast_shutdown = 0;
-# restart:--innodb_redo_log_encrypt=OFF
+# Removing manifest file for current MySQL server instance
+# Removing local keyring file for keyring component: component_keyring_file
+# Removing local configuration file for keyring component: component_keyring_file
+Restart with no encryption and no key_ring
+# restart:
+SHOW VARIABLES LIKE "%innodb_redo_log_encrypt%";
+Variable_name	Value
+innodb_redo_log_encrypt	OFF
 SELECT * FROM t1 ORDER BY c1 LIMIT 10;
 c1	c2
 0	aaaaa
@@ -52,4 +70,3 @@ c1	c2
 0	aaaaa
 0	aaaaa
 DROP TABLE t1;
-# restart:

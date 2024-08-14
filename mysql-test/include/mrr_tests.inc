@@ -79,7 +79,7 @@ select b,filler from t3 where (b>='c-1011=w' and b<= 'c-1018=w') or
 #
 # Now try different keypart types and special values
 #
-create table t4 (a varchar(10), b int, c char(10), filler char(200),
+create table t4 (a varchar(10), b int, c char(12), filler char(200),
                  key idx1 (a, b, c)) charset utf8mb4;
 
 # insert buffer_size * 1.5 all-NULL tuples
@@ -144,7 +144,7 @@ CREATE TABLE t1 (
   PRIMARY KEY (ID),
   KEY (key1),
   KEY (key2)
-) AUTO_INCREMENT=6 DEFAULT CHARSET=utf8;
+) AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb3;
 
 INSERT INTO t1 VALUES
 (1,NULL,1130,NULL,'Hello',NULL,100,'bodyandsubject',0),
@@ -506,7 +506,7 @@ INSERT INTO t3
 
 CREATE TABLE t4 (
   pk int(11) NOT NULL,
-  c1_key varchar(10) CHARACTER SET utf8 NOT NULL,
+  c1_key varchar(10) CHARACTER SET utf8mb3 NOT NULL,
   c2 varchar(10) NOT NULL,
   c3 varchar(10) NOT NULL,
   PRIMARY KEY (pk),

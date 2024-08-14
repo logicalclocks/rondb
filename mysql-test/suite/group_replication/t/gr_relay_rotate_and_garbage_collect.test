@@ -27,14 +27,14 @@
 --echo #    Relay log file size has been reduced to 4096 in CNF file.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_broadcast_thread_short_period';
 
 --source include/start_and_bootstrap_group_replication.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_broadcast_thread_short_period';
 SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_garbage_collection_ran';
@@ -48,7 +48,7 @@ SET @@GLOBAL.DEBUG= '+d,group_replication_certifier_garbage_collection_ran';
 --echo #    info garbage collection happened.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 CREATE TABLE t1(c1 INT NOT NULL AUTO_INCREMENT PRIMARY KEY, c2 BLOB);
 
@@ -81,13 +81,13 @@ while ($relay_log_rotate < 5)
 --echo # 3. Cleanup.
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 DROP TABLE t1;
---source include/rpl_sync.inc
+--source include/rpl/sync.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --source include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_broadcast_thread_short_period';
@@ -95,7 +95,7 @@ SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_garbage_collection_ran';
 SET DEBUG_SYNC= 'RESET';
 
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 
 --source include/stop_group_replication.inc
 SET @@GLOBAL.DEBUG= '-d,group_replication_certifier_broadcast_thread_short_period';

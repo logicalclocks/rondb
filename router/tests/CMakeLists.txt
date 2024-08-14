@@ -35,6 +35,7 @@ SET(helper_sources
   helpers/router_component_test.cc
   helpers/router_component_testutils.cc
   helpers/router_component_system_layout.cc
+  helpers/router_component_metadata.cc
   helpers/router_test_helpers.cc
   helpers/script_generator.cc
   helpers/shared_server.cc
@@ -52,15 +53,17 @@ STRING(REPLACE "-Wsuggest-override" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 ADD_LIBRARY(routertest_helpers STATIC ${helper_sources})
 
-TARGET_LINK_LIBRARIES(routertest_helpers harness-library router_lib
-  rest_api_lib mock_server_rest_client)
+TARGET_LINK_LIBRARIES(routertest_helpers
+  harness-library
+  router_utils
+  router_mysql
+  mock_server_rest_client
+  )
 TARGET_INCLUDE_DIRECTORIES(routertest_helpers
   PUBLIC
-  helpers
+  ${CMAKE_CURRENT_SOURCE_DIR}/helpers
   ${PROJECT_SOURCE_DIR}/src/harness/shared/include/
   )
-
-
 
 ADD_SUBDIRECTORY(component)
 ADD_SUBDIRECTORY(fuzzers)

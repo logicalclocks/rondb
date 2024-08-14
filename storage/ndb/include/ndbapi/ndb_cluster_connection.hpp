@@ -112,7 +112,7 @@ class Ndb_cluster_connection {
    * @param connectstring The connectstring for where to find the
    *                      management server
    */
-  Ndb_cluster_connection(const char *connectstring = 0);
+  Ndb_cluster_connection(const char *connectstring = nullptr);
 
   /**
    * Create a connection to a cluster of storage nodes
@@ -157,6 +157,43 @@ class Ndb_cluster_connection {
    * For the name to be visible, this must be called prior to connect().
    */
   void set_name(const char *name);
+
+  /**
+   * Configure TLS for the connection.
+   *
+   * tls_search_path is a colon-delimited list of directories that may contain
+   * TLS private key files or signed public key certificates. The search path
+   * may contain absolute directories, relative directories, and environment
+   * variables which will be expanded.
+   *
+   * mgm_tls_level is a value 0 or 1 specifying the requirement for TLS
+   * to secure the MGM protocol connection between this node and the NDB
+   * Management server.
+   *   0 = Relaxed TLS (attempt to use TLS, but failure is OK)
+   *   1 = Strict TLS (failure to establish TLS is treated as an error)
+   *
+   * If the node finds active NDB TLS node keys and certificates in the seach
+   * path, it will be able to connect securely to other nodes. These keys and
+   * certificates can be created using the ndb_sign_keys tool.
+   *
+   * If configure_tls() is not called for a connection, the search path
+   * used will be the compile-time default NDB_TLS_SEARCH_PATH, and the
+   * mgm_tls_level will be 0 (relaxed).
+   */
+  void configure_tls(const char *tls_search_path, int mgm_tls_level);
+
+  /**
+   * Retrieve the actual pathname to the active TLS certificate file.
+   *
+   * This can be called after connect() to obtain the pathname to the
+   * active TLS certificate. It may return null if:
+   *   - connect() has not yet been called
+   *   - no valid key and certificate were found in the TLS search path that
+   *     was supplied to configure_tls()
+   *   - configure_tls() was not called, and no valid key and certificate were
+   *     found in the default TLS search path
+   */
+  const char *get_tls_certificate_path() const;
 
   /**
    * For each Ndb_cluster_connection, NDB publishes a URI in the ndbinfo
@@ -251,7 +288,7 @@ class Ndb_cluster_connection {
               int verbose = 1);
 
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
-  int start_connect_thread(int (*connect_callback)(void) = 0);
+  int start_connect_thread(int (*connect_callback)(void) = nullptr);
 #endif
 
   /**

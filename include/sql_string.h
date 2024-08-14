@@ -39,8 +39,6 @@
 #include <string_view>
 
 #include "lex_string.h"
-#include "m_ctype.h"   // my_convert
-#include "m_string.h"  // LEX_CSTRING
 #include "memory_debugging.h"
 #include "my_alloc.h"
 #include "my_compiler.h"
@@ -51,6 +49,7 @@
 #include "mysql/mysql_lex_string.h"  // LEX_STRING
 #include "mysql/psi/psi_memory.h"
 #include "mysql/service_mysql_alloc.h"  // my_free
+#include "mysql/strings/m_ctype.h"      // my_convert
 
 struct MEM_ROOT;
 
@@ -264,6 +263,28 @@ class String {
     if (m_ptr && m_length < m_alloced_length) m_ptr[m_length] = 0;
     return m_ptr;
   }
+
+  /**
+    Returns a pointer to a C-style null-terminated string. The function is
+    "safe" in the sense that the returned string is guaranteed to be
+    null-terminated (as opposed to c_ptr_quick()). However, in terms of memory
+    safety, this function might perform a heap allocation, so using it
+    necessitates manual cleanup.
+
+    @note One potential pitfall when using this function happens when calling
+    c_ptr_safe() on a String object from the parser. In this case the internal
+    m_ptr string is already allocated on a MEM_ROOT and is cleaned up as part of
+    the query lifecycle. This cleanup is performed by simply clearing the
+    MEM_ROOT (freeing its allocated memory) and does not involve destructing the
+    String object. So in the case when the parser works with (ptr, length)-style
+    strings that are placed in String objects and m_length = m_allocated_length
+    we get a heap allocation when calling c_ptr_safe(), even if just to read the
+    contents of the string, and this newly allocated memory is not on the same
+    MEM_ROOT as the original string, and thus we get a memory leak if we do not
+    make sure to free it.
+
+    @return Pointer to null-terminated string.
+  */
   char *c_ptr_safe() {
     if (m_ptr && m_length < m_alloced_length)
       m_ptr[m_length] = 0;
@@ -474,8 +495,10 @@ class String {
 
   bool copy();                 // Alloc string if not allocated
   bool copy(const String &s);  // Allocate new string
-  // Allocate new string
   bool copy(const char *s, size_t arg_length, const CHARSET_INFO *cs);
+  bool copy(const char *s, size_t arg_length, const CHARSET_INFO *from_cs,
+            const CHARSET_INFO *to_cs, uint *errors);
+
   static bool needs_conversion(size_t arg_length, const CHARSET_INFO *cs_from,
                                const CHARSET_INFO *cs_to, size_t *offset);
   bool needs_conversion(const CHARSET_INFO *cs_to) const {
@@ -495,8 +518,6 @@ class String {
                     const CHARSET_INFO *cs);
   bool set_or_copy_aligned(const char *s, size_t arg_length,
                            const CHARSET_INFO *cs);
-  bool copy(const char *s, size_t arg_length, const CHARSET_INFO *csfrom,
-            const CHARSET_INFO *csto, uint *errors);
   bool append(const String &s);
   bool append(std::string_view s) { return append(s.data(), s.size()); }
   bool append(LEX_STRING *ls) { return append(ls->str, ls->length); }
@@ -565,17 +586,17 @@ class String {
   /* Inline (general) functions used by the protocol functions */
 
   char *prep_append(size_t arg_length, size_t step_alloc) {
-    size_t new_length = arg_length + m_length;
+    const size_t new_length = arg_length + m_length;
     if (new_length > m_alloced_length) {
       if (mem_realloc(new_length + step_alloc)) return nullptr;
     }
-    size_t old_length = m_length;
+    const size_t old_length = m_length;
     m_length += arg_length;
     return m_ptr + old_length; /* Area to use */
   }
 
   bool append(const char *s, size_t arg_length, size_t step_alloc) {
-    size_t new_length = arg_length + m_length;
+    const size_t new_length = arg_length + m_length;
     if (new_length > m_alloced_length &&
         mem_realloc_exp(new_length + step_alloc))
       return true;
@@ -617,7 +638,7 @@ class String {
   @param arg_length     Length of string to copy.
   @param from_cs        Character set to copy from
   @param to_cs          Character set to copy to
-  @param *offset	Returns number of unaligned characters.
+  @param[out] offset	Returns number of unaligned characters.
 
   @returns true if conversion is required, false otherwise.
 

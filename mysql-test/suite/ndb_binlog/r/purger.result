@@ -1,9 +1,9 @@
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 # Find physical binlog file name format as it varies between platforms
 CREATE TABLE check_binlog_name (a int primary key) engine = NDB;
 INSERT INTO check_binlog_name VALUES (1);
 DROP TABLE check_binlog_name;
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 # =======================================
 # 1. Showing configuration required by test
 # =======================================
@@ -76,16 +76,16 @@ FLUSH BINARY LOGS;
 FLUSH BINARY LOGS;
 SHOW BINARY LOGS;
 Log_name	File_size	Encrypted
-binlog.000001	201	No
-binlog.000002	201	No
-binlog.000003	201	No
-binlog.000004	201	No
-binlog.000005	201	No
-binlog.000006	201	No
-binlog.000007	201	No
-binlog.000008	201	No
-binlog.000009	201	No
-binlog.000010	157	No
+binlog.000001	202	No
+binlog.000002	202	No
+binlog.000003	202	No
+binlog.000004	202	No
+binlog.000005	202	No
+binlog.000006	202	No
+binlog.000007	202	No
+binlog.000008	202	No
+binlog.000009	202	No
+binlog.000010	158	No
 # =======================================
 # 3. Add additional rows to  ndb_binlog_index corresponding to the
 #    binary logs, the number of rows should exceed the configured

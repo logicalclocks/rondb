@@ -28,10 +28,12 @@
 #include <NdbSleep.h>
 #include <NdbTick.h>
 #include <my_sys.h>
+#include <ndb_opts.h>
 #include <random.h>
 #include <HugoTransactions.hpp>
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
+#include <NdbMgmd.hpp>
 #include <NdbRestarter.hpp>
 #include <NdbRestarts.hpp>
 #include <UtilTransactions.hpp>
@@ -1901,6 +1903,7 @@ int runNdbClusterConnectionDelete_connection_owner(NDBT_Context *ctx,
   // Create a new cluster connection, connect it and assign
   // to pointer so the other thread can access it.
   Ndb_cluster_connection *con = new Ndb_cluster_connection(constr);
+  con->configure_tls(opt_tls_search_path, opt_mgm_tls);
 
   const int retries = 12;
   const int retry_delay = 5;
@@ -3307,6 +3310,7 @@ int testApiFailReqImpl(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
 
+  otherConnection->configure_tls(opt_tls_search_path, opt_mgm_tls);
   int rc = otherConnection->connect();
 
   if (rc != 0) {
@@ -3756,6 +3760,7 @@ int setupOtherConnection(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
 
+  otherConnection->configure_tls(opt_tls_search_path, opt_mgm_tls);
   int rc = otherConnection->connect();
 
   if (rc != 0) {
@@ -4828,8 +4833,6 @@ int runTestUnlockScan(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
-#include <NdbMgmd.hpp>
-
 class NodeIdReservations {
   bool m_ids[MAX_NODES];
   NdbMutex m_mutex;
@@ -4897,6 +4900,7 @@ int runNdbClusterConnectInit(NDBT_Context *ctx, NDBT_Step *step) {
   {
     NdbMgmd mgmd;
 
+    mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
     if (!mgmd.connect()) return NDBT_FAILED;
 
     ndb_mgm_node_type node_types[2] = {NDB_MGM_NODE_TYPE_API,
@@ -4963,6 +4967,7 @@ int runNdbClusterConnect(NDBT_Context *ctx, NDBT_Step *step) {
       ndbout_c("thread %u waiting complete", step_no);
     }
     Ndb_cluster_connection con(constr);
+    con.configure_tls(opt_tls_search_path, opt_mgm_tls);
 
     const int retries = 12;
     const int retry_delay = 5;
@@ -5139,6 +5144,7 @@ static bool check_connect_no_such_host() {
   for (int i = 0; i < 3; i++) {
     const char *no_such_host = "no_such_host:1186";
     Ndb_cluster_connection con(no_such_host);
+    con.configure_tls(opt_tls_search_path, opt_mgm_tls);
 
     const int verbose = 1;
     int res = con.connect(i, i, verbose);
@@ -5160,6 +5166,7 @@ static bool check_connect_until_no_more_nodeid(const char *constr) {
   Vector<Ndb_cluster_connection *> connections;
   while (true) {
     Ndb_cluster_connection *con = new Ndb_cluster_connection(constr);
+    con->configure_tls(opt_tls_search_path, opt_mgm_tls);
     if (!con) {
       g_err << "Failed to create another Ndb_cluster_connection" << endl;
       result = false;
@@ -6001,6 +6008,7 @@ int testSchemaObjectOwnerCheck(NDBT_Context *ctx, NDBT_Step *step) {
       result = NDBT_FAILED;
       break;
     }
+    otherConnection->configure_tls(opt_tls_search_path, opt_mgm_tls);
     int rc = otherConnection->connect();
     if (rc != 0) {
       ndbout << "Connect of otherConnection failed with rc " << rc << endl;
@@ -7446,6 +7454,7 @@ int testSlowConnectEnable(NDBT_Context *ctx, NDBT_Step *step) {
       break;
     }
 
+    otherConnection->configure_tls(opt_tls_search_path, opt_mgm_tls);
     int rc = otherConnection->connect();
     if (rc != 0) {
       ndbout << "Connection failed with " << rc << endl;

@@ -11,7 +11,10 @@
 var common_stmts = require("common_statements");
 
 var node_host = "127.0.0.1";
-var cluster_members_online = ["uuid", node_host, mysqld.session.port];
+var cluster_members_online = [[
+  "uuid", node_host, mysqld.session.port, /*xport=*/ undefined,
+  /*attributes=*/ "", "PRIMARY"
+]];
 
 var options = {
   innodb_cluster_instances: cluster_members_online,
@@ -30,6 +33,7 @@ var common_responses = common_stmts.prepare_statement_responses(
       "router_select_schema_version",
       "router_select_cluster_type_v2",
       "router_select_view_id_v2_ar",
+      "router_select_router_options_view",
     ],
     options);
 

@@ -7,10 +7,6 @@
 -- source include/have_multi_ndb.inc
 -- source suite/ndb/include/backup_restore_setup.inc
 
---disable_query_log
-set new=on;
---enable_query_log
-
 ############ Test 1 Simple DD backup and restore #############
 -- echo **** Test 1 Simple DD backup and restore ****
 
@@ -53,7 +49,7 @@ DROP TABLESPACE table_space1;
 DROP LOGFILE GROUP log_group1
 ENGINE NDB;
 
--- source include/ndb_restore_master.inc
+-- source common/rpl/ndb_restore_source.inc
 
 # Wait until the following changes have been synced:
 # Logfile group 'log_group1'
@@ -139,7 +135,7 @@ DROP TABLESPACE table_space1;
 DROP LOGFILE GROUP log_group1
 ENGINE NDB;
 
--- source include/ndb_restore_master.inc
+-- source common/rpl/ndb_restore_source.inc
 
 # Wait until the following 6 object changes are synced:
 # Logfile group 'log_group1'
@@ -293,7 +289,7 @@ DROP TABLESPACE table_space2;
 DROP LOGFILE GROUP log_group1
 ENGINE NDB;
 
--- source include/ndb_restore_master.inc
+-- source common/rpl/ndb_restore_source.inc
 
 # Wait until the following 9 objects are synced:
 # Logfile group 'log_group1'

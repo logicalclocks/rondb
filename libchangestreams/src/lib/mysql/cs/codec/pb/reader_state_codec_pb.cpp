@@ -28,7 +28,7 @@
 namespace cs::reader::codec::pb::example {
 
 void read_from_stream(std::istream &stream, cs::reader::State &out) {
-  binary_log::gtids::Gtid_set gtid_set;
+  mysql::gtid::Gtid_set gtid_set;
   cs::reader::codec::pb::example::State state_codec;
   std::string sibuf;
 
@@ -56,16 +56,17 @@ void read_from_stream(std::istream &stream, cs::reader::State &out) {
 
   for (const auto &gtids : state_codec.gtids()) {
     std::string suuid = gtids.uuid();
+    mysql::gtid::Tag tag(gtids.tag());
     for (const auto &range : gtids.range()) {
-      binary_log::gtids::Gno_interval interval{range.start(), range.end()};
-      binary_log::gtids::Uuid uuid;
+      mysql::gtid::Gno_interval interval{range.start(), range.end()};
+      mysql::gtid::Uuid uuid;
       if (uuid.parse(suuid.c_str(), suuid.length())) {
         /* purecov: begin inspected */
         stream.setstate(std::ios_base::failbit);
         return;
         /* purecov: end */
       }
-      if (gtid_set.add(uuid, interval)) {
+      if (gtid_set.add(mysql::gtid::Tsid(uuid, tag), interval)) {
         /* purecov: begin inspected */
         stream.setstate(std::ios_base::failbit);
         return;
@@ -78,16 +79,21 @@ void read_from_stream(std::istream &stream, cs::reader::State &out) {
 
 void write_to_stream(std::ostream &stream, cs::reader::State &in) {
   auto &gtid_set = in.get_gtids();
-  auto map_of_intervals = gtid_set.get_gtid_set();
+  const auto &contents = gtid_set.get_gtid_set();
   cs::reader::codec::pb::example::State state_codec;
 
-  for (auto const &[uuid, intervals] : map_of_intervals) {
-    auto *ranges = state_codec.add_gtids();
-    ranges->set_uuid(uuid.to_string());
-    for (auto &interval : intervals) {
-      auto range = ranges->add_range();
-      range->set_end(interval.get_end());
-      range->set_start(interval.get_start());
+  for (auto const &[uuid, tag_map] : contents) {
+    for (auto const &[tag, intervals] : tag_map) {
+      auto *ranges = state_codec.add_gtids();
+      ranges->set_uuid(uuid.to_string());
+      if (tag.is_defined()) {
+        ranges->set_tag(tag.to_string());
+      }
+      for (auto &interval : intervals) {
+        auto range = ranges->add_range();
+        range->set_end(interval.get_end());
+        range->set_start(interval.get_start());
+      }
     }
   }
 
