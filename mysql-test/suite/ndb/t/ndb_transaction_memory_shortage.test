@@ -1,5 +1,6 @@
 --source include/have_ndb.inc
 --source include/have_ndb_debug.inc
+--source include/linux.inc
 
 create table t0 (c int primary key) engine=ndbcluster;
 
