@@ -1838,7 +1838,7 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
 			if ds.FeatureGroupId == -1 {
 				t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
 			}
-			if (ds.FeatureGroupId ==2076 && ds.HttpStatus != http.StatusOK) || (ds.FeatureGroupId ==2069 && ds.HttpStatus != http.StatusBadRequest) {
+			if (ds.FeatureGroupId == 2076 && ds.HttpStatus != http.StatusOK) || (ds.FeatureGroupId == 2069 && ds.HttpStatus != http.StatusBadRequest) {
 				t.Fatalf("HttpStatus should be 200 or 400")
 			}
 		}
@@ -1871,7 +1871,7 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 		if ds.FeatureGroupId == -1 {
 			t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
 		}
-		if (ds.FeatureGroupId ==2069 && ds.HttpStatus != http.StatusNotFound) || (ds.FeatureGroupId ==2076 && ds.HttpStatus != http.StatusBadRequest) {
+		if (ds.FeatureGroupId == 2069 && ds.HttpStatus != http.StatusNotFound) || (ds.FeatureGroupId == 2076 && ds.HttpStatus != http.StatusBadRequest) {
 			t.Fatalf("HttpStatus should be 404 or 400")
 		}
 	}
@@ -1889,7 +1889,7 @@ func Test_GetFeatureVector_Success_ComplexType_With_Schema_Change(t *testing.T) 
 	time.Sleep(2 * time.Second)
 
 	log.Debug("Changing the schema for the test")
-	err := testutils.RunQueriesOnDataCluster(testdbs.HopsworksUpdateScheme)
+	err := testutils.RunQueriesOnMetadataCluster(testdbs.HopsworksUpdateScheme)
 	if err != nil {
 		t.Fatalf("failed to change schema. Error: %v", err)
 	}
