@@ -1790,31 +1790,41 @@ func Test_IncludeDetailedStatus_JoinedTable(t *testing.T) {
 }
 
 func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
-	rows, _, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
+	var joinKey = make(map[string]string)
+	joinKey["id1"] = "bigint"
+	rows, _, cols, err := GetNSampleDataWithJoinAndKey(
+		2, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_3_1", "", joinKey,
+		[]string{"id1", "ts", "data1", "data2"}, []string{"id1", "id2", "bigint"})
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
+	// Exclude the primary key because they are not selected as features
+	var exCols = make(map[string]bool)
+	exCols["righId1"] = true
+	exCols["id2"] = true
 	for _, row := range rows {
 		var fsReq = CreateFeatureStoreRequest(
 			testdbs.FSDB001,
-			"sample_1n1_self",
+			"sample_1n3",
 			1,
-			[]string{"fg1_id1"},
-			[]interface{}{row[4]},
+			[]string{"0_id1", "id2"},
+			[]interface{}{row[4], row[5]},
 			nil,
 			nil,
 		)
 		// Only features from right fg are not null because primary key of the right fg is provided
 		for j := range row {
-			if j < 4 {
+			if j != 6 {
 				row[j] = nil
 			}
 		}
+		// Change the column name because it is conflicted with col[0]
+		cols[4] = "righId1"
 		includeDetailedStatus := true
 		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 
-		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
 		if fsResp.Status != "MISSING" {
 			t.Fatalf("Status should be MISSING")
 		}
@@ -1824,11 +1834,11 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
 		if len(fsResp.DetailedStatus) != 2 {
 			t.Fatalf("DetailedStatus should have two elements")
 		}
-		for idx, ds := range fsResp.DetailedStatus {
+		for _, ds := range fsResp.DetailedStatus {
 			if ds.FeatureGroupId == -1 {
 				t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
 			}
-			if (idx == 1 && ds.HttpStatus != http.StatusOK) || (idx == 0 && ds.HttpStatus != http.StatusBadRequest) {
+			if (ds.FeatureGroupId ==2076 && ds.HttpStatus != http.StatusOK) || (ds.FeatureGroupId ==2069 && ds.HttpStatus != http.StatusBadRequest) {
 				t.Fatalf("HttpStatus should be 200 or 400")
 			}
 		}
@@ -1857,11 +1867,11 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 	if len(fsResp.DetailedStatus) != 2 {
 		t.Fatalf("DetailedStatus should have two elements")
 	}
-	for idx, ds := range fsResp.DetailedStatus {
+	for _, ds := range fsResp.DetailedStatus {
 		if ds.FeatureGroupId == -1 {
 			t.Fatalf("FeatureGroupId should have been parsed correctly from OperationId")
 		}
-		if (idx == 0 && ds.HttpStatus != http.StatusNotFound) || (idx == 1 && ds.HttpStatus != http.StatusBadRequest) {
+		if (ds.FeatureGroupId ==2069 && ds.HttpStatus != http.StatusNotFound) || (ds.FeatureGroupId ==2076 && ds.HttpStatus != http.StatusBadRequest) {
 			t.Fatalf("HttpStatus should be 404 or 400")
 		}
 	}
