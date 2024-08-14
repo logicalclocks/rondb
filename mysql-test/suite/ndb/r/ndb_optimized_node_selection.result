@@ -162,16 +162,16 @@ Variable_name	Value
 ndb_optimized_node_selection	2
 READ BACKUP o-n-s 2 case Hinted autocommit select by pk
 node_id	balance
-1	NONE
-2	ALL
+1	ALL
+2	NONE
 READ BACKUP o-n-s 2 case Unhinted table scan
 node_id	balance
 1	HALF
 2	HALF
 READ BACKUP o-n-s 2 case Autocommit update by pk
 node_id	balance
-1	NONE
-2	ALL
+1	ALL
+2	NONE
 READ BACKUP o-n-s 2 case Unhinted table scan on new connection
 node_id	balance
 1	HALF
@@ -182,16 +182,16 @@ Variable_name	Value
 ndb_optimized_node_selection	3
 READ BACKUP o-n-s 3 case Hinted autocommit select by pk
 node_id	balance
-1	NONE
-2	ALL
+1	HALF
+2	HALF
 READ BACKUP o-n-s 3 case Unhinted table scan
 node_id	balance
 1	HALF
 2	HALF
 READ BACKUP o-n-s 3 case Autocommit update by pk
 node_id	balance
-1	NONE
-2	ALL
+1	HALF
+2	HALF
 READ BACKUP o-n-s 3 case Unhinted table scan on new connection
 node_id	balance
 1	HALF
@@ -207,28 +207,28 @@ Variable_name	Value
 ndb_optimized_node_selection	0
 FULLY REPLICATED o-n-s 0 case Hinted autocommit select by pk
 node_id	balance
-1	ALL
-2	NONE
+1	HALF
+2	HALF
 FULLY REPLICATED o-n-s 0 case Unhinted table scan
 node_id	balance
-1	ALL
-2	NONE
+1	HALF
+2	HALF
 FULLY REPLICATED o-n-s 0 case Autocommit update by pk
 node_id	balance
-1	ALL
-2	NONE
+1	HALF
+2	HALF
 FULLY REPLICATED o-n-s 0 case Unhinted table scan on new connection
 node_id	balance
-1	ERROR
-2	ERROR
+1	HALF
+2	HALF
 set ndb_optimized_node_selection=1;
 show variables like 'ndb_optimized_node_selection';
 Variable_name	Value
 ndb_optimized_node_selection	1
 FULLY REPLICATED o-n-s 1 case Hinted autocommit select by pk
 node_id	balance
-1	ERROR
-2	ERROR
+1	HALF
+2	HALF
 FULLY REPLICATED o-n-s 1 case Unhinted table scan
 node_id	balance
 1	HALF
