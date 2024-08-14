@@ -1,17 +1,18 @@
 /****************************************************************************
 
-Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -635,21 +636,30 @@ bool FTS::Parser::doc_tokenize(doc_id_t doc_id, fts_doc_t *doc,
   auto parser = m_dup->m_index->parser;
   auto is_ngram = m_dup->m_index->is_ngram;
 
-  /* Tokenize the data and add each word string, its corresponding
-  doc id and position to sort buffer */
+  /* When using a plug-in parser, the whole document is tokenized first
+  by the plugin and written to t_ctx->m_token_list. The list is not
+  empty at this point iff the buffer was filled without processing all
+  tokens (function returned false on same document). In this case the
+  list contains the remaining tokens to be processed. */
+  if (parser != nullptr) {
+    ut_ad(t_ctx->m_processed_len == 0);
+
+    if (UT_LIST_GET_LEN(t_ctx->m_token_list) == 0) {
+      /* Parse the whole doc and cache tokens. */
+      tokenize(doc, parser, t_ctx);
+    }
+  }
+
+  /* Iterate over each word string and add it with its corresponding
+  doc id and position to sort buffer. In non-plugin mode
+  t_ctx->m_processed_len indicates the position of the next unprocessed
+  token. With a plugin parser it is only updated once all remaining tokens
+  produced by the plugin are processed. */
   while (t_ctx->m_processed_len < doc->text.f_len) {
     Token *fts_token{};
 
+    /* Get the next unprocessed token */
     if (parser != nullptr) {
-      if (t_ctx->m_processed_len == 0) {
-        /* Parse the whole doc and cache tokens. */
-        tokenize(doc, parser, t_ctx);
-
-        /* Just indicate we have parsed all the word. */
-        t_ctx->m_processed_len += 1;
-      }
-
-      /* Then get a token. */
       fts_token = UT_LIST_GET_FIRST(t_ctx->m_token_list);
 
       if (fts_token != nullptr) {
@@ -669,6 +679,7 @@ bool FTS::Parser::doc_tokenize(doc_id_t doc_id, fts_doc_t *doc,
 
       ut_a(inc > 0);
     }
+    /* str now contains the token */
 
     /* Ignore string whose character number is less than
     "fts_min_token_size" or more than "fts_max_token_size" */
@@ -903,7 +914,7 @@ void FTS::Parser::parse(Builder *builder) noexcept {
         auto &file = handler->m_file;
         handler->m_offsets.push_back(file.m_size);
 
-        auto persistor = [&](IO_buffer io_buffer, os_offset_t &) -> dberr_t {
+        auto persistor = [&](IO_buffer io_buffer) -> dberr_t {
           return builder->append(file, io_buffer);
         };
 
@@ -950,9 +961,22 @@ void FTS::Parser::parse(Builder *builder) noexcept {
     clean_up(DB_SUCCESS);
   };
 
-  for (;;) {
-    doc_id_t last_doc_id{};
+  /* Items provided by get_next_doc_item are individual fields
+  of a potentially multi-field document. Subsequent fields in
+  multi-field document must arrive consecutively, not
+  interleaved by fields from other documents; last_doc_id
+  is used to determine whether a new item is part of the same
+  document as the previous one. */
+  doc_id_t last_doc_id{};
 
+  /* get_next_doc_item() reads items from a non-blocking queue.
+  It may therefore yield a nullptr result even when there are more
+  documents to be read. The inner loop reads doc items from the
+  queue as long as they are available and there is space to store
+  the item on the buffer. When either of these conditions is not
+  met, control will break out to the outer loop, which handles
+  buffer flushing and polling for more data. */
+  for (;;) {
     while (doc_item != nullptr) {
       auto dfield = doc_item->m_field;
 
@@ -1019,7 +1043,7 @@ void FTS::Parser::parse(Builder *builder) noexcept {
 
       handler->m_offsets.push_back(file.m_size);
 
-      auto persistor = [&](IO_buffer io_buffer, os_offset_t &) -> dberr_t {
+      auto persistor = [&](IO_buffer io_buffer) -> dberr_t {
         return builder->append(file, io_buffer);
       };
 
@@ -1146,6 +1170,8 @@ dberr_t FTS::Inserter::write_word(Insert *ins_ctx,
                                   " index table, error ("
                                << ut_strerr(err) << ")";
       ret = err;
+    } else {
+      ut_ad(ins_ctx->m_btr_bulk->get_n_recs() > 0);
     }
 
     ut::free(fts_node->ilist);
@@ -1518,18 +1544,18 @@ dberr_t FTS::start_parse_threads(Builder *builder) noexcept {
 #else
     Runnable runnable{PSI_NOT_INSTRUMENTED, seqnum};
 #endif /* UNIV_PFS_THREAD */
+    runnable([&]() {
+      auto thd = create_internal_thd();
+      ut_ad(current_thd == thd);
 
-    my_thread_init();
+      thd->push_diagnostics_area(&parser->da, false);
+      parser->parse(builder);
+      thd->pop_diagnostics_area();
 
-    auto thd = create_internal_thd();
-    ut_ad(current_thd == thd);
-
-    thd->push_diagnostics_area(&parser->da, false);
-    parser->parse(builder);
-    thd->pop_diagnostics_area();
-
-    destroy_internal_thd(current_thd);
-    my_thread_end();
+      destroy_internal_thd(current_thd);
+      /* Return value ignored but required for Runnable::operator() */
+      return DB_SUCCESS;
+    });
   };
 
   size_t seqnum{1};
@@ -1590,7 +1616,7 @@ dberr_t FTS::insert(Builder *builder) noexcept {
 #endif /* UNIV_PFS_THREAD */
 
     if (!handler->m_files.empty()) {
-      err = m_inserter->insert(builder, handler);
+      err = runnable([&]() { return m_inserter->insert(builder, handler); });
     }
   };
 

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1997, 2023, Oracle and/or its affiliates.
+Copyright (c) 1997, 2024, Oracle and/or its affiliates.
 Copyright (c) 2008, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -13,12 +13,13 @@ This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -2508,13 +2509,19 @@ void row_sel_field_store_in_mysql_format_func(
 
   bool clust_templ_for_sec = (sec_field != ULINT_UNDEFINED);
 #endif /* UNIV_DEBUG */
-  ulint mysql_col_len =
-      templ->is_multi_val ? templ->mysql_mvidx_len : templ->mysql_col_len;
+
+  if (templ->is_multi_val) {
+    ib::fatal(UT_LOCATION_HERE, ER_CONVERT_MULTI_VALUE)
+        << "Table name: " << index->table->name
+        << " Index name: " << index->name;
+  }
+
+  auto const mysql_col_len = templ->mysql_col_len;
 
   ut_ad(rec_field_not_null_not_add_col_def(len));
   UNIV_MEM_ASSERT_RW(data, len);
-  UNIV_MEM_ASSERT_W(dest, templ->mysql_col_len);
-  UNIV_MEM_INVALID(dest, templ->mysql_col_len);
+  UNIV_MEM_ASSERT_W(dest, mysql_col_len);
+  UNIV_MEM_INVALID(dest, mysql_col_len);
 
   switch (templ->type) {
     const byte *field_end;
@@ -2597,14 +2604,14 @@ void row_sel_field_store_in_mysql_format_func(
       /* Store a pointer to the BLOB buffer to dest: the BLOB was
       already copied to the buffer in row_sel_store_mysql_rec */
 
-      row_mysql_store_blob_ref(dest, templ->mysql_col_len, data, len);
+      row_mysql_store_blob_ref(dest, mysql_col_len, data, len);
       break;
 
     case DATA_POINT:
     case DATA_VAR_POINT:
     case DATA_GEOMETRY:
       /* We store all geometry data as BLOB data at server layer. */
-      row_mysql_store_geometry(dest, templ->mysql_col_len, data, len);
+      row_mysql_store_geometry(dest, mysql_col_len, data, len);
       break;
 
     case DATA_MYSQL:
@@ -2645,7 +2652,7 @@ void row_sel_field_store_in_mysql_format_func(
       done in row0mysql.cc, function
       row_mysql_store_col_in_innobase_format(). */
       if ((templ->mbminlen == 1 && templ->mbmaxlen != 1) ||
-          (templ->is_virtual && templ->mysql_col_len > len)) {
+          (templ->is_virtual && mysql_col_len > len)) {
         /* NOTE: This comment is for the second condition:
         This probably comes from a prefix virtual index, where no complete
         value can be got because the full virtual column can only be
@@ -2918,6 +2925,22 @@ bool row_sel_store_mysql_rec(byte *mysql_rec, row_prebuilt_t *prebuilt,
 
   for (ulint i = 0; i < prebuilt->n_template; i++) {
     const auto templ = &prebuilt->mysql_template[i];
+
+    /* Skip multi-value columns; since they can not be explicitly
+    requested by the query, they may only be here in scenarios
+    where all index columns are included routinely, like these:
+    1. Index-only scan (done for covering index): all index field
+    are stored regardless of whether they are requested or not
+    (depending on optimization options): for multi-values they
+    need not be stored, as they may never be requested.
+    2. Cross-partition index scan, for the purpose of index merge:
+    not needed since multi-values do not introduce ordering and
+    so are not needed for index merge. */
+    if (templ->is_multi_val) {
+      /* Multi-value columns are always virtual */
+      ut_ad(templ->is_virtual);
+      continue;
+    }
 
     if (templ->is_virtual && rec_index->is_clustered()) {
       /* Skip virtual columns if it is not a covered
@@ -3460,6 +3483,8 @@ static void row_sel_copy_cached_field_for_mysql(
     const byte *cache,              /*!< in: cached row */
     const mysql_row_templ_t *templ) /*!< in: column template */
 {
+  ut_a(!templ->is_multi_val);
+
   ulint len;
 
   buf += templ->mysql_col_offset;
@@ -3479,6 +3504,9 @@ static void row_sel_copy_cached_field_for_mysql(
     len = templ->mysql_col_len;
   }
 
+  /* The buf and cache have each reserved exactly templ->mysql_col_len
+  bytes for this column. In case of varchar we might copy fewer. */
+  ut_a(len <= templ->mysql_col_len);
   ut_memcpy(buf, cache, len);
 }
 
@@ -3560,10 +3588,18 @@ static inline void row_sel_dequeue_cached_row_for_mysql(
       templ = prebuilt->mysql_template + i;
 
       /* Skip virtual columns */
-      if (templ->is_virtual && !(dict_index_has_virtual(prebuilt->index) &&
-                                 prebuilt->read_just_key)) {
-        continue;
+      if (templ->is_virtual) {
+        if (!(dict_index_has_virtual(prebuilt->index) &&
+              prebuilt->read_just_key)) {
+          continue;
+        }
+
+        if (templ->is_multi_val) {
+          continue;
+        }
       }
+      // Multi-value columns are always virtual
+      ut_a(!templ->is_multi_val);
 
       row_sel_copy_cached_field_for_mysql(buf, cached_rec, templ);
     }

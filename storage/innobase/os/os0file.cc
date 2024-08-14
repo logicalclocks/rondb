@@ -1,6 +1,6 @@
 /***********************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 Copyright (c) 2009, Percona Inc.
 
 Portions of this file contain modifications contributed and copyrighted
@@ -14,12 +14,13 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -57,11 +58,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 #endif /* !UNIV_HOTBACKUP */
 
 #ifdef _WIN32
+
 #include <errno.h>
 #include <mbstring.h>
 #include <sys/stat.h>
 #include <tchar.h>
 #include <codecvt>
+
 #endif /* _WIN32 */
 
 #ifdef __linux__
@@ -189,23 +192,17 @@ bool os_is_o_direct_supported() {
 #endif /* !NO_FALLOCATE && UNIV_LINUX */
 }
 
-/* This specifies the file permissions InnoDB uses when it creates files in
-Unix; the value of os_innodb_umask is initialized in ha_innodb.cc to
-my_umask */
-
 #ifndef _WIN32
-/** Umask for creating files */
-static ulint os_innodb_umask = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
+/** This specifies the file permissions InnoDB uses when it creates files in
+Unix; the value of os_innodb_umask is initialized in ha_innodb.cc to my_umask.
+It is a global value and can't be modified once it is set. */
+static mode_t os_innodb_umask = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
 #else
-/** Umask for creating files */
-static ulint os_innodb_umask = 0;
-
-/* On Windows when using native AIO the number of AIO requests
+/** On Windows when using native AIO the number of AIO requests
 that a thread can handle at a given time is limited to 32
 i.e.: SRV_N_PENDING_IOS_PER_THREAD */
 constexpr uint32_t SRV_N_PENDING_IOS_PER_THREAD =
     OS_AIO_N_PENDING_IOS_PER_THREAD;
-
 #endif /* _WIN32 */
 
 /** In simulated aio, merge at most this many consecutive i/os */
@@ -2881,6 +2878,41 @@ static int os_file_fsync_posix(os_file_t file) {
   return (-1);
 }
 
+/** fsync the parent directory of a path. Useful following rename, unlink, etc..
+@param[in]      path            path of file */
+static void os_parent_dir_fsync_posix(const char *path) {
+  ut_a(path[0] != '\0');
+
+  auto parent_in_path = os_file_get_parent_dir(path);
+  const char *parent_dir = parent_in_path;
+  if (parent_in_path == nullptr) {
+    /** if there is no parent dir in the path, then the real parent is
+    either the current directory, or the root directory */
+    if (path[0] == '/') {
+      parent_dir = "/";
+    } else {
+      parent_dir = ".";
+    }
+  }
+
+  /* Open the parent directory */
+  auto dir_fd = ::open(parent_dir, O_RDONLY);
+
+  ut_a(dir_fd != -1);
+
+  if (parent_in_path != nullptr) {
+    ut::free(parent_in_path);
+  }
+
+  /** Using fsync even when --innodb_use_fdatasync=ON
+  since this operation is not very frequent, but WSL1 does
+  not support fdatasync on directories. */
+  auto ret = ::fsync(dir_fd);
+  ut_a(ret == 0);
+
+  ::close(dir_fd);
+}
+
 /** Check the existence and type of the given file.
 @param[in]      path            path name of file
 @param[out]     exists          true if the file exists
@@ -2996,98 +3028,6 @@ bool os_file_flush_func(os_file_t file) {
   return (false);
 }
 
-/** NOTE! Use the corresponding macro os_file_create_simple(), not directly
-this function!
-A simple function to open or create a file.
-@param[in]      name            name of the file or path as a null-terminated
-                                string
-@param[in]      create_mode     create mode
-@param[in]      access_type     OS_FILE_READ_ONLY or OS_FILE_READ_WRITE
-@param[in]      read_only       if true, read only checks are enforced
-@param[out]     success         true if succeed, false if error
-@return handle to the file, not defined if error, error number
-        can be retrieved with os_file_get_last_error */
-os_file_t os_file_create_simple_func(const char *name, ulint create_mode,
-                                     ulint access_type, bool read_only,
-                                     bool *success) {
-  os_file_t file;
-
-  *success = false;
-
-  int create_flag;
-
-  ut_a(!(create_mode & OS_FILE_ON_ERROR_SILENT));
-  ut_a(!(create_mode & OS_FILE_ON_ERROR_NO_EXIT));
-
-  if (create_mode == OS_FILE_OPEN) {
-    if (access_type == OS_FILE_READ_ONLY) {
-      create_flag = O_RDONLY;
-
-    } else if (read_only) {
-      create_flag = O_RDONLY;
-
-    } else {
-      create_flag = O_RDWR;
-    }
-
-  } else if (read_only) {
-    create_flag = O_RDONLY;
-
-  } else if (create_mode == OS_FILE_CREATE) {
-    create_flag = O_RDWR | O_CREAT | O_EXCL;
-
-  } else if (create_mode == OS_FILE_CREATE_PATH) {
-    /* Create subdirs along the path if needed. */
-    dberr_t err;
-
-    err = os_file_create_subdirs_if_needed(name);
-
-    if (err != DB_SUCCESS) {
-      *success = false;
-      ib::error(ER_IB_MSG_776)
-          << "Unable to create subdirectories '" << name << "'";
-
-      return (OS_FILE_CLOSED);
-    }
-
-    create_flag = O_RDWR | O_CREAT | O_EXCL;
-    create_mode = OS_FILE_CREATE;
-  } else {
-    ib::error(ER_IB_MSG_777) << "Unknown file create mode (" << create_mode
-                             << " for file '" << name << "'";
-
-    return (OS_FILE_CLOSED);
-  }
-
-  bool retry;
-
-  do {
-    file = ::open(name, create_flag, os_innodb_umask);
-
-    if (file == -1) {
-      *success = false;
-
-      retry = os_file_handle_error(
-          name, create_mode == OS_FILE_OPEN ? "open" : "create");
-    } else {
-      *success = true;
-      retry = false;
-    }
-
-  } while (retry);
-
-#ifdef USE_FILE_LOCK
-  if (!read_only && *success && access_type == OS_FILE_READ_WRITE &&
-      os_file_lock(file, name)) {
-    *success = false;
-    close(file);
-    file = -1;
-  }
-#endif /* USE_FILE_LOCK */
-
-  return (file);
-}
-
 /** This function attempts to create a directory named pathname. The new
 directory gets default permissions. On Unix the permissions are
 (0770 & ~umask). If the directory exists already, nothing is done and
@@ -3106,6 +3046,10 @@ bool os_file_create_directory(const char *pathname, bool fail_if_exists) {
     os_file_handle_error_no_exit(pathname, "mkdir", false);
 
     return (false);
+  }
+
+  if (rcode == 0) {
+    os_parent_dir_fsync_posix(pathname);
   }
 
   return (true);
@@ -3188,6 +3132,7 @@ pfs_os_file_t os_file_create_func(const char *name, ulint create_mode,
     create_flag = O_RDWR | O_CREAT | O_EXCL;
 
   } else if (create_mode == OS_FILE_CREATE_PATH) {
+    mode_str = "CREATE";
     /* Create subdirs along the path if needed. */
     dberr_t err;
 
@@ -3293,29 +3238,22 @@ pfs_os_file_t os_file_create_func(const char *name, ulint create_mode,
   }
 #endif /* USE_FILE_LOCK */
 
+  if (*success && (create_flag & O_CREAT) != 0) {
+    os_parent_dir_fsync_posix(name);
+  }
+
   return (file);
 }
 
-/** NOTE! Use the corresponding macro
-os_file_create_simple_no_error_handling(), not directly this function!
-A simple function to open or create a file.
-@param[in]      name            name of the file or path as a null-terminated
-                                string
-@param[in]      create_mode     create mode
-@param[in]      access_type     OS_FILE_READ_ONLY, OS_FILE_READ_WRITE, or
-                                OS_FILE_READ_ALLOW_DELETE; the last option
-                                is used by a backup program reading the file
-@param[in]      read_only       if true read only mode checks are enforced
-@param[out]     success         true if succeeded
-@return own: handle to the file, not defined if error, error number
-        can be retrieved with os_file_get_last_error */
-pfs_os_file_t os_file_create_simple_no_error_handling_func(const char *name,
-                                                           ulint create_mode,
-                                                           ulint access_type,
-                                                           bool read_only,
-                                                           bool *success) {
+pfs_os_file_t os_file_create_simple_no_error_handling_func(
+    const char *name, ulint create_mode, ulint access_type, bool read_only,
+    mode_t umask, bool *success) {
   pfs_os_file_t file;
   int create_flag;
+
+  if (umask == os_innodb_umask_default) {
+    umask = os_innodb_umask;
+  }
 
   ut_a(!(create_mode & OS_FILE_ON_ERROR_SILENT));
   ut_a(!(create_mode & OS_FILE_ON_ERROR_NO_EXIT));
@@ -3349,7 +3287,7 @@ pfs_os_file_t os_file_create_simple_no_error_handling_func(const char *name,
     return (file);
   }
 
-  file.m_file = ::open(name, create_flag, os_innodb_umask);
+  file.m_file = ::open(name, create_flag, umask);
 
   *success = (file.m_file != -1);
 
@@ -3361,6 +3299,10 @@ pfs_os_file_t os_file_create_simple_no_error_handling_func(const char *name,
     file.m_file = -1;
   }
 #endif /* USE_FILE_LOCK */
+
+  if (*success && create_mode == OS_FILE_CREATE) {
+    os_parent_dir_fsync_posix(name);
+  }
 
   return (file);
 }
@@ -3385,20 +3327,21 @@ bool os_file_delete_if_exists_func(const char *name, bool *exist) {
     *exist = true;
   }
 
-  int ret = unlink(name);
-
-  if (ret != 0 && errno == ENOENT) {
-    if (exist != nullptr) {
-      *exist = false;
+  if (unlink(name) != 0) {  // couldn't unlink
+    if (errno == ENOENT) {  // that's because file was missing, not an error
+      if (exist != nullptr) {
+        *exist = false;
+      }
+      return true;
     }
-
-  } else if (ret != 0 && errno != ENOENT) {
+    // it's some other problem, report it, but don't crash
     os_file_handle_error_no_exit(name, "delete", false);
-
-    return (false);
+    return false;
   }
 
-  return (true);
+  // persist the change of the directory's content
+  os_parent_dir_fsync_posix(name);
+  return true;
 }
 
 /** Deletes a file. The file has to be closed before calling this.
@@ -3412,6 +3355,8 @@ bool os_file_delete_func(const char *name) {
 
     return (false);
   }
+
+  os_parent_dir_fsync_posix(name);
 
   return (true);
 }
@@ -3442,6 +3387,8 @@ bool os_file_rename_func(const char *oldpath, const char *newpath) {
 
     return (false);
   }
+
+  os_parent_dir_fsync_posix(newpath);
 
   return (true);
 }
@@ -4017,128 +3964,6 @@ static ulint os_file_get_last_error_low(bool report_all_errors,
   return OS_FILE_ERROR_MAX + err;
 }
 
-/** NOTE! Use the corresponding macro os_file_create_simple(), not directly
-this function!
-A simple function to open or create a file.
-@param[in]      name            name of the file or path as a null-terminated
-                                string
-@param[in]      create_mode     create mode
-@param[in]      access_type     OS_FILE_READ_ONLY or OS_FILE_READ_WRITE
-@param[in]      read_only       if true, read only checks are enforced
-@param[out]     success         true if succeed, false if error
-@return handle to the file, not defined if error, error number
-        can be retrieved with os_file_get_last_error */
-os_file_t os_file_create_simple_func(const char *name, ulint create_mode,
-                                     ulint access_type, bool read_only,
-                                     bool *success) {
-  os_file_t file;
-
-  *success = false;
-
-  DWORD access;
-  DWORD create_flag;
-  DWORD attributes = 0;
-#ifdef UNIV_HOTBACKUP
-  DWORD share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE;
-#else
-  DWORD share_mode = FILE_SHARE_READ;
-#endif /* UNIV_HOTBACKUP */
-
-  ut_a(!(create_mode & OS_FILE_ON_ERROR_SILENT));
-  ut_a(!(create_mode & OS_FILE_ON_ERROR_NO_EXIT));
-
-  if (create_mode == OS_FILE_OPEN) {
-    create_flag = OPEN_EXISTING;
-
-  } else if (read_only) {
-    create_flag = OPEN_EXISTING;
-
-  } else if (create_mode == OS_FILE_CREATE) {
-    create_flag = CREATE_NEW;
-
-  } else if (create_mode == OS_FILE_CREATE_PATH) {
-    /* Create subdirs along the path if needed. */
-    dberr_t err;
-
-    err = os_file_create_subdirs_if_needed(name);
-
-    if (err != DB_SUCCESS) {
-      *success = false;
-      ib::error(ER_IB_MSG_794)
-          << "Unable to create subdirectories '" << name << "'";
-
-      return (OS_FILE_CLOSED);
-    }
-
-    create_flag = CREATE_NEW;
-    create_mode = OS_FILE_CREATE;
-
-  } else {
-    ib::error(ER_IB_MSG_795) << "Unknown file create mode (" << create_mode
-                             << ") for file '" << name << "'";
-
-    return (OS_FILE_CLOSED);
-  }
-
-  if (access_type == OS_FILE_READ_ONLY) {
-    access = GENERIC_READ;
-
-  } else if (access_type == OS_FILE_READ_ALLOW_DELETE) {
-    ut_ad(read_only);
-
-    access = GENERIC_READ;
-    share_mode |= FILE_SHARE_DELETE | FILE_SHARE_WRITE;
-
-  } else if (read_only) {
-    ib::info(ER_IB_MSG_796) << "Read only mode set. Unable to"
-                               " open file '"
-                            << name << "' in RW mode, "
-                            << "trying RO mode";
-    access = GENERIC_READ;
-
-  } else if (access_type == OS_FILE_READ_WRITE) {
-    access = GENERIC_READ | GENERIC_WRITE;
-
-  } else {
-    ib::error(ER_IB_MSG_797) << "Unknown file access type (" << access_type
-                             << ") "
-                                "for file '"
-                             << name << "'";
-
-    return (OS_FILE_CLOSED);
-  }
-
-  bool retry;
-
-  do {
-    /* Use default security attributes and no template file. */
-
-    file = CreateFile((LPCTSTR)name, access, share_mode, NULL, create_flag,
-                      attributes, NULL);
-
-    if (file == INVALID_HANDLE_VALUE) {
-      *success = false;
-
-      retry = os_file_handle_error(
-          name, create_mode == OS_FILE_OPEN ? "open" : "create");
-
-    } else {
-      retry = false;
-
-      *success = true;
-
-      DWORD temp;
-
-      /* This is a best effort use case, if it fails then we will find out when
-      we try and punch the hole. */
-      DeviceIoControl(file, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &temp, NULL);
-    }
-
-  } while (retry);
-
-  return (file);
-}
-
 /** This function attempts to create a directory named pathname. The new
 directory gets default permissions. On Unix the permissions are
 (0770 & ~umask). If the directory exists already, nothing is done and
@@ -4367,18 +4192,6 @@ pfs_os_file_t os_file_create_func(const char *name, ulint create_mode,
   return (file);
 }
 
-/** NOTE! Use the corresponding macro os_file_create_simple_no_error_handling(),
-not directly this function!
-A simple function to open or create a file.
-@param[in]      name            name of the file or path as a null-terminated
-                                string
-@param[in]      create_mode     create mode
-@param[in]      access_type     OS_FILE_READ_ONLY, OS_FILE_READ_WRITE, or
-                                OS_FILE_READ_ALLOW_DELETE; the last option is
-                                used by a backup program reading the file
-@param[out]     success         true if succeeded
-@return own: handle to the file, not defined if error, error number
-        can be retrieved with os_file_get_last_error */
 pfs_os_file_t os_file_create_simple_no_error_handling_func(const char *name,
                                                            ulint create_mode,
                                                            ulint access_type,
@@ -6293,7 +6106,7 @@ bool AIO::start(ulint n_per_seg, ulint n_readers, ulint n_writers) {
       return false;
     }
 
-    srv_io_thread_function[++n_segments] = "insert buffer thread";
+    srv_io_thread_function[n_segments++] = "insert buffer thread";
 
   } else {
     s_ibuf = nullptr;
@@ -6308,7 +6121,7 @@ bool AIO::start(ulint n_per_seg, ulint n_readers, ulint n_writers) {
 
   for (size_t i = 0; i < n_readers; ++i) {
     ut_a(n_segments < SRV_MAX_N_IO_THREADS);
-    srv_io_thread_function[++n_segments] = "read thread";
+    srv_io_thread_function[n_segments++] = "read thread";
   }
 
   s_writes =
@@ -6320,7 +6133,7 @@ bool AIO::start(ulint n_per_seg, ulint n_readers, ulint n_writers) {
 
   for (size_t i = 0; i < n_writers; ++i) {
     ut_a(n_segments < SRV_MAX_N_IO_THREADS);
-    srv_io_thread_function[++n_segments] = "write thread";
+    srv_io_thread_function[n_segments++] = "write thread";
   }
 
   ut_ad(n_segments == n_extra + n_readers + n_writers);
@@ -7915,14 +7728,14 @@ void os_aio_print_pending_io(FILE *file) { AIO::print_to_file(file); }
 #endif /* UNIV_DEBUG */
 #endif /* !UNIV_HOTBACKUP */
 
-/**
-Set the file create umask
-@param[in]      umask           The umask to use for file creation. */
-void os_file_set_umask(ulint umask) { os_innodb_umask = umask; }
-
-/** Get the file create umask
-@return the umask to use for file creation. */
-ulint os_file_get_umask() { return (os_innodb_umask); }
+#ifndef _WIN32
+void os_file_set_umask(mode_t umask) {
+  static bool was_already_set{false};
+  ut_a(!was_already_set);
+  was_already_set = true;
+  os_innodb_umask = umask;
+}
+#endif
 
 /** Check if the path is a directory. The file/directory must exist.
 @param[in]      path            The path to check

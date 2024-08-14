@@ -1,18 +1,19 @@
 #ifndef SQL_PACK_ROWS_H_
 #define SQL_PACK_ROWS_H_
 
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -71,7 +72,7 @@ struct Column {
 /// When the join or aggregate iterator is constructed, we extract the columns
 /// that are needed to satisfy the SQL query.
 struct Table {
-  explicit Table(TABLE *tab);
+  explicit Table(TABLE *table_arg);
   TABLE *table;
   Prealloced_array<Column, 8> columns;
 
@@ -96,11 +97,6 @@ class TableCollection {
   TableCollection(const Prealloced_array<TABLE *, 4> &tables, bool store_rowids,
                   table_map tables_to_get_rowid_for,
                   table_map tables_to_store_contents_of_null_rows_for);
-
-  // A single table (typically one for which there is no map bit).
-  explicit TableCollection(TABLE *table) {
-    AddTable(table, /*store_contents_of_null_rows=*/false);
-  }
 
   const Prealloced_array<Table, 4> &tables() const { return m_tables; }
 
@@ -171,7 +167,7 @@ enum class NullRowFlag {
 ///     - Space for a NULL flag per nullable table (tables on the inner side of
 ///     an outer join).
 /// 3) Size of the buffer returned by pack() on all columns marked in the
-///    read_set.
+///    read_set_internal.
 ///
 /// Note that if any of the tables has a BLOB/TEXT column, this function looks
 /// at the data stored in the record buffers. This means that the function can
@@ -254,7 +250,7 @@ ALWAYS_INLINE uchar *StoreFromTableBuffersRaw(const TableCollection &tables,
     }
 
     for (const Column &column : tbl.columns) {
-      assert(bitmap_is_set(column.field->table->read_set,
+      assert(bitmap_is_set(&column.field->table->read_set_internal,
                            column.field->field_index()));
       if (!column.field->is_null()) {
         // Store the data in packed format. The packed format will also

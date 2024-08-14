@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,6 +33,7 @@
 #include "lex_string.h"
 #include "m_ctype.h"
 #include "my_dbug.h"
+#include "mysql/components/services/log_builtins.h"
 #include "mysql/thread_type.h"
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/bootstrap.h"                   // bootstrap::run_bootstrap_thread
@@ -107,7 +109,14 @@ bool check_perf_schema_has_correct_version(THD *thd) {
   DBUG_EXECUTE_IF("test_p_s_metadata_version",
                   { actual_version = UNKNOWN_P_S_VERSION; });
 
-  return d->get_target_P_S_version() == actual_version;
+  if (d->get_target_P_S_version() == actual_version) return true;
+
+  LogErr(INFORMATION_LEVEL, ER_PERFORMANCE_SCHEMA_VERSION_CHANGE,
+         (actual_version > d->get_target_P_S_version() ? "Downgrading"
+                                                       : "Upgrading"),
+         actual_version, d->get_target_P_S_version());
+
+  return false;
 }
 
 /**

@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -483,8 +484,7 @@ void Connection_delay_action::conditional_wait(MYSQL_THD thd,
 
   /* Finish waiting and deregister wait condition */
   mysql_mutex_unlock(&connection_delay_mutex);
-  thd_exit_cond(thd, &stage_waiting_in_connection_control_plugin, __func__,
-                __FILE__, __LINE__);
+  thd_exit_cond(thd, &old_stage, __func__, __FILE__, __LINE__);
 
   /* Cleanup */
   mysql_mutex_destroy(&connection_delay_mutex);
@@ -564,6 +564,10 @@ bool Connection_delay_action::notify_event(
     rd_lock.unlock();
     conditional_wait(thd, wait_time);
     rd_lock.lock();
+
+    /* Introduce a delay to check that connection delay status doesn't last
+     * longer than configured */
+    DBUG_EXECUTE_IF("delay_after_connection_delay", sleep(2););
   }
 
   if (connection_event->status) {

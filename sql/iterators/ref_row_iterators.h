@@ -1,18 +1,19 @@
 #ifndef SQL_ITERATORS_REF_ROW_ITERATORS_H_
 #define SQL_ITERATORS_REF_ROW_ITERATORS_H_
 
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -210,24 +211,6 @@ class DynamicRangeIterator final : public TableRowIterator {
   bool m_quick_traced_before = false;
 
   ha_rows *const m_examined_rows;
-
-  /**
-    Read set to be used when range optimizer picks covering index. This
-    read set is same as what filter_gcol_for_dynamic_range_scan()
-    sets up after filtering out the base columns for virtually generated
-    columns from the original table read set. By filtering out the base
-    columns, it avoids addition of unneeded columns for hash join/BKA.
-  */
-  MY_BITMAP *m_read_set_without_base_columns;
-
-  /**
-    Read set to be used when range optimizer picks a non-covering index
-    or when table scan gets picked. It is setup by adding base columns
-    to the read set setup by filter_gcol_for_dynamic_range_scan().
-    add_virtual_gcol_base_cols() adds the base columns when initializing
-    this iterator.
-  */
-  MY_BITMAP m_read_set_with_base_columns;
 };
 
 /**
@@ -320,16 +303,6 @@ class AlternativeIterator final : public RowIterator {
 
   // The underlying table.
   TABLE *const m_table;
-
-  /**
-    A read set we can use when we fall back to table scans,
-    to get the base columns we need for virtual generated columns.
-    See add_virtual_gcol_base_cols().
-   */
-  MY_BITMAP m_table_scan_read_set;
-
-  /// The original value of table->read_set.
-  MY_BITMAP *m_original_read_set;
 };
 
 #endif  // SQL_ITERATORS_REF_ROW_ITERATORS_H_

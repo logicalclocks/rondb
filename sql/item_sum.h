@@ -1,18 +1,19 @@
 #ifndef ITEM_SUM_INCLUDED
 #define ITEM_SUM_INCLUDED
 
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -505,6 +506,12 @@ class Item_sum : public Item_func {
     The value must be reset to false after execution.
   */
   bool forced_const{false};
+
+  /// true if the function is resolved to be always NULL
+  bool m_null_resolved{false};
+  /// true if the function is determined to be NULL at start of execution
+  bool m_null_executed{false};
+
   static ulonglong ram_limitation(THD *thd);
 
  public:
@@ -2095,8 +2102,6 @@ class Item_func_group_concat final : public Item_sum {
 
   /// True if GROUP CONCAT has the DISTINCT attribute
   bool distinct;
-  /// True if the result is always NULL
-  bool always_null{false};
   /// The number of ORDER BY items.
   uint m_order_arg_count;
   /// The number of selected items, aka the concat field list

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,24 +24,23 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
 #include <ndb_global.h>
 
 #include <ndbd_exit_codes.h>
 #include "ErrorReporter.hpp"
 
-#include <FastScheduler.hpp>
-#include <DebuggerNames.hpp>
-#include <NdbHost.h>
 #include <NdbConfig.h>
+#include <NdbHost.h>
 #include <Configuration.hpp>
+#include <DebuggerNames.hpp>
+#include <FastScheduler.hpp>
 #include "EventLogger.hpp"
 
-#include "ndb_stacktrace.h"
 #include "TimeModule.hpp"
+#include "ndb_stacktrace.h"
 
-#include <NdbAutoPtr.hpp>
 #include <NdbSleep.h>
+#include <NdbAutoPtr.hpp>
 
 #define JAM_FILE_ID 490
 
@@ -60,49 +60,38 @@ const char * ndb_basename(const char *path);
 int simulate_error_during_error_reporting = 0;
 #endif
 
-static
-const char*
-formatTimeStampString(char* theDateTimeString, size_t len){
-  TimeModule DateTime;          /* To create "theDateTimeString" */
+static const char *formatTimeStampString(char *theDateTimeString, size_t len) {
+  TimeModule DateTime; /* To create "theDateTimeString" */
   DateTime.setTimeStamp();
-  
-  BaseString::snprintf(theDateTimeString, len, "%s %d %s %d - %s:%s:%s",
-	   DateTime.getDayName(), DateTime.getDayOfMonth(),
-	   DateTime.getMonthName(), DateTime.getYear(), DateTime.getHour(),
-	   DateTime.getMinute(), DateTime.getSecond());
-  
+
+  BaseString::snprintf(
+      theDateTimeString, len, "%s %d %s %d - %s:%s:%s", DateTime.getDayName(),
+      DateTime.getDayOfMonth(), DateTime.getMonthName(), DateTime.getYear(),
+      DateTime.getHour(), DateTime.getMinute(), DateTime.getSecond());
+
   return theDateTimeString;
 }
 
-int
-ErrorReporter::get_trace_no(){
-  
+int ErrorReporter::get_trace_no() {
   FILE *stream;
   unsigned int traceFileNo;
-  
-  char *file_name= NdbConfig_NextTraceFileName(globalData.ownId);
+
+  char *file_name = NdbConfig_NextTraceFileName(globalData.ownId);
   NdbAutoPtr<char> tmp_aptr(file_name);
 
-  /* 
+  /*
    * Read last number from tracefile
-   */  
+   */
   stream = fopen(file_name, "r+");
-  if (stream == NULL)
-  {
+  if (stream == NULL) {
     traceFileNo = 1;
-  }
-  else
-  {
+  } else {
     char buf[255];
-    if (fgets(buf, 255, stream) == NULL)
-    {
+    if (fgets(buf, 255, stream) == NULL) {
       traceFileNo = 1;
-    }
-    else
-    {
+    } else {
       const int scan = sscanf(buf, "%u", &traceFileNo);
-      if(scan != 1)
-      {
+      if (scan != 1) {
         traceFileNo = 1;
       }
     }
@@ -111,10 +100,10 @@ ErrorReporter::get_trace_no(){
   }
 
   /**
-   * Wrap tracefile no 
+   * Wrap tracefile no
    */
   Uint32 tmp = globalEmulatorData.theConfiguration->maxNoOfErrorLogs();
-  if (traceFileNo > tmp ) {
+  if (traceFileNo > tmp) {
     traceFileNo = 1;
   }
 
@@ -122,7 +111,7 @@ ErrorReporter::get_trace_no(){
    *  Save new number to the file
    */
   stream = fopen(file_name, "w");
-  if(stream != NULL){
+  if (stream != NULL) {
     fprintf(stream, "%u", traceFileNo);
     fclose(stream);
   }
@@ -131,15 +120,12 @@ ErrorReporter::get_trace_no(){
 }
 
 // Using my_progname without including all of mysys
-extern const char* my_progname;
+extern const char *my_progname;
 
-void
-ErrorReporter::formatMessage(int thr_no,
-                             Uint32 num_threads, int faultID,
-			     const char* problemData, 
-			     const char* objRef,
-			     const char* theNameOfTheTraceFile,
-			     char* messptr){
+void ErrorReporter::formatMessage(int thr_no, Uint32 num_threads, int faultID,
+                                  const char *problemData, const char *objRef,
+                                  const char *theNameOfTheTraceFile,
+                                  char *messptr) {
   int processId;
   ndbd_exit_classification cl;
   ndbd_exit_status st;
@@ -154,20 +140,18 @@ ErrorReporter::formatMessage(int thr_no,
   if (theNameOfTheTraceFile) {
     BaseString traceFileFullPath(theNameOfTheTraceFile);
     Vector<BaseString> traceFileComponents;
-    int noOfComponents = traceFileFullPath.split(traceFileComponents,
-                                                 DIR_SEPARATOR);
+    int noOfComponents =
+        traceFileFullPath.split(traceFileComponents, DIR_SEPARATOR);
     assert(noOfComponents >= 1);
-    failingThdTraceFileName = traceFileComponents[noOfComponents-1];
+    failingThdTraceFileName = traceFileComponents[noOfComponents - 1];
   }
 
   processId = NdbHost_GetProcessId();
   char thrbuf[100] = "";
-  if (thr_no >= 0)
-  {
+  if (thr_no >= 0) {
     char thrSuffix[100] = "";
     BaseString::snprintf(thrbuf, sizeof(thrbuf), " thr: %u", thr_no);
-    if (thr_no > 0)
-    {
+    if (thr_no > 0) {
       /* Append the thread number to log the causing thread trace file
        * name explicitly
        * Thread 0 is a special case with no suffix */
@@ -179,83 +163,69 @@ ErrorReporter::formatMessage(int thr_no,
   char time_str[39];
   formatTimeStampString(time_str, sizeof(time_str));
 
-  BaseString::snprintf(messptr, MESSAGE_LENGTH,
-                       "Time: %s\n"
-                       "Status: %s\n"
-                       "Message: %s (%s)\n"
-                       "Error: %d\n"
-                       "Error data: %s\n"
-                       "Error object: %s\n"
-                       "Program: %s\n"
-                       "Pid: %d%s\n"
-                       "Version: %s\n"
-                       "Trace file name: %s\n"
-                       "Trace file path: %s",
-                       time_str,
-                       exit_st_msg,
-                       exit_msg, exit_cl_msg,
-                       faultID, 
-                       (problemData == NULL) ? "" : problemData, 
-                       objRef, 
-                       ndb_basename(my_progname),
-                       processId, 
-                       thrbuf,
-                       NDB_VERSION_STRING,
-                       theNameOfTheTraceFile ?
-                       failingThdTraceFileName.c_str()
-                       : "<no tracefile>",
-                       theNameOfTheTraceFile ? 
-                       theNameOfTheTraceFile : "<no tracefile>");
+  BaseString::snprintf(
+      messptr, MESSAGE_LENGTH,
+      "Time: %s\n"
+      "Status: %s\n"
+      "Message: %s (%s)\n"
+      "Error: %d\n"
+      "Error data: %s\n"
+      "Error object: %s\n"
+      "Program: %s\n"
+      "Pid: %d%s\n"
+      "Version: %s\n"
+      "Trace file name: %s\n"
+      "Trace file path: %s",
+      time_str, exit_st_msg, exit_msg, exit_cl_msg, faultID,
+      (problemData == NULL) ? "" : problemData, objRef,
+      ndb_basename(my_progname), processId, thrbuf, NDB_VERSION_STRING,
+      theNameOfTheTraceFile ? failingThdTraceFileName.c_str()
+                            : "<no tracefile>",
+      theNameOfTheTraceFile ? theNameOfTheTraceFile : "<no tracefile>");
 
-  if (theNameOfTheTraceFile)
-  {
+  if (theNameOfTheTraceFile) {
     sofar = (int)strlen(messptr);
-    if(sofar < MESSAGE_LENGTH)
-    {
+    if (sofar < MESSAGE_LENGTH) {
       BaseString::snprintf(messptr + sofar, MESSAGE_LENGTH - sofar,
                            " [t%u..t%u]", 1, num_threads);
     }
   }
 
   sofar = (int)strlen(messptr);
-  if(sofar < MESSAGE_LENGTH)
-  {
+  if (sofar < MESSAGE_LENGTH) {
     BaseString::snprintf(messptr + sofar, MESSAGE_LENGTH - sofar,
                          "\n"
                          "***EOM***\n");
   }
 
   // Add trailing blanks to get a fixed length of the message
-  while (strlen(messptr) <= MESSAGE_LENGTH-3){
+  while (strlen(messptr) <= MESSAGE_LENGTH - 3) {
     strcat(messptr, " ");
   }
-  
-  messptr[MESSAGE_LENGTH -2]='\n';
-  messptr[MESSAGE_LENGTH -1]=0;
-  
+
+  messptr[MESSAGE_LENGTH - 2] = '\n';
+  messptr[MESSAGE_LENGTH - 1] = 0;
+
   return;
 }
 
 NdbShutdownType ErrorReporter::s_errorHandlerShutdownType = NST_ErrorHandler;
 
-void
-ErrorReporter::handleAssert(const char* message, const char* file, int line, int ec)
-{
+void ErrorReporter::handleAssert(const char *message, const char *file,
+                                 int line, int ec) {
   char refMessage[200];
 
   globalData.theStopFlag = true;
 #ifdef NO_EMULATED_JAM
-  BaseString::snprintf(refMessage, 200, "file: %s lineNo: %d",
-	   file, line);
+  BaseString::snprintf(refMessage, 200, "file: %s lineNo: %d", file, line);
 #else
-  BaseString::snprintf(refMessage, 200, "%s line: %d",
-	   file, line);
+  BaseString::snprintf(refMessage, 200, "%s line: %d", file, line);
 #endif
   NdbShutdownType nst = s_errorHandlerShutdownType;
   WriteMessage(ec, message, refMessage, nst);
 
   NdbShutdown(ec, nst);
-  exit(1);                                      // Deadcode
+  exit(1);  // Deadcode
 }
 
 void
@@ -265,22 +235,35 @@ ErrorReporter::handleError(int messageID,
 			   NdbShutdownType nst)
 {
   globalData.theStopFlag = true;
-  ndb_print_stacktrace();
 
-  if(messageID == NDBD_EXIT_ERROR_INSERT)
-  {
-    nst = NST_ErrorInsert;
-  } 
-  else 
-  {
-    if (nst == NST_ErrorHandler)
-      nst = s_errorHandlerShutdownType;
+  /**
+   * Print the stack trace on stdout only for software errors.
+   * When the shutdown is provoked in a controlled way rather than a
+   * software crash stack trace is not printed.
+   *
+   * For the NDBD_EXIT_OS_SIGNAL_RECEIVED error code, although it is a
+   * software error (ndbd_exit_classification XIE), stack trace is not
+   * printed because it is already done in the Unix signal handler case.
+   */
+  if (ndbd_is_software_error(messageID)) {
+    if (nst != NST_ErrorHandlerSignal) {
+      /**
+       * Show stack trace of thread hitting problem - already done in
+       * Unix signal handler case
+       */
+      ndb_print_stacktrace();
+    }
   }
-  
+
+  if (messageID == NDBD_EXIT_ERROR_INSERT) {
+    nst = NST_ErrorInsert;
+  } else {
+    if (nst == NST_ErrorHandler) nst = s_errorHandlerShutdownType;
+  }
+
   WriteMessage(messageID, ndb_basename(problemData), objRef, nst);
 
-  if (problemData == NULL)
-  {
+  if (problemData == NULL) {
     ndbd_exit_classification cl;
     problemData = ndbd_exit_message(messageID, &cl);
   }
@@ -289,7 +272,7 @@ ErrorReporter::handleError(int messageID,
   g_eventLogger->info("%s", objRef);
 
   NdbShutdown(messageID, nst);
-  exit(1); // kill warning
+  exit(1);  // kill warning
 }
 
 bool ErrorReporter::dumpJam_ok = false;
@@ -327,35 +310,34 @@ ErrorReporter::WriteMessage(int thrdMessageID,
   /**
    * Format trace file name
    */
-  char *theTraceFileName= 0;
+  char *theTraceFileName = 0;
   if (globalData.ownId > 0)
     theTraceFileName= NdbConfig_TraceFileName(globalData.ownId,
 					      get_trace_no());
   NdbAutoPtr<char> tmp_aptr1(theTraceFileName);
-  
+
   // The first 69 bytes is info about the current offset
   Uint32 noMsg = globalEmulatorData.theConfiguration->maxNoOfErrorLogs();
 
   maxOffset = (69 + (noMsg * MESSAGE_LENGTH));
-  
-  char *theErrorFileName= (char *)NdbConfig_ErrorFileName(globalData.ownId);
+
+  char *theErrorFileName = (char *)NdbConfig_ErrorFileName(globalData.ownId);
   NdbAutoPtr<char> tmp_aptr2(theErrorFileName);
 
   stream = fopen(theErrorFileName, "r+");
   if (stream == NULL) { /* If the file could not be opened. */
-    
-    // Create a new file, and skip the first 69 bytes, 
+
+    // Create a new file, and skip the first 69 bytes,
     // which are info about the current offset
     stream = fopen(theErrorFileName, "w");
-    if(stream == NULL)
-    {
+    if (stream == NULL) {
       g_eventLogger->info("Unable to open error log file: %s",
                           theErrorFileName);
       return -1;
     }
     fprintf(stream, "%s%u%s", "Current byte-offset of file-pointer is: ", 69,
-	    "                        \n\n\n");   
-    
+            "                        \n\n\n");
+
     // ...and write the error-message...
     formatMessage(thr_no,
                   threadCount, thrdMessageID,
@@ -363,16 +345,16 @@ ErrorReporter::WriteMessage(int thrdMessageID,
                   theTraceFileName, theMessage);
     fprintf(stream, "%s", theMessage);
     fflush(stream);
-    
-    /* ...and finally, at the beginning of the file, 
+
+    /* ...and finally, at the beginning of the file,
        store the position where to
        start writing the next message. */
     offset = ftell(stream);
     // If we have not reached the maximum number of messages...
-    if (offset <= (maxOffset - MESSAGE_LENGTH)){
+    if (offset <= (maxOffset - MESSAGE_LENGTH)) {
       fseek(stream, 40, SEEK_SET);
       // ...set the current offset...
-      fprintf(stream,"%d", offset);
+      fprintf(stream, "%d", offset);
     } else {
       fseek(stream, 40, SEEK_SET);
       // ...otherwise, start over from the beginning.
@@ -381,8 +363,7 @@ ErrorReporter::WriteMessage(int thrdMessageID,
   } else {
     // Go to the latest position in the file...
     fseek(stream, 40, SEEK_SET);
-    if (fscanf(stream, "%u", &offset) != 1)
-    {
+    if (fscanf(stream, "%u", &offset) != 1) {
       abort();
     }
 
@@ -396,20 +377,17 @@ ErrorReporter::WriteMessage(int thrdMessageID,
      * beginning of the file.
      */
     bool oddNoOfMessages = false;
-    if(((offset - 69) / OLD_MESSAGE_LENGTH) % 2 == 1 )
-      oddNoOfMessages = true;
-    if (oddNoOfMessages)
-    {
+    if (((offset - 69) / OLD_MESSAGE_LENGTH) % 2 == 1) oddNoOfMessages = true;
+    if (oddNoOfMessages) {
       /* Adjust the offset by the length (old) of 1
        * message. Also check if the maximum number of
        * messages has been reached.
        */
       offset = offset + 499;
-      if (offset > (maxOffset - MESSAGE_LENGTH))
-        offset = 69;
+      if (offset > (maxOffset - MESSAGE_LENGTH)) offset = 69;
     }
     fseek(stream, offset, SEEK_SET);
-    
+
     // ...and write the error-message there...
     formatMessage(thr_no,
                   threadCount, thrdMessageID,
@@ -417,17 +395,17 @@ ErrorReporter::WriteMessage(int thrdMessageID,
                   theTraceFileName, theMessage);
     fprintf(stream, "%s", theMessage);
     fflush(stream);
-    
-    /* ...and finally, at the beginning of the file, 
+
+    /* ...and finally, at the beginning of the file,
        store the position where to
        start writing the next message. */
     offset = ftell(stream);
-    
+
     // If we have not reached the maximum number of messages...
-    if (offset <= (maxOffset - MESSAGE_LENGTH)){
+    if (offset <= (maxOffset - MESSAGE_LENGTH)) {
       fseek(stream, 40, SEEK_SET);
       // ...set the current offset...
-      fprintf(stream,"%d", offset);
+      fprintf(stream, "%d", offset);
     } else {
       fseek(stream, 40, SEEK_SET);
       // ...otherwise, start over from the beginning.
@@ -440,8 +418,7 @@ ErrorReporter::WriteMessage(int thrdMessageID,
   prepare_to_crash(false, (nst == NST_ErrorInsert));
 
 #ifdef ERROR_INSERT
-  if (simulate_error_during_error_reporting == 1)
-  {
+  if (simulate_error_during_error_reporting == 1) {
     fprintf(stderr, "Stall during error reporting after releasing lock\n");
     NdbSleep_MilliSleep(12000);
   }

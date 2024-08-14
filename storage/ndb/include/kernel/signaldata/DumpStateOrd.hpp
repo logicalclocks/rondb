@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,7 +30,6 @@
 #include "SignalData.hpp"
 
 #define JAM_FILE_ID 137
-
 
 /**
  * DumpStateOrd is sent by the mgmtsrvr to CMVMI.
@@ -62,7 +62,7 @@ class DumpStateOrd {
   friend class Dbdict;
   friend class Ndbfs;
 
-public:
+ public:
   enum DumpStateType {
     /* any dumps above this value should go to one block only */
     OneBlockOnly = 100000,
@@ -120,9 +120,9 @@ public:
     CommitAckMarkersSize = 14, // TC+LQH Dump free size in commitAckMarkerP
     CommitAckMarkersDump = 15, // TC+LQH Dump info in commitAckMarkerPool
     DihDumpNodeRestartInfo = 16, // 16 DIH Dump node restart info
-    DihDumpNodeStatusInfo = 17,// 17 DIH Dump node status info
-    DihPrintFragmentation = 18,// 18 DIH Print fragmentation
-    DihPrintOneFragmentation = 19,// 18 DIH Print info about one fragmentation
+    DihDumpNodeStatusInfo = 17,     // 17 DIH Dump node status info
+    DihPrintFragmentation = 18,     // 18 DIH Print fragmentation
+    DihPrintOneFragmentation = 19,  // 18 DIH Print info about one fragmentation
     // 19 NDBFS Fipple with O_SYNC, O_CREATE etc.
     // 20-24 BACKUP
     NdbcntrTestStopOnError = 25,
@@ -240,7 +240,7 @@ public:
     // 7010 DIH
     // 7011 DIH
     // 7012 DIH
-    DihDumpLCPState= 7013,
+    DihDumpLCPState = 7013,
     DihDumpLCPMasterTakeOver = 7014,    
     // 7015 DIH
     DihAllAllowNodeStart = 7016,
@@ -308,11 +308,10 @@ public:
 
     RestoreRates = 30000
   };
-public:
   
+ public:
   Uint32 args[25];          // Generic argument
 };
-
 
 #undef JAM_FILE_ID
 

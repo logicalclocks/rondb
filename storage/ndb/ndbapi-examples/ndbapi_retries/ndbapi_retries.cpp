@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -49,70 +50,70 @@
 #ifdef _WIN32
 #include <windows.h>
 // Emulate sleep with Sleep
-static inline
-void sleep(unsigned int seconds)
-{
-  Sleep(seconds/1000);
-}
+static inline void sleep(unsigned int seconds) { Sleep(seconds / 1000); }
 #else
 // Used for sleep (use your own version of sleep)
 #include <unistd.h>
 #endif
 #define TIME_TO_SLEEP_BETWEEN_TRANSACTION_RETRIES 1
 
-#define PRINT_ERROR(code,msg) \
+#define PRINT_ERROR(code, msg)                                   \
   std::cout << "Error in " << __FILE__ << ", line: " << __LINE__ \
-            << ", code: " << code \
-            << ", msg: " << msg << "." << std::endl
-#define MYSQLERROR(mysql) { \
-  PRINT_ERROR(mysql_errno(&mysql),mysql_error(&mysql)); \
-  exit(-1); }
+            << ", code: " << code << ", msg: " << msg << "." << std::endl
+#define MYSQLERROR(mysql)                                  \
+  {                                                        \
+    PRINT_ERROR(mysql_errno(&mysql), mysql_error(&mysql)); \
+    exit(-1);                                              \
+  }
 
 //
 //  APIERROR prints an NdbError object
 //
 #define APIERROR(error) \
-  { std::cout << "API ERROR: " << error.code << " " << error.message \
+  {                                                                        \
+    std::cout << "API ERROR: " << error.code << " " << error.message       \
               << std::endl \
-              << "           " << "Status: " << error.status \
-              << ", Classification: " << error.classification << std::endl\
-              << "           " << "File: " << __FILE__ \
-              << " (Line: " << __LINE__ << ")" << std::endl \
-              ; \
+              << "           "                                             \
+              << "Status: " << error.status                                \
+              << ", Classification: " << error.classification << std::endl \
+              << "           "                                             \
+              << "File: " << __FILE__ << " (Line: " << __LINE__ << ")"     \
+              << std::endl;                                                \
   }
 
 //
 //  TRANSERROR prints all error info regarding an NdbTransaction
 //
 #define TRANSERROR(ndbTransaction) \
-  { NdbError error = ndbTransaction->getNdbError(); \
+  {                                                                        \
+    NdbError error = ndbTransaction->getNdbError();                        \
     std::cout << "TRANS ERROR: " << error.code << " " << error.message \
               << std::endl \
-              << "           " << "Status: " << error.status \
+              << "           "                                             \
+              << "Status: " << error.status                                \
               << ", Classification: " << error.classification << std::endl \
-              << "           " << "File: " << __FILE__ \
-              << " (Line: " << __LINE__ << ")" << std::endl \
-              ; \
+              << "           "                                             \
+              << "File: " << __FILE__ << " (Line: " << __LINE__ << ")"     \
+              << std::endl;                                                \
     printTransactionError(ndbTransaction); \
   }
 
 void printTransactionError(NdbTransaction *ndbTransaction) {
   const NdbOperation *ndbOp = NULL;
-  int i=0;
+  int i = 0;
 
   /****************************************************************
    * Print NdbError object of every operations in the transaction *
    ****************************************************************/
   while ((ndbOp = ndbTransaction->getNextCompletedOperation(ndbOp)) != NULL) {
     NdbError error = ndbOp->getNdbError();
-    std::cout << "           OPERATION " << i+1 << ": " 
-	      << error.code << " " << error.message << std::endl
+    std::cout << "           OPERATION " << i + 1 << ": " << error.code << " "
+              << error.message << std::endl
 	      << "           Status: " << error.status 
 	      << ", Classification: " << error.classification << std::endl;
     i++;
   }
 }
-
 
 //
 //  Example insert
@@ -122,7 +123,7 @@ void printTransactionError(NdbTransaction *ndbTransaction) {
 //  @param error          NdbError object returned in case of errors
 //  @return -1 in case of failures, 0 otherwise
 //
-int insert(int transactionId, NdbTransaction* myTransaction,
+int insert(int transactionId, NdbTransaction *myTransaction,
 	   const NdbDictionary::Table *myTable) {
   NdbOperation	 *myOperation;          // For other operations
 
@@ -139,13 +140,12 @@ int insert(int transactionId, NdbTransaction* myTransaction,
   return myTransaction->execute(NdbTransaction::NoCommit);
 }
 
-
 //
 //  Execute function which re-executes (tries 10 times) the transaction 
 //  if there are temporary errors (e.g. the NDB Cluster is overloaded).
 //  @return -1 failure, 1 success
 //
-int executeInsertTransaction(int transactionId, Ndb* myNdb,
+int executeInsertTransaction(int transactionId, Ndb *myNdb,
 			     const NdbDictionary::Table *myTable) {
   int result = 0;                       // No result yet
   int noOfRetriesLeft = 10;
@@ -153,7 +153,6 @@ int executeInsertTransaction(int transactionId, Ndb* myNdb,
   NdbError ndberror;
   
   while (noOfRetriesLeft > 0 && !result) {
-    
     /*********************************
      * Start and execute transaction *
      *********************************/
@@ -163,7 +162,7 @@ int executeInsertTransaction(int transactionId, Ndb* myNdb,
       ndberror = myNdb->getNdbError();
       result = -1;  // Failure
     } else if (insert(transactionId, myTransaction, myTable) || 
-	       insert(10000+transactionId, myTransaction, myTable) ||
+               insert(10000 + transactionId, myTransaction, myTable) ||
 	       myTransaction->execute(NdbTransaction::Commit)) {
       TRANSERROR(myTransaction);
       ndberror = myTransaction->getNdbError();
@@ -209,69 +208,58 @@ int executeInsertTransaction(int transactionId, Ndb* myNdb,
 /*********************************************************
  * Create a table named api_retries if it does not exist *
  *********************************************************/
-static void create_table(MYSQL &mysql)
-{
-  while(mysql_query(&mysql, 
+static void create_table(MYSQL &mysql) {
+  while (mysql_query(&mysql,
 		  "CREATE TABLE "
 		  "  api_retries"
 		  "    (ATTR1 INT UNSIGNED NOT NULL PRIMARY KEY,"
 		  "     ATTR2 INT UNSIGNED NOT NULL)"
-		  "  ENGINE=NDB"))
-  {
-    if (mysql_errno(&mysql) == ER_TABLE_EXISTS_ERROR)
-    {
+                     "  ENGINE=NDB")) {
+    if (mysql_errno(&mysql) == ER_TABLE_EXISTS_ERROR) {
       std::cout << "MySQL Cluster already has example table: api_scan. "
 	     << "Dropping it..." << std::endl; 
         mysql_query(&mysql, "DROP TABLE api_retries");
-    }
-    else MYSQLERROR(mysql);
+    } else
+      MYSQLERROR(mysql);
   }
 }
 
-
-int main(int argc, char** argv)
-{
-  if (argc != 3)
-  {
+int main(int argc, char **argv) {
+  if (argc != 3) {
     std::cout << "Arguments are <socket mysqld> <connect_string cluster>.\n";
     exit(-1);
   }
-  char * mysqld_sock  = argv[1];
+  char *mysqld_sock = argv[1];
   const char *connectstring = argv[2];
   ndb_init();
 
-  Ndb_cluster_connection *cluster_connection=
-    new Ndb_cluster_connection(connectstring); // Object representing the cluster
+  Ndb_cluster_connection *cluster_connection = new Ndb_cluster_connection(
+      connectstring);  // Object representing the cluster
 
-  int r= cluster_connection->connect(5 /* retries               */,
+  int r = cluster_connection->connect(5 /* retries               */,
 				     3 /* delay between retries */,
 				     1 /* verbose               */);
-  if (r > 0)
-  {
+  if (r > 0) {
     std::cout
       << "Cluster connect failed, possibly resolved with more retries.\n";
     exit(-1);
-  }
-  else if (r < 0)
-  {
-    std::cout
-      << "Cluster connect failed.\n";
+  } else if (r < 0) {
+    std::cout << "Cluster connect failed.\n";
     exit(-1);
   }
 					   
-  if (cluster_connection->wait_until_ready(30,30))
-  {
+  if (cluster_connection->wait_until_ready(30, 30)) {
     std::cout << "Cluster was not ready within 30 secs." << std::endl;
     exit(-1);
   }
   // connect to mysql server
   MYSQL mysql;
-  if ( !mysql_init(&mysql) ) {
+  if (!mysql_init(&mysql)) {
     std::cout << "mysql_init failed\n";
     exit(-1);
   }
-  if ( !mysql_real_connect(&mysql, "localhost", "root", "", "",
-			   0, mysqld_sock, 0) )
+  if (!mysql_real_connect(&mysql, "localhost", "root", "", "", 0, mysqld_sock,
+                          0))
     MYSQLERROR(mysql);
   
   /********************************************
@@ -282,18 +270,17 @@ int main(int argc, char** argv)
   create_table(mysql);
   mysql_close(&mysql);
 
-  Ndb* myNdb= new Ndb( cluster_connection,
-		       "ndb_examples" );  // Object representing the database
+  Ndb *myNdb = new Ndb(cluster_connection,
+                       "ndb_examples");  // Object representing the database
   
   if (myNdb->init() == -1) {
     APIERROR(myNdb->getNdbError());
     exit(-1);
   }
 
-  const NdbDictionary::Dictionary* myDict= myNdb->getDictionary();
-  const NdbDictionary::Table *myTable= myDict->getTable("api_retries");
-  if (myTable == NULL)
-  {
+  const NdbDictionary::Dictionary *myDict = myNdb->getDictionary();
+  const NdbDictionary::Table *myTable = myDict->getTable("api_retries");
+  if (myTable == NULL) {
     APIERROR(myDict->getNdbError());
     return -1;
   }

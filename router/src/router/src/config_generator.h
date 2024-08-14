@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -388,28 +389,21 @@ class ConfigGenerator {
    * @param username Router account to be created - the username part
    * @param hostnames Router accounts to be created - the hostnames part
    * @param password Password for the account
-   * @param hash_password CREATE USER method:
-   *   true: password should be hashed, CREATE USER using mysql_native_password
-   *   false: password should remain plaintext, CREATE USER without
-   *          mysql_native_password
    * @param if_not_exists if true, CREATE USER IF NOT EXISTS will be used
    *        instead of CREATE USER
    *
    * @throws std::logic_error on not connected
    *         password_too_weak on Server not liking the password
-   *         plugin_not_loaded on Server not supporting mysql_native_password
    *         account_exists if running without IF NOT EXISTS and account exists
    * already MySQLSession::Error on other (unexpected) SQL error
    */
   void create_accounts(const std::string &username,
                        const std::set<std::string> &hostnames,
-                       const std::string &password, bool hash_password = false,
-                       bool if_not_exists = false);
+                       const std::string &password, bool if_not_exists = false);
 
   void create_users(const std::string &username,
                     const std::set<std::string> &hostnames,
-                    const std::string &password, bool hash_password,
-                    bool if_not_exists);
+                    const std::string &password, bool if_not_exists);
 
   void throw_account_exists(const MySQLSession::Error &e,
                             const std::string &username);

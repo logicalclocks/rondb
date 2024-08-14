@@ -1,15 +1,16 @@
-# Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -19,6 +20,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+
+INCLUDE(ProcessorCount)
 
 # Skip -- Up-to-date messages in case of multiple 'make install'.
 # This works for CMAKE 3.1.3 and up
@@ -115,6 +118,44 @@ ADD_CUSTOM_TARGET(test-mtr
   COMMAND perl ./mysql-test-run.pl --force --parallel=4 --suite=main
           ${VS_CONFIG} ${DEBUG_SERVER} ${EXP}
 )
+
+SET(MTR_TESTS_FOR_PROFILING
+  auth_sec
+  binlog
+  connection_control
+  encryption
+  gcol
+  gis
+  innodb
+  json
+  main
+  sysschema
+  thread_pool
+  x
+  )
+STRING(REPLACE ";" "," MTR_SUITE_STRING "${MTR_TESTS_FOR_PROFILING}")
+
+PROCESSORCOUNT(NPROC)
+IF(NPROC EQUAL 0)
+  SET(NPROC 8)
+ENDIF()
+
+ADD_CUSTOM_TARGET(run-profile-suite
+  COMMAND perl ./mysql-test-run.pl
+  --accept-test-fail
+  --clean-vardir
+  --force
+  --max-test-fail=10
+  --mem
+  --mysqld=--binlog-format=row
+  --parallel=${NPROC}
+  --retry=0
+  --skip-rpl
+  --suite=${MTR_SUITE_STRING}
+
+  USES_TERMINAL # So that Ninja will show progress, rather than buffer output.
+  VERBATIM
+  )
 
 ## We could do something like this, but the 'test' target generated
 ## by cmake is really for unit testing: all output is muted by default,

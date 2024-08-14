@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -41,9 +42,9 @@
 #define MAX_NDB_NODES 145
 #define MAX_NDB_NODES_v1 49
 #define MAX_NDB_NODE_GROUPS 72
-#define MAX_NODES     256
+#define MAX_NODES 256
 #define NDB_UNDEF_NODEGROUP 0xFFFF
-#define MAX_BACKUPS   0xFFFFFFFF
+#define MAX_BACKUPS 0xFFFFFFFF
 #define MAX_INSTANCE_KEYS 1024
 #define MAX_NUM_CPUS 2500
 #define MAX_USED_NUM_CPUS 1024
@@ -74,11 +75,11 @@
 /**
  * The maximum number of transporters allowed
  * A maximum is needed to be able to allocate the array of transporters
- * We need one 
+ * We need one
  */
 #define MAX_NODE_GROUP_TRANSPORTERS 32
-#define MAX_NTRANSPORTERS (MAX_NODES + \
-                           ((MAX_REPLICAS - 1) * MAX_NODE_GROUP_TRANSPORTERS))
+#define MAX_NTRANSPORTERS \
+  (MAX_NODES + ((MAX_REPLICAS - 1) * MAX_NODE_GROUP_TRANSPORTERS))
 
 /**
  * The maximum number of local checkpoints stored at a time
@@ -100,11 +101,12 @@
  * The maximum number of tuples per page
  **/
 #define MAX_TUPLES_PER_PAGE 8191
-#define MAX_TUPLES_BITS 13 		/* 13 bits = 8191 tuples per page */
-#define NDB_MAX_TABLES 20320                /* SchemaFile.hpp */
+#define MAX_TUPLES_BITS 13   /* 13 bits = 8191 tuples per page */
+#define NDB_MAX_TABLES 20320 /* SchemaFile.hpp */
 #define MAX_TAB_NAME_SIZE 128
-#define MAX_ATTR_NAME_SIZE NAME_LEN       /* From mysql_com.h */
-#define MAX_ATTR_DEFAULT_VALUE_SIZE ((MAX_TUPLE_SIZE_IN_WORDS + 1) * 4)  //Add 1 word for AttributeHeader
+#define MAX_ATTR_NAME_SIZE NAME_LEN /* From mysql_com.h */
+#define MAX_ATTR_DEFAULT_VALUE_SIZE \
+  ((MAX_TUPLE_SIZE_IN_WORDS + 1) * 4)  // Add 1 word for AttributeHeader
 #define MAX_ATTRIBUTES_IN_TABLE 512
 #define MAX_ATTRIBUTES_IN_INDEX 32
 #define MAX_TUPLE_SIZE_IN_WORDS 7500
@@ -117,7 +119,7 @@
  * factorial of the number of replicas, to ensure balance in any
  * node failure situations.
  */
-#define MAX_SUMA_BUCKETS_PER_NG     24 /* factorial of MAX_REPLICAS */
+#define MAX_SUMA_BUCKETS_PER_NG 24 /* factorial of MAX_REPLICAS */
 
 /*
  * At any time, one Suma is responsible for streaming bucket data
@@ -132,12 +134,14 @@
  * group.  The upper 8 bit determines an identifier with that group.
  *
  * Stream group identifiers range from 1 to MAX_SUB_DATA_STREAM_GROUPS.
- * Stream identifier within a group range from 0 to MAX_SUB_DATA_STREAMS_PER_GROUP - 1.
- * Stream identifier zero is reserved to not identify any stream.
+ * Stream identifier within a group range from 0 to
+ * MAX_SUB_DATA_STREAMS_PER_GROUP - 1. Stream identifier zero is reserved to not
+ * identify any stream.
  */
-#define MAX_SUB_DATA_STREAMS (MAX_SUB_DATA_STREAMS_PER_GROUP * MAX_SUB_DATA_STREAM_GROUPS)
-#define MAX_SUB_DATA_STREAM_GROUPS      (MAX_NDB_NODES-1)
-#define MAX_SUB_DATA_STREAMS_PER_GROUP  (MAX_SUMA_BUCKETS_PER_NG / MAX_REPLICAS)
+#define MAX_SUB_DATA_STREAMS \
+  (MAX_SUB_DATA_STREAMS_PER_GROUP * MAX_SUB_DATA_STREAM_GROUPS)
+#define MAX_SUB_DATA_STREAM_GROUPS (MAX_NDB_NODES - 1)
+#define MAX_SUB_DATA_STREAMS_PER_GROUP (MAX_SUMA_BUCKETS_PER_NG / MAX_REPLICAS)
 
 /*
  * Fragmentation data are Uint16, first two are #replicas,
@@ -150,9 +154,9 @@
 #define MAX_FRAGMENT_DATA_BYTES (2 * MAX_FRAGMENT_DATA_ENTRIES)
 #define MAX_FRAGMENT_DATA_WORDS ((MAX_FRAGMENT_DATA_BYTES + 3) / 4)
 
-#if NDB_VERSION_D < NDB_MAKE_VERSION(7,2,0)
+#if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
 #define MAX_NDB_PARTITIONS 240
-#elif NDB_VERSION_D < NDB_MAKE_VERSION(7,6,8)
+#elif NDB_VERSION_D < NDB_MAKE_VERSION(7, 6, 8)
 #define MAX_NDB_PARTITIONS 2048
 #else
 #define MAX_NDB_PARTITIONS 8160
@@ -175,7 +179,7 @@
  */
 #define MAX_WORDS_META_FILE 65536
 
-#define MIN_ATTRBUF ((MAX_ATTRIBUTES_IN_TABLE/24) + 1)
+#define MIN_ATTRBUF ((MAX_ATTRIBUTES_IN_TABLE / 24) + 1)
 /*
  * Max Number of Records to fetch per SCAN_NEXTREQ in a scan in LQH. The
  * API can order a multiple of this number of records at a time since
@@ -183,25 +187,25 @@
  */
 #define MAX_PARALLEL_OP_PER_SCAN 992
 /*
-* The default batch size. Configurable parameter.
-*/
+ * The default batch size. Configurable parameter.
+ */
 #define DEF_BATCH_SIZE 256
 /*
-* When calculating the number of records sent from LQH in each batch
-* one uses SCAN_BATCH_SIZE divided by the expected size of signals
-* per row. This gives the batch size used for the scan. The NDB API
-* will receive one batch from each node at a time so there has to be
-* some care taken also so that the NDB API is not overloaded with
-* signals.
-* This parameter is configurable, this is the default value.
-*/
+ * When calculating the number of records sent from LQH in each batch
+ * one uses SCAN_BATCH_SIZE divided by the expected size of signals
+ * per row. This gives the batch size used for the scan. The NDB API
+ * will receive one batch from each node at a time so there has to be
+ * some care taken also so that the NDB API is not overloaded with
+ * signals.
+ * This parameter is configurable, this is the default value.
+ */
 #define SCAN_BATCH_SIZE 16384
 /*
-* To protect the NDB API from overload we also define a maximum total
-* batch size from all nodes. This parameter should most likely be
-* configurable, or dependent on sendBufferSize.
-* This parameter is configurable, this is the default value.
-*/
+ * To protect the NDB API from overload we also define a maximum total
+ * batch size from all nodes. This parameter should most likely be
+ * configurable, or dependent on sendBufferSize.
+ * This parameter is configurable, this is the default value.
+ */
 #define MAX_SCAN_BATCH_SIZE 262144
 /*
  * Maximum number of Parallel Scan queries on one hash index fragment
@@ -216,22 +220,22 @@
 /*
  * Ordered index constants.  Make configurable per index later.
  */
-#define MAX_TTREE_NODE_SIZE 64	    /* total words in node */
-#define MAX_TTREE_PREF_SIZE 4	    /* words in min prefix */
-#define MAX_TTREE_NODE_SLACK 2	    /* diff between max and min occupancy */
+#define MAX_TTREE_NODE_SIZE 64 /* total words in node */
+#define MAX_TTREE_PREF_SIZE 4  /* words in min prefix */
+#define MAX_TTREE_NODE_SLACK 2 /* diff between max and min occupancy */
 
 /*
  * Blobs.
  */
 #define NDB_BLOB_V1 1
 #define NDB_BLOB_V2 2
-#define NDB_BLOB_V1_HEAD_SIZE 2     /* sizeof(Uint64) >> 2 */
-#define NDB_BLOB_V2_HEAD_SIZE 4     /* 2 + 2 + 4 + 8 bytes, see NdbBlob.hpp */
+#define NDB_BLOB_V1_HEAD_SIZE 2 /* sizeof(Uint64) >> 2 */
+#define NDB_BLOB_V2_HEAD_SIZE 4 /* 2 + 2 + 4 + 8 bytes, see NdbBlob.hpp */
 
 /*
  * Character sets.
  */
-#define MAX_XFRM_MULTIPLY 8         /* max expansion when normalizing */
+#define MAX_XFRM_MULTIPLY 8 /* max expansion when normalizing */
 
 /**
  * Disk data
@@ -265,8 +269,7 @@
  * Restore Buffer in pages
  *   4M
  */
-#define LCP_RESTORE_BUFFER (4*32)
-
+#define LCP_RESTORE_BUFFER (4 * 32)
 
 /**
  * The hashmap size should support at least one
@@ -296,7 +299,7 @@
 #define NDB_MAX_HASHMAP_BUCKETS (3840 * 2 * 3)
 #define NDB_DEFAULT_HASHMAP_MAX_FRAGMENTS 1536
 
-#if NDB_VERSION_D < NDB_MAKE_VERSION(7,2,0)
+#if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
 #define NDB_DEFAULT_HASHMAP_BUCKETS 240
 #else
 #define NDB_DEFAULT_HASHMAP_BUCKETS 3840
@@ -312,51 +315,46 @@
 
 #define NDB_DEFAULT_LOG_PARTS 4
 
-#define NDBMT_MAIN_THREADS         2 /* Without receiver threads */
+#define NDBMT_MAIN_THREADS 2 /* Without receiver threads */
 
-#if NDB_VERSION_D < NDB_MAKE_VERSION(7,2,0)
-#define NDB_MAX_LOG_PARTS          4
-#define MAX_NDBMT_TC_THREADS       2
-#define MAX_NDBMT_RECEIVE_THREADS  1
-#define MAX_NDBMT_SEND_THREADS     0
-#elif NDB_VERSION_D < NDB_MAKE_VERSION(8,0,23)
-#define NDB_MAX_LOG_PARTS         32
-#define MAX_NDBMT_TC_THREADS      32
-#define MAX_NDBMT_RECEIVE_THREADS 16 
-#define MAX_NDBMT_SEND_THREADS    16
+#if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
+#define NDB_MAX_LOG_PARTS 4
+#define MAX_NDBMT_TC_THREADS 2
+#define MAX_NDBMT_RECEIVE_THREADS 1
+#define MAX_NDBMT_SEND_THREADS 0
+#elif NDB_VERSION_D < NDB_MAKE_VERSION(8, 0, 23)
+#define NDB_MAX_LOG_PARTS 32
+#define MAX_NDBMT_TC_THREADS 32
+#define MAX_NDBMT_RECEIVE_THREADS 16
+#define MAX_NDBMT_SEND_THREADS 16
 #else
-#define NDB_MAX_LOG_PARTS         32
-#define MAX_NDBMT_TC_THREADS      160
+#define NDB_MAX_LOG_PARTS 32
+#define MAX_NDBMT_TC_THREADS 160
 #define MAX_NDBMT_RECEIVE_THREADS 80
-#define MAX_NDBMT_SEND_THREADS    80
+#define MAX_NDBMT_SEND_THREADS 80
 #endif
 
-#define MAX_NDBMT_LQH_WORKERS 332 
+#define MAX_NDBMT_LQH_WORKERS 332
 #define MAX_NDBMT_LQH_THREADS 332
 #define MAX_NDBMT_QUERY_THREADS 332
 
-#define NDBMT_MAX_BLOCK_INSTANCES (MAX_NDBMT_LQH_THREADS + \
-                                   MAX_NDBMT_QUERY_THREADS + \
-                                   MAX_NDBMT_TC_THREADS + \
-                                   MAX_NDBMT_RECEIVE_THREADS + \
-                                   NDBMT_MAIN_THREADS)
+#define NDBMT_MAX_BLOCK_INSTANCES                                           \
+  (MAX_NDBMT_LQH_THREADS + MAX_NDBMT_QUERY_THREADS + MAX_NDBMT_TC_THREADS + \
+   MAX_NDBMT_RECEIVE_THREADS + NDBMT_MAIN_THREADS)
 /* Proxy block 0 is not a worker */
 #define NDBMT_MAX_WORKER_INSTANCES (NDBMT_MAX_BLOCK_INSTANCES - 1)
 
-#define MAX_THREADS_TO_WATCH (MAX_NDBMT_LQH_THREADS + \
-                              MAX_NDBMT_QUERY_THREADS + \
-                              MAX_NDBMT_TC_THREADS + \
-                              MAX_NDBMT_SEND_THREADS + \
-                              MAX_NDBMT_RECEIVE_THREADS + \
-                              NDBMT_MAIN_THREADS)
+#define MAX_THREADS_TO_WATCH                                                \
+  (MAX_NDBMT_LQH_THREADS + MAX_NDBMT_QUERY_THREADS + MAX_NDBMT_TC_THREADS + \
+   MAX_NDBMT_SEND_THREADS + MAX_NDBMT_RECEIVE_THREADS + NDBMT_MAIN_THREADS)
 
-#define NDB_FILE_BUFFER_SIZE (256*1024)
+#define NDB_FILE_BUFFER_SIZE (256 * 1024)
 
 /*
  * NDB_FS_RW_PAGES must be big enough for biggest request,
  * probably PACK_TABLE_PAGES (see Dbdih.hpp)
  */
-#if NDB_VERSION_D < NDB_MAKE_VERSION(7,2,0)
+#if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
 #define NDB_FS_RW_PAGES 32
 #else
 #define NDB_FS_RW_PAGES 268 * 4
@@ -392,11 +390,11 @@
  * MAX_KEY_LENGTH/4 instead of the bigger MAX_KEY_SIZE_IN_WORDS.  The
  * definition is not available by default, use 3072 directly now.
  */
-#define MAX_INDEX_STAT_KEY_COUNT    MAX_ATTRIBUTES_IN_INDEX
-#define MAX_INDEX_STAT_KEY_SIZE     ((3072/4) - 3 - 1)
-#define MAX_INDEX_STAT_VALUE_COUNT  (1 + MAX_INDEX_STAT_KEY_COUNT)
-#define MAX_INDEX_STAT_VALUE_SIZE   MAX_INDEX_STAT_VALUE_COUNT
-#define MAX_INDEX_STAT_VALUE_CSIZE  512 /* Longvarbinary(2048) */
+#define MAX_INDEX_STAT_KEY_COUNT MAX_ATTRIBUTES_IN_INDEX
+#define MAX_INDEX_STAT_KEY_SIZE ((3072 / 4) - 3 - 1)
+#define MAX_INDEX_STAT_VALUE_COUNT (1 + MAX_INDEX_STAT_KEY_COUNT)
+#define MAX_INDEX_STAT_VALUE_SIZE MAX_INDEX_STAT_VALUE_COUNT
+#define MAX_INDEX_STAT_VALUE_CSIZE 512 /* Longvarbinary(2048) */
 #define MAX_INDEX_STAT_VALUE_FORMAT 1
 
 /**
@@ -414,7 +412,7 @@
  */
 #define MAX_EVENT_REP_SIZE_WORDS 1024
 
-#define MAX_UNDO_DATA            20 + MAX_TUPLE_SIZE_IN_WORDS
+#define MAX_UNDO_DATA 20 + MAX_TUPLE_SIZE_IN_WORDS
 // Max. number of pending undo records allowed per LDM
 #define MAX_PENDING_UNDO_RECORDS 1000
 
@@ -455,6 +453,7 @@ static_assert(MAX_NDB_NODES == MAX_NDB_DATA_NODES + 1);
 static_assert(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <= MAX_NDB_PARTITIONS);
 
 // The default hashmap should at least support the maximum default partitioning
-static_assert(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <= NDB_MAX_HASHMAP_BUCKETS);
+static_assert(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <=
+              NDB_MAX_HASHMAP_BUCKETS);
 
 #endif

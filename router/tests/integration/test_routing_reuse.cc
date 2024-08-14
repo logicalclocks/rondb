@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,6 +32,7 @@
 #include <gmock/gmock-matchers.h>
 #include <google/protobuf/io/tokenizer.h>
 #include <google/protobuf/message.h>
+#include <google/protobuf/stubs/common.h>
 #include <google/protobuf/text_format.h>
 #include <gtest/gtest-param-test.h>
 #include <gtest/gtest.h>
@@ -126,15 +128,27 @@ query_one_result(MysqlClient &cli, std::string_view stmt) {
  */
 class StringErrorCollector : public google::protobuf::io::ErrorCollector {
  public:
+#if (GOOGLE_PROTOBUF_VERSION >= 4024000)
+  void RecordError(int line, google::protobuf::io::ColumnNumber column,
+                   absl::string_view msg) override
+#else
   void AddError(int line, google::protobuf::io::ColumnNumber column,
-                const std::string &msg) override {
+                const std::string &msg) override
+#endif  // (GOOGLE_PROTOBUF_VERSION >= 4024000)
+  {
     std::ostringstream ss;
 
     ss << "ERROR: " << line << ":" << column << ": " << msg;
     lines_.push_back(ss.str());
   }
+#if (GOOGLE_PROTOBUF_VERSION >= 4024000)
+  void RecordWarning(int line, google::protobuf::io::ColumnNumber column,
+                     absl::string_view msg) override
+#else
   void AddWarning(int line, google::protobuf::io::ColumnNumber column,
-                  const std::string &msg) override {
+                  const std::string &msg) override
+#endif  // (GOOGLE_PROTOBUF_VERSION >= 4024000)
+  {
     std::ostringstream ss;
 
     ss << "WARN: " << line << ":" << column << ": " << msg;
@@ -280,6 +294,7 @@ class SharedServer {
             .spawner(mysqld.str())
             .wait_for_sync_point(ProcessManager::Spawner::SyncPoint::NONE)
             .spawn({
+                "--no-defaults",
                 "--initialize-insecure",
                 "--datadir=" + mysqld_dir_name(),
                 "--log-error=" + mysqld_dir_name() +
@@ -322,7 +337,7 @@ class SharedServer {
                                            static_cast<int>(0xc000013a)})
 #endif
             .spawn({
-                "--no-defaults-file",
+                "--no-defaults",
                 "--lc-messages-dir=" + lc_messages_dir.str(),
                 "--datadir=" + mysqld_dir_name(),
                 "--log-error=" + mysqld_dir_name() +

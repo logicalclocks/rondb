@@ -1,18 +1,19 @@
 #ifndef ITEM_CMPFUNC_INCLUDED
 #define ITEM_CMPFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -245,6 +246,8 @@ class Arg_comparator {
 
   Arg_comparator *get_child_comparators() const { return comparators; }
 
+  bool compare_as_json() const { return func == &Arg_comparator::compare_json; }
+
   /// @returns true if the class has decided that values should be extracted
   ///   from the Items using function pointers set up by this class.
   bool use_custom_value_extractors() const {
@@ -329,7 +332,7 @@ class Item_bool_func : public Item_int_func {
   }
   uint decimal_precision() const override { return 1; }
   bool created_by_in2exists() const override { return m_created_by_in2exists; }
-  void set_created_by_in2exists() { m_created_by_in2exists = true; }
+  void set_created_by_in2exists();
 
   static const char *bool_transform_names[10];
   /**

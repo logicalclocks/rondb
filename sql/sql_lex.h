@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1171,6 +1172,7 @@ class Query_block : public Query_term {
   Query_block *query_block() const override {
     return const_cast<Query_block *>(this);
   }
+  void label_children() override {}
   void destroy_tree() override { m_parent = nullptr; }
 
   bool open_result_tables(THD *, int) override;
@@ -1372,8 +1374,8 @@ class Query_block : public Query_term {
   auto visible_fields() const { return VisibleFields(fields); }
 
   /// Check privileges for views that are merged into query block
-  bool check_view_privileges(THD *thd, ulong want_privilege_first,
-                             ulong want_privilege_next);
+  bool check_view_privileges(THD *thd, Access_bitmask want_privilege_first,
+                             Access_bitmask want_privilege_next);
   /// Check privileges for all columns referenced from query block
   bool check_column_privileges(THD *thd);
 
@@ -1839,7 +1841,7 @@ class Query_block : public Query_term {
 
   /// Creates a clone for the given expression by re-parsing the
   /// expression. Used in condition pushdown to derived tables.
-  Item *clone_expression(THD *thd, Item *item);
+  Item *clone_expression(THD *thd, Item *item, Table_ref *derived_table);
   /// Returns an expression from the select list of the query block
   /// using the field's index in a derived table.
   Item *get_derived_expr(uint expr_index);
@@ -2037,9 +2039,10 @@ class Query_block : public Query_term {
   */
   uint select_n_where_fields{0};
   /**
-    number of items in select_list and HAVING clause used to get number
-    bigger then can be number of entries that will be added to all item
-    list during split_sum_func
+    Number of items in the select list, HAVING clause and ORDER BY clause. It is
+    used to reserve space in the base_ref_items array so that it is big enough
+    to hold hidden items for any of the expressions or sub-expressions in those
+    clauses.
   */
   uint select_n_having_items{0};
   /// Number of arguments of and/or/xor in where/having/on
@@ -2357,6 +2360,11 @@ class Query_block : public Query_term {
 
   /// Number of GROUP BY expressions added to all_fields
   int hidden_group_field_count;
+
+  /// A backup of the items in base_ref_items at the end of preparation, so that
+  /// base_ref_items can be restored between executions of prepared statements.
+  /// Empty if it's a regular statement.
+  Ref_item_array m_saved_base_items;
 
   /**
     True if query block has semi-join nests merged into it. Notice that this
@@ -3630,8 +3638,8 @@ class Lex_input_stream {
 class LEX_COLUMN {
  public:
   String column;
-  uint rights;
-  LEX_COLUMN(const String &x, const uint &y) : column(x), rights(y) {}
+  Access_bitmask rights;
+  LEX_COLUMN(const String &x, const Access_bitmask &y) : column(x), rights(y) {}
 };
 
 enum class role_enum;
@@ -3733,6 +3741,7 @@ struct LEX : public Query_tables_list {
   /// @return true if this is an EXPLAIN statement
   bool is_explain() const { return explain_format != nullptr; }
   bool is_explain_analyze = false;
+
   /**
     Whether the currently-running query should be (attempted) executed in
     the hypergraph optimizer. This will not change after the query is
@@ -3740,7 +3749,18 @@ struct LEX : public Query_tables_list {
     whether to inhibit some transformation that the hypergraph optimizer
     does not properly understand yet.
    */
-  bool using_hypergraph_optimizer = false;
+  bool using_hypergraph_optimizer() const {
+    return m_using_hypergraph_optimizer;
+  }
+
+  void set_using_hypergraph_optimizer(bool use_hypergraph) {
+    m_using_hypergraph_optimizer = use_hypergraph;
+  }
+
+ private:
+  bool m_using_hypergraph_optimizer{false};
+
+ public:
   LEX_STRING name;
   char *help_arg;
   char *to_log; /* For PURGE MASTER LOGS TO */
@@ -3886,9 +3906,14 @@ struct LEX : public Query_tables_list {
   */
   nesting_map allow_sum_func;
   /**
-    Windowing functions are not allowed in HAVING - in contrast to group
-    aggregates - then we need to be stricter than allow_sum_func.
-    One bit per query block, as allow_sum_func.
+    Windowing functions are not allowed in HAVING - in contrast to grouped
+    aggregate functions, since windowing in SQL logically follows after all
+    grouping operations. Nor are they allowed inside grouped aggregate
+    function arguments.  One bit per query block, as also \c allow_sum_func. For
+    ORDER BY and QUALIFY predicates, window functions \em are allowed unless
+    they are contained in arguments of a grouped aggregate function.  Nor are
+    references to outer window functions (via alias) allowed in subqueries, but
+    that is checked separately.
   */
   nesting_map m_deny_window_func;
 
@@ -3905,7 +3930,7 @@ struct LEX : public Query_tables_list {
     KILL, HA_READ, CREATE/ALTER EVENT etc. Set this to `false` to get
     syntax error back.
   */
-  bool expr_allows_subselect;
+  bool expr_allows_subquery{true};
   /**
     If currently re-parsing a CTE's definition, this is the offset in bytes
     of that definition in the original statement which had the WITH
@@ -4110,6 +4135,20 @@ struct LEX : public Query_tables_list {
   bool is_metadata_used() const {
     return query_tables != nullptr || has_udf() ||
            (sroutines != nullptr && !sroutines->empty());
+  }
+
+  /// We have detected the presence of an alias of a window function with a
+  /// window on query block qb. Check if the reference is illegal at this point
+  /// during resolution.
+  /// @param qb  The query block of the window function
+  /// @return true if window function is referenced from another query block
+  /// than its window, or if window functions are disallowed at the current
+  /// point during prepare, cf. also documentation of \c m_deny_window_func.
+  bool deny_window_function(Query_block *qb) const {
+    return qb != current_query_block() ||
+           ((~allow_sum_func | m_deny_window_func) >>
+            current_query_block()->nest_level) &
+               0x1;
   }
 
  public:

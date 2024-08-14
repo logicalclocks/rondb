@@ -1,16 +1,17 @@
 #ifndef RPL_TRX_TRACKING_INCLUDED
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -86,10 +87,13 @@ class Commit_order_trx_dependency_tracker {
     Main function that gets the dependencies using the COMMIT_ORDER tracker.
 
     @param [in]     thd             THD of the caller.
+    @param[in]      parallelization_barrier  Transaction is blocking and
+                                    subseqent transactions should depend on it.
     @param [in,out] sequence_number sequence_number initialized and returned.
     @param [in,out] commit_parent   commit_parent to be returned.
    */
-  void get_dependency(THD *thd, int64 &sequence_number, int64 &commit_parent);
+  void get_dependency(THD *thd, bool parallelization_barrier,
+                      int64 &sequence_number, int64 &commit_parent);
 
   void update_max_committed(int64 sequence_number);
 
@@ -219,7 +223,8 @@ class Transaction_dependency_tracker {
       : m_opt_tracking_mode(DEPENDENCY_TRACKING_COMMIT_ORDER),
         m_writeset(25000) {}
 
-  void get_dependency(THD *thd, int64 &sequence_number, int64 &commit_parent);
+  void get_dependency(THD *thd, bool parallelization_barrier,
+                      int64 &sequence_number, int64 &commit_parent);
 
   void tracking_mode_changed();
 

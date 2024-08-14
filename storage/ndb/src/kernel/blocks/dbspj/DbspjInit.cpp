@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,28 +25,26 @@
 
 #include <pc.hpp>
 #define DBSPJ_C
-#include "Dbspj.hpp"
 #include <ndb_limits.h>
+#include "Dbspj.hpp"
 
 #define JAM_FILE_ID 482
 
+#define DEBUG(x) \
+  { ndbout << "SPJ::" << x << endl; }
 
-#define DEBUG(x) { ndbout << "SPJ::" << x << endl; }
-
-
-Dbspj::Dbspj(Block_context& ctx, Uint32 instanceNumber):
-  SimulatedBlock(DBSPJ, ctx, instanceNumber),
-  m_scan_request_hash(m_request_pool),
-  m_lookup_request_hash(m_request_pool),
-  m_treenode_hash(m_treenode_pool),
-  m_scanfraghandle_hash(m_scanfraghandle_pool),
-  m_tableRecord(NULL),
-  c_tabrecFilesize(0),
-  m_allocedPages(0),
-  m_maxUsedPages(0),
-  m_usedPagesStat(5),  // Sample over 5 observations
-  m_load_balancer_location(0)
-{
+Dbspj::Dbspj(Block_context &ctx, Uint32 instanceNumber)
+    : SimulatedBlock(DBSPJ, ctx, instanceNumber),
+      m_scan_request_hash(m_request_pool),
+      m_lookup_request_hash(m_request_pool),
+      m_treenode_hash(m_treenode_pool),
+      m_scanfraghandle_hash(m_scanfraghandle_pool),
+      m_tableRecord(NULL),
+      c_tabrecFilesize(0),
+      m_allocedPages(0),
+      m_maxUsedPages(0),
+      m_usedPagesStat(5),  // Sample over 5 observations
+      m_load_balancer_location(0) {
   BLOCK_CONSTRUCTOR(Dbspj);
 
   addRecSignal(GSN_SIGNAL_DROPPED_REP, &Dbspj::execSIGNAL_DROPPED_REP, true);
@@ -88,18 +87,13 @@ Dbspj::Dbspj(Block_context& ctx, Uint32 instanceNumber):
   addRecSignal(GSN_TRANSID_AI, &Dbspj::execTRANSID_AI);
   addRecSignal(GSN_SCAN_HBREP, &Dbspj::execSCAN_HBREP);
 
-}//Dbspj::Dbspj()
+}  // Dbspj::Dbspj()
 
-Dbspj::~Dbspj()
-{
+Dbspj::~Dbspj() {
   m_page_pool.clear();
 
-  deallocRecord((void**)&m_tableRecord,
-		"TableRecord",
-		sizeof(TableRecord), 
-		c_tabrecFilesize);
-}//Dbspj::~Dbspj()
-
+  deallocRecord((void **)&m_tableRecord, "TableRecord", sizeof(TableRecord),
+                c_tabrecFilesize);
+}  // Dbspj::~Dbspj()
 
 BLOCK_FUNCTIONS(Dbspj)
-

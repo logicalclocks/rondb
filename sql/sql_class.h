@@ -1,16 +1,17 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -966,7 +967,7 @@ class THD : public MDL_context_owner,
     call Item::check_column_privileges().
     After use, restore previous value as current value.
   */
-  ulong want_privilege;
+  Access_bitmask want_privilege;
 
  private:
   /**
@@ -1245,6 +1246,14 @@ class THD : public MDL_context_owner,
  private:
   mysql_mutex_t LOCK_query_plan;
 
+  /**
+    Keep a cached value saying whether the connection is alive. Update when
+    pushing, popping or getting the protocol. Used by
+    information_schema.processlist to avoid locking mutexes that might
+    affect performance.
+  */
+  std::atomic<bool> m_cached_is_connection_alive;
+
  public:
   /// Locks the query plan of this THD
   void lock_query_plan() { mysql_mutex_lock(&LOCK_query_plan); }
@@ -1296,7 +1305,7 @@ class THD : public MDL_context_owner,
 
   const Protocol *get_protocol() const { return m_protocol; }
 
-  Protocol *get_protocol() { return m_protocol; }
+  Protocol *get_protocol();
 
   SSL_handle get_ssl() const {
 #ifndef NDEBUG
@@ -1322,10 +1331,7 @@ class THD : public MDL_context_owner,
     return pointer_cast<const Protocol_classic *>(m_protocol);
   }
 
-  Protocol_classic *get_protocol_classic() {
-    assert(is_classic_protocol());
-    return pointer_cast<Protocol_classic *>(m_protocol);
-  }
+  Protocol_classic *get_protocol_classic();
 
  private:
   Protocol *m_protocol;  // Current protocol
@@ -2666,18 +2672,6 @@ class THD : public MDL_context_owner,
   /// instead /sven
   bool slave_thread;
 
-  // override_replica_filtering is used to indicate that we want to execute a
-  // query that normally would be suppressed in a replica thread.
-  enum enum_override_replica_filtering {
-    // Use a couple of semi-random constants to ensure initialization. They are
-    // chosen to encode "OSFY" and "OSFN" (meaning "override slave(replica) filtering
-    // yes/no") to aid debugging.
-    // Debug search terms: OSFY, OSFN, YFSO, NFSO
-    OVERRIDE_REPLICA_FILTERING = 0x4f534659,
-    NO_OVERRIDE_REPLICA_FILTERING = 0x4f53464e,
-  };
-  enum enum_override_replica_filtering override_replica_filtering;
-
   uchar password;
 
  private:
@@ -3191,7 +3185,7 @@ class THD : public MDL_context_owner,
   bool is_classic_protocol() const;
 
   /** Return false if connection to client is broken. */
-  bool is_connected() final;
+  bool is_connected(bool use_cached_connection_alive = false) final;
 
   /**
     Mark the current error as fatal. Warning: this does not

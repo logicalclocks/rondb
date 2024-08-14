@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -181,9 +182,10 @@ static void do_partial_update(Item_json_func *func, Field_json *field,
 TEST_F(ItemJsonFuncTest, PartialUpdate) {
   m_field.make_writable();
 
+  Item *itf1 = new Item_field(&m_field);
   auto json_set = new Item_func_json_set(
-      thd(), new Item_field(&m_field), new_item_string("$[1]"),
-      new_item_string("abc"), new_item_string("$[2]"), new Item_int(100));
+      thd(), itf1, new_item_string("$[1]"), new_item_string("abc"),
+      new_item_string("$[2]"), new Item_int(100));
 
   EXPECT_FALSE(m_table->mark_column_for_partial_update(&m_field));
   EXPECT_FALSE(m_table->setup_partial_update(true));
@@ -563,9 +565,9 @@ TEST_F(ItemJsonFuncTest, PartialUpdate) {
 
   // Remove multiple paths.
   {
-    auto remove = new Item_func_json_remove(thd(), new Item_field(&m_field),
-                                            new_item_string("$.a.b"),
-                                            new_item_string("$.c[1]"));
+    Item *itf2 = new Item_field(&m_field);
+    auto remove = new Item_func_json_remove(
+        thd(), itf2, new_item_string("$.a.b"), new_item_string("$.c[1]"));
     {
       SCOPED_TRACE("");
       do_partial_update(remove, &m_field, "{}", "{}", true, true);
@@ -602,9 +604,9 @@ TEST_F(ItemJsonFuncTest, PartialUpdate) {
 
   // Mixed JSON_REMOVE/JSON_SET.
   {
-    auto set =
-        new Item_func_json_set(thd(), new Item_field(&m_field),
-                               new_item_string("$.a"), new_item_string("abc"));
+    Item *itf3 = new Item_field(&m_field);
+    auto set = new Item_func_json_set(thd(), itf3, new_item_string("$.a"),
+                                      new_item_string("abc"));
     auto remove = new Item_func_json_remove(thd(), set, new_item_string("$.b"));
 
     {
@@ -718,9 +720,9 @@ static void BM_JsonSearch(size_t num_iterations) {
   field.make_writable();
   EXPECT_EQ(TYPE_OK, field.store_json(&doc));
 
-  auto search = new Item_func_json_search(table.in_use, new Item_field(&field),
-                                          new_item_string("all"),
-                                          new_item_string("Apple"));
+  Item *itf = new Item_field(&field);
+  auto search = new Item_func_json_search(
+      table.in_use, itf, new_item_string("all"), new_item_string("Apple"));
   EXPECT_FALSE(search->fix_fields(table.in_use, nullptr));
 
   StartBenchmarkTiming();

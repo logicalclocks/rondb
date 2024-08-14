@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,11 +24,11 @@
 */
 
 #include "storage/ndb/plugin/ndb_local_connection.h"
-#include "storage/ndb/plugin/ndb_anyvalue.h"
 
 #include "sql/mysqld.h"  // next_query_id()
 #include "sql/sql_class.h"
 #include "sql/sql_prepare.h"
+#include "storage/ndb/plugin/ndb_anyvalue.h"
 #include "storage/ndb/plugin/ndb_log.h"
 
 class Ndb_local_connection::Impl {
@@ -222,6 +223,76 @@ bool Ndb_local_connection::delete_rows(const std::string &db,
   }
 
   return execute_query_iso(query, ignore_mysql_errors);
+}
+
+bool Ndb_local_connection::get_affected_rows(ulong &rows) {
+  if (execute_query_iso("SELECT CAST(ROW_COUNT() AS CHAR(20))", nullptr)) {
+    ndb_log_error("Failed to get affected rows");
+    return true;
+  }
+
+  if (get_results() == nullptr) {
+    // Query reported sucess but no result set, this indicates failure
+    ndb_log_error("No result set for affected rows");
+    assert(false);
+    return true;
+  }
+
+  List<Ed_row> results = *get_results();
+
+  if (results.elements != 1) {
+    ndb_log_error("ROW_COUNT() returned %d rows", results.elements);
+    return true;
+  }
+  Ed_row *result_row = results[0];
+  const MYSQL_LEX_STRING *rows_str = result_row->get_column(0);
+  rows = std::stoul(rows_str->str);
+  return false;
+}
+
+bool Ndb_local_connection::select_column(const std::string &query,
+                                         std::vector<std::string> &values) {
+  if (execute_query_iso(query, nullptr)) {
+    ndb_log_error("Failed to run query '%s'", query.c_str());
+    return true;
+  }
+
+  if (get_results() == nullptr) {
+    // Query reported sucess but no result set, this indicates failure
+    ndb_log_error("No result set for query '%s'", query.c_str());
+    assert(false);
+    return true;
+  }
+
+  List<Ed_row> results = *get_results();
+  for (uint i = 0; i < results.elements; i++) {
+    values.emplace_back(results[i]->get_column(0)->str);
+  }
+  return false;
+}
+
+bool Ndb_local_connection::select_column_matching_filter(
+    const std::string &query, std::vector<std::string> &values,
+    std::function<bool(std::string_view)> filter) {
+  if (execute_query_iso(query, nullptr)) {
+    ndb_log_error("Failed to run query '%s'", query.c_str());
+    return true;
+  }
+
+  if (get_results() == nullptr) {
+    // Query reported sucess but no result set, this indicates failure
+    ndb_log_error("No result set for query '%s'", query.c_str());
+    assert(false);
+    return true;
+  }
+
+  List<Ed_row> results = *get_results();
+  for (uint i = 0; i < results.elements; i++) {
+    const Ed_column *col = results[i]->get_column(0);
+    if (filter({col->str, col->length}))
+      values.emplace_back(results[i]->get_column(0)->str);
+  }
+  return false;
 }
 
 bool Ndb_local_connection::create_util_table(const std::string &table_def_sql) {

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -63,6 +64,7 @@
 #include "mysql/harness/stdx/filesystem.h"
 #include "mysqlrouter/mysql_session.h"
 #include "mysqlrouter/utils.h"
+#include "scope_guard.h"
 #include "test/temp_directory.h"
 
 using mysql_harness::Path;
@@ -218,6 +220,43 @@ bool wait_for_port_ready(uint16_t port, std::chrono::milliseconds timeout,
   return status >= 0;
 }
 
+bool wait_for_socket_ready(const std::string &socket,
+                           std::chrono::milliseconds timeout) {
+  const auto sock = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (sock < 0) {
+    throw std::system_error(net::impl::socket::last_error_code(),
+                            "wait_for_socket_ready(): socket() failed");
+  }
+
+  struct sockaddr_un endpoint_sock;
+
+  endpoint_sock.sun_family = AF_UNIX;
+  strcpy(endpoint_sock.sun_path, socket.c_str());
+  const auto len =
+      strlen(endpoint_sock.sun_path) + sizeof(endpoint_sock.sun_family);
+
+  auto step_ms = 10ms;
+  // Valgrind needs way more time
+  if (getenv("WITH_VALGRIND")) {
+    timeout *= 10;
+    step_ms *= 10;
+  }
+
+  const auto started = std::chrono::steady_clock::now();
+  int status = 0;
+  do {
+    status = connect(sock, (struct sockaddr *)&endpoint_sock, len);
+
+    if (status < 0) {
+      const auto step = std::min(timeout, step_ms);
+      std::this_thread::sleep_for(std::chrono::milliseconds(step));
+      timeout -= step;
+    }
+  } while (status < 0 && timeout > std::chrono::steady_clock::now() - started);
+
+  return status >= 0;
+}
+
 bool is_port_bindable(const uint16_t port) {
   net::io_context io_ctx;
   net::ip::tcp::acceptor acceptor(io_ctx);
@@ -334,6 +373,55 @@ void init_keyring(std::map<std::string, std::string> &default_section,
   // add relevant config settings to [DEFAULT] section
   default_section["keyring_path"] = keyring_file;
   default_section["master_key_path"] = masterkey_file;
+}
+
+bool wait_file_exists(const std::string &file, const bool exists,
+                      std::chrono::milliseconds timeout) {
+  if (getenv("WITH_VALGRIND")) {
+    timeout *= 10;
+  }
+
+  const auto MSEC_STEP = 20ms;
+  bool found = false;
+  using clock_type = std::chrono::steady_clock;
+  const auto end = clock_type::now() + timeout;
+  do {
+    found = mysql_harness::Path(file).exists();
+    if (found != exists) {
+      auto step = std::min(timeout, MSEC_STEP);
+      std::this_thread::sleep_for(step);
+    }
+  } while (found != exists && clock_type::now() < end);
+
+  return found;
+}
+
+bool is_socket_bindable(const std::string &socket) {
+  net::io_context io_ctx;
+  local::stream_protocol::acceptor sock(io_ctx);
+  sock.set_option(net::socket_base::reuse_address(true));
+
+  const auto open_res = sock.open();
+  if (!open_res) {
+    return false;
+  }
+
+  local::stream_protocol::endpoint ep(socket);
+  const auto bind_res = sock.bind(ep);
+  if (!bind_res) {
+    return false;
+  }
+
+  Scope_guard on_exit([&socket]() { unlink(socket.c_str()); });
+
+  const auto listen_res = sock.listen(128);
+  if (!listen_res) {
+    return false;
+  }
+
+  sock.cancel();
+
+  return true;
 }
 
 namespace {

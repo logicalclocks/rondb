@@ -1,16 +1,17 @@
-/* Copyright (c) 2007, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2007, 2024, Oracle and/or its affiliates.
    Use is subject to license terms
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,16 +24,14 @@
 
 #include <signaldata/DropIndxImpl.hpp>
 
-bool
-printDROP_INDX_IMPL_REQ(FILE* output, const Uint32* theData, Uint32 len, Uint16)
-{
-  if (len < DropIndxImplReq::SignalLength)
-  {
+bool printDROP_INDX_IMPL_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                             Uint16) {
+  if (len < DropIndxImplReq::SignalLength) {
     assert(false);
     return false;
   }
 
-  const DropIndxImplReq* sig = (const DropIndxImplReq*)theData;
+  const DropIndxImplReq *sig = (const DropIndxImplReq *)theData;
   fprintf(output, " senderRef: 0x%x", sig->senderRef);
   fprintf(output, " senderData: %u", sig->senderData);
   fprintf(output, " requestType: %u", sig->requestType);
@@ -46,32 +45,28 @@ printDROP_INDX_IMPL_REQ(FILE* output, const Uint32* theData, Uint32 len, Uint16)
   return true;
 }
 
-bool
-printDROP_INDX_IMPL_CONF(FILE* output, const Uint32* theData, Uint32 len, Uint16)
-{
-  if (len < DropIndxImplConf::SignalLength)
-  {
+bool printDROP_INDX_IMPL_CONF(FILE *output, const Uint32 *theData, Uint32 len,
+                              Uint16) {
+  if (len < DropIndxImplConf::SignalLength) {
     assert(false);
     return false;
   }
 
-  const DropIndxImplConf* sig = (const DropIndxImplConf*)theData;
+  const DropIndxImplConf *sig = (const DropIndxImplConf *)theData;
   fprintf(output, " senderRef: 0x%x", sig->senderRef);
   fprintf(output, " senderData: %u", sig->senderData);
   fprintf(output, "\n");
   return true;
 }
 
-bool
-printDROP_INDX_IMPL_REF(FILE* output, const Uint32* theData, Uint32 len, Uint16)
-{
-  if (len < DropIndxImplRef::SignalLength)
-  {
+bool printDROP_INDX_IMPL_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                             Uint16) {
+  if (len < DropIndxImplRef::SignalLength) {
     assert(false);
     return false;
   }
 
-  const DropIndxImplRef* sig = (const DropIndxImplRef*)theData;
+  const DropIndxImplRef *sig = (const DropIndxImplRef *)theData;
   fprintf(output, " senderRef: 0x%x", sig->senderRef);
   fprintf(output, " senderData: %u", sig->senderData);
   fprintf(output, "\n");

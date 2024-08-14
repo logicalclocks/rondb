@@ -1,16 +1,17 @@
-/* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,17 +25,14 @@
 #ifndef NDBD_HPP
 #define NDBD_HPP
 
-#include <stddef.h> // size_t
+#include <stddef.h>  // size_t
 
 #define JAM_FILE_ID 218
 
-
-void
-ndbd_run(bool foreground, int report_fd,
-         const char* connect_str, int force_nodeid, const char* bind_address,
-         bool no_start, bool initial, bool initialstart,
-         unsigned allocated_nodeid, int connect_retries, int connect_delay,
-         size_t logbuffer_size);
+void ndbd_run(bool foreground, int report_fd, const char *connect_str,
+              int force_nodeid, const char *bind_address, bool no_start,
+              bool initial, bool initialstart, unsigned allocated_nodeid,
+              int connect_retries, int connect_delay, size_t logbuffer_size);
 
 enum NdbShutdownType {
   NST_Normal,
@@ -46,11 +44,11 @@ enum NdbShutdownType {
 };
 
 enum NdbRestartType {
-  NRT_Default               = 0,
-  NRT_NoStart_Restart       = 1, // -n
-  NRT_DoStart_Restart       = 2, //
-  NRT_NoStart_InitialStart  = 3, // -n -i
-  NRT_DoStart_InitialStart  = 4  // -i
+  NRT_Default = 0,
+  NRT_NoStart_Restart = 1,       // -n
+  NRT_DoStart_Restart = 2,       //
+  NRT_NoStart_InitialStart = 3,  // -n -i
+  NRT_DoStart_InitialStart = 4   // -i
 };
 
 /**

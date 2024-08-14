@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -56,6 +57,80 @@ using mysqlrouter::MySQLSession;
 using mysqlrouter::sqlstring;
 using namespace std::string_literals;
 IMPORT_LOG_FUNCTIONS()
+
+// helper class - helps to log the warning about the instance only when the
+// warning condition changes
+struct LogSuppressor {
+  static LogSuppressor &instance() {
+    static LogSuppressor instance_;
+    return instance_;
+  }
+
+  std::string get_warning_hidden(const std::string &instance_uuid) const {
+    if (warnings_.count(instance_uuid) == 0) {
+      return "";
+    }
+
+    return warnings_.at(instance_uuid).warning_hidden;
+  }
+
+  void set_warning_hidden(const std::string &instance_uuid,
+                          const std::string &warning) {
+    warnings_[instance_uuid].warning_hidden = warning;
+  }
+
+  std::string get_warning_disconnect_existing_sessions_when_hidden(
+      const std::string &instance_uuid) {
+    if (warnings_.count(instance_uuid) == 0) {
+      return "";
+    }
+
+    return warnings_.at(instance_uuid)
+        .warning_disconnect_existing_sessions_when_hidden;
+  }
+
+  void set_warning_disconnect_existing_sessions_when_hidden(
+      const std::string &instance_uuid, const std::string &warning) {
+    warnings_[instance_uuid].warning_disconnect_existing_sessions_when_hidden =
+        warning;
+  }
+
+  std::string get_warning_depracated_metadata_version(
+      const std::string &instance_uuid) {
+    if (warnings_.count(instance_uuid) == 0) {
+      return "";
+    }
+
+    return warnings_.at(instance_uuid).warning_deprecated_metadata_version;
+  }
+
+  void set_warning_depracated_metadata_version(const std::string &instance_uuid,
+                                               const std::string &warning) {
+    warnings_[instance_uuid].warning_deprecated_metadata_version = warning;
+  }
+
+ private:
+  struct instance_warnings {
+    /* warning about the incorrect JSON for _hidden in the metadata from the
+     * last query */
+    std::string warning_hidden;
+
+    /* last warning about the incorrect JSON for
+     * _disconnect_existing_sessions_when_hidden from the last query */
+    std::string warning_disconnect_existing_sessions_when_hidden;
+
+    /* instance has a deprecated metadata version */
+    std::string warning_deprecated_metadata_version;
+  };
+
+  // the key in the map is the instance_id
+  std::map<std::string, instance_warnings> warnings_;
+
+  // singleton
+  LogSuppressor() = default;
+  LogSuppressor(const LogSuppressor &) = delete;
+  LogSuppressor &operator=(const LogSuppressor &) = delete;
+};
 
 /**
  * Return a string representation of the input character string.
@@ -182,6 +257,20 @@ ClusterMetadata::get_and_check_metadata_schema_version(
         session.get_address().c_str(),
         to_string(mysqlrouter::kRequiredRoutingMetadataSchemaVersion).c_str(),
         to_string(version).c_str()));
+  }
+
+  if (metadata_schema_version_is_deprecated(version)) {
+    const auto instance = session.get_address();
+    const auto message =
+        "Instance '" + instance +
+        "': " + mysqlrouter::get_metadata_schema_deprecated_msg(version);
+
+    auto &log_suppressor = LogSuppressor::instance();
+    if (message !=
+        log_suppressor.get_warning_depracated_metadata_version(instance)) {
+      log_warning("%s", message.c_str());
+      log_suppressor.set_warning_depracated_metadata_version(instance, message);
+    }
   }
 
   return version;
@@ -437,7 +526,9 @@ std::optional<metadata_cache::metadata_server_t>
 ClusterMetadata::find_rw_server(
     const std::vector<metadata_cache::ManagedCluster> &clusters) {
   for (auto &cluster : clusters) {
-    if (cluster.is_primary) return find_rw_server(cluster.members);
+    if (cluster.is_primary && !cluster.is_invalidated) {
+      return find_rw_server(cluster.members);
+    }
   }
 
   return {};
@@ -508,63 +599,6 @@ bool get_disconnect_existing_sessions_when_hidden(const std::string &attributes,
                       metadata_cache::kNodeTagDisconnectWhenHiddenDefault,
                       out_warning);
 }
-
-// helper class - helps to log the warning about the instance only when the
-// warning condition changes
-struct LogSuppressor {
-  static LogSuppressor &instance() {
-    static LogSuppressor instance_;
-    return instance_;
-  }
-
-  std::string get_warning_hidden(const std::string &instance_uuid) const {
-    if (warnings_.count(instance_uuid) == 0) {
-      return "";
-    }
-
-    return warnings_.at(instance_uuid).warning_hidden;
-  }
-
-  void set_warning_hidden(const std::string &instance_uuid,
-                          const std::string &warning) {
-    warnings_[instance_uuid].warning_hidden = warning;
-  }
-
-  std::string get_warning_disconnect_existing_sessions_when_hidden(
-      const std::string &instance_uuid) {
-    if (warnings_.count(instance_uuid) == 0) {
-      return "";
-    }
-
-    return warnings_.at(instance_uuid)
-        .warning_disconnect_existing_sessions_when_hidden;
-  }
-
-  void set_warning_disconnect_existing_sessions_when_hidden(
-      const std::string &instance_uuid, const std::string &warning) {
-    warnings_[instance_uuid].warning_disconnect_existing_sessions_when_hidden =
-        warning;
-  }
-
- private:
-  struct instance_warnings {
-    /* warning about the incorrect JSON for _hidden in the metadata from the
-     * last query */
-    std::string warning_hidden;
-
-    /* last warning about the incorrect JSON for
-     * _disconnect_existing_sessions_when_hidden from the last query */
-    std::string warning_disconnect_existing_sessions_when_hidden;
-  };
-
-  // the key in the map is the instance_id
-  std::map<std::string, instance_warnings> warnings_;
-
-  // singleton
-  LogSuppressor() = default;
-  LogSuppressor(const LogSuppressor &) = delete;
-  LogSuppressor &operator=(const LogSuppressor &) = delete;
-};
 
 void set_instance_attributes(metadata_cache::ManagedInstance &instance,
                              const std::string &attributes) {

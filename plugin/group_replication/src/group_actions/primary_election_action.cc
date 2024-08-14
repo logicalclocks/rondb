@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -136,11 +137,19 @@ int Primary_election_action::process_action_message(
       /* purecov: end */
     }
 
-    Group_member_info *appointed_primary_info =
-        group_member_mgr->get_group_member_info(appointed_primary_uuid);
-    appointed_primary_gcs_id.assign(
-        appointed_primary_info->get_gcs_member_id().get_member_id());
-    delete appointed_primary_info;
+    Group_member_info appointed_primary_info;
+    if (group_member_mgr->get_group_member_info(appointed_primary_uuid,
+                                                appointed_primary_info)) {
+      std::string error_message{
+          "The appointed primary member is no more member of the group."};
+      execution_message_area.set_execution_message(
+          Group_action_diagnostics::GROUP_ACTION_LOG_ERROR, error_message);
+      validation_handler.terminates_validation_structures();
+      return 1;
+    } else {
+      appointed_primary_gcs_id.assign(
+          appointed_primary_info.get_gcs_member_id().get_member_id());
+    }
   }
 
   std::string error_message;
@@ -171,15 +180,13 @@ int Primary_election_action::process_action_message(
           message.get_transaction_monitor_timeout());
     }
 
-    Group_member_info *primary_info =
-        group_member_mgr->get_primary_member_info();
-    if (primary_info != nullptr) {
+    Group_member_info primary_info;
+    if (!group_member_mgr->get_primary_member_info(primary_info)) {
       invoking_member_gcs_id.assign(
-          primary_info->get_gcs_member_id().get_member_id());
+          primary_info.get_gcs_member_id().get_member_id());
       is_primary = invoking_member_gcs_id ==
                    local_member_info->get_gcs_member_id().get_member_id();
-      old_primary_uuid.assign(primary_info->get_uuid());
-      delete primary_info;
+      old_primary_uuid.assign(primary_info.get_uuid());
     }
   }
 
@@ -578,9 +585,10 @@ int Primary_election_action::after_view_change(
     election methods.
   */
   if (current_action_phase == PRIMARY_ELECTION_PHASE) {
-    Group_member_info *member_info =
-        group_member_mgr->get_primary_member_info();
-    if (member_info == nullptr || is_appointed_primary_leaving) {
+    Group_member_info member_info;
+    const bool member_info_not_found =
+        group_member_mgr->get_primary_member_info(member_info);
+    if (member_info_not_found || is_appointed_primary_leaving) {
       assert(appointed_primary_gcs_id.empty() || is_appointed_primary_leaving);
       *skip_primary_election = false;
       std::string new_primary("");
@@ -625,7 +633,6 @@ int Primary_election_action::after_view_change(
       }
       appointed_primary_gcs_id.clear();
     }
-    delete member_info;
   }
 
   /*

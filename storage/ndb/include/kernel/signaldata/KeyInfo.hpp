@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,7 +30,6 @@
 
 #define JAM_FILE_ID 162
 
-
 class KeyInfo {
   /**
    * Sender(s)
@@ -44,23 +44,23 @@ class KeyInfo {
    * Reciver(s)
    */
   friend class Dbtc;
-  
-public:
+
+ public:
   static constexpr Uint32 HeaderLength = 3;
   static constexpr Uint32 DataLength = 20;
   static constexpr Uint32 MaxSignalLength = HeaderLength + DataLength;
-  
+
   /* IndexBound constants */
   static constexpr Uint32 PerBoundColumnOverhead = 2;
   /* Max number of key columns with max total key size */
   static constexpr Uint32 MaxWordsPerBoundRow =
-                (PerBoundColumnOverhead * MAX_ATTRIBUTES_IN_INDEX)
-                + MAX_KEY_SIZE_IN_WORDS;
+      (PerBoundColumnOverhead * MAX_ATTRIBUTES_IN_INDEX) +
+      MAX_KEY_SIZE_IN_WORDS;
   /* Single key column with max total key size */
   static constexpr Uint32 MaxWordsPerBoundColumn =
-                PerBoundColumnOverhead + MAX_KEY_SIZE_IN_WORDS;
+      PerBoundColumnOverhead + MAX_KEY_SIZE_IN_WORDS;
 
-private:
+ private:
   Uint32 connectPtr;
   Uint32 transId[2];
   Uint32 keyData[DataLength];
@@ -82,10 +82,10 @@ private:
     N words of attribute data (N = (length+3)>>2).
   Additionally, it is possible to send multiple range bounds in a single
   SCAN_TABREQ and associated KEYINFO stream (using NdbRecord Index scans and
-  multiple calls to setBound with different range numbers). In this case, the 
-  first word of each range bound contains additional information: 
+  multiple calls to setBound with different range numbers). In this case, the
+  first word of each range bound contains additional information:
   bits 16-31 holds the length of this bound, in words of KEYINFO data,
-  and bits 4-15 holds a number RANGE_NO specified by the application that 
+  and bits 4-15 holds a number RANGE_NO specified by the application that
   can be read back from the RANGE_NO pseudo-column.
 
 */

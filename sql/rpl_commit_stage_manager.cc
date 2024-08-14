@@ -1,15 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -281,19 +282,10 @@ bool Commit_stage_manager::enroll_for(StageID stage, THD *thd,
   }
 
   /*
-    We do not need to unlock the stage_mutex if it is LOCK_log when rotating
-    binlog caused by logging incident log event, since it should be held
-    always during rotation.
-  */
-  bool need_unlock_stage_mutex =
-      !(mysql_bin_log.is_rotating_caused_by_incident &&
-        stage_mutex == mysql_bin_log.get_log_lock());
-
-  /*
     The stage mutex can be nullptr if we are enrolling for the first
     stage.
   */
-  if (stage_mutex && need_unlock_stage_mutex) mysql_mutex_unlock(stage_mutex);
+  if (stage_mutex) mysql_mutex_unlock(stage_mutex);
 
 #ifndef NDEBUG
   DBUG_PRINT("info", ("This is a leader thread: %d (0=n 1=y)", leader));
@@ -365,19 +357,8 @@ bool Commit_stage_manager::enroll_for(StageID stage, THD *thd,
     DEBUG_SYNC(thd, "bgc_between_flush_and_sync");
 #endif
 
-  bool need_lock_enter_mutex = false;
   if (leader && enter_mutex != nullptr) {
-    /*
-      We do not lock the enter_mutex if it is LOCK_log when rotating binlog
-      caused by logging incident log event, since it is already locked.
-    */
-    need_lock_enter_mutex = !(mysql_bin_log.is_rotating_caused_by_incident &&
-                              enter_mutex == mysql_bin_log.get_log_lock());
-
-    if (need_lock_enter_mutex)
-      mysql_mutex_lock(enter_mutex);
-    else
-      mysql_mutex_assert_owner(enter_mutex);
+    mysql_mutex_lock(enter_mutex);
   }
 
   if (stage == COMMIT_ORDER_FLUSH_STAGE) {
@@ -386,7 +367,7 @@ bool Commit_stage_manager::enroll_for(StageID stage, THD *thd,
     lock_queue(stage);
 
     if (!m_queue[BINLOG_FLUSH_STAGE].is_empty()) {
-      if (need_lock_enter_mutex) mysql_mutex_unlock(enter_mutex);
+      mysql_mutex_unlock(enter_mutex);
 
       THD *binlog_leader = m_queue[BINLOG_FLUSH_STAGE].get_leader();
       binlog_leader->tx_commit_pending = false;

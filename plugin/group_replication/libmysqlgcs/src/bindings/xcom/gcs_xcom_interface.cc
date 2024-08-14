@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1347,6 +1348,44 @@ void cb_xcom_receive_data(synode_no message_id, synode_no origin,
   Gcs_xcom_nodes *xcom_nodes = new Gcs_xcom_nodes(site, nodes);
   assert(xcom_nodes->is_valid());
   free_node_set(&nodes);
+
+  // Check if the origin node still exists in Gcs_xcom_nodes for the provided
+  // site.
+  // If it does not exist, then drop this message and dump all necessary
+  // information about this message
+  auto const *node = xcom_nodes->get_node(origin.node);
+
+  if (!node) {
+    std::ostringstream log_message;
+
+    log_message << "Received a network packet from an unrecognised sender. "
+                   "Will ignore this message. No need to take any further "
+                   "action. If this behaviour persists, consider restarting "
+                   "the group at the next convenient time and reporting a "
+                   "bug containing the details presented next. Details: "
+                << "xcom_unique_id = " << get_my_xcom_id()
+                << ", node_id = " << xcom_nodes->get_node_no()
+                << ", message_id.group = " << message_id.group_id
+                << ", message_id.msgno = " << message_id.msgno
+                << ", message_id.node = " << message_id.node
+                << ", origin.group = " << origin.group_id
+                << ", origin.msgno = " << origin.msgno
+                << ", origin.node = " << origin.node
+                << ", start.group = " << site->start.group_id
+                << ", start.msgno = " << site->start.msgno
+                << ", start.node = " << site->start.node
+                << ", site.nodes_list_len= " << site->nodes.node_list_len;
+
+    log_message << ", site.nodes.addresses={";
+    for (u_int i = 0; i < site->nodes.node_list_len; i++) {
+      log_message << " node id[" << i
+                  << "]=" << site->nodes.node_list_val[i].address;
+    }
+    log_message << " }";
+    MYSQL_GCS_LOG_WARN(log_message.str().c_str());
+
+    return;
+  }
 
   Gcs_xcom_notification *notification =
       new Data_notification(do_cb_xcom_receive_data, message_id, origin,

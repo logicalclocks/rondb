@@ -1,15 +1,16 @@
-# Copyright (c) 2006, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2006, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -310,6 +311,11 @@ SET(LIBS "")
 # Returned string in ${var} is can be passed to linker's command line
 MACRO(EXTRACT_LINK_LIBRARIES target var)
   GET_TARGET_PROPERTY(TARGET_LIB_DEPENDS ${target} LINK_LIBRARIES)
+  # Uncomment to debug:
+  # MESSAGE(STATUS "xxx ${target} ${TARGET_LIB_DEPENDS}")
+  # Depending on platform, and whether "system" or "bundled" has been used,
+  # this will typically be:
+  # ext::zlib  ext::zstd  <ssl>  <crypto>  /usr/lib64/libresolv.so  m
   IF(TARGET_LIB_DEPENDS)
     LIST(REMOVE_DUPLICATES TARGET_LIB_DEPENDS)
     FOREACH(lib ${TARGET_LIB_DEPENDS})
@@ -318,7 +324,12 @@ MACRO(EXTRACT_LINK_LIBRARIES target var)
       ELSEIF (lib MATCHES "^ext::")
         STRING(REGEX MATCH "ext::([a-z]+)" MATCH_LIB "${lib}")
         SET(SYSTEM_LIB ${CMAKE_MATCH_1})
-        SET(${var} "${${var}} -l${SYSTEM_LIB} ")
+        SET(SYSTEM_LINK_FLAG ${${SYSTEM_LIB}_SYSTEM_LINK_FLAGS})
+        IF(NOT SYSTEM_LINK_FLAG)
+          MESSAGE(WARNING "Missing link flag for ${lib}")
+        ELSE()
+          SET(${var} "${${var}} ${SYSTEM_LINK_FLAG} ")
+        ENDIF()
       ELSEIF (lib MATCHES "^\\-L")
         # Search directory. Test on FreeBSD: -L/usr/local/lib -lunwind
         SET(${var} "${${var}} ${lib} ")

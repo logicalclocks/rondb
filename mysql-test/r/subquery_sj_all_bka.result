@@ -1,8 +1,4 @@
 set optimizer_switch='batched_key_access=on,mrr_cost_based=off';
-Warnings:
-Warning	1287	'@@binlog_format' is deprecated and will be removed in a future release.
-Warnings:
-Warning	1287	'@@binlog_format' is deprecated and will be removed in a future release.
 set optimizer_switch='semijoin=on,materialization=on,firstmatch=on,loosescan=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=off';
 set @old_opt_switch=@@optimizer_switch;
 set optimizer_switch='subquery_materialization_cost_based=off';
@@ -9944,7 +9940,7 @@ AND grandparent1.col_int_key <> 3
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	SIMPLE	t3	NULL	ALL	NULL	NULL	NULL	NULL	1	100.00	NULL
 1	SIMPLE	grandparent1	NULL	ref	col_int_key	col_int_key	4	test.t3.g1	1	100.00	Using where; Not exists
-1	SIMPLE	parent1	NULL	ref	col_int_key	col_int_key	4	test.grandparent1.col_int_nokey	1	100.00	Using where
+1	SIMPLE	parent1	NULL	ref	col_int_key	col_int_key	4	test.grandparent1.col_int_nokey	1	100.00	Using index condition
 1	SIMPLE	parent2	NULL	ref	col_int_key	col_int_key	4	test.parent1.col_int_nokey	1	100.00	Using index
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t3`.`g1` AS `g1` from `test`.`t3` anti join (`test`.`t1` `grandparent1` join `test`.`t1` `parent1` left join `test`.`t2` `parent2` on((`test`.`parent2`.`col_int_key` = `test`.`parent1`.`col_int_nokey`))) on(((`test`.`grandparent1`.`col_int_key` = `test`.`t3`.`g1`) and (`test`.`grandparent1`.`col_int_nokey` = `test`.`t3`.`g1`) and (`test`.`parent1`.`col_int_key` = `test`.`t3`.`g1`) and (`test`.`t3`.`g1` <> 3))) where true
@@ -10037,6 +10033,7 @@ EXPLAIN
           "rows_examined_per_scan": 1,
           "rows_produced_per_join": 3,
           "filtered": "100.00",
+          "index_condition": "<if>(is_not_null_compl(grandparent1..parent2), (`test`.`parent1`.`col_int_key` = `test`.`t3`.`g1`), true)",
           "cost_info": {
             "read_cost": "0.84",
             "eval_cost": "0.34",
@@ -10046,8 +10043,7 @@ EXPLAIN
           "used_columns": [
             "col_int_nokey",
             "col_int_key"
-          ],
-          "attached_condition": "<if>(is_not_null_compl(grandparent1..parent2), (`test`.`parent1`.`col_int_key` = `test`.`t3`.`g1`), true)"
+          ]
         }
       },
       {
@@ -13539,6 +13535,4 @@ f1	f2
 14:51:13	S
 DROP TABLE t1, t2;
 set optimizer_switch=default;
-Warnings:
-Warning	1287	'@@binlog_format' is deprecated and will be removed in a future release.
 set optimizer_switch=default;

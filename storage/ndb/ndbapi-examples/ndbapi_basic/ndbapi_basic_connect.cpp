@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -21,28 +22,23 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
-#include <iostream>
 #include <cstdlib>
+#include <iostream>
 
 #include <NdbApi.hpp>
 
-namespace
-{
-  inline void test_connection(const Ndb_cluster_connection &connection)
-  {
-    std::cout << "Connected to: " << connection.get_system_name()
-              << ",\n\ton port: " << connection.get_connected_port()
-              << ",\n\tactive NDBDs: " << connection.get_active_ndb_objects()
-              << std::endl;
-  }
+namespace {
+inline void test_connection(const Ndb_cluster_connection &connection) {
+  std::cout << "Connected to: " << connection.get_system_name()
+            << ",\n\ton port: " << connection.get_connected_port()
+            << ",\n\tactive NDBDs: " << connection.get_active_ndb_objects()
+            << std::endl;
 }
+}  // namespace
 
-int main(int argc, char **argv)
-{
-  if (argc != 2)
-  {
-    std::cout << "Usage: ndb_ndbapi_basic_connect <connectstring>"
-              << std::endl;
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    std::cout << "Usage: ndb_ndbapi_basic_connect <connectstring>" << std::endl;
     return EXIT_FAILURE;
   }
 
@@ -51,14 +47,12 @@ int main(int argc, char **argv)
   ndb_init();
   {
     Ndb_cluster_connection connection(connectstring);
-    if (connection.connect() != 0)
-    {
+    if (connection.connect() != 0) {
       std::cout << "Cannot connect to cluster management server" << std::endl;
       return EXIT_FAILURE;
     }
 
-    if (connection.wait_until_ready(30, 0) != 0)
-    {
+    if (connection.wait_until_ready(30, 0) != 0) {
       std::cout << "Cluster was not ready within 30 secs" << std::endl;
       return EXIT_FAILURE;
     }
@@ -70,4 +64,3 @@ int main(int argc, char **argv)
 
   return EXIT_SUCCESS;
 }
-

@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -448,10 +449,6 @@ bool Sql_cmd_alter_table_exchange_partition::exchange_partition(
 
   DEBUG_SYNC(thd, "swap_partition_before_exchange");
 
-  if (dd::sdi::drop_all_for_table(thd, swap_table_def) ||
-      dd::sdi::drop_all_for_table(thd, part_table_def)) {
-    return true;
-  }
   int ha_error = part_handler->exchange_partition(swap_part_id, part_table_def,
                                                   swap_table_def);
 
@@ -479,6 +476,9 @@ bool Sql_cmd_alter_table_exchange_partition::exchange_partition(
     (void)thd->locked_tables_list.reopen_tables(thd);
     return true;
   } else {
+    bool drop_sdi_res = dd::sdi::drop_all_for_table(thd, swap_table_def) ||
+                        dd::sdi::drop_all_for_table(thd, part_table_def);
+
     if (part_table->file->ht->flags & HTON_SUPPORTS_ATOMIC_DDL) {
       handlerton *hton = part_table->file->ht;
 
@@ -513,7 +513,7 @@ bool Sql_cmd_alter_table_exchange_partition::exchange_partition(
       std::unique_ptr<THD, decltype(rollback_post_ddl_reopen_lambda)>
           rollback_post_ddl_reopen_guard(thd, rollback_post_ddl_reopen_lambda);
 
-      if (thd->dd_client()->update(part_table_def) ||
+      if (drop_sdi_res || thd->dd_client()->update(part_table_def) ||
           thd->dd_client()->update(swap_table_def) ||
           write_bin_log(thd, true, thd->query().str, thd->query().length,
                         true)) {
@@ -531,7 +531,8 @@ bool Sql_cmd_alter_table_exchange_partition::exchange_partition(
       close_all_tables_for_name(thd, part_table->s, false, nullptr);
       (void)thd->locked_tables_list.reopen_tables(thd);
 
-      if (write_bin_log(thd, true, thd->query().str, thd->query().length))
+      if (drop_sdi_res ||
+          write_bin_log(thd, true, thd->query().str, thd->query().length))
         return true;
     }
   }

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,6 +27,7 @@
 #include "mysql/harness/logging/logger_plugin.h"
 
 #include <sstream>
+#include <vector>
 
 #include "consolelog_plugin.h"
 #include "dim.h"
@@ -52,7 +54,10 @@ IMPORT_LOG_FUNCTIONS()
 using HandlerPtr = std::shared_ptr<mysql_harness::logging::Handler>;
 using LoggerHandlersList = std::vector<std::pair<std::string, HandlerPtr>>;
 
-#ifdef WIN32
+std::vector<on_switch_to_configured_loggers>
+    g_on_switch_to_configured_loggers_clbs;
+
+#ifdef _WIN32
 #define NULL_DEVICE_NAME "NUL"
 #define STDOUT_DEVICE_NAME "CON"
 // no equivalent for STDERR_DEVICE_NAME
@@ -68,7 +73,7 @@ using LoggerHandlersList = std::vector<std::pair<std::string, HandlerPtr>>;
 static inline bool legal_consolelog_destination(
     const std::string &destination) {
   if ((destination != NULL_DEVICE_NAME) &&
-#ifndef WIN32
+#ifndef _WIN32
       (destination != STDERR_DEVICE_NAME) &&
 #endif
       (destination != STDOUT_DEVICE_NAME))
@@ -262,6 +267,11 @@ void create_plugin_loggers(const mysql_harness::LoaderConfig &config,
     attach_handler_to_all_loggers(registry, h);
 }
 
+void register_on_switch_to_configured_loggers_callback(
+    on_switch_to_configured_loggers callback) {
+  g_on_switch_to_configured_loggers_clbs.push_back(callback);
+}
+
 static bool init_handlers(mysql_harness::PluginFuncEnv *env,
                           const mysql_harness::LoaderConfig &config,
                           LoggerHandlersList &logger_handlers) {
@@ -421,6 +431,12 @@ static void init(mysql_harness::PluginFuncEnv *env) {
   if (!res) return;
 
   switch_to_loggers_in_config(config, logger_handlers);
+
+  for (auto &clb : g_on_switch_to_configured_loggers_clbs) {
+    clb();
+  }
+
+  g_on_switch_to_configured_loggers_clbs.clear();
 }
 
 mysql_harness::Plugin harness_plugin_logger = {

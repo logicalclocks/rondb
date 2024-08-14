@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -522,7 +523,14 @@ static void setup_tmp_table_column_bitmaps(TABLE *table, uchar *bitmaps) {
   bitmap_init(&table->cond_set,
               (my_bitmap_map *)(bitmaps + bitmap_buffer_size(field_count) * 2),
               field_count);
-  /* write_set and all_set are copies of read_set */
+
+  // Establish the other sets as copies of read_set. Temporary tables are
+  // generally created with all relevant columns, so all fields can be marked in
+  // read_set. (An exception to this is temporary tables for materialized
+  // derived tables, which are instantiated with all the columns of the derived
+  // table, even if they are not needed in the outer query block. Currently, all
+  // columns get marked as read here, even those that are not required.)
+  table->read_set_internal = table->def_read_set;
   table->def_write_set = table->def_read_set;
   table->s->all_set = table->def_read_set;
   bitmap_set_all(&table->s->all_set);

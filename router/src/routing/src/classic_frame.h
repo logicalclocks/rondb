@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -43,7 +44,7 @@ class ClassicFrame {
   /**
    * recv a full message sequence into the channel's recv_plain_buffer()
    */
-  [[nodiscard]] static stdx::expected<void, std::error_code>
+  [[nodiscard]] static stdx::expected<size_t, std::error_code>
   recv_frame_sequence(Channel *src_channel, ClassicProtocolState *src_protocol);
 
   static stdx::expected<void, std::error_code> ensure_server_greeting(
@@ -68,16 +69,51 @@ class ClassicFrame {
         ClassicFrame::recv_frame_sequence(src_channel, src_protocol);
     if (!read_res) return stdx::make_unexpected(read_res.error());
 
-    auto &recv_buf = src_channel->recv_plain_view();
+    auto num_of_frames = *read_res;
+    if (num_of_frames > 1) {
+      // more than one frame.
+      auto frame_sequence_buf = src_channel->recv_plain_view();
 
-    auto decode_res =
-        classic_protocol::decode<classic_protocol::frame::Frame<Msg>>(
-            net::buffer(recv_buf), caps);
-    if (!decode_res) return stdx::make_unexpected(decode_res.error());
+      // assemble the payload from multiple frames.
 
-    src_protocol->seq_id(decode_res->second.seq_id());
+      auto &payload_buf = src_channel->payload_buffer();
+      payload_buf.clear();
 
-    return decode_res->second.payload();
+      while (!frame_sequence_buf.empty()) {
+        auto hdr_res =
+            classic_protocol::decode<classic_protocol::frame::Header>(
+                net::buffer(frame_sequence_buf), caps);
+        if (!hdr_res) return stdx::make_unexpected(hdr_res.error());
+
+        // skip the hdr.
+        frame_sequence_buf =
+            frame_sequence_buf.last(frame_sequence_buf.size() - hdr_res->first);
+
+        auto frame_payload =
+            frame_sequence_buf.first(hdr_res->second.payload_size());
+
+        payload_buf.insert(payload_buf.end(), frame_payload.begin(),
+                           frame_payload.end());
+
+        frame_sequence_buf = frame_sequence_buf.last(
+            frame_sequence_buf.size() - hdr_res->second.payload_size());
+      }
+
+      auto decode_res =
+          classic_protocol::decode<Msg>(net::buffer(payload_buf), caps);
+      if (!decode_res) return stdx::make_unexpected(decode_res.error());
+
+      return decode_res->second;
+    } else {
+      auto &recv_buf = src_channel->recv_plain_view();
+
+      auto decode_res =
+          classic_protocol::decode<classic_protocol::frame::Frame<Msg>>(
+              net::buffer(recv_buf), caps);
+      if (!decode_res) return stdx::make_unexpected(decode_res.error());
+
+      return decode_res->second.payload();
+    }
   }
 
   template <class Msg>

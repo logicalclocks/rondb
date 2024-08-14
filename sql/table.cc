@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -737,22 +738,25 @@ void setup_key_part_field(TABLE_SHARE *share, handler *handler_file,
 
   const bool full_length_key_part =
       field->key_length() == key_part->length && !field->is_flag_set(BLOB_FLAG);
+  const bool is_spatial_key = Overlaps(keyinfo->flags, HA_SPATIAL);
   /*
     part_of_key contains all non-prefix keys, part_of_prefixkey
     contains prefix keys.
     Note that prefix keys in the extended PK key parts
     (part_of_key_not_extended is false) are not considered.
-    Full-text keys are not considered prefix keys.
+    Full-text and spatial keys are not considered prefix keys.
   */
   if (full_length_key_part || Overlaps(keyinfo->flags, HA_FULLTEXT)) {
     field->part_of_key.set_bit(key_n);
     if (part_of_key_not_extended)
       field->part_of_key_not_extended.set_bit(key_n);
-  } else if (part_of_key_not_extended) {
+  } else if (part_of_key_not_extended && !is_spatial_key) {
     field->part_of_prefixkey.set_bit(key_n);
   }
+  // R-tree indexes do not allow index scans and therefore cannot be
+  // marked as keys for index only access.
   if ((handler_file->index_flags(key_n, key_part_n, false) & HA_KEYREAD_ONLY) &&
-      field->type() != MYSQL_TYPE_GEOMETRY) {
+      !is_spatial_key) {
     // Set the key as 'keys_for_keyread' even if it is prefix key.
     share->keys_for_keyread.set_bit(key_n);
   }
@@ -2591,14 +2595,14 @@ bool unpack_value_generator(THD *thd, TABLE *table,
                                   Query_arena::STMT_REGULAR_EXECUTION);
   thd->swap_query_arena(val_generator_arena, &save_arena);
   thd->stmt_arena = &val_generator_arena;
-  ulong save_old_privilege = thd->want_privilege;
+  Access_bitmask save_old_privilege = thd->want_privilege;
   thd->want_privilege = 0;
 
   const CHARSET_INFO *save_character_set_client =
       thd->variables.character_set_client;
   // Subquery is not allowed in generated expression
-  const bool save_allow_subselects = thd->lex->expr_allows_subselect;
-  thd->lex->expr_allows_subselect = false;
+  const bool save_allows_subquery = thd->lex->expr_allows_subquery;
+  thd->lex->expr_allows_subquery = false;
   // allow_sum_func is also 0, banning group aggregates and window functions.
   assert(thd->lex->allow_sum_func == 0);
 
@@ -2633,7 +2637,7 @@ bool unpack_value_generator(THD *thd, TABLE *table,
     thd->swap_query_arena(save_arena, &val_generator_arena);
     thd->variables.character_set_client = save_character_set_client;
     thd->want_privilege = save_old_privilege;
-    thd->lex->expr_allows_subselect = save_allow_subselects;
+    thd->lex->expr_allows_subquery = save_allows_subquery;
   };
 
   // Properties that need to be restored before leaving the scope if an
@@ -2658,7 +2662,7 @@ bool unpack_value_generator(THD *thd, TABLE *table,
   assert((*val_generator)->expr_item != nullptr &&
          (*val_generator)->expr_str.str == nullptr);
 
-  thd->lex->expr_allows_subselect = save_allow_subselects;
+  thd->lex->expr_allows_subquery = save_allows_subquery;
 
   // Set the stored_in_db attribute of the column it depends on (if any)
   if (field != nullptr) (*val_generator)->set_field_stored(field->stored_in_db);
@@ -3036,7 +3040,8 @@ int open_table_from_share(THD *thd, TABLE_SHARE *share, const char *alias,
   */
 
   bitmap_size = share->column_bitmap_size;
-  if (!(bitmaps = root->ArrayAlloc<uchar>(bitmap_size * 7))) goto err;
+  bitmaps = root->ArrayAlloc<uchar>(bitmap_size * 8);
+  if (bitmaps == nullptr) goto err;
   bitmap_init(&outparam->def_read_set, (my_bitmap_map *)bitmaps, share->fields);
   bitmap_init(&outparam->def_write_set,
               (my_bitmap_map *)(bitmaps + bitmap_size), share->fields);
@@ -3050,6 +3055,9 @@ int open_table_from_share(THD *thd, TABLE_SHARE *share, const char *alias,
               (my_bitmap_map *)(bitmaps + bitmap_size * 5), share->fields);
   bitmap_init(&outparam->pack_row_tmp_set,
               (my_bitmap_map *)(bitmaps + bitmap_size * 6), share->fields);
+  bitmap_init(&outparam->read_set_internal,
+              pointer_cast<my_bitmap_map *>(bitmaps + bitmap_size * 7),
+              share->fields);
   outparam->default_column_bitmaps();
 
   /*
@@ -4395,6 +4403,17 @@ void Table_ref::reset() {
   }
 }
 
+/// Save the contents of the "from" bitmap in "to".
+static bool save_bitmap(MEM_ROOT *mem_root, const MY_BITMAP &from,
+                        MY_BITMAP *to) {
+  my_bitmap_map *buffer = static_cast<my_bitmap_map *>(
+      mem_root->Alloc(bitmap_buffer_size(from.n_bits)));
+  if (buffer == nullptr) return true;
+  if (bitmap_init(to, buffer, from.n_bits)) return true;
+  bitmap_copy(to, &from);
+  return false;
+}
+
 /**
   Save persistent properties from TABLE into Table_ref.
   Required because some properties about a table are calculated inside TABLE
@@ -4406,22 +4425,13 @@ void Table_ref::reset() {
   @returns false if success, true if error
 */
 bool Table_ref::save_properties() {
-  size_t size = bitmap_buffer_size(table->s->fields);
-  my_bitmap_map *read_map, *write_map;
-  if (table->s->fields <= 64) {
-    read_map = read_set_small;
-    write_map = write_set_small;
-  } else {
-    read_map = static_cast<my_bitmap_map *>(current_thd->mem_root->Alloc(size));
-    if (read_map == nullptr) return true;
-    write_map =
-        static_cast<my_bitmap_map *>(current_thd->mem_root->Alloc(size));
-    if (write_map == nullptr) return true;
+  MEM_ROOT *const mem_root = *THR_MALLOC;
+  if (save_bitmap(mem_root, *table->read_set, &read_set_saved) ||
+      save_bitmap(mem_root, *table->write_set, &write_set_saved) ||
+      save_bitmap(mem_root, table->read_set_internal,
+                  &read_set_internal_saved)) {
+    return true;
   }
-  bitmap_init(&read_set_saved, read_map, table->s->fields);
-  bitmap_init(&write_set_saved, write_map, table->s->fields);
-  bitmap_copy(&read_set_saved, table->read_set);
-  bitmap_copy(&write_set_saved, table->write_set);
   covering_keys_saved = table->covering_keys;
   merge_keys_saved = table->merge_keys;
   keys_in_use_for_query_saved = table->keys_in_use_for_query;
@@ -4433,13 +4443,9 @@ bool Table_ref::save_properties() {
   force_index_group_saved = table->force_index_group;
   partition_info *const part = table->part_info;
   if (part != nullptr) {
-    const uint part_count = part->read_partitions.n_bits;
-    size = bitmap_buffer_size(part_count);
-    my_bitmap_map *lock_part_map =
-        static_cast<my_bitmap_map *>(current_thd->mem_root->Alloc(size));
-    if (lock_part_map == nullptr) return true;
-    bitmap_init(&lock_partitions_saved, lock_part_map, part_count);
-    bitmap_copy(&lock_partitions_saved, &part->lock_partitions);
+    if (save_bitmap(mem_root, part->lock_partitions, &lock_partitions_saved)) {
+      return true;
+    }
   }
   return false;
 }
@@ -4455,6 +4461,7 @@ void Table_ref::restore_properties() {
   if (read_set_saved.bitmap == nullptr) return;
   bitmap_copy(table->read_set, &read_set_saved);
   bitmap_copy(table->write_set, &write_set_saved);
+  bitmap_copy(&table->read_set_internal, &read_set_internal_saved);
   table->covering_keys = covering_keys_saved;
   table->merge_keys = merge_keys_saved;
   table->keys_in_use_for_query = keys_in_use_for_query_saved;
@@ -5372,6 +5379,7 @@ void TABLE::clear_column_bitmaps() {
 
   bitmap_clear_all(&tmp_set);
   bitmap_clear_all(&cond_set);
+  bitmap_clear_all(&read_set_internal);
 
   if (m_partial_update_columns != nullptr)
     bitmap_clear_all(m_partial_update_columns);
@@ -5425,6 +5433,7 @@ void TABLE::mark_column_used(Field *field, enum enum_mark_columns mark) {
     case MARK_COLUMNS_READ: {
       Key_map part_of_key = field->part_of_key;
       bitmap_set_bit(read_set, field->field_index());
+      bitmap_set_bit(&read_set_internal, field->field_index());
 
       part_of_key.merge(field->part_of_prefixkey);
       covering_keys.intersect(part_of_key);

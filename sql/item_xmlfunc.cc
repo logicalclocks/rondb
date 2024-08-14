@@ -1,15 +1,16 @@
-/* Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -2498,21 +2499,24 @@ String *Item_func_xml_extractvalue::val_str(String *str) {
 }
 
 String *Item_func_xml_update::val_str(String *str) {
-  String *res = nullptr, *rep = nullptr;
-
   null_value = false;
   if (!nodeset_func && parse_xpath(args[1])) {
     assert(is_nullable());
-    null_value = true;
-    return nullptr;
+    return error_str();
   }
 
-  if (!nodeset_func || !(res = args[0]->val_str(str)) ||
-      !(rep = args[2]->val_str(&tmp_value)) || !parse_xml(res, &pxml) ||
-      (nodeset_func->type() != XPATH_NODESET)) {
-    null_value = true;
-    return nullptr;
-  }
+  if (nodeset_func == nullptr) return error_str();
+
+  String *res = eval_string_arg(collation.collation, args[0], str);
+  if (res == nullptr) return error_str();
+
+  StringBuffer<STRING_BUFFER_USUAL_SIZE> rep_buf(nullptr, 0,
+                                                 collation.collation);
+  String *rep = eval_string_arg(collation.collation, args[2], &rep_buf);
+  if (rep == nullptr) return error_str();
+
+  if (!parse_xml(res, &pxml)) return error_str();
+  if (nodeset_func->type() != XPATH_NODESET) return error_str();
 
   XPathFilter nodeset;
   down_cast<const Item_nodeset_func *>(nodeset_func)->val_nodeset(&nodeset);

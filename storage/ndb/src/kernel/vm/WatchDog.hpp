@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,17 +26,16 @@
 #ifndef WatchDog_H
 #define WatchDog_H
 
-#include <kernel_types.h>
-#include <NdbThread.h>
 #include <NdbMutex.h>
+#include <NdbThread.h>
 #include <NdbTick.h>
+#include <kernel_types.h>
 
 #define JAM_FILE_ID 253
 
+extern "C" void *runWatchDog(void *w);
 
-extern "C" void* runWatchDog(void* w);
-
-class WatchDog{
+class WatchDog {
   enum { MAX_WATCHED_THREADS = MAX_THREADS_TO_WATCH };
 
   struct WatchedThread {
@@ -55,11 +55,11 @@ class WatchDog{
     Uint32 m_lastCounterValue;
   };
 
-public:
+ public:
   WatchDog(Uint32 interval = 3000);
   ~WatchDog();
- 
-  struct NdbThread* doStart();
+
+  struct NdbThread *doStart();
   void doStop();
 
   Uint32 setCheckInterval(Uint32 interval);
@@ -74,18 +74,18 @@ public:
 
   void setKillSwitch(bool kill);
 
-protected:
+ protected:
   /**
    * Thread function
    */
-  friend void* runWatchDog(void* w);
-  
+  friend void *runWatchDog(void *w);
+
   /**
-   * Thread pointer 
+   * Thread pointer
    */
-  NdbThread* theThreadPtr;
-  
-private:
+  NdbThread *theThreadPtr;
+
+ private:
   Uint32 theInterval;
   /*
     List of watched threads.
@@ -100,12 +100,11 @@ private:
 
   bool theStop;
   bool killer;
-  
+
   void run();
   void shutdownSystem(const char *last_stuck_action);
 };
 
-
 #undef JAM_FILE_ID
 
-#endif // WatchDog_H
+#endif  // WatchDog_H

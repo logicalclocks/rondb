@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1948,7 +1949,7 @@ bool ndb_pushed_builder_ctx::is_field_item_pushable(
   //    usable by substituting existing 'key_item_field'.
   //    The hypergraph optimizer do not provide a reliable Item_equal.
   //
-  const Item_equal *item_equal = (!m_thd->lex->using_hypergraph_optimizer)
+  const Item_equal *item_equal = (!m_thd->lex->using_hypergraph_optimizer())
                                      ? table->get_item_equal(key_item_field)
                                      : nullptr;
   if (item_equal != nullptr) {
@@ -2256,7 +2257,7 @@ void ndb_pushed_builder_ctx::collect_key_refs(const pushed_table *table,
    * those key_fields within the equality set.
    * When using the Hypergraph optimizer we can't use the Item_equal's.
    **/
-  const bool use_item_equal = !m_thd->lex->using_hypergraph_optimizer;
+  const bool use_item_equal = !m_thd->lex->using_hypergraph_optimizer();
 
   for (uint key_part_no = 0; key_part_no < table->get_no_of_key_fields();
        key_part_no++) {

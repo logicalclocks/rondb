@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -172,6 +173,8 @@ static const Date_time_format time_24hrs_format = {{0}, {"%H:%i:%S", 8}};
                             pointer to end of string matching this specifier
                             should be stored.
   @param date_time_type "time" or "datetime", used for the error/warning msg
+  @param data_type  Type of data
+  @param flags      flags used by check_date()
 
   @note
     Possibility to parse strings matching to patterns equivalent to compound
@@ -194,7 +197,9 @@ static bool extract_date_time(const Date_time_format *format, const char *val,
                               size_t length, MYSQL_TIME *l_time,
                               enum_mysql_timestamp_type cached_timestamp_type,
                               const char **sub_pattern_end,
-                              const char *date_time_type) {
+                              const char *date_time_type,
+                              enum_field_types data_type,
+                              my_time_flags_t flags) {
   int weekday = 0, yearday = 0, daypart = 0;
   int week_number = -1;
   int error = 0;
@@ -379,14 +384,16 @@ static bool extract_date_time(const Date_time_format *format, const char *val,
             warnings in case of errors
           */
           if (extract_date_time(&time_ampm_format, val, (uint)(val_end - val),
-                                l_time, cached_timestamp_type, &val, "time"))
+                                l_time, cached_timestamp_type, &val, "time",
+                                data_type, flags))
             return true;
           break;
 
           /* Time in 24-hour notation */
         case 'T':
           if (extract_date_time(&time_24hrs_format, val, (uint)(val_end - val),
-                                l_time, cached_timestamp_type, &val, "time"))
+                                l_time, cached_timestamp_type, &val, "time",
+                                data_type, flags))
             return true;
           break;
 
@@ -469,8 +476,12 @@ static bool extract_date_time(const Date_time_format *format, const char *val,
     get_date_from_daynr(days, &l_time->year, &l_time->month, &l_time->day);
   }
 
-  if (l_time->month > 12 || l_time->day > 31 || l_time->hour > 23 ||
-      l_time->minute > 59 || l_time->second > 59)
+  assert(l_time->year <= 9999);
+  if (data_type == MYSQL_TYPE_TIME) flags &= ~TIME_NO_ZERO_DATE;
+  int warnings;
+  if (l_time->month > 12 || l_time->hour > 23 || l_time->minute > 59 ||
+      l_time->second > 59 ||
+      check_date(*l_time, non_zero_date(*l_time), flags, &warnings))
     goto err;
 
   if (val != val_end) {
@@ -3585,7 +3596,8 @@ bool Item_func_str_to_date::val_datetime(MYSQL_TIME *ltime,
   date_time_format.format.str = format->ptr();
   date_time_format.format.length = format->length();
   if (extract_date_time(&date_time_format, val->ptr(), val->length(), ltime,
-                        cached_timestamp_type, nullptr, "datetime"))
+                        cached_timestamp_type, nullptr, "datetime", data_type(),
+                        fuzzy_date))
     goto null_date;
   if (date_should_be_null(data_type(), *ltime, fuzzy_date)) {
     char buff[128];

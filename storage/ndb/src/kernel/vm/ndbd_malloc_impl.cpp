@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2006, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2006, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,12 +24,10 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-#include "my_config.h"
-#include "util/require.h"
-#include "ndbd_malloc.hpp"
 #include "ndbd_malloc_impl.hpp"
+#include "my_config.h"
 #include "ndbd_malloc.hpp"
+#include "util/require.h"
 
 #include <time.h>
 
@@ -49,9 +48,14 @@
 #endif
 
 #ifdef DEBUG_MEM_ALLOC
-#define DEB_MEM_ALLOC(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_MEM_ALLOC(arglist)   \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
 #else
-#define DEB_MEM_ALLOC(arglist) do { } while (0)
+#define DEB_MEM_ALLOC(arglist) \
+  do {                         \
+  } while (0)
 #endif
 
 #ifdef DEBUG_MEM_SHORT_RELEASE
@@ -71,17 +75,14 @@
 
 
 #ifdef _WIN32
-void *sbrk(int increment)
-{
-  return (void*)-1;
-}
+void *sbrk(int increment) { return (void *)-1; }
 #endif
 
 static int f_method_idx = 0;
 #ifdef NDBD_MALLOC_METHOD_SBRK
-static const char * f_method = "SMsm";
+static const char *f_method = "SMsm";
 #else
-static const char * f_method = "MSms";
+static const char *f_method = "MSms";
 #endif
 #define MAX_CHUNKS 10
 
@@ -99,12 +100,11 @@ extern void mt_mem_manager_unlock();
 #include <NdbOut.hpp>
 
 constexpr Uint32 Ndbd_mem_manager::zone_bound[ZONE_COUNT] =
-{ /* bound in regions */
-  ZONE_19_BOUND >> PAGES_PER_REGION_LOG,
-  ZONE_27_BOUND >> PAGES_PER_REGION_LOG,
-  ZONE_30_BOUND >> PAGES_PER_REGION_LOG,
-  ZONE_32_BOUND >> PAGES_PER_REGION_LOG
-};
+    {/* bound in regions */
+     ZONE_19_BOUND >> PAGES_PER_REGION_LOG,
+     ZONE_27_BOUND >> PAGES_PER_REGION_LOG,
+     ZONE_30_BOUND >> PAGES_PER_REGION_LOG,
+     ZONE_32_BOUND >> PAGES_PER_REGION_LOG};
 
 /*
  * Linux on ARM64 uses 64K as default memory page size.
@@ -165,39 +165,33 @@ static constexpr size_t ALLOC_PAGES_PER_SYSTEM_PAGE =
 //#define NDB_TEST_128TB_VIRTUAL_MEMORY
 #ifdef NDB_TEST_128TB_VIRTUAL_MEMORY
 
-static inline int
-log_and_fake_success(const char func[], int line,
-                     const char msg[], void* p, size_t s)
-{
+static inline int log_and_fake_success(const char func[], int line,
+                                       const char msg[], void *p, size_t s) {
   g_eventLogger->info("DEBUG: %s: %u: %s: p %p: len %zu", func, line, msg, p,
                       s);
   return 0;
 }
 
-#define NdbMem_ReserveSpace(x,y) \
+#define NdbMem_ReserveSpace(x, y) \
   log_and_fake_success(__func__, __LINE__, "NdbMem_ReserveSpace", (x), (y))
 
-#define NdbMem_PopulateSpace(x,y) \
+#define NdbMem_PopulateSpace(x, y) \
   log_and_fake_success(__func__, __LINE__, "NdbMem_PopulateSpace", (x), (y))
 
 #endif
 
-bool
-Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
-                                   InitChunk chunks[ZONE_COUNT],
-                                   Uint32* watchCounter,
-                                   Alloc_page** base_address)
-{
+bool Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
+                                        InitChunk chunks[ZONE_COUNT],
+                                        Uint32 *watchCounter,
+                                        Alloc_page **base_address) {
   require(pages % ALLOC_PAGES_PER_SYSTEM_PAGE == 0);
   require(pages > 0);
-  if (watchCounter)
-    *watchCounter = 9;
+  if (watchCounter) *watchCounter = 9;
   constexpr Uint32 max_regions = zone_bound[ZONE_COUNT - 1];
   constexpr Uint32 max_pages = max_regions << PAGES_PER_REGION_LOG;
   static_assert(max_regions == (max_pages >> PAGES_PER_REGION_LOG));
   static_assert(max_regions > 0);
-  if (pages > max_pages)
-  {
+  if (pages > max_pages) {
     return false;
   }
   const bool half_space = (pages <= (max_pages >> 1));
@@ -206,19 +200,14 @@ Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
   Uint32 page_count[ZONE_COUNT];
   Uint32 region_count[ZONE_COUNT];
   Uint32 prev_bound = 0;
-  for (int i = 0; i < ZONE_COUNT; i++)
-  {
+  for (int i = 0; i < ZONE_COUNT; i++) {
     Uint32 n = pages / (ZONE_COUNT - i);
-    if (half_space && n > (zone_bound[i] << (PAGES_PER_REGION_LOG - 1)))
-    {
+    if (half_space && n > (zone_bound[i] << (PAGES_PER_REGION_LOG - 1))) {
       n = zone_bound[i] << (PAGES_PER_REGION_LOG - 1);
-    }
-    else if (n > ((zone_bound[i] - prev_bound) << PAGES_PER_REGION_LOG))
-    {
+    } else if (n > ((zone_bound[i] - prev_bound) << PAGES_PER_REGION_LOG)) {
       n = (zone_bound[i] - prev_bound) << PAGES_PER_REGION_LOG;
     }
-    if (n % ALLOC_PAGES_PER_SYSTEM_PAGE != 0)
-    {
+    if (n % ALLOC_PAGES_PER_SYSTEM_PAGE != 0) {
       // Always assign whole system pages
       n -= n % ALLOC_PAGES_PER_SYSTEM_PAGE;
     }
@@ -234,23 +223,19 @@ Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
   /* Reserve big enough continuous address space */
   static_assert(ZONE_COUNT >= 2);
   const Uint32 highest_low = zone_bound[0] - region_count[0];
-  const Uint32 lowest_high = zone_bound[ZONE_COUNT - 2] +
-                             region_count[ZONE_COUNT - 1];
+  const Uint32 lowest_high =
+      zone_bound[ZONE_COUNT - 2] + region_count[ZONE_COUNT - 1];
   const Uint32 least_region_count = lowest_high - highest_low;
   Uint32 space_regions = max_regions;
   Alloc_page *space = nullptr;
   int rc = -1;
-  while (space_regions >= least_region_count)
-  {
-    if (watchCounter)
-      *watchCounter = 9;
+  while (space_regions >= least_region_count) {
+    if (watchCounter) *watchCounter = 9;
     rc = NdbMem_ReserveSpace(
-           (void**)&space,
-           (space_regions << PAGES_PER_REGION_LOG) * Uint64(32768));
-    if (watchCounter)
-      *watchCounter = 9;
-    if (rc == 0)
-    {
+        (void **)&space,
+        (space_regions << PAGES_PER_REGION_LOG) * Uint64(32768));
+    if (watchCounter) *watchCounter = 9;
+    if (rc == 0) {
       g_eventLogger->info(
           "%s: Reserved address space for %u 8GiB regions at %p.", __func__,
           space_regions, space);
@@ -258,8 +243,7 @@ Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
     }
     space_regions = (space_regions - 1 + least_region_count) / 2;
   }
-  if (rc == -1)
-  {
+  if (rc == -1) {
     g_eventLogger->info(
         "%s: Failed reserved address space for at least %u 8GiB regions.",
         __func__, least_region_count);
@@ -268,19 +252,15 @@ Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
 
 #ifdef NDBD_RANDOM_START_PAGE
   Uint32 range = highest_low;
-  for (int i = 0; i < ZONE_COUNT; i++)
-  {
+  for (int i = 0; i < ZONE_COUNT; i++) {
     Uint32 rmax = (zone_bound[i] << PAGES_PER_REGION_LOG) - page_count[i];
-    if (i > 0)
-    {
+    if (i > 0) {
       rmax -= zone_bound[i - 1] << PAGES_PER_REGION_LOG;
     }
-    if (half_space)
-    {
+    if (half_space) {
       rmax -= 1 << 17; /* lower half of region */
     }
-    if (range > rmax)
-    {
+    if (range > rmax) {
       rmax = range;
     }
   }
@@ -288,26 +268,25 @@ Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
 #endif
 
   Uint32 first_region[ZONE_COUNT];
-  for (int i = 0; i < ZONE_COUNT; i++)
-  {
+  for (int i = 0; i < ZONE_COUNT; i++) {
     first_region[i] = (i < ZONE_COUNT - 1)
-                      ? zone_bound[i]
-                      : MIN(first_region[0] + space_regions, max_regions);
+                          ? zone_bound[i]
+                          : MIN(first_region[0] + space_regions, max_regions);
     first_region[i] -= ((page_count[i] +
 #ifdef NDBD_RANDOM_START_PAGE
                          m_random_start_page_id +
 #endif
-                         ((1 << PAGES_PER_REGION_LOG) - 1))
-                        >> PAGES_PER_REGION_LOG);
+                         ((1 << PAGES_PER_REGION_LOG) - 1)) >>
+                        PAGES_PER_REGION_LOG);
 
     chunks[i].m_cnt = page_count[i];
-    chunks[i].m_ptr = space + ((first_region[i] - first_region[0])
-                                << PAGES_PER_REGION_LOG);
+    chunks[i].m_ptr =
+        space + ((first_region[i] - first_region[0]) << PAGES_PER_REGION_LOG);
 #ifndef NDBD_RANDOM_START_PAGE
     const Uint32 first_page = first_region[i] << PAGES_PER_REGION_LOG;
 #else
-    const Uint32 first_page = (first_region[i] << PAGES_PER_REGION_LOG) +
-                              m_random_start_page_id;
+    const Uint32 first_page =
+        (first_region[i] << PAGES_PER_REGION_LOG) + m_random_start_page_id;
 #endif
     const Uint32 last_page = first_page + chunks[i].m_cnt - 1;
     g_eventLogger->info("%s: Populated space with pages %u to %u at %p.",
@@ -315,125 +294,108 @@ Ndbd_mem_manager::do_virtual_alloc(Uint32 pages,
     require(last_page < (zone_bound[i] << PAGES_PER_REGION_LOG));
   }
   *base_address = space - first_region[0] * 8 * Uint64(32768);
-  if (watchCounter)
-    *watchCounter = 9;
+  if (watchCounter) *watchCounter = 9;
 #ifdef NDB_TEST_128TB_VIRTUAL_MEMORY
-  exit(0); // No memory mapped only faking no meaning to continue.
+  exit(0);  // No memory mapped only faking no meaning to continue.
 #endif
   return true;
 }
 #endif
 
-static
-bool
-do_malloc(Uint32 pages,
-          InitChunk* chunk,
-          Uint32 *watchCounter,
-          void * baseaddress)
-{
-  void * ptr = 0;
+static bool do_malloc(Uint32 pages, InitChunk *chunk, Uint32 *watchCounter,
+                      void *baseaddress) {
+  void *ptr = 0;
   Uint32 sz = pages;
 
 retry:
-  if (watchCounter)
-    *watchCounter = 9;
+  if (watchCounter) *watchCounter = 9;
 
   char method = f_method[f_method_idx];
-  switch(method){
-  case 0:
-    return false;
-  case 'S':
-  case 's':
-  {
-    ptr = 0;
-    while (ptr == 0)
-    {
-      if (watchCounter)
-        *watchCounter = 9;
+  switch (method) {
+    case 0:
+      return false;
+    case 'S':
+    case 's': {
+      ptr = 0;
+      while (ptr == 0) {
+        if (watchCounter) *watchCounter = 9;
 
-      ptr = mmap(nullptr,
-                 sizeof(Alloc_page) * sz,
-                 PROT_WRITE,
-                 MAP_ANON | MAP_PRIVATE,
-                 -1,
-                 0);
+        ptr = mmap(nullptr,
+                   sizeof(Alloc_page) * sz,
+                   PROT_WRITE,
+                   MAP_ANON | MAP_PRIVATE,
+                   -1,
+                   0);
       
-      if (ptr == MAP_FAILED)
-      {
-	if (method == 'S')
-	{
-	  f_method_idx++;
-	  goto retry;
-	}
+        if (ptr == MAP_FAILED)
+        {
+	  if (method == 'S')
+	  {
+	    f_method_idx++;
+	    goto retry;
+	  }
 	
-	ptr = 0;
-	sz = 1 + (9 * sz) / 10;
-	if (pages >= 32 && sz < 32)
-	{
-	  sz = pages;
-	  f_method_idx++;
-	  goto retry;
-	}
-      }
-      else if (UintPtr(ptr) < UintPtr(baseaddress))
-      {
-        /**
-         * Unusable memory :(
-         */
-        g_eventLogger->info(
+	  ptr = 0;
+	  sz = 1 + (9 * sz) / 10;
+	  if (pages >= 32 && sz < 32)
+	  {
+	    sz = pages;
+	    f_method_idx++;
+	    goto retry;
+	  }
+        }
+        else if (UintPtr(ptr) < UintPtr(baseaddress))
+        {
+          /**
+           * Unusable memory :(
+           */
+          g_eventLogger->info(
             "sbrk(%lluMb) => %p which is less than baseaddress!!",
             Uint64((sizeof(Alloc_page) * sz) >> 20), ptr);
-        f_method_idx++;
-        goto retry;
+          f_method_idx++;
+          goto retry;
+        }
       }
+      break;
     }
-    break;
-  }
-  case 'M':
-  case 'm':
-  {
-    ptr = 0;
-    while (ptr == 0)
-    {
-      if (watchCounter)
-        *watchCounter = 9;
+    case 'M':
+    case 'm': {
+      ptr = 0;
+      while (ptr == 0) {
+        if (watchCounter) *watchCounter = 9;
 
-      ptr = NdbMem_AlignedAlloc(ALLOC_PAGES_PER_SYSTEM_PAGE *
-                                  sizeof(Alloc_page),
-                                sizeof(Alloc_page) * sz);
-      if (UintPtr(ptr) < UintPtr(baseaddress))
-      {
-        g_eventLogger->info(
-            "malloc(%lluMb) => %p which is less than baseaddress!!",
-            Uint64((sizeof(Alloc_page) * sz) >> 20), ptr);
-        free(ptr);
-        ptr = 0;
+        ptr = NdbMem_AlignedAlloc(
+            ALLOC_PAGES_PER_SYSTEM_PAGE * sizeof(Alloc_page),
+            sizeof(Alloc_page) * sz);
+        if (UintPtr(ptr) < UintPtr(baseaddress)) {
+          g_eventLogger->info(
+              "malloc(%lluMb) => %p which is less than baseaddress!!",
+              Uint64((sizeof(Alloc_page) * sz) >> 20), ptr);
+          free(ptr);
+          ptr = 0;
+        }
+
+        if (ptr == 0) {
+          if (method == 'M') {
+            f_method_idx++;
+            goto retry;
+          }
+
+          sz = 1 + (9 * sz) / 10;
+          if (pages >= 32 && sz < 32) {
+            f_method_idx++;
+            goto retry;
+          }
+        }
       }
-
-      if (ptr == 0)
-      {
-	if (method == 'M')
-	{
-	  f_method_idx++;
-	  goto retry;
-	}
-
-	sz = 1 + (9 * sz) / 10;
-	if (pages >= 32 && sz < 32)
-	{
-	  f_method_idx++;
-	  goto retry;
-	}
-      }
+      break;
     }
-    break;
+    default:
+      return false;
   }
-  default:
-    return false;
-  }
-  
+
   chunk->m_cnt = sz;
-  chunk->m_ptr = (Alloc_page*)ptr;
+  chunk->m_ptr = (Alloc_page *)ptr;
   const UintPtr align = sizeof(Alloc_page) - 1;
   /*
    * Ensure aligned to 32KB boundary.
@@ -441,32 +403,29 @@ retry:
    * NdbMem_PopulateSpace() in ndbd_alloc_touch_mem() need system page
    * alignment, typically 4KB or 8KB.
    */
-  if (UintPtr(ptr) & align)
-  {
+  if (UintPtr(ptr) & align) {
     chunk->m_cnt--;
-    chunk->m_ptr = (Alloc_page*)((UintPtr(ptr) + align) & ~align);
+    chunk->m_ptr = (Alloc_page *)((UintPtr(ptr) + align) & ~align);
   }
 
 #ifdef UNIT_TEST
   g_eventLogger->info("do_malloc(%d) -> %p %d", pages, ptr, chunk->m_cnt);
-  if (1)
-  {
+  if (1) {
     Uint32 sum = 0;
-    Alloc_page* page = chunk->m_ptr;
-    for (Uint32 i = 0; i<chunk->m_cnt; i++, page++)
-    {
-      page->m_data[0*1024] = 0;
-      page->m_data[1*1024] = 0;
-      page->m_data[2*1024] = 0;
-      page->m_data[3*1024] = 0;
-      page->m_data[4*1024] = 0;
-      page->m_data[5*1024] = 0;
-      page->m_data[6*1024] = 0;
-      page->m_data[7*1024] = 0;
+    Alloc_page *page = chunk->m_ptr;
+    for (Uint32 i = 0; i < chunk->m_cnt; i++, page++) {
+      page->m_data[0 * 1024] = 0;
+      page->m_data[1 * 1024] = 0;
+      page->m_data[2 * 1024] = 0;
+      page->m_data[3 * 1024] = 0;
+      page->m_data[4 * 1024] = 0;
+      page->m_data[5 * 1024] = 0;
+      page->m_data[6 * 1024] = 0;
+      page->m_data[7 * 1024] = 0;
     }
   }
 #endif
-  
+
   return true;
 }
 
@@ -474,8 +433,7 @@ retry:
  * Resource_limits
  */
 
-Resource_limits::Resource_limits()
-{
+Resource_limits::Resource_limits() {
   m_allocated = 0;
   m_free_reserved = 0;
   m_reserved = 0;
@@ -494,17 +452,15 @@ Resource_limits::Resource_limits()
 inline
 #endif
 void
-Resource_limits::check() const
-{
+Resource_limits::check(Uint32 line) const {
 #ifdef VM_TRACE
-  const Resource_limit* rl = m_limit;
+  const Resource_limit *rl = m_limit;
   Uint32 curr = 0;
   Uint32 spare = 0;
   Uint32 sumres_alloc = 0; // includes spare and lent pages
   Uint32 shared_alloc = 0;
   Uint32 sumres = 0;
-  for (Uint32 i = 0; i < MM_RG_COUNT; i++)
-  {
+  for (Uint32 i = 0; i < MM_RG_COUNT; i++) {
     curr += rl[i].m_curr;
     Uint32 stolen_reserved = rl[i].m_stolen_reserved;
     spare += rl[i].m_spare;
@@ -521,7 +477,6 @@ Resource_limits::check() const
       sumres_alloc += res_alloc;
     }
   }
-
   if(!((curr == get_in_use()) &&
        ((spare + sumres) == get_reserved()) &&
        ((sumres + spare)== (sumres_alloc + get_free_reserved())) &&
@@ -536,9 +491,9 @@ Resource_limits::check() const
 }
 
 void
-Ndbd_mem_manager::check() const
+Ndbd_mem_manager::check(Uint32 line) const
 {
-  m_resource_limits.check();
+  m_resource_limits.check(line);
 }
 
 void
@@ -618,36 +573,27 @@ Resource_limits::init_resource_spare(Uint32 id, Uint32 pct)
  * Ndbd_mem_manager
  */
 
-int
-Ndbd_mem_manager::PageInterval::compare(const void* px, const void* py)
-{
-  const PageInterval* x = static_cast<const PageInterval*>(px);
-  const PageInterval* y = static_cast<const PageInterval*>(py);
+int Ndbd_mem_manager::PageInterval::compare(const void *px, const void *py) {
+  const PageInterval *x = static_cast<const PageInterval *>(px);
+  const PageInterval *y = static_cast<const PageInterval *>(py);
 
-  if (x->start < y->start)
-  {
+  if (x->start < y->start) {
     return -1;
   }
-  if (x->start > y->start)
-  {
+  if (x->start > y->start) {
     return +1;
   }
-  if (x->end < y->end)
-  {
+  if (x->end < y->end) {
     return -1;
   }
-  if (x->end > y->end)
-  {
+  if (x->end > y->end) {
     return +1;
   }
   return 0;
 }
 
-Uint32
-Ndbd_mem_manager::ndb_log2(Uint32 input)
-{
-  if (input > 65535)
-    return 16;
+Uint32 Ndbd_mem_manager::ndb_log2(Uint32 input) {
+  if (input > 65535) return 16;
   input = input | (input >> 8);
   input = input | (input >> 4);
   input = input | (input >> 2);
@@ -660,14 +606,12 @@ Ndbd_mem_manager::ndb_log2(Uint32 input)
 }
 
 Ndbd_mem_manager::Ndbd_mem_manager()
-: m_base_page(NULL),
-  m_dump_on_alloc_fail(false),
-  m_mapped_pages_count(0),
-  m_mapped_pages_new_count(0)
-{
+    : m_base_page(NULL),
+      m_dump_on_alloc_fail(false),
+      m_mapped_pages_count(0),
+      m_mapped_pages_new_count(0) {
   size_t system_page_size = NdbMem_GetSystemPageSize();
-  if (system_page_size > MAX_SYSTEM_PAGE_SIZE)
-  {
+  if (system_page_size > MAX_SYSTEM_PAGE_SIZE) {
     g_eventLogger->error(
         "Default system page size, %zu, is bigger than supported %zu\n",
         system_page_size, MAX_SYSTEM_PAGE_SIZE);
@@ -675,21 +619,18 @@ Ndbd_mem_manager::Ndbd_mem_manager()
   }
   memset(m_buddy_lists, 0, sizeof(m_buddy_lists));
 
-  if (sizeof(Free_page_data) != (4 * (1 << FPD_2LOG)))
-  {
+  if (sizeof(Free_page_data) != (4 * (1 << FPD_2LOG))) {
     g_eventLogger->error("Invalid build, ndbd_malloc_impl.cpp:%d", __LINE__);
     abort();
   }
   mt_mem_manager_init();
 }
 
-void*
-Ndbd_mem_manager::get_memroot() const
-{
+void *Ndbd_mem_manager::get_memroot() const {
 #ifdef NDBD_RANDOM_START_PAGE
-  return (void*)(m_base_page - m_random_start_page_id);
+  return (void *)(m_base_page - m_random_start_page_id);
 #else
-  return (void*)m_base_page;
+  return (void *)m_base_page;
 #endif
 }
 
@@ -703,9 +644,7 @@ Ndbd_mem_manager::get_memroot() const
  * m_spare = pages reserved for restart or special use
  *
  */
-void
-Ndbd_mem_manager::set_resource_limit(const Resource_limit& rl)
-{
+void Ndbd_mem_manager::set_resource_limit(const Resource_limit &rl) {
   require(rl.m_resource_id > 0);
   mt_mem_manager_lock();
   m_resource_limits.init_resource_limit(rl.m_resource_id,
@@ -746,8 +685,7 @@ Ndbd_mem_manager::get_resource_limit(Uint32 id, Resource_limit& rl) const
    * DUMP DumpPageMemory(1000) is agnostic about what resource groups exists.
    * Allowing use of any id.
    */
-  if (1 <= id && id <= MM_RG_COUNT)
-  {
+  if (1 <= id && id <= MM_RG_COUNT) {
     mt_mem_manager_lock();
     m_resource_limits.get_resource_limit(id, rl);
     mt_mem_manager_unlock();
@@ -756,59 +694,47 @@ Ndbd_mem_manager::get_resource_limit(Uint32 id, Resource_limit& rl) const
   return false;
 }
 
-bool
-Ndbd_mem_manager::get_resource_limit_nolock(Uint32 id, Resource_limit& rl) const
-{
+bool Ndbd_mem_manager::get_resource_limit_nolock(Uint32 id,
+                                                 Resource_limit &rl) const {
   assert(id > 0);
-  if (id <= MM_RG_COUNT)
-  {
+  if (id <= MM_RG_COUNT) {
     m_resource_limits.get_resource_limit(id, rl);
     return true;
   }
   return false;
 }
 
-Uint32
-Ndbd_mem_manager::get_allocated() const
-{
+Uint32 Ndbd_mem_manager::get_allocated() const {
   mt_mem_manager_lock();
   const Uint32 val = m_resource_limits.get_allocated();
   mt_mem_manager_unlock();
   return val;
 }
 
-Uint32
-Ndbd_mem_manager::get_reserved() const
-{
+Uint32 Ndbd_mem_manager::get_reserved() const {
   mt_mem_manager_lock();
   const Uint32 val = m_resource_limits.get_reserved();
   mt_mem_manager_unlock();
   return val;
 }
 
-Uint32
-Ndbd_mem_manager::get_shared() const
-{
+Uint32 Ndbd_mem_manager::get_shared() const {
   mt_mem_manager_lock();
   const Uint32 val = m_resource_limits.get_shared();
   mt_mem_manager_unlock();
   return val;
 }
 
-Uint32
-Ndbd_mem_manager::get_free_shared() const
-{
+Uint32 Ndbd_mem_manager::get_free_shared() const {
   mt_mem_manager_lock();
   const Uint32 val = m_resource_limits.get_free_shared();
   mt_mem_manager_unlock();
   return val;
 }
 
-Uint32
-Ndbd_mem_manager::get_free_shared_nolock() const
-{
+Uint32 Ndbd_mem_manager::get_free_shared_nolock() const {
   /* Used by mt_getSendBufferLevel for quick read. */
-  const Uint32 val = m_resource_limits.get_free_shared(); // racy
+  const Uint32 val = m_resource_limits.get_free_shared();  // racy
   return val;
 }
 
@@ -821,33 +747,25 @@ Ndbd_mem_manager::get_in_use() const
   return val;
 }
 
-Uint32
-Ndbd_mem_manager::get_reserved_in_use() const
-{
+Uint32 Ndbd_mem_manager::get_reserved_in_use() const {
   mt_mem_manager_lock();
   const Uint32 val = m_resource_limits.get_reserved_in_use();
   mt_mem_manager_unlock();
   return val;
 }
 
-Uint32
-Ndbd_mem_manager::get_shared_in_use() const
-{
+Uint32 Ndbd_mem_manager::get_shared_in_use() const {
   mt_mem_manager_lock();
   const Uint32 val = m_resource_limits.get_shared_in_use();
   mt_mem_manager_unlock();
   return val;
 }
 
-int
-cmp_chunk(const void * chunk_vptr_1, const void * chunk_vptr_2)
-{
-  InitChunk * ptr1 = (InitChunk*)chunk_vptr_1;
-  InitChunk * ptr2 = (InitChunk*)chunk_vptr_2;
-  if (ptr1->m_ptr < ptr2->m_ptr)
-    return -1;
-  if (ptr1->m_ptr > ptr2->m_ptr)
-    return 1;
+int cmp_chunk(const void *chunk_vptr_1, const void *chunk_vptr_2) {
+  InitChunk *ptr1 = (InitChunk *)chunk_vptr_1;
+  InitChunk *ptr2 = (InitChunk *)chunk_vptr_2;
+  if (ptr1->m_ptr < ptr2->m_ptr) return -1;
+  if (ptr1->m_ptr > ptr2->m_ptr) return 1;
   assert(false);
   return 0;
 }
@@ -863,23 +781,21 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
 
   DEB_MEM_ALLOC(("Allocating %u pages", max_pages));
 
-  if (watchCounter)
-    *watchCounter = 9;
+  if (watchCounter) *watchCounter = 9;
 
   Uint32 pages = max_pages;
   Uint32 max_page = 0;
-  
+
   const Uint64 pg = Uint64(sizeof(Alloc_page));
-  if (pages == 0)
-  {
+  if (pages == 0) {
     return false;
   }
 
 #if SIZEOF_CHARP == 4
-  Uint64 sum = (pg*pages); 
-  if (sum >= (Uint64(1) << 32))
-  {
-    g_eventLogger->error("Trying to allocate more that 4Gb with 32-bit binary!!");
+  Uint64 sum = (pg * pages);
+  if (sum >= (Uint64(1) << 32)) {
+    g_eventLogger->error(
+        "Trying to allocate more that 4Gb with 32-bit binary!!");
     return false;
   }
 #endif
@@ -894,10 +810,8 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
      * needed.
      */
     int zones_needed = 1;
-    for (zones_needed = 1; zones_needed <= ZONE_COUNT; zones_needed++)
-    {
-      if (pages < (zone_bound[zones_needed - 1] << PAGES_PER_REGION_LOG))
-        break;
+    for (zones_needed = 1; zones_needed <= ZONE_COUNT; zones_needed++) {
+      if (pages < (zone_bound[zones_needed - 1] << PAGES_PER_REGION_LOG)) break;
     }
     pages += ZONE_COUNT - zones_needed;
   }
@@ -907,23 +821,19 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
    * Always allocate even number of pages to cope with 64K system page size
    * on ARM.
    */
-  if (pages % ALLOC_PAGES_PER_SYSTEM_PAGE != 0)
-  {
+  if (pages % ALLOC_PAGES_PER_SYSTEM_PAGE != 0) {
     // Round up page count
-    pages = (pages / ALLOC_PAGES_PER_SYSTEM_PAGE + 1) *
-            ALLOC_PAGES_PER_SYSTEM_PAGE;
+    pages =
+        (pages / ALLOC_PAGES_PER_SYSTEM_PAGE + 1) * ALLOC_PAGES_PER_SYSTEM_PAGE;
   }
 
 #ifdef USE_DO_VIRTUAL_ALLOC
   {
     InitChunk chunks[ZONE_COUNT];
-    if (do_virtual_alloc(pages, chunks, watchCounter, &m_base_page))
-    {
-      for (int i = 0; i < ZONE_COUNT; i++)
-      {
+    if (do_virtual_alloc(pages, chunks, watchCounter, &m_base_page)) {
+      for (int i = 0; i < ZONE_COUNT; i++) {
         m_unmapped_chunks.push_back(chunks[i]);
-        DEB_MEM_ALLOC(("Adding one more chunk with %u pages",
-                       chunks[i].m_cnt));
+        DEB_MEM_ALLOC(("Adding one more chunk with %u pages", chunks[i].m_cnt));
         allocated += chunks[i].m_cnt;
       }
       require(allocated == pages);
@@ -932,8 +842,7 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
 #endif
 
 #ifdef NDBD_RANDOM_START_PAGE
-  if (m_base_page == NULL)
-  {
+  if (m_base_page == NULL) {
     /**
      * In order to find bad-users of page-id's
      *   we add a random offset to the page-id's returned
@@ -941,12 +850,11 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
      *   (since we at get_page don't know if it's a HI/LO page)
      */
     Uint32 max_rand_start = ZONE_19_BOUND - 1;
-    if (max_rand_start > pages)
-    {
+    if (max_rand_start > pages) {
       max_rand_start -= pages;
       if (max_rand_start > 0x10000)
         m_random_start_page_id =
-          0x10000 + (rand() % (max_rand_start - 0x10000));
+            0x10000 + (rand() % (max_rand_start - 0x10000));
       else if (max_rand_start)
         m_random_start_page_id = rand() % max_rand_start;
 
@@ -961,27 +869,21 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
   /**
    * Do malloc
    */
-  while (m_unmapped_chunks.size() < MAX_CHUNKS && allocated < pages)
-  {
+  while (m_unmapped_chunks.size() < MAX_CHUNKS && allocated < pages) {
     InitChunk chunk;
     memset(&chunk, 0, sizeof(chunk));
-    
-    if (do_malloc(pages - allocated, &chunk, watchCounter, m_base_page))
-    {
-      if (watchCounter)
-        *watchCounter = 9;
+
+    if (do_malloc(pages - allocated, &chunk, watchCounter, m_base_page)) {
+      if (watchCounter) *watchCounter = 9;
 
       m_unmapped_chunks.push_back(chunk);
       allocated += chunk.m_cnt;
       DEB_MEM_ALLOC(("malloc of a chunk of %u pages", chunk.m_cnt));
-      if (allocated < pages)
-      {
+      if (allocated < pages) {
         /* Add one more page for another chunk */
         pages += ALLOC_PAGES_PER_SYSTEM_PAGE;
       }
-    }
-    else
-    {
+    } else {
       break;
     }
   }
@@ -1007,8 +909,7 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
       return false;
   }
 
-  if (m_base_page == NULL)
-  {
+  if (m_base_page == NULL) {
     /**
      * Sort chunks...
      */
@@ -1018,8 +919,7 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
     m_base_page = m_unmapped_chunks[0].m_ptr;
   }
 
-  for (Uint32 i = 0; i<m_unmapped_chunks.size(); i++)
-  {
+  for (Uint32 i = 0; i < m_unmapped_chunks.size(); i++) {
     UintPtr start = UintPtr(m_unmapped_chunks[i].m_ptr) - UintPtr(m_base_page);
     start >>= (2 + BMW_2LOG);
     assert((Uint64(start) >> 32) == 0);
@@ -1028,8 +928,7 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
     assert((last64 >> 32) == 0);
     Uint32 last = Uint32(last64);
 
-    if (last > max_page)
-      max_page = last;
+    if (last > max_page) max_page = last;
   }
 
   g_eventLogger->info("Ndbd_mem_manager::init(%d) min: %lluMb initial: %lluMb",
@@ -1043,42 +942,35 @@ Ndbd_mem_manager::init(Uint32 *watchCounter,
   return true;
 }
 
-void
-Ndbd_mem_manager::map(Uint32 * watchCounter, bool memlock, Uint32 resources[])
-{
+void Ndbd_mem_manager::map(Uint32 *watchCounter, bool memlock,
+                           Uint32 resources[]) {
   require(watchCounter != nullptr);
   Uint32 limit = ~(Uint32)0;
   Uint32 sofar = 0;
 
-  if (resources != 0)
-  {
+  if (resources != 0) {
     /*
      * To reduce start up time, only touch memory needed for selected resources.
      * The rest of memory will be touched in a second call to map.
      */
     limit = 0;
-    for (Uint32 i = 0; resources[i] ; i++)
-    {
+    for (Uint32 i = 0; resources[i]; i++) {
       limit += m_resource_limits.get_resource_reserved(resources[i]);
     }
-    if (limit % ALLOC_PAGES_PER_SYSTEM_PAGE != 0)
-    {
-      limit += ALLOC_PAGES_PER_SYSTEM_PAGE -
-               (limit % ALLOC_PAGES_PER_SYSTEM_PAGE);
+    if (limit % ALLOC_PAGES_PER_SYSTEM_PAGE != 0) {
+      limit +=
+          ALLOC_PAGES_PER_SYSTEM_PAGE - (limit % ALLOC_PAGES_PER_SYSTEM_PAGE);
     }
   }
 
-  while (m_unmapped_chunks.size() && sofar < limit)
-  {
+  while (m_unmapped_chunks.size() && sofar < limit) {
     Uint32 remain = limit - sofar;
 
     unsigned idx = m_unmapped_chunks.size() - 1;
-    InitChunk * chunk = &m_unmapped_chunks[idx];
-    if (watchCounter)
-      *watchCounter = 9;
+    InitChunk *chunk = &m_unmapped_chunks[idx];
+    if (watchCounter) *watchCounter = 9;
 
-    if (chunk->m_cnt > remain)
-    {
+    if (chunk->m_cnt > remain) {
       /**
        * Split chunk
        */
@@ -1096,45 +988,37 @@ Ndbd_mem_manager::map(Uint32 * watchCounter, bool memlock, Uint32 resources[])
     }
 
     g_eventLogger->info("Touch Memory Starting, %u pages, page size = %d",
-                        chunk->m_cnt,
-                        (int)sizeof(Alloc_page));
+                        chunk->m_cnt, (int)sizeof(Alloc_page));
 
-    ndbd_alloc_touch_mem(chunk->m_ptr,
-                         chunk->m_cnt * sizeof(Alloc_page),
-                         watchCounter,
-                         true /* make_readwritable */);
+    ndbd_alloc_touch_mem(chunk->m_ptr, chunk->m_cnt * sizeof(Alloc_page),
+                         watchCounter, true /* make_readwritable */);
 
     g_eventLogger->info("Touch Memory Completed");
 
-    if (memlock)
-    {
+    if (memlock) {
       /**
        * memlock pages that I added...
        */
-      if (watchCounter)
-        *watchCounter = 9;
+      if (watchCounter) *watchCounter = 9;
 
       /**
        * Don't memlock everything in one go...
        *   cause then process won't be killable
        */
-      const Alloc_page * start = chunk->m_ptr;
+      const Alloc_page *start = chunk->m_ptr;
       Uint32 cnt = chunk->m_cnt;
       g_eventLogger->info("Lock Memory Starting, %u pages, page size = %d",
-                          chunk->m_cnt,
-                          (int)sizeof(Alloc_page));
+                          chunk->m_cnt, (int)sizeof(Alloc_page));
 
-      while (cnt > 32768) // 1G
+      while (cnt > 32768)  // 1G
       {
-        if (watchCounter)
-          *watchCounter = 9;
+        if (watchCounter) *watchCounter = 9;
 
         NdbMem_MemLock(start, 32768 * sizeof(Alloc_page));
         start += 32768;
         cnt -= 32768;
       }
-      if (watchCounter)
-        *watchCounter = 9;
+      if (watchCounter) *watchCounter = 9;
 
       NdbMem_MemLock(start, cnt * sizeof(Alloc_page));
 
@@ -1155,19 +1039,15 @@ Ndbd_mem_manager::map(Uint32 * watchCounter, bool memlock, Uint32 resources[])
 
   /* Note: calls to map() must be serialized by other means. */
   m_mapped_pages_lock.write_lock();
-  if (m_mapped_pages_new_count != m_mapped_pages_count)
-  {
+  if (m_mapped_pages_new_count != m_mapped_pages_count) {
     /* Do not support shrinking memory */
     require(m_mapped_pages_new_count > m_mapped_pages_count);
 
-    qsort(m_mapped_pages,
-          m_mapped_pages_new_count,
-          sizeof(m_mapped_pages[0]),
+    qsort(m_mapped_pages, m_mapped_pages_new_count, sizeof(m_mapped_pages[0]),
           PageInterval::compare);
 
     /* Validate no overlapping intervals */
-    for (Uint32 i = 1; i < m_mapped_pages_new_count; i++)
-    {
+    for (Uint32 i = 1; i < m_mapped_pages_new_count; i++) {
       require(m_mapped_pages[i - 1].end <= m_mapped_pages[i].start);
     }
 
@@ -1176,9 +1056,7 @@ Ndbd_mem_manager::map(Uint32 * watchCounter, bool memlock, Uint32 resources[])
   m_mapped_pages_lock.write_unlock();
 }
 
-void
-Ndbd_mem_manager::init_resource_spare(Uint32 id, Uint32 pct)
-{
+void Ndbd_mem_manager::init_resource_spare(Uint32 id, Uint32 pct) {
   mt_mem_manager_lock();
   m_resource_limits.init_resource_spare(id, pct);
   mt_mem_manager_unlock();
@@ -1186,9 +1064,7 @@ Ndbd_mem_manager::init_resource_spare(Uint32 id, Uint32 pct)
 
 #include <NdbOut.hpp>
 
-void
-Ndbd_mem_manager::grow(Uint32 start, Uint32 cnt)
-{
+void Ndbd_mem_manager::grow(Uint32 start, Uint32 cnt) {
   assert(cnt);
   Uint32 start_bmp = start >> BPP_2LOG;
   Uint32 last_bmp = (start + cnt - 1) >> BPP_2LOG;
@@ -1196,18 +1072,16 @@ Ndbd_mem_manager::grow(Uint32 start, Uint32 cnt)
 #if SIZEOF_CHARP == 4
   assert(start_bmp == 0 && last_bmp == 0);
 #endif
-  
-  if (start_bmp != last_bmp)
-  {
+
+  if (start_bmp != last_bmp) {
     Uint32 tmp = ((start_bmp + 1) << BPP_2LOG) - start;
     grow(start, tmp);
     grow((start_bmp + 1) << BPP_2LOG, cnt - tmp);
     return;
   }
 
-  for (Uint32 i = 0; i<m_used_bitmap_pages.size(); i++)
-    if (m_used_bitmap_pages[i] == start_bmp)
-    {
+  for (Uint32 i = 0; i < m_used_bitmap_pages.size(); i++)
+    if (m_used_bitmap_pages[i] == start_bmp) {
       /* m_mapped_pages should contain the ranges of allocated pages.
        * In release build there will typically be one big range.
        * In debug build there are typically four ranges, one per allocation
@@ -1222,12 +1096,9 @@ Ndbd_mem_manager::grow(Uint32 start, Uint32 cnt)
        * adjacent ranges are combined.
        */
       if (m_mapped_pages_new_count > 0 &&
-          m_mapped_pages[m_mapped_pages_new_count - 1].end == start)
-      {
+          m_mapped_pages[m_mapped_pages_new_count - 1].end == start) {
         m_mapped_pages[m_mapped_pages_new_count - 1].end = start + cnt;
-      }
-      else
-      {
+      } else {
         require(m_mapped_pages_new_count < NDB_ARRAY_SIZE(m_mapped_pages));
         m_mapped_pages[m_mapped_pages_new_count].start = start;
         m_mapped_pages[m_mapped_pages_new_count].end = start + cnt;
@@ -1236,33 +1107,29 @@ Ndbd_mem_manager::grow(Uint32 start, Uint32 cnt)
       goto found;
     }
 
-  if (start != (start_bmp << BPP_2LOG))
-  {
+  if (start != (start_bmp << BPP_2LOG)) {
     g_eventLogger->info(
         "ndbd_malloc_impl.cpp:%d:grow(%d, %d) %d!=%d not using %uMb"
         " - Unable to use due to bitmap pages missaligned!!",
         __LINE__, start, cnt, start, (start_bmp << BPP_2LOG),
         (cnt >> (20 - 15)));
-    g_eventLogger->error("ndbd_malloc_impl.cpp:%d:grow(%d, %d) not using %uMb"
-                         " - Unable to use due to bitmap pages missaligned!!",
-                         __LINE__, start, cnt,
-                         (cnt >> (20 - 15)));
+    g_eventLogger->error(
+        "ndbd_malloc_impl.cpp:%d:grow(%d, %d) not using %uMb"
+        " - Unable to use due to bitmap pages missaligned!!",
+        __LINE__, start, cnt, (cnt >> (20 - 15)));
 
     dump(false);
     return;
   }
-  
+
 #ifdef UNIT_TEST
   g_eventLogger->info("creating bitmap page %d", start_bmp);
 #endif
 
   if (m_mapped_pages_new_count > 0 &&
-      m_mapped_pages[m_mapped_pages_new_count - 1].end == start)
-  {
+      m_mapped_pages[m_mapped_pages_new_count - 1].end == start) {
     m_mapped_pages[m_mapped_pages_new_count - 1].end = start + cnt;
-  }
-  else
-  {
+  } else {
     require(m_mapped_pages_new_count < NDB_ARRAY_SIZE(m_mapped_pages));
     m_mapped_pages[m_mapped_pages_new_count].start = start;
     m_mapped_pages[m_mapped_pages_new_count].end = start + cnt;
@@ -1270,7 +1137,7 @@ Ndbd_mem_manager::grow(Uint32 start, Uint32 cnt)
   }
 
   {
-    Alloc_page* bmp = m_base_page + start;
+    Alloc_page *bmp = m_base_page + start;
     memset(bmp, 0, sizeof(Alloc_page));
     cnt--;
     start++;
@@ -1278,17 +1145,15 @@ Ndbd_mem_manager::grow(Uint32 start, Uint32 cnt)
   m_used_bitmap_pages.push_back(start_bmp);
 
 found:
-  if ((start + cnt) == ((start_bmp + 1) << BPP_2LOG))
-  {
-    cnt--; // last page is always marked as empty
+  if ((start + cnt) == ((start_bmp + 1) << BPP_2LOG)) {
+    cnt--;  // last page is always marked as empty
   }
 
-  if (cnt)
-  {
+  if (cnt) {
     mt_mem_manager_lock();
     const Uint32 allocated = m_resource_limits.get_allocated();
     m_resource_limits.set_allocated(allocated + cnt);
-    const Uint64 mbytes = ((Uint64(cnt)*32) + 1023) / 1024;
+    const Uint64 mbytes = ((Uint64(cnt) * 32) + 1023) / 1024;
     /**
      * grow first split large page ranges to ranges completely within
      * a BPP regions.
@@ -1296,36 +1161,21 @@ found:
      * boundary.
      */
     static_assert((ZONE_19_BOUND & ((1 << BPP_2LOG) - 1)) == 0);
-    if (start < ZONE_19_BOUND)
-    {
+    if (start < ZONE_19_BOUND) {
       require(start + cnt < ZONE_19_BOUND);
-      g_eventLogger->info("Adding %uMb to ZONE_19 (%u, %u)",
-                          (Uint32)mbytes,
-                          start,
-                          cnt);
-    }
-    else if (start < ZONE_27_BOUND)
-    {
+      g_eventLogger->info("Adding %uMb to ZONE_19 (%u, %u)", (Uint32)mbytes,
+                          start, cnt);
+    } else if (start < ZONE_27_BOUND) {
       require(start + cnt < ZONE_27_BOUND);
-      g_eventLogger->info("Adding %uMb to ZONE_27 (%u, %u)",
-                          (Uint32)mbytes,
-                          start,
-                          cnt);
-    }
-    else if (start < ZONE_30_BOUND)
-    {
+      g_eventLogger->info("Adding %uMb to ZONE_27 (%u, %u)", (Uint32)mbytes,
+                          start, cnt);
+    } else if (start < ZONE_30_BOUND) {
       require(start + cnt < ZONE_30_BOUND);
-      g_eventLogger->info("Adding %uMb to ZONE_30 (%u, %u)",
-                          (Uint32)mbytes,
-                          start,
-                          cnt);
-    }
-    else
-    {
-      g_eventLogger->info("Adding %uMb to ZONE_32 (%u, %u)",
-                          (Uint32)mbytes,
-                          start,
-                          cnt);
+      g_eventLogger->info("Adding %uMb to ZONE_30 (%u, %u)", (Uint32)mbytes,
+                          start, cnt);
+    } else {
+      g_eventLogger->info("Adding %uMb to ZONE_32 (%u, %u)", (Uint32)mbytes,
+                          start, cnt);
     }
     release(start, cnt);
     g_eventLogger->info("Now added %u pages to Global Memory Manager",
@@ -1335,23 +1185,19 @@ found:
   }
 }
 
-void
-Ndbd_mem_manager::release(Uint32 start, Uint32 cnt)
-{
+void Ndbd_mem_manager::release(Uint32 start, Uint32 cnt) {
   assert(start);
 #if defined VM_TRACE || defined ERROR_INSERT
   memset(m_base_page + start, 0xF5, cnt * sizeof(m_base_page[0]));
 #endif
 
-  set(start, start+cnt-1);
+  set(start, start + cnt - 1);
 
   Uint32 zone = get_page_zone(start);
   release_impl(zone, start, cnt);
 }
 
-void
-Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
-{
+void Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt) {
   assert(start);
 
 #if 0
@@ -1373,9 +1219,8 @@ Ndbd_mem_manager::release_impl(Uint32 zone, Uint32 start, Uint32 cnt)
   }
 
   Uint32 right = start + cnt;
-  if (test & 2)
-  {
-    Free_page_data *fd = get_free_page_data(m_base_page+right, right);
+  if (test & 2) {
+    Free_page_data *fd = get_free_page_data(m_base_page + right, right);
     Uint32 sz = fd->m_size;
     require(fd->m_list == (ndb_log2(sz) - 1));
     remove_free_list(zone, right, fd->m_list);
@@ -1399,8 +1244,7 @@ Ndbd_mem_manager::alloc(AllocZone zone,
   for (Uint32 z = zone; ; z--)
   {
     alloc_impl(z, ret, pages, min);
-    if (*pages)
-    {
+    if (*pages) {
 #if defined VM_TRACE || defined ERROR_INSERT
       Uint32 pages_allocated = *pages;
       Uint32 start = *ret;
@@ -1409,10 +1253,8 @@ Ndbd_mem_manager::alloc(AllocZone zone,
 #endif
       return;
     }
-    if (z == 0)
-    {
-      if (unlikely(m_dump_on_alloc_fail))
-      {
+    if (z == 0) {
+      if (unlikely(m_dump_on_alloc_fail)) {
         g_eventLogger->info(
             "Page allocation failed in %s: zone=%u pages=%u (at least %u)",
             __func__, zone, save, min);
@@ -1420,7 +1262,7 @@ Ndbd_mem_manager::alloc(AllocZone zone,
       }
       return;
     }
-    * pages = save;
+    *pages = save;
   }
 }
 
@@ -1592,12 +1434,11 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
       i++;
     }
   }
-  * pages = 0;
+  *pages = 0;
 }
 
-void
-Ndbd_mem_manager::insert_free_list(Uint32 zone, Uint32 start, Uint32 size)
-{
+void Ndbd_mem_manager::insert_free_list(Uint32 zone, Uint32 start,
+                                        Uint32 size) {
   Uint32 list = ndb_log2(size) - 1;
   Uint32 last = start + size - 1;
 
@@ -1607,34 +1448,31 @@ Ndbd_mem_manager::insert_free_list(Uint32 zone, Uint32 start, Uint32 size)
 #endif
 
   Uint32 head = m_buddy_lists[zone][list];
-  Free_page_data* fd_first = get_free_page_data(m_base_page+start, 
-						start);
+  Free_page_data *fd_first = get_free_page_data(m_base_page + start, start);
   fd_first->m_list = list;
   fd_first->m_next = head;
   fd_first->m_prev = 0;
   fd_first->m_size = size;
 
-  Free_page_data* fd_last = get_free_page_data(m_base_page+last, last);
+  Free_page_data *fd_last = get_free_page_data(m_base_page + last, last);
   fd_last->m_list = list;
   fd_last->m_next = head;
   fd_last->m_prev = 0;
   fd_last->m_size = size;
-  
-  if (head)
-  {
-    Free_page_data* fd = get_free_page_data(m_base_page+head, head);
+
+  if (head) {
+    Free_page_data *fd = get_free_page_data(m_base_page + head, head);
     assert(fd->m_prev == 0);
     assert(fd->m_list == list);
     fd->m_prev = start;
   }
-  
+
   m_buddy_lists[zone][list] = start;
 }
 
-Uint32 
-Ndbd_mem_manager::remove_free_list(Uint32 zone, Uint32 start, Uint32 list)
-{
-  Free_page_data* fd = get_free_page_data(m_base_page+start, start);
+Uint32 Ndbd_mem_manager::remove_free_list(Uint32 zone, Uint32 start,
+                                          Uint32 list) {
+  Free_page_data *fd = get_free_page_data(m_base_page + start, start);
   Uint32 size = fd->m_size;
   Uint32 next = fd->m_next;
   Uint32 prev = fd->m_prev;
@@ -1648,20 +1486,17 @@ Ndbd_mem_manager::remove_free_list(Uint32 zone, Uint32 start, Uint32 list)
   if (prev)
   {
     assert(m_buddy_lists[zone][list] != start);
-    fd = get_free_page_data(m_base_page+prev, prev);
+    fd = get_free_page_data(m_base_page + prev, prev);
     assert(fd->m_next == start);
     assert(fd->m_list == list);
     fd->m_next = next;
-  }
-  else
-  {
+  } else {
     assert(m_buddy_lists[zone][list] == start);
     m_buddy_lists[zone][list] = next;
   }
-  
-  if (next)
-  {
-    fd = get_free_page_data(m_base_page+next, next);
+
+  if (next) {
+    fd = get_free_page_data(m_base_page + next, next);
     assert(fd->m_list == list);
     assert(fd->m_prev == start);
     fd->m_prev = prev;
@@ -1670,24 +1505,17 @@ Ndbd_mem_manager::remove_free_list(Uint32 zone, Uint32 start, Uint32 list)
   return size;
 }
 
-void
-Ndbd_mem_manager::dump(bool locked) const
-{
-  if (!locked)
-    mt_mem_manager_lock();
+void Ndbd_mem_manager::dump(bool locked) const {
+  if (!locked) mt_mem_manager_lock();
   g_eventLogger->info("Begin Ndbd_mem_manager::dump");
-  for (Uint32 zone = 0; zone < ZONE_COUNT; zone ++)
-  {
+  for (Uint32 zone = 0; zone < ZONE_COUNT; zone++) {
     g_eventLogger->info("zone %u", zone);
-    for (Uint32 i = 0; i<16; i++)
-    {
+    for (Uint32 i = 0; i < 16; i++) {
       Uint32 head = m_buddy_lists[zone][i];
-      if (head == 0)
-        continue;
+      if (head == 0) continue;
       g_eventLogger->info(" list: %d - ", i);
-      while(head)
-      {
-        Free_page_data* fd = get_free_page_data(m_base_page+head, head);
+      while (head) {
+        Free_page_data *fd = get_free_page_data(m_base_page + head, head);
         g_eventLogger->info("[ i: %d prev %d next %d list %d size %d ] ", head,
                             fd->m_prev, fd->m_next, fd->m_list, fd->m_size);
         head = fd->m_next;
@@ -1697,27 +1525,16 @@ Ndbd_mem_manager::dump(bool locked) const
   }
   m_resource_limits.dump();
   g_eventLogger->info("End Ndbd_mem_manager::dump");
-  if (!locked)
-    mt_mem_manager_unlock();
+  if (!locked) mt_mem_manager_unlock();
 }
 
-void
-Ndbd_mem_manager::dump_on_alloc_fail(bool on)
-{
+void Ndbd_mem_manager::dump_on_alloc_fail(bool on) {
   m_dump_on_alloc_fail = on;
 }
 
-void
-Ndbd_mem_manager::lock()
-{
-  mt_mem_manager_lock();
-}
+void Ndbd_mem_manager::lock() { mt_mem_manager_lock(); }
 
-void
-Ndbd_mem_manager::unlock()
-{
-  mt_mem_manager_unlock();
-}
+void Ndbd_mem_manager::unlock() { mt_mem_manager_unlock(); }
 
 void*
 Ndbd_mem_manager::alloc_page(Uint32 type,
@@ -1729,8 +1546,7 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
 {
   Uint32 idx = type & RG_MASK;
   assert(idx && idx <= MM_RG_COUNT);
-  if (!locked)
-    mt_mem_manager_lock();
+  if (!locked) mt_mem_manager_lock();
 
   Uint32 cnt = 1;
   const Uint32 min = 1;
@@ -1750,8 +1566,7 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
               "Page allocation failed in %s: no free resource page.", __func__);
           dump(true);
         }
-        if (!locked)
-          mt_mem_manager_unlock();
+        if (!locked) mt_mem_manager_unlock();
         return NULL;
       }
     }
@@ -1774,9 +1589,8 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
   if (likely(cnt))
   {
     m_resource_limits.post_alloc_resource_pages(idx, cnt);
-    m_resource_limits.check();
-    if (!locked)
-      mt_mem_manager_unlock();
+    m_resource_limits.check(__LINE__);
+    if (!locked) mt_mem_manager_unlock();
 #ifdef NDBD_RANDOM_START_PAGE
     *i += m_random_start_page_id;
     return m_base_page + *i - m_random_start_page_id;
@@ -1784,15 +1598,13 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
     return m_base_page + *i;
 #endif
   }
-  if (unlikely(m_dump_on_alloc_fail))
-  {
+  if (unlikely(m_dump_on_alloc_fail)) {
     g_eventLogger->info(
         "Page allocation failed in %s: no page available in zone %d.", __func__,
         zone);
     dump(true);
   }
-  if (!locked)
-    mt_mem_manager_unlock();
+  if (!locked) mt_mem_manager_unlock();
   return 0;
 }
 
@@ -1863,7 +1675,7 @@ Ndbd_mem_manager::alloc_emergency_page(Uint32 type,
   {
     assert(cnt == min);
     m_resource_limits.post_alloc_resource_emergency(idx, cnt, force_reserved);
-    m_resource_limits.check();
+    m_resource_limits.check(__LINE__);
     if (!locked)
     {
       mt_mem_manager_unlock();
@@ -1882,13 +1694,10 @@ Ndbd_mem_manager::alloc_emergency_page(Uint32 type,
   return 0;
 }
 
-void
-Ndbd_mem_manager::release_page(Uint32 type, Uint32 i, bool locked)
-{
+void Ndbd_mem_manager::release_page(Uint32 type, Uint32 i, bool locked) {
   Uint32 idx = type & RG_MASK;
   assert(idx && idx <= MM_RG_COUNT);
-  if (!locked)
-    mt_mem_manager_lock();
+  if (!locked) mt_mem_manager_lock();
 
 #ifdef NDBD_RANDOM_START_PAGE
   i -= m_random_start_page_id;
@@ -1897,23 +1706,15 @@ Ndbd_mem_manager::release_page(Uint32 type, Uint32 i, bool locked)
   release(i, 1);
   m_resource_limits.post_release_resource_pages(idx, 1);
 
-  m_resource_limits.check();
-  if (!locked)
-    mt_mem_manager_unlock();
+  m_resource_limits.check(__LINE__);
+  if (!locked) mt_mem_manager_unlock();
 }
 
-void
-Ndbd_mem_manager::alloc_pages(Uint32 type,
-                              Uint32* i,
-                              Uint32 *cnt,
-                              Uint32 min,
-                              AllocZone zone,
-                              bool locked)
-{
+void Ndbd_mem_manager::alloc_pages(Uint32 type, Uint32 *i, Uint32 *cnt,
+                                   Uint32 min, AllocZone zone, bool locked) {
   Uint32 idx = type & RG_MASK;
   assert(idx && idx <= MM_RG_COUNT);
-  if (!locked)
-    mt_mem_manager_lock();
+  if (!locked) mt_mem_manager_lock();
 
   Uint32 req = *cnt;
   const Uint32 free_res =
@@ -1930,18 +1731,15 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
     {
       req = free_shr + free_res;
     }
-    if (req < min)
-    {
+    if (req < min) {
       *cnt = 0;
-      if (unlikely(m_dump_on_alloc_fail))
-      {
+      if (unlikely(m_dump_on_alloc_fail)) {
         g_eventLogger->info(
             "Page allocation failed in %s: not enough free resource pages.",
             __func__);
         dump(true);
       }
-      if (!locked)
-        mt_mem_manager_unlock();
+      if (!locked) mt_mem_manager_unlock();
       return;
     }
   }
@@ -1955,17 +1753,15 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
     m_resource_limits.post_release_resource_pages(idx, req);
     req = 0;
   }
-  * cnt = req;
-  m_resource_limits.check();
-  if (req == 0 && unlikely(m_dump_on_alloc_fail))
-  {
+  *cnt = req;
+  m_resource_limits.check(__LINE__);
+  if (req == 0 && unlikely(m_dump_on_alloc_fail)) {
     g_eventLogger->info(
         "Page allocation failed in %s: no page available in zone %d.", __func__,
         zone);
     dump(true);
   }
-  if (!locked)
-    mt_mem_manager_unlock();
+  if (!locked) mt_mem_manager_unlock();
 #ifdef NDBD_RANDOM_START_PAGE
   *i += m_random_start_page_id;
 #endif
@@ -1988,8 +1784,7 @@ Ndbd_mem_manager::release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked)
 {
   Uint32 idx = type & RG_MASK;
   assert(idx && idx <= MM_RG_COUNT);
-  if (!locked)
-    mt_mem_manager_lock();
+  if (!locked) mt_mem_manager_lock();
 
 #ifdef NDBD_RANDOM_START_PAGE
   i -= m_random_start_page_id;
@@ -1997,9 +1792,8 @@ Ndbd_mem_manager::release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked)
 
   release(i, cnt);
   m_resource_limits.post_release_resource_pages(idx, cnt);
-  m_resource_limits.check();
-  if (!locked)
-    mt_mem_manager_unlock();
+  m_resource_limits.check(__LINE__);
+  if (!locked) mt_mem_manager_unlock();
 }
 
 /** Transfer pages between resource groups without risk that some other
@@ -2146,66 +1940,60 @@ template class Vector<InitChunk>;
 
 #if defined(TEST_NDBD_MALLOC)
 
-#include <Vector.hpp>
 #include <NdbHost.h>
-#include "portlib/ndb_stacktrace.h"
+#include <Vector.hpp>
 #include "portlib/NdbTick.h"
+#include "portlib/ndb_stacktrace.h"
 
 struct Chunk {
   Uint32 pageId;
   Uint32 pageCount;
 };
 
-struct Timer
-{
+struct Timer {
   Uint64 sum;
   Uint32 cnt;
 
-  Timer() { sum = cnt = 0;}
+  Timer() { sum = cnt = 0; }
 
   NDB_TICKS st;
 
-  void start() {
-    st = NdbTick_getCurrentTicks();
-  }
+  void start() { st = NdbTick_getCurrentTicks(); }
 
   Uint64 calc_diff() {
     const NDB_TICKS st2 = NdbTick_getCurrentTicks();
     const NdbDuration dur = NdbTick_Elapsed(st, st2);
     return dur.microSec();
   }
-  
-  void stop() {
-    add(calc_diff());
-  }
-  
-  void add(Uint64 diff) { sum += diff; cnt++;}
 
-  void print(const char * title) const {
+  void stop() { add(calc_diff()); }
+
+  void add(Uint64 diff) {
+    sum += diff;
+    cnt++;
+  }
+
+  void print(const char *title) const {
     float ps = sum;
     ps /= cnt;
     printf("%s %fus/call %lld %d\n", title, ps, sum, cnt);
   }
 };
 
-void abort_handler(int signum)
-{
+void abort_handler(int signum) {
   ndb_print_stacktrace();
   signal(SIGABRT, SIG_DFL);
   abort();
 }
 
-class Test_mem_manager: public Ndbd_mem_manager
-{
-public:
+class Test_mem_manager : public Ndbd_mem_manager {
+ public:
   static constexpr Uint32 ZONE_COUNT = Ndbd_mem_manager::ZONE_COUNT;
-  Test_mem_manager(Uint32 tot_mem,
-                   Uint32 data_mem,
-                   Uint32 trans_mem,
-                   Uint32 data_mem2 = 0,
-                   Uint32 trans_mem2 = 0);
+  Test_mem_manager(Uint32 tot_mem, Uint32 data_mem, Uint32 trans_mem,
+                   Uint32 data_mem2 = 0, Uint32 trans_mem2 = 0);
   ~Test_mem_manager();
-private:
+
+ private:
   Uint32 m_leaked_mem;
 };
 
@@ -2218,12 +2006,9 @@ enum Resource_groups {
   RG_QM2 = 6,
 };
 
-Test_mem_manager::Test_mem_manager(Uint32 tot_mem,
-                                   Uint32 data_mem,
-                                   Uint32 trans_mem,
-                                   Uint32 data_mem2,
-                                   Uint32 trans_mem2)
-{
+Test_mem_manager::Test_mem_manager(Uint32 tot_mem, Uint32 data_mem,
+                                   Uint32 trans_mem, Uint32 data_mem2,
+                                   Uint32 trans_mem2) {
   const Uint32 reserved_mem = data_mem + trans_mem + data_mem2 + trans_mem2;
   assert(tot_mem >= reserved_mem);
 
@@ -2287,10 +2072,9 @@ Test_mem_manager::Test_mem_manager(Uint32 tot_mem,
 
   Uint32 shared_mem = tot_mem - reserved_mem;
   Uint32 page_count = 0;
-  Uint32* free_pages = new Uint32[trans_mem + shared_mem];
+  Uint32 *free_pages = new Uint32[trans_mem + shared_mem];
   while (page_count < trans_mem + shared_mem &&
-         alloc_page(RG_TM, &free_pages[page_count], zone))
-  {
+         alloc_page(RG_TM, &free_pages[page_count], zone)) {
     page_count++;
   }
 
@@ -2301,16 +2085,14 @@ Test_mem_manager::Test_mem_manager(Uint32 tot_mem,
   m_leaked_mem = leak_count;
 
   /* free pages again */
-  while (page_count > 0)
-  {
+  while (page_count > 0) {
     page_count--;
     release_page(RG_TM, free_pages[page_count]);
   }
   delete[] free_pages;
 }
 
-Test_mem_manager::~Test_mem_manager()
-{
+Test_mem_manager::~Test_mem_manager() {
   require(m_resource_limits.get_in_use() == m_leaked_mem);
 }
 
@@ -2318,20 +2100,16 @@ Test_mem_manager::~Test_mem_manager()
 static void perf_test(int sz, int run_time);
 static void lc_ndbd_malloc_test();
 
-int 
-main(int argc, char** argv)
-{
+int main(int argc, char **argv) {
   ndb_init();
   ndb_init_stacktrace();
   signal(SIGABRT, abort_handler);
 
   int sz = 1 * 32768;
   int run_time = 30;
-  if (argc > 1)
-    sz = 32 * atoi(argv[1]);
+  if (argc > 1) sz = 32 * atoi(argv[1]);
 
-  if (argc > 2)
-    run_time = atoi(argv[2]);
+  if (argc > 2) run_time = atoi(argv[2]);
 
   g_eventLogger->createConsoleHandler();
   g_eventLogger->setCategory("ndbd_malloc-t");
@@ -2374,126 +2152,93 @@ void perf_test(int sz, int run_time)
     printf("pid: %d press enter to continue\n", NdbHost_GetProcessId());
     fgets(buf, sizeof(buf), stdin);
     time_t stop = time(0) + run_time;
-    for (Uint32 i = 0; time(0) < stop; i++)
-    {
+    for (Uint32 i = 0; time(0) < stop; i++) {
       // Case
       Uint32 c = (rand() % 100);
-      if (c < 50)
-      {
+      if (c < 50) {
         c = 0;
-      }
-      else if (c < 93)
-      {
+      } else if (c < 93) {
         c = 1;
-      }
-      else
-      {
+      } else {
         c = 2;
       }
 
       Uint32 alloc = 1 + rand() % 3200;
 
-      if (chunks.size() == 0 && c == 0)
-      {
+      if (chunks.size() == 0 && c == 0) {
         c = 1 + rand() % 2;
       }
 
-      if (DEBUG)
-      {
+      if (DEBUG) {
         printf("loop=%d ", i);
       }
-      switch (c)
-      {
-      case 0:
-      { // Release
-        const int ch = rand() % chunks.size();
-        Chunk chunk = chunks[ch];
-        chunks.erase(ch);
-        timer[0].start();
-        mem.release_pages(RG_DM, chunk.pageId, chunk.pageCount);
-        timer[0].stop();
-        if (DEBUG)
-        {
-          printf(" release %d %d\n", chunk.pageId, chunk.pageCount);
+      switch (c) {
+        case 0: {  // Release
+          const int ch = rand() % chunks.size();
+          Chunk chunk = chunks[ch];
+          chunks.erase(ch);
+          timer[0].start();
+          mem.release_pages(RG_DM, chunk.pageId, chunk.pageCount);
+          timer[0].stop();
+          if (DEBUG) {
+            printf(" release %d %d\n", chunk.pageId, chunk.pageCount);
+          }
+        } break;
+        case 2: {  // Seize(n) - fail
+          alloc += sz;
         }
-      }
-      break;
-      case 2:
-      { // Seize(n) - fail
-        alloc += sz;
-      }
-      [[fallthrough]];
-      case 1:
-      { // Seize(n) (success)
-        Chunk chunk;
-        chunk.pageCount = alloc;
-        if (DEBUG)
-        {
-          printf(" alloc %d -> ", alloc);
-          fflush(stdout);
-        }
-        timer[0].start();
-        mem.alloc_pages(RG_DM, &chunk.pageId, &chunk.pageCount, 1, zone);
-        Uint64 diff = timer[0].calc_diff();
+          [[fallthrough]];
+        case 1: {  // Seize(n) (success)
+          Chunk chunk;
+          chunk.pageCount = alloc;
+          if (DEBUG) {
+            printf(" alloc %d -> ", alloc);
+            fflush(stdout);
+          }
+          timer[0].start();
+          mem.alloc_pages(RG_DM, &chunk.pageId, &chunk.pageCount, 1, zone);
+          Uint64 diff = timer[0].calc_diff();
 
-        if (DEBUG)
-        {
-          printf("%d %d", chunk.pageId, chunk.pageCount);
-        }
-        assert(chunk.pageCount <= alloc);
-        if (chunk.pageCount != 0)
-        {
-          chunks.push_back(chunk);
-          if (chunk.pageCount != alloc)
-          {
-            timer[2].add(diff);
-            if (DEBUG)
-            {
-              printf(" -  Tried to allocate %d - only allocated %d - free: %d",
-                     alloc, chunk.pageCount, 0);
+          if (DEBUG) {
+            printf("%d %d", chunk.pageId, chunk.pageCount);
+          }
+          assert(chunk.pageCount <= alloc);
+          if (chunk.pageCount != 0) {
+            chunks.push_back(chunk);
+            if (chunk.pageCount != alloc) {
+              timer[2].add(diff);
+              if (DEBUG) {
+                printf(
+                    " -  Tried to allocate %d - only allocated %d - free: %d",
+                    alloc, chunk.pageCount, 0);
+              }
+            } else {
+              timer[1].add(diff);
+            }
+          } else {
+            timer[3].add(diff);
+            if (DEBUG) {
+              printf("  Failed to alloc %d pages with %d pages free", alloc, 0);
             }
           }
-          else
-          {
-            timer[1].add(diff);
+          if (DEBUG) {
+            printf("\n");
           }
-        }
-        else
-        {
-          timer[3].add(diff);
-          if (DEBUG)
-          {
-            printf("  Failed to alloc %d pages with %d pages free",
-                   alloc, 0);
-          }
-        }
-        if (DEBUG)
-        {
-          printf("\n");
-        }
-      }
-      break;
+        } break;
       }
     }
   }
-  if (!DEBUG)
-  {
-    while (chunks.size() > 0)
-    {
+  if (!DEBUG) {
+    while (chunks.size() > 0) {
       Chunk chunk = chunks.back();
       mem.release_pages(RG_DM, chunk.pageId, chunk.pageCount);
       chunks.erase(chunks.size() - 1);
     }
   }
 
-  const char *title[] = {
-    "release   ",
-    "alloc full",
-    "alloc part",
-    "alloc fail"
-  };
-  for (Uint32 i = 0; i < 4; i++)
-  {
+  const char *title[] = {"release   ", "alloc full", "alloc part",
+                         "alloc fail"};
+  for (Uint32 i = 0; i < 4; i++) {
     timer[i].print(title[i]);
   }
   mem.dump(false);

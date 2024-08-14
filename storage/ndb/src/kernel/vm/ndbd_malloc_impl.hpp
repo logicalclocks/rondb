@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2006, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2006, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,23 +27,23 @@
 #ifndef NDBD_MALLOC_IMPL_H
 #define NDBD_MALLOC_IMPL_H
 
+#include <algorithm>
 #include "my_config.h"
 #include "util/require.h"
-#include <algorithm>
 #ifdef VM_TRACE
 //#ifndef NDBD_RANDOM_START_PAGE
 //#define NDBD_RANDOM_START_PAGE
 //#endif
 #endif
 
-#include <cstdint>
+#include <assert.h>
 #include <kernel_types.h>
 #include <Bitmask.hpp>
-#include <assert.h>
+#include <EventLogger.hpp>
+#include <Vector.hpp>
+#include <cstdint>
 #include "NdbSeqLock.hpp"
 #include "Pool.hpp"
-#include <Vector.hpp>
-#include <EventLogger.hpp>
 
 #define JAM_FILE_ID 291
 
@@ -91,15 +92,13 @@ struct Alloc_page
   Uint32 m_data[BITMAP_WORDS];
 };
 
-struct InitChunk
-{
+struct InitChunk {
   Uint32 m_cnt;
   Uint32 m_start;
-  Alloc_page* m_ptr;
+  Alloc_page *m_ptr;
 };
 
-struct Free_page_data 
-{
+struct Free_page_data {
   Uint32 m_list;
   Uint32 m_next;
   Uint32 m_prev;
@@ -113,8 +112,7 @@ struct Free_page_data
 /**
   Information of restriction and current usage of shared global page memory.
 */
-class Resource_limits
-{
+class Resource_limits {
   /**
    * Number of pages reserved for specific resource groups but currently
    * not in use.
@@ -377,14 +375,14 @@ public:
   void post_release_resource_pages(Uint32 id, Uint32 cnt);
   void post_alloc_resource_emergency(Uint32 id, Uint32 cnt, bool);
 
-  void check() const;
+  void check(Uint32) const;
   void dump() const;
 };
 
-class Ndbd_mem_manager 
-{
+class Ndbd_mem_manager {
   friend class Test_mem_manager;
-public:
+
+ public:
   Ndbd_mem_manager();
   
   /**
@@ -649,16 +647,16 @@ public:
    */
   void lock();
   void unlock();
-  void check() const;
+  void check(Uint32) const;
 
   /**
-   * Compute 2log of size 
+   * Compute 2log of size
    * @note size = 0     -> 0
    * @note size > 65536 -> 16
    */
   static Uint32 ndb_log2(Uint32 size);
 
-private:
+ private:
   enum { ZONE_19 = 0, ZONE_27 = 1, ZONE_30 = 2, ZONE_32 = 3, ZONE_COUNT = 4 };
   enum : Uint32 {
     ZONE_19_BOUND = (1U << 19U),
@@ -667,32 +665,28 @@ private:
     ZONE_32_BOUND = (RNIL)
   };
 
-  struct PageInterval
-  {
-    PageInterval(Uint32 start = 0, Uint32 end = 0)
-    : start(start), end(end) {}
-    static int compare(const void* x, const void* y);
+  struct PageInterval {
+    PageInterval(Uint32 start = 0, Uint32 end = 0) : start(start), end(end) {}
+    static int compare(const void *x, const void *y);
 
     Uint32 start; /* inclusive */
-    Uint32 end; /* exclusive */
+    Uint32 end;   /* exclusive */
   };
 
   static const Uint32 zone_bound[ZONE_COUNT];
   void grow(Uint32 start, Uint32 cnt);
-  bool do_virtual_alloc(Uint32 pages,
-                        InitChunk chunks[ZONE_COUNT],
-                        Uint32* watchCounter,
-                        Alloc_page** base_address);
+  bool do_virtual_alloc(Uint32 pages, InitChunk chunks[ZONE_COUNT],
+                        Uint32 *watchCounter, Alloc_page **base_address);
 
   /**
    * Return pointer to free page data on page
    */
-  static Free_page_data* get_free_page_data(Alloc_page*, Uint32 idx);
+  static Free_page_data *get_free_page_data(Alloc_page *, Uint32 idx);
   Vector<Uint32> m_used_bitmap_pages;
-  
+
   Uint32 m_buddy_lists[ZONE_COUNT][16];
   Resource_limits m_resource_limits;
-  Alloc_page * m_base_page;
+  Alloc_page *m_base_page;
 #ifdef NDBD_RANDOM_START_PAGE
   Uint32 m_random_start_page_id;
 #endif
@@ -729,7 +723,7 @@ private:
    */
   Uint32 m_mapped_pages_new_count;
 
-  void release_impl(Uint32 zone, Uint32 start, Uint32 cnt);  
+  void release_impl(Uint32 zone, Uint32 start, Uint32 cnt);
   void insert_free_list(Uint32 zone, Uint32 start, Uint32 cnt);
   Uint32 remove_free_list(Uint32 zone, Uint32 start, Uint32 list);
 
@@ -739,8 +733,8 @@ private:
   Uint32 check(Uint32 first, Uint32 last);
 
   static Uint32 get_page_zone(Uint32 page);
-  void alloc(AllocZone, Uint32* ret, Uint32 *pages, Uint32 min_requested);
-  void alloc_impl(Uint32 zone, Uint32* ret, Uint32 *pages, Uint32 min);
+  void alloc(AllocZone, Uint32 *ret, Uint32 *pages, Uint32 min_requested);
+  void alloc_impl(Uint32 zone, Uint32 *ret, Uint32 *pages, Uint32 min);
   void release(Uint32 start, Uint32 cnt);
 
   /**
@@ -842,23 +836,17 @@ void Resource_limits::inc_shared_in_use(Uint32 cnt)
   m_shared_in_use += cnt;
 }
 
-inline
-void Resource_limits::dec_free_reserved(Uint32 cnt)
-{
+inline void Resource_limits::dec_free_reserved(Uint32 cnt) {
   assert(m_free_reserved >= cnt);
   m_free_reserved -= cnt;
 }
 
-inline
-void Resource_limits::dec_in_use(Uint32 cnt)
-{
+inline void Resource_limits::dec_in_use(Uint32 cnt) {
   assert(m_in_use >= cnt);
   m_in_use -= cnt;
 }
 
-inline
-void Resource_limits::dec_resource_in_use(Uint32 id, Uint32 cnt)
-{
+inline void Resource_limits::dec_resource_in_use(Uint32 id, Uint32 cnt) {
   assert(m_limit[id - 1].m_curr >= cnt);
   m_limit[id - 1].m_curr -= cnt;
 }
@@ -875,19 +863,14 @@ Uint32 Resource_limits::get_reserved() const
   return m_reserved;
 }
 
-inline
-Uint32 Resource_limits::get_shared() const
-{
+inline Uint32 Resource_limits::get_shared() const {
   const Uint32 reserved = get_reserved();
   const Uint32 allocated = get_allocated();
-  if (allocated < reserved)
-    return 0;
+  if (allocated < reserved) return 0;
   return allocated - reserved;
 }
 
-inline
-Uint32 Resource_limits::get_free_reserved() const
-{
+inline Uint32 Resource_limits::get_free_reserved() const {
   return m_free_reserved;
 }
 
@@ -925,11 +908,7 @@ Uint32 Resource_limits::get_shared_in_use() const
   return m_shared_in_use;
 }
 
-inline
-Uint32 Resource_limits::get_max_page() const
-{
-  return m_max_page;
-}
+inline Uint32 Resource_limits::get_max_page() const { return m_max_page; }
 
 inline
 Uint32 Resource_limits::get_resource_free(Uint32 id, bool use_spare) const
@@ -965,7 +944,7 @@ Uint32 Resource_limits::get_resource_free_shared(Uint32 id) const
 {
   const Uint32 free_shared = m_shared - m_shared_in_use;
   require(id <= MM_RG_COUNT);
-  const Resource_limit& rl = m_limit[id - 1];
+  const Resource_limit &rl = m_limit[id - 1];
 
   if (rl.m_prio_memory == Resource_limit::ULTRA_HIGH_PRIO_MEMORY)
   {
@@ -1005,31 +984,24 @@ Uint32 Resource_limits::get_resource_free_shared(Uint32 id) const
   return 0;
 }
 
-inline
-Uint32 Resource_limits::get_resource_in_use(Uint32 id) const
-{
+inline Uint32 Resource_limits::get_resource_in_use(Uint32 id) const {
   require(id <= MM_RG_COUNT);
   return m_limit[id - 1].m_curr;
 }
 
-inline
-void Resource_limits::get_resource_limit(Uint32 id, Resource_limit& rl) const
-{
+inline void Resource_limits::get_resource_limit(Uint32 id,
+                                                Resource_limit &rl) const {
   require(id <= MM_RG_COUNT);
   rl = m_limit[id - 1];
 }
 
-inline
-Uint32 Resource_limits::get_resource_reserved(Uint32 id) const
-{
+inline Uint32 Resource_limits::get_resource_reserved(Uint32 id) const {
   require(id > 0);
   require(id <= MM_RG_COUNT);
   return m_limit[id - 1].m_min;
 }
 
-inline
-Uint32 Resource_limits::get_resource_spare(Uint32 id) const
-{
+inline Uint32 Resource_limits::get_resource_spare(Uint32 id) const {
   require(id > 0);
   require(id <= MM_RG_COUNT);
   return m_limit[id - 1].m_spare;
@@ -1042,9 +1014,7 @@ void Resource_limits::inc_free_reserved(Uint32 cnt)
   assert(m_free_reserved >= cnt);
 }
 
-inline
-void Resource_limits::inc_in_use(Uint32 cnt)
-{
+inline void Resource_limits::inc_in_use(Uint32 cnt) {
   m_in_use += cnt;
   assert(m_in_use >= cnt);
 }
@@ -1205,24 +1175,17 @@ void Resource_limits::set_prio_free_limits(Uint32 res)
   m_low_prio_free_limit = Uint32(low_prio_free_limit);
 }
 
-inline
-void Resource_limits::set_max_page(Uint32 page)
-{
-  m_max_page = page;
-}
+inline void Resource_limits::set_max_page(Uint32 page) { m_max_page = page; }
 
 /**
  * Ndbd_mem_manager
  */
 
-inline
-void*
-Ndbd_mem_manager::get_page(Uint32 page_num) const
-{
+inline void *Ndbd_mem_manager::get_page(Uint32 page_num) const {
 #ifdef NDBD_RANDOM_START_PAGE
   page_num -= m_random_start_page_id;
 #endif
-  return (void*)(m_base_page + page_num);
+  return (void *)(m_base_page + page_num);
 }
 /**
  * get_valid_page returns page pointer if requested page is handled by
@@ -1245,17 +1208,13 @@ Ndbd_mem_manager::get_page(Uint32 page_num) const
  *
  * In any case one should strive to remove this function!
  */
-inline
-void*
-Ndbd_mem_manager::get_valid_page(Uint32 page_num) const
-{
+inline void *Ndbd_mem_manager::get_valid_page(Uint32 page_num) const {
 #ifdef NDBD_RANDOM_START_PAGE
   page_num -= m_random_start_page_id;
 #endif
   const Uint32 page_region_index = page_num & PAGE_REGION_MASK;
   if (unlikely(page_region_index == 0 ||
-               page_region_index == PAGE_REGION_MASK))
-  {
+               page_region_index == PAGE_REGION_MASK)) {
     /**
      * First page in region are used internally for bitmap.
      * Last page is region is reserved for no use.
@@ -1279,30 +1238,23 @@ Ndbd_mem_manager::get_valid_page(Uint32 page_num) const
   do {
     lock_value = m_mapped_pages_lock.read_lock();
 
-    Uint32 a = 0; /* inclusive lower limit */
+    Uint32 a = 0;                    /* inclusive lower limit */
     Uint32 z = m_mapped_pages_count; /* exclusive upper limit */
     page_is_mapped = false;
-    while (a < z)
-    {
+    while (a < z) {
       Uint32 i = (a + z) / 2;
-      if (page_num < m_mapped_pages[i].start)
-      {
+      if (page_num < m_mapped_pages[i].start) {
         z = i;
-      }
-      else if (page_num < m_mapped_pages[i].end)
-      {
+      } else if (page_num < m_mapped_pages[i].end) {
         page_is_mapped = true;
         break;
-      }
-      else
-      {
+      } else {
         a = i + 1;
       }
     }
   } while (!m_mapped_pages_lock.read_unlock(lock_value));
 
-  if (unlikely(!page_is_mapped))
-  {
+  if (unlikely(!page_is_mapped)) {
 #ifdef NDBD_RANDOM_START_PAGE
     g_eventLogger->info(
         "Warning: Ndbd_mem_manager::get_valid_page: unmapped page %u %u",
@@ -1318,53 +1270,40 @@ Ndbd_mem_manager::get_valid_page(Uint32 page_num) const
     return NULL;
   }
 
-  return (void*)(m_base_page + page_num);
+  return (void *)(m_base_page + page_num);
 }
 
-inline
-Free_page_data*
-Ndbd_mem_manager::get_free_page_data(Alloc_page* ptr, Uint32 idx)
-{
+inline Free_page_data *Ndbd_mem_manager::get_free_page_data(Alloc_page *ptr,
+                                                            Uint32 idx) {
   assert(idx & ((1 << BPP_2LOG) - 1));
   assert((idx & ((1 << BPP_2LOG) - 1)) != ((1 << BPP_2LOG) - 1));
-  
-  return (Free_page_data*)
-    (ptr->m_data + ((idx & ((BITMAP_WORDS >> FPD_2LOG) - 1)) << FPD_2LOG));
+
+  return (
+      Free_page_data *)(ptr->m_data +
+                        ((idx & ((BITMAP_WORDS >> FPD_2LOG) - 1)) << FPD_2LOG));
 }
 
-inline
-Uint32 Ndbd_mem_manager::get_page_zone(Uint32 page)
-{
-  if (page < ZONE_19_BOUND)
-  {
+inline Uint32 Ndbd_mem_manager::get_page_zone(Uint32 page) {
+  if (page < ZONE_19_BOUND) {
     return ZONE_19;
-  }
-  else if (page < ZONE_27_BOUND)
-  {
+  } else if (page < ZONE_27_BOUND) {
     return ZONE_27;
-  }
-  else if (page < ZONE_30_BOUND)
-  {
+  } else if (page < ZONE_30_BOUND) {
     return ZONE_30;
-  }
-  else
-  {
+  } else {
     return ZONE_32;
   }
 }
 
-inline
-void
-Ndbd_mem_manager::set(Uint32 first, Uint32 last)
-{
+inline void Ndbd_mem_manager::set(Uint32 first, Uint32 last) {
   /**
    * First and last page in a BPP region may not be available for external use.
    * First page is the bitmap page for the region.
    * Last page is always unused.
    */
   require(first & ((1 << BPP_2LOG) - 1));
-  require((first+1) & ((1 << BPP_2LOG) - 1));
-  Alloc_page * ptr = m_base_page;
+  require((first + 1) & ((1 << BPP_2LOG) - 1));
+  Alloc_page *ptr = m_base_page;
 #if ((SPACE_PER_BMP_2LOG < 32) && (SIZEOF_CHARP == 4)) || (SIZEOF_CHARP == 8)
   Uint32 bmp = first & ~((1 << BPP_2LOG) - 1);
   assert((first >> BPP_2LOG) == (last >> BPP_2LOG));
@@ -1381,16 +1320,13 @@ Ndbd_mem_manager::set(Uint32 first, Uint32 last)
 #endif
 }
 
-inline
-void
-Ndbd_mem_manager::clear(Uint32 first, Uint32 last)
-{
-  Alloc_page * ptr = m_base_page;
+inline void Ndbd_mem_manager::clear(Uint32 first, Uint32 last) {
+  Alloc_page *ptr = m_base_page;
 #if ((SPACE_PER_BMP_2LOG < 32) && (SIZEOF_CHARP == 4)) || (SIZEOF_CHARP == 8)
   Uint32 bmp = first & ~((1 << BPP_2LOG) - 1);
   assert((first >> BPP_2LOG) == (last >> BPP_2LOG));
   assert(bmp < m_resource_limits.get_max_page());
-  
+
   first -= bmp;
   last -= bmp;
   ptr += bmp;
@@ -1411,24 +1347,21 @@ Ndbd_mem_manager::get_bit(Uint32 first)
 #if ((SPACE_PER_BMP_2LOG < 32) && (SIZEOF_CHARP == 4)) || (SIZEOF_CHARP == 8)
   Uint32 bmp = first & ~((1 << BPP_2LOG) - 1);
   assert(bmp < m_resource_limits.get_max_page());
-  
+
   first -= bmp;
   ptr += bmp;
 #endif
   return BitmaskImpl::get(BITMAP_WORDS, ptr->m_data, first);
 }
 
-inline
-Uint32
-Ndbd_mem_manager::check(Uint32 first, Uint32 last)
-{
+inline Uint32 Ndbd_mem_manager::check(Uint32 first, Uint32 last) {
   Uint32 ret = 0;
-  Alloc_page * ptr = m_base_page;
+  Alloc_page *ptr = m_base_page;
 #if ((SPACE_PER_BMP_2LOG < 32) && (SIZEOF_CHARP == 4)) || (SIZEOF_CHARP == 8)
   Uint32 bmp = first & ~((1 << BPP_2LOG) - 1);
   assert((first >> BPP_2LOG) == (last >> BPP_2LOG));
   assert(bmp < m_resource_limits.get_max_page());
-  
+
   first -= bmp;
   last -= bmp;
   ptr += bmp;
@@ -1440,4 +1373,4 @@ Ndbd_mem_manager::check(Uint32 first, Uint32 last)
 
 #undef JAM_FILE_ID
 
-#endif 
+#endif

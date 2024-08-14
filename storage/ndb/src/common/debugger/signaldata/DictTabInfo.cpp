@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,10 +24,10 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include <signaldata/DictTabInfo.hpp>
 #include <ndb_limits.h>
 #include <NdbOut.hpp>
 #include <cstring>
+#include <signaldata/DictTabInfo.hpp>
 
 //static 
 const
@@ -142,11 +143,12 @@ bool printDICTTABINFO(FILE* output,
   return true;
 }
 
-void
-DictTabInfo::Table::init(){
-  std::memset(TableName, 0, sizeof(TableName));//TableName[0] = 0;
+void DictTabInfo::Table::init() {
+  std::memset(TableName, 0, sizeof(TableName));  // TableName[0] = 0;
   TableId = ~0;
-  std::memset(PrimaryTable, 0, sizeof(PrimaryTable));//PrimaryTable[0] = 0; // Only used when "index"
+  std::memset(
+      PrimaryTable, 0,
+      sizeof(PrimaryTable));  // PrimaryTable[0] = 0; // Only used when "index"
   PrimaryTableId = RNIL;
   TableLoggedFlag = 1;
   TableTemporaryFlag = 0;
@@ -211,85 +213,78 @@ DictTabInfo::Table::init(){
   UseVarSizedDiskDataFlag = 0;
 }
 
-void
-DictTabInfo::Attribute::init(){
-  std::memset(AttributeName, 0, sizeof(AttributeName));//AttributeName[0] = 0;
-  AttributeId = 0xFFFF; // ZNIL
-  AttributeType = ~0, // deprecated
-  AttributeSize = DictTabInfo::a32Bit;
+void DictTabInfo::Attribute::init() {
+  std::memset(AttributeName, 0, sizeof(AttributeName));  // AttributeName[0] =
+                                                         // 0;
+  AttributeId = 0xFFFF;                                  // ZNIL
+  AttributeType = ~0,                                    // deprecated
+      AttributeSize = DictTabInfo::a32Bit;
   AttributeArraySize = 1;
   AttributeArrayType = NDB_ARRAYTYPE_FIXED;
   AttributeKeyFlag = 0;
   AttributeNullableFlag = 0;
   AttributeDKey = 0;
-  AttributeExtType = DictTabInfo::ExtUnsigned,
-  AttributeExtPrecision = 0,
-  AttributeExtScale = 0,
-  AttributeExtLength = 0,
-  AttributeAutoIncrement = false;
+  AttributeExtType = DictTabInfo::ExtUnsigned, AttributeExtPrecision = 0,
+  AttributeExtScale = 0, AttributeExtLength = 0, AttributeAutoIncrement = false;
   AttributeStorageType = 0;
-  AttributeDynamic = 0;                         // Default is not dynamic
-  AttributeDefaultValueLen = 0;                 //Default byte sizes of binary default value is 0
+  AttributeDynamic = 0;  // Default is not dynamic
+  AttributeDefaultValueLen =
+      0;  // Default byte sizes of binary default value is 0
   std::memset(AttributeDefaultValue, 0, sizeof(AttributeDefaultValue));
 }
 
-//static 
-const
-SimpleProperties::SP2StructMapping
-DictFilegroupInfo::Mapping[] = {
-  DFGI_MAP_STR(Filegroup, FilegroupName, FilegroupName, MAX_TAB_NAME_SIZE),
-  DFGI_MAP_INT(Filegroup, FilegroupType, FilegroupType),
-  DFGI_MAP_INT(Filegroup,  FilegroupId, FilegroupId),
-  DFGI_MAP_INT(Filegroup,  FilegroupVersion, FilegroupVersion),
+// static
+const SimpleProperties::SP2StructMapping DictFilegroupInfo::Mapping[] = {
+    DFGI_MAP_STR(Filegroup, FilegroupName, FilegroupName, MAX_TAB_NAME_SIZE),
+    DFGI_MAP_INT(Filegroup, FilegroupType, FilegroupType),
+    DFGI_MAP_INT(Filegroup, FilegroupId, FilegroupId),
+    DFGI_MAP_INT(Filegroup, FilegroupVersion, FilegroupVersion),
 
-  DFGI_MAP_INT(Filegroup,  TS_ExtentSize,   TS_ExtentSize),
-  DFGI_MAP_INT(Filegroup,  TS_LogfileGroupId, TS_LogfileGroupId),
-  DFGI_MAP_INT(Filegroup,  TS_LogfileGroupVersion, TS_LogfileGroupVersion),
-  DFGI_MAP_INT(Filegroup,  TS_GrowLimit, TS_DataGrow.GrowLimit),
-  DFGI_MAP_INT(Filegroup,  TS_GrowSizeHi, TS_DataGrow.GrowSizeHi),
-  DFGI_MAP_INT(Filegroup,  TS_GrowSizeLo, TS_DataGrow.GrowSizeLo),
-  DFGI_MAP_STR(Filegroup, TS_GrowPattern, TS_DataGrow.GrowPattern, PATH_MAX),
-  DFGI_MAP_INT(Filegroup,  TS_GrowMaxSize, TS_DataGrow.GrowMaxSize),
+    DFGI_MAP_INT(Filegroup, TS_ExtentSize, TS_ExtentSize),
+    DFGI_MAP_INT(Filegroup, TS_LogfileGroupId, TS_LogfileGroupId),
+    DFGI_MAP_INT(Filegroup, TS_LogfileGroupVersion, TS_LogfileGroupVersion),
+    DFGI_MAP_INT(Filegroup, TS_GrowLimit, TS_DataGrow.GrowLimit),
+    DFGI_MAP_INT(Filegroup, TS_GrowSizeHi, TS_DataGrow.GrowSizeHi),
+    DFGI_MAP_INT(Filegroup, TS_GrowSizeLo, TS_DataGrow.GrowSizeLo),
+    DFGI_MAP_STR(Filegroup, TS_GrowPattern, TS_DataGrow.GrowPattern, PATH_MAX),
+    DFGI_MAP_INT(Filegroup, TS_GrowMaxSize, TS_DataGrow.GrowMaxSize),
 
-  DFGI_MAP_INT(Filegroup,  LF_UndoBufferSize, LF_UndoBufferSize),
-  DFGI_MAP_INT(Filegroup,  LF_UndoGrowLimit, LF_UndoGrow.GrowLimit),
-  DFGI_MAP_INT(Filegroup,  LF_UndoGrowSizeHi, LF_UndoGrow.GrowSizeHi),
-  DFGI_MAP_INT(Filegroup,  LF_UndoGrowSizeLo, LF_UndoGrow.GrowSizeLo),
-  DFGI_MAP_STR(Filegroup, LF_UndoGrowPattern, LF_UndoGrow.GrowPattern, PATH_MAX),
-  DFGI_MAP_INT(Filegroup,  LF_UndoGrowMaxSize, LF_UndoGrow.GrowMaxSize),
-  DFGI_MAP_INT(Filegroup,  LF_UndoFreeWordsHi, LF_UndoFreeWordsHi),
-  DFGI_MAP_INT(Filegroup,  LF_UndoFreeWordsLo, LF_UndoFreeWordsLo),
+    DFGI_MAP_INT(Filegroup, LF_UndoBufferSize, LF_UndoBufferSize),
+    DFGI_MAP_INT(Filegroup, LF_UndoGrowLimit, LF_UndoGrow.GrowLimit),
+    DFGI_MAP_INT(Filegroup, LF_UndoGrowSizeHi, LF_UndoGrow.GrowSizeHi),
+    DFGI_MAP_INT(Filegroup, LF_UndoGrowSizeLo, LF_UndoGrow.GrowSizeLo),
+    DFGI_MAP_STR(Filegroup, LF_UndoGrowPattern, LF_UndoGrow.GrowPattern,
+                 PATH_MAX),
+    DFGI_MAP_INT(Filegroup, LF_UndoGrowMaxSize, LF_UndoGrow.GrowMaxSize),
+    DFGI_MAP_INT(Filegroup, LF_UndoFreeWordsHi, LF_UndoFreeWordsHi),
+    DFGI_MAP_INT(Filegroup, LF_UndoFreeWordsLo, LF_UndoFreeWordsLo),
 
-  DFGIBREAK(FileName)
-};
+    DFGIBREAK(FileName)};
 
-//static 
-const Uint32 DictFilegroupInfo::MappingSize = 
-sizeof(DictFilegroupInfo::Mapping) / sizeof(SimpleProperties::SP2StructMapping);
+// static
+const Uint32 DictFilegroupInfo::MappingSize =
+    sizeof(DictFilegroupInfo::Mapping) /
+    sizeof(SimpleProperties::SP2StructMapping);
 
-//static 
-const
-SimpleProperties::SP2StructMapping
-DictFilegroupInfo::FileMapping[] = {
-  DFGI_MAP_STR(File, FileName, FileName, PATH_MAX),
-  DFGI_MAP_INT(File, FileType, FileType),
-  DFGI_MAP_INT(File, FileId, FileId),
-  DFGI_MAP_INT(File, FileVersion, FileVersion),
-  DFGI_MAP_INT(File, FileFGroupId, FilegroupId),
-  DFGI_MAP_INT(File, FileFGroupVersion, FilegroupVersion),
-  DFGI_MAP_INT(File, FileSizeHi, FileSizeHi),
-  DFGI_MAP_INT(File, FileSizeLo, FileSizeLo),
-  DFGI_MAP_INT(File, FileFreeExtents, FileFreeExtents),
-  DFGIBREAK(FileEnd)
-};
+// static
+const SimpleProperties::SP2StructMapping DictFilegroupInfo::FileMapping[] = {
+    DFGI_MAP_STR(File, FileName, FileName, PATH_MAX),
+    DFGI_MAP_INT(File, FileType, FileType),
+    DFGI_MAP_INT(File, FileId, FileId),
+    DFGI_MAP_INT(File, FileVersion, FileVersion),
+    DFGI_MAP_INT(File, FileFGroupId, FilegroupId),
+    DFGI_MAP_INT(File, FileFGroupVersion, FilegroupVersion),
+    DFGI_MAP_INT(File, FileSizeHi, FileSizeHi),
+    DFGI_MAP_INT(File, FileSizeLo, FileSizeLo),
+    DFGI_MAP_INT(File, FileFreeExtents, FileFreeExtents),
+    DFGIBREAK(FileEnd)};
 
-//static 
-const Uint32 DictFilegroupInfo::FileMappingSize = 
-sizeof(DictFilegroupInfo::FileMapping) / 
-sizeof(SimpleProperties::SP2StructMapping);
+// static
+const Uint32 DictFilegroupInfo::FileMappingSize =
+    sizeof(DictFilegroupInfo::FileMapping) /
+    sizeof(SimpleProperties::SP2StructMapping);
 
-void
-DictFilegroupInfo::Filegroup::init(){
+void DictFilegroupInfo::Filegroup::init() {
   std::memset(FilegroupName, 0, sizeof(FilegroupName));
   FilegroupType = ~0;
   FilegroupId = ~0;
@@ -303,12 +298,11 @@ DictFilegroupInfo::Filegroup::init(){
   TS_DataGrow.GrowSizeLo = 0;
   std::memset(TS_DataGrow.GrowPattern, 0, sizeof(TS_DataGrow.GrowPattern));
   TS_DataGrow.GrowMaxSize = 0;
-  LF_UndoFreeWordsHi= 0;
-  LF_UndoFreeWordsLo= 0;
+  LF_UndoFreeWordsHi = 0;
+  LF_UndoFreeWordsLo = 0;
 }
 
-void
-DictFilegroupInfo::File::init(){
+void DictFilegroupInfo::File::init() {
   std::memset(FileName, 0, sizeof(FileName));
   FileType = ~0;
   FileId = ~0;
@@ -322,104 +316,89 @@ DictFilegroupInfo::File::init(){
 
 // blob table name hack
 
-bool
-DictTabInfo::isBlobTableName(const char* name, Uint32* ptab_id, Uint32* pcol_no)
-{ 
-  const char* const prefix = "NDB$BLOB_";
-  const char* s = strrchr(name, table_name_separator);
+bool DictTabInfo::isBlobTableName(const char *name, Uint32 *ptab_id,
+                                  Uint32 *pcol_no) {
+  const char *const prefix = "NDB$BLOB_";
+  const char *s = strrchr(name, table_name_separator);
   s = (s == nullptr ? name : s + 1);
-  if (strncmp(s, prefix, strlen(prefix)) != 0)
-    return false;
+  if (strncmp(s, prefix, strlen(prefix)) != 0) return false;
   s += strlen(prefix);
   uint i, n;
-  for (i = 0, n = 0; '0' <= s[i] && s[i] <= '9'; i++)
-    n = 10 * n + (s[i] - '0');
-  if (i == 0 || s[i] != '_')
-    return false;
+  for (i = 0, n = 0; '0' <= s[i] && s[i] <= '9'; i++) n = 10 * n + (s[i] - '0');
+  if (i == 0 || s[i] != '_') return false;
   const uint tab_id = n;
   s = &s[i + 1];
-  for (i = 0, n = 0; '0' <= s[i] && s[i] <= '9'; i++)
-    n = 10 * n + (s[i] - '0');
-  if (i == 0 || s[i] != 0)
-    return false;
+  for (i = 0, n = 0; '0' <= s[i] && s[i] <= '9'; i++) n = 10 * n + (s[i] - '0');
+  if (i == 0 || s[i] != 0) return false;
   const uint col_no = n;
-  if (ptab_id)
-    *ptab_id = tab_id;
-  if (pcol_no)
-    *pcol_no = col_no;
+  if (ptab_id) *ptab_id = tab_id;
+  if (pcol_no) *pcol_no = col_no;
   return true;
 }
 
 /**
  * HashMap
  */
-const
-SimpleProperties::SP2StructMapping
-DictHashMapInfo::Mapping[] = {
-  DHMI_MAP_STR(HashMap, HashMapName, HashMapName, MAX_TAB_NAME_SIZE),
-  DHMI_MAP_INT(HashMap, HashMapBuckets, HashMapBuckets),
-  DTI_MAP_INT(HashMap, HashMapObjectId, HashMapObjectId),
-  DTI_MAP_INT(HashMap, HashMapVersion, HashMapVersion),
+const SimpleProperties::SP2StructMapping DictHashMapInfo::Mapping[] = {
+    DHMI_MAP_STR(HashMap, HashMapName, HashMapName, MAX_TAB_NAME_SIZE),
+    DHMI_MAP_INT(HashMap, HashMapBuckets, HashMapBuckets),
+    DTI_MAP_INT(HashMap, HashMapObjectId, HashMapObjectId),
+    DTI_MAP_INT(HashMap, HashMapVersion, HashMapVersion),
 
-  /**
-   * This *should* change to Uint16 or similar once endian is pushed
-   */
-  DHMI_MAP_BIN(HashMap, HashMapValues, HashMapValues,
-              NDB_MAX_HASHMAP_BUCKETS * sizeof(Uint16), HashMapBuckets)
-};
+    /**
+     * This *should* change to Uint16 or similar once endian is pushed
+     */
+    DHMI_MAP_BIN(HashMap, HashMapValues, HashMapValues,
+                 NDB_MAX_HASHMAP_BUCKETS * sizeof(Uint16), HashMapBuckets)};
 
-//static
+// static
 const Uint32 DictHashMapInfo::MappingSize =
-  sizeof(DictHashMapInfo::Mapping) / sizeof(SimpleProperties::SP2StructMapping);
+    sizeof(DictHashMapInfo::Mapping) /
+    sizeof(SimpleProperties::SP2StructMapping);
 
-
-void
-DictHashMapInfo::HashMap::init()
-{
-  std::memset(this, 0, sizeof(* this));
-}
+void DictHashMapInfo::HashMap::init() { std::memset(this, 0, sizeof(*this)); }
 
 /**
  * ForeignKey
  */
-const
-SimpleProperties::SP2StructMapping
-DictForeignKeyInfo::Mapping[] = {
-  DFKI_MAP_STR(ForeignKey, ForeignKeyName, Name, MAX_TAB_NAME_SIZE),
-  DFKI_MAP_STR(ForeignKey, ForeignKeyParentTableName, ParentTableName, MAX_TAB_NAME_SIZE),
-  DFKI_MAP_STR(ForeignKey, ForeignKeyParentIndexName, ParentIndexName, MAX_TAB_NAME_SIZE),
-  DFKI_MAP_STR(ForeignKey, ForeignKeyChildTableName, ChildTableName, MAX_TAB_NAME_SIZE),
-  DFKI_MAP_STR(ForeignKey, ForeignKeyChildIndexName, ChildIndexName, MAX_TAB_NAME_SIZE),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyId, ForeignKeyId),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyVersion, ForeignKeyVersion),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyParentTableId, ParentTableId),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyParentTableVersion, ParentTableVersion),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyChildTableId, ChildTableId),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyChildTableVersion, ChildTableVersion),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyParentIndexId, ParentIndexId),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyParentIndexVersion, ParentIndexVersion),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyChildIndexId, ChildIndexId),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyChildIndexVersion, ChildIndexVersion),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyOnUpdateAction, OnUpdateAction),
-  DFKI_MAP_INT(ForeignKey, ForeignKeyOnDeleteAction, OnDeleteAction),
+const SimpleProperties::SP2StructMapping DictForeignKeyInfo::Mapping[] = {
+    DFKI_MAP_STR(ForeignKey, ForeignKeyName, Name, MAX_TAB_NAME_SIZE),
+    DFKI_MAP_STR(ForeignKey, ForeignKeyParentTableName, ParentTableName,
+                 MAX_TAB_NAME_SIZE),
+    DFKI_MAP_STR(ForeignKey, ForeignKeyParentIndexName, ParentIndexName,
+                 MAX_TAB_NAME_SIZE),
+    DFKI_MAP_STR(ForeignKey, ForeignKeyChildTableName, ChildTableName,
+                 MAX_TAB_NAME_SIZE),
+    DFKI_MAP_STR(ForeignKey, ForeignKeyChildIndexName, ChildIndexName,
+                 MAX_TAB_NAME_SIZE),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyId, ForeignKeyId),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyVersion, ForeignKeyVersion),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyParentTableId, ParentTableId),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyParentTableVersion, ParentTableVersion),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyChildTableId, ChildTableId),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyChildTableVersion, ChildTableVersion),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyParentIndexId, ParentIndexId),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyParentIndexVersion, ParentIndexVersion),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyChildIndexId, ChildIndexId),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyChildIndexVersion, ChildIndexVersion),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyOnUpdateAction, OnUpdateAction),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyOnDeleteAction, OnDeleteAction),
 
-  DFKI_MAP_INT(ForeignKey, ForeignKeyParentColumnsLength, ParentColumnsLength),
-  DFKI_MAP_BIN(ForeignKey, ForeignKeyParentColumns, ParentColumns,
-               4*MAX_ATTRIBUTES_IN_INDEX, ParentColumnsLength),
+    DFKI_MAP_INT(ForeignKey, ForeignKeyParentColumnsLength,
+                 ParentColumnsLength),
+    DFKI_MAP_BIN(ForeignKey, ForeignKeyParentColumns, ParentColumns,
+                 4 * MAX_ATTRIBUTES_IN_INDEX, ParentColumnsLength),
 
-  DFKI_MAP_INT(ForeignKey, ForeignKeyChildColumnsLength, ChildColumnsLength),
-  DFKI_MAP_BIN(ForeignKey, ForeignKeyChildColumns, ChildColumns,
-               4*MAX_ATTRIBUTES_IN_INDEX, ChildColumnsLength)
-};
+    DFKI_MAP_INT(ForeignKey, ForeignKeyChildColumnsLength, ChildColumnsLength),
+    DFKI_MAP_BIN(ForeignKey, ForeignKeyChildColumns, ChildColumns,
+                 4 * MAX_ATTRIBUTES_IN_INDEX, ChildColumnsLength)};
 
-//static
+// static
 const Uint32 DictForeignKeyInfo::MappingSize =
-  sizeof(DictForeignKeyInfo::Mapping) / sizeof(SimpleProperties::SP2StructMapping);
+    sizeof(DictForeignKeyInfo::Mapping) /
+    sizeof(SimpleProperties::SP2StructMapping);
 
-
-void
-DictForeignKeyInfo::ForeignKey::init()
-{
+void DictForeignKeyInfo::ForeignKey::init() {
   std::memset(Name, 0, sizeof(Name));
   std::memset(ParentTableName, 0, sizeof(ParentTableName));
   std::memset(ParentIndexName, 0, sizeof(ParentIndexName));
@@ -441,25 +420,21 @@ DictForeignKeyInfo::ForeignKey::init()
   ChildColumnsLength = 0;
 }
 
-void
-ndbout_print(const DictForeignKeyInfo::ForeignKey& fk, char* buf, size_t sz)
-{
+void ndbout_print(const DictForeignKeyInfo::ForeignKey &fk, char *buf,
+                  size_t sz) {
   BaseString::snprintf(buf, sz,
-    "fk: name:%s id:%u"
-    " parent table: name:%s id:%u"
-    " parent index: name:%s id:%u"
-    " child table: name:%s id:%u"
-    " child index: name:%s id:%u",
-    fk.Name, fk.ForeignKeyId,
-    fk.ParentTableName, fk.ParentTableId,
-    fk.ParentIndexName, fk.ParentIndexId,
-    fk.ChildTableName, fk.ChildTableId,
-    fk.ChildIndexName, fk.ChildIndexId);
+                       "fk: name:%s id:%u"
+                       " parent table: name:%s id:%u"
+                       " parent index: name:%s id:%u"
+                       " child table: name:%s id:%u"
+                       " child index: name:%s id:%u",
+                       fk.Name, fk.ForeignKeyId, fk.ParentTableName,
+                       fk.ParentTableId, fk.ParentIndexName, fk.ParentIndexId,
+                       fk.ChildTableName, fk.ChildTableId, fk.ChildIndexName,
+                       fk.ChildIndexId);
 }
 
-NdbOut&
-operator<<(NdbOut& out, const DictForeignKeyInfo::ForeignKey& fk)
-{
+NdbOut &operator<<(NdbOut &out, const DictForeignKeyInfo::ForeignKey &fk) {
   char buf[2048];
   ndbout_print(fk, buf, sizeof(buf));
   out << buf;

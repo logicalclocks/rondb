@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -450,7 +451,7 @@ void LEX::reset() {
   m_sql_cmd = nullptr;
   query_tables = nullptr;
   reset_query_tables_list(false);
-  expr_allows_subselect = true;
+  expr_allows_subquery = true;
   use_only_table_context = false;
   contains_plaintext_password = false;
   keep_diagnostics = DA_KEEP_NOTHING;
@@ -470,7 +471,7 @@ void LEX::reset() {
   server_options.reset();
   explain_format = nullptr;
   is_explain_analyze = false;
-  using_hypergraph_optimizer = false;
+  set_using_hypergraph_optimizer(false);
   is_lex_started = true;
   reset_slave_info.all = false;
   mi.channel = nullptr;
@@ -3867,7 +3868,9 @@ bool Query_expression::save_cmd_properties(THD *thd) {
   including binding data for all associated tables.
 */
 void Query_expression::restore_cmd_properties() {
-  for (auto qt : query_terms<>()) qt->query_block()->restore_cmd_properties();
+  for (auto qt : query_terms<>()) {
+    qt->query_block()->restore_cmd_properties();
+  }
 }
 
 /**
@@ -4271,6 +4274,10 @@ bool Query_block::save_properties(THD *thd) {
 
   saved_cond_count = cond_count;
 
+  if (!base_ref_items.empty()) {
+    m_saved_base_items =
+        base_ref_items.prefix(fields.size()).Clone(thd->mem_root);
+  }
   if (group_list.first &&
       save_order_properties(thd, &group_list, &group_list_ptrs))
     return true;
@@ -4798,6 +4805,11 @@ bool Query_block::save_cmd_properties(THD *thd) {
   they are ready for optimization.
 */
 void Query_block::restore_cmd_properties() {
+  // Restore base_ref_items. Do this before we dive into subqueries, so that
+  // their outer references point to valid items when they update used tables.
+  std::copy(m_saved_base_items.begin(), m_saved_base_items.end(),
+            base_ref_items.begin());
+
   for (Query_expression *u = first_inner_query_expression(); u;
        u = u->next_query_expression())
     u->restore_cmd_properties();
@@ -4830,6 +4842,12 @@ void Query_block::restore_cmd_properties() {
     Window *w;
     while ((w = li++)) w->reset_round();
   }
+  /*
+    Unconditionally update used table information for all items referenced from
+    query block. This is required in case const table substitution, or other
+    kind of optimization, has been performed in earlier rounds.
+  */
+  update_used_tables();
 }
 
 bool Query_options::merge(const Query_options &a, const Query_options &b) {

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -741,7 +742,6 @@ THD::THD(bool enable_plugins)
   lex->set_current_query_block(nullptr);
   m_lock_usec = 0L;
   slave_thread = false;
-  override_replica_filtering = THD::NO_OVERRIDE_REPLICA_FILTERING;
   memset(&variables, 0, sizeof(variables));
   m_thread_id = Global_THD_manager::reserved_thread_id;
   file_id = 0;
@@ -815,6 +815,7 @@ THD::THD(bool enable_plugins)
   protocol_text->init(this);
   protocol_binary->init(this);
   protocol_text->set_client_capabilities(0);  // minimalistic client
+  m_cached_is_connection_alive.store(m_protocol->connection_alive());
 
   /*
     Make sure thr_lock_info_init() is called for threads which do not get
@@ -3147,13 +3148,22 @@ bool THD::is_classic_protocol() const {
          get_protocol()->type() == Protocol::PROTOCOL_TEXT;
 }
 
-bool THD::is_connected() {
+bool THD::is_connected(bool use_cached_connection_alive) {
   /*
     All system threads (e.g., the slave IO thread) are connected but
     not using vio. So this function always returns true for all
     system threads.
   */
   if (system_thread) return true;
+
+  /*
+    In some situations, e.g. when generating information_schema.processlist,
+    we can live with a cached value to avoid introducing mutex usage.
+  */
+  if (use_cached_connection_alive) {
+    DEBUG_SYNC(current_thd, "wait_before_checking_alive");
+    return m_cached_is_connection_alive.load();
+  }
 
   if (is_classic_protocol())
     return get_protocol()->connection_alive() &&
@@ -3162,17 +3172,30 @@ bool THD::is_connected() {
   return get_protocol()->connection_alive();
 }
 
+Protocol *THD::get_protocol() {
+  m_cached_is_connection_alive.store(m_protocol->connection_alive());
+  return m_protocol;
+}
+
+Protocol_classic *THD::get_protocol_classic() {
+  assert(is_classic_protocol());
+  m_cached_is_connection_alive.store(m_protocol->connection_alive());
+  return pointer_cast<Protocol_classic *>(m_protocol);
+}
+
 void THD::push_protocol(Protocol *protocol) {
   assert(m_protocol != nullptr);
   assert(protocol != nullptr);
   m_protocol->push_protocol(protocol);
   m_protocol = protocol;
+  m_cached_is_connection_alive.store(m_protocol->connection_alive());
 }
 
 void THD::pop_protocol() {
   assert(m_protocol != nullptr);
   m_protocol = m_protocol->pop_protocol();
   assert(m_protocol != nullptr);
+  m_cached_is_connection_alive.store(m_protocol->connection_alive());
 }
 
 void THD::set_time() {
@@ -3232,6 +3255,11 @@ void Transactional_ddl_context::init(dd::String_type db,
                                      dd::String_type tablename,
                                      const handlerton *hton) {
   assert(m_hton == nullptr);
+  /*
+    Currently, Transactional_ddl_context is used only for CREATE TABLE ... START
+    TRANSACTION statement.
+  */
+  assert(m_thd->lex->sql_command == SQLCOM_CREATE_TABLE);
   m_db = db;
   m_tablename = tablename;
   m_hton = hton;
@@ -3243,7 +3271,15 @@ void Transactional_ddl_context::init(dd::String_type db,
 */
 void Transactional_ddl_context::rollback() {
   if (!inited()) return;
+  /*
+    Since the transaction is being rolledback, We need to unlock and close the
+    table belonging to this transaction.
+  */
+  if (m_thd->lock) mysql_unlock_tables(m_thd, m_thd->lock);
+  m_thd->lock = nullptr;
+  if (m_thd->open_tables) close_thread_table(m_thd, &m_thd->open_tables);
   table_cache_manager.lock_all_and_tdc();
+
   TABLE_SHARE *share =
       get_cached_table_share(m_db.c_str(), m_tablename.c_str());
   if (share) {

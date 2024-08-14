@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -219,6 +220,13 @@ static void adjust_collect_flags(PSI_statement_locker_state *state) {
   do not use in production.
 */
 #undef PFS_PARANOID
+
+/*
+  This is a development tool to investigate
+  the statement instrumentation,
+  do not use in production.
+*/
+#undef PFS_INFO_PARANOID
 
 #ifdef PFS_PARANOID
 static void report_memory_accounting_error(const char *api_name,
@@ -3377,6 +3385,12 @@ void pfs_set_thread_info_vc(const char *info, uint info_len) {
   pfs_dirty_state dirty_state;
   PFS_thread *pfs = my_thread_get_THR_PFS();
 
+#ifdef PFS_INFO_PARANOID
+  if (info != nullptr) {
+    fprintf(stderr, "THREAD.INFO = %.*s\n", info_len, info);
+  }
+#endif
+
   if (likely(pfs != nullptr)) {
     if (info_len > sizeof(pfs->m_processlist_info)) {
       info_len = sizeof(pfs->m_processlist_info);
@@ -3672,14 +3686,14 @@ void pfs_detect_telemetry_vc(PSI_thread *thread [[maybe_unused]]) {
   assert(pfs_thread != nullptr);
 
   // Dirty read
-  telemetry_t *actual_telemetry = g_telemetry.load();
+  telemetry_t *actual_telemetry = g_telemetry.m_ptr.load();
 
   telemetry_t *expected_telemetry = pfs_thread->m_telemetry;
 
   if (actual_telemetry != expected_telemetry) {
     server_telemetry_tracing_lock();
     // Safe read
-    actual_telemetry = g_telemetry.load();
+    actual_telemetry = g_telemetry.m_ptr.load();
     if (actual_telemetry != expected_telemetry) {
       if (expected_telemetry == nullptr) {
         pfs_thread->m_telemetry = actual_telemetry;
@@ -6608,6 +6622,7 @@ void pfs_start_statement_vc(PSI_statement_locker *locker, const char *db,
       pfs->m_sqltext_cs_number = system_charset_info->number; /* default */
 
       pfs->m_message_text[0] = '\0';
+      pfs->m_message_text_length = 0;
       pfs->m_sql_errno = 0;
       pfs->m_sqlstate[0] = '\0';
       pfs->m_error_count = 0;
@@ -6697,6 +6712,12 @@ void pfs_set_statement_text_vc(PSI_statement_locker *locker, const char *text,
                                uint text_len) {
   auto *state = reinterpret_cast<PSI_statement_locker_state *>(locker);
   assert(state != nullptr);
+
+#ifdef PFS_INFO_PARANOID
+  if (text != nullptr) {
+    fprintf(stderr, "STATEMENT.TEXT = %.*s\n", text_len, text);
+  }
+#endif
 
   if (!(state->m_collect_flags & STATE_FLAG_EVENT)) {
     return;
@@ -6957,6 +6978,7 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
             reinterpret_cast<PFS_events_statements *>(state->m_statement);
         assert(pfs != nullptr);
 
+        size_t message_text_length;
         pfs_dirty_state dirty_state;
         thread->m_stmt_lock.allocated_to_dirty(&dirty_state);
 
@@ -6964,8 +6986,14 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
           case Diagnostics_area::DA_EMPTY:
             break;
           case Diagnostics_area::DA_OK:
-            memcpy(pfs->m_message_text, da->message_text(), MYSQL_ERRMSG_SIZE);
-            pfs->m_message_text[MYSQL_ERRMSG_SIZE] = 0;
+            message_text_length = da->message_text_length();
+            if (message_text_length > 0) {
+              memcpy(pfs->m_message_text, da->message_text(),
+                     message_text_length);
+            }
+            pfs->m_message_text[message_text_length] = '\0';
+            pfs->m_message_text_length = message_text_length;
+
             pfs->m_rows_affected = da->affected_rows();
             pfs->m_warning_count = da->last_statement_cond_count();
             memcpy(pfs->m_sqlstate, "00000", SQLSTATE_LENGTH);
@@ -6974,8 +7002,14 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
             pfs->m_warning_count = da->last_statement_cond_count();
             break;
           case Diagnostics_area::DA_ERROR:
-            memcpy(pfs->m_message_text, da->message_text(), MYSQL_ERRMSG_SIZE);
-            pfs->m_message_text[MYSQL_ERRMSG_SIZE] = 0;
+            message_text_length = da->message_text_length();
+            if (message_text_length > 0) {
+              memcpy(pfs->m_message_text, da->message_text(),
+                     message_text_length);
+            }
+            pfs->m_message_text[message_text_length] = '\0';
+            pfs->m_message_text_length = message_text_length;
+
             pfs->m_sql_errno = da->mysql_errno();
             memcpy(pfs->m_sqlstate, da->returned_sqlstate(), SQLSTATE_LENGTH);
             pfs->m_error_count++;

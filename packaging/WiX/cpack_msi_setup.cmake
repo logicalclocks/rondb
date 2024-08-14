@@ -1,15 +1,16 @@
-# Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -242,7 +243,7 @@ FUNCTION(TRAVERSE_FILES dir topdir file file_comp  dir_root)
 	# According to MSDN each DLL or EXE should be in the own component
 	IF(f_ext MATCHES ".exe" OR f_ext MATCHES ".dll")
 
-	  FILE(APPEND ${file} "  <Component Id='C.${id}' Guid='*' Win64='yes'>\n")
+	  FILE(APPEND ${file} "  <Component Id='C.${id}' Bitness='always64'>\n")
 	  FILE(APPEND ${file} "    <File Id='F.${id}' KeyPath='yes' Source='${f_native}'/>\n")
 	  FILE(APPEND ${file} "  </Component>\n")
 	  FILE(APPEND ${file_comp} "  <ComponentRef Id='C.${id}'/>\n")
@@ -257,7 +258,7 @@ FUNCTION(TRAVERSE_FILES dir topdir file file_comp  dir_root)
     GENERATE_GUID(guid)
     SET(ComponentId "C._files_${COMP_NAME}.${DirectoryRefId}")
     FILE(APPEND ${file} 
-    "<DirectoryRef Id='${DirectoryRefId}'>\n<Component Guid='${guid}' Id='${ComponentId}' Win64='yes'>${NONEXEFILES}\n</Component></DirectoryRef>\n")
+    "<DirectoryRef Id='${DirectoryRefId}'>\n<Component Guid='${guid}' Id='${ComponentId}' Bitness='always64'>${NONEXEFILES}\n</Component>\n</DirectoryRef>\n")
 	FILE(APPEND ${file_comp} "  <ComponentRef Id='${ComponentId}'/>\n")
   ENDIF()
   FOREACH(f ${all_files})

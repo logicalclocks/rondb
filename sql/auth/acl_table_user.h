@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -90,7 +91,7 @@ class Acl_user_attributes {
     Default constructor.
   */
   Acl_user_attributes(MEM_ROOT *mem_root, bool read_restrictions,
-                      Auth_id &auth_id, ulong global_privs);
+                      Auth_id &auth_id, Access_bitmask global_privs);
 
   Acl_user_attributes(MEM_ROOT *mem_root, bool read_restrictions,
                       Auth_id &auth_id, Restrictions *m_restrictions,
@@ -177,8 +178,8 @@ class Acl_user_attributes {
 
  private:
   void report_and_remove_invalid_db_restrictions(
-      DB_restrictions &db_restrictions, ulong mask, enum loglevel level,
-      ulonglong errcode);
+      DB_restrictions &db_restrictions, Access_bitmask mask,
+      enum loglevel level, ulonglong errcode);
   bool deserialize_password_lock(const Json_object &json_object);
   bool deserialize_multi_factor(const Json_object &json_object);
 
@@ -194,7 +195,7 @@ class Acl_user_attributes {
   /** Restrictions_list on certain databases for user */
   Restrictions m_restrictions;
   /** Global static privileges */
-  ulong m_global_privs;
+  Access_bitmask m_global_privs;
   /** password locking */
   Password_lock m_password_lock;
   /** multi factor auth info */
@@ -214,7 +215,8 @@ using acl_table_user_writer_status =
 class Acl_table_user_writer_status {
  public:
   Acl_table_user_writer_status();
-  Acl_table_user_writer_status(bool skip, ulong rights, Table_op_error_code err,
+  Acl_table_user_writer_status(bool skip, Access_bitmask rights,
+                               Table_op_error_code err,
                                my_timeval pwd_timestamp, std::string cred,
                                Password_lock &password_lock,
                                I_multi_factor_auth *multi_factor)
@@ -228,7 +230,7 @@ class Acl_table_user_writer_status {
         multi_factor(multi_factor) {}
 
   bool skip_cache_update;
-  ulong updated_rights;
+  Access_bitmask updated_rights;
   Table_op_error_code error;
   my_timeval password_change_timestamp;
   std::string second_cred;
@@ -239,8 +241,9 @@ class Acl_table_user_writer_status {
 
 class Acl_table_user_writer : public Acl_table {
  public:
-  Acl_table_user_writer(THD *thd, TABLE *table, LEX_USER *combo, ulong rights,
-                        bool revoke_grant, bool can_create_user,
+  Acl_table_user_writer(THD *thd, TABLE *table, LEX_USER *combo,
+                        Access_bitmask rights, bool revoke_grant,
+                        bool can_create_user,
                         Pod_user_what_to_update what_to_update,
                         Restrictions *restrictions, I_multi_factor_auth *mfa);
   ~Acl_table_user_writer() override;
@@ -264,7 +267,7 @@ class Acl_table_user_writer : public Acl_table {
 
   void replace_user_application_user_metadata(
       std::function<bool(TABLE *table)> const &update);
-  ulong get_user_privileges();
+  Access_bitmask get_user_privileges();
   std::string get_current_credentials();
 
  private:
@@ -272,7 +275,7 @@ class Acl_table_user_writer : public Acl_table {
   bool write_user_attributes_column(const Acl_user_attributes &user_attributes);
   bool m_has_user_application_user_metadata;
   LEX_USER *m_combo;
-  ulong m_rights;
+  Access_bitmask m_rights;
   bool m_revoke_grant;
   bool m_can_create_user;
   Pod_user_what_to_update m_what_to_update;

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,7 +37,7 @@ const GlobalSignalNumber MAX_GSN = 912;
 
 struct GsnName {
   GlobalSignalNumber gsn;
-  const char * name;
+  const char *name;
 };
 
 extern const GsnName SignalNames[];
@@ -682,9 +683,9 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_TCINDXREF                   521
 #define GSN_INDXKEYINFO                 522
 #define GSN_INDXATTRINFO                523
-#define GSN_TCINDXNEXTREQ               524
-#define GSN_TCINDXNEXTCONF              525
-#define GSN_TCINDXNEXREF                526
+#define GSN_524                         524
+#define GSN_525                         525
+#define GSN_526                         526
 #define GSN_FIRE_TRIG_ORD               527
 #define GSN_FIRE_TRIG_ORD_L             123 /* local from TUP to SUMA */
 
@@ -925,10 +926,7 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_TUX_ADD_ATTRCONF            674
 #define GSN_TUX_ADD_ATTRREF             675
 
-/*
- * REP
- */
-#define GSN_REP_DISCONNECT_REP          676
+#define GSN_676                         676
 
 #define GSN_TUX_MAINT_REQ               677
 #define GSN_TUX_MAINT_CONF              678
@@ -1023,7 +1021,6 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_DICT_TAKEOVER_REQ           765
 #define GSN_DICT_TAKEOVER_REF           766
 #define GSN_DICT_TAKEOVER_CONF          767
-
 
 /* DICT LOCK signals */
 #define GSN_DICT_LOCK_REQ               410

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2023, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,6 +27,7 @@
 
 #include <cctype>
 #include <iostream>
+#include <memory>
 #include <random>  // uniform_int_distribution
 #include <sstream>
 #include <system_error>
@@ -33,6 +35,7 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include "await_client_or_server.h"
 #include "classic_auth.h"
 #include "classic_auth_caching_sha2.h"
 #include "classic_auth_cleartext.h"
@@ -389,12 +392,8 @@ ServerGreetor::server_greeting() {
  */
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::server_greeting_error() {
-  if (auto &tr = tracer()) {
-    tr.trace(Tracer::Event().stage("server::greeting::error"));
-  }
-
-  // don't increment the error-counter
-  connection()->client_greeting_sent(true);
+  connection()->server_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kFinished);
 
   auto *socket_splicer = connection()->socket_splicer();
   auto *src_channel = socket_splicer->server_channel();
@@ -498,6 +497,10 @@ ServerGreetor::server_greeting_greeting() {
 #endif
 
   auto server_greeting_msg = *msg_res;
+
+  // engage the "send-client-greeting-on-early-client-abort"
+  connection()->server_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kServerGreeting);
 
   auto caps = server_greeting_msg.capabilities();
 
@@ -674,9 +677,6 @@ ServerGreetor::client_greeting() {
   dst_protocol->username(src_protocol->username());
   dst_protocol->attributes(src_protocol->attributes());
 
-  // the client greeting was received and will be forwarded to the server
-  // soon.
-  connection()->client_greeting_sent(true);
   connection()->on_handshake_received();
 
   if (dst_protocol->shared_capabilities().test(
@@ -718,6 +718,9 @@ ServerGreetor::client_greeting_start_tls() {
           ""   // attributes
       });
   if (!send_res) return send_server_failed(send_res.error());
+
+  connection()->server_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kClientGreeting);
 
   if (auto &tr = tracer()) {
     tr.trace(Tracer::Event().stage("client::greeting (start-tls)"));
@@ -823,6 +826,9 @@ ServerGreetor::client_greeting_full() {
   return ClassicFrame::send_msg(dst_channel, dst_protocol, client_greeting_msg)
       .and_then(
           [this](auto /* sent */) -> stdx::expected<Result, std::error_code> {
+            connection()->server_protocol()->handshake_state(
+                ClassicProtocolState::HandshakeState::kClientGreeting);
+
             stage(Stage::InitialResponse);
 
             return Result::SendToServer;
@@ -1050,7 +1056,12 @@ ServerGreetor::client_greeting_after_tls() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerGreetor::initial_response() {
-  connection()->push_processor(std::make_unique<AuthForwarder>(connection()));
+  const auto *src_protocol = connection()->client_protocol();
+
+  connection()->push_processor(std::make_unique<AuthForwarder>(
+      connection(),
+      // password was requested already.
+      src_protocol->password() && !src_protocol->password()->empty()));
 
   stage(Stage::FinalResponse);
   return Result::Again;
@@ -1067,6 +1078,9 @@ ServerGreetor::final_response() {
   auto read_res =
       ClassicFrame::ensure_has_msg_prefix(src_channel, src_protocol);
   if (!read_res) return recv_server_failed(read_res.error());
+
+  connection()->server_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kFinished);
 
   const uint8_t msg_type = src_protocol->current_msg_type().value();
 
@@ -1438,7 +1452,6 @@ ServerFirstAuthenticator::client_greeting() {
 
   // the client greeting was received and will be forwarded to the server
   // soon.
-  connection()->client_greeting_sent(true);
   connection()->on_handshake_received();
 
   if (dst_protocol->shared_capabilities().test(
@@ -1492,6 +1505,13 @@ ServerFirstAuthenticator::client_greeting_start_tls() {
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("client::greeting (forward-tls)"));
     }
+
+    // whatever happens next is encrypted and will not be treated as
+    // connection-error.
+    connection()->client_protocol()->handshake_state(
+        ClassicProtocolState::HandshakeState::kFinished);
+    connection()->server_protocol()->handshake_state(
+        ClassicProtocolState::HandshakeState::kFinished);
 
     stage(Stage::TlsForwardInit);
   } else {
@@ -1603,15 +1623,6 @@ static TlsErrc forward_tls(Channel *src_channel, Channel *dst_channel) {
     const uint8_t tls_content_type = plain[0];
     const uint16_t tls_payload_size = (plain[3] << 8) | plain[4];
 
-#if defined(DEBUG_SSL)
-    const uint16_t tls_legacy_version = (plain[1] << 8) | plain[2];
-
-    log_debug("-- ssl: ver=%04x, len=%d, %s", tls_legacy_version,
-              tls_payload_size,
-              tls_content_type_to_string(
-                  static_cast<TlsContentType>(tls_content_type))
-                  .c_str());
-#endif
     if (plain.size() < tls_header_size + tls_payload_size) {
       src_channel->read_to_plain(tls_header_size + tls_payload_size -
                                  plain.size());
@@ -1641,48 +1652,63 @@ static TlsErrc forward_tls(Channel *src_channel, Channel *dst_channel) {
   return TlsErrc::kWantRead;
 }
 
+template <bool toServer>
+class SendProcessor : public Processor {
+ public:
+  explicit SendProcessor(MysqlRoutingClassicConnectionBase *conn)
+      : Processor(conn) {}
+
+  stdx::expected<Result, std::error_code> process() override {
+    auto *socket_splicer = connection()->socket_splicer();
+    auto *dst_channel = toServer ? socket_splicer->server_channel()
+                                 : socket_splicer->client_channel();
+
+    if (dst_channel->send_buffer().empty()) return Result::Done;
+
+    return toServer ? Result::SendToServer : Result::SendToClient;
+  }
+};
+
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::tls_forward() {
-  auto *socket_splicer = connection()->socket_splicer();
+  connection()->push_processor(std::make_unique<AwaitClientOrServerProcessor>(
+      connection(), [this](auto result) {
+        if (!result) return;
 
-  auto client_channel = socket_splicer->client_channel();
-  auto server_channel = socket_splicer->server_channel();
+        switch (*result) {
+          case AwaitClientOrServerProcessor::AwaitResult::ClientReadable: {
+            auto *socket_splicer = connection()->socket_splicer();
+            auto *src_channel = socket_splicer->client_channel();
+            auto *dst_channel = socket_splicer->server_channel();
 
-  bool client_recv_buf_changed =
-      client_last_recv_buf_size_ != client_channel->recv_plain_view().size();
-  bool server_recv_buf_changed =
-      server_last_recv_buf_size_ != server_channel->recv_plain_view().size();
-  bool client_send_buf_changed =
-      client_last_send_buf_size_ != client_channel->send_buffer().size();
-  bool server_send_buf_changed =
-      server_last_send_buf_size_ != server_channel->send_buffer().size();
+            forward_tls(src_channel, dst_channel);
 
-  if (client_recv_buf_changed || server_send_buf_changed) {
-    forward_tls(client_channel, server_channel);
+            if (!dst_channel->send_buffer().empty()) {
+              connection()->push_processor(
+                  std::make_unique<SendProcessor<true>>(connection()));
+            }
+            return;
+          }
+          case AwaitClientOrServerProcessor::AwaitResult::ServerReadable: {
+            auto *socket_splicer = connection()->socket_splicer();
+            auto *src_channel = socket_splicer->server_channel();
+            auto *dst_channel = socket_splicer->client_channel();
 
-    client_last_recv_buf_size_ = client_channel->recv_plain_view().size();
-    server_last_send_buf_size_ = server_channel->send_buffer().size();
+            forward_tls(src_channel, dst_channel);
 
-    if (!server_channel->send_buffer().empty()) {
-      return Result::SendToServer;
-    }
+            if (!dst_channel->send_buffer().empty()) {
+              connection()->push_processor(
+                  std::make_unique<SendProcessor<false>>(connection()));
+            }
 
-    return Result::RecvFromClient;
+            return;
+          }
+        }
 
-  } else if (server_recv_buf_changed || client_send_buf_changed) {
-    forward_tls(server_channel, client_channel);
+        harness_assert_this_should_not_execute();
+      }));
 
-    server_last_recv_buf_size_ = server_channel->recv_plain_view().size();
-    client_last_send_buf_size_ = client_channel->send_buffer().size();
-
-    if (!client_channel->send_buffer().empty()) {
-      return Result::SendToClient;
-    }
-
-    return Result::RecvFromServer;
-  }
-
-  return stdx::make_unexpected(make_error_code(std::errc::bad_message));
+  return Result::Again;
 }
 
 stdx::expected<Processor::Result, std::error_code>
@@ -1701,7 +1727,7 @@ ServerFirstAuthenticator::tls_forward_init() {
   }
 
   stage(Stage::TlsForward);
-  return Result::RecvFromBoth;
+  return Result::Again;
 }
 
 stdx::expected<Processor::Result, std::error_code>
@@ -1890,7 +1916,12 @@ ServerFirstAuthenticator::client_greeting_after_tls() {
 
 stdx::expected<Processor::Result, std::error_code>
 ServerFirstAuthenticator::initial_response() {
-  connection()->push_processor(std::make_unique<AuthForwarder>(connection()));
+  const auto *src_protocol = connection()->client_protocol();
+
+  connection()->push_processor(std::make_unique<AuthForwarder>(
+      connection(),
+      // password was requested already.
+      src_protocol->password() && !src_protocol->password()->empty()));
 
   stage(Stage::FinalResponse);
   return Result::Again;
@@ -1907,6 +1938,9 @@ ServerFirstAuthenticator::final_response() {
   auto read_res =
       ClassicFrame::ensure_has_msg_prefix(src_channel, src_protocol);
   if (!read_res) return recv_server_failed(read_res.error());
+
+  connection()->server_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kFinished);
 
   const uint8_t msg_type = src_protocol->current_msg_type().value();
 

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -53,7 +54,8 @@
 #include "mysql/harness/stdx/expected.h"
 #include "mysql/harness/stdx/expected_ostream.h"
 #include "mysql/harness/stdx/filesystem.h"
-#include "mysql/harness/stdx/ranges.h"  // enumerate
+#include "mysql/harness/stdx/ranges.h"   // enumerate
+#include "mysql/harness/string_utils.h"  // split_string
 #include "mysql/harness/tls_context.h"
 #include "mysql/harness/utility/string.h"  // join
 #include "mysqlrouter/classic_protocol_codec_frame.h"
@@ -102,6 +104,28 @@ std::ostream &operator<<(std::ostream &os, MysqlError e) {
   os << e.sql_state() << " (" << e.value() << ") " << e.message();
   return os;
 }
+
+namespace {
+std::string find_executable_path(const std::string &name) {
+  std::string path(getenv("PATH"));
+
+#ifdef _WIN32
+  const char path_sep = ';';
+#else
+  const char path_sep = ':';
+#endif
+
+  for (const auto &subpath : mysql_harness::split_string(path, path_sep)) {
+    // the path can end with the separator so the last value can be ""
+    if (!subpath.empty()) {
+      auto fn = mysql_harness::Path(subpath).join(name);
+      if (fn.exists()) return fn.str();
+    }
+  }
+
+  return {};
+}
+}  // namespace
 
 /**
  * convert a multi-resultset into a simple container which can be EXPECTed
@@ -6850,6 +6874,266 @@ TEST_P(ShareConnectionTest, classic_protocol_charset_after_connect) {
   }
 }
 
+TEST_P(ShareConnectionTest, php_caching_sha2_password_empty_pass) {
+  auto account = SharedServer::caching_sha2_empty_password_account();
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc =
+      spawner(php)
+          .wait_for_sync_point(Spawner::SyncPoint::NONE)
+          .spawn({
+              "-f",
+              get_data_dir().join("routing_sharing_php_query.php").str(),
+              shared_router()->host(),                            //
+              std::to_string(shared_router()->port(GetParam())),  //
+              account.username,
+              account.password,
+              std::to_string(GetParam().client_ssl_mode == kRequired),
+              std::to_string(GetParam().can_share()),
+          });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, php_caching_sha2_password_pass) {
+  auto account = SharedServer::caching_sha2_password_account();
+
+  if (GetParam().client_ssl_mode == kDisabled &&
+      (GetParam().server_ssl_mode == kRequired ||
+       GetParam().server_ssl_mode == kPreferred)) {
+    // skip it as it is expected to fail to auth.
+    return;
+  }
+
+  // clean the shared privileges to force a full auth.
+  for (const auto &srv : shared_servers()) {
+    srv->flush_privileges();
+  }
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc =
+      spawner(php)
+          .wait_for_sync_point(Spawner::SyncPoint::NONE)
+          .spawn({
+              "-f",
+              get_data_dir().join("routing_sharing_php_query.php").str(),
+              shared_router()->host(),                            //
+              std::to_string(shared_router()->port(GetParam())),  //
+              account.username,
+              account.password,
+              std::to_string(GetParam().client_ssl_mode == kRequired),
+              std::to_string(GetParam().can_share()),
+          });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, php_native_empty_pass) {
+  auto account = SharedServer::native_empty_password_account();
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc =
+      spawner(php)
+          .wait_for_sync_point(Spawner::SyncPoint::NONE)
+          .spawn({
+              "-f",
+              get_data_dir().join("routing_sharing_php_query.php").str(),
+              shared_router()->host(),                            //
+              std::to_string(shared_router()->port(GetParam())),  //
+              account.username,
+              account.password,
+              std::to_string(GetParam().client_ssl_mode == kRequired),
+              std::to_string(GetParam().can_share()),
+          });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, php_native_pass) {
+  auto account = SharedServer::native_password_account();
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc =
+      spawner(php)
+          .wait_for_sync_point(Spawner::SyncPoint::NONE)
+          .spawn({
+              "-f",
+              get_data_dir().join("routing_sharing_php_query.php").str(),
+              shared_router()->host(),                            //
+              std::to_string(shared_router()->port(GetParam())),  //
+              account.username,
+              account.password,
+              std::to_string(GetParam().client_ssl_mode == kRequired),
+              std::to_string(GetParam().can_share()),
+          });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, php_sha256_empty_pass) {
+  auto account = SharedServer::sha256_empty_password_account();
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc =
+      spawner(php)
+          .wait_for_sync_point(Spawner::SyncPoint::NONE)
+          .spawn({
+              "-f",
+              get_data_dir().join("routing_sharing_php_query.php").str(),
+              shared_router()->host(),                            //
+              std::to_string(shared_router()->port(GetParam())),  //
+              account.username,
+              account.password,
+              std::to_string(GetParam().client_ssl_mode == kRequired),
+              std::to_string(GetParam().can_share()),
+          });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, php_sha256_pass) {
+  // - https://github.com/php/php-src/issues/11438 requires
+  // "sha256_short_password_account()"
+  auto account = SharedServer::sha256_short_password_account();
+
+  // - https://github.com/php/php-src/issues/11440 makes PASSTHROUGH fail.
+  if ((GetParam().client_ssl_mode == kDisabled &&
+       (GetParam().server_ssl_mode == kRequired ||
+        GetParam().server_ssl_mode == kPreferred)) ||
+      GetParam().client_ssl_mode == kPassthrough) {
+    // skip it as it is expected to fail to auth.
+    return;
+  }
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc =
+      spawner(php)
+          .wait_for_sync_point(Spawner::SyncPoint::NONE)
+          .spawn({
+              "-f",
+              get_data_dir().join("routing_sharing_php_query.php").str(),
+              shared_router()->host(),                            //
+              std::to_string(shared_router()->port(GetParam())),  //
+              account.username,
+              account.password,
+              std::to_string(GetParam().client_ssl_mode == kRequired),
+              std::to_string(GetParam().can_share()),
+          });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, php_prepared_statement) {
+  auto account = SharedServer::native_empty_password_account();
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc = spawner(php)
+                   .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                   .spawn({
+                       "-f",
+                       get_data_dir()
+                           .join("routing_sharing_php_prepared_statement.php")
+                           .str(),
+                       shared_router()->host(),                            //
+                       std::to_string(shared_router()->port(GetParam())),  //
+                       account.username,
+                       account.password,
+                       std::to_string(GetParam().client_ssl_mode != kDisabled),
+                       std::to_string(GetParam().can_share()),
+                   });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, php_all_commands) {
+  auto account = SharedServer::admin_account();
+
+  auto php = find_executable_path("php");
+  if (php.empty()) GTEST_SKIP() << "php not found in $PATH";
+
+  auto &proc =
+      spawner(php)
+          .wait_for_sync_point(Spawner::SyncPoint::NONE)
+          .spawn({
+              "-f",
+              get_data_dir().join("routing_sharing_php_all_commands.php").str(),
+              shared_router()->host(),                            //
+              std::to_string(shared_router()->port(GetParam())),  //
+              account.username,
+              account.password,
+              std::to_string(GetParam().client_ssl_mode != kDisabled),
+              std::to_string(GetParam().can_share()),
+          });
+
+  proc.wait_for_exit();
+}
+
+TEST_P(ShareConnectionTest, select_overlong) {
+  RecordProperty(
+      "Description",
+      "Check if overlong statements are properly tokenized and forwarded.");
+
+  MysqlClient cli;
+
+  auto account = SharedServer::caching_sha2_empty_password_account();
+
+  cli.username(account.username);
+  cli.password(account.password);
+
+  ASSERT_NO_ERROR(
+      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
+
+  // send a statement that's longer than 16Mbyte which spans multiple protocol
+  // frames.
+  {
+    auto query_res =
+        query_one_result(cli, "SET /* " + std::string(16 * 1024 * 1024, 'a') +
+                                  " */ GLOBAL wait_timeout = 1");
+    ASSERT_ERROR(query_res);
+    // should fail with "Access denied; need SUPER|SYSTEM_VARIABLES_ADMIN
+    EXPECT_EQ(query_res.error().value(), 1227) << query_res.error();
+  }
+
+  // a safe guard that the recv-buffers are proper cleaned
+  ASSERT_NO_ERROR(cli.query("DO 1"));
+}
+
+TEST_P(ShareConnectionTest, aborted_lexing) {
+  RecordProperty("Description",
+                 "Check that lexing a statement with a non-closed comment "
+                 "fails properly.");
+
+  MysqlClient cli;
+
+  auto account = SharedServer::caching_sha2_empty_password_account();
+
+  cli.username(account.username);
+  cli.password(account.password);
+
+  ASSERT_NO_ERROR(
+      cli.connect(shared_router()->host(), shared_router()->port(GetParam())));
+
+  auto query_res = cli.query("DO 1 /*");
+  ASSERT_ERROR(query_res);
+
+  // parse-error at /*
+  EXPECT_EQ(query_res.error().value(), 1064) << query_res.error();
+}
+
 INSTANTIATE_TEST_SUITE_P(Spec, ShareConnectionTest,
                          ::testing::ValuesIn(share_connection_params),
                          [](auto &info) {
@@ -6907,6 +7191,14 @@ class ChangeUserTest
       public ::testing::WithParamInterface<std::tuple<
           bool, ShareConnectionParam, ChangeUserParam, std::string>> {
  public:
+  void SetUp() override {
+    for (auto &s : shared_servers()) {
+      if (s->mysqld_failed_to_start()) {
+        GTEST_SKIP() << "mysql-server failed to start.";
+      }
+    }
+  }
+
   static void TearDownTestSuite() {
     cli_.reset();
     ShareConnectionTestBase::TearDownTestSuite();

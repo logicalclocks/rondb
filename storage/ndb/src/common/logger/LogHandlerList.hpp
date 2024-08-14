@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,9 +35,8 @@ class LogHandler;
  * @see LogHandler
  * @version #@ $Id: LogHandlerList.hpp,v 1.2 2002/03/14 13:07:21 eyualex Exp $
  */
-class LogHandlerList
-{
-public:
+class LogHandlerList {
+ public:
   /**
    * Default Constructor.
    */
@@ -52,14 +52,14 @@ public:
    *
    * @param pNewHandler log handler.
    */
-  bool add(LogHandler* pNewHandler);
+  bool add(LogHandler *pNewHandler);
 
   /**
    * Removes a log handler from the list and call its destructor.
    *
    * @param pRemoveHandler the handler to remove
    */
-  bool remove(LogHandler* pRemoveHandler);
+  bool remove(LogHandler *pRemoveHandler);
 
   /**
    * Removes all log handlers.
@@ -67,36 +67,34 @@ public:
   void removeAll();
 
   /**
-   * Returns the next log handler in the list. 
+   * Returns the next log handler in the list.
    * returns a log handler or NULL.
    */
-  LogHandler* next();
+  LogHandler *next();
 
   /**
    * Returns the size of the list.
-   */ 
+   */
   int size() const;
-private:
+
+ private:
   /** List node */
-  struct LogHandlerNode
-  {
-    LogHandlerNode* pPrev;
-    LogHandlerNode* pNext;    
-    LogHandler* pHandler;
+  struct LogHandlerNode {
+    LogHandlerNode *pPrev;
+    LogHandlerNode *pNext;
+    LogHandler *pHandler;
   };
 
-  LogHandlerNode* next(LogHandlerNode* pNode);
-  LogHandlerNode* prev(LogHandlerNode* pNode);
+  LogHandlerNode *next(LogHandlerNode *pNode);
+  LogHandlerNode *prev(LogHandlerNode *pNode);
 
-  void removeNode(LogHandlerNode* pNode);
+  void removeNode(LogHandlerNode *pNode);
 
   int m_size;
 
-  LogHandlerNode* m_pHeadNode;
-  LogHandlerNode* m_pTailNode;
-  LogHandlerNode* m_pCurrNode;
+  LogHandlerNode *m_pHeadNode;
+  LogHandlerNode *m_pTailNode;
+  LogHandlerNode *m_pCurrNode;
 };
 
 #endif
-
-

@@ -1,17 +1,18 @@
 /*
- *  Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+ *  Copyright (c) 2009, 2024, Oracle and/or its affiliates.
  *  Copyright (c) 2020, 2023, Hopsworks, and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
  *  as published by the Free Software Foundation.
  *
- *  This program is also distributed with certain software (including
+ *  This program is designed to work with certain software (including
  *  but not limited to OpenSSL) that is licensed under separate terms,
  *  as designated in a particular file or component or in included license
  *  documentation.  The authors of MySQL hereby grant you an additional
  *  permission to link the program and your derivative works with the
- *  separately licensed software that they have included with MySQL.
+ *  separately licensed software that they have either included with
+ *  the program or referenced in the documentation.
  *
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -97,12 +98,6 @@ class ClusterTransactionImpl implements ClusterTransaction {
     /** The NdbDictionary */
     private Dictionary ndbDictionary;
 
-    /** The coordinated transaction identifier */
-    private String coordinatedTransactionId = null;
-
-    /** Is getCoordinatedTransactionId supported? True until proven false. */
-    private static boolean supportsGetCoordinatedTransactionId = true;
-
     /** Lock mode for find operations */
     private int findLockMode = com.mysql.ndbjtie.ndbapi.NdbOperationConst.LockMode.LM_CommittedRead;
 
@@ -121,9 +116,6 @@ class ClusterTransactionImpl implements ClusterTransaction {
     /** Autocommitted flag if we autocommitted early */
     private boolean autocommitted = false;
 
-    /** The transaction id to join this transaction to */
-    private String joinTransactionId;
-
     private BufferManager bufferManager;
 
     private List<Operation> operationsToCheck = new ArrayList<Operation>();
@@ -132,11 +124,10 @@ class ClusterTransactionImpl implements ClusterTransaction {
     private final boolean hops_pk_fix = true;
 
     public ClusterTransactionImpl(ClusterConnectionImpl clusterConnectionImpl,
-            DbImpl db, Dictionary ndbDictionary, String joinTransactionId) {
+            DbImpl db, Dictionary ndbDictionary) {
         this.db = db;
         this.clusterConnectionImpl = clusterConnectionImpl;
         this.ndbDictionary = ndbDictionary;
-        this.joinTransactionId = joinTransactionId;
         this.bufferManager = db.getBufferManager();
     }
 
@@ -162,20 +153,14 @@ class ClusterTransactionImpl implements ClusterTransaction {
 
     /**
      * Enlist the ndb transaction if not already enlisted.
-     * If the coordinated transaction id is set, join an existing transaction.
-     * Otherwise, use the partition key to enlist the transaction.
+     * Use the partition key to enlist the transaction.
      */
     private void enlist() {
         db.assertNotClosed("ClusterTransactionImpl.enlist");
-        if (logger.isTraceEnabled()) logger.trace("ndbTransaction: " + ndbTransaction
-                + " with joinTransactionId: " + joinTransactionId);
+        if (logger.isTraceEnabled())
+            logger.trace("ndbTransaction: " + ndbTransaction);
         if (ndbTransaction == null) {
-            if (coordinatedTransactionId != null) {
-                ndbTransaction = db.joinTransaction(coordinatedTransactionId);
-            } else {
-                ndbTransaction = partitionKey.enlist(db);
-                getCoordinatedTransactionId(db);
-            }
+            ndbTransaction = partitionKey.enlist(db);
         }
     }
 
@@ -684,40 +669,6 @@ class ClusterTransactionImpl implements ClusterTransaction {
         } else {
             this.partitionKey = (PartitionKeyImpl)partitionKey;
         }
-    }
-
-    public String getCoordinatedTransactionId() {
-        return coordinatedTransactionId;
-    }
-
-    /** Get the coordinated transaction id if possible and update the field with
-     * the id. If running on a back level system (prior to 7.1.6 for the ndbjtie
-     * and native library) the ndbTransaction.getCoordinatedTransactionId() method
-     * will throw an Error of some kind (java.lang.NoSuchMethodError or
-     * java.lang.UnsatisfiedLinkError) and this will cause this instance
-     * (and any other instance with access to the new value of the static variable 
-     * supportsGetCoordinatedTransactionId) to never try again.
-     * @param db the DbImpl instance
-     */
-    private void getCoordinatedTransactionId(DbImpl db) {
-        try {
-            if (supportsGetCoordinatedTransactionId) {
-// not implemented quite yet...
-//                ByteBuffer buffer = db.getCoordinatedTransactionIdBuffer();
-//                coordinatedTransactionId = ndbTransaction.
-//                        getCoordinatedTransactionId(buffer, buffer.capacity());
-                if (logger.isDetailEnabled()) logger.detail("CoordinatedTransactionId: "
-                        + coordinatedTransactionId);
-                throw new ClusterJFatalInternalException("Not Implemented");
-            }
-        } catch (Throwable t) {
-            // oops, don't do this again
-            supportsGetCoordinatedTransactionId = false;
-        }
-    }
-
-    public void setCoordinatedTransactionId(String coordinatedTransactionId) {
-        this.coordinatedTransactionId = coordinatedTransactionId;
     }
 
     public void setLockMode(LockMode lockmode) {

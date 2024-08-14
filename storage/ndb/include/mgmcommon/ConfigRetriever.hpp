@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,21 +27,20 @@
 #ifndef ConfigRetriever_H
 #define ConfigRetriever_H
 
-#include <ndb_types.h>
 #include <mgmapi.h>
-#include "mgmcommon/NdbMgm.hpp"
+#include <ndb_types.h>
 #include <BaseString.hpp>
+#include "mgmcommon/NdbMgm.hpp"
 
 /**
  * @class ConfigRetriever
  * @brief Used by nodes (DB, MGM, API) to get their config from MGM server. 
  */
 class ConfigRetriever {
-public:
-  ConfigRetriever(const char * _connect_string, int force_nodeid,
-                  Uint32 version, ndb_mgm_node_type nodeType,
-		  const char * _bind_address = nullptr,
-                  int timeout_ms = 30000);
+ public:
+  ConfigRetriever(const char *_connect_string, int force_nodeid, Uint32 version,
+                  ndb_mgm_node_type nodeType,
+                  const char *_bind_address = nullptr, int timeout_ms = 30000);
   ~ConfigRetriever();
 
   int do_connect(int no_retries, int retry_delay_in_seconds, int verbose);
@@ -63,14 +63,14 @@ public:
   
   void resetError();
   int hasError();
-  const char * getErrorString();
+  const char *getErrorString();
 
   /**
    * @return Node id of this node (as stated in local config or connectString)
    */
   Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds);
-  Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds,
-                     int verbose, int& error);
+  Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds, int verbose,
+                     int &error);
 
   int setNodeId(Uint32 nodeid);
 
@@ -82,8 +82,8 @@ public:
   /**
    * Get config from file
    */
-  static ndb_mgm::config_ptr getConfig(const char * file, BaseString& err);
-  ndb_mgm::config_ptr getConfig(const char * file);
+  static ndb_mgm::config_ptr getConfig(const char *file, BaseString &err);
+  ndb_mgm::config_ptr getConfig(const char *file);
 
   /**
    * Verify config
@@ -95,19 +95,17 @@ public:
   const char *get_mgmd_host() const;
   const char *get_connectstring(char *buf, int buf_sz) const;
   NdbMgmHandle get_mgmHandle() const { return m_handle; }
-  NdbMgmHandle* get_mgmHandlePtr() { return &m_handle; }
-  void end_session(bool end) { m_end_session= end; }
+  NdbMgmHandle *get_mgmHandlePtr() { return &m_handle; }
+  void end_session(bool end) { m_end_session = end; }
 
   Uint32 get_configuration_nodeid() const;
-private:
+
+ private:
   BaseString errorString;
-  enum ErrorType {
-    CR_NO_ERROR = 0,
-    CR_ERROR = 1
-  };
+  enum ErrorType { CR_NO_ERROR = 0, CR_ERROR = 1 };
   ErrorType latestErrorType;
 
-  void setError(ErrorType, const char * errorMsg);
+  void setError(ErrorType, const char *errorMsg);
   void setError(ErrorType, BaseString err);
 
   bool m_end_session;
@@ -119,5 +117,3 @@ private:
 };
 
 #endif
-
-

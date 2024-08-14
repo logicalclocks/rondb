@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,14 +35,12 @@
  * Output stream
  */
 class OutputStream {
-public:
+ public:
   OutputStream() {}
   virtual ~OutputStream() {}
-  virtual int print(const char * fmt, ...)
-    ATTRIBUTE_FORMAT(printf, 2, 3) = 0;
-  virtual int println(const char * fmt, ...)
-    ATTRIBUTE_FORMAT(printf, 2, 3) = 0;
-  virtual int write(const void * buf, size_t len) = 0;
+  virtual int print(const char *fmt, ...) ATTRIBUTE_FORMAT(printf, 2, 3) = 0;
+  virtual int println(const char *fmt, ...) ATTRIBUTE_FORMAT(printf, 2, 3) = 0;
+  virtual int write(const void *buf, size_t len) = 0;
   virtual void flush() {}
   virtual void reset_timeout() {}
 };
@@ -53,125 +52,101 @@ public:
  */
 
 class BufferedOutputStream : public OutputStream {
-public:
-  BufferedOutputStream(class LogBuffer* plogBuf);
+ public:
+  BufferedOutputStream(class LogBuffer *plogBuf);
   ~BufferedOutputStream() override {}
 
-  int print(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int println(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int write(const void * buf, size_t len) override;
+  int print(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int println(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int write(const void *buf, size_t len) override;
   void flush() override {}
 
-private:
-  class LogBuffer* logBuf;
+ private:
+  class LogBuffer *logBuf;
 };
 
 class FileOutputStream : public OutputStream {
-  FILE * f;
-public:
-  FileOutputStream(FILE * file = stdout);
+  FILE *f;
+
+ public:
+  FileOutputStream(FILE *file = stdout);
   ~FileOutputStream() override {}
   FILE *getFile() { return f; }
 
-  int print(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int println(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int write(const void * buf, size_t len) override;
+  int print(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int println(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int write(const void *buf, size_t len) override;
   void flush() override { fflush(f); }
 };
 
-class SecureSocketOutputStream : public OutputStream {
-protected:
-  const NdbSocket & m_socket;
+class SocketOutputStream : public OutputStream {
+ protected:
+  const NdbSocket &m_socket;
   unsigned m_timeout_ms;
   bool m_timedout;
   unsigned m_timeout_remain;
-public:
-  SecureSocketOutputStream(const NdbSocket &, unsigned write_timeout_ms = 1000);
-  ~SecureSocketOutputStream() override {}
-  bool timedout() { return m_timedout; }
-  void reset_timeout() override { m_timedout= false; m_timeout_remain= m_timeout_ms;}
 
-  int print(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int println(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int write(const void * buf, size_t len) override;
-};
-
-class SocketOutputStream : public SecureSocketOutputStream {
-public:
-  SocketOutputStream(ndb_socket_t s, unsigned timeout_ms = 1000) :
-    SecureSocketOutputStream(m_owned_socket, timeout_ms),
-    m_owned_socket(s, NdbSocket::From::Existing) {}
+ public:
+  SocketOutputStream(const NdbSocket &, unsigned write_timeout_ms = 1000);
   ~SocketOutputStream() override {}
+  bool timedout() { return m_timedout; }
+  void reset_timeout() override {
+    m_timedout = false;
+    m_timeout_remain = m_timeout_ms;
+  }
 
-private:
-  NdbSocket m_owned_socket;
+  int print(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int println(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int write(const void *buf, size_t len) override;
 };
 
-class BufferedSecureOutputStream : public SecureSocketOutputStream {
-protected:
-  class UtilBuffer& m_buffer;
-public:
-  BufferedSecureOutputStream(const NdbSocket & socket,
-                             unsigned write_timeout_ms = 1000);
-  ~BufferedSecureOutputStream() override;
+class BufferSocketOutputStream : public SocketOutputStream {
+ protected:
+  class UtilBuffer &m_buffer;
 
-  int print(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int println(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
+ public:
+  BufferSocketOutputStream(const NdbSocket &socket,
+                           unsigned write_timeout_ms = 1000);
+  ~BufferSocketOutputStream() override;
 
-  int write(const void * buf, size_t len) override;
+  int print(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int println(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+
+  int write(const void *buf, size_t len) override;
   void flush() override;
 };
 
-class BufferedSockOutputStream : public BufferedSecureOutputStream {
-public:
-  BufferedSockOutputStream(ndb_socket_t s, unsigned timeout_msec = 1000) :
-    BufferedSecureOutputStream(m_owned_socket, timeout_msec),
-    m_owned_socket(s, NdbSocket::From::Existing) {}
-
-  ~BufferedSockOutputStream() override {}
-private:
-  NdbSocket m_owned_socket;
-};
-
-
 class NullOutputStream : public OutputStream {
-public:
+ public:
   NullOutputStream() {}
   ~NullOutputStream() override {}
-  int print(const char * /* unused */, ...) override { return 1;}
-  int println(const char * /* unused */, ...) override { return 1;}
-  int write(const void * /*buf*/, size_t /*len*/) override { return 1;}
+  int print(const char * /* unused */, ...) override { return 1; }
+  int println(const char * /* unused */, ...) override { return 1; }
+  int write(const void * /*buf*/, size_t /*len*/) override { return 1; }
 };
 
-class StaticBuffOutputStream : public OutputStream
-{
-private:
-  char* m_buff;
+class StaticBuffOutputStream : public OutputStream {
+ private:
+  char *m_buff;
   const size_t m_size;
   size_t m_offset;
-public:
-  StaticBuffOutputStream(char* buff, size_t size);
+
+ public:
+  StaticBuffOutputStream(char *buff, size_t size);
   ~StaticBuffOutputStream() override;
 
-  int print(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
-  int println(const char * fmt, ...) override
-    ATTRIBUTE_FORMAT(printf, 2, 3);
+  int print(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
+  int println(const char *fmt, ...) override ATTRIBUTE_FORMAT(printf, 2, 3);
 
-  int write(const void * buf, size_t len) override;
+  int write(const void *buf, size_t len) override;
   void flush() override {}
 
-  const char* getBuff() const {return m_buff;}
-  size_t getLen() const {return m_offset;}
-  void reset() {m_buff[0] = '\n'; m_offset = 0; }
+  const char *getBuff() const { return m_buff; }
+  size_t getLen() const { return m_offset; }
+  void reset() {
+    m_buff[0] = '\n';
+    m_offset = 0;
+  }
 };
 
 #endif

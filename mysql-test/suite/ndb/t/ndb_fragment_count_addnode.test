@@ -311,4 +311,7 @@ select @cnt_t13_1 > @cnt_t13_0;
 
 drop table t9,t10,t11,t12,t13,t14;
 
+--exec $NDB_MGM -e "drop nodegroup 3"
+--exec $NDB_MGM -e "drop nodegroup 2"
+
 --source suite/ndb/include/restore_ndb_read_backup.inc

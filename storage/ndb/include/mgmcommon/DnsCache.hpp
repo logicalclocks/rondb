@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,8 +27,8 @@
 #define DnsCache_H
 
 #include <string>
-#include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
 
 /*
   Local DNS cache used to speed up subsequent DNS lookups where same hostname is
@@ -42,22 +43,23 @@
 class ndb_sockaddr;
 
 class LocalDnsCache {
-public:
+ public:
   ~LocalDnsCache();
 
-  int getAddress(ndb_sockaddr * result, const char *hostname);
-protected:
-  /* no heap allocation */
-  static void * operator new(std::size_t) = delete;
-  static void * operator new[](std::size_t) = delete;
+  int getAddress(ndb_sockaddr *result, const char *hostname);
 
-private:
+ protected:
+  /* no heap allocation */
+  static void *operator new(std::size_t) = delete;
+  static void *operator new[](std::size_t) = delete;
+
+ private:
   // Negative cache of DNS misses
   std::unordered_set<std::string> m_failed_lookups;
   // Positive cache of DNS lookups
-  std::unordered_map<std::string, ndb_sockaddr*> m_resolver_cache;
+  std::unordered_map<std::string, ndb_sockaddr *> m_resolver_cache;
 
-  bool getCachedOrResolveAddress(ndb_sockaddr* result, const char* hostname);
+  bool getCachedOrResolveAddress(ndb_sockaddr *result, const char *hostname);
 };
 
 #endif

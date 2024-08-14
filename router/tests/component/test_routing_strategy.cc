@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -272,6 +273,13 @@ class RouterRoutingStrategyTest : public RouterComponentTest {
     EXPECT_EQ(server->wait_for_exit(), 0);
   }
 
+  void check_log_contains(ProcessWrapper &router,
+                          const std::string &expected_string) {
+    const std::string log_content = router.get_logfile_content();
+    EXPECT_EQ(1, count_str_occurences(log_content, expected_string))
+        << log_content;
+  }
+
   std::chrono::milliseconds wait_for_cache_ready_timeout{1000};
   std::chrono::milliseconds wait_for_static_ready_timeout{100};
   std::chrono::milliseconds wait_for_process_exit_timeout{10000};
@@ -423,6 +431,19 @@ TEST_P(RouterRoutingStrategyMetadataCache, MetadataCacheRoutingStrategy) {
                   node_port);
       }
     }
+  }
+
+  if (GetParam().role.find("allow_primary_reads") != std::string::npos) {
+    RecordProperty("Worklog", "15871");
+    RecordProperty("RequirementId", "FR1");
+    RecordProperty("Description",
+                   "Checks that the Router logs a deprecation warning if "
+                   "allow_primary_reads parameter is used in the "
+                   "[routing].destinations URI");
+
+    check_log_contains(router,
+                       "allow_primary_reads is deprecated, use "
+                       "role=PRIMARY_AND_SECONDARY instead");
   }
 
   ASSERT_THAT(router.kill(), testing::Eq(0));

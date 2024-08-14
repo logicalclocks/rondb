@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1911,7 +1912,7 @@ bool explain_single_table_modification(THD *explain_thd, const THD *query_thd,
     return ExplainIterator(explain_thd, query_thd, nullptr);
   }
 
-  if (query_thd->lex->using_hypergraph_optimizer) {
+  if (query_thd->lex->using_hypergraph_optimizer()) {
     my_error(ER_HYPERGRAPH_NOT_SUPPORTED_YET, MYF(0),
              "EXPLAIN with TRADITIONAL format");
     return true;
@@ -2267,10 +2268,10 @@ bool explain_query(THD *explain_thd, const THD *query_thd,
   // offloaded to a secondary engine, so we return a fake plan with that
   // information.
   const bool fake_explain_for_secondary_engine =
-      query_thd->lex->using_hypergraph_optimizer && secondary_engine &&
+      query_thd->lex->using_hypergraph_optimizer() && secondary_engine &&
       !lex->explain_format->is_hierarchical();
 
-  if (query_thd->lex->using_hypergraph_optimizer &&
+  if (query_thd->lex->using_hypergraph_optimizer() &&
       !fake_explain_for_secondary_engine) {
     // With hypergraph, JSON is iterator-based. So it must be TRADITIONAL.
     my_error(ER_HYPERGRAPH_NOT_SUPPORTED_YET, MYF(0),

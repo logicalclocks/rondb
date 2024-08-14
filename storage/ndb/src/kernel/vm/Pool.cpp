@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2006, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2006, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,10 +24,9 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-#include "ndbd_malloc_impl.hpp"
 #include "Pool.hpp"
 #include "SimulatedBlock.hpp"
+#include "ndbd_malloc_impl.hpp"
 
 #define JAM_FILE_ID 255
 
@@ -75,32 +75,22 @@ Pool_context::alloc_page32(Uint32 type_id,
                                         allow_use_spare);
 }
 
-void 
-Pool_context::release_page(Uint32 type_id, Uint32 i)
-{
+void Pool_context::release_page(Uint32 type_id, Uint32 i) {
   m_block->m_ctx.m_mm.release_page(type_id, i);
 }
 
-Ndbd_mem_manager*
-Pool_context::get_mem_manager() const
-{
+Ndbd_mem_manager *Pool_context::get_mem_manager() const {
   return &m_block->m_ctx.m_mm;
 }
 
-void*
-Pool_context::get_memroot() const
-{
+void *Pool_context::get_memroot() const {
   return m_block->m_ctx.m_mm.get_memroot();
 }
 
-void*
-Pool_context::get_valid_page(Uint32 page_num) const
-{
+void *Pool_context::get_valid_page(Uint32 page_num) const {
   return m_block->m_ctx.m_mm.get_valid_page(page_num);
 }
 
-void
-Pool_context::handleAbort(int err, const char * msg) const
-{
+void Pool_context::handleAbort(int err, const char *msg) const {
   m_block->progError(__LINE__, err, msg);
 }

@@ -1,15 +1,16 @@
-# Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,10 +26,12 @@
 # Version 1.3.1 on Ubuntu 20.04 does *not* work.
 # Version 1.4.0 on Fedora 33 passes all tests.
 SET(MIN_FIDO_VERSION_REQUIRED "1.4.0")
+SET(FIDO_BUNDLED_VERSION "1.13.0")
+SET(CBOR_BUNDLED_VERSION "0.10.2")
 
 MACRO(FIND_FIDO_VERSION)
   IF(WITH_FIDO STREQUAL "bundled")
-    SET(FIDO_VERSION "1.8.0")
+    SET(FIDO_VERSION "${FIDO_BUNDLED_VERSION}")
   ELSE()
     # This does not set any version information:
     # PKG_CHECK_MODULES(SYSTEM_FIDO fido2)
@@ -143,8 +146,10 @@ FUNCTION(FIND_SYSTEM_FIDO)
   ENDIF()
 ENDFUNCTION(FIND_SYSTEM_FIDO)
 
-SET(FIDO_BUNDLE_SRC_PATH "extra/libfido2/libfido2-1.8.0")
-SET(CBOR_BUNDLE_SRC_PATH "extra/libcbor")
+SET(FIDO_BUNDLE_SRC_PATH "extra/libfido2/libfido2-")
+STRING_APPEND(FIDO_BUNDLE_SRC_PATH "${FIDO_BUNDLED_VERSION}")
+SET(CBOR_BUNDLE_SRC_PATH "extra/libcbor/libcbor-")
+STRING_APPEND(CBOR_BUNDLE_SRC_PATH "${CBOR_BUNDLED_VERSION}")
 
 FUNCTION(MYSQL_USE_BUNDLED_FIDO)
 
@@ -179,29 +184,52 @@ FUNCTION(MYSQL_USE_BUNDLED_FIDO)
 ENDFUNCTION(MYSQL_USE_BUNDLED_FIDO)
 
 MACRO(MYSQL_CHECK_FIDO)
-  IF (NOT WITH_FIDO)
-    SET(WITH_FIDO "bundled"
-      CACHE STRING "By default use bundled libfido2.")
-  ENDIF()
-
-  IF(WITH_FIDO STREQUAL "bundled")
-    MYSQL_USE_BUNDLED_FIDO()
-  ELSEIF(WITH_FIDO STREQUAL "system")
-    FIND_SYSTEM_FIDO()
-    IF(NOT FIDO_FOUND)
-      MESSAGE(WARNING "Cannot find system fido2 libraries/headers.")
-    ENDIF()
+  IF("${OPENSSL_MAJOR_MINOR_FIX_VERSION}" VERSION_GREATER "1.1.0")
+    SET(OPENSSL_IS_COMPATIBLE_WITH_BUNDLED_FIDO ON)
   ELSE()
-    MESSAGE(WARNING "WITH_FIDO must be bundled or system")
+    SET(OPENSSL_IS_COMPATIBLE_WITH_BUNDLED_FIDO OFF)
+    SET(WITH_AUTHENTICATION_FIDO OFF)
   ENDIF()
 
-  FIND_FIDO_VERSION()
-  IF(FIDO_VERSION VERSION_LESS MIN_FIDO_VERSION_REQUIRED)
-    MESSAGE(FATAL_ERROR
-      "FIDO version must be at least ${MIN_FIDO_VERSION_REQUIRED}, "
-      "found ${FIDO_VERSION}.\nPlease use -DWITH_FIDO=bundled")
+  IF (NOT WITH_FIDO)
+    IF(OPENSSL_IS_COMPATIBLE_WITH_BUNDLED_FIDO)
+      SET(WITH_FIDO "bundled"
+        CACHE STRING "By default use bundled libfido2.")
+    ELSE()
+      SET(WITH_FIDO "none"
+        CACHE STRING "Do not compile libfido2 for OpenSSL < 1.1.1")
+    ENDIF()
   ENDIF()
-  IF(FIDO_FOUND)
-    ADD_LIBRARY(ext::fido ALIAS fido_interface)
+
+  IF(WITH_FIDO STREQUAL "none")
+    MESSAGE(WARNING
+      "WITH_FIDO is set to \"none\". \
+       FIDO based authentication plugins will be skipped.")
+  ELSE()
+    IF(WITH_FIDO STREQUAL "bundled")
+      IF(OPENSSL_IS_COMPATIBLE_WITH_BUNDLED_FIDO)
+        MYSQL_USE_BUNDLED_FIDO()
+      ELSE()
+        MESSAGE(FATAL_ERROR
+          "Bundled libfido2 requires OpenSSL version >= 1.1.1")
+      ENDIF()
+    ELSEIF(WITH_FIDO STREQUAL "system")
+      FIND_SYSTEM_FIDO()
+      IF(NOT FIDO_FOUND)
+        MESSAGE(WARNING "Cannot find system fido2 libraries/headers.")
+      ENDIF()
+    ELSE()
+      MESSAGE(WARNING "WITH_FIDO must be none, bundled or system")
+    ENDIF()
+
+    FIND_FIDO_VERSION()
+    IF(FIDO_VERSION VERSION_LESS MIN_FIDO_VERSION_REQUIRED)
+      MESSAGE(FATAL_ERROR
+        "FIDO version must be at least ${MIN_FIDO_VERSION_REQUIRED}, "
+        "found ${FIDO_VERSION}.\nPlease use -DWITH_FIDO=bundled")
+    ENDIF()
+    IF(FIDO_FOUND)
+      ADD_LIBRARY(ext::fido ALIAS fido_interface)
+    ENDIF()
   ENDIF()
 ENDMACRO()

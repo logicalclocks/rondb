@@ -1,16 +1,17 @@
-# Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 # Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -63,6 +64,7 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   SocketServer.cpp
   Vector.cpp
   basename.cpp
+  cstrbuf.cpp
   decimal_utils.cpp
   xxhash_avx2.cpp
   xxhash_std.cpp
@@ -73,11 +75,13 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   parse_mask.cpp
   random.cpp
   require.cpp
-  ssl_socket_table.cpp
   socket_io.cpp
   version.cpp
   LINK_LIBRARIES ndbtrace ndbportlib ext::zlib mysys
 )
+
+# Exclude ndbgeneral_objlib from PGO on Windows to avoid linker error LNK1248
+EXCLUDE_FROM_MSVC_PGO(ndbgeneral_objlib)
 
 # Cyclic dependencies for ndbgeneral.
 SET_TARGET_PROPERTIES(ndbgeneral PROPERTIES LINK_INTERFACE_MULTIPLICITY 3)
@@ -86,6 +90,15 @@ FOREACH(tests BaseString Bitmask SparseBitmask Parser HashMap2 LinkedStack
         ndb_zlib cstrbuf span)
   NDB_ADD_TEST("${tests}-t" "${tests}.cpp" LIBS ndbgeneral)
 ENDFOREACH(tests)
+
+# This looks like a gcc bug, there *are* ATTRIBUTE_FORMAT annotations for
+# cstrbuf::appendf()
+IF(WITH_UNIT_TESTS)
+  IF(MY_COMPILER_IS_GNU AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 13)
+    TARGET_COMPILE_OPTIONS(cstrbuf-t PRIVATE
+      "-Wno-error=suggest-attribute=format")
+  ENDIF()
+ENDIF()
 
 NDB_ADD_TEST(ndb_version-t version.cpp LIBS ndbgeneral)
 

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -87,7 +88,6 @@ bool RouterComponentTest::wait_log_contains(const ProcessWrapper &router,
   return found;
 }
 
-std::string RouterComponentBootstrapTest::my_hostname;
 constexpr const char RouterComponentBootstrapTest::kRootPassword[];
 
 const RouterComponentBootstrapTest::OutputResponder
@@ -125,6 +125,19 @@ void RouterComponentBootstrapTest::bootstrap_failover(
 
   std::vector<std::tuple<ProcessWrapper &, unsigned int>> mock_servers;
 
+  // shutdown the mock-servers when bootstrap is done.
+  Scope_guard guard{[&mock_servers]() {
+    // send a shutdown to all mocks
+    for (auto [proc, port] : mock_servers) {
+      proc.send_clean_shutdown_event();
+    }
+
+    // ... then wait for them all to finish.
+    for (auto [proc, port] : mock_servers) {
+      proc.wait_for_exit();
+    }
+  }};
+
   // start the mocks
   for (const auto &mock_server_config : mock_server_configs) {
     if (mock_server_config.js_filename.empty()) continue;
@@ -151,8 +164,6 @@ void RouterComponentBootstrapTest::bootstrap_failover(
     router_cmdline.emplace_back("--bootstrap=" + gr_members[0].first + ":" +
                                 std::to_string(gr_members[0].second));
 
-    router_cmdline.emplace_back("--report-host");
-    router_cmdline.emplace_back(my_hostname);
     router_cmdline.emplace_back("--connect-timeout");
     router_cmdline.emplace_back("1");
     router_cmdline.emplace_back("-d");

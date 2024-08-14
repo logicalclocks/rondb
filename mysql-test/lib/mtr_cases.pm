@@ -1,16 +1,17 @@
 # -*- cperl -*-
-# Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2005, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1357,6 +1358,15 @@ sub collect_one_test_case {
     }
   }
 
+  if ($tinfo->{'ndbt_test'}) {
+    # This test requires special NDB test binaries
+    if ($ENV{'NDBT_BINARIES_AVAILABLE'} != 1) {
+       # NDB test binaries not available, skip
+       skip_test($tinfo, "NDB test binaries not available");
+       return $tinfo;
+    }
+  }
+
   if ($tinfo->{'federated_test'}) {
     # This is a test that needs federated, enable it
     push(@{ $tinfo->{'master_opt'} }, "--loose-federated");
@@ -1494,6 +1504,8 @@ my @tags = (
   [ "include/have_debug.inc",     "need_debug", 1 ],
   [ "include/have_ndb.inc",       "ndb_test",   1 ],
   [ "include/have_multi_ndb.inc", "ndb_test",   1 ],
+  [ "include/full_result_diff.inc", "full_result_diff", 1 ],
+  [ "run_ndbapitest.inc", "ndbt_test",  1 ],
 
   # Any test sourcing the below inc file is considered to be an NDB
   # test not having its corresponding result file.

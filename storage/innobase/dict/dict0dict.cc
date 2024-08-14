@@ -1,18 +1,19 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2023, Oracle and/or its affiliates.
+Copyright (c) 1996, 2024, Oracle and/or its affiliates.
 Copyright (c) 2012, Facebook Inc.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -1551,7 +1552,12 @@ dberr_t dict_table_rename_in_cache(
 
     ut_ad(!table->is_temporary());
 
+    /* In case of explicit data dir setting or
+    table recreation(ALTER TABLE .. FORCE/ALTER TABLE .. ENGINE)
+    from a non-default path, the new table path should be same
+    as the source/old path. */
     if (DICT_TF_HAS_DATA_DIR(table->flags)) {
+      ut_ad(old_path != nullptr);
       std::string new_ibd;
 
       new_ibd = Fil_path::make_new_path(old_path, new_name, IBD);
@@ -3129,11 +3135,13 @@ static dict_index_t *dict_index_build_internal_clust(
 
   ut::free(indexed);
 
-  if (!table->is_system_table) {
-    if (table->has_row_versions()) {
-      new_index->create_fields_array();
-    }
-    new_index->create_nullables(table->current_row_version);
+  new_index->create_nullables(table->current_row_version);
+
+  if (table->has_row_versions()) {
+    new_index->create_fields_array();
+  } else {
+    /* Table with no row version are considered of version 0 */
+    ut_a(new_index->get_nullable_in_version(0) == new_index->n_nullable);
   }
 
   ut_ad(UT_LIST_GET_LEN(table->indexes) == 0);

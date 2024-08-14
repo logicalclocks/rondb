@@ -1,16 +1,17 @@
 /*
-Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -151,8 +152,11 @@ class GrNotificationsTest : public RouterComponentTest {
     gr_id_.reset(new JsonValue(gr_id.c_str(), gr_id.length(), allocator));
 
     gr_nodes_.reset(new JsonValue(rapidjson::kArrayType));
-    for (auto &gr_node : gr_node_ports) {
+    for (auto [i, gr_node] : stdx::views::enumerate(gr_node_ports)) {
       JsonValue node(rapidjson::kArrayType);
+      const std::string uuid = "uuid-" + std::to_string(i + 1);
+      node.PushBack(JsonValue(uuid.c_str(), uuid.length(), allocator),
+                    allocator);
       node.PushBack(JsonValue(static_cast<int>(gr_node)), allocator);
       node.PushBack(JsonValue("ONLINE", strlen("ONLINE"), allocator),
                     allocator);
@@ -164,6 +168,9 @@ class GrNotificationsTest : public RouterComponentTest {
         cluster_node_ports.empty() ? gr_node_ports : cluster_node_ports;
     for (auto [i, cluster_node] : stdx::views::enumerate(cluster_nodes)) {
       JsonValue node(rapidjson::kArrayType);
+      const std::string uuid = "uuid-" + std::to_string(i + 1);
+      node.PushBack(JsonValue(uuid.c_str(), uuid.length(), allocator),
+                    allocator);
       node.PushBack(JsonValue(static_cast<int>(cluster_node)), allocator);
       node.PushBack(JsonValue(static_cast<int>(gr_node_xports[i])), allocator);
       node.PushBack(JsonValue("{}", strlen("{}"), allocator), allocator);
@@ -760,10 +767,16 @@ TEST_P(GrNotificationMysqlxWaitTimeoutUnsupportedTest,
   // there should be no WARNINGs nor ERRORs in the log file
   const std::string log_content = router.get_logfile_content();
 
-  EXPECT_THAT(log_content,
-              ::testing::Not(::testing::AnyOf(
-                  ::testing::HasSubstr(" metadata_cache ERROR "),
-                  ::testing::HasSubstr(" metadata_cache WARNING "))));
+  if (GetParam() == "metadata_dynamic_nodes.js") {
+    // there will be warning about deprecated metadata for MD 1.x
+    EXPECT_THAT(log_content,
+                ::testing::Not(::testing::HasSubstr(" metadata_cache ERROR ")));
+  } else {
+    EXPECT_THAT(log_content,
+                ::testing::Not(::testing::AnyOf(
+                    ::testing::HasSubstr(" metadata_cache ERROR "),
+                    ::testing::HasSubstr(" metadata_cache WARNING "))));
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(GrNotificationMysqlxWaitTimeoutUnsupported,

@@ -1,16 +1,17 @@
 /*
-Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,25 +26,24 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 #ifndef NODEJS_ADAPTER_INCLUDE_JSVALUEACCESS_H
 #define NODEJS_ADAPTER_INCLUDE_JSVALUEACCESS_H
 
-#include <cstddef>              // size_t
 #include <node_buffer.h>
+#include <cstddef>  // size_t
 
-using v8::String;
-using v8::Number;
-using v8::NewStringType;
-using v8::Local;
-using v8::Object;
+using v8::Boolean;
+using v8::Date;
+using v8::Integer;
 using v8::Isolate;
-using v8::Value;
+using v8::Local;
 using v8::Maybe;
 using v8::MaybeLocal;
-using v8::Boolean;
-using v8::Integer;
-using v8::Number;
-using v8::Date;
-using v8::Name;
-using v8::TryCatch;
 using v8::Message;
+using v8::Name;
+using v8::NewStringType;
+using v8::Number;
+using v8::Object;
+using v8::String;
+using v8::TryCatch;
+using v8::Value;
 
 typedef v8::FunctionCallbackInfo<Value> Arguments;
 
@@ -76,15 +76,14 @@ inline Local<Value> Get(Local<Object> obj, T key) {
 
 // Create New JavaScript Strings
 inline Local<String> NewUtf8String(Isolate *isolate, const char *str,
-                                   size_t len)
-{
-  return  String::NewFromUtf8(isolate, str, NewStringType::kNormal, len).
-    ToLocalChecked();
+                                   size_t len) {
+  return String::NewFromUtf8(isolate, str, NewStringType::kNormal, len)
+      .ToLocalChecked();
 }
 
-inline Local<String> NewUtf8String(Isolate *isolate, const char *str,
-                                   NewStringType type = NewStringType::kNormal)
-{
+inline Local<String> NewUtf8String(
+    Isolate *isolate, const char *str,
+    NewStringType type = NewStringType::kNormal) {
   return String::NewFromUtf8(isolate, str, type).ToLocalChecked();
 }
 
@@ -105,7 +104,6 @@ template <typename EXT>
 inline Local<String> NewExternalTwoByteString(Isolate *isolate, EXT ext) {
   return String::NewExternalTwoByte(isolate, ext).ToLocalChecked();
 }
-
 
 inline Local<String> ToString(const Arguments &args, const char *str) {
   return NewUtf8String(args.GetIsolate(), str);
@@ -146,15 +144,14 @@ inline Local<Object> ToObject(Local<Value> val) {
 }
 
 template <typename T>
-inline Local<Object> ElementToObject(Local<Object> obj, T key)
-{
+inline Local<Object> ElementToObject(Local<Object> obj, T key) {
   return ToObject(obj->GetIsolate(), Get(obj->GetIsolate(), obj, key));
 }
 
-
 // SetProp
 template <typename T>
-inline void SetProp(Isolate *isolate, T obj, const char * key, Local<Value> value) {
+inline void SetProp(Isolate *isolate, T obj, const char *key,
+                    Local<Value> value) {
   Maybe<bool> r = obj->Set(isolate->GetCurrentContext(),
                            NewStringSymbol(isolate, key), value);
   r.Check();
@@ -166,8 +163,8 @@ inline void SetProp(Isolate *isolate, T obj, int i, Local<Value> value) {
   r.Check();
 }
 
-inline void SetProp(Isolate *isolate, Local<Object> obj,
-                    Local<String> key, Local<Value> value) {
+inline void SetProp(Isolate *isolate, Local<Object> obj, Local<String> key,
+                    Local<Value> value) {
   Maybe<bool> r = obj->Set(isolate->GetCurrentContext(), key, value);
   r.Check();
 }
@@ -192,15 +189,15 @@ inline void SetProp(Local<Object> obj, KEY key, Local<Value> value) {
 }
 
 // Node::Buffer
-inline Local<Object> CopyToJsBuffer(Isolate* i, const char* data, size_t len) {
+inline Local<Object> CopyToJsBuffer(Isolate *i, const char *data, size_t len) {
   return node::Buffer::Copy(i, data, len).ToLocalChecked();
 }
 
-inline Local<Object> NewJsBuffer(Isolate* iso, char* data, size_t len) {
+inline Local<Object> NewJsBuffer(Isolate *iso, char *data, size_t len) {
   return node::Buffer::New(iso, data, len).ToLocalChecked();
 }
 
-inline Local<Object> NewJsBuffer(Isolate* isolate, char* data, size_t len,
+inline Local<Object> NewJsBuffer(Isolate *isolate, char *data, size_t len,
                                  node::Buffer::FreeCallback cb) {
   /* nullptr is hint */
   return node::Buffer::New(isolate, data, len, cb, nullptr).ToLocalChecked();
@@ -210,7 +207,7 @@ inline Local<Object> NewJsBuffer(Isolate *isolate, Local<String> str) {
   return node::Buffer::New(isolate, str).ToLocalChecked();
 }
 
-inline Local<Object> NewJsBuffer(Isolate* iso, size_t len) {
+inline Local<Object> NewJsBuffer(Isolate *iso, size_t len) {
   return node::Buffer::New(iso, len).ToLocalChecked();
 }
 
@@ -218,7 +215,7 @@ inline size_t GetBufferLength(Local<Object> obj) {
   return node::Buffer::Length(obj);
 }
 
-inline char * GetBufferData(Local<Object> obj) {
+inline char *GetBufferData(Local<Object> obj) {
   return node::Buffer::Data(obj);
 }
 
@@ -318,8 +315,8 @@ inline bool GetBoolProperty(Local<Object> obj, T key) {
 
 // StackTrace
 inline Local<Value> GetStackTrace(Isolate *isolate, TryCatch *err) {
-  return ToString(isolate,
-    err->StackTrace(isolate->GetCurrentContext()).ToLocalChecked());
+  return ToString(
+      isolate, err->StackTrace(isolate->GetCurrentContext()).ToLocalChecked());
 }
 
 #endif

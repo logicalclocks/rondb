@@ -1,15 +1,16 @@
-# Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -125,12 +126,12 @@ FUNCTION(FIND_SYSTEM_CURL ARG_CURL_INCLUDE_DIR)
   ENDIF()
 ENDFUNCTION(FIND_SYSTEM_CURL)
 
-SET(CURL_VERSION_DIR "curl-8.1.2")
+SET(CURL_VERSION_DIR "curl-8.6.0")
 FUNCTION(MYSQL_USE_BUNDLED_CURL CURL_INCLUDE_DIR)
   SET(WITH_CURL "bundled" CACHE STRING "Bundled curl library")
   ADD_SUBDIRECTORY(extra/curl)
   SET(CURL_FOUND ON CACHE INTERNAL "")
-  SET(CURL_LIBRARY libcurl)
+  SET(CURL_LIBRARY libcurl) # libcurl is an alias for libcurl_static
   SET(CURL_INCLUDE_DIR
     ${CMAKE_SOURCE_DIR}/extra/curl/${CURL_VERSION_DIR}/include)
   SET(CURL_INCLUDE_DIR ${CURL_INCLUDE_DIR} PARENT_SCOPE)

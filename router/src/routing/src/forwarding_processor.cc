@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2023, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,11 +27,13 @@
 
 #include <memory>  // make_unique
 
+#include "await_client_or_server.h"
 #include "classic_connect.h"
 #include "classic_connection_base.h"
 #include "classic_forwarder.h"
 #include "classic_frame.h"
 #include "classic_lazy_connect.h"
+#include "mysql/harness/tls_error.h"
 #include "mysqlrouter/connection_pool_component.h"
 
 stdx::expected<Processor::Result, std::error_code>
@@ -127,6 +130,34 @@ ForwardingProcessor::mysql_reconnect_start() {
       }));
 
   return Result::Again;
+}
+
+stdx::expected<Processor::Result, std::error_code>
+ForwardingProcessor::recv_server_failed_and_check_client_socket(
+    std::error_code ec) {
+  auto *socket_splicer = connection()->socket_splicer();
+
+  if (ec == TlsErrc::kWantRead && socket_splicer->client_conn().is_open()) {
+    // monitor the client side while we wait for the server to return the
+    // resultset.
+    //
+    // After AwaitClientOrServerProcessor returns, either client or server
+    // became readable. In both cases:
+    //
+    // if there was data: it has been added to the recv-buffers.
+    // if the connection was closed, the socket is now closed.
+    connection()->push_processor(std::make_unique<AwaitClientOrServerProcessor>(
+        connection(), [this](auto result) {
+          if (!result) {
+            connection()->recv_server_failed(result.error());
+            return;
+          }
+        }));
+
+    return Result::Again;
+  }
+
+  return recv_server_failed(ec);
 }
 
 stdx::expected<Processor::Result, std::error_code>

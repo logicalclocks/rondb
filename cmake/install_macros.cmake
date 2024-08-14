@@ -1,15 +1,16 @@
-# Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -647,7 +648,6 @@ FUNCTION(COPY_OPENSSL_BINARY executable_full_filename
     -DOPENSSL_VERSION="${OPENSSL_VERSION}"
     -DINSTALL_PRIV_LIBDIR="${INSTALL_PRIV_LIBDIR}"
     -DPATCHELF_EXECUTABLE="${PATCHELF_EXECUTABLE}"
-    -DCPU_PAGE_SIZE="${CPU_PAGE_SIZE}"
     -DBUILD_IS_SINGLE_CONFIG="${BUILD_IS_SINGLE_CONFIG}"
     -DCMAKE_GENERATOR="${CMAKE_GENERATOR}"
     -DCMAKE_SYSTEM_PROCESSOR="${CMAKE_SYSTEM_PROCESSOR}"
@@ -754,7 +754,6 @@ FUNCTION(COPY_CUSTOM_SHARED_LIBRARY library_full_filename subdir
     -Dlibrary_version="${library_version}"
     -Dsubdir="${subdir}"
     -DPATCHELF_EXECUTABLE="${PATCHELF_EXECUTABLE}"
-    -DCPU_PAGE_SIZE="${CPU_PAGE_SIZE}"
     -DCMAKE_SYSTEM_PROCESSOR="${CMAKE_SYSTEM_PROCESSOR}"
     -P ${CMAKE_SOURCE_DIR}/cmake/copy_custom_library.cmake
 

@@ -1,16 +1,17 @@
 /*
- Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+ Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,13 +30,13 @@
 #define jtie_tconv_xwidth_hpp
 
 #include <jni.h>
+#include <stdint.h>
 
-#include "jtie_stdint.h"
-#include "jtie_tconv_value.hpp"
 #include "jtie_tconv_ptrbybb.hpp"
-#include "jtie_tconv_refbybb.hpp"
 #include "jtie_tconv_ptrbyval.hpp"
+#include "jtie_tconv_refbybb.hpp"
 #include "jtie_tconv_refbyval.hpp"
+#include "jtie_tconv_value.hpp"
 
 // ---------------------------------------------------------------------------
 // Java <-> C primitive & derived exact-width type conversions
@@ -52,15 +53,15 @@
  *
  * Naming convention: see documentation of the JTIE_DEFINE_... macros
  */
-#define JTIE_DEFINE_BASIC_TYPE_MAPPING_SET( J, C, T )                   \
-    JTIE_DEFINE_BASIC_TYPE_MAPPING(J, C, T)                             \
-    JTIE_DEFINE_ARRAY_PTR_TYPE_MAPPING(_##J##Array, C, T)               \
-    JTIE_DEFINE_ARRAY_PTR_LENGTH1_TYPE_MAPPING(_##J##Array, C, T)       \
-    JTIE_DEFINE_VALUE_REF_TYPE_MAPPING(J, C, T)                         \
-    JTIE_DEFINE_ARRAY_REF_TYPE_MAPPING(_##J##Array, C, T)               \
-    JTIE_DEFINE_BYTEBUFFER_PTR_TYPE_MAPPING(C, T)                       \
-    JTIE_DEFINE_BYTEBUFFER_PTR_LENGTH1_TYPE_MAPPING(C, T)               \
-    JTIE_DEFINE_BYTEBUFFER_REF_TYPE_MAPPING(C, T)
+#define JTIE_DEFINE_BASIC_TYPE_MAPPING_SET(J, C, T)             \
+  JTIE_DEFINE_BASIC_TYPE_MAPPING(J, C, T)                       \
+  JTIE_DEFINE_ARRAY_PTR_TYPE_MAPPING(_##J##Array, C, T)         \
+  JTIE_DEFINE_ARRAY_PTR_LENGTH1_TYPE_MAPPING(_##J##Array, C, T) \
+  JTIE_DEFINE_VALUE_REF_TYPE_MAPPING(J, C, T)                   \
+  JTIE_DEFINE_ARRAY_REF_TYPE_MAPPING(_##J##Array, C, T)         \
+  JTIE_DEFINE_BYTEBUFFER_PTR_TYPE_MAPPING(C, T)                 \
+  JTIE_DEFINE_BYTEBUFFER_PTR_LENGTH1_TYPE_MAPPING(C, T)         \
+  JTIE_DEFINE_BYTEBUFFER_REF_TYPE_MAPPING(C, T)
 
 JTIE_DEFINE_BASIC_TYPE_MAPPING_SET(jboolean, bool, bool)
 JTIE_DEFINE_BASIC_TYPE_MAPPING_SET(jbyte, char, char)
@@ -79,4 +80,4 @@ JTIE_DEFINE_BASIC_TYPE_MAPPING_SET(jdouble, double, double)
 
 // ---------------------------------------------------------------------------
 
-#endif // jtie_tconv_xwidth_hpp
+#endif  // jtie_tconv_xwidth_hpp

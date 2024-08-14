@@ -1,16 +1,17 @@
-# Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-# Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +23,7 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
 Next QMGR 950
-Next NDBCNTR 1028
+Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3006
 Next DBTUP 4040
@@ -30,12 +31,18 @@ Next DBLQH 5109
 Next DBDICT 6223
 Next DBDIH 7249
 Next DBTC 8132
-Next CMVMI 9000
-Next TRPMAN 9501
-Next BACKUP 10055
+Next DBTUP 4040
+Next DBLQH 5112
+Next DBDICT 6223
+Next DBDIH 7251
+Next DBTC 8133
+Next CMVMI 9993              Note: CMVMI grows downwards
+Next TRPMAN 9007 // Ndb numbers
+Next TRPMAN 9501 // RonDB numbers
+Next BACKUP 10057
 Next PGMAN 11010
 Next DBTUX 12010
-Next SUMA 13057
+Next SUMA 13060
 Next LGMAN 15002
 Next TSMAN 16002
 Next DBSPJ 17000
@@ -148,6 +155,7 @@ GCP Stop so that isolation is required to remove a node.
 7244: Delay SUB_GCP_COMPLETE_REP processing indefinitely
 7247: Delay WAIT_GCP_REQ processing indefinitely
 7248: Skip most recent LCP during a restart
+7250: Boost GCI to provoke a warning
 
 Related (LQH):
   5085 : Ignore request to kill via DUMP 2305
@@ -356,6 +364,7 @@ Error insertions used to test ACCKEYCONF/ABORT interleaving
 5097: ndbabort()
 5107: Cause SimulatedBlock::allocChunks() to return chunks with gaps
 5108: Cause request to fail with error 1218 SendBuffer overload (temp error)
+5109: Delay on handling BACKUP_FRAGMENT_CONF during an ALTER table operation
 
 
 ERROR CODES FOR TESTING TIME-OUT HANDLING IN DBTC
@@ -485,10 +494,6 @@ DBLQH LONG SIGNAL TESTING
 DBTC TCINDXREQ TESTING
 ----------------------
 
-8100: Force TCINDXREQ to recycle a connection record of ongoing abort, phase 1 (set by test case). Will block TCROLLBACKREP.
-
-8101: Force TCINDXREQ to recycle a connection record of ongoing abort, phase 2 (set internally). Will release TCROLLBACKREP.
-
 8102: simulate out of memory (segments,attributes) in fk_scanFromChildTable
 8103: simulate out of memory in fk_constructAttrInfoUpdateCascade
 8104: simulate ZGET_DATAREC_ERROR (218) in fk_buildKeyInfo
@@ -510,11 +515,16 @@ DBTC Api failure testing
 8131: Api disconnect later during SCAN ZSEND_FRAG_SCANS CONTINUEB
 
 
+TRPMAN
+-----
+9000: Set RestartOnErrorInsert to restart -n
+
+9500: Delaying ENABLE_COMREQ signal for 5s
+
 CMVMI
 -----
-9000 Set RestartOnErrorInsert to restart -n
-9998 Enter endless loop (trigger watchdog)
-9999 Crash system immediatly
+9998: Enter endless loop (trigger watchdog)
+9999: Crash system immediately
 
 Test Crashes in handling node restarts
 --------------------------------------
@@ -659,6 +669,14 @@ Backup Stuff:
 10052: Same as 10051 for START_BACKUP_REQ
 10053: Same as 10051 for STOP_BACKUP_REQ
 10054: Illegal signal received (signal scope test)
+10055: Stall LCP at start of fragment scan [on table id]
+       Table id supplied in ERROR insert extra.
+       Can be supplied with DUMP 13003
+10056: Stall LCP part way through fragment scan [on table id]
+       Table id supplied in ERROR insert extra.
+       Can be supplied with DUMP 13003
+       Only works if SCAN_NEXTREQ required ( > 1 batch of
+       LCP scan results from fragment)
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 
@@ -841,6 +859,8 @@ NDBCNTR:
 1025 Crash insertion on open secretsfile
 1026 Change user provided filesystem password to a wrong one
 1027 Crash insertion on secretsfile reading
+1028: Crash insertion during system restart after writing the SYSFILE
+1029: Slow down restart phase transitions
 
 SUMA:
 13036: Simulate report MISSING_DATA at node failure
@@ -852,6 +872,10 @@ SUMA:
 13041: Crash in SUB_CREATE_REQ (no matter)
 13042: Crash in SUB_START_REQ (if m_restart_server_node_id != 0)
 13051: Delay the DROP_TRIG_IMPL_REQ
+13057: Changing the ndbrequire from checking whether the gci is higher than
+       the known gci instead of the next gci
+13058: Delay subscription reporting during node restart + cause API failure
+13059: Delay subscription reporting during node restart
 
 LGMAN:
 -----

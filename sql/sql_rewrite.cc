@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -324,7 +325,7 @@ bool rewrite_query(THD *thd, Consumer_type type, const Rewrite_params *params,
 
   The query aimed to be rewritten in the usual log files
   (i.e. General, slow query and audit log) uses default value of
-  type which is Consumer_type::LOG
+  type which is Consumer_type::TEXTLOG
 
    Side-effects:
 
@@ -338,18 +339,18 @@ bool rewrite_query(THD *thd, Consumer_type type, const Rewrite_params *params,
 
   @param thd        The THD to rewrite for.
   @param type       Purpose of rewriting the query
-                     Consumer_type::LOG
+                     Consumer_type::TEXTLOG
                       To rewrite the query either for general, slow query
                       and audit log.
                      Consumer_type::BINLOG
                       To rewrite the query for binlogs.
-                     Consumer_type::CONSOLE
+                     Consumer_type::STDOUT
                       To rewrite the query for standard output.
   @param params     Wrapper object of parameters in case needed by a SQL
                       rewriter.
 */
-void mysql_rewrite_query(THD *thd, Consumer_type type /*= Consumer_type::LOG */,
-                         const Rewrite_params *params /*= nullptr*/) {
+void mysql_rewrite_query(THD *thd, Consumer_type type,
+                         const Rewrite_params *params) {
   String rlb;
 
   DBUG_TRACE;
@@ -372,12 +373,12 @@ void mysql_rewrite_query(THD *thd, Consumer_type type /*= Consumer_type::LOG */,
   @param rlb        Buffer to return rewritten query in (if any) if
                     do_ps_instrument is false.
   @param type       Purpose of rewriting the query
-                     Consumer_type::LOG
+                     Consumer_type::TEXTLOG
                       To rewrite the query either for general, slow query
                       and audit log.
                      Consumer_type::BINLOG
                       To rewrite the query for binlogs.
-                     Consumer_type::CONSOLE
+                     Consumer_type::STDOUT
                       To rewrite the query for standard output.
   @param params     Wrapper object of parameters in case needed by a SQL
                       rewriter.
@@ -391,8 +392,18 @@ void mysql_rewrite_acl_query(THD *thd, String &rlb, Consumer_type type,
   if (rewrite_query(thd, type, params, rlb) && (rlb.length() > 0) &&
       do_ps_instrument) {
     thd->swap_rewritten_query(rlb);
-    thd->set_query_for_display(thd->rewritten_query().ptr(),
-                               thd->rewritten_query().length());
+
+    /*
+      Queries rewritten for Consumer_type::BINLOG may contain
+      sensitive informations, encoded in the binlog event.
+      Do not print these.
+      A subsequent call, using Consumer_type::TEXTLOG,
+      will display a proper sanitized query.
+    */
+    if (type != Consumer_type::BINLOG) {
+      thd->set_query_for_display(thd->rewritten_query().ptr(),
+                                 thd->rewritten_query().length());
+    }
     /*
       rlb now contains the previous rewritten query.
       We clear it here both to save memory and to prevent possible confusion.
@@ -1311,7 +1322,7 @@ bool Rewriter_grant::rewrite(String &rlb) const {
     rlb.append(STRING_WITH_LEN("ALL PRIVILEGES"));
   else {
     bool comma = false;
-    ulong priv;
+    Access_bitmask priv;
 
     for (c = 0, priv = SELECT_ACL; priv <= GLOBAL_ACLS; c++, priv <<= 1) {
       if (priv == GRANT_ACL && !lex->grant_privilege) continue;

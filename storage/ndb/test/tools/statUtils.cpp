@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +23,6 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
 #include <stat_utils.hpp>
 
 /**
@@ -32,8 +32,7 @@
  * range [99..101], and eventually stabilize around ~100.
  * stdDev should be ~1.0 for this number series.
  */
-int main(int argc, char** argv)
-{
+int main(int argc, char **argv) {
   NdbStatistics stats;
   bool pass = true;
   const float delta = 0.1;
@@ -41,24 +40,21 @@ int main(int argc, char** argv)
   // prime it with an initial value
   stats.update(100);
 
-  for (int i = 0; i < 100; i++)
-  {
-    double sample = 99 + 2*(i % 2);
-    stats.update (sample);
+  for (int i = 0; i < 100; i++) {
+    double sample = 99 + 2 * (i % 2);
+    stats.update(sample);
 
-    printf("i: %d, sample:%f, mean:%f, stdDev:%f\n",
-           i, sample, stats.getMean(), stats.getStdDev());
+    printf("i: %d, sample:%f, mean:%f, stdDev:%f\n", i, sample, stats.getMean(),
+           stats.getStdDev());
     // Expect 'mean' to be in range [99..101}
-    if (stats.getMean() <= 99 || stats.getMean() >= 101)
-      pass = false;
+    if (stats.getMean() <= 99 || stats.getMean() >= 101) pass = false;
 
     // Expect stdDev ~1, allow a small 'delta'
-    if (stats.getStdDev()  > 1.0 + delta)
-      pass = false;
+    if (stats.getStdDev() > 1.0 + delta) pass = false;
   }
 
   // Expect 'mean' to stabilize around ~100.
-  if (stats.getMean() <= 100-delta || stats.getMean() >= 100+delta)
+  if (stats.getMean() <= 100 - delta || stats.getMean() >= 100 + delta)
     pass = false;
 
   if (pass)

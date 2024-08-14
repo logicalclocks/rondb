@@ -1,15 +1,16 @@
-# Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,9 +33,11 @@ FUNCTION(GET_FILE_SIZE FILE_NAME OUTPUT_SIZE)
       OUTPUT_STRIP_TRAILING_WHITESPACE)
 
   ELSEIF(APPLE OR FREEBSD)
-    EXEC_PROGRAM(stat ARGS -f '%z' ${FILE_NAME} OUTPUT_VARIABLE RESULT)
+    EXECUTE_PROCESS(
+      COMMAND stat -f '%z' ${FILE_NAME} OUTPUT_VARIABLE RESULT)
   ELSE()
-    EXEC_PROGRAM(stat ARGS -c '%s' ${FILE_NAME} OUTPUT_VARIABLE RESULT)
+    EXECUTE_PROCESS(
+      COMMAND stat -c '%s' ${FILE_NAME} OUTPUT_VARIABLE RESULT)
   ENDIF()
   SET(${OUTPUT_SIZE} ${RESULT} PARENT_SCOPE)
 ENDFUNCTION()
@@ -60,7 +63,6 @@ IF(WIN32)
   GET_FILENAME_COMPONENT(CMAKE_LINKER_PATH "${CMAKE_LINKER}" DIRECTORY)
   FIND_PROGRAM(DUMPBIN_EXECUTABLE dumpbin PATHS "${CMAKE_LINKER_PATH}")
 
-  # TODO: implement for macOS (otool) Unix (ldd)
   FUNCTION(FIND_OBJECT_DEPENDENCIES FILE_NAME RETURN_VALUE)
     SET(${RETURN_VALUE} PARENT_SCOPE)
     IF(WIN32 AND DUMPBIN_EXECUTABLE)
@@ -82,6 +84,39 @@ IF(WIN32)
     ENDIF()
   ENDFUNCTION()
 ENDIF()
+
+IF(APPLE)
+  FUNCTION(FIND_OBJECT_DEPENDENCIES FILE_NAME RETURN_VALUE)
+    SET(${RETURN_VALUE} PARENT_SCOPE)
+    EXECUTE_PROCESS(COMMAND otool -L ${FILE_NAME}
+      OUTPUT_VARIABLE OTOOL_OUTPUT
+      RESULT_VARIABLE OTOOL_RESULT
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+    IF(NOT OTOOL_RESULT EQUAL 0)
+      MESSAGE(FATAL_ERROR "obool -L ${FILE_NAME} result: ${OTOOL_RESULT}")
+    ENDIF()
+    STRING(REPLACE "\n" ";" OTOOL_OUTPUT_LIST "${OTOOL_OUTPUT}")
+    # Skip header, and the library itself
+    LIST(REMOVE_AT OTOOL_OUTPUT_LIST 0 1)
+    SET(DEPENDENCIES)
+    FOREACH(LINE ${OTOOL_OUTPUT_LIST})
+      IF(${LINE} MATCHES "@rpath")
+        CONTINUE()
+      ENDIF()
+      # Strip off leading spaces/tabs, the compatibility comment,
+      # and the library version (so that we return the symlink).
+      STRING(REGEX REPLACE "^[\t ]+" "" LINE "${LINE}")
+      STRING(REGEX REPLACE " \\(compatibility version.*" "" LINE "${LINE}")
+      STRING(REGEX REPLACE "\\.[0-9]+\\.[0-9]\\.[0-9]" "" LINE "${LINE}")
+      # MESSAGE(STATUS "xxx ${LINE}")
+      LIST(APPEND DEPENDENCIES ${LINE})
+    ENDFOREACH()
+    # Sort it, for readability when debugging cmake code.
+    LIST(SORT DEPENDENCIES)
+    SET(${RETURN_VALUE} ${DEPENDENCIES} PARENT_SCOPE)
+  ENDFUNCTION(FIND_OBJECT_DEPENDENCIES)
+ENDIF(APPLE)
 
 IF(LINUX)
   FUNCTION(FIND_OBJECT_DEPENDENCIES FILE_NAME RETURN_VALUE)

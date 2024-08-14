@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
     Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,12 +37,12 @@
  * -# Error status         : Application impact
  * -# Error classification : Logical error group
  * -# Error code           : Internal error code
- * -# Error message        : Context independent description of error 
- * -# Error details        : Context dependent information 
+ * -# Error message        : Context independent description of error
+ * -# Error details        : Context dependent information
  *                           (not always available)
  *
  * <em>Error status</em> is usually used for programming against errors.
- * If more detailed error control is needed, it is possible to 
+ * If more detailed error control is needed, it is possible to
  * use the <em>error classification</em>.
  *
  * It is not recommended to write application programs dependent on
@@ -49,7 +50,7 @@
  *
  * The <em>error messages</em> and <em>error details</em> may
  * change without notice.
- * 
+ *
  * For example of use, see @ref ndbapi_retries.cpp.
  */
 struct NdbError {
@@ -67,23 +68,23 @@ struct NdbError {
     /**
      * The error code indicates a temporary error.
      * The application should typically retry.<br>
-     * (Includes classifications: NdbError::InsufficientSpace, 
+     * (Includes classifications: NdbError::InsufficientSpace,
      *  NdbError::TemporaryResourceError, NdbError::NodeRecoveryError,
-     *  NdbError::OverloadError, NdbError::NodeShutdown 
+     *  NdbError::OverloadError, NdbError::NodeShutdown
      *  and NdbError::TimeoutExpired.)
      */
     TemporaryError = ndberror_st_temporary,
-    
+
     /**
      * The error code indicates a permanent error.<br>
-     * (Includes classificatons: NdbError::PermanentError, 
+     * (Includes classificatons: NdbError::PermanentError,
      *  NdbError::ApplicationError, NdbError::NoDataFound,
      *  NdbError::ConstraintViolation, NdbError::SchemaError,
-     *  NdbError::UserDefinedError, NdbError::InternalError, and, 
+     *  NdbError::UserDefinedError, NdbError::InternalError, and,
      *  NdbError::FunctionNotImplemented.)
      */
     PermanentError = ndberror_st_permanent,
-  
+
     /**
      * The result/status is unknown.<br>
      * (Includes classifications: NdbError::UnknownResultError, and
@@ -91,7 +92,7 @@ struct NdbError {
      */
     UnknownResult = ndberror_st_unknown
   };
-  
+
   /**
    * Type of error
    */
@@ -112,7 +113,7 @@ struct NdbError {
     NoDataFound = ndberror_cl_no_data_found,
 
     /**
-     * E.g. inserting a tuple with a primary key already existing 
+     * E.g. inserting a tuple with a primary key already existing
      * in the table.
      */
     ConstraintViolation = ndberror_cl_constraint_violation,
@@ -126,7 +127,7 @@ struct NdbError {
      * Error occurred in interpreted program.
      */
     UserDefinedError = ndberror_cl_user_defined,
-    
+
     /**
      * E.g. insufficient memory for data or indexes.
      */
@@ -153,12 +154,12 @@ struct NdbError {
      * Timeouts, often inflicted by deadlocks in NDB.
      */
     TimeoutExpired = ndberror_cl_timeout_expired,
-    
+
     /**
      * Is is unknown whether the transaction was committed or not.
      */
     UnknownResultError = ndberror_cl_unknown_result,
-    
+
     /**
      * A serious error in NDB has occurred.
      */
@@ -189,9 +190,9 @@ struct NdbError {
      */
     InternalTemporary = ndberror_cl_internal_temporary
   };
-  
+
   /**
-   * Error status.  
+   * Error status.
    */
   Status status;
 
@@ -199,7 +200,7 @@ struct NdbError {
    * Error type
    */
   Classification classification;
-  
+
   /**
    * Error code
    */
@@ -213,20 +214,20 @@ struct NdbError {
   /**
    * Error message
    */
-  const char * message;
+  const char *message;
 
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
   /**
-   * The detailed description.  This is extra information regarding the 
+   * The detailed description.  This is extra information regarding the
    * error which is not included in the error message.
    *
    * @note Is NULL when no details specified
    */
-  char * details;
+  char *details;
 #endif
 
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
-  NdbError(){
+  NdbError() {
     status = UnknownResult;
     classification = NoError;
     code = 0;
@@ -234,9 +235,9 @@ struct NdbError {
     message = 0;
     details = 0;
   }
-  NdbError(const ndberror_struct & ndberror){
-    status = (NdbError::Status) ndberror.status;
-    classification = (NdbError::Classification) ndberror.classification;
+  NdbError(const ndberror_struct &ndberror) {
+    status = (NdbError::Status)ndberror.status;
+    classification = (NdbError::Classification)ndberror.classification;
     code = ndberror.code;
     mysql_code = ndberror.mysql_code;
     message = ndberror.message;
@@ -244,8 +245,8 @@ struct NdbError {
   }
   operator ndberror_struct() const {
     ndberror_struct ndberror;
-    ndberror.status = (ndberror_status_enum) status;
-    ndberror.classification = (ndberror_classification_enum) classification;
+    ndberror.status = (ndberror_status_enum)status;
+    ndberror.classification = (ndberror_classification_enum)classification;
     ndberror.code = code;
     ndberror.mysql_code = mysql_code;
     ndberror.message = message;
@@ -255,7 +256,7 @@ struct NdbError {
 #endif
 };
 
-class NdbOut& operator <<(class NdbOut&, const NdbError &);
-class NdbOut& operator <<(class NdbOut&, const NdbError::Status&);
-class NdbOut& operator <<(class NdbOut&, const NdbError::Classification&);
+class NdbOut &operator<<(class NdbOut &, const NdbError &);
+class NdbOut &operator<<(class NdbOut &, const NdbError::Status &);
+class NdbOut &operator<<(class NdbOut &, const NdbError::Classification &);
 #endif

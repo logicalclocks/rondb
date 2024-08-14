@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -35,6 +36,7 @@
 #include "my_thread.h"
 #include "mysql/harness/stdx/expected.h"
 #include "mysql/harness/tls_error.h"
+#include "mysql/harness/tls_types.h"
 #include "openssl_version.h"
 
 /*
@@ -354,23 +356,16 @@ TlsVersion TlsContext::min_version() const {
 }
 
 std::vector<std::string> TlsContext::cipher_list() const {
-#if OPENSSL_VERSION_NUMBER >= ROUTER_OPENSSL_VERSION(1, 1, 0)
-  // dump the cipher-list we actually have
-  STACK_OF(SSL_CIPHER) *st = SSL_CTX_get_ciphers(ssl_ctx_.get());
-  size_t num_ciphers = sk_SSL_CIPHER_num(st);
+  // dump the cipher-list we actually have - using the SSL_* functions
+  mysql_harness::Ssl ssl{SSL_new(ssl_ctx_.get())};
 
-  std::vector<std::string> out(num_ciphers);
-  for (size_t ndx = 0; ndx < num_ciphers; ++ndx) {
-    auto *cipher = sk_SSL_CIPHER_value(st, ndx);
-    out.emplace_back(SSL_CIPHER_get_name(cipher));
+  std::vector<std::string> out;
+  int prio = 0;
+  while (auto cipher = SSL_get_cipher_list(ssl.get(), prio++)) {
+    out.emplace_back(cipher);
   }
 
   return out;
-#else
-  throw std::invalid_argument(
-      "::cipher_list() isn't implemented. Use .has_get_cipher_list() "
-      "to check before calling");
-#endif
 }
 
 void TlsContext::info_callback(TlsContext::InfoCallback cb) {

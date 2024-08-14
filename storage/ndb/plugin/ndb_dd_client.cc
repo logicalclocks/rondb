@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2017, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -116,14 +117,9 @@ bool Ndb_dd_client::mdl_lock_table(const char *schema_name,
   mdl_requests.push_front(&schema_request);
   mdl_requests.push_front(&mdl_request);
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests,
-                                       m_thd->variables.lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, m_thd->variables.lock_wait_timeout)) {
     return false;
   }
-
-  // Remember tickets of the acquired mdl locks
-  m_acquired_mdl_tickets.push_back(schema_request.ticket);
-  m_acquired_mdl_tickets.push_back(mdl_request.ticket);
 
   return true;
 }
@@ -156,14 +152,9 @@ bool Ndb_dd_client::mdl_lock_schema_exclusive(const char *schema_name,
     lock_wait_timeout = m_thd->variables.lock_wait_timeout;
   }
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests, lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, lock_wait_timeout)) {
     return false;
   }
-
-  // Remember tickets of the acquired mdl locks
-  m_acquired_mdl_tickets.push_back(schema_request.ticket);
-  m_acquired_mdl_tickets.push_back(backup_lock_request.ticket);
-  m_acquired_mdl_tickets.push_back(grl_request.ticket);
 
   return true;
 }
@@ -176,8 +167,7 @@ bool Ndb_dd_client::mdl_lock_schema(const char *schema_name) {
                    MDL_INTENTION_EXCLUSIVE, MDL_EXPLICIT);
   mdl_requests.push_front(&schema_request);
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests,
-                                       m_thd->variables.lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, m_thd->variables.lock_wait_timeout)) {
     return false;
   }
 
@@ -186,9 +176,6 @@ bool Ndb_dd_client::mdl_lock_schema(const char *schema_name) {
     option we can safely re-check its value.
   */
   if (check_readonly(m_thd, true)) return false;
-
-  // Remember ticket(s) of the acquired mdl lock
-  m_acquired_mdl_tickets.push_back(schema_request.ticket);
 
   return true;
 }
@@ -221,7 +208,7 @@ bool Ndb_dd_client::mdl_lock_logfile_group_exclusive(
     lock_wait_timeout = m_thd->variables.lock_wait_timeout;
   }
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests, lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, lock_wait_timeout)) {
     return false;
   }
 
@@ -230,11 +217,6 @@ bool Ndb_dd_client::mdl_lock_logfile_group_exclusive(
     option we can safely re-check its value.
   */
   if (check_readonly(m_thd, true)) return false;
-
-  // Remember tickets of the acquired mdl locks
-  m_acquired_mdl_tickets.push_back(logfile_group_request.ticket);
-  m_acquired_mdl_tickets.push_back(backup_lock_request.ticket);
-  m_acquired_mdl_tickets.push_back(grl_request.ticket);
 
   return true;
 }
@@ -251,13 +233,9 @@ bool Ndb_dd_client::mdl_lock_logfile_group(const char *logfile_group_name,
 
   mdl_requests.push_front(&logfile_group_request);
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests,
-                                       m_thd->variables.lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, m_thd->variables.lock_wait_timeout)) {
     return false;
   }
-
-  // Remember tickets of the acquired mdl locks
-  m_acquired_mdl_tickets.push_back(logfile_group_request.ticket);
 
   return true;
 }
@@ -290,7 +268,7 @@ bool Ndb_dd_client::mdl_lock_tablespace_exclusive(const char *tablespace_name,
     lock_wait_timeout = m_thd->variables.lock_wait_timeout;
   }
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests, lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, lock_wait_timeout)) {
     return false;
   }
 
@@ -299,11 +277,6 @@ bool Ndb_dd_client::mdl_lock_tablespace_exclusive(const char *tablespace_name,
     option we can safely re-check its value.
   */
   if (check_readonly(m_thd, true)) return false;
-
-  // Remember tickets of the acquired mdl locks
-  m_acquired_mdl_tickets.push_back(tablespace_request.ticket);
-  m_acquired_mdl_tickets.push_back(backup_lock_request.ticket);
-  m_acquired_mdl_tickets.push_back(grl_request.ticket);
 
   return true;
 }
@@ -320,13 +293,9 @@ bool Ndb_dd_client::mdl_lock_tablespace(const char *tablespace_name,
 
   mdl_requests.push_front(&tablespace_request);
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests,
-                                       m_thd->variables.lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, m_thd->variables.lock_wait_timeout)) {
     return false;
   }
-
-  // Remember tickets of the acquired mdl locks
-  m_acquired_mdl_tickets.push_back(tablespace_request.ticket);
 
   return true;
 }
@@ -362,7 +331,7 @@ bool Ndb_dd_client::mdl_locks_acquire_exclusive(const char *schema_name,
     lock_wait_timeout = m_thd->variables.lock_wait_timeout;
   }
 
-  if (m_thd->mdl_context.acquire_locks(&mdl_requests, lock_wait_timeout)) {
+  if (!mdl_locks_acquire(mdl_requests, lock_wait_timeout)) {
     return false;
   }
 
@@ -372,12 +341,20 @@ bool Ndb_dd_client::mdl_locks_acquire_exclusive(const char *schema_name,
   */
   if (check_readonly(m_thd, true)) return false;
 
-  // Remember tickets of the acquired mdl locks
-  m_acquired_mdl_tickets.push_back(schema_request.ticket);
-  m_acquired_mdl_tickets.push_back(mdl_request.ticket);
-  m_acquired_mdl_tickets.push_back(backup_lock_request.ticket);
-  m_acquired_mdl_tickets.push_back(grl_request.ticket);
+  return true;
+}
 
+bool Ndb_dd_client::mdl_locks_acquire(MDL_request_list mdl_requests,
+                                      ulong lock_wait_timeout) {
+  if (m_thd->mdl_context.acquire_locks(&mdl_requests, lock_wait_timeout)) {
+    return false;
+  }
+  // Remember tickets of the acquired mdl locks
+  MDL_request_list::Iterator it(mdl_requests);
+  MDL_request *request;
+  while ((request = it++)) {
+    m_acquired_mdl_tickets.push_back(request->ticket);
+  }
   return true;
 }
 
@@ -1824,4 +1801,50 @@ bool Ndb_dd_client::dbug_shuffle_spi_for_NDB_tables() {
   return false;
 }
 
+bool Ndb_dd_client::change_version_for_table(const char *schema_name,
+                                             const char *table_name,
+                                             uint new_version) {
+  DBUG_TRACE;
+
+  if (!mdl_lock_schema(schema_name)) {
+    assert(false);
+    return false;
+  }
+
+  // Read new schema from DD
+  const dd::Schema *schema = nullptr;
+  if (m_client->acquire(schema_name, &schema)) {
+    return false;
+  }
+  if (schema == nullptr) {
+    // Database does not exist
+    return false;
+  }
+
+  if (!mdl_locks_acquire_exclusive(schema_name, table_name)) {
+    assert(false);
+    return false;
+  }
+
+  // Read table from DD
+  const dd::Table *table_def = nullptr;
+  if (m_client->acquire(schema_name, table_name, &table_def)) return false;
+
+  if (table_def == nullptr) {
+    return false;
+  }
+
+  const Ndb_dd_handle ndb_id = ndb_dd_table_get_spi_and_version(table_def);
+  if (!set_object_id_and_version_in_table(schema_name, table_name, ndb_id.spi,
+                                          new_version)) {
+    return false;
+  }
+  // Save updated table definitions to DD
+  commit();
+
+  std::cout << "Ndb_dd_client: Changed version of " << schema_name << "."
+            << table_name << " to " << new_version << std::endl;
+
+  return true;
+}
 #endif

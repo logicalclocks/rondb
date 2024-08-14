@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,8 +30,7 @@
 
 #define JAM_FILE_ID 500
 
-class RedoStateRep
-{
+class RedoStateRep {
   /**
    * Sender(s)
    * Receiver(s)
@@ -39,26 +39,25 @@ class RedoStateRep
   friend class Dbdih;
   friend class Ndbcntr;
 
-  friend bool printREDO_STATE_REP(FILE*, const Uint32*, Uint32, Uint16);
+  friend bool printREDO_STATE_REP(FILE *, const Uint32 *, Uint32, Uint16);
 
-public:
+ public:
   static constexpr Uint32 SignalLength = 2;
 
-  enum ReceiverInfo
-  {
+  enum ReceiverInfo {
     ToNdbcntr = 0,
     ToLocalDih = 1,
     ToAllDih = 2,
     ToBackup = 3
   };
-  enum RedoAlertState
-  {
+  enum RedoAlertState {
     NO_REDO_ALERT = 0,
     REDO_ALERT_LOW = 1,
     REDO_ALERT_HIGH = 2,
     REDO_ALERT_CRITICAL = 3
   };
-private:
+
+ private:
   Uint32 receiverInfo;
   Uint32 redoState;
 };

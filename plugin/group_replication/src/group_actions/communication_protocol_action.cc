@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -53,15 +54,13 @@ int Communication_protocol_action::set_consensus_leaders() const {
   Gcs_member_identifier const my_gcs_id =
       local_member_info->get_gcs_member_id();
   if (is_single_primary_mode) {
-    Group_member_info *primary_info =
-        group_member_mgr->get_primary_member_info();
-    if (primary_info == nullptr) {
+    Group_member_info primary_info;
+    if (group_member_mgr->get_primary_member_info(primary_info)) {
       return 1;
     }
 
     Gcs_member_identifier const primary_gcs_id =
-        primary_info->get_gcs_member_id();
-    delete primary_info;
+        primary_info.get_gcs_member_id();
     bool const am_i_the_primary = (my_gcs_id == primary_gcs_id);
     my_role = (am_i_the_primary ? Group_member_info::MEMBER_ROLE_PRIMARY
                                 : Group_member_info::MEMBER_ROLE_SECONDARY);

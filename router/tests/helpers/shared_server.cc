@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -188,7 +189,7 @@ void SharedServer::spawn_server_with_datadir(
   std::string log_file_name = "mysqld-" + std::to_string(starts_) + ".err";
 
   std::vector<std::string> args{
-      "--no-defaults-file",  //
+      "--no-defaults",  //
       "--lc-messages-dir=" + lc_messages_dir.str(),
       "--datadir=" + datadir,             //
       "--plugin_dir=" + plugindir.str(),  //
@@ -335,6 +336,7 @@ END)"));
            caching_sha2_password_account(),
            caching_sha2_empty_password_account(),
            sha256_password_account(),
+           sha256_short_password_account(),
            sha256_empty_password_account(),
        }) {
     create_account(cli, account);

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,30 +26,29 @@
 
 #include <ndb_global.h>
 
-#include "Emulator.hpp"
 #include <FastScheduler.hpp>
 #include <SignalLoggerManager.hpp>
-#include <TransporterRegistry.hpp>
 #include <TimeQueue.hpp>
+#include <TransporterRegistry.hpp>
+#include "Emulator.hpp"
 
 #include "Configuration.hpp"
-#include "WatchDog.hpp"
-#include "ThreadConfig.hpp"
 #include "SimBlockList.hpp"
+#include "ThreadConfig.hpp"
+#include "WatchDog.hpp"
 
 #include <NodeState.hpp>
 #include "ndbd_malloc_impl.hpp"
 
 #include <NdbMutex.h>
 
-#include <EventLogger.hpp>
 #include <string.h>
+#include <EventLogger.hpp>
 
 #define JAM_FILE_ID 329
 
-
 /**
- * Declare the global variables 
+ * Declare the global variables
  */
 
 #ifndef NO_EMULATED_JAM
@@ -60,18 +60,18 @@
 EmulatedJamBuffer theEmulatedJamBuffer;
 #endif
 
-   GlobalData globalData;
+GlobalData globalData;
 
-   TimeQueue globalTimeQueue;
-   FastScheduler globalScheduler;
-   extern TransporterRegistry globalTransporterRegistry;
+TimeQueue globalTimeQueue;
+FastScheduler globalScheduler;
+extern TransporterRegistry globalTransporterRegistry;
 
 #ifdef VM_TRACE
-   SignalLoggerManager globalSignalLoggers;
+SignalLoggerManager globalSignalLoggers;
 #endif
 
 EmulatorData globalEmulatorData;
-NdbMutex * theShutdownMutex = 0;
+NdbMutex *theShutdownMutex = 0;
 
 // The jamFileNames table has been moved to Emulator.hpp
 
@@ -80,81 +80,64 @@ const char* JamEvent::getFileName() const
   if (getFileId() < sizeof jamFileNames/sizeof jamFileNames[0])
   {
     return jamFileNames[getFileId()];
-  }
-  else
-  {
+  } else {
     return NULL;
   }
 }
 
-EmulatorData::EmulatorData(){
+EmulatorData::EmulatorData() {
   theConfiguration = 0;
-  theWatchDog      = 0;
-  theThreadConfig  = 0;
-  theSimBlockList  = 0;
+  theWatchDog = 0;
+  theThreadConfig = 0;
+  theSimBlockList = 0;
   theShutdownMutex = 0;
   m_socket_server = 0;
   m_mem_manager = 0;
 }
 
-void
-EmulatorData::create(){
+void EmulatorData::create() {
   /*
     Global jam() buffer, for non-multithreaded operation.
     For multithreaded ndbd, each thread will set a local jam buffer later.
   */
 #ifndef NO_EMULATED_JAM
-  EmulatedJamBuffer * jamBuffer = &theEmulatedJamBuffer;
+  EmulatedJamBuffer *jamBuffer = &theEmulatedJamBuffer;
 #else
-  EmulatedJamBuffer * jamBuffer = nullptr;
+  EmulatedJamBuffer *jamBuffer = nullptr;
 #endif
   NDB_THREAD_TLS_JAM = jamBuffer;
 
   theConfiguration = new Configuration();
-  theWatchDog      = new WatchDog();
-  theThreadConfig  = new ThreadConfig();
-  theSimBlockList  = new SimBlockList();
-  m_socket_server  = new SocketServer();
-  m_mem_manager    = new Ndbd_mem_manager();
+  theWatchDog = new WatchDog();
+  theThreadConfig = new ThreadConfig();
+  theSimBlockList = new SimBlockList();
+  m_socket_server = new SocketServer();
+  m_mem_manager = new Ndbd_mem_manager();
   globalData.m_global_page_pool.setMutex();
 
-  if (theConfiguration == NULL ||
-      theWatchDog == NULL ||
-      theThreadConfig == NULL ||
-      theSimBlockList == NULL ||
-      m_socket_server == NULL ||
-      m_mem_manager == NULL )
-  {
-    ERROR_SET(fatal, NDBD_EXIT_MEMALLOC,
-              "Failed to create EmulatorData", "");
+  if (theConfiguration == NULL || theWatchDog == NULL ||
+      theThreadConfig == NULL || theSimBlockList == NULL ||
+      m_socket_server == NULL || m_mem_manager == NULL) {
+    ERROR_SET(fatal, NDBD_EXIT_MEMALLOC, "Failed to create EmulatorData", "");
   }
 
-  if (!(theShutdownMutex = NdbMutex_Create()))
-  {
-    ERROR_SET(fatal, NDBD_EXIT_MEMALLOC,
-              "Failed to create shutdown mutex", "");
+  if (!(theShutdownMutex = NdbMutex_Create())) {
+    ERROR_SET(fatal, NDBD_EXIT_MEMALLOC, "Failed to create shutdown mutex", "");
   }
 }
 
-void
-EmulatorData::destroy(){
-  if(theConfiguration)
-    delete theConfiguration;
+void EmulatorData::destroy() {
+  if (theConfiguration) delete theConfiguration;
   theConfiguration = 0;
-  if(theWatchDog)
-    delete theWatchDog;
+  if (theWatchDog) delete theWatchDog;
   theWatchDog = 0;
-  if(theThreadConfig)
-    delete theThreadConfig;
+  if (theThreadConfig) delete theThreadConfig;
   theThreadConfig = 0;
-  if(theSimBlockList)
-    delete theSimBlockList;
+  if (theSimBlockList) delete theSimBlockList;
   theSimBlockList = 0;
-  if(m_socket_server)
-    delete m_socket_server;
+  if (m_socket_server) delete m_socket_server;
   m_socket_server = 0;
   NdbMutex_Destroy(theShutdownMutex);
-  if (m_mem_manager)
-    delete m_mem_manager;
+  if (m_mem_manager) delete m_mem_manager;
   m_mem_manager = 0;
 }

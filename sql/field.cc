@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -6341,6 +6342,11 @@ int Field_string::cmp(const uchar *a_ptr, const uchar *b_ptr) const {
 }
 
 size_t Field_string::make_sort_key(uchar *to, size_t length) const {
+  return make_sort_key(to, length, char_length());
+}
+
+size_t Field_string::make_sort_key(uchar *to, size_t length,
+                                   size_t trunc_pos) const {
   /*
     We don't store explicitly how many bytes long this string is.
     Find out by calling charpos, since just using field_length
@@ -6354,7 +6360,7 @@ size_t Field_string::make_sort_key(uchar *to, size_t length) const {
       field_length,
       field_charset->cset->charpos(
           field_charset, pointer_cast<const char *>(ptr),
-          pointer_cast<const char *>(ptr) + field_length, char_length()));
+          pointer_cast<const char *>(ptr) + field_length, trunc_pos));
 
   if (field_charset->pad_attribute == NO_PAD &&
       !(current_thd->variables.sql_mode & MODE_PAD_CHAR_TO_FULL_LENGTH)) {
@@ -6710,13 +6716,24 @@ int Field_varstring::key_cmp(const uchar *a, const uchar *b) const {
 }
 
 size_t Field_varstring::make_sort_key(uchar *to, size_t length) const {
+  return make_sort_key(to, length, char_length());
+}
+
+size_t Field_varstring::make_sort_key(uchar *to, size_t length,
+                                      size_t trunc_pos) const {
   const int flags =
       (field_charset->pad_attribute == NO_PAD) ? 0 : MY_STRXFRM_PAD_TO_MAXLEN;
 
+  size_t f_length = data_length();
+  const uchar *pos = ptr + length_bytes;
+
+  size_t local_char_length =
+      my_charpos(field_charset, pos, pos + f_length, trunc_pos);
+  f_length = std::min(f_length, local_char_length);
+
   assert(char_length_cache == char_length());
   return field_charset->coll->strnxfrm(field_charset, to, length,
-                                       char_length_cache, ptr + length_bytes,
-                                       data_length(), flags);
+                                       char_length_cache, pos, f_length, flags);
 }
 
 enum ha_base_keytype Field_varstring::key_type() const {
@@ -7272,13 +7289,21 @@ int Field_blob::do_save_field_metadata(uchar *metadata_ptr) const {
 }
 
 size_t Field_blob::make_sort_key(uchar *to, size_t length) const {
-  static const uchar EMPTY_BLOB[1] = {0};
-  uint32 blob_length = get_length();
+  return make_sort_key(to, length, char_length());
+}
 
+size_t Field_blob::make_sort_key(uchar *to, size_t length,
+                                 size_t trunc_pos) const {
+  static const uchar EMPTY_BLOB[1] = {0};
   const int flags =
       (field_charset->pad_attribute == NO_PAD) ? 0 : MY_STRXFRM_PAD_TO_MAXLEN;
 
+  size_t blob_length = get_length();
   const uchar *blob = blob_length > 0 ? get_blob_data() : EMPTY_BLOB;
+
+  size_t local_char_length =
+      my_charpos(field_charset, blob, blob + blob_length, trunc_pos);
+  blob_length = std::min(blob_length, local_char_length);
 
   return field_charset->coll->strnxfrm(field_charset, to, length, length, blob,
                                        blob_length, flags);
@@ -10474,10 +10499,9 @@ Create_field *generate_create_field(THD *thd, Item *source_item,
     assert(table);
     const dd::Table *table_obj =
         table->s->tmp_table ? table->s->tmp_table_def : nullptr;
+    dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
 
     if (!table_obj && table->s->table_category != TABLE_UNKNOWN_CATEGORY) {
-      dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
-
       if (thd->dd_client()->acquire(table->s->db.str, table->s->table_name.str,
                                     &table_obj)) {
         return nullptr; /* purecov: inspected */

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1297,9 +1298,19 @@ SqlLexer::iterator::Token SqlLexer::iterator::next_token() {
   return {get_token_text(token_id), token_id};
 }
 
+static bool is_final_token(const SqlLexer::iterator::Token &tkn) {
+  switch (tkn.id) {
+    case END_OF_INPUT:  // end-of-input
+    case ABORT_SYM:     // broken comment, string, hex-number, ...
+      return true;
+  }
+
+  return false;
+}
+
 SqlLexer::iterator SqlLexer::iterator::operator++(int) {
-  // the last token as END_OF_INPUT, +1 is past the "end()"
-  if (token_.id == END_OF_INPUT) {
+  // the last token is END_OF_INPUT, +1 is past the "end()"
+  if (is_final_token(token_)) {
     return {nullptr};
   }
 
@@ -1307,8 +1318,8 @@ SqlLexer::iterator SqlLexer::iterator::operator++(int) {
 }
 
 SqlLexer::iterator &SqlLexer::iterator::operator++() {
-  // the last token as END_OF_INPUT, +1 is past the "end()"
-  if (token_.id == END_OF_INPUT) {
+  // the last token is END_OF_INPUT, +1 is past the "end()"
+  if (is_final_token(token_)) {
     token_ = {};
   } else {
     token_ = next_token();
@@ -1332,6 +1343,8 @@ std::string_view SqlLexer::iterator::get_token_text(TokenId token_id) const {
     return {"\0", 1};
   } else if (token_id == 0) {  // YYEOF
     return {};
+  } else if (token_id == ABORT_SYM) {
+    return raw_token;
   } else if (token_id < 256) {  // 0-255 are plain ASCII characters
     return raw_token;
   } else if (token_id == IDENT) {

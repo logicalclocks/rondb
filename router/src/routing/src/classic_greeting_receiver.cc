@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2023, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -49,9 +50,11 @@
 #include "mysql/harness/stdx/expected.h"
 #include "mysql/harness/tls_error.h"
 #include "mysqld_error.h"  // mysql-server error-codes
+#include "mysqlrouter/classic_protocol_codec_error.h"
 #include "mysqlrouter/classic_protocol_constants.h"
 #include "mysqlrouter/connection_base.h"
 #include "processor.h"
+#include "router_config.h"  // MYSQL_ROUTER_VERSION
 #include "sql/server_component/mysql_command_services_imp.h"
 #include "tracer.h"
 
@@ -157,6 +160,12 @@ stdx::expected<Processor::Result, std::error_code> ClientGreetor::error() {
   }
 
   auto &client_conn = connection()->socket_splicer()->client_conn();
+
+  if (connection()->client_protocol()->handshake_state() ==
+      ClassicProtocolState::HandshakeState::kClientGreeting) {
+    // reached the error, but still are in the initial ClientGreeting state.
+    connection()->on_handshake_aborted();
+  }
 
   (void)client_conn.cancel();
   (void)client_conn.shutdown(net::socket_base::shutdown_both);
@@ -269,6 +278,10 @@ ClientGreetor::server_greeting() {
   dst_protocol->auth_method_data(server_greeting_msg.auth_method_data());
   dst_protocol->server_greeting(server_greeting_msg);
 
+  // ServerGreeting is sent, expecting a ClientGreeting next.
+  connection()->client_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kServerGreeting);
+
   stage(Stage::ClientGreeting);
   return Result::SendToClient;
 }
@@ -338,14 +351,53 @@ ClientGreetor::client_greeting() {
   auto msg_res =
       ClassicFrame::recv_msg<classic_protocol::message::client::Greeting>(
           src_channel, src_protocol, src_protocol->server_capabilities());
-  if (!msg_res) return recv_client_failed(msg_res.error());
+  if (!msg_res) {
+    const auto ec = msg_res.error();
 
-  auto msg = std::move(*msg_res);
+    if (!src_channel->recv_plain_view().empty()) {
+      // something was received, but it failed to decode.
+      connection()->client_protocol()->handshake_state(
+          ClassicProtocolState::HandshakeState::kClientGreeting);
+    }
+
+    if (ec.category() != classic_protocol::codec_category()) {
+      return recv_client_failed(ec);
+    }
+
+    discard_current_msg(src_channel, src_protocol);
+
+    // server sends Bad Handshake instead of Malformed message.
+    const auto send_msg = ClassicFrame::send_msg<
+        classic_protocol::borrowed::message::server::Error>(
+        src_channel, src_protocol,
+        {ER_HANDSHAKE_ERROR, "Bad handshake", "08S01"});
+    if (!send_msg) send_client_failed(send_msg.error());
+
+    stage(Stage::Error);
+
+    return Result::SendToClient;
+  }
+
+  // got a greeting, treat all errors that abort the connection
+  // in abnormal way as "connect-errors".
+  connection()->client_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kClientGreeting);
 
   if (src_protocol->seq_id() != 1) {
-    // client-greeting has seq-id 1
-    return recv_client_failed(make_error_code(std::errc::bad_message));
+    discard_current_msg(src_channel, src_protocol);
+
+    const auto send_msg = ClassicFrame::send_msg<
+        classic_protocol::borrowed::message::server::Error>(
+        src_channel, src_protocol,
+        {ER_NET_PACKETS_OUT_OF_ORDER, "Got packets out of order", "08S01"});
+    if (!send_msg) send_client_failed(send_msg.error());
+
+    stage(Stage::Error);
+
+    return Result::SendToClient;
   }
+
+  auto msg = std::move(*msg_res);
 
   if (auto &tr = tracer()) {
     tr.trace(Tracer::Event().stage("client::greeting"));
@@ -360,6 +412,10 @@ ClientGreetor::client_greeting() {
 
   if (!client_ssl_mode_is_satisfied(connection()->source_ssl_mode(),
                                     src_protocol->shared_capabilities())) {
+    // do NOT treat ssl-mode-errors as "connect-error"
+    connection()->client_protocol()->handshake_state(
+        ClassicProtocolState::HandshakeState::kFinished);
+
     // config says: client->router MUST be encrypted, but client didn't set
     // the SSL cap.
     //
@@ -376,6 +432,10 @@ ClientGreetor::client_greeting() {
   // checking the server's capabilities.
   if (!client_compress_is_satisfied(src_protocol->client_capabilities(),
                                     src_protocol->shared_capabilities())) {
+    // do NOT treat compress-mode-errors as "connect-error"
+    connection()->client_protocol()->handshake_state(
+        ClassicProtocolState::HandshakeState::kFinished);
+
     const auto send_res = ClassicFrame::send_msg<
         classic_protocol::borrowed::message::server::Error>(
         src_channel, src_protocol,
@@ -394,7 +454,16 @@ ClientGreetor::client_greeting() {
           classic_protocol::capabilities::pos::ssl)) {
     // client wants to stay with plaintext
 
-    if (msg.auth_method_data() == "\x00"sv) {
+    // libmysqlclient sends auth-data: \x00 for empty password
+    // php sends auth-data: <empty> for empty password.
+    //
+    // check that the auth-method-name matches the auth method sent in the
+    // server-greeting the client received.
+    if (src_protocol->server_greeting()->auth_method_name() ==
+            AuthCachingSha2Password::kName &&
+        src_protocol->auth_method_name() == AuthCachingSha2Password::kName &&
+        (msg.auth_method_data() == "\x00"sv ||
+         msg.auth_method_data().empty())) {
       // password is empty.
       src_protocol->password("");
     } else {
@@ -459,6 +528,11 @@ stdx::expected<Processor::Result, std::error_code> ClientGreetor::tls_accept() {
       // accept failed.
       if (!client_channel->send_buffer().empty()) {
         if (ec != TlsErrc::kWantRead) {
+          // do NOT treat tls-handshake-errors that are returned
+          // to the client as "connect-error"
+          connection()->client_protocol()->handshake_state(
+              ClassicProtocolState::HandshakeState::kFinished);
+
           log_debug("tls-accept failed: %s", ec.message().c_str());
 
           stage(Stage::Error);
@@ -468,9 +542,12 @@ stdx::expected<Processor::Result, std::error_code> ClientGreetor::tls_accept() {
 
       if (ec == TlsErrc::kWantRead) return Result::RecvFromClient;
 
-      log_fatal_error_code("tls-accept failed", ec);
+      log_info("accepting TLS connection from %s failed: %s",
+               connection()->get_client_address().c_str(),
+               ec.message().c_str());
 
-      return recv_client_failed(ec);
+      stage(Stage::Error);
+      return Result::Again;
     }
   }
 
@@ -541,6 +618,10 @@ ClientGreetor::client_greeting_after_tls() {
   discard_current_msg(src_channel, src_protocol);
 
   if (!authentication_method_is_supported(msg.auth_method_name())) {
+    // do NOT treat auth-errors as "connect-error"
+    connection()->client_protocol()->handshake_state(
+        ClassicProtocolState::HandshakeState::kFinished);
+
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("client::greeting::error"));
     }
@@ -565,6 +646,11 @@ ClientGreetor::client_greeting_after_tls() {
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("client::greeting::error"));
     }
+
+    // do NOT treat compress-mode-errors as "connect-error"
+    connection()->client_protocol()->handshake_state(
+        ClassicProtocolState::HandshakeState::kFinished);
+
     const auto send_res = ClassicFrame::send_msg<
         classic_protocol::borrowed::message::server::Error>(
         src_channel, src_protocol,
@@ -680,6 +766,11 @@ stdx::expected<Processor::Result, std::error_code> ClientGreetor::accepted() {
 
   auto *dst_protocol = connection()->server_protocol();
 
+  // treat the client-handshake as finished. No further tracking of
+  // max-connect-errors.
+  connection()->client_protocol()->handshake_state(
+      ClassicProtocolState::HandshakeState::kFinished);
+
   stage(Stage::Authenticated);
 
   if (dst_protocol->server_greeting().has_value()) {
@@ -721,15 +812,6 @@ ClientGreetor::authenticated() {
 
     if (auto &tr = tracer()) {
       tr.trace(Tracer::Event().stage("greeting::error"));
-    }
-
-    if (log_level_is_handled(mysql_harness::logging::LogLevel::kDebug)) {
-      // RouterRoutingTest.RoutingTooManyServerConnections expects this
-      // message.
-      log_debug(
-          "Error from the server while waiting for greetings message: "
-          "%u, '%s'",
-          connect_err_.error_code(), connect_err_.message().c_str());
     }
 
     stage(Stage::Error);

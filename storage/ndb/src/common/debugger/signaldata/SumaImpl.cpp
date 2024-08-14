@@ -1,16 +1,17 @@
-/* Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,13 +25,9 @@
 
 #include <signaldata/SumaImpl.hpp>
 
-bool printSUB_CREATE_REQ(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 len,
-                         Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubCreateReq::SignalLength)
-  {
+bool printSUB_CREATE_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16 /*receiverBlockNo*/) {
+  if (len < SubCreateReq::SignalLength) {
     assert(false);
     return false;
   }
@@ -46,13 +43,9 @@ bool printSUB_CREATE_REQ(FILE *output,
   return false;
 }
 
-bool printSUB_CREATE_CONF(FILE *output,
-                          const Uint32 *theData,
-                          Uint32 len,
-                          Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubCreateConf::SignalLength)
-  {
+bool printSUB_CREATE_CONF(FILE *output, const Uint32 *theData, Uint32 len,
+                          Uint16 /*receiverBlockNo*/) {
+  if (len < SubCreateConf::SignalLength) {
     assert(false);
     return false;
   }
@@ -62,13 +55,9 @@ bool printSUB_CREATE_CONF(FILE *output,
   return false;
 }
 
-bool printSUB_CREATE_REF(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 len,
-                         Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubCreateRef::SignalLength)
-  {
+bool printSUB_CREATE_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16 /*receiverBlockNo*/) {
+  if (len < SubCreateRef::SignalLength) {
     assert(false);
     return false;
   }
@@ -78,13 +67,9 @@ bool printSUB_CREATE_REF(FILE *output,
   return false;
 }
 
-bool printSUB_REMOVE_REQ(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 len,
-                         Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubRemoveReq::SignalLength)
-  {
+bool printSUB_REMOVE_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16 /*receiverBlockNo*/) {
+  if (len < SubRemoveReq::SignalLength) {
     assert(false);
     return false;
   }
@@ -95,13 +80,9 @@ bool printSUB_REMOVE_REQ(FILE *output,
   return false;
 }
 
-bool printSUB_REMOVE_CONF(FILE *output,
-                          const Uint32 *theData,
-                          Uint32 len,
-                          Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubRemoveConf::SignalLength)
-  {
+bool printSUB_REMOVE_CONF(FILE *output, const Uint32 *theData, Uint32 len,
+                          Uint16 /*receiverBlockNo*/) {
+  if (len < SubRemoveConf::SignalLength) {
     assert(false);
     return false;
   }
@@ -113,13 +94,9 @@ bool printSUB_REMOVE_CONF(FILE *output,
   return false;
 }
 
-bool printSUB_REMOVE_REF(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 len,
-                         Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubRemoveRef::SignalLength)
-  {
+bool printSUB_REMOVE_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16 /*receiverBlockNo*/) {
+  if (len < SubRemoveRef::SignalLength) {
     assert(false);
     return false;
   }
@@ -132,13 +109,9 @@ bool printSUB_REMOVE_REF(FILE *output,
   return false;
 }
 
-bool printSUB_START_REQ(FILE *output,
-                        const Uint32 *theData,
-                        Uint32 len,
-                        Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubStartReq::SignalLength)
-  {
+bool printSUB_START_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                        Uint16 /*receiverBlockNo*/) {
+  if (len < SubStartReq::SignalLength) {
     assert(false);
     return false;
   }
@@ -150,13 +123,9 @@ bool printSUB_START_REQ(FILE *output,
   return false;
 }
 
-bool printSUB_START_REF(FILE *output,
-                        const Uint32 *theData,
-                        Uint32 len,
-                        Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubStartRef::SignalLength)
-  {
+bool printSUB_START_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                        Uint16 /*receiverBlockNo*/) {
+  if (len < SubStartRef::SignalLength) {
     assert(false);
     return false;
   }
@@ -170,13 +139,9 @@ bool printSUB_START_REF(FILE *output,
   return false;
 }
 
-bool printSUB_START_CONF(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 len,
-                         Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubStartConf::SignalLength)
-  {
+bool printSUB_START_CONF(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16 /*receiverBlockNo*/) {
+  if (len < SubStartConf::SignalLength) {
     assert(false);
     return false;
   }
@@ -189,13 +154,9 @@ bool printSUB_START_CONF(FILE *output,
   return false;
 }
 
-bool printSUB_STOP_REQ(FILE *output,
-                       const Uint32 *theData,
-                       Uint32 len,
-                       Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubStopReq::SignalLength)
-  {
+bool printSUB_STOP_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                       Uint16 /*receiverBlockNo*/) {
+  if (len < SubStopReq::SignalLength) {
     assert(false);
     return false;
   }
@@ -207,13 +168,9 @@ bool printSUB_STOP_REQ(FILE *output,
   return false;
 }
 
-bool printSUB_STOP_REF(FILE *output,
-                       const Uint32 *theData,
-                       Uint32 len,
-                       Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubStopRef::SignalLength)
-  {
+bool printSUB_STOP_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                       Uint16 /*receiverBlockNo*/) {
+  if (len < SubStopRef::SignalLength) {
     assert(false);
     return false;
   }
@@ -226,13 +183,9 @@ bool printSUB_STOP_REF(FILE *output,
   return false;
 }
 
-bool printSUB_STOP_CONF(FILE *output,
-                        const Uint32 *theData,
-                        Uint32 len,
-                        Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubStopConf::SignalLength)
-  {
+bool printSUB_STOP_CONF(FILE *output, const Uint32 *theData, Uint32 len,
+                        Uint16 /*receiverBlockNo*/) {
+  if (len < SubStopConf::SignalLength) {
     assert(false);
     return false;
   }
@@ -244,13 +197,9 @@ bool printSUB_STOP_CONF(FILE *output,
   return false;
 }
 
-bool printSUB_SYNC_REQ(FILE *output,
-                       const Uint32 *theData,
-                       Uint32 len,
-                       Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubSyncReq::SignalLength)
-  {
+bool printSUB_SYNC_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                       Uint16 /*receiverBlockNo*/) {
+  if (len < SubSyncReq::SignalLength) {
     assert(false);
     return false;
   }
@@ -266,13 +215,9 @@ bool printSUB_SYNC_REQ(FILE *output,
   return false;
 }
 
-bool printSUB_SYNC_REF(FILE *output,
-                       const Uint32 *theData,
-                       Uint32 len,
-                       Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubSyncRef::SignalLength)
-  {
+bool printSUB_SYNC_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                       Uint16 /*receiverBlockNo*/) {
+  if (len < SubSyncRef::SignalLength) {
     assert(false);
     return false;
   }
@@ -283,13 +228,9 @@ bool printSUB_SYNC_REF(FILE *output,
   return false;
 }
 
-bool printSUB_SYNC_CONF(FILE *output,
-                        const Uint32 *theData,
-                        Uint32 len,
-                        Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubSyncConf::SignalLength)
-  {
+bool printSUB_SYNC_CONF(FILE *output, const Uint32 *theData, Uint32 len,
+                        Uint16 /*receiverBlockNo*/) {
+  if (len < SubSyncConf::SignalLength) {
     assert(false);
     return false;
   }
@@ -299,13 +240,9 @@ bool printSUB_SYNC_CONF(FILE *output,
   return false;
 }
 
-bool printSUB_TABLE_DATA(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 len,
-                         Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubTableData::SignalLength)
-  {
+bool printSUB_TABLE_DATA(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16 /*receiverBlockNo*/) {
+  if (len < SubTableData::SignalLength) {
     assert(false);
     return false;
   }
@@ -317,21 +254,15 @@ bool printSUB_TABLE_DATA(FILE *output,
   fprintf(output, " tableId: %x\n", sig->tableId);
   fprintf(output, " operation: %x\n", 
 	  SubTableData::getOperation(sig->requestInfo));
-  if (len == SubTableData::SignalLengthWithTransId)
-  {
-    fprintf(output, " TransId : %x %x\n",
-            sig->transId1, sig->transId2);
+  if (len == SubTableData::SignalLengthWithTransId) {
+    fprintf(output, " TransId : %x %x\n", sig->transId1, sig->transId2);
   }
   return false;
 }
 
-bool printSUB_SYNC_CONTINUE_REQ(FILE *output,
-                                const Uint32 *theData,
-                                Uint32 len,
-                                Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubSyncContinueReq::SignalLength)
-  {
+bool printSUB_SYNC_CONTINUE_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                                Uint16 /*receiverBlockNo*/) {
+  if (len < SubSyncContinueReq::SignalLength) {
     assert(false);
     return false;
   }
@@ -342,13 +273,9 @@ bool printSUB_SYNC_CONTINUE_REQ(FILE *output,
   return false;
 }
 
-bool printSUB_SYNC_CONTINUE_REF(FILE *output,
-                                const Uint32 *theData,
-                                Uint32 len,
-                                Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubSyncContinueRef::SignalLength)
-  {
+bool printSUB_SYNC_CONTINUE_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                                Uint16 /*receiverBlockNo*/) {
+  if (len < SubSyncContinueRef::SignalLength) {
     assert(false);
     return false;
   }
@@ -359,13 +286,9 @@ bool printSUB_SYNC_CONTINUE_REF(FILE *output,
   return false;
 }
 
-bool printSUB_SYNC_CONTINUE_CONF(FILE *output,
-                                 const Uint32 *theData,
-                                 Uint32 len,
-                                 Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubSyncContinueConf::SignalLength)
-  {
+bool printSUB_SYNC_CONTINUE_CONF(FILE *output, const Uint32 *theData,
+                                 Uint32 len, Uint16 /*receiverBlockNo*/) {
+  if (len < SubSyncContinueConf::SignalLength) {
     assert(false);
     return false;
   }
@@ -376,13 +299,9 @@ bool printSUB_SYNC_CONTINUE_CONF(FILE *output,
   return false;
 }
 
-bool printSUB_GCP_COMPLETE_REP(FILE *output,
-                               const Uint32 *theData,
-                               Uint32 len,
-                               Uint16 /*receiverBlockNo*/)
-{
-  if (len < SubGcpCompleteRep::SignalLength)
-  {
+bool printSUB_GCP_COMPLETE_REP(FILE *output, const Uint32 *theData, Uint32 len,
+                               Uint16 /*receiverBlockNo*/) {
+  if (len < SubGcpCompleteRep::SignalLength) {
     assert(false);
     return false;
   }

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -772,12 +773,24 @@ TEST_P(SplicerConnectParamTest, check) {
 
   const auto conf_file = create_config_file(conf_dir_.name(), config);
 
-  launch_router({"-c", conf_file}, EXIT_SUCCESS,
-                /* catch_stderr */ true, /* with_sudo */ false,
-                /* wait_for_notify_ready */ 30s);
+  auto &proc = launch_router({"-c", conf_file}, EXIT_SUCCESS,
+                             /* catch_stderr */ true, /* with_sudo */ false,
+                             /* wait_for_notify_ready */ 30s);
   EXPECT_TRUE(wait_for_port_ready(router_port));
 
   EXPECT_NO_FATAL_FAILURE(GetParam().checker(router_host_, router_port));
+
+  proc.send_clean_shutdown_event();
+  EXPECT_NO_THROW(proc.wait_for_exit());
+
+  // check the log doesn't contain:
+  //
+  // classic::loop() processor failed:
+  // error:0A000418:SSL routines::tlsv1 alert unknown ca (tls_err:167773208)
+  //
+  // or similar.
+  EXPECT_THAT(proc.get_logfile_content(),
+              testing::Not(testing::HasSubstr("processor failed")));
 }
 
 const SplicerConnectParam splicer_connect_params[] = {

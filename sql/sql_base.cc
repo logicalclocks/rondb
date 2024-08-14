@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -126,9 +127,10 @@
 #include "sql/sql_class.h"        // THD
 #include "sql/sql_const.h"
 #include "sql/sql_data_change.h"
-#include "sql/sql_db.h"       // check_schema_readonly
-#include "sql/sql_error.h"    // Sql_condition
-#include "sql/sql_handler.h"  // mysql_ha_flush_tables
+#include "sql/sql_db.h"        // check_schema_readonly
+#include "sql/sql_error.h"     // Sql_condition
+#include "sql/sql_executor.h"  // unwrap_rollup_group
+#include "sql/sql_handler.h"   // mysql_ha_flush_tables
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
 #include "sql/sql_parse.h"    // is_update_query
@@ -7721,7 +7723,7 @@ Field *find_field_in_table_ref(THD *thd, Table_ref *table_list,
                                const char *name, size_t length,
                                const char *item_name, const char *db_name,
                                const char *table_name, Item **ref,
-                               ulong want_privilege, bool allow_rowid,
+                               Access_bitmask want_privilege, bool allow_rowid,
                                uint *field_index_ptr, bool register_tree_change,
                                Table_ref **actual_table) {
   Field *fld;
@@ -7905,7 +7907,8 @@ Field *find_field_in_table_sef(TABLE *table, const char *name) {
 Field *find_field_in_tables(THD *thd, Item_ident *item, Table_ref *first_table,
                             Table_ref *last_table, Item **ref,
                             find_item_error_report_type report_error,
-                            ulong want_privilege, bool register_tree_change) {
+                            Access_bitmask want_privilege,
+                            bool register_tree_change) {
   Field *found = nullptr;
   const char *db = item->db_name;
   const char *table_name = item->table_name;
@@ -8114,6 +8117,11 @@ bool find_item_in_list(THD *thd, Item *find, mem_root_deque<Item *> *items,
       find->type() == Item::FIELD_ITEM || find->type() == Item::REF_ITEM
           ? down_cast<Item_ident *>(find)
           : nullptr;
+  /*
+    Some items, such as Item_aggregate_ref, do not have a name and hence
+    can never be found.
+  */
+  assert(find_ident == nullptr || find_ident->field_name != nullptr);
 
   int i = 0;
   for (auto it = VisibleFields(*items).begin();
@@ -8202,12 +8210,12 @@ bool find_item_in_list(THD *thd, Item *find, mem_root_deque<Item *> *items,
           unaliased_counter = i;
         }
       }
-    } else if (find_ident == nullptr || find_ident->table_name == nullptr) {
-      if (item->type() == Item::FUNC_ITEM &&
-          down_cast<const Item_func *>(item)->functype() ==
-              Item_func::ROLLUP_GROUP_ITEM_FUNC) {
-        item = down_cast<Item_rollup_group_item *>(item)->inner_item();
-      }
+    } else if (find_ident == nullptr || find_ident->table_name == nullptr ||
+               is_rollup_group_wrapper(item)) {
+      // Unwrap rollup wrappers, if any
+      item = unwrap_rollup_group(item);
+      find = unwrap_rollup_group(find);
+
       if (find_ident != nullptr && item->item_name.eq_safe(find->item_name)) {
         *found = &*it;
         *counter = i;
@@ -8246,15 +8254,6 @@ bool find_item_in_list(THD *thd, Item *find, mem_root_deque<Item *> *items,
         *found = &*it;
         *counter = i;
         *resolution = RESOLVED_IGNORING_ALIAS;
-        break;
-      }
-    } else if (item->type() == Item::FUNC_ITEM &&
-               down_cast<const Item_func *>(item)->functype() ==
-                   Item_func::ROLLUP_GROUP_ITEM_FUNC) {
-      if (find_ident != nullptr && item->item_name.eq_safe(find->item_name)) {
-        *found = &*it;
-        *counter = i;
-        *resolution = RESOLVED_AGAINST_ALIAS;
         break;
       }
     }
@@ -8957,7 +8956,7 @@ bool resolve_var_assignments(THD *thd, LEX *lex) {
         for update.
 */
 
-bool setup_fields(THD *thd, ulong want_privilege, bool allow_sum_func,
+bool setup_fields(THD *thd, Access_bitmask want_privilege, bool allow_sum_func,
                   bool split_sum_funcs, bool column_update,
                   const mem_root_deque<Item *> *typed_items,
                   mem_root_deque<Item *> *fields,
@@ -10309,7 +10308,7 @@ bool init_ftfuncs(THD *thd, Query_block *query_block) {
   DBUG_PRINT("info", ("Performing FULLTEXT search"));
   THD_STAGE_INFO(thd, stage_fulltext_initialization);
 
-  if (thd->lex->using_hypergraph_optimizer) {
+  if (thd->lex->using_hypergraph_optimizer()) {
     // Set the no_ranking hint if ranking of the results is not required. The
     // old optimizer does this when it determines which scan to use. The
     // hypergraph optimizer doesn't know until the full plan is built, so do it

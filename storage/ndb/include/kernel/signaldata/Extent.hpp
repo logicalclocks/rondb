@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,6 @@
 
 #define JAM_FILE_ID 86
 
-
 struct AllocExtentReq {
   /**
    * Sender(s) / Reciver(s)
@@ -48,17 +48,14 @@ struct AllocExtentReq {
     NoDatafile = 1602
   };
   
-  union 
-  {
-    struct 
-    {
+  union {
+    struct {
       Uint32 tablespace_id;
       Uint32 table_id;
       Uint32 fragment_id;
       Uint32 create_table_version;
     } request;
-    struct 
-    {
+    struct {
       Uint32 errorCode;
       Local_key page_id;
       Uint32 page_count;
@@ -78,22 +75,17 @@ struct FreeExtentReq {
   
   static constexpr Uint32 SignalLength = 4;
 
-  enum ErrorCode {
-    UnmappedExtentPageIsNotImplemented = 1
-  };
+  enum ErrorCode { UnmappedExtentPageIsNotImplemented = 1 };
   
-  union 
-  {
-    struct 
-    {
+  union {
+    struct {
       Local_key key;
       Uint32 table_id;
       Uint32 tablespace_id;
       Uint32 lsn_hi;
       Uint32 lsn_lo;
     } request;
-    struct 
-    {
+    struct {
       Uint32 errorCode;
     } reply;
   };
@@ -110,29 +102,21 @@ struct AllocPageReq {
   
   static constexpr Uint32 SignalLength = 3;
 
-  enum ErrorCode {
-    UnmappedExtentPageIsNotImplemented = 1,
-    NoPageFree= 2
-  };
+  enum ErrorCode { UnmappedExtentPageIsNotImplemented = 1, NoPageFree = 2 };
   
   Local_key key; // in out
   Uint32 bits;   // in out
-  union 
-  {
-    struct 
-    {
+  union {
+    struct {
       Uint32 table_id;
       Uint32 fragment_id;
       Uint32 tablespace_id;
     } request;
-    struct 
-    {
+    struct {
       Uint32 errorCode;
     } reply;
   };
 };
-
-
 
 #undef JAM_FILE_ID
 

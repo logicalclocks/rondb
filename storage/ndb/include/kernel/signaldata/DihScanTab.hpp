@@ -1,16 +1,17 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,12 +29,10 @@
 
 #define JAM_FILE_ID 108
 
-
 /**
  * DihScanTabReq
  */
-struct DihScanTabReq
-{
+struct DihScanTabReq {
   static constexpr Uint32 SignalLength = 6;
   static constexpr Uint32 RetryInterval = 5;
 
@@ -42,7 +41,7 @@ struct DihScanTabReq
   Uint32 senderRef;
   Uint32 schemaTransId;
   union {
-    void * jamBufferPtr;
+    void *jamBufferPtr;
     Uint32 jamBufferStorage[2];
   };
 };
@@ -67,18 +66,14 @@ struct DihScanTabConf
 /**
  * DihScanTabRef
  */
-struct DihScanTabRef
-{
-  enum ErrorCode {
-    ErroneousState = 0,
-    ErroneousTableState = 1
-  };
+struct DihScanTabRef {
+  enum ErrorCode { ErroneousState = 0, ErroneousTableState = 1 };
   static constexpr Uint32 SignalLength = 5;
 
   Uint32 tableId;
   Uint32 senderData;
   Uint32 error;
-  Uint32 tableStatus; // Dbdih::TabRecord::tabStatus
+  Uint32 tableStatus;  // Dbdih::TabRecord::tabStatus
   Uint32 schemaTransId;
 };
 
@@ -90,11 +85,10 @@ struct DihScanTabCompleteRep
   Uint32 schemaVersionCookie;
   Uint32 scanCookie;
   union {
-    void * jamBufferPtr;
+    void *jamBufferPtr;
     Uint32 jamBufferStorage[2];
   };
 };
-
 
 #undef JAM_FILE_ID
 

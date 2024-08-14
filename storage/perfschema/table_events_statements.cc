@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -342,8 +343,13 @@ int table_events_statements_common::make_row_part_1(
                      m_row.m_source, sizeof(m_row.m_source),
                      m_row.m_source_length);
 
-  memcpy(m_row.m_message_text, statement->m_message_text,
-         sizeof(m_row.m_message_text));
+  m_row.m_message_text_length = statement->m_message_text_length;
+  if (m_row.m_message_text_length > 0) {
+    memcpy(m_row.m_message_text, statement->m_message_text,
+           m_row.m_message_text_length);
+  }
+  m_row.m_message_text[m_row.m_message_text_length] = '\0';
+
   memcpy(m_row.m_sqlstate, statement->m_sqlstate, SQLSTATE_LENGTH);
 
   m_row.m_sql_errno = statement->m_sql_errno;
@@ -532,7 +538,7 @@ int table_events_statements_common::read_row_values(TABLE *table,
           }
           break;
         case 19: /* MESSAGE_TEXT */
-          len = (uint)strlen(m_row.m_message_text);
+          len = m_row.m_message_text_length;
           if (len) {
             set_field_varchar_utf8mb4(f, m_row.m_message_text, len);
           } else {

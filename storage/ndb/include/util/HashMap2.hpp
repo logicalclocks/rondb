@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,7 +27,6 @@
 #define NDB_HASHMAP2_HPP
 
 #include <ndb_global.h>
-
 
 /* Basic HashTable implementation
  * The HashTable stores elements of type KV.
@@ -57,29 +57,18 @@
  *   void setNext(KV* next);
  *   KV* getNext() const;
  */
-template<typename KV>
-class KVOPStaticAdapter
-{
-public:
-  static Uint32 hashValue(const KV* obj)
-  {
-    return obj->hashValue();
-  }
+template <typename KV>
+class KVOPStaticAdapter {
+ public:
+  static Uint32 hashValue(const KV *obj) { return obj->hashValue(); }
 
-  static bool equal(const KV* objA, const KV* objB)
-  {
+  static bool equal(const KV *objA, const KV *objB) {
     return objA->equal(objB);
   }
 
-  static void setNext(KV* from, KV* to)
-  {
-    return from->setNext(to);
-  }
+  static void setNext(KV *from, KV *to) { return from->setNext(to); }
 
-  static KV* getNext(const KV* from)
-  {
-    return from->getNext();
-  }
+  static KV *getNext(const KV *from) { return from->getNext(); }
 };
 
 // TODO :
@@ -91,22 +80,14 @@ public:
  * StandardAllocator - used in HashMap2 when no allocator supplied
  * Uses standard malloc/free.
  */
-struct StandardAllocator
-{
-  static void* alloc(void*, size_t bytes)
-  {
-    return ::malloc(bytes);
-  }
+struct StandardAllocator {
+  static void *alloc(void *, size_t bytes) { return ::malloc(bytes); }
 
-  static void* mem_calloc(void*, size_t nelem, size_t bytes)
-  {
+  static void *mem_calloc(void *, size_t nelem, size_t bytes) {
     return ::calloc(nelem, bytes);
   }
 
-  static void mem_free(void*, void* mem)
-  {
-    ::free(mem);
-  }
+  static void mem_free(void *, void *mem) { ::free(mem); }
 };
 
 /**
@@ -167,31 +148,24 @@ struct StandardAllocator
  *   - collision count?
  *   - release option?
  */
-template<typename KV,
-         bool unique = true,
-         typename A = StandardAllocator,
-         typename KVOP = KVOPStaticAdapter<KV> >
-class HashMap2
-{
-public:
+template <typename KV, bool unique = true, typename A = StandardAllocator,
+          typename KVOP = KVOPStaticAdapter<KV>>
+class HashMap2 {
+ public:
   /**
    * HashMap2 constructor
    * Pass an Allocator pointer if the templated allocator
    * requires some context info.
    * setSize() must be called before the HashMap is used.
    */
-  HashMap2(void* _allocatorContext = nullptr)
-    : tableSize(0),
-      elementCount(0),
-      allocatorContext(_allocatorContext),
-      table(nullptr)
-  {
-  }
+  HashMap2(void *_allocatorContext = nullptr)
+      : tableSize(0),
+        elementCount(0),
+        allocatorContext(_allocatorContext),
+        table(nullptr) {}
 
-  ~HashMap2()
-  {
-    if (table)
-      A::mem_free(allocatorContext, table);
+  ~HashMap2() {
+    if (table) A::mem_free(allocatorContext, table);
   }
 
   /**
@@ -202,22 +176,17 @@ public:
    *  The Allocator is used to allocate/release bucket
    *  storage.
    */
-  bool
-  setSize(Uint32 hashBuckets)
-  {
-    if (elementCount)
-    {
+  bool setSize(Uint32 hashBuckets) {
+    if (elementCount) {
       /* Can't set size while we have contents */
       return false;
     }
 
-    if (hashBuckets == 0)
-    {
+    if (hashBuckets == 0) {
       return false;
     }
 
-    if (table)
-    {
+    if (table) {
       A::mem_free(allocatorContext, table);
       table = nullptr;
     }
@@ -225,15 +194,13 @@ public:
     /* TODO : Consider using only power-of-2 + bitmask instead of mod */
     tableSize = hashBuckets;
 
-    table = (KV**) A::mem_calloc(allocatorContext, hashBuckets, sizeof(KV*));
+    table = (KV **)A::mem_calloc(allocatorContext, hashBuckets, sizeof(KV *));
 
-    if (!table)
-    {
+    if (!table) {
       return false;
     }
 
-    for (Uint32 i=0; i < tableSize; i++)
-      table[i] = nullptr;
+    for (Uint32 i = 0; i < tableSize; i++) table[i] = nullptr;
 
     return true;
   }
@@ -246,32 +213,26 @@ public:
    * If the hash table requires uniqueness, and the
    * element is not unique, false will be returned
    */
-  bool
-  add(KV* keyVal)
-  {
+  bool add(KV *keyVal) {
     assert(table);
 
     Uint32 hashVal = rehash(KVOP::hashValue(keyVal));
     Uint32 bucketIdx = hashVal % tableSize;
 
-    KV* bucket = table[bucketIdx];
+    KV *bucket = table[bucketIdx];
 
-    if (bucket != nullptr)
-    {
-      if (unique)
-      {
+    if (bucket != nullptr) {
+      if (unique) {
         /* Need to check element is not already there, in this
          * chain
          */
-        const KV* chainElement = bucket;
-        while (chainElement)
-        {
-          if (KVOP::equal(keyVal, chainElement))
-          {
+        const KV *chainElement = bucket;
+        while (chainElement) {
+          if (KVOP::equal(keyVal, chainElement)) {
             /* Found duplicate */
             return false;
           }
-          chainElement= KVOP::getNext(chainElement);
+          chainElement = KVOP::getNext(chainElement);
         }
       }
 
@@ -281,9 +242,7 @@ public:
       assert(KVOP::getNext(keyVal) == nullptr);
       KVOP::setNext(keyVal, bucket);
       table[bucketIdx] = keyVal;
-    }
-    else
-    {
+    } else {
       /* First element in bucket */
       assert(KVOP::getNext(keyVal) == nullptr);
       KVOP::setNext(keyVal, nullptr);
@@ -294,35 +253,27 @@ public:
     return true;
   }
 
-  KV*
-  remove(KV* key)
-  {
+  KV *remove(KV *key) {
     assert(table);
 
     Uint32 hashVal = rehash(KVOP::hashValue(key));
     Uint32 bucketIdx = hashVal % tableSize;
 
-    KV* bucket = table[bucketIdx];
+    KV *bucket = table[bucketIdx];
 
-    if (bucket != nullptr)
-    {
-      KV* chainElement = bucket;
-      KV* prev = nullptr;
-      while (chainElement)
-      {
-        if (KVOP::equal(key, chainElement))
-        {
+    if (bucket != nullptr) {
+      KV *chainElement = bucket;
+      KV *prev = nullptr;
+      while (chainElement) {
+        if (KVOP::equal(key, chainElement)) {
           /* Found, repair bucket chain
            * Get next, might be NULL
            */
-          KV* n = KVOP::getNext(chainElement);
-          if (prev)
-          {
+          KV *n = KVOP::getNext(chainElement);
+          if (prev) {
             /* Link prev to next */
             KVOP::setNext(prev, n);
-          }
-          else
-          {
+          } else {
             /* Put next as first in bucket */
             table[bucketIdx] = n;
           }
@@ -352,20 +303,16 @@ public:
    * Further elements must be found by iteration
    * (and key comparison), until NULL is returned.
    */
-  KV*
-  get(const KV* key) const
-  {
+  KV *get(const KV *key) const {
     assert(table);
 
     Uint32 hashVal = rehash(KVOP::hashValue(key));
     Uint32 bucketIdx = hashVal % tableSize;
 
-    KV* chainElement = table[bucketIdx];
+    KV *chainElement = table[bucketIdx];
 
-    while(chainElement)
-    {
-      if (KVOP::equal(key, chainElement))
-      {
+    while (chainElement) {
+      if (KVOP::equal(key, chainElement)) {
         break;
       }
       chainElement = KVOP::getNext(chainElement);
@@ -385,17 +332,13 @@ public:
    * Storage for the hash table itself is
    * preserved
    */
-  void
-  reset()
-  {
+  void reset() {
     /* Zap the hashtable ptrs, without freeing the 'elements'
      * Keep the storage allocated for the ptrs
      */
-    if (elementCount)
-    {
+    if (elementCount) {
       assert(table);
-      for (Uint32 i=0; i < tableSize; i++)
-      {
+      for (Uint32 i = 0; i < tableSize; i++) {
         table[i] = nullptr;
       }
 
@@ -409,53 +352,35 @@ public:
    * Returns the number of elements currently
    * stored in this hash table.
    */
-  Uint32
-  getElementCount() const
-  {
-      return elementCount;
-  }
+  Uint32 getElementCount() const { return elementCount; }
 
   /**
    * getTableSize
    *
    * Returns the number of hashBuckets in this hash table
    */
-  Uint32
-  getTableSize() const
-  {
-    return tableSize;
-  }
+  Uint32 getTableSize() const { return tableSize; }
 
-  class Iterator
-  {
-  public:
-    Iterator(HashMap2& hashMap)
-      : m_hash(&hashMap),
-        curr_element(nullptr),
-        curr_bucket(0)
-    {}
+  class Iterator {
+   public:
+    Iterator(HashMap2 &hashMap)
+        : m_hash(&hashMap), curr_element(nullptr), curr_bucket(0) {}
 
     /**
       Return the current element and reposition the iterator to the next
       element.
     */
-    KV* next()
-    {
-      while (curr_bucket < m_hash->tableSize)
-      {
-        if (curr_element == nullptr)
-        {
+    KV *next() {
+      while (curr_bucket < m_hash->tableSize) {
+        if (curr_element == nullptr) {
           /* First this bucket */
-          curr_element = m_hash->table[ curr_bucket ];
-        }
-        else
-        {
+          curr_element = m_hash->table[curr_bucket];
+        } else {
           /* Next this bucket */
           curr_element = KVOP::getNext(curr_element);
         }
 
-        if (curr_element)
-        {
+        if (curr_element) {
           return curr_element;
         }
         curr_bucket++;
@@ -463,20 +388,19 @@ public:
 
       return nullptr;
     }
-    void reset()
-    {
+    void reset() {
       curr_element = nullptr;
       curr_bucket = 0;
     }
-  private:
-    HashMap2* m_hash;
-    KV* curr_element;
+
+   private:
+    HashMap2 *m_hash;
+    KV *curr_element;
     Uint32 curr_bucket;
   };
 
-private:
-  static Uint32 rehash(Uint32 userHash)
-  {
+ private:
+  static Uint32 rehash(Uint32 userHash) {
     /* We rehash the supplied hash value in case
      * it's low quality, mixing some higher order
      * bits in with the lower bits
@@ -487,10 +411,10 @@ private:
 
   Uint32 tableSize;
   Uint32 elementCount;
-  void* allocatorContext;
+  void *allocatorContext;
 
-  KV** table;
+  KV **table;
 
-}; // class HashMap2()
+};  // class HashMap2()
 
 #endif

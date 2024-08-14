@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -230,7 +231,7 @@ bool Query_block::prepare(THD *thd, mem_root_deque<Item *> *insert_field_list) {
   const bool check_privs = !thd->derived_tables_processing ||
                            master_query_expression()->item != nullptr;
   thd->mark_used_columns = check_privs ? MARK_COLUMNS_READ : MARK_COLUMNS_NONE;
-  ulonglong want_privilege_saved = thd->want_privilege;
+  Access_bitmask want_privilege_saved = thd->want_privilege;
   thd->want_privilege = check_privs ? SELECT_ACL : 0;
 
   /*
@@ -1125,9 +1126,10 @@ static Table_ref **make_leaf_tables(Table_ref **list, Table_ref *tables) {
   @returns false if success, true if error.
 */
 
-bool Query_block::check_view_privileges(THD *thd, ulong want_privilege_first,
-                                        ulong want_privilege_next) {
-  ulong want_privilege = want_privilege_first;
+bool Query_block::check_view_privileges(THD *thd,
+                                        Access_bitmask want_privilege_first,
+                                        Access_bitmask want_privilege_next) {
+  Access_bitmask want_privilege = want_privilege_first;
   Internal_error_handler_holder<View_error_handler, Table_ref> view_handler(
       thd, true, leaf_tables);
 
@@ -1498,7 +1500,7 @@ bool Query_block::resolve_subquery(THD *thd) {
       no_aggregates &&                                             // 3,3x,4,5
       (outer->resolve_place == Query_block::RESOLVE_CONDITION ||   // 6a
        (outer->resolve_place == Query_block::RESOLVE_JOIN_NEST &&  // 6a
-        (!thd->lex->using_hypergraph_optimizer ||
+        (!thd->lex->using_hypergraph_optimizer() ||
          (thd->secondary_engine_optimization() ==
               Secondary_engine_optimization::SECONDARY &&
           !Overlaps(
@@ -4437,14 +4439,16 @@ bool find_order_in_list(THD *thd, Ref_item_array ref_item_array,
   thd->lex->current_query_block()->group_fix_field = save_group_fix_field;
   if (ret) return true; /* Wrong field. */
 
-  order_item->increment_ref_count();
-
-  assert_consistent_hidden_flags(*fields, order_item, /*hidden=*/true);
-
   uint el = fields->size();
-  order_item->hidden = true;
-  fields->push_front(order_item); /* Add new field to field list. */
-  ref_item_array[el] = order_item;
+
+  if (!order_item->const_for_execution()) {
+    order_item->increment_ref_count();
+    assert_consistent_hidden_flags(*fields, order_item, /*hidden=*/true);
+
+    order_item->hidden = true;
+    fields->push_front(order_item); /* Add new field to field list. */
+    ref_item_array[el] = order_item;
+  }
   /*
     If the order_item is a SUM_FUNC_ITEM, when fix_fields is called
     referenced_by is set to order->item which is the address of order_item.
@@ -4463,7 +4467,9 @@ bool find_order_in_list(THD *thd, Ref_item_array ref_item_array,
     with clean_up_after_removal() on the old order->item.
   */
   assert(order_item == *order->item);
-  order->item = &ref_item_array[el];
+  if (!order_item->const_for_execution()) {
+    order->item = &ref_item_array[el];
+  }
   return false;
 }
 
@@ -7824,7 +7830,7 @@ bool Query_block::lift_fulltext_from_having_to_select_list(THD *thd) {
                      // results from a temporary table instead of evaluating the
                      // expressions if they have been materialized. So we wrap
                      // these items in an Item_ref later.
-                     if (!thd->lex->using_hypergraph_optimizer) {
+                     if (!thd->lex->using_hypergraph_optimizer()) {
                        return refs_to_fulltext.push_back(ref);
                      }
                      return false;
@@ -7834,7 +7840,7 @@ bool Query_block::lift_fulltext_from_having_to_select_list(THD *thd) {
 
   // Add Item_ref indirection in the old optimizer.
   for (Item **item_to_replace : refs_to_fulltext) {
-    assert(!thd->lex->using_hypergraph_optimizer);
+    assert(!thd->lex->using_hypergraph_optimizer());
     having_cond = TransformItem(having_cond, [&](Item *sub_item) -> Item * {
       if (sub_item == *item_to_replace) {
         return new (thd->mem_root)

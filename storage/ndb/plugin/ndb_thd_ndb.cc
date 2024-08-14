@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,10 +41,10 @@
 */
 static const int MAX_TRANSACTIONS = 4;
 
-Thd_ndb *Thd_ndb::seize(THD *thd) {
+Thd_ndb *Thd_ndb::seize(THD *thd, const char *name) {
   DBUG_TRACE;
 
-  Thd_ndb *thd_ndb = new Thd_ndb(thd);
+  Thd_ndb *thd_ndb = new Thd_ndb(thd, name);
   if (thd_ndb == nullptr) {
     return nullptr;
   }
@@ -341,4 +342,19 @@ void Thd_ndb::clear_ddl_transaction_ctx() {
   assert(m_ddl_ctx != nullptr);
   delete m_ddl_ctx;
   m_ddl_ctx = nullptr;
+}
+
+std::string Thd_ndb::get_info_str() const {
+  bool sep = false;
+  std::stringstream ss;
+  if (m_thread_name) {
+    ss << "name=" << m_thread_name;
+    sep = true;
+  }
+  const ulonglong pfs_thread_id = ndb_thd_get_pfs_thread_id();
+  if (pfs_thread_id) {
+    if (sep) ss << ", ";
+    ss << "pfs_thread_id=" << pfs_thread_id;
+  }
+  return ss.str();
 }

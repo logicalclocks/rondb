@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,21 +27,19 @@
 #define Ndb_mgmclient_hpp
 
 class CommandInterpreter;
-class Ndb_mgmclient
-{
-public:
-  Ndb_mgmclient(const char* host,
-                const char* default_prompt,
-                int verbose,
+class Ndb_mgmclient {
+ public:
+  Ndb_mgmclient(const char *host, const char *default_prompt, int verbose,
                 int connect_retry_delay);
   ~Ndb_mgmclient();
   bool execute(const char *line, int try_reconnect = -1,
                bool interactive = true, int *error = NULL);
-  const char* get_current_prompt() const;
+  const char *get_current_prompt() const;
   int set_default_backup_password(const char backup_password[]) const;
   int set_always_encrypt_backup(bool on) const;
-private:
+
+ private:
   CommandInterpreter *m_cmd;
 };
 
-#endif // Ndb_mgmclient_hpp
+#endif  // Ndb_mgmclient_hpp

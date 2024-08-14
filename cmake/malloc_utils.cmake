@@ -1,15 +1,16 @@
-# Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -39,6 +40,10 @@ FUNCTION(WARN_MISSING_SYSTEM_JEMALLOC)
 ENDFUNCTION()
 
 FUNCTION(FIND_MALLOC_LIBRARY library_name)
+  # Skip system tcmalloc, and build the bundled version instead.
+  IF(WITH_TCMALLOC STREQUAL "bundled")
+    RETURN()
+  ENDIF()
   FIND_LIBRARY(MALLOC_LIBRARY ${library_name})
   IF(NOT MALLOC_LIBRARY)
     IF(library_name MATCHES "tcmalloc")
@@ -49,24 +54,24 @@ FUNCTION(FIND_MALLOC_LIBRARY library_name)
     MESSAGE(FATAL_ERROR "Library ${library_name} not found")
   ENDIF()
 
-  STRING_APPEND(CMAKE_C_FLAGS " -fno-builtin-malloc -fno-builtin-calloc")
-  STRING_APPEND(CMAKE_C_FLAGS " -fno-builtin-realloc -fno-builtin-free")
-  STRING_APPEND(CMAKE_CXX_FLAGS " -fno-builtin-malloc -fno-builtin-calloc")
-  STRING_APPEND(CMAKE_CXX_FLAGS " -fno-builtin-realloc -fno-builtin-free")
+  # There are some special considerations when using the RedHat gcc toolsets:
+  # https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/
+  #   html/developing_c_and_cpp_applications_in_rhel_8/
+  #   additional-toolsets-for-development_developing-applications
+  #
+  # For mysqld (and possibly other binaries),
+  #   we need tcmalloc to be the last library on the link line.
+  # Or more specifically:
+  #   after any library that might pull in libstdc++_nonshared.a
+  # Cmake will analyze target dependencies, and will add -ltcmalloc
+  #   somewhere on the compiler/linker command line accordingly.
+  # There is no way to tell cmake to "link this library last",
+  #   so we modify CMAKE_CXX_LINK_EXECUTABLE instead.
+  # For the original contents of CMAKE_CXX_LINK_EXECUTABLE,
+  #   see e.g. cmake-3.20.1/Modules/CMakeCXXInformation.cmake
+  SET(ORIGINAL_CMAKE_CXX_LINK_EXECUTABLE "${CMAKE_CXX_LINK_EXECUTABLE}")
+  SET(CMAKE_CXX_LINK_EXECUTABLE "${CMAKE_CXX_LINK_EXECUTABLE} -l${library_name}")
 
-  STRING_APPEND(CMAKE_EXE_LINKER_FLAGS " -l${library_name}")
-  STRING_APPEND(CMAKE_MODULE_LINKER_FLAGS " -l${library_name}")
-  STRING_APPEND(CMAKE_SHARED_LINKER_FLAGS " -l${library_name}")
-
-  SET(FIND_MALLOC_LIBRARY_FLAG "-l${library_name}" CACHE STRING "" FORCE)
-
-  FOREACH(flag
-      CMAKE_C_FLAGS
-      CMAKE_CXX_FLAGS
-      CMAKE_EXE_LINKER_FLAGS
-      CMAKE_MODULE_LINKER_FLAGS
-      CMAKE_SHARED_LINKER_FLAGS
-      )
-    SET(${flag} "${${flag}}" PARENT_SCOPE)
-  ENDFOREACH()
+  SET(ORIGINAL_CMAKE_CXX_LINK_EXECUTABLE "${ORIGINAL_CMAKE_CXX_LINK_EXECUTABLE}" PARENT_SCOPE)
+  SET(CMAKE_CXX_LINK_EXECUTABLE "${CMAKE_CXX_LINK_EXECUTABLE}" PARENT_SCOPE)
 ENDFUNCTION()

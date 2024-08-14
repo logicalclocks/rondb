@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2016, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,7 +27,6 @@
 #ifndef NDB_PROCESSINFO_HPP
 #define NDB_PROCESSINFO_HPP
 
-
 #include <stddef.h>  // size_t
 #include "ndb_types.h"
 #include "portlib/ndb_socket.h"  // socklen_t
@@ -38,13 +38,13 @@ class ndb_sockaddr;
 /* Class ProcessInfo */
 class ProcessInfo {
   friend void getNameFromEnvironment();
-  friend ProcessInfo * getOwnProcessInfo(Uint16);
+  friend ProcessInfo *getOwnProcessInfo(Uint16);
 
-public:
+ public:
   ProcessInfo();
   ~ProcessInfo() {}
 
-  static ProcessInfo * forNodeId(Uint16);
+  static ProcessInfo *forNodeId(Uint16);
   static void release(ProcessInfo *);
 
   static bool isValidUri(const char *scheme, const char *path);
@@ -64,12 +64,12 @@ public:
   void setPort(Uint16);
   void setNodeId(Uint16);
 
-  int getServiceUri(char * buffer, size_t length) const;
+  int getServiceUri(char *buffer, size_t length) const;
 
-  const char * getUriPath() const        { return uri_path;          }
-  const char * getUriScheme() const      { return uri_scheme;        }
-  const char * getProcessName() const    { return process_name;      }
-  const char * getHostAddress() const    { return host_address;      }
+  const char *getUriPath() const { return uri_path; }
+  const char *getUriScheme() const { return uri_scheme; }
+  const char *getProcessName() const { return process_name; }
+  const char *getHostAddress() const { return host_address; }
   int getPid() const;
   int getAngelPid() const                { return angel_process_id;  }
   int getPort() const                    { return application_port;  }
@@ -89,8 +89,7 @@ public:
      from received signal */
   void initializeFromProcessInfoRep(ProcessInfoRep *);
 
-
-private:              /* Data Members */
+ private: /* Data Members */
   char uri_path[UriPathLength];
   char host_address[AddressStringLength];
   char process_name[ProcessNameLength];
@@ -101,9 +100,6 @@ private:              /* Data Members */
   Uint32 application_port;
 };   // 256 bytes per node
 
-
-inline bool ProcessInfo::isValid() const {
-  return process_id;
-}
+inline bool ProcessInfo::isValid() const { return process_id; }
 
 #endif

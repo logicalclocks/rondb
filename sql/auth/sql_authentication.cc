@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -4193,7 +4194,7 @@ int acl_authenticate(THD *thd, enum_server_command command) {
 
     DBUG_PRINT("info", ("Capabilities: %lu  packet_length: %ld  Host: '%s'  "
                         "Login user: '%s' Priv_user: '%s'  Using password: %s "
-                        "Access: %lu  db: '%s'",
+                        "Access: %" PRIu32 "  db: '%s'",
                         thd->get_protocol()->get_client_capabilities(),
                         thd->max_client_packet_length, sctx->host_or_ip().str,
                         sctx->user().str, sctx->priv_user().str,
@@ -4269,6 +4270,10 @@ bool is_secure_transport(int vio_type) {
 }
 
 static void native_password_authentication_deprecation_warning() {
+  static std::atomic<bool> warning_logged = false;
+
+  if (warning_logged) return;
+
   /*
     Deprecate message for mysql_native_password plugin.
   */
@@ -4277,6 +4282,8 @@ static void native_password_authentication_deprecation_warning() {
                    PLUGIN_MYSQL_NATIVE_PASSWORD),
                Cached_authentication_plugins::get_plugin_name(
                    PLUGIN_CACHING_SHA2_PASSWORD));
+
+  warning_logged = true;
 }
 
 static int generate_native_password(char *outbuf, unsigned int *buflen,

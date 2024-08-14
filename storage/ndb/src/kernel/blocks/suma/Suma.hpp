@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2020, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,125 +32,121 @@
 
 #include <NodeBitmask.hpp>
 
-#include <IntrusiveList.hpp>
-#include <KeyTable.hpp>
-#include <DataBuffer.hpp>
-#include <SignalCounter.hpp>
 #include <AttributeHeader.hpp>
 #include <AttributeList.hpp>
+#include <DataBuffer.hpp>
+#include <IntrusiveList.hpp>
+#include <KeyTable.hpp>
+#include <SignalCounter.hpp>
 
-#include <signaldata/UtilSequence.hpp>
-#include <signaldata/SumaImpl.hpp>
-#include <ndbapi/NdbDictionary.hpp>
 #include <NdbTick.h>
+#include <ndbapi/NdbDictionary.hpp>
+#include <signaldata/SumaImpl.hpp>
+#include <signaldata/UtilSequence.hpp>
 
 #include "TransientPool.hpp"
 #include "TransientSlotPool.hpp"
 
 #define JAM_FILE_ID 469
 
-
 class Suma : public SimulatedBlock {
   BLOCK_DEFINES(Suma);
-public:
-  Suma(Block_context& ctx);
+
+ public:
+  Suma(Block_context &ctx);
   ~Suma() override;
 
   /**
    * Private interface
    */
-  void execSUB_CREATE_REQ(Signal* signal);
-  void execSUB_REMOVE_REQ(Signal* signal);
-  
-  void execSUB_START_REQ(Signal* signal);
-  void execSUB_STOP_REQ(Signal* signal);
+  void execSUB_CREATE_REQ(Signal *signal);
+  void execSUB_REMOVE_REQ(Signal *signal);
 
-  void execSUB_SYNC_REQ(Signal* signal);
-  void execSUB_ABORT_SYNC_REQ(Signal* signal);
+  void execSUB_START_REQ(Signal *signal);
+  void execSUB_STOP_REQ(Signal *signal);
 
- /**
+  void execSUB_SYNC_REQ(Signal *signal);
+  void execSUB_ABORT_SYNC_REQ(Signal *signal);
+
+  /**
    * Dict interface
    */
-  void execGET_TABINFOREF(Signal* signal);
-  void execGET_TABINFO_CONF(Signal* signal);
+  void execGET_TABINFOREF(Signal *signal);
+  void execGET_TABINFO_CONF(Signal *signal);
 
-  void execDROP_TAB_CONF(Signal* signal);
-  void execALTER_TAB_REQ(Signal* signal);
-  void execCREATE_TAB_CONF(Signal* signal);
+  void execDROP_TAB_CONF(Signal *signal);
+  void execALTER_TAB_REQ(Signal *signal);
+  void execCREATE_TAB_CONF(Signal *signal);
 
-  void execDICT_LOCK_REF(Signal*);
-  void execDICT_LOCK_CONF(Signal*);
+  void execDICT_LOCK_REF(Signal *);
+  void execDICT_LOCK_CONF(Signal *);
 
   /**
    * Scan interface
    */
-  void execSCAN_HBREP(Signal* signal);
-  void execSCAN_FRAGREF(Signal* signal);
-  void execSCAN_FRAGCONF(Signal* signal);
-  void execTRANSID_AI(Signal* signal);
-  void execKEYINFO20(Signal* signal);
-  void execSUB_SYNC_CONTINUE_REF(Signal* signal);
-  void execSUB_SYNC_CONTINUE_CONF(Signal* signal);
-  
+  void execSCAN_HBREP(Signal *signal);
+  void execSCAN_FRAGREF(Signal *signal);
+  void execSCAN_FRAGCONF(Signal *signal);
+  void execTRANSID_AI(Signal *signal);
+  void execKEYINFO20(Signal *signal);
+  void execSUB_SYNC_CONTINUE_REF(Signal *signal);
+  void execSUB_SYNC_CONTINUE_CONF(Signal *signal);
+
   /**
    * Trigger logging
    */
-  void execTRIG_ATTRINFO(Signal* signal);
-  void doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3]);
-  void execFIRE_TRIG_ORD(Signal* signal);
-  void execFIRE_TRIG_ORD_L(Signal* signal);
-  void execSUB_GCP_COMPLETE_REP(Signal* signal);
-  void sendSUB_GCP_COMPLETE_REP(Signal* signal);
+  void execTRIG_ATTRINFO(Signal *signal);
+  void doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]);
+  void execFIRE_TRIG_ORD(Signal *signal);
+  void execFIRE_TRIG_ORD_L(Signal *signal);
+  void execSUB_GCP_COMPLETE_REP(Signal *signal);
+  void sendSUB_GCP_COMPLETE_REP(Signal *signal);
   Uint32 mark_epoch_inflight(Uint64 gci);
-  void unmark_epoch_inflight(Signal* signal, Uint32 inflight_index);
-  
+  void unmark_epoch_inflight(Signal *signal, Uint32 inflight_index);
+
   /**
    * DIH signals
    */
-  void sendDIH_SCAN_TAB_REQ(Signal *signal,
-                            Uint32 synPtrI,
-                            Uint32 tableId,
+  void sendDIH_SCAN_TAB_REQ(Signal *signal, Uint32 synPtrI, Uint32 tableId,
                             Uint32 schemaTransId);
-  void sendDIGETNODESREQ(Signal *signal,
-                         Uint32 synPtrI,
-                         Uint32 tableId,
+  void sendDIGETNODESREQ(Signal *signal, Uint32 synPtrI, Uint32 tableId,
                          Uint32 fragNo);
-  void execDIH_SCAN_TAB_REF(Signal* signal);
-  void execDIH_SCAN_TAB_CONF(Signal* signal);
+  void execDIH_SCAN_TAB_REF(Signal *signal);
+  void execDIH_SCAN_TAB_CONF(Signal *signal);
   void execCHECKNODEGROUPSCONF(Signal *signal);
   void execGCP_PREPARE(Signal *signal);
 
   /**
    * Trigger administration
    */
-  void execCREATE_TRIG_IMPL_REF(Signal* signal);
-  void execCREATE_TRIG_IMPL_CONF(Signal* signal);
-  void execDROP_TRIG_IMPL_REF(Signal* signal);
-  void execDROP_TRIG_IMPL_CONF(Signal* signal);
-  
+  void execCREATE_TRIG_IMPL_REF(Signal *signal);
+  void execCREATE_TRIG_IMPL_CONF(Signal *signal);
+  void execDROP_TRIG_IMPL_REF(Signal *signal);
+  void execDROP_TRIG_IMPL_CONF(Signal *signal);
+
   /**
    * continueb
    */
-  void execCONTINUEB(Signal* signal);
+  void execCONTINUEB(Signal *signal);
 
-  void execCREATE_NODEGROUP_IMPL_REQ(Signal*);
-  void execDROP_NODEGROUP_IMPL_REQ(Signal*);
-public:
+  void execCREATE_NODEGROUP_IMPL_REQ(Signal *);
+  void execDROP_NODEGROUP_IMPL_REQ(Signal *);
 
+ public:
   void suma_ndbrequire(bool v);
 
   // wl4391_todo big enough for now
   // Keep m_fragDesc within 32 bit,
   // m_dummy is used to pass value.
-  union FragmentDescriptor { 
-    struct  {
+  union FragmentDescriptor {
+    struct {
       Uint32 m_fragmentNo;
       Uint16 m_lqhInstanceKey;
       Uint16 m_nodeId;
     } m_fragDesc;
     Uint32 m_dummy[2];
   };
-  
+
   /**
    * Used when sending SCAN_FRAG
    */
@@ -173,7 +170,10 @@ public:
     Uint32 m_senderData;
     Uint32 nextList;
 
-    union { Uint32 nextPool; Uint32 prevList; };
+    union {
+      Uint32 nextPool;
+      Uint32 prevList;
+    };
   };
   static constexpr Uint32 SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX = 3;
   typedef Ptr<Subscriber> SubscriberPtr;
@@ -196,13 +196,15 @@ public:
                           SyncRecordBuffer_pool,
                           RT_SUMA_DATA_BUFFER> LocalSyncRecordBuffer;
   struct SyncRecord {
-    SyncRecord(Suma& s, SyncRecordBuffer_pool & p)
-      : suma(s)
+    SyncRecord(Suma &s, SyncRecordBuffer_pool &p)
+        : suma(s)
 #ifdef ERROR_INSERT
-	, cerrorInsert(s.cerrorInsert)
+          ,
+          cerrorInsert(s.cerrorInsert)
 #endif
-    {}
-    
+    {
+    }
+
     void release();
 
     Uint32 m_senderRef;
@@ -212,8 +214,8 @@ public:
     Uint32 m_error;
     Uint32 m_requestInfo;
 
-    Uint32 m_frag_cnt; // only scan this many fragments...
-    Uint32 m_frag_id;  // only scan this specific fragment...
+    Uint32 m_frag_cnt;  // only scan this many fragments...
+    Uint32 m_frag_id;   // only scan this specific fragment...
     Uint32 m_scan_batchsize;
     Uint32 m_tableId;  // redundant...
 
@@ -227,41 +229,41 @@ public:
     /**
      * Sync data
      */
-    Uint32 m_currentFragment;       // Index in tabPtr.p->m_fragments
-    Uint32 m_currentNoOfAttributes; // No of attributes for current table
-    SyncRecordBuffer::Head m_attributeList; // Attribute if other than default
-    SyncRecordBuffer::Head m_boundInfo;  // For range scan
-    
+    Uint32 m_currentFragment;        // Index in tabPtr.p->m_fragments
+    Uint32 m_currentNoOfAttributes;  // No of attributes for current table
+    SyncRecordBuffer::Head m_attributeList;  // Attribute if other than default
+    SyncRecordBuffer::Head m_boundInfo;      // For range scan
+
     /**
-     * Current row 
+     * Current row
      * (assumes max 1 concurrent frag scan / syncrecord for LM_Exclusive)
      */
     Uint32 m_sourceInstance;
     Uint32 m_headersSection;
     Uint32 m_dataSection;
 
+    void startScan(Signal *);
+    void nextScan(Signal *);
+    bool getNextFragment(TablePtr *tab, FragmentDescriptor *fd);
+    void completeScan(Signal *, int error = 0);
 
-    void startScan(Signal*);
-    void nextScan(Signal*);
-    bool getNextFragment(TablePtr * tab, FragmentDescriptor * fd);
-    void completeScan(Signal*, int error= 0);
-
-    Suma & suma;
+    Suma &suma;
 #ifdef ERROR_INSERT
     UintR &cerrorInsert;
 #endif
     BlockNumber number() const { return suma.number(); }
     EmulatedJamBuffer *jamBuffer() const { return suma.jamBuffer(); }
-    [[noreturn]] void progError(int line,
-                                int cause,
-                                const char * extra,
-                                const char * check)
-    {
+    [[noreturn]] void progError(int line, int cause, const char *extra,
+                                const char *check) {
       suma.progError(line, cause, extra, check);
     }
-    
-    Uint32 prevList; Uint32 ptrI;
-    union { Uint32 nextPool; Uint32 nextList; };
+
+    Uint32 prevList;
+    Uint32 ptrI;
+    union {
+      Uint32 nextPool;
+      Uint32 nextList;
+    };
   };
   static constexpr Uint32 SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef ArrayPool<SyncRecord> SyncRecord_pool;
@@ -279,8 +281,7 @@ public:
       m_magic(Magic::make(TYPE_ID))
     {}
 
-    enum OpType
-    {
+    enum OpType {
       R_SUB_START_REQ,
       R_SUB_STOP_REQ,
       R_START_ME_REQ,
@@ -324,17 +325,13 @@ public:
     Uint16 m_options;
 
     enum Options {
-      REPORT_ALL       = 0x1,
+      REPORT_ALL = 0x1,
       REPORT_SUBSCRIBE = 0x2,
-      MARKED_DROPPED   = 0x4,
-      NO_REPORT_DDL    = 0x8
+      MARKED_DROPPED = 0x4,
+      NO_REPORT_DDL = 0x8
     };
 
-    enum State {
-      UNDEFINED,
-      DEFINED,
-      DEFINING
-    };
+    enum State { UNDEFINED, DEFINED, DEFINING };
 
     enum TriggerState {
       T_UNDEFINED,
@@ -352,23 +349,23 @@ public:
     SubOpRecord_fifo::Head m_start_req;
     SubOpRecord_fifo::Head m_stop_req;
     SyncRecord_dllist::Head m_syncRecords;
-    
+
     Uint32 m_errorCode;
     Uint32 m_outstanding_trigger;
     Uint32 m_triggers[3];
 
     Uint32 nextList, prevList;
     Uint32 nextHash;
-    union { Uint32 prevHash; Uint32 nextPool; };
+    union {
+      Uint32 prevHash;
+      Uint32 nextPool;
+    };
 
-    Uint32 hashValue() const {
-      return m_subscriptionId + m_subscriptionKey;
-    }
+    Uint32 hashValue() const { return m_subscriptionId + m_subscriptionKey; }
 
-    bool equal(const Subscription & s) const {
-      return
-	m_subscriptionId == s.m_subscriptionId &&
-	m_subscriptionKey == s.m_subscriptionKey;
+    bool equal(const Subscription &s) const {
+      return m_subscriptionId == s.m_subscriptionId &&
+             m_subscriptionKey == s.m_subscriptionKey;
     }
     /**
      * The following holds the tables included
@@ -397,12 +394,7 @@ public:
 
     Subscription_list::Head m_subscriptions;
 
-    enum State {
-      UNDEFINED,
-      DEFINING,
-      DEFINED,
-      DROPPED
-    };
+    enum State { UNDEFINED, DEFINING, DEFINED, DROPPED };
     State m_state;
 
     Uint32 m_ptrI;
@@ -411,26 +403,28 @@ public:
     /**
      * Create triggers
      */
-    void createAttributeMask(AttributeMask&, Suma &suma);
-    
-    union { Uint32 m_tableId; Uint32 key; };
+    void createAttributeMask(AttributeMask &, Suma &suma);
+
+    union {
+      Uint32 m_tableId;
+      Uint32 key;
+    };
     Uint32 m_schemaVersion;
 
     Uint32 m_error;
-    
+
     Uint32 m_noOfAttributes;
 
     /**
      * Hash table stuff
      */
     Uint32 nextHash;
-    union { Uint32 prevHash; Uint32 nextPool; };
-    Uint32 hashValue() const {
-      return m_tableId;
-    }
-    bool equal(const Table& rec) const {
-      return m_tableId == rec.m_tableId;
-    }
+    union {
+      Uint32 prevHash;
+      Uint32 nextPool;
+    };
+    Uint32 hashValue() const { return m_tableId; }
+    bool equal(const Table &rec) const { return m_tableId == rec.m_tableId; }
 
     // copy from Subscription
     Uint32 m_schemaTransId;
@@ -439,7 +433,7 @@ public:
   typedef TransientPool<Table> Table_pool;
   typedef DLHashTable<Table_pool> Table_hash;
   /**
-   * 
+   *
    */
 
   /**
@@ -471,160 +465,155 @@ public:
    */
   bool removeSubscribersOnNode(Signal *signal, Uint32 nodeId);
 
-  void sendSubIdRef(Signal* signal,Uint32 senderRef,Uint32 senderData,Uint32 errorCode);
+  void sendSubIdRef(Signal *signal, Uint32 senderRef, Uint32 senderData,
+                    Uint32 errorCode);
 
-  void sendSubCreateRef(Signal* signal, Uint32 ref, Uint32 data, Uint32 error);
-  void sendSubStartRef(Signal* signal, Uint32 ref, Uint32 data, Uint32 error);
-  void sendSubStopRef(Signal* signal, Uint32 ref, Uint32 data, Uint32 error);
-  void report_sub_stop_conf(Signal* signal,
-                            Ptr<SubOpRecord> subOpPtr,
-                            Ptr<Subscriber> ptr,
-                            bool report,
-                            Local_Subscriber_list& list);
+  void sendSubCreateRef(Signal *signal, Uint32 ref, Uint32 data, Uint32 error);
+  void sendSubStartRef(Signal *signal, Uint32 ref, Uint32 data, Uint32 error);
+  void sendSubStopRef(Signal *signal, Uint32 ref, Uint32 data, Uint32 error);
+  void report_sub_stop_conf(Signal *signal, Ptr<SubOpRecord> subOpPtr,
+                            Ptr<Subscriber> ptr, bool report,
+                            Local_Subscriber_list &list);
 
-  void sendSubSyncRef(Signal* signal, Uint32 errorCode);  
-  void sendSubRemoveRef(Signal* signal, const SubRemoveReq& ref,
-			Uint32 errorCode);
-  void sendSubStopReq(Signal* signal, bool unlock= false);
+  void sendSubSyncRef(Signal *signal, Uint32 errorCode);
+  void sendSubRemoveRef(Signal *signal, const SubRemoveReq &ref,
+                        Uint32 errorCode);
+  void sendSubStopReq(Signal *signal, bool unlock = false);
 
   void completeSubRemove(SubscriptionPtr subPtr);
-  
-  void send_sub_start_stop_event(Signal *signal,
-                                 Ptr<Subscriber> ptr,
+
+  void send_sub_start_stop_event(Signal *signal, Ptr<Subscriber> ptr,
                                  NdbDictionary::Event::_TableEvent event,
-                                 bool report,
-                                 Local_Subscriber_list& list);
-  
-  Uint32 getFirstGCI(Signal* signal);
-  void sendBatchedSUB_TABLE_DATA(Signal* signal,
+                                 bool report, Local_Subscriber_list &list);
+
+  Uint32 getFirstGCI(Signal *signal);
+  void sendBatchedSUB_TABLE_DATA(Signal *signal,
                                  Subscriber_list::Head subscriber,
-                                 LinearSectionPtr ptr[],
-                                 Uint32 nptr);
-  void send_fragmented_SUB_TABLE_DATA_callback(Signal* signal,
+                                 LinearSectionPtr ptr[], Uint32 nptr);
+  void send_fragmented_SUB_TABLE_DATA_callback(Signal *signal,
                                                Uint32 inflight_index,
                                                Uint32 returnCode);
 
-
-  void create_triggers(Signal*, Ptr<Subscription>);
-  void drop_triggers(Signal*, Ptr<Subscription>);
-  void drop_triggers_complete(Signal*, Ptr<Subscription>);
+  void create_triggers(Signal *, Ptr<Subscription>);
+  void drop_triggers(Signal *, Ptr<Subscription>);
+  void drop_triggers_complete(Signal *, Ptr<Subscription>);
 
   bool check_sub_start(Uint32 subscriberRef);
-  void report_sub_start_conf(Signal* signal, Ptr<Subscription> subPtr);
-  void report_sub_start_ref(Signal* signal, Ptr<Subscription> subPtr, Uint32);
-
-  void sub_stop_req(Signal*);
-  void check_remove_queue(Signal*, Ptr<Subscription>,
-                          Ptr<SubOpRecord>,bool,bool);
-  void check_release_subscription(Signal* signal, Ptr<Subscription>);
-  void get_tabinfo_ref_release(Signal*, Ptr<Table>);
+  void report_sub_start_conf(Signal *signal, Ptr<Subscription> subPtr);
+  void report_sub_start_ref(Signal *signal, Ptr<Subscription> subPtr, Uint32);
+  void report_subscription_set(Signal *signal, Uint32 subscriptionIdx,
+                               Uint32 subscriberIdx, Uint32 otherSubscriberIdx,
+                               const Uint32 batchSize);
+  void sub_stop_req(Signal *);
+  void check_remove_queue(Signal *, Ptr<Subscription>, Ptr<SubOpRecord>, bool,
+                          bool);
+  void check_release_subscription(Signal *signal, Ptr<Subscription>);
+  void get_tabinfo_ref_release(Signal *, Ptr<Table>);
 
   /**
    * Public interface
    */
-  void execCREATE_SUBSCRIPTION_REQ(Signal* signal);
-  void execDROP_SUBSCRIPTION_REQ(Signal* signal);
-  
-  void execSTART_SUBSCRIPTION_REQ(Signal* signal);
-  void execSTOP_SUBSCRIPTION_REQ(Signal* signal);
-  
-  void execSYNC_SUBSCRIPTION_REQ(Signal* signal);
-  void execABORT_SYNC_REQ(Signal* signal);
+  void execCREATE_SUBSCRIPTION_REQ(Signal *signal);
+  void execDROP_SUBSCRIPTION_REQ(Signal *signal);
+
+  void execSTART_SUBSCRIPTION_REQ(Signal *signal);
+  void execSTOP_SUBSCRIPTION_REQ(Signal *signal);
+
+  void execSYNC_SUBSCRIPTION_REQ(Signal *signal);
+  void execABORT_SYNC_REQ(Signal *signal);
 
   /**
    * Framework signals
    */
 
-  void getNodeGroupMembers(Signal* signal);
-  void execREAD_CONFIG_REQ(Signal* signal);
+  void getNodeGroupMembers(Signal *signal);
+  void execREAD_CONFIG_REQ(Signal *signal);
 
-  void execSTTOR(Signal* signal);
-  void sendSTTORRY(Signal*);
-  void execNDB_STTOR(Signal* signal);
-  void execDUMP_STATE_ORD(Signal* signal);
-  void execDBINFO_SCANREQ(Signal* signal);
-  void execREAD_NODESCONF(Signal* signal);
-  void execNODE_FAILREP(Signal* signal);
-  void execINCL_NODEREQ(Signal* signal);
-  void execSIGNAL_DROPPED_REP(Signal* signal);
-  void execAPI_START_REP(Signal* signal);
-  void execAPI_FAILREQ(Signal* signal) ;
+  void execSTTOR(Signal *signal);
+  void sendSTTORRY(Signal *);
+  void execNDB_STTOR(Signal *signal);
+  void execDUMP_STATE_ORD(Signal *signal);
+  void execDBINFO_SCANREQ(Signal *signal);
+  void execREAD_NODESCONF(Signal *signal);
+  void execNODE_FAILREP(Signal *signal);
+  void execINCL_NODEREQ(Signal *signal);
+  void execSIGNAL_DROPPED_REP(Signal *signal);
+  void execAPI_START_REP(Signal *signal);
+  void execAPI_FAILREQ(Signal *signal);
 
-  void api_fail_gci_list(Signal*, Uint32 node);
-  void api_fail_subscriber_list(Signal*, Uint32 node);
-  void api_fail_subscription(Signal*);
-  void api_fail_block_cleanup(Signal* signal, Uint32 failedNode);
-  void api_fail_block_cleanup_callback(Signal* signal,
-                                       Uint32 failedNodeId,
+  void api_fail_gci_list(Signal *, Uint32 node);
+  void api_fail_subscriber_list(Signal *, Uint32 node);
+  void api_fail_subscription(Signal *);
+  void api_fail_block_cleanup(Signal *signal, Uint32 failedNode);
+  void api_fail_block_cleanup_callback(Signal *signal, Uint32 failedNodeId,
                                        Uint32 elementsCleaned);
 
-  void execSUB_GCP_COMPLETE_ACK(Signal* signal);
+  void execSUB_GCP_COMPLETE_ACK(Signal *signal);
 
   /**
    * Controller interface
    */
-  void execSUB_CREATE_REF(Signal* signal);
-  void execSUB_CREATE_CONF(Signal* signal);
+  void execSUB_CREATE_REF(Signal *signal);
+  void execSUB_CREATE_CONF(Signal *signal);
 
-  void execSUB_DROP_REF(Signal* signal);
-  void execSUB_DROP_CONF(Signal* signal);
+  void execSUB_DROP_REF(Signal *signal);
+  void execSUB_DROP_CONF(Signal *signal);
 
-  void execSUB_START_REF(Signal* signal);
-  void execSUB_START_CONF(Signal* signal);
+  void execSUB_START_REF(Signal *signal);
+  void execSUB_START_CONF(Signal *signal);
 
-  void execSUB_ABORT_SYNC_REF(Signal* signal);
-  void execSUB_ABORT_SYNC_CONF(Signal* signal);
+  void execSUB_ABORT_SYNC_REF(Signal *signal);
+  void execSUB_ABORT_SYNC_CONF(Signal *signal);
 
-  void execSUMA_START_ME_REQ(Signal* signal);
-  void execSUMA_START_ME_REF(Signal* signal);
-  void execSUMA_START_ME_CONF(Signal* signal);
+  void execSUMA_START_ME_REQ(Signal *signal);
+  void execSUMA_START_ME_REF(Signal *signal);
+  void execSUMA_START_ME_CONF(Signal *signal);
 
-  void execSTOP_ME_REQ(Signal*);
+  void execSTOP_ME_REQ(Signal *);
 
-  void copySubscription(Signal* signal, Subscription_hash::Iterator);
-  void sendSubCreateReq(Signal* signal, Ptr<Subscription>);
-  void copySubscriber(Signal*, Ptr<Subscription>, Ptr<Subscriber>);
-  void abort_start_me(Signal*, Ptr<Subscription>, bool lockowner);
+  void copySubscription(Signal *signal, Subscription_hash::Iterator);
+  void sendSubCreateReq(Signal *signal, Ptr<Subscription>);
+  void copySubscriber(Signal *, Ptr<Subscription>, Ptr<Subscriber>);
+  void abort_start_me(Signal *, Ptr<Subscription>, bool lockowner);
 
-  void execSUMA_HANDOVER_REQ(Signal* signal);
-  void execSUMA_HANDOVER_REF(Signal* signal);
-  void execSUMA_HANDOVER_CONF(Signal* signal);
+  void execSUMA_HANDOVER_REQ(Signal *signal);
+  void execSUMA_HANDOVER_REF(Signal *signal);
+  void execSUMA_HANDOVER_CONF(Signal *signal);
 
   /**
    * Subscription generation interface
    */
-  void createSequence(Signal* signal);
-  void createSequenceReply(Signal* signal,
-			   UtilSequenceConf* conf,
-			   UtilSequenceRef* ref);
-  void execUTIL_SEQUENCE_CONF(Signal* signal);  
-  void execUTIL_SEQUENCE_REF(Signal* signal);
-  void execCREATE_SUBID_REQ(Signal* signal);
-  
+  void createSequence(Signal *signal);
+  void createSequenceReply(Signal *signal, UtilSequenceConf *conf,
+                           UtilSequenceRef *ref);
+  void execUTIL_SEQUENCE_CONF(Signal *signal);
+  void execUTIL_SEQUENCE_REF(Signal *signal);
+  void execCREATE_SUBID_REQ(Signal *signal);
+
   /**
    * for Suma that is restarting another
    */
 
   // for LQH transporter overload check
-  const NodeBitmask& getSubscriberNodes() const { return c_subscriber_nodes; }
+  const NodeBitmask &getSubscriberNodes() const { return c_subscriber_nodes; }
 
-protected:
-  bool getParam(const char * param, Uint32 * retVal) override;
+ protected:
+  bool getParam(const char *param, Uint32 *retVal) override;
 
-private:
+ private:
   /**
    * Variables
    */
   NodeId c_masterNodeId;
   NdbNodeBitmask c_alive_nodes;
-  
+
   /**
    * for restarting Suma not to start sending data too early
    */
 
-  struct Startup
-  {
-    Uint32 m_wait_handover_timeout_ms; // Max time to wait in phase 101 for API nodes to connect
+  struct Startup {
+    Uint32 m_wait_handover_timeout_ms;  // Max time to wait in phase 101 for API
+                                        // nodes to connect
     bool m_wait_handover;
     NDB_TICKS m_wait_handover_expire;
     NDB_TICKS m_wait_handover_message_expire;
@@ -636,29 +625,27 @@ private:
   /**
    * for graceful shutdown
    */
-  struct Shutdown
-  {
+  struct Shutdown {
     bool m_wait_handover;
     Uint32 m_senderRef;
     Uint32 m_senderData;
   } c_shutdown;
 
-  struct Restart
-  {
+  struct Restart {
     Uint16 m_abort;
     Uint16 m_waiting_on_self;
     Uint32 m_ref;
     Uint32 m_max_seq;
     Uint32 m_subPtrI;
     Uint32 m_subOpPtrI;
-    Uint32 m_bucket; // In c_subscribers hashtable
+    Uint32 m_bucket;  // In c_subscribers hashtable
   } c_restart;
 
-  Uint32 c_current_seq; // Sequence no on subscription(s)
+  Uint32 c_current_seq;  // Sequence no on subscription(s)
   Uint32 c_outstanding_drop_trig_req;
 
-  NodeBitmask c_connected_nodes;  // (NODE/API) START REP / (API/NODE) FAIL REQ
-  NodeBitmask c_subscriber_nodes; // 
+  NodeBitmask c_connected_nodes;   // (NODE/API) START REP / (API/NODE) FAIL REQ
+  NodeBitmask c_subscriber_nodes;  //
 
   /**
    * for all Suma's to keep track of other Suma's in Node group
@@ -668,53 +655,61 @@ private:
   Uint32 c_nodesInGroup[MAX_REPLICAS];
   NdbNodeBitmask c_nodes_in_nodegroup_mask;  // NodeId's of nodes in nodegroup
 
-  void send_dict_lock_req(Signal* signal, Uint32 state);
-  void send_dict_unlock_ord(Signal* signal, Uint32 state);
-  void send_start_me_req(Signal* signal);
-  void check_start_handover(Signal* signal);
-  void check_wait_handover_timeout(Signal* signal);
+  void send_dict_lock_req(Signal *signal, Uint32 state);
+  void send_dict_unlock_ord(Signal *signal, Uint32 state);
+  void send_start_me_req(Signal *signal);
+  void check_start_handover(Signal *signal);
+  void check_wait_handover_timeout(Signal *signal);
   void check_wait_handover_message(NDB_TICKS now);
-  void send_handover_req(Signal* signal, Uint32 type);
+  void send_handover_req(Signal *signal, Uint32 type);
 
-  void calculate_sub_data_stream(Uint16 bucket, Uint16 buckets, Uint16 replicas);
+  void calculate_sub_data_stream(Uint16 bucket, Uint16 buckets,
+                                 Uint16 replicas);
   Uint16 get_sub_data_stream(Uint16 bucket) const;
   Uint32 get_responsible_node(Uint32 B) const;
-  Uint32 get_responsible_node(Uint32 B, const NdbNodeBitmask& mask) const;
+  Uint32 get_responsible_node(Uint32 B, const NdbNodeBitmask &mask) const;
   bool check_switchover(Uint32 bucket, Uint64 gci);
 
   void fix_nodegroup();
 
-public:  
-  struct Page_pos
-  {
+ public:
+  struct Page_pos {
     Uint32 m_page_id;
-    Uint32 m_page_pos;  
+    Uint32 m_page_pos;
     Uint64 m_max_gci;   // max gci on page
     Uint64 m_last_gci;  // last gci on page
   };
-private:
-  
-  struct Bucket 
-  {
+
+ private:
+  struct Bucket {
     enum {
       BUCKET_STARTING = 0x1  // On starting node
-      ,BUCKET_HANDOVER = 0x2 // On running node
-      ,BUCKET_TAKEOVER = 0x4 // On takeing over node
-      ,BUCKET_RESEND   = 0x8 // On takeing over node
-      ,BUCKET_CREATED_SELF  = 0x10 // New nodegroup (me)
-      ,BUCKET_CREATED_OTHER = 0x20 // New nodegroup (not me)
-      ,BUCKET_CREATED_MASK  = (BUCKET_CREATED_SELF | BUCKET_CREATED_OTHER)
-      ,BUCKET_DROPPED_SELF  = 0x40 // New nodegroup (me) uses hi 8 bit for cnt
-      ,BUCKET_DROPPED_OTHER = 0x80 // New nodegroup (not me)
-      ,BUCKET_DROPPED_MASK  = (BUCKET_DROPPED_SELF | BUCKET_DROPPED_OTHER)
-      ,BUCKET_SHUTDOWN = 0x100 // Graceful shutdown
-      ,BUCKET_SHUTDOWN_TO = 0x200 // Graceful shutdown
+      ,
+      BUCKET_HANDOVER = 0x2  // On running node
+      ,
+      BUCKET_TAKEOVER = 0x4  // On takeing over node
+      ,
+      BUCKET_RESEND = 0x8  // On takeing over node
+      ,
+      BUCKET_CREATED_SELF = 0x10  // New nodegroup (me)
+      ,
+      BUCKET_CREATED_OTHER = 0x20  // New nodegroup (not me)
+      ,
+      BUCKET_CREATED_MASK = (BUCKET_CREATED_SELF | BUCKET_CREATED_OTHER),
+      BUCKET_DROPPED_SELF = 0x40  // New nodegroup (me) uses hi 8 bit for cnt
+      ,
+      BUCKET_DROPPED_OTHER = 0x80  // New nodegroup (not me)
+      ,
+      BUCKET_DROPPED_MASK = (BUCKET_DROPPED_SELF | BUCKET_DROPPED_OTHER),
+      BUCKET_SHUTDOWN = 0x100  // Graceful shutdown
+      ,
+      BUCKET_SHUTDOWN_TO = 0x200  // Graceful shutdown
     };
     Uint16 m_state;
     Uint16 m_switchover_node;
-    Uint16 m_nodes[MAX_REPLICAS]; 
+    Uint16 m_nodes[MAX_REPLICAS];
     Uint16 m_sub_data_stream;
-    Uint32 m_buffer_tail;   // Page
+    Uint32 m_buffer_tail;  // Page
     Uint64 m_switchover_gci;
     Uint64 m_max_acked_gci;
     Page_pos m_buffer_head;
@@ -733,7 +728,7 @@ private:
     Uint32 _tupdata2;
     Uint32 _tupdata3;
     Uint32 _tupdata4;
-    Uint32 m_page_state;     // Used by TUP buddy algorithm
+    Uint32 m_page_state;  // Used by TUP buddy algorithm
     Uint32 m_page_chunk_ptr_i;
     Uint32 m_next_page;      
     Uint32 m_words_used;     // 
@@ -743,17 +738,17 @@ private:
     Uint32 m_data[DATA_WORDS];
   };
   typedef ArrayPool<Buffer_page> Buffer_page_pool;
-  
-  static constexpr Uint32 NO_OF_BUCKETS = 24; // 24 = 4*3*2*1! 
+
+  static constexpr Uint32 NO_OF_BUCKETS = 24;  // 24 = 4*3*2*1!
   Uint32 c_no_of_buckets;
   struct Bucket c_buckets[NO_OF_BUCKETS];
   Uint32 c_subscriber_per_node[MAX_NODES];
 
-  static constexpr Uint32 BUCKET_MASK_SIZE = (((NO_OF_BUCKETS+31)>> 5));
+  static constexpr Uint32 BUCKET_MASK_SIZE = (((NO_OF_BUCKETS + 31) >> 5));
   typedef Bitmask<BUCKET_MASK_SIZE> Bucket_mask;
   Bucket_mask m_active_buckets;
-  Bucket_mask m_switchover_buckets;  
-  
+  Bucket_mask m_switchover_buckets;
+
   void init_buffers();
   Uint32* get_buffer_ptr(Signal*,
                          Uint32 buck,
@@ -765,28 +760,26 @@ private:
   void out_of_buffer(Signal*);
   void out_of_buffer_release(Signal* signal, Uint32 buck);
 
-  Uint32 reformat(Signal* signal,
-                  LinearSectionPtr ptr[3],
+  Uint32 reformat(Signal *signal, LinearSectionPtr ptr[3],
                   const LinearSectionPtr lsptr[3]);
-  void start_resend(Signal*, Uint32 bucket);
-  void resend_bucket(Signal*, Uint32 bucket, Uint64 gci,
-		     Uint32 page_pos, Uint64 last_gci);
-  void release_gci(Signal*, Uint32 bucket, Uint64 gci);
+  void start_resend(Signal *, Uint32 bucket);
+  void resend_bucket(Signal *, Uint32 bucket, Uint64 gci, Uint32 page_pos,
+                     Uint64 last_gci);
+  void release_gci(Signal *, Uint32 bucket, Uint64 gci);
 
-  Uint64 get_current_gci(Signal*);
+  Uint64 get_current_gci(Signal *);
 
   void checkMaxBufferedEpochs(Signal *signal);
 
-  Uint64 m_max_seen_gci;      // FIRE_TRIG_ORD
-  Uint64 m_max_sent_gci;      // FIRE_TRIG_ORD -> send
-  Uint64 m_last_complete_gci; // SUB_GCP_COMPLETE_REP
+  Uint64 m_max_seen_gci;       // FIRE_TRIG_ORD
+  Uint64 m_max_sent_gci;       // FIRE_TRIG_ORD -> send
+  Uint64 m_last_complete_gci;  // SUB_GCP_COMPLETE_REP
   Uint64 m_out_of_buffer_gci;
   bool m_out_of_buffer_release_ongoing;
   Uint32 m_gcp_complete_rep_count;
   bool m_missing_data;
 
-  struct Gcp_record 
-  {
+  struct Gcp_record {
     Uint64 m_gci;
     NodeBitmask m_subscribers;
     union {
@@ -800,8 +793,7 @@ private:
   Gcp_record_pool c_gcp_pool;
   Gcp_record_fifo c_gcp_list;
 
-  struct Page_chunk
-  {
+  struct Page_chunk {
     static constexpr Uint32 CHUNK_PAGE_SIZE = 32768;
     static constexpr Uint32 PAGES_PER_CHUNK = 16;
 
@@ -827,8 +819,7 @@ private:
   Uint64 m_gcp_monitor;
 #endif
 
-  struct SubGcpCompleteCounter
-  {
+  struct SubGcpCompleteCounter {
     Uint64 m_gci;
     Uint32 m_cnt;
     Uint32 m_flags;
@@ -962,12 +953,9 @@ public:
   Bitmask<1> c_transient_pools_shrinking;
 };
 
-inline
-Uint16
-Suma::get_sub_data_stream(Uint16 bucket) const
-{
+inline Uint16 Suma::get_sub_data_stream(Uint16 bucket) const {
   ndbassert(bucket < NO_OF_BUCKETS);
-  const Bucket* ptr= c_buckets + bucket;
+  const Bucket *ptr = c_buckets + bucket;
   return ptr->m_sub_data_stream;
 }
 

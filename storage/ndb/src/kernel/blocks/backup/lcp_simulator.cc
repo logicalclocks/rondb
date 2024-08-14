@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -73,14 +74,11 @@
  * to select which LCP ids I am interested in looking at or any other
  * condition.
  */
-static
-int calculate_num_lcps(long double *percent_size, int current_i)
-{
+static int calculate_num_lcps(long double *percent_size, int current_i) {
   long double sum_percent = percent_size[current_i - 1];
   int num_lcps = 1;
   long double comparator = 0.99999999;
-  while (sum_percent < comparator && current_i > 0)
-  {
+  while (sum_percent < comparator && current_i > 0) {
     current_i--;
     sum_percent += percent_size[current_i - 1];
     num_lcps++;
@@ -88,14 +86,10 @@ int calculate_num_lcps(long double *percent_size, int current_i)
   return num_lcps;
 }
 
-static
-int calculate_total_lcp_size(long double *lcp_sizes,
-                             int current_i,
-                             int num_lcps)
-{
+static int calculate_total_lcp_size(long double *lcp_sizes, int current_i,
+                                    int num_lcps) {
   long double total_lcp_size = 0.0;
-  for (int i = 0; i < num_lcps; i++)
-  {
+  for (int i = 0; i < num_lcps; i++) {
     total_lcp_size += lcp_sizes[current_i - i - 1];
   }
   return (int)total_lcp_size;
@@ -108,39 +102,29 @@ static long double delete_rate;
 static long double one_part = 1.0 / 2048.0;
 static int num_parts = 0;
 
-static
-void set_rates(int lcp_id)
-{
+static void set_rates(int lcp_id) {
 #define NUM_SIMULATED_LCPS 300
-  if (lcp_id <= 100)
-  {
+  if (lcp_id <= 100) {
     update_rate = 0.0;
     insert_rate = 8000.0;
     delete_rate = 0.0;
-  }
-  else if (lcp_id <= 200)
-  {
+  } else if (lcp_id <= 200) {
     update_rate = 8000.0;
     insert_rate = 0.0;
     delete_rate = 0.0;
-  }
-  else
-  {
+  } else {
     update_rate = 0.0;
     insert_rate = 0.0;
     delete_rate = 8000.0;
   }
 }
 
-static void
-calculate_lcp_sizes(long double & lcp_size,
-                    long double & percent_size)
-{
+static void calculate_lcp_sizes(long double &lcp_size,
+                                long double &percent_size) {
   long double recovery_work = 60.0;
   long double insert_work = 45.0;
   long double delete_work = 120.0;
-  if (1)
-  {
+  if (1) {
     long double rate = update_rate;
     rate /= (long double)db_size;
     rate *= (long double)2048.0;
@@ -164,14 +148,11 @@ calculate_lcp_sizes(long double & lcp_size,
 
     num_parts = (int)rate;
     num_parts++;
-    if (num_parts > 2048)
-      num_parts = 2048;
+    if (num_parts > 2048) num_parts = 2048;
     percent_size = (long double)num_parts / (long double)2048.0;
     lcp_size = percent_size * (long double)db_size;
     lcp_size += ((long double)1 - percent_size) * (insert_rate + update_rate);
-  }
-  else
-  {
+  } else {
     long double rate = (update_rate + insert_rate + delete_rate);
     rate /= (long double)db_size;
     rate *= (long double)2048.0;
@@ -179,17 +160,14 @@ calculate_lcp_sizes(long double & lcp_size,
     rate /= (long double)recovery_work;
     num_parts = (int)rate;
     num_parts++;
-    if (num_parts > 2048)
-      num_parts = 2048;
+    if (num_parts > 2048) num_parts = 2048;
     percent_size = (long double)num_parts / (long double)2048.0;
     lcp_size = percent_size * (long double)db_size;
     lcp_size += ((long double)1 - percent_size) * (insert_rate + update_rate);
   }
 }
 
-static
-int calculate_overhead(long long int total_lcp_size)
-{
+static int calculate_overhead(long long int total_lcp_size) {
   long double overhead;
   overhead = total_lcp_size;
   overhead /= db_size;
@@ -198,18 +176,14 @@ int calculate_overhead(long long int total_lcp_size)
   return (int)overhead;
 }
 
-static
-void update_db_size()
-{
+static void update_db_size() {
   db_size += (int)insert_rate;
-  if (db_size > (int)delete_rate)
-  {
+  if (db_size > (int)delete_rate) {
     db_size -= (int)delete_rate;
   }
 }
 
-int main()
-{
+int main() {
   long double lcp_size;
   long double percent_size;
   int num_lcps;
@@ -220,8 +194,7 @@ int main()
 
   percent_sizes[0] = 1.0;
   lcp_sizes[0] = 0.0;
-  for (int i = 1; i <= NUM_SIMULATED_LCPS; i++)
-  {
+  for (int i = 1; i <= NUM_SIMULATED_LCPS; i++) {
     set_rates(i);
     update_db_size();
     calculate_lcp_sizes(lcp_size, percent_size);
@@ -229,24 +202,16 @@ int main()
     lcp_sizes[i] = lcp_size;
     percent_sizes[i] = percent_size;
     num_lcps = calculate_num_lcps(&percent_sizes[0], i + 1);
-    total_lcp_size = calculate_total_lcp_size(&lcp_sizes[0],
-                                                  i + 1,
-                                                  num_lcps);
+    total_lcp_size = calculate_total_lcp_size(&lcp_sizes[0], i + 1, num_lcps);
     overhead_int = calculate_overhead(total_lcp_size);
 
-    if (i % 1 == 0 || i < 20)
-    {
-      printf("LCP %d: LCP size: %d MByte, NumParts: %d, Percent in LCP: %f,"
-             " Num LCPs: %d, DB size = %d MByte, Total LCP size: %lld MBytes,"
-             " Percent overhead: %d\n",
-             i,
-             (int)lcp_size,
-             num_parts,
-             (double)(100.0 * percent_size),
-             num_lcps,
-             db_size,
-             total_lcp_size,
-             overhead_int);
+    if (i % 1 == 0 || i < 20) {
+      printf(
+          "LCP %d: LCP size: %d MByte, NumParts: %d, Percent in LCP: %f,"
+          " Num LCPs: %d, DB size = %d MByte, Total LCP size: %lld MBytes,"
+          " Percent overhead: %d\n",
+          i, (int)lcp_size, num_parts, (double)(100.0 * percent_size), num_lcps,
+          db_size, total_lcp_size, overhead_int);
     }
   }
   return 0;

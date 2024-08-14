@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -146,6 +147,12 @@ bool iterate_all_dynamic_privileges(THD *thd,
 using std::max;
 using std::min;
 
+/** Count number of times information_schema.processlist has been used. */
+std::atomic_ulong deprecated_use_i_s_processlist_count = 0;
+
+/** Last time information_schema.processlist was used, as usec since epoch. */
+std::atomic_ullong deprecated_use_i_s_processlist_last_timestamp = 0;
+
 /**
   @class CSET_STRING
   @brief Character set armed LEX_CSTRING
@@ -234,7 +241,7 @@ bool Sql_cmd_show_schema_base::check_privileges(THD *thd) {
   assert(dst_db_name != nullptr);
 
   // Get user's global and db-level privileges.
-  ulong global_db_privs;
+  Access_bitmask global_db_privs;
   if (check_access(thd, SELECT_ACL, dst_db_name, &global_db_privs, nullptr,
                    false, false))
     return true;
@@ -396,7 +403,8 @@ bool Sql_cmd_show_create_table::execute_inner(THD *thd) {
       access is granted. We need to check if first_table->grant.privilege
       contains any table-specific privilege.
     */
-    DBUG_PRINT("debug", ("tbl->grant.privilege: %lx", tbl->grant.privilege));
+    DBUG_PRINT("debug",
+               ("tbl->grant.privilege: %" PRIx32, tbl->grant.privilege));
     if (check_some_access(thd, TABLE_OP_ACLS, tbl) ||
         (tbl->grant.privilege & TABLE_OP_ACLS) == 0) {
       my_error(ER_TABLEACCESS_DENIED_ERROR, MYF(0), "SHOW",
@@ -2812,7 +2820,13 @@ class List_process_list : public Do_THD_Impl {
       : m_user(user_value),
         m_thread_infos(thread_infos),
         m_client_thd(thd_value),
-        m_max_query_length(max_query_length) {}
+        m_max_query_length(max_query_length) {
+    push_deprecated_warn(m_client_thd, "INFORMATION_SCHEMA.PROCESSLIST",
+                         "performance_schema.processlist");
+
+    deprecated_use_i_s_processlist_last_timestamp = my_micro_time();
+    deprecated_use_i_s_processlist_count++;
+  }
 
   void operator()(THD *inspect_thd) override {
     DBUG_TRACE;
@@ -2828,16 +2842,16 @@ class List_process_list : public Do_THD_Impl {
       LEX_CSTRING inspect_sctx_host = inspect_sctx->host();
       LEX_CSTRING inspect_sctx_host_or_ip = inspect_sctx->host_or_ip();
 
-      {
-        MUTEX_LOCK(grd, &inspect_thd->LOCK_thd_protocol);
-
-        if ((!(inspect_thd->get_protocol() &&
-               inspect_thd->get_protocol()->connection_alive()) &&
-             !inspect_thd->system_thread) ||
-            (m_user && (inspect_thd->system_thread || !inspect_sctx_user.str ||
-                        strcmp(inspect_sctx_user.str, m_user)))) {
-          return;
-        }
+      /*
+        Since we only access a cached value of connection_alive, which is
+        also an atomic, we do not need to lock LOCK_thd_protocol here. We
+        may get a value that is slightly outdated, but we will not get a crash
+        due to reading invalid memory at least.
+      */
+      if (!inspect_thd->is_connected(true) ||
+          (m_user && (inspect_thd->system_thread || !inspect_sctx_user.str ||
+                      strcmp(inspect_sctx_user.str, m_user)))) {
+        return;
       }
 
       thd_info = new (m_client_thd->mem_root) thread_info;
@@ -3041,7 +3055,13 @@ class Fill_process_list : public Do_THD_Impl {
 
  public:
   Fill_process_list(THD *thd_value, Table_ref *tables_value)
-      : m_client_thd(thd_value), m_tables(tables_value) {}
+      : m_client_thd(thd_value), m_tables(tables_value) {
+    push_deprecated_warn(m_client_thd, "INFORMATION_SCHEMA.PROCESSLIST",
+                         "performance_schema.processlist");
+
+    deprecated_use_i_s_processlist_last_timestamp = my_micro_time();
+    deprecated_use_i_s_processlist_count++;
+  }
 
   ~Fill_process_list() override {
     DBUG_EXECUTE_IF("test_fill_proc_with_x_root",
@@ -3070,13 +3090,16 @@ class Fill_process_list : public Do_THD_Impl {
               ? NullS
               : client_priv_user;
 
-      {
-        MUTEX_LOCK(grd, &inspect_thd->LOCK_thd_protocol);
-        if ((!inspect_thd->get_protocol()->connection_alive() &&
-             !inspect_thd->system_thread) ||
-            (user && (inspect_thd->system_thread || !inspect_sctx_user.str ||
-                      strcmp(inspect_sctx_user.str, user))))
-          return;
+      /*
+        Since we only access a cached value of connection_alive, which is
+        also an atomic, we do not need to lock LOCK_thd_protocol here. We
+        may get a value that is slightly outdated, but we will not get a crash
+        due to reading invalid memory at least.
+      */
+      if (!inspect_thd->is_connected(true) ||
+          (user && (inspect_thd->system_thread || !inspect_sctx_user.str ||
+                    strcmp(inspect_sctx_user.str, user)))) {
+        return;
       }
 
       DBUG_EXECUTE_IF(
@@ -4636,10 +4659,16 @@ static TABLE *create_schema_table(THD *thd, Table_ref *table_list) {
             query_block->active_options() | TMP_TABLE_ALL_COLUMNS, HA_POS_ERROR,
             table_list->alias)))
     return nullptr;
+
+  // create_tmp_table() makes read_set and write_set share the same buffer, so
+  // they are always identical, and always have all bits set. For information
+  // schema tables we need to distinguish between read and write, so break the
+  // link between them here.
   my_bitmap_map *bitmaps =
       (my_bitmap_map *)thd->alloc(bitmap_buffer_size(field_count));
   bitmap_init(&table->def_read_set, bitmaps, field_count);
   table->read_set = &table->def_read_set;
+  table->read_set_internal = table->def_read_set;
   bitmap_clear_all(table->read_set);
   return table;
 }
@@ -4740,7 +4769,7 @@ bool mysql_schema_table(THD *thd, LEX *lex, Table_ref *table_list) {
     Query_block *sel = lex->current_query_block();
     Field_translator *transl;
 
-    ulonglong want_privilege_saved = thd->want_privilege;
+    const Access_bitmask want_privilege_saved = thd->want_privilege;
     thd->want_privilege = SELECT_ACL;
     enum enum_mark_columns save_mark_used_columns = thd->mark_used_columns;
     thd->mark_used_columns = MARK_COLUMNS_READ;
@@ -5161,7 +5190,7 @@ int finalize_schema_table(st_plugin_int *plugin) {
   if (schema_table) {
     if (plugin->plugin->deinit) {
       DBUG_PRINT("info", ("Deinitializing plugin: '%s'", plugin->name.str));
-      if (plugin->plugin->deinit(nullptr)) {
+      if (plugin->plugin->deinit(plugin)) {
         DBUG_PRINT("warning", ("Plugin '%s' deinit function returned error.",
                                plugin->name.str));
       }

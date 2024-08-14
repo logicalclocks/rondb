@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,7 +30,6 @@
 
 #define JAM_FILE_ID 210
 
-
 class DiAddTabReq {
   /**
    * Sender(s)
@@ -40,17 +40,18 @@ class DiAddTabReq {
    * Receiver(s)
    */
   friend class Dbdih;
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 14;
-  SECTION( FRAGMENTATION = 0 );
-  SECTION( TS_RANGE = 0 );
-  
-private:
+  SECTION(FRAGMENTATION = 0);
+  SECTION(TS_RANGE = 0);
+
+ private:
   Uint32 connectPtr;
   Uint32 tableId;
   Uint32 fragType;
   Uint32 kValue;
-  Uint32 noOfReplicas; //Currently not used
+  Uint32 noOfReplicas;  // Currently not used
   Uint32 loggedTable;
   Uint32 tableType;
   Uint32 schemaVersion;
@@ -72,10 +73,11 @@ class DiAddTabRef {
    * Receiver(s)
    */
   friend class Dbdict;
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 2;
-  
-private:
+
+ private:
   union {
     Uint32 connectPtr;
     Uint32 senderData;
@@ -93,17 +95,16 @@ class DiAddTabConf {
    * Receiver(s)
    */
   friend class Dbdict;
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 1;
-  
-private:
+
+ private:
   union {
     Uint32 connectPtr;
     Uint32 senderData;
   };
 };
-
-
 
 #undef JAM_FILE_ID
 

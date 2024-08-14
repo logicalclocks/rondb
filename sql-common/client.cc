@@ -1,15 +1,16 @@
-/* Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -5663,11 +5664,24 @@ static mysql_state_machine_status authsm_begin_plugin_auth(
   }
 
   if (ctx->auth_plugin_name == nullptr || ctx->auth_plugin == nullptr) {
-    /*
-      If everything else fail we use the built in plugin
-    */
-    ctx->auth_plugin = &caching_sha2_password_client_plugin;
-    ctx->auth_plugin_name = ctx->auth_plugin->name;
+    auth_plugin_t *client_plugin{nullptr};
+    if (mysql->options.extension && mysql->options.extension->default_auth &&
+        (client_plugin = (auth_plugin_t *)mysql_client_find_plugin(
+             mysql, mysql->options.extension->default_auth,
+             MYSQL_CLIENT_AUTHENTICATION_PLUGIN))) {
+      // try default_auth again in case CLIENT_PLUGIN_AUTH wasn't on.
+      ctx->auth_plugin_name = mysql->options.extension->default_auth;
+      ctx->auth_plugin = client_plugin;
+    } else {
+      /*
+        If everything else fail we use the built in plugin: caching sha if the
+        server is new enough or native if not.
+      */
+      ctx->auth_plugin = (mysql->server_capabilities & CLIENT_PLUGIN_AUTH)
+                             ? &caching_sha2_password_client_plugin
+                             : &native_password_client_plugin;
+      ctx->auth_plugin_name = ctx->auth_plugin->name;
+    }
   }
 
   if (check_plugin_enabled(mysql, ctx)) return STATE_MACHINE_FAILED;

@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,28 +26,25 @@
 #ifndef SOCKETINPUTSTREAM2_HPP
 #define SOCKETINPUTSTREAM2_HPP
 
-#include "portlib/ndb_socket.h"
 #include <BaseString.hpp>
 #include <UtilBuffer.hpp>
+#include "portlib/ndb_socket.h"
 #include "util/NdbSocket.h"
 
 class SocketInputStream2 {
-  NdbSocket m_socket;
+  const NdbSocket &m_socket;
   unsigned m_read_timeout;
   UtilBuffer m_buffer;
   size_t m_buffer_read_pos;
 
   bool has_data_to_read();
-  ssize_t read_socket(char* buf, size_t len);
-  bool get_buffered_line(BaseString& str);
-  bool add_buffer(char* buf, ssize_t len);
+  ssize_t read_socket(char *buf, size_t len);
+  bool get_buffered_line(BaseString &str);
+  bool add_buffer(char *buf, ssize_t len);
 
-public:
-  SocketInputStream2(ndb_socket_t socket,
-                     unsigned read_timeout = 60) :
-    m_socket(socket, NdbSocket::From::Existing),
-    m_read_timeout(read_timeout),
-    m_buffer_read_pos(0)          {}
+ public:
+  SocketInputStream2(const NdbSocket &socket, unsigned read_timeout = 60)
+      : m_socket(socket), m_read_timeout(read_timeout), m_buffer_read_pos(0) {}
 
   /*
     Read a line from socket into the string "str" until
@@ -57,8 +55,7 @@ public:
      false - EOF or read timeout occurred
 
   */
-  bool gets(BaseString& str);
-
+  bool gets(BaseString &str);
 };
 
 #endif

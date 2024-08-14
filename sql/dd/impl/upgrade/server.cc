@@ -1,15 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -495,6 +496,7 @@ bool fix_sys_schema(THD *thd) {
 
   if (sch != nullptr &&
       !dd::bootstrap::DD_bootstrap_ctx::instance().is_server_upgrade() &&
+      !bootstrap::DD_bootstrap_ctx::instance().is_server_patch_downgrade() &&
       (opt_upgrade_mode != UPGRADE_FORCE))
     return false;
 
@@ -507,7 +509,9 @@ bool fix_sys_schema(THD *thd) {
 }
 
 bool fix_mysql_tables(THD *thd) {
-  const char **query_ptr;
+  /* Keep system tables as is for LTS downgrade. */
+  if (bootstrap::DD_bootstrap_ctx::instance().is_server_patch_downgrade())
+    return false;
 
   DBUG_EXECUTE_IF(
       "schema_read_only",
@@ -526,6 +530,7 @@ bool fix_mysql_tables(THD *thd) {
   if (upgrade_firewall(thd)) return true;
 
   LogErr(INFORMATION_LEVEL, ER_SERVER_UPGRADE_MYSQL_TABLES);
+  const char **query_ptr;
   for (query_ptr = &mysql_fix_privilege_tables[0]; *query_ptr != nullptr;
        query_ptr++)
     if (ignore_error_and_execute(thd, *query_ptr)) return true;
@@ -877,9 +882,17 @@ bool upgrade_system_schemas(THD *thd) {
 
   MySQL_check check;
 
-  LogErr(SYSTEM_LEVEL, ER_SERVER_UPGRADE_STATUS, server_version,
-         MYSQL_VERSION_ID, "started");
-  sysd::notify("STATUS=Server upgrade in progress\n");
+  if (dd::bootstrap::DD_bootstrap_ctx::instance().is_server_patch_downgrade()) {
+    /* purecov: begin inspected */
+    LogErr(SYSTEM_LEVEL, ER_SERVER_DOWNGRADE_STATUS, server_version,
+           MYSQL_VERSION_ID, "started");
+    sysd::notify("STATUS=Server downgrade in progress\n");
+    /* purecov: end */
+  } else {
+    LogErr(SYSTEM_LEVEL, ER_SERVER_UPGRADE_STATUS, server_version,
+           MYSQL_VERSION_ID, "started");
+    sysd::notify("STATUS=Server upgrade in progress\n");
+  }
 
   bootstrap_error_handler.set_log_error(false);
   bool err =
@@ -903,10 +916,19 @@ bool upgrade_system_schemas(THD *thd) {
   create_upgrade_file();
   bootstrap_error_handler.set_log_error(true);
 
-  if (!err)
-    LogErr(SYSTEM_LEVEL, ER_SERVER_UPGRADE_STATUS, server_version,
-           MYSQL_VERSION_ID, "completed");
-  sysd::notify("STATUS=Server upgrade complete\n");
+  if (dd::bootstrap::DD_bootstrap_ctx::instance().is_server_patch_downgrade()) {
+    /* purecov: begin inspected */
+    if (!err)
+      LogErr(SYSTEM_LEVEL, ER_SERVER_DOWNGRADE_STATUS, server_version,
+             MYSQL_VERSION_ID, "completed");
+    sysd::notify("STATUS=Server downgrade complete\n");
+    /* purecov: end */
+  } else {
+    if (!err)
+      LogErr(SYSTEM_LEVEL, ER_SERVER_UPGRADE_STATUS, server_version,
+             MYSQL_VERSION_ID, "completed");
+    sysd::notify("STATUS=Server upgrade complete\n");
+  }
 
   /*
    * During server startup, dd::reset_tables_and_tablespaces is called, which
@@ -921,12 +943,15 @@ bool upgrade_system_schemas(THD *thd) {
 }
 
 bool no_server_upgrade_required() {
-  return !(dd::bootstrap::DD_bootstrap_ctx::instance().is_server_upgrade() ||
-           opt_upgrade_mode == UPGRADE_FORCE);
+  return !(
+      dd::bootstrap::DD_bootstrap_ctx::instance().is_server_upgrade() ||
+      bootstrap::DD_bootstrap_ctx::instance().is_server_patch_downgrade() ||
+      opt_upgrade_mode == UPGRADE_FORCE);
 }
 
 bool I_S_upgrade_required() {
   return dd::bootstrap::DD_bootstrap_ctx::instance().is_server_upgrade() ||
+         bootstrap::DD_bootstrap_ctx::instance().is_server_patch_downgrade() ||
          dd::bootstrap::DD_bootstrap_ctx::instance().I_S_upgrade_done() ||
          opt_upgrade_mode == UPGRADE_FORCE;
 }

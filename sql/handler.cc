@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -129,7 +130,6 @@
 #include "sql_tmp_table.h"  // free_tmp_table
 #include "template_utils.h"
 #include "uniques.h"  // Unique_on_insert
-#include "varlen_sort.h"
 
 /**
   @def MYSQL_TABLE_IO_WAIT
@@ -745,7 +745,7 @@ int ha_finalize_handlerton(st_plugin_int *plugin) {
       engine plugins.
     */
     DBUG_PRINT("info", ("Deinitializing plugin: '%s'", plugin->name.str));
-    if (plugin->plugin->deinit(nullptr)) {
+    if (plugin->plugin->deinit(plugin)) {
       DBUG_PRINT("warning", ("Plugin '%s' deinit function returned error.",
                              plugin->name.str));
     }
@@ -887,7 +887,7 @@ err_deinit:
     Let plugin do its inner deinitialization as plugin->init()
     was successfully called before.
   */
-  if (plugin->plugin->deinit) (void)plugin->plugin->deinit(nullptr);
+  if (plugin->plugin->deinit) (void)plugin->plugin->deinit(plugin);
 
 err:
   my_free(hton);
@@ -1884,21 +1884,21 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit) {
       all ? Transaction_ctx::SESSION : Transaction_ctx::STMT;
   auto ha_list = trn_ctx->ha_trx_info(trx_scope);
 
+  /*
+    At execution of XA COMMIT .. ONE PHASE binlog or slave applier reattaches
+    the engine ha_data to THD, previously saved at XA START.
+  */
+  const bool need_restore_backup_ha_data =
+      all && thd->is_engine_ha_data_detached() &&
+      thd->lex->sql_command == SQLCOM_XA_COMMIT &&
+      static_cast<Sql_cmd_xa_commit *>(thd->lex->m_sql_cmd)->get_xa_opt() ==
+          XA_ONE_PHASE;
+
   DBUG_TRACE;
 
   if (ha_list) {
-    bool restore_backup_ha_data = false;
-    /*
-      At execution of XA COMMIT ONE PHASE binlog or slave applier
-      reattaches the engine ha_data to THD, previously saved at XA START.
-    */
-    if (all && thd->is_engine_ha_data_detached()) {
+    if (need_restore_backup_ha_data) {
       DBUG_PRINT("info", ("query='%s'", thd->query().str));
-      assert(thd->lex->sql_command == SQLCOM_XA_COMMIT);
-      assert(
-          static_cast<Sql_cmd_xa_commit *>(thd->lex->m_sql_cmd)->get_xa_opt() ==
-          XA_ONE_PHASE);
-      restore_backup_ha_data = true;
     }
 
     bool is_applier_wait_enabled = false;
@@ -1930,7 +1930,7 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit) {
       thd->status_var.ha_commit_count++;
       ha_info.reset(); /* keep it conveniently zero-filled */
     }
-    if (restore_backup_ha_data) thd->rpl_reattach_engine_ha_data();
+    if (need_restore_backup_ha_data) thd->rpl_reattach_engine_ha_data();
     trn_ctx->reset_scope(trx_scope);
 
     /*
@@ -1949,6 +1949,8 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit) {
         Commit_order_manager::wait_and_finish(thd, error);
       }
     }
+  } else if (need_restore_backup_ha_data) {
+    thd->rpl_reattach_engine_ha_data();
   }
 
 err:
@@ -1983,35 +1985,31 @@ int ha_rollback_low(THD *thd, bool all) {
 
   (void)RUN_HOOK(transaction, before_rollback, (thd, all));
 
-  if (ha_list) {
-    bool restore_backup_ha_data = false;
-    /*
-      Similarly to the commit case, the binlog or slave applier
-      reattaches the engine ha_data to THD.
-    */
-    if (all && thd->is_engine_ha_data_detached()) {
-      assert(trn_ctx->xid_state()->get_state() != XID_STATE::XA_NOTR ||
-             thd->killed == THD::KILL_CONNECTION);
+  /*
+    Similar to the commit case, the binlog or slave applier reattaches the
+    engine ha_data to THD, previously saved at XA START.
+  */
+  const bool need_restore_backup_ha_data =
+      all && thd->is_engine_ha_data_detached() &&
+      (trn_ctx->xid_state()->get_state() != XID_STATE::XA_NOTR ||
+       thd->killed == THD::KILL_CONNECTION);
 
-      restore_backup_ha_data = true;
+  for (auto &ha_info : ha_list) {
+    int err;
+    auto ht = ha_info.ht();
+    if ((err = ht->rollback(ht, thd, all))) {  // cannot happen
+      char errbuf[MYSQL_ERRMSG_SIZE];
+      my_error(ER_ERROR_DURING_ROLLBACK, MYF(0), err,
+               my_strerror(errbuf, MYSQL_ERRMSG_SIZE, err));
+      error = 1;
     }
-
-    for (auto &ha_info : ha_list) {
-      int err;
-      auto ht = ha_info.ht();
-      if ((err = ht->rollback(ht, thd, all))) {  // cannot happen
-        char errbuf[MYSQL_ERRMSG_SIZE];
-        my_error(ER_ERROR_DURING_ROLLBACK, MYF(0), err,
-                 my_strerror(errbuf, MYSQL_ERRMSG_SIZE, err));
-        error = 1;
-      }
-      assert(!thd->status_var_aggregated);
-      thd->status_var.ha_rollback_count++;
-      ha_info.reset(); /* keep it conveniently zero-filled */
-    }
-    if (restore_backup_ha_data) thd->rpl_reattach_engine_ha_data();
-    trn_ctx->reset_scope(trx_scope);
+    assert(!thd->status_var_aggregated);
+    thd->status_var.ha_rollback_count++;
+    ha_info.reset(); /* keep it conveniently zero-filled */
   }
+
+  if (need_restore_backup_ha_data) thd->rpl_reattach_engine_ha_data();
+  if (ha_list) trn_ctx->reset_scope(trx_scope);
 
   /*
     Thanks to possibility of MDL deadlock rollback request can come even if
@@ -5834,6 +5832,12 @@ int ha_binlog_index_purge_file(THD *thd, const char *file) {
   return 0;
 }
 
+void ha_binlog_index_purge_wait(THD *thd) {
+  assert(thd);
+  binlog_func_st bfn = {BFN_BINLOG_PURGE_WAIT, nullptr};
+  binlog_func_foreach(thd, &bfn);
+}
+
 struct binlog_log_query_st {
   enum_binlog_command binlog_command;
   const char *query;
@@ -6781,9 +6785,18 @@ int DsMrr_impl::dsmrr_fill_buffer() {
   uint elem_size = h->ref_length + (int)is_mrr_assoc * sizeof(void *);
   assert((rowids_buf_cur - rowids_buf) % elem_size == 0);
 
-  varlen_sort(
-      rowids_buf, rowids_buf_cur, elem_size,
-      [this](const uchar *a, const uchar *b) { return h->cmp_ref(a, b) < 0; });
+  // Store the handler in a thread local variable so that it is available in the
+  // stateless comparator passed to qsort.
+  thread_local const handler *current_handler;
+  current_handler = h;
+
+  qsort(rowids_buf, (rowids_buf_cur - rowids_buf) / elem_size, elem_size,
+        [](const void *a, const void *b) {
+          return current_handler->cmp_ref(
+              static_cast<const unsigned char *>(a),
+              static_cast<const unsigned char *>(b));
+        });
+
   rowids_buf_last = rowids_buf_cur;
   rowids_buf_cur = rowids_buf;
   return 0;
@@ -8027,6 +8040,10 @@ int handler::ha_delete_row(const uchar *buf) {
   */
   assert(buf == table->record[0] || buf == table->record[1]);
   DBUG_EXECUTE_IF("inject_error_ha_delete_row", return HA_ERR_INTERNAL_ERROR;);
+  DBUG_EXECUTE_IF("simulate_error_ha_delete_row_lock_wait_timeout", {
+    DBUG_SET("-d,simulate_error_ha_delete_row_lock_wait_timeout");
+    return HA_ERR_LOCK_WAIT_TIMEOUT;
+  });
 
   DBUG_EXECUTE_IF(
       "handler_crashed_table_on_usage",

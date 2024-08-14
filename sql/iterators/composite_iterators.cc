@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -67,6 +68,7 @@
 #include "template_utils.h"
 
 using pack_rows::TableCollection;
+using std::any_of;
 using std::string;
 using std::swap;
 using std::vector;
@@ -218,7 +220,7 @@ bool AggregateIterator::Init() {
   // This is a hack. It would be good to get rid of the slice system altogether
   // (the hypergraph join optimizer does not use it).
   if (!(m_join->implicit_grouping || m_join->group_optimized_away) &&
-      !thd()->lex->using_hypergraph_optimizer) {
+      !thd()->lex->using_hypergraph_optimizer()) {
     m_output_slice = m_join->get_ref_item_slice();
   }
 
@@ -839,19 +841,28 @@ bool MaterializeIterator<Profiler>::Init() {
   // If this is a CTE, it could be referred to multiple times in the same query.
   // If so, check if we have already been materialized through any of our alias
   // tables.
-  if (!table()->materialized && m_cte != nullptr) {
-    for (Table_ref *table_ref : m_cte->tmp_tables) {
-      if (table_ref->table != nullptr && table_ref->table->materialized) {
-        table()->materialized = true;
-        break;
-      }
+  const bool use_shared_cte_materialization =
+      !table()->materialized && m_cte != nullptr && !m_rematerialize &&
+      any_of(m_cte->tmp_tables.begin(), m_cte->tmp_tables.end(),
+             [](const Table_ref *table_ref) {
+               return table_ref->table != nullptr &&
+                      table_ref->table->materialized;
+             });
+
+  if (use_shared_cte_materialization) {
+    // If using an already materialized shared CTE table, update the
+    // invalidators with the latest generation.
+    for (Invalidator &invalidator : m_invalidators) {
+      invalidator.generation_at_last_materialize =
+          invalidator.iterator->generation();
     }
+    table()->materialized = true;
   }
 
   if (table()->materialized) {
     bool rematerialize = m_rematerialize;
 
-    if (!rematerialize) {
+    if (!rematerialize && !use_shared_cte_materialization) {
       // See if any lateral tables that we depend on have changed since
       // last time (which would force a rematerialization).
       //
@@ -910,8 +921,10 @@ bool MaterializeIterator<Profiler>::Init() {
   // initialize scanning of the index over that hash field. (This is entirely
   // separate from any index usage when reading back the materialized table;
   // m_table_iterator will do that for us.)
-  auto end_unique_index =
-      create_scope_guard([&] { table()->file->ha_index_end(); });
+  auto end_unique_index = create_scope_guard([&] {
+    if (table()->file->inited == handler::INDEX) table()->file->ha_index_end();
+  });
+
   if (doing_hash_deduplication()) {
     if (table()->file->ha_index_init(0, /*sorted=*/false)) {
       return true;

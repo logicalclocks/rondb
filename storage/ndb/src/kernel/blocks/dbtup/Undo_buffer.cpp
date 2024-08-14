@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,39 +24,33 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include "util/require.h"
 #include "Undo_buffer.hpp"
+#include "util/require.h"
 #define DBTUP_C
 #include "Dbtup.hpp"
 
 #define JAM_FILE_ID 429
 
-struct UndoPage
-{
+struct UndoPage {
   Uint32 m_words_used;
   Uint32 m_ref_count;
-  Uint32 m_data[GLOBAL_PAGE_SIZE_WORDS-2];
-  
-  static constexpr Uint32 DATA_WORDS = GLOBAL_PAGE_SIZE_WORDS-2;
+  Uint32 m_data[GLOBAL_PAGE_SIZE_WORDS - 2];
+
+  static constexpr Uint32 DATA_WORDS = GLOBAL_PAGE_SIZE_WORDS - 2;
 };
 
 #if defined VM_TRACE || defined ERROR_INSERT
 #define SAFE_UB
 #endif
 
-static
-inline
-UndoPage* 
-get_page(Ndbd_mem_manager* mm, Uint32 no)
-{
-  return ((UndoPage*)mm->get_memroot()) + no;
+static inline UndoPage *get_page(Ndbd_mem_manager *mm, Uint32 no) {
+  return ((UndoPage *)mm->get_memroot()) + no;
 }
 
-Undo_buffer::Undo_buffer(Ndbd_mem_manager* mm)
-{
+Undo_buffer::Undo_buffer(Ndbd_mem_manager *mm) {
   m_mm = mm;
   m_first_free = RNIL;
-  assert(sizeof(UndoPage) == 4*GLOBAL_PAGE_SIZE_WORDS);
+  assert(sizeof(UndoPage) == 4 * GLOBAL_PAGE_SIZE_WORDS);
 }
 
 Uint32 *
@@ -66,22 +61,19 @@ Undo_buffer::alloc_copy_tuple(Local_key* dst,
   UndoPage* page = nullptr;
   assert(words);
 #ifdef SAFE_UB
-  words += 2; // header + footer
+  words += 2;  // header + footer
 #endif
   assert(words <= UndoPage::DATA_WORDS);
-  if (unlikely(words > UndoPage::DATA_WORDS))
-  {
+  if (unlikely(words > UndoPage::DATA_WORDS)) {
     return nullptr;
   }
   Uint32 pos = 0;
-  if (m_first_free != RNIL)
-  {
+  if (m_first_free != RNIL) {
     page = get_page(m_mm, m_first_free);
 
     pos = page->m_words_used;
 
-    if (words + pos > UndoPage::DATA_WORDS)
-    {
+    if (words + pos > UndoPage::DATA_WORDS) {
       m_first_free = RNIL;
     }
   }
@@ -117,16 +109,16 @@ Undo_buffer::alloc_copy_tuple(Local_key* dst,
     pos = 0;
     page->m_ref_count = 0;
   }
-  
+
   dst->m_page_no = m_first_free;
   dst->m_page_idx = pos;
-  
+
   page->m_ref_count++;
   page->m_words_used = pos + words;
 #ifdef SAFE_UB
-  page->m_data[pos] = words;    // header
+  page->m_data[pos] = words;  // header
   page->m_data[pos + words - 1] = m_first_free + pos;
-  pos ++;
+  pos++;
 #endif
   return page->m_data + pos;
 }
@@ -135,29 +127,23 @@ void
 Undo_buffer::shrink_copy_tuple(Local_key* key, Uint32 words)
 {
   assert(key->m_page_no == m_first_free);
-  UndoPage* page= get_page(m_mm, key->m_page_no); 
+  UndoPage *page = get_page(m_mm, key->m_page_no);
   assert(page->m_words_used >= words);
   page->m_words_used -= words;
 }
 
-void
-Undo_buffer::free_copy_tuple(Local_key* key)
-{
-  UndoPage* page= get_page(m_mm, key->m_page_no);
-  Uint32 cnt= page->m_ref_count;
+void Undo_buffer::free_copy_tuple(Local_key *key) {
+  UndoPage *page = get_page(m_mm, key->m_page_no);
+  Uint32 cnt = page->m_ref_count;
   assert(cnt);
 
-  page->m_ref_count= cnt - 1;
-  
-  if (cnt - 1 == 0)
-  {
-    page->m_words_used= 0;
-    if (m_first_free == key->m_page_no)
-    {
+  page->m_ref_count = cnt - 1;
+
+  if (cnt - 1 == 0) {
+    page->m_words_used = 0;
+    if (m_first_free == key->m_page_no) {
       // g_eventLogger->info("resetting page");
-    }
-    else 
-    {
+    } else {
       // g_eventLogger->info("returning page");
       m_mm->release_page(RT_DBTUP_COPY_PAGE, key->m_page_no);
     }
@@ -165,16 +151,13 @@ Undo_buffer::free_copy_tuple(Local_key* key)
   key->setNull();
 }
 
-Uint32 *
-Undo_buffer::get_ptr(const Local_key* key)
-{
-  UndoPage* page = get_page(m_mm, key->m_page_no);
-  Uint32 * ptr = page->m_data + key->m_page_idx;
+Uint32 *Undo_buffer::get_ptr(const Local_key *key) {
+  UndoPage *page = get_page(m_mm, key->m_page_no);
+  Uint32 *ptr = page->m_data + key->m_page_idx;
 #ifdef SAFE_UB
-  Uint32 words = * ptr;
+  Uint32 words = *ptr;
   Uint32 check = ptr[words - 1];
-  if (unlikely(! ((check == key->m_page_no + key->m_page_idx))))
-  {
+  if (unlikely(!((check == key->m_page_no + key->m_page_idx)))) {
     abort();
   }
   ptr++;

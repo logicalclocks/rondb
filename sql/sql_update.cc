@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1200,7 +1201,7 @@ static TABLE *GetOutermostTable(const JOIN *join) {
   // The old optimizer can usually find it in the access path too, except if the
   // outermost table is a const table, since const tables may not be visible in
   // the access path tree.
-  if (!join->thd->lex->using_hypergraph_optimizer) {
+  if (!join->thd->lex->using_hypergraph_optimizer()) {
     assert(join->qep_tab != nullptr);
     return join->qep_tab[0].table();
   }
@@ -1545,7 +1546,7 @@ bool Sql_cmd_update::prepare_inner(THD *thd) {
   // enables it to perform optimizations like sort avoidance and semi-join
   // flattening even if features specific to single-table UPDATE (that is, ORDER
   // BY and LIMIT) are used.
-  if (lex->using_hypergraph_optimizer) {
+  if (lex->using_hypergraph_optimizer()) {
     multitable = true;
   }
 
@@ -2998,7 +2999,7 @@ table_map GetImmediateUpdateTable(const JOIN *join, bool single_target) {
 
   // The hypergraph optimizer determines the immediate update tables during
   // planning, not after planning.
-  assert(!join->thd->lex->using_hypergraph_optimizer);
+  assert(!join->thd->lex->using_hypergraph_optimizer());
 
   // In some cases, rows may be updated immediately as they are read from the
   // outermost table in the join.
@@ -3071,7 +3072,7 @@ unique_ptr_destroy_only<RowIterator> Query_result_update::create_iterator(
       update_tables, tmp_tables, copy_field, unupdated_check_opt_tables,
       update_operations, fields_for_table, values_for_table,
       // The old optimizer does not use hash join in UPDATE statements.
-      thd->lex->using_hypergraph_optimizer
+      thd->lex->using_hypergraph_optimizer()
           ? GetHashJoinTables(unit->root_access_path())
           : 0);
 }

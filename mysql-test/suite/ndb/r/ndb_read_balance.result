@@ -17,279 +17,379 @@ Warning	1121	Ndb does not support unique index on NULL valued attributes, index 
 Check that all fragments are in-use, else raise key count
 select count(1) from ndbinfo.memory_per_fragment where fq_name='test/def/t1' and fixed_elem_count=0;
 count(1)
-0
+2
+select * from ndbinfo.memory_per_fragment where fq_name='test/def/t1';
+fq_name	parent_fq_name	type	table_id	node_id	block_instance	fragment_num	fixed_elem_alloc_bytes	fixed_elem_free_bytes	fixed_elem_size_bytes	fixed_elem_count	fixed_elem_free_count	var_elem_alloc_bytes	var_elem_free_bytes	var_elem_count	hash_index_alloc_bytes
+test/def/t1	NULL	User table	13	1	1	0	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	1	4	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	1	2	1	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	2	5	32768	32252	44	8	733	0	0	0	16384
+test/def/t1	NULL	User table	13	1	3	2	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	3	6	32768	32472	44	3	738	0	0	0	16384
+test/def/t1	NULL	User table	13	1	4	3	0	0	44	0	0	0	0	0	8192
+test/def/t1	NULL	User table	13	1	4	7	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	2	1	0	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	1	4	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	2	2	1	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	2	5	32768	32252	44	8	733	0	0	0	16384
+test/def/t1	NULL	User table	13	2	3	2	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	3	6	32768	32472	44	3	738	0	0	0	16384
+test/def/t1	NULL	User table	13	2	4	3	0	0	44	0	0	0	0	0	8192
+test/def/t1	NULL	User table	13	2	4	7	32768	32428	44	4	737	0	0	0	16384
+select * from test.t1;
+a	b	c	d
+40	40	40	40
+33	33	33	33
+32	32	32	32
+18	18	18	18
+39	39	39	39
+13	13	13	13
+1	1	1	1
+30	30	30	30
+26	26	26	26
+21	21	21	21
+20	20	20	20
+14	14	14	14
+12	12	12	12
+11	11	11	11
+2	2	2	2
+28	28	28	28
+27	27	27	27
+25	25	25	25
+17	17	17	17
+35	35	35	35
+24	24	24	24
+23	23	23	23
+15	15	15	15
+7	7	7	7
+6	6	6	6
+4	4	4	4
+38	38	38	38
+37	37	37	37
+34	34	34	34
+31	31	31	31
+29	29	29	29
+22	22	22	22
+19	19	19	19
+36	36	36	36
+16	16	16	16
+10	10	10	10
+9	9	9	9
+8	8	8	8
+5	5	5	5
+3	3	3	3
 Build fragment identity table
 Test lock free pk reads to show fragment types read
 select distinct obj_type, fragment_type from min_baseline_diff_type order by obj_type, fragment_type;
 obj_type	fragment_type
 TABLE	PRIMARY
-Test a number of scenarios to show read routing
+Test a number of scenarios repeatedly to show read routing variants
 
 ****
 Row with key : 40
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 35
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 30
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 25
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 20
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 15
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 10
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 5
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 *********
 Scans
 
 Unhinted PK OI read, no lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 
 Unhinted PK OI read, shared lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 TABLE	PRIMARY
 
 Unhinted PK OI read, exclusive lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 TABLE	PRIMARY
 
 Table scan, no lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY
 
 Table scan, shared lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY
 
 Table scan, exclusive lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY
 
 
@@ -310,278 +410,396 @@ Warning	1121	Ndb does not support unique index on NULL valued attributes, index 
 Check that all fragments are in-use, else raise key count
 select count(1) from ndbinfo.memory_per_fragment where fq_name='test/def/t1' and fixed_elem_count=0;
 count(1)
-0
+2
+select * from ndbinfo.memory_per_fragment where fq_name='test/def/t1';
+fq_name	parent_fq_name	type	table_id	node_id	block_instance	fragment_num	fixed_elem_alloc_bytes	fixed_elem_free_bytes	fixed_elem_size_bytes	fixed_elem_count	fixed_elem_free_count	var_elem_alloc_bytes	var_elem_free_bytes	var_elem_count	hash_index_alloc_bytes
+test/def/t1	NULL	User table	13	1	1	0	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	1	4	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	1	2	1	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	2	5	32768	32252	44	8	733	0	0	0	16384
+test/def/t1	NULL	User table	13	1	3	2	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	3	6	32768	32472	44	3	738	0	0	0	16384
+test/def/t1	NULL	User table	13	1	4	3	0	0	44	0	0	0	0	0	8192
+test/def/t1	NULL	User table	13	1	4	7	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	2	1	0	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	1	4	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	2	2	1	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	2	5	32768	32252	44	8	733	0	0	0	16384
+test/def/t1	NULL	User table	13	2	3	2	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	3	6	32768	32472	44	3	738	0	0	0	16384
+test/def/t1	NULL	User table	13	2	4	3	0	0	44	0	0	0	0	0	8192
+test/def/t1	NULL	User table	13	2	4	7	32768	32428	44	4	737	0	0	0	16384
+select * from test.t1;
+a	b	c	d
+28	28	28	28
+27	27	27	27
+25	25	25	25
+17	17	17	17
+35	35	35	35
+24	24	24	24
+23	23	23	23
+15	15	15	15
+7	7	7	7
+6	6	6	6
+4	4	4	4
+30	30	30	30
+26	26	26	26
+21	21	21	21
+20	20	20	20
+14	14	14	14
+12	12	12	12
+11	11	11	11
+2	2	2	2
+36	36	36	36
+16	16	16	16
+10	10	10	10
+9	9	9	9
+8	8	8	8
+5	5	5	5
+3	3	3	3
+40	40	40	40
+33	33	33	33
+32	32	32	32
+18	18	18	18
+38	38	38	38
+37	37	37	37
+34	34	34	34
+31	31	31	31
+29	29	29	29
+22	22	22	22
+19	19	19	19
+39	39	39	39
+13	13	13	13
+1	1	1	1
 Build fragment identity table
 Test lock free pk reads to show fragment types read
 select distinct obj_type, fragment_type from min_baseline_diff_type order by obj_type, fragment_type;
 obj_type	fragment_type
 TABLE	BACKUP
 TABLE	PRIMARY
-Test a number of scenarios to show read routing
+Test a number of scenarios repeatedly to show read routing variants
 
 ****
 Row with key : 40
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 35
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 30
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 25
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 20
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 15
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 10
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 5
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 *********
 Scans
 
 Unhinted PK OI read, no lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 
 Unhinted PK OI read, shared lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 TABLE	PRIMARY
 
 Unhinted PK OI read, exclusive lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 TABLE	PRIMARY
 
 Table scan, no lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY
 
 Table scan, shared lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY
 
 Table scan, exclusive lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY
 
 
@@ -602,263 +820,388 @@ Warning	1121	Ndb does not support unique index on NULL valued attributes, index 
 Check that all fragments are in-use, else raise key count
 select count(1) from ndbinfo.memory_per_fragment where fq_name='test/def/t1' and fixed_elem_count=0;
 count(1)
-0
+2
+select * from ndbinfo.memory_per_fragment where fq_name='test/def/t1';
+fq_name	parent_fq_name	type	table_id	node_id	block_instance	fragment_num	fixed_elem_alloc_bytes	fixed_elem_free_bytes	fixed_elem_size_bytes	fixed_elem_count	fixed_elem_free_count	var_elem_alloc_bytes	var_elem_free_bytes	var_elem_count	hash_index_alloc_bytes
+test/def/t1	NULL	User table	13	1	1	0	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	1	4	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	1	2	1	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	2	5	32768	32252	44	8	733	0	0	0	16384
+test/def/t1	NULL	User table	13	1	3	2	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	1	3	6	32768	32472	44	3	738	0	0	0	16384
+test/def/t1	NULL	User table	13	1	4	3	0	0	44	0	0	0	0	0	8192
+test/def/t1	NULL	User table	13	1	4	7	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	2	1	0	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	1	4	32768	32428	44	4	737	0	0	0	16384
+test/def/t1	NULL	User table	13	2	2	1	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	2	5	32768	32252	44	8	733	0	0	0	16384
+test/def/t1	NULL	User table	13	2	3	2	32768	32296	44	7	734	0	0	0	16384
+test/def/t1	NULL	User table	13	2	3	6	32768	32472	44	3	738	0	0	0	16384
+test/def/t1	NULL	User table	13	2	4	3	0	0	44	0	0	0	0	0	8192
+test/def/t1	NULL	User table	13	2	4	7	32768	32428	44	4	737	0	0	0	16384
+select * from test.t1;
+a	b	c	d
+28	28	28	28
+27	27	27	27
+25	25	25	25
+17	17	17	17
+36	36	36	36
+16	16	16	16
+10	10	10	10
+9	9	9	9
+8	8	8	8
+5	5	5	5
+3	3	3	3
+40	40	40	40
+33	33	33	33
+32	32	32	32
+18	18	18	18
+35	35	35	35
+24	24	24	24
+23	23	23	23
+15	15	15	15
+7	7	7	7
+6	6	6	6
+4	4	4	4
+30	30	30	30
+26	26	26	26
+21	21	21	21
+20	20	20	20
+14	14	14	14
+12	12	12	12
+11	11	11	11
+2	2	2	2
+38	38	38	38
+37	37	37	37
+34	34	34	34
+31	31	31	31
+29	29	29	29
+22	22	22	22
+19	19	19	19
+39	39	39	39
+13	13	13	13
+1	1	1	1
 Build fragment identity table
 Test lock free pk reads to show fragment types read
 select distinct obj_type, fragment_type from min_baseline_diff_type order by obj_type, fragment_type;
 obj_type	fragment_type
 TABLE	BACKUP
 TABLE	PRIMARY
-Test a number of scenarios to show read routing
+Test a number of scenarios repeatedly to show read routing variants
 
 ****
 Row with key : 40
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 35
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 30
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 25
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 20
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 15
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 10
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 ****
 Row with key : 5
 
+Unhinted PK read, no lock
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
+
 Hinted PK read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
+obj_type	fragment_type
+TABLE	BACKUP
+TABLE	PRIMARY
 
 Unhinted PK read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted PK read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
 
 Unhinted UI read, no lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	BACKUP	1	0	0	0	0	0
-UI_B	BACKUP	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	BACKUP
+UI_B	PRIMARY
 
 Unhinted UI read, shared lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 Unhinted UI read, exclusive lock
-obj_type	fragment_type	key_reads	key_inserts	key_writes	key_updates	key_deletes	frag_scans
-TABLE	PRIMARY	1	0	0	0	0	0
-UI_B	PRIMARY	1	0	0	0	0	0
+obj_type	fragment_type
+TABLE	PRIMARY
+UI_B	PRIMARY
 
 *********
 Scans
 
 Unhinted PK OI read, no lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 
 Unhinted PK OI read, shared lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 TABLE	PRIMARY
 
 Unhinted PK OI read, exclusive lock
 obj_type	fragment_type
+OI_PRIMARY	BACKUP
 OI_PRIMARY	PRIMARY
 TABLE	PRIMARY
 
@@ -869,8 +1212,10 @@ TABLE	PRIMARY
 
 Table scan, shared lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY
 
 Table scan, exclusive lock
 obj_type	fragment_type
+TABLE	BACKUP
 TABLE	PRIMARY

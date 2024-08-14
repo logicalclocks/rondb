@@ -1,16 +1,17 @@
 /*
- * Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
  *
- * This program is also distributed with certain software (including
+ * This program is designed to work with certain software (including
  * but not limited to OpenSSL) that is licensed under separate terms,
  * as designated in a particular file or component or in included license
  * documentation.  The authors of MySQL hereby grant you an additional
  * permission to link the program and your derivative works with the
- * separately licensed software that they have included with MySQL.
+ * separately licensed software that they have either included with
+ * the program or referenced in the documentation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,8 +34,6 @@
 
 #include "plugin/x/tests/driver/processor/variable_names.h"
 
-google::protobuf::LogHandler *g_lh = nullptr;
-
 Connection_manager::Connection_manager(const Connection_options &co,
                                        Variable_container *variables,
                                        const Console &console_with_flow_history,
@@ -43,14 +42,6 @@ Connection_manager::Connection_manager(const Connection_options &co,
       m_variables(variables),
       m_console_with_flow_history(console_with_flow_history),
       m_console(console) {
-  g_lh = google::protobuf::SetLogHandler([](google::protobuf::LogLevel level,
-                                            const char *filename, int line,
-                                            const std::string &message) {
-    if (g_lh) g_lh(level, filename, line, message);
-    DBUG_LOG("debug",
-             "Protobuf error (level:" << level << ", filename:" << filename
-                                      << ":" << line << ", text:" << message);
-  });
   m_variables->make_special_variable(
       k_variable_option_user,
       new Variable_dynamic_string(m_default_connection_options.user));

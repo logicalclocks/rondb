@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,7 +30,6 @@
 #include "SignalData.hpp"
 
 #define JAM_FILE_ID 156
-
 
 /**
  * FsReadWriteReq - Common signal class for FSWRITEREQ and FSREADREQ
@@ -68,19 +68,20 @@ class FsReadWriteReq {
   /**
    * For printing
    */
-  friend bool printFSREADWRITEREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
+  friend bool printFSREADWRITEREQ(FILE *output, const Uint32 *theData,
+                                  Uint32 len, Uint16 receiverBlockNo);
 
-public:
+ public:
   /**
  * Enum type for errorCode
  */
   enum NdbfsFormatType {
-    fsFormatListOfPairs=0,
-    fsFormatArrayOfPages=1,
-    fsFormatListOfMemPages=2,
-    fsFormatGlobalPage=3,
-    fsFormatSharedPage=4,
-    fsFormatMemAddress=5,
+    fsFormatListOfPairs = 0,
+    fsFormatArrayOfPages = 1,
+    fsFormatListOfMemPages = 2,
+    fsFormatGlobalPage = 3,
+    fsFormatSharedPage = 4,
+    fsFormatMemAddress = 5,
     fsFormatMax
   };
   
@@ -89,8 +90,7 @@ public:
    */
   static constexpr Uint32 FixedLength = 6;
 
-private:
-
+ private:
   /**
    * DATA VARIABLES
    */
@@ -101,10 +101,10 @@ private:
   UintR varIndex;             // DATA 4
   UintR numberOfPages;        // DATA 5  
 
-//-------------------------------------------------------------
-// Variable sized part. Those will contain 
-// info about memory/file pages to read/write
-//-------------------------------------------------------------  
+  //-------------------------------------------------------------
+  // Variable sized part. Those will contain
+  // info about memory/file pages to read/write
+  //-------------------------------------------------------------
   union { // DATA 6 - 21
     struct {
       Uint32 varIndex;   // In unit cluster size
@@ -134,14 +134,14 @@ private:
     } zeroPageIndicator;
   } data;
 
-  static Uint8 getSyncFlag(const UintR & opFlag);
-  static void setSyncFlag(UintR & opFlag, Uint8 flag);
+  static Uint8 getSyncFlag(const UintR &opFlag);
+  static void setSyncFlag(UintR &opFlag, Uint8 flag);
 
-  static NdbfsFormatType getFormatFlag(const UintR & opFlag);
-  static void setFormatFlag(UintR & opFlag, Uint8 flag);
+  static NdbfsFormatType getFormatFlag(const UintR &opFlag);
+  static void setFormatFlag(UintR &opFlag, Uint8 flag);
 
   static Uint32 getPartialReadFlag(UintR opFlag);
-  static void setPartialReadFlag(UintR & opFlag, Uint32 flag);
+  static void setPartialReadFlag(UintR &opFlag, Uint32 flag);
 };
 
 DECLARE_SIGNAL_SCOPE(GSN_FSREADREQ, Local);
@@ -165,53 +165,40 @@ DECLARE_SIGNAL_SCOPE(GSN_FSWRITEREQ, Local);
 
 #define PARTIAL_READ_SHIFT (5)
 
-inline
-Uint8
-FsReadWriteReq::getSyncFlag(const UintR & opFlag){
+inline Uint8 FsReadWriteReq::getSyncFlag(const UintR &opFlag) {
   return (Uint8)((opFlag >> SYNC_SHIFT) & SYNC_MASK);
 }
 
-inline
-FsReadWriteReq::NdbfsFormatType
-FsReadWriteReq::getFormatFlag(const UintR & opFlag){
+inline FsReadWriteReq::NdbfsFormatType FsReadWriteReq::getFormatFlag(
+    const UintR &opFlag) {
   return (NdbfsFormatType)(opFlag & FORMAT_MASK);
 }
 
-inline
-void 
-FsReadWriteReq::setSyncFlag(UintR & opFlag, Uint8 flag){
+inline void FsReadWriteReq::setSyncFlag(UintR &opFlag, Uint8 flag) {
   ASSERT_BOOL(flag, "FsReadWriteReq::setSyncFlag");
   opFlag |= (flag << SYNC_SHIFT);
 }
 
-inline
-void 
-FsReadWriteReq::setFormatFlag(UintR & opFlag, Uint8 flag){
+inline void FsReadWriteReq::setFormatFlag(UintR &opFlag, Uint8 flag) {
   ASSERT_MAX(flag, fsFormatMax, "FsReadWriteReq::setSyncFlag");
   opFlag |= flag;
 }
 
-inline
-void 
-FsReadWriteReq::setPartialReadFlag(UintR & opFlag, Uint32 flag){
+inline void FsReadWriteReq::setPartialReadFlag(UintR &opFlag, Uint32 flag) {
   ASSERT_BOOL(flag, "FsReadWriteReq::setSyncFlag");
   opFlag |= (flag << PARTIAL_READ_SHIFT);
 }
 
-inline
-Uint32
-FsReadWriteReq::getPartialReadFlag(UintR opFlag){
+inline Uint32 FsReadWriteReq::getPartialReadFlag(UintR opFlag) {
   return (opFlag >> PARTIAL_READ_SHIFT) & 1;
 }
 
-struct FsSuspendOrd
-{
+struct FsSuspendOrd {
   UintR filePointer;          // DATA 0
   Uint32 milliseconds;
 
   static constexpr Uint32 SignalLength = 2;
 };
-
 
 #undef JAM_FILE_ID
 

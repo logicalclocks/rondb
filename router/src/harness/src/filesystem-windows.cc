@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -62,39 +63,28 @@ const char *const Path::root_directory = "/";
 
 Path::FileType Path::type(bool refresh) const {
   validate_non_empty_path();
-  if (type_ == FileType::TYPE_UNKNOWN || refresh) {
-    struct _stat stat_buf;
-    if (_stat(c_str(), &stat_buf) == -1) {
-      if (errno == ENOENT) {
-        // Special case, a drive name like "C:"
-        if (path_[path_.size() - 1] == ':') {
-          DWORD flags = GetFileAttributesA(path_.c_str());
-          // API reports it as directory if it exist
-          if (flags & FILE_ATTRIBUTE_DIRECTORY) {
-            type_ = FileType::DIRECTORY_FILE;
-            return type_;
-          }
-        }
-        type_ = FileType::FILE_NOT_FOUND;
-      } else if (errno == EINVAL)
-        type_ = FileType::STATUS_ERROR;
-    } else {
-      switch (stat_buf.st_mode & S_IFMT) {
-        case S_IFDIR:
-          type_ = FileType::DIRECTORY_FILE;
-          break;
-        case S_IFCHR:
-          type_ = FileType::CHARACTER_FILE;
-          break;
-        case S_IFREG:
-          type_ = FileType::REGULAR_FILE;
-          break;
-        default:
-          type_ = FileType::TYPE_UNKNOWN;
-          break;
-      }
-    }
+  if (!(type_ == FileType::TYPE_UNKNOWN || refresh)) {
+    return type_;
   }
+
+  DWORD flags = GetFileAttributesA(path_.c_str());
+  if (flags == INVALID_FILE_ATTRIBUTES) {
+    std::error_code ec(GetLastError(), std::system_category());
+
+    if (ec == make_error_condition(std::errc::no_such_file_or_directory)) {
+      type_ = FileType::FILE_NOT_FOUND;
+    } else {
+      type_ = FileType::STATUS_ERROR;
+    }
+    return type_;
+  }
+
+  if (flags & FILE_ATTRIBUTE_DIRECTORY) {
+    type_ = FileType::DIRECTORY_FILE;
+    return type_;
+  }
+
+  type_ = FileType::REGULAR_FILE;
   return type_;
 }
 

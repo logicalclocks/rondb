@@ -1,15 +1,16 @@
-# Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -82,6 +83,7 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
     EXCLUDE_FROM_ALL   # add target, but do not build it by default
     EXCLUDE_FROM_PGO   # add target, but do not build for PGO
     SKIP_INSTALL       # do not install it
+    SKIP_TCMALLOC      # do not link with tcmalloc
     )
   SET(EXECUTABLE_ONE_VALUE_KW
     ADD_TEST           # add unit test, sets SKIP_INSTALL
@@ -118,6 +120,20 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
   ADD_VERSION_INFO(${target} EXECUTABLE sources)
 
   ADD_EXECUTABLE(${target} ${sources})
+  TARGET_COMPILE_FEATURES(${target} PUBLIC cxx_std_17)
+
+  IF(TARGET my_tcmalloc)
+    IF(ARG_SKIP_TCMALLOC OR target MATCHES "^rpd")
+      # nothing, use glibc malloc/free
+    ELSE()
+      IF(WITH_VALGRIND)
+        TARGET_LINK_LIBRARIES(${target} my_tcmalloc_debug)
+      ELSE()
+        TARGET_LINK_LIBRARIES(${target} my_tcmalloc)
+      ENDIF()
+      ADD_INSTALL_RPATH(${target} "\$ORIGIN/../${INSTALL_PRIV_LIBDIR}")
+    ENDIF()
+  ENDIF()
 
   SET_PATH_TO_CUSTOM_SSL_FOR_APPLE(${target})
 
@@ -142,7 +158,7 @@ FUNCTION(MYSQL_ADD_EXECUTABLE target_arg)
   ENDIF()
 
   IF(ARG_EXCLUDE_FROM_PGO)
-    IF(FPROFILE_GENERATE OR FPROFILE_USE)
+    IF(FPROFILE_GENERATE)
       SET(ARG_EXCLUDE_FROM_ALL TRUE)
       SET(ARG_SKIP_INSTALL TRUE)
       UNSET(ARG_ADD_TEST)

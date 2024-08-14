@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,11 +37,13 @@ namespace pack_rows {
 
 Column::Column(Field *field) : field(field), field_type(field->real_type()) {}
 
-// Take in a QEP_TAB and extract the columns that are needed to satisfy the SQL
-// query (determined by the read set of the table).
-Table::Table(TABLE *table) : table(table), columns(PSI_NOT_INSTRUMENTED) {
+// Take in a TABLE and extract the columns that are needed to satisfy the SQL
+// query (determined by the read set for internal operations in the execution
+// engine).
+Table::Table(TABLE *table_arg)
+    : table(table_arg), columns(PSI_NOT_INSTRUMENTED) {
   for (uint i = 0; i < table->s->fields; ++i) {
-    if (bitmap_is_set(table->read_set, i)) {
+    if (bitmap_is_set(&table->read_set_internal, i)) {
       columns.emplace_back(table->field[i]);
     }
   }

@@ -1,17 +1,18 @@
 /*
- Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+ Copyright (c) 2010, 2024, Oracle and/or its affiliates.
  Use is subject to license terms.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -58,7 +59,8 @@ typedef int cstatus;
  * By default, no type conversions are supported at all to prevent any
  * inadvertent or unsafe type mappings.
  */
-template < typename J, typename C > struct is_supported_type_mapping;
+template <typename J, typename C>
+struct is_supported_type_mapping;
 
 /**
  * A class template with static functions for conversion of parameter data
@@ -68,9 +70,9 @@ template < typename J, typename C > struct is_supported_type_mapping;
  * defined here, in order to have undefined type mappings result in a
  * compilation error.
  */
-template< typename J, typename C >
+template <typename J, typename C>
 struct Param
-#if 0 // only document class template, to be defined by specialization
+#if 0   // only document class template, to be defined by specialization
 {
     /**
      * Returns the C argument for a Java argument.
@@ -131,8 +133,8 @@ struct Param
         static_assert(false, "missing specialization of parameter conversion");
     }
 }
-#endif // only document class template, to be defined by specialization
-;
+#endif  // only document class template, to be defined by specialization
+    ;
 
 /**
  * A class template with static functions for conversion of target objects
@@ -147,9 +149,9 @@ struct Param
  * defined here, in order to have undefined type mappings result in a
  * compilation error.
  */
-template< typename J, typename C >
+template <typename J, typename C>
 struct Target
-#if 0 // only document class template, to be defined by specialization
+#if 0   // only document class template, to be defined by specialization
 {
     /**
      * Returns the C delegate of a Java wrapper object as target of a
@@ -178,8 +180,8 @@ struct Target
         static_assert(false, "missing specialization of target conversion");
     }
 }
-#endif // only document class template, to be defined by specialization
-;
+#endif  // only document class template, to be defined by specialization
+    ;
 
 /**
  * A class template with static functions for conversion of function call
@@ -189,9 +191,9 @@ struct Target
  * defined here, in order to have undefined type mappings result in a
  * compilation error.
  */
-template< typename J, typename C >
+template <typename J, typename C>
 struct Result
-#if 0 // only document class template, to be defined by specialization
+#if 0   // only document class template, to be defined by specialization
 {
     /**
      * Returns the Java result value for a C result.
@@ -214,11 +216,11 @@ struct Result
         return 0;
     }
 }
-#endif // only document class template, to be defined by specialization
-;
+#endif  // only document class template, to be defined by specialization
+    ;
 
 // Lessons learned:
-// 
+//
 // Basing the type conversion code on class templates rather than loose
 // function templates allows for:
 // - defining a uniform type converter interface (no overloading ambiguities)
@@ -241,18 +243,18 @@ struct Result
 // Examples: 'int const', 'A * const' (does not apply to 'const A *')
 
 // XXX ambiguous with enums
-//template< typename J, typename C >
-//struct Param< J, C const > : Param< J, C > {};
+// template< typename J, typename C >
+// struct Param< J, C const > : Param< J, C > {};
 //
-//template< typename J, typename C >
-//struct Result< J, C const > : Result< J, C > {};
+// template< typename J, typename C >
+// struct Result< J, C const > : Result< J, C > {};
 
 // XXX untested
-template< typename J, typename C >
-struct Param< J const, C > : Param< J, C > {};
+template <typename J, typename C>
+struct Param<J const, C> : Param<J, C> {};
 
-template< typename J, typename C >
-struct Result< J const, C > : Result< J, C > {};
+template <typename J, typename C>
+struct Result<J const, C> : Result<J, C> {};
 
 // ---------------------------------------------------------------------------
 // formal <-> actual parameter/result type casts
@@ -261,11 +263,10 @@ struct Result< J const, C > : Result< J, C > {};
 /**
  * A function template for formal/actual parameter/result type adjustments.
  */
-template< typename T, typename S >
-inline T
-cast(S s) {
-    TRACE("T cast(S)");
-    return static_cast< T >(s); // support base->derived class pointer casts
+template <typename T, typename S>
+inline T cast(S s) {
+  TRACE("T cast(S)");
+  return static_cast<T>(s);  // support base->derived class pointer casts
 }
 
 // Design note:
@@ -277,4 +278,4 @@ cast(S s) {
 
 // ---------------------------------------------------------------------------
 
-#endif // jtie_tconv_impl_hpp
+#endif  // jtie_tconv_impl_hpp

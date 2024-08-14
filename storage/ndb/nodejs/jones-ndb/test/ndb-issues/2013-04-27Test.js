@@ -1,16 +1,17 @@
 /*
- Copyright (c) 2013, 2023, Oracle and/or its affiliates.
- 
+ Copyright (c) 2013, 2024, Oracle and/or its affiliates.
+
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +23,7 @@
  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-/* 
+/*
 CREATE TABLE if not exists `towns2` (
   `town` varchar(50) NOT NULL,
   `county` varchar(50) DEFAULT NULL,
@@ -39,28 +40,27 @@ var Town = function(name, county) {
   this.county = county;
 };
 
-// create basic object<->table mappings                                                                                                  
+// create basic object<->table mappings
 var annotations = new jones.TableMapping('towns2').applyToClass(Town);
 
-//check results of find                                                                                                                  
+// check results of find
 var onFind = function(err, result) {
-  if(global.test_conn_properties.use_mapped_ndb_record) {
+  if (global.test_conn_properties.use_mapped_ndb_record) {
     try {
       t1.errorIfNotEqual("Expected SQLState WCTOR", "WCTOR", err.sqlstate);
-    }
-    catch(e) {
+    } catch (e) {
       t1.appendErrorMessage("Expected DBOperation Error with SQLState WCTOR");
     }
   }
   t1.failOnError();
 };
 
-//check results of insert                                                                                                                
+// check results of insert
 var onInsert = function(err, object, session) {
   session.find(Town, 'Maidenhead', onFind);
 };
 
-// insert an object                                                                                                                      
+// insert an object
 var onSession = function(err, session) {
   var data = new Town('Maidenhead', 'Berkshire');
   session.persist(data, onInsert, data, session);
@@ -75,6 +75,4 @@ t1.run = function() {
 };
 
 
-module.exports.tests = [ t1 ];
-
-
+module.exports.tests = [t1];

@@ -1,15 +1,16 @@
-/* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -497,13 +498,30 @@ static Sys_var_charptr Sys_pfs_instrument(
     CMD_LINE(OPT_ARG, OPT_PFS_INSTRUMENT), IN_FS_CHARSET, DEFAULT(""),
     PFS_TRAILING_PROPERTIES);
 
+/**
+  Update the performance_schema_show_processlist.
+  Warn that the use of information_schema processlist is deprecated.
+*/
+static bool performance_schema_show_processlist_update(sys_var *, THD *thd,
+                                                       enum_var_type) {
+  push_warning_printf(thd, Sql_condition::SL_WARNING,
+                      ER_WARN_DEPRECATED_WITH_NOTE,
+                      ER_THD(thd, ER_WARN_DEPRECATED_WITH_NOTE),
+                      "@@performance_schema_show_processlist",
+                      "When it is removed, SHOW PROCESSLIST will always use the"
+                      " performance schema implementation.");
+
+  return false;
+}
+
 static Sys_var_bool Sys_pfs_processlist(
     "performance_schema_show_processlist",
     "Default startup value to enable SHOW PROCESSLIST "
     "in the performance schema.",
     GLOBAL_VAR(pfs_processlist_enabled), CMD_LINE(OPT_ARG), DEFAULT(false),
-    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr),
-    nullptr, sys_var::PARSE_NORMAL);
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
+    ON_UPDATE(performance_schema_show_processlist_update), nullptr,
+    sys_var::PARSE_NORMAL);
 
 static Sys_var_bool Sys_pfs_consumer_events_stages_current(
     "performance_schema_consumer_events_stages_current",
@@ -1877,8 +1895,9 @@ static Sys_var_struct<CHARSET_INFO, Get_csname> Sys_character_set_system(
 
 static Sys_var_struct<CHARSET_INFO, Get_csname> Sys_character_set_server(
     "character_set_server", "The default character set",
-    SESSION_VAR(collation_server), NO_CMD_LINE, DEFAULT(&default_charset_info),
-    NO_MUTEX_GUARD, IN_BINLOG, ON_CHECK(check_charset_not_null));
+    PERSIST_AS_READONLY SESSION_VAR(collation_server), NO_CMD_LINE,
+    DEFAULT(&default_charset_info), NO_MUTEX_GUARD, IN_BINLOG,
+    ON_CHECK(check_charset_not_null));
 
 static bool check_charset_db(sys_var *self, THD *thd, set_var *var) {
   if (check_session_admin(self, thd, var)) return true;
@@ -3244,11 +3263,16 @@ static Sys_var_ulong Sys_net_retry_count(
 static Sys_var_bool Sys_new_mode("new",
                                  "Use very new possible \"unsafe\" functions",
                                  SESSION_VAR(new_mode), CMD_LINE(OPT_ARG, 'n'),
-                                 DEFAULT(false));
+                                 DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+                                 ON_CHECK(nullptr), ON_UPDATE(nullptr),
+                                 DEPRECATED_VAR(""));
 
 static Sys_var_bool Sys_old_mode("old", "Use compatible behavior",
                                  READ_ONLY GLOBAL_VAR(old_mode),
-                                 CMD_LINE(OPT_ARG), DEFAULT(false));
+                                 CMD_LINE(OPT_ARG, OPT_OLD_OPTION),
+                                 DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG,
+                                 ON_CHECK(nullptr), ON_UPDATE(nullptr),
+                                 DEPRECATED_VAR(""));
 
 static Sys_var_bool Sys_old_alter_table("old_alter_table",
                                         "Use old, non-optimized alter table",
@@ -3358,7 +3382,7 @@ static Sys_var_ulonglong Sys_parser_max_mem_size(
   Also update global_system_variables, so 'SELECT parser_max_mem_size'
   reports correct data.
 */
-export void update_parser_max_mem_size() {
+void update_parser_max_mem_size() {
   const ulonglong max_max = max_system_variables.parser_max_mem_size;
   if (max_max == max_mem_sz) return;
   // In case parser-max-mem-size is also set:
@@ -3366,6 +3390,13 @@ export void update_parser_max_mem_size() {
       std::min(max_max, global_system_variables.parser_max_mem_size);
   Sys_parser_max_mem_size.update_default(new_val);
   global_system_variables.parser_max_mem_size = new_val;
+}
+
+void update_optimizer_switch() {
+#ifndef WITH_HYPERGRAPH_OPTIMIZER
+  global_system_variables.optimizer_switch &=
+      ~OPTIMIZER_SWITCH_HYPERGRAPH_OPTIMIZER;
+#endif
 }
 
 static bool check_optimizer_switch(sys_var *, THD *thd [[maybe_unused]],
@@ -4231,10 +4262,12 @@ static Sys_var_enum Binlog_transaction_dependency_tracking(
     "replica_parallel_type=LOGICAL_CLOCK. "
     "Possible values are COMMIT_ORDER, WRITESET and WRITESET_SESSION.",
     GLOBAL_VAR(mysql_bin_log.m_dependency_tracker.m_opt_tracking_mode),
-    CMD_LINE(REQUIRED_ARG), opt_binlog_transaction_dependency_tracking_names,
+    CMD_LINE(REQUIRED_ARG, OPT_BINLOG_TRANSACTION_DEPENDENCY_TRACKING),
+    opt_binlog_transaction_dependency_tracking_names,
     DEFAULT(DEPENDENCY_TRACKING_COMMIT_ORDER), &PLock_slave_trans_dep_tracker,
     NOT_IN_BINLOG, ON_CHECK(check_binlog_transaction_dependency_tracking),
-    ON_UPDATE(update_binlog_transaction_dependency_tracking));
+    ON_UPDATE(update_binlog_transaction_dependency_tracking),
+    DEPRECATED_VAR(""));
 static Sys_var_ulong Binlog_transaction_dependency_history_size(
     "binlog_transaction_dependency_history_size",
     "Maximum number of rows to keep in the writeset history.",

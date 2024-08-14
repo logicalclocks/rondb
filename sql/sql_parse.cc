@@ -1,16 +1,17 @@
-/* Copyright (c) 1999, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 1999, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -2967,12 +2968,6 @@ int mysql_execute_command(THD *thd, bool first_level) {
 
   CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_execute_command");
 
-  assert(thd->override_replica_filtering ==
-         THD::NO_OVERRIDE_REPLICA_FILTERING ||
-         (thd->override_replica_filtering ==
-          THD::OVERRIDE_REPLICA_FILTERING &&
-          thd->slave_thread));
-
   /*
     If there is a CREATE TABLE...START TRANSACTION command which
     is not yet committed or rollbacked, then we should allow only
@@ -3169,14 +3164,12 @@ int mysql_execute_command(THD *thd, bool first_level) {
         in 5.0 there are no SET statements in the binary log)
       - DROP TEMPORARY TABLE IF EXISTS: we always execute it (otherwise we
         have stale files on slave caused by exclusion of one tmp table).
-      - Slave filtering is overridden, e.g. since the query is internal.
     */
     if (!(lex->sql_command == SQLCOM_UPDATE_MULTI) &&
         !(lex->sql_command == SQLCOM_SET_OPTION) &&
         !(lex->sql_command == SQLCOM_DROP_TABLE && lex->drop_temporary &&
           lex->drop_if_exists) &&
-        all_tables_not_ok(thd, all_tables) &&
-        thd->override_replica_filtering == THD::NO_OVERRIDE_REPLICA_FILTERING) {
+        all_tables_not_ok(thd, all_tables)) {
       /* we warn the replica SQL thread */
       my_error(ER_REPLICA_IGNORED_TABLE, MYF(0));
       binlog_gtid_end_transaction(thd);
@@ -3732,7 +3725,9 @@ int mysql_execute_command(THD *thd, bool first_level) {
         goto error;
 
       if (open_tables_for_query(thd, all_tables, false)) goto error;
-      if (!thd->stmt_arena->is_regular()) {
+      if (!thd->stmt_arena->is_regular() &&
+          (thd->stmt_arena->get_state() == Query_arena::STMT_PREPARED ||
+           thd->stmt_arena->get_state() == Query_arena::STMT_EXECUTED)) {
         lex->restore_cmd_properties();
         bind_fields(thd->stmt_arena->item_list());
         if (all_tables != nullptr &&
@@ -3918,8 +3913,8 @@ int mysql_execute_command(THD *thd, bool first_level) {
         }
 
         // Use the hypergraph optimizer if it's enabled.
-        lex->using_hypergraph_optimizer =
-            thd->optimizer_switch_flag(OPTIMIZER_SWITCH_HYPERGRAPH_OPTIMIZER);
+        lex->set_using_hypergraph_optimizer(
+            thd->optimizer_switch_flag(OPTIMIZER_SWITCH_HYPERGRAPH_OPTIMIZER));
 
         res = sp_process_definer(thd);
         if (res) break;
@@ -5200,7 +5195,7 @@ void THD::reset_for_next_command() {
   thd->parsing_system_view = false;
 
   // Need explicit setting, else demand all privileges to a table.
-  thd->want_privilege = ~NO_ACCESS;
+  thd->want_privilege = ALL_ACCESS;
 
   thd->reset_skip_readonly_check();
   thd->tx_commit_pending = false;

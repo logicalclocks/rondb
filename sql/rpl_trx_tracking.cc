@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -137,14 +138,17 @@ static bool is_trx_unsafe_for_parallel_slave(const THD *thd) {
   on parallel committing transactions.
 
   @param[in]     thd             Current THD from which to extract trx context.
+  @param[in]     parallelization_barrier The transaction is a
+                                 parallelization_barrier and subseqent
+                                 transactions should depend on it.
   @param[in,out] sequence_number Sequence number of current transaction.
   @param[in,out] commit_parent   Commit_parent of current transaction,
                                  pre-filled with the commit_parent calculated
                                  by the logical clock logic.
 */
-void Commit_order_trx_dependency_tracker::get_dependency(THD *thd,
-                                                         int64 &sequence_number,
-                                                         int64 &commit_parent) {
+void Commit_order_trx_dependency_tracker::get_dependency(
+    THD *thd, bool parallelization_barrier, int64 &sequence_number,
+    int64 &commit_parent) {
   Transaction_ctx *trn_ctx = thd->get_transaction();
 
   assert(trn_ctx->sequence_number > m_max_committed_transaction.get_offset());
@@ -169,7 +173,7 @@ void Commit_order_trx_dependency_tracker::get_dependency(THD *thd,
         std::max(trn_ctx->last_committed, m_last_blocking_transaction) -
         m_max_committed_transaction.get_offset();
 
-  if (is_trx_unsafe_for_parallel_slave(thd))
+  if (is_trx_unsafe_for_parallel_slave(thd) || parallelization_barrier)
     m_last_blocking_transaction = trn_ctx->sequence_number;
 }
 
@@ -323,21 +327,24 @@ void Writeset_session_trx_dependency_tracker::get_dependency(
   Get the dependencies in a transaction, the main entry point for the
   dependency tracking work.
 */
-void Transaction_dependency_tracker::get_dependency(THD *thd,
-                                                    int64 &sequence_number,
-                                                    int64 &commit_parent) {
+void Transaction_dependency_tracker::get_dependency(
+    THD *thd, bool parallelization_barrier, int64 &sequence_number,
+    int64 &commit_parent) {
   sequence_number = commit_parent = 0;
 
   switch (m_opt_tracking_mode) {
     case DEPENDENCY_TRACKING_COMMIT_ORDER:
-      m_commit_order.get_dependency(thd, sequence_number, commit_parent);
+      m_commit_order.get_dependency(thd, parallelization_barrier,
+                                    sequence_number, commit_parent);
       break;
     case DEPENDENCY_TRACKING_WRITESET:
-      m_commit_order.get_dependency(thd, sequence_number, commit_parent);
+      m_commit_order.get_dependency(thd, parallelization_barrier,
+                                    sequence_number, commit_parent);
       m_writeset.get_dependency(thd, sequence_number, commit_parent);
       break;
     case DEPENDENCY_TRACKING_WRITESET_SESSION:
-      m_commit_order.get_dependency(thd, sequence_number, commit_parent);
+      m_commit_order.get_dependency(thd, parallelization_barrier,
+                                    sequence_number, commit_parent);
       m_writeset.get_dependency(thd, sequence_number, commit_parent);
       m_writeset_session.get_dependency(thd, sequence_number, commit_parent);
       break;
@@ -346,7 +353,8 @@ void Transaction_dependency_tracker::get_dependency(THD *thd,
       /*
         Fallback to commit order on production builds.
        */
-      m_commit_order.get_dependency(thd, sequence_number, commit_parent);
+      m_commit_order.get_dependency(thd, parallelization_barrier,
+                                    sequence_number, commit_parent);
   }
 }
 

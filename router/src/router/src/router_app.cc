@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -95,8 +96,6 @@ using mysql_harness::DIM;
 using mysql_harness::truncate_string;
 using mysql_harness::utility::string_format;
 using mysql_harness::utility::wrap_string;
-using mysqlrouter::substitute_envvar;
-using mysqlrouter::SysUserOperations;
 using mysqlrouter::SysUserOperationsBase;
 
 static const char *kDefaultKeyringFileName = "keyring";
@@ -118,7 +117,8 @@ void check_and_add_conf(std::vector<std::string> &configs,
 
   if (cfg_file_path.is_regular()) {
     configs.push_back(cfg_file_path.real_path().str());
-  } else if (!cfg_file_path.exists()) {
+  } else if (cfg_file_path.type() ==
+             mysql_harness::Path::FileType::FILE_NOT_FOUND) {
     throw std::runtime_error(string_format(
         "The configuration file '%s' does not exist.", value.c_str()));
   } else {
@@ -616,6 +616,25 @@ void MySQLRouter::start() {
     }
   }
 
+  register_on_switch_to_configured_loggers_callback([]() {
+    // once we switched to the configured logger(s) log the Router version
+    log_system("Starting '%s', version: %s (%s)", MYSQL_ROUTER_PACKAGE_NAME,
+               MYSQL_ROUTER_VERSION, MYSQL_ROUTER_VERSION_EDITION);
+  });
+
+  mysql_harness::ProcessStateComponent::get_instance()
+      .register_on_shutdown_request_callback(
+          [](mysql_harness::ShutdownPending::Reason reason,
+             const std::string &msg) {
+            // once we received the shutdown request, we want to log that along
+            // with the Router version
+            log_system(
+                "Stopping '%s', version: %s (%s), reason: %s%s",
+                MYSQL_ROUTER_PACKAGE_NAME, MYSQL_ROUTER_VERSION,
+                MYSQL_ROUTER_VERSION_EDITION, to_string(reason).c_str(),
+                msg.empty() ? "" : std::string(" ("s + msg + ")").c_str());
+          });
+
   init_loader(config);  // throws std::runtime_error
 
   if (!pid_file_path_.empty()) {
@@ -713,24 +732,29 @@ void MySQLRouter::start() {
               mysql_harness::ShutdownPending::Reason::FATAL_ERROR, errmsg);
     });
 
-    signal_handler_.add_sig_handler(SIGHUP, [&log_reopener](int /* sig */) {
-      // is run by the signal-thread.
-      log_reopener->request_reopen();
-    });
+    signal_handler_.add_sig_handler(
+        SIGHUP,
+        [&log_reopener](int /* sig */, const std::string & /*signal_info*/) {
+          // is run by the signal-thread.
+          log_reopener->request_reopen();
+        });
 
     mysql_harness::on_service_ready(kLogReopenServiceName);
 
     // signal-handler
-    signal_handler_.add_sig_handler(SIGTERM, [](int /* sig */) {
-      mysql_harness::ProcessStateComponent::get_instance()
-          .request_application_shutdown(
-              mysql_harness::ShutdownPending::Reason::REQUESTED);
-    });
+    signal_handler_.add_sig_handler(
+        SIGTERM, [](int /* sig */, const std::string &signal_info) {
+          mysql_harness::ProcessStateComponent::get_instance()
+              .request_application_shutdown(
+                  mysql_harness::ShutdownPending::Reason::REQUESTED,
+                  signal_info);
+        });
 
-    signal_handler_.add_sig_handler(SIGINT, [](int /* sig */) {
+    signal_handler_.add_sig_handler(SIGINT, [](int /* sig */,
+                                               const std::string &signal_info) {
       mysql_harness::ProcessStateComponent::get_instance()
           .request_application_shutdown(
-              mysql_harness::ShutdownPending::Reason::REQUESTED);
+              mysql_harness::ShutdownPending::Reason::REQUESTED, signal_info);
     });
 
     mysql_harness::on_service_ready(kSignalHandlerServiceName);
@@ -1319,11 +1343,14 @@ void MySQLRouter::prepare_command_options() noexcept {
 
   arg_handler_.add_option(
       OptionNames({"--force-password-validation"}),
-      "When autocreating database account do not use HASHED password. "
+      "When autocreating database account do not use HASHED password - this is "
+      "the default behavior now, this parameter is not needed, it is kept for "
+      "backward compatibility."
       "(bootstrap)",
       CmdOptionValueReq::none, "",
-      [this](const std::string &) {
-        this->bootstrap_options_["force-password-validation"] = "1";
+      [](const std::string &) {
+        // this is now always assumed, so this parameter is ignored, kept for
+        // backward compatibility
       },
       [this](const std::string &) {
         this->assert_bootstrap_mode("--force-password-validation");

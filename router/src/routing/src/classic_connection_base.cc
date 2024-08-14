@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -185,7 +186,10 @@ void MysqlRoutingClassicConnectionBase::client_socket_failed(std::error_code ec,
   auto &client_conn = this->socket_splicer()->client_conn();
 
   if (client_conn.is_open()) {
-    if (!client_greeting_sent_) {
+    // only log the connection-error, if the client started to send a handshake
+    // and then aborted before the handshake finished.
+    if (client_protocol()->handshake_state() ==
+        ClassicProtocolState::HandshakeState::kClientGreeting) {
       log_info("[%s] %s closed connection before finishing handshake",
                this->context().get_name().c_str(),
                client_conn.endpoint().c_str());
@@ -227,6 +231,10 @@ void MysqlRoutingClassicConnectionBase::async_send_client(Function next) {
   auto socket_splicer = this->socket_splicer();
   auto dst_channel = socket_splicer->client_channel();
 
+  if (disconnect_requested()) {
+    return send_client_failed(make_error_code(std::errc::operation_canceled));
+  }
+
   ++active_work_;
   socket_splicer->async_send_client(
       [this, next, to_transfer = dst_channel->send_buffer().size()](
@@ -247,43 +255,31 @@ void MysqlRoutingClassicConnectionBase::async_send_client(Function next) {
 }
 
 void MysqlRoutingClassicConnectionBase::async_recv_client(Function next) {
+  if (disconnect_requested()) {
+    return recv_client_failed(make_error_code(std::errc::operation_canceled));
+  }
+
   ++active_work_;
-  this->socket_splicer()->async_recv_client([this, next](std::error_code ec,
-                                                         size_t transferred) {
-    (void)transferred;
+  this->socket_splicer()->async_recv_client(
+      [this, next](std::error_code ec, size_t transferred [[maybe_unused]]) {
+        --active_work_;
 
-    --active_work_;
+        if (ec != std::errc::operation_canceled) {
+          read_timer().cancel();
+        }
 
-    if (ec == std::errc::operation_canceled) {
-      // cancelled by:
-      //
-      // - request to shutdown
-      // - timer
-      // - read-from-client-xor-server
-      if (recv_from_either() ==
-          MysqlRoutingClassicConnectionBase::FromEither::RecvedFromServer) {
-        recv_from_either(MysqlRoutingClassicConnectionBase::FromEither::None);
+        if (ec) return recv_client_failed(ec);
 
-        return call_next_function(next);
-      }
-    } else {
-      read_timer().cancel();
-    }
-
-    if (ec) return recv_client_failed(ec);
-
-    if (recv_from_either() ==
-        MysqlRoutingClassicConnectionBase::FromEither::Started) {
-      recv_from_either(
-          MysqlRoutingClassicConnectionBase::FromEither::RecvedFromClient);
-    }
-
-    return trace_and_call_function(Tracer::Event::Direction::kClientToRouter,
-                                   "io::recv", next);
-  });
+        return trace_and_call_function(
+            Tracer::Event::Direction::kClientToRouter, "io::recv", next);
+      });
 }
 
 void MysqlRoutingClassicConnectionBase::async_send_server(Function next) {
+  if (disconnect_requested()) {
+    return send_server_failed(make_error_code(std::errc::operation_canceled));
+  }
+
   auto socket_splicer = this->socket_splicer();
   auto dst_channel = socket_splicer->server_channel();
 
@@ -307,7 +303,64 @@ void MysqlRoutingClassicConnectionBase::async_send_server(Function next) {
 }
 
 void MysqlRoutingClassicConnectionBase::async_recv_server(Function next) {
+  if (disconnect_requested()) {
+    return recv_server_failed(make_error_code(std::errc::operation_canceled));
+  }
+
   ++active_work_;
+
+  this->socket_splicer()->async_recv_server(
+      [this, next](std::error_code ec, size_t transferred [[maybe_unused]]) {
+        --active_work_;
+
+        if (ec) return recv_server_failed(ec);
+
+        return trace_and_call_function(
+            Tracer::Event::Direction::kServerToRouter, "io::recv", next);
+      });
+}
+
+void MysqlRoutingClassicConnectionBase::async_recv_both(Function next) {
+  if (disconnect_requested()) {
+    return recv_client_failed(make_error_code(std::errc::operation_canceled));
+  }
+
+  recv_from_either(MysqlRoutingClassicConnectionBase::FromEither::Started);
+
+  ++active_work_;  // client
+  ++active_work_;  // server
+
+  this->socket_splicer()->async_recv_client([this, next](std::error_code ec,
+                                                         size_t transferred
+                                                         [[maybe_unused]]) {
+    --active_work_;
+
+    if (ec == std::errc::operation_canceled) {
+      // cancelled by:
+      //
+      // - request to shutdown
+      // - timer
+      // - read-from-client-xor-server
+      if (recv_from_either() ==
+          MysqlRoutingClassicConnectionBase::FromEither::RecvedFromServer) {
+        recv_from_either(MysqlRoutingClassicConnectionBase::FromEither::None);
+
+        return call_next_function(next);
+      }
+    }
+
+    if (ec) return recv_client_failed(ec);
+
+    if (recv_from_either() ==
+        MysqlRoutingClassicConnectionBase::FromEither::Started) {
+      recv_from_either(
+          MysqlRoutingClassicConnectionBase::FromEither::RecvedFromClient);
+    }
+
+    return trace_and_call_function(Tracer::Event::Direction::kClientToRouter,
+                                   "io::recv", next);
+  });
+
   this->socket_splicer()->async_recv_server([this, next](std::error_code ec,
                                                          size_t transferred) {
     (void)transferred;
@@ -402,14 +455,17 @@ void MysqlRoutingClassicConnectionBase::finish() {
 
   if (server_socket.is_open() && !client_socket.is_open()) {
     // client side closed while server side is still open ...
-    if (!client_greeting_sent_) {
+    if (server_protocol()->handshake_state() ==
+        ClassicProtocolState::HandshakeState::kServerGreeting) {
       // client hasn't sent a greeting to the server. The server would track
       // this as "connection error" and block the router. Better send our own
       // client-greeting.
-      client_greeting_sent_ = true;
+      server_protocol()->handshake_state(
+          ClassicProtocolState::HandshakeState::kClientGreeting);
       return server_side_client_greeting();
     } else {
-      // if the server is waiting on something, as client is already gone.
+      // if the server is waiting on something, cancel it,
+      // as client is already gone.
       (void)server_socket.cancel();
     }
   } else if (!server_socket.is_open() && client_socket.is_open()) {
@@ -757,9 +813,7 @@ void MysqlRoutingClassicConnectionBase::loop() {
       case Processor::Result::RecvFromServer:
         return async_recv_server(Function::kLoop);
       case Processor::Result::RecvFromBoth:
-        async_recv_client(Function::kLoop);
-        async_recv_server(Function::kLoop);
-        return;
+        return async_recv_both(Function::kLoop);
       case Processor::Result::SendToClient:
         return async_send_client(Function::kLoop);
       case Processor::Result::SendToServer:

@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,12 +24,11 @@
 #ifndef DBLQH_COMMON_H
 #define DBLQH_COMMON_H
 
-#include <pc.hpp>
 #include <ndb_types.h>
 #include <Bitmask.hpp>
+#include <pc.hpp>
 
 #define JAM_FILE_ID 443
-
 
 /*
  * Log part id is from DBDIH.  Number of log parts is configurable with a
@@ -51,12 +51,11 @@ struct NdbLogPartInfo {
   Uint32 lqhWorkers;
   Uint32 partCount;
   Uint16 partNo[NDB_MAX_LOG_PARTS];
-  Bitmask<(NDB_MAX_LOG_PARTS+31)/32> partMask;
+  Bitmask<(NDB_MAX_LOG_PARTS + 31) / 32> partMask;
   Uint32 partNoFromId(Uint32 lpid) const;
   bool partNoOwner(Uint32 lpno) const;
   Uint32 partNoIndex(Uint32 lpno) const;
 };
-
 
 #undef JAM_FILE_ID
 

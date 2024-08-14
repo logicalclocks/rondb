@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -78,6 +79,7 @@
 #include "sql/sql_executor.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
+#include "sql/sql_optimizer.h"
 #include "sql/sql_resolver.h"  // setup_order
 #include "sql/sql_select.h"
 #include "sql/sql_tmp_table.h"  // create_tmp_table
@@ -152,37 +154,30 @@ ulonglong Item_sum::ram_limitation(THD *thd) {
 */
 
 bool Item_sum::init_sum_func_check(THD *thd) {
+  LEX *const lex = thd->lex;
+  base_query_block = lex->current_query_block();
   if (m_is_window_function) {
-    /*
-      Are either no aggregates of any kind allowed at this level, or
-      specifically not window functions?
-    */
-    LEX *const lex = thd->lex;
-    if (((~lex->allow_sum_func | lex->m_deny_window_func) >>
-         lex->current_query_block()->nest_level) &
-        0x1) {
+    if (lex->deny_window_function(base_query_block)) {
       my_error(ER_WINDOW_INVALID_WINDOW_FUNC_USE, MYF(0), func_name());
       return true;
     }
     in_sum_func = nullptr;
   } else {
-    if (!thd->lex->allow_sum_func) {
+    if (!lex->allow_sum_func) {
       my_error(ER_INVALID_GROUP_FUNC_USE, MYF(0));
       return true;
     }
     // Set a reference to the containing set function if there is one
-    in_sum_func = thd->lex->in_sum_func;
+    in_sum_func = lex->in_sum_func;
     /*
       Set this object as the current containing set function, used when
       checking arguments of this set function.
     */
-    thd->lex->in_sum_func = this;
+    lex->in_sum_func = this;
   }
-  save_deny_window_func = thd->lex->m_deny_window_func;
-  thd->lex->m_deny_window_func |=
-      (nesting_map)1 << thd->lex->current_query_block()->nest_level;
+  save_deny_window_func = lex->m_deny_window_func;
+  lex->m_deny_window_func |= (nesting_map)1 << base_query_block->nest_level;
   // @todo: When resolving once, move following code to constructor
-  base_query_block = thd->lex->current_query_block();
   aggr_query_block = nullptr;  // Aggregation query block is undetermined yet
   referenced_by[0] = nullptr;
   /*
@@ -190,8 +185,7 @@ bool Item_sum::init_sum_func_check(THD *thd) {
     re-done, so referenced_by[1] isn't set again. So keep it as it was in
     preparation.
   */
-  if (thd->lex->current_query_block()->first_execution)
-    referenced_by[1] = nullptr;
+  if (base_query_block->first_execution) referenced_by[1] = nullptr;
   max_aggr_level = -1;
   max_sum_func_level = -1;
   used_tables_cache = 0;
@@ -440,7 +434,9 @@ Item_sum::Item_sum(THD *thd, const Item_sum *item)
       base_query_block(item->base_query_block),
       aggr_query_block(item->aggr_query_block),
       allow_group_via_temp_table(item->allow_group_via_temp_table),
-      forced_const(item->forced_const) {
+      forced_const(item->forced_const),
+      m_null_resolved(item->m_null_resolved),
+      m_null_executed(item->m_null_executed) {
   assert(arg_count == item->arg_count);
   with_distinct = item->with_distinct;
   if (item->aggr) {
@@ -520,6 +516,12 @@ bool Item_sum::clean_up_after_removal(uchar *arg) {
       pointer_cast<Cleanup_after_removal_context *>(arg);
 
   if (ctx->is_stopped(this)) return false;
+
+  if (reference_count() > 1) {
+    (void)decrement_ref_count();
+    ctx->stop_at(this);
+    return false;
+  }
 
   // Remove item on upward traversal, not downward:
   if (marker == MARKER_NONE) {
@@ -867,6 +869,8 @@ void Item_sum::cleanup() {
   Item_result_field::cleanup();
   // forced_const may have been set during optimization, reset it:
   forced_const = false;
+
+  m_null_executed = false;
 }
 
 bool Item_sum::fix_fields(THD *thd, Item **ref [[maybe_unused]]) {
@@ -2225,7 +2229,7 @@ bool Item_sum_avg::resolve_type(THD *thd) {
     set_data_type_decimal(precision, scale);
     f_precision =
         min(precision + DECIMAL_LONGLONG_DIGITS, DECIMAL_MAX_PRECISION);
-    f_scale = args[0]->decimals;
+    f_scale = min<uint>(args[0]->decimals, f_precision);
     dec_bin_size = my_decimal_get_binary_size(f_precision, f_scale);
   } else {
     assert(hybrid_type == REAL_RESULT);
@@ -4227,7 +4231,6 @@ Item_func_group_concat::Item_func_group_concat(THD *thd,
                                                Item_func_group_concat *item)
     : Item_sum(thd, item),
       distinct(item->distinct),
-      always_null(item->always_null),
       m_order_arg_count(item->m_order_arg_count),
       m_field_arg_count(item->m_field_arg_count),
       context(item->context),
@@ -4355,17 +4358,19 @@ void Item_func_group_concat::clear() {
 }
 
 bool Item_func_group_concat::add() {
-  if (always_null) return false;
+  if (m_null_executed) return false;
   THD *thd = current_thd;
   if (copy_funcs(tmp_table_param, thd)) return true;
 
   for (uint i = 0; i < m_field_arg_count; i++) {
-    Item *show_item = args[i];
-    if (show_item->const_item()) continue;
-
-    Field *field = show_item->get_tmp_table_field();
-    if (field && field->is_null_in_record((const uchar *)table->record[0]))
+    Item *item = args[i];
+    if (item->const_for_execution()) {
+      continue;
+    }
+    Field *field = item->get_tmp_table_field();
+    if (field && field->is_null_in_record((const uchar *)table->record[0])) {
       return false;  // Skip row if it contains null
+    }
   }
 
   null_value = false;
@@ -4473,7 +4478,7 @@ bool Item_func_group_concat::fix_fields(THD *thd, Item **ref) {
         item->is_null()) {
       // "is_null()" may cause error:
       if (thd->is_error()) return true;
-      always_null = true;
+      m_null_resolved = true;
     }
   }
 
@@ -4483,7 +4488,7 @@ bool Item_func_group_concat::fix_fields(THD *thd, Item **ref) {
     The "fields" list is not used after the call to setup_order(), however it
     must be recreated during optimization to create tmp table columns.
   */
-  if (m_order_arg_count > 0 && !always_null &&
+  if (m_order_arg_count > 0 && !m_null_resolved &&
       setup_order(thd, Ref_item_array(args, arg_count), context->table_list,
                   &fields, order_array.begin()))
     return true;
@@ -4503,8 +4508,10 @@ bool Item_func_group_concat::setup(THD *thd) {
   */
   if (table != nullptr || tree != nullptr) return false;
 
-  // Nothing to set up if always NULL:
-  if (always_null) return false;
+  // If resolved as NULL, execution is always NULL
+  m_null_executed = m_null_resolved;
+  // Nothing to set up if value is NULL:
+  if (m_null_executed) return false;
 
   assert(thd->lex->current_query_block() == aggr_query_block);
 
@@ -4535,7 +4542,14 @@ bool Item_func_group_concat::setup(THD *thd) {
 
   // First add the fields from the concat field list
   for (uint i = 0; i < m_field_arg_count; i++) {
-    fields.push_back(args[i]);
+    Item *item = args[i];
+    fields.push_back(item);
+    if (item->const_for_execution() &&
+        evaluate_during_optimization(item, aggr_query_block)) {
+      if (item->is_null()) m_null_executed = true;
+      if (thd->is_error()) return true;
+      if (m_null_executed) return false;
+    }
   }
   // Then prepend the ordered fields not already in the "fields" list
   for (uint i = 0; i < m_order_arg_count; i++) {
@@ -4758,7 +4772,7 @@ void Item_rank::update_after_wf_arguments_changed(THD *thd) {
     // on them. This is called only during resolving with ROLLUP in case
     // of old optimizer.
     Item **item_to_be_changed;
-    if (!thd->lex->using_hypergraph_optimizer) {
+    if (!thd->lex->using_hypergraph_optimizer()) {
       Item_ref *item_ref = down_cast<Item_ref *>(m_previous[i]->get_item());
       item_to_be_changed = item_ref->ref_pointer();
     } else {

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -79,12 +80,16 @@ static inline int set_client_ssl_options(MYSQL *mysql) {
   }
 
   /* Set SSL parameters: key, cert, ca, capath, cipher, clr, clrpath. */
-  if (opt_ssl_mode >= SSL_MODE_VERIFY_CA)
-    mysql_ssl_set(mysql, opt_ssl_key, opt_ssl_cert, opt_ssl_ca, opt_ssl_capath,
-                  opt_ssl_cipher);
-  else
-    mysql_ssl_set(mysql, opt_ssl_key, opt_ssl_cert, nullptr, nullptr,
-                  opt_ssl_cipher);
+  mysql_options(mysql, MYSQL_OPT_SSL_KEY, opt_ssl_key);
+  mysql_options(mysql, MYSQL_OPT_SSL_CERT, opt_ssl_cert);
+  mysql_options(mysql, MYSQL_OPT_SSL_CIPHER, opt_ssl_cipher);
+  if (opt_ssl_mode >= SSL_MODE_VERIFY_CA) {
+    mysql_options(mysql, MYSQL_OPT_SSL_CA, opt_ssl_ca);
+    mysql_options(mysql, MYSQL_OPT_SSL_CAPATH, opt_ssl_capath);
+  } else {
+    mysql_options(mysql, MYSQL_OPT_SSL_CA, nullptr);
+    mysql_options(mysql, MYSQL_OPT_SSL_CAPATH, nullptr);
+  }
   mysql_options(mysql, MYSQL_OPT_SSL_CRL, opt_ssl_crl);
   mysql_options(mysql, MYSQL_OPT_SSL_CRLPATH, opt_ssl_crlpath);
   mysql_options(mysql, MYSQL_OPT_TLS_VERSION, opt_tls_version);

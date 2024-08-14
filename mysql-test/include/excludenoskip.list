@@ -47,10 +47,11 @@ costmodel_planchange.test
 have_met_timezone.inc
 # Checks if server is started with Moscow leap timezone. Including the below inc file until Bug#25188986 is fixed.
 have_moscow_leap_timezone.inc
-
 # 32/64 bits time_t
 have_32bits_time.inc
 have_64bits_time.inc
+# Skip filesystems which do not support O_DIRECT mode, e.g. when using --mem option on Linux
+have_odirect.inc
 
 # 2.0 Binlog formats
 # Below files are included because rpl suite runs each test with 3 different
@@ -109,6 +110,7 @@ federated_bug_25714.test
 check_openssl_version.inc
 have_tlsv13.inc
 not_have_tlsv13.inc
+not_tlsv13.inc
 not_min_protocol_tlsv12.inc
 
 # 4.5 Reason for inclusion: Tests should run only with supported innodb page
@@ -323,3 +325,12 @@ not_tlsv13.inc
 # language component which is not supported for now
 have_python.inc
 have_ruby.inc
+
+# 33. Skip tests on platforms that don't support the FIDO plugins
+have_fido_plugin.inc
+
+# 34.0 Tests skipped due to conflicting use of ./mtr --defaults-extra-file
+
+# 34.1 ./mtr-defaults-extra-file=suite/ndb/encrypted_filesystem.cnf
+ndb_redo_log_reader.test
+ndb_secretsfile1.test

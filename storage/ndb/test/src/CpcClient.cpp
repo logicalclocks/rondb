@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -419,7 +420,6 @@ int SimpleCpcClient::select_protocol(Properties &reply) {
 SimpleCpcClient::SimpleCpcClient(const char *_host, int _port) {
   host = strdup(_host);
   port = _port;
-  ndb_socket_initialize(&cpc_sock);
   m_cpcd_protocol_version = 0;
 }
 
@@ -431,7 +431,7 @@ SimpleCpcClient::~SimpleCpcClient() {
 
   port = 0;
 
-  if (ndb_socket_valid(cpc_sock)) {
+  if (cpc_sock.is_valid()) {
     close_connection();
   }
 }
@@ -450,27 +450,23 @@ int SimpleCpcClient::connect() {
 }
 
 int SimpleCpcClient::open_connection() {
-
   // Resolve server address
   ndb_sockaddr sa;
-  if (Ndb_getAddr(&sa, host))
-  {
-    ndb_socket_close(cpc_sock);
-    ndb_socket_invalidate(&cpc_sock);
+  if (Ndb_getAddr(&sa, host)) {
+    close_connection();
     errno = ENOENT;
     return -1;
   }
   sa.set_port(port);
 
   /* Create socket */
-  cpc_sock = ndb_socket_create(sa.get_address_family());
-  if (!ndb_socket_valid(cpc_sock)) return -1;
+  cpc_sock = NdbSocket(ndb_socket_create(sa.get_address_family()));
+  if (!cpc_sock.is_valid()) return -1;
 
-  if (sa.need_dual_stack())
-  {
-    [[maybe_unused]] bool ok = ndb_socket_dual_stack(cpc_sock, 1);
+  if (sa.need_dual_stack()) {
+    [[maybe_unused]] bool ok = ndb_socket_dual_stack(cpc_sock.ndb_socket(), 1);
   }
-  return ndb_connect(cpc_sock, &sa);
+  return ndb_connect(cpc_sock.ndb_socket(), &sa);
 }
 
 int SimpleCpcClient::negotiate_client_protocol() {
@@ -490,10 +486,7 @@ int SimpleCpcClient::negotiate_client_protocol() {
   return 0;
 }
 
-void SimpleCpcClient::close_connection() {
-  ndb_socket_close(cpc_sock);
-  ndb_socket_invalidate(&cpc_sock);
-}
+void SimpleCpcClient::close_connection() { cpc_sock.close(); }
 
 int SimpleCpcClient::cpc_send(const char *cmd, const Properties &args) {
   SocketOutputStream cpc_out(cpc_sock);
@@ -567,15 +560,11 @@ SimpleCpcClient::Parser_t::ParserStatus SimpleCpcClient::cpc_recv(
   Parser_t parser(syntax, cpc_in);
   *reply = parser.parse(ctx, session);
 
-  if (user_value != NULL)
-  {
+  if (user_value != NULL) {
     if (ctx.m_status == Parser_t::Ok ||
-      ctx.m_status == Parser_t::CommandWithoutFunction)
-    {
+        ctx.m_status == Parser_t::CommandWithoutFunction) {
       *user_value = ctx.m_currentCmd->user_value;
-    }
-    else
-    {
+    } else {
       *user_value = NULL;
     }
   }
@@ -593,7 +582,7 @@ const Properties *SimpleCpcClient::cpc_call(const char *cmd,
   return ret;
 }
 
-SimpleCpcClient::ParserDummy::ParserDummy(ndb_socket_t sock)
+SimpleCpcClient::ParserDummy::ParserDummy(const NdbSocket &sock)
     : SocketServer::Session(sock) {}
 
 template class Vector<SimpleCpcClient::Process>;

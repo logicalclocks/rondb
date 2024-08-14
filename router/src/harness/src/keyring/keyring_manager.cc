@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,6 +33,7 @@
 #include "dim.h"
 #include "keyring/keyring_file.h"
 #include "keyring/master_key_file.h"
+#include "mysql/harness/filesystem.h"
 #include "random_generator.h"
 
 /*
@@ -96,40 +98,53 @@ static std::pair<std::string, std::string> get_master_key(
     if (e.code() != std::errc::no_such_file_or_directory || !create_if_needed) {
       throw;
     }
+
+    return {};
   }
 
-  std::string master_key;
-  // get the key for the keyring from the master key file, decrypting it with
-  // the scramble
-  if (!master_scramble.empty()) {
-    try {
-      // look up for the master_key for this given keyring file
-      master_key = mkf.get(keyring_file_path, master_scramble);
-    } catch (const std::out_of_range &) {
-      // missing key will be handled further down
-    }
-  }
+  // look up for the master_key for this given keyring file
+  std::string master_key =
+      mkf.get(mysql_harness::Path(keyring_file_path).real_path().str(),
+              master_scramble);
 
+  // if there is no master key for the "read-path' based keyring path, try to
+  // lookup via the path itself.
   if (master_key.empty()) {
-    if (!create_if_needed)
-      throw std::runtime_error("Master key for keyring at '" +
-                               keyring_file_path + "' could not be read");
-    // if the master key doesn't exist anywhere yet, generate one and store it
-    mysql_harness::RandomGeneratorInterface &rg =
-        mysql_harness::DIM::instance().get_RandomGenerator();
-    master_key = rg.generate_strong_password(kKeyLength);
-    // scramble to encrypt the master key with, which should be stored in the
-    // keyring
-    master_scramble = rg.generate_strong_password(kKeyLength);
-    mkf.add(keyring_file_path, master_key, master_scramble);
+    master_key = mkf.get(keyring_file_path, master_scramble);
   }
-  return std::make_pair(master_key, master_scramble);
+
+  return {master_key, master_scramble};
+}
+
+static std::pair<std::string, std::string> create_initial_keyring_pair(
+    MasterKeyFile &mkf, const std::string &keyring_file_path,
+    std::string master_scramble) {
+  // if the master key doesn't exist anywhere yet, generate one and store it
+  mysql_harness::RandomGeneratorInterface &rg =
+      mysql_harness::DIM::instance().get_RandomGenerator();
+  std::string master_key = rg.generate_strong_password(kKeyLength);
+
+  // scramble to encrypt the master key with, which should be stored in the
+  // keyring
+  if (master_scramble.empty()) {
+    master_scramble = rg.generate_strong_password(kKeyLength);
+
+    KeyringFile kf;
+    kf.set_header(master_scramble);
+    kf.save(keyring_file_path, master_key);
+  }
+
+  // use the real-path to store/lookup the keyring
+  mkf.add(mysql_harness::Path(keyring_file_path).real_path().str(), master_key,
+          master_scramble);
+
+  mkf.save();
+
+  return {master_key, master_scramble};
 }
 
 bool init_keyring(const std::string &keyring_file_path,
                   const std::string &master_key_path, bool create_if_needed) {
-  std::string master_key;
-  std::string master_scramble;
   MasterKeyFile mkf(master_key_path);
 
   try {
@@ -142,22 +157,31 @@ bool init_keyring(const std::string &keyring_file_path,
   }
 
   // throws std::runtime_error (anything else?)
-  std::tie(master_key, master_scramble) =
+  auto [master_key, master_scramble] =
       get_master_key(mkf, keyring_file_path, create_if_needed);
 
-  bool existed =
-      init_keyring_with_key(keyring_file_path, master_key, create_if_needed);
-  if (create_if_needed && !existed) {
-    g_keyring->set_header(master_scramble);
-    flush_keyring();
+  // if there is a master-scramble, the
+  const bool keyring_existed{!master_scramble.empty()};
+
+  if (master_key.empty()) {
+    if (!create_if_needed) {
+      throw std::runtime_error("Master key for keyring at '" +
+                               keyring_file_path + "' could not be read");
+    }
+
     try {
-      mkf.save();
+      std::tie(master_key, master_scramble) =
+          create_initial_keyring_pair(mkf, keyring_file_path, master_scramble);
     } catch (const std::system_error &e) {
       throw std::system_error(
           e.code(), "Unable to save master key to " + master_key_path);
     }
   }
-  return existed;
+
+  // load the keyring.
+  init_keyring_with_key(keyring_file_path, master_key, false);
+
+  return keyring_existed;
 }
 
 bool init_keyring_with_key(const std::string &keyring_file_path,
@@ -165,7 +189,8 @@ bool init_keyring_with_key(const std::string &keyring_file_path,
                            bool create_if_needed) {
   if (g_keyring) throw std::logic_error("Keyring already initialized");
   bool existed = false;
-  std::unique_ptr<KeyringFile> key_store(new KeyringFile());
+
+  auto key_store = std::make_unique<KeyringFile>();
   try {
     key_store->load(keyring_file_path, master_key);
     existed = true;

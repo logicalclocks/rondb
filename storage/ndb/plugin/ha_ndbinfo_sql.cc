@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2009, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,6 +23,9 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
+
+#include <algorithm>
+#include <vector>
 
 #include "mysql/service_thd_alloc.h"
 #include "sql/current_thd.h"
@@ -739,6 +743,26 @@ static struct view {
      "SELECT * "
      "FROM `ndbinfo`.`ndb$threads`"},
     {"ndbinfo", "threadstat", "SELECT * FROM `ndbinfo`.`ndb$threadstat`"},
+    {"ndbinfo", "transporter_details",
+     "SELECT node_id, block_instance, trp_id, remote_node_id, "
+     " CASE connection_status"
+     "  WHEN 0 THEN \"CONNECTED\""
+     "  WHEN 1 THEN \"CONNECTING\""
+     "  WHEN 2 THEN \"DISCONNECTED\""
+     "  WHEN 3 THEN \"DISCONNECTING\""
+     "  ELSE NULL "
+     " END AS status, "
+     " remote_address, bytes_sent, bytes_received, "
+     " connect_count, "
+     " overloaded, overload_count, slowdown, slowdown_count, encrypted, "
+     " sendbuffer_used_bytes, sendbuffer_max_used_bytes, "
+     " sendbuffer_alloc_bytes, sendbuffer_max_alloc_bytes, "
+     " CASE type"
+     "   WHEN 1 THEN \"TCP\""
+     "   WHEN 3 THEN \"SHM\""
+     "   ELSE NULL "
+     " END AS type "
+     "FROM `ndbinfo`.`ndb$transporter_details`"},
     {"ndbinfo", "transporters",
      "SELECT node_id, remote_node_id, "
      " CASE connection_status"
@@ -927,14 +951,6 @@ static struct obsolete_object obsolete_tables[] = {
     {"ndbinfo", "dummy_table"}  // replace this with an actual deleted table
 };
 
-static int compare_names(const void *px, const void *py) {
-  const Ndbinfo::Table *const *x =
-      static_cast<const Ndbinfo::Table *const *>(px);
-  const Ndbinfo::Table *const *y =
-      static_cast<const Ndbinfo::Table *const *>(py);
-  return strcmp((*x)->m.name, (*y)->m.name);
-}
-
 static Plugin_table *ndbinfo_define_table(const Ndbinfo::Table &table) {
   THD *thd = current_thd;  // For string allocation
   BaseString table_name, table_sql, table_options;
@@ -987,19 +1003,24 @@ bool ndbinfo_define_dd_tables(List<const Plugin_table> *plugin_tables) {
     plugin_tables->push_back(
         new Plugin_table(t.schema_name, t.name, nullptr, nullptr, nullptr));
 
-  /* Sort Ndbinfo tables; define Ndbinfo tables as tables in DD */
-  const Ndbinfo::Table **tables =
-      new const Ndbinfo::Table *[Ndbinfo::getNumTables()];
+  /* Sort Ndbinfo tables by name and define them in DD */
+  {
+    std::vector<const Ndbinfo::Table *> tables;
+    for (int i = 0; i < Ndbinfo::getNumTableEntries(); i++) {
+      const Ndbinfo::Table *tbl = Ndbinfo::getTable(i);
+      if (tbl == nullptr) continue;
+      tables.push_back(tbl);
+    }
 
-  for (int i = 0; i < Ndbinfo::getNumTables(); i++) {
-    tables[i] = &Ndbinfo::getTable(i);
+    std::sort(tables.begin(), tables.end(),
+              [](const Ndbinfo::Table *x, const Ndbinfo::Table *y) {
+                return (strcmp(x->m.name, y->m.name) < 0);
+              });
+
+    for (auto *table : tables) {
+      plugin_tables->push_back(ndbinfo_define_table(*table));
+    }
   }
-  qsort(tables, Ndbinfo::getNumTables(), sizeof(tables[0]), compare_names);
-
-  for (int i = 0; i < Ndbinfo::getNumTables(); i++)
-    plugin_tables->push_back(ndbinfo_define_table(*tables[i]));
-
-  delete[] tables;
 
   /* Require virtual tables (lookups) defined above to be sorted by name */
   for (size_t i = 0; i < num_lookups; i++)

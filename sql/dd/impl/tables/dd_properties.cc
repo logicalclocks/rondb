@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -94,6 +95,16 @@ DD_properties::DD_properties() : m_properties() {
                                 upgrade.
       MYSQLD_VERSION_UPGRADED   The server version of the last
                                 completed successful upgrade.
+      MYSQL_VERSION_STABILITY   Stability type of the GA release of the
+                                server version MYSQLD_VERSION. Should be
+                                "LTS" or "INNOVATION". In the source code,
+                                we take a specific action if the value is
+                                "LTS". There is no validation of the value
+                                that is set.
+      SERVER_DOWNGRADE_THRESHOLD Limit for how far back within an LTS
+                                release series we can downgrade.
+      SERVER_UPGRADE_THRESHOLD  The lowest innovation release we can upgrade
+                                to from an LTS release.
   */
   m_property_desc = {
       {"DD_VERSION", Property_type::UNSIGNED_INT_32},
@@ -109,7 +120,10 @@ DD_properties::DD_properties() : m_properties() {
       {"SYSTEM_TABLES", Property_type::PROPERTIES},
       {"UPGRADE_TARGET_SCHEMA", Property_type::CHARACTER_STRING},
       {"UPGRADE_ACTUAL_SCHEMA", Property_type::CHARACTER_STRING},
-      {"MYSQLD_VERSION_UPGRADED", Property_type::UNSIGNED_INT_32}};
+      {"MYSQLD_VERSION_UPGRADED", Property_type::UNSIGNED_INT_32},
+      {"MYSQL_VERSION_STABILITY", Property_type::CHARACTER_STRING},
+      {"SERVER_DOWNGRADE_THRESHOLD", Property_type::UNSIGNED_INT_32},
+      {"SERVER_UPGRADE_THRESHOLD", Property_type::UNSIGNED_INT_32}};
 }
 
 // Read all properties from disk and populate the cache.

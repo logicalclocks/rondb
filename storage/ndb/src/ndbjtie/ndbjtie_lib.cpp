@@ -1,16 +1,17 @@
 /*
- Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+ Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,15 +34,14 @@
 #include "jtie_lib.hpp"
 
 // ndb client library initialization
-#include "ndb_init.h"
 #include "CharsetMap.hpp"
+#include "ndb_init.h"
 
 // global ndb client library definitions
-#include "mysql_utils_jtie.hpp"
-#include "mgmapi_jtie.hpp"
-#include "ndbapi_jtie.hpp"
 #include <mutex>
-
+#include "mgmapi_jtie.hpp"
+#include "mysql_utils_jtie.hpp"
+#include "ndbapi_jtie.hpp"
 
 // ---------------------------------------------------------------------------
 // API Global Symbol Definitions & Template Instantiations
@@ -52,76 +52,99 @@ JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_m_CharsetMap,
 
 // ---------------------------------------------------------------------------
 
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_Ndb,
-                                    "com/mysql/ndbjtie/ndbapi/Ndb")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_Ndb, "com/mysql/ndbjtie/ndbapi/Ndb")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbBlob,
                                     "com/mysql/ndbjtie/ndbapi/NdbBlob")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary,
                                     "com/mysql/ndbjtie/ndbapi/NdbDictionary")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_AutoGrowSpecification,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$AutoGrowSpecification")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Column,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Column")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Datafile,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Datafile")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Dictionary,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Dictionary")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_DictionaryConst_List,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$DictionaryConst$List")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_DictionaryConst_ListConst_Element,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$DictionaryConst$ListConst$Element")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_DictionaryConst_ListConst_ElementArray,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$DictionaryConst$ListConst$ElementArray")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Event,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Event")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Index,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Index")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_LogfileGroup,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$LogfileGroup")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Object,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Object")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_ObjectId,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$ObjectId")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_OptimizeIndexHandle,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$OptimizeIndexHandle")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_OptimizeTableHandle,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$OptimizeTableHandle")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_RecordSpecification,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$RecordSpecification")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_RecordSpecificationArray,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$RecordSpecificationArray")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Table,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Table")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Tablespace,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Tablespace")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbDictionary_Undofile,
-                                    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Undofile")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_AutoGrowSpecification,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$AutoGrowSpecification")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Column,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Column")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Datafile,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Datafile")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Dictionary,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Dictionary")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_DictionaryConst_List,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$DictionaryConst$List")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_DictionaryConst_ListConst_Element,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$DictionaryConst$ListConst$Element")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_DictionaryConst_ListConst_ElementArray,
+    "com/mysql/ndbjtie/ndbapi/"
+    "NdbDictionary$DictionaryConst$ListConst$ElementArray")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Event, "com/mysql/ndbjtie/ndbapi/NdbDictionary$Event")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Index, "com/mysql/ndbjtie/ndbapi/NdbDictionary$Index")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_LogfileGroup,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$LogfileGroup")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Object,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Object")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_ObjectId,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$ObjectId")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_OptimizeIndexHandle,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$OptimizeIndexHandle")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_OptimizeTableHandle,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$OptimizeTableHandle")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_RecordSpecification,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$RecordSpecification")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_RecordSpecificationArray,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$RecordSpecificationArray")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Table, "com/mysql/ndbjtie/ndbapi/NdbDictionary$Table")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Tablespace,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Tablespace")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbDictionary_Undofile,
+    "com/mysql/ndbjtie/ndbapi/NdbDictionary$Undofile")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbError,
                                     "com/mysql/ndbjtie/ndbapi/NdbError")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbEventOperation,
-                                    "com/mysql/ndbjtie/ndbapi/NdbEventOperation")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbIndexOperation,
-                                    "com/mysql/ndbjtie/ndbapi/NdbIndexOperation")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbIndexScanOperation,
-                                    "com/mysql/ndbjtie/ndbapi/NdbIndexScanOperation")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbIndexScanOperation_IndexBound,
-                                    "com/mysql/ndbjtie/ndbapi/NdbIndexScanOperation$IndexBound")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbInterpretedCode,
-                                    "com/mysql/ndbjtie/ndbapi/NdbInterpretedCode")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbEventOperation, "com/mysql/ndbjtie/ndbapi/NdbEventOperation")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbIndexOperation, "com/mysql/ndbjtie/ndbapi/NdbIndexOperation")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbIndexScanOperation,
+    "com/mysql/ndbjtie/ndbapi/NdbIndexScanOperation")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbIndexScanOperation_IndexBound,
+    "com/mysql/ndbjtie/ndbapi/NdbIndexScanOperation$IndexBound")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbInterpretedCode, "com/mysql/ndbjtie/ndbapi/NdbInterpretedCode")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbLockHandle,
                                     "com/mysql/ndbjtie/ndbapi/NdbLockHandle")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbOperation,
                                     "com/mysql/ndbjtie/ndbapi/NdbOperation")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbOperation_GetValueSpec,
-                                    "com/mysql/ndbjtie/ndbapi/NdbOperation$GetValueSpec")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbOperation_GetValueSpecArray,
-                                    "com/mysql/ndbjtie/ndbapi/NdbOperation$GetValueSpecArray")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbOperation_OperationOptions,
-                                    "com/mysql/ndbjtie/ndbapi/NdbOperation$OperationOptions")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbOperation_SetValueSpec,
-                                    "com/mysql/ndbjtie/ndbapi/NdbOperation$SetValueSpec")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbOperation_SetValueSpecArray,
-                                    "com/mysql/ndbjtie/ndbapi/NdbOperation$SetValueSpecArray")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbOperation_GetValueSpec,
+    "com/mysql/ndbjtie/ndbapi/NdbOperation$GetValueSpec")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbOperation_GetValueSpecArray,
+    "com/mysql/ndbjtie/ndbapi/NdbOperation$GetValueSpecArray")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbOperation_OperationOptions,
+    "com/mysql/ndbjtie/ndbapi/NdbOperation$OperationOptions")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbOperation_SetValueSpec,
+    "com/mysql/ndbjtie/ndbapi/NdbOperation$SetValueSpec")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbOperation_SetValueSpecArray,
+    "com/mysql/ndbjtie/ndbapi/NdbOperation$SetValueSpecArray")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbRecAttr,
                                     "com/mysql/ndbjtie/ndbapi/NdbRecAttr")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbRecord,
@@ -130,16 +153,19 @@ JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbScanFilter,
                                     "com/mysql/ndbjtie/ndbapi/NdbScanFilter")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbScanOperation,
                                     "com/mysql/ndbjtie/ndbapi/NdbScanOperation")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbScanOperation_ScanOptions,
-                                    "com/mysql/ndbjtie/ndbapi/NdbScanOperation$ScanOptions")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_NdbScanOperation_ScanOptions,
+    "com/mysql/ndbjtie/ndbapi/NdbScanOperation$ScanOptions")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_NdbTransaction,
                                     "com/mysql/ndbjtie/ndbapi/NdbTransaction")
 JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_Ndb_Key_part_ptr,
                                     "com/mysql/ndbjtie/ndbapi/Ndb$Key_part_ptr")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_Ndb_Key_part_ptrArray,
-                                    "com/mysql/ndbjtie/ndbapi/Ndb$Key_part_ptrArray")
-JTIE_INSTANTIATE_PEER_CLASS_MAPPING(c_m_n_n_Ndb_cluster_connection,
-                                    "com/mysql/ndbjtie/ndbapi/Ndb_cluster_connection")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_Ndb_Key_part_ptrArray,
+    "com/mysql/ndbjtie/ndbapi/Ndb$Key_part_ptrArray")
+JTIE_INSTANTIATE_PEER_CLASS_MAPPING(
+    c_m_n_n_Ndb_cluster_connection,
+    "com/mysql/ndbjtie/ndbapi/Ndb_cluster_connection")
 
 // ---------------------------------------------------------------------------
 
@@ -175,16 +201,11 @@ JTIE_INSTANTIATE_JINT_ENUM_TYPE_MAPPING(NdbScanOperation::ScanOptions::Type)
 JTIE_INSTANTIATE_JINT_ENUM_TYPE_MAPPING(NdbTransaction::ExecType)
 JTIE_INSTANTIATE_JINT_ENUM_TYPE_MAPPING(NdbTransaction::CommitStatusType)
 
-
-class JTie_NdbInit
-{
-public:
-
-  int initOnLoad()
-  {
+class JTie_NdbInit {
+ public:
+  int initOnLoad() {
     m_mutex.lock();
-    if(!is_init)
-    {
+    if (!is_init) {
       VERBOSE("initializing the NDBAPI resources ...");
       int stat = ndb_init();
       if (stat != 0) {
@@ -203,21 +224,15 @@ public:
     return 0;
   }
 
+  ~JTie_NdbInit() { uninitOnUnLoad(); }
 
-  ~JTie_NdbInit()
-  {
-    uninitOnUnLoad();
-  }
-
-private:
+ private:
   static bool is_init;
   static std::mutex m_mutex;
 
-  void uninitOnUnLoad()
-  {
+  void uninitOnUnLoad() {
     m_mutex.lock();
-    if(is_init)
-    {
+    if (is_init) {
       VERBOSE("releasing the MySQL Utilities resources ...");
       CharsetMap::unload();
       VERBOSE("... released the MySQL Utilities resources");
@@ -229,7 +244,6 @@ private:
     }
     m_mutex.unlock();
   }
-
 };
 
 bool JTie_NdbInit::is_init = false;
@@ -243,39 +257,34 @@ static JTie_NdbInit ndbInitHelper;
 // initialize the NDB interface and JTie resources
 // called when the native library is loaded; returns the JNI version
 // needed by the native library or JNI_ERR.
-JNIEXPORT jint JNICALL
-JNI_OnLoad(JavaVM * jvm, void * reserved)
-{
-    TRACE("jint JNI_OnLoad(JavaVM *, void *)");
-    VERBOSE("loading the NDB JTie library ...");
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *jvm, void *reserved) {
+  TRACE("jint JNI_OnLoad(JavaVM *, void *)");
+  VERBOSE("loading the NDB JTie library ...");
 
-    const jint required_jni_version = JTie_OnLoad(jvm, reserved);
-    if (required_jni_version == JNI_ERR) {
-        PRINT_ERROR("JTie_OnLoad() returned: JNI_ERR");
-        return JNI_ERR;
-    }
+  const jint required_jni_version = JTie_OnLoad(jvm, reserved);
+  if (required_jni_version == JNI_ERR) {
+    PRINT_ERROR("JTie_OnLoad() returned: JNI_ERR");
+    return JNI_ERR;
+  }
 
-    if (ndbInitHelper.initOnLoad())
-    {
-        return JNI_ERR;
-    }
+  if (ndbInitHelper.initOnLoad()) {
+    return JNI_ERR;
+  }
 
-    VERBOSE("... loaded the NDB JTie library");
-    return required_jni_version;
+  VERBOSE("... loaded the NDB JTie library");
+  return required_jni_version;
 }
 
 // called when the class loader containing the native library is garbage
 // collected; called in an unknown context (such as from a finalizer):
 // be conservative, and refrain from arbitrary Java call-backs.
-JNIEXPORT void JNICALL
-JNI_OnUnload(JavaVM * jvm, void * reserved)
-{
-    TRACE("void JNI_OnUnload(JavaVM *, void *)");
-    VERBOSE("unloading the NDB JTie library...");
+JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *jvm, void *reserved) {
+  TRACE("void JNI_OnUnload(JavaVM *, void *)");
+  VERBOSE("unloading the NDB JTie library...");
 
-    JTie_OnUnload(jvm, reserved);
+  JTie_OnUnload(jvm, reserved);
 
-    VERBOSE("... unloaded the NDB JTie library");
+  VERBOSE("... unloaded the NDB JTie library");
 }
 
 // ---------------------------------------------------------------------------
@@ -284,9 +293,4 @@ JNI_OnUnload(JavaVM * jvm, void * reserved)
   Dummy function with constant signature to be used by parent library
   to make sure that the linker includes the functions from this module
 */
-extern "C"
-void
-_ndbjtie_exports(void)
-{
-  return;
-}
+extern "C" void _ndbjtie_exports(void) { return; }

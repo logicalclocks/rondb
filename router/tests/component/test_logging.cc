@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -46,6 +47,7 @@
 #include "random_generator.h"
 #include "router_component_test.h"
 #include "router_component_testutils.h"
+#include "router_config.h"
 #include "router_test_helpers.h"  // get_file_output
 #include "tcp_port_pool.h"
 
@@ -62,7 +64,7 @@ using testing::StartsWith;
 using namespace std::chrono_literals;
 using namespace std::string_literals;
 
-class RouterLoggingTest : public RouterComponentTest {
+class RouterLoggingTest : public RouterComponentBootstrapTest {
  protected:
   std::string create_config_file(
       const std::string &directory, const std::string &sections,
@@ -80,11 +82,52 @@ class RouterLoggingTest : public RouterComponentTest {
 
   ProcessWrapper &launch_router_for_success(
       const std::vector<std::string> &params) {
-    return launch_router(
-        params, EXIT_SUCCESS, true, false, 5s,
-        RouterComponentBootstrapTest::kBootstrapOutputResponder);
+    return launch_router(params, EXIT_SUCCESS, true);
   }
 };
+
+/** @test Check that the Router logs its version when it is started and stopped
+ */
+TEST_F(RouterLoggingTest, log_start_stop_with_version) {
+  // create tmp dir where we will log
+  TempDirectory logging_folder;
+
+  std::map<std::string, std::string> params = get_DEFAULT_defaults();
+  params.at("logging_folder") = logging_folder.name();
+  TempDirectory conf_dir("conf");
+  const std::string conf_file =
+      create_config_file(conf_dir.name(), "[keepalive]", &params);
+
+  // run the router and close right away
+  auto &router = launch_router_for_success({"-c", conf_file});
+  router.send_shutdown_event();
+  router.wait_for_exit();
+
+  auto file_content =
+      router.get_logfile_content("mysqlrouter.log", logging_folder.name());
+  auto lines = mysql_harness::split_string(file_content, '\n');
+
+#if defined(_WIN32)
+  const std::string stopping_info = "";
+#elif defined(__APPLE__)
+  const std::string stopping_info = " \\(Signal .*\\)";
+#else
+  const std::string stopping_info =
+      " \\(Signal .* sent by UID: .* and PID: .*\\)";
+#endif
+
+  EXPECT_THAT(
+      file_content,
+      ::testing::AllOf(
+          ::testing::ContainsRegex(
+              "main SYSTEM .* Starting 'MySQL Router', version: "s +
+              MYSQL_ROUTER_VERSION + " \\(" + MYSQL_ROUTER_VERSION_EDITION +
+              "\\)"),
+          ::testing::ContainsRegex(
+              "main SYSTEM .* Stopping 'MySQL Router', version: "s +
+              MYSQL_ROUTER_VERSION + " \\(" + MYSQL_ROUTER_VERSION_EDITION +
+              "\\), reason: REQUESTED" + stopping_info)));
+}
 
 /** @test This test verifies that fatal error messages thrown before switching
  * to logger specified in config file (before Loader::run() runs
@@ -817,7 +860,7 @@ INSTANTIATE_TEST_SUITE_P(
             /* filelog_expected_level =  */ LogLevel::kSystem)),
     [](auto const &info) { return info.param.test_name; });
 
-#ifndef WIN32
+#ifndef _WIN32
 INSTANTIATE_TEST_SUITE_P(
     LoggingConfigTestUnix, RouterLoggingTestConfig,
     ::testing::Values(
@@ -1738,16 +1781,13 @@ TEST_F(RouterLoggingTest, is_debug_logs_disabled_if_no_bootstrap_config_file) {
   // ASSERT_NO_FATAL_FAILURE(check_port_ready(server_mock, server_port));
 
   // launch the router in bootstrap mode
-  auto &router = launch_router(
+  auto &router = launch_router_for_bootstrap(
       {
           "--bootstrap=127.0.0.1:" + std::to_string(server_port),
-          "--report-host",
-          "dont.query.dns",
           "-d",
           bootstrap_dir.name(),
       },
-      EXIT_SUCCESS, true, false, -1s,
-      RouterComponentBootstrapTest::kBootstrapOutputResponder);
+      EXIT_SUCCESS);
 
   // check if the bootstrapping was successful
   check_exit_code(router, EXIT_SUCCESS);
@@ -1780,19 +1820,16 @@ TEST_F(RouterLoggingTest, is_debug_logs_enabled_if_bootstrap_config_file) {
       bootstrap_conf.name(), logger_section, &conf_params, "bootstrap.conf", "",
       false);
 
-  auto &router = launch_router(
+  auto &router = launch_router_for_bootstrap(
       {
           "--bootstrap=127.0.0.1:" + std::to_string(server_port),
-          "--report-host",
-          "dont.query.dns",
           "--force",
           "-d",
           bootstrap_dir.name(),
           "-c",
           conf_file,
       },
-      EXIT_SUCCESS, true, false, -1s,
-      RouterComponentBootstrapTest::kBootstrapOutputResponder);
+      EXIT_SUCCESS);
 
   // check if the bootstrapping was successful
   check_exit_code(router, EXIT_SUCCESS);
@@ -1827,19 +1864,16 @@ TEST_F(RouterLoggingTest, is_debug_logs_written_to_file_if_logging_folder) {
   const std::string conf_file =
       create_config_file(conf_dir.name(), "[logger]\nlevel = DEBUG\n", &params);
 
-  auto &router = launch_router(
+  auto &router = launch_router_for_bootstrap(
       {
           "--bootstrap=127.0.0.1:" + std::to_string(server_port),
-          "--report-host",
-          "dont.query.dns",
           "--force",
           "-d",
           bootstrap_dir.name(),
           "-c",
           conf_file,
       },
-      EXIT_SUCCESS, true, false, -1s,
-      RouterComponentBootstrapTest::kBootstrapOutputResponder);
+      EXIT_SUCCESS);
 
   // check if the bootstrapping was successful
   check_exit_code(router, EXIT_SUCCESS);
@@ -1882,19 +1916,16 @@ TEST_F(RouterLoggingTest, bootstrap_normal_logs_written_to_stdout) {
       bootstrap_conf.name(), logger_section, &conf_params, "bootstrap.conf", "",
       false);
 
-  auto &router = ProcessManager::launch_router(
+  auto &router = launch_router_for_bootstrap(
       {
           "--bootstrap=127.0.0.1:" + std::to_string(server_port),
-          "--report-host",
-          "dont.query.dns",
           "--force",
           "-d",
           bootstrap_dir.name(),
           "-c",
           conf_file,
       },
-      EXIT_SUCCESS, /*catch_stderr=*/false, false, -1s,
-      RouterComponentBootstrapTest::kBootstrapOutputResponder);
+      EXIT_SUCCESS, true, true, /*catch_sterr=*/false);
 
   // check if the bootstrapping was successful
   check_exit_code(router, EXIT_SUCCESS);
@@ -2547,7 +2578,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 #define NOT_USED ""
 
-#ifndef WIN32
+#ifndef _WIN32
 #define NULL_DEVICE_NAME "/dev/null"
 #define STDOUT_DEVICE_NAME "/dev/stdout"
 #define STDERR_DEVICE_NAME "/dev/stderr"
@@ -2575,7 +2606,7 @@ TEST_P(RouterLoggingTestConfigFilenameDevices,
       (test_params.filename.compare(NULL_DEVICE_NAME) == 0 ? true : false);
 
   Path destination(test_params.filename);
-#ifndef WIN32
+#ifndef _WIN32
   EXPECT_TRUE(destination.exists());
 #endif
 
@@ -2615,7 +2646,7 @@ TEST_P(RouterLoggingTestConfigFilenameDevices,
   shouldnotexist = Path("/dev").join(DEFAULT_LOGFILE_NAME);
   EXPECT_FALSE(shouldnotexist.exists());
 
-#ifndef WIN32
+#ifndef _WIN32
   EXPECT_TRUE(destination.exists());
 #endif
 }
@@ -2631,7 +2662,7 @@ INSTANTIATE_TEST_SUITE_P(
         /*1*/
         LoggingConfigFilenameOkParams(NOT_USED, STDOUT_DEVICE_NAME, false)));
 
-#ifndef WIN32
+#ifndef _WIN32
 INSTANTIATE_TEST_SUITE_P(
     LoggingTestConsoleDestinationDevicesUnix,
     RouterLoggingTestConfigFilenameDevices,
@@ -2957,7 +2988,7 @@ class TempRelativeDirectory {
  private:
   std::string name_;
 
-#ifndef WIN32
+#ifndef _WIN32
   // mysql_harness::get_tmp_dir() returns a relative path on these platforms
   std::string get_tmp_dir_(const std::string &name) {
     return mysql_harness::get_tmp_dir(name);
@@ -3196,7 +3227,7 @@ TEST_F(RouterLoggingTest, log_console_non_existing_destination) {
   EXPECT_THAT(router.get_full_output(), ::testing::Not(::testing::IsEmpty()));
 }
 
-#ifndef WIN32
+#ifndef _WIN32
 /** @test This test verifies that filename may be set to /dev/null the ugly way
  */
 TEST_F(RouterLoggingTest, log_filename_dev_null_ugly) {

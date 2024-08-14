@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -380,6 +381,31 @@ class Binlog_group_commit_ctx {
   binlog::BgcTicket m_session_ticket{0};
   /** Whether or not the session already waited on the ticket. */
   bool m_has_waited{false};
+
+ public:
+  /// Set whether binlog max size was exceeded.
+  /// The max size exceeded condition must be checked with LOCK_log held and
+  /// thus its done early during flush stage although not used until end of BGC.
+  /// This is an optimization which avoids taking LOCK_log at end of BGC when no
+  /// session has seen that the threshold has been exceeded.
+  void set_max_size_exceeded(bool value) { m_max_size_exceeded = value; }
+
+  /// Turn on forced rotate at end of BGC. Thus performing a rotate although
+  /// the max size has not been reached.
+  void set_force_rotate() { m_force_rotate = true; }
+
+  /// Aggregate the rotate requests over all sessions in queue
+  ///
+  /// @return The first element states whether any session
+  /// detected max binlog size exceeded and the second whether any session
+  /// requested forced binlog rotate.
+  static std::pair<bool, bool> aggregate_rotate_settings(THD *queue);
+
+ private:
+  /// Whether session detected that binlog max size was exceeded.
+  bool m_max_size_exceeded{false};
+  /// Whether session requests forced rotate
+  bool m_force_rotate{false};
 };
 
 /*

@@ -1,16 +1,17 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,9 +29,7 @@
 
 #define JAM_FILE_ID 7
 
-
-struct ConfigChangeReq
-{
+struct ConfigChangeReq {
   /**
    * Sender
    */
@@ -43,12 +42,10 @@ struct ConfigChangeReq
 
   static constexpr Uint32 SignalLength = 1;
 
-  Uint32 length; // Length of the config data in long signal
+  Uint32 length;  // Length of the config data in long signal
 };
 
-
-struct ConfigChangeConf 
-{
+struct ConfigChangeConf {
   /**
    * Sender
    */
@@ -64,9 +61,7 @@ struct ConfigChangeConf
   Uint32 unused;
 };
 
-
-struct ConfigChangeRef 
-{
+struct ConfigChangeRef {
   /**
    * Sender
    */
@@ -77,97 +72,87 @@ struct ConfigChangeRef
    */
   friend class MgmtSrvr;
 
-
   enum ErrorCode {
-    OK                      = 0,
-    ConfigChangeOnGoing     = 1,
-    NotMaster               = 2,
-    NoConfigData            = 3,
-    ConfigNotOk             = 4,
-    InternalError           = 5,
-    PrepareFailed           = 6,
-    IllegalConfigChange     = 7,
-    FailedToUnpack          = 8,
-    InvalidGeneration       = 9,
-    InvalidConfigName       = 10,
-    IllegalInitialState     = 11,
+    OK = 0,
+    ConfigChangeOnGoing = 1,
+    NotMaster = 2,
+    NoConfigData = 3,
+    ConfigNotOk = 4,
+    InternalError = 5,
+    PrepareFailed = 6,
+    IllegalConfigChange = 7,
+    FailedToUnpack = 8,
+    InvalidGeneration = 9,
+    InvalidConfigName = 10,
+    IllegalInitialState = 11,
     IllegalInitialGeneration = 12,
-    DifferentInitial        = 13,
-    NotAllStarted           = 14,
-    NotPrimaryMgmNode       = 15,
-    SendFailed              = 16
+    DifferentInitial = 13,
+    NotAllStarted = 14,
+    NotPrimaryMgmNode = 15,
+    SendFailed = 16
   };
 
   static constexpr Uint32 SignalLength = 1;
 
-  static const char* errorMessage(Uint32 error) {
-    switch (error){
-    case ConfigChangeOnGoing:
-      return "Config change ongoing";
-    case NotMaster:
-      return "Not the config change master";
-    case NoConfigData:
-      return "No config data in signal";
-    case ConfigNotOk:
-      return "Config is not ok";
-    case InternalError:
-      return "ConfigChangeRef, internal error";
-    case PrepareFailed:
-      return "Prepare of config change failed";
-    case IllegalConfigChange:
-      return "Illegal configuration change";
-    case FailedToUnpack:
-      return "Failed to unpack the configuration";
-    case InvalidGeneration:
-      return "Invalid generation in configuration";
-    case InvalidConfigName:
-      return "Invalid configuration name in configuration";
-    case IllegalInitialState:
-      return "Initial config change not allowed in this state";
-    case IllegalInitialGeneration:
-      return "Initial config change with generation not 0";
-    case DifferentInitial:
-      return "Different initial config files";
-    case NotAllStarted:
-      return " Not all mgm nodes are started";
-    case NotPrimaryMgmNode:
-      return "Not primary mgm node for configuration";
-    case SendFailed:
-      return "Failed to send signal to other node";
+  static const char *errorMessage(Uint32 error) {
+    switch (error) {
+      case ConfigChangeOnGoing:
+        return "Config change ongoing";
+      case NotMaster:
+        return "Not the config change master";
+      case NoConfigData:
+        return "No config data in signal";
+      case ConfigNotOk:
+        return "Config is not ok";
+      case InternalError:
+        return "ConfigChangeRef, internal error";
+      case PrepareFailed:
+        return "Prepare of config change failed";
+      case IllegalConfigChange:
+        return "Illegal configuration change";
+      case FailedToUnpack:
+        return "Failed to unpack the configuration";
+      case InvalidGeneration:
+        return "Invalid generation in configuration";
+      case InvalidConfigName:
+        return "Invalid configuration name in configuration";
+      case IllegalInitialState:
+        return "Initial config change not allowed in this state";
+      case IllegalInitialGeneration:
+        return "Initial config change with generation not 0";
+      case DifferentInitial:
+        return "Different initial config files";
+      case NotAllStarted:
+        return " Not all mgm nodes are started";
+      case NotPrimaryMgmNode:
+        return "Not primary mgm node for configuration";
+      case SendFailed:
+        return "Failed to send signal to other node";
 
-    default:
-      return "ConfigChangeRef, unknown error";
+      default:
+        return "ConfigChangeRef, unknown error";
     }
   }
 
   Uint32 errorCode;
 };
 
-
-struct ConfigChangeImplReq
-{
+struct ConfigChangeImplReq {
   /**
    * Receiver and sender
    */
   friend class ConfigManager;
 
-  enum RequestType {
-    Prepare,
-    Commit,
-    Abort
-  };
+  enum RequestType { Prepare, Commit, Abort };
 
   static constexpr Uint32 SignalLength = 3;
 
   Uint32 requestType;
-  Uint32 initial; // Valid when requestType = Prepare
-  Uint32 length; // Length of the config data in long signal
-
+  Uint32 initial;  // Valid when requestType = Prepare
+  Uint32 length;   // Length of the config data in long signal
 };
 
-
-struct ConfigChangeImplConf
-{
+struct ConfigChangeImplConf {
   /**
    * Receiver and sender
    */
@@ -178,9 +163,7 @@ struct ConfigChangeImplConf
   Uint32 requestType;
 };
 
-
-struct ConfigChangeImplRef
-{
+struct ConfigChangeImplRef {
   /**
    * Receiver and sender
    */
@@ -191,9 +174,7 @@ struct ConfigChangeImplRef
   Uint32 errorCode;
 };
 
-
-struct ConfigCheckReq
-{
+struct ConfigCheckReq {
   /**
    * Sender
    */
@@ -212,9 +193,7 @@ struct ConfigCheckReq
   Uint32 checksum;
 };
 
-
-struct ConfigCheckConf
-{
+struct ConfigCheckConf {
   /**
    * Sender
    */
@@ -231,9 +210,7 @@ struct ConfigCheckConf
   Uint32 generation;
 };
 
-
-struct ConfigCheckRef
-{
+struct ConfigCheckRef {
   /**
    * Sender
    */
@@ -275,9 +252,8 @@ struct ConfigCheckRef
   Uint32 expected_generation;
   Uint32 state;
   Uint32 expected_state;
-  Uint32 length; // Length of the config data in long signal
+  Uint32 length;  // Length of the config data in long signal
 };
-
 
 #undef JAM_FILE_ID
 

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -457,9 +458,12 @@ const char *STDCALL mysql_character_set_name(MYSQL *mysql);
 int STDCALL mysql_set_character_set(MYSQL *mysql, const char *csname);
 
 MYSQL *STDCALL mysql_init(MYSQL *mysql);
-bool STDCALL mysql_ssl_set(MYSQL *mysql, const char *key, const char *cert,
-                           const char *ca, const char *capath,
-                           const char *cipher);
+#if defined(__cplusplus) && (__cplusplus >= 201402L)
+[[deprecated("Use mysql_options() instead.")]]
+#endif
+bool STDCALL
+mysql_ssl_set(MYSQL *mysql, const char *key, const char *cert, const char *ca,
+              const char *capath, const char *cipher);
 const char *STDCALL mysql_get_ssl_cipher(MYSQL *mysql);
 bool STDCALL mysql_get_ssl_session_reused(MYSQL *mysql);
 void *STDCALL mysql_get_ssl_session_data(MYSQL *mysql, unsigned int n_ticket,

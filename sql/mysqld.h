@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -386,6 +387,7 @@ extern struct my_option my_long_early_options[];
 extern bool mysqld_server_started;
 extern "C" MYSQL_PLUGIN_IMPORT int orig_argc;
 extern "C" MYSQL_PLUGIN_IMPORT char **orig_argv;
+extern bool server_shutting_down;
 extern my_thread_attr_t connection_attrib;
 extern bool old_mode;
 extern bool avoid_temporal_upgrade;
@@ -737,6 +739,7 @@ extern mysql_cond_t COND_manager;
 extern mysql_rwlock_t LOCK_sys_init_connect;
 extern mysql_rwlock_t LOCK_sys_init_replica;
 extern mysql_rwlock_t LOCK_system_variables_hash;
+extern mysql_rwlock_t LOCK_server_shutting_down;
 
 extern ulong opt_ssl_fips_mode;
 
@@ -844,4 +847,22 @@ extern Deployed_components *g_deployed_components;
 extern bool opt_persist_sensitive_variables_in_plaintext;
 
 void persisted_variables_refresh_keyring_support();
+
+/**
+  Stores the value of argc during server start up that contains
+  the count of arguments specified by the user in the
+  configuration files and command line.
+  The server refers the cached argument count during
+  plugin and component installation.
+*/
+extern int argc_cached;
+/**
+  Stores the value of argv during server start up that contains
+  the vector of arguments specified by the user in the
+  configuration files and command line.
+  The server refers the cached argument vector during
+  plugin and component installation.
+*/
+extern char **argv_cached;
+
 #endif /* MYSQLD_INCLUDED */

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,24 +27,24 @@
 #ifndef MGMAPI_SERVICE_HPP
 #define MGMAPI_SERVICE_HPP
 
-#include "util/SocketServer.hpp"
 #include "NdbSleep.h"
 #include "Parser.hpp"
-#include "util/OutputStream.hpp"
 #include "util/InputStream.hpp"
 #include "util/NdbSocket.h"
+#include "util/OutputStream.hpp"
+#include "util/SocketServer.hpp"
 
 #include "MgmtSrvr.hpp"
 
-class MgmApiSession : public SocketServer::Session
-{
+class MgmApiSession : public SocketServer::Session {
   static void list_session(SocketServer::Session *_s, void *data);
   static void get_session(SocketServer::Session *_s, void *data);
-private:
+
+ private:
   typedef Parser<MgmApiSession> Parser_t;
 
   NdbSocket m_secure_socket;
-  class MgmtSrvr & m_mgmsrv;
+  class MgmtSrvr &m_mgmsrv;
   InputStream *m_input;
   OutputStream *m_output;
   Parser_t *m_parser;
@@ -58,18 +59,19 @@ private:
   int m_errorInsert;
 
   BaseString m_name;
-  const char* name() { return m_name.c_str(); }
+  const char *name() { return m_name.c_str(); }
 
-  const char *get_error_text(int err_no)
-  { return m_mgmsrv.getErrorText(err_no, m_err_str, sizeof(m_err_str)); }
+  const char *get_error_text(int err_no) {
+    return m_mgmsrv.getErrorText(err_no, m_err_str, sizeof(m_err_str));
+  }
 
   /* Client version info, m_vMajor != 0 if known */
   unsigned int m_vMajor;
   unsigned int m_vMinor;
   unsigned int m_vBuild;
 
-public:
-  MgmApiSession(class MgmtSrvr & mgm, ndb_socket_t sock, Uint64 session_id);
+ public:
+  MgmApiSession(class MgmtSrvr &mgm, NdbSocket &&sock, Uint64 session_id);
   ~MgmApiSession() override;
   void runSession() override;
 
@@ -116,21 +118,19 @@ public:
   void bye(Parser_t::Context &ctx, const class Properties &args);
   void endSession(Parser_t::Context &ctx, const class Properties &args);
   void setLogLevel(Parser_t::Context &ctx, const class Properties &args);
-  void getClusterLogLevel(Parser_t::Context &ctx, 
-			  const class Properties &args);
-  void setClusterLogLevel(Parser_t::Context &ctx, 
-			  const class Properties &args);
+  void getClusterLogLevel(Parser_t::Context &ctx, const class Properties &args);
+  void setClusterLogLevel(Parser_t::Context &ctx, const class Properties &args);
   void setLogFilter(Parser_t::Context &ctx, const class Properties &args);
 
   void setParameter(Parser_t::Context &ctx, const class Properties &args);
   void setConnectionParameter(Parser_t::Context &ctx,
 			      const class Properties &args);
-  void getConnectionParameter(Parser_t::Context &ctx,
-			      Properties const &args);
+  void getConnectionParameter(Parser_t::Context &ctx, Properties const &args);
 
   void listen_event(Parser_t::Context &ctx, const class Properties &args);
 
-  void purge_stale_sessions(Parser_t::Context &ctx, const class Properties &args);
+  void purge_stale_sessions(Parser_t::Context &ctx,
+                            const class Properties &args);
   void check_connection(Parser_t::Context &ctx, const class Properties &args);
 
   void transporter_connect(Parser_t::Context &ctx, Properties const &args);
@@ -157,27 +157,18 @@ public:
 };
 
 class MgmApiService : public SocketServer::Service {
-  MgmtSrvr& m_mgmsrv;
+  MgmtSrvr &m_mgmsrv;
   Uint64 m_next_session_id; // Protected by m_sessions mutex it SocketServer
-public:
-  MgmApiService(MgmtSrvr& mgm):
-    m_mgmsrv(mgm),
-    m_next_session_id(1) {}
+ public:
+  MgmApiService(MgmtSrvr &mgm) : m_mgmsrv(mgm), m_next_session_id(1) {}
 
-  SocketServer::Session * newSession(ndb_socket_t socket) override{
-    return new MgmApiSession(m_mgmsrv, socket, m_next_session_id++);
+  SocketServer::Session *newSession(NdbSocket &&socket) override {
+    return new MgmApiSession(m_mgmsrv, std::move(socket), m_next_session_id++);
   }
 };
 
-static const char* str_null(const char* str)
-{
-  return (str ? str : "(null)");
-}
+static const char *str_null(const char *str) { return (str ? str : "(null)"); }
 
-static const char* yes_no(bool value)
-{
-  return (value ? "yes" : "no");
-}
-
+static const char *yes_no(bool value) { return (value ? "yes" : "no"); }
 
 #endif

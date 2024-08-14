@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -252,7 +253,7 @@ static void SaveCondEqualLists(COND_EQUAL *cond_equal) {
 
 bool JOIN::check_access_path_with_fts() const {
   // Only relevant to the old optimizer.
-  assert(!thd->lex->using_hypergraph_optimizer);
+  assert(!thd->lex->using_hypergraph_optimizer());
 
   assert(query_block->has_ft_funcs());
   assert(rollup_state != RollupState::NONE);
@@ -417,7 +418,7 @@ bool JOIN::optimize(bool finalize_access_paths) {
     }
   }
 
-  if (thd->lex->using_hypergraph_optimizer) {
+  if (thd->lex->using_hypergraph_optimizer()) {
     // The hypergraph optimizer also wants all subselect items to be optimized,
     // so that it has cost information to attach to filter nodes.
     for (Query_expression *unit = query_block->first_inner_query_expression();
@@ -605,7 +606,7 @@ bool JOIN::optimize(bool finalize_access_paths) {
   // Ensure there are no errors prior making query plan
   if (thd->is_error()) return true;
 
-  if (thd->lex->using_hypergraph_optimizer) {
+  if (thd->lex->using_hypergraph_optimizer()) {
     // Get the WHERE and HAVING clauses with the IN-to-EXISTS predicates
     // removed, so that we can plan both with and without the IN-to-EXISTS
     // conversion.
@@ -680,7 +681,7 @@ bool JOIN::optimize(bool finalize_access_paths) {
   //       All of this is never called for the hypergraph join optimizer!
   // ----------------------------------------------------------------------------
 
-  assert(!thd->lex->using_hypergraph_optimizer);
+  assert(!thd->lex->using_hypergraph_optimizer());
   // Don't expect to get here if the hypergraph optimizer is enabled via an
   // optimizer switch. We only check it for regular statements. Prepared
   // statements and stored programs use the optimizer that was active when the
@@ -1551,12 +1552,6 @@ bool JOIN::optimize_distinct_group_order() {
     }
     ORDER *o;
     bool all_order_fields_used;
-    /*
-      There is possibility where the REF_SLICE_ACTIVE points to
-      freed-up Items like in case of non-first row of a UPDATE
-      trigger. Re-load the Items before using the slice.
-    */
-    refresh_base_slice();
     if ((o = create_order_from_distinct(
              thd, ref_items[REF_SLICE_ACTIVE], order.order, fields,
              /*skip_aggregates=*/true,
@@ -1711,6 +1706,13 @@ void JOIN::test_skip_sort() {
              tab, order, m_select_limit, false,
              &tab->table()->keys_in_use_for_order_by, &dummy))) {
       m_ordered_index_usage = ORDERED_INDEX_ORDER_BY;
+      /*
+        Update plan cost if there is only one table. Multi-table/join scenarios
+        are more complex and will not reflect updated costs after access change.
+      */
+      if (primary_tables == 1 && tab->table()->s->has_secondary_engine()) {
+        best_read = qep_tab->position()->prefix_cost + sort_cost;
+      }
     }
   }
 }
@@ -1819,11 +1821,13 @@ int test_if_order_by_key(ORDER_with_src *order_src, TABLE *table, uint idx,
     /*
       Skip key parts that are constants in the WHERE clause if these are
       already removed in the ORDER expression by check_field_is_const().
+      If they are not removed in the ORDER expression yet, then we skip
+      the constant keyparts that are not part of the ORDER expression.
     */
-    if (order_src->is_const_optimized()) {
-      for (; const_key_parts & 1 && key_part < key_part_end;
-           const_key_parts >>= 1)
-        key_part++;
+    for (; const_key_parts & 1 && key_part < key_part_end &&
+           (order_src->is_const_optimized() || key_part->field != field);
+         const_key_parts >>= 1) {
+      key_part++;
     }
 
     /* Avoid usage of prefix index for sorting a partition table */
@@ -1850,11 +1854,13 @@ int test_if_order_by_key(ORDER_with_src *order_src, TABLE *table, uint idx,
         /*
           Skip key parts that are constants in the WHERE clause if these are
           already removed in the ORDER expression by check_field_is_const().
+          If they are not removed in the ORDER expression yet, then we skip
+          the constant keyparts that are not part of the ORDER expression.
         */
-        if (order_src->is_const_optimized()) {
-          for (; const_key_parts & 1 && key_part < key_part_end;
-               const_key_parts >>= 1)
-            key_part++;
+        for (; const_key_parts & 1 && key_part < key_part_end &&
+               (order_src->is_const_optimized() || key_part->field != field);
+             const_key_parts >>= 1) {
+          key_part++;
         }
         /*
          The primary and secondary key parts were all const (i.e. there's
@@ -1964,14 +1970,18 @@ uint find_shortest_key(TABLE *table, const Key_map *usable_keys) {
       if (nr == usable_clustered_pk) continue;
       if (usable_keys->is_set(nr)) {
         /*
-          Can not do full index scan on rtree index because it is not
-          supported by Innodb, probably not supported by others either.
+          Cannot do full index scan on rtree index. It is not supported by
+          Innodb as it's rtree index does not store data, but only the
+          minimum bouding box (maybe makes sense only for geometries of
+          type POINT). Index scans on rtrees are probabaly not supported
+          by other storage engines either.
           A multi-valued key requires unique filter, and won't be the most
           fast option even if it will be the shortest one.
          */
         const KEY &key_ref = table->key_info[nr];
-        assert(!(key_ref.flags & HA_MULTI_VALUED_KEY));
-        if (key_ref.key_length < min_length && !(key_ref.flags & HA_SPATIAL)) {
+        assert(!(key_ref.flags & HA_MULTI_VALUED_KEY) &&
+               !(key_ref.flags & HA_SPATIAL));
+        if (key_ref.key_length < min_length) {
           min_length = key_ref.key_length;
           best = nr;
         }
@@ -2192,6 +2202,7 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
   THD *const thd = join->thd;
   AccessPath *const save_range_scan = tab->range_scan();
   int best_key = -1;
+  double best_read_time = 0;
   bool set_up_ref_access_to_key = false;
   bool can_skip_sorting = false;  // used as return value
   int changed_key = -1;
@@ -2443,7 +2454,7 @@ static bool test_if_skip_sort_order(JOIN_TAB *tab, ORDER_with_src &order,
       test_if_cheaper_ordering(tab, &order, table, usable_keys, ref_key_hint,
                                select_limit, &best_key, &best_key_direction,
                                &select_limit, &best_key_parts,
-                               &saved_best_key_parts);
+                               &saved_best_key_parts, &best_read_time);
 
     // Try backward scan for previously found key
     if (best_key < 0 && order_direction < 0) goto check_reverse_order;
@@ -2715,6 +2726,28 @@ fix_ICP:
         select_limit < table->file->stats.records) {
       assert(select_limit > 0);
       tab->position()->rows_fetched = select_limit;
+      /*
+        Update the cost data if secondary engine is active as it is needed to
+        make the query offload decision later.
+      */
+      if (best_read_time > 0 && join->primary_tables == 1 &&
+          table->s->has_secondary_engine()) {
+        tab->position()->read_cost = best_read_time;
+        /*
+          Assume no filter at this point to calculate the access cost. This
+          will be updated later to proper values when/if filter_effect is
+          updated. The logic is to ensure the cost covers accessing at least
+          LIMIT number of rows using the access method. If there exists a WHERE
+          clause, then more than LIMIT number of rows needs to be accessed.
+          Ideally we should calculate proper filtering effect and update
+          rows_fetched to include the filtering effect as well. Eg:
+          tab->position()->rows_fetched = select_limit / filter_effect;
+        */
+        tab->position()->filter_effect = COND_FILTER_ALLPASS;
+        // Update the cost values accordingly.
+        tab->position()->set_prefix_join_cost(tab->idx(), join->cost_model());
+      }
+      // Update filter effect to reflect the access change.
       tab->position()->filter_effect = COND_FILTER_STALE_NO_CONST;
     }
 
@@ -6099,26 +6132,50 @@ static void semijoin_types_allow_materialization(Table_ref *sj_nest) {
      b) No subquery is present.
      c) Fulltext Index is not involved.
      d) No GROUP-BY or DISTINCT clause.
-     e) No ORDER-BY clause.
+     e.I) No ORDER-BY clause or
+     e.II) The given index can provide the order.
 
   F2) Not applicable to multi-table query.
-
-  F3) This optimization is not applicable to EXPLAIN queries.
 
   @param tab   JOIN_TAB object.
   @param thd   THD object.
 */
+
 static bool check_skip_records_in_range_qualification(JOIN_TAB *tab, THD *thd) {
   Query_block *select = thd->lex->current_query_block();
   TABLE *table = tab->table();
-  return ((table->force_index &&
-           table->keys_in_use_for_query.bits_set() == 1) &&     // F1.a
-          select->parent_lex->is_single_level_stmt() &&         // F1.b
-          !select->has_ft_funcs() &&                            // F1.c
-          (!select->is_grouped() && !select->is_distinct()) &&  // F1.d
-          !select->is_ordered() &&                              // F1.e
-          select->m_current_table_nest->size() == 1 &&          // F2
-          !thd->lex->is_explain());                             // F3
+
+  if ((!table->force_index ||
+       table->keys_in_use_for_query.bits_set() != 1) ||   // F1.a
+      !select->parent_lex->is_single_level_stmt() ||      // F1.b
+      select->has_ft_funcs() ||                           // F1.c
+      (select->is_grouped() || select->is_distinct()) ||  // F1.d
+      select->m_current_table_nest->size() != 1)          // F2
+    return false;
+
+  /*
+    Index dive is needed to get accurate cost from storage engine. When all
+    above criteria is met, there are 2 use for the cost. Row access and sort.
+
+    F1.e.I) If there is no ORDER BY then getting accurate cost is not needed as
+    row access is enforced by force index.
+
+    F1.e.II) If there is an ORDER BY and the chosen index (enforced by FORCE
+    INDEX) for row access can provide order then the cost is not really used.
+    Hence accurate cost calculation is not needed.
+  */
+
+  // F1.e.I
+  if (!select->is_ordered()) return true;
+
+  int idx = table->keys_in_use_for_query.get_first_set();
+  uint used_key_parts;
+  bool skip_quick;
+  ORDER_with_src order_src(select->order_list.first, ESC_ORDER_BY);
+  int key_order = test_if_order_by_key(&order_src, table, idx, &used_key_parts,
+                                       &skip_quick);
+  // Condition F1.e.II
+  return key_order != 0;
 }
 
 /*****************************************************************************
@@ -6419,9 +6476,11 @@ static bool has_not_null_predicate(Item *cond, Item_field *not_null_item) {
   handled outside of this function.
 
   Restrict some function types from being pushed down to storage engine:
-  a) Don't push down the triggered conditions. Nested outer joins execution
-     code may need to evaluate a condition several times (both triggered and
-     untriggered).
+  a) Don't push down the triggered conditions with exception for
+  IS_NOT_NULL_COMPL trigger condition since the NULL-complemented rows are added
+  at a later stage in the iterators, so we won't see NULL-complemented rows when
+  evaluating it as an index condition. Nested outer joins execution code may
+  need to evaluate a condition several times (both triggered and untriggered).
      TODO: Consider cloning the triggered condition and using the copies for:
         1. push the first copy down, to have most restrictive index condition
            possible.
@@ -6461,9 +6520,15 @@ bool uses_index_fields_only(Item *item, TABLE *tbl, uint keyno,
       Item_func *item_func = (Item_func *)item;
       const Item_func::Functype func_type = item_func->functype();
 
-      if (func_type == Item_func::TRIG_COND_FUNC ||  // Restriction a.
-          func_type == Item_func::DD_INTERNAL_FUNC)  // Restriction d.
+      if (func_type == Item_func::DD_INTERNAL_FUNC)  // Restriction d.
         return false;
+
+      // Restriction a.
+      if (func_type == Item_func::TRIG_COND_FUNC &&
+          down_cast<Item_func_trig_cond *>(item_func)->get_trig_type() !=
+              Item_func_trig_cond::IS_NOT_NULL_COMPL) {
+        return false;
+      }
 
       /* This is a function, apply condition recursively to arguments */
       if (item_func->argument_count() > 0) {
@@ -9776,7 +9841,9 @@ static bool make_join_query_block(JOIN *join, Item *cond) {
                 */
                 if (read_direction == 1 ||
                     (read_direction == -1 &&
-                     is_reverse_sorted_range(tab->range_scan()))) {
+                     reverse_sort_possible(tab->range_scan()) &&
+                     !make_reverse(get_used_key_parts(tab->range_scan()),
+                                   tab->range_scan()))) {
                   recheck_reason = DONT_RECHECK;
                 }
               }
@@ -10774,7 +10841,7 @@ bool JOIN::optimize_fts_query() {
   assert(query_block->has_ft_funcs());
 
   // Only used by the old optimizer.
-  assert(!thd->lex->using_hypergraph_optimizer);
+  assert(!thd->lex->using_hypergraph_optimizer());
 
   for (uint i = const_tables; i < tables; i++) {
     JOIN_TAB *tab = best_ref[i];
@@ -11522,7 +11589,7 @@ double EstimateRowAccesses(const AccessPath *path, double num_evaluations,
           // may be too low. Get the cardinality from the handler's statistics
           // instead.
           if (subpath->type == AccessPath::INDEX_SCAN &&
-              !current_thd->lex->using_hypergraph_optimizer) {
+              !current_thd->lex->using_hypergraph_optimizer()) {
             num_output_rows = table->file->stats.records;
           }
 

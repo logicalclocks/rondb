@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -75,6 +76,11 @@ const char *ndb_thd_query(const THD *thd);
  @note It's safe for own thread to read it's query string length
 */
 size_t ndb_thd_query_length(const THD *thd);
+
+/*
+  @brief Get PFS id of current thread
+*/
+ulonglong ndb_thd_get_pfs_thread_id();
 
 /*
  @brief Check if THD is the "binlog injector thread"
@@ -142,6 +148,23 @@ class Ndb_thd_memory_guard {
  public:
   Ndb_thd_memory_guard(THD *thd);
   ~Ndb_thd_memory_guard();
+};
+
+/**
+  @brief RAII style class to create and release a THD
+
+  @note The THD will be created and configured to be a background THD
+*/
+class Ndb_thd_guard {
+  THD *const m_thd;
+  Ndb_thd_guard(const Ndb_thd_guard &) = delete;
+
+ public:
+  Ndb_thd_guard();
+
+  ~Ndb_thd_guard();
+
+  THD *get_thd() const { return m_thd; }
 };
 
 #endif

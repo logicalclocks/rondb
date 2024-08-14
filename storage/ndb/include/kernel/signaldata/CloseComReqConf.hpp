@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,11 +26,10 @@
 #ifndef CLOSE_COMREQCONF_HPP
 #define CLOSE_COMREQCONF_HPP
 
-#include "SignalData.hpp"
 #include <NodeBitmask.hpp>
+#include "SignalData.hpp"
 
 #define JAM_FILE_ID 174
-
 
 /**
  * The Req signal is sent by Qmgr to Cmvmi
@@ -42,7 +42,6 @@
  * Req signal also sends data nodes bitmask in first section.
  */
 struct CloseComReqConf {
-
   /**
    * Sender(s) / Reciver(s)
    */
@@ -53,24 +52,20 @@ struct CloseComReqConf {
   /**
    * For printing
    */
-  friend bool printCLOSECOMREQCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
+  friend bool printCLOSECOMREQCONF(FILE *output, const Uint32 *theData,
+                                   Uint32 len, Uint16 receiverBlockNo);
 
   static constexpr Uint32 SignalLength = 5;
 
-  enum RequestType {
-    RT_API_FAILURE   = 0,
-    RT_NODE_FAILURE  = 1,
-    RT_NO_REPLY      = 2
-  };
+  enum RequestType { RT_API_FAILURE = 0, RT_NODE_FAILURE = 1, RT_NO_REPLY = 2 };
 
   Uint32 xxxBlockRef;
   Uint32 requestType;
   Uint32 failNo;
-  
+
   Uint32 noOfNodes;
   Uint32 failedNodeId;
 };
-
 
 #undef JAM_FILE_ID
 

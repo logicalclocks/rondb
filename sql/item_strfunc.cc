@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -2388,6 +2389,35 @@ void Item_func_make_set::split_sum_func(THD *thd, Ref_item_array ref_item_array,
   Item_str_func::split_sum_func(thd, ref_item_array, fields);
 }
 
+bool Item_func_make_set::fix_fields(THD *thd, Item **ref) {
+  assert(!fixed);
+  if (!item->fixed && item->fix_fields(thd, &item)) {
+    return true;
+  }
+  if (item->check_cols(1)) {
+    return true;
+  }
+  if (Item_func::fix_fields(thd, ref)) {
+    return true;
+  }
+  if (item->is_nullable()) {
+    set_nullable(true);
+  }
+  used_tables_cache |= item->used_tables();
+  if (null_on_null) not_null_tables_cache |= item->not_null_tables();
+  add_accum_properties(item);
+
+  return false;
+}
+
+void Item_func_make_set::fix_after_pullout(Query_block *parent_query_block,
+                                           Query_block *removed_query_block) {
+  Item_func::fix_after_pullout(parent_query_block, removed_query_block);
+  item->fix_after_pullout(parent_query_block, removed_query_block);
+  used_tables_cache |= item->used_tables();
+  if (null_on_null) not_null_tables_cache |= item->not_null_tables();
+}
+
 bool Item_func_make_set::resolve_type(THD *thd) {
   if (item->propagate_type(thd, MYSQL_TYPE_LONGLONG)) return true;
   if (param_type_is_default(thd, 0, -1)) return true;
@@ -2399,9 +2429,6 @@ bool Item_func_make_set::resolve_type(THD *thd) {
   for (uint i = 0; i < arg_count; i++)
     char_length += args[i]->max_char_length();
   set_data_type_string(char_length);
-  used_tables_cache |= item->used_tables();
-  not_null_tables_cache &= item->not_null_tables();
-  add_accum_properties(item);
 
   return false;
 }
@@ -3804,6 +3831,8 @@ bool Item_func_quote::resolve_type(THD *thd) {
   ulonglong max_result_length = max<ulonglong>(
       4, static_cast<ulonglong>(args[0]->max_char_length()) * 2U + 2U);
   collation.set(args[0]->collation);
+  if (collation.collation == &my_charset_bin)
+    collation.set(thd->variables.collation_connection);
   set_data_type_string(max_result_length);
   set_nullable(is_nullable() || max_length > thd->variables.max_allowed_packet);
   return false;
@@ -3844,8 +3873,8 @@ String *Item_func_quote::val_str(String *str) {
 
   char *to;
   const char *from, *end, *start;
-  String *arg = args[0]->val_str(str);
-  size_t arg_length, new_length;
+  String *arg = eval_string_arg(collation.collation, args[0], str);
+  if (current_thd->is_error()) return error_str();
   if (!arg)  // Null argument
   {
     /* Return the string 'NULL' */
@@ -3854,37 +3883,47 @@ String *Item_func_quote::val_str(String *str) {
     return str;
   }
 
-  arg_length = arg->length();
+  size_t new_length;
+  size_t arg_length = arg->length();
 
   if (collation.collation->mbmaxlen == 1) {
     new_length = arg_length + 2; /* for beginning and ending ' signs */
     for (from = arg->ptr(), end = from + arg_length; from < end; from++)
-      new_length += get_esc_bit(escmask, (uchar)*from);
+      new_length += get_esc_bit(escmask, static_cast<uchar>(*from));
   } else {
     new_length = (arg_length * 2) + /* For string characters */
                  (2 * collation.collation->mbmaxlen); /* For quotes */
   }
 
-  if (tmp_value.alloc(new_length)) goto null;
+  if (tmp_value.alloc(new_length)) return error_str();
 
   if (collation.collation->mbmaxlen > 1) {
     const CHARSET_INFO *cs = collation.collation;
-    int mblen;
-    uchar *to_end;
     to = tmp_value.ptr();
-    to_end = (uchar *)to + new_length;
+    uchar *to_end = pointer_cast<uchar *>(to) + new_length;
 
     /* Put leading quote */
-    if ((mblen = cs->cset->wc_mb(cs, '\'', (uchar *)to, to_end)) <= 0)
-      goto null;
+    int mblen = cs->cset->wc_mb(cs, '\'', pointer_cast<uchar *>(to), to_end);
+    if (mblen <= 0) {
+      my_error(ER_INTERNAL_ERROR, MYF(0), func_name());
+      return make_empty_result();
+    }
     to += mblen;
 
     for (start = arg->ptr(), end = start + arg_length; start < end;) {
       my_wc_t wc;
       bool escape;
-      if ((mblen = cs->cset->mb_wc(cs, &wc, pointer_cast<const uchar *>(start),
-                                   pointer_cast<const uchar *>(end))) <= 0)
-        goto null;
+      mblen = cs->cset->mb_wc(cs, &wc, pointer_cast<const uchar *>(start),
+                              pointer_cast<const uchar *>(end));
+      if (mblen <= 0) {
+        // See e.g. my_mb_wc_euc_jp() which has special handling of valid,
+        // but un-assigned characters.
+        if ((mblen == -2 || mblen == -3)) {
+          mblen = -mblen;
+          wc = '?';
+        } else
+          return make_empty_result(); /* EOL or invalid byte sequence */
+      }
       start += mblen;
       switch (wc) {
         case 0:
@@ -3906,18 +3945,27 @@ String *Item_func_quote::val_str(String *str) {
           break;
       }
       if (escape) {
-        if ((mblen = cs->cset->wc_mb(cs, '\\', (uchar *)to, to_end)) <= 0)
-          goto null;
+        mblen = cs->cset->wc_mb(cs, '\\', pointer_cast<uchar *>(to), to_end);
+        if (mblen <= 0) {
+          my_error(ER_INTERNAL_ERROR, MYF(0), func_name());
+          return make_empty_result();
+        }
         to += mblen;
       }
-      if ((mblen = cs->cset->wc_mb(cs, wc, (uchar *)to, to_end)) <= 0)
-        goto null;
+      mblen = cs->cset->wc_mb(cs, wc, pointer_cast<uchar *>(to), to_end);
+      if (mblen <= 0) {
+        my_error(ER_INTERNAL_ERROR, MYF(0), func_name());
+        return make_empty_result();
+      }
       to += mblen;
     }
 
     /* Put trailing quote */
-    if ((mblen = cs->cset->wc_mb(cs, '\'', (uchar *)to, to_end)) <= 0)
-      goto null;
+    mblen = cs->cset->wc_mb(cs, '\'', pointer_cast<uchar *>(to), to_end);
+    if (mblen <= 0) {
+      my_error(ER_INTERNAL_ERROR, MYF(0), func_name());
+      return make_empty_result();
+    }
     to += mblen;
     new_length = to - tmp_value.ptr();
     goto ret;
@@ -3963,10 +4011,6 @@ ret:
   tmp_value.set_charset(collation.collation);
   null_value = false;
   return &tmp_value;
-
-null:
-  null_value = true;
-  return nullptr;
 }
 
 /**

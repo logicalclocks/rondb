@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,15 +25,14 @@
 
 #include <ndb_global.h>
 
+#include <NdbSleep.h>
 #include <NdbThread.h>
 #include <NdbOut.hpp>
-#include <NdbSleep.h>
 
 #include "CPCD.hpp"
 #include "common.hpp"
 
-static void *
-monitor_thread_create_wrapper(void * arg) {
+static void *monitor_thread_create_wrapper(void *arg) {
   CPCD::Monitor *mon = (CPCD::Monitor *)arg;
   mon->run();
   return NULL;
@@ -43,11 +43,10 @@ CPCD::Monitor::Monitor(CPCD *cpcd, int poll) {
   m_pollingInterval = poll;
   m_changeCondition = NdbCondition_Create();
   m_changeMutex = NdbMutex_Create();
-  m_monitorThread = NdbThread_Create(monitor_thread_create_wrapper,
-				     (NDB_THREAD_ARG*) this,
-                                     0, // default stack size
-				     "ndb_cpcd_monitor",
-				     NDB_THREAD_PRIO_MEAN);
+  m_monitorThread =
+      NdbThread_Create(monitor_thread_create_wrapper, (NDB_THREAD_ARG *)this,
+                       0,  // default stack size
+                       "ndb_cpcd_monitor", NDB_THREAD_PRIO_MEAN);
   m_monitorThreadQuitFlag = false;
 }
 
@@ -57,29 +56,24 @@ CPCD::Monitor::~Monitor() {
   NdbMutex_Destroy(m_changeMutex);
 }
 
-void
-CPCD::Monitor::run() {
-  while(1) {
+void CPCD::Monitor::run() {
+  while (1) {
     NdbMutex_Lock(m_changeMutex);
-    NdbCondition_WaitTimeout(m_changeCondition,
-			     m_changeMutex,
-			     m_pollingInterval * 1000);
+    NdbCondition_WaitTimeout(m_changeCondition, m_changeMutex,
+                             m_pollingInterval * 1000);
 
     MutexVector<CPCD::Process *> &processes = *m_cpcd->getProcessList();
 
     processes.lock();
 
-    for (unsigned i = 0; i < processes.size(); i++)
-    {
+    for (unsigned i = 0; i < processes.size(); i++) {
       processes[i]->monitor();
     }
 
     // Erase in reverse order to let i always step down
-    for (unsigned i = processes.size(); i > 0; i--)
-    {
+    for (unsigned i = processes.size(); i > 0; i--) {
       CPCD::Process *proc = processes[i - 1];
-      if (!proc->should_be_erased())
-      {
+      if (!proc->should_be_erased()) {
         continue;
       }
 
@@ -93,9 +87,6 @@ CPCD::Monitor::run() {
   }
 }
 
-void
-CPCD::Monitor::signal() {
-  NdbCondition_Signal(m_changeCondition);
-}
+void CPCD::Monitor::signal() { NdbCondition_Signal(m_changeCondition); }
 
-template class MutexVector<CPCD::Process*>;
+template class MutexVector<CPCD::Process *>;

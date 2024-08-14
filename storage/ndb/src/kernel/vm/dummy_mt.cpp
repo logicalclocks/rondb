@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,73 +29,40 @@
 #include "Emulator.hpp"
 #include "VMSignal.hpp"
 
-#include <SignalLoggerManager.hpp>
 #include <BlockNumbers.h>
 #include <GlobalSignalNumbers.h>
+#include <NdbTick.h>
+#include <SignalLoggerManager.hpp>
+#include <TimeQueue.hpp>
 #include <signaldata/EventReport.hpp>
 #include "LongSignal.hpp"
-#include <NdbTick.h>
-#include <TimeQueue.hpp>
 
 #define JAM_FILE_ID 229
 
+FastScheduler::FastScheduler() {}
 
+FastScheduler::~FastScheduler() {}
 
-FastScheduler::FastScheduler()
-{
-}
+void FastScheduler::clear() {}
 
-FastScheduler::~FastScheduler()
-{
-}
+void bnr_error() {}
 
-void
-FastScheduler::clear()
-{
-}
+void jbuf_error() {}
 
+void FastScheduler::prio_level_error() {}
 
-void bnr_error()
-{
-}
+APZJobBuffer::APZJobBuffer() {}
 
-void jbuf_error()
-{
-}
+APZJobBuffer::~APZJobBuffer() {}
 
-void
-FastScheduler::prio_level_error()
-{
-}
+void APZJobBuffer::insert(const SignalHeader *const sh,
+                          const Uint32 *const theData,
+                          const Uint32 secPtrI[3]) {}
 
-APZJobBuffer::APZJobBuffer()
-{
-}
+void APZJobBuffer::signal2buffer(Signal25 *signal, BufferEntry &buf) {}
 
-APZJobBuffer::~APZJobBuffer()
-{
-}
+TimeQueue::TimeQueue() {}
 
-void
-APZJobBuffer::insert(const SignalHeader * const sh,
-		     const Uint32 * const theData, const Uint32 secPtrI[3]){
-}
+TimeQueue::~TimeQueue() {}
 
-void 
-APZJobBuffer::signal2buffer(Signal25* signal, BufferEntry& buf)
-{
-}
-
-TimeQueue::TimeQueue()
-{
-}
-
-TimeQueue::~TimeQueue()
-{
-}
-
-bool
-NdbIsMultiThreaded()
-{
-  return true;
-}
+bool NdbIsMultiThreaded() { return true; }

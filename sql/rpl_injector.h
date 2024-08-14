@@ -1,15 +1,16 @@
-/* Copyright (c) 2006, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2006, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,9 +25,8 @@
 #define INJECTOR_H
 
 #include <stddef.h>
+#include <string_view>
 
-#include "lex_string.h"
-#include "libbinlogevents/include/control_events.h"  // enum_incidents
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "sql/table.h"  // TABLE
@@ -147,8 +147,6 @@ class injector {
             m_is_transactional(is_transactional),
             m_skip_hash(skip_hash) {}
 
-      char const *db_name() const { return m_table->s->db.str; }
-      char const *table_name() const { return m_table->s->table_name.str; }
       TABLE *get_table() const { return m_table; }
       bool is_transactional() const { return m_is_transactional; }
       bool skip_hash() const { return m_skip_hash; }
@@ -377,8 +375,7 @@ class injector {
    */
   void new_trans(THD *, transaction *);
 
-  int record_incident(THD *, binary_log::Incident_event::enum_incident incident,
-                      LEX_CSTRING const message);
+  int record_incident(THD *, std::string_view message);
 
  private:
   explicit injector();

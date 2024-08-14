@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -847,19 +848,21 @@ class Slave_worker : public Relay_log_info {
     transaction if it is allowed. Retry policy and logic is similar to
     single-threaded slave.
 
-    @param[in] start_relay_number The extension number of the relay log which
-                 includes the first event of the transaction.
     @param[in] start_relay_pos The offset of the transaction's first event.
+    @param[in] start_event_relay_log_name The name of the relay log which
+                 includes the first event of the transaction.
 
-    @param[in] end_relay_number The extension number of the relay log which
-               includes the last event it should retry.
     @param[in] end_relay_pos The offset of the last event it should retry.
+    @param[in] end_event_relay_log_name The name of the relay log which
+               includes the last event it should retry.
 
     @retval false if transaction succeeds (possibly after a number of retries)
     @retval true  if transaction fails
   */
-  bool retry_transaction(uint start_relay_number, my_off_t start_relay_pos,
-                         uint end_relay_number, my_off_t end_relay_pos);
+  bool retry_transaction(my_off_t start_relay_pos,
+                         const char *start_event_relay_log_name,
+                         my_off_t end_relay_pos,
+                         const char *end_event_relay_log_name);
 
   bool set_info_search_keys(Rpl_info_handler *to) override;
 
@@ -927,8 +930,10 @@ class Slave_worker : public Relay_log_info {
   Slave_worker &operator=(const Slave_worker &info);
   Slave_worker(const Slave_worker &info);
   bool worker_sleep(ulong seconds);
-  bool read_and_apply_events(uint start_relay_number, my_off_t start_relay_pos,
-                             uint end_relay_number, my_off_t end_relay_pos);
+  bool read_and_apply_events(my_off_t start_relay_pos,
+                             const char *start_event_relay_log_name,
+                             my_off_t end_relay_pos,
+                             const char *end_event_relay_log_name);
   void assign_partition_db(Log_event *ev);
 
   void reset_commit_order_deadlock();

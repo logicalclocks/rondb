@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -754,10 +755,11 @@ bool Item_func::eq(const Item *item, bool binary_cmp) const {
   /* Assume we don't have rtti */
   if (this == item) return true;
   if (item->type() != FUNC_ITEM) return false;
+  const Item_func::Functype func_type = functype();
   const Item_func *item_func = down_cast<const Item_func *>(item);
-  Item_func::Functype func_type;
-  if ((func_type = functype()) != item_func->functype() ||
-      arg_count != item_func->arg_count ||
+
+  if ((func_type != item_func->functype()) ||
+      (arg_count != item_func->arg_count) ||
       (func_type != Item_func::FUNC_SP &&
        strcmp(func_name(), item_func->func_name()) != 0) ||
       (func_type == Item_func::FUNC_SP &&
@@ -3006,9 +3008,11 @@ template <bool to_left>
 longlong Item_func_shift::eval_int_op() {
   assert(fixed);
   ulonglong res = args[0]->val_uint();
+  if (current_thd->is_error()) return error_int();
   if (args[0]->null_value) return error_int();
 
   ulonglong shift = args[1]->val_uint();
+  if (current_thd->is_error()) return error_int();
   if (args[1]->null_value) return error_int();
 
   null_value = false;
@@ -3032,11 +3036,13 @@ String *Item_func_shift::eval_str_op(String *) {
 
   String tmp_str;
   String *arg = args[0]->val_str(&tmp_str);
-  if (!arg || args[0]->null_value) return error_str();
+  if (current_thd->is_error()) return error_str();
+  if (args[0]->null_value) return error_str();
 
   ssize_t arg_length = arg->length();
   size_t shift =
       min(args[1]->val_uint(), static_cast<ulonglong>(arg_length) * 8);
+  if (current_thd->is_error()) return error_str();
   if (args[1]->null_value) return error_str();
 
   if (tmp_value.alloc(arg->length())) return error_str();
@@ -4288,6 +4294,8 @@ bool Item_func_find_in_set::resolve_type(THD *thd) {
   if (args[0]->const_item() && args[1]->type() == FIELD_ITEM &&
       args[0]->may_eval_const_item(thd)) {
     Field *field = down_cast<Item_field *>(args[1])->field;
+    // Bail during CREATE TABLE/INDEX so we don't look for absent typelib.
+    if (field->is_wrapper_field()) return false;
     if (field->real_type() == MYSQL_TYPE_SET) {
       String *find = args[0]->val_str(&value);
       if (thd->is_error()) return true;
@@ -4487,6 +4495,8 @@ bool udf_handler::fix_fields(THD *thd, Item_result_field *func, uint arg_count,
   args = arguments;
 
   m_initialized = true;  // Use count was incremented by find_udf()
+  const bool is_in_prepare =
+      thd->stmt_arena->is_stmt_prepare() && !thd->stmt_arena->is_repreparing;
   /*
     RAII wrapper to free the memory allocated in case of any failure while
     initializing the UDF
@@ -4522,6 +4532,12 @@ bool udf_handler::fix_fields(THD *thd, Item_result_field *func, uint arg_count,
       if (!(*arg)->fixed && (*arg)->fix_fields(thd, arg)) {
         return true;
       }
+
+      if ((*arg)->data_type() == MYSQL_TYPE_INVALID &&
+          (*arg)->propagate_type(thd, MYSQL_TYPE_VARCHAR)) {
+        return true;
+      }
+
       // we can't assign 'item' before, because fix_fields() can change arg
       Item *item = *arg;
       if (item->check_cols(1)) {
@@ -4596,8 +4612,7 @@ bool udf_handler::fix_fields(THD *thd, Item_result_field *func, uint arg_count,
   initid.ptr = nullptr;
   initid.extension = &m_return_value_extension;
 
-  if (thd->stmt_arena->is_stmt_prepare() && !thd->stmt_arena->is_repreparing &&
-      !initid.const_item) {
+  if (is_in_prepare && !initid.const_item) {
     udf_fun_guard.defer();
     return false;
   }
@@ -8606,7 +8621,7 @@ static bool check_table_and_trigger_access(Item **args, bool check_trigger_acl,
   }
 
   // Check access
-  ulong db_access = 0;
+  Access_bitmask db_access = 0;
   if (check_access(thd, SELECT_ACL, schema_name_ptr->ptr(), &db_access, nullptr,
                    false, true))
     return false;

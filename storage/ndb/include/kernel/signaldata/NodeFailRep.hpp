@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,11 +26,10 @@
 #ifndef NODE_FAILREP_HPP
 #define NODE_FAILREP_HPP
 
-#include "SignalData.hpp"
 #include <NodeBitmask.hpp>
+#include "SignalData.hpp"
 
 #define JAM_FILE_ID 59
-
 
 /**
  * This signals is sent by Qmgr to NdbCntr
@@ -52,21 +52,18 @@ struct NodeFailRep {
   Uint32 masterNodeId;
 
   Uint32 noOfNodes;
-  union
-  {
-    Uint32 theNodes[NdbNodeBitmask::Size]; // data nodes 8.0.17 and older
-    Uint32 theAllNodes[NodeBitmask::Size]; // api nodes 8.0.17 and older
+  union {
+    Uint32 theNodes[NdbNodeBitmask::Size];  // data nodes 8.0.17 and older
+    Uint32 theAllNodes[NodeBitmask::Size];  // api nodes 8.0.17 and older
   };
 
   static Uint32 getNodeMaskLength(Uint32 signalLength) {
-    assert(signalLength == SignalLength ||
-           signalLength == SignalLengthLong ||
+    assert(signalLength == SignalLength || signalLength == SignalLengthLong ||
            signalLength == SignalLength_v1 ||
            signalLength == SignalLengthLong_v1);
     return signalLength - 3;
   }
 };
-
 
 #undef JAM_FILE_ID
 

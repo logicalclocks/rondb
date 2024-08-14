@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -44,7 +45,6 @@
 
 #define MIN_API_FIXED_BLOCK_NO (API_CLUSTERMGR)
 #define MAX_API_FIXED_BLOCK_NO (MIN_API_FIXED_BLOCK_NO + NO_API_FIXED_BLOCKS)
-
 
 #define BACKUP      0xF4
 #define DBTC        0xF5
@@ -111,16 +111,35 @@ const BlockReference TRPMAN_REF   = numberToRef(TRPMAN, 0);
 
 static inline void __hide_warnings_unused_ref_vars(void) {
   // Hide annoying warnings about unused variables
-  (void)BACKUP_REF;  (void)DBTC_REF;    (void)DBDIH_REF;
-  (void)DBLQH_REF;   (void)DBACC_REF;   (void)DBTUP_REF;
-  (void)DBQLQH_REF;  (void)DBQACC_REF;  (void)DBQTUP_REF;
-  (void)DBDICT_REF;  (void)NDBCNTR_REF; (void)QMGR_REF;
-  (void)NDBFS_REF;   (void)CMVMI_REF;   (void)TRIX_REF;
-  (void)DBUTIL_REF;  (void)SUMA_REF;    (void)DBTUX_REF;
-  (void)TSMAN_REF;   (void)LGMAN_REF;   (void)PGMAN_REF;
-  (void)RESTORE_REF; (void)DBINFO_REF;  (void)DBSPJ_REF;
-  (void)THRMAN_REF;  (void)TRPMAN_REF;  (void)QRESTORE_REF;
-  (void)QBACKUP_REF; (void)DBQTUX_REF;
+  (void)BACKUP_REF;
+  (void)DBTC_REF;
+  (void)DBDIH_REF;
+  (void)DBLQH_REF;
+  (void)DBACC_REF;
+  (void)DBTUP_REF;
+  (void)DBQLQH_REF;
+  (void)DBQACC_REF;
+  (void)DBQTUP_REF;
+  (void)DBDICT_REF;
+  (void)NDBCNTR_REF;
+  (void)QMGR_REF;
+  (void)NDBFS_REF;
+  (void)CMVMI_REF;
+  (void)TRIX_REF;
+  (void)DBUTIL_REF;
+  (void)SUMA_REF;
+  (void)DBTUX_REF;
+  (void)TSMAN_REF;
+  (void)LGMAN_REF;
+  (void)PGMAN_REF;
+  (void)RESTORE_REF;
+  (void)DBINFO_REF;
+  (void)DBSPJ_REF;
+  (void)THRMAN_REF;
+  (void)TRPMAN_REF;
+  (void)QRESTORE_REF;
+  (void)QBACKUP_REF;
+  (void)DBQTUX_REF;
 }
 
 const BlockNumber MIN_BLOCK_NO = BACKUP;

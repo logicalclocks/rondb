@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -728,8 +729,7 @@ int Gtid_state::save_gtids_of_last_binlog_into_table() {
   if (!ret) {
     logged_gtids_last_binlog.remove_gtid_set(&previous_gtids_logged);
     logged_gtids_last_binlog.remove_gtid_set(&gtids_only_in_table);
-    if (!logged_gtids_last_binlog.is_empty() ||
-        mysql_bin_log.is_rotating_caused_by_incident) {
+    if (!logged_gtids_last_binlog.is_empty()) {
       /* Prepare previous_gtids_logged for next binlog always. Need it
       even during shutdown to synchronize with innodb GTID persister. */
       if (previous_gtids_logged.add_gtid_set(&logged_gtids_last_binlog))
@@ -928,8 +928,6 @@ void Gtid_state::update_gtids_impl_own_anonymous(THD *thd, bool *more_trx) {
     See comment for the update_gtids_impl_begin function.
   */
   if (opt_bin_log) {
-    // Needed before is_binlog_cache_empty.
-    thd->binlog_setup_trx_data();
     if (!thd->is_binlog_cache_empty(true)) {
       *more_trx = true;
       DBUG_PRINT("info", ("Transaction cache is non-empty: setting "

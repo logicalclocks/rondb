@@ -1,15 +1,16 @@
-/* Copyright (c) 2001, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2001, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -674,9 +675,9 @@ bool Query_expression::can_materialize_directly_into_result() const {
 }
 
 /**
-  Prepares all query blocks of a query expression, including
-  fake_query_block. If a recursive query expression, this also creates the
-  materialized temporary table.
+  Prepares all query blocks of a query expression.
+  If a recursive query expression, this also creates the materialized temporary
+  table.
 
   @param thd           Thread handler
   @param sel_result    Result object where the unit's output should go.
@@ -881,7 +882,7 @@ bool Query_expression::prepare(THD *thd, Query_result *sel_result,
 /// have been created.
 static bool finalize_full_text_functions(THD *thd,
                                          Query_expression *query_expression) {
-  assert(thd->lex->using_hypergraph_optimizer);
+  assert(thd->lex->using_hypergraph_optimizer());
   for (Query_expression *qe = query_expression; qe != nullptr;
        qe = qe->next_query_expression()) {
     for (Query_block *qb = qe->first_query_block(); qb != nullptr;
@@ -1127,7 +1128,7 @@ bool Query_expression::optimize(THD *thd, TABLE *materialize_destination,
       return true;
     }
 
-    if (thd->lex->using_hypergraph_optimizer) {
+    if (thd->lex->using_hypergraph_optimizer()) {
       if (finalize_full_text_functions(thd, this)) {
         return true;
       }
@@ -1181,7 +1182,7 @@ bool Query_expression::force_create_iterators(THD *thd) {
 
   if (m_root_iterator == nullptr) return true;
 
-  if (thd->lex->using_hypergraph_optimizer) {
+  if (thd->lex->using_hypergraph_optimizer()) {
     if (finalize_full_text_functions(thd, this)) {
       return true;
     }
@@ -2020,8 +2021,12 @@ static void cleanup_tmp_tables(Table_ref *list) {
         tl->table = nullptr;
       } else {
         // Clear indexes added during optimization, keep possible unique index
-        tl->table->s->keys = tl->table->s->is_distinct ? 1 : 0;
-        tl->table->s->first_unused_tmp_key = 0;
+        TABLE *t = tl->table;
+        t->s->keys = t->s->is_distinct ? 1 : 0;
+        t->s->first_unused_tmp_key = 0;
+        t->keys_in_use_for_query.clear_all();
+        t->keys_in_use_for_group_by.clear_all();
+        t->keys_in_use_for_order_by.clear_all();
       }
     }
   }

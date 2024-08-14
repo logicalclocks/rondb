@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,14 +26,13 @@
 
 #define DBTUP_C
 #define DBTUP_PAG_MAN_CPP
-#include "Dbtup.hpp"
-#include <RefConvert.hpp>
 #include <ndb_limits.h>
-#include <pc.hpp>
+#include <RefConvert.hpp>
 #include <dblqh/Dblqh.hpp>
+#include <pc.hpp>
+#include "Dbtup.hpp"
 
 #define JAM_FILE_ID 407
-
 
 /* ---------------------------------------------------------------- */
 // 4) Page Memory Manager (buddy algorithm)
@@ -82,7 +82,7 @@
 // i-value of the first page in the chunk delivered, if zero pages returned
 // this i-value is undefined. It also returns the size of the chunk actually
 // delivered.
-// 
+//
 // returnCommonArea is used when somebody is returning pages to the free area.
 // It is used both from internal routines and external routines.
 //
@@ -114,8 +114,7 @@
 /* ---------------------------------------------------------------- */
 /* CALCULATE THE 2-LOG + 1 OF TMP AND PUT RESULT INTO TBITS         */
 /* ---------------------------------------------------------------- */
-Uint32 Dbtup::nextHigherTwoLog(Uint32 input) 
-{
+Uint32 Dbtup::nextHigherTwoLog(Uint32 input) {
   input = input | (input >> 8);
   input = input | (input >> 4);
   input = input | (input >> 2);
@@ -125,23 +124,19 @@ Uint32 Dbtup::nextHigherTwoLog(Uint32 input)
   output = output + (output >> 4);
   output = (output & 0xf) + ((output >> 8) & 0xf);
   return output;
-}//nextHigherTwoLog()
+}  // nextHigherTwoLog()
 
-void Dbtup::initializePage() 
-{
-}//Dbtup::initializePage()
+void Dbtup::initializePage() {}  // Dbtup::initializePage()
 
 void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
                            Tablerec *regTabPtr,
                            Uint32 noOfPagesToAllocate,
-                           Uint32& noOfPagesAllocated,
-                           Uint32& allocPageRef)
-{
-  if (noOfPagesToAllocate == 0){ 
+                           Uint32 &noOfPagesAllocated, Uint32 &allocPageRef) {
+  if (noOfPagesToAllocate == 0) {
     thrjam(jamBuf);
     noOfPagesAllocated = 0;
     return;
-  }//if
+  }  // if
 
   if (noOfPagesToAllocate == 1)
   {
@@ -159,22 +154,16 @@ void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
     if (p != NULL)
     {
       noOfPagesAllocated = 1;
-    }
-    else
-    {
+    } else {
       noOfPagesAllocated = 0;
     }
-  }
-  else
-  {
+  } else {
 #ifndef VM_TRACE
     ndbrequire(noOfPagesToAllocate == 1);
 #else
     /* For DUMP_STATE_ORD 1211, 1212, and, 1213 */
     noOfPagesAllocated = noOfPagesToAllocate;
-    m_ctx.m_mm.alloc_pages(RT_DBTUP_PAGE,
-                           &allocPageRef,
-                           &noOfPagesAllocated,
+    m_ctx.m_mm.alloc_pages(RT_DBTUP_PAGE, &allocPageRef, &noOfPagesAllocated,
                            1);
 #endif
   }
@@ -182,15 +171,14 @@ void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
   update_pages_allocated(noOfPagesAllocated);
 
   return;
-}//allocConsPages()
+}  // allocConsPages()
 
-void Dbtup::returnCommonArea(Uint32 retPageRef, Uint32 retNo)
-{
+void Dbtup::returnCommonArea(Uint32 retPageRef, Uint32 retNo) {
   m_ctx.m_mm.release_pages(RT_DBTUP_PAGE, retPageRef, retNo);
 
   // Count number of allocated pages
   update_pages_allocated(-retNo);
-}//Dbtup::returnCommonArea()
+}  // Dbtup::returnCommonArea()
 
 void
 Dbtup::update_pages_allocated(int retNo)
@@ -209,47 +197,35 @@ Dbtup::update_pages_allocated(int retNo)
   bool lock_flag = false;
   Dblqh *lqh_block;
   Dbtup *tup_block;
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     Uint32 instanceNo = c_lqh->m_current_ldm_instance;
     ndbrequire(instanceNo != 0);
-    tup_block = (Dbtup*) globalData.getBlock(DBTUP, instanceNo);
-    lqh_block = (Dblqh*) globalData.getBlock(DBLQH, instanceNo);
+    tup_block = (Dbtup *)globalData.getBlock(DBTUP, instanceNo);
+    lqh_block = (Dblqh *)globalData.getBlock(DBLQH, instanceNo);
     ndbrequire(!lqh_block->is_restore_phase_done());
     ndbrequire(c_lqh->m_is_recover_block);
     lock_flag = true;
-  }
-  else
-  {
+  } else {
     lqh_block = c_lqh;
     tup_block = this;
     if (!c_lqh->is_restore_phase_done() &&
-        (globalData.ndbMtRecoverThreads +
-         globalData.ndbMtQueryThreads) > 0)
-    {
+        (globalData.ndbMtRecoverThreads + globalData.ndbMtQueryThreads) > 0) {
       lock_flag = true;
     }
   }
-  if (lock_flag)
-  {
+  if (lock_flag) {
     NdbMutex_Lock(lqh_block->m_lock_tup_page_mutex);
   }
 
   tup_block->m_pages_allocated += retNo;
   if (retNo > 0 &&
-      tup_block->m_pages_allocated >
-      tup_block->m_pages_allocated_max)
-  {
+      tup_block->m_pages_allocated > tup_block->m_pages_allocated_max) {
     tup_block->m_pages_allocated_max = tup_block->m_pages_allocated;
   }
 
-  if (lock_flag)
-  {
+  if (lock_flag) {
     NdbMutex_Unlock(lqh_block->m_lock_tup_page_mutex);
   }
 }
 
-Uint32 Dbtup::get_pages_allocated() const
-{
-  return m_pages_allocated;
-}
+Uint32 Dbtup::get_pages_allocated() const { return m_pages_allocated; }

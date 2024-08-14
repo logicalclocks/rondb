@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -394,8 +395,8 @@ uint32_t register_router_v2(
       //            router_name.c_str(), hostname.c_str());
       query = sqlstring(
           "SELECT router_id FROM mysql_innodb_cluster_metadata.v2_routers"
-          " WHERE router_name = ?");
-      query << router_name << sqlstring::end;
+          " WHERE router_name = ? and address = ?");
+      query << router_name << hostname << sqlstring::end;
       std::unique_ptr<MySQLSession::ResultRow> row(mysql->query_one(query));
       if (row) {
         return static_cast<uint32_t>(strtoui_checked((*row)[0]));
@@ -440,6 +441,20 @@ bool metadata_schema_version_is_compatible(
     return false;
   }
   return true;
+}
+
+bool ROUTER_LIB_EXPORT metadata_schema_version_is_deprecated(
+    const mysqlrouter::MetadataSchemaVersion &version) {
+  return version < kNewMetadataVersion;
+}
+
+std::string ROUTER_LIB_EXPORT get_metadata_schema_deprecated_msg(
+    const mysqlrouter::MetadataSchemaVersion &version) {
+  return "The target Cluster's Metadata version ('" + to_string(version) +
+         "') is deprecated. Please use the latest MySQL Shell to upgrade it "
+         "using 'dba.upgradeMetadata()'. Although this version of MySQL Router "
+         "still supports it, future versions will no longer work with this "
+         "Cluster unless its metadata is upgraded.";
 }
 
 std::string to_string(const MetadataSchemaVersion &version) {
@@ -517,24 +532,26 @@ bool check_group_replication_online(MySQLSession *mysql) {
 
 bool check_group_has_quorum(MySQLSession *mysql) {
   std::string q =
-      "SELECT SUM(IF(member_state = 'ONLINE', 1, 0)) as num_onlines, COUNT(*) "
-      "as num_total"
-      " FROM performance_schema.replication_group_members";
+      "SELECT SUM(IF(member_state = 'ONLINE', 1, 0)) as num_onlines, "
+      "SUM(IF(member_state = 'RECOVERING', 1, 0)) as num_recovering, "
+      "COUNT(*) as num_total "
+      "FROM performance_schema.replication_group_members";
 
   std::unique_ptr<MySQLSession::ResultRow> result(
       mysql->query_one(q));  // throws MySQLSession::Error
   if (result) {
-    if (result->size() != 2) {
+    if (result->size() != 3) {
       throw std::out_of_range(
           "Invalid number of values returned from "
           "performance_schema.replication_group_members: "
-          "expected 2 got " +
+          "expected 3 got " +
           std::to_string(result->size()));
     }
     int online = strtoi_checked((*result)[0]);
-    int all = strtoi_checked((*result)[1]);
-    // log_info("%d members online out of %d", online, all);
-    if (online >= all / 2 + 1) return true;
+    int recovering = strtoi_checked((*result)[1]);
+    int all = strtoi_checked((*result)[2]);
+
+    if ((online + recovering) > all / 2) return true;
     return false;
   }
 

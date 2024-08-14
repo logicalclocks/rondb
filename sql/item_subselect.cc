@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -524,7 +525,7 @@ AccessPath *Item_in_subselect::root_access_path() const {
     // the query to the log for debugging, it isn't fully optimized
     // yet and might not yet have an iterator. Thus, return nullptr instead of
     // assert-failing.
-    assert(current_thd->lex->using_hypergraph_optimizer);
+    assert(current_thd->lex->using_hypergraph_optimizer());
     return nullptr;
   }
 }
@@ -560,7 +561,9 @@ bool Item_subselect::fix_fields(THD *thd, Item **ref) {
     if (substitution) {
       int ret = 0;
       (*ref) = substitution;
-      substitution->item_name = item_name;
+      if (item_name.is_set()) {
+        substitution->item_name = item_name;
+      }
       if (have_to_be_excluded) {
         unit->exclude_level();
       }
@@ -2538,6 +2541,7 @@ void Item_in_subselect::update_used_tables() {
   Item_subselect::update_used_tables();
   left_expr->update_used_tables();
   used_tables_cache |= left_expr->used_tables();
+  add_accum_properties(left_expr);
 }
 
 /**
@@ -2682,6 +2686,12 @@ bool Item_subselect::clean_up_after_removal(uchar *arg) {
   // Check whether this item should be removed
   if (ctx->is_stopped(this)) return false;
 
+  if (reference_count() > 1) {
+    (void)decrement_ref_count();
+    ctx->stop_at(this);
+    return false;
+  }
+
   // Remove item on upward traversal, not downward:
   if (marker == MARKER_NONE) {
     marker = MARKER_TRAVERSAL;
@@ -2735,16 +2745,17 @@ bool Item_singlerow_subselect::collect_scalar_subqueries(uchar *arg) {
   auto *info = pointer_cast<Collect_scalar_subquery_info *>(arg);
   Item *i = unit->first_query_block()->single_visible_field();
 
+  // Skip transformations for row subqueries:
+  if (i == nullptr) return false;
+
   if (!info->m_collect_unconditionally) {
-    // Skip transformation if more than one column is selected [1]
-    // or column contains a non-deterministic function [3]
-    // Also exclude scalar subqueries with references to outer query blocks [2]
-    // and Item_maxmin_subselect (ALL/ANY -> MAX/MIN transform artifact) [4]
+    // Skip transformation if column contains a non-deterministic function [2]
+    // Also exclude scalar subqueries with references to outer query blocks [1]
+    // and Item_maxmin_subselect (ALL/ANY -> MAX/MIN transform artifact) [3]
     // Merely correlation to the current query block are ok
-    if (i == nullptr ||                                    // [1]
-        info->is_stopped(this) || is_outer_reference() ||  // [2]
-        is_non_deterministic() ||                          // [3]
-        is_maxmin()) {                                     // [4]
+    if (info->is_stopped(this) || is_outer_reference() ||  // [1]
+        is_non_deterministic() ||                          // [2]
+        is_maxmin()) {                                     // [3]
       return false;
     }
   }

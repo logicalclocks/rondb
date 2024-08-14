@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -94,7 +95,8 @@ int Primary_election_handler::execute_primary_election(
 
   bool has_primary_changed;
   bool in_primary_mode;
-  Group_member_info *primary_member_info = nullptr;
+  Group_member_info primary_member_info;
+  bool primary_member_info_not_found = true;
   Group_member_info_list *all_members_info =
       group_member_mgr->get_all_members();
 
@@ -123,9 +125,10 @@ int Primary_election_handler::execute_primary_election(
     pick_primary_member(primary_uuid, all_members_info);
   }
 
-  primary_member_info = group_member_mgr->get_group_member_info(primary_uuid);
+  primary_member_info_not_found = group_member_mgr->get_group_member_info(
+      primary_uuid, primary_member_info);
 
-  if (primary_member_info == nullptr) {
+  if (primary_member_info_not_found) {
     if (all_members_info->size() != 1) {
       // There are no servers in the group or they are all recovering WARN the
       // user
@@ -146,7 +149,7 @@ int Primary_election_handler::execute_primary_election(
 
   in_primary_mode = local_member_info->in_primary_mode();
   has_primary_changed = Group_member_info::MEMBER_ROLE_PRIMARY !=
-                            primary_member_info->get_role() ||
+                            primary_member_info.get_role() ||
                         !in_primary_mode;
   if (has_primary_changed) {
     /*
@@ -189,14 +192,14 @@ int Primary_election_handler::execute_primary_election(
             "relay logs.");
 
       LogPluginErr(SYSTEM_LEVEL, ER_GRP_RPL_NEW_PRIMARY_ELECTED,
-                   primary_member_info->get_hostname().c_str(),
-                   primary_member_info->get_port(), message.c_str());
+                   primary_member_info.get_hostname().c_str(),
+                   primary_member_info.get_port(), message.c_str());
       internal_primary_election(primary_uuid, mode);
     } else {
       // retain the old message
       LogPluginErr(SYSTEM_LEVEL, ER_GRP_RPL_NEW_PRIMARY_ELECTED,
-                   primary_member_info->get_hostname().c_str(),
-                   primary_member_info->get_port(),
+                   primary_member_info.get_hostname().c_str(),
+                   primary_member_info.get_port(),
                    "Enabling conflict detection until the new primary applies "
                    "all relay logs.");
       legacy_primary_election(primary_uuid);
@@ -214,7 +217,6 @@ end:
     delete (*it);
   }
   delete all_members_info;
-  delete primary_member_info;
   return 0;
 }
 
@@ -287,8 +289,10 @@ int Primary_election_handler::legacy_primary_election(
     std::string &primary_uuid) {
   const bool is_primary_local =
       !primary_uuid.compare(local_member_info->get_uuid());
-  Group_member_info *primary_member_info =
-      group_member_mgr->get_group_member_info(primary_uuid);
+  Group_member_info primary_member_info;
+  const bool primary_member_info_not_found =
+      group_member_mgr->get_group_member_info(primary_uuid,
+                                              primary_member_info);
 
   /*
     A new primary was elected, inform certifier to enable conflict
@@ -319,16 +323,22 @@ int Primary_election_handler::legacy_primary_election(
     internal_primary_election(primary_uuid, LEGACY_ELECTION_PRIMARY);
   } else {
     set_election_running(false);
-    LogPluginErr(SYSTEM_LEVEL, ER_GRP_RPL_SRV_SECONDARY_MEM,
-                 primary_member_info->get_hostname().c_str(),
-                 primary_member_info->get_port());
+    if (primary_member_info_not_found) {
+      LogPluginErr(WARNING_LEVEL, ER_GRP_RPL_MEMBER_INFO_DOES_NOT_EXIST,
+                   "as the primary by the member uuid", primary_uuid.c_str(),
+                   "a primary election. The group will heal itself on the next "
+                   "primary election that will be triggered automatically");
+    } else {
+      LogPluginErr(SYSTEM_LEVEL, ER_GRP_RPL_SRV_SECONDARY_MEM,
+                   primary_member_info.get_hostname().c_str(),
+                   primary_member_info.get_port());
+    }
   }
 
   group_events_observation_manager->after_primary_election(
       primary_uuid,
       enum_primary_election_primary_change_status::PRIMARY_DID_CHANGE,
       DEAD_OLD_PRIMARY);
-  delete primary_member_info;
 
   return 0;
 }

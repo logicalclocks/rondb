@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,11 +26,8 @@
 
 #include <signaldata/TcKeyReq.hpp>
 
-bool printTCKEYREQ(FILE *output,
-                   const Uint32 *theData,
-                   Uint32 len,
-                   Uint16 /*receiverBlockNo*/)
-{
+bool printTCKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
+                   Uint16 /*receiverBlockNo*/) {
   const TcKeyReq *const sig = (const TcKeyReq *)theData;
 
   UintR requestInfo = sig->requestInfo;
@@ -62,7 +60,7 @@ bool printTCKEYREQ(FILE *output,
     if (sig->getNoDiskFlag(requestInfo)) {
       fprintf(output, " NoDisk");
     }
-    
+
     UintR TcommitType = sig->getAbortOption(requestInfo);
     if (TcommitType == TcKeyReq::AbortOnError) {
       fprintf(output, " AbortOnError");
@@ -82,7 +80,7 @@ bool printTCKEYREQ(FILE *output,
     if(sig->getDistributionKeyFlag(sig->requestInfo)){
       fprintf(output, " d-key");
     }
-    if(sig->getViaSPJFlag(sig->requestInfo)){
+    if (sig->getViaSPJFlag(sig->requestInfo)) {
       fprintf(output, " spj");
     }
     if(sig->getQueueOnRedoProblemFlag(sig->requestInfo))
@@ -105,19 +103,18 @@ bool printTCKEYREQ(FILE *output,
 
     fprintf(output, "\n");
   }
-  
-  const int keyLen     = sig->getKeyLength(requestInfo);
+
+  const int keyLen = sig->getKeyLength(requestInfo);
   const int attrInThis = sig->getAIInTcKeyReq(requestInfo);
   const int attrLen = sig->getAttrinfoLen(sig->attrLen);
-  fprintf(output, 
-	  " keyLen: %d, attrLen: %d, AI in this: %d, tableId: %d, "
-	  "tableSchemaVer: %d\n",
-	  keyLen, attrLen, attrInThis, 
-	  sig->tableId, sig->tableSchemaVersion);
-    
-  fprintf(output, " transId(1, 2): (H\'%.8x, H\'%.8x)\n -- Variable Data --\n", 
-	  sig->transId1, sig->transId2);
-  
+  fprintf(output,
+          " keyLen: %d, attrLen: %d, AI in this: %d, tableId: %d, "
+          "tableSchemaVer: %d\n",
+          keyLen, attrLen, attrInThis, sig->tableId, sig->tableSchemaVersion);
+
+  fprintf(output, " transId(1, 2): (H\'%.8x, H\'%.8x)\n -- Variable Data --\n",
+          sig->transId1, sig->transId2);
+
   if (len >= TcKeyReq::StaticLength) {
     Uint32 restLen = (len - TcKeyReq::StaticLength);
     const Uint32 * rest = &sig->scanInfo;
