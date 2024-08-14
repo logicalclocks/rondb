@@ -36,6 +36,7 @@ CREATE DATABASE hopsworks;
 
 USE hopsworks;
 
+SET FOREIGN_KEY_CHECKS=0;
 --
 -- Table structure for table `account_audit`
 --
@@ -2965,3 +2966,5 @@ CREATE TABLE IF NOT EXISTS feature_view_logging
 ) ENGINE = ndbcluster
   DEFAULT CHARSET = latin1
   COLLATE = latin1_general_cs;
+
+SET FOREIGN_KEY_CHECKS=1;
