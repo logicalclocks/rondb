@@ -1604,8 +1604,7 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
   Uint32 num_prospective_nodes = 0;
   Uint32 my_location_domain_id = m_my_location_domain_id;
 
-  if (my_location_domain_id == 0)
-  {
+  if (my_location_domain_id == 0) {
     return select_node(impl_ndb, nodes, cnt, primary_node);
   }
   for (Uint32 i = 0; i < cnt; i++) {
@@ -1615,16 +1614,11 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
       prospective_node_ids[num_prospective_nodes++] = nodes[i];
     }
   }
-  if (num_prospective_nodes == 0)
-  {
+  if (num_prospective_nodes == 0) {
     return select_node(impl_ndb, nodes, cnt, primary_node);
-  }
-  else if (num_prospective_nodes == 1)
-  {
+  } else if (num_prospective_nodes == 1) {
     return prospective_node_ids[0];
-  }
-  else
-  {
+  } else {
     return select_node(impl_ndb,
                        prospective_node_ids,
                        num_prospective_nodes,
@@ -1638,8 +1632,7 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
                                          Uint32 cnt,
                                          Uint32 primary_node)
 {
-  if (cnt == 1)
-  {
+  if (cnt == 1) {
     return nodes[0];
   } else if (cnt == 0) {
     return 0;
@@ -1725,8 +1718,7 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
             best_usage = nodes_arr[i].hint_count;
           } else if (nodes_arr[i].adjusted_group == best_score) {
             Uint32 usage = nodes_arr[i].hint_count;
-            if (candidate_node == primary_node ||
-                best_usage - usage < HINT_COUNT_HALF) {
+            if (candidate_node == primary_node) {
               /**
                * hint_count may wrap, for this calculation it is assumed that
                * the two counts should be near each other, and so if the
@@ -1735,6 +1727,19 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
               best_idx = i;
               best_node = candidate_node;
               best_usage = usage;
+            } else {
+              if (best_usage - usage < HINT_COUNT_HALF &&
+                  best_node != primary_node)
+              {
+                /**
+                 * hint_count may wrap, for this calculation it is assummed that
+                 * the two counts should be near each other, and so if the
+                 * difference is small above, best_usage is greater than usage.
+                 */
+                best_idx = i;
+                best_node = candidate_node;
+                best_usage = usage;
+              }
             }
           }
           break;
