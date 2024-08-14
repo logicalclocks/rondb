@@ -807,7 +807,6 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
       tdf.td_join_id                 = td_join_id_attr->int32_value();
       tdf.idx                        = idx_attr->int32_value();
       tdf.label                      = label_attr->int32_value();
-      tdf.transformation_function_id = transformation_function_id_attr->int32_value();
       tdf.feature_view_id            = feature_view_id_attr->int32_value();
 
       // name
@@ -862,7 +861,6 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
     (*tdfs + i)->td_join_id                 = tdfsv[i].td_join_id;
     (*tdfs + i)->idx                        = tdfsv[i].idx;
     (*tdfs + i)->label                      = tdfsv[i].label;
-    (*tdfs + i)->transformation_function_id = tdfsv[i].transformation_function_id;
     (*tdfs + i)->feature_view_id            = tdfsv[i].feature_view_id;
     memcpy((*tdfs + i)->name, tdfsv[i].name,
            strlen(tdfsv[i].name) + 1);  // +1 for '\0'

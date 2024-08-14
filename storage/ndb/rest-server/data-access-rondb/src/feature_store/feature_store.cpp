@@ -781,14 +781,12 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
   NdbRecAttr *td_join_id_attr       = scan_op->getValue("td_join", nullptr);
   NdbRecAttr *idx_attr              = scan_op->getValue("idx", nullptr);
   NdbRecAttr *label_attr            = scan_op->getValue("label", nullptr);
-  NdbRecAttr *transformation_function_id_attr =
-      scan_op->getValue("transformation_function", nullptr);
   NdbRecAttr *feature_view_id_attr = scan_op->getValue("feature_view_id", nullptr);
 
   if (feature_id_attr == nullptr || training_dataset_attr == nullptr ||
       feature_group_id_attr == nullptr || name_attr == nullptr || type_attr == nullptr ||
       td_join_id_attr == nullptr || idx_attr == nullptr || label_attr == nullptr ||
-      transformation_function_id_attr == nullptr || feature_view_id_attr == nullptr) {
+      feature_view_id_attr == nullptr) {
     ndb_error = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
@@ -811,7 +809,6 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
       tdf.td_join_id                 = td_join_id_attr->int32_value();
       tdf.idx                        = idx_attr->int32_value();
       tdf.label                      = label_attr->int32_value();
-      tdf.transformation_function_id = transformation_function_id_attr->int32_value();
       tdf.feature_view_id            = feature_view_id_attr->int32_value();
 
       // name
