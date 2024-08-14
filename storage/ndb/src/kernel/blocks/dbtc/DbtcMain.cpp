@@ -9967,16 +9967,18 @@ void Dbtc::checkStartTimeout(Signal *signal) {
        * transactions which would render the system useless. This is
        * to protect ourselves for future bugs in the code that we
        * might introduce by mistake.
-       *
-       * 100 is simply an arbitrary number that needs to be bigger
+       * 
+       * 1000 is simply an arbitrary number that needs to be bigger
        * than the maximum number of calls to timer_handling that
        * we can have in one call to execTIME_SIGNAL. This is
-       * currently 10 but could change in the future.
+       * currently 10 but could change in the future. The number also
+       * takes into account shared environments where access to CPU
+       * might be far between and short lived.
        */
       ctimeOutMissedHeartbeats++;
-      if (ctimeOutMissedHeartbeats > 100) {
-        jam();
-        systemErrorLab(signal, __LINE__);
+      if (ctimeOutMissedHeartbeats > 1000) {
+	jam();
+	systemErrorLab(signal, __LINE__);
       }
     }
     ctimeOutCheckLastHeartbeat = ctimeOutCheckHeartbeat;
@@ -10015,9 +10017,9 @@ void Dbtc::checkStartFragTimeout(Signal *signal) {
        */
       jam();
       ctimeOutMissedHeartbeatsScan++;
-      if (ctimeOutMissedHeartbeatsScan > 100) {
-        jam();
-        systemErrorLab(signal, __LINE__);
+      if (ctimeOutMissedHeartbeatsScan > 1000) {
+	jam();
+	systemErrorLab(signal, __LINE__);
       }
     }
     ctimeOutCheckLastHeartbeatScan = ctimeOutCheckHeartbeatScan;

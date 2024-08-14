@@ -44,7 +44,6 @@ type TrainingDatasetFeature struct {
 	TDJoinID                 int
 	IDX                      int
 	Label                    int
-	TransformationFunctionID int
 	FeatureViewID            int
 }
 
@@ -189,7 +188,6 @@ func GetTrainingDatasetFeature(featureViewID int) ([]TrainingDatasetFeature, *Da
 			TDJoinID:                 int(tdf.td_join_id),
 			IDX:                      int(tdf.idx),
 			Label:                    int(tdf.label),
-			TransformationFunctionID: int(tdf.transformation_function_id),
 			FeatureViewID:            int(tdf.feature_view_id),
 		}
 		retTdfs[i] = retTdf
