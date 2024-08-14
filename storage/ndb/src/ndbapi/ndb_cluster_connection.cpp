@@ -1611,6 +1611,9 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
     if (my_location_domain_id == m_location_domain_id[nodes[i]] &&
         impl_ndb->get_node_available(nodes[i]))
     {
+      if (i == 0) {
+        return nodes[0];
+      }
       prospective_node_ids[num_prospective_nodes++] = nodes[i];
     }
   }

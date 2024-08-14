@@ -709,16 +709,15 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
    * nodes with the same proximity, but small enough to not prioritize
    * it over other nodes with higher proximity.
    */
-  if (table_impl == nullptr)
-  {
+  if (table_impl == nullptr) {
     return m_ndb_cluster_connection.select_any(this);
   }
 
   Uint32 nodeId;
+  bool readBackup = table_impl->m_read_backup;
   bool fullyReplicated = table_impl->m_fully_replicated;
 
-  if (cnt && !fullyReplicated)
-  {
+  if (cnt && !readBackup && !fullyReplicated) {
     /**
      * We select the primary replica node normally. If the user
      * have specified location domains we will always ensure that
@@ -731,15 +730,12 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
      * so we keeping the TC local to this domain always seems preferable
      * to picking the perfect path for this operation.
      */
-    if (m_optimized_node_selection)
-    {
+    if (m_optimized_node_selection) {
       nodeId = m_ndb_cluster_connection.select_location_based(this,
                                                               nodes,
                                                               cnt,
                                                               primary_node);
-    }
-    else
-    {
+    } else {
       /* Backwards compatible setting */
       nodeId = primary_node;
     }
@@ -751,14 +747,19 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
     cnt = table_impl->m_fragments.size();
     nodes = table_impl->m_fragments.getBase();
     nodeId = m_ndb_cluster_connection.select_node(this, nodes, cnt, 0);
-  }
-  else
-  {
+  } else if (cnt == 0) {
     /**
      * For unhinted select, let caller select node.
      * Except for fully replicated tables, see above.
      */
     nodeId = m_ndb_cluster_connection.select_any(this);
+  } else {
+    /**
+     * Read backup tables.
+     * Consider one fragment and any replica for readBackup
+     */
+    require(readBackup);
+    nodeId = m_ndb_cluster_connection.select_node(this, nodes, cnt, 0);
   }
   return nodeId;
 }
