@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,9 +112,9 @@ class FsReadWriteReq;
 #define ZTWOLOG_PAGE_SIZE 13
 #define ZMAX_MM_BUFFER_SIZE 32  // Main memory window during log execution
 
-#define ZMAX_PAGES_WRITTEN 8     // Max pages before writing to disk (=> config)
-#define ZMIN_READ_BUFFER_SIZE 3  // Minimum number of pages to execute log
-#define ZMIN_LOG_PAGES_OPERATION 10  // Minimum no of pages before stopping
+#define ZMAX_PAGES_WRITTEN 8    // Max pages before writing to disk (=> config)
+#define ZMIN_READ_BUFFER_SIZE 3       // Minimum number of pages to execute log
+#define ZMIN_LOG_PAGES_OPERATION 10   // Minimum no of pages before stopping
 
 #define ZPOS_CHECKSUM 0
 #define ZPOS_LOG_LAP 1

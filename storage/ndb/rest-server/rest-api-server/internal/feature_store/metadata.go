@@ -81,7 +81,6 @@ type FeatureMetadata struct {
 	Index                    int
 	Label                    bool
 	Prefix                   string
-	TransformationFunctionId int
 	JoinIndex                int
 }
 
@@ -417,7 +416,6 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.Label = tdf.Label == 1
 		feature.Prefix = joinIdToJoin[tdf.TDJoinID].Prefix
 		feature.JoinIndex = joinIdToJoin[tdf.TDJoinID].Index
-		feature.TransformationFunctionId = tdf.TransformationFunctionID
 		features[i] = &feature
 	}
 	var servingKeys, err1 = dal.GetServingKeys(fvID)
