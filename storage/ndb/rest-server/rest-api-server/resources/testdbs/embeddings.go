@@ -38,8 +38,13 @@ var BenchmarkAddRow string
 const BenchAddRow_TABLE_NAME = "TABLE_NAME"
 const BenchAddRow_COLUMN_VALUES_TO_INSERT = "COLUMN_VALUES_TO_INSERT"
 
-//go:embed fixed/hopsworks_34.sql
-var HopsworksScheme string
+//go:embed fixed/hopsworks_40_data.sql
+var HopsworksData string
+
+//go:embed fixed/hopsworks_40_schema.sql
+var HopsworksSchema string
+
+var HopsworksScheme string = HopsworksSchema + HopsworksData
 
 const HOPSWORKS_DB_NAME = "hopsworks"
 
