@@ -24,7 +24,7 @@
 									"RequireAndVerifyClientCert": false
 					}, 
 					"APIKey": {
-									"UseHopsworksAPIKeys": false
+									"UseHopsworksAPIKeys": true
 					}
 	},
 	"Log": {

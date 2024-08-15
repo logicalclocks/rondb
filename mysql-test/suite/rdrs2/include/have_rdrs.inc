@@ -93,8 +93,9 @@ print $F "--let RDRS_CONFIG_FILE=$vardir/tmp/rdrs_config.json\n";
 print $F "--let RDRS_LIB_DIR=$bindir/library_output_directory\n";
 print $F "--let LD_LIBRARY_PATH=$bindir/library_output_directory\n";
 print $F "--let CGO_LDFLAGS=\"-g -O2 -L$bindir/lib -Wl,-rpath,$bindir/lib\"\n";
-print $F "--let RDRS_SRC_DIR=$ENV{'MYSQL_BASEDIR'}/storage/ndb/rest-server2/server/test_go\n";
-print $F "--let RDRS_SERVER_DIR=$ENV{'MYSQL_BASEDIR'}//build/storage/ndb/rest-server2/server\n";
+print $F "--let RDRS_TEST_GO_DIR=$ENV{'MYSQL_BASEDIR'}/storage/ndb/rest-server2/server/test_go\n";
+print $F "--let RDRS_SERVER_DIR=$ENV{'MYSQL_BASEDIR'}/build/storage/ndb/rest-server2/server/src\n";
+print $F "--let RDRS_TEST_DIR=$ENV{'MYSQL_BASEDIR'}/build/storage/ndb/rest-server2/server/test\n";
 
 $F->close();
 
@@ -128,7 +129,7 @@ my $jsonStr = <<"END_TXT";
                         "RequireAndVerifyClientCert": false
                 }, 
                 "APIKey": {
-                        "UseHopsworksAPIKeys": false
+                        "UseHopsworksAPIKeys": true
                 }
         },
         "Log": {

@@ -62,7 +62,6 @@ class RonDBConnection {
 
   RonDBConnection &operator=(RonDBConnection &&other) = default;
 
- private:
   static RS_Status init_rondb_connection(RonDB &, RonDB &) noexcept;
 
   static RS_Status shutdown_rondb_connection() noexcept;

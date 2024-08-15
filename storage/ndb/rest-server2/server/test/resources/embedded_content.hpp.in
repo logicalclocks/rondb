@@ -1,0 +1,9 @@
+// embedded_content.hpp.in - Template for embedding SQL files
+#pragma once
+#include <string>
+#include <map>
+
+// Map of SQL file names to their contents
+inline const std::map<std::string, std::string> sqlFiles = {
+    @SQL_CONTENT_ENTRIES@
+};
