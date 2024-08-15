@@ -27,7 +27,6 @@
 #include <record_types.hpp>
 #include <ndbd_malloc.hpp>
 #include "Rope.hpp"
-#include "DataBuffer.hpp"
 #include "util/require.h"
 
 #define JAM_FILE_ID 330

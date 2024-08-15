@@ -221,6 +221,8 @@ const ParserRow<MgmApiSession> commands[] = {
     MGM_CMD("enter single user", &MgmApiSession::enterSingleUser, ""),
     MGM_ARG("nodeId", Int, Mandatory, "Node"),
   
+    MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, ""),
+
     MGM_CMD("get mgm nodeid", &MgmApiSession::get_mgm_nodeid, ""),
 
     MGM_CMD("set_hostname", &MgmApiSession::set_hostname, ""),
@@ -232,8 +234,6 @@ const ParserRow<MgmApiSession> commands[] = {
 
     MGM_CMD("deactivate", &MgmApiSession::deactivate, ""),
     MGM_ARG("node", Int, Mandatory, "node"),
-
-    MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, ""),
 
     MGM_CMD("start", &MgmApiSession::start, ""),
     MGM_ARG("node", Int, Mandatory, "Node"),
