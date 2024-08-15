@@ -781,7 +781,6 @@ struct Fragrecord {
     Uint32 fragTableId;
     Uint32 fragmentId;
     Uint32 partitionId;
-    Uint32 nextfreefrag;
     // +1 is as "full" pages are stored last
     Page_list::Head free_var_page_array[MAX_FREE_LIST + 1];
 
@@ -2608,9 +2607,6 @@ private:
   void disk_page_load_callback(Signal*, Uint32 op, Uint32 page);
   void disk_page_load_scan_callback(Signal*, Uint32 op, Uint32 page);
 
- private:
-
- private:
   // Trigger signals
   //------------------------------------------------------------------
   //------------------------------------------------------------------
@@ -3238,8 +3234,6 @@ private:
 
   Uint32 setAttrIds(const AttributeMask &attributeMask, Uint32 noOfAttributes,
                     Uint32 *inBuffer);
-
-  bool primaryKey(Tablerec* const, Uint32);
 
   // these set terrorCode and return non-zero on error
 

@@ -36,7 +36,7 @@ bool printAPI_VERSION_REQ(FILE *output, const Uint32 *theData, Uint32 len,
   const ApiVersionReq *sig = (const ApiVersionReq *)&theData[0];
 
   fprintf(output,
-          " senderRef: (node: %d, block: %d), nodeId: %d\n" \
+          " senderRef: (node: %d, block: %d), nodeId: %d\n"
           " version: %x, mysql_version: %x\n",
 	  refToNode(sig->senderRef), refToBlock(sig->senderRef),
 	  sig->nodeId, sig->version, sig->mysql_version);
