@@ -233,7 +233,7 @@ const ParserRow<MgmApiSession> commands[] = {
     MGM_CMD("deactivate", &MgmApiSession::deactivate, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "node"),
 
-    MGM_CMD("start", &MgmApiSession::start, ""),
+    MGM_CMD("start", &MgmApiSession::start, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
 
     MGM_CMD("start all", &MgmApiSession::startAll, "", &Basic),
