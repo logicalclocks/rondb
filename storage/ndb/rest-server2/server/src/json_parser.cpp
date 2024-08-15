@@ -217,7 +217,7 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
   }
   reqStruct.operationId = operationId;
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 // This is used to perform batched primary key read operations.
@@ -481,7 +481,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
     }
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status JSONParser::config_parse(const std::string &configsBody,
@@ -511,7 +511,7 @@ RS_Status JSONParser::config_parse(const std::string &configsBody,
       // Set the grpc.enable to be true
       // so that in main it exits
       configsStruct.grpc.enable = true;
-      return CRS_Status().status;
+      return CRS_Status::SUCCESS.status;
     }
     if (keyv == REST_STR) {
       simdjson::ondemand::object restObj;
@@ -810,7 +810,7 @@ RS_Status JSONParser::config_parse(const std::string &configsBody,
       }
     }
   }
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status extract_db_and_table(const std::string &relativeUrl, std::string &db,
@@ -838,7 +838,7 @@ RS_Status extract_db_and_table(const std::string &relativeUrl, std::string &db,
         .status;
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status handle_simdjson_error(const simdjson::error_code &error,

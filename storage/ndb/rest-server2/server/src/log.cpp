@@ -32,7 +32,7 @@ LogConfig::LogConfig() {
 
 RS_Status LogConfig::validate() {
   // TODO Implement Me
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string LogConfig::string() {

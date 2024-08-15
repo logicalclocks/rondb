@@ -78,19 +78,19 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
 
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
     return ret;
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status RonDBConnection::shutdown_rondb_connection() noexcept {
   RS_Status ret = shutdown_connection();
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
     return ret;
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status RonDBConnection::rondb_reconnect() noexcept {
   RS_Status ret = reconnect();
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
     return ret;
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }

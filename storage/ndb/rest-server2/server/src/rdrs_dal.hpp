@@ -31,8 +31,10 @@ class CRS_Status {
   RS_Status status{};
 
   CRS_Status() {
-    initialize(SUCCESS, 0, 0, 0, 0, "", 0, "");
+    initialize(HTTP_CODE::SUCCESS, 0, 0, 0, 0, "", 0, "");
   }
+
+  static CRS_Status SUCCESS;
 
   explicit CRS_Status(HTTP_CODE http_code) {
     initialize(http_code, 0, 0, 0, 0, "", 0, "");
@@ -71,4 +73,5 @@ class CRS_Status {
     this->status.err_file_name[RS_STATUS_FILE_NAME_LEN - 1] = '\0';
   }
 };
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_HPP_
