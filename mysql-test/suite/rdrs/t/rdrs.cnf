@@ -2,3 +2,4 @@
 
 [cluster_config.1]
 DataMemory=200M
+MaxNoOfTables=4096
