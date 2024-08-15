@@ -3058,8 +3058,6 @@ private:
     return LqhKeyReq::getNrCopyFlag(m_tc_connect_ptr.p->reqinfo) |
            c_executing_redo_log;
   }
-private:
-
  private:
   BLOCK_DEFINES(Dblqh);
 
@@ -3910,6 +3908,7 @@ private:
  public:
   Uint32 readPrimaryKeys(Uint32 opPtrI, Uint32 *dst, bool xfrm);
 
+ private:
   void acckeyconf_tupkeyreq(Signal*, TcConnectionrec*, Fragrecord*,
                             Uint32, Uint32);
   void acckeyconf_load_diskpage(Signal*,TcConnectionrecPtr,Fragrecord*,

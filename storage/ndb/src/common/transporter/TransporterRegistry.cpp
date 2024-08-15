@@ -2077,7 +2077,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
      * synchronication between ::update_connections() and 
      * performReceive()
      *
-     * Transporter::isConnected() state my change asynch.
+     * Transporter::isConnected() state may change asynch.
      * A mismatch between the TransporterRegistry::is_connected(),
      * and Transporter::isConnected() state is possible, and indicate 
      * that a change is underway. (Completed by update_connections())

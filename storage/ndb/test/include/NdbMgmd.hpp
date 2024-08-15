@@ -27,7 +27,6 @@
 #ifndef NDB_MGMD_HPP
 #define NDB_MGMD_HPP
 
-#include "portlib/ndb_socket.h"
 #include <mgmapi.h>
 #include "../../src/mgmapi/mgmapi_internal.h"
 #include "mgmcommon/NdbMgm.hpp"

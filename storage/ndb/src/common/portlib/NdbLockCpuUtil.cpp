@@ -29,7 +29,6 @@
 #include <NdbMutex.h>
 #include <NdbThread.h>
 #include <ndb_global.h>
-#include <memory>
 #include "util/require.h"
 
 #define UNDEFINED_PROCESSOR_SET 0xFFFF

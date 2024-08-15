@@ -61,7 +61,6 @@
 #include <signaldata/SyncThreadViaReqConf.hpp>
 #include <signaldata/TakeOverTcConf.hpp>
 #include <signaldata/TrpKeepAlive.hpp>
-#include <signaldata/GetNumMultiTrp.hpp>
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
 #include <Configuration.hpp>
