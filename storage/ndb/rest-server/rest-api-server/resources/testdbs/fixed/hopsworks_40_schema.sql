@@ -36,6 +36,8 @@ CREATE DATABASE hopsworks;
 
 USE hopsworks;
 
+SET FOREIGN_KEY_CHECKS=0;
+
 --
 -- Table structure for table `account_audit`
 --
@@ -2553,16 +2555,6 @@ CREATE TABLE IF NOT EXISTS `pki_certificate`
   DEFAULT CHARSET = latin1
   COLLATE = latin1_general_cs;
 
-CREATE TABLE IF NOT EXISTS `pki_crl`
-(
-    `type` VARCHAR(20) NOT NULL,
-    `crl`  MEDIUMBLOB  NOT NULL,
-    PRIMARY KEY (`type`) USING HASH
-) /*!50100 TABLESPACE `ts_1` STORAGE DISK */
-           ENGINE = ndbcluster COMMENT ='NDB_TABLE=READ_BACKUP=1'
-           DEFAULT CHARSET = latin1
-           COLLATE = latin1_general_cs;
-
 CREATE TABLE IF NOT EXISTS `pki_key`
 (
     `owner` VARCHAR(100)    NOT NULL,
@@ -2965,3 +2957,5 @@ CREATE TABLE IF NOT EXISTS feature_view_logging
 ) ENGINE = ndbcluster
   DEFAULT CHARSET = latin1
   COLLATE = latin1_general_cs;
+
+SET FOREIGN_KEY_CHECKS=1;
