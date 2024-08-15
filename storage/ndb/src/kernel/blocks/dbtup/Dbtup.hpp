@@ -3266,8 +3266,6 @@ public:
   Uint32 setAttrIds(const AttributeMask &attributeMask, Uint32 noOfAttributes,
                     Uint32 *inBuffer);
 
-  bool primaryKey(Tablerec* const regTabPtr, Uint32 attrId);
-
   // these set terrorCode and return non-zero on error
 
   int executeTuxInsertTriggers(Signal *signal, Operationrec *regOperPtr,
