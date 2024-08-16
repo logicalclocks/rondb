@@ -1,15 +1,16 @@
-# Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -19,7 +20,6 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
-
 
 ## ADD_COMPILE_FLAGS(<source files> COMPILE_FLAGS <flags>)
 ## Use this for adding compiler flags to source files.
@@ -139,12 +139,31 @@ ENDFUNCTION(ADD_LINUX_DEB_FLAGS)
 # If compilation/linking succeeds, we extend misc cmake LINKER_FLAGS,
 # and set OUTPUT_RESULT to 1.
 FUNCTION(CHECK_ALTERNATIVE_LINKER LINKER OUTPUT_RESULT)
+  SET(ACCEPTED_VERSION 1)
   CMAKE_PUSH_CHECK_STATE(RESET)
 
   SET(CMAKE_REQUIRED_LIBRARIES "-fuse-ld=${LINKER}")
   CHECK_C_SOURCE_COMPILES("int main() {}" C_LD_${LINKER}_RESULT)
   CHECK_CXX_SOURCE_COMPILES("int main() {}" CXX_LD_${LINKER}_RESULT)
   IF(C_LD_${LINKER}_RESULT AND CXX_LD_${LINKER}_RESULT)
+    IF(${LINKER} STREQUAL "mold")
+      FIND_PROGRAM(MOLD_EXECUTABLE "mold")
+      IF(MOLD_EXECUTABLE)
+        EXECUTE_PROCESS(COMMAND ${MOLD_EXECUTABLE} --version
+          OUTPUT_VARIABLE MOLD_OUTPUT
+          RESULT_VARIABLE MOLD_RESULT
+          OUTPUT_STRIP_TRAILING_WHITESPACE
+          )
+        STRING(REGEX MATCH "^mold ([.0-9]+)" VERSION "${MOLD_OUTPUT}")
+        IF(NOT CMAKE_MATCH_1 OR CMAKE_MATCH_1 VERSION_LESS "2.0.0")
+          MESSAGE(STATUS
+            "This version of mold has an incompatible version: ${MOLD_OUTPUT}")
+          SET(ACCEPTED_VERSION 0)
+        ENDIF()
+      ENDIF()
+    ENDIF()
+  ENDIF()
+  IF(ACCEPTED_VERSION AND C_LD_${LINKER}_RESULT AND CXX_LD_${LINKER}_RESULT)
     FOREACH(flag
         CMAKE_EXE_LINKER_FLAGS
         CMAKE_MODULE_LINKER_FLAGS
@@ -161,3 +180,17 @@ FUNCTION(CHECK_ALTERNATIVE_LINKER LINKER OUTPUT_RESULT)
 
   CMAKE_POP_CHECK_STATE()
 ENDFUNCTION(CHECK_ALTERNATIVE_LINKER)
+
+FUNCTION(EXCLUDE_FROM_MSVC_PGO TARGET_LIB)
+  # Exclude archive from PGO on Windows to avoid linker error LNK1248
+  IF(MSVC AND ((FPROFILE_GENERATE OR FPROFILE_USE)))
+    TARGET_COMPILE_OPTIONS(${TARGET_LIB} PRIVATE /GL-)
+  ENDIF()
+ENDFUNCTION(EXCLUDE_FROM_MSVC_PGO)
+
+FUNCTION(EXCLUDE_FILE_FROM_MSVC_PGO TARGET_FILE)
+  # Exclude archive from PGO on Windows to avoid linker error LNK1248
+  IF(MSVC AND ((FPROFILE_GENERATE OR FPROFILE_USE)))
+    ADD_COMPILE_FLAGS(${TARGET_FILE} COMPILE_FLAGS /GL-)
+  ENDIF()
+ENDFUNCTION(EXCLUDE_FILE_FROM_MSVC_PGO)

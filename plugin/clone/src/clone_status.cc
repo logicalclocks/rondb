@@ -1,15 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -358,7 +359,7 @@ int Status_pfs::read_column_value(PSI_field *field, uint32_t index) {
 
   /* Return NULL if cursor is positioned at beginning or end. */
   auto row_index = get_position();
-  bool is_null = (row_index == 0 || row_index > S_NUM_ROWS);
+  const bool is_null = (row_index == 0 || row_index > S_NUM_ROWS);
 
   switch (index) {
     case 0: /* ID: Clone ID */
@@ -400,7 +401,7 @@ int Status_pfs::read_column_value(PSI_field *field, uint32_t index) {
           field, is_null ? nullptr : m_data.m_error_mesg);
       break;
     case 9: /* BINLOG_FILE */ {
-      size_t dir_len = dirname_length(m_data.m_binlog_file);
+      const size_t dir_len = dirname_length(m_data.m_binlog_file);
       mysql_pfscol_string->set_varchar_utf8mb4(
           field, is_null ? nullptr : m_data.m_binlog_file + dir_len);
     } break;
@@ -530,7 +531,7 @@ void Status_pfs::Data::read() {
 }
 
 void Status_pfs::Data::recover() {
-  std::string file_name(CLONE_RECOVERY_FILE);
+  const std::string file_name(CLONE_RECOVERY_FILE);
   std::ifstream recovery_file;
   recovery_file.open(file_name, std::ifstream::in);
   if (!recovery_file.is_open()) {
@@ -637,7 +638,7 @@ int Progress_pfs::read_column_value(PSI_field *field, uint32_t index) {
 
   /* Return NULL if cursor is positioned at beginning or end. */
   auto row_index = get_position();
-  bool is_null = (row_index == 0 || row_index > S_NUM_ROWS);
+  const bool is_null = (row_index == 0 || row_index > S_NUM_ROWS);
 
   switch (index) {
     case 0: /* ID: Clone ID */

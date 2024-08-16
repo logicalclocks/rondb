@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2023, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,20 +38,25 @@ class SqlParser {
   SqlParser(SqlLexer::iterator first, SqlLexer::iterator last)
       : cur_{first}, end_{last} {}
 
- protected:
   class TokenText {
    public:
     TokenText() = default;
-    TokenText(std::string_view txt) : txt_{txt} {}
+    TokenText(SqlLexer::TokenId id, std::string_view txt)
+        : id_{id}, txt_{txt} {}
 
     operator bool() const { return !txt_.empty(); }
 
     [[nodiscard]] std::string_view text() const { return txt_; }
+    [[nodiscard]] SqlLexer::TokenId id() const { return id_; }
 
    private:
+    SqlLexer::TokenId id_{};
     std::string_view txt_{};
   };
 
+  TokenText token() const { return {cur_->id, cur_->text}; }
+
+ protected:
   TokenText ident() {
     if (auto ident_tkn = accept(IDENT)) {
       return ident_tkn;
@@ -61,13 +67,27 @@ class SqlParser {
     }
   }
 
+  TokenText accept_if_not(int sym) {
+    if (has_error()) return {};
+
+    if (cur_->id != sym) {
+      auto id = cur_->id;
+      auto txt = cur_->text;
+      ++cur_;
+      return {id, txt};
+    }
+
+    return {};
+  }
+
   TokenText accept(int sym) {
     if (has_error()) return {};
 
     if (cur_->id == sym) {
+      auto id = cur_->id;
       auto txt = cur_->text;
       ++cur_;
-      return txt;
+      return {id, txt};
     }
 
     return {};

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,15 +32,15 @@
 
 class MockIoService : public net::IoServiceBase {
  public:
-  using void_ret = stdx::expected<void, std::error_code>;
-  MOCK_METHOD0(open, void_ret());
-  MOCK_METHOD2(add_fd_interest,
-               void_ret(native_handle_type, net::impl::socket::wait_type));
-  MOCK_METHOD1(remove_fd, void_ret(native_handle_type));
-  MOCK_METHOD0(notify, void());
+  MOCK_METHOD((stdx::expected<void, std::error_code>), open, (), (override));
+  MOCK_METHOD((stdx::expected<void, std::error_code>), add_fd_interest,
+              (native_handle_type, net::impl::socket::wait_type), (override));
+  MOCK_METHOD((stdx::expected<void, std::error_code>), remove_fd,
+              (native_handle_type), (override));
+  MOCK_METHOD(void, notify, (), (override));
 
-  using fdevent_ret = stdx::expected<net::fd_event, std::error_code>;
-  MOCK_METHOD1(poll_one, fdevent_ret(std::chrono::milliseconds));
+  MOCK_METHOD((stdx::expected<net::fd_event, std::error_code>), poll_one,
+              (std::chrono::milliseconds), (override));
 };
 
 #endif

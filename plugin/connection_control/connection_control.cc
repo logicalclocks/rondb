@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,6 +34,7 @@
 #include "mysqld_error.h"
 #include "plugin/connection_control/connection_control_coordinator.h" /* g_connection_event_coordinator */
 #include "plugin/connection_control/connection_delay_api.h" /* connection_delay apis */
+#include "template_utils.h"
 
 static SERVICE_TYPE(registry) *reg_srv = nullptr;
 SERVICE_TYPE(log_builtins) *log_bi = nullptr;
@@ -307,7 +309,7 @@ static int check_min_connection_delay(MYSQL_THD thd [[maybe_unused]],
                                       void *save [[maybe_unused]],
                                       struct st_mysql_value *value) {
   long long new_value;
-  int64 existing_value = g_variables.max_connection_delay;
+  const int64 existing_value = g_variables.max_connection_delay;
   if (value->val_int(value, &new_value)) return 1; /* NULL value */
 
   if (new_value >= connection_control::MIN_DELAY &&
@@ -371,7 +373,7 @@ static int check_max_connection_delay(MYSQL_THD thd [[maybe_unused]],
                                       void *save [[maybe_unused]],
                                       struct st_mysql_value *value) {
   long long new_value;
-  int64 existing_value = g_variables.min_connection_delay;
+  const int64 existing_value = g_variables.min_connection_delay;
   if (value->val_int(value, &new_value)) return 1; /* NULL value */
 
   if (new_value >= connection_control::MIN_DELAY &&
@@ -437,7 +439,7 @@ static int show_delay_generated(MYSQL_THD thd [[maybe_unused]], SHOW_VAR *var,
   var->type = SHOW_LONGLONG;
   var->value = buff;
   longlong *value = reinterpret_cast<longlong *>(buff);
-  int64 current_val =
+  const int64 current_val =
       g_statistics.stats_array[STAT_CONNECTION_DELAY_TRIGGERED].load();
   *value = static_cast<longlong>(current_val);
   return 0;

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -625,7 +626,7 @@ extern "C" char *lookup(UDF_INIT *, UDF_ARGS *args, char *result,
   memcpy(name_buff, args->args[0], length);
   name_buff[length] = 0;
   {
-    std::lock_guard<std::mutex> lock(*LOCK_hostname);
+    const std::lock_guard<std::mutex> lock(*LOCK_hostname);
     if (!(hostent = gethostbyname((char *)name_buff))) {
       *null_value = 1;
       return nullptr;
@@ -700,7 +701,7 @@ extern "C" char *reverse_lookup(UDF_INIT *, UDF_ARGS *args, char *result,
     return nullptr;
   }
   {
-    std::lock_guard<std::mutex> lock(*LOCK_hostname);
+    const std::lock_guard<std::mutex> lock(*LOCK_hostname);
     if (!(hp = gethostbyaddr((char *)&taddr, sizeof(taddr), AF_INET))) {
       *null_value = 1;
       return nullptr;
@@ -787,8 +788,8 @@ extern "C" void avgcost_add(UDF_INIT *initid, UDF_ARGS *args, unsigned char *,
                             unsigned char *) {
   if (args->args[0] && args->args[1]) {
     struct avgcost_data *data = (struct avgcost_data *)initid->ptr;
-    long long quantity = *((long long *)args->args[0]);
-    long long newquantity = data->totalquantity + quantity;
+    const long long quantity = *((long long *)args->args[0]);
+    const long long newquantity = data->totalquantity + quantity;
     double price = *((double *)args->args[1]);
 
     data->count++;
@@ -934,7 +935,7 @@ extern "C" void my_median_add(UDF_INIT *initid, UDF_ARGS *args, unsigned char *,
       static_cast<My_median_data *>(static_cast<void *>(initid->ptr));
   if (args->args[0]) {
     void *arg0 = args->args[0];
-    long long number = *(static_cast<long long *>(arg0));
+    const long long number = *(static_cast<long long *>(arg0));
     data->vec.push_back(number);
   }
 }

@@ -1,6 +1,6 @@
-include/master-slave.inc
+include/rpl/init_source_replica.inc
 [connection master]
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 CREATE TABLE employees (id INT NOT NULL, store_id INT NOT NULL);
 Test PARTITION BY
 ALTER TABLE employees PARTITION BY RANGE (store_id) (PARTITION p0 VALUES LESS THAN (6), PARTITION p1 VALUES LESS THAN (11), PARTITION p2 VALUES LESS THAN (16));
@@ -90,4 +90,4 @@ Test COALESCE PARTITION
 ALTER TABLE employees COALESCE PARTITION 2;
 include/assert.inc [Check that the before count is greater than after count  after COALESCE PARTITION]
 DROP TABLE employees;
-include/rpl_end.inc
+include/rpl/deinit.inc

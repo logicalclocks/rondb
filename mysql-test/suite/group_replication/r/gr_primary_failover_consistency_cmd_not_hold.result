@@ -16,13 +16,13 @@ SET @@GLOBAL.DEBUG= '+d,launch_hook_trans_begin_assert_if_hold';
 # 2. Validate SQL command SHOW will not block
 SHOW GLOBAL VARIABLES LIKE 'group_replication_consistency';
 Variable_name	Value
-group_replication_consistency	EVENTUAL
+group_replication_consistency	BEFORE_ON_PRIMARY_FAILOVER
 SHOW PROCESSLIST;
 SHOW STATUS;
 SHOW ENGINE INNODB LOGS;
 SHOW ENGINE INNODB STATUS;
 SHOW ENGINE INNODB MUTEX;
-SHOW MASTER STATUS;
+SHOW BINARY LOG STATUS;
 SHOW REPLICA STATUS;
 SHOW CHARACTER SET;
 SHOW COLLATION;
@@ -74,7 +74,7 @@ COUNT(*)=1
 # 10. Validate SQL command SELECT that don't use tables will not block
 SELECT @@GLOBAL.GTID_EXECUTED;
 @@GLOBAL.GTID_EXECUTED
-GROUP_REPLICATION_GROUP_NAME:1
+
 
 # 11. Validate SQL command RESET PERSIST will not block
 RESET PERSIST;
@@ -90,7 +90,7 @@ include/start_and_bootstrap_group_replication.inc
 # 14. Validate SQL command SHUTDOWN will not block
 SET @@GLOBAL.DEBUG= '+d,launch_hook_trans_begin_assert_if_hold';
 SHUTDOWN;
-include/rpl_reconnect.inc
+include/rpl/reconnect.inc
 
 # 15. Cleanup
 SET @@GLOBAL.DEBUG= '-d,launch_hook_trans_begin_assert_if_hold';

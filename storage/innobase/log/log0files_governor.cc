@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -574,7 +575,7 @@ log.writer_mutex acquired iff has_writer_mutex is true.
 @param[in,out]  log               redo log
 @param[in]      has_writer_mutex  true iff this thread has log.writer_mutex
                                   acquired
-@return @see Log_files_governor_iteration_result */
+@return @ref Log_files_governor_iteration_result */
 static Log_files_governor_iteration_result log_files_governor_iteration_low(
     log_t &log, bool has_writer_mutex);
 
@@ -1304,6 +1305,8 @@ static Log_files_governor_iteration_result log_files_governor_iteration_low(
 }
 
 static void log_files_governor_iteration(log_t &log) {
+  IB_mutex_guard iteration_latch{&(log.governor_iteration_mutex),
+                                 UT_LOCATION_HERE};
   using Iteration_result = Log_files_governor_iteration_result;
 
   /* We can't use log_writer_mutex_own() here, because it could return true
@@ -2017,8 +2020,10 @@ void log_files_initialize_on_existing_redo(log_t &log) {
 Notifies the log_files_governor thread (to ensure it is soon).
 @param[in,out]  log   redo log */
 static void log_files_wait_until_next_governor_iteration(log_t &log) {
+  mutex_enter(&log.governor_iteration_mutex);
   const auto sig_count = os_event_reset(log.m_files_governor_iteration_event);
   os_event_set(log.m_files_governor_event);
+  mutex_exit(&log.governor_iteration_mutex);
   os_event_wait_low(log.m_files_governor_iteration_event, sig_count);
 }
 
@@ -2027,7 +2032,9 @@ void log_files_resize_requested(log_t &log) {
 }
 
 void log_files_thread_concurrency_updated(log_t &log) {
-  log_files_wait_until_next_governor_iteration(log);
+  if (log_files_governor_is_active()) {
+    log_files_wait_until_next_governor_iteration(log);
+  }
 }
 
 /** @} */

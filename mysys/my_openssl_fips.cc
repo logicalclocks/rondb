@@ -1,15 +1,16 @@
-/* Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -125,8 +126,8 @@ bool set_fips_mode(const int fips_mode, char err_string[OPENSSL_ERROR_LENGTH]) {
   @retval non-zero: FIPS is supported.
 */
 int test_ssl_fips_mode(char err_string[OPENSSL_ERROR_LENGTH]) {
-  unsigned test_fips_mode = get_fips_mode() == 0 ? 1 : 0;
-  int ret = set_fips_mode_inner(test_fips_mode);
+  const unsigned test_fips_mode = get_fips_mode() == 0 ? 1 : 0;
+  const int ret = set_fips_mode_inner(test_fips_mode);
   unsigned long err = (ret == 0) ? ERR_get_error() : 0;
 
   if (err != 0) {

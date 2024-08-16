@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -50,9 +51,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "log_sink_perfschema_imp.h"
 #include "log_sink_trad.h"  // log_sink_trad_parse_log_line()
 #include "my_dir.h"
-#include "my_loglevel.h"
 #include "my_systime.h"  // my_micro_time()
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysqld_error.h"
 #include "mysys_err.h"
 #include "sql/log.h"
@@ -935,7 +936,7 @@ DEFINE_METHOD(log_service_error, log_sink_perfschema_imp::event_add,
                const char *error_code, uint error_code_length,
                const char *subsys, uint subsys_length, const char *message,
                uint message_length)) {
-  log_service_error ret = LOG_SERVICE_ARGUMENT_TOO_LONG;
+  const log_service_error ret = LOG_SERVICE_ARGUMENT_TOO_LONG;
 
   log_sink_pfs_event e;
   memset(&e, 0, sizeof(log_sink_pfs_event));

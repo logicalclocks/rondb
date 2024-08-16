@@ -1,4 +1,4 @@
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 call mtr.add_suppression("Failed to compress the gtid_executed table.");
 SET @debug_save= @@GLOBAL.DEBUG;
 SET @@GLOBAL.DEBUG= '+d, disable_gtid_background_persister';
@@ -13,20 +13,20 @@ SET DEBUG_SYNC= 'now SIGNAL notified_thread_complete';
 # Veriry that we can get correct gtid sets after server restarts
 # from a crash of compressing gtid_executed table.
 #
-include/assert.inc [committed gtid set is MASTER_UUID:1-3]
+include/assert.inc [committed gtid set is Source_UUID:1-3]
 FLUSH LOGS;
 SELECT * FROM mysql.gtid_executed;
-source_uuid	interval_start	interval_end
-MASTER_UUID	1	3
+source_uuid	interval_start	interval_end	gtid_tag
+MASTER_UUID	1	3	
 #
 # Verify that no gtid is inserted into gtid_executed table on binlog
 # rotation if no gtid is stored into the last binlog.
 #
 FLUSH LOGS;
-include/assert.inc [committed gtid set is MASTER_UUID:1-3]
+include/assert.inc [committed gtid set is Source_UUID:1-3]
 SELECT * FROM mysql.gtid_executed;
-source_uuid	interval_start	interval_end
-MASTER_UUID	1	3
+source_uuid	interval_start	interval_end	gtid_tag
+MASTER_UUID	1	3	
 SET @@GLOBAL.DEBUG= '+d, disable_gtid_background_persister';
 INSERT INTO t1 VALUES(2);
 SET @@GLOBAL.DEBUG= '+d, simulate_error_on_compress_gtid_table';
@@ -38,11 +38,11 @@ SET @@GLOBAL.DEBUG= '-d, simulate_error_on_compress_gtid_table';
 # is not compressed if we encountered an error when compressing
 # gtid_executed table.
 #
-include/assert.inc [committed gtid set is MASTER_UUID:1-4]
+include/assert.inc [committed gtid set is Source_UUID:1-4]
 SELECT * FROM mysql.gtid_executed;
-source_uuid	interval_start	interval_end
-MASTER_UUID	1	3
-MASTER_UUID	4	4
+source_uuid	interval_start	interval_end	gtid_tag
+MASTER_UUID	1	3	
+MASTER_UUID	4	4	
 #
 # Verify that 'Compressing gtid_executed table' stage is set
 # for compression thread when compressing gtid_executed table.
@@ -66,8 +66,8 @@ SET @@GLOBAL.DEBUG= '-d, disable_gtid_background_persister';
 call mtr.add_suppression("Failed to delete the row: .* from "
                          "the gtid_executed table.");
 SET @@GLOBAL.DEBUG= '+d, simulate_error_on_delete_gtid_from_table';
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 ERROR HY000: Got error -1 - 'Unknown error' from storage engine
 SET GLOBAL DEBUG= @debug_save;
 # restart
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2019, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,14 +31,10 @@
 
 #define JAM_FILE_ID 518
 
-Dbqlqh::Dbqlqh(Block_context& ctx,
-               Uint32 instanceNumber):
-  Dblqh(ctx, instanceNumber, DBQLQH)
-{
-}
+Dbqlqh::Dbqlqh(Block_context &ctx, Uint32 instanceNumber)
+    : Dblqh(ctx, instanceNumber, DBQLQH) {}
 
-Uint64 Dbqlqh::getTransactionMemoryNeed()
-{
+Uint64 Dbqlqh::getTransactionMemoryNeed() {
   Uint32 query_instance_count =
     globalData.ndbMtQueryWorkers;
   Uint32 lqh_scan_recs = 1;
@@ -53,12 +50,9 @@ Uint64 Dbqlqh::getTransactionMemoryNeed()
   Uint32 lqh_commit_ack_markers = 1;
   Uint64 commit_ack_marker_byte_count = 0;
   commit_ack_marker_byte_count +=
-    CommitAckMarker_pool::getMemoryNeed(lqh_commit_ack_markers);
+      CommitAckMarker_pool::getMemoryNeed(lqh_commit_ack_markers);
   commit_ack_marker_byte_count *= query_instance_count;
   return (op_byte_count + scan_byte_count + commit_ack_marker_byte_count);
 }
 
-
-Dbqlqh::~Dbqlqh()
-{
-}
+Dbqlqh::~Dbqlqh() {}

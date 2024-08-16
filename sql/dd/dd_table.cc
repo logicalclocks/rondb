@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,16 +29,18 @@
 #include <memory>  // unique_ptr
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_alloc.h"
 #include "my_base.h"
 #include "my_dbug.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/dtoa.h"
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
@@ -52,6 +55,7 @@
 #include "sql/dd/impl/utils.h"                 // dd::escape
 #include "sql/dd/performance_schema/init.h"    // performance_schema::
                                                //   set_PS_version_for_table
+#include "sql-common/my_decimal.h"
 #include "sql/create_field.h"
 #include "sql/dd/dd_version.h"  // DD_VERSION
 #include "sql/dd/properties.h"  // dd::Properties
@@ -84,7 +88,6 @@
 #include "sql/log.h"
 #include "sql/mdl.h"
 #include "sql/mem_root_array.h"
-#include "sql/my_decimal.h"
 #include "sql/mysqld.h"  // lower_case_table_names
 #include "sql/partition_element.h"
 #include "sql/partition_info.h"        // partition_info
@@ -105,6 +108,8 @@
 #include "sql/table.h"
 #include "sql/thd_raii.h"
 #include "sql_string.h"
+#include "string_with_len.h"
+#include "strmake.h"
 #include "typelib.h"
 
 namespace dd {
@@ -950,6 +955,12 @@ static bool is_candidate_primary_key(THD *thd, const KEY *key,
       if (i == key_part->fieldnr) break;
       i++;
     }
+
+    // cfield can be nullptr if the while-loop above terminates without
+    // finding the column, which is highly unlikely to happen. In this
+    // situation, a crash would be more appropriate.
+    assert(cfield != nullptr);
+
     if (cfield->is_array) return false;
     /* Prepare Field* object from Create_field */
 
@@ -2593,8 +2604,8 @@ bool table_legacy_db_type(THD *thd, const char *schema_name,
       ha_resolve_by_name_raw(thd, lex_cstring_handle(table->engine()));
 
   // Return DB_TYPE_UNKNOWN and no error if engine is not loaded.
-  *db_type =
-      ha_legacy_type(tmp_plugin ? plugin_data<handlerton *>(tmp_plugin) : NULL);
+  *db_type = ha_legacy_type(tmp_plugin ? plugin_data<handlerton *>(tmp_plugin)
+                                       : nullptr);
 
   return false;
 }
@@ -2967,21 +2978,20 @@ bool uses_general_tablespace(const Table &t) {
   return false;
 }
 
-void warn_on_deprecated_prefix_key_partition(THD *thd, const char *schema_name,
-                                             const char *orig_table_name,
-                                             const Table *table,
-                                             const bool is_upgrade) {
+bool prefix_key_partition_exists(const char *schema_name,
+                                 const char *orig_table_name,
+                                 const Table *table, const bool is_upgrade) {
   DBUG_TRACE;
   assert(table);
 
   // Check if table is partitioned.
   const Table::enum_partition_type pt_type = table->partition_type();
-  if (pt_type == Table::enum_partition_type::PT_NONE) return;
+  if (pt_type == Table::enum_partition_type::PT_NONE) return false;
 
   // Check if table is partitioned by [LINEAR] KEY.
   if (pt_type != Table::PT_KEY_51 && pt_type != Table::PT_KEY_55 &&
       pt_type != Table::PT_LINEAR_KEY_51 && pt_type != Table::PT_LINEAR_KEY_55)
-    return;
+    return false;
 
   // Parse the partition expression to get the list of columns used.
   // NOTE : This is similar to working of set_field_list().
@@ -3052,21 +3062,21 @@ void warn_on_deprecated_prefix_key_partition(THD *thd, const char *schema_name,
       const CHARSET_INFO *cs = dd_get_mysql_charset(column->collation_id());
       const uint prefix_key_length = index_element->length() / cs->mbmaxlen;
 
-      // In case of UPGRADE from 5.7 or lower 8.0.x version, send warning to the
-      // error log. In case of CREATE|ALTER TABLE, send warning to client.
+      // In case of UPGRADE from 5.7 or lower 8.0.x version, send error to the
+      // error log. In case of CREATE|ALTER TABLE, send error to client.
       if (is_upgrade)
-        LogErr(WARNING_LEVEL, ER_WARN_LOG_DEPRECATED_PARTITION_PREFIX_KEY,
+        LogErr(ERROR_LEVEL, ER_LOG_PARTITION_PREFIX_KEY_NOT_SUPPORTED,
                schema_name, orig_table_name, column_name.c_str(),
                column_name.c_str(), prefix_key_length);
       else
-        push_warning_printf(
-            thd, Sql_condition::SL_WARNING,
-            ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT,
-            ER_THD(thd, ER_WARN_CLIENT_DEPRECATED_PARTITION_PREFIX_KEY),
-            schema_name, orig_table_name, column_name.c_str(),
-            column_name.c_str(), prefix_key_length);
+        my_error(ER_PARTITION_PREFIX_KEY_NOT_SUPPORTED, MYF(0), schema_name,
+                 orig_table_name, column_name.c_str(), column_name.c_str(),
+                 prefix_key_length);
+      // Return error when first prefix key is encountered
+      return true;
     }
   }
+  return false;
 }
 
 bool get_implicit_tablespace_options(THD *thd, const Table *table,
@@ -3145,6 +3155,56 @@ bool get_implicit_tablespace_options(THD *thd, const Table *table,
     /* purecov: end */
   }
 
+  return false;
+}
+
+bool check_non_standard_key_exists_in_fk(THD *thd, const Table *table) {
+  for (const dd::Foreign_key *fk : table->foreign_keys()) {
+    const dd::Table *parent_table_def = nullptr;
+    const dd::cache::Dictionary_client::Auto_releaser releaser(
+        thd->dd_client());
+    if (thd->dd_client()->acquire(fk->referenced_table_schema_name(),
+                                  fk->referenced_table_name(),
+                                  &parent_table_def))
+      return true;
+    if (parent_table_def == nullptr) return true;
+
+    bool found_standard_key = false;
+    uint fk_element_count = fk->elements().size();
+    for (const dd::Index *idx : parent_table_def->indexes()) {
+      if ((idx->type() == dd::Index::IT_PRIMARY ||
+           idx->type() == dd::Index::IT_UNIQUE)) {
+        uint num_idx_elements = 0;
+        for (const dd::Index_element *idx_el : idx->elements()) {
+          if (!idx_el->is_hidden()) num_idx_elements++;
+        }
+        if (num_idx_elements != fk_element_count) continue;
+
+        uint num_matched_cols = 0;
+        auto fk_element_iter = fk->elements().begin();
+        for (const dd::Index_element *idx_el : idx->elements()) {
+          if (idx_el->is_hidden() && idx_el->is_prefix()) continue;
+          if (my_strcasecmp(
+                  system_charset_info, idx_el->column().name().c_str(),
+                  (*fk_element_iter)->referenced_column_name().c_str()) == 0)
+            num_matched_cols++;
+          if (++fk_element_iter == fk->elements().end()) break;
+        }
+
+        if (num_matched_cols == num_idx_elements) {
+          found_standard_key = true;
+          break;
+        }
+      }
+    }
+    if (!found_standard_key) {
+      deprecated_use_fk_on_non_standard_key_last_timestamp = my_micro_time();
+      deprecated_use_fk_on_non_standard_key_count++;
+      LogErr(WARNING_LEVEL, ER_WARN_LOG_DEPRECATED_NON_STANDARD_KEY,
+             fk->name().c_str(), fk->referenced_table_schema_name().c_str(),
+             fk->referenced_table_name().c_str());
+    }
+  }
   return false;
 }
 }  // namespace dd

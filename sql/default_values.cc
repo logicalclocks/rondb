@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,6 +35,7 @@
 #include "my_macros.h"
 #include "my_pointer_arithmetic.h"
 #include "my_sys.h"
+#include "mysql/strings/dtoa.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "sql/create_field.h"
@@ -44,11 +46,10 @@
 #include "sql/dd_table_share.h"   // dd_get_old_field_type
 #include "sql/field.h"            // calc_pack_length
 #include "sql/gis/srid.h"
-#include "sql/handler.h"     // handler
-#include "sql/item.h"        // Item
-#include "sql/my_decimal.h"  // DECIMAL_MAX_SCALE
-#include "sql/sql_class.h"   // THD
-#include "sql/sql_list.h"    // List
+#include "sql/handler.h"    // handler
+#include "sql/item.h"       // Item
+#include "sql/sql_class.h"  // THD
+#include "sql/sql_list.h"   // List
 #include "sql/table.h"
 
 /**
@@ -68,7 +69,7 @@
 
 static size_t column_pack_length(const dd::Column &col_obj) {
   // Arrays always use JSON as storage
-  dd::enum_column_types col_type =
+  const dd::enum_column_types col_type =
       col_obj.is_array() ? dd::enum_column_types::JSON : col_obj.type();
   bool treat_bit_as_char = false;
 
@@ -201,7 +202,7 @@ bool prepare_default_value(THD *thd, uchar *buf, TABLE *table,
   if (field.constant_default) {
     // Pointless to store the value of a function as it may not be constant.
     assert(field.constant_default->type() != Item::FUNC_ITEM);
-    type_conversion_status res =
+    const type_conversion_status res =
         field.constant_default->save_in_field(regfield, true);
     if (res != TYPE_OK && res != TYPE_NOTE_TIME_TRUNCATED &&
         res != TYPE_NOTE_TRUNCATED) {
@@ -255,7 +256,7 @@ bool prepare_default_value(THD *thd, uchar *buf, TABLE *table,
 err:
   // Destroy the field, despite being MEM_ROOT allocated, to avoid memory
   // leak for fields that allocate extra memory (e.g Field_blob::value).
-  destroy(regfield);
+  if (regfield != nullptr) ::destroy_at(regfield);
   return retval;
 }
 
@@ -277,10 +278,10 @@ bool prepare_default_value_buffer_and_table_share(THD *thd,
   }
 
   // Get the minimal and extra record buffer lengths from the handler.
-  size_t extra_length = file->extra_rec_buf_length();
-  size_t min_length =
+  const size_t extra_length = file->extra_rec_buf_length();
+  const size_t min_length =
       static_cast<size_t>(file->min_record_length(share->db_create_options));
-  destroy(file);
+  ::destroy_at(file);
 
   // Get the number of columns, record length etc.
   if (find_record_length(table, min_length, share)) return true;

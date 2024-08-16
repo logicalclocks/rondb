@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -64,7 +65,7 @@ Histogram_sampler::Histogram_sampler(size_t max_threads, int sampling_seed,
 #endif /* UNIV_DEBUG */
 
   m_parallel_reader.set_start_callback(
-      [=](Parallel_reader::Thread_ctx *thread_ctx) {
+      [this IF_DEBUG(, thd)](Parallel_reader::Thread_ctx *thread_ctx) {
         if (thread_ctx->get_state() == Parallel_reader::State::THREAD) {
 #ifdef UNIV_DEBUG
           /* for debug sync calls */
@@ -77,7 +78,7 @@ Histogram_sampler::Histogram_sampler(size_t max_threads, int sampling_seed,
       });
 
   m_parallel_reader.set_finish_callback(
-      [=](Parallel_reader::Thread_ctx *thread_ctx) {
+      [this](Parallel_reader::Thread_ctx *thread_ctx) {
         if (thread_ctx->get_state() == Parallel_reader::State::THREAD) {
           return finish_callback(thread_ctx);
         } else {
@@ -156,7 +157,8 @@ bool Histogram_sampler::init(trx_t *trx, dict_index_t *index,
   Parallel_reader::Config config(full_scan, index, read_level);
 
   dberr_t err = m_parallel_reader.add_scan(
-      trx, config, [=](const Parallel_reader::Ctx *ctx) {
+      trx, config,
+      [this, read_level, prebuilt](const Parallel_reader::Ctx *ctx) {
         if (read_level == 0) {
           return (process_leaf_rec(ctx, prebuilt));
         } else {

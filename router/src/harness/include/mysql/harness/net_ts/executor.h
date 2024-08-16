@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -166,28 +167,11 @@ class execution_context {
   }
 
   // 13.7.3 [async.exec.ctx.ops]
-  void notify_fork(fork_event e) {
-    // prepare is in reverse
-    if (e == fork_event::prepare) {
-      std::for_each(services_.rbegin(), services_.rend(),
-                    [e](auto &svc) { svc.ptr_->notify_fork(e); });
-    } else {
-      std::for_each(services_.begin(), services_.end(),
-                    [e](auto &svc) { svc.ptr_->notify_fork(e); });
-    }
-  }
+  void notify_fork(fork_event e);
 
  protected:
   // 13.7.4 [async.exec.ctx.protected]
-  void shutdown() noexcept {
-    // shutdown in reverse insert-order
-    std::for_each(services_.rbegin(), services_.rend(), [](auto &svc) {
-      if (svc.active_) {
-        svc.ptr_->shutdown();
-        svc.active_ = false;
-      }
-    });
-  }
+  void shutdown() noexcept;
 
   void destroy() noexcept {
     // destroy in reverse insert-order
@@ -933,6 +917,29 @@ bool operator!=(const strand<Executor> &a, const strand<Executor> &b) {
 // 13.26 [async.use.future] - not implemented
 
 // 13.27 [async.packaged.task.spec] - not implemented
+
+// 13.7.3 [async.exec.ctx.ops]
+inline void execution_context::notify_fork(fork_event e) {
+  // prepare is in reverse
+  if (e == fork_event::prepare) {
+    std::for_each(services_.rbegin(), services_.rend(),
+                  [e](auto &svc) { svc.ptr_->notify_fork(e); });
+  } else {
+    std::for_each(services_.begin(), services_.end(),
+                  [e](auto &svc) { svc.ptr_->notify_fork(e); });
+  }
+}
+
+// 13.7.4 [async.exec.ctx.protected]
+inline void execution_context::shutdown() noexcept {
+  // shutdown in reverse insert-order
+  std::for_each(services_.rbegin(), services_.rend(), [](auto &svc) {
+    if (svc.active_) {
+      svc.ptr_->shutdown();
+      svc.active_ = false;
+    }
+  });
+}
 
 }  // namespace net
 

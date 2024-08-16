@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,9 +33,9 @@
 
 #include "map_helpers.h"
 #include "my_alloc.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysqld_error.h"
 #ifdef HAVE_SYS_MMAN_H
@@ -259,7 +260,7 @@ int TC_LOG_DUMMY::rollback(THD *thd, bool all) {
 
 int TC_LOG_DUMMY::prepare(THD *thd, bool all) {
   CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_prepare_in_engines");
-  int error = ha_prepare_low(thd, all);
+  const int error = ha_prepare_low(thd, all);
   if (error != 0) return error;
   CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("after_ha_prepare_low");
   return trx_coordinator::set_prepared_in_tc_in_engines(thd, all);
@@ -470,7 +471,7 @@ void TC_LOG_MMAP::overflow() {
     TODO perhaps, increase log size ?
     let's check the behaviour of tc_log_page_waits first
   */
-  ulong old_log_page_waits = tc_log_page_waits;
+  const ulong old_log_page_waits = tc_log_page_waits;
 
   mysql_cond_wait(&COND_pool, &LOCK_tc);
 
@@ -493,7 +494,8 @@ void TC_LOG_MMAP::overflow() {
 TC_LOG::enum_result TC_LOG_MMAP::commit(THD *thd, bool all) {
   DBUG_TRACE;
   ulong cookie = 0;
-  my_xid xid = thd->get_transaction()->xid_state()->get_xid()->get_my_xid();
+  const my_xid xid =
+      thd->get_transaction()->xid_state()->get_xid()->get_my_xid();
 
   if (all) {
     CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_commit_in_tc");
@@ -521,7 +523,7 @@ int TC_LOG_MMAP::rollback(THD *thd, bool all) {
 
 int TC_LOG_MMAP::prepare(THD *thd, bool all) {
   CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("before_prepare_in_engines");
-  int error = ha_prepare_low(thd, all);
+  const int error = ha_prepare_low(thd, all);
   if (error != 0) return error;
   CONDITIONAL_SYNC_POINT_FOR_TIMESTAMP("after_ha_prepare_low");
   return trx_coordinator::set_prepared_in_tc_in_engines(thd, all);
@@ -576,7 +578,7 @@ ulong TC_LOG_MMAP::log_xid(my_xid xid) {
   }
 
   PAGE *p = active;
-  ulong cookie = store_xid_in_empty_slot(xid, p, data);
+  const ulong cookie = store_xid_in_empty_slot(xid, p, data);
   bool err;
 
   if (syncing) {  // somebody's syncing. let's wait
@@ -612,8 +614,8 @@ bool TC_LOG_MMAP::sync() {
     note - no locks are held at this point
   */
 
-  int err = do_msync_and_fsync(fd, syncing->start,
-                               syncing->size * sizeof(my_xid), MS_SYNC);
+  const int err = do_msync_and_fsync(fd, syncing->start,
+                                     syncing->size * sizeof(my_xid), MS_SYNC);
 
   mysql_mutex_lock(&LOCK_tc);
   assert(syncing != active);

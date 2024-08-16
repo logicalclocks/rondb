@@ -1996,7 +1996,7 @@ SELECT * FROM t1, t1 as t2 WHERE t2.pk BETWEEN t1.i4 AND t1.i4;
 EXPLAIN
 -> Nested loop inner join  (cost=1.6 rows=3)
     -> Filter: (t1.i4 is not null)  (cost=0.55 rows=3)
-        -> Index scan on t1 using i4_uq  (cost=0.55 rows=3)
+        -> Covering index scan on t1 using i4_uq  (cost=0.55 rows=3)
     -> Filter: (t2.pk between t1.i4 and t1.i4)  (cost=0.283 rows=1)
         -> Single-row index lookup on t2 using PRIMARY (pk=t1.i4)  (cost=0.283 rows=1)
 
@@ -3028,7 +3028,7 @@ EXPLAIN SELECT a, b FROM t1 WHERE (a, b) IN ((@v, 0), (1, 1));
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	SIMPLE	t1	NULL	range	x	x	10	NULL	2	100.00	Using where; Using index
 Warnings:
-Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where ((`test`.`t1`.`a`,`test`.`t1`.`b`) in (((@`v`),0),(1,1)))
+Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where ((`test`.`t1`.`a`,`test`.`t1`.`b`) in ((<cache>((@`v`)),0),(1,1)))
 FLUSH STATUS;
 SELECT a, b FROM t1 WHERE (a, b) IN ((@v, 0), (1, 1));
 a	b
@@ -3534,13 +3534,13 @@ DROP TABLE t1;
 #               WITH GROUP BY
 #
 CREATE TABLE t1 (
-v1 VARCHAR(20) CHARACTER SET utf8 NOT NULL,
+v1 VARCHAR(20) CHARACTER SET utf8mb3 NOT NULL,
 pk INTEGER NOT NULL,
 PRIMARY KEY (pk),
 KEY v1_key (v1(10))
 ) ENGINE=InnoDB;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 INSERT INTO t1 VALUES ('ABCDE',19), ('JLVGO',14);
 EXPLAIN SELECT * FROM t1 WHERE t1.v1 < CHAR(127);
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
@@ -3690,7 +3690,7 @@ CREATE TABLE `giant_table` (
 `other_id` bigint(20) NOT NULL DEFAULT '0',
 `some_other_id` int(11) DEFAULT 0 NOT NULL,
 `something` double NOT NULL DEFAULT '0',
-`comment` text COLLATE utf8_unicode_ci,
+`comment` text COLLATE utf8mb3_unicode_ci,
 `flags` int(11) NOT NULL DEFAULT '0',
 `time_created` int(11) NOT NULL DEFAULT '0',
 PRIMARY KEY (`id`),
@@ -3699,7 +3699,7 @@ KEY `some_other_id` (`some_other_id`),
 KEY `one_other_idx` (`one_id`,`other_id`),
 KEY `other_id` (`other_id`,`time_created`)
 ) ENGINE=InnoDB AUTO_INCREMENT=101651329
-DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci ;
+DEFAULT CHARSET=utf8mb3 COLLATE=utf8_unicode_ci ;
 Warnings:
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
@@ -3708,7 +3708,7 @@ Warning	1681	Integer display width is deprecated and will be removed in a future
 Warning	3778	'utf8mb3_unicode_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 Warning	3778	'utf8mb3_unicode_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 CREATE TABLE t1 (c1 INT);
 INSERT INTO t1 VALUES (66136540), (68983250), (89627210), (77869520),
@@ -4111,7 +4111,7 @@ SELECT 1 FROM t AS t1 JOIN t AS t2 ON t2.f1 < NULL;
 explain format=tree SELECT 1 FROM t AS t1 JOIN t AS t2 ON t2.f1 BETWEEN 2 AND 3;
 EXPLAIN
 -> Inner hash join (no condition)  (rows=8)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t2.f1 between 2 and 3)  (rows=2)
             -> Covering index range scan on t2 using f1 over (2 <= f1 <= 3)  (rows=2)
@@ -4126,14 +4126,14 @@ explain format=tree SELECT 1
 FROM t AS t1 JOIN (SELECT * FROM t WHERE f1 BETWEEN 2 AND 3) AS t2 ON TRUE;
 EXPLAIN
 -> Inner hash join (no condition)  (rows=8)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t.f1 between 2 and 3)  (rows=2)
             -> Covering index range scan on t using f1 over (2 <= f1 <= 3)  (rows=2)
 
 explain format=tree SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t2.f1 < NULL;
 EXPLAIN
--> Index scan on t1 using f1  (rows=4)
+-> Covering index scan on t1 using f1  (rows=4)
 
 SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t2.f1 < NULL;
 1
@@ -4144,7 +4144,7 @@ SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t2.f1 < NULL;
 explain format=tree SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t2.f1 BETWEEN 2 AND 3;
 EXPLAIN
 -> Left hash join (no condition)  (rows=8)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t2.f1 between 2 and 3)  (rows=2)
             -> Covering index range scan on t2 using f1 over (2 <= f1 <= 3)  (rows=2)
@@ -4152,10 +4152,10 @@ EXPLAIN
 explain format=tree SELECT 1 FROM t AS t1 LEFT JOIN (SELECT * FROM t WHERE f1 < NULL) AS t2 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t.f1 < NULL)  (rows=4)
-            -> Index scan on t using f1  (rows=4)
+            -> Covering index scan on t using f1  (rows=4)
 
 SELECT 1 FROM t AS t1 LEFT JOIN (SELECT * FROM t WHERE f1 < NULL) AS t2 ON TRUE;
 1
@@ -4168,7 +4168,7 @@ FROM t AS t1 LEFT JOIN (SELECT * FROM t AS t2 WHERE f1 BETWEEN 2 AND 3) AS t2
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=8)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t2.f1 between 2 and 3)  (rows=2)
             -> Covering index range scan on t2 using f1 over (2 <= f1 <= 3)  (rows=2)
@@ -4176,9 +4176,9 @@ EXPLAIN
 explain format=tree SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t1.f1 < NULL;
 EXPLAIN
 -> Left hash join (no condition), extra conditions: (t1.f1 < NULL)  (rows=16)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
-        -> Index scan on t2 using f1  (rows=4)
+        -> Covering index scan on t2 using f1  (rows=4)
 
 SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t1.f1 < NULL;
 1
@@ -4189,9 +4189,9 @@ SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t1.f1 < NULL;
 explain format=tree SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON t1.f1 BETWEEN 2 AND 3;
 EXPLAIN
 -> Left hash join (no condition), extra conditions: (t1.f1 between 2 and 3)  (rows=16)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
-        -> Index scan on t2 using f1  (rows=4)
+        -> Covering index scan on t2 using f1  (rows=4)
 
 explain format=tree SELECT 1 FROM t AS t1 LEFT JOIN t AS t2 ON TRUE WHERE t1.f1 < NULL;
 EXPLAIN
@@ -4205,7 +4205,7 @@ EXPLAIN
     -> Filter: (t1.f1 between 2 and 3)  (rows=2)
         -> Covering index range scan on t1 using f1 over (2 <= f1 <= 3)  (rows=2)
     -> Hash
-        -> Index scan on t2 using f1  (rows=4)
+        -> Covering index scan on t2 using f1  (rows=4)
 
 explain format=tree SELECT 1 FROM (SELECT * FROM t WHERE f1 < NULL) AS t1 LEFT JOIN t AS t2 ON TRUE;
 EXPLAIN
@@ -4220,14 +4220,14 @@ EXPLAIN
     -> Filter: (t.f1 between 2 and 3)  (rows=2)
         -> Covering index range scan on t using f1 over (2 <= f1 <= 3)  (rows=2)
     -> Hash
-        -> Index scan on t2 using f1  (rows=4)
+        -> Covering index scan on t2 using f1  (rows=4)
 
 explain format=tree SELECT 1 FROM (SELECT * FROM t) AS t1 LEFT JOIN t AS t2 ON t1.f1 < NULL;
 EXPLAIN
 -> Left hash join (no condition), extra conditions: (t.f1 < NULL)  (rows=16)
-    -> Index scan on t using f1  (rows=4)
+    -> Covering index scan on t using f1  (rows=4)
     -> Hash
-        -> Index scan on t2 using f1  (rows=4)
+        -> Covering index scan on t2 using f1  (rows=4)
 
 SELECT 1 FROM (SELECT * FROM t) AS t1 LEFT JOIN t AS t2 ON t1.f1 < NULL;
 1
@@ -4239,9 +4239,9 @@ explain format=tree SELECT 1
 FROM (SELECT * FROM t) AS t1 LEFT JOIN t AS t2 ON t1.f1 BETWEEN 2 AND 3;
 EXPLAIN
 -> Left hash join (no condition), extra conditions: (t.f1 between 2 and 3)  (rows=16)
-    -> Index scan on t using f1  (rows=4)
+    -> Covering index scan on t using f1  (rows=4)
     -> Hash
-        -> Index scan on t2 using f1  (rows=4)
+        -> Covering index scan on t2 using f1  (rows=4)
 
 explain format=tree SELECT 1
 FROM (SELECT * FROM t) AS t1 LEFT JOIN t AS t2 ON TRUE
@@ -4261,7 +4261,7 @@ EXPLAIN
     -> Filter: (t.f1 between 2 and 3)  (rows=2)
         -> Covering index range scan on t using f1 over (2 <= f1 <= 3)  (rows=2)
     -> Hash
-        -> Index scan on t2 using f1  (rows=4)
+        -> Covering index scan on t2 using f1  (rows=4)
 
 explain format=tree SELECT 1
 FROM t AS t1 LEFT JOIN
@@ -4269,13 +4269,13 @@ t AS t2 JOIN t AS t3 ON t2.f1 < NULL
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=16)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t2.f1 < NULL)  (rows=16)
             -> Inner hash join (no condition)  (rows=16)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
-                    -> Index scan on t2 using f1  (rows=4)
+                    -> Covering index scan on t2 using f1  (rows=4)
 
 SELECT 1
 FROM t AS t1 LEFT JOIN
@@ -4292,13 +4292,13 @@ t AS t2 JOIN t AS t3 ON t3.f1 < NULL
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=16)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t3.f1 < NULL)  (rows=16)
             -> Inner hash join (no condition)  (rows=16)
-                -> Index scan on t2 using f1  (rows=4)
+                -> Covering index scan on t2 using f1  (rows=4)
                 -> Hash
-                    -> Index scan on t3 using f1  (rows=4)
+                    -> Covering index scan on t3 using f1  (rows=4)
 
 SELECT 1
 FROM t AS t1 LEFT JOIN
@@ -4315,11 +4315,11 @@ t AS t2 JOIN t AS t3 ON t2.f1 BETWEEN 2 AND 3
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=32)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t2.f1 between 2 and 3)  (rows=8)
             -> Inner hash join (no condition)  (rows=8)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
                     -> Covering index range scan on t2 using f1 over (2 <= f1 <= 3)  (rows=2)
 
@@ -4329,11 +4329,11 @@ t AS t2 JOIN t AS t3 ON t3.f1 BETWEEN 2 AND 3
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=32)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t3.f1 between 2 and 3)  (rows=8)
             -> Inner hash join (no condition)  (rows=8)
-                -> Index scan on t2 using f1  (rows=4)
+                -> Covering index scan on t2 using f1  (rows=4)
                 -> Hash
                     -> Covering index range scan on t3 using f1 over (2 <= f1 <= 3)  (rows=2)
 
@@ -4343,13 +4343,13 @@ FROM t AS t1 LEFT JOIN
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=16)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t2.f1 < NULL)  (rows=16)
             -> Inner hash join (no condition)  (rows=16)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
-                    -> Index scan on t2 using f1  (rows=4)
+                    -> Covering index scan on t2 using f1  (rows=4)
 
 SELECT 1
 FROM t AS t1 LEFT JOIN
@@ -4366,13 +4366,13 @@ FROM t AS t1 LEFT JOIN
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=16)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t3.f1 < NULL)  (rows=16)
             -> Inner hash join (no condition)  (rows=16)
-                -> Index scan on t2 using f1  (rows=4)
+                -> Covering index scan on t2 using f1  (rows=4)
                 -> Hash
-                    -> Index scan on t3 using f1  (rows=4)
+                    -> Covering index scan on t3 using f1  (rows=4)
 
 SELECT 1
 FROM t AS t1 LEFT JOIN
@@ -4389,11 +4389,11 @@ FROM t AS t1 LEFT JOIN
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=32)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t2.f1 between 2 and 3)  (rows=8)
             -> Inner hash join (no condition)  (rows=8)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
                     -> Covering index range scan on t2 using f1 over (2 <= f1 <= 3)  (rows=2)
 
@@ -4403,11 +4403,11 @@ FROM t AS t1 LEFT JOIN
 ON TRUE;
 EXPLAIN
 -> Left hash join (no condition)  (rows=32)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Hash
         -> Filter: (t3.f1 between 2 and 3)  (rows=8)
             -> Inner hash join (no condition)  (rows=8)
-                -> Index scan on t2 using f1  (rows=4)
+                -> Covering index scan on t2 using f1  (rows=4)
                 -> Hash
                     -> Covering index range scan on t3 using f1 over (2 <= f1 <= 3)  (rows=2)
 
@@ -4417,11 +4417,11 @@ t AS t2 LEFT JOIN t AS t3 ON t3.f1 < NULL
 ON t1.f1 = t2.f1;
 EXPLAIN
 -> Nested loop left join  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Nested loop left join  (rows=1)
         -> Covering index lookup on t2 using f1 (f1=t1.f1)  (rows=1)
         -> Filter: (t3.f1 < NULL)  (rows=1)
-            -> Index scan on t3 using f1  (rows=4)
+            -> Covering index scan on t3 using f1  (rows=4)
 
 SELECT 1
 FROM t AS t1 LEFT JOIN
@@ -4439,7 +4439,7 @@ ON t1.f1 = t2.f1;
 EXPLAIN
 -> Filter: <if>(found_match(t3), true, true)  (rows=8)
     -> Nested loop left join  (rows=8)
-        -> Index scan on t1 using f1  (rows=4)
+        -> Covering index scan on t1 using f1  (rows=4)
         -> Nested loop left join  (rows=2)
             -> Covering index lookup on t2 using f1 (f1=t1.f1)  (rows=1)
             -> Filter: (t3.f1 between 2 and 3)  (rows=2)
@@ -4451,11 +4451,11 @@ FROM t AS t1 LEFT JOIN
 ON t1.f1 = t4.f1;
 EXPLAIN
 -> Nested loop left join  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Nested loop left join  (rows=1)
         -> Covering index lookup on t2 using f1 (f1=t1.f1)  (rows=1)
         -> Filter: (t3.f1 < NULL)  (rows=1)
-            -> Index scan on t3 using f1  (rows=4)
+            -> Covering index scan on t3 using f1  (rows=4)
 
 SELECT 1
 FROM t AS t1 LEFT JOIN
@@ -4474,7 +4474,7 @@ ON t1.f1 = t4.f1;
 EXPLAIN
 -> Filter: <if>(found_match(t3), true, true)  (rows=8)
     -> Nested loop left join  (rows=8)
-        -> Index scan on t1 using f1  (rows=4)
+        -> Covering index scan on t1 using f1  (rows=4)
         -> Nested loop left join  (rows=2)
             -> Covering index lookup on t2 using f1 (f1=t1.f1)  (rows=1)
             -> Filter: (t3.f1 between 2 and 3)  (rows=2)
@@ -4557,7 +4557,7 @@ EXPLAIN
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Inner hash join (no condition)  (rows=4)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
                     -> Filter: (t2.f1 between 2 and 3)  (rows=1)
                         -> Covering index lookup on t2 using f1 (f1=<cache>(t.f2))  (rows=1)
@@ -4627,7 +4627,7 @@ EXPLAIN
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Inner hash join (no condition)  (rows=4)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
                     -> Filter: (t2.f1 between 2 and 3)  (rows=1)
                         -> Covering index lookup on t2 using f1 (f1=<cache>(t.f2))  (rows=1)
@@ -4655,7 +4655,7 @@ FROM t AS t1
 WHERE NOT EXISTS (SELECT * FROM t AS t2 WHERE t2.f1 < NULL AND t1.f1 = t2.f1);
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Zero rows (no matching row in const table)  (rows=0)
 
@@ -4676,7 +4676,7 @@ FROM t AS t2
 WHERE t2.f1 BETWEEN 2 AND 3 AND t1.f1 = t2.f1);
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Filter: (t2.f1 between 2 and 3)  (rows=1)
@@ -4692,7 +4692,7 @@ WHERE t1.f1 = t4.f1
 );
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Zero rows (no matching row in const table)  (rows=0)
 
@@ -4718,7 +4718,7 @@ WHERE t1.f1 = t4.f1
 );
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Filter: (t2.f1 between 2 and 3)  (rows=1)
@@ -4733,7 +4733,7 @@ FROM t AS t2 JOIN t AS t3 ON t2.f1 < NULL
 WHERE t1.f1 = t2.f1);
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Zero rows (no matching row in const table)  (rows=0)
 
@@ -4756,7 +4756,7 @@ FROM t AS t2 JOIN t AS t3 ON t3.f1 < NULL
 WHERE t1.f1 = t3.f1);
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Zero rows (no matching row in const table)  (rows=0)
 
@@ -4779,11 +4779,11 @@ FROM t AS t2 JOIN t AS t3 ON t2.f1 BETWEEN 2 AND 3
 WHERE t1.f1 = t2.f1);
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Inner hash join (no condition)  (rows=4)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
                     -> Filter: (t2.f1 between 2 and 3)  (rows=1)
                         -> Covering index lookup on t2 using f1 (f1=t1.f1)  (rows=1)
@@ -4797,7 +4797,7 @@ FROM t AS t2 JOIN t AS t3 ON t3.f1 BETWEEN 2 AND 3
 WHERE t1.f1 = t2.f1);
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Inner hash join (no condition)  (rows=2)
@@ -4817,7 +4817,7 @@ WHERE t1.f1 = t4.f1
 );
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Zero rows (no matching row in const table)  (rows=0)
 
@@ -4844,7 +4844,7 @@ WHERE t1.f1 = t4.f1
 );
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Zero rows (no matching row in const table)  (rows=0)
 
@@ -4872,11 +4872,11 @@ WHERE t1.f1 = t4.f1
 );
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Inner hash join (no condition)  (rows=4)
-                -> Index scan on t3 using f1  (rows=4)
+                -> Covering index scan on t3 using f1  (rows=4)
                 -> Hash
                     -> Filter: (t2.f1 between 2 and 3)  (rows=1)
                         -> Covering index lookup on t2 using f1 (f1=t1.f1)  (rows=1)
@@ -4893,7 +4893,7 @@ WHERE t1.f1 = t4.f1
 );
 EXPLAIN
 -> Filter: exists(select #2) is false  (rows=4)
-    -> Index scan on t1 using f1  (rows=4)
+    -> Covering index scan on t1 using f1  (rows=4)
     -> Select #2 (subquery in condition; dependent)
         -> Limit: 1 row(s)  (rows=1)
             -> Inner hash join (no condition)  (rows=2)

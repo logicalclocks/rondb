@@ -2,12 +2,12 @@
 .\"     Title: ndb_blob_tool
 .\"    Author: [FIXME: author] [see http://docbook.sf.net/el/author]
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
-.\"      Date: 08/31/2023
+.\"      Date: 05/31/2024
 .\"    Manual: MySQL Database System
-.\"    Source: MySQL 8.0
+.\"    Source: MySQL 8.4
 .\"  Language: English
 .\"
-.TH "NDB_BLOB_TOOL" "1" "08/31/2023" "MySQL 8\&.0" "MySQL Database System"
+.TH "NDB_BLOB_TOOL" "1" "05/31/2024" "MySQL 8\&.4" "MySQL Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -87,296 +87,7 @@ option provides additional information in the output about the tool\*(Aqs progre
 All options that can be used with
 \fBndb_mgmd\fR
 are shown in the following table\&. Additional descriptions follow the table\&.
-.sp
-.it 1 an-trap
-.nr an-no-space-flag 1
-.nr an-break-flag 1
-.br
-.B Table\ \&23.28.\ \&Command\-line options used with the program ndb_blob_tool
-.TS
-allbox tab(:);
-lB lB lB.
-T{
-Format
-T}:T{
-Description
-T}:T{
-Added, Deprecated, or Removed
-T}
-.T&
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l
-lB l l.
-T{
 .PP
-\fB \fR\fB--add-missing\fR\fB \fR
-T}:T{
-Write dummy blob parts to take place of those which are missing
-T}:T{
-.PP
-ADDED: NDB 8.0.20
-T}
-T{
-.PP
-\fB \fR\fB--character-sets-dir=path\fR\fB \fR
-T}:T{
-Directory containing character sets
-T}:T{
-.PP
-REMOVED: 8.0.31
-T}
-T{
-.PP
-\fB \fR\fB--check-missing\fR\fB \fR
-T}:T{
-Check for blobs having inline parts but missing one or more parts from
-              parts table
-T}:T{
-.PP
-ADDED: NDB 8.0.20
-T}
-T{
-.PP
-\fB \fR\fB--check-orphans\fR\fB \fR
-T}:T{
-Check for blob parts having no corresponding inline parts
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--connect-retries=#\fR\fB \fR
-T}:T{
-Number of times to retry connection before giving up
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--connect-retry-delay=#\fR\fB \fR
-T}:T{
-Number of seconds to wait between attempts to contact management server
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB--connect-string=connection_string\fR,
-.PP
-\fB \fR\fB-c connection_string\fR\fB \fR
-T}:T{
-Same as --ndb-connectstring
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--core-file\fR\fB \fR
-T}:T{
-Write core file on error; used in debugging
-T}:T{
-.PP
-REMOVED: 8.0.31
-T}
-T{
-.PP
-\fB--database=name\fR,
-.PP
-\fB \fR\fB-d name\fR\fB \fR
-T}:T{
-Database to find the table in
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--defaults-extra-file=path\fR\fB \fR
-T}:T{
-Read given file after global files are read
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--defaults-file=path\fR\fB \fR
-T}:T{
-Read default options from given file only
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--defaults-group-suffix=string\fR\fB \fR
-T}:T{
-Also read groups with concat(group, suffix)
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--delete-orphans\fR\fB \fR
-T}:T{
-Delete blob parts having no corresponding inline parts
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--dump-file=file\fR\fB \fR
-T}:T{
-Write orphan keys to specified file
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB--help\fR,
-.PP
-\fB \fR\fB-?\fR\fB \fR
-T}:T{
-Display help text and exit
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--login-path=path\fR\fB \fR
-T}:T{
-Read given path from login file
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB--ndb-connectstring=connection_string\fR,
-.PP
-\fB \fR\fB-c connection_string\fR\fB \fR
-T}:T{
-Set connect string for connecting to ndb_mgmd. Syntax:
-              "[nodeid=id;][host=]hostname[:port]". Overrides entries in
-              NDB_CONNECTSTRING and my.cnf
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB--ndb-mgmd-host=connection_string\fR,
-.PP
-\fB \fR\fB-c connection_string\fR\fB \fR
-T}:T{
-Same as --ndb-connectstring
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--ndb-nodeid=#\fR\fB \fR
-T}:T{
-Set node ID for this node, overriding any ID set by --ndb-connectstring
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--ndb-optimized-node-selection\fR\fB \fR
-T}:T{
-Enable optimizations for selection of nodes for transactions. Enabled by
-              default; use --skip-ndb-optimized-node-selection to
-              disable
-T}:T{
-.PP
-REMOVED: 8.0.31
-T}
-T{
-.PP
-\fB \fR\fB--no-defaults\fR\fB \fR
-T}:T{
-Do not read default options from any option file other than login file
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB \fR\fB--print-defaults\fR\fB \fR
-T}:T{
-Print program argument list and exit
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB--usage\fR,
-.PP
-\fB \fR\fB-?\fR\fB \fR
-T}:T{
-Display help text and exit; same as --help
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB--verbose\fR,
-.PP
-\fB \fR\fB-v\fR\fB \fR
-T}:T{
-Verbose output
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-T{
-.PP
-\fB--version\fR,
-.PP
-\fB \fR\fB-V\fR\fB \fR
-T}:T{
-Display version information and exit
-T}:T{
-.PP
-(Supported in all NDB releases based on MySQL 8.0)
-T}
-.TE
-.sp 1
 .sp
 .RS 4
 .ie n \{\
@@ -389,17 +100,11 @@ T}
 \fB\-\-add\-missing\fR
 .TS
 allbox tab(:);
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --add-missing
-T}
-T{
-Introduced
-T}:T{
-8.0.20-ndb-8.0.20
 T}
 .TE
 .sp 1
@@ -417,17 +122,11 @@ For each inline part in NDB Cluster tables which has no corresponding BLOB part,
 \fB\-\-character\-sets\-dir\fR
 .TS
 allbox tab(:);
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --character-sets-dir=path
-T}
-T{
-Removed
-T}:T{
-8.0.31
 T}
 .TE
 .sp 1
@@ -445,17 +144,11 @@ Directory containing character sets\&.
 \fB\-\-check\-missing\fR
 .TS
 allbox tab(:);
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --check-missing
-T}
-T{
-Introduced
-T}:T{
-8.0.20-ndb-8.0.20
 T}
 .TE
 .sp 1
@@ -622,17 +315,11 @@ Same as
 \fB\-\-core\-file\fR
 .TS
 allbox tab(:);
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --core-file
-T}
-T{
-Removed
-T}:T{
-8.0.31
 T}
 .TE
 .sp 1
@@ -897,6 +584,28 @@ Read given path from login file\&.
 .sp -1
 .IP \(bu 2.3
 .\}
+\fB\-\-no\-login\-paths\fR
+.TS
+allbox tab(:);
+lB l.
+T{
+Command-Line Format
+T}:T{
+--no-login-paths
+T}
+.TE
+.sp 1
+Skips reading options from the login path file\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
 \fB\-\-ndb\-connectstring\fR
 .TS
 allbox tab(:);
@@ -920,7 +629,62 @@ T}:T{
 T}
 .TE
 .sp 1
-Set connect string for connecting to ndb_mgmd\&. Syntax: "[nodeid=id;][host=]hostname[:port]"\&. Overrides entries in NDB_CONNECTSTRING and my\&.cnf\&.
+Set connection string for connecting to
+\fBndb_mgmd\fR\&. Syntax:
+[nodeid=\fIid\fR;][host=]\fIhostname\fR[:\fIport\fR]\&. Overrides entries in
+NDB_CONNECTSTRING
+and
+my\&.cnf\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+\fB\-\-ndb\-mgm\-tls\fR
+.TS
+allbox tab(:);
+lB l
+lB l
+lB l
+lB l.
+T{
+Command-Line Format
+T}:T{
+--ndb-mgm-tls=level
+T}
+T{
+Type
+T}:T{
+Enumeration
+T}
+T{
+Default Value
+T}:T{
+relaxed
+T}
+T{
+Valid Values
+T}:T{
+.PP
+relaxed
+.PP
+strict
+T}
+.TE
+.sp 1
+Sets the level of TLS support required to connect to the management server; one of
+relaxed
+or
+strict\&.
+relaxed
+(the default) means that a TLS connection is attempted, but success is not required;
+strict
+means that TLS is required to connect\&.
 .RE
 .sp
 .RS 4
@@ -1003,23 +767,64 @@ Set node ID for this node, overriding any ID set by \-\-ndb\-connectstring\&.
 \fB\-\-ndb\-optimized\-node\-selection\fR
 .TS
 allbox tab(:);
-lB l
 lB l.
 T{
 Command-Line Format
 T}:T{
 --ndb-optimized-node-selection
 T}
-T{
-Removed
-T}:T{
-8.0.31
-T}
 .TE
 .sp 1
 Enable optimizations for selection of nodes for transactions\&. Enabled by default; use
 \fB\-\-skip\-ndb\-optimized\-node\-selection\fR
 to disable\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+\fB\-\-ndb\-tls\-search\-path\fR
+.TS
+allbox tab(:);
+lB l
+lB l
+lB l
+lB l.
+T{
+Command-Line Format
+T}:T{
+--ndb-tls-search-path=list
+T}
+T{
+Type
+T}:T{
+Path name
+T}
+T{
+Default Value (Unix)
+T}:T{
+$HOME/ndb-tls
+T}
+T{
+Default Value (Windows)
+T}:T{
+$HOMEDIR/ndb-tls
+T}
+.TE
+.sp 1
+Specify a list of directories to search for a CA file\&. On Unix platforms, the directory names are separated by colons (:); on Windows systems, the semicolon character (;) is used as the separator\&. A directory reference may be relative or absolute; it may contain one or more environment variables, each denoted by a prefixed dollar sign ($), and expanded prior to use\&.
+.sp
+Searching begins with the leftmost named directory and proceeds from left to right until a file is found\&. An empty string denotes an empty search path, which causes all searches to fail\&. A string consisting of a single dot (\&.) indicates that the search path limited to the current working directory\&.
+.sp
+If no search path is supplied, the compiled\-in default value is used\&. This value depends on the platform used: On Windows, this is
+\endb\-tls; on other platforms (including Linux), it is
+$HOME/ndb\-tls\&. This can be overridden by compiling NDB Cluster using
+\fB\-DWITH_NDB_TLS_SEARCH_PATH\fR\&.
 .RE
 .sp
 .RS 4
@@ -1200,7 +1005,6 @@ NDB$BLOB_19_2: nextResult: res=1
 total parts: 10
 orphan parts: 0
 disconnected
-NDBT_ProgramExit: 0 \- OK
 .fi
 .if n \{\
 .RE
@@ -1224,11 +1028,11 @@ BLOB
 column parts are created by
 NDB
 for this column\&. See
-Section\ \&11.7, \(lqData Type Storage Requirements\(rq, for more information\&.
+Section\ \&13.7, \(lqData Type Storage Requirements\(rq, for more information\&.
 .SH "COPYRIGHT"
 .br
 .PP
-Copyright \(co 1997, 2023, Oracle and/or its affiliates.
+Copyright \(co 1997, 2024, Oracle and/or its affiliates.
 .PP
 This documentation is free software; you can redistribute it and/or modify it only under the terms of the GNU General Public License as published by the Free Software Foundation; version 2 of the License.
 .PP

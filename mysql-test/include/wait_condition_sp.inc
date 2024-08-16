@@ -54,8 +54,8 @@ while ($wait_counter)
 if (!$success)
 {
   echo Timeout in wait_condition.inc for $wait_condition;
-  show master status;
-  show slave status;
+  show binary log status;
+  SHOW REPLICA STATUS;
 }
 
 --enable_query_log

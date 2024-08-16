@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -115,6 +116,11 @@ extern PFS_builtin_memory_class builtin_memory_stage_class;
 extern PFS_builtin_memory_class builtin_memory_statement_class;
 extern PFS_builtin_memory_class builtin_memory_memory_class;
 
+extern PFS_builtin_memory_class builtin_memory_meter_class;
+extern PFS_builtin_memory_class builtin_memory_meter;
+extern PFS_builtin_memory_class builtin_memory_metric_class;
+extern PFS_builtin_memory_class builtin_memory_metric;
+
 extern PFS_builtin_memory_class builtin_memory_setup_actor;
 extern PFS_builtin_memory_class builtin_memory_setup_object;
 
@@ -138,5 +144,7 @@ extern PFS_builtin_memory_class builtin_memory_program;
 extern PFS_builtin_memory_class builtin_memory_prepared_stmt;
 
 extern PFS_builtin_memory_class builtin_memory_scalable_buffer;
+
+extern PFS_builtin_memory_class builtin_memory_data_container;
 
 #endif

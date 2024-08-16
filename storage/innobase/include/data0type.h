@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2023, Oracle and/or its affiliates.
+Copyright (c) 1996, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -522,6 +523,10 @@ struct dtype_t {
 
   bool is_virtual() const { return ((prtype & DATA_VIRTUAL) == DATA_VIRTUAL); }
 
+  /** Check if the value in mtype is valid.
+  @return true if mtype is valid, false otherwise. */
+  bool is_mtype_valid() const;
+
   std::ostream &print(std::ostream &out) const;
 };
 
@@ -536,6 +541,13 @@ static_assert(DATA_TRX_ID_LEN == 6, "DATA_TRX_ID_LEN != 6!");
 static_assert(DATA_ROLL_PTR_LEN == 7, "DATA_PTR_LEN != 7!");
 
 static_assert(DATA_TRX_ID + 1 == DATA_ROLL_PTR, "DATA_TRX_ID value invalid!");
+
+inline bool dtype_t::is_mtype_valid() const {
+  const bool is_valid =
+      (mtype >= DATA_MTYPE_CURRENT_MIN) && (mtype <= DATA_MTYPE_CURRENT_MAX);
+  ut_ad(is_valid);
+  return is_valid;
+}
 
 #include "data0type.ic"
 

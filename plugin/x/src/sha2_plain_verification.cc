@@ -1,16 +1,17 @@
 /*
- * Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
  *
- * This program is also distributed with certain software (including
+ * This program is designed to work with certain software (including
  * but not limited to OpenSSL) that is licensed under separate terms,
  * as designated in a particular file or component or in included license
  * documentation.  The authors of MySQL hereby grant you an additional
  * permission to link the program and your derivative works with the
- * separately licensed software that they have included with MySQL.
+ * separately licensed software that they have either included with
+ * the program or referenced in the documentation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,7 +25,10 @@
 
 #include "plugin/x/src/sha2_plain_verification.h"
 
+#include <algorithm>
+
 #include "crypt_genhash_impl.h"
+#include "sql/auth/i_sha2_password.h"
 
 namespace xpl {
 
@@ -54,6 +58,13 @@ bool Sha2_plain_verification::verify_authentication_string(
     b = db_string.find('$', b + 1);
     if (b == std::string::npos) return false;
 
+    std::string iteration_info =
+        db_string.substr(b + 1, sha2_password::ITERATION_LENGTH);
+    unsigned int iterations =
+        std::min((std::stoul(iteration_info, nullptr, 16)) *
+                     sha2_password::ITERATION_MULTIPLIER,
+                 sha2_password::MAX_ITERATIONS);
+
     b = db_string.find('$', b + 1);
     if (b == std::string::npos) return false;
 
@@ -62,7 +73,7 @@ bool Sha2_plain_verification::verify_authentication_string(
 
     std::string digest = db_string.substr(b + CRYPT_SALT_LENGTH + 1);
 
-    if (compute_password_hash(client_string, salt) == digest) {
+    if (compute_password_hash(client_string, salt, iterations) == digest) {
       client_string_matches = true;
     }
   }
@@ -75,10 +86,11 @@ bool Sha2_plain_verification::verify_authentication_string(
 }
 
 std::string Sha2_plain_verification::compute_password_hash(
-    const std::string &password, const std::string &salt) const {
+    const std::string &password, const std::string &salt,
+    unsigned int iteration_count) const {
   char hash[CRYPT_MAX_PASSWORD_SIZE + 1] = {0};
   ::my_crypt_genhash(hash, CRYPT_MAX_PASSWORD_SIZE, password.c_str(),
-                     password.size(), salt.c_str(), nullptr);
+                     password.size(), salt.c_str(), nullptr, &iteration_count);
   std::string generated_digest;
   generated_digest.assign(hash + 3 + CRYPT_SALT_LENGTH + 1,
                           STORED_SHA256_DIGEST_LENGTH);

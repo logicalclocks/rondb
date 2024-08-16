@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,6 +26,9 @@
 
 #include <string.h>
 
+#include <memory>
+
+#include "m_string.h"
 #include "my_alloc.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -44,6 +48,8 @@
 #include "sql/system_variables.h"
 #include "sql/table.h"
 #include "sql/trigger.h"  // Trigger
+
+struct CHARSET_INFO;
 
 namespace dd {
 
@@ -345,7 +351,7 @@ bool load_triggers(THD *thd, MEM_ROOT *mem_root, const char *schema_name,
     if (trigger_to_add == nullptr) return true;
 
     if (triggers->push_back(trigger_to_add, mem_root)) {
-      destroy(trigger_to_add);
+      ::destroy_at(trigger_to_add);
       return true;
     }
   }

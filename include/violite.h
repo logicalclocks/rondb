@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -247,6 +248,7 @@ enum enum_ssl_init_error {
   SSL_FIPS_MODE_FAILED,
   SSL_INITERR_ECDHFAIL,
   SSL_INITERR_X509_VERIFY_PARAM,
+  SSL_INITERR_INVALID_CERTIFICATES,
   SSL_INITERR_LASTERR
 };
 const char *sslGetErrString(enum enum_ssl_init_error err);
@@ -258,7 +260,8 @@ struct st_VioSSLFd {
 int sslaccept(struct st_VioSSLFd *, MYSQL_VIO, long timeout,
               unsigned long *errptr);
 int sslconnect(struct st_VioSSLFd *, MYSQL_VIO, long timeout,
-               SSL_SESSION *session, unsigned long *errptr, SSL **ssl);
+               SSL_SESSION *session, unsigned long *errptr, SSL **ssl,
+               const char *sni_servername);
 
 struct st_VioSSLFd *new_VioSSLConnectorFd(
     const char *key_file, const char *cert_file, const char *ca_file,

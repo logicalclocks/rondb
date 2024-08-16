@@ -1,15 +1,16 @@
-/* Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2004, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,6 @@
 #include <utility>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "mem_root_deque.h"  // mem_root_deque
 #include "my_alloc.h"        // operator new
@@ -41,10 +41,12 @@
 #include "my_sys.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
-#include "sql/auth/auth_common.h"  // CREATE_VIEW_ACL
+#include "sql/auth/auth_common.h"        // CREATE_VIEW_ACL
+#include "sql/auth/sql_authorization.h"  // check_valid_definer
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/binlog.h"  // mysql_bin_log
 #include "sql/dd/cache/dictionary_client.h"
@@ -84,6 +86,7 @@
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "thr_lock.h"
 
 namespace dd {
@@ -528,33 +531,9 @@ bool mysql_create_view(THD *thd, Table_ref *views, enum_view_create_mode mode) {
     if (!lex->definer) goto err;
   }
 
-  /*
-    check definer of view:
-      - same as current user
-      - current user has SUPER_ACL or SET_USER_ID
-  */
-  if (lex->definer &&
-      (strcmp(lex->definer->user.str,
-              thd->security_context()->priv_user().str) != 0 ||
-       my_strcasecmp(system_charset_info, lex->definer->host.str,
-                     thd->security_context()->priv_host().str) != 0)) {
-    Security_context *sctx = thd->security_context();
-    if (!(sctx->check_access(SUPER_ACL) ||
-          sctx->has_global_grant(STRING_WITH_LEN("SET_USER_ID")).first)) {
-      my_error(ER_SPECIFIC_ACCESS_DENIED_ERROR, MYF(0), "SUPER or SET_USER_ID");
-      res = true;
-      goto err;
-    } else if (sctx->can_operate_with({lex->definer}, consts::system_user,
-                                      true)) {
-      res = true;
-      goto err;
-    } else {
-      if (!is_acl_user(thd, lex->definer->host.str, lex->definer->user.str)) {
-        push_warning_printf(thd, Sql_condition::SL_NOTE, ER_NO_SUCH_USER,
-                            ER_THD(thd, ER_NO_SUCH_USER),
-                            lex->definer->user.str, lex->definer->host.str);
-      }
-    }
+  if (check_valid_definer(thd, lex->definer)) {
+    res = true;
+    goto err;
   }
 
   /*
@@ -658,15 +637,16 @@ bool mysql_create_view(THD *thd, Table_ref *views, enum_view_create_mode mode) {
        This will hold the intersection of the privileges on all columns in the
        view.
      */
-    uint final_priv = VIEW_ANY_ACL;
+    Access_bitmask final_priv = VIEW_ANY_ACL;
 
     for (sl = query_block; sl; sl = sl->next_query_block()) {
       assert(view->db); /* Must be set in the parser */
       for (Item *item : sl->visible_fields()) {
         Item_field *fld = item->field_for_view_update();
-        uint priv = (get_column_grant(thd, &view->grant, view->db,
-                                      view->table_name, item->item_name.ptr()) &
-                     VIEW_ANY_ACL);
+        Access_bitmask priv =
+            (get_column_grant(thd, &view->grant, view->db, view->table_name,
+                              item->item_name.ptr()) &
+             VIEW_ANY_ACL);
 
         if (fld && !fld->field->table->s->tmp_table) {
           final_priv &= fld->have_privileges;
@@ -907,7 +887,7 @@ bool mysql_register_view(THD *thd, Table_ref *view,
   if (can_be_merged) {
     for (ORDER *order = lex->query_block->order_list.first; order;
          order = order->next)
-      order->used_alias = false;  /// @see Item::print_for_order()
+      order->used_alias = nullptr;  /// @see Item::print_for_order()
   }
 
   /* Generate view definition and IS queries. */
@@ -1656,6 +1636,17 @@ bool parse_view_definition(THD *thd, Table_ref *view_ref) {
   view_ref->derived_key_list.clear();
 
   assert(view_lex == thd->lex);
+  if (view_lex->can_execute_only_in_hypergraph_optimizer()) {
+    old_lex->set_execute_only_in_hypergraph_optimizer(
+        /*execute_in_hypergraph_optimizer_param=*/true,
+        view_lex->get_only_supported_in_hypergraph_reason());
+  }
+  if (view_lex->can_execute_only_in_secondary_engine()) {
+    old_lex->set_execute_only_in_secondary_engine(
+        /*execute_only_in_secondary_engine_param=*/true,
+        view_lex->get_not_supported_in_primary_reason());
+  }
+
   thd->lex = old_lex;  // Needed for prepare_security
 
   result = view_ref->prepare_security(thd);
@@ -1933,7 +1924,7 @@ bool check_key_in_view(THD *thd, Table_ref *view, const Table_ref *table_ref) {
     */
     enum_mark_columns save_mark_used_columns = thd->mark_used_columns;
     thd->mark_used_columns = MARK_COLUMNS_NONE;
-    ulong want_privilege_saved = thd->want_privilege;
+    Access_bitmask want_privilege_saved = thd->want_privilege;
     thd->want_privilege = 0;
     for (Field_translator *fld = trans; fld < end_of_trans; fld++) {
       if (!fld->item->fixed && fld->item->fix_fields(thd, &fld->item))

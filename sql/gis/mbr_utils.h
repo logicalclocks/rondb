@@ -1,18 +1,19 @@
 #ifndef SQL_GIS_MBR_UTILS_H_INCLUDED
 #define SQL_GIS_MBR_UTILS_H_INCLUDED
 
-// Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+// Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0,
 // as published by the Free Software Foundation.
 //
-// This program is also distributed with certain software (including
+// This program is designed to work with certain software (including
 // but not limited to OpenSSL) that is licensed under separate terms,
 // as designated in a particular file or component or in included license
 // documentation.  The authors of MySQL hereby grant you an additional
 // permission to link the program and your derivative works with the
-// separately licensed software that they have included with MySQL.
+// separately licensed software that they have either included with
+// the program or referenced in the documentation.
 //
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,6 +34,9 @@
 #include "sql/gis/box.h"
 #include "sql/gis/geometries.h"
 #include "sql/gis/geometries_cs.h"
+
+class Item;
+class THD;
 
 namespace dd {
 class Spatial_reference_system;
@@ -88,6 +92,15 @@ bool mbr_is_line(Box const &mbr);
 /// @param[out] mbr The envelope.
 void box_envelope(const Geometry *g, const dd::Spatial_reference_system *srs,
                   Box *mbr);
+
+/// Parse the input geometry, computes and returns the MBR
+///
+/// @param[in] thd The thread
+/// @param[in] knn_query_item The input geometry
+/// @param[out] coordinates The coordinates of the MBR
+///
+/// @return false if succeed, true in case of an error
+bool knn_query_to_mbr(THD *thd, Item *knn_query_item, double (&coordinates)[5]);
 
 }  // namespace gis
 

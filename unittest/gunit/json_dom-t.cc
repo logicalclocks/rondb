@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -20,20 +21,44 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include <gtest/gtest.h>
+#include <atomic>
+#include <cassert>
 #include <cstring>
+#include <initializer_list>
+#include <map>
 #include <memory>
+#include <new>
+#include <string>
+#include <utility>
+
+#include "gtest/gtest.h"
 
 #include "base64.h"
+#include "decimal.h"
+#include "field_types.h"
 #include "my_byteorder.h"
 #include "my_inttypes.h"
+#include "my_sys.h"
+#include "my_time.h"
+#include "mysql/components/services/bits/psi_bits.h"
+#include "mysql/mysql_lex_string.h"
+#include "mysql/strings/m_ctype.h"
+#include "mysql_time.h"
+#include "mysqld_error.h"
 #include "sql-common/json_binary.h"
+#include "sql-common/json_diff.h"
 #include "sql-common/json_dom.h"
+#include "sql-common/json_error_handler.h"
 #include "sql-common/json_path.h"
-#include "sql/json_diff.h"
-#include "sql/my_decimal.h"
+#include "sql-common/my_decimal.h"
+#include "sql/current_thd.h"
+#include "sql/field.h"
+#include "sql/item_json_func.h"
+#include "sql/psi_memory_key.h"
 #include "sql/sql_class.h"
+#include "sql/sql_const.h"
 #include "sql/sql_time.h"
+#include "sql/table.h"
 #include "sql_string.h"
 #include "template_utils.h"  // down_cast
 #include "unittest/gunit/base_mock_field.h"
@@ -106,8 +131,7 @@ static Json_dom_ptr parse_json(const char *json_text) {
 static Json_path parse_path(const char *json_path) {
   Json_path path(key_memory_JSON);
   size_t bad_index;
-  EXPECT_FALSE(parse_path(std::strlen(json_path), json_path, &path, &bad_index,
-                          [] { ASSERT_TRUE(false); }))
+  EXPECT_FALSE(parse_path(std::strlen(json_path), json_path, &path, &bad_index))
       << "bad index: " << bad_index;
   return path;
 }
@@ -435,16 +459,16 @@ TEST_F(JsonDomTest, EscapeSpecialChars) {
   EXPECT_EQ(str.value(), str2->value());
 }
 
-void vet_wrapper_length(const THD *thd, const char *text,
-                        size_t expected_length) {
+void vet_wrapper_length(const char *text, size_t expected_length) {
   Json_wrapper dom_wrapper(parse_json(text));
 
   EXPECT_EQ(expected_length, dom_wrapper.length())
       << "Wrapped DOM: " << text << "\n";
 
   String serialized_form;
-  EXPECT_FALSE(
-      json_binary::serialize(thd, dom_wrapper.to_dom(), &serialized_form));
+  EXPECT_FALSE(json_binary::serialize(
+      dom_wrapper.to_dom(), JsonSerializationDefaultErrorHandler(current_thd),
+      &serialized_form));
   json_binary::Value binary = json_binary::parse_binary(
       serialized_form.ptr(), serialized_form.length());
   Json_wrapper binary_wrapper(binary);
@@ -464,7 +488,6 @@ TEST_F(JsonDomTest, WrapperTest) {
   // Constructors, assignment, copy constructors, aliasing
   Json_dom *d = new (std::nothrow) Json_null();
   Json_wrapper w(d);
-  const THD *thd = this->thd();
   EXPECT_EQ(w.to_dom(), d);
   Json_wrapper w_2(w);
   EXPECT_NE(w.to_dom(), w_2.to_dom());  // deep copy
@@ -496,27 +519,27 @@ TEST_F(JsonDomTest, WrapperTest) {
   w_5 = std::move(w_7);  // should deallocate w_5's original
 
   // scalars
-  vet_wrapper_length(thd, "false", 1);
-  vet_wrapper_length(thd, "true", 1);
-  vet_wrapper_length(thd, "null", 1);
-  vet_wrapper_length(thd, "1.1", 1);
-  vet_wrapper_length(thd, "\"hello world\"", 1);
+  vet_wrapper_length("false", 1);
+  vet_wrapper_length("true", 1);
+  vet_wrapper_length("null", 1);
+  vet_wrapper_length("1.1", 1);
+  vet_wrapper_length("\"hello world\"", 1);
 
   // objects
-  vet_wrapper_length(thd, "{}", 0);
-  vet_wrapper_length(thd, "{ \"a\" : 100 }", 1);
-  vet_wrapper_length(thd, "{ \"a\" : 100, \"b\" : 200 }", 2);
+  vet_wrapper_length("{}", 0);
+  vet_wrapper_length("{ \"a\" : 100 }", 1);
+  vet_wrapper_length("{ \"a\" : 100, \"b\" : 200 }", 2);
 
   // arrays
-  vet_wrapper_length(thd, "[]", 0);
-  vet_wrapper_length(thd, "[ 100 ]", 1);
-  vet_wrapper_length(thd, "[ 100, 200 ]", 2);
+  vet_wrapper_length("[]", 0);
+  vet_wrapper_length("[ 100 ]", 1);
+  vet_wrapper_length("[ 100, 200 ]", 2);
 
   // nested objects
-  vet_wrapper_length(thd, "{ \"a\" : 100, \"b\" : { \"c\" : 300 } }", 2);
+  vet_wrapper_length("{ \"a\" : 100, \"b\" : { \"c\" : 300 } }", 2);
 
   // nested arrays
-  vet_wrapper_length(thd, "[ 100, [ 200, 300 ] ]", 2);
+  vet_wrapper_length("[ 100, [ 200, 300 ] ]", 2);
 }
 
 void vet_merge(const char *left_text, const char *right_text,
@@ -702,7 +725,8 @@ TEST_F(JsonDomTest, AttemptBinaryUpdate) {
   auto dom = parse_json("[\"abc\", 123, \"def\", -70000]");
 
   String buffer;
-  EXPECT_FALSE(json_binary::serialize(thd(), dom.get(), &buffer));
+  EXPECT_FALSE(json_binary::serialize(
+      dom.get(), JsonSerializationDefaultErrorHandler(thd()), &buffer));
 
   json_binary::Value binary =
       json_binary::parse_binary(buffer.ptr(), buffer.length());
@@ -961,7 +985,8 @@ TEST_F(JsonDomTest, AttemptBinaryUpdate_AllTypes) {
     EXPECT_FALSE(m_field.val_json(&doc));
 
     StringBuffer<STRING_BUFFER_USUAL_SIZE> original;
-    EXPECT_FALSE(doc.to_binary(thd(), &original));
+    EXPECT_FALSE(
+        doc.to_binary(JsonSerializationDefaultErrorHandler(thd()), &original));
 
     Json_wrapper new_value(dom->clone());
 
@@ -1087,11 +1112,12 @@ void test_apply_json_diffs(Field_json *field, const Json_diff_vector &diffs,
 
   TABLE *table = field->table;
   if (table->is_binary_diff_enabled(field)) {
+    JsonSerializationDefaultErrorHandler error_handler{current_thd};
     StringBuffer<STRING_BUFFER_USUAL_SIZE> original;
-    EXPECT_FALSE(json_binary::serialize(
-        table->in_use, parse_json(orig_json).get(), &original));
+    EXPECT_FALSE(json_binary::serialize(parse_json(orig_json).get(),
+                                        error_handler, &original));
     StringBuffer<STRING_BUFFER_USUAL_SIZE> updated;
-    EXPECT_FALSE(doc.to_binary(table->in_use, &updated));
+    EXPECT_FALSE(doc.to_binary(error_handler, &updated));
     verify_binary_diffs(field, table->get_binary_diffs(field), original,
                         updated);
   }
@@ -1320,7 +1346,9 @@ static void benchmark_dom_parse(size_t num_iterations, const char *json_text) {
   auto dom = parse_json(json_text);
 
   String buffer;
-  EXPECT_FALSE(json_binary::serialize(initializer.thd(), dom.get(), &buffer));
+  EXPECT_FALSE(json_binary::serialize(
+      dom.get(), JsonSerializationDefaultErrorHandler(initializer.thd()),
+      &buffer));
 
   json_binary::Value binary =
       json_binary::parse_binary(buffer.ptr(), buffer.length());
@@ -1382,7 +1410,8 @@ static void benchmark_binary_seek(size_t num_iterations, const Json_path &path,
   initializer.SetUp();
 
   String buffer;
-  EXPECT_FALSE(json_binary::serialize(initializer.thd(), &o, &buffer));
+  EXPECT_FALSE(json_binary::serialize(
+      &o, JsonSerializationDefaultErrorHandler(initializer.thd()), &buffer));
   json_binary::Value val =
       json_binary::parse_binary(buffer.ptr(), buffer.length());
 
@@ -1689,8 +1718,9 @@ static void BM_JsonWrapperObjectIteratorBinary(size_t num_iterations) {
   }
 
   String serialized_object;
-  EXPECT_FALSE(json_binary::serialize(initializer.thd(), &dom_object,
-                                      &serialized_object));
+  EXPECT_FALSE(json_binary::serialize(
+      &dom_object, JsonSerializationDefaultErrorHandler(initializer.thd()),
+      &serialized_object));
   Json_wrapper wrapper(json_binary::parse_binary(serialized_object.ptr(),
                                                  serialized_object.length()));
   EXPECT_EQ(enum_json_type::J_OBJECT, wrapper.type());

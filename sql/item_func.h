@@ -1,18 +1,19 @@
 #ifndef ITEM_FUNC_INCLUDED
 #define ITEM_FUNC_INCLUDED
 
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,7 +35,6 @@
 #include "field_types.h"
 #include "ft_global.h"
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "my_alloc.h"
 #include "my_base.h"
 #include "my_compiler.h"
@@ -45,15 +45,15 @@
 #include "my_thread_local.h"
 #include "my_time.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
-#include "mysql_com.h"
 #include "mysql_time.h"
 #include "mysqld_error.h"
+#include "sql-common/my_decimal.h"  // str2my_decimal
 #include "sql/enum_query_type.h"
 #include "sql/field.h"
 #include "sql/handler.h"
 #include "sql/item.h"            // Item_result_field
-#include "sql/my_decimal.h"      // str2my_decimal
 #include "sql/parse_location.h"  // POS
 #include "sql/set_var.h"         // enum_var_type
 #include "sql/sql_const.h"
@@ -71,6 +71,7 @@ class THD;
 class sp_rcontext;
 struct MY_BITMAP;
 struct Parse_context;
+struct TYPELIB;
 
 template <class T>
 class List;
@@ -172,6 +173,8 @@ class Item_func : public Item_result_field {
   table_map not_null_tables_cache{0};
 
  public:
+  bool is_null_on_null() const { return null_on_null; }
+
   /*
     When updating Functype with new spatial functions,
     is_spatial_operator() should also be updated.
@@ -206,6 +209,7 @@ class Item_func : public Item_result_field {
     ISNOTNULLTEST_FUNC,
     SP_EQUALS_FUNC,
     SP_DISJOINT_FUNC,
+    SP_DISTANCE_FUNC,
     SP_INTERSECTS_FUNC,
     SP_TOUCHES_FUNC,
     SP_CROSSES_FUNC,
@@ -270,6 +274,7 @@ class Item_func : public Item_result_field {
     YEAR_FUNC,
     YEARWEEK_FUNC,
     MAKEDATE_FUNC,
+    MAKETIME_FUNC,
     MONTH_FUNC,
     MONTHNAME_FUNC,
     DAY_FUNC,
@@ -303,7 +308,19 @@ class Item_func : public Item_result_field {
     MEMBER_OF_FUNC,
     STRCMP_FUNC,
     TRUE_FUNC,
-    FALSE_FUNC
+    FALSE_FUNC,
+    SYSDATE_FUNC,
+    TIMEDIFF_FUNC,
+    PERIODADD_FUNC,
+    PERIODDIFF_FUNC,
+    SEC_TO_TIME_FUNC,
+    GET_FORMAT_FUNC,
+    ANY_VALUE_FUNC,
+    JSON_LENGTH_FUNC,
+    JSON_DEPTH_FUNC,
+    JSON_EXTRACT_FUNC,
+    JSON_OBJECT_FUNC,
+    JSON_ARRAY_FUNC
   };
   enum optimize_type {
     OPTIMIZE_NONE,
@@ -450,7 +467,7 @@ class Item_func : public Item_result_field {
     return nullptr;
   }
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   bool fix_fields(THD *, Item **ref) override;
   bool fix_func_arg(THD *, Item **arg);
@@ -490,7 +507,7 @@ class Item_func : public Item_result_field {
     @return true on OOM, false otherwise
   */
   bool set_arguments(mem_root_deque<Item *> *list, bool context_free);
-  void split_sum_func(THD *thd, Ref_item_array ref_item_array,
+  bool split_sum_func(THD *thd, Ref_item_array ref_item_array,
                       mem_root_deque<Item *> *fields) override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
@@ -540,12 +557,43 @@ class Item_func : public Item_result_field {
                                             item_sep);
   }
 
+  Item *replace_func_call(uchar *) override;
+
   bool walk(Item_processor processor, enum_walk walk, uchar *arg) override;
   Item *transform(Item_transformer transformer, uchar *arg) override;
   Item *compile(Item_analyzer analyzer, uchar **arg_p,
                 Item_transformer transformer, uchar *arg_t) override;
   void traverse_cond(Cond_traverser traverser, void *arg,
                      traverse_order order) override;
+
+  bool replace_equal_field_checker(uchar **arg) override {
+    Replace_equal *replace = pointer_cast<Replace_equal *>(*arg);
+    replace->stack.push_front(this);
+    return true;
+  }
+
+  Item *replace_equal_field(uchar *arg) override {
+    pointer_cast<Replace_equal *>(arg)->stack.pop();
+    return this;
+  }
+
+  /**
+    Check whether a function allows replacement of a field with another item:
+    In particular, a replacement that changes the metadata of some Item
+    from non-nullable to nullable is not allowed.
+    Notice that e.g. changing the nullability of an operand of a comparison
+    operator in a WHERE clause that ignores UNKNOWN values is allowed,
+    according to this criterion.
+
+    @param original the field that could be replaced
+    @param subst    the item that could be the replacement
+
+    @returns true if replacement is allowed, false otherwise
+  */
+  virtual bool allow_replacement(Item_field *const original,
+                                 Item *const subst) {
+    return original->is_nullable() || !subst->is_nullable();
+  }
 
   /**
      Throw an error if the input double number is not finite, i.e. is either
@@ -694,6 +742,7 @@ class Item_func : public Item_result_field {
     [1] "At least one" for multiple equality (X = Y = Z = ...), "all"
     for the rest (e.g. BETWEEN)
 
+    @param thd               The current thread.
     @param read_tables       Tables earlier in the join sequence.
                              Predicates for table 'filter_for_table' that
                              rely on values from these tables can be part of
@@ -711,7 +760,7 @@ class Item_func : public Item_result_field {
     placed in Item_func.
   */
   const Item_field *contributes_to_filter(
-      table_map read_tables, table_map filter_for_table,
+      THD *thd, table_map read_tables, table_map filter_for_table,
       const MY_BITMAP *fields_to_ignore) const;
   /**
     Named parameters are allowed in a parameter list
@@ -1000,7 +1049,7 @@ class Item_func_connection_id final : public Item_int_func {
   table_map get_initial_pseudo_tables() const override {
     return INNER_TABLE_BIT;
   }
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override { return "connection_id"; }
   bool resolve_type(THD *thd) override;
   bool fix_fields(THD *thd, Item **ref) override;
@@ -1042,6 +1091,9 @@ class Item_typecast_unsigned final : public Item_int_func {
 };
 
 class Item_typecast_decimal final : public Item_func {
+ protected:
+  void add_json_info(Json_object *obj) override;
+
  public:
   Item_typecast_decimal(const POS &pos, Item *a, int len, int dec)
       : Item_func(pos, a) {
@@ -1073,6 +1125,12 @@ class Item_typecast_decimal final : public Item_func {
   Class used to implement CAST to floating-point data types.
 */
 class Item_typecast_real final : public Item_func {
+ protected:
+  void add_json_info(Json_object *obj) override {
+    obj->add_alias("is_double", create_dom_ptr<Json_boolean>(
+                                    data_type() == MYSQL_TYPE_DOUBLE));
+  }
+
  public:
   Item_typecast_real(const POS &pos, Item *a, bool as_double)
       : Item_func(pos, a) {
@@ -1427,17 +1485,18 @@ class Item_func_rand final : public Item_real_func {
   rand_struct *m_rand{nullptr};
   bool first_eval{true};  // true if val_real() is called 1st time
  public:
+  Item_func_rand() : Item_real_func() {}
   Item_func_rand(const POS &pos, Item *a) : Item_real_func(pos, a) {}
   explicit Item_func_rand(const POS &pos) : Item_real_func(pos) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   double val_real() override;
   const char *func_name() const override { return "rand"; }
   /**
     This function is non-deterministic and hence depends on the
     'RAND' pseudo-table.
 
-    @retval RAND_TABLE_BIT
+    @returns RAND_TABLE_BIT
   */
   table_map get_initial_pseudo_tables() const override {
     return RAND_TABLE_BIT;
@@ -1521,6 +1580,7 @@ class Item_func_min_max : public Item_func_numhybrid {
   bool resolve_type_inner(THD *thd) override;
   void set_numeric_type() override {}
   enum Item_result result_type() const override { return hybrid_type; }
+  TYPELIB *get_typelib() const override;
 
   /**
     Make CAST(LEAST_OR_GREATEST(datetime_expr, varchar_expr))
@@ -1548,6 +1608,12 @@ class Item_func_min_max : public Item_func_numhybrid {
     '95-05-05'.
   */
   Item *temporal_item;
+
+  /**
+    Fractional seconds precision to use when converting a time or timestamp
+    expression into a string.
+  */
+  uint8 fsp_for_string;
   /**
     Compare arguments as datetime values.
 
@@ -1621,7 +1687,7 @@ class Item_rollup_group_item final : public Item_func {
     // with all the other copying done here.)
     hidden = inner_item->hidden;
     set_nullable(true);
-    set_rollup_expr();
+    set_group_by_modifier();
   }
   double val_real() override;
   longlong val_int() override;
@@ -1642,7 +1708,7 @@ class Item_rollup_group_item final : public Item_func {
   }
   void update_used_tables() override {
     Item_func::update_used_tables();
-    set_rollup_expr();
+    set_group_by_modifier();
   }
   Item_result result_type() const override { return args[0]->result_type(); }
   bool resolve_type(THD *) override {
@@ -1662,6 +1728,7 @@ class Item_rollup_group_item final : public Item_func {
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   bool eq(const Item *item, bool binary_cmp) const override;
+  TYPELIB *get_typelib() const override;
 
   // Used by AggregateIterator.
   void set_current_rollup_level(int level) { m_current_rollup_level = level; }
@@ -1977,8 +2044,8 @@ class Item_func_shift_left final : public Item_func_shift {
   const char *func_name() const override { return "<<"; }
 
  private:
-  longlong int_op() override { return eval_int_op<true>(); }
-  String *str_op(String *str) override { return eval_str_op<true>(str); }
+  longlong int_op() override;
+  String *str_op(String *str) override;
 };
 
 class Item_func_shift_right final : public Item_func_shift {
@@ -1988,8 +2055,8 @@ class Item_func_shift_right final : public Item_func_shift {
   const char *func_name() const override { return ">>"; }
 
  private:
-  longlong int_op() override { return eval_int_op<false>(); }
-  String *str_op(String *str) override { return eval_str_op<false>(str); }
+  longlong int_op() override;
+  String *str_op(String *str) override;
 };
 
 class Item_func_bit_neg final : public Item_func_bit {
@@ -2019,7 +2086,7 @@ class Item_func_last_insert_id final : public Item_int_func {
   explicit Item_func_last_insert_id(const POS &pos) : Item_int_func(pos) {}
   Item_func_last_insert_id(const POS &pos, Item *a) : Item_int_func(pos, a) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override { return "last_insert_id"; }
 
@@ -2053,7 +2120,7 @@ class Item_func_benchmark final : public Item_int_func {
     return RAND_TABLE_BIT;
   }
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override { return "benchmark"; }
   bool resolve_type(THD *thd) override {
@@ -2083,13 +2150,13 @@ class Item_func_sleep final : public Item_int_func {
  public:
   Item_func_sleep(const POS &pos, Item *a) : Item_int_func(pos, a) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override { return "sleep"; }
   /**
     This function is non-deterministic and hence depends on the
     'RAND' pseudo-table.
 
-    @retval RAND_TABLE_BIT
+    @returns RAND_TABLE_BIT
   */
   table_map get_initial_pseudo_tables() const override {
     return RAND_TABLE_BIT;
@@ -2113,7 +2180,6 @@ class Item_udf_func : public Item_func {
 
  protected:
   udf_handler udf;
-  bool is_expensive_processor(uchar *) override { return true; }
 
  public:
   Item_udf_func(const POS &pos, udf_func *udf_arg, PT_item_list *opt_list)
@@ -2122,7 +2188,7 @@ class Item_udf_func : public Item_func {
   }
   ~Item_udf_func() override = default;
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override { return udf.name(); }
   enum Functype functype() const override { return UDF_FUNC; }
   table_map get_initial_pseudo_tables() const override {
@@ -2131,7 +2197,6 @@ class Item_udf_func : public Item_func {
   bool fix_fields(THD *thd, Item **ref) override;
   void cleanup() override;
   Item_result result_type() const override { return udf.result_type(); }
-  bool is_expensive() override { return true; }
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
 
@@ -2141,6 +2206,10 @@ class Item_udf_func : public Item_func {
             checker_args);
     func_arg->banned_function_name = func_name();
     return true;
+  }
+
+  void compute_cost(CostOfItem *root_cost) const override {
+    root_cost->MarkExpensive();
   }
 
  protected:
@@ -2159,11 +2228,11 @@ class Item_func_udf_float final : public Item_udf_func {
   Item_func_udf_float(const POS &pos, udf_func *udf_arg, PT_item_list *opt_list)
       : Item_udf_func(pos, udf_arg, opt_list) {}
   longlong val_int() override {
-    assert(fixed == 1);
+    assert(fixed);
     return (longlong)rint(Item_func_udf_float::val_real());
   }
   my_decimal *val_decimal(my_decimal *dec_buf) override {
-    double res = val_real();
+    const double res = val_real();
     if (null_value) return nullptr;
     double2my_decimal(E_DEC_FATAL_ERROR, res, dec_buf);
     return dec_buf;
@@ -2274,7 +2343,7 @@ class Item_func_get_lock final : public Item_int_func {
   Item_func_get_lock(const POS &pos, Item *a, Item *b)
       : Item_int_func(pos, a, b) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override { return "get_lock"; }
   bool resolve_type(THD *thd) override {
@@ -2301,7 +2370,7 @@ class Item_func_release_lock final : public Item_int_func {
 
  public:
   Item_func_release_lock(const POS &pos, Item *a) : Item_int_func(pos, a) {}
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   longlong val_int() override;
   const char *func_name() const override { return "release_lock"; }
@@ -2326,7 +2395,7 @@ class Item_func_release_all_locks final : public Item_int_func {
 
  public:
   explicit Item_func_release_all_locks(const POS &pos) : Item_int_func(pos) {}
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   longlong val_int() override;
   const char *func_name() const override { return "release_all_locks"; }
@@ -2358,7 +2427,7 @@ class Item_source_pos_wait : public Item_int_func {
   Item_source_pos_wait(const POS &pos, Item *a, Item *b, Item *c, Item *d)
       : Item_int_func(pos, a, b, c, d) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override { return "source_pos_wait"; }
   bool resolve_type(THD *thd) override {
@@ -3138,6 +3207,7 @@ class user_var_entry {
   /* Routines to access the value and its type */
   const char *ptr() const { return m_ptr; }
   size_t length() const { return m_length; }
+  /// The data type of this variable.
   Item_result type() const { return m_type; }
   /* Item-alike routines to access the value */
   double val_real(bool *null_value) const;
@@ -3310,7 +3380,7 @@ class Item_user_var_as_out_param : public Item {
 
 class Item_func_get_system_var;
 
-/** Class to log audit event MYSQL_AUDIT_GLOBAL_VARIABLE_GET. */
+/** Class to log audit event EVENT_TRACKING_GLOBAL_VARIABLE_GET. */
 class Audit_global_variable_get_event {
  public:
   Audit_global_variable_get_event(THD *thd, Item_func_get_system_var *item,
@@ -3395,6 +3465,9 @@ class JOIN;
 class Item_func_match final : public Item_real_func {
   typedef Item_real_func super;
 
+ protected:
+  void add_json_info(Json_object *obj) override;
+
  public:
   Item *against;
   uint key, flags;
@@ -3439,7 +3512,7 @@ class Item_func_match final : public Item_real_func {
     null_on_null = false;
   }
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   void cleanup() override {
     DBUG_TRACE;
@@ -3456,6 +3529,7 @@ class Item_func_match final : public Item_real_func {
   enum Functype functype() const override { return FT_FUNC; }
   const char *func_name() const override { return "match"; }
   bool fix_fields(THD *thd, Item **ref) override;
+  void update_used_tables() override;
   bool eq(const Item *, bool binary_cmp) const override;
   /* The following should be safe, even if we compare doubles */
   longlong val_int() override {
@@ -3687,7 +3761,7 @@ class Item_func_is_free_lock final : public Item_int_func {
  public:
   Item_func_is_free_lock(const POS &pos, Item *a) : Item_int_func(pos, a) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override { return "is_free_lock"; }
   bool resolve_type(THD *thd) override {
@@ -3714,7 +3788,7 @@ class Item_func_is_used_lock final : public Item_int_func {
  public:
   Item_func_is_used_lock(const POS &pos, Item *a) : Item_int_func(pos, a) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override { return "is_used_lock"; }
   bool resolve_type(THD *thd) override {
@@ -3739,7 +3813,7 @@ class Item_func_row_count final : public Item_int_func {
  public:
   explicit Item_func_row_count(const POS &pos) : Item_int_func(pos) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   longlong val_int() override;
   const char *func_name() const override { return "row_count"; }
@@ -3784,14 +3858,12 @@ class Item_func_sp final : public Item_func {
   bool init_result_field(THD *thd);
 
  protected:
-  bool is_expensive_processor(uchar *) override { return true; }
-
  public:
   Item_func_sp(const POS &pos, const LEX_STRING &db_name,
                const LEX_STRING &fn_name, bool use_explicit_name,
                PT_item_list *opt_list);
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   /**
     Must not be called before the procedure is resolved,
     i.e. @c init_result_field().
@@ -3829,8 +3901,6 @@ class Item_func_sp final : public Item_func {
   bool fix_fields(THD *thd, Item **ref) override;
   bool resolve_type(THD *thd) override;
 
-  bool is_expensive() override { return true; }
-
   inline Field *get_sp_result_field() { return sp_result_field; }
   bool check_function_as_value_generator(uchar *checker_args) override {
     Check_function_as_value_generator_parameters *func_arg =
@@ -3838,6 +3908,10 @@ class Item_func_sp final : public Item_func {
             checker_args);
     func_arg->banned_function_name = func_name();
     return true;
+  }
+
+  void compute_cost(CostOfItem *root_cost) const override {
+    root_cost->MarkExpensive();
   }
 };
 
@@ -3847,7 +3921,7 @@ class Item_func_found_rows final : public Item_int_func {
  public:
   explicit Item_func_found_rows(const POS &pos) : Item_int_func(pos) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override { return "found_rows"; }
   bool resolve_type(THD *) override {
@@ -3871,7 +3945,7 @@ class Item_func_uuid_short final : public Item_int_func {
  public:
   Item_func_uuid_short(const POS &pos) : Item_int_func(pos) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override { return "uuid_short"; }
   longlong val_int() override;
   bool resolve_type(THD *) override {
@@ -3899,7 +3973,7 @@ class Item_func_version final : public Item_static_string_func {
  public:
   explicit Item_func_version(const POS &pos);
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 };
 
 /**
@@ -3914,6 +3988,21 @@ class Item_func_internal_is_mandatory_role : public Item_int_func {
   longlong val_int() override;
   const char *func_name() const override {
     return "internal_is_mandatory_role";
+  }
+  enum Functype functype() const override { return DD_INTERNAL_FUNC; }
+  bool resolve_type(THD *) override {
+    set_nullable(true);
+    return false;
+  }
+};
+
+class Item_func_internal_use_terminology_previous : public Item_int_func {
+ public:
+  Item_func_internal_use_terminology_previous(const POS &pos)
+      : Item_int_func(pos) {}
+  longlong val_int() override;
+  const char *func_name() const override {
+    return "internal_use_terminology_previous";
   }
   enum Functype functype() const override { return DD_INTERNAL_FUNC; }
   bool resolve_type(THD *) override {

@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,11 +29,11 @@
 #include <limits.h>
 #include <stdarg.h>
 #include <algorithm>
+#include <bit>
 #include <new>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "my_bit.h"
+#include "m_string.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_io.h"
@@ -40,6 +41,9 @@
 #include "myisam.h"
 #include "myisampack.h"
 #include "mysql/plugin.h"
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
 #include "sql/current_thd.h"
 #include "sql/derror.h"
 #include "sql/field.h"
@@ -54,6 +58,7 @@
 #include "sql/system_variables.h"
 #include "storage/myisam/myisamdef.h"
 #include "storage/myisam/rt_index.h"
+#include "strxmov.h"
 
 #include "mysql/components/services/log_builtins.h"
 
@@ -1976,7 +1981,7 @@ static int myisam_init(void *p) {
   else
     myisam_recover_options = HA_RECOVER_OFF;
 
-  myisam_block_size = (uint)1 << my_bit_log2(opt_myisam_block_size);
+  myisam_block_size = std::bit_floor(opt_myisam_block_size);
 
   myisam_hton = (handlerton *)p;
   myisam_hton->state = SHOW_OPTION_YES;

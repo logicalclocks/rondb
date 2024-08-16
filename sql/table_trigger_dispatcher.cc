@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,15 +27,16 @@
 #include <assert.h>
 #include <sys/types.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_alloc.h"
 #include "my_sqlcommand.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/auth/auth_acls.h"
-#include "sql/auth/auth_common.h"  // check_global_access
+#include "sql/auth/auth_common.h"        // check_global_access
+#include "sql/auth/sql_authorization.h"  // check_valid_definer
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/dd_trigger.h"  // dd::create_trigger
@@ -55,6 +57,7 @@
 #include "sql/thr_malloc.h"
 #include "sql/trigger.h"
 #include "sql/trigger_chain.h"
+#include "string_with_len.h"
 #include "thr_lock.h"
 
 namespace dd {
@@ -98,13 +101,16 @@ Table_trigger_dispatcher::~Table_trigger_dispatcher() {
 
   if (m_record1_field) {
     for (Field **fld_ptr = m_record1_field; *fld_ptr; fld_ptr++)
-      destroy(*fld_ptr);
+      ::destroy_at(*fld_ptr);
   }
 
   // Destroy trigger chains.
 
-  for (int i = 0; i < (int)TRG_EVENT_MAX; ++i)
-    for (int j = 0; j < (int)TRG_ACTION_MAX; ++j) destroy(m_trigger_map[i][j]);
+  for (int i = 0; i < (int)TRG_EVENT_MAX; ++i) {
+    for (int j = 0; j < (int)TRG_ACTION_MAX; ++j) {
+      if (m_trigger_map[i][j] != nullptr) ::destroy_at(m_trigger_map[i][j]);
+    }
+  }
 }
 bool Table_trigger_dispatcher::create_trigger(
     THD *thd, String *binlog_create_trigger_stmt, bool if_not_exists,
@@ -112,7 +118,7 @@ bool Table_trigger_dispatcher::create_trigger(
   assert(m_subject_table);
   assert(!already_exists);
   LEX *lex = thd->lex;
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
 
   // If this table has broken triggers, CREATE TRIGGER is not allowed.
   if (check_for_broken_triggers()) return true;
@@ -197,33 +203,9 @@ bool Table_trigger_dispatcher::create_trigger(
     return true;
   }
 
-  /*
-    If the specified definer differs from the current user, we should check
-    that the current user has SUPER privilege (in order to create trigger
-    under another user one must have SUPER privilege).
-  */
-  Security_context *sctx = thd->security_context();
-  if (lex->definer &&
-      (strcmp(lex->definer->user.str, sctx->priv_user().str) ||
-       my_strcasecmp(system_charset_info, lex->definer->host.str,
-                     sctx->priv_host().str))) {
-    if (!sctx->check_access(SUPER_ACL) &&
-        !sctx->has_global_grant(STRING_WITH_LEN("SET_USER_ID")).first) {
-      my_error(ER_SPECIFIC_ACCESS_DENIED_ERROR, MYF(0), "SUPER or SET_USER_ID");
-      return true;
-    }
-    if (sctx->can_operate_with({lex->definer}, consts::system_user, true))
-      return true;
-  }
+  if (check_valid_definer(thd, lex->definer)) return true;
 
-  if (lex->definer &&
-      !is_acl_user(thd, lex->definer->host.str, lex->definer->user.str)) {
-    push_warning_printf(thd, Sql_condition::SL_NOTE, ER_NO_SUCH_USER,
-                        ER_THD(thd, ER_NO_SUCH_USER), lex->definer->user.str,
-                        lex->definer->host.str);
-
-    if (thd->get_stmt_da()->is_error()) return true;
-  }
+  if (thd->get_stmt_da()->is_error()) return true;
 
   /*
     Check if all references to fields in OLD/NEW-rows in this trigger are valid.
@@ -263,7 +245,7 @@ bool Table_trigger_dispatcher::create_trigger(
       &m_subject_table->mem_root, t->get_event(), t->get_action_time());
 
   if (!tc) {
-    destroy(t);
+    ::destroy_at(t);
     return true;
   }
 
@@ -272,7 +254,7 @@ bool Table_trigger_dispatcher::create_trigger(
   if (tc->add_trigger(&m_subject_table->mem_root, t,
                       lex->sphead->m_trg_chistics.ordering_clause,
                       lex->sphead->m_trg_chistics.anchor_trigger_name)) {
-    destroy(t);
+    ::destroy_at(t);
     return true;
   }
 
@@ -456,7 +438,7 @@ void Table_trigger_dispatcher::parse_triggers(THD *thd, List<Trigger> *triggers,
 
     if (!t) break;
 
-    bool fatal_parse_error = t->parse(thd, is_upgrade);
+    const bool fatal_parse_error = t->parse(thd, is_upgrade);
 
     /*
       There are two kinds of parse errors here:
@@ -501,7 +483,7 @@ void Table_trigger_dispatcher::parse_triggers(THD *thd, List<Trigger> *triggers,
       }
 
       if (fatal_parse_error) {
-        destroy(t);
+        ::destroy_at(t);
         it.remove();
       }
 
@@ -557,7 +539,7 @@ bool Table_trigger_dispatcher::process_triggers(
   assert(m_subject_table->pos_in_table_list->trg_event_map &
          static_cast<uint>(1 << static_cast<int>(event)));
 
-  bool rc = tc->execute_triggers(thd);
+  const bool rc = tc->execute_triggers(thd);
 
   m_new_field = nullptr;
   m_old_field = nullptr;

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,12 +27,11 @@
 #ifndef BUILD_INDX_HPP
 #define BUILD_INDX_HPP
 
-#include "SignalData.hpp"
 #include <NodeBitmask.hpp>
 #include <signaldata/DictTabInfo.hpp>
+#include "SignalData.hpp"
 
 #define JAM_FILE_ID 15
-
 
 struct BuildIndxReq {
   enum RequestType {
@@ -39,9 +39,7 @@ struct BuildIndxReq {
     SubOp = 2   // actual build of hash index
   };
 
-  enum RequestFlag {
-    RF_BUILD_OFFLINE = 1 << 8
-  };
+  enum RequestFlag { RF_BUILD_OFFLINE = 1 << 8 };
 
   static constexpr Uint32 SignalLength = 11;
   static constexpr Uint32 INDEX_COLUMNS = 0;
@@ -67,7 +65,9 @@ struct BuildIndxConf {
   static constexpr Uint32 SignalLength = 6;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 tableId;
   Uint32 indexId;
@@ -97,7 +97,9 @@ struct BuildIndxRef {
   static constexpr Uint32 SignalLength = 10;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 tableId;
   Uint32 indexId;

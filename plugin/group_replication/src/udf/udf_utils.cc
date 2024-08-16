@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,8 +25,10 @@
 #include <mysql/components/my_service.h>
 #include <mysql/components/services/dynamic_privilege.h>
 #include <mysql/components/services/mysql_runtime_error_service.h>
+#include "m_string.h"
 #include "plugin/group_replication/include/plugin.h"
 #include "sql/auth/auth_acls.h"
+#include "string_with_len.h"
 
 std::atomic<int> UDF_counter::number_udfs_running(0);
 
@@ -163,15 +166,13 @@ bool validate_uuid_parameter(std::string &uuid, size_t length,
     return true;
   }
 
-  if (!binary_log::Uuid::is_valid(uuid.c_str(), length)) {
+  if (!mysql::gtid::Uuid::is_valid(uuid.c_str(), length)) {
     *error_message = server_uuid_not_valid_str;
     return true;
   }
 
   if (group_member_mgr) {
-    std::unique_ptr<Group_member_info> member_info{
-        group_member_mgr->get_group_member_info(uuid)};
-    if (member_info.get() == nullptr) {
+    if (!group_member_mgr->is_member_info_present(uuid)) {
       *error_message = server_uuid_not_on_group_str;
       return true;
     }

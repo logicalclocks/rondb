@@ -1,14 +1,15 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,6 +27,7 @@
 #include <vector>
 
 #include "sql-common/json_dom.h"  // Json_array
+#include "sql/auth/authentication_policy.h"
 #include "sql/auth/user_table.h"
 #include "sql/mem_root_allocator.h"
 #include "sql/sql_class.h"
@@ -35,6 +37,9 @@ enum class nthfactor { NONE = 1, SECOND_FACTOR, THIRD_FACTOR };
 
 class Multi_factor_auth_list;
 class Multi_factor_auth_info;
+
+using server_challenge_info_vector =
+    std::vector<std::pair<std::string, std::string>>;
 
 /**
   An interface to access information about Multi factor authentication
@@ -53,12 +58,16 @@ class I_multi_factor_auth {
   /**
     Helper method to validate Multi factor authentication methods.
   */
-  virtual bool validate_plugins_in_auth_chain(THD *thd) = 0;
+  virtual bool validate_plugins_in_auth_chain(
+      THD *thd, const authentication_policy::Factors &policy_factors) = 0;
   /**
     Helper method to validate Multi factor authentication methods are
     correct compared to authentication policy.
   */
-  virtual bool validate_against_authentication_policy(THD *) { return false; }
+  virtual bool validate_against_authentication_policy(
+      THD *, const authentication_policy::Factors &) {
+    return false;
+  }
   /**
     method to add/delete Multi factor authentication methods in user_attributes
     column.
@@ -91,7 +100,7 @@ class I_multi_factor_auth {
   /**
     Fill in server challenge generated as part of initiate registration step.
   */
-  virtual void get_server_challenge(std::vector<std::string> &sc) = 0;
+  virtual void get_server_challenge_info(server_challenge_info_vector &sc) = 0;
   /**
     Get methods.
   */
@@ -119,8 +128,10 @@ class Multi_factor_auth_list : public I_multi_factor_auth {
   size_t get_mfa_list_size();
   bool is_alter_allowed(THD *, LEX_USER *) override;
   void alter_mfa(I_multi_factor_auth *) override;
-  bool validate_plugins_in_auth_chain(THD *thd) override;
-  bool validate_against_authentication_policy(THD *thd) override;
+  bool validate_plugins_in_auth_chain(
+      THD *thd, const authentication_policy::Factors &policy_factors) override;
+  bool validate_against_authentication_policy(
+      THD *thd, const authentication_policy::Factors &policy_factors) override;
   bool update_user_attributes() override;
   void add_factor(I_multi_factor_auth *m) override;
   bool serialize(Json_array &mfa_arr) override;
@@ -131,7 +142,7 @@ class Multi_factor_auth_list : public I_multi_factor_auth {
   void get_info_for_query_rewrite(THD *, LEX_USER *) override;
   void get_generated_passwords(Userhostpassword_list &gp, const char *u,
                                const char *h) override;
-  void get_server_challenge(std::vector<std::string> &sc) override;
+  void get_server_challenge_info(server_challenge_info_vector &sc) override;
 
  private:
   /*
@@ -156,7 +167,8 @@ class Multi_factor_auth_info : public I_multi_factor_auth {
   Multi_factor_auth_info(MEM_ROOT *mem_root, LEX_MFA *m);
   ~Multi_factor_auth_info() override {}
   /* validate Multi factor authentication plugins during ACL DDL */
-  bool validate_plugins_in_auth_chain(THD *thd) override;
+  bool validate_plugins_in_auth_chain(
+      THD *thd, const authentication_policy::Factors &policy_factors) override;
   /* update user attributes */
   bool update_user_attributes() override;
   /* construct json object out of user attributes column */
@@ -169,7 +181,7 @@ class Multi_factor_auth_info : public I_multi_factor_auth {
   void get_info_for_query_rewrite(THD *, LEX_USER *) override;
   void get_generated_passwords(Userhostpassword_list &gp, const char *u,
                                const char *h) override;
-  void get_server_challenge(std::vector<std::string> &sc) override;
+  void get_server_challenge_info(server_challenge_info_vector &sc) override;
 
   /* during ALTER USER copy attributes from ACL_USER */
   Multi_factor_auth_info &operator=(Multi_factor_auth_info &new_af);
@@ -195,6 +207,9 @@ class Multi_factor_auth_info : public I_multi_factor_auth {
   const char *get_generated_password_str();
   size_t get_generated_password_len();
 
+  const char *get_client_plugin_str();
+  size_t get_client_plugin_len();
+
   nthfactor get_factor();
   unsigned int get_nth_factor();
   bool is_add_factor();
@@ -210,6 +225,7 @@ class Multi_factor_auth_info : public I_multi_factor_auth {
   void set_auth_str(const char *, size_t);
   void set_plugin_str(const char *, size_t);
   void set_generated_password(const char *, size_t);
+  void set_client_plugin(const char *, size_t);
   void set_factor(nthfactor f);
   void set_passwordless(int v);
   void set_init_registration(bool v);

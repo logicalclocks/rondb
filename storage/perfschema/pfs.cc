@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -51,13 +52,16 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/service.h>
 #include <mysql/components/service_implementation.h>
+#include <mysql/components/services/mysql_server_telemetry_metrics_service.h>
 #include <mysql/components/services/mysql_server_telemetry_traces_service.h>
+#include <mysql/components/services/pfs_notification.h>
 #include <mysql/components/services/psi_cond_service.h>
 #include <mysql/components/services/psi_error_service.h>
 #include <mysql/components/services/psi_file_service.h>
 #include <mysql/components/services/psi_idle_service.h>
 #include <mysql/components/services/psi_mdl_service.h>
 #include <mysql/components/services/psi_memory_service.h>
+#include <mysql/components/services/psi_metric_service.h>
 #include <mysql/components/services/psi_mutex_service.h>
 #include <mysql/components/services/psi_rwlock_service.h>
 #include <mysql/components/services/psi_socket_service.h>
@@ -84,12 +88,15 @@
 #include "my_thread.h"
 #include "mysql/psi/mysql_memory.h"
 #include "mysql/psi/mysql_thread.h"
+#include "mysql/psi/psi_metric.h"
+#include "mysql/strings/m_ctype.h"
 #include "pfs_error_provider.h"
 /* Make sure exported prototypes match the implementation. */
 #include "pfs_file_provider.h"
 #include "pfs_idle_provider.h"
 #include "pfs_memory_provider.h"
 #include "pfs_metadata_provider.h"
+#include "pfs_metric_provider.h"
 #include "pfs_socket_provider.h"
 #include "pfs_stage_provider.h"
 #include "pfs_statement_provider.h"
@@ -116,6 +123,7 @@
 #include "storage/perfschema/pfs_host.h"
 #include "storage/perfschema/pfs_instr.h"
 #include "storage/perfschema/pfs_instr_class.h"
+#include "storage/perfschema/pfs_metrics_service_imp.h"
 #include "storage/perfschema/pfs_plugin_table.h"
 #include "storage/perfschema/pfs_prepared_stmt.h"
 #include "storage/perfschema/pfs_program.h"
@@ -141,6 +149,7 @@
 #define DISABLE_PSI_IDLE
 #define DISABLE_PSI_MEMORY
 #define DISABLE_PSI_METADATA
+#define DISABLE_PSI_METRICS
 #define DISABLE_PSI_MUTEX
 #define DISABLE_PSI_PS
 #define DISABLE_PSI_RWLOCK
@@ -219,6 +228,13 @@ static void adjust_collect_flags(PSI_statement_locker_state *state) {
   do not use in production.
 */
 #undef PFS_PARANOID
+
+/*
+  This is a development tool to investigate
+  the statement instrumentation,
+  do not use in production.
+*/
+#undef PFS_INFO_PARANOID
 
 #ifdef PFS_PARANOID
 static void report_memory_accounting_error(const char *api_name,
@@ -3027,7 +3043,10 @@ static void *pfs_spawn_thread(void *arg) {
   }
   my_thread_set_THR_PFS(pfs);
 
-  pfs_notify_thread_create((PSI_thread *)pfs);
+  if (pfs) {
+    pfs_notify_thread_create(pfs);
+  }
+
   /*
     Secondly, free the memory allocated in spawn_thread_v1().
     It is preferable to do this before invoking the user
@@ -3114,7 +3133,7 @@ PSI_thread *pfs_new_thread_vc(PSI_thread_key key, PSI_thread_seqnum seqnum,
   }
 
   if (pfs) {
-    pfs_notify_thread_create((PSI_thread *)pfs);
+    pfs_notify_thread_create(pfs);
   }
 
   return reinterpret_cast<PSI_thread *>(pfs);
@@ -3377,6 +3396,12 @@ void pfs_set_thread_info_vc(const char *info, uint info_len) {
   pfs_dirty_state dirty_state;
   PFS_thread *pfs = my_thread_get_THR_PFS();
 
+#ifdef PFS_INFO_PARANOID
+  if (info != nullptr) {
+    fprintf(stderr, "THREAD.INFO = %.*s\n", info_len, info);
+  }
+#endif
+
   if (likely(pfs != nullptr)) {
     if (info_len > sizeof(pfs->m_processlist_info)) {
       info_len = sizeof(pfs->m_processlist_info);
@@ -3459,38 +3484,16 @@ int pfs_set_thread_resource_group_by_id_vc(PSI_thread *thread,
   return set_thread_resource_group(pfs, group_name, group_name_len, user_data);
 }
 
-/**
-  Get the system and session attributes for a given PFS_thread.
-  @param pfs thread instrumentation
-  @param current_thread true if pfs refers to the current thread
-  @param thread_attrs thread attribute structure
-  @return 0 if successful, non-zero otherwise
-*/
-int get_thread_attributes(PFS_thread *pfs, bool current_thread,
-                          PSI_thread_attrs *thread_attrs)
-
-{
-  size_t len;
-  int result = 0;
-  pfs_optimistic_state lock = pfs_optimistic_state();
-  pfs_optimistic_state session_lock = pfs_optimistic_state();
-
-  assert(thread_attrs != nullptr);
-
+void pfs_get_thread_system_attrs(PFS_thread *pfs,
+                                 PSI_thread_attrs *thread_attrs) {
   static_assert(PSI_NAME_LEN == NAME_LEN);
   static_assert(PSI_USERNAME_LENGTH == USERNAME_LENGTH);
   static_assert(PSI_HOSTNAME_LENGTH == HOSTNAME_LENGTH);
 
-  if (unlikely(pfs == nullptr)) {
-    return 1;
-  }
+  assert(pfs != nullptr);
+  assert(thread_attrs != nullptr);
 
-  if (!current_thread) {
-    /* Protect this reader against a thread delete. */
-    pfs->m_lock.begin_optimistic_lock(&lock);
-    /* Protect this reader against writing on session attributes */
-    pfs->m_session_lock.begin_optimistic_lock(&session_lock);
-  }
+  size_t len;
 
   thread_attrs->m_thread_internal_id = pfs->m_thread_internal_id;
   thread_attrs->m_processlist_id = pfs->m_processlist_id;
@@ -3498,7 +3501,8 @@ int get_thread_attributes(PFS_thread *pfs, bool current_thread,
   thread_attrs->m_user_data = pfs->m_user_data;
   thread_attrs->m_system_thread = pfs->m_system_thread;
 
-  assert(pfs->m_sock_addr_len <= sizeof(PSI_thread_attrs::m_sock_addr));
+  assert(pfs->m_sock_addr_len <=
+         static_cast<int>(sizeof(PSI_thread_attrs::m_sock_addr)));
   thread_attrs->m_sock_addr_length = pfs->m_sock_addr_len;
   if (thread_attrs->m_sock_addr_length > 0) {
     memcpy(&thread_attrs->m_sock_addr, &pfs->m_sock_addr, pfs->m_sock_addr_len);
@@ -3524,6 +3528,37 @@ int get_thread_attributes(PFS_thread *pfs, bool current_thread,
     memcpy(thread_attrs->m_groupname, pfs->m_groupname,
            pfs->m_groupname_length);
   }
+}
+
+/**
+  Get the system and session attributes for a given PFS_thread.
+  @param pfs thread instrumentation
+  @param current_thread true if pfs refers to the current thread
+  @param thread_attrs thread attribute structure
+  @return 0 if successful, non-zero otherwise
+*/
+int get_thread_attributes(PFS_thread *pfs, bool current_thread,
+                          PSI_thread_attrs *thread_attrs)
+
+{
+  int result = 0;
+  pfs_optimistic_state lock = pfs_optimistic_state();
+  pfs_optimistic_state session_lock = pfs_optimistic_state();
+
+  assert(thread_attrs != nullptr);
+
+  if (unlikely(pfs == nullptr)) {
+    return 1;
+  }
+
+  if (!current_thread) {
+    /* Protect this reader against a thread delete. */
+    pfs->m_lock.begin_optimistic_lock(&lock);
+    /* Protect this reader against writing on session attributes */
+    pfs->m_session_lock.begin_optimistic_lock(&session_lock);
+  }
+
+  pfs_get_thread_system_attrs(pfs, thread_attrs);
 
   if (!current_thread) {
     if (!pfs->m_session_lock.end_optimistic_lock(&session_lock)) {
@@ -3583,23 +3618,32 @@ int pfs_unregister_notification_vc(int handle) {
   @sa PSI_v2::notify_session_connect.
 */
 void pfs_notify_session_connect_vc(PSI_thread *thread) {
-  pfs_notify_session_connect(thread);
+  auto *pfs = reinterpret_cast<PFS_thread *>(thread);
+  if (pfs) {
+    pfs_notify_session_connect(pfs);
+  }
 }
 
 /**
   Implementation of the thread instrumentation interface.
   @sa PSI_v2::notify_session_disconnect.
 */
-void pfs_notify_session_disconnect_vc(PSI_thread *thread [[maybe_unused]]) {
-  pfs_notify_session_disconnect(thread);
+void pfs_notify_session_disconnect_vc(PSI_thread *thread) {
+  auto *pfs = reinterpret_cast<PFS_thread *>(thread);
+  if (pfs) {
+    pfs_notify_session_disconnect(pfs);
+  }
 }
 
 /**
   Implementation of the thread instrumentation interface.
   @sa PSI_v2::notify_session_change_user.
 */
-void pfs_notify_session_change_user_vc(PSI_thread *thread [[maybe_unused]]) {
-  pfs_notify_session_change_user(thread);
+void pfs_notify_session_change_user_vc(PSI_thread *thread) {
+  auto *pfs = reinterpret_cast<PFS_thread *>(thread);
+  if (pfs) {
+    pfs_notify_session_change_user(pfs);
+  }
 }
 
 /**
@@ -3642,7 +3686,7 @@ void pfs_delete_current_thread_vc() {
   if (thread != nullptr) {
     aggregate_thread(thread, thread->m_account, thread->m_user, thread->m_host);
     my_thread_set_THR_PFS(nullptr);
-    pfs_notify_thread_destroy((PSI_thread *)thread);
+    pfs_notify_thread_destroy(thread);
     destroy_thread(thread);
   }
 }
@@ -3656,7 +3700,7 @@ void pfs_delete_thread_vc(PSI_thread *thread) {
 
   if (pfs != nullptr) {
     aggregate_thread(pfs, pfs->m_account, pfs->m_user, pfs->m_host);
-    pfs_notify_thread_destroy(thread);
+    pfs_notify_thread_destroy(pfs);
     destroy_thread(pfs);
   }
 }
@@ -3672,14 +3716,14 @@ void pfs_detect_telemetry_vc(PSI_thread *thread [[maybe_unused]]) {
   assert(pfs_thread != nullptr);
 
   // Dirty read
-  telemetry_t *actual_telemetry = g_telemetry.load();
+  telemetry_t *actual_telemetry = g_telemetry.m_ptr.load();
 
   telemetry_t *expected_telemetry = pfs_thread->m_telemetry;
 
   if (actual_telemetry != expected_telemetry) {
     server_telemetry_tracing_lock();
     // Safe read
-    actual_telemetry = g_telemetry.load();
+    actual_telemetry = g_telemetry.m_ptr.load();
     if (actual_telemetry != expected_telemetry) {
       if (expected_telemetry == nullptr) {
         pfs_thread->m_telemetry = actual_telemetry;
@@ -6608,6 +6652,7 @@ void pfs_start_statement_vc(PSI_statement_locker *locker, const char *db,
       pfs->m_sqltext_cs_number = system_charset_info->number; /* default */
 
       pfs->m_message_text[0] = '\0';
+      pfs->m_message_text_length = 0;
       pfs->m_sql_errno = 0;
       pfs->m_sqlstate[0] = '\0';
       pfs->m_error_count = 0;
@@ -6697,6 +6742,12 @@ void pfs_set_statement_text_vc(PSI_statement_locker *locker, const char *text,
                                uint text_len) {
   auto *state = reinterpret_cast<PSI_statement_locker_state *>(locker);
   assert(state != nullptr);
+
+#ifdef PFS_INFO_PARANOID
+  if (text != nullptr) {
+    fprintf(stderr, "STATEMENT.TEXT = %.*s\n", text_len, text);
+  }
+#endif
 
   if (!(state->m_collect_flags & STATE_FLAG_EVENT)) {
     return;
@@ -6957,6 +7008,7 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
             reinterpret_cast<PFS_events_statements *>(state->m_statement);
         assert(pfs != nullptr);
 
+        size_t message_text_length;
         pfs_dirty_state dirty_state;
         thread->m_stmt_lock.allocated_to_dirty(&dirty_state);
 
@@ -6964,8 +7016,14 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
           case Diagnostics_area::DA_EMPTY:
             break;
           case Diagnostics_area::DA_OK:
-            memcpy(pfs->m_message_text, da->message_text(), MYSQL_ERRMSG_SIZE);
-            pfs->m_message_text[MYSQL_ERRMSG_SIZE] = 0;
+            message_text_length = da->message_text_length();
+            if (message_text_length > 0) {
+              memcpy(pfs->m_message_text, da->message_text(),
+                     message_text_length);
+            }
+            pfs->m_message_text[message_text_length] = '\0';
+            pfs->m_message_text_length = message_text_length;
+
             pfs->m_rows_affected = da->affected_rows();
             pfs->m_warning_count = da->last_statement_cond_count();
             memcpy(pfs->m_sqlstate, "00000", SQLSTATE_LENGTH);
@@ -6974,8 +7032,14 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
             pfs->m_warning_count = da->last_statement_cond_count();
             break;
           case Diagnostics_area::DA_ERROR:
-            memcpy(pfs->m_message_text, da->message_text(), MYSQL_ERRMSG_SIZE);
-            pfs->m_message_text[MYSQL_ERRMSG_SIZE] = 0;
+            message_text_length = da->message_text_length();
+            if (message_text_length > 0) {
+              memcpy(pfs->m_message_text, da->message_text(),
+                     message_text_length);
+            }
+            pfs->m_message_text[message_text_length] = '\0';
+            pfs->m_message_text_length = message_text_length;
+
             pfs->m_sql_errno = da->mysql_errno();
             memcpy(pfs->m_sqlstate, da->returned_sqlstate(), SQLSTATE_LENGTH);
             pfs->m_error_count++;
@@ -7159,7 +7223,6 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
     }
 
     if (pfs_program != nullptr) {
-      PFS_statement_stat *sub_stmt_stat = nullptr;
       sub_stmt_stat = &pfs_program->m_stmt_stat;
       if (sub_stmt_stat != nullptr) {
         if (pfs_flags & STATE_FLAG_TIMED) {
@@ -7197,17 +7260,16 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
 
     if (pfs_prepared_stmt != nullptr) {
       if (state->m_in_prepare) {
-        PFS_single_stat *prepared_stmt_stat = nullptr;
-        prepared_stmt_stat = &pfs_prepared_stmt->m_prepare_stat;
-        if (prepared_stmt_stat != nullptr) {
+        PFS_single_stat *prepare_stat = nullptr;
+        prepare_stat = &pfs_prepared_stmt->m_prepare_stat;
+        if (prepare_stat != nullptr) {
           if (pfs_flags & STATE_FLAG_TIMED) {
-            prepared_stmt_stat->aggregate_value(wait_time);
+            prepare_stat->aggregate_value(wait_time);
           } else {
-            prepared_stmt_stat->aggregate_counted();
+            prepare_stat->aggregate_counted();
           }
         }
       } else {
-        PFS_statement_stat *prepared_stmt_stat = nullptr;
         prepared_stmt_stat = &pfs_prepared_stmt->m_execute_stat;
         if (prepared_stmt_stat != nullptr) {
           if (pfs_flags & STATE_FLAG_TIMED) {
@@ -7245,14 +7307,6 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
           }
         }
       }
-    }
-
-    if (pfs_program != nullptr) {
-      sub_stmt_stat = &pfs_program->m_stmt_stat;
-    }
-
-    if (pfs_prepared_stmt != nullptr && !state->m_in_prepare) {
-      prepared_stmt_stat = &pfs_prepared_stmt->m_execute_stat;
     }
   }
 
@@ -7361,9 +7415,9 @@ void pfs_end_statement_vc(PSI_statement_locker *locker, void *stmt_da) {
     tel_data.m_sql_text = state->m_query_sample;
     tel_data.m_sql_text_length = state->m_query_sample_length;
 
-    const sql_digest_storage *digest_storage = state->m_digest;
-    if (digest_storage != nullptr) {
-      compute_digest_text(digest_storage, &digest_text);
+    const sql_digest_storage *tel_digest_storage = state->m_digest;
+    if (tel_digest_storage != nullptr) {
+      compute_digest_text(tel_digest_storage, &digest_text);
       tel_data.m_digest_text = digest_text.ptr();
     } else {
       tel_data.m_digest_text = nullptr;
@@ -7715,7 +7769,7 @@ void pfs_start_transaction_v1(PSI_transaction_locker *locker,
     pfs->m_source_file = src_file;
     pfs->m_source_line = src_line;
     pfs->m_state = TRANS_STATE_ACTIVE;
-    pfs->m_sid.clear();
+    pfs->m_tsid.clear();
     pfs->m_gtid_spec.set_automatic();
   }
 }
@@ -7731,7 +7785,8 @@ void pfs_set_transaction_gtid_v1(PSI_transaction_locker *locker,
     auto *pfs =
         reinterpret_cast<PFS_events_transactions *>(state->m_transaction);
     assert(pfs != nullptr);
-    pfs->m_sid = *static_cast<const rpl_sid *>(sid);
+    pfs->m_tsid =
+        mysql::gtid::Tsid_plain(*static_cast<const mysql::gtid::Tsid *>(sid));
     pfs->m_gtid_spec = *static_cast<const Gtid_specification *>(gtid_spec);
   }
 }
@@ -8054,7 +8109,8 @@ void pfs_digest_end_vc(PSI_digest_locker *locker,
 
     state->m_digest = digest;
 
-    const uint req_flags = STATE_FLAG_THREAD | STATE_FLAG_EVENT;
+    const uint req_flags =
+        STATE_FLAG_THREAD | STATE_FLAG_EVENT | STATE_FLAG_DIGEST;
 
     if ((state->m_pfs_flags & req_flags) == req_flags) {
       auto *thread = reinterpret_cast<PFS_thread *>(state->m_thread);
@@ -8102,6 +8158,41 @@ PSI_prepared_stmt *pfs_create_prepared_stmt_vc(void *identity, uint stmt_id,
   if (sql_text_length > COL_INFO_SIZE) {
     sql_text_length = COL_INFO_SIZE;
   }
+
+  /*
+    IMPORTANT NOTE:
+
+    When:
+    - the performance schema is configured to _not_ instrument prepared
+      statements (m_pfs_flags == 0),
+    - a telemetry component is configured to _force_ instrumentation,
+      (m_collect_flags != 0), asking for prepared statements instrumentation.
+
+    prepared statements will be instrumented anyway,
+    and therefore will be visible in the performance schema.
+
+    This is an accepted side effect of telemetry.
+
+    Alternative 1, rejected:
+
+    Honor the performance schema configuration,
+    but do not honor the telemetry configuration.
+
+    Alternative 2, rejected:
+
+    Do not call create_prepared_stmt(),
+    but return a different instance of PFS_prepared_stmt just for telemetry.
+
+    This imply to adjust aggregation, and destroy prepared statements,
+    to account for this different instrumentation.
+
+    This will lead to CPU and MEMORY overhead comparable
+    to the performance schema instrumentation,
+    without the added benefits of seeing the prepared statement in
+    table performance_schema.PREPARED_STATEMENTS_INSTANCES.
+
+    Technically feasible if the side effect must be removed, but not desirable.
+  */
 
   PFS_prepared_stmt *pfs = create_prepared_stmt(
       identity, pfs_thread, pfs_program, pfs_stmt, stmt_id, stmt_name,
@@ -9851,103 +9942,64 @@ struct PSI_tls_channel_bootstrap pfs_tls_channel_bootstrap = {
 struct PSI_transaction_bootstrap pfs_transaction_bootstrap = {
     get_transaction_interface};
 
-BEGIN_COMPONENT_PROVIDES(performance_schema)
-PROVIDES_SERVICE(performance_schema, psi_cond_v1),
-    PROVIDES_SERVICE(performance_schema, psi_error_v1),
-    PROVIDES_SERVICE(performance_schema, psi_file_v2),
-    PROVIDES_SERVICE(performance_schema, psi_idle_v1),
+#define REFERENCES_SERVICE(component, service) \
+  const_cast<void *>((const void *)&SERVICE_IMPLEMENTATION(component, service))
+
+/*
+ PFS plugin is special because it's being linked statically with the server.
+ The service list below is not being registered automatically by the dynamic
+ loader so you need to register each service:
+ - here to ensure compiler does not complain about unused implementation
+ objects
+ - in server_component.cc as well for automatic (un)registration by minimal
+ chassis init/deinit
+ */
+static void *services[] = {
+    REFERENCES_SERVICE(performance_schema, psi_cond_v1),
+    REFERENCES_SERVICE(performance_schema, psi_error_v1),
+    REFERENCES_SERVICE(performance_schema, psi_file_v2),
+    REFERENCES_SERVICE(performance_schema, psi_idle_v1),
     /* Deprecated, use psi_mdl_v2. */
-    PROVIDES_SERVICE(performance_schema, psi_mdl_v1),
-    PROVIDES_SERVICE(performance_schema, psi_mdl_v2),
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_memory_v1), */
-    PROVIDES_SERVICE(performance_schema, psi_memory_v2),
-    PROVIDES_SERVICE(performance_schema, psi_mutex_v1),
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_rwlock_v1), */
-    PROVIDES_SERVICE(performance_schema, psi_rwlock_v2),
-    PROVIDES_SERVICE(performance_schema, psi_socket_v1),
-    PROVIDES_SERVICE(performance_schema, psi_stage_v1),
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_statement_v1), */
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_statement_v2), */
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_statement_v3), */
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_statement_v4), */
-    PROVIDES_SERVICE(performance_schema, psi_statement_v5),
-    PROVIDES_SERVICE(performance_schema, psi_system_v1),
-    PROVIDES_SERVICE(performance_schema, psi_table_v1),
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_thread_v1), */
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_thread_v2), */
-    /* Obsolete: PROVIDES_SERVICE(performance_schema, psi_thread_v3), */
-    PROVIDES_SERVICE(performance_schema, psi_thread_v4),
-    PROVIDES_SERVICE(performance_schema, psi_thread_v5),
-    PROVIDES_SERVICE(performance_schema, psi_thread_v6),
-    PROVIDES_SERVICE(performance_schema, psi_thread_v7),
-    PROVIDES_SERVICE(performance_schema, psi_transaction_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_table_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_tiny_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_small_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_medium_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_integer_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_bigint_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_decimal_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_float_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_double_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_string_v2),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_blob_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_enum_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_date_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_time_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_datetime_v1),
+    REFERENCES_SERVICE(performance_schema, psi_mdl_v1),
+    REFERENCES_SERVICE(performance_schema, psi_mdl_v2),
+    REFERENCES_SERVICE(performance_schema, psi_memory_v2),
+    REFERENCES_SERVICE(performance_schema, psi_mutex_v1),
+    REFERENCES_SERVICE(performance_schema, psi_rwlock_v2),
+    REFERENCES_SERVICE(performance_schema, psi_socket_v1),
+    REFERENCES_SERVICE(performance_schema, psi_stage_v1),
+    REFERENCES_SERVICE(performance_schema, psi_statement_v5),
+    REFERENCES_SERVICE(performance_schema, psi_system_v1),
+    REFERENCES_SERVICE(performance_schema, psi_table_v1),
+    REFERENCES_SERVICE(performance_schema, psi_thread_v4),
+    REFERENCES_SERVICE(performance_schema, psi_thread_v5),
+    REFERENCES_SERVICE(performance_schema, psi_thread_v6),
+    REFERENCES_SERVICE(performance_schema, psi_thread_v7),
+    REFERENCES_SERVICE(performance_schema, psi_transaction_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_table_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_tiny_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_small_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_medium_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_integer_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_bigint_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_decimal_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_float_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_double_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_string_v2),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_blob_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_enum_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_date_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_time_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_datetime_v1),
     /* Deprecated, use pfs_plugin_column_timestamp_v2. */
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_timestamp_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_timestamp_v2),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_year_v1),
-    PROVIDES_SERVICE(performance_schema, psi_tls_channel_v1),
-    PROVIDES_SERVICE(performance_schema, mysql_server_telemetry_traces_v1),
-    PROVIDES_SERVICE(performance_schema, pfs_plugin_column_text_v1),
-    END_COMPONENT_PROVIDES();
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_timestamp_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_timestamp_v2),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_year_v1),
+    REFERENCES_SERVICE(performance_schema, psi_tls_channel_v1),
+    REFERENCES_SERVICE(performance_schema, mysql_server_telemetry_traces_v1),
+    REFERENCES_SERVICE(performance_schema, mysql_server_telemetry_metrics_v1),
+    REFERENCES_SERVICE(performance_schema, psi_metric_v1),
+    REFERENCES_SERVICE(performance_schema, pfs_plugin_column_text_v1),
+    REFERENCES_SERVICE(mysql_server, pfs_notification_v3),
+    REFERENCES_SERVICE(mysql_server, pfs_resource_group_v3)};
 
-static BEGIN_COMPONENT_REQUIRES(performance_schema) END_COMPONENT_REQUIRES();
-
-BEGIN_COMPONENT_METADATA(performance_schema)
-METADATA("mysql.author", "Oracle Corporation"),
-    METADATA("mysql.license", "GPL"), END_COMPONENT_METADATA();
-
-DECLARE_COMPONENT(performance_schema, "mysql:pfs")
-/* There are no initialization/deinitialization functions, they will not be
-   called as this component is not a regular one. */
-nullptr, nullptr END_DECLARE_COMPONENT();
-
-bool pfs_init_services(SERVICE_TYPE(registry_registration) * reg) {
-  int inx = 0;
-
-  for (;;) {
-    auto *pfs_service = reinterpret_cast<my_h_service>(
-        mysql_component_performance_schema.provides[inx].implementation);
-
-    if (pfs_service == nullptr) {
-      break;
-    }
-
-    if (reg->register_service(
-            mysql_component_performance_schema.provides[inx].name,
-            pfs_service)) {
-      return true;
-    }
-
-    inx++;
-  }
-
-  return false;
-}
-
-bool pfs_deinit_services(SERVICE_TYPE(registry_registration) * reg) {
-  for (int inx = 0;
-       mysql_component_performance_schema.provides[inx].name != nullptr;
-       inx++) {
-    if (reg->unregister(
-            mysql_component_performance_schema.provides[inx].name)) {
-      return true;
-    }
-  }
-
-  return false;
-}
+void *get_services() { return services; }

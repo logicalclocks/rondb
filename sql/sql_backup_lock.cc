@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,7 +25,6 @@
 
 #include <utility>
 
-#include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
@@ -33,6 +33,7 @@
 #include "sql/mdl.h"
 #include "sql/system_variables.h"
 #include "sql_class.h"  // THD
+#include "string_with_len.h"
 
 /**
   Check if a current user has the privilege BACKUP_ADMIN required to run
@@ -175,13 +176,13 @@ void release_backup_lock(THD *thd) {
 
 bool acquire_exclusive_backup_lock(THD *thd, ulong lock_wait_timeout,
                                    bool for_trx) {
-  enum_mdl_duration duration = (for_trx ? MDL_TRANSACTION : MDL_EXPLICIT);
+  const enum_mdl_duration duration = (for_trx ? MDL_TRANSACTION : MDL_EXPLICIT);
   return acquire_mdl_for_backup(thd, MDL_SHARED, duration, lock_wait_timeout);
 }
 
 bool acquire_shared_backup_lock(THD *thd, ulong lock_wait_timeout,
                                 bool for_trx) {
-  enum_mdl_duration duration = (for_trx ? MDL_TRANSACTION : MDL_EXPLICIT);
+  const enum_mdl_duration duration = (for_trx ? MDL_TRANSACTION : MDL_EXPLICIT);
   return acquire_mdl_for_backup(thd, MDL_INTENTION_EXCLUSIVE, duration,
                                 lock_wait_timeout);
 }

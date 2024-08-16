@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -74,14 +75,18 @@ struct IndexSkipScanParameters {
   uint eq_prefix_len;        ///< Length of the equality prefix
   uint eq_prefix_key_parts;  ///< Number of key parts in the equality prefix
   EQPrefix *eq_prefixes;     ///< Array of equality constants (IN list)
-  KEY_PART_INFO *range_key_part;  ///< The key part corresponding to the range
-                                  ///< condition
+  KEY_PART_INFO *range_key_part;  ///< The key part matching the range condition
+  uint used_key_parts;            ///< Number of index keys used for skip scan
+  double read_cost;               ///< Total cost of read
+  uint index;                     ///< Position of chosen index
+
   uchar *min_range_key;
   uchar *max_range_key;
   uchar *min_search_key;
   uchar *max_search_key;
   uint range_cond_flag;
   uint range_key_len;
+  uint num_output_rows;
 
   // The sub-tree corresponding to the range condition
   // (on key part C - for more details see description of get_best_skip_scan()).
@@ -94,6 +99,12 @@ struct IndexSkipScanParameters {
   bool has_aggregate_function;  ///< TRUE if there are aggregate functions.
 };
 
+Mem_root_array<AccessPath *> get_all_skip_scans(THD *thd,
+                                                RANGE_OPT_PARAM *param,
+                                                SEL_TREE *tree,
+                                                enum_order order_direction,
+                                                bool skip_records_in_range,
+                                                bool force_skip_scan);
 AccessPath *get_best_skip_scan(THD *thd, RANGE_OPT_PARAM *param, SEL_TREE *tree,
                                enum_order order_direction,
                                bool skip_records_in_range,

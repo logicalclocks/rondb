@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,6 +37,7 @@
 #include "metadata_cache.h"
 #include "my_thread.h"  // my_thread_self_setname
 #include "mysql/harness/config_parser.h"
+#include "mysql/harness/dynamic_config.h"
 #include "mysql/harness/loader_config.h"
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/utility/string.h"
@@ -67,13 +69,17 @@ static metadata_cache::RouterAttributes get_router_attributes(
       const auto protocol = routing_section->get("protocol");
       const auto destinations = routing_section->get("destinations");
 
-      const bool is_rw =
-          mysql_harness::utility::ends_with(destinations, "PRIMARY");
-      const bool is_ro =
-          mysql_harness::utility::ends_with(destinations, "SECONDARY");
+      const bool is_rw_split = routing_section->has("access_mode") &&
+                               routing_section->get("access_mode") == "auto";
+      const bool is_rw = !is_rw_split && mysql_harness::utility::ends_with(
+                                             destinations, "PRIMARY");
+      const bool is_ro = !is_rw_split && mysql_harness::utility::ends_with(
+                                             destinations, "SECONDARY");
 
       if (protocol == "classic") {
-        if (is_rw)
+        if (is_rw_split)
+          result.rw_split_classic_port = port;
+        else if (is_rw)
           result.rw_classic_port = port;
         else if (is_ro)
           result.ro_classic_port = port;
@@ -101,34 +107,6 @@ static void init(mysql_harness::PluginFuncEnv *env) {
                 "[metadata_cache] section is empty");
     }
   }
-}
-
-static std::string get_option(const mysql_harness::ConfigSection *section,
-                              const std::string &key,
-                              const std::string &def_value) {
-  if (section->has(key)) return section->get(key);
-  return def_value;
-}
-
-#define GET_OPTION_CHECKED(option, section, name, def_value) \
-  static_assert(mysql_harness::str_in_collection(            \
-      metadata_cache_supported_options, name));              \
-  option = get_option(section, name, def_value);
-
-static mysqlrouter::SSLOptions make_ssl_options(
-    const mysql_harness::ConfigSection *section) {
-  mysqlrouter::SSLOptions options;
-
-  GET_OPTION_CHECKED(options.mode, section, "ssl_mode",
-                     mysqlrouter::MySQLSession::kSslModePreferred);
-  GET_OPTION_CHECKED(options.cipher, section, "ssl_cipher", "");
-  GET_OPTION_CHECKED(options.tls_version, section, "tls_version", "");
-  GET_OPTION_CHECKED(options.ca, section, "ssl_ca", "");
-  GET_OPTION_CHECKED(options.capath, section, "ssl_capath", "");
-  GET_OPTION_CHECKED(options.crl, section, "ssl_crl", "");
-  GET_OPTION_CHECKED(options.crlpath, section, "ssl_crlpath", "");
-
-  return options;
 }
 
 class MetadataServersStateListener
@@ -194,17 +172,18 @@ static void start(mysql_harness::PluginFuncEnv *env) {
   try {
     using namespace std::string_literals;
 
-    MetadataCachePluginConfig config(section);
+    const MetadataCachePluginConfig config(section);
 
     if (config.metadata_servers_addresses.size() == 0 &&
         (!config.metadata_cache_dynamic_state ||
          config.metadata_cache_dynamic_state->get_metadata_servers().empty())) {
       throw std::runtime_error(
-          "list of metadata-servers is empty: 'bootstrap_server_addresses' in the configuration file is empty or not set and "s +
+          "list of metadata-servers is empty: "s +
           (!config.metadata_cache_dynamic_state
-               ? "no known 'dynamic_config'-file"
+               ? "no known 'dynamic_config'-file."
                : "list of 'cluster-metadata-servers' in 'dynamic_config'-file "
-                 "is empty, too."));
+                 "is empty.") +
+          " Bootstrap the Router again to fix this issue.");
     }
 
     const metadata_cache::MetadataCacheTTLConfig ttl_config{
@@ -256,10 +235,9 @@ static void start(mysql_harness::PluginFuncEnv *env) {
 
     md_cache->cache_init(config.cluster_type, config.router_id, clusterset_id,
                          config.metadata_servers_addresses, ttl_config,
-                         make_ssl_options(section), target_cluster,
-                         session_config, g_router_attributes,
-                         config.thread_stack_size, config.use_gr_notifications,
-                         config.get_view_id());
+                         config.ssl_options, target_cluster, session_config,
+                         g_router_attributes, config.thread_stack_size,
+                         config.use_gr_notifications, config.get_view_id());
 
     // register callback
     md_cache_dynamic_state = std::move(config.metadata_cache_dynamic_state);
@@ -293,6 +271,20 @@ static const std::array<const char *, 2> required = {{
     "router_protobuf",
 }};
 
+static void expose_configuration(mysql_harness::PluginFuncEnv *env,
+                                 const char * /*key*/, bool initial) {
+  const mysql_harness::AppInfo *info = get_app_info(env);
+
+  if (!info->config) return;
+
+  for (const mysql_harness::ConfigSection *section : info->config->sections()) {
+    if (section->name == kSectionName) {
+      MetadataCachePluginConfig config{section};
+      config.expose_configuration(info->config->get_default_section(), initial);
+    }
+  }
+}
+
 extern "C" {
 
 mysql_harness::Plugin METADATA_CACHE_PLUGIN_EXPORT
@@ -314,5 +306,6 @@ mysql_harness::Plugin METADATA_CACHE_PLUGIN_EXPORT
         true,     // declares_readiness
         metadata_cache_supported_options.size(),
         metadata_cache_supported_options.data(),
+        expose_configuration,
 };
 }

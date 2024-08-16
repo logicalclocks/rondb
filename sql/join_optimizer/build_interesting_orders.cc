@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,6 +26,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <algorithm>
+#include <bit>
 #include <string>
 #include <utility>
 
@@ -34,6 +36,7 @@
 #include "my_table_map.h"
 #include "mysql/udf_registration_types.h"
 #include "sql/field.h"
+#include "sql/gis/mbr_utils.h"
 #include "sql/handler.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
@@ -44,6 +47,7 @@
 #include "sql/join_optimizer/interesting_orders.h"
 #include "sql/join_optimizer/interesting_orders_defs.h"
 #include "sql/join_optimizer/make_join_hypergraph.h"
+#include "sql/join_optimizer/optimizer_trace.h"
 #include "sql/join_optimizer/relational_expression.h"
 #include "sql/key.h"
 #include "sql/key_spec.h"
@@ -63,6 +67,7 @@
 #include "template_utils.h"
 
 using hypergraph::NodeMap;
+using std::has_single_bit;
 using std::string;
 using std::swap;
 
@@ -198,7 +203,7 @@ static void CollectFunctionalDependenciesFromPredicates(
     Predicate &pred = graph->predicates[i];
     bool always_active =
         !Overlaps(pred.total_eligibility_set, PSEUDO_TABLE_BITS) &&
-        IsSingleBitSet(pred.total_eligibility_set);
+        has_single_bit(pred.total_eligibility_set);
     int fd_idx = AddFunctionalDependencyFromCondition(thd, pred.condition,
                                                       always_active, orderings);
     if (fd_idx != -1) {
@@ -211,7 +216,7 @@ static void CollectFunctionalDependenciesFromUniqueIndexes(
     THD *thd, JoinHypergraph *graph, LogicalOrderings *orderings) {
   // Collect functional dependencies from unique indexes.
   for (JoinHypergraph::Node &node : graph->nodes) {
-    TABLE *table = node.table;
+    TABLE *table = node.table();
     for (unsigned key_idx = 0; key_idx < table->s->keys; ++key_idx) {
       KEY *key = &table->key_info[key_idx];
       if (!Overlaps(actual_key_flags(key), HA_NOSAME)) {
@@ -255,15 +260,21 @@ static void CollectFunctionalDependenciesFromUniqueIndexes(
   }
 }
 
-static Ordering::Elements CollectInterestingOrder(THD *thd, ORDER *order,
-                                                  int order_len,
+static size_t CountOrderElements(const ORDER *order) {
+  size_t count = 0;
+  for (const ORDER *ptr = order; ptr != nullptr; ptr = ptr->next) {
+    ++count;
+  }
+  return count;
+}
+
+static Ordering::Elements CollectInterestingOrder(THD *thd, const ORDER *order,
                                                   bool unwrap_rollup,
                                                   LogicalOrderings *orderings) {
   Ordering::Elements elements =
-      Ordering::Elements::Alloc(thd->mem_root, order_len);
+      Ordering::Elements::Alloc(thd->mem_root, CountOrderElements(order));
 
-  int i = 0;
-  for (; order != nullptr; order = order->next, ++i) {
+  for (int i = 0; order != nullptr; order = order->next, ++i) {
     Item *item = *order->item;
     if (unwrap_rollup) {
       item = unwrap_rollup_group(item);
@@ -272,14 +283,6 @@ static Ordering::Elements CollectInterestingOrder(THD *thd, ORDER *order,
     elements[i].direction = order->direction;
   }
   return elements;
-}
-
-// A convenience form of the above.
-static Ordering::Elements CollectInterestingOrder(
-    THD *thd, const SQL_I_List<ORDER> &order_list, bool unwrap_rollup,
-    LogicalOrderings *orderings) {
-  return CollectInterestingOrder(thd, order_list.first, order_list.size(),
-                                 unwrap_rollup, orderings);
 }
 
 ORDER *BuildSortAheadOrdering(THD *thd, const LogicalOrderings *orderings,
@@ -388,17 +391,79 @@ Ordering ReduceFinalOrdering(THD *thd, const LogicalOrderings &orderings,
       Ordering::Elements::Alloc(thd->mem_root, full_ordering.size()));
 }
 
+static void CollectOrderingsFromSpatialIndex(
+    THD *thd, TABLE *table, int key_idx, LogicalOrderings *orderings,
+    Mem_root_array<SpatialDistanceScanInfo> *spatial_indexes) {
+  const KEY_PART_INFO &key_part = table->key_info[key_idx].key_part[0];
+  // The debug_hton_distance_scan check can be removed after the
+  // implementation of WL9440.
+  bool debug_hton_distance_scan = false;
+  DBUG_EXECUTE_IF("handlerton_supports_distance_scan",
+                  debug_hton_distance_scan = true;);
+  if ((debug_hton_distance_scan ||
+       ha_check_storage_engine_flag(table->file->ht,
+                                    HTON_SUPPORTS_DISTANCE_SCAN))) {
+    Item *item = new Item_field(key_part.field);
+
+    for (int i = 1; i < orderings->num_items(); ++i) {
+      // We match a distance item with a spatial key.
+      Item *const current_item = orderings->item(i);
+      if (current_item->type() == Item::FUNC_ITEM) {
+        Item_func *const item_func = down_cast<Item_func *>(current_item);
+        // If we find an distance item in m_items then we check the item
+        // against both arguments of the distance item.
+        if (item_func->functype() == Item_func::SP_DISTANCE_FUNC &&
+            item_func->arg_count == 2) {
+          Item *const item_func_arg1 = item_func->arguments()[0];
+          Item *const item_func_arg2 = item_func->arguments()[1];
+          if (item->eq(item_func_arg1, /*binary_cmp=*/true) ||
+              item->eq(item_func_arg2, /*binary_cmp=*/true)) {
+            SpatialDistanceScanInfo index_info;
+            index_info.table = table;
+            index_info.key_idx = key_idx;
+            bool parse_correct = false;
+            if (item_func_arg1->type() == Item::FUNC_ITEM &&
+                !gis::knn_query_to_mbr(thd, item_func_arg1,
+                                       index_info.coordinates)) {
+              parse_correct = true;
+            } else if (item_func_arg2->type() == Item::FUNC_ITEM &&
+                       !gis::knn_query_to_mbr(thd, item_func_arg2,
+                                              index_info.coordinates)) {
+              parse_correct = true;
+            }
+            if (!parse_correct) return;
+
+            OrderElement order_element{i, ORDER_ASC};
+            Ordering::Elements elements{&order_element, 1};
+
+            index_info.forward_order = orderings->AddOrdering(
+                thd, Ordering(elements, Ordering::Kind::kOrder),
+                /*interesting=*/false,
+                /*used_at_end=*/true, /*homogenize_tables=*/0);
+            spatial_indexes->push_back(index_info);
+          }
+        }
+      }
+    }
+  }
+  // There is the case of ORDER BY p, where p is a spatial type.
+  // The use of index is currently not supported for this case.
+}
+
 void BuildInterestingOrders(
     THD *thd, JoinHypergraph *graph, Query_block *query_block,
     LogicalOrderings *orderings,
     Mem_root_array<SortAheadOrdering> *sort_ahead_orderings,
     int *order_by_ordering_idx, int *group_by_ordering_idx,
     int *distinct_ordering_idx, Mem_root_array<ActiveIndexInfo> *active_indexes,
-    Mem_root_array<FullTextIndexInfo> *fulltext_searches, string *trace) {
+    Mem_root_array<SpatialDistanceScanInfo> *spatial_indexes,
+    Mem_root_array<FullTextIndexInfo> *fulltext_searches) {
+  JOIN *const join = query_block->join;
+
   // Collect ordering from ORDER BY.
-  if (query_block->is_ordered()) {
+  if (join->order.order != nullptr) {
     Ordering::Elements elements =
-        CollectInterestingOrder(thd, query_block->order_list,
+        CollectInterestingOrder(thd, join->order.order,
                                 /*unwrap_rollup=*/false, orderings);
 
     *order_by_ordering_idx =
@@ -409,10 +474,10 @@ void BuildInterestingOrders(
   // Collect grouping from GROUP BY.
   if (query_block->is_explicitly_grouped()) {
     Ordering::Elements elements =
-        CollectInterestingOrder(thd, query_block->group_list,
+        CollectInterestingOrder(thd, join->group_list.order,
                                 /*unwrap_rollup=*/true, orderings);
 
-    if (query_block->join->rollup_state == JOIN::RollupState::NONE) {
+    if (join->rollup_state == JOIN::RollupState::NONE) {
       CanonicalizeGrouping(&elements);
       *group_by_ordering_idx =
           AddOrdering(thd, Ordering(elements, Ordering::Kind::kGroup),
@@ -442,7 +507,7 @@ void BuildInterestingOrders(
   // However, since we don't support hybrid groupings/orderings,
   // just pure groupings or pure orderings, we only accept #1 here.
   // For PARTITION BY with no ORDER BY, we use a grouping as usual.
-  for (Window &window : query_block->join->m_windows) {
+  for (Window &window : join->m_windows) {
     ORDER *order = window.sorting_order(thd);
     if (order == nullptr) {
       window.m_ordering_idx = 0;
@@ -451,16 +516,14 @@ void BuildInterestingOrders(
 
     const bool mixed_grouping = (window.effective_order_by() != nullptr &&
                                  window.effective_partition_by() != nullptr);
-    int order_len = 0;
     for (ORDER *ptr = order; ptr != nullptr; ptr = ptr->next) {
       if (mixed_grouping && ptr->direction == ORDER_NOT_RELEVANT) {
         ptr->direction = ORDER_ASC;
       }
-      ++order_len;
     }
 
     Ordering::Elements elements =
-        CollectInterestingOrder(thd, order, order_len,
+        CollectInterestingOrder(thd, order,
                                 /*unwrap_rollup=*/false, orderings);
     Ordering::Kind kind;
     if (window.effective_order_by() == nullptr) {
@@ -481,23 +544,18 @@ void BuildInterestingOrders(
   // ordering was able to also satisfy the ORDER BY); group coverings will be
   // dealt with by the more general intesting order framework, which can also
   // combine e.g. GROUP BY groupings with ORDER BY.
-  if (query_block->join->select_distinct) {
+  if (join->select_distinct) {
     bool all_order_fields_used = false;
     ORDER *order = create_order_from_distinct(
-        thd, Ref_item_array(), /*order=*/nullptr, query_block->join->fields,
+        thd, Ref_item_array(), /*order=*/nullptr, join->fields,
         /*skip_aggregates=*/false, /*convert_bit_fields_to_long=*/false,
         &all_order_fields_used);
 
     if (order == nullptr) {
       *distinct_ordering_idx = 0;  // 0 is the empty ordering.
     } else {
-      int order_len = 0;
-      for (ORDER *ptr = order; ptr != nullptr; ptr = ptr->next) {
-        ++order_len;
-      }
-
       Ordering::Elements elements =
-          CollectInterestingOrder(thd, order, order_len,
+          CollectInterestingOrder(thd, order,
                                   /*unwrap_rollup=*/false, orderings);
 
       CanonicalizeGrouping(&elements);
@@ -562,12 +620,16 @@ void BuildInterestingOrders(
   // Collect list of all active indexes. We will be needing this for ref access
   // and full-text index search even if we don't have any interesting orders.
   for (unsigned node_idx = 0; node_idx < graph->nodes.size(); ++node_idx) {
-    TABLE *table = graph->nodes[node_idx].table;
+    TABLE *table = graph->nodes[node_idx].table();
     for (unsigned key_idx = 0; key_idx < table->s->keys; ++key_idx) {
       // NOTE: visible_index claims to contain “visible and enabled” indexes,
       // but we still need to check keys_in_use to ignore disabled indexes.
       if (!table->keys_in_use_for_query.is_set(key_idx)) {
         continue;
+      }
+      if (Overlaps(table->key_info[key_idx].flags, HA_SPATIAL)) {
+        CollectOrderingsFromSpatialIndex(thd, table, key_idx, orderings,
+                                         spatial_indexes);
       }
       ActiveIndexInfo index_info;
       index_info.table = table;
@@ -597,12 +659,11 @@ void BuildInterestingOrders(
 
   // Early exit if we don't have any interesting orderings.
   if (orderings->num_orderings() <= 1) {
-    if (trace != nullptr) {
-      *trace +=
-          "\nNo interesting orders found. Not collecting functional "
-          "dependencies.\n\n";
+    if (TraceStarted(thd)) {
+      Trace(thd) << "\nNo interesting orders found. Not collecting functional "
+                    "dependencies.\n\n";
     }
-    orderings->Build(thd, trace);
+    orderings->Build(thd);
     return;
   }
 
@@ -733,18 +794,17 @@ void BuildInterestingOrders(
   // AddFDsFromAggregateItems() later.
   if (query_block->is_explicitly_grouped()) {
     auto head = Bounds_checked_array<ItemHandle>::Alloc(
-        thd->mem_root, query_block->group_list.size());
+        thd->mem_root, CountOrderElements(join->group_list.order));
     int idx = 0;
-    for (ORDER *group = query_block->group_list.first; group != nullptr;
+    for (ORDER *group = join->group_list.order; group != nullptr;
          group = group->next, ++idx) {
       head[idx] = orderings->GetHandle(*group->item);
     }
     orderings->SetHeadForAggregates(head);
   }
-  orderings->SetRollup(query_block->join->rollup_state !=
-                       JOIN::RollupState::NONE);
+  orderings->SetRollup(join->rollup_state != JOIN::RollupState::NONE);
 
-  orderings->Build(thd, trace);
+  orderings->Build(thd);
 
   if (*order_by_ordering_idx != -1) {
     *order_by_ordering_idx =
@@ -754,11 +814,12 @@ void BuildInterestingOrders(
     // ORDER BY clause. If so, store the reduced ordering in join->order.
     if (const Ordering reduced_ordering =
             ReduceFinalOrdering(thd, *orderings, *order_by_ordering_idx);
-        reduced_ordering.size() < query_block->order_list.elements) {
-      query_block->join->order = ORDER_with_src(
-          RemoveRedundantOrderElements(query_block->join->order.order,
-                                       reduced_ordering, *orderings),
-          query_block->join->order.src);
+        reduced_ordering.size() < CountOrderElements(join->order.order)) {
+      join->order =
+          ORDER_with_src(RemoveRedundantOrderElements(
+                             join->order.order, reduced_ordering, *orderings),
+                         join->order.src,
+                         /*const_optimized_arg=*/true);
     }
   }
   if (*group_by_ordering_idx != -1) {
@@ -769,7 +830,7 @@ void BuildInterestingOrders(
     *distinct_ordering_idx =
         orderings->RemapOrderingIndex(*distinct_ordering_idx);
   }
-  for (Window &window : query_block->join->m_windows) {
+  for (Window &window : join->m_windows) {
     if (window.m_ordering_idx != -1) {
       window.m_ordering_idx =
           orderings->RemapOrderingIndex(window.m_ordering_idx);
@@ -834,8 +895,7 @@ void BuildInterestingOrders(
       const Item *real_item = item->real_item();
       sort_ahead_only =
           sort_ahead_only ||
-          std::none_of(query_block->join->fields->cbegin(),
-                       query_block->join->fields->cend(),
+          std::none_of(join->fields->cbegin(), join->fields->cend(),
                        [real_item](const Item *field) {
                          return real_item->eq(field->real_item(),
                                               /*binary_cmp=*/true);

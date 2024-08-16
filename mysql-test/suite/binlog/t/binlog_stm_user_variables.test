@@ -1,7 +1,7 @@
 -- source include/have_myisam.inc
 -- source include/force_myisam_default.inc
 -- source include/have_binlog_format_statement.inc
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 #
 # BUG#49562: SBR out of sync when using numeric data types + user variable
 #
@@ -54,7 +54,7 @@ INSERT IGNORE INTO t1 VALUES (@positive,
 -- echo ## assertion: checks that User_var_log_event::pack_info
 -- echo ## correctly displays the binlog content by taking into
 -- echo ## account the unsigned_flag
--- source include/show_binlog_events.inc
+-- source include/rpl/deprecated/show_binlog_events.inc
 
 -- echo ### insert min signed
 -- echo ### a) declarative
@@ -84,6 +84,6 @@ INSERT IGNORE INTO t1 VALUES (@negative,
 -- echo ## assertion: checks that User_var_log_event::pack_info
 -- echo ## correctly displays the binlog content by taking into
 -- echo ## account the unsigned_flag
--- source include/show_binlog_events.inc
+-- source include/rpl/deprecated/show_binlog_events.inc
 
 DROP TABLE t1;

@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,13 +27,13 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_macros.h"
 #include "my_sys.h"
 #include "mysql/plugin.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // check_access
@@ -234,8 +235,8 @@ bool Sql_cmd_alter_table::execute(THD *thd) {
   */
   HA_CREATE_INFO create_info(*lex->create_info);
   Alter_info alter_info(*m_alter_info, thd->mem_root);
-  ulong priv = 0;
-  ulong priv_needed = ALTER_ACL;
+  Access_bitmask priv = 0;
+  Access_bitmask priv_needed = ALTER_ACL;
   bool result;
 
   DBUG_TRACE;
@@ -389,7 +390,7 @@ bool Sql_cmd_discard_import_tablespace::execute(THD *thd) {
     it is the case.
     TODO: this design is obsolete and will be removed.
   */
-  enum_log_table_type table_kind =
+  const enum_log_table_type table_kind =
       query_logger.check_if_log_table(table_list, false);
 
   if (table_kind != QUERY_LOG_NONE) {
@@ -426,6 +427,11 @@ bool Sql_cmd_secondary_load_unload::execute(THD *thd) {
 
   if (check_grant(thd, ALTER_ACL, table_list, false, UINT_MAX, false))
     return true;
+
+  Table_ddl_hton_notification_guard notification_guard{
+      thd, &table_list->mdl_request.key, HA_ALTER_DDL};
+
+  if (notification_guard.notify()) return true;
 
   return mysql_secondary_load_or_unload(thd, table_list);
 }

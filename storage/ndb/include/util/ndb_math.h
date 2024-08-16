@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,9 +34,8 @@
  * Arguments should be positive integers.
  */
 
-template<typename Int>
-inline Int gcd(Int x, Int y)
-{
+template <typename Int>
+inline Int gcd(Int x, Int y) {
   do {
     Int t = y;
     y = x % y;
@@ -50,9 +50,8 @@ inline Int gcd(Int x, Int y)
  * Result may be overflowed.
  */
 
-template<typename Int>
-inline Int lcm(Int x, Int y)
-{
+template <typename Int>
+inline Int lcm(Int x, Int y) {
   return (x / gcd(x, y)) * y;
 }
 
@@ -60,20 +59,17 @@ inline Int lcm(Int x, Int y)
  * Integer division rounding up.
  */
 
-template<typename T>
-static constexpr inline T ndb_ceil_div(const T p, const T q)
-{
+template <typename T>
+static constexpr inline T ndb_ceil_div(const T p, const T q) {
   static_assert(std::is_integral_v<T>,
                 "Integral type required for ndb_ceil_div().");
-  if (p == 0)
-  {
+  if (p == 0) {
     return 0;
   }
 #if defined(__GNUC__) && (__GNUC__ <= 8)
   // Nothing, broken build: calling non-constexpr function require_failed().
 #else
-  if constexpr (std::is_signed_v<T>)
-  {
+  if constexpr (std::is_signed_v<T>) {
     // Negative values not supported
     require(p >= 0);
     require(q >= 0);

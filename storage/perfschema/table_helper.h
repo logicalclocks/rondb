@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -47,6 +48,7 @@
 #include "storage/perfschema/pfs_stat.h"
 #include "storage/perfschema/pfs_timer.h"
 
+struct CHARSET_INFO;
 struct PFS_host;
 struct PFS_user;
 struct PFS_account;
@@ -614,6 +616,20 @@ struct PFS_object_row {
   void set_nullable_field(uint index, Field *f);
 };
 
+/** Row fragment for columns OBJECT_TYPE, SCHEMA_NAME, OBJECT_NAME. */
+struct PFS_object_view_row {
+  /** Column OBJECT_TYPE. */
+  enum_object_type m_object_type;
+  /** Column SCHEMA_NAME. */
+  PFS_schema_name_view m_schema_name;
+  /** Column OBJECT_NAME. */
+  PFS_object_name_view m_object_name;
+
+  /** Set a table field from the row. */
+  void set_field(uint index, Field *f);
+  void set_nullable_field(uint index, Field *f);
+};
+
 /** Row fragment for columns OBJECT_TYPE, SCHEMA_NAME, OBJECT_NAME, COLUMN_NAME.
  */
 struct PFS_column_row {
@@ -638,7 +654,8 @@ struct PFS_column_row {
   void set_nullable_field(uint index, Field *f);
 };
 
-/** Row fragment for columns OBJECT_TYPE, SCHEMA_NAME, OBJECT_NAME, INDEX_NAME.
+/**
+  Row fragment for columns OBJECT_TYPE, SCHEMA_NAME, OBJECT_NAME, INDEX_NAME.
  */
 struct PFS_index_row {
   PFS_object_row m_object_row;
@@ -651,6 +668,18 @@ struct PFS_index_row {
   int make_index_name(PFS_table_share_index *pfs_index, uint table_index);
   int make_row(PFS_table_share *pfs, PFS_table_share_index *pfs_index,
                uint table_index);
+  /** Set a table field from the row. */
+  void set_field(uint index, Field *f);
+  void set_nullable_field(uint index, Field *f);
+};
+
+/**
+  Row fragment for columns OBJECT_TYPE, SCHEMA_NAME, OBJECT_NAME, INDEX_NAME.
+ */
+struct PFS_index_view_row {
+  PFS_object_view_row m_object_row;
+  PFS_index_name_view m_index_name;
+
   /** Set a table field from the row. */
   void set_field(uint index, Field *f);
   void set_nullable_field(uint index, Field *f);
@@ -1440,6 +1469,24 @@ class PFS_key_event_name : public PFS_key_string<PFS_MAX_INFO_NAME_LENGTH> {
   bool match(const PFS_file *pfs);
   bool match(const PFS_socket *pfs);
   bool match_view(uint view);
+};
+
+class PFS_key_meter_name : public PFS_key_string<PFS_MAX_INFO_NAME_LENGTH> {
+ public:
+  explicit PFS_key_meter_name(const char *name) : PFS_key_string(name) {}
+
+  ~PFS_key_meter_name() override = default;
+
+  bool match(PFS_meter_class *pfs);
+};
+
+class PFS_key_metric_name : public PFS_key_string<PFS_MAX_INFO_NAME_LENGTH> {
+ public:
+  explicit PFS_key_metric_name(const char *name) : PFS_key_string(name) {}
+
+  ~PFS_key_metric_name() override = default;
+
+  bool match(PFS_metric_class *pfs);
 };
 
 class PFS_key_user : public PFS_key_string<USERNAME_LENGTH> {

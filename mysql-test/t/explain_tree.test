@@ -234,10 +234,12 @@ ANALYZE TABLE t1;
 EXPLAIN FORMAT=tree SELECT * FROM t1 WHERE a > 3 ORDER BY b;
 DROP TABLE t1;
 
-# Single-table modifications don't have a JOIN, so are not explainable with a tree.
+# Single-table modifications don't have a JOIN, so they have a simple explain.
 CREATE TABLE t1 (i INT);
 EXPLAIN INSERT INTO t1 VALUES (10);
 EXPLAIN FORMAT=tree INSERT INTO t1 VALUES (10);
+EXPLAIN REPLACE INTO t1 VALUES (10);
+EXPLAIN FORMAT=tree REPLACE INTO t1 VALUES (10);
 DROP TABLE t1;
 
 # Limit pushed into filesort.
@@ -662,7 +664,8 @@ WITH tx AS (SELECT FLOOR(5*RAND(0)) i1 FROM t1 j1 JOIN t1 j2 ON j1.b=j2.a)
 --replace_regex $elide_time
 EXPLAIN ANALYZE
 WITH x1 AS (SELECT MAX(a) AS m1 FROM t1 GROUP BY b)
-SELECT * FROM x1 y1 WHERE y1.m1 = (SELECT MAX(m1) FROM x1);
+SELECT * FROM x1 y1 WHERE
+  y1.m1 = (SELECT MAX(m1) FROM x1) AND ABS(y1.m1) = (SELECT MIN(m1) FROM x1);
 
 --echo #
 --echo #  Bug#34051681 mysqld asan crash at ExplainMaterializeAccessPath
@@ -696,5 +699,83 @@ EXPLAIN ANALYZE INSERT INTO t1 SELECT 4, SUM(i) k1 FROM t1 GROUP BY j LIMIT 2;
 --replace_regex $elide_time
 EXPLAIN ANALYZE WITH cte AS (SELECT SUM(i) k1 FROM t1 GROUP BY j)
 SELECT * FROM cte LIMIT 2;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#34527697: EXPLAIN and EXPLAIN ANALYZE disagree on
+--echo #               covering index scans
+--echo #
+
+CREATE TABLE t(
+  x INT,
+  y INT DEFAULT (x),
+  z VARCHAR(128) DEFAULT (REPEAT('z', 128)), KEY (x));
+INSERT INTO t(x) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10);
+INSERT INTO t SELECT * FROM t;
+INSERT INTO t SELECT * FROM t;
+INSERT INTO t SELECT * FROM t;
+INSERT INTO t SELECT * FROM t;
+ANALYZE TABLE t;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t;
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t WHERE x = 4;
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t WHERE x = 4;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT 1 FROM t WHERE x > 4;
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT 1 FROM t WHERE x > 4;
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT x FROM t ORDER BY MOD(x, 2);
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT x FROM t ORDER BY MOD(x, 2);
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE SELECT t1.x FROM t t1, t t2 WHERE t1.x < t2.y;
+--replace_regex $elide_costs_and_time
+EXPLAIN ANALYZE SELECT t1.x FROM t t1, t t2 WHERE t1.x < t2.y;
+
+DROP TABLE t;
+
+--echo #
+--echo # Bug#35537921 Contribution by Tencent:
+--echo # explain format=tree lost the subquery in the hash join
+--echo #
+
+SET optimizer_switch=default;
+
+CREATE TABLE t1 (a INT NOT NULL, b INT NOT NULL);
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE
+SELECT * FROM t1 x1 JOIN t1 x2 ON x2.a=
+(SELECT MIN(x3.a) FROM t1 x3 WHERE x1.a=x3.a);
+
+--replace_regex $elide_costs
+EXPLAIN FORMAT=TREE
+SELECT * FROM t1 x1 LEFT JOIN t1 x2 ON x2.a<
+(SELECT MIN(x3.a) FROM t1 x3 WHERE x1.a=x3.a);
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#34569685 No explain output for subquery
+--echo #
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT);
+
+ANALYZE TABLE  t1;
+
+--replace_regex $elide_costs_and_rows
+EXPLAIN FORMAT=TREE SELECT LAST_VALUE((SELECT x1.a FROM t1))
+OVER (PARTITION BY b) FROM t1 x1;
 
 DROP TABLE t1;

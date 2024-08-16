@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -35,7 +36,6 @@ enum options_mysqld {
   OPT_BINLOG_FORMAT,
   OPT_BINLOG_IGNORE_DB,
   OPT_BINLOG_MAX_FLUSH_QUEUE_TIME,
-  OPT_EXPIRE_LOGS_DAYS,
   OPT_BINLOG_EXPIRE_LOGS_SECONDS,
   OPT_BIN_LOG,
   OPT_BOOTSTRAP,
@@ -61,40 +61,29 @@ enum options_mysqld {
   OPT_REPLICATE_WILD_DO_TABLE,
   OPT_REPLICATE_WILD_IGNORE_TABLE,
   OPT_SERVER_ID,
-  OPT_SKIP_HOST_CACHE_DEPRECATED,
   OPT_SKIP_LOCK,
   OPT_SKIP_NEW,
   OPT_SKIP_RESOLVE,
   OPT_SKIP_STACK_TRACE,
   OPT_SKIP_SYMLINKS,
   OPT_REPLICA_SQL_VERIFY_CHECKSUM,
-  OPT_SSL_CA,
-  OPT_SSL_CAPATH,
-  OPT_SSL_CERT,
   OPT_SSL_CIPHER,
   OPT_TLS_CIPHERSUITES,
   OPT_TLS_VERSION,
-  OPT_SSL_KEY,
   OPT_UPDATE_LOG,
   OPT_WANT_CORE,
   OPT_LOG_ERROR,
   OPT_MAX_LONG_DATA_SIZE,
   OPT_PLUGIN_LOAD,
   OPT_PLUGIN_LOAD_ADD,
-  OPT_SSL_CRL,
-  OPT_SSL_CRLPATH,
   OPT_PFS_INSTRUMENT,
   OPT_DEFAULT_AUTH,
   OPT_THREAD_CACHE_SIZE,
   OPT_HOST_CACHE_SIZE,
   OPT_TABLE_DEFINITION_CACHE,
-  OPT_SKIP_INNODB,
-  OPT_AVOID_TEMPORAL_UPGRADE,
-  OPT_SHOW_OLD_TEMPORALS,
   OPT_ENFORCE_GTID_CONSISTENCY,
   OPT_INSTALL_SERVER,
   OPT_EARLY_PLUGIN_LOAD,
-  OPT_SSL_FIPS_MODE,
   OPT_KEYRING_MIGRATION_SOURCE,
   OPT_KEYRING_MIGRATION_DESTINATION,
   OPT_KEYRING_MIGRATION_USER,
@@ -106,10 +95,6 @@ enum options_mysqld {
   OPT_REPLICA_PRESERVE_COMMIT_ORDER,
   OPT_LOG_SLOW_EXTRA,
   OPT_NAMED_PIPE_FULL_ACCESS_GROUP,
-  OPT_RELAY_LOG_INFO_FILE,
-  OPT_MASTER_INFO_FILE,
-  OPT_LOG_BIN_USE_V1_ROW_EVENTS,
-  OPT_SLAVE_ROWS_SEARCH_ALGORITHMS,
   OPT_ADMIN_SSL_CA,
   OPT_ADMIN_SSL_CAPATH,
   OPT_ADMIN_SSL_CERT,
@@ -119,23 +104,13 @@ enum options_mysqld {
   OPT_ADMIN_SSL_KEY,
   OPT_ADMIN_SSL_CRL,
   OPT_ADMIN_SSL_CRLPATH,
-  OPT_MASTER_INFO_REPOSITORY,
-  OPT_RELAY_LOG_INFO_REPOSITORY,
   OPT_KEYRING_MIGRATION_TO_COMPONENT,
-  OPT_USE_SSL,
-  OPT_USE_ADMIN_SSL,
-  OPT_TRANSACTION_WRITE_SET_EXTRACTION,
+  OPT_KEYRING_MIGRATION_FROM_COMPONENT,
   OPT_SHOW_SLAVE_AUTH_INFO_DEPRECATED,
-  OPT_DISCONNECT_SLAVE_EVENT_COUNT,
-  OPT_ABORT_SLAVE_EVENT_COUNT,
   OPT_REPLICA_PARALLEL_TYPE,
-  OPT_SSL_SESSION_CACHE_TIMEOUT,
   OPT_REPLICA_PARALLEL_WORKERS,
-  OPT_OLD_STYLE_USER_LIMITS,
   OPT_SYNC_RELAY_LOG_INFO,
-  OPT_BINLOG_TRANSACTION_DEPENDENCY_TRACKING,
-  OPT_CHARACTER_SET_CLIENT_HANDSHAKE,
-  OPT_OLD_OPTION
+  OPT_CHARACTER_SET_CLIENT_HANDSHAKE
 };
 
 #endif  // OPTIONS_MYSQLD_INCLUDED

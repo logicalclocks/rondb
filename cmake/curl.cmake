@@ -1,15 +1,16 @@
-# Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -20,10 +21,10 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-# cmake -DWITH_CURL=system|<path/to/custom/installation>|no
-# system is the default for unix builds.
-# bundled is also supported on el7, for -DWITH_SSL=openssl11.
-# no will disable build of binaries that use curl.
+# cmake -DWITH_CURL=system|bundled|<path/to/custom/installation>|no
+# 'system' is the default for unix builds.
+# 'bundled' will use bundled code in extra/curl.
+# 'no' will disable build of binaries that use curl.
 
 # We create an INTERFACE library called curl_interface,
 # and an alias ext::curl
@@ -31,10 +32,9 @@
 # so just link with it, no need to do INCLUDE_DIRECTORIES.
 
 SET(WITH_CURL_DOC "\nsystem (use the OS curl library)")
+STRING_APPEND(WITH_CURL_DOC ", \nbundled (code in extra/curl)")
 STRING_APPEND(WITH_CURL_DOC ", \n</path/to/custom/installation>")
-STRING_APPEND(WITH_CURL_DOC ", \n 0 | no | off | none (skip curl)")
-STRING_APPEND(WITH_CURL_DOC
-  ", \n bundled (only supported for WITH_SSL=openssl11 on el7")
+STRING_APPEND(WITH_CURL_DOC ", \n0 | no | off | none (skip curl)")
 STRING_APPEND(WITH_CURL_DOC "\n")
 
 STRING(REPLACE "\n" "| " WITH_CURL_DOC_STRING "${WITH_CURL_DOC}")
@@ -125,7 +125,7 @@ FUNCTION(FIND_SYSTEM_CURL ARG_CURL_INCLUDE_DIR)
   ENDIF()
 ENDFUNCTION(FIND_SYSTEM_CURL)
 
-SET(CURL_VERSION_DIR "curl-8.4.0")
+SET(CURL_VERSION_DIR "curl-8.6.0")
 FUNCTION(MYSQL_USE_BUNDLED_CURL CURL_INCLUDE_DIR)
   SET(WITH_CURL "bundled" CACHE STRING "Bundled curl library")
   ADD_SUBDIRECTORY(extra/curl)
@@ -169,6 +169,7 @@ FUNCTION(FIND_CUSTOM_CURL_INCLUDE WITH_CURL CURL_INCLUDE_DIR)
     NO_SYSTEM_ENVIRONMENT_PATH
     )
   IF(NOT INTERNAL_CURL_INCLUDE_DIR)
+    MESSAGE(WARNING "${WITH_CURL_DOC}")
     MESSAGE(FATAL_ERROR "CURL include files not found under '${WITH_CURL}'")
   ENDIF()
   SET(CURL_INCLUDE_DIR ${INTERNAL_CURL_INCLUDE_DIR} PARENT_SCOPE)
@@ -233,12 +234,7 @@ FUNCTION(MYSQL_CHECK_CURL)
   IF(WITH_CURL STREQUAL "system")
     FIND_SYSTEM_CURL(CURL_INCLUDE_DIR)
   ELSEIF(WITH_CURL STREQUAL "bundled")
-    IF(ALTERNATIVE_SYSTEM_SSL)
-      MYSQL_USE_BUNDLED_CURL(CURL_INCLUDE_DIR)
-    ELSE()
-      MESSAGE(WARNING "WITH_CURL options: ${WITH_CURL_DOC}")
-      MESSAGE(FATAL_ERROR "Bundled CURL library is not supported.")
-    ENDIF()
+    MYSQL_USE_BUNDLED_CURL(CURL_INCLUDE_DIR)
   ELSEIF(WITH_CURL)
     FIND_CUSTOM_CURL(CURL_INCLUDE_DIR)
   ENDIF()

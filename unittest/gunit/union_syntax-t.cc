@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -339,6 +340,38 @@ TEST_F(UnionSyntaxTest, InnerVsOuterOrder) {
   EXPECT_STREQ("a", get_order_by_column_name(query_expression, 0));
   EXPECT_STREQ("b", get_order_by_column_name(query_expression, 1));
   //    EXPECT_EQ(2, get_limit(query_expression->fake_query_block));
+}
+
+TEST_F(UnionSyntaxTest, QueryTermIteratorReentrancy) {
+  Query_block *query_block = parse(
+      "(SELECT * FROM r UNION ALL SELECT * FROM s ORDER BY a LIMIT 10)"
+      " UNION ALL "
+      " (SELECT * FROM r UNION DISTINCT SELECT * FROM s) LIMIT 7");
+
+  Query_expression *qe = query_block->master_query_expression();
+  Query_terms<QTC_POST_ORDER, VL_VISIT_LEAVES> terms(qe->query_term());
+  // set of nodes collected without any "interference"
+  std::vector<Query_term *> nodes_a_priori;
+  std::vector<Query_term *> nodes_outer;
+  std::vector<Query_term *> nodes_inner;
+
+  for (Query_term *term1 : terms) {
+    nodes_a_priori.push_back(term1);
+  }
+
+  EXPECT_EQ(7, nodes_a_priori.size());
+
+  for (Query_term *term1 : terms) {
+    // run a second iterator over the same query terms and verify that it
+    // doesn't interfere with the outer iterator's job
+    for (Query_term *term2 : terms) {
+      nodes_inner.push_back(term2);
+    }
+    EXPECT_EQ(nodes_a_priori, nodes_inner);
+    nodes_inner.clear();
+    nodes_outer.push_back(term1);
+  }
+  EXPECT_EQ(nodes_a_priori, nodes_outer);
 }
 
 }  // namespace union_syntax_unittest

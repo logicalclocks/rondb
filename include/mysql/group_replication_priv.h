@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -39,6 +40,12 @@
 #include "sql/rpl_commit_stage_manager.h"
 #include "sql/rpl_gtid.h"
 #include "sql/rpl_write_set_handler.h"
+
+namespace gr {
+using Gtid_tsid = mysql::gtid::Tsid;
+using Gtid_tag = mysql::gtid::Tag;
+using Gtid_format = mysql::gtid::Gtid_format;
+}  // namespace gr
 
 /**
   Server side initializations.
@@ -157,9 +164,15 @@ char *encoded_gtid_set_to_string(uchar *encoded_gtid_set, size_t length);
 rpl_gno get_last_executed_gno(rpl_sidno sidno);
 
 /**
-  Return sidno for a given sid, see Sid_map::add_sid() for details.
+  Return sidno for a given tsid, see Tsid_map::add_tsid() for details.
 */
-rpl_sidno get_sidno_from_global_sid_map(rpl_sid sid);
+rpl_sidno get_sidno_from_global_tsid_map(const mysql::gtid::Tsid &tsid);
+
+/**
+   Return Tsid for a given sidno on the global_tsid_map.
+   See Tsid_map::sidno_to_tsid() for details.
+*/
+const mysql::gtid::Tsid &get_tsid_from_global_tsid_map(rpl_sidno sidno);
 
 /**
   Set slave thread default options.
@@ -239,5 +252,21 @@ bool is_server_restarting_after_clone();
   @returns if the server already dropped its data when cloning
 */
 bool is_server_data_dropped();
+
+/**
+  Copy to datetime_str parameter the date in the format
+  'YYYY-MM-DD hh:mm:ss.ffffff' of the moment in time
+  represented by micro-seconds elapsed since the Epoch,
+  1970-01-01 00:00:00 +0000 (UTC).
+
+  @param[in]  microseconds_since_epoch  micro-seconds since Epoch.
+  @param[out] datetime_str              The string pointer to print at. This
+                                        function is guaranteed not to write
+                                        more than MAX_DATE_STRING_REP_LENGTH
+                                        characters.
+  @param[in]  decimal_precision         decimal precision, in the range 0..6
+*/
+void microseconds_to_datetime_str(uint64_t microseconds_since_epoch,
+                                  char *datetime_str, uint decimal_precision);
 
 #endif /* GROUP_REPLICATION_PRIV_INCLUDE */

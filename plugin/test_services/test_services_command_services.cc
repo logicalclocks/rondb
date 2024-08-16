@@ -1,15 +1,16 @@
-/* Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -69,7 +70,7 @@ static char *test_command_service_udf(UDF_INIT *, UDF_ARGS *args, char *result,
   std::string query(args->args[0], args->lengths[0]);
 
   // Query by attaching to the THD to the session service.
-  MYSQL_SESSION mysql_session = srv_session_open(NULL, NULL);
+  MYSQL_SESSION mysql_session = srv_session_open(nullptr, nullptr);
   auto loc_thd = srv_session_info_get_thd(mysql_session);
   if (loc_thd) {
     // Fill the secruity context of session we got.

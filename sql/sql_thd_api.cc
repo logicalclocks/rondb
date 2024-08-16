@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,7 +27,6 @@
 #include <atomic>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_io.h"
@@ -39,6 +39,7 @@
 #include "mysql/plugin.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_thd_engine_lock.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/sql_security_ctx.h"
@@ -64,6 +65,7 @@
 #include "sql/transaction_info.h"
 #include "sql/xa.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "violite.h"
 
 struct MYSQL_LEX_STRING;
@@ -402,7 +404,15 @@ int thd_sql_command(const MYSQL_THD thd) { return (int)thd->lex->sql_command; }
 
 int thd_tx_isolation(const MYSQL_THD thd) { return (int)thd->tx_isolation; }
 
-int thd_tx_is_read_only(const MYSQL_THD thd) { return (int)thd->tx_read_only; }
+int thd_tx_is_read_only(const MYSQL_THD thd) {
+  // If the transaction is marked to be skipped read-only  then we ignore
+  // the value of tx_read_only variable and treat the transaction as
+  // a normal read-write trx.
+  if (thd->tx_read_only && thd->is_cmd_skip_transaction_read_only())
+    return 0;
+  else
+    return (int)thd->tx_read_only;
+}
 
 int thd_tx_priority(const MYSQL_THD thd) {
   return (thd->thd_tx_priority != 0 ? thd->thd_tx_priority : thd->tx_priority);

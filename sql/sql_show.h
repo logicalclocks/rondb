@@ -1,15 +1,16 @@
-/* Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -149,6 +150,8 @@ void show_sql_type(enum_field_types type, bool is_array, uint metadata,
 bool do_fill_information_schema_table(THD *thd, Table_ref *table_list,
                                       Item *condition);
 
+extern std::atomic_ulong deprecated_use_i_s_processlist_count;
+extern std::atomic_ullong deprecated_use_i_s_processlist_last_timestamp;
 extern TYPELIB grant_types;
 
 /**
@@ -434,11 +437,12 @@ class Sql_cmd_show_keys : public Sql_cmd_show_table_base {
   Sql_cmd_show_keys() : Sql_cmd_show_table_base(SQLCOM_SHOW_KEYS) {}
 };
 
-/// Represents SHOW MASTER STATUS statement.
+/// Represents SHOW BINARY LOG STATUS statement.
 
-class Sql_cmd_show_master_status : public Sql_cmd_show_noplan {
+class Sql_cmd_show_binary_log_status : public Sql_cmd_show_noplan {
  public:
-  Sql_cmd_show_master_status() : Sql_cmd_show_noplan(SQLCOM_SHOW_MASTER_STAT) {}
+  Sql_cmd_show_binary_log_status()
+      : Sql_cmd_show_noplan(SQLCOM_SHOW_BINLOG_STATUS) {}
   bool check_privileges(THD *thd) override;
   bool execute_inner(THD *thd) override;
 };
@@ -485,6 +489,13 @@ class Sql_cmd_show_processlist : public Sql_cmd_show {
   bool m_use_pfs{false};
 };
 
+/// Represents SHOW PARSE_TREE statement.
+
+class Sql_cmd_show_parse_tree : public Sql_cmd_show {
+ public:
+  Sql_cmd_show_parse_tree() : Sql_cmd_show(SQLCOM_SHOW_PARSE_TREE) {}
+};
+
 /// Represents SHOW PROFILE statement.
 
 class Sql_cmd_show_profile : public Sql_cmd_show {
@@ -519,7 +530,7 @@ class Sql_cmd_show_relaylog_events : public Sql_cmd_show_noplan {
 
 class Sql_cmd_show_replicas : public Sql_cmd_show_noplan {
  public:
-  Sql_cmd_show_replicas() : Sql_cmd_show_noplan(SQLCOM_SHOW_SLAVE_HOSTS) {}
+  Sql_cmd_show_replicas() : Sql_cmd_show_noplan(SQLCOM_SHOW_REPLICAS) {}
   bool check_privileges(THD *thd) override;
   bool execute_inner(THD *thd) override;
 };
@@ -528,7 +539,8 @@ class Sql_cmd_show_replicas : public Sql_cmd_show_noplan {
 
 class Sql_cmd_show_replica_status : public Sql_cmd_show_noplan {
  public:
-  Sql_cmd_show_replica_status() : Sql_cmd_show_noplan(SQLCOM_SHOW_SLAVE_STAT) {}
+  Sql_cmd_show_replica_status()
+      : Sql_cmd_show_noplan(SQLCOM_SHOW_REPLICA_STATUS) {}
   bool check_privileges(THD *thd) override;
   bool execute_inner(THD *thd) override;
 };

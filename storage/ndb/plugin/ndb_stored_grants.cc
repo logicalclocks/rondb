@@ -1,17 +1,18 @@
 /*
-  Copyright (c) 2019, 2023, Oracle and/or its affiliates.
-  Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+  Copyright (c) 2019, 2024, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,19 +30,22 @@
 #include <mutex>
 #include <unordered_set>
 
+#include "m_string.h"
 #include "mysql/components/my_service.h"
 #include "mysql/components/services/dynamic_privilege.h"
 #include "sql/auth/acl_change_notification.h"
 #include "sql/mem_root_array.h"
 #include "sql/sql_lex.h"
-#include "sql/sql_prepare.h"
+#include "sql/statement/ed_connection.h"
 #include "storage/ndb/plugin/ndb_local_connection.h"
 #include "storage/ndb/plugin/ndb_log.h"
 #include "storage/ndb/plugin/ndb_mysql_services.h"
 #include "storage/ndb/plugin/ndb_retry.h"
+#include "storage/ndb/plugin/ndb_rpl_filter.h"
 #include "storage/ndb/plugin/ndb_sql_metadata_table.h"
 #include "storage/ndb/plugin/ndb_thd.h"
 #include "storage/ndb/plugin/ndb_thd_ndb.h"
+#include "string_with_len.h"
 
 using ChangeNotice = const Acl_change_notification;
 
@@ -287,30 +291,24 @@ void ThreadContext::deserialize_users(std::string &str) {
 
 /* returns false on success */
 bool ThreadContext::exec_sql(const std::string &statement) {
+  // Disable rpl_filter as otherwise the non-updating query fail in the applier
+  Ndb_rpl_filter_disable disable_filter(m_thd);
+
   assert(m_closed);
 
-  /* Many queries can be ignored if we are a replica thread. Since this query is
-     executed for internal purposes, we always want it to execute. We therefore
-     set a flag to override suppression of query execution in replica thread. */
-  assert(m_thd->override_replica_filtering ==
-         THD::NO_OVERRIDE_REPLICA_FILTERING);
-  if(m_thd->slave_thread) {
-    m_thd->override_replica_filtering = THD::OVERRIDE_REPLICA_FILTERING;
-  }
-
   /* execute_query_iso() returns false on success */
-  m_closed = execute_query_iso(statement, nullptr);
-
-  /* Restore the flag for overriding suppression of query execution */
-  if(m_thd->slave_thread) {
-    assert(m_thd->override_replica_filtering ==
-           THD::OVERRIDE_REPLICA_FILTERING);
-    m_thd->override_replica_filtering = THD::NO_OVERRIDE_REPLICA_FILTERING;
-  } else {
-    assert(m_thd->override_replica_filtering ==
-           THD::NO_OVERRIDE_REPLICA_FILTERING);
+  if (execute_query_iso(statement, nullptr)) {
+    // Query failed
+    return true;
   }
 
+  if (get_results() == nullptr) {
+    // Query reported sucess but no result set, this indicates failure
+    ndb_log_error("No result set for query '%s'", statement.c_str());
+    assert(false);
+  }
+
+  m_closed = false;
   return m_closed;
 }
 
@@ -1055,6 +1053,11 @@ Ndb_stored_grants::Strategy Ndb_stored_grants::handle_local_acl_change(
     THD *thd, const Acl_change_notification *notice, std::string *user_list,
     bool *schema_dist_use_db, bool *must_refresh) {
   ThreadContext context(thd);
+
+  if (notice == nullptr) {
+    ndb_log_error("stored grants: no Acl_change_notification");
+    return Strategy::ERROR;
+  }
 
   if (!metadata_table.isInitialized()) {
     ndb_log_error("stored grants: not intialized.");

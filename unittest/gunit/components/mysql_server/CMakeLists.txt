@@ -1,15 +1,16 @@
-# Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,6 +26,7 @@ INCLUDE_DIRECTORIES(
 )
 
 REMOVE_DEFINITIONS(-DMYSQL_SERVER)
+DISABLE_MISSING_PROFILE_WARNING()
 
 # Add tests
 SET(TESTS registry dynamic_loader)
@@ -60,10 +62,6 @@ MYSQL_ADD_EXECUTABLE(minimal_chassis_test_driver-t
   DEPENDENCIES component_example_component1
 )
 
-IF(WIN32)
-  TARGET_LINK_LIBRARIES(minimal_chassis_test_driver-t my_nt_servc)
-ENDIF()
-
 IF(NOT WITH_SHARED_UNITTEST_LIBRARY)
   TARGET_LINK_LIBRARIES(minimal_chassis_test_driver-t
     mysql_server_component_services)
@@ -79,12 +77,16 @@ IF(WIN32)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${run_dir}/${CMAKE_CFG_INTDIR}/${DLL_FILE_NAME}"
       "${plg_dir}/${CMAKE_CFG_INTDIR}/${DLL_FILE_NAME}"
+      COMMENT "Copying ${DLL_FILE_NAME}"
       )
   ENDFUNCTION()
   GET_FILENAME_COMPONENT(CRYPTO_NAME "${HAVE_CRYPTO_DLL}" NAME)
   GET_FILENAME_COMPONENT(OPENSSL_NAME "${HAVE_OPENSSL_DLL}" NAME)
 
-  COPY_DLL_FOR_UNITTEST("$<TARGET_FILE_NAME:libprotobuf-lite>")
+  IF(NOT WIN32_CLANG)
+    COPY_DLL_FOR_UNITTEST("$<TARGET_FILE_NAME:abseil_dll>")
+    COPY_DLL_FOR_UNITTEST("$<TARGET_FILE_NAME:libprotobuf-lite>")
+  ENDIF()
   COPY_DLL_FOR_UNITTEST("${CRYPTO_NAME}")
   COPY_DLL_FOR_UNITTEST("${OPENSSL_NAME}")
 ENDIF()
@@ -98,9 +100,6 @@ MYSQL_ADD_EXECUTABLE(reference_cache-t
   DEPENDENCIES component_reference_cache component_test_reference_cache
 )
 
-IF(WIN32)
-  TARGET_LINK_LIBRARIES(reference_cache-t my_nt_servc)
-ENDIF()
 IF(NOT WITH_SHARED_UNITTEST_LIBRARY)
   TARGET_LINK_LIBRARIES(reference_cache-t mysql_server_component_services)
 ENDIF()

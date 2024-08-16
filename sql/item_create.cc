@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -46,29 +47,31 @@
 
 #include "decimal.h"
 #include "field_types.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "my_time.h"
+#include "mysql/strings/dtoa.h"
+#include "mysql/strings/m_ctype.h"
+#include "mysql/strings/my_strtoll10.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_time.h"
 #include "mysqld_error.h"
+#include "sql-common/my_decimal.h"
 #include "sql/item.h"
-#include "sql/item_cmpfunc.h"    // Item_func_any_value
-#include "sql/item_func.h"       // Item_func_udf_str
-#include "sql/item_geofunc.h"    // Item_func_st_area
-#include "sql/item_gtid_func.h"  // Item_wait_for_executed_gtid_set Item_master_gtid_set_wait Item_func_gtid_subset
-#include "sql/item_inetfunc.h"   // Item_func_inet_ntoa
-#include "sql/item_json_func.h"  // Item_func_json
-#include "sql/item_pfs_func.h"   // Item_pfs_func_thread_id
+#include "sql/item_cmpfunc.h"  // Item_func_any_value
+#include "sql/item_func.h"     // Item_func_udf_str
+#include "sql/item_geofunc.h"  // Item_func_st_area
+#include "sql/item_gtid_func.h"  // Item_wait_for_executed_gtid_set Item_func_gtid_subset
+#include "sql/item_inetfunc.h"     // Item_func_inet_ntoa
+#include "sql/item_json_func.h"    // Item_func_json
+#include "sql/item_pfs_func.h"     // Item_pfs_func_thread_id
 #include "sql/item_regexp_func.h"  // Item_func_regexp_xxx
 #include "sql/item_strfunc.h"      // Item_func_aes_encrypt
 #include "sql/item_sum.h"          // Item_sum_udf_str
 #include "sql/item_timefunc.h"     // Item_func_add_time
 #include "sql/item_xmlfunc.h"      // Item_func_xml_extractvalue
-#include "sql/my_decimal.h"
 #include "sql/parse_location.h"
 #include "sql/parse_tree_helpers.h"  // PT_item_list
 #include "sql/parser_yystype.h"
@@ -127,7 +130,7 @@ namespace {
   @see Function_factory::create_func()
 */
 constexpr auto MAX_ARGLIST_SIZE =
-    std::numeric_limits<decltype(PT_item_list().elements())>::max();
+    std::numeric_limits<decltype(PT_item_list(POS()).elements())>::max();
 
 /**
   Instantiates a function class with the list of arguments.
@@ -965,8 +968,7 @@ class Make_set_instantiator {
   static const uint Max_argcount = MAX_ARGLIST_SIZE;
 
   Item *instantiate(THD *thd, PT_item_list *args) {
-    Item *param_1 = args->pop_front();
-    return new (thd->mem_root) Item_func_make_set(POS(), param_1, args);
+    return new (thd->mem_root) Item_func_make_set(POS(), args);
   }
 };
 
@@ -1001,7 +1003,7 @@ uint arglist_length(const PT_item_list *args) {
 bool check_argcount_bounds(THD *, LEX_STRING function_name,
                            PT_item_list *item_list, uint min_argcount,
                            uint max_argcount) {
-  uint argcount = arglist_length(item_list);
+  const uint argcount = arglist_length(item_list);
   if (argcount < min_argcount || argcount > max_argcount) {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), function_name.str);
     return true;
@@ -1178,7 +1180,7 @@ Item *Create_udf_func::create(THD *thd, udf_func *udf,
   assert((udf->type == UDFTYPE_FUNCTION) || (udf->type == UDFTYPE_AGGREGATE));
 
   Item *func = nullptr;
-  POS pos{};
+  const POS pos{};
 
   switch (udf->returns) {
     case STRING_RESULT:
@@ -1549,8 +1551,6 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"STATEMENT_DIGEST_TEXT", SQL_FN(Item_func_statement_digest_text, 1)},
     {"WAIT_FOR_EXECUTED_GTID_SET",
      SQL_FN_V(Item_wait_for_executed_gtid_set, 1, 2)},
-    {"WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS",
-     SQL_FN_V(Item_master_gtid_set_wait, 1, 3)},
     {"SQRT", SQL_FN(Item_func_sqrt, 1)},
     {"STRCMP", SQL_FN(Item_func_strcmp, 2)},
     {"STR_TO_DATE", SQL_FN(Item_func_str_to_date, 2)},
@@ -1784,6 +1784,8 @@ static const std::pair<const char *, Create_func *> func_array[] = {
      SQL_FN_INTERNAL(Item_func_internal_get_mandatory_roles_json, 0)},
     {"INTERNAL_IS_MANDATORY_ROLE",
      SQL_FN_INTERNAL(Item_func_internal_is_mandatory_role, 2)},
+    {"INTERNAL_USE_TERMINOLOGY_PREVIOUS",
+     SQL_FN_INTERNAL(Item_func_internal_use_terminology_previous, 0)},
     {"INTERNAL_IS_ENABLED_ROLE",
      SQL_FN_INTERNAL(Item_func_internal_is_enabled_role, 2)}};
 
@@ -1837,7 +1839,6 @@ Item *create_func_cast(THD *thd, const POS &pos, Item *a,
   expressions, and Items performing CAST-like tasks, such as JSON_VALUE.
 
   @param thd        thread handler
-  @param pos        the location of the expression
   @param arg        the value to cast
   @param cast_type  the target type of the cast
   @param as_array   true if the target type is an array type
@@ -1845,11 +1846,15 @@ Item *create_func_cast(THD *thd, const POS &pos, Item *a,
   @param[out] precision  gets set to the precision of the target type
   @return true on error, false on success
 */
-static bool validate_cast_type_and_extract_length(
-    const THD *thd, const POS &pos, Item *arg, const Cast_type &cast_type,
-    bool as_array, int64_t *length, uint *precision) {
+static bool validate_cast_type_and_extract_length(const THD *thd, Item *arg,
+                                                  const Cast_type &cast_type,
+                                                  bool as_array,
+                                                  int64_t *length,
+                                                  uint *precision) {
   // earlier syntax error detected
   if (arg == nullptr) return true;
+
+  const POS pos(arg->m_pos);
 
   if (as_array) {
     // Disallow arrays in stored routines.
@@ -1894,7 +1899,7 @@ static bool validate_cast_type_and_extract_length(
       return false;
     case ITEM_CAST_TIME:
     case ITEM_CAST_DATETIME: {
-      uint dec = c_dec ? strtoul(c_dec, nullptr, 10) : 0;
+      const uint dec = c_dec ? strtoul(c_dec, nullptr, 10) : 0;
       if (dec > DATETIME_MAX_DECIMALS) {
         my_error(ER_TOO_BIG_PRECISION, MYF(0), dec, "CAST",
                  DATETIME_MAX_DECIMALS);
@@ -2077,8 +2082,8 @@ Item *create_func_cast(THD *thd, const POS &pos, Item *arg,
                        const Cast_type &type, bool as_array) {
   int64_t length = 0;
   unsigned precision = 0;
-  if (validate_cast_type_and_extract_length(thd, pos, arg, type, as_array,
-                                            &length, &precision))
+  if (validate_cast_type_and_extract_length(thd, arg, type, as_array, &length,
+                                            &precision))
     return nullptr;
 
   if (as_array) {
@@ -2145,8 +2150,8 @@ Item *create_func_json_value(THD *thd, const POS &pos, Item *arg, Item *path,
                              Item *on_error_default) {
   int64_t length = 0;
   unsigned precision = 0;
-  if (validate_cast_type_and_extract_length(thd, pos, arg, cast_type, false,
-                                            &length, &precision))
+  if (validate_cast_type_and_extract_length(thd, arg, cast_type, false, &length,
+                                            &precision))
     return nullptr;
 
   // Create dummy items for the default values, if they haven't been specified.
@@ -2227,7 +2232,7 @@ Item *create_temporal_literal(THD *thd, const char *str, size_t length,
     const char *typestr = (type == MYSQL_TYPE_DATE)
                               ? "DATE"
                               : (type == MYSQL_TYPE_TIME) ? "TIME" : "DATETIME";
-    ErrConvString err(str, length, thd->variables.character_set_client);
+    const ErrConvString err(str, length, thd->variables.character_set_client);
     my_error(ER_WRONG_VALUE, MYF(0), typestr, err.ptr());
   }
   return nullptr;

@@ -1,16 +1,17 @@
 /* Copyright (C) 2007 Google Inc.
-   Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -779,7 +780,8 @@ int ReplSemiSyncMaster::commitTrx(const char *trx_wait_binlog_name,
       /*
         After we release LOCK_binlog_ above while waiting for the condition,
         it can happen that some other parallel client session executed
-        RESET MASTER. That can set rpl_semi_sync_source_wait_sessions to zero.
+        RESET BINARY LOGS AND GTIDS.
+        That can set rpl_semi_sync_source_wait_sessions to zero.
         Hence check the value before decrementing it and decrement it only if it
         is non-zero value.
       */
@@ -1249,7 +1251,7 @@ int AckContainer::resize(unsigned int size, const AckInfo **ackinfo) {
   m_ack_array = nullptr;
   if (m_size) {
     m_ack_array = (AckInfo *)DBUG_EVALUATE_IF(
-        "rpl_semisync_simulate_allocate_ack_container_failure", NULL,
+        "rpl_semisync_simulate_allocate_ack_container_failure", nullptr,
         my_malloc(0, sizeof(AckInfo) * (size - 1), MYF(MY_ZEROFILL)));
     if (m_ack_array == nullptr) {
       m_ack_array = old_ack_array;

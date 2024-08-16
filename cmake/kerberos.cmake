@@ -1,15 +1,16 @@
-# Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,7 +24,12 @@
 # cmake -DWITH_KERBEROS=system|<path/to/custom/installation>|none
 # system is the default
 # none will diable the kerberos build
-# Custom path is only supported for LINUX_STANDALONE.
+# no Kerberos support for APPLE OR, FREEBSD, SOLARIS, set WITH_KERBEROS to none
+
+# cmake -DWITH_KERBEROS_WIN=system|<path/to/custom/installation>|none
+# ignored when not on Windows
+# when set, WITH_KERBEROS is set to WITH_KERBEROS_WIN
+# and KERBEROS_LIB_SSPI is set to 1
 
 INCLUDE (CheckIncludeFile)
 INCLUDE (CheckIncludeFiles)
@@ -179,23 +185,6 @@ IF (WIN32)
     krbcc64.dll
     gssapi64.dll
     )
-    # We still support 32bit build for -DWITHOUT_SERVER=ON
-    IF(CMAKE_SIZEOF_VOID_P EQUAL 4)
-      SET(CUSTOM_KERBEROS_EXTRA_LIBRARIES
-        k5sprt32.lib
-        comerr32.lib
-        xpprof32.lib
-        krbcc32.lib
-        gssapi32.lib
-        )
-      SET(CUSTOM_KERBEROS_EXTRA_DLLS
-        k5sprt32.dll
-        comerr32.dll
-        xpprof32.dll
-        krbcc32.dll
-        gssapi32.dll
-        )
-    ENDIF()
 ELSE()
   SET(CUSTOM_KERBEROS_EXTRA_LIBRARIES
     com_err
@@ -251,23 +240,6 @@ MACRO(FIND_CUSTOM_KERBEROS)
       NO_CMAKE_ENVIRONMENT_PATH
       NO_SYSTEM_ENVIRONMENT_PATH
       )
-    # We still support 32bit build for -DWITHOUT_SERVER=ON
-    IF(CMAKE_SIZEOF_VOID_P EQUAL 4)
-      FIND_FILE(KERBEROS_CUSTOM_LIBRARY
-        NAMES krb5_32.lib
-        PATHS ${KERBEROS_ROOT_DIR}/lib
-        NO_CMAKE_PATH
-        NO_CMAKE_ENVIRONMENT_PATH
-        NO_SYSTEM_ENVIRONMENT_PATH
-        )
-      FIND_FILE(KERBEROS_CUSTOM_DLL
-        NAMES krb5_32.dll
-        PATHS ${KERBEROS_ROOT_DIR}/bin
-        NO_CMAKE_PATH
-        NO_CMAKE_ENVIRONMENT_PATH
-        NO_SYSTEM_ENVIRONMENT_PATH
-        )
-    ENDIF()
 
     IF(KERBEROS_INCLUDE_DIR AND KERBEROS_CUSTOM_LIBRARY AND
        KERBEROS_CUSTOM_DLL AND CCAPISERVER_EXECUTABLE)
@@ -358,7 +330,8 @@ MACRO(MYSQL_CHECK_KERBEROS)
   IF(WIN32)
     SET(KERBEROS_LIB_SSPI 1)
     IF(WITH_KERBEROS_WIN)
-      MESSAGE(STATUS "WITH_KERBEROS_WIN is specified. Setting WITH_KERBEROS.")
+      MESSAGE(STATUS "WITH_KERBEROS_WIN is specified. \
+        Setting WITH_KERBEROS = ${WITH_KERBEROS_WIN}.")
       SET(WITH_KERBEROS ${WITH_KERBEROS_WIN})
       SET(WITH_KERBEROS ${WITH_KERBEROS_WIN} CACHE STRING "${WITH_KERBEROS_WIN}")
     ELSE()
@@ -419,7 +392,7 @@ MACRO(MYSQL_CHECK_KERBEROS)
     ENDIF()
   ENDIF()
 
-  IF(KERBEROS_FOUND AND (NOT WIN32))
+  IF(KERBEROS_FOUND)
     SET(KERBEROS_LIB_CONFIGURED 1)
   ENDIF()
 
@@ -494,7 +467,7 @@ MACRO(MYSQL_CHECK_KERBEROS_DLLS)
         DESTINATION ${INSTALL_BINDIR} COMPONENT SharedLibraries)
     ENDFOREACH()
 
-    GET_FILENAME_COMPONENT(CCAPISERVER_EXE_NAME 
+    GET_FILENAME_COMPONENT(CCAPISERVER_EXE_NAME
       "${CCAPISERVER_EXECUTABLE}" NAME)
     ADD_CUSTOM_COMMAND(
       OUTPUT "${RUNTIME_DIR}/${CMAKE_CFG_INTDIR}/${CCAPISERVER_EXE_NAME}"

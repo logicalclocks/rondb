@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,10 +26,10 @@
 #include <mysql/psi/mysql_thread.h>
 #include <time.h>
 
-#include "m_ctype.h" /* my_charset_bin */
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_systime.h"
+#include "mysql/strings/m_ctype.h" /* my_charset_bin */
 #include "mysqld_error.h"
 #include "plugin/connection_control/connection_control.h"
 #include "plugin/connection_control/security_context_wrapper.h"
@@ -211,7 +212,7 @@ bool Connection_delay_event::remove_entry(const Sql_string &s) {
   if (searched_entry && searched_entry != MY_LF_ERRPTR) {
     searched_entry_info = *searched_entry;
     assert(searched_entry_info != nullptr);
-    int rc = lf_hash_delete(&m_entries, pins, s.c_str(), s.length());
+    const int rc = lf_hash_delete(&m_entries, pins, s.c_str(), s.length());
     lf_hash_search_unpin(pins);
     lf_hash_put_pins(pins);
     if (rc == 0) {
@@ -483,8 +484,7 @@ void Connection_delay_action::conditional_wait(MYSQL_THD thd,
 
   /* Finish waiting and deregister wait condition */
   mysql_mutex_unlock(&connection_delay_mutex);
-  thd_exit_cond(thd, &stage_waiting_in_connection_control_plugin, __func__,
-                __FILE__, __LINE__);
+  thd_exit_cond(thd, &old_stage, __func__, __FILE__, __LINE__);
 
   /* Cleanup */
   mysql_mutex_destroy(&connection_delay_mutex);
@@ -514,7 +514,7 @@ bool Connection_delay_action::notify_event(
     Error_handler *error_handler) {
   DBUG_TRACE;
   bool error = false;
-  unsigned int subclass = connection_event->event_subclass;
+  const unsigned int subclass = connection_event->event_subclass;
   Connection_event_observer *self = this;
 
   if (subclass != MYSQL_AUDIT_CONNECTION_CONNECT &&
@@ -523,7 +523,7 @@ bool Connection_delay_action::notify_event(
 
   RD_lock rd_lock(m_lock);
 
-  int64 threshold = this->get_threshold();
+  const int64 threshold = this->get_threshold();
 
   /* If feature was disabled, return */
   if (threshold <= DISABLE_THRESHOLD) return error;
@@ -550,7 +550,7 @@ bool Connection_delay_action::notify_event(
       have to consider current connection as well - Hence the usage
       of current_count + 1.
     */
-    ulonglong wait_time = get_wait_time((current_count + 1) - threshold);
+    const ulonglong wait_time = get_wait_time((current_count + 1) - threshold);
 
     if ((error = coordinator->notify_status_var(
              &self, STAT_CONNECTION_DELAY_TRIGGERED, ACTION_INC))) {
@@ -564,6 +564,10 @@ bool Connection_delay_action::notify_event(
     rd_lock.unlock();
     conditional_wait(thd, wait_time);
     rd_lock.lock();
+
+    /* Introduce a delay to check that connection delay status doesn't last
+     * longer than configured */
+    DBUG_EXECUTE_IF("delay_after_connection_delay", sleep(2););
   }
 
   if (connection_event->status) {
@@ -612,11 +616,11 @@ bool Connection_delay_action::notify_sys_var(
   bool error = true;
   Connection_event_observer *self = this;
 
-  WR_lock wr_lock(m_lock);
+  const WR_lock wr_lock(m_lock);
 
   switch (variable) {
     case OPT_FAILED_CONNECTIONS_THRESHOLD: {
-      int64 new_threshold = *(static_cast<int64 *>(new_value));
+      const int64 new_threshold = *(static_cast<int64 *>(new_value));
       assert(new_threshold >= DISABLE_THRESHOLD);
       set_threshold(new_threshold);
 
@@ -629,7 +633,7 @@ bool Connection_delay_action::notify_sys_var(
     }
     case OPT_MIN_CONNECTION_DELAY:
     case OPT_MAX_CONNECTION_DELAY: {
-      int64 new_delay = *(static_cast<int64 *>(new_value));
+      const int64 new_delay = *(static_cast<int64 *>(new_value));
       if ((error =
                set_delay(new_delay, (variable == OPT_MIN_CONNECTION_DELAY)))) {
         error_handler->handle_error(
@@ -658,7 +662,7 @@ void Connection_delay_action::init(
   assert(coordinator);
   bool retval;
   Connection_event_observer *subscriber = this;
-  WR_lock wr_lock(m_lock);
+  const WR_lock wr_lock(m_lock);
   retval = coordinator->register_event_subscriber(&subscriber, &m_sys_vars,
                                                   &m_stats_vars);
   assert(!retval);
@@ -735,7 +739,7 @@ void Connection_delay_action::fill_IS_table(THD *thd, Table_ref *tables,
   Security_context_wrapper sctx_wrapper(thd);
   if (!(sctx_wrapper.is_super_user() || sctx_wrapper.is_connection_admin()))
     return;
-  WR_lock wr_lock(m_lock);
+  const WR_lock wr_lock(m_lock);
   Sql_string eq_arg;
   if (cond != nullptr &&
       !get_equal_condition_argument(

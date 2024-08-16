@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2001, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2001, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,10 +30,11 @@
 #include <vector>
 
 #include "client/check/mysqlcheck.h"
-#include "client/client_priv.h"
-#include "m_ctype.h"
+#include "client/include/client_priv.h"
+#include "m_string.h"
 #include "my_default.h"
 #include "my_inttypes.h"
+#include "mysql/strings/m_ctype.h"
 
 using namespace Mysql::Tools::Check;
 
@@ -279,8 +281,8 @@ static void print_result() {
   prev_alter[0] = 0;
 
   while ((row = mysql_fetch_row(res))) {
-    int changed = strcmp(prev, row[0]);
-    bool status = !strcmp(row[2], "status");
+    const int changed = strcmp(prev, row[0]);
+    const bool status = !strcmp(row[2], "status");
 
     if (status) {
       /*
@@ -354,15 +356,18 @@ static void print_result() {
   mysql_free_result(res);
 }
 
-void Mysql::Tools::Check::mysql_check(
-    MYSQL *connection, int what_to_do, bool opt_alldbs,
-    bool opt_check_only_changed, bool opt_extended, bool opt_databases,
-    bool opt_fast, bool opt_medium_check, bool opt_quick, bool opt_all_in_1,
-    bool opt_silent, bool opt_auto_repair, bool ignore_errors, bool opt_frm,
-    bool opt_fix_table_names, bool opt_fix_db_names, bool opt_upgrade,
-    bool opt_write_binlog, uint verbose, std::string opt_skip_database,
-    std::vector<std::string> arguments,
-    void (*dberror)(MYSQL *mysql, const std::string &when)) {
+namespace Mysql::Tools::Check {
+
+void mysql_check(MYSQL *connection, int what_to_do, bool opt_alldbs,
+                 bool opt_check_only_changed, bool opt_extended,
+                 bool opt_databases, bool opt_fast, bool opt_medium_check,
+                 bool opt_quick, bool opt_all_in_1, bool opt_silent,
+                 bool opt_auto_repair, bool ignore_errors, bool opt_frm,
+                 bool opt_fix_table_names, bool opt_fix_db_names,
+                 bool opt_upgrade, bool opt_write_binlog, uint verbose,
+                 std::string opt_skip_database,
+                 std::vector<std::string> arguments,
+                 void (*dberror)(MYSQL *mysql, const std::string &when)) {
   ::sock = connection;
   ::what_to_do = what_to_do;
   ::opt_alldbs = opt_alldbs;
@@ -418,6 +423,8 @@ void Mysql::Tools::Check::mysql_check(
     }
   }
 }
+
+}  // namespace Mysql::Tools::Check
 
 Program::Program()
     : m_what_to_do(0),

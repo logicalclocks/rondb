@@ -1,14 +1,15 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,8 +30,6 @@
 #include <utility>
 #include <vector>
 
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_psi_config.h"
@@ -38,6 +37,7 @@
 #include "mysql/components/services/bits/psi_thread_bits.h"
 #include "mysql/components/services/log_shared.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "pfs_thread_provider.h"
@@ -62,6 +62,7 @@
 #include "sql/sql_lex.h"  // is_invalid_string
 #include "sql/system_variables.h"
 #include "sql/thd_raii.h"
+#include "string_with_len.h"
 
 namespace dd {
 class Resource_group;

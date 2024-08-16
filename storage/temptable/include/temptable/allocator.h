@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -189,13 +190,14 @@ class TableResourceMonitor {
  */
 template <typename Block_size_policy, typename Block_source_policy>
 struct Allocation_scheme {
-  static Source block_source(size_t block_size,
-                             TableResourceMonitor *table_resource_monitor) {
-    return Block_source_policy::block_source(block_size,
-                                             table_resource_monitor);
+  static Source block_source(size_t block_size) {
+    return Block_source_policy::block_source(block_size);
   }
   static size_t block_size(size_t number_of_blocks, size_t n_bytes_requested) {
     return Block_size_policy::block_size(number_of_blocks, n_bytes_requested);
+  }
+  static void block_freed(uint32_t block_size, Source block_source) {
+    Block_source_policy::block_freed(block_size, block_source);
   }
 };
 
@@ -212,8 +214,7 @@ struct Allocation_scheme {
  *     tmp_table_size SYSVAR.
  * */
 struct Prefer_RAM_over_MMAP_policy {
-  static Source block_source(uint32_t block_size,
-                             TableResourceMonitor * = nullptr) {
+  static Source block_source(uint32_t block_size) {
     if (MemoryMonitor::RAM::consumption() < MemoryMonitor::RAM::threshold()) {
       if (MemoryMonitor::RAM::increase(block_size) <=
           MemoryMonitor::RAM::threshold()) {
@@ -232,37 +233,13 @@ struct Prefer_RAM_over_MMAP_policy {
     }
     throw Result::RECORD_FILE_FULL;
   }
-};
 
-/* Another concrete implementation of Block_source_policy, a type which controls
- * where TempTable allocator is going to be allocating next Block of memory
- * from. It acts the same as Prefer_RAM_over_MMAP_policy with the main
- * difference being that this policy obeys the per-table limit.
- *
- * What this means is that each temptable::Table is allowed to fit no more data
- * than the given threshold controlled through TableResourceMonitor abstraction.
- * TableResourceMonitor is a simple abstraction which is in its part an alias
- * for tmp_table_size, a system variable that end MySQL users will be using to
- * control this threshold.
- *
- * Updating the tmp_table_size threshold can only be done through the separate
- * SET statement which implies that the tmp_table_size threshold cannot be
- * updated during the duration of some query which is running within the same
- * session. Separate sessions can still of course change this value to their
- * liking.
- * */
-struct Prefer_RAM_over_MMAP_policy_obeying_per_table_limit {
-  static Source block_source(uint32_t block_size,
-                             TableResourceMonitor *table_resource_monitor) {
-    assert(table_resource_monitor);
-    assert(table_resource_monitor->consumption() <=
-           table_resource_monitor->threshold());
-
-    if (table_resource_monitor->consumption() + block_size >
-        table_resource_monitor->threshold())
-      throw Result::RECORD_FILE_FULL;
-
-    return Prefer_RAM_over_MMAP_policy::block_source(block_size);
+  static void block_freed(uint32_t block_size, Source block_source) {
+    if (block_source == Source::RAM) {
+      MemoryMonitor::RAM::decrease(block_size);
+    } else {
+      MemoryMonitor::MMAP::decrease(block_size);
+    }
   }
 };
 
@@ -314,8 +291,7 @@ struct Exponential_policy {
  * over MMAP allocations.
  */
 using Exponential_growth_preferring_RAM_over_MMAP =
-    Allocation_scheme<Exponential_policy,
-                      Prefer_RAM_over_MMAP_policy_obeying_per_table_limit>;
+    Allocation_scheme<Exponential_policy, Prefer_RAM_over_MMAP_policy>;
 
 /**
   Shared state between all instances of a given allocator.
@@ -335,7 +311,77 @@ using Exponential_growth_preferring_RAM_over_MMAP =
   guide's recommendation to have clear ownership of objects, but at least it
   avoids the use-after-free.
  */
-struct AllocatorState {
+template <class AllocationScheme>
+class AllocatorState {
+ public:
+  /**
+   * Destroys the state, deallocate the current_block if it was left empty.
+   */
+  ~AllocatorState() noexcept {
+    if (!current_block.is_empty()) {
+      free_block(current_block);
+    }
+    /* User must deallocate all data from all blocks, otherwise the memory will
+     * be leaked.
+     */
+    assert(number_of_blocks == 0);
+  }
+
+  /**
+   * Gets a Block from which a new allocation of the specified size should be
+   * performed. It will use the current Block or create a new one if it is too
+   * small.
+   * [in] Number of bytes that will be allocated from the returned block.
+   */
+  Block *get_block_for_new_allocation(size_t n_bytes_requested) {
+    if (current_block.is_empty() ||
+        !current_block.can_accommodate(n_bytes_requested)) {
+      /* The current_block may have been left empty during some deallocate()
+       * call. It is the last opportunity to free it before we lose reference to
+       * it.
+       */
+      if (!current_block.is_empty() &&
+          current_block.number_of_used_chunks() == 0) {
+        free_block(current_block);
+      }
+
+      const size_t block_size =
+          AllocationScheme::block_size(number_of_blocks, n_bytes_requested);
+      current_block =
+          Block(block_size, AllocationScheme::block_source(block_size));
+      ++number_of_blocks;
+    }
+    return &current_block;
+  }
+
+  /**
+   * Informs the state object of a block that has no data allocated inside of it
+   * anymore for garbage collection.
+   * [in] The empty block to manage and possibly free.
+   */
+  void block_is_not_used_anymore(Block block) noexcept {
+    if (block == current_block) {
+      /* Do nothing. Keep the last block alive. Some queries are repeatedly
+       * allocating one Row and freeing it, leading to constant allocation and
+       * deallocation of 1MB of memory for the current_block. Let's keep this
+       * block empty ready for a future use.
+       */
+    } else {
+      free_block(block);
+    }
+  }
+
+ private:
+  /**
+   * Frees the specified block and takes care of all accounting.
+   * [in] The empty block to free.
+   */
+  void free_block(Block &block) noexcept {
+    AllocationScheme::block_freed(block.size(), block.type());
+    block.destroy();
+    --number_of_blocks;
+  }
+
   /** Current not-yet-full block to feed allocations from. */
   Block current_block;
 
@@ -485,7 +531,7 @@ class Allocator {
     Shared state between all the copies and rebinds of this allocator.
     See AllocatorState for details.
    */
-  std::shared_ptr<AllocatorState> m_state;
+  std::shared_ptr<AllocatorState<AllocationScheme>> m_state;
 
   /** A block of memory which is a state external to this allocator and can be
    * shared among different instances of the allocator (not simultaneously). In
@@ -504,7 +550,7 @@ class Allocator {
 template <class T, class AllocationScheme>
 inline Allocator<T, AllocationScheme>::Allocator(
     Block *shared_block, TableResourceMonitor &table_resource_monitor)
-    : m_state(std::make_shared<AllocatorState>()),
+    : m_state(std::make_shared<AllocatorState<AllocationScheme>>()),
       m_shared_block(shared_block),
       m_table_resource_monitor(table_resource_monitor) {}
 
@@ -556,26 +602,32 @@ inline T *Allocator<T, AllocationScheme>::allocate(size_t n_elements) {
   if (m_shared_block && m_shared_block->is_empty()) {
     const size_t block_size =
         AllocationScheme::block_size(0, n_bytes_requested);
-    *m_shared_block = Block(
-        block_size,
-        AllocationScheme::block_source(block_size, &m_table_resource_monitor));
+    *m_shared_block =
+        Block(block_size, AllocationScheme::block_source(block_size));
     block = m_shared_block;
   } else if (m_shared_block &&
              m_shared_block->can_accommodate(n_bytes_requested)) {
     block = m_shared_block;
-  } else if (m_state->current_block.is_empty() ||
-             !m_state->current_block.can_accommodate(n_bytes_requested)) {
-    const size_t block_size = AllocationScheme::block_size(
-        m_state->number_of_blocks, n_bytes_requested);
-    m_state->current_block = Block(
-        block_size,
-        AllocationScheme::block_source(block_size, &m_table_resource_monitor));
-    block = &m_state->current_block;
-    ++m_state->number_of_blocks;
   } else {
-    block = &m_state->current_block;
+    block = m_state->get_block_for_new_allocation(n_bytes_requested);
   }
 
+  /* temptable::Table is allowed to fit no more data than the given threshold
+   * controlled through TableResourceMonitor abstraction. TableResourceMonitor
+   * is a simple abstraction which is in its part an alias for tmp_table_size, a
+   * system variable that end MySQL users will be using to control this
+   * threshold.
+   *
+   * Updating the tmp_table_size threshold can only be done through the separate
+   * SET statement which implies that the tmp_table_size threshold cannot be
+   * updated during the duration of some query which is running within the same
+   * session. Separate sessions can still of course change this value to their
+   * liking.
+   */
+  if (m_table_resource_monitor.consumption() + n_bytes_requested >
+      m_table_resource_monitor.threshold()) {
+    throw Result::RECORD_FILE_FULL;
+  }
   m_table_resource_monitor.increase(n_bytes_requested);
 
   T *chunk_data =
@@ -602,18 +654,7 @@ inline void Allocator<T, AllocationScheme>::deallocate(T *chunk_data,
     if (m_shared_block && (block == *m_shared_block)) {
       // Do nothing. Keep the last block alive.
     } else {
-      assert(m_state->number_of_blocks > 0);
-      if (block.type() == Source::RAM) {
-        MemoryMonitor::RAM::decrease(block.size());
-      } else {
-        MemoryMonitor::MMAP::decrease(block.size());
-      }
-      if (block == m_state->current_block) {
-        m_state->current_block.destroy();
-      } else {
-        block.destroy();
-      }
-      --m_state->number_of_blocks;
+      m_state->block_is_not_used_anymore(block);
     }
   }
   m_table_resource_monitor.decrease(n_bytes_requested);

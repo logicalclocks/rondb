@@ -1,8 +1,28 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
- *
- * Author: Zhao Song
- */
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+*/
+
 #include "config.h"
 
 #ifdef _WIN32
@@ -184,36 +204,36 @@ std::random_device rd;
 std::mt19937 gen(rd());
 
 /*
-   std::uniform_int_distribution<int64_t> g_bigint(0xFFFFFFFF, 0x7FFFFFFF);
-   std::uniform_int_distribution<uint64_t> g_ubigint(0, 0xFFFFFFFF);
-   std::uniform_int_distribution<int32_t> g_int(0xFFFF, 0x7FFF);
-   std::uniform_int_distribution<uint32_t> g_uint(0, 0xFFFF);
-   std::uniform_int_distribution<int32_t> g_mediumint(0x0FFF, 0x7FF);
-   std::uniform_int_distribution<uint32_t> g_umediumint(0, 0xFFF);
-   std::uniform_int_distribution<int16_t> g_smallint(0xFF, 0x7F);
-   std::uniform_int_distribution<uint16_t> g_usmallint(0, 0xFF);
-   std::uniform_int_distribution<int8_t> g_tinyint(0xF, 0x7);
-   std::uniform_int_distribution<uint8_t> g_utinyint(0, 0xF);
+   std::uniform_int_distribution<Int64> g_bigint(0xFFFFFFFF, 0x7FFFFFFF);
+   std::uniform_int_distribution<Uint64> g_ubigint(0, 0xFFFFFFFF);
+   std::uniform_int_distribution<Int32> g_int(0xFFFF, 0x7FFF);
+   std::uniform_int_distribution<Uint32> g_uint(0, 0xFFFF);
+   std::uniform_int_distribution<Int32> g_mediumint(0x0FFF, 0x7FF);
+   std::uniform_int_distribution<Uint32> g_umediumint(0, 0xFFF);
+   std::uniform_int_distribution<Int16> g_smallint(0xFF, 0x7F);
+   std::uniform_int_distribution<Uint16> g_usmallint(0, 0xFF);
+   std::uniform_int_distribution<Int8> g_tinyint(0xF, 0x7);
+   std::uniform_int_distribution<Uint8> g_utinyint(0, 0xF);
    std::uniform_real_distribution<float> g_float(0xFFFF, 0x7FFF);
    std::uniform_real_distribution<double> g_double(0xFFFFFFFF, 0x7FFFFFFF);
 */
 
-std::uniform_int_distribution<int64_t> g_bigint(-3147483648, 3147483648);
-std::uniform_int_distribution<uint64_t> g_ubigint(0, 5294967295);
-std::uniform_int_distribution<int32_t> g_int(-2147483648, 2147483647);
-std::uniform_int_distribution<uint32_t> g_uint(0, 4294967295);
-// std::uniform_int_distribution<int32_t> g_mediumint(-8388608, 8388607);
-std::uniform_int_distribution<int32_t> g_mediumint(-10, 10);
-std::uniform_int_distribution<uint32_t> g_umediumint(0, 8388607);
-std::uniform_int_distribution<int16_t> g_smallint(-32768, 32767);
-std::uniform_int_distribution<uint16_t> g_usmallint(0, 32768);
-// std::uniform_int_distribution<int8_t> g_tinyint(-128, 127);
-std::uniform_int_distribution<int8_t> g_tinyint(60, 70);
-std::uniform_int_distribution<uint8_t> g_utinyint(0, 255);
+std::uniform_int_distribution<Int64> g_bigint(-3147483648, 3147483648);
+std::uniform_int_distribution<Uint64> g_ubigint(0, 5294967295);
+std::uniform_int_distribution<Int32> g_int(-2147483648, 2147483647);
+std::uniform_int_distribution<Uint32> g_uint(0, 4294967295);
+// std::uniform_int_distribution<Int32> g_mediumint(-8388608, 8388607);
+std::uniform_int_distribution<Int32> g_mediumint(-10, 10);
+std::uniform_int_distribution<Uint32> g_umediumint(0, 8388607);
+std::uniform_int_distribution<Int16> g_smallint(-32768, 32767);
+std::uniform_int_distribution<Uint16> g_usmallint(0, 32768);
+// std::uniform_int_distribution<Int8> g_tinyint(-128, 127);
+std::uniform_int_distribution<Int8> g_tinyint(60, 70);
+std::uniform_int_distribution<Uint8> g_utinyint(0, 255);
 std::uniform_real_distribution<float> g_float(-32768, 32767);
 std::uniform_real_distribution<double> g_double(-8388608, 8388607);
 
-std::uniform_int_distribution<uint8_t> g_zero(0, 19);
+std::uniform_int_distribution<Uint8> g_zero(0, 19);
 
 #define NUM 10000
 int populate(Ndb * myNdb, MYSQL& mysql)
@@ -390,18 +410,18 @@ int populate(Ndb * myNdb, MYSQL& mysql)
   */
 }
 
-#define sint3korr(A)  ((int32_t) ((((uint8_t) (A)[2]) & 128) ? \
-                                  (((uint32_t) 255L << 24) | \
-                                  (((uint32_t) (uint8_t) (A)[2]) << 16) |\
-                                  (((uint32_t) (uint8_t) (A)[1]) << 8) | \
-                                   ((uint32_t) (uint8_t) (A)[0])) : \
-                                 (((uint32_t) (uint8_t) (A)[2]) << 16) |\
-                                 (((uint32_t) (uint8_t) (A)[1]) << 8) | \
-                                  ((uint32_t) (uint8_t) (A)[0])))
+#define sint3korr(A)  ((Int32) ((((Uint8) (A)[2]) & 128) ? \
+                                  (((Uint32) 255L << 24) | \
+                                  (((Uint32) (Uint8) (A)[2]) << 16) |\
+                                  (((Uint32) (Uint8) (A)[1]) << 8) | \
+                                   ((Uint32) (Uint8) (A)[0])) : \
+                                 (((Uint32) (Uint8) (A)[2]) << 16) |\
+                                 (((Uint32) (Uint8) (A)[1]) << 8) | \
+                                  ((Uint32) (Uint8) (A)[0])))
 
-#define uint3korr(A)  (uint32_t) (((uint32_t) ((uint8_t) (A)[0])) +\
-                                  (((uint32_t) ((uint8_t) (A)[1])) << 8) +\
-                                  (((uint32_t) ((uint8_t) (A)[2])) << 16))
+#define uint3korr(A)  (Uint32) (((Uint32) ((Uint8) (A)[0])) +\
+                                  (((Uint32) ((Uint8) (A)[1])) << 8) +\
+                                  (((Uint32) ((Uint8) (A)[2])) << 16))
 
 int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
 {
@@ -469,7 +489,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
     }
 
     /* Filter CTINYINT = 66 */
-    uint8_t val = 66;
+    Uint8 val = 66;
     NdbScanFilter filter(myScanOp);
     if (filter.begin(NdbScanFilter::AND) < 0  ||
         filter.cmp(NdbScanFilter::COND_EQ, 1, &val, sizeof(val)) < 0 ||
@@ -570,18 +590,18 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
         assert(iter->first.ptr + sizeof(AttributeHeader) + 12 +
             sizeof(AttributeHeader) + 4 ==
             iter->second.ptr);
-        int32_t cmedium =
+        Int32 cmedium =
           sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12);
         std::string value_cmedium = std::to_string(
             sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12));
 
         AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
-        uint64_t agg_1 = item[0].value.val_uint64;
+        Uint64 agg_1 = item[0].value.val_uint64;
         double agg_2 = item[1].value.val_double;
         double agg_3 = item[2].value.val_double;
         double agg_4 = item[3].value.val_double;
         {
-          MYSQL_RES *res;
+          MYSQL_RES *res = nullptr;
           MYSQL_ROW row;
           std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CCHAR=") +
             "'" +
@@ -591,6 +611,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
             value_cmedium +
             " GROUP BY CCHAR, CMEDIUMINT";
           if (mysql_real_query(&mysql, sql.data(), sql.length())) {
+            ;
           } else {
             res = mysql_store_result(&mysql);
             assert(res != nullptr);
@@ -606,7 +627,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
                    agg_3 - std::stod(row[2]) < -1.0) ||
                   (agg_4 - std::stod(row[3]) > 1.0 ||
                    agg_4 - std::stod(row[3]) < -1.0)) {
-                fprintf(stderr, "Catch [%s, %d] -> %lu, %lf, %lf, %lf : %lu, %lf, %lf, %lf\n",
+                fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf : %lu, %lf, %lf, %lf\n",
                     value_cchar.c_str(), cmedium,
                     agg_1, agg_2, agg_3, agg_4,
                     std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]));
@@ -654,12 +675,12 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
         switch (result.type()) {
           case NdbDictionary::Column::Bigint:
             fprintf(stderr,
-                " (type: %u, is_null: %u, data: %ld)",
+                " (type: %u, is_null: %u, data: %lld)",
                 result.type(), result.is_null(), result.data_int64());
             break;
           case NdbDictionary::Column::Bigunsigned:
             fprintf(stderr,
-                " (type: %u, is_null: %u, data: %lu)",
+                " (type: %u, is_null: %u, data: %llu)",
                 result.type(), result.is_null(), result.data_uint64());
             break;
           case NdbDictionary::Column::Double:
@@ -670,7 +691,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
           case NdbDictionary::Column::Undefined:
             // Aggregation on empty table or all rows are filtered out.
             fprintf(stderr,
-                " (type: %u, is_null: %u, data: %ld)",
+                " (type: %u, is_null: %u, data: %lld)",
                 result.type(), result.is_null(), result.data_int64());
             break;
           default:
@@ -732,7 +753,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
   }
 
   /* Filter: CTINYINT = 66 */
-  uint8_t val = 66;
+  Uint8 val = 66;
   NdbScanFilter filter(myIndexScanOp);
   if (filter.begin(NdbScanFilter::AND) < 0  ||
       filter.cmp(NdbScanFilter::COND_EQ, 1, &val, sizeof(val)) < 0 ||
@@ -823,18 +844,18 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
       assert(iter->first.ptr + sizeof(AttributeHeader) + 12 +
           sizeof(AttributeHeader) + 4 ==
           iter->second.ptr);
-      int32_t cmedium =
+      Int32 cmedium =
         sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12);
       std::string value_cmedium = std::to_string(
           sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12));
 
       AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
-      uint64_t agg_1 = item[0].value.val_uint64;
+      Uint64 agg_1 = item[0].value.val_uint64;
       double agg_2 = item[1].value.val_double;
       double agg_3 = item[2].value.val_double;
       double agg_4 = item[3].value.val_double;
       {
-        MYSQL_RES *res;
+        MYSQL_RES *res = nullptr;
         MYSQL_ROW row;
         std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CMEDIUMINT >= 6 AND CMEDIUMINT < 8 AND CCHAR=") +
           "'" +
@@ -844,6 +865,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
           value_cmedium +
           " GROUP BY CCHAR, CMEDIUMINT";
         if (mysql_real_query(&mysql, sql.data(), sql.length())) {
+          ;
         } else {
           res = mysql_store_result(&mysql);
           assert(res != nullptr);
@@ -859,7 +881,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
                  agg_3 - std::stod(row[2]) < -1.0) ||
                 (agg_4 - std::stod(row[3]) > 1.0 ||
                  agg_4 - std::stod(row[3]) < -1.0)) {
-              fprintf(stderr, "Catch [%s, %d] -> %lu, %lf, %lf, %lf: %lu, %lf, %lf, %lf\n",
+              fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf: %lu, %lf, %lf, %lf\n",
                   value_cchar.c_str(), cmedium,
                   agg_1, agg_2, agg_3, agg_4,
                   std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]));
@@ -903,12 +925,12 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
       switch (result.type()) {
         case NdbDictionary::Column::Bigint:
           fprintf(stderr,
-              " (type: %u, is_null: %u, data: %ld)",
+              " (type: %u, is_null: %u, data: %lld)",
               result.type(), result.is_null(), result.data_int64());
           break;
         case NdbDictionary::Column::Bigunsigned:
           fprintf(stderr,
-              " (type: %u, is_null: %u, data: %lu)",
+              " (type: %u, is_null: %u, data: %llu)",
               result.type(), result.is_null(), result.data_uint64());
           break;
         case NdbDictionary::Column::Double:
@@ -919,7 +941,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
         case NdbDictionary::Column::Undefined:
           // Aggregation on empty table or all rows are filtered out.
           fprintf(stderr,
-              " (type: %u, is_null: %u, data: %ld)",
+              " (type: %u, is_null: %u, data: %lld)",
               result.type(), result.is_null(), result.data_int64());
           break;
         default:

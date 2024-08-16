@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -82,12 +83,11 @@ int Multi_primary_migration_action::process_action_message(
     return 1;                     /* purecov: inspected */
   }
 
-  Group_member_info *primary_info = group_member_mgr->get_primary_member_info();
-  if (primary_info != nullptr) {
-    primary_uuid.assign(primary_info->get_uuid());
-    primary_gcs_id.assign(primary_info->get_gcs_member_id().get_member_id());
+  Group_member_info primary_info;
+  if (!group_member_mgr->get_primary_member_info(primary_info)) {
+    primary_uuid.assign(primary_info.get_uuid());
+    primary_gcs_id.assign(primary_info.get_gcs_member_id().get_member_id());
     is_primary = !primary_uuid.compare(local_member_info->get_uuid());
-    delete primary_info;
   }
 
   group_events_observation_manager->register_group_event_observer(this);

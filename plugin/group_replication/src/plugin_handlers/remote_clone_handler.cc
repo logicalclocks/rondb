@@ -1,14 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,6 +25,7 @@
 #include "plugin/group_replication/include/leave_group_on_failure.h"
 #include "plugin/group_replication/include/plugin.h"
 #include "plugin/group_replication/include/plugin_variables/recovery_endpoints.h"
+#include "string_with_len.h"
 
 void *Remote_clone_handler::launch_thread(void *arg) {
   Remote_clone_handler *thd = static_cast<Remote_clone_handler *>(arg);
@@ -159,12 +162,12 @@ int Remote_clone_handler::extract_donor_info(
   Group_member_info_list *all_members_info =
       group_member_mgr->get_all_members();
 
-  Sid_map local_sid_map(nullptr);
-  Sid_map group_sid_map(nullptr);
-  Gtid_set local_member_set(&local_sid_map, nullptr);
-  Gtid_set group_set(&group_sid_map, nullptr);
-  Sid_map purged_sid_map(nullptr);
-  Gtid_set purged_set(&purged_sid_map, nullptr);
+  Tsid_map local_tsid_map(nullptr);
+  Tsid_map group_tsid_map(nullptr);
+  Gtid_set local_member_set(&local_tsid_map, nullptr);
+  Gtid_set group_set(&group_tsid_map, nullptr);
+  Tsid_map purged_tsid_map(nullptr);
+  Gtid_set purged_set(&purged_tsid_map, nullptr);
 
   if (local_member_set.add_gtid_text(
           local_member_info->get_gtid_executed().c_str()) != RETURN_STATUS_OK ||
@@ -180,34 +183,28 @@ int Remote_clone_handler::extract_donor_info(
 
   for (Group_member_info *member : *all_members_info) {
     std::string m_uuid = member->get_uuid();
-    bool is_online =
+    const bool not_self = m_uuid.compare(local_member_info->get_uuid());
+    const bool is_online =
         member->get_recovery_status() == Group_member_info::MEMBER_ONLINE;
-    bool not_self = m_uuid.compare(local_member_info->get_uuid());
-    // We can only clone from our own version.
-    bool supports_clone =
-        member->get_member_version().get_version() >=
-            CLONE_GR_SUPPORT_VERSION &&
-        member->get_member_version().get_version() ==
-            local_member_info->get_member_version().get_version();
+    const bool valid_donor_version =
+        (member->get_member_version().get_version() >=
+         CLONE_GR_SUPPORT_VERSION);
 
     std::string member_exec_set_str = member->get_gtid_executed();
     std::string applier_ret_set_str = member->get_gtid_retrieved();
 
-    if (is_online) {
-      if (not_self) {
-        // Check if it support cloning looking at the server version
-        if (supports_clone) valid_clone_donors++;
+    if (is_online && not_self && valid_donor_version) {
+      valid_clone_donors++;
 
-        if (group_set.add_gtid_text(member_exec_set_str.c_str()) !=
-                RETURN_STATUS_OK ||
-            group_set.add_gtid_text(applier_ret_set_str.c_str()) !=
-                RETURN_STATUS_OK) {
-          /* purecov: begin inspected */
-          LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_LOCAL_GTID_SETS_PROCESS_ERROR);
-          error = 1;
-          goto cleaning;
-          /* purecov: end */
-        }
+      if (group_set.add_gtid_text(member_exec_set_str.c_str()) !=
+              RETURN_STATUS_OK ||
+          group_set.add_gtid_text(applier_ret_set_str.c_str()) !=
+              RETURN_STATUS_OK) {
+        /* purecov: begin inspected */
+        LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_LOCAL_GTID_SETS_PROCESS_ERROR);
+        error = 1;
+        goto cleaning;
+        /* purecov: end */
       }
     }
   }
@@ -233,7 +230,7 @@ int Remote_clone_handler::extract_donor_info(
 
     if (not_self) {
       if (is_online || is_recovering) {
-        purged_set.clear_set_and_sid_map();
+        purged_set.clear_set_and_tsid_map();
         if (purged_set.add_gtid_text(member_purged_set_str.c_str()) !=
             RETURN_STATUS_OK) {
           /* purecov: begin inspected */
@@ -351,16 +348,14 @@ void Remote_clone_handler::get_clone_donors(
 
   for (Group_member_info *member : *all_members_info) {
     std::string m_uuid = member->get_uuid();
-    bool is_online =
+    const bool not_self = m_uuid.compare(local_member_info->get_uuid());
+    const bool is_online =
         member->get_recovery_status() == Group_member_info::MEMBER_ONLINE;
-    bool not_self = m_uuid.compare(local_member_info->get_uuid());
-    bool supports_clone =
-        member->get_member_version().get_version() >=
-            CLONE_GR_SUPPORT_VERSION &&
-        member->get_member_version().get_version() ==
-            local_member_info->get_member_version().get_version();
+    const bool valid_donor_version =
+        (member->get_member_version().get_version() >=
+         CLONE_GR_SUPPORT_VERSION);
 
-    if (is_online && not_self && supports_clone) {
+    if (is_online && not_self && valid_donor_version) {
       suitable_donors.push_back(member);
     } else {
       delete member;

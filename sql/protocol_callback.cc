@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,13 +27,14 @@
 #include <stddef.h>
 #include <algorithm>
 
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
+#include "sql-common/my_decimal.h"
 #include "sql/current_thd.h"
+#include "sql/debug_sync.h"
 #include "sql/field.h"
 #include "sql/item.h"
 #include "sql/item_func.h"
-#include "sql/my_decimal.h"
 #include "sql/sql_class.h"
 #include "sql/sql_error.h"
 #include "sql/sql_lex.h"
@@ -276,8 +278,10 @@ int Protocol_callback::shutdown(bool server_shutdown) {
     false  disconnected
 */
 bool Protocol_callback::connection_alive() const {
-  if (callbacks.connection_alive)
+  if (callbacks.connection_alive) {
+    DEBUG_SYNC(current_thd, "wait_before_checking_alive");
     return callbacks.connection_alive(callbacks_ctx);
+  }
 
   return true;
 }
@@ -372,8 +376,8 @@ bool Protocol_callback::end_result_metadata() {
 
   if (callbacks.end_result_metadata) {
     THD *t = current_thd;
-    uint status = t->server_status;
-    uint warn_count = t->get_stmt_da()->current_statement_cond_count();
+    const uint status = t->server_status;
+    const uint warn_count = t->get_stmt_da()->current_statement_cond_count();
 
     return callbacks.end_result_metadata(callbacks_ctx, status, warn_count);
   }

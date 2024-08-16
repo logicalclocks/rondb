@@ -1,15 +1,16 @@
-/* Copyright (c) 2006, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2006, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,12 +30,12 @@
 #include <utility>
 
 #include "lex_string.h"
-#include "libbinlogevents/export/binary_log_funcs.h"
 #include "my_byteorder.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
+#include "mysql/binlog/event/export/binary_log_funcs.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/service_mysql_alloc.h"
 #include "sql/thr_malloc.h"
 
@@ -44,14 +45,15 @@ struct TYPELIB;
 
 #include <algorithm>
 
-#include "libbinlogevents/include/binlog_event.h"  // checksum_crv32
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_base.h"
 #include "my_bitmap.h"
+#include "mysql/binlog/event/binlog_event.h"  // checksum_crv32
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/psi/psi_memory.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
+#include "sql-common/my_decimal.h"
 #include "sql/changestreams/misc/replicated_columns_view_factory.h"  // get_columns_view
 #include "sql/create_field.h"
 #include "sql/dd/dd.h"          // get_dictionary
@@ -60,8 +62,7 @@ struct TYPELIB;
 #include "sql/field.h"          // Field
 #include "sql/log.h"
 #include "sql/log_event.h"  // Log_event
-#include "sql/my_decimal.h"
-#include "sql/mysqld.h"  // replica_type_conversions_options
+#include "sql/mysqld.h"     // replica_type_conversions_options
 #include "sql/psi_memory_key.h"
 #include "sql/rpl_replica.h"
 #include "sql/rpl_rli.h"    // Relay_log_info
@@ -77,7 +78,7 @@ struct TYPELIB;
 #include "template_utils.h"  // delete_container_pointers
 #include "typelib.h"
 
-using binary_log::checksum_crc32;
+using mysql::binlog::event::checksum_crc32;
 using std::max;
 using std::min;
 using std::unique_ptr;
@@ -686,7 +687,7 @@ TABLE *table_def::create_conversion_table(THD *thd, Relay_log_info *rli,
                                   unsigned_flag,  // unsigned_flag
                                   0);
     field_def->charset = default_charset_info;
-    field_def->interval = 0;
+    field_def->interval = nullptr;
   }
 
   for (auto it = fields->begin(); it.filtered_pos() < cols_to_create; ++it) {
@@ -1380,51 +1381,6 @@ bool is_require_row_format_violation(const THD *thd) {
   }
 
   return false;
-}
-
-// TODO: once the old syntax is removed, remove this as well.
-static const std::unordered_map<std::string, std::string> deprecated_field_map{
-    {"Replica_IO_State", "Slave_IO_State"},
-    {"Source_Host", "Master_Host"},
-    {"Source_User", "Master_User"},
-    {"Source_Port", "Master_Port"},
-    {"Source_Log_File", "Master_Log_File"},
-    {"Read_Source_Log_Pos", "Read_Master_Log_Pos"},
-    {"Relay_Source_Log_File", "Relay_Master_Log_File"},
-    {"Replica_IO_Running", "Slave_IO_Running"},
-    {"Replica_SQL_Running", "Slave_SQL_Running"},
-    {"Exec_Source_Log_Pos", "Exec_Master_Log_Pos"},
-    {"Source_SSL_Allowed", "Master_SSL_Allowed"},
-    {"Source_SSL_CA_File", "Master_SSL_CA_File"},
-    {"Source_SSL_CA_Path", "Master_SSL_CA_Path"},
-    {"Source_SSL_Cert", "Master_SSL_Cert"},
-    {"Source_SSL_Cipher", "Master_SSL_Cipher"},
-    {"Source_SSL_Key", "Master_SSL_Key"},
-    {"Seconds_Behind_Source", "Seconds_Behind_Master"},
-    {"Source_SSL_Verify_Server_Cert", "Master_SSL_Verify_Server_Cert"},
-    {"Source_Server_Id", "Master_Server_Id"},
-    {"Source_UUID", "Master_UUID"},
-    {"Source_Info_File", "Master_Info_File"},
-    {"Replica_SQL_Running_State", "Slave_SQL_Running_State"},
-    {"Source_Retry_Count", "Master_Retry_Count"},
-    {"Source_Bind", "Master_Bind"},
-    {"Source_SSL_Crl", "Master_SSL_Crl"},
-    {"Source_SSL_Crlpath", "Master_SSL_Crlpath"},
-    {"Source_TLS_Version", "Master_TLS_Version"},
-    {"Source_public_key_path", "Master_public_key_path"},
-    {"Get_Source_public_key", "Get_master_public_key"},
-    {"Server_Id", "Server_id"},
-    {"Source_Id", "Master_id"},
-    {"Replica_UUID", "Slave_UUID"}};
-
-void rename_fields_use_old_replica_source_terms(
-    THD *thd, mem_root_deque<Item *> &field_list) {
-  for (auto &item : field_list) {
-    std::string name{item->full_name()};
-    auto itr = deprecated_field_map.find(name);
-    if (itr != deprecated_field_map.end()) name = itr->second;
-    item->rename(thd->mem_strdup(name.c_str()));
-  }
 }
 
 bool is_immediate_server_gipk_ready(THD &thd) {

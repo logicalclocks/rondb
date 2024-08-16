@@ -32,24 +32,24 @@
 --echo # Bootstrap start GR on server1 (Primary). Start GR on server2 (Secondary).
 --echo #
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 --let $server1_uuid= `SELECT @@server_uuid`
 --source include/start_and_bootstrap_group_replication.inc
 
 --let $rpl_connection_name= server2
---source include/rpl_connection.inc
+--source include/connection.inc
 --source include/start_group_replication.inc
 
 # Make sure server1 is Primary
---let $assert_text= Verify group_replication_primary_member is SERVER_UUID
---let $assert_cond= "[SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME= \'group_replication_primary_member\', VARIABLE_VALUE, 1]" = "$server1_uuid"
+--let $assert_text= Verify server1 is primary
+--let $assert_cond= "[SELECT MEMBER_ID FROM performance_schema.replication_group_members WHERE MEMBER_ROLE=\'PRIMARY\', MEMBER_ID, 1]" = "$server1_uuid"
 --source include/assert.inc
 
 --echo #
 --echo # Create parent and child tables.
 --echo #
 --let $rpl_connection_name= server1
---source include/rpl_connection.inc
+--source include/connection.inc
 # Parent table
 CREATE TABLE tp1 (c1 char(50) NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 

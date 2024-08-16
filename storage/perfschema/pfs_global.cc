@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "my_inttypes.h"
 #include "my_sys.h"
 #include "sql/log.h"
 #include "storage/perfschema/pfs_builtin_memory.h"
@@ -72,15 +74,15 @@ void *pfs_malloc(PFS_builtin_memory_class *klass, size_t size, myf flags) {
 #ifdef HAVE_MEMALIGN
   /* Solaris */
   ptr = memalign(PFS_ALIGNEMENT, size);
-  if (unlikely(ptr == NULL)) {
-    return NULL;
+  if (unlikely(ptr == nullptr)) {
+    return nullptr;
   }
 #else
 #ifdef HAVE_ALIGNED_MALLOC
   /* Windows */
   ptr = _aligned_malloc(size, PFS_ALIGNEMENT);
-  if (unlikely(ptr == NULL)) {
-    return NULL;
+  if (unlikely(ptr == nullptr)) {
+    return nullptr;
   }
 #else
 #error "Missing implementation for PFS_ALIGNENT"
@@ -90,8 +92,8 @@ void *pfs_malloc(PFS_builtin_memory_class *klass, size_t size, myf flags) {
 #else  /* PFS_ALIGNMENT */
   /* Everything else */
   ptr = malloc(size);
-  if (unlikely(ptr == NULL)) {
-    return NULL;
+  if (unlikely(ptr == nullptr)) {
+    return nullptr;
   }
 #endif
 
@@ -136,7 +138,7 @@ void pfs_free(PFS_builtin_memory_class *klass, size_t size, void *ptr) {
   @param n     number of array elements
   @param size  element size
   @param flags malloc flags
-  @return pointer to memory on success, else NULL
+  @return pointer to memory on success, else nullptr
 */
 void *pfs_malloc_array(PFS_builtin_memory_class *klass, size_t n, size_t size,
                        myf flags) {
@@ -226,7 +228,7 @@ uint pfs_get_socket_address(char *host, uint host_len, uint *port,
       /* Older versions of Windows do not support inet_ntop() */
       getnameinfo(pointer_cast<struct sockaddr *>(
                       const_cast<struct sockaddr_in *>(sa4)),
-                  sizeof(struct sockaddr_in), host, host_len, NULL, 0,
+                  sizeof(struct sockaddr_in), host, host_len, nullptr, 0,
                   NI_NUMERICHOST);
 #else
       inet_ntop(AF_INET, &(sa4->sin_addr), host, INET_ADDRSTRLEN);
@@ -243,7 +245,7 @@ uint pfs_get_socket_address(char *host, uint host_len, uint *port,
       /* Older versions of Windows do not support inet_ntop() */
       getnameinfo(pointer_cast<struct sockaddr *>(
                       const_cast<struct sockaddr_in6 *>(sa6)),
-                  sizeof(struct sockaddr_in6), host, host_len, NULL, 0,
+                  sizeof(struct sockaddr_in6), host, host_len, nullptr, 0,
                   NI_NUMERICHOST);
 #else
       inet_ntop(AF_INET6, &(sa6->sin6_addr), host, INET6_ADDRSTRLEN);

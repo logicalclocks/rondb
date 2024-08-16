@@ -1,15 +1,16 @@
-/* Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,19 +24,19 @@
 #include "sql/event_data_objects.h"
 
 #include <string.h>
+#include <memory>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_sp.h"
 #include "mysql/psi/mysql_statement.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_time.h"
 #include "mysqld.h"
 #include "mysqld_error.h"
@@ -71,6 +72,8 @@
 // calc_time_diff.
 #include "sql/tztime.h"  // my_tz_find, my_tz_OFFSET0
 #include "sql_string.h"
+#include "storage/perfschema/terminology_use_previous_enum.h"
+#include "string_with_len.h"
 
 class Item;
 
@@ -134,7 +137,7 @@ class Event_creation_ctx : public Stored_program_creation_ctx {
     return nullptr;
   }
 
-  void delete_backup_ctx() override { destroy(this); }
+  void delete_backup_ctx() override { ::destroy_at(this); }
 
  private:
   Event_creation_ctx(const CHARSET_INFO *client_cs,
@@ -149,7 +152,7 @@ bool Event_creation_ctx::create_event_creation_ctx(
   const CHARSET_INFO *client_cs = nullptr;
   const CHARSET_INFO *connection_cl = nullptr;
   const CHARSET_INFO *db_cl = nullptr;
-  bool invalid_creation_ctx = false;
+  const bool invalid_creation_ctx = false;
   auto collation_info = [](uint id) { return get_charset(id, MYF(0)); };
 
   // Set collation or charset attribute of client, connection and database.
@@ -539,8 +542,8 @@ static bool get_next_time(const Time_zone *time_zone, my_time_t *next,
   if (seconds) {
     longlong seconds_diff;
     long microsec_diff;
-    bool negative = calc_time_diff(local_now, local_start, 1, &seconds_diff,
-                                   &microsec_diff);
+    const bool negative = calc_time_diff(local_now, local_start, 1,
+                                         &seconds_diff, &microsec_diff);
     if (!negative) {
       /*
         The formula below returns the interval that, when added to
@@ -615,8 +618,9 @@ static bool get_next_time(const Time_zone *time_zone, my_time_t *next,
       } while (next_time <= time_now);
     }
   } else {
-    long diff_months = ((long)local_now.year - (long)local_start.year) * 12 +
-                       ((long)local_now.month - (long)local_start.month);
+    const long diff_months =
+        ((long)local_now.year - (long)local_start.year) * 12 +
+        ((long)local_now.month - (long)local_start.month);
 
     /*
       Unlike for seconds above, the formula below returns the interval
@@ -935,9 +939,16 @@ int Event_timed::get_create_event(const THD *thd, String *buf) {
 
   if (m_status == Event_parse_data::ENABLED)
     buf->append(STRING_WITH_LEN("ENABLE"));
-  else if (m_status == Event_parse_data::SLAVESIDE_DISABLED)
-    buf->append(STRING_WITH_LEN("DISABLE ON SLAVE"));
-  else
+  else if (m_status == Event_parse_data::REPLICA_SIDE_DISABLED) {
+    if (thd->variables.terminology_use_previous !=
+            terminology_use_previous::enum_compatibility_version::NONE &&
+        thd->variables.terminology_use_previous <=
+            (ulong)terminology_use_previous::enum_compatibility_version::
+                BEFORE_8_2_0)
+      buf->append(STRING_WITH_LEN("DISABLE ON SLAVE"));
+    else
+      buf->append(STRING_WITH_LEN("DISABLE ON REPLICA"));
+  } else
     buf->append(STRING_WITH_LEN("DISABLE"));
 
   if (m_comment.length) {
@@ -1177,7 +1188,7 @@ end:
 
       // Prevent InnoDB from automatically committing the InnoDB transaction
       // after updating the data-dictionary table.
-      Disable_autocommit_guard autocommit_guard(thd);
+      const Disable_autocommit_guard autocommit_guard(thd);
 
       /*
         NOTE: even if we run in read-only mode, we should be able to lock
@@ -1191,7 +1202,7 @@ end:
       saved_master_access = thd->security_context()->master_access();
       thd->security_context()->set_master_access(saved_master_access |
                                                  SUPER_ACL);
-      bool save_tx_read_only = thd->tx_read_only;
+      const bool save_tx_read_only = thd->tx_read_only;
       thd->tx_read_only = false;
 
       ret = Events::drop_event(thd, m_schema_name, m_event_name, false);

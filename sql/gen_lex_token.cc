@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -234,11 +235,20 @@ struct range {
   int max_seen;
 };
 
-static_assert(YYUNDEF == 1150,
-              "YYUNDEF must be stable, because raw token numbers are used in "
-              "PFS digest calculations");
-range range_for_sql_yacc2{"sql/sql_yacc.yy (before YYUNDEF)", YYUNDEF,
-                          MY_MAX_TOKEN};
+/*
+  Newer Bison versions (e.g 3.7) will rename YYUNDEF to
+  MY_SQL_PARSER_UNDEF, older versions (e.g. 3.0) will not.
+ */
+#if !defined(MY_SQL_PARSER_UNDEF)
+#define MY_SQL_PARSER_UNDEF YYUNDEF
+#endif
+
+static_assert(
+    MY_SQL_PARSER_UNDEF == 1150,
+    "MY_SQL_PARSER_UNDEF must be stable, because raw token numbers are used in "
+    "PFS digest calculations");
+range range_for_sql_yacc2{"sql/sql_yacc.yy (before MY_SQL_PARSER_UNDEF)",
+                          MY_SQL_PARSER_UNDEF, MY_MAX_TOKEN};
 
 range range_for_digests{"digest specials", 1100, range_for_sql_yacc2.start - 1};
 
@@ -247,7 +257,7 @@ static_assert(MAX_EXECUTION_TIME_HINT == 1000,
 range range_for_sql_hints{"sql/sql_hints.yy", MAX_EXECUTION_TIME_HINT,
                           range_for_digests.start - 1};
 
-range range_for_sql_yacc1{"sql/sql_yacc.yy (after YYUNDEF)", 256,
+range range_for_sql_yacc1{"sql/sql_yacc.yy (after MY_SQL_PARSER_UNDEF)", 256,
                           range_for_sql_hints.start - 1};
 
 int tok_generic_value = 0;
@@ -317,7 +327,7 @@ static void compute_tokens() {
   */
   for (const SYMBOL &sym : symbols) {
     if ((sym.group & SG_MAIN_PARSER) != 0) {
-      if (sym.tok < YYUNDEF)
+      if (sym.tok < MY_SQL_PARSER_UNDEF)
         range_for_sql_yacc1.set_token(sym.tok, sym.name, __LINE__);
       else
         range_for_sql_yacc2.set_token(sym.tok, sym.name, __LINE__);

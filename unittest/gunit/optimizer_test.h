@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -79,7 +80,7 @@ inline void SetJoinConditions(const mem_root_deque<Table_ref *> &join_list);
 inline void DestroyFakeTables(
     const std::unordered_map<string, Fake_TABLE *> &fake_tables) {
   for (const auto &[name, table] : fake_tables) {
-    destroy(table);
+    ::destroy_at(table);
   }
 }
 
@@ -181,7 +182,7 @@ inline void ResolveQueryBlock(
     tl->table = fake_table;
     tl->set_tableno(num_tables++);
     tl->set_updatable();
-    tl->grant.privilege = ~0UL;
+    tl->grant.privilege = ~(Access_bitmask)0;
   }
 
   // Find all Item_field objects, and resolve them to fields in the fake tables.
@@ -190,14 +191,14 @@ inline void ResolveQueryBlock(
   // Also in any conditions and subqueries within the WHERE condition.
   if (query_block->where_cond() != nullptr) {
     WalkItem(query_block->where_cond(), enum_walk::POSTFIX, [&](Item *item) {
-      if (item->type() == Item::SUBSELECT_ITEM &&
-          down_cast<Item_subselect *>(item)->substype() ==
-              Item_subselect::IN_SUBS) {
+      if (item->type() == Item::SUBQUERY_ITEM &&
+          down_cast<Item_subselect *>(item)->subquery_type() ==
+              Item_subselect::IN_SUBQUERY) {
         Item_in_subselect *item_subselect =
             down_cast<Item_in_subselect *>(item);
         ResolveFieldToFakeTable(item_subselect->left_expr, *fake_tables);
         Query_block *child_query_block =
-            item_subselect->unit->first_query_block();
+            item_subselect->query_expr()->first_query_block();
         ResolveAllFieldsToFakeTable(child_query_block->m_table_nest,
                                     *fake_tables);
         if (child_query_block->where_cond() != nullptr) {
@@ -357,7 +358,7 @@ inline handlerton *OptimizerTestBase::EnableSecondaryEngine(
         MakeSecondaryEngineFlags(SecondaryEngineFlag::SUPPORTS_HASH_JOIN);
   }
   hton->secondary_engine_modify_access_path_cost = nullptr;
-
+  hton->secondary_engine_check_optimizer_request = nullptr;
   for (const auto &[name, table] : m_fake_tables) {
     table->file->ht = hton;
     static_cast<Fake_TABLE_SHARE *>(table->s)->set_secondary_engine(true);

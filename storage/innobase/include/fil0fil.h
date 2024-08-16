@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -44,7 +45,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #endif /* !UNIV_HOTBACKUP */
 #include "ut0new.h"
 
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/dd/object_id.h"
 
 #include <atomic>
@@ -139,6 +140,10 @@ enum class Fil_state {
   /** Space ID matches but the paths don't match. */
   MOVED,
 
+  /** Space ID and paths match but dd_table data dir flag doesn't
+  exist or tablespace is created outside default data dir */
+  MOVED_PREV_OR_HAS_DATADIR,
+
   /** Tablespace and/or filename was renamed. The DDL log will handle
   this case. */
   RENAMED
@@ -179,6 +184,8 @@ struct fil_node_t {
 
   /** whether the file actually is a raw device or disk partition */
   bool is_raw_disk;
+
+  bool is_offset_valid(os_offset_t byte_offset) const;
 
   /** size of the file in database pages (0 if not known yet);
   the possible last incomplete megabyte may be ignored
@@ -418,7 +425,33 @@ struct fil_space_t {
   /** true if the tablespace is marked for deletion. */
   std::atomic_bool m_deleted{};
 
+  /** true if bulk operation is in progress. */
+  std::atomic_bool m_is_bulk{false};
+
+  /** true if bulk operation is in progress. */
+  std::atomic<uint64_t> m_bulk_extend_size;
+
  public:
+  /** Begin bulk operation on the space.
+  @param[in] extend_size space extension size for bulk operation */
+  void begin_bulk_operation(uint64_t extend_size) {
+    m_is_bulk.store(true);
+    m_bulk_extend_size.store(extend_size);
+  }
+
+  /** End bulk operation on the space. */
+  void end_bulk_operation() { m_is_bulk.store(false); }
+
+  /** @return true, if bulk operation in progress. */
+  bool is_bulk_operation_in_progress() const { return m_is_bulk.load(); }
+
+  /** @return automatic extension size for space. */
+  uint64_t get_auto_extend_size();
+
+  /** @return true if added space should be initialized while extending space.
+   */
+  bool initialize_while_extending();
+
   /** true if we want to rename the .ibd file of tablespace and
   want to temporarily prevent other threads from opening the file that is being
   renamed.  */
@@ -668,6 +701,14 @@ class Fil_path {
   @param[in]  other  directory path to compare to
   @return true if this path is the same as the other path */
   [[nodiscard]] bool is_same_as(const std::string &other) const;
+
+  /** Get the absolute directory of this path */
+  [[nodiscard]] Fil_path get_abs_directory() const;
+
+  /** Check if the directory to path is same as directory as the other path.
+  @param[in]  other  directory path to compare to
+  @return true if this path directory is the same as the other path directory */
+  [[nodiscard]] bool is_dir_same_as(const Fil_path &other) const;
 
   /** Check if two path strings are equal. Put them into Fil_path objects
   so that they can be compared correctly.
@@ -1291,12 +1332,20 @@ inline bool fil_page_type_is_index(page_type_t page_type) {
          page_type == FIL_PAGE_RTREE;
 }
 
-page_type_t fil_page_get_type(const byte *page);
+/** Get the file page type.
+@param[in]    page    File page
+@return page type */
+inline page_type_t fil_page_get_type(const byte *page) {
+  return (static_cast<page_type_t>(mach_read_from_2(page + FIL_PAGE_TYPE)));
+}
 
 /** Check whether the page is index page (either regular Btree index or Rtree
-index */
+index.
+@param[in]  page  page frame whose page type is to be checked. */
 inline bool fil_page_index_page_check(const byte *page) {
-  return fil_page_type_is_index(fil_page_get_type(page));
+  const page_type_t type = fil_page_get_type(page);
+  const bool is_idx = fil_page_type_is_index(type);
+  return is_idx;
 }
 
 /** @} */
@@ -1788,12 +1837,34 @@ Any other pages were written with uninitialized bytes in FIL_PAGE_TYPE.
 void fil_page_reset_type(const page_id_t &page_id, byte *page, ulint type,
                          mtr_t *mtr);
 
-/** Get the file page type.
-@param[in]      page            File page
-@return page type */
-inline page_type_t fil_page_get_type(const byte *page) {
-  return (static_cast<page_type_t>(mach_read_from_2(page + FIL_PAGE_TYPE)));
+/** Check (and if needed, reset) the page type.
+Data files created before MySQL 5.1 may contain
+garbage in the FIL_PAGE_TYPE field.
+In MySQL 3.23.53, only undo log pages and index pages were tagged.
+Any other pages were written with uninitialized bytes in FIL_PAGE_TYPE.
+@param[in]      page_id         Page number
+@param[in,out]  page            Page with possibly invalid FIL_PAGE_TYPE
+@param[in]      type            Expected page type
+@param[in,out]  mtr             Mini-transaction */
+inline void fil_page_check_type(const page_id_t &page_id, byte *page,
+                                ulint type, mtr_t *mtr) {
+  ulint page_type = fil_page_get_type(page);
+
+  if (page_type != type) {
+    fil_page_reset_type(page_id, page, type, mtr);
+  }
 }
+
+/** Check (and if needed, reset) the page type.
+Data files created before MySQL 5.1 may contain
+garbage in the FIL_PAGE_TYPE field.
+In MySQL 3.23.53, only undo log pages and index pages were tagged.
+Any other pages were written with uninitialized bytes in FIL_PAGE_TYPE.
+@param[in,out]  block           Block with possibly invalid FIL_PAGE_TYPE
+@param[in]      type            Expected page type
+@param[in,out]  mtr             Mini-transaction */
+#define fil_block_check_type(block, type, mtr) \
+  fil_page_check_type(block->page.id, block->frame, type, mtr)
 
 #ifdef UNIV_DEBUG
 /** Increase redo skipped count for a tablespace.
@@ -1990,13 +2061,13 @@ inline void fil_space_open_if_needed(fil_space_t *space) {
   }
 }
 
-#if !defined(NO_FALLOCATE) && defined(UNIV_LINUX)
+#ifdef UNIV_LINUX
 /**
 Try and enable FusionIO atomic writes.
 @param[in] file         OS file handle
 @return true if successful */
 [[nodiscard]] bool fil_fusionio_enable_atomic_write(pfs_os_file_t file);
-#endif /* !NO_FALLOCATE && UNIV_LINUX */
+#endif /* UNIV_LINUX */
 
 /** Note that the file system where the file resides doesn't support PUNCH HOLE.
 Called from AIO handlers when IO returns DB_IO_NO_PUNCH_HOLE
@@ -2020,10 +2091,11 @@ inline fil_space_t *fil_space_get_sys_space() {
 @param[in]      parse_only      Don't apply, parse only
 @return pointer to next redo log record
 @retval nullptr if this log record was truncated */
-[[nodiscard]] byte *fil_tablespace_redo_create(byte *ptr, const byte *end,
-                                               const page_id_t &page_id,
-                                               ulint parsed_bytes,
-                                               bool parse_only);
+[[nodiscard]] const byte *fil_tablespace_redo_create(const byte *ptr,
+                                                     const byte *end,
+                                                     const page_id_t &page_id,
+                                                     ulint parsed_bytes,
+                                                     bool parse_only);
 
 /** Redo a tablespace delete.
 @param[in]      ptr             redo log record
@@ -2033,10 +2105,11 @@ inline fil_space_t *fil_space_get_sys_space() {
 @param[in]      parse_only      Don't apply, parse only
 @return pointer to next redo log record
 @retval nullptr if this log record was truncated */
-[[nodiscard]] byte *fil_tablespace_redo_delete(byte *ptr, const byte *end,
-                                               const page_id_t &page_id,
-                                               ulint parsed_bytes,
-                                               bool parse_only);
+[[nodiscard]] const byte *fil_tablespace_redo_delete(const byte *ptr,
+                                                     const byte *end,
+                                                     const page_id_t &page_id,
+                                                     ulint parsed_bytes,
+                                                     bool parse_only);
 
 /** Redo a tablespace rename.
 This function doesn't do anything, simply parses the redo log record.
@@ -2047,10 +2120,11 @@ This function doesn't do anything, simply parses the redo log record.
 @param[in]      parse_only      Don't apply, parse only
 @return pointer to next redo log record
 @retval nullptr if this log record was truncated */
-[[nodiscard]] byte *fil_tablespace_redo_rename(byte *ptr, const byte *end,
-                                               const page_id_t &page_id,
-                                               ulint parsed_bytes,
-                                               bool parse_only);
+[[nodiscard]] const byte *fil_tablespace_redo_rename(const byte *ptr,
+                                                     const byte *end,
+                                                     const page_id_t &page_id,
+                                                     ulint parsed_bytes,
+                                                     bool parse_only);
 
 /** Redo a tablespace extend
 @param[in]      ptr             redo log record
@@ -2060,10 +2134,11 @@ This function doesn't do anything, simply parses the redo log record.
 @param[in]      parse_only      Don't apply the log if true
 @return pointer to next redo log record
 @retval nullptr if this log record was truncated */
-[[nodiscard]] byte *fil_tablespace_redo_extend(byte *ptr, const byte *end,
-                                               const page_id_t &page_id,
-                                               ulint parsed_bytes,
-                                               bool parse_only);
+[[nodiscard]] const byte *fil_tablespace_redo_extend(const byte *ptr,
+                                                     const byte *end,
+                                                     const page_id_t &page_id,
+                                                     ulint parsed_bytes,
+                                                     bool parse_only);
 
 /** Parse and process an encryption redo record.
 @param[in]      ptr             redo log record
@@ -2071,9 +2146,10 @@ This function doesn't do anything, simply parses the redo log record.
 @param[in]      space_id        the tablespace ID
 @param[in]      lsn             lsn for REDO record
 @return log record end, nullptr if not a complete record */
-[[nodiscard]] byte *fil_tablespace_redo_encryption(byte *ptr, const byte *end,
-                                                   space_id_t space_id,
-                                                   lsn_t lsn);
+[[nodiscard]] const byte *fil_tablespace_redo_encryption(const byte *ptr,
+                                                         const byte *end,
+                                                         space_id_t space_id,
+                                                         lsn_t lsn);
 
 /** Read the tablespace id to path mapping from the file
 @param[in]      recovery        true if called from crash recovery */
@@ -2097,23 +2173,26 @@ bool fil_update_partition_name(space_id_t space_id, uint32_t fsp_flags,
                                std::string &dd_path);
 
 /** Add tablespace to the set of tablespaces to be updated in DD.
-@param[in]      dd_object_id    Server DD tablespace ID
-@param[in]      space_id        Innodb tablespace ID
-@param[in]      space_name      New tablespace name
-@param[in]      old_path        Old Path in the data dictionary
-@param[in]      new_path        New path to be update in dictionary */
+@param[in]    dd_object_id                   Server DD tablespace ID
+@param[in]    space_id                       InnoDB tablespace ID
+@param[in]    space_name                     Tablespace name
+@param[in]    old_path                       Old Path in the data dictionary
+@param[in]    new_path                       New path to be update in dictionary
+@param[in]    moved_prev_or_has_datadir      The move has happened before
+                                             8.0.38/8.4.1/9.0.0 or table is
+                                             created with data dir clause.*/
 void fil_add_moved_space(dd::Object_id dd_object_id, space_id_t space_id,
                          const char *space_name, const std::string &old_path,
-                         const std::string &new_path);
-
+                         const std::string &new_path,
+                         bool moved_prev_or_has_datadir);
 /** Lookup the tablespace ID and return the path to the file. The filename
 is ignored when testing for equality. Only the path up to the file name is
 considered for matching: e.g. ./test/a.ibd == ./test/b.ibd.
-@param[in]  space_id      tablespace ID to lookup
-@param[in]  space_name    tablespace name
-@param[in]  fsp_flags     tablespace flags
-@param[in]  old_path      the path found in dd:Tablespace_files
-@param[out] new_path      the scanned path for this space_id
+@param[in]  space_id                tablespace ID to lookup
+@param[in]  space_name              tablespace name
+@param[in]  fsp_flags               tablespace flags
+@param[in]  old_path                the path found in dd:Tablespace_files
+@param[out] new_path                the scanned path for this space_id
 @return status of the match. */
 [[nodiscard]] Fil_state fil_tablespace_path_equals(space_id_t space_id,
                                                    const char *space_name,
@@ -2237,4 +2316,16 @@ size_t fil_count_undo_deleted(space_id_t undo_num);
 @param[in]  type  the page type to be checked for validity.
 @return true if it is valid page type, false otherwise. */
 [[nodiscard]] bool fil_is_page_type_valid(page_type_t type) noexcept;
+
+dberr_t fil_prepare_file_for_io(space_id_t space_id, page_no_t &page_no,
+                                fil_node_t **node_out);
+void fil_complete_write(space_id_t space_id, fil_node_t *node);
+
+inline bool fil_node_t::is_offset_valid(os_offset_t byte_offset) const {
+  const page_size_t page_size(space->flags);
+  const os_offset_t max_offset = size * page_size.physical();
+  ut_ad(byte_offset < max_offset);
+  return byte_offset < max_offset;
+}
+
 #endif /* fil0fil_h */

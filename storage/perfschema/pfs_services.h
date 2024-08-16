@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,13 +27,17 @@
 #include "mysql/components/services/registry.h"
 
 // pfs services
+#include <mysql/components/services/mysql_server_telemetry_metrics_service.h>
 #include <mysql/components/services/mysql_server_telemetry_traces_service.h>
+#include <mysql/components/services/pfs_notification.h>
+#include <mysql/components/services/pfs_resource_group.h>
 #include <mysql/components/services/psi_cond_service.h>
 #include <mysql/components/services/psi_error_service.h>
 #include <mysql/components/services/psi_file_service.h>
 #include <mysql/components/services/psi_idle_service.h>
 #include <mysql/components/services/psi_mdl_service.h>
 #include <mysql/components/services/psi_memory_service.h>
+#include <mysql/components/services/psi_metric_service.h>
 #include <mysql/components/services/psi_mutex_service.h>
 #include <mysql/components/services/psi_rwlock_service.h>
 #include <mysql/components/services/psi_socket_service.h>
@@ -43,9 +48,6 @@
 #include <mysql/components/services/psi_thread_service.h>
 #include <mysql/components/services/psi_tls_channel_service.h>
 #include <mysql/components/services/psi_transaction_service.h>
-
-bool pfs_init_services(SERVICE_TYPE(registry_registration) * reg);
-bool pfs_deinit_services(SERVICE_TYPE(registry_registration) * reg);
 
 extern SERVICE_TYPE(psi_cond_v1)
     SERVICE_IMPLEMENTATION(performance_schema, psi_cond_v1);
@@ -61,6 +63,8 @@ extern SERVICE_TYPE(psi_mdl_v2)
     SERVICE_IMPLEMENTATION(performance_schema, psi_mdl_v2);
 extern SERVICE_TYPE(psi_memory_v2)
     SERVICE_IMPLEMENTATION(performance_schema, psi_memory_v2);
+extern SERVICE_TYPE(psi_metric_v1)
+    SERVICE_IMPLEMENTATION(performance_schema, psi_metric_v1);
 extern SERVICE_TYPE(psi_mutex_v1)
     SERVICE_IMPLEMENTATION(performance_schema, psi_mutex_v1);
 extern SERVICE_TYPE(psi_rwlock_v2)
@@ -88,5 +92,12 @@ extern SERVICE_TYPE(psi_tls_channel_v1)
 extern SERVICE_TYPE(mysql_server_telemetry_traces_v1)
     SERVICE_IMPLEMENTATION(performance_schema,
                            mysql_server_telemetry_traces_v1);
+extern SERVICE_TYPE(mysql_server_telemetry_metrics_v1)
+    SERVICE_IMPLEMENTATION(performance_schema,
+                           mysql_server_telemetry_metrics_v1);
+extern SERVICE_TYPE(pfs_notification_v3)
+    SERVICE_IMPLEMENTATION(mysql_server, pfs_notification_v3);
+extern SERVICE_TYPE(pfs_resource_group_v3)
+    SERVICE_IMPLEMENTATION(mysql_server, pfs_resource_group_v3);
 
 #endif /* PFS_SERVICES_H */

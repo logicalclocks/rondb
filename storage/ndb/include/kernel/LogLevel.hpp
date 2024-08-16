@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,38 +26,37 @@
 #ifndef _LOG_LEVEL_HPP
 #define _LOG_LEVEL_HPP
 
-#include <ndb_global.h>
 #include <mgmapi_config_parameters.h>
+#include <ndb_global.h>
 
 #define JAM_FILE_ID 3
 
-
 /**
- * 
+ *
  */
 class LogLevel {
   friend class Config;
-public:
+
+ public:
   /**
    * Constructor
    */
   LogLevel();
-  
+
   /**
    * Howto add a new event category:
    * 1. Add the new event category to EventCategory below
-   * 2. Update #define _LOGLEVEL_CATEGORIES (found below) with the number of 
-   *    items in EventCategory 
+   * 2. Update #define _LOGLEVEL_CATEGORIES (found below) with the number of
+   *    items in EventCategory
    * 3. Update LogLevelCategoryName in LogLevel.cpp
    * 4. Add the event in EventLogger
    */
 
-
   /**
    * Copy operator
    */
-  LogLevel & operator= (const LogLevel &) = default;
-  LogLevel(const LogLevel&) = default;
+  LogLevel &operator=(const LogLevel &) = default;
+  LogLevel(const LogLevel &) = default;
 
   enum EventCategory {
     llInvalid = -1,
@@ -70,9 +70,9 @@ public:
     llWarning = CFG_LOGLEVEL_WARNING - CFG_MIN_LOGLEVEL,
     llError = CFG_LOGLEVEL_ERROR - CFG_MIN_LOGLEVEL,
     llCongestion = CFG_LOGLEVEL_CONGESTION - CFG_MIN_LOGLEVEL,
-    llDebug = CFG_LOGLEVEL_DEBUG - CFG_MIN_LOGLEVEL
-    ,llBackup = CFG_LOGLEVEL_BACKUP - CFG_MIN_LOGLEVEL
-    ,llSchema = CFG_LOGLEVEL_SCHEMA - CFG_MIN_LOGLEVEL
+    llDebug = CFG_LOGLEVEL_DEBUG - CFG_MIN_LOGLEVEL,
+    llBackup = CFG_LOGLEVEL_BACKUP - CFG_MIN_LOGLEVEL,
+    llSchema = CFG_LOGLEVEL_SCHEMA - CFG_MIN_LOGLEVEL
   };
 
   /**
@@ -80,77 +80,64 @@ public:
    */
 #define _LOGLEVEL_CATEGORIES (CFG_MAX_LOGLEVEL - CFG_MIN_LOGLEVEL + 1)
   static constexpr Uint32 LOGLEVEL_CATEGORIES = _LOGLEVEL_CATEGORIES;
-  
+
   void clear();
-  
+
   /**
    * Note level is valid as 0-15
    */
   int setLogLevel(EventCategory ec, Uint32 level = 7);
-  
+
   /**
    * Get the loglevel (0-15) for a category
    */
   Uint32 getLogLevel(EventCategory ec) const;
-  
+
   /**
    * Set this= max(this, ll) per category
    */
-  LogLevel& set_max(const LogLevel& ll);
-  
-  bool operator==(const LogLevel& l) const { 
-    return memcmp(this, &l, sizeof(* this)) == 0;
+  LogLevel &set_max(const LogLevel &ll);
+
+  bool operator==(const LogLevel &l) const {
+    return memcmp(this, &l, sizeof(*this)) == 0;
   }
 
-private:
+ private:
   /**
    * The actual data
    */
   Uint8 logLevelData[LOGLEVEL_CATEGORIES];
 };
 
-inline
-LogLevel::LogLevel(){
-  clear();
-}
+inline LogLevel::LogLevel() { clear(); }
 
-inline
-void
-LogLevel::clear(){
-  for(Uint32 i = 0; i<LOGLEVEL_CATEGORIES; i++){
+inline void LogLevel::clear() {
+  for (Uint32 i = 0; i < LOGLEVEL_CATEGORIES; i++) {
     logLevelData[i] = 0;
   }
 }
 
-inline
-int
-LogLevel::setLogLevel(EventCategory ec, Uint32 level){
-  if (ec >= 0 && (Uint32) ec < LOGLEVEL_CATEGORIES)
-  {
+inline int LogLevel::setLogLevel(EventCategory ec, Uint32 level) {
+  if (ec >= 0 && (Uint32)ec < LOGLEVEL_CATEGORIES) {
     logLevelData[ec] = (Uint8)level;
     return 0;
   }
   return 1;
 }
 
-inline
-Uint32
-LogLevel::getLogLevel(EventCategory ec) const{
-  assert(ec >= 0 && (Uint32) ec < LOGLEVEL_CATEGORIES);
+inline Uint32 LogLevel::getLogLevel(EventCategory ec) const {
+  assert(ec >= 0 && (Uint32)ec < LOGLEVEL_CATEGORIES);
 
   return (Uint32)logLevelData[ec];
 }
 
-inline
-LogLevel & 
-LogLevel::set_max(const LogLevel & org){
-  for(Uint32 i = 0; i<LOGLEVEL_CATEGORIES; i++){
-    if(logLevelData[i] < org.logLevelData[i])
+inline LogLevel &LogLevel::set_max(const LogLevel &org) {
+  for (Uint32 i = 0; i < LOGLEVEL_CATEGORIES; i++) {
+    if (logLevelData[i] < org.logLevelData[i])
       logLevelData[i] = org.logLevelData[i];
   }
-  return * this;
+  return *this;
 }
-
 
 #undef JAM_FILE_ID
 

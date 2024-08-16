@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,39 +26,40 @@
 #ifndef DIHADDFRAG_HPP
 #define DIHADDFRAG_HPP
 
-#include <NodeBitmask.hpp>
 #include <ndb_limits.h>
+#include <NodeBitmask.hpp>
 
 #define JAM_FILE_ID 37
 
-
 /**
- * 
+ *
  */
 class DihAddFragConf {
   /**
    * Sender(s) / Reciver(s)
    */
   friend class Dbdih;
-    
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 2;
-private:  
+
+ private:
   Uint32 senderNodeId;
   Uint32 tableId;
 };
 /**
- * 
+ *
  */
 class DihAddFragReq {
   /**
    * Sender(s) / Reciver(s)
    */
   friend class Dbdih;
-    
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 10 + MAX_REPLICAS;
-private:
+
+ private:
   Uint32 masterRef;
   Uint32 tableId;
   Uint32 fragId;

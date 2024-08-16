@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -124,25 +125,14 @@ class Compatibility_module {
       const std::set<Member_version> &all_members_versions);
 
   /**
-    Checks if the provided versions are 8.0.35 or a higher 8.0 patch version.
+    Checks if the provided versions belong to the same LTS version
     @param all_members_versions  The versions
 
-    @return
-      @retval true   All versions are 8.0.35 or a higher 8.0 patch version
+      @retval true   All versions belong to the same LTS version
       @retval false  Otherwise
   */
-  static bool are_all_versions_8_0_lts(
+  static bool do_all_versions_belong_to_the_same_lts(
       const std::set<Member_version> &all_members_versions);
-
-  /**
-    Checks if the version is 8.0.35 or a higher 8.0 patch version.
-    @param version  A server version
-
-    @return
-      @retval true   The version is 8.0.35 or a higher 8.0 patch version
-      @retval false  Otherwise
-  */
-  static bool is_version_8_0_lts(const Member_version &version);
 
   virtual ~Compatibility_module();
 
@@ -155,6 +145,15 @@ class Compatibility_module {
   */
   std::multimap<unsigned int, std::pair<unsigned int, unsigned int>>
       incompatibilities;
+
+  /**
+    Checks if the version is 8.4.X.
+    @param version  A server version
+
+      @retval true   The version is 8.4.X
+      @retval false  Otherwise
+  */
+  static bool is_version_8_4_lts(const Member_version &version);
 };
 
 #endif /* COMPATIBILITY_MODULE_INCLUDED */

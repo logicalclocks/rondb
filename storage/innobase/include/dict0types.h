@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2023, Oracle and/or its affiliates.
+Copyright (c) 1996, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -50,6 +51,14 @@ struct dict_v_col_t;
 struct ind_node_t;
 struct tab_node_t;
 struct dict_add_v_col_t;
+
+struct table_name_components {
+  std::string schema_name;
+  std::string table_name;
+  std::string partition;
+  std::string subpartition;
+  std::string directory;
+};
 
 namespace dd {
 class Partition;
@@ -151,6 +160,12 @@ void get_table(const std::string &dict_name, bool convert, std::string &schema,
 @param[out]     table           table name */
 void get_table(const std::string &dict_name, std::string &schema,
                std::string &table);
+
+/** Get schema, table name, partition, subpartition and absolute directory
+from dictionary from filepath.
+@param[in]      path            path where the ibd file is located
+@return table_name_components struct with parsed out parts of the table name */
+std::optional<table_name_components> parse_tablespace_path(std::string path);
 
 /** Get partition and sub-partition name from partition string
 @param[in]      partition       partition string from dictionary table name

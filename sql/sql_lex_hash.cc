@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -86,18 +87,18 @@ const SYMBOL *Lex_hash::get_hash_symbol(const char *s, unsigned int len) const {
   uint32 cur_struct = uint4korr(hash_map + ((len - 1) * 4));
 
   for (;;) {
-    uchar first_char = (uchar)cur_struct;
+    const uchar first_char = (uchar)cur_struct;
 
     if (first_char == 0) {
-      uint16 ires = (uint16)(cur_struct >> 16);
+      const uint16 ires = (uint16)(cur_struct >> 16);
       if (ires == array_elements(symbols)) return nullptr;
       const SYMBOL *res = symbols + ires;
-      uint count = (uint)(cur_str - s);
+      const uint count = (uint)(cur_str - s);
       return lex_casecmp(cur_str, res->name + count, len - count) ? nullptr
                                                                   : res;
     }
 
-    uchar cur_char = (uchar)to_upper_lex[(uchar)*cur_str];
+    const uchar cur_char = (uchar)to_upper_lex[(uchar)*cur_str];
     if (cur_char < first_char) return nullptr;
     cur_struct >>= 8;
     if (cur_char > (uchar)cur_struct) return nullptr;

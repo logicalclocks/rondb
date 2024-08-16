@@ -1,18 +1,19 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2023, Oracle and/or its affiliates.
+Copyright (c) 1996, 2024, Oracle and/or its affiliates.
 Copyright (c) 2012, Facebook Inc.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -480,8 +481,8 @@ struct dict_col_default_t {
   /** Length of default value */
   size_t len;
 
-  bool operator==(const dict_col_default_t &other);
-  bool operator!=(const dict_col_default_t &other);
+  bool operator==(const dict_col_default_t &other) const;
+  bool operator!=(const dict_col_default_t &other) const;
 };
 
 /** Data structure for a column in a table */
@@ -1597,7 +1598,7 @@ struct dict_index_t {
 
   /** Check if the underlying table is compressed.
   @return true if compressed, false otherwise. */
-  bool is_compressed() const;
+  inline bool is_compressed() const;
 
   /** Check if a multi-value index is built on specified multi-value
   virtual column. Please note that there could be only one multi-value
@@ -1910,6 +1911,12 @@ struct dict_table_t {
   @return true if compressed, false otherwise. */
   bool is_compressed() const { return (DICT_TF_GET_ZIP_SSIZE(flags) != 0); }
 
+  /** Check if the table is encrypted.  Only for file per table tablespace.
+  @return true if encrypted, false otherwise. */
+  bool is_encrypted() const {
+    return (flags2 & DICT_TF2_ENCRYPTION_FILE_PER_TABLE);
+  }
+
   /** Get reference count.
   @return current value of n_ref_count */
   inline uint64_t get_ref_count() const;
@@ -2112,6 +2119,8 @@ struct dict_table_t {
 
   /** List of indexes of the table. */
   UT_LIST_BASE_NODE_T(dict_index_t, indexes) indexes;
+
+  size_t get_index_count() const { return UT_LIST_GET_LEN(indexes); }
 
   /** Node of the LRU list of tables. */
   UT_LIST_NODE_T(dict_table_t) table_LRU;
@@ -2450,6 +2459,10 @@ detect this and will eventually quit sooner. */
   during table creation */
   bool explicitly_non_lru;
 
+  /** Check if the table has user defined primary key (PK).
+  @return true if table has user defined PK, false otherwise. */
+  bool has_pk() const;
+
   /** @return the clustered index */
   const dict_index_t *first_index() const {
     ut_ad(magic_n == DICT_TABLE_MAGIC_N);
@@ -2710,9 +2723,7 @@ static inline void DICT_TF2_FLAG_UNSET(dict_table_t *table, uint32_t flag) {
   table->flags2 &= ~flag;
 }
 
-inline bool dict_index_t::is_compressed() const {
-  return (table->is_compressed());
-}
+bool dict_index_t::is_compressed() const { return (table->is_compressed()); }
 
 /** Persistent dynamic metadata type, there should be 1 to 1
 relationship between the metadata and the type. Please keep them in order

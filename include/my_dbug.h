@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -161,22 +162,22 @@ class AutoDebugTrace {
     _db_return_(__LINE__, &_db_stack_frame_); \
     return;                                   \
   } while (0)
-#define DBUG_EXECUTE(keyword, a1)        \
-  do {                                   \
-    if (_db_keyword_(0, (keyword), 0)) { \
-      a1                                 \
-    }                                    \
+#define DBUG_EXECUTE(keyword, a1)              \
+  do {                                         \
+    if (_db_keyword_(nullptr, (keyword), 0)) { \
+      a1                                       \
+    }                                          \
   } while (0)
-#define DBUG_EXECUTE_IF(keyword, a1)     \
-  do {                                   \
-    if (_db_keyword_(0, (keyword), 1)) { \
-      a1                                 \
-    }                                    \
+#define DBUG_EXECUTE_IF(keyword, a1)           \
+  do {                                         \
+    if (_db_keyword_(nullptr, (keyword), 1)) { \
+      a1                                       \
+    }                                          \
   } while (0)
 #define DBUG_EVALUATE(keyword, a1, a2) \
-  (_db_keyword_(0, (keyword), 0) ? (a1) : (a2))
+  (_db_keyword_(nullptr, (keyword), 0) ? (a1) : (a2))
 #define DBUG_EVALUATE_IF(keyword, a1, a2) \
-  (_db_keyword_(0, (keyword), 1) ? (a1) : (a2))
+  (_db_keyword_(nullptr, (keyword), 1) ? (a1) : (a2))
 #define DBUG_PRINT(keyword, arglist) \
   do {                               \
     _db_pargs_(__LINE__, keyword);   \
@@ -195,7 +196,7 @@ class AutoDebugTrace {
 #define DBUG_END() _db_end_()
 #define DBUG_LOCK_FILE _db_lock_file_()
 #define DBUG_UNLOCK_FILE _db_unlock_file_()
-#define DBUG_EXPLAIN(buf, len) _db_explain_(0, (buf), (len))
+#define DBUG_EXPLAIN(buf, len) _db_explain_(nullptr, (buf), (len))
 #define DBUG_EXPLAIN_INITIAL(buf, len) _db_explain_init_((buf), (len))
 #ifndef _WIN32
 #define DBUG_ABORT() (_db_flush_(), my_abort())

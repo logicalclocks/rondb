@@ -39,9 +39,18 @@
 call mtr.add_suppression("Failed to set up SSL because of the following SSL library error");
 call mtr.add_suppression("\\[Warning\\] .*MY-\\d+.* Changing innodb_extend_and_initialize not supported on this platform.");
 call mtr.add_suppression("Failed to initialize TLS for channel: mysql_main");
+call mtr.add_suppression("CA certificate/certficates is invalid. Please check logs for more details.");
+call mtr.add_suppression("Failed to validate certificate .*");
+call mtr.add_suppression("Server certificate .* verification has failed. Check logs for more details");
+call mtr.add_suppression("Failed to set up TLS. Check logs for details");
+call mtr.add_suppression("Internal TLS error error.*");
 
-let $total_global_vars=`SELECT COUNT(*) FROM performance_schema.global_variables where variable_name NOT LIKE 'ndb_%' AND variable_name NOT LIKE 'debug_%'`;
-let $total_persistent_vars=448;
+let $total_global_vars=`SELECT COUNT(*)
+   FROM performance_schema.global_variables
+   WHERE variable_name NOT LIKE 'ndb_%'
+   AND variable_name NOT LIKE 'debug_%'
+   AND variable_name NOT LIKE '%telemetry%'`;
+let $total_persistent_vars=441;
 
 --echo ***************************************************************
 --echo * 0. Verify that variables present in performance_schema.global
@@ -60,7 +69,7 @@ CREATE TABLE global_vars (id INT PRIMARY KEY AUTO_INCREMENT, var_name VARCHAR(64
 # ERROR 1231 (42000): Variable 'innodb_monitor_reset' can't be set to the value of 'NULL'
 # -> SET GLOBAL innodb_monitor_reset_all = @@global.innodb_monitor_reset_all;
 # ERROR 1231 (42000): Variable 'innodb_monitor_reset_all' can't be set to the value of 'NULL'
-
+#
 # Bug#27534122 - RBR_EXEC_MODE DOES NOT SUPPORT GLOBAL SCOPE
 INSERT INTO global_vars (var_name, var_value) SELECT * FROM
 performance_schema.global_variables WHERE variable_name NOT IN
@@ -122,11 +131,12 @@ WHERE variable_name NOT IN
 ('rbr_exec_mode')
 AND variable_name NOT LIKE 'ndb_%'
 AND variable_name NOT LIKE 'debug_%'
+AND variable_name NOT LIKE '%telemetry%'
 ORDER BY variable_name;
 
 --let $count_vars= `SELECT COUNT(*) FROM all_vars;`
 --echo
---let $assert_text= Expect 500+ variables in the table. Due to open Bugs, we are checking for fewer 
+--let $assert_text= Expect 500+ variables in the table. Due to open Bugs, we are checking for fewer
 --let $assert_cond= [SELECT COUNT(*) as count FROM all_vars, count, 1] = $expected_var_count
 --source include/assert.inc
 
@@ -170,12 +180,16 @@ SET PERSIST innodb_monitor_reset_all="latch";
 --let $assert_cond= [SELECT COUNT(*) as count FROM performance_schema.persisted_variables, count, 1] = $total_persistent_vars
 --source include/assert.inc
 
+# The fix for the Bug #35529604 declares the character_set_server variable as PERSIST_AS_READONLY. Because of this, the said variable is
+# persisted as "mysql_static_variables" and during the start up of the server, the source is not updated properly. So, for the assert
+# conditions below, the count is reduced by 1 because the character_set_server variable has VARIABLE_SOURCE=COMPILED.
+# There is a bug filed (Bug #36221843) to migrate all the options from my_long_options[] to Sys_vars. Fixing this bug would fix this.
 --let $assert_text= Expect $total_persistent_vars persisted variables shown as PERSISTED in variables_info table.
---let $assert_cond= [SELECT COUNT(*) as count FROM performance_schema.variables_info WHERE variable_source="PERSISTED", count, 1] = $total_persistent_vars
+--let $assert_cond= [SELECT COUNT(*) as count FROM performance_schema.variables_info WHERE variable_source="PERSISTED", count, 1] = $total_persistent_vars-1
 --source include/assert.inc
 
  --let $assert_text= Expect $total_persistent_vars persisted variables with matching peristed and global values.
- --let $assert_cond= [SELECT COUNT(*) as count FROM performance_schema.variables_info vi JOIN performance_schema.persisted_variables pv JOIN performance_schema.global_variables gv ON vi.variable_name=pv.variable_name AND vi.variable_name=gv.variable_name AND pv.variable_value=gv.variable_value WHERE vi.variable_source="PERSISTED", count, 1] = $total_persistent_vars
+ --let $assert_cond= [SELECT COUNT(*) as count FROM performance_schema.variables_info vi JOIN performance_schema.persisted_variables pv JOIN performance_schema.global_variables gv ON vi.variable_name=pv.variable_name AND vi.variable_name=gv.variable_name AND pv.variable_value=gv.variable_value WHERE vi.variable_source="PERSISTED", count, 1] = $total_persistent_vars-1
 --source include/assert.inc
 
 --echo

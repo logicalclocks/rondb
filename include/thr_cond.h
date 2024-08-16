@@ -1,18 +1,19 @@
 #ifndef THR_COND_INCLUDED
 #define THR_COND_INCLUDED
 
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -62,8 +63,8 @@ static DWORD get_milliseconds(const struct timespec *abstime) {
     Convert timespec to millis and subtract current time.
     my_getsystime() returns time in 100 ns units.
   */
-  ulonglong future = abstime->tv_sec * 1000 + abstime->tv_nsec / 1000000;
-  ulonglong now = my_getsystime() / 10000;
+  const ulonglong future = abstime->tv_sec * 1000 + abstime->tv_nsec / 1000000;
+  const ulonglong now = my_getsystime() / 10000;
   /* Don't allow the timeout to be negative. */
   if (future < now) return 0;
   return (DWORD)(future - now);
@@ -92,7 +93,7 @@ static inline int native_cond_timedwait(native_cond_t *cond,
                                         native_mutex_t *mutex,
                                         const struct timespec *abstime) {
 #ifdef _WIN32
-  DWORD timeout = get_milliseconds(abstime);
+  const DWORD timeout = get_milliseconds(abstime);
   if (!SleepConditionVariableCS(cond, mutex, timeout)) return ETIMEDOUT;
   return 0;
 #else

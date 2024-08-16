@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -21,6 +22,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 /* Simple unit tests for thread id partitioned rwlocks. */
+
+#include <atomic>
 
 #include <gtest/gtest.h>
 #include <sys/types.h>
@@ -57,7 +60,7 @@ TEST(PartitionedRwlock, InitDestroy) {
 class Reader_thread : public Thread {
  public:
   void init(uint thread_id, Partitioned_rwlock *rwlock,
-            volatile uint *shared_counter) {
+            std::atomic<uint> *shared_counter) {
     m_thread_id = thread_id;
     m_rwlock = rwlock;
     m_shared_counter = shared_counter;
@@ -76,12 +79,12 @@ class Reader_thread : public Thread {
  private:
   uint m_thread_id;
   Partitioned_rwlock *m_rwlock;
-  volatile uint *m_shared_counter;
+  std::atomic<uint> *m_shared_counter;
 };
 
 class Writer_thread : public Thread {
  public:
-  Writer_thread(Partitioned_rwlock *rwlock, volatile uint *shared_counter)
+  Writer_thread(Partitioned_rwlock *rwlock, std::atomic<uint> *shared_counter)
       : m_rwlock(rwlock), m_shared_counter(shared_counter) {}
   void run() override {
     for (uint i = 0; i < 1000; ++i) {
@@ -98,7 +101,7 @@ class Writer_thread : public Thread {
 
  private:
   Partitioned_rwlock *m_rwlock;
-  volatile uint *m_shared_counter;
+  std::atomic<uint> *m_shared_counter;
 };
 
 /**
@@ -110,7 +113,7 @@ TEST(PartitionedRwlock, Concurrent) {
   const uint PARTS_NUM = 32;
 
   Partitioned_rwlock rwlock;
-  volatile uint shared_counter = 0;
+  std::atomic<uint> shared_counter = 0;
   rwlock.init(PARTS_NUM
 #ifdef HAVE_PSI_INTERFACE
               ,

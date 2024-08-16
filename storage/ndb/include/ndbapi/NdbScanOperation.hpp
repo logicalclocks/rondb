@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -49,7 +50,7 @@ class NdbScanOperation : public NdbOperation {
   friend class NdbQueryOperationImpl;
 #endif
 
-public:
+ public:
   /**
    * Scan flags.  OR-ed together and passed as argument to
    * readTuples, scanIndex, and scanTable. Note that SF_MultiRange
@@ -125,7 +126,6 @@ public:
     SF_KeyInfo = 1
   };
 
-
   /*
    * ScanOptions
    *  These are options passed to the NdbRecord based scanTable and 
@@ -145,20 +145,17 @@ public:
    *  structure.  This effect is achieved by passing
    *  sizeof(NdbScanOperation::ScanOptions) into this parameter.
    */
-  struct ScanOptions
-  {
+  struct ScanOptions {
     /*
       Size of the ScanOptions structure.
     */
-    static inline Uint32 size()
-    {
-        return sizeof(ScanOptions);
-    }
+    static inline Uint32 size() { return sizeof(ScanOptions); }
 
     /* Which options are present - see below for possibilities */
     Uint64 optionsPresent;
 
-    enum Type { SO_SCANFLAGS    = 0x01,
+    enum Type {
+      SO_SCANFLAGS = 0x01,
                 SO_PARALLEL     = 0x02,
                 SO_BATCH        = 0x04,
                 SO_GETVALUE     = 0x08,
@@ -201,13 +198,12 @@ public:
     const NdbInterpretedCode *interpretedCode;
 
     /* CustomData ptr to associate with the scan operation */
-    void * customData;
+    void *customData;
 
     /* Partition information for bounding this scan */
-    const Ndb::PartitionSpec* partitionInfo;
+    const Ndb::PartitionSpec *partitionInfo;
     Uint32 sizeOfPartInfo;
   };
-
 
   /**
    * readTuples
@@ -218,11 +214,8 @@ public:
    * @param parallel Number of fragments to scan in parallel (0=max)
    * @param batch Number of rows to fetch in each batch
    */ 
-  virtual
-  int readTuples(LockMode lock_mode = LM_Read, 
-                 Uint32 scan_flags = 0, 
-		 Uint32 parallel = 0,
-		 Uint32 batch = 0);
+  virtual int readTuples(LockMode lock_mode = LM_Read, Uint32 scan_flags = 0,
+                         Uint32 parallel = 0, Uint32 batch = 0);
 
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
   /**
@@ -233,34 +226,35 @@ public:
    * @note specifying 0 for batch and parallel means max performance
    */ 
 #ifdef ndb_readtuples_impossible_overload
-  int readTuples(LockMode lock_mode = LM_Read, 
-		 Uint32 batch = 0, Uint32 parallel = 0, 
-                 bool keyinfo = false, bool multi_range = false);
+  int readTuples(LockMode lock_mode = LM_Read, Uint32 batch = 0,
+                 Uint32 parallel = 0, bool keyinfo = false,
+                 bool multi_range = false);
 #endif
   
-  inline int readTuples(int parallell){
+  inline int readTuples(int parallell) {
     return readTuples(LM_Read, 0, parallell);
   }
   
-  inline int readTuplesExclusive(int parallell = 0){
+  inline int readTuplesExclusive(int parallell = 0) {
     return readTuples(LM_Exclusive, 0, parallell);
   }
 
   /* First version of ScanOptions, defined here for backwards
    * compatibility reasons
    */
-  struct ScanOptions_v1
-  {
+  struct ScanOptions_v1 {
     /* Which options are present - see below for possibilities */
     Uint64 optionsPresent;
 
-    enum Type { SO_SCANFLAGS    = 0x01,
+    enum Type {
+      SO_SCANFLAGS = 0x01,
                 SO_PARALLEL     = 0x02,
                 SO_BATCH        = 0x04,
                 SO_GETVALUE     = 0x08,
                 SO_PARTITION_ID = 0x10,
                 SO_INTERPRETED  = 0x20,
-                SO_CUSTOMDATA   = 0x40 };
+      SO_CUSTOMDATA = 0x40
+    };
 
     /* Flags controlling scan behaviour
      * See NdbScanOperation::ScanFlag for details
@@ -295,13 +289,13 @@ public:
     const NdbInterpretedCode *interpretedCode;
 
     /* CustomData ptr to associate with the scan operation */
-    void * customData;
+    void *customData;
   };
 #endif
   
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
-  NdbBlob* getBlobHandle(const char* anAttrName) override;
-  NdbBlob* getBlobHandle(Uint32 anAttrId) override;
+  NdbBlob *getBlobHandle(const char *anAttrName) override;
+  NdbBlob *getBlobHandle(Uint32 anAttrId) override;
 
   /** 
    * setInterpretedCode
@@ -400,9 +394,7 @@ public:
    * all must be supplied to avoid invoking the two-parameter, non
    * NdbRecord variant of nextResult.
    */
-  int nextResult(const char ** out_row_ptr,
-                 bool fetchAllowed, 
-                 bool forceSend);
+  int nextResult(const char **out_row_ptr, bool fetchAllowed, bool forceSend);
 
   /*
    * Alternate NdbRecord version of nextResult.
@@ -419,9 +411,7 @@ public:
    * -   1: if there are no more tuples to scan
    * -   2: if there are no more cached records in NdbApi
    */
-  int nextResultCopyOut(char * buffer,
-                 bool fetchAllowed,
-                 bool forceSend);
+  int nextResultCopyOut(char *buffer, bool fetchAllowed, bool forceSend);
 
   /**
    * Close scan
@@ -433,7 +423,7 @@ public:
    *
    * @return an NdbOperation or NULL.
    */
-  NdbOperation* lockCurrentTuple();
+  NdbOperation *lockCurrentTuple();
   /**
    * Lock current tuple
    *
@@ -441,13 +431,13 @@ public:
    *
    * @return an NdbOperation or NULL.
    */
-  NdbOperation*	lockCurrentTuple(NdbTransaction* lockTrans);
+  NdbOperation *lockCurrentTuple(NdbTransaction *lockTrans);
   /**
    * Update current tuple
    *
    * @return an NdbOperation or NULL.
    */
-  NdbOperation* updateCurrentTuple();
+  NdbOperation *updateCurrentTuple();
   /**
    * Update current tuple
    *
@@ -455,7 +445,7 @@ public:
    *
    * @return an NdbOperation or NULL.
    */
-  NdbOperation*	updateCurrentTuple(NdbTransaction* updateTrans);
+  NdbOperation *updateCurrentTuple(NdbTransaction *updateTrans);
 
   /**
    * Delete current tuple
@@ -469,7 +459,7 @@ public:
    *
    * @return 0 on success or -1 on failure
    */
-  int deleteCurrentTuple(NdbTransaction* takeOverTransaction);
+  int deleteCurrentTuple(NdbTransaction *takeOverTransaction);
   
   /*
    * NdbRecord versions of scan lock take-over operations.
@@ -486,12 +476,11 @@ public:
    * The NdbRecord * is required even when not reading any attributes.
    * Supported OperationOptions : OO_ABORTOPTION, OO_GETVALUE, OO_ANYVALUE
    */
-  const NdbOperation *lockCurrentTuple(NdbTransaction *takeOverTrans,
-                                       const NdbRecord *result_rec,
-                                       char *result_row= 0,
-                                       const unsigned char *result_mask= 0,
-                                       const NdbOperation::OperationOptions *opts = 0,
-                                       Uint32 sizeOfOptions = 0);
+  const NdbOperation *lockCurrentTuple(
+      NdbTransaction *takeOverTrans, const NdbRecord *result_rec,
+      char *result_row = nullptr, const unsigned char *result_mask = nullptr,
+      const NdbOperation::OperationOptions *opts = nullptr,
+      Uint32 sizeOfOptions = 0);
 
   /*
    * Update the current tuple, NdbRecord version.
@@ -499,30 +488,28 @@ public:
    * Supported OperationOptions : OO_ABORTOPTION, OO_SETVALUE, 
    *                              OO_INTERPRETED, OO_ANYVALUE
    */
-  const NdbOperation *updateCurrentTuple(NdbTransaction *takeOverTrans,
-                                         const NdbRecord *attr_rec,
-                                         const char *attr_row,
-                                         const unsigned char *mask= 0,
-                                         const NdbOperation::OperationOptions *opts = 0,
-                                         Uint32 sizeOfOptions = 0);
+  const NdbOperation *updateCurrentTuple(
+      NdbTransaction *takeOverTrans, const NdbRecord *attr_rec,
+      const char *attr_row, const unsigned char *mask = nullptr,
+      const NdbOperation::OperationOptions *opts = nullptr,
+      Uint32 sizeOfOptions = 0);
 
   /* Delete the current tuple. NdbRecord version.
    * The tuple can be read before being deleted.  Specify the columns to read
-   * and the result storage as usual with result_rec, result_row and result_mask.
-   * Supported OperationOptions : OO_ABORTOPTION, OO_GETVALUE, OO_ANYVALUE
+   * and the result storage as usual with result_rec, result_row and
+   * result_mask. Supported OperationOptions : OO_ABORTOPTION, OO_GETVALUE,
+   * OO_ANYVALUE
    */
-  const NdbOperation *deleteCurrentTuple(NdbTransaction *takeOverTrans,
-                                         const NdbRecord *result_rec,
-                                         char *result_row = 0,
-                                         const unsigned char *result_mask = 0,
-                                         const NdbOperation::OperationOptions *opts = 0,
-                                         Uint32 sizeOfOptions = 0);
+  const NdbOperation *deleteCurrentTuple(
+      NdbTransaction *takeOverTrans, const NdbRecord *result_rec,
+      char *result_row = nullptr, const unsigned char *result_mask = nullptr,
+      const NdbOperation::OperationOptions *opts = nullptr,
+      Uint32 sizeOfOptions = 0);
 
   /**
    * Get NdbTransaction object for this scan operation
    */
-  NdbTransaction* getNdbTransaction() const override;
-
+  NdbTransaction *getNdbTransaction() const override;
 
   /**
    * Is scan operation pruned to a single table partition?
@@ -531,49 +518,46 @@ public:
    */
   bool getPruned() const;
 
-protected:
-  NdbScanOperation(Ndb* aNdb,
+ protected:
+  NdbScanOperation(Ndb *aNdb,
                    NdbOperation::Type aType = NdbOperation::TableScan);
   ~NdbScanOperation() override;
 
-  NdbRecAttr* getValue_impl(const NdbColumnImpl*, char* aValue = 0) override;
-  NdbRecAttr* getValue_NdbRecord_scan(const NdbColumnImpl*, char* aValue);
-  NdbRecAttr* getValue_NdbRecAttr_scan(const NdbColumnImpl*, char* aValue);
+  NdbRecAttr *getValue_impl(const NdbColumnImpl *,
+                            char *aValue = nullptr) override;
+  NdbRecAttr *getValue_NdbRecord_scan(const NdbColumnImpl *, char *aValue);
+  NdbRecAttr *getValue_NdbRecAttr_scan(const NdbColumnImpl *, char *aValue);
 
   int handleScanGetValuesOldApi();
   int addInterpretedCode();
   int addAggregationCode();
-  int handleScanOptionsVersion(const ScanOptions*& optionsPtr, 
-                               Uint32 sizeOfOptions,
-                               ScanOptions& currOptions);
+  int handleScanOptionsVersion(const ScanOptions *&optionsPtr,
+                               Uint32 sizeOfOptions, ScanOptions &currOptions);
   int handleScanOptions(const ScanOptions *options);
-  int validatePartInfoPtr(const Ndb::PartitionSpec*& partInfo,
-                          Uint32 sizeOfPartInfo,
-                          Ndb::PartitionSpec& partValue);
-  int getPartValueFromInfo(const Ndb::PartitionSpec* partInfo,
-                           const NdbTableImpl* table,
-                           Uint32* partValue);
-  int generatePackedReadAIs(const NdbRecord *reseult_record, bool& haveBlob,
-                            const Uint32 * readMask);
+  int validatePartInfoPtr(const Ndb::PartitionSpec *&partInfo,
+                          Uint32 sizeOfPartInfo, Ndb::PartitionSpec &partValue);
+  int getPartValueFromInfo(const Ndb::PartitionSpec *partInfo,
+                           const NdbTableImpl *table, Uint32 *partValue);
+  int generatePackedReadAIs(const NdbRecord *reseult_record, bool &haveBlob,
+                            const Uint32 *readMask);
   int scanImpl(const NdbScanOperation::ScanOptions *options, 
-               const Uint32 * readMask);
+               const Uint32 *readMask);
   int scanTableImpl(const NdbRecord *result_record,
                     NdbOperation::LockMode lock_mode,
                     const unsigned char *result_mask,
                     const NdbScanOperation::ScanOptions *options,
                     Uint32 sizeOfOptions);
 
-  int nextResultNdbRecord(const char * & out_row,
-                          bool fetchAllowed, bool forceSend);
+  int nextResultNdbRecord(const char *&out_row, bool fetchAllowed,
+                          bool forceSend);
   void release() override;
   
-  int close_impl(bool forceSend,
-                 PollGuard *poll_guard);
+  int close_impl(bool forceSend, PollGuard *poll_guard);
 
   /* Helper for NdbScanFilter to allocate an InterpretedCode
    * object owned by the Scan operation
    */
-  NdbInterpretedCode* allocInterpretedCodeOldApi();
+  NdbInterpretedCode *allocInterpretedCodeOldApi();
   void freeInterpretedCodeOldApi();
 
   int doSendSetAISectionSizes();
@@ -582,7 +566,7 @@ protected:
   int executeCursor(int ProcessorId);
 
   // Overloaded private methods from NdbOperation
-  int init(const NdbTableImpl* tab, NdbTransaction*);
+  int init(const NdbTableImpl *tab, NdbTransaction *);
   int prepareSend(Uint32  TC_ConnectPtr, Uint64  TransactionId,
                   NdbOperation::AbortOption) override;
   int doSend(int ProcessorId);
@@ -612,15 +596,15 @@ protected:
   void finaliseScan();
   int finaliseScanOldApi();
   int prepareSendScan(Uint32 TC_ConnectPtr, Uint64 TransactionId,
-                      const Uint32 * readMask);
+                      const Uint32 *readMask);
   
   int fix_receivers(Uint32 parallel);
   void reset_receivers(Uint32 parallel, Uint32 ordered);
-  Uint32* m_array; // containing all arrays below
+  Uint32 *m_array;  // containing all arrays below
   Uint32 m_allocated_receivers;
-  NdbReceiver** m_receivers;      // All receivers
+  NdbReceiver **m_receivers;  // All receivers
 
-  Uint32* m_prepared_receivers;   // These are to be sent
+  Uint32 *m_prepared_receivers;  // These are to be sent
 
   /*
     Owned by API/user thread.
@@ -645,7 +629,7 @@ protected:
    */
   Uint32 m_current_api_receiver;
   Uint32 m_api_receivers_count;
-  NdbReceiver** m_api_receivers;  // These are currently used by api
+  NdbReceiver **m_api_receivers;  // These are currently used by api
   
   /*
     Shared by receiver thread and API thread.
@@ -655,7 +639,7 @@ protected:
     first access with nextResult().
    */
   Uint32 m_conf_receivers_count;  // NOTE needs mutex to access
-  NdbReceiver** m_conf_receivers; // receive thread puts them here
+  NdbReceiver **m_conf_receivers;  // receive thread puts them here
   
   /*
    Owned by receiver thread
@@ -664,22 +648,19 @@ protected:
    Once all is received, they will be moved to m_conf_receivers.
   */
   Uint32 m_sent_receivers_count;  // NOTE needs mutex to access
-  NdbReceiver** m_sent_receivers; // receive thread puts them here
+  NdbReceiver **m_sent_receivers;  // receive thread puts them here
   
   int send_next_scan(Uint32 cnt, bool close);
-  void receiver_delivered(NdbReceiver*);
-  void receiver_completed(NdbReceiver*);
+  void receiver_delivered(NdbReceiver *);
+  void receiver_completed(NdbReceiver *);
   void execCLOSE_SCAN_REP();
 
-  int getKeyFromKEYINFO20(Uint32* data, Uint32 & size);
-  NdbOperation*	takeOverScanOp(OperationType opType, NdbTransaction*);
-  NdbOperation* takeOverScanOpNdbRecord(OperationType opType,
-                                        NdbTransaction* pTrans,
-                                        const NdbRecord *record,
-                                        char *row,
-                                        const unsigned char *mask,
-                                        const NdbOperation::OperationOptions *opts,
-                                        Uint32 sizeOfOptions);
+  int getKeyFromKEYINFO20(Uint32 *data, Uint32 &size);
+  NdbOperation *takeOverScanOp(OperationType opType, NdbTransaction *);
+  NdbOperation *takeOverScanOpNdbRecord(
+      OperationType opType, NdbTransaction *pTrans, const NdbRecord *record,
+      char *row, const unsigned char *mask,
+      const NdbOperation::OperationOptions *opts, Uint32 sizeOfOptions);
   bool m_ordered;
   bool m_descending;
   Uint32 m_read_range_no;
@@ -704,10 +685,8 @@ protected:
   Uint32 *m_scan_buffer;
   
   /* Initialise scan operation with user provided information */
-  virtual int processTableScanDefs(LockMode lock_mode, 
-                                   Uint32 scan_flags, 
-                                   Uint32 parallel,
-                                   Uint32 batch);
+  virtual int processTableScanDefs(LockMode lock_mode, Uint32 scan_flags,
+                                   Uint32 parallel, Uint32 batch);
 
   /* This flag indicates whether a scan operation is using the old API */
   bool  m_scanUsingOldApi;
@@ -724,7 +703,7 @@ protected:
   /* NdbInterpretedCode object owned by ScanOperation to support
    * old NdbScanFilter Api
    */
-  NdbInterpretedCode* m_interpretedCodeOldApi;
+  NdbInterpretedCode *m_interpretedCodeOldApi;
 
   enum ScanPruningState {
     SPS_UNKNOWN,           // Initial state
@@ -744,9 +723,9 @@ protected:
 
   /* Aggregation program for NdbRecord operations. */
   NdbAggregator *m_aggregation_code;
-private:
-  NdbScanOperation(const NdbScanOperation&); // Not impl.
-  NdbScanOperation&operator=(const NdbScanOperation&);
+ private:
+  NdbScanOperation(const NdbScanOperation &);  // Not impl.
+  NdbScanOperation &operator=(const NdbScanOperation &);
 
   /**
    * Const variants overloaded...calling NdbOperation::getBlobHandle()
@@ -756,61 +735,42 @@ private:
    * I'm not sure...but these doesn't seem to be an users of this...
    * so I make them private...
    */
-  NdbBlob* getBlobHandle(const char* anAttrName) const override;
-  NdbBlob* getBlobHandle(Uint32 anAttrId) const override;
+  NdbBlob *getBlobHandle(const char *anAttrName) const override;
+  NdbBlob *getBlobHandle(Uint32 anAttrId) const override;
 };
 
-inline
-NdbOperation* 
-NdbScanOperation::lockCurrentTuple(){
+inline NdbOperation *NdbScanOperation::lockCurrentTuple() {
   return lockCurrentTuple(m_transConnection);
 }
 
-inline
-NdbOperation* 
-NdbScanOperation::lockCurrentTuple(NdbTransaction* takeOverTrans){
-  return takeOverScanOp(NdbOperation::ReadRequest, 
-			takeOverTrans);
+inline NdbOperation *NdbScanOperation::lockCurrentTuple(
+    NdbTransaction *takeOverTrans) {
+  return takeOverScanOp(NdbOperation::ReadRequest, takeOverTrans);
 }
 
-inline
-NdbOperation* 
-NdbScanOperation::updateCurrentTuple(){
+inline NdbOperation *NdbScanOperation::updateCurrentTuple() {
   return updateCurrentTuple(m_transConnection);
 }
 
-inline
-NdbOperation* 
-NdbScanOperation::updateCurrentTuple(NdbTransaction* takeOverTrans){
-  return takeOverScanOp(NdbOperation::UpdateRequest, 
-			takeOverTrans);
+inline NdbOperation *NdbScanOperation::updateCurrentTuple(
+    NdbTransaction *takeOverTrans) {
+  return takeOverScanOp(NdbOperation::UpdateRequest, takeOverTrans);
 }
 
-inline
-int
-NdbScanOperation::deleteCurrentTuple(){
+inline int NdbScanOperation::deleteCurrentTuple() {
   return deleteCurrentTuple(m_transConnection);
 }
 
-inline
-int
-NdbScanOperation::deleteCurrentTuple(NdbTransaction * takeOverTrans){
-  void * res = takeOverScanOp(NdbOperation::DeleteRequest, 
-			      takeOverTrans);
-  if(res == 0)
-    return -1;
+inline int NdbScanOperation::deleteCurrentTuple(NdbTransaction *takeOverTrans) {
+  void *res = takeOverScanOp(NdbOperation::DeleteRequest, takeOverTrans);
+  if (res == nullptr) return -1;
   return 0;
 }
 
-inline
-const NdbOperation *
-NdbScanOperation::updateCurrentTuple(NdbTransaction *takeOverTrans,
-                                     const NdbRecord *attr_rec,
-                                     const char *attr_row,
-                                     const unsigned char *mask,
-                                     const NdbOperation::OperationOptions *opts,
-                                     Uint32 sizeOfOptions)
-{
+inline const NdbOperation *NdbScanOperation::updateCurrentTuple(
+    NdbTransaction *takeOverTrans, const NdbRecord *attr_rec,
+    const char *attr_row, const unsigned char *mask,
+    const NdbOperation::OperationOptions *opts, Uint32 sizeOfOptions) {
   /*
     We share the code implementing lockCurrentTuple() and updateCurrentTuple().
     For lock the row may be updated, for update it is const.
@@ -822,24 +782,16 @@ NdbScanOperation::updateCurrentTuple(NdbTransaction *takeOverTrans,
                                  opts, sizeOfOptions);
 }
 
-inline
-const NdbOperation *
-NdbScanOperation::deleteCurrentTuple(NdbTransaction *takeOverTrans,
-                                     const NdbRecord *result_rec,
-                                     char *result_row,
-                                     const unsigned char *result_mask,
-                                     const NdbOperation::OperationOptions *opts,
-                                     Uint32 sizeOfOptions)
-{
+inline const NdbOperation *NdbScanOperation::deleteCurrentTuple(
+    NdbTransaction *takeOverTrans, const NdbRecord *result_rec,
+    char *result_row, const unsigned char *result_mask,
+    const NdbOperation::OperationOptions *opts, Uint32 sizeOfOptions) {
   return takeOverScanOpNdbRecord(NdbOperation::DeleteRequest, takeOverTrans,
-                                 result_rec, result_row, result_mask,
-                                 opts, sizeOfOptions);
+                                 result_rec, result_row, result_mask, opts,
+                                 sizeOfOptions);
 }
 
-inline
-NdbTransaction*
-NdbScanOperation::getNdbTransaction() const
-{
+inline NdbTransaction *NdbScanOperation::getNdbTransaction() const {
   /* return the user visible transaction object ptr, not the
    * scan's 'internal' / buddy transaction object
    */

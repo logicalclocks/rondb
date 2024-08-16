@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -53,14 +54,15 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <exception>
 #include <iostream>
 #include <sstream>
-#include "m_string.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_dir.h"
 #include "my_getopt.h"
 #include "my_io.h"
 #include "my_macros.h"
+#include "nulls.h"
 #include "print_version.h"
+#include "template_utils.h"
 #include "typelib.h"
 #include "welcome_copyright_notice.h"
 
@@ -905,17 +907,31 @@ bool tablespace_creator::create() {
 
       ut_ad(first_page_num == 0);
 
-      page_no_t pages = static_cast<page_no_t>(size / page_size.physical());
+      const auto max_tablespace_size = uint64_t{page_size.physical()} *
+                                       std::numeric_limits<page_no_t>::max();
+
+      if (!(size < max_tablespace_size)) {
+        ib::error()
+            << "Tablespace file reaches max permissible size for page size "
+            << page_size.physical() << ", and crosses the limit by "
+            << size - max_tablespace_size << " bytes";
+        return true;
+      }
+
+      const auto pages = static_cast<page_no_t>(size / page_size.physical());
+      const auto computed_size = uint64_t{pages} * page_size.physical();
 
       DBUG_EXECUTE_IF("ib_partial_page", size++;);
 
-      if (pages * page_size.physical() != size) {
+      if (computed_size != size) {
         ib::warn() << "There is a partial page at the"
-                   << " end, of size " << size - (pages * page_size.physical())
+                   << " end, of size " << size - computed_size
                    << ". This partial page is ignored";
       }
 
+      ib::dbug() << "Total Size in the file: " << size;
       ib::dbug() << "Total Number of pages in the file: " << pages;
+      ib::dbug() << "Physical Page size in the file: " << page_size.physical();
 
       ib_file_t ibd_file;
       ibd_file.first_page_num = first_page_num;
@@ -1645,7 +1661,7 @@ uint64_t ibd2sdi::copy_compressed_blob(ib_tablespace *ts,
 
   d_stream.next_out = dest_buf;
   d_stream.avail_out = static_cast<uInt>(total_off_page_length);
-  d_stream.next_in = Z_NULL;
+  d_stream.next_in = nullptr;
   d_stream.avail_in = 0;
 
   /* Zlib inflate needs 32KB for the default window size, plus

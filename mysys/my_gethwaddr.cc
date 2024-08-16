@@ -1,15 +1,16 @@
-/* Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2004, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -195,7 +196,7 @@ bool my_gethwaddr(uchar *to) {
   address_len = sizeof(IP_ADAPTER_ADDRESSES);
 
   /* Get the required size for the address data. */
-  if (fnGetAdaptersAddresses(AF_UNSPEC, 0, 0, &adapterAddresses,
+  if (fnGetAdaptersAddresses(AF_UNSPEC, 0, nullptr, &adapterAddresses,
                              &address_len) == ERROR_BUFFER_OVERFLOW) {
     pAdapterAddresses = static_cast<PIP_ADAPTER_ADDRESSES>(
         my_malloc(key_memory_win_IP_ADAPTER_ADDRESSES, address_len, 0));
@@ -204,7 +205,7 @@ bool my_gethwaddr(uchar *to) {
     pAdapterAddresses = &adapterAddresses; /* one is enough don't alloc */
 
   /* Get the hardware info. */
-  if (fnGetAdaptersAddresses(AF_UNSPEC, 0, 0, pAdapterAddresses,
+  if (fnGetAdaptersAddresses(AF_UNSPEC, 0, nullptr, pAdapterAddresses,
                              &address_len) == NO_ERROR) {
     pCurrAddresses = pAdapterAddresses;
 

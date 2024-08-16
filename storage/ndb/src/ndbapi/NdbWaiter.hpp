@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,17 +29,17 @@
 #include <ndb_global.h>
 #include "trp_client.hpp"
 
-enum WaitSignalType { 
-  NO_WAIT           = 0,
+enum WaitSignalType {
+  NO_WAIT = 0,
   WAIT_NODE_FAILURE = 1,  // Node failure during wait
-  WST_WAIT_TIMEOUT  = 2,  // Timeout during wait
+  WST_WAIT_TIMEOUT = 2,   // Timeout during wait
 
-  WAIT_TC_SEIZE     = 3,
-  WAIT_TC_RELEASE   = 4,
-  WAIT_NDB_TAMPER   = 5,
-  WAIT_SCAN         = 6,
-  WAIT_TRANS        = 7,
-  WAIT_EVENT        = 8,
+  WAIT_TC_SEIZE = 3,
+  WAIT_TC_RELEASE = 4,
+  WAIT_NDB_TAMPER = 5,
+  WAIT_SCAN = 6,
+  WAIT_TRANS = 7,
+  WAIT_EVENT = 8,
 
   // DICT stuff
   WAIT_GET_TAB_INFO_REQ = 11,
@@ -52,41 +53,32 @@ enum WaitSignalType {
 };
 
 class NdbWaiter {
-public:
-  explicit NdbWaiter(trp_client* clnt)
-    : m_clnt(clnt), m_node(0), m_state(NO_WAIT)
-  {}
+ public:
+  explicit NdbWaiter(trp_client *clnt)
+      : m_clnt(clnt), m_node(0), m_state(NO_WAIT) {}
 
   void signal(Uint32 state);
   void nodeFail(Uint32 node);
 
-  void set_state(Uint32 state) { m_state= state; }
+  void set_state(Uint32 state) { m_state = state; }
   Uint32 get_state() const { return m_state; }
 
-  void set_node(Uint32 node) { m_node= node; }
+  void set_node(Uint32 node) { m_node = node; }
 
-private:
-  trp_client* const m_clnt;
+ private:
+  trp_client *const m_clnt;
   Uint32 m_node;
   Uint32 m_state;
 };
 
-
-inline
-void
-NdbWaiter::nodeFail(Uint32 aNodeId)
-{
-  if (m_state != NO_WAIT && m_node == aNodeId)
-  {
+inline void NdbWaiter::nodeFail(Uint32 aNodeId) {
+  if (m_state != NO_WAIT && m_node == aNodeId) {
     m_state = WAIT_NODE_FAILURE;
     m_clnt->wakeup();
   }
 }
 
-inline
-void 
-NdbWaiter::signal(Uint32 state)
-{
+inline void NdbWaiter::signal(Uint32 state) {
   m_state = state;
   m_clnt->wakeup();
 }

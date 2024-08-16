@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -132,9 +133,9 @@ const std::string &Auth_id::host() const { return m_host; }
 
   @returns Name for the privilege represented by LSB
 */
-std::string get_one_priv(ulong &revoke_privs) {
+std::string get_one_priv(Access_bitmask &revoke_privs) {
   std::string priv;
-  ulong lsb;
+  Access_bitmask lsb;
   if (revoke_privs != 0) {
     // find out the least significant bit(lsb)
     lsb = revoke_privs & ~(revoke_privs - 1);

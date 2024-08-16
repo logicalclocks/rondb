@@ -1,15 +1,16 @@
-/*  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/*  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License, version 2.0,
     as published by the Free Software Foundation.
 
-    This program is also distributed with certain software (including
+    This program is designed to work with certain software (including
     but not limited to OpenSSL) that is licensed under separate terms,
     as designated in a particular file or component or in included license
     documentation.  The authors of MySQL hereby grant you an additional
     permission to link the program and your derivative works with the
-    separately licensed software that they have included with MySQL.
+    separately licensed software that they have either included with
+    the program or referenced in the documentation.
 
     This program is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -47,7 +48,7 @@ bool query_rewritten(const std::string &query, std::string *rewritten_query) {
      - Path enclosed in single quotes.
      - Use of ungreedy patterns to get correct grouping.
   */
-  std::regex directory_option(
+  const std::regex directory_option(
       "\\s*,?\\s*(DATA|INDEX)\\s+DIRECTORY\\s*?=?\\s*?[\"'][^\"']+?[\"']\\s*,?"
       "\\s*",
       std::regex::icase | std::regex::nosubs);
@@ -56,7 +57,7 @@ bool query_rewritten(const std::string &query, std::string *rewritten_query) {
   /*
     Replace ENCRYPTION option.
   */
-  std::regex encryption_option(
+  const std::regex encryption_option(
       "\\s*,?\\s*ENCRYPTION\\s*?=?\\s*?[\"'][NY]?[\"']\\s*,?\\s*",
       std::regex::icase | std::regex::nosubs);
   *rewritten_query =

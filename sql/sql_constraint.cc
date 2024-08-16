@@ -1,15 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +23,8 @@
 
 #include "sql/sql_constraint.h"
 
-#include "my_sys.h"              // my_error
+#include "my_sys.h"  // my_error
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"        // ER_*
 #include "sql/dd/types/table.h"  // dd::Table
 #include "sql/field.h"           // Field
@@ -199,9 +201,9 @@ bool Enforce_constraint_type_resolver::resolve_constraint_type(
   // CHECK constraint.
   if (is_check_constraint(src_table, alter_constraint->name)) {
     type = Alter_constraint_enforcement::Type::CHECK_CONSTRAINT;
-    ulonglong check_cons_flag = alter_constraint->is_enforced
-                                    ? Alter_info::ENFORCE_CHECK_CONSTRAINT
-                                    : Alter_info::SUSPEND_CHECK_CONSTRAINT;
+    const ulonglong check_cons_flag =
+        alter_constraint->is_enforced ? Alter_info::ENFORCE_CHECK_CONSTRAINT
+                                      : Alter_info::SUSPEND_CHECK_CONSTRAINT;
     m_flags |= ((m_alter_info->flags ^ check_cons_flag) & check_cons_flag);
   }
 

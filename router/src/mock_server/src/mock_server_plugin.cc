@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,8 @@
 #include <string>
 #include <system_error>  // error_code
 
-#include "mysql.h"  // mysql_ssl_mode
+#include "my_thread.h"  // my_thread_self_setname
+#include "mysql.h"      // mysql_ssl_mode
 #include "mysql/harness/config_option.h"
 #include "mysql/harness/config_parser.h"
 #include "mysql/harness/logging/logging.h"
@@ -148,14 +150,14 @@ class PluginConfig : public mysql_harness::BasePluginConfig {
     GET_OPTION_CHECKED(tls_version, section, "tls_version", StringOption{});
   }
 
-  std::string get_default(const std::string &option) const override {
+  std::string get_default(std::string_view option) const override {
     std::error_code ec;
     const auto cwd = stdx::filesystem::current_path(ec);
     if (ec) {
       throw std::system_error(ec);
     }
 
-    const std::map<std::string, std::string> defaults{
+    const std::map<std::string_view, std::string> defaults{
         {"bind_address", "0.0.0.0"},
         {"module_prefix", cwd.native()},
         {"port", "3306"},
@@ -170,7 +172,7 @@ class PluginConfig : public mysql_harness::BasePluginConfig {
     return it->second;
   }
 
-  bool is_required(const std::string &option) const override {
+  bool is_required(std::string_view option) const override {
     if (option == "filename") return true;
     return false;
   }
@@ -219,11 +221,14 @@ static void start(mysql_harness::PluginFuncEnv *env) {
     name = section->name;
   }
 
+  my_thread_self_setname(std::string("MockSrv:" + section->key).c_str());
+
   try {
     PluginConfig config{section};
     const std::string key = section->name + ":" + section->key;
 
-    TlsServerContext tls_server_ctx;
+    TlsServerContext tls_server_ctx{TlsVersion::TLS_1_2, TlsVersion::AUTO, true,
+                                    1024, 300};
 
     if (config.ssl_mode != SSL_MODE_DISABLED) {
       if (!config.tls_version.empty()) {
@@ -348,17 +353,15 @@ mysql_harness::Plugin MOCK_SERVER_EXPORT harness_plugin_mock_server = {
     "Mock MySQL Server for testing",         // name
     VERSION_NUMBER(0, 0, 1),
     // requires
-    required.size(),
-    required.data(),
+    required.size(), required.data(),
     // conflicts
-    0,
-    nullptr,
+    0, nullptr,
     init,     // init
     deinit,   // deinit
     start,    // start
     nullptr,  // stop
     true,     // declares_readiness
-    supported_options.size(),
-    supported_options.data(),
+    supported_options.size(), supported_options.data(),
+    nullptr,  // expose_configuration
 };
 }

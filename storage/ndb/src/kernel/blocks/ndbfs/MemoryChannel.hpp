@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,14 +30,15 @@
 //===========================================================================
 //
 // .DESCRIPTION
-//              Pointer based communication channel for communication between two 
-//              thread. It does not copy any data in or out the channel so the 
-//              item that is put in can not be used until the other thread has 
-//              given it back. There is no support for detecting the return of a 
-//              item. The channel is half-duplex. 
-//              For communication between 1 writer and 1 reader use the MemoryChannel
-//              class, for communication between multiple writer and 1 reader use the
-//              MemoryChannelMultipleWriter. There is no support for multiple readers.
+//              Pointer based communication channel for communication between
+//              two thread. It does not copy any data in or out the channel so
+//              the item that is put in can not be used until the other thread
+//              has given it back. There is no support for detecting the return
+//              of a item. The channel is half-duplex. For communication between
+//              1 writer and 1 reader use the MemoryChannel class, for
+//              communication between multiple writer and 1 reader use the
+//              MemoryChannelMultipleWriter. There is no support for multiple
+//              readers.
 //
 // .TYPICAL USE:
 //              to communicate between threads.
@@ -74,65 +76,58 @@
 //                      T : item from the channel or zero if channel is empty.
 //
 
-#include "NdbMutex.h"
-#include "NdbCondition.h"
 #include <NdbOut.hpp>
+#include "NdbCondition.h"
+#include "NdbMutex.h"
 
 #define JAM_FILE_ID 396
 
-
-
 template <class T>
-class MemoryChannel
-{
-public:
+class MemoryChannel {
+ public:
   MemoryChannel();
   virtual ~MemoryChannel();
 
   void writeChannel(T *t);
   void writeChannelNoSignal(T *t);
-  T* readChannel();
-  T* tryReadChannel();
+  T *readChannel();
+  T *tryReadChannel();
 
   /**
    * Should be made class using MemoryChannel
    */
-  struct ListMember
-  {
-    T* m_next;
+  struct ListMember {
+    T *m_next;
   };
 
 private:
   void writeChannelNoSignal(T *t, bool signal);
   Uint32 m_occupancy;
-  T* m_head; // First element in list (e.g will be read by readChannel)
-  T* m_tail;
-  NdbMutex* theMutexPtr;
-  NdbCondition* theConditionPtr;
+  T *m_head;  // First element in list (e.g will be read by readChannel)
+  T *m_tail;
+  NdbMutex *theMutexPtr;
+  NdbCondition *theConditionPtr;
 
-  template<class U>
-  friend NdbOut& operator<<(NdbOut& out, const MemoryChannel<U> & chn);
+  template <class U>
+  friend NdbOut &operator<<(NdbOut &out, const MemoryChannel<U> &chn);
 };
 
 template <class T>
-NdbOut& operator<<(NdbOut& out, const MemoryChannel<T> & chn)
-{
+NdbOut &operator<<(NdbOut &out, const MemoryChannel<T> &chn) {
   NdbMutex_Lock(chn.theMutexPtr);
-  out << "[ occupancy: " << chn.m_occupancy
-      << " ]";
+  out << "[ occupancy: " << chn.m_occupancy << " ]";
   NdbMutex_Unlock(chn.theMutexPtr);
   return out;
 }
 
-template <class T> MemoryChannel<T>::MemoryChannel() :
-  m_occupancy(0), m_head(0), m_tail(0)
-{
+template <class T>
+MemoryChannel<T>::MemoryChannel() : m_occupancy(0), m_head(0), m_tail(0) {
   theMutexPtr = NdbMutex_Create();
   theConditionPtr = NdbCondition_Create();
 }
 
-template <class T> MemoryChannel<T>::~MemoryChannel( )
-{
+template <class T>
+MemoryChannel<T>::~MemoryChannel() {
   NdbMutex_Destroy(theMutexPtr);
   NdbCondition_Destroy(theConditionPtr);
 }
@@ -150,13 +145,10 @@ template <class T> void MemoryChannel<T>::writeChannelNoSignal(T *t)
 template <class T> void MemoryChannel<T>::writeChannelNoSignal(T *t, bool signal)
 {
   NdbMutex_Lock(theMutexPtr);
-  if (m_head == 0)
-  {
+  if (m_head == 0) {
     assert(m_occupancy == 0);
     m_head = m_tail = t;
-  }
-  else
-  {
+  } else {
     assert(m_tail != 0);
     m_tail->m_mem_channel.m_next = t;
     m_tail = t;
@@ -170,24 +162,19 @@ template <class T> void MemoryChannel<T>::writeChannelNoSignal(T *t, bool signal
   NdbMutex_Unlock(theMutexPtr);
 }
 
-template <class T> T* MemoryChannel<T>::readChannel()
-{
+template <class T>
+T *MemoryChannel<T>::readChannel() {
   NdbMutex_Lock(theMutexPtr);
-  while (m_head == 0)
-  {
+  while (m_head == 0) {
     assert(m_occupancy == 0);
-    NdbCondition_Wait(theConditionPtr,
-                      theMutexPtr);    
+    NdbCondition_Wait(theConditionPtr, theMutexPtr);
   }
   assert(m_occupancy > 0);
-  T* tmp = m_head;
-  if (m_head == m_tail)
-  {
+  T *tmp = m_head;
+  if (m_head == m_tail) {
     assert(m_occupancy == 1);
     m_head = m_tail = 0;
-  }
-  else
-  {
+  } else {
     m_head = m_head->m_mem_channel.m_next;
   }
   m_occupancy--;
@@ -195,34 +182,26 @@ template <class T> T* MemoryChannel<T>::readChannel()
   return tmp;
 }
 
-template <class T> T* MemoryChannel<T>::tryReadChannel()
-{
+template <class T>
+T *MemoryChannel<T>::tryReadChannel() {
   NdbMutex_Lock(theMutexPtr);
-  T* tmp = m_head;
-  if (m_head != 0)
-  {
+  T *tmp = m_head;
+  if (m_head != 0) {
     assert(m_occupancy > 0);
-    if (m_head == m_tail)
-    {
+    if (m_head == m_tail) {
       assert(m_occupancy == 1);
       m_head = m_tail = 0;
-    }
-    else
-    {
+    } else {
       m_head = m_head->m_mem_channel.m_next;
     }
     m_occupancy--;
-  }
-  else
-  {
+  } else {
     assert(m_occupancy == 0);
   }
   NdbMutex_Unlock(theMutexPtr);
   return tmp;
 }
 
-
 #undef JAM_FILE_ID
 
-#endif // MemoryChannel_H
-
+#endif  // MemoryChannel_H

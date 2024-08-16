@@ -1,15 +1,16 @@
-# Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -63,6 +64,7 @@ NDB_ADD_EXECUTABLE(testTimeout testTimeout.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testTransactions testTransactions.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testDeadlock testDeadlock.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(test_event test_event.cpp NDBTEST NDBCLIENT)
+NDB_ADD_EXECUTABLE(test_event_mysqld test_event_mysqld.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(ndbapi_slow_select slow_select.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testReadPerf testReadPerf.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testLcp testLcp.cpp NDBTEST NDBCLIENT)
@@ -109,12 +111,21 @@ NDB_ADD_EXECUTABLE(testAsynchMultiwait testAsynchMultiwait.cpp
 NDB_ADD_EXECUTABLE(testDebugger testDebugger.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testFK testFK.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testLoad testLoad.cpp NDBTEST NDBCLIENT)
+NDB_ADD_EXECUTABLE(testReconnect testReconnect.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
+NDB_ADD_EXECUTABLE(testNDBT testNDBT.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 
 TARGET_LINK_LIBRARIES(testBackup ndbbank ndbNDBT ndbclient_so)
 TARGET_LINK_LIBRARIES(testSRBank ndbbank ndbNDBT ndbclient_so)
 
-IF(WIN32)
-  NDB_ADD_EXECUTABLE(testMgmd testMgmd.cpp NDBTEST NDBCLIENT)
-ELSE()
-  NDB_ADD_EXECUTABLE(testMgmd testMgmd.cpp NDBTEST NDBCLIENT)
-ENDIF()
+NDB_ADD_EXECUTABLE(testMgmd testMgmd.cpp NDBTEST NDBCLIENT)
+
+IF(WITH_NDB_JAVA)
+  NDB_ADD_EXECUTABLE(testClusterJ testClusterJ.cpp NDBCLIENT)
+  TARGET_COMPILE_DEFINITIONS(testClusterJ PRIVATE
+                             CMAKE_BINARY_DIR=\"${CMAKE_BINARY_DIR}\"
+                             CMAKE_INSTALL_PREFIX=\"${CMAKE_INSTALL_PREFIX}\"
+                             INSTALL_LIBDIR=\"${INSTALL_LIBDIR}\"
+                             INSTALL_MYSQLSHAREDIR=\"${INSTALL_MYSQLSHAREDIR}\"
+                             WITH_CLASSPATH=\"${WITH_CLASSPATH}\"
+                            )
+ENDIF(WITH_NDB_JAVA)

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -115,61 +116,6 @@ std::string serial_comma(InputIt start, InputIt finish,
   serial_comma(out, start, finish, delim);
 
   return out.str();
-}
-
-/**
- * Returns string containing list of the elements separated by selected
- * delimiter.
- *
- * To return a list of the first five prime numbers as "The first five prime
- * numbers are 2, 3, 5, 7, 11":
- *
- * @code
- * std::vector<int> primes{2, 3, 5, 7, 11};
- * std::cout << "The first five prime numbers are "
- *           << list_elements(primes.begin(), primes.end()) << std::endl;
- * @endcode
- *
- * @param start Input iterator to start of range.
- * @param finish Input iterator to one-after-end of range.
- * @param delim Delimiter to use. Defaults to ",".
- *
- * @return string containing list of the elements
- */
-template <class InputIt>
-std::string list_elements(InputIt start, InputIt finish,
-                          const std::string &delim = ",") {
-  std::string result;
-  for (auto cur = start; cur != finish; ++cur) {
-    if (cur != start) result += delim;
-    result += *cur;
-  }
-
-  return result;
-}
-
-/**
- * Returns string containing list of the elements separated by selected
- * delimiter.
- *
- * To return a list of the first five prime numbers as "The first five prime
- * numbers are 2, 3, 5, 7, 11":
- *
- * @code
- * std::vector<int> primes{2, 3, 5, 7, 11};
- * std::cout << "The first five prime numbers are "
- *           << list_elements(primes) << std::endl;
- * @endcode
- *
- * @param collection Collection of the elements to output.
- * @param delim Delimiter to use. Defaults to ",".
- *
- * @return string containing list of the elements
- */
-template <class Collection>
-std::string list_elements(Collection collection,
-                          const std::string &delim = ",") {
-  return list_elements(collection.begin(), collection.end(), delim);
 }
 
 /**

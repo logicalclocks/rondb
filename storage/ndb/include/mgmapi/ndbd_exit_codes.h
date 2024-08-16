@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -47,8 +48,7 @@ extern "C" {
  *
  */
 
-typedef enum
-{
+typedef enum {
   ndbd_exit_st_success = 0,
   ndbd_exit_st_unknown = 1,
   ndbd_exit_st_permanent = 2,
@@ -56,8 +56,7 @@ typedef enum
   ndbd_exit_st_filesystem_error = 4
 } ndbd_exit_status_enum;
 
-typedef enum
-{
+typedef enum {
   ndbd_exit_cl_none = 0,
   ndbd_exit_cl_unknown = 1,
   ndbd_exit_cl_internal_error = 2,
@@ -172,19 +171,13 @@ typedef ndbd_exit_classification_enum ndbd_exit_classification;
 #define NDBD_EXIT_RESTORE_SCHEMA            2355
 #define NDBD_OUT_OF_MEMORY                  2356
 
-const char *
-ndbd_exit_message(int faultId, ndbd_exit_classification *cl);
-const char *
-ndbd_exit_classification_message(ndbd_exit_classification classification,
-			        ndbd_exit_status *status);
-const char *
-ndbd_exit_status_message(ndbd_exit_status status);
+const char *ndbd_exit_message(int faultId, ndbd_exit_classification *cl);
+const char *ndbd_exit_classification_message(
+    ndbd_exit_classification classification, ndbd_exit_status *status);
+const char *ndbd_exit_status_message(ndbd_exit_status status);
 
-int ndbd_exit_code_get_next(int index,
-                            int* exit_code,
-                            const char** status_msg,
-                            const char** class_msg,
-                            const char** error_msg);
+int ndbd_exit_code_get_next(int index, int *exit_code, const char **status_msg,
+                            const char **class_msg, const char **error_msg);
 
 int ndbd_is_software_error(int errorCode);
 

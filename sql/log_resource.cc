@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -43,7 +44,7 @@ bool Log_resource_mi_wrapper::collect_info() {
 
   LOG_INFO log_info;
   mi->get_flushed_relay_log_info(&log_info);
-  size_t dir_len = dirname_length(log_info.log_file_name);
+  const size_t dir_len = dirname_length(log_info.log_file_name);
   Json_string json_log_file(log_info.log_file_name + dir_len);
   Json_int json_log_pos(log_info.pos);
 
@@ -76,7 +77,7 @@ bool Log_resource_binlog_wrapper::collect_info() {
 
     LOG_INFO log_info;
     binlog->get_current_log(&log_info, false);
-    size_t dir_len = dirname_length(log_info.log_file_name);
+    const size_t dir_len = dirname_length(log_info.log_file_name);
     Json_string json_log_file(log_info.log_file_name + dir_len);
     Json_int json_log_pos(log_info.pos);
 
@@ -86,17 +87,18 @@ bool Log_resource_binlog_wrapper::collect_info() {
   return error;
 }
 
-void Log_resource_gtid_state_wrapper::lock() { global_sid_lock->wrlock(); }
+void Log_resource_gtid_state_wrapper::lock() { global_tsid_lock->wrlock(); }
 
-void Log_resource_gtid_state_wrapper::unlock() { global_sid_lock->unlock(); }
+void Log_resource_gtid_state_wrapper::unlock() { global_tsid_lock->unlock(); }
 
 bool Log_resource_gtid_state_wrapper::collect_info() {
   bool error = false;
-  global_sid_lock->assert_some_wrlock();
+  global_tsid_lock->assert_some_wrlock();
 
   char *gtid_executed_string;
   Json_object *json_local = static_cast<Json_object *>(get_json());
-  int len = gtid_state->get_executed_gtids()->to_string(&gtid_executed_string);
+  const int len =
+      gtid_state->get_executed_gtids()->to_string(&gtid_executed_string);
   if (!(error = (len < 0))) {
     Json_string json_gtid_executed(gtid_executed_string);
     error = json_local->add_clone("gtid_executed", &json_gtid_executed);

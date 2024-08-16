@@ -1,15 +1,16 @@
-/* Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,11 +24,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "mysql_thd_store_imp.h"
 #include "mysql_current_thread_reader_imp.h"
 
-#include <include/mysql/components/services/log_builtins.h> /* LogErr */
-#include <include/mysqld_error.h>
-#include <rwlock_scoped_lock.h>
-#include <sql/mysqld.h>
-#include <sql/sql_class.h>
+#include "mysql/components/services/log_builtins.h" /* LogErr */
+#include "mysqld_error.h"
+#include "rwlock_scoped_lock.h"
+#include "sql/mysqld.h"
+#include "sql/sql_class.h"
 
 #include <string>
 #include <vector>
@@ -54,7 +55,8 @@ class Thd_store_data_service final {
   }
 
   unsigned int assign(const std::string &name, free_resource_fn free_fn) {
-    rwlock_scoped_lock lock(&LOCK_thd_store_data, true, __FILE__, __LINE__);
+    const rwlock_scoped_lock lock(&LOCK_thd_store_data, true, __FILE__,
+                                  __LINE__);
     auto value = std::make_pair(name, free_fn);
     vector_.push_back(value);
     auto index = vector_.size();
@@ -64,7 +66,8 @@ class Thd_store_data_service final {
   }
 
   void unassign(unsigned int slot) {
-    rwlock_scoped_lock lock(&LOCK_thd_store_data, true, __FILE__, __LINE__);
+    const rwlock_scoped_lock lock(&LOCK_thd_store_data, true, __FILE__,
+                                  __LINE__);
     if (slot >= vector_.size() || !vector_[slot].first.length()) return;
     LogErr(INFORMATION_LEVEL, ER_NOTE_COMPONENT_SLOT_DEREGISTRATION_SUCCESS,
            slot, vector_[slot].first.c_str());
@@ -74,7 +77,8 @@ class Thd_store_data_service final {
 
   bool free_resource(THD *thd, std::unordered_map<unsigned, void *> &data) {
     bool retval = false;
-    rwlock_scoped_lock lock(&LOCK_thd_store_data, false, __FILE__, __LINE__);
+    const rwlock_scoped_lock lock(&LOCK_thd_store_data, false, __FILE__,
+                                  __LINE__);
     for (auto &element : data) {
       if (element.second != nullptr) {
         auto i = element.first;

@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -68,19 +69,24 @@ bool Rpl_transaction_ctx::is_transaction_rollback() {
   return m_transaction_ctx.m_rollback_transaction;
 }
 
-bool Rpl_transaction_ctx::is_generated_gtid() {
-  DBUG_TRACE;
-  return m_transaction_ctx.m_generated_gtid;
-}
-
-rpl_sidno Rpl_transaction_ctx::get_sidno() {
+rpl_sidno Rpl_transaction_ctx::get_sidno() const {
   DBUG_TRACE;
   return m_transaction_ctx.m_sidno;
 }
 
-rpl_gno Rpl_transaction_ctx::get_gno() {
+rpl_gno Rpl_transaction_ctx::get_gno() const {
   DBUG_TRACE;
   return m_transaction_ctx.m_gno;
+}
+
+std::pair<rpl_sidno, rpl_gno> Rpl_transaction_ctx::get_gtid_components() const {
+  DBUG_TRACE;
+  return std::make_pair(get_sidno(), get_gno());
+}
+
+void Rpl_transaction_ctx::set_sidno(rpl_sidno sidno) {
+  DBUG_TRACE;
+  m_transaction_ctx.m_sidno = sidno;
 }
 
 /**

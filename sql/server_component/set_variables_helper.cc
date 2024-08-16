@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -49,10 +50,10 @@ Set_variables_helper::~Set_variables_helper() {
 bool Set_variables_helper::add_variable(
     const char *prefix, size_t prefix_length, const char *suffix,
     size_t suffix_length, Item *variable_value, enum_var_type var_type) {
-  std::string_view prefix_v{prefix, prefix_length};
-  std::string_view suffix_v{suffix, suffix_length};
+  const std::string_view prefix_v{prefix, prefix_length};
+  const std::string_view suffix_v{suffix, suffix_length};
 
-  System_variable_tracker var_tracker =
+  const System_variable_tracker var_tracker =
       System_variable_tracker::make_tracker(prefix_v, suffix_v);
   if (var_tracker.access_system_variable(m_thd)) return true;
 
@@ -70,10 +71,10 @@ bool Set_variables_helper::check_variable_update_type(const char *prefix,
                                                       const char *suffix,
                                                       size_t suffix_length,
                                                       Item *variable_value) {
-  std::string_view prefix_v{prefix, prefix_length};
-  std::string_view suffix_v{suffix, suffix_length};
+  const std::string_view prefix_v{prefix, prefix_length};
+  const std::string_view suffix_v{suffix, suffix_length};
 
-  System_variable_tracker var_tracker =
+  const System_variable_tracker var_tracker =
       System_variable_tracker::make_tracker(prefix_v, suffix_v);
 
   auto f = [variable_value](const System_variable_tracker &,

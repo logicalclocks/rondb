@@ -2,12 +2,12 @@ call mtr.add_suppression("Unsafe statement written to the binary log using state
 drop table if exists t1, t2;
 create table t1 (a int) engine=innodb;
 create table t2 (a int) engine=myisam;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(1);
 insert into t2 select * from t1;
 commit;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -19,14 +19,14 @@ binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Xid	#	#	COMMIT /* XID */
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(2);
 insert into t2 select * from t1;
 rollback;
 Warnings:
 Warning	1196	Some non-transactional changed tables couldn't be rolled back
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -34,7 +34,7 @@ binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Query	#	#	COMMIT
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(3);
 savepoint my_savepoint;
@@ -44,7 +44,7 @@ rollback to savepoint my_savepoint;
 Warnings:
 Warning	1196	Some non-transactional changed tables couldn't be rolled back
 commit;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -57,7 +57,7 @@ binlog.000001	#	Query	#	#	SAVEPOINT `my_savepoint`
 binlog.000001	#	Xid	#	#	COMMIT /* XID */
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(5);
 savepoint my_savepoint;
@@ -72,7 +72,7 @@ select a from t1 order by a;
 a
 5
 7
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -87,7 +87,7 @@ binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Xid	#	#	COMMIT /* XID */
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 select get_lock("a",10);
 get_lock("a",10)
 1
@@ -97,7 +97,7 @@ insert into t2 select * from t1;
 select get_lock("a",10);
 get_lock("a",10)
 1
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -105,10 +105,10 @@ binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Query	#	#	COMMIT
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 insert into t1 values(9);
 insert into t2 select * from t1;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -120,11 +120,11 @@ binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Query	#	#	COMMIT
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 insert into t1 values(10);
 begin;
 insert into t2 select * from t1;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -136,7 +136,7 @@ binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Query	#	#	COMMIT
 insert into t1 values(11);
 commit;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -153,12 +153,12 @@ binlog.000001	#	Xid	#	#	COMMIT /* XID */
 alter table t2 engine=INNODB;
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(12);
 insert into t2 select * from t1;
 commit;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -168,16 +168,16 @@ binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Xid	#	#	COMMIT /* XID */
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(13);
 insert into t2 select * from t1;
 rollback;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(14);
 savepoint my_savepoint;
@@ -185,7 +185,7 @@ insert into t1 values(15);
 insert into t2 select * from t1;
 rollback to savepoint my_savepoint;
 commit;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -194,7 +194,7 @@ binlog.000001	#	Query	#	#	SAVEPOINT `my_savepoint`
 binlog.000001	#	Xid	#	#	COMMIT /* XID */
 delete from t1;
 delete from t2;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into t1 values(16);
 savepoint my_savepoint;
@@ -207,7 +207,7 @@ select a from t1 order by a;
 a
 16
 18
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -264,11 +264,11 @@ insert into t0 select GET_LOCK("lock1",null);
 set autocommit=0;
 create table t2 (n int) engine=innodb;
 insert into t2 values (3);
-include/save_binlog_position.inc
+include/rpl/save_binlog_file_position.inc
 select get_lock("lock1",60);
 get_lock("lock1",60)
 1
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -306,7 +306,7 @@ do release_lock("lock1");
 drop table t0,t2;
 set autocommit=0;
 CREATE TABLE t1 (a int, b int) engine=myisam;
-reset master;
+reset binary logs and gtids;
 INSERT INTO t1 values (1,1),(1,2);
 CREATE TABLE t2 (primary key (a)) engine=innodb select * from t1;
 ERROR 23000: Duplicate entry '1' for key 't2.PRIMARY'
@@ -387,7 +387,7 @@ SELECT * from t2;
 a	b
 100	100
 DROP TABLE t1,t2;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -431,7 +431,7 @@ binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
 binlog.000001	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 binlog.000001	#	Query	#	#	COMMIT
 binlog.000001	#	Query	#	#	use `test`; DROP TABLE `t1` /* generated by server */
-reset master;
+reset binary logs and gtids;
 create table t1 (a int) engine=innodb;
 create table t2 (a int) engine=myisam;
 select get_lock("a",10);
@@ -448,7 +448,7 @@ There is nothing to roll back; transactional changes are removed from the trans 
 drop table t1, t2;
 create temporary table tt (a int unique);
 create table ti (a int) engine=innodb;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into ti values (1);
 insert into ti values (2) ;
@@ -459,7 +459,7 @@ Warning	1196	Some non-transactional changed tables couldn't be rolled back
 select count(*) from tt /* 2 */;
 count(*)
 2
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 select count(*) from ti /* zero */;
 count(*)
@@ -471,7 +471,7 @@ a
 2
 delete from ti;
 delete from tt where a=1;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into ti values (1);
 insert into ti values (2) /* to make the dup error in the following */;
@@ -480,7 +480,7 @@ ERROR 23000: Duplicate entry '2' for key 'tt.a'
 rollback;
 Warnings:
 Warning	1196	Some non-transactional changed tables couldn't be rolled back
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 select count(*) from ti /* zero */;
 count(*)
@@ -503,13 +503,13 @@ return n;
 end|
 Warnings:
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
-reset master;
+reset binary logs and gtids;
 insert into t2 values (bug27417(1));
 insert into t2 select bug27417(2);
-reset master;
+reset binary logs and gtids;
 insert into t2 values (bug27417(2));
 ERROR 23000: Duplicate entry '2' for key 't2.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -520,7 +520,7 @@ binlog.000001	#	Query	#	#	COMMIT
 select count(*) from t1 /* must be 3 */;
 count(*)
 3
-reset master;
+reset binary logs and gtids;
 select count(*) from t2;
 count(*)
 2
@@ -528,7 +528,7 @@ delete from t2 where a=bug27417(3);
 select count(*) from t2 /* nothing got deleted */;
 count(*)
 2
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -551,10 +551,10 @@ CREATE TABLE t3 (a int, PRIMARY KEY (a), b int unique) ENGINE=MyISAM;
 CREATE TABLE t4 (a int, PRIMARY KEY (a), b int unique) ENGINE=Innodb;
 CREATE TABLE t5 (a int, PRIMARY KEY (a)) ENGINE=InnoDB;
 insert into t2 values (1);
-reset master;
+reset binary logs and gtids;
 insert into t2 values (bug27417(1));
 ERROR 23000: Duplicate entry '1' for key 't2.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -567,10 +567,10 @@ count(*)
 delete from t1;
 delete from t2;
 insert into t2 values (2);
-reset master;
+reset binary logs and gtids;
 insert into t2 select bug27417(1) union select bug27417(2);
 ERROR 23000: Duplicate entry '2' for key 't2.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -582,10 +582,10 @@ count(*)
 2
 delete from t1;
 insert into t3 values (1,1),(2,3),(3,4);
-reset master;
+reset binary logs and gtids;
 update t3 set b=b+bug27417(1);
 ERROR 23000: Duplicate entry '4' for key 't3.b'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t3)
@@ -602,10 +602,10 @@ delete from t3;
 delete from t4;
 insert into t3 values (1,1);
 insert into t4 values (1,1),(2,2);
-reset master;
+reset binary logs and gtids;
 UPDATE t4,t3 SET t4.a=t3.a + bug27417(1) /* top level non-ta table */;
 ERROR 23000: Duplicate entry '2' for key 't4.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -620,7 +620,7 @@ delete from t3;
 delete from t4;
 insert into t3 values (1,1),(2,2);
 insert into t4 values (1,1),(2,2);
-reset master;
+reset binary logs and gtids;
 UPDATE t3,t4 SET t3.a=t4.a + bug27417(1);
 ERROR 23000: Duplicate entry '2' for key 't3.PRIMARY'
 select count(*) from t1 /* must be 1 */;
@@ -634,10 +634,10 @@ insert into t2 values (1);
 insert into t3 values (1,1);
 create trigger trg_del before delete on t2 for each row 
 insert into t3 values (bug27417(1), 2);
-reset master;
+reset binary logs and gtids;
 delete from t2;
 ERROR 23000: Duplicate entry '1' for key 't3.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t3)
@@ -656,10 +656,10 @@ create trigger trg_del_t2 after  delete on t2 for each row
 insert into t1 values (1);
 insert into t2 values (2),(3);
 insert into t5 values (1),(2);
-reset master;
+reset binary logs and gtids;
 delete t2.* from t2,t5 where t2.a=t5.a + 1;
 ERROR 23000: Duplicate entry '1' for key 't1.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -672,7 +672,7 @@ count(*)
 delete from t1;
 create table t4 (a int default 0, b int primary key) engine=innodb;
 insert into t4 values (0, 17);
-reset master;
+reset binary logs and gtids;
 load data infile '../../std_data/rpl_loaddata.dat' into table t4 (a, @b) set b= @b + bug27417(2);
 ERROR 23000: Duplicate entry '17' for key 't4.PRIMARY'
 select * from t4;
@@ -681,7 +681,7 @@ a	b
 select count(*) from t1 /* must be 2 */;
 count(*)
 2
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -694,7 +694,7 @@ drop function bug27417;
 end of tests
 create temporary table tt (a int unique);
 create table ti (a int) engine=innodb;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into ti values (1);
 insert into ti values (2) ;
@@ -705,7 +705,7 @@ Warning	1196	Some non-transactional changed tables couldn't be rolled back
 select count(*) from tt /* 2 */;
 count(*)
 2
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 select count(*) from ti /* zero */;
 count(*)
@@ -717,7 +717,7 @@ a
 2
 delete from ti;
 delete from tt where a=1;
-reset master;
+reset binary logs and gtids;
 begin;
 insert into ti values (1);
 insert into ti values (2) /* to make the dup error in the following */;
@@ -726,7 +726,7 @@ ERROR 23000: Duplicate entry '2' for key 'tt.a'
 rollback;
 Warnings:
 Warning	1196	Some non-transactional changed tables couldn't be rolled back
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 select count(*) from ti /* zero */;
 count(*)
@@ -749,13 +749,13 @@ return n;
 end|
 Warnings:
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
-reset master;
+reset binary logs and gtids;
 insert into t2 values (bug27417(1));
 insert into t2 select bug27417(2);
-reset master;
+reset binary logs and gtids;
 insert into t2 values (bug27417(2));
 ERROR 23000: Duplicate entry '2' for key 't2.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -765,7 +765,7 @@ binlog.000001	#	Query	#	#	COMMIT
 select count(*) from t1 /* must be 3 */;
 count(*)
 3
-reset master;
+reset binary logs and gtids;
 select count(*) from t2;
 count(*)
 2
@@ -773,7 +773,7 @@ delete from t2 where a=bug27417(3);
 select count(*) from t2 /* nothing got deleted */;
 count(*)
 2
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t2)
@@ -795,10 +795,10 @@ CREATE TABLE t3 (a int, PRIMARY KEY (a), b int unique) ENGINE=MyISAM;
 CREATE TABLE t4 (a int, PRIMARY KEY (a), b int unique) ENGINE=Innodb;
 CREATE TABLE t5 (a int, PRIMARY KEY (a)) ENGINE=InnoDB;
 insert into t2 values (1);
-reset master;
+reset binary logs and gtids;
 insert into t2 values (bug27417(1));
 ERROR 23000: Duplicate entry '1' for key 't2.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -810,10 +810,10 @@ count(*)
 delete from t1;
 delete from t2;
 insert into t2 values (2);
-reset master;
+reset binary logs and gtids;
 insert into t2 select bug27417(1) union select bug27417(2);
 ERROR 23000: Duplicate entry '2' for key 't2.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -824,10 +824,10 @@ count(*)
 2
 delete from t1;
 insert into t3 values (1,1),(2,3),(3,4);
-reset master;
+reset binary logs and gtids;
 update t3 set b=b+bug27417(1);
 ERROR 23000: Duplicate entry '4' for key 't3.b'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t3)
@@ -843,10 +843,10 @@ delete from t3;
 delete from t4;
 insert into t3 values (1,1);
 insert into t4 values (1,1),(2,2);
-reset master;
+reset binary logs and gtids;
 UPDATE t4,t3 SET t4.a=t3.a + bug27417(1) /* top level non-ta table */;
 ERROR 23000: Duplicate entry '2' for key 't4.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -860,7 +860,7 @@ delete from t3;
 delete from t4;
 insert into t3 values (1,1),(2,2);
 insert into t4 values (1,1),(2,2);
-reset master;
+reset binary logs and gtids;
 UPDATE t3,t4 SET t3.a = t4.a + bug27417(1) where t3.a = 1;
 ERROR 23000: Duplicate entry '2' for key 't3.PRIMARY'
 select count(*) from t1 /* must be 1 */;
@@ -874,10 +874,10 @@ insert into t2 values (1);
 insert into t3 values (1,1);
 create trigger trg_del before delete on t2 for each row 
 insert into t3 values (bug27417(1), 2);
-reset master;
+reset binary logs and gtids;
 delete from t2;
 ERROR 23000: Duplicate entry '1' for key 't3.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t3)
@@ -895,10 +895,10 @@ create trigger trg_del_t2 after  delete on t2 for each row
 insert into t1 values (1);
 insert into t2 values (2),(3);
 insert into t5 values (1),(2);
-reset master;
+reset binary logs and gtids;
 delete t2.* from t2,t5 where t2.a=t5.a + 1;
 ERROR 23000: Duplicate entry '1' for key 't1.PRIMARY'
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -910,7 +910,7 @@ count(*)
 delete from t1;
 create table t4 (a int default 0, b int primary key) engine=innodb;
 insert into t4 values (0, 17);
-reset master;
+reset binary logs and gtids;
 load data infile '../../std_data/rpl_loaddata.dat' into table t4 (a, @b) set b= @b + bug27417(2);
 ERROR 23000: Duplicate entry '17' for key 't4.PRIMARY'
 select * from t4;
@@ -919,7 +919,7 @@ a	b
 select count(*) from t1 /* must be 2 */;
 count(*)
 2
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)

@@ -1,16 +1,17 @@
 /*
-Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -102,23 +103,19 @@ class MetadataHttpAuthTest : public RouterComponentTest {
   }
 
   std::string get_rest_section() const {
-    const std::string result =
-        "[http_server]\n"
-        "port=" +
-        std::to_string(http_server_port) +
-        "\n"
-        "[rest_router]\n"
-        "require_realm = somerealm\n"
-        "[rest_api]\n"
-        "[http_auth_realm:somerealm]\n"
-        "backend = somebackend\n"
-        "method = basic\n"
-        "name = test\n" +
-        auth_backend_settings() +
-        "[rest_routing]\n"
-        "require_realm = somerealm\n";
-
-    return result;
+    return mysql_harness::ConfigBuilder::build_section("rest_api", {}) +
+           mysql_harness::ConfigBuilder::build_section(
+               "rest_router", {{"require_realm", "somerealm"}}) +
+           mysql_harness::ConfigBuilder::build_section(
+               "rest_routing", {{"require_realm", "somerealm"}}) +
+           mysql_harness::ConfigBuilder::build_section(
+               "http_auth_realm:somerealm", {{"backend", "somebackend"},
+                                             {"method", "basic"},
+                                             {"name", "test"}}) +
+           mysql_harness::ConfigBuilder::build_section(
+               "http_server", {{"port", std::to_string(http_server_port)},
+                               {"bind_address", "127.0.0.1"}}) +
+           auth_backend_settings();
   }
 
   std::string create_state_file_content(const std::string &cluster_id,
@@ -182,15 +179,17 @@ class MetadataHttpAuthTest : public RouterComponentTest {
         /*with_sudo=*/false, wait_for_notify_ready);
   }
 
-  void set_mock_metadata(
-      const std::vector<Auth_data> &auth_data_collection,
-      const uint16_t http_port, const std::string &gr_id,
-      const uint16_t cluster_node_port, const bool error_on_md_query = false,
-      const unsigned primary_id = 0, const uint64_t view_id = 0,
-      const mysqlrouter::MetadataSchemaVersion md_version = {2, 0, 3}) const {
-    auto json_doc = mock_GR_metadata_as_json(gr_id, {cluster_node_port}, 0,
-                                             {cluster_node_port}, primary_id,
-                                             view_id, error_on_md_query);
+  void set_mock_metadata(const std::vector<Auth_data> &auth_data_collection,
+                         const uint16_t http_port, const std::string &gr_id,
+                         const uint16_t cluster_node_port,
+                         const bool error_on_md_query = false,
+                         const uint64_t view_id = 0,
+                         const mysqlrouter::MetadataSchemaVersion md_version = {
+                             2, 0, 3}) const {
+    auto json_doc = mock_GR_metadata_as_json(
+        gr_id, classic_ports_to_gr_nodes({cluster_node_port}), 0,
+        classic_ports_to_cluster_nodes({cluster_node_port}), view_id,
+        error_on_md_query);
 
     JsonAllocator allocator;
     JsonValue nodes(rapidjson::kArrayType);
@@ -222,7 +221,8 @@ class MetadataHttpAuthTest : public RouterComponentTest {
     metadata_version_node.PushBack(md_version.major, allocator);
     metadata_version_node.PushBack(md_version.minor, allocator);
     metadata_version_node.PushBack(md_version.patch, allocator);
-    json_doc.AddMember("metadata_version", metadata_version_node, allocator);
+    json_doc.AddMember("metadata_schema_version", metadata_version_node,
+                       allocator);
 
     const auto json_str = json_to_string(json_doc);
 
@@ -343,7 +343,7 @@ class BasicMetadataHttpAuthTest
 
 TEST_F(BasicMetadataHttpAuthTest, MetadataHttpAuthDefaultConfig) {
   set_mock_metadata({{kTestUser1, ""}}, cluster_http_port, cluster_id,
-                    cluster_node_port, false, 0, view_id);
+                    cluster_node_port, false, view_id);
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   launch_router(kMetadataCacheSectionBase);
@@ -361,9 +361,9 @@ TEST_F(BasicMetadataHttpAuthTest, MetadataHttpAuthDefaultConfig) {
                                        kContentTypeJson));
 }
 
-TEST_F(BasicMetadataHttpAuthTest, UnsupportedMetadataSchemaVersion) {
+TEST_F(BasicMetadataHttpAuthTest, DISABLED_UnsupportedMetadataSchemaVersion) {
   set_mock_metadata({{kTestUser1, ""}}, cluster_http_port, cluster_id,
-                    cluster_node_port, false, 0, view_id, {1, 0, 0});
+                    cluster_node_port, false, view_id, {2, 0, 0});
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   launch_router(kMetadataCacheSectionBase);
@@ -384,7 +384,7 @@ TEST_P(BasicMetadataHttpAuthTest, BasicMetadataHttpAuth) {
   set_mock_metadata(
       {{GetParam().cached_info.credentials, GetParam().cached_info.privileges,
         GetParam().cached_info.auth_method}},
-      cluster_http_port, cluster_id, cluster_node_port, false, 0, view_id);
+      cluster_http_port, cluster_id, cluster_node_port, false, view_id);
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   const std::string metadata_cache_section =
@@ -496,7 +496,7 @@ TEST_F(FileAuthBackendWithMetadataAuthSettings, MixedBackendSettings) {
   EXPECT_EQ(cmd.wait_for_exit(), 0) << cmd.get_full_output();
 
   set_mock_metadata({}, cluster_http_port, cluster_id, cluster_node_port, false,
-                    0, view_id);
+                    view_id);
 
   const std::string metadata_cache_section =
       get_metadata_cache_section(kTTL, kAuthCacheTTL, kAuthCacheRefreshRate);
@@ -512,7 +512,7 @@ class InvalidMetadataHttpAuthTimersTest
 
 TEST_P(InvalidMetadataHttpAuthTimersTest, InvalidMetadataHttpAuthTimers) {
   set_mock_metadata({{kTestUser1, ""}}, cluster_http_port, cluster_id,
-                    cluster_node_port, false, 0, view_id);
+                    cluster_node_port, false, view_id);
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   auto &router =
@@ -541,7 +541,7 @@ class ValidMetadataHttpAuthTimersTest
 
 TEST_P(ValidMetadataHttpAuthTimersTest, ValidMetadataHttpAuthTimers) {
   set_mock_metadata({{kTestUser1, ""}}, cluster_http_port, cluster_id,
-                    cluster_node_port, false, 0, view_id);
+                    cluster_node_port, false, view_id);
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   launch_router(kMetadataCacheSectionBase + "ttl=0.001\n" + GetParam());
@@ -565,7 +565,7 @@ class MetadataHttpAuthTestCustomTimers
 
 TEST_P(MetadataHttpAuthTestCustomTimers, MetadataHttpAuthCustomTimers) {
   set_mock_metadata({{kTestUser1, ""}}, cluster_http_port, cluster_id,
-                    cluster_node_port, false, 0, view_id);
+                    cluster_node_port, false, view_id);
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   launch_router(kMetadataCacheSectionBase + GetParam());
@@ -595,7 +595,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(MetadataHttpAuthTest, ExpiredAuthCacheTTL) {
   set_mock_metadata({{kTestUser1, ""}}, cluster_http_port, cluster_id,
-                    cluster_node_port, false, 0, view_id);
+                    cluster_node_port, false, view_id);
 
   std::chrono::milliseconds cache_ttl = kAuthCacheRefreshRate * 4;
   SCOPED_TRACE("// Launch the router with the initial state file");
@@ -618,7 +618,7 @@ TEST_F(MetadataHttpAuthTest, ExpiredAuthCacheTTL) {
   const bool fail_on_md_query = true;
   // Start to fail metadata cache updates
   set_mock_metadata({{kTestUser1, ""}}, cluster_http_port, cluster_id,
-                    cluster_node_port, fail_on_md_query, 0, view_id);
+                    cluster_node_port, fail_on_md_query, view_id);
 
   // wait long enough for the auth cache to expire
   std::this_thread::sleep_for(cache_ttl);
@@ -641,7 +641,7 @@ class MetadataAuthCacheUpdate
 
 TEST_P(MetadataAuthCacheUpdate, AuthCacheUpdate) {
   set_mock_metadata(GetParam().first_auth_cache_data_set, cluster_http_port,
-                    cluster_id, cluster_node_port, false, 0, view_id);
+                    cluster_id, cluster_node_port, false, view_id);
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   const std::string metadata_cache_section =
@@ -662,7 +662,7 @@ TEST_P(MetadataAuthCacheUpdate, AuthCacheUpdate) {
 
   // Update authentication metadata
   set_mock_metadata(GetParam().second_auth_cache_data_set, cluster_http_port,
-                    cluster_id, cluster_node_port, false, 0, view_id);
+                    cluster_id, cluster_node_port, false, view_id);
 
   // auth_cache is updated
   EXPECT_GT(wait_for_rest_auth_query(2, cluster_http_port), 0);

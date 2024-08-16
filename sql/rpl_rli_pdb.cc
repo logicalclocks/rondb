@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -72,6 +73,8 @@
 #include "sql/sql_lex.h"
 #include "sql/table.h"
 #include "sql/transaction_info.h"
+#include "string_with_len.h"
+#include "strmake.h"
 #include "thr_mutex.h"
 
 #ifndef NDEBUG
@@ -348,11 +351,15 @@ int Slave_worker::init_worker(Relay_log_info *rli, ulong i) {
   server_version = version_product(rli->slave_version_split);
   bitmap_shifted = 0;
   workers = c_rli->workers;  // shallow copying is sufficient
-  wq_empty_waits = wq_size_waits_cnt = groups_done = events_done = curr_jobs =
-      0;
+  wq_empty_waits = 0;
+  wq_size_waits_cnt = 0;
+  groups_done = 0;
+  events_done = 0;
+  curr_jobs = 0;
   usage_partition = 0;
   end_group_sets_max_dbs = false;
-  gaq_index = last_group_done_index = c_rli->gaq->capacity;  // out of range
+  gaq_index = c_rli->gaq->capacity;              // out of range
+  last_group_done_index = c_rli->gaq->capacity;  // out of range
   last_groups_assigned_index = 0;
   assert(!jobs.inited_queue);
   jobs.avail = 0;
@@ -547,8 +554,8 @@ bool Slave_worker::read_info(Rpl_info_handler *from) {
 
 /*
   This function is used to make a copy of the worker object before we
-  destroy it while STOP SLAVE. This new object is then used to report the
-  worker status until next START SLAVE following which the new worker objects
+  destroy it while STOP REPLICA. This new object is then used to report the
+  worker status until next START REPLICA following which the new worker objects
   will be used.
 */
 void Slave_worker::copy_values_for_PFS(ulong worker_id,
@@ -643,6 +650,7 @@ bool Slave_worker::commit_positions(Log_event *ev, Slave_job_group *ptr_g,
     after a rotation.
   */
   if (ptr_g->group_master_log_name != nullptr) {
+    my_claim(ptr_g->group_master_log_name, /*claim=*/true);
     strmake(group_master_log_name, ptr_g->group_master_log_name,
             sizeof(group_master_log_name) - 1);
     my_free(ptr_g->group_master_log_name);
@@ -651,6 +659,9 @@ bool Slave_worker::commit_positions(Log_event *ev, Slave_job_group *ptr_g,
             sizeof(checkpoint_master_log_name) - 1);
   }
   if (ptr_g->checkpoint_log_name != nullptr) {
+    my_claim(ptr_g->checkpoint_log_name, /*claim=*/true);
+    my_claim(ptr_g->checkpoint_relay_log_name, /*claim=*/true);
+
     strmake(checkpoint_relay_log_name, ptr_g->checkpoint_relay_log_name,
             sizeof(checkpoint_relay_log_name) - 1);
     checkpoint_relay_log_pos = ptr_g->checkpoint_relay_log_pos;
@@ -1524,17 +1535,24 @@ void Slave_committed_queue::free_dynamic_items() {
 
 void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
                              va_list args) const {
+  const Gtid_specification *gtid_next = &info_thd->variables.gtid_next;
+  do_report(level, err_code, gtid_next, msg, args);
+}
+
+void Slave_worker::do_report(loglevel level, int err_code,
+                             const Gtid_specification *gtid_next,
+                             const char *msg, va_list args) const {
   char buff_coord[MAX_SLAVE_ERRMSG];
   char buff_gtid[Gtid::MAX_TEXT_LENGTH + 1];
   const char *log_name =
       const_cast<Slave_worker *>(this)->get_master_log_name();
   ulonglong log_pos = const_cast<Slave_worker *>(this)->get_master_log_pos();
   bool is_group_replication_applier_channel =
-      channel_map.is_group_replication_channel_name(c_rli->get_channel(), true);
-  const Gtid_specification *gtid_next = &info_thd->variables.gtid_next;
+      channel_map.is_group_replication_applier_channel_name(
+          c_rli->get_channel());
   THD *thd = info_thd;
 
-  gtid_next->to_string(global_sid_map, buff_gtid, true);
+  gtid_next->to_string(global_tsid_map, buff_gtid, true);
 
   if (level == ERROR_LEVEL && (!has_temporary_error(thd, err_code) ||
                                thd->get_transaction()->cannot_safely_rollback(
@@ -1598,11 +1616,9 @@ static bool may_have_timestamp(Log_event *ev) {
   bool res = false;
 
   switch (ev->get_type_code()) {
-    case binary_log::QUERY_EVENT:
-      res = true;
-      break;
-
-    case binary_log::GTID_LOG_EVENT:
+    case mysql::binlog::event::QUERY_EVENT:
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT:
       res = true;
       break;
 
@@ -1617,7 +1633,8 @@ static int64 get_last_committed(Log_event *ev) {
   int64 res = SEQ_UNINIT;
 
   switch (ev->get_type_code()) {
-    case binary_log::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT:
       res = static_cast<Gtid_log_event *>(ev)->last_committed;
       break;
 
@@ -1632,7 +1649,8 @@ static int64 get_sequence_number(Log_event *ev) {
   int64 res = SEQ_UNINIT;
 
   switch (ev->get_type_code()) {
-    case binary_log::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT:
       res = static_cast<Gtid_log_event *>(ev)->sequence_number;
       break;
 
@@ -1701,7 +1719,7 @@ int Slave_worker::slave_worker_exec_event(Log_event *ev) {
 #endif
 
   // Address partitioning only in database mode
-  if (!is_gtid_event(ev) && is_mts_db_partitioned(rli)) {
+  if (!is_any_gtid_event(ev) && is_mts_db_partitioned(rli)) {
     if (ev->contains_partition_info(end_group_sets_max_dbs)) {
       uint num_dbs = ev->mts_number_dbs();
 
@@ -1781,9 +1799,10 @@ void Slave_worker::report_commit_order_deadlock() {
 
 void Slave_worker::prepare_for_retry(Log_event &event) {
   if (event.get_type_code() ==
-      binary_log::ROWS_QUERY_LOG_EVENT) {  // If a `Rows_query_log_event`, let
-                                           // the event be disposed in the main
-                                           // worker loop.
+      mysql::binlog::event::
+          ROWS_QUERY_LOG_EVENT) {  // If a `Rows_query_log_event`, let
+                                   // the event be disposed in the main
+                                   // worker loop.
     event.worker = this;
     this->rows_query_ev = nullptr;
   }
@@ -1846,10 +1865,10 @@ std::tuple<bool, bool, uint> Slave_worker::check_and_report_end_of_retries(
   return std::make_tuple(false, silent, error);
 }
 
-bool Slave_worker::retry_transaction(uint start_relay_number,
-                                     my_off_t start_relay_pos,
-                                     uint end_relay_number,
-                                     my_off_t end_relay_pos) {
+bool Slave_worker::retry_transaction(my_off_t start_relay_pos,
+                                     const char *start_event_relay_log_name,
+                                     my_off_t end_relay_pos,
+                                     const char *end_event_relay_log_name) {
   THD *thd = info_thd;
   bool silent = false;
 
@@ -1922,37 +1941,36 @@ bool Slave_worker::retry_transaction(uint start_relay_number,
     clean_retry_context();
     worker_sleep(min<ulong>(trans_retries, MAX_SLAVE_RETRY_PAUSE));
 
-  } while (read_and_apply_events(start_relay_number, start_relay_pos,
-                                 end_relay_number, end_relay_pos));
+  } while (read_and_apply_events(start_relay_pos, start_event_relay_log_name,
+                                 end_relay_pos, end_event_relay_log_name));
   return false;
 }
 
 /**
   Read events from relay logs and apply them.
 
-  @param[in] start_relay_number The extension number of the relay log which
-               includes the first event of the transaction.
   @param[in] start_relay_pos The offset of the transaction's first event.
+  @param[in] start_event_relay_log_name The name of the relay log which
+               includes the first event of the transaction.
 
-  @param[in] end_relay_number The extension number of the relay log which
-               includes the last event it should retry.
   @param[in] end_relay_pos The offset of the last event it should retry.
+  @param[in] end_event_relay_log_name The name of the relay log which
+               includes the last event it should retry.
 
   @return false if succeeds, otherwise returns true.
 */
-bool Slave_worker::read_and_apply_events(uint start_relay_number,
-                                         my_off_t start_relay_pos,
-                                         uint end_relay_number,
-                                         my_off_t end_relay_pos) {
+bool Slave_worker::read_and_apply_events(my_off_t start_relay_pos,
+                                         const char *start_event_relay_log_name,
+                                         my_off_t end_relay_pos,
+                                         const char *end_event_relay_log_name) {
   DBUG_TRACE;
 
   Relay_log_info *rli = c_rli;
   char file_name[FN_REFLEN + 1];
-  uint file_number = start_relay_number;
   bool arrive_end = false;
   Relaylog_file_reader relaylog_file_reader(opt_replica_sql_verify_checksum);
 
-  relay_log_number_to_name(start_relay_number, file_name);
+  strcpy(file_name, start_event_relay_log_name);
 
 #ifdef HAVE_PSI_THREAD_INTERFACE
   PSI_thread *thread = thd_get_psi(rli->info_thd);
@@ -1976,7 +1994,7 @@ bool Slave_worker::read_and_apply_events(uint start_relay_number,
 
     /* If it is the last event, then set arrive_end as true */
     arrive_end = (relaylog_file_reader.position() == end_relay_pos &&
-                  file_number == end_relay_number);
+                  !(strcmp(file_name, end_event_relay_log_name)));
 
     ev = relaylog_file_reader.read_event_object();
     if (ev != nullptr) {
@@ -2030,8 +2048,6 @@ bool Slave_worker::read_and_apply_events(uint start_relay_number,
         LogErr(ERROR_LEVEL, ER_RPL_WORKER_CANT_FIND_NEXT_RELAY_LOG, file_name);
         return true;
       }
-
-      file_number = relay_log_name_to_number(file_name);
 
       relaylog_file_reader.close();
       start_relay_pos = BIN_LOG_HEADER_SIZE;
@@ -2096,6 +2112,8 @@ bool append_item_to_jobs(slave_job_item *job_item, Slave_worker *worker,
   mysql_mutex_lock(&rli->pending_jobs_lock);
   new_pend_size = rli->mts_pending_jobs_size + ev_size;
   bool big_event = (ev_size > rli->mts_pending_jobs_size_max);
+  Slave_job_group *ptr_g =
+      rli->gaq->get_job_group(rli->gaq->assigned_group_index);
   /*
     C waits basing on *data* sizes in the queues.
     If it is a big event (event size is greater than
@@ -2120,9 +2138,15 @@ bool append_item_to_jobs(slave_job_item *job_item, Slave_worker *worker,
     mysql_mutex_unlock(&rli->pending_jobs_lock);
     thd->EXIT_COND(&old_stage);
     if (thd->killed) return true;
-    if (rli->wq_size_waits_cnt % 10 == 1)
-      LogErr(INFORMATION_LEVEL, ER_RPL_MTA_REPLICA_COORDINATOR_HAS_WAITED,
-             rli->wq_size_waits_cnt, ev_size);
+    if (rli->wq_size_waits_cnt % 10 == 1) {
+      time_t my_now = time(nullptr);
+      if ((my_now - rli->mta_coordinator_has_waited_stat) >=
+          mts_online_stat_period) {
+        LogErr(INFORMATION_LEVEL, ER_RPL_MTA_REPLICA_COORDINATOR_HAS_WAITED,
+               rli->wq_size_waits_cnt, ev_size);
+        rli->mta_coordinator_has_waited_stat = my_now;
+      }
+    }
     mysql_mutex_lock(&rli->pending_jobs_lock);
 
     new_pend_size = rli->mts_pending_jobs_size + ev_size;
@@ -2130,6 +2154,7 @@ bool append_item_to_jobs(slave_job_item *job_item, Slave_worker *worker,
   rli->pending_jobs++;
   rli->mts_pending_jobs_size = new_pend_size;
   rli->mts_events_assigned++;
+  rli->mts_online_stat_curr++;
 
   mysql_mutex_unlock(&rli->pending_jobs_lock);
 
@@ -2162,6 +2187,16 @@ bool append_item_to_jobs(slave_job_item *job_item, Slave_worker *worker,
     rli->mts_wq_no_underrun_cnt++;
   }
 
+  // unclaim ownership of the event log memory
+  job_item->data->claim_memory_ownership(/*claim=*/false);
+  if (worker->checkpoint_notified) {
+    my_claim(ptr_g->checkpoint_log_name, /*claim=*/false);
+    my_claim(ptr_g->checkpoint_relay_log_name, /*claim=*/false);
+  }
+  if (worker->master_log_change_notified) {
+    my_claim(ptr_g->group_master_log_name, /*claim=*/false);
+  }
+
   mysql_mutex_lock(&worker->jobs_lock);
 
   // possible WQ overfill
@@ -2191,6 +2226,16 @@ bool append_item_to_jobs(slave_job_item *job_item, Slave_worker *worker,
     rli->pending_jobs--;  // roll back of the prev incr
     rli->mts_pending_jobs_size -= ev_size;
     mysql_mutex_unlock(&rli->pending_jobs_lock);
+
+    // claim back ownership of the event log memory
+    job_item->data->claim_memory_ownership(/*claim=*/true);
+    if (worker->checkpoint_notified) {
+      my_claim(ptr_g->checkpoint_log_name, /*claim=*/true);
+      my_claim(ptr_g->checkpoint_relay_log_name, /*claim=*/true);
+    }
+    if (worker->master_log_change_notified) {
+      my_claim(ptr_g->group_master_log_name, /*claim=*/true);
+    }
   }
 
   return (Slave_jobs_queue::error_result != ret) ? false : true;
@@ -2399,23 +2444,23 @@ void report_error_to_coordinator(Slave_worker *worker) {
          returns an error code.
  */
 int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
-  struct slave_job_item item = {nullptr, 0, 0};
+  struct slave_job_item item = {nullptr, 0, {'\0'}};
   struct slave_job_item *job_item = &item;
   THD *thd = worker->info_thd;
   bool seen_gtid = false;
   bool seen_begin = false;
   int error = 0;
   Log_event *ev = nullptr;
-  uint start_relay_number;
   my_off_t start_relay_pos;
+  char start_event_relay_log_name[FN_REFLEN + 1];
 
   DBUG_TRACE;
 
   if (unlikely(worker->trans_retries > 0)) worker->trans_retries = 0;
 
   job_item = pop_jobs_item(worker, job_item);
-  start_relay_number = job_item->relay_number;
   start_relay_pos = job_item->relay_pos;
+  strcpy(start_event_relay_log_name, job_item->event_relay_log_name);
 
   PSI_thread *thread = thd_get_psi(thd);
 
@@ -2444,6 +2489,10 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
 
     ev = job_item->data;
     assert(ev != nullptr);
+
+    // claim ownership of the event log memory
+    ev->claim_memory_ownership(/*claim=*/true);
+
     DBUG_PRINT("info", ("W_%lu <- job item: %p data: %p thd: %p", worker->id,
                         job_item, ev, thd));
     /*
@@ -2455,7 +2504,7 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
     */
     worker_curr_ev.set_current_event(ev);
 
-    if (is_gtid_event(ev)) seen_gtid = true;
+    if (is_any_gtid_event(ev)) seen_gtid = true;
     if (!seen_begin && ev->starts_group()) {
       seen_begin = true;  // The current group is started with B-event
       worker->end_group_sets_max_dbs = true;
@@ -2480,9 +2529,9 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
         diff_timespec(&worker->ts_exec[1], &worker->ts_exec[0]);
     if (error || worker->found_commit_order_deadlock()) {
       worker->prepare_for_retry(*ev);
-      error = worker->retry_transaction(start_relay_number, start_relay_pos,
-                                        job_item->relay_number,
-                                        job_item->relay_pos);
+      error = worker->retry_transaction(
+          start_relay_pos, start_event_relay_log_name, job_item->relay_pos,
+          job_item->event_relay_log_name);
       if (error) goto err;
     }
     /*
@@ -2493,14 +2542,15 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
       WL#7592 refines the original assert disjunction formula
       with the final disjunct.
     */
-    assert(seen_begin || is_gtid_event(ev) ||
-           ev->get_type_code() == binary_log::QUERY_EVENT ||
+    assert(seen_begin || is_any_gtid_event(ev) ||
+           ev->get_type_code() == mysql::binlog::event::QUERY_EVENT ||
            is_mts_db_partitioned(rli) || worker->id == 0 || seen_gtid);
 
-    if (ev->ends_group() || (!seen_begin && !is_gtid_event(ev) &&
-                             (ev->get_type_code() == binary_log::QUERY_EVENT ||
-                              /* break through by LC only in GTID off */
-                              (!seen_gtid && !is_mts_db_partitioned(rli)))))
+    if (ev->ends_group() ||
+        (!seen_begin && !is_any_gtid_event(ev) &&
+         (ev->get_type_code() == mysql::binlog::event::QUERY_EVENT ||
+          /* break through by LC only in GTID off */
+          (!seen_gtid && !is_mts_db_partitioned(rli)))))
       break;
 
     remove_item_from_jobs(job_item, worker, rli);
@@ -2527,7 +2577,7 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
       assert(opt_debug_sync_timeout > 0);
       assert(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
     };);
-    if (ev->get_type_code() == binary_log::QUERY_EVENT &&
+    if (ev->get_type_code() == mysql::binlog::event::QUERY_EVENT &&
         ((Query_log_event *)ev)->rollback_injected_by_coord) {
       /*
         If this was a rollback event injected by the coordinator because of a

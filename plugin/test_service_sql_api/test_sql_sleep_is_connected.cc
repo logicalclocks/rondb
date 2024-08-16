@@ -1,14 +1,15 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,6 +28,7 @@
 
 #include <cstdint>
 
+#include "m_string.h"
 #include "mysql/components/my_service.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/plugin.h"
@@ -37,6 +39,8 @@
 #include "my_dbug.h"       // NOLINT(build/include_subdir)
 #include "my_inttypes.h"   // NOLINT(build/include_subdir)
 #include "mysqld_error.h"  // NOLINT(build/include_subdir)
+
+struct CHARSET_INFO;
 
 static Test_context *test_context = nullptr;
 
@@ -63,6 +67,8 @@ static void ensure_api_ok(const char *function, MYSQL_SESSION result) {
 struct Callback_data {
   bool limit_is_connected{false};
   int is_connected_calls{0};
+  int is_disconnected_calls{2};  // Calls after disconnect.
+  int is_preamble_calls{4};      // Calls before starting query.
   int handle_ok_calls{0};
 };
 
@@ -209,6 +215,14 @@ static bool sql_connection_alive(void *ctx) {
   Callback_data *cbd = static_cast<Callback_data *>(ctx);
 
   if (cbd->limit_is_connected) {
+    // Patch for bug#34930219 changes the way connection_alive() is called.
+    // Hence, we must adjust the expected number of calls.
+    if (cbd->is_preamble_calls-- > 0) return true;
+    if (cbd->is_connected_calls == 0 && cbd->is_disconnected_calls > 0) {
+      cbd->is_disconnected_calls--;
+      return false;
+    }
+
     // Connection is disconnected
     // after concrete number of calls
     cbd->is_connected_calls--;
@@ -263,7 +277,7 @@ static void run_cmd(MYSQL_SESSION session, const std::string &query,
   com.com_query.query = query.c_str();
   com.com_query.length = query.length();
 
-  int fail = command_service_run_command(
+  const int fail = command_service_run_command(
       session, COM_QUERY, &com, &my_charset_utf8mb3_general_ci, &sql_cbs,
       CS_TEXT_REPRESENTATION, ctxt);
   if (fail) {

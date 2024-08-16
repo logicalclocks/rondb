@@ -1,18 +1,19 @@
 #ifndef HISTOGRAMS_HISTOGRAM_INCLUDED
 #define HISTOGRAMS_HISTOGRAM_INCLUDED
 
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -42,7 +43,8 @@
 
 #include <cstddef>  // size_t
 #include <functional>
-#include <map>      // std::map
+#include <map>  // std::map
+#include <memory>
 #include <set>      // std::set
 #include <string>   // std::string
 #include <utility>  // std::pair
@@ -92,6 +94,7 @@ enum class Message {
   HISTOGRAM_DELETED,
   SERVER_READ_ONLY,
   MULTIPLE_COLUMNS_SPECIFIED,
+  SYSTEM_SCHEMA_NOT_SUPPORTED,
 
   // JSON validation errors. See Error_context.
   JSON_FORMAT_ERROR,
@@ -179,36 +182,49 @@ enum class enum_operator {
     5) breaking bucket sequence semantics
     6) breaking certain constraint between pieces of information
 
-  @see Message
+  @see histograms::Message for the list of JSON validation errors.
+
+  Use of the Error_context class
+  ------------------------------
+
+  An Error_context object is passed along with other parameters to the
+  json_to_histogram() function that is used to create a histogram object (e.g.
+  Equi_height<longlong>) from a JSON string.
+
+  The json_to_histogram() function has two different use cases, with different
+  requirements for validation:
+
+  1) Deserializing a histogram that was retrieved from the dictionary. In this
+     case the histogram has already been validated, and the user is not
+     expecting validation feedback, so we pass along a default-constructed
+     "empty shell" Error_context object with no-op operations.
+
+  2) When validating the user-supplied JSON string to the UPDATE HISTOGRAM ...
+     USING DATA commmand. In this case we pass along an active Error_context
+     object that uses a Field object to validate bucket values, and stores
+     results in a results_map.
+
+  The binary() method is used to distinguish between these two contexts/cases.
 */
 class Error_context {
  public:
-  /// Default constructor.
+  /// Default constructor. Used when deserializing binary JSON that has already
+  /// been validated, e.g. when retrieving a histogram from the dictionary, and
+  /// the Error_context object is not actively used for validation.
   Error_context()
       : m_thd{nullptr}, m_field{nullptr}, m_results{nullptr}, m_binary{true} {}
 
   /**
-    Constructor. The context will create a copy of the Field so that
-    Field::store can be used to check validity of bucket values. Results will
-    be saved to the given results store
+    Constructor. Used in the context of deserializing the user-supplied JSON
+    string to the UPDATE HISTOGRAM ... USING DATA command.
 
     @param thd      Thread context
     @param field    The field for values on which the histogram is built
-    @param table    The table on which the histogram is built
     @param results  Where reported errors are stored
     */
-  Error_context(THD *thd, Field *field, TABLE *table, results_map *results);
+  Error_context(THD *thd, Field *field, results_map *results)
+      : m_thd(thd), m_field(field), m_results(results), m_binary(false) {}
 
-  /**
-   Destructor. Destroy the copy of the Field and set all pointers to nullptr
-   **/
-  ~Error_context() {
-    if (m_field) destroy(m_field);
-    m_thd = nullptr;
-    m_field = nullptr;
-    m_results = nullptr;
-    m_binary = false;
-  }
   /**
     Report a global error to this context.
 
@@ -237,6 +253,14 @@ class Error_context {
     @param v Pointer to the value.
 
     @return true on error, false otherwise
+
+    @note Uses Field::store() on the field for which the user-defined histogram
+    is to be constructed in order to check the validity of the supplied value.
+    This will have the side effect of writing to the record buffer so this
+    should only be used with an active Error_context (with a non-nullptr field)
+    when we do not otherwise expect to use the record buffer. Currently the only
+    use case is to validate the JSON input to the command UPDATE HISTOGRAM ...
+    USING DATA where it should be OK to use the field for this purpose.
    */
   template <typename T>
   bool check_value(T *v);
@@ -256,6 +280,7 @@ class Error_context {
     Return data-type of field in context if present. Used to enforce
     that histogram datatype matches column datatype for user-defined
     histograms.
+
     @return datatype string if present, nullptr if not
    */
   Field *field() const { return m_field; }
@@ -263,8 +288,6 @@ class Error_context {
  private:
   /// Thread context for error handlers
   THD *m_thd;
-  /// Buffer for m_field
-  uchar m_buffer[MAX_FIELD_WIDTH];
   /// The field for checking endpoint values
   Field *m_field;
   /// Where reported errors are stored
@@ -335,6 +358,9 @@ class Histogram {
   static constexpr const char *numer_of_buckets_specified_str() {
     return "number-of-buckets-specified";
   }
+
+  /// String representation of the JSON field "auto-update".
+  static constexpr const char *auto_update_str() { return "auto-update"; }
 
   /**
     Constructor.
@@ -422,6 +448,10 @@ class Histogram {
 
   /// Name of the column this histogram represents.
   LEX_CSTRING m_column_name;
+
+  /// True if the histogram was created with the AUTO UPDATE option, false if
+  /// MANUAL UPDATE.
+  bool m_auto_update;
 
   /**
     An internal function for getting a selectivity estimate prior to adustment.
@@ -560,6 +590,17 @@ class Histogram {
   size_t get_num_buckets_specified() const { return m_num_buckets_specified; }
 
   /**
+    @return True if automatic updates are enabled for the histogram, false
+    otherwise.
+  */
+  bool get_auto_update() const { return m_auto_update; }
+
+  /**
+    Sets the auto update property for the histogram.
+  */
+  void set_auto_update(bool auto_update) { m_auto_update = auto_update; }
+
+  /**
     Converts the histogram to a JSON object.
 
     @param[in,out] json_object output where the histogram is to be stored. The
@@ -601,7 +642,8 @@ class Histogram {
   virtual Histogram *clone(MEM_ROOT *mem_root) const = 0;
 
   /**
-    Store this histogram to persistent storage (data dictionary).
+    Store this histogram to persistent storage (data dictionary). The MEM_ROOT
+    that the histogram is allocated on is transferred to the dictionary.
 
     @param thd Thread handler.
 
@@ -685,24 +727,121 @@ Histogram *build_histogram(MEM_ROOT *mem_root, const Value_map<T> &value_map,
                            const std::string &col_name);
 
 /**
+  A simple struct containing the settings for a histogram to be built.
+*/
+struct HistogramSetting {
+  /// A null-terminated C-style string with the name of the column to build the
+  /// histogram for.
+  const char *column_name;
+
+  /// The target number of buckets for the histogram.
+  size_t num_buckets = 100;
+
+  /// Holds the JSON specification of the histogram for the UPDATE HISTOGRAM ...
+  /// USING DATA command, otherwise empty.
+  LEX_STRING data = {nullptr, 0};
+
+  /// True if AUTO UPDATE, false for MANUAL UPDATE.
+  bool auto_update = false;
+
+  /// A pointer to the field, used internally by update_histograms().
+  Field *field = nullptr;
+};
+
+/**
   Create or update histograms for a set of columns of a given table.
 
-  This function will try to create histogram statistics for all the columns
-  specified. If one of the columns fail, it will continue to the next one and
-  try.
+  This function will try to create a histogram for each HistogramSetting object
+  passed to it. It operates in two stages:
+
+  In the first stage it will attempt to resolve every HistogramSetting in
+  settings, verifying that the specified column exists and supports histograms.
+  If a setting cannot be resolved an error message will be generated (see note
+  below for details on error reporting), but the function will continue
+  executing. The collection of settings is modified in-place so that only the
+  resolved settings remain when the function returns.
+
+  In the second stage, after the settings have been resolved, the function
+  attempts to build a histogram for each resolved column. If an error is
+  encountered during this stage, the function will immediately abort and return
+  true. In other words, if the function returns true, it will have made an
+  attempt to update the histograms as specified in the output collection of
+  settings, but it could have failed halfway.
+
+  If no error occurs during the second stage the function will return false, and
+  the histograms specified in the output collection of settings will succesfully
+  have been updated.
 
   @param thd Thread handler.
   @param table The table where we should look for the columns/data.
-  @param columns Columns specified by the user.
-  @param num_buckets The maximum number of buckets to create in each
-         histogram.
-  @param data The histogram json literal for update
-  @param results A map where the result of each operation is stored.
+  @param[in,out] settings The settings for the histograms to be built.
+  @param[in,out] results A map where the result of each operation is stored.
 
-  @return false on success, true on error.
+  @return False on success, true if an error was encountered.
 */
-bool update_histogram(THD *thd, Table_ref *table, const columns_set &columns,
-                      int num_buckets, LEX_STRING data, results_map &results);
+bool update_histograms(THD *thd, Table_ref *table,
+                       Mem_root_array<HistogramSetting> *settings,
+                       results_map &results);
+
+/**
+  Updates existing histograms on a table that were specified with the AUTO
+  UPDATE option. If any histograms were updated a new snapshot of the current
+  collection of histograms for the table is inserted on the TABLE_SHARE.
+
+  @note The caller must manually ensure that the table share is flushed or that
+  tables are evicted from the table cache to guarantee that new queries will use
+  the updated histograms. This can be done by calling tdc_remove_table() and
+  passing the TDC_RT_REMOVE_UNUSED or TDC_RT_MARK_FOR_REOPEN option,
+  respectively.
+
+  @param thd Thread handle.
+  @param table Table_ref for the table to update histograms on. The table should
+  already be opened.
+
+  @return False if all automatically updated histograms on the table
+  (potentially none) were updated without encountering an error. True otherwise.
+*/
+bool auto_update_table_histograms(THD *thd, Table_ref *table);
+
+/**
+  Retrieve an updated snapshot of the histograms on a table directly from the
+  dictionary (in an inefficient manner, querying all columns) and inserts this
+  snapshot in the Table_histograms_collection on the TABLE_SHARE.
+
+  @param thd The current thread.
+  @param table The table to retrieve updated histograms for.
+
+  @note This function assumes that the table is opened and generally depends on
+  the surrounding context. It also locks/unlocks LOCK_OPEN.
+
+  @return False on success. Returns true if an error occurred in which case the
+  TABLE_SHARE will not have been updated.
+*/
+bool update_share_histograms(THD *thd, Table_ref *table);
+
+/**
+  Updates existing histograms on a table that were specified with the AUTO
+  UPDATE option. Updated histograms are made available to the optimizer.
+
+  This function wraps auto_update_table_histograms()) in an appropriate
+  transaction-context for the background thread.
+
+  @note This function temporarily disables the binary log as we are not
+  interested in replicating or recovering updates to histograms that take place
+  in the background.
+
+  @note This function supresses some errors in order to avoid spamming the error
+  log, but unexpected errors are written to the error log, following the same
+  pattern as the event scheduler.
+
+  @param thd Background thread handle.
+  @param db_name Name of the database holding the table.
+  @param table_name Name of the table to update histograms for.
+
+  @return False on success, true on error.
+*/
+bool auto_update_table_histograms_from_background_thread(
+    THD *thd, const std::string &db_name, const std::string &table_name);
 
 /**
   Drop histograms for all columns in a given table.
@@ -730,18 +869,17 @@ bool drop_all_histograms(THD *thd, Table_ref &table,
   @param thd Thread handler.
   @param table The table where we should look for the columns.
   @param columns Columns specified by the user.
-  @param needs_lock Whether we need to acquire metadata locks on
-                    the table and column statistics to be dropped.
   @param results A map where the result of each operation is stored.
 
-  @note In case when needs_lock parameter is false assumes that caller
-        owns exclusive metadata lock on the table, so there is no need
-        to lock individual statistics.
+  @note Assumes that the caller has the appropriate metadata locks on both the
+  table and column statistics. That can either be an exclusive metadata lock on
+  the table itself, or a shared metadata lock on the table combined with
+  exclusive locks on individual column statistics.
 
   @return false on success, true on error.
 */
 bool drop_histograms(THD *thd, Table_ref &table, const columns_set &columns,
-                     bool needs_lock, results_map &results);
+                     results_map &results);
 
 /**
   Rename histograms for all columns in a given table.

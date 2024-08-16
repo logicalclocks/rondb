@@ -25,6 +25,8 @@ if(CHECK_PIE_SUPPORTED)
 	check_pie_supported(LANGUAGES C)
 endif()
 
+DISABLE_MISSING_PROFILE_WARNING()
+
 # set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # set(CMAKE_COLOR_MAKEFILE OFF)
 # set(CMAKE_VERBOSE_MAKEFILE ON)
@@ -194,7 +196,7 @@ if(MSVC)
 	endif()
 	set(CBOR_LIBRARIES cbor)
 	set(ZLIB_LIBRARIES ext::zlib)
-	set(CRYPTO_LIBRARIES  ${CRYPTO_LIBRARY})
+	set(CRYPTO_LIBRARIES  OpenSSL::Crypto)
 
 	set(MSVC_DISABLED_WARNINGS_LIST
 		"C4152" # nonstandard extension used: function/data pointer
@@ -242,7 +244,7 @@ else()
   ENDIF(DISABLE_THESE_LINES)
 
 	set(CBOR_LIBRARIES "cbor")
-	set(CRYPTO_LIBRARIES "${CRYPTO_LIBRARY}")
+	set(CRYPTO_LIBRARIES "OpenSSL::Crypto")
 
   IF(DISABLE_THESE_LINES)
 	if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -344,6 +346,8 @@ endif()
 if(CMAKE_COMPILER_IS_GNUCC)
 	add_compile_options(-Wno-unused-result)
 endif()
+
+DISABLE_MISSING_PROFILE_WARNING()
 
 # Decide which keyword to use for thread-local storage.
 if(CMAKE_COMPILER_IS_GNUCC OR

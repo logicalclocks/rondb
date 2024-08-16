@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,26 +26,26 @@
 
 #define DBTUP_C
 #define DBTUP_GEN_CPP
-#include "util/require.h"
-#include <dblqh/Dblqh.hpp>
-#include "Dbtup.hpp"
-#include <RefConvert.hpp>
 #include <ndb_limits.h>
-#include <pc.hpp>
 #include <AttributeDescriptor.hpp>
-#include "AttributeOffset.hpp"
 #include <AttributeHeader.hpp>
 #include <Interpreter.hpp>
+#include <RefConvert.hpp>
+#include <dblqh/Dblqh.hpp>
+#include <pc.hpp>
 #include <signaldata/FsConf.hpp>
 #include <signaldata/FsRef.hpp>
 #include <signaldata/FsRemoveReq.hpp>
-#include <signaldata/TupCommit.hpp>
-#include <signaldata/TupKey.hpp>
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/NodeStateSignalData.hpp>
+#include <signaldata/TupCommit.hpp>
+#include <signaldata/TupKey.hpp>
+#include "AttributeOffset.hpp"
+#include "Dbtup.hpp"
+#include "util/require.h"
 
-#include <signaldata/DropTab.hpp>
 #include <IntrusiveList.hpp>
+#include <signaldata/DropTab.hpp>
 
 #include <EventLogger.hpp>
 
@@ -106,8 +107,7 @@ Dbtup::Dbtup(Block_context& ctx,
 {
   BLOCK_CONSTRUCTOR(Dbtup);
 
-  if (blockNo == DBTUP)
-  {
+  if (blockNo == DBTUP) {
     addRecSignal(GSN_DEBUG_SIG, &Dbtup::execDEBUG_SIG);
     addRecSignal(GSN_CONTINUEB, &Dbtup::execCONTINUEB);
     addRecSignal(GSN_NODE_FAILREP, &Dbtup::execNODE_FAILREP);
@@ -118,7 +118,7 @@ Dbtup::Dbtup(Block_context& ctx,
     addRecSignal(GSN_STTOR, &Dbtup::execSTTOR);
     addRecSignal(GSN_MEMCHECKREQ, &Dbtup::execMEMCHECKREQ);
     addRecSignal(GSN_TUPSEIZEREQ, &Dbtup::execTUPSEIZEREQ);
-    addRecSignal(GSN_STORED_PROCREQ, &Dbtup::execSTORED_PROCREQ); 
+    addRecSignal(GSN_STORED_PROCREQ, &Dbtup::execSTORED_PROCREQ);
     addRecSignal(GSN_CREATE_TAB_REQ, &Dbtup::execCREATE_TAB_REQ);
     addRecSignal(GSN_TUPFRAGREQ, &Dbtup::execTUPFRAGREQ);
     addRecSignal(GSN_TUP_ADD_ATTRREQ, &Dbtup::execTUP_ADD_ATTRREQ);
@@ -130,7 +130,7 @@ Dbtup::Dbtup(Block_context& ctx,
 
     // Trigger Signals
     addRecSignal(GSN_CREATE_TRIG_IMPL_REQ, &Dbtup::execCREATE_TRIG_IMPL_REQ);
-    addRecSignal(GSN_DROP_TRIG_IMPL_REQ,  &Dbtup::execDROP_TRIG_IMPL_REQ);
+    addRecSignal(GSN_DROP_TRIG_IMPL_REQ, &Dbtup::execDROP_TRIG_IMPL_REQ);
 
     addRecSignal(GSN_DROP_TAB_REQ, &Dbtup::execDROP_TAB_REQ);
 
@@ -174,9 +174,7 @@ Dbtup::Dbtup(Block_context& ctx,
     m_tux_block = DBTUX;
     m_backup_block = BACKUP;
     m_ldm_instance_used = this;
-  }
-  else
-  {
+  } else {
     ndbrequire(blockNo == DBQTUP);
     m_is_query_block = true;
     m_is_in_query_thread = true;
@@ -217,12 +215,12 @@ Dbtup::Dbtup(Block_context& ctx,
   c_storedProcCountNonAPI = 0;
 
   {
-    CallbackEntry& ce = m_callbackEntry[THE_NULL_CALLBACK];
+    CallbackEntry &ce = m_callbackEntry[THE_NULL_CALLBACK];
     ce.m_function = TheNULLCallback.m_callbackFunction;
     ce.m_flags = 0;
   }
-  { // 1
-    CallbackEntry& ce = m_callbackEntry[DROP_TABLE_LOG_BUFFER_CALLBACK];
+  {  // 1
+    CallbackEntry &ce = m_callbackEntry[DROP_TABLE_LOG_BUFFER_CALLBACK];
     ce.m_function = safe_cast(&Dbtup::drop_table_log_buffer_callback);
     ce.m_flags = 0;
   }
@@ -237,25 +235,22 @@ Dbtup::Dbtup(Block_context& ctx,
     ce.m_flags = CALLBACK_ACK;
   }
   {
-    CallbackTable& ct = m_callbackTable;
+    CallbackTable &ct = m_callbackTable;
     ct.m_count = COUNT_CALLBACKS;
     ct.m_entry = m_callbackEntry;
     m_callbackTableAddr = &ct;
   }
   c_transient_pools[DBTUP_OPERATION_RECORD_TRANSIENT_POOL_INDEX] =
-    &c_operation_pool;
+      &c_operation_pool;
   c_transient_pools[DBTUP_STORED_PROCEDURE_TRANSIENT_POOL_INDEX] =
-    &c_storedProcPool;
-  c_transient_pools[DBTUP_SCAN_LOCK_TRANSIENT_POOL_INDEX] =
-    &c_scanLockPool;
-  c_transient_pools[DBTUP_SCAN_OPERATION_TRANSIENT_POOL_INDEX] =
-    &c_scanOpPool;
+      &c_storedProcPool;
+  c_transient_pools[DBTUP_SCAN_LOCK_TRANSIENT_POOL_INDEX] = &c_scanLockPool;
+  c_transient_pools[DBTUP_SCAN_OPERATION_TRANSIENT_POOL_INDEX] = &c_scanOpPool;
   static_assert(c_transient_pool_count == 4);
   c_transient_pools_shrinking.clear();
-}//Dbtup::Dbtup()
+}  // Dbtup::Dbtup()
 
-Dbtup::~Dbtup() 
-{
+Dbtup::~Dbtup() {
   /* Free Fragment Copy Procedure info */
   freeCopyProcedure();
 
@@ -279,8 +274,7 @@ Dbtup::~Dbtup()
 		cnoOfTablerec);
 }//Dbtup::~Dbtup()
 
-Dbtup::Apply_undo::Apply_undo()
-{
+Dbtup::Apply_undo::Apply_undo() {
   m_in_intermediate_log_record = false;
   m_type = 0;
   m_len = 0;
@@ -308,8 +302,7 @@ Uint64 Dbtup::getTransactionMemoryNeed(
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_TUP_RESERVED_SCAN_RECORDS,
                                        &tup_scan_recs));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_LDM_RESERVED_OPERATIONS,
+    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LDM_RESERVED_OPERATIONS,
                                        &tup_op_recs));
     tup_sp_recs = tup_scan_recs;
     tup_scan_lock_recs = 1000;
@@ -330,82 +323,71 @@ Uint64 Dbtup::getTransactionMemoryNeed(
   scan_lock_byte_count += ScanLock_pool::getMemoryNeed(tup_scan_lock_recs);
   scan_lock_byte_count *= ldm_instance_count;
 
-  return (op_byte_count +
-          sp_byte_count +
-          scan_lock_byte_count +
+  return (op_byte_count + sp_byte_count + scan_lock_byte_count +
           scan_op_byte_count);
 }
 
-void Dbtup::execCONTINUEB(Signal* signal) 
-{
+void Dbtup::execCONTINUEB(Signal *signal) {
   jamEntry();
   Uint32 actionType = signal->theData[0];
   Uint32 dataPtr = signal->theData[1];
 
   switch (actionType) {
-  case ZTUP_REPORT_COMMIT_PERFORMED:
-  {
-    jam();
-    continue_report_commit_performed(signal, dataPtr);
-    return;
-  }
-  case ZTUP_SHRINK_TRANSIENT_POOLS:
-  {
-    jam();
-    Uint32 pool_index = signal->theData[1];
-    ndbassert(signal->getLength() == 2);
-    shrinkTransientPools(pool_index);
-    return;
-  }
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
+    case ZTUP_REPORT_COMMIT_PERFORMED: {
+      jam();
+      continue_report_commit_performed(signal, dataPtr);
+      return;
+    }
+    case ZTUP_SHRINK_TRANSIENT_POOLS: {
+      jam();
+      Uint32 pool_index = signal->theData[1];
+      ndbassert(signal->getLength() == 2);
+      shrinkTransientPools(pool_index);
+      return;
+    }
+#if (defined(VM_TRACE) || defined(ERROR_INSERT)) && \
     defined(DO_TRANSIENT_POOL_STAT)
 
-  case ZTUP_TRANSIENT_POOL_STAT:
-  {
-    for (Uint32 pool_index = 0;
-         pool_index < c_transient_pool_count;
-         pool_index++)
-    {
-      g_eventLogger->info(
-        "DBTUP %u: Transient slot pool %u %p: Entry size %u:"
-       " Free %u: Used %u: Used high %u: Size %u: For shrink %u",
-       instance(),
-       pool_index,
-       c_transient_pools[pool_index],
-       c_transient_pools[pool_index]->getEntrySize(),
-       c_transient_pools[pool_index]->getNoOfFree(),
-       c_transient_pools[pool_index]->getUsed(),
-       c_transient_pools[pool_index]->getUsedHi(),
-       c_transient_pools[pool_index]->getSize(),
-       c_transient_pools_shrinking.get(pool_index));
+    case ZTUP_TRANSIENT_POOL_STAT: {
+      for (Uint32 pool_index = 0; pool_index < c_transient_pool_count;
+           pool_index++) {
+        g_eventLogger->info(
+            "DBTUP %u: Transient slot pool %u %p: Entry size %u:"
+            " Free %u: Used %u: Used high %u: Size %u: For shrink %u",
+            instance(), pool_index, c_transient_pools[pool_index],
+            c_transient_pools[pool_index]->getEntrySize(),
+            c_transient_pools[pool_index]->getNoOfFree(),
+            c_transient_pools[pool_index]->getUsed(),
+            c_transient_pools[pool_index]->getUsedHi(),
+            c_transient_pools[pool_index]->getSize(),
+            c_transient_pools_shrinking.get(pool_index));
+      }
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 5000, 1);
+      break;
     }
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 5000, 1);
-    break;
-  }
 #endif
-  case ZINITIALISE_RECORDS:
-    jam();
-    initialiseRecordsLab(signal, dataPtr, 
-			 signal->theData[2], signal->theData[3]);
-    break;
-  case ZREL_FRAG:
-    jam();
-    releaseFragment(signal, dataPtr, signal->theData[2]);
-    break;
-  case ZBUILD_INDEX:
-    jam();
-    buildIndex(signal, dataPtr);
-    break;
-  case ZTUP_SCAN:
-    jam();
-    {
-      ScanOpPtr scanPtr;
-      scanPtr.i = dataPtr;
-      ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
-      c_lqh->checkLcpStopBlockedLab(signal, scanPtr.p->m_userPtr);
-    }
-    return;
+    case ZINITIALISE_RECORDS:
+      jam();
+      initialiseRecordsLab(signal, dataPtr, signal->theData[2],
+                           signal->theData[3]);
+      break;
+    case ZREL_FRAG:
+      jam();
+      releaseFragment(signal, dataPtr, signal->theData[2]);
+      break;
+    case ZBUILD_INDEX:
+      jam();
+      buildIndex(signal, dataPtr);
+      break;
+    case ZTUP_SCAN:
+      jam();
+      {
+        ScanOpPtr scanPtr;
+        scanPtr.i = dataPtr;
+        ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
+        c_lqh->checkLcpStopBlockedLab(signal, scanPtr.p->m_userPtr);
+      }
+      return;
   case ZFREE_EXTENT:
   {
     jam();
@@ -460,89 +442,78 @@ void Dbtup::execCONTINUEB(Signal* signal)
     rebuild_page_free_list(signal);
     return;
   }
-  case ZDISK_RESTART_UNDO:
-  {
-    jam();
-    if (!assembleFragments(signal)) {
+     case ZDISK_RESTART_UNDO: {
       jam();
+      if (!assembleFragments(signal)) {
+        jam();
+        return;
+      }
+      Uint32 type = signal->theData[1];
+      Uint32 len = signal->theData[2];
+      Uint64 lsn_hi = signal->theData[3];
+      Uint64 lsn_lo = signal->theData[4];
+      Uint64 lsn = (lsn_hi << 32) | lsn_lo;
+      SectionHandle handle(this, signal);
+      ndbrequire(handle.m_cnt == 1);
+      SegmentedSectionPtr ssptr;
+      ndbrequire(handle.getSection(ssptr, 0));
+      ndbrequire(ssptr.sz <= NDB_ARRAY_SIZE(f_undo.m_data));
+      ::copy(f_undo.m_data, ssptr);
+      releaseSections(handle);
+      disk_restart_undo(signal, lsn, type, f_undo.m_data, len);
       return;
     }
-    Uint32 type = signal->theData[1];
-    Uint32 len = signal->theData[2];
-    Uint64 lsn_hi = signal->theData[3];
-    Uint64 lsn_lo = signal->theData[4];
-    Uint64 lsn = (lsn_hi << 32) | lsn_lo;
-    SectionHandle handle(this, signal);
-    ndbrequire(handle.m_cnt == 1);
-    SegmentedSectionPtr ssptr;
-    ndbrequire(handle.getSection(ssptr, 0));
-    ndbrequire(ssptr.sz <= NDB_ARRAY_SIZE(f_undo.m_data));
-    ::copy(f_undo.m_data, ssptr);
-    releaseSections(handle);
-    disk_restart_undo(signal,
-                      lsn,
-                      type,
-                      f_undo.m_data,
-                      len);
-    return;
-  }
 
-  default:
-    ndbabort();
-  }//switch
-}//Dbtup::execTUP_CONTINUEB()
+    default:
+      ndbabort();
+  }  // switch
+}  // Dbtup::execTUP_CONTINUEB()
 
 /* **************************************************************** */
 /* ---------------------------------------------------------------- */
 /* ------------------- SYSTEM RESTART MODULE ---------------------- */
 /* ---------------------------------------------------------------- */
 /* **************************************************************** */
-void Dbtup::execSTTOR(Signal* signal) 
-{
+void Dbtup::execSTTOR(Signal *signal) {
   jamEntry();
   Uint32 startPhase = signal->theData[1];
   Uint32 sigKey = signal->theData[6];
   switch (startPhase) {
-  case ZSTARTPHASE1:
-    jam();
-    c_started = false;
-    if (m_is_query_block)
-    {
-      ndbrequire((c_tux = (Dbtux*)globalData.getBlock(DBQTUX,
-                                                      instance())) != 0);
-      ndbrequire((c_acc = (Dbacc*)globalData.getBlock(DBQACC,
-                                                      instance())) != 0);
-      ndbrequire((c_lqh = (Dblqh*)globalData.getBlock(DBQLQH,
-                                                      instance())) != 0);
-      ndbrequire((c_backup =
-        (Backup*)globalData.getBlock(QBACKUP, instance())) != 0);
-    }
-    else
-    {
-      ndbrequire((c_tux = (Dbtux*)globalData.getBlock(DBTUX,
-                                                      instance())) != 0);
-      ndbrequire((c_acc = (Dbacc*)globalData.getBlock(DBACC,
-                                                      instance())) != 0);
-      ndbrequire((c_lqh = (Dblqh*)globalData.getBlock(DBLQH,
-                                                      instance())) != 0);
-      ndbrequire((c_backup =
-        (Backup*)globalData.getBlock(BACKUP, instance())) != 0);
-    }
-    ndbrequire((c_suma = (Suma*)globalData.getBlock(SUMA)) != 0);
-    ndbrequire((c_tsman = (Tsman*)globalData.getBlock(TSMAN)) != 0);
-    ndbrequire((c_lgman = (Lgman*)globalData.getBlock(LGMAN)) != 0);
-    ndbrequire((c_pgman =
-                (Pgman*)globalData.getBlock(PGMAN, instance())) != 0);
-    cownref = reference();
-    break;
-  case 3:
-  {
-#if (defined(VM_TRACE) || \
-     defined(ERROR_INSERT)) && \
+    case ZSTARTPHASE1:
+      jam();
+      c_started = false;
+      if (m_is_query_block) {
+        ndbrequire((c_tux = (Dbtux *)globalData.getBlock(DBQTUX, instance())) !=
+                   0);
+        ndbrequire((c_acc = (Dbacc *)globalData.getBlock(DBQACC, instance())) !=
+                   0);
+        ndbrequire((c_lqh = (Dblqh *)globalData.getBlock(DBQLQH, instance())) !=
+                   0);
+        ndbrequire((c_backup = (Backup *)globalData.getBlock(QBACKUP,
+                                                             instance())) != 0);
+      } else {
+        ndbrequire((c_tux = (Dbtux *)globalData.getBlock(DBTUX, instance())) !=
+                   0);
+        ndbrequire((c_acc = (Dbacc *)globalData.getBlock(DBACC, instance())) !=
+                   0);
+        ndbrequire((c_lqh = (Dblqh *)globalData.getBlock(DBLQH, instance())) !=
+                   0);
+        ndbrequire((c_backup = (Backup *)globalData.getBlock(BACKUP,
+                                                             instance())) != 0);
+      }
+      ndbrequire((c_suma = (Suma*)globalData.getBlock(SUMA)) != 0);
+      ndbrequire((c_tsman = (Tsman *)globalData.getBlock(TSMAN)) != 0);
+      ndbrequire((c_lgman = (Lgman *)globalData.getBlock(LGMAN)) != 0);
+      ndbrequire((c_pgman = (Pgman *)globalData.getBlock(PGMAN, instance())) !=
+                 0);
+      cownref = reference();
+      break;
+    case 3: {
+#if (defined(VM_TRACE) || defined(ERROR_INSERT)) && \
     defined(DO_TRANSIENT_POOL_STAT)
-    /* Start reporting statistics for transient pools */
-    signal->theData[0] = ZTUP_TRANSIENT_POOL_STAT;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
+      /* Start reporting statistics for transient pools */
+      signal->theData[0] = ZTUP_TRANSIENT_POOL_STAT;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
 #endif
     break;
   }
@@ -585,23 +556,22 @@ void Dbtup::execSTTOR(Signal* signal)
     BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : DBTUP_REF;
     sendSignal(cntrRef, GSN_STTORRY, signal, 8, JBB);
   }
-}//Dbtup::execSTTOR()
+}  // Dbtup::execSTTOR()
 
 /************************************************************************************************/
-// SIZE_ALTREP INITIALIZE DATA STRUCTURES, FILES AND DS VARIABLES, GET READY FOR EXTERNAL 
-// CONNECTIONS.
+// SIZE_ALTREP INITIALIZE DATA STRUCTURES, FILES AND DS VARIABLES, GET READY FOR
+// EXTERNAL CONNECTIONS.
 /************************************************************************************************/
-void Dbtup::execREAD_CONFIG_REQ(Signal* signal) 
-{
-  const ReadConfigReq * req = (ReadConfigReq*)signal->getDataPtr();
+void Dbtup::execREAD_CONFIG_REQ(Signal *signal) {
+  const ReadConfigReq *req = (ReadConfigReq *)signal->getDataPtr();
   Uint32 ref = req->senderRef;
   Uint32 senderData = req->senderData;
   ndbrequire(req->noOfParameters == 0);
-  
+
   jamEntry();
 
-  const ndb_mgm_configuration_iterator * p = 
-    m_ctx.m_config.getOwnConfigIterator();
+  const ndb_mgm_configuration_iterator *p =
+      m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
   
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUP_TABLE, &cnoOfTablerec));
@@ -621,7 +591,7 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
   c_extent_hash.setSize(8192); // 4k
 
   c_pending_undo_page_hash.setSize(MAX_PENDING_UNDO_RECORDS);
-  
+
   Pool_context pc;
   pc.m_block = this;
   c_triggerPool.init(RT_DBTUP_TRIGGER_DATA, pc);
@@ -632,14 +602,11 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
   c_pending_undo_page_pool.init(RT_DBTUP_UNDO, pc);
 
   c_extent_pool.init(RT_DBTUP_EXTENT_INFO, pc);
-  if (!m_is_query_block)
-  {
+  if (!m_is_query_block) {
     NdbMutex_Init(&c_page_map_pool_mutex);
     c_page_map_pool.init(&c_page_map_pool_mutex, RT_DBTUP_PAGE_MAP, pc);
     c_page_map_pool_ptr = &c_page_map_pool;
-  }
-  else
-  {
+  } else {
     c_page_map_pool_ptr = 0;
   }
 
@@ -656,7 +623,6 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
     else
       m_max_page_read_ahead = (Uint32)page_cache_size;
   }
-
 
   ScanOpPtr lcp;
   ndbrequire(c_scanOpPool.seize(lcp));
@@ -688,13 +654,12 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
     val = (val + instance() - 1) / globalData.ndbMtLqhWorkers;
     m_max_parallel_index_build = val;
   }
-  
+
   initialiseRecordsLab(signal, 0, ref, senderData);
 
   {
     Uint32 val = 0;
-    ndb_mgm_get_int_parameter(p, CFG_DB_CRASH_ON_CORRUPTED_TUPLE,
-                              &val);
+    ndb_mgm_get_int_parameter(p, CFG_DB_CRASH_ON_CORRUPTED_TUPLE, &val);
     c_crashOnCorruptedTuple = val ? true : false;
   }
   /**
@@ -705,40 +670,32 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
   bat[0].nrr = (BackupFormat::LCP_CTL_FILE_BUFFER_SIZE_IN_WORDS * 4);
 }
 
-void Dbtup::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg) 
-{
+void Dbtup::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg) {
   unsigned i;
-  const ndb_mgm_configuration_iterator * p = 
-    m_ctx.m_config.getOwnConfigIterator();
+  const ndb_mgm_configuration_iterator *p =
+      m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   {
-    void* tmp[] =
-    {
-      &prepare_fragptr,
-      &prepare_tabptr,
-      &prepare_oper_ptr,
-      &prepare_pageptr,
-      &m_curr_tabptr,
-      &m_curr_fragptr,
+    void *tmp[] = {
+        &prepare_fragptr, &prepare_tabptr, &prepare_oper_ptr,
+        &prepare_pageptr, &m_curr_tabptr,  &m_curr_fragptr,
     };
-    init_global_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    init_global_ptrs(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
   {
-    void * tmp[] =
-    {
-      &prepare_page_idx,
-      &prepare_page_no,
+    void *tmp[] = {
+        &prepare_page_idx,
+        &prepare_page_no,
     };
-    init_global_uint32(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    init_global_uint32(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
   {
-    void * tmp[] =
-    {
-      &prepare_tuple_ptr,
+    void *tmp[] = {
+        &prepare_tuple_ptr,
     };
-    init_global_uint32_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    init_global_uint32_ptrs(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
 #endif
   // Records with dynamic sizes
@@ -746,8 +703,7 @@ void Dbtup::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   c_page_pool.set((Page*)ptr, (Uint32)~0);
   c_restart_allow_use_spare = true;
 
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     cnoOfFragoprec = 1;
     cnoOfAlterTabOps = 0;
     cnoOfTablerec = 0;
@@ -777,54 +733,34 @@ void Dbtup::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   pc.m_block = this;
 
   Uint32 reserveOpRecs = 1;
-  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
-                             CFG_LDM_RESERVED_OPERATIONS,
-                             &reserveOpRecs));
-  if (m_is_query_block)
-  {
+  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LDM_RESERVED_OPERATIONS,
+                                        &reserveOpRecs));
+  if (m_is_query_block) {
     reserveOpRecs = 200;
   }
-  c_operation_pool.init(
-    Operationrec::TYPE_ID,
-    pc,
-    reserveOpRecs,
-    UINT32_MAX);
-  while (c_operation_pool.startup())
-  {
+  c_operation_pool.init(Operationrec::TYPE_ID, pc, reserveOpRecs, UINT32_MAX);
+  while (c_operation_pool.startup()) {
     refresh_watch_dog();
   }
 
   Uint32 reserveSpRecs = 200;
-  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
-                             CFG_TUP_RESERVED_SCAN_RECORDS,
-                             &reserveSpRecs));
-  if (m_is_query_block)
-  {
+  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_TUP_RESERVED_SCAN_RECORDS,
+                                        &reserveSpRecs));
+  if (m_is_query_block) {
     reserveSpRecs = 1;
   }
-  c_storedProcPool.init(
-    storedProc::TYPE_ID,
-    pc,
-    reserveSpRecs,
-    UINT32_MAX);
-  while (c_storedProcPool.startup())
-  {
+  c_storedProcPool.init(storedProc::TYPE_ID, pc, reserveSpRecs, UINT32_MAX);
+  while (c_storedProcPool.startup()) {
     refresh_watch_dog();
   }
 
   Uint32 tup_scan_lock_recs = 1000;
   c_freeScanLock = RNIL;
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     tup_scan_lock_recs = 1;
   }
-  c_scanLockPool.init(
-    ScanLock::TYPE_ID,
-    pc,
-    tup_scan_lock_recs,
-    UINT32_MAX);
-  while (c_scanLockPool.startup())
-  {
+  c_scanLockPool.init(ScanLock::TYPE_ID, pc, tup_scan_lock_recs, UINT32_MAX);
+  while (c_scanLockPool.startup()) {
     refresh_watch_dog();
   }
   for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
@@ -838,20 +774,14 @@ void Dbtup::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
     m_reserved_copy_frag_lock.addFirst(lockPtr);
   }
 
-  c_scanOpPool.init(
-    ScanOp::TYPE_ID,
-    pc,
-    reserveSpRecs + 1,
-    UINT32_MAX);
-  while (c_scanOpPool.startup())
-  {
+  c_scanOpPool.init(ScanOp::TYPE_ID, pc, reserveSpRecs + 1, UINT32_MAX);
+  while (c_scanOpPool.startup()) {
     refresh_watch_dog();
   }
-}//Dbtup::initRecords()
+}  // Dbtup::initRecords()
 
-void Dbtup::initialiseRecordsLab(Signal* signal, Uint32 switchData,
-				 Uint32 retRef, Uint32 retData) 
-{
+void Dbtup::initialiseRecordsLab(Signal *signal, Uint32 switchData,
+                                 Uint32 retRef, Uint32 retData) {
   switch (switchData) {
   case 0:
     jam();
@@ -882,65 +812,63 @@ void Dbtup::initialiseRecordsLab(Signal* signal, Uint32 switchData,
   case 7:
     jam();
 
-    {
-      ReadConfigConf * conf = (ReadConfigConf*)signal->getDataPtrSend();
-      conf->senderRef = reference();
-      conf->senderData = retData;
-      sendSignal(retRef, GSN_READ_CONFIG_CONF, signal, 
-		 ReadConfigConf::SignalLength, JBB);
-    }
-    return;
-  default:
-    ndbabort();
-  }//switch
+      {
+        ReadConfigConf *conf = (ReadConfigConf *)signal->getDataPtrSend();
+        conf->senderRef = reference();
+        conf->senderData = retData;
+        sendSignal(retRef, GSN_READ_CONFIG_CONF, signal,
+                   ReadConfigConf::SignalLength, JBB);
+      }
+      return;
+    default:
+      ndbabort();
+  }  // switch
   signal->theData[0] = ZINITIALISE_RECORDS;
   signal->theData[1] = switchData + 1;
   signal->theData[2] = retRef;
   signal->theData[3] = retData;
   sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
   return;
-}//Dbtup::initialiseRecordsLab()
+}  // Dbtup::initialiseRecordsLab()
 
-void Dbtup::execNDB_STTOR(Signal* signal) 
-{
+void Dbtup::execNDB_STTOR(Signal *signal) {
   jamEntry();
   cndbcntrRef = signal->theData[0];
   Uint32 startPhase = signal->theData[2];
   switch (startPhase) {
-  case ZSTARTPHASE1:
-    jam();
-    ndbassert(!m_is_query_block);
-    initializeDefaultValuesFrag();
-    break;
-  case ZSTARTPHASE2:
-    jam();
-    break;
-  case ZSTARTPHASE3:
-    jam();
-    break;
-  case ZSTARTPHASE4:
-    jam();
-    break;
-  case ZSTARTPHASE6:
-    jam();
-    break;
-  default:
-    jam();
-    break;
-  }//switch
+    case ZSTARTPHASE1:
+      jam();
+      ndbassert(!m_is_query_block);
+      initializeDefaultValuesFrag();
+      break;
+    case ZSTARTPHASE2:
+      jam();
+      break;
+    case ZSTARTPHASE3:
+      jam();
+      break;
+    case ZSTARTPHASE4:
+      jam();
+      break;
+    case ZSTARTPHASE6:
+      jam();
+      break;
+    default:
+      jam();
+      break;
+  }  // switch
   signal->theData[0] = cownref;
   BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : DBTUP_REF;
   sendSignal(cntrRef, GSN_NDB_STTORRY, signal, 1, JBB);
-}//Dbtup::execNDB_STTOR()
+}  // Dbtup::execNDB_STTOR()
 
-void Dbtup::initializeDefaultValuesFrag()
-{
+void Dbtup::initializeDefaultValuesFrag() {
   /* Grab and initialize a fragment record for storing default
    * values for the table fragments held by this TUP instance
    */
   ndbrequire(seizeFragrecord(DefaultValuesFragment));
   DefaultValuesFragment.p->fragStatus = Fragrecord::FS_ONLINE;
-  DefaultValuesFragment.p->m_undo_complete= 0;
+  DefaultValuesFragment.p->m_undo_complete = 0;
   DefaultValuesFragment.p->m_lcp_scan_op = RNIL;
   DefaultValuesFragment.p->noOfPages = 0;
   DefaultValuesFragment.p->noOfVarPages = 0;
@@ -949,7 +877,7 @@ void Dbtup::initializeDefaultValuesFrag()
   DefaultValuesFragment.p->m_free_page_id_list = FREE_PAGE_RNIL;
   ndbrequire(DefaultValuesFragment.p->m_page_map.isEmpty());
   DefaultValuesFragment.p->m_restore_lcp_id = RNIL;
-  for (Uint32 i = 0; i<MAX_FREE_LIST+1; i++)
+  for (Uint32 i = 0; i < MAX_FREE_LIST + 1; i++)
     ndbrequire(DefaultValuesFragment.p->free_var_page_array[i].isEmpty());
 
   DefaultValuesFragment.p->m_logfile_group_id = RNIL;
@@ -957,18 +885,17 @@ void Dbtup::initializeDefaultValuesFrag()
   return;
 }
 
-void Dbtup::initializeFragoperrec() 
-{
+void Dbtup::initializeFragoperrec() {
   FragoperrecPtr fragoperPtr;
   for (fragoperPtr.i = 0; fragoperPtr.i < cnoOfFragoprec; fragoperPtr.i++) {
     ptrAss(fragoperPtr, fragoperrec);
     fragoperPtr.p->nextFragoprec = fragoperPtr.i + 1;
-  }//for
+  }  // for
   fragoperPtr.i = cnoOfFragoprec - 1;
   ptrAss(fragoperPtr, fragoperrec);
   fragoperPtr.p->nextFragoprec = RNIL;
   cfirstfreeFragopr = 0;
-}//Dbtup::initializeFragoperrec()
+}  // Dbtup::initializeFragoperrec()
 
 void Dbtup::initializeAlterTabOperation()
 {
@@ -978,35 +905,30 @@ void Dbtup::initializeAlterTabOperation()
     return;
   }
   AlterTabOperationPtr regAlterTabOpPtr;
-  for (regAlterTabOpPtr.i= 0;
-       regAlterTabOpPtr.i<cnoOfAlterTabOps;
-       regAlterTabOpPtr.i++)
-  {
+  for (regAlterTabOpPtr.i = 0; regAlterTabOpPtr.i < cnoOfAlterTabOps;
+       regAlterTabOpPtr.i++) {
     refresh_watch_dog();
     ptrAss(regAlterTabOpPtr, alterTabOperRec);
     new (regAlterTabOpPtr.p) AlterTabOperation();
-    regAlterTabOpPtr.p->nextAlterTabOp= regAlterTabOpPtr.i+1;
+    regAlterTabOpPtr.p->nextAlterTabOp = regAlterTabOpPtr.i + 1;
   }
-  regAlterTabOpPtr.i= cnoOfAlterTabOps-1;
+  regAlterTabOpPtr.i = cnoOfAlterTabOps - 1;
   ptrAss(regAlterTabOpPtr, alterTabOperRec);
-  regAlterTabOpPtr.p->nextAlterTabOp= RNIL;
-  cfirstfreeAlterTabOp= 0;
+  regAlterTabOpPtr.p->nextAlterTabOp = RNIL;
+  cfirstfreeAlterTabOp = 0;
 }
 
-void Dbtup::initializeHostBuffer() 
-{
+void Dbtup::initializeHostBuffer() {
   Uint32 hostId;
   cpackedListIndex = 0;
   for (hostId = 0; hostId < MAX_NODES; hostId++) {
     hostBuffer[hostId].inPackedList = false;
     hostBuffer[hostId].noOfPacketsTA = 0;
     hostBuffer[hostId].packetLenTA = 0;
-  }//for
-}//Dbtup::initializeHostBuffer()
+  }  // for
+}  // Dbtup::initializeHostBuffer()
 
-
-void Dbtup::initializeTablerec() 
-{
+void Dbtup::initializeTablerec() {
   TablerecPtr regTabPtr;
   jam();
   jamData(cnoOfTablerec);
@@ -1014,8 +936,8 @@ void Dbtup::initializeTablerec()
     refresh_watch_dog();
     ptrAss(regTabPtr, tablerec);
     initTab(regTabPtr.p);
-  }//for
-}//Dbtup::initializeTablerec()
+  }  // for
+}  // Dbtup::initializeTablerec()
 
 void
 Dbtup::initTab(Tablerec* const regTabPtr)
@@ -1068,49 +990,55 @@ Dbtup::initTab(Tablerec* const regTabPtr)
 
   // Clear trigger data
   if (!regTabPtr->afterInsertTriggers.isEmpty())
-    while (regTabPtr->afterInsertTriggers.releaseFirst());
+    while (regTabPtr->afterInsertTriggers.releaseFirst())
+      ;
   if (!regTabPtr->afterDeleteTriggers.isEmpty())
-    while (regTabPtr->afterDeleteTriggers.releaseFirst());
+    while (regTabPtr->afterDeleteTriggers.releaseFirst())
+      ;
   if (!regTabPtr->afterUpdateTriggers.isEmpty())
-    while (regTabPtr->afterUpdateTriggers.releaseFirst());
+    while (regTabPtr->afterUpdateTriggers.releaseFirst())
+      ;
   if (!regTabPtr->subscriptionInsertTriggers.isEmpty())
-    while (regTabPtr->subscriptionInsertTriggers.releaseFirst());
+    while (regTabPtr->subscriptionInsertTriggers.releaseFirst())
+      ;
   if (!regTabPtr->subscriptionDeleteTriggers.isEmpty())
-    while (regTabPtr->subscriptionDeleteTriggers.releaseFirst());
+    while (regTabPtr->subscriptionDeleteTriggers.releaseFirst())
+      ;
   if (!regTabPtr->subscriptionUpdateTriggers.isEmpty())
-    while (regTabPtr->subscriptionUpdateTriggers.releaseFirst());
+    while (regTabPtr->subscriptionUpdateTriggers.releaseFirst())
+      ;
   if (!regTabPtr->constraintUpdateTriggers.isEmpty())
-    while (regTabPtr->constraintUpdateTriggers.releaseFirst());
+    while (regTabPtr->constraintUpdateTriggers.releaseFirst())
+      ;
   if (!regTabPtr->tuxCustomTriggers.isEmpty())
-    while (regTabPtr->tuxCustomTriggers.releaseFirst());
-}//Dbtup::initTab()
+    while (regTabPtr->tuxCustomTriggers.releaseFirst())
+      ;
+}  // Dbtup::initTab()
 
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* --------------- CONNECT/DISCONNECT MODULE ---------------------- */
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
-void Dbtup::execTUPSEIZEREQ(Signal* signal)
-{
+void Dbtup::execTUPSEIZEREQ(Signal *signal) {
   OperationrecPtr regOperPtr;
   jamEntry();
   Uint32 userPtr = signal->theData[0];
   BlockReference userRef = signal->theData[1];
-  if (!c_operation_pool.seize(regOperPtr))
-  {
+  if (!c_operation_pool.seize(regOperPtr)) {
     jam();
     signal->theData[0] = userPtr;
     signal->theData[1] = ZGET_OPREC_ERROR;
     sendSignal(userRef, GSN_TUPSEIZEREF, signal, 2, JBB);
     return;
-  }//if
+  }  // if
   initOpConnection(regOperPtr.p);
   regOperPtr.p->userpointer = userPtr;
   signal->theData[0] = regOperPtr.p->userpointer;
   signal->theData[1] = regOperPtr.i;
   sendSignal(userRef, GSN_TUPSEIZECONF, signal, 2, JBB);
   return;
-}//Dbtup::execTUPSEIZEREQ()
+}  // Dbtup::execTUPSEIZEREQ()
 
 Dbtup::Operationrec*
 Dbtup::get_operation_ptr(Uint32 i)
@@ -1140,10 +1068,8 @@ bool Dbtup::seize_op_rec(Uint32 userPtr,
   return true;
 }
 
-void Dbtup::releaseFragrec(FragrecordPtr regFragPtr) 
-{
-  for (Uint32 i = 0; i < NUM_TUP_FRAGMENT_MUTEXES; i++)
-  {
+void Dbtup::releaseFragrec(FragrecordPtr regFragPtr) {
+  for (Uint32 i = 0; i < NUM_TUP_FRAGMENT_MUTEXES; i++) {
     NdbMutex_Deinit(&regFragPtr.p->tup_frag_mutex[i]);
   }
   NdbMutex_Deinit(&regFragPtr.p->tup_frag_page_map_mutex);
@@ -1151,13 +1077,10 @@ void Dbtup::releaseFragrec(FragrecordPtr regFragPtr)
   c_fragment_pool.release(regFragPtr);
 }//Dbtup::releaseFragrec()
 
-
-void Dbtup::execNODE_FAILREP(Signal* signal)
-{
+void Dbtup::execNODE_FAILREP(Signal *signal) {
   jamEntry();
-  NodeFailRep * rep = (NodeFailRep*)signal->getDataPtr();
-  if(signal->getLength() == NodeFailRep::SignalLength)
-  {
+  NodeFailRep *rep = (NodeFailRep *)signal->getDataPtr();
+  if (signal->getLength() == NodeFailRep::SignalLength) {
     ndbrequire(signal->getNoOfSections() == 1);
     ndbrequire(ndbd_send_node_bitmask_in_section(
         getNodeInfo(refToNode(signal->getSendersBlockRef())).m_version));
@@ -1167,35 +1090,28 @@ void Dbtup::execNODE_FAILREP(Signal* signal)
     memset(rep->theNodes, 0, sizeof(rep->theNodes));
     copy(rep->theNodes, ptr);
     releaseSections(handle);
+  } else {
+    memset(rep->theNodes + NdbNodeBitmask48::Size, 0, _NDB_NBM_DIFF_BYTES);
   }
-  else
-  {
-    memset(rep->theNodes + NdbNodeBitmask48::Size,
-           0,
-           _NDB_NBM_DIFF_BYTES);
-  }
-  NdbNodeBitmask failed; 
+  NdbNodeBitmask failed;
   failed.assign(NdbNodeBitmask::Size, rep->theNodes);
 
   /* Block level cleanup */
-  for(unsigned i = 1; i < MAX_NDB_NODES; i++) {
+  for (unsigned i = 1; i < MAX_NDB_NODES; i++) {
     jam();
-    if(failed.get(i)) {
+    if (failed.get(i)) {
       jam();
-      Uint32 elementsCleaned = simBlockNodeFailure(signal, i); // No callback
-      ndbassert(elementsCleaned == 0); // No distributed fragmented signals
-      (void) elementsCleaned; // Remove compiler warning
-    }//if
-  }//for
+      Uint32 elementsCleaned = simBlockNodeFailure(signal, i);  // No callback
+      ndbassert(elementsCleaned == 0);  // No distributed fragmented signals
+      (void)elementsCleaned;            // Remove compiler warning
+    }                                   // if
+  }                                     // for
 }
 
-void
-Dbtup::sendPoolShrink(const Uint32 pool_index)
-{
+void Dbtup::sendPoolShrink(const Uint32 pool_index) {
   const bool need_send = c_transient_pools_shrinking.get(pool_index) == 0;
   c_transient_pools_shrinking.set(pool_index);
-  if (need_send)
-  {
+  if (need_send) {
     Signal25 signal[1] = {};
     signal->theData[0] = ZTUP_SHRINK_TRANSIENT_POOLS;
     signal->theData[1] = pool_index;
@@ -1203,17 +1119,13 @@ Dbtup::sendPoolShrink(const Uint32 pool_index)
   }
 }
 
-void
-Dbtup::shrinkTransientPools(Uint32 pool_index)
-{
+void Dbtup::shrinkTransientPools(Uint32 pool_index) {
   ndbrequire(pool_index < c_transient_pool_count);
   ndbrequire(c_transient_pools_shrinking.get(pool_index));
   if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink())
   {
     sendPoolShrink(pool_index);
-  }
-  else
-  {
+  } else {
     c_transient_pools_shrinking.clear(pool_index);
   }
 }

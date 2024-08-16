@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -47,6 +48,9 @@
 #include "storage/perfschema/pfs_instr.h"
 #include "storage/perfschema/table_helper.h"
 
+#include "sql/current_thd.h"
+#include "sql/debug_sync.h"
+
 size_t digest_max = 0;
 ulong digest_lost = 0;
 
@@ -79,6 +83,10 @@ int init_digest(const PFS_global_param *param) {
   digest_lost = 0;
   digest_monotonic_index.m_u32.store(1);
   digest_full = false;
+
+  statements_digest_stat_array = nullptr;
+  statements_digest_token_array = nullptr;
+  statements_digest_query_sample_text_array = nullptr;
 
   if (digest_max == 0) {
     return 0;
@@ -152,6 +160,7 @@ void cleanup_digest() {
   statements_digest_stat_array = nullptr;
   statements_digest_token_array = nullptr;
   statements_digest_query_sample_text_array = nullptr;
+  digest_max = 0;
 }
 
 static const uchar *digest_hash_get_key(const uchar *entry, size_t *length) {
@@ -282,6 +291,8 @@ search:
   /* Lookup LF_HASH using this new key. */
   entry = reinterpret_cast<PFS_statements_digest_stat **>(
       lf_hash_search(&digest_hash, pins, &hash_key, sizeof(PFS_digest_key)));
+
+  DEBUG_SYNC(current_thd, "after_lf_hash_search");
 
   if (entry && (entry != MY_LF_ERRPTR)) {
     /* If digest already exists, update stats and return. */

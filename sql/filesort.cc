@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -52,7 +53,6 @@
 #include "add_with_saturate.h"
 #include "decimal.h"
 #include "field_types.h"  // enum_field_types
-#include "m_ctype.h"
 #include "map_helpers.h"
 #include "my_basename.h"
 #include "my_bitmap.h"
@@ -61,17 +61,19 @@
 #include "my_config.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_file.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "priority_queue.h"
 #include "sql-common/json_dom.h"  // Json_wrapper
+#include "sql-common/my_decimal.h"
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/bounded_queue.h"
 #include "sql/cmp_varlen_keys.h"
@@ -88,7 +90,6 @@
 #include "sql/key_spec.h"
 #include "sql/malloc_allocator.h"
 #include "sql/merge_many_buff.h"
-#include "sql/my_decimal.h"
 #include "sql/mysqld.h"  // mysql_tmpdir
 #include "sql/opt_costmodel.h"
 #include "sql/opt_trace.h"
@@ -292,9 +293,9 @@ int Sort_param::count_json_keys() const {
 
 size_t Sort_param::get_record_length(uchar *p) const {
   uchar *start_of_payload = get_start_of_payload(p);
-  uint size_of_payload = using_packed_addons()
-                             ? Addon_fields::read_addon_length(start_of_payload)
-                             : fixed_res_length;
+  const uint size_of_payload =
+      using_packed_addons() ? Addon_fields::read_addon_length(start_of_payload)
+                            : fixed_res_length;
   uchar *end_of_payload = start_of_payload + size_of_payload;
   return end_of_payload - p;
 }
@@ -321,7 +322,7 @@ static void trace_filesort_information(Opt_trace_context *trace,
                                        uint s_length) {
   if (!trace->is_started()) return;
 
-  Opt_trace_array trace_filesort(trace, "filesort_information");
+  const Opt_trace_array trace_filesort(trace, "filesort_information");
   for (; s_length--; sortorder++) {
     Opt_trace_object oto(trace);
     oto.add_alnum("direction", sortorder->reverse ? "desc" : "asc");
@@ -368,13 +369,13 @@ bool filesort(THD *thd, Filesort *filesort, RowIterator *source_iterator,
               Filesort_info *fs_info, Sort_result *sort_result,
               ha_rows *found_rows) {
   int error;
-  ulong memory_available = thd->variables.sortbuff_size;
+  const ulong memory_available = thd->variables.sortbuff_size;
   ha_rows num_rows_found = HA_POS_ERROR;
   IO_CACHE tempfile;    // Temporary file for storing intermediate results.
   IO_CACHE chunk_file;  // For saving Merge_chunk structs.
   IO_CACHE *outfile;    // Contains the final, sorted result.
   Sort_param *param = &filesort->m_sort_param;
-  ha_rows max_rows = filesort->limit;
+  const ha_rows max_rows = filesort->limit;
   uint s_length = 0;
 
   DBUG_TRACE;
@@ -487,7 +488,7 @@ bool filesort(THD *thd, Filesort *filesort, RowIterator *source_iterator,
       trace) in this case, not actually used.
     */
     if (num_rows_estimate < MERGEBUFF2) num_rows_estimate = MERGEBUFF2;
-    ha_rows keys =
+    const ha_rows keys =
         memory_available / (param->max_record_length() + sizeof(char *));
     param->max_rows_per_buffer =
         min(num_rows_estimate > 0 ? num_rows_estimate : 1, keys);
@@ -500,7 +501,7 @@ bool filesort(THD *thd, Filesort *filesort, RowIterator *source_iterator,
 
   // New scope, because subquery execution must be traced within an array.
   {
-    Opt_trace_array ota(trace, "filesort_execution");
+    const Opt_trace_array ota(trace, "filesort_execution");
     num_rows_found = read_all_rows(
         thd, param, filesort->tables, tables_to_get_rowid_for, fs_info,
         &chunk_file, &tempfile, param->using_pq ? &pq : nullptr,
@@ -623,7 +624,7 @@ err:
   if (my_b_inited(outfile)) {
     if (flush_io_cache(outfile)) error = 1;
     {
-      my_off_t save_pos = outfile->pos_in_file;
+      const my_off_t save_pos = outfile->pos_in_file;
       /* For following reads */
       if (reinit_io_cache(outfile, READ_CACHE, 0L, false, false)) error = 1;
       outfile->end_of_file = save_pos;
@@ -933,7 +934,7 @@ static ha_rows read_all_rows(
     popped off the stack automatically when the handler goes out of
     scope.
   */
-  Filesort_error_handler error_handler(thd);
+  const Filesort_error_handler error_handler(thd);
 
   DBUG_TRACE;
 
@@ -969,7 +970,7 @@ static ha_rows read_all_rows(
     fs_info->clear_peak_memory_used();
   }
 
-  PFSBatchMode batch_mode(source_iterator);
+  const PFSBatchMode batch_mode(source_iterator);
   for (;;) {
     DBUG_EXECUTE_IF("bug19656296", DBUG_SET("+d,ha_rnd_next_deadlock"););
     if ((error = source_iterator->Read())) {
@@ -1111,7 +1112,7 @@ static int write_keys(Sort_param *param, Filesort_info *fs_info, uint count,
 
   for (uint ix = 0; ix < count; ++ix) {
     uchar *record = fs_info->get_sorted_record(ix);
-    size_t rec_length = param->get_record_length(record);
+    const size_t rec_length = param->get_record_length(record);
 
     if (my_b_write(tempfile, record, rec_length))
       return 1; /* purecov: inspected */
@@ -1181,7 +1182,7 @@ static uint make_json_sort_key(Item *item, uchar *to, uchar *null_indicator,
     /* purecov: end */
   }
 
-  size_t actual_length = wr.make_sort_key(to, length);
+  const size_t actual_length = wr.make_sort_key(to, length);
   *hash = wr.make_hash_key(*hash);
   return actual_length;
 }
@@ -1277,7 +1278,7 @@ size_t make_sortkey_from_item(Item *item, Item_result result_type,
         return dst_length.value();
       }
 
-      uint src_length = static_cast<uint>(res->length());
+      const uint src_length = static_cast<uint>(res->length());
       const char *from = res->ptr();
 
       size_t actual_length;
@@ -1361,7 +1362,7 @@ size_t make_sortkey_from_item(Item *item, Item_result result_type,
     }
     case REAL_RESULT: {
       assert(!is_varlen);
-      double value = item->val_real();
+      const double value = item->val_real();
       if (current_thd->is_error()) {
         return UINT_MAX;
       }
@@ -1522,7 +1523,9 @@ uint Sort_param::make_sortkey(Bounds_checked_array<uchar> dst,
         if (static_cast<size_t>(to_end - to) < addonf.max_length) {
           return UINT_MAX;
         }
-        if (addonf.null_bit && field->is_null()) {
+        if (field->table->has_null_row()) {
+          assert(field->table->is_nullable());
+        } else if (addonf.null_bit && field->is_null()) {
           nulls[addonf.null_offset] |= addonf.null_bit;
         } else {
           uchar *ptr [[maybe_unused]] =
@@ -1610,7 +1613,7 @@ static bool save_index(Sort_param *param, uint count, Filesort_info *table_sort,
     return true; /* purecov: inspected */
   sort_result->sorted_result_end = sort_result->sorted_result.get() + buf_size;
 
-  uint res_length = param->fixed_res_length;
+  const uint res_length = param->fixed_res_length;
   for (uint ix = 0; ix < count; ++ix) {
     uchar *record = table_sort->get_sorted_record(ix);
     uchar *start_of_payload = param->get_start_of_payload(record);
@@ -1679,7 +1682,7 @@ bool check_if_pq_applicable(Opt_trace_context *trace, Sort_param *param,
     return false;
   }
 
-  ulong num_available_keys =
+  const ulong num_available_keys =
       memory_available / (param->max_record_length() + sizeof(char *));
   // We need 1 extra record in the buffer, when using PQ.
   param->max_rows_per_buffer = (uint)param->max_rows + 1;
@@ -1718,7 +1721,7 @@ bool check_if_pq_applicable(Opt_trace_context *trace, Sort_param *param,
 static uint read_to_buffer(IO_CACHE *fromfile, Merge_chunk *merge_chunk,
                            Sort_param *param) {
   DBUG_TRACE;
-  uint rec_length = param->max_record_length();
+  const uint rec_length = param->max_record_length();
   ha_rows count;
 
   const bool packed_addon_fields = param->using_packed_addons();
@@ -1842,7 +1845,7 @@ static int copy_bytes(IO_CACHE *to_file, IO_CACHE *from_file, size_t count,
   // since we may need the sort key for deduplication purposes.
   uchar buf[4096];
   while (count > 0) {
-    size_t bytes_to_copy = min(count, sizeof(buf));
+    const size_t bytes_to_copy = min(count, sizeof(buf));
     if (mysql_file_pread(from_file->file, buf, bytes_to_copy, offset, MYF_RW)) {
       return 1; /* purecov: inspected */
     }
@@ -1870,7 +1873,7 @@ static int copy_row(IO_CACHE *to_file, IO_CACHE *from_file,
   uchar *row_start = merge_chunk->current_key() + offset;
   size_t bytes_in_buffer =
       min<size_t>(merge_chunk->valid_buffer_end() - row_start, bytes_to_write);
-  size_t remaining_bytes = bytes_to_write - bytes_in_buffer;
+  const size_t remaining_bytes = bytes_to_write - bytes_in_buffer;
 
   if (bytes_in_buffer > 0) {
     if (my_b_write(to_file, row_start, bytes_in_buffer)) {
@@ -1918,7 +1921,7 @@ static int merge_buffers(THD *thd, Sort_param *param, IO_CACHE *from_file,
 
   thd->inc_status_sort_merge_passes();
 
-  my_off_t to_start_filepos = my_b_tell(to_file);
+  const my_off_t to_start_filepos = my_b_tell(to_file);
   strpos = sort_buffer.array();
   org_max_rows = max_rows = param->max_rows;
 
@@ -1934,9 +1937,9 @@ static int merge_buffers(THD *thd, Sort_param *param, IO_CACHE *from_file,
     key_len -= param->sum_ref_length;
   }
 
-  Merge_chunk_greater mcl = param->using_varlen_keys()
-                                ? Merge_chunk_greater(param)
-                                : Merge_chunk_greater(key_len);
+  const Merge_chunk_greater mcl = param->using_varlen_keys()
+                                      ? Merge_chunk_greater(param)
+                                      : Merge_chunk_greater(key_len);
   Priority_queue<Merge_chunk *,
                  std::vector<Merge_chunk *, Malloc_allocator<Merge_chunk *>>,
                  Merge_chunk_greater>
@@ -1972,7 +1975,8 @@ static int merge_buffers(THD *thd, Sort_param *param, IO_CACHE *from_file,
         param->get_rec_and_res_len(merge_chunk->current_key(), &row_length,
                                    &payload_length);
         const uint bytes_to_write = include_keys ? row_length : payload_length;
-        unsigned offset = include_keys ? 0 : (row_length - payload_length);
+        const unsigned offset =
+            include_keys ? 0 : (row_length - payload_length);
 
         bool is_duplicate = false;
         if (param->m_remove_duplicates) {
@@ -2031,12 +2035,12 @@ static int merge_buffers(THD *thd, Sort_param *param, IO_CACHE *from_file,
       param->get_rec_and_res_len(merge_chunk->current_key(), &row_length,
                                  &payload_length);
       const uint bytes_to_write = include_keys ? row_length : payload_length;
-      unsigned offset = include_keys ? 0 : (row_length - payload_length);
+      const unsigned offset = include_keys ? 0 : (row_length - payload_length);
 
       // Since there's only one chunk left, and it does not contain duplicates
       // internally, we only need to check for duplicates on the first
       // iteration of the loop.
-      bool is_duplicate =
+      const bool is_duplicate =
           (ix == 0 && param->m_remove_duplicates && seen_any_records &&
            !mcl.key_is_greater_than(merge_chunk->current_key(),
                                     param->m_last_key_seen));

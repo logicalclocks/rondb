@@ -1,18 +1,19 @@
 #ifndef SQL_ITERATORS_BASIC_ROW_ITERATORS_H_
 #define SQL_ITERATORS_BASIC_ROW_ITERATORS_H_
 
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,7 +41,9 @@
 
 class Filesort_info;
 class Item;
+class Item_values_column;
 class JOIN;
+class QUICK_RANGE;
 class Sort_result;
 class THD;
 struct IO_CACHE;
@@ -122,6 +125,35 @@ class IndexScanIterator final : public TableRowIterator {
   uchar *const m_record;
   const int m_idx;
   const bool m_use_order;
+  const double m_expected_rows;
+  ha_rows *const m_examined_rows;
+  bool m_first = true;
+};
+
+/**
+  Perform a distance index scan along an index.
+  For now it is just like the IndexScanIterator, waiting for innodb
+  implementation of distance index scan functions
+*/
+class IndexDistanceScanIterator final : public TableRowIterator {
+ public:
+  // “expected_rows” is used for scaling the record buffer.
+  // If zero or less, no record buffer will be set up.
+  //
+  // The pushed condition can be nullptr.
+  //
+  // "examined_rows", if not nullptr, is incremented for each successful Read().
+  IndexDistanceScanIterator(THD *thd, TABLE *table, int idx,
+                            QUICK_RANGE *query_mbr, double expected_rows,
+                            ha_rows *examined_rows);
+
+  bool Init() override;
+  int Read() override;
+
+ private:
+  uchar *const m_record;
+  const int m_idx;
+  QUICK_RANGE *m_query_mbr;
   const double m_expected_rows;
   ha_rows *const m_examined_rows;
   bool m_first = true;
@@ -500,7 +532,7 @@ class TableValueConstructorIterator final : public RowIterator {
   TableValueConstructorIterator(
       THD *thd, ha_rows *examined_rows,
       const mem_root_deque<mem_root_deque<Item *> *> &row_value_list,
-      mem_root_deque<Item *> *join_fields);
+      Mem_root_array<Item_values_column *> *output_refs);
 
   bool Init() override;
   int Read() override;
@@ -521,13 +553,14 @@ class TableValueConstructorIterator final : public RowIterator {
   /// References to the row we currently want to output. When multiple rows must
   /// be output, this contains Item_values_column objects. In this case, each
   /// call to Read() will replace its current reference with the next row.
-  mem_root_deque<Item *> *const m_output_refs;
+  /// It is nullptr if there is only one row.
+  Mem_root_array<Item_values_column *> *m_output_refs;
 };
 
 /**
   Auxiliary class to squeeze two 32 bits integers into a 64 bits one, cf.
   logic of INTERSECT ALL in
-  MaterializeIterator<Profiler>::MaterializeQueryBlock.
+  MaterializeIterator<Profiler>::MaterializeOperand.
   For INTERSECT ALL we need two counters: the number of duplicates in the left
   operand, and the number of matches seen (so far) from the right operand.
   Instead of adding another field to the temporary table, we subdivide the

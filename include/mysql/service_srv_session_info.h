@@ -1,17 +1,18 @@
 #ifndef MYSQL_SERVICE_SRV_SESSION_INFO_INCLUDED
 #define MYSQL_SERVICE_SRV_SESSION_INFO_INCLUDED
-/*  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/*  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License, version 2.0,
     as published by the Free Software Foundation.
 
-    This program is also distributed with certain software (including
+    This program is designed to work with certain software (including
     but not limited to OpenSSL) that is licensed under separate terms,
     as designated in a particular file or component or in included license
     documentation.  The authors of MySQL hereby grant you an additional
     permission to link the program and your derivative works with the
-    separately licensed software that they have included with MySQL.
+    separately licensed software that they have either included with
+    the program or referenced in the documentation.
 
     This program is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,9 +30,9 @@
 
 #include "mysql/service_srv_session.h"
 #ifndef MYSQL_ABI_CHECK
-#include <stdint.h>    /* uint16_t */
-#include "m_string.h"  /* LEX_CSTRING */
-#include "my_thread.h" /* my_thread_id */
+#include <stdint.h>     /* uint16_t */
+#include "lex_string.h" /* LEX_CSTRING */
+#include "my_thread.h"  /* my_thread_id */
 #include "my_thread_local.h"
 #include "mysql_com.h" /* Vio for violite.h */
 #include "plugin.h"    /* MYSQL_THD */

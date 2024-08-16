@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,6 +38,7 @@
 
 #include "filesystem_utils.h"
 #include "router_test_helpers.h"  // EXPECT_THROW_LIKE
+#include "scope_guard.h"
 
 // these tests are Windows-specific
 #ifdef _WIN32
@@ -271,8 +273,7 @@ TEST_F(AllowWindowsServiceToWriteLogsTest, log_dir_is_not_a_dir) {
       "' specified (or implied) by configuration file '" +
       path_to_conf_file_.str() + "' does not point to a valid directory";
   std::ofstream of(erased_log_dir);
-  std::shared_ptr<void> exit_guard(
-      nullptr, [&](void *) { mysql_harness::delete_file(erased_log_dir); });
+  Scope_guard exit_guard([&]() { mysql_harness::delete_file(erased_log_dir); });
   ASSERT_TRUE(Path{erased_log_dir}.is_regular());
 
   // test with file in place of log dir

@@ -1,15 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,6 +25,7 @@
 #define MEM_ROOT_DEQUE_H
 
 #include <algorithm>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -238,14 +240,14 @@ class mem_root_deque {
   /// Removes the last element from the deque.
   void pop_back() {
     assert(!empty());
-    ::destroy(&get(--m_end_idx));
+    ::destroy_at(&get(--m_end_idx));
     invalidate_iterators();
   }
 
   /// Removes the first element from the deque.
   void pop_front() {
     assert(!empty());
-    ::destroy(&get(m_begin_idx++));
+    ::destroy_at(&get(m_begin_idx++));
     invalidate_iterators();
   }
 
@@ -276,7 +278,7 @@ class mem_root_deque {
   /// their memory cannot be freed.
   void clear() {
     for (size_t idx = m_begin_idx; idx != m_end_idx; ++idx) {
-      ::destroy(&get(idx));
+      ::destroy_at(&get(idx));
     }
     m_begin_idx = m_end_idx = m_capacity / 2;
     invalidate_iterators();
@@ -471,7 +473,7 @@ class mem_root_deque {
     if (first != last) {
       iterator new_end = std::move(last, cend(), pos);
       for (size_t idx = new_end.m_physical_idx; idx != m_end_idx; ++idx) {
-        ::destroy(&get(idx));
+        ::destroy_at(&get(idx));
       }
       m_end_idx = new_end.m_physical_idx;
     }

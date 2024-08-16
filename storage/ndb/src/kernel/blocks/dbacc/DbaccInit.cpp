@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,16 +24,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-
 #define DBACC_C
-#include "util/require.h"
 #include "Dbacc.hpp"
+#include "util/require.h"
 
 #define JAM_FILE_ID 346
 
-
-#define DEBUG(x) { ndbout << "ACC::" << x << endl; }
+#define DEBUG(x) \
+  { ndbout << "ACC::" << x << endl; }
 
 Uint64 Dbacc::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
@@ -77,20 +76,17 @@ void Dbacc::initData()
 
   Pool_context pc;
   pc.m_block = this;
-  if (!m_is_query_block)
-  {
+  if (!m_is_query_block) {
     directoryPool.init(RT_DBACC_DIRECTORY, pc);
     directoryPoolPtr = &directoryPool;
-  }
-  else
-  {
+  } else {
     directoryPoolPtr = 0;
   }
 
   tabrec = 0;
 
-  void* ptr = m_ctx.m_mm.get_memroot();
-  c_page_pool.set((Page32*)ptr, (Uint32)~0);
+  void *ptr = m_ctx.m_mm.get_memroot();
+  c_page_pool.set((Page32 *)ptr, (Uint32)~0);
 
   c_fragment_pool.init(RT_DBACC_FRAGMENT, pc);
 
@@ -102,20 +98,15 @@ void Dbacc::initData()
 
   RSS_OP_COUNTER_INIT(cnoOfAllocatedFragrec);
 
-}//Dbacc::initData()
+}  // Dbacc::initData()
 
-void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg) 
-{
+void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg) {
   jam();
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   {
-    void* tmp[] = { &fragrecptr,
-                    &operationRecPtr,
-                    &queOperPtr,
-                    &scanPtr,
-                    &tabptr
-    };
-    init_global_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    void *tmp[] = {&fragrecptr, &operationRecPtr, &queOperPtr, &scanPtr,
+                   &tabptr};
+    init_global_ptrs(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
 #endif
   cfreepages.init();
@@ -127,9 +118,7 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
     ctablesize = 0;
   }
 
-  tabrec = (Tabrec*)allocRecord("Tabrec",
-				sizeof(Tabrec),
-				ctablesize);
+  tabrec = (Tabrec *)allocRecord("Tabrec", sizeof(Tabrec), ctablesize);
 
   /**
    * Records moved into poolification is created and the
@@ -146,13 +135,8 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   {
     reserveScanRecs = 500;
   }
-  scanRec_pool.init(
-    ScanRec::TYPE_ID,
-    pc,
-    reserveScanRecs,
-    UINT32_MAX);
-  while (scanRec_pool.startup())
-  {
+  scanRec_pool.init(ScanRec::TYPE_ID, pc, reserveScanRecs, UINT32_MAX);
+  while (scanRec_pool.startup()) {
     refresh_watch_dog();
   }
 
@@ -167,13 +151,8 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   {
     reserveOpRecs = 1000;
   }
-  oprec_pool.init(
-    Operationrec::TYPE_ID,
-    pc,
-    reserveOpRecs,
-    UINT32_MAX);
-  while (oprec_pool.startup())
-  {
+  oprec_pool.init(Operationrec::TYPE_ID, pc, reserveOpRecs, UINT32_MAX);
+  while (oprec_pool.startup()) {
     refresh_watch_dog();
   }
   if (!m_is_query_block)
@@ -199,8 +178,7 @@ Dbacc::Dbacc(Block_context& ctx,
   BLOCK_CONSTRUCTOR(Dbacc);
 
   // Transit signals
-  if (blockNo == DBACC)
-  {
+  if (blockNo == DBACC) {
     addRecSignal(GSN_DUMP_STATE_ORD, &Dbacc::execDUMP_STATE_ORD);
     addRecSignal(GSN_DEBUG_SIG, &Dbacc::execDEBUG_SIG);
     addRecSignal(GSN_CONTINUEB, &Dbacc::execCONTINUEB);
@@ -226,9 +204,7 @@ Dbacc::Dbacc(Block_context& ctx,
     m_is_in_query_thread = false;
     m_lqh_block = DBLQH;
     m_ldm_instance_used = this;
-  }
-  else
-  {
+  } else {
     m_lqh_block = DBQLQH;
     m_is_query_block = true;
     m_is_in_query_thread = true;
@@ -246,10 +222,8 @@ Dbacc::Dbacc(Block_context& ctx,
   }
   initData();
 
-  c_transient_pools[DBACC_SCAN_RECORD_TRANSIENT_POOL_INDEX] =
-    &scanRec_pool;
-  c_transient_pools[DBACC_OPERATION_RECORD_TRANSIENT_POOL_INDEX] =
-    &oprec_pool;
+  c_transient_pools[DBACC_SCAN_RECORD_TRANSIENT_POOL_INDEX] = &scanRec_pool;
+  c_transient_pools[DBACC_OPERATION_RECORD_TRANSIENT_POOL_INDEX] = &oprec_pool;
   static_assert(c_transient_pool_count == 2);
   c_transient_pools_shrinking.clear();
 }//Dbacc::Dbacc()

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -25,19 +26,15 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include <assert.h>
-#include <stdint.h>
-#include <string.h>
+#include "mysql/strings/int2str.h"
+
+#include <cassert>
+#include <cstdint>
+#include <cstring>
 #include <iterator>
 
+#include "dig_vec.h"
 #include "integer_digits.h"
-#include "m_string.h"  // IWYU pragma: keep
-
-/*
-  _dig_vec arrays are public because they are used in several outer places.
-*/
-const char _dig_vec_upper[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const char _dig_vec_lower[] = "0123456789abcdefghijklmnopqrstuvwxyz";
 
 /**
   Converts a 64-bit integer value to its character form and moves it to the
@@ -58,7 +55,8 @@ const char _dig_vec_lower[] = "0123456789abcdefghijklmnopqrstuvwxyz";
 */
 char *ll2str(int64_t val, char *dst, int radix, bool upcase) {
   char buffer[65];
-  const char *const dig_vec = upcase ? _dig_vec_upper : _dig_vec_lower;
+  const char *const dig_vec =
+      upcase ? dig_vec_upper.data() : dig_vec_lower.data();
   auto uval = static_cast<uint64_t>(val);
 
   if (radix < 0) {

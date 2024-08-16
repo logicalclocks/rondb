@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2023, Oracle and/or its affiliates.
+Copyright (c) 1994, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -687,13 +688,13 @@ void page_dir_balance_slot(page_t *page, page_zip_des_t *page_zip,
 
 /** Parses a log record of a record list end or start deletion.
  @return end of log record or NULL */
-byte *page_parse_delete_rec_list(
+const byte *page_parse_delete_rec_list(
     mlog_id_t type,      /*!< in: MLOG_LIST_END_DELETE,
                          MLOG_LIST_START_DELETE,
                          MLOG_COMP_LIST_END_DELETE or
                          MLOG_COMP_LIST_START_DELETE */
-    byte *ptr,           /*!< in: buffer */
-    byte *end_ptr,       /*!< in: buffer end */
+    const byte *ptr,     /*!< in: buffer */
+    const byte *end_ptr, /*!< in: buffer end */
     buf_block_t *block,  /*!< in/out: buffer block or NULL */
     dict_index_t *index, /*!< in: record descriptor */
     mtr_t *mtr);         /*!< in: mtr or NULL */
@@ -711,7 +712,7 @@ void page_parse_create(buf_block_t *block, ulint comp, page_type_t page_type);
 @param[in] rec Physical record
 @param[in] offsets Record descriptor */
 void page_rec_print(const rec_t *rec, const ulint *offsets);
-#ifdef UNIV_BTR_PRINT
+#ifdef UNIV_DEBUG
 /** This is used to print the contents of the directory for
  debugging purposes. */
 void page_dir_print(page_t *page, /*!< in: index page */
@@ -732,7 +733,7 @@ void page_print(buf_block_t *block,  /*!< in: index page */
                                      in directory */
                 ulint rn);           /*!< in: print rn first and last records
                                      in directory */
-#endif                               /* UNIV_BTR_PRINT */
+#endif                               /* UNIV_DEBUG */
 #endif                               /* !UNIV_HOTBACKUP */
 /** The following is used to validate a record on a page. This function
  differs from rec_validate as it can also check the n_owned field and
@@ -764,8 +765,11 @@ bool page_simple_validate_new(
 @param[in]  page   index page
 @param[in]  index  data dictionary index containing the page record type
 definition
+@param[in]  check_min_rec  check whether min rec flag (REC_INFO_MIN_REC_FLAG)
+is correctly set in the page. The default value is true.
 @return true if ok */
-bool page_validate(const page_t *page, dict_index_t *index);
+bool page_validate(const page_t *page, dict_index_t *index,
+                   bool check_min_rec = true);
 
 /** Looks in the page record list for a record with the given heap number.
  @return record, NULL if not found */
@@ -800,6 +804,8 @@ param[in]       rec     Btree record
 param[in]       index   index
 @return true if ok */
 bool page_is_spatial_non_leaf(const rec_t *rec, dict_index_t *index);
+
+page_t *page_create_low(buf_block_t *block, ulint comp, page_type_t page_type);
 
 #include "page0page.ic"
 

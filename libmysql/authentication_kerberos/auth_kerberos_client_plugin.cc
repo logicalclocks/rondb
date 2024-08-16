@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -216,7 +217,7 @@ static int kerberos_authenticate(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql) {
 static int initialize_plugin(char *, size_t, int, va_list) {
   g_logger_client = new Logger_client();
   const char *opt = getenv("AUTHENTICATION_KERBEROS_CLIENT_LOG");
-  int opt_val = opt ? atoi(opt) : 0;
+  const int opt_val = opt ? atoi(opt) : 0;
   if (opt && opt_val > 0 && opt_val < 6) {
     g_logger_client->set_log_level(static_cast<log_client_level>(opt_val));
   }

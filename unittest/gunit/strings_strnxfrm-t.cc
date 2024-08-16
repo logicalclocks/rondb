@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,6 +41,7 @@
 
 #include "my_inttypes.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "template_utils.h"
 #include "unittest/gunit/benchmark.h"
 #include "unittest/gunit/strnxfrm.h"
@@ -89,8 +91,7 @@ void expect_arrays_equal(const uchar *expected, const uchar *got, size_t len) {
 }
 
 CHARSET_INFO *init_collation(const char *name) {
-  MY_CHARSET_LOADER loader;
-  return my_collation_get_by_name(&loader, name, MYF(0));
+  return get_charset_by_name(name, MYF(0));
 }
 
 int compare_through_strxfrm(CHARSET_INFO *cs, const char *a, const char *b) {
@@ -117,6 +118,18 @@ int compare_through_strxfrm(CHARSET_INFO *cs, const char *a, const char *b) {
     return (alen < blen) ? -1 : 1;
   }
 }
+
+#if defined(__cpp_char8_t) && __cpp_char8_t
+int compare_through_strxfrm(CHARSET_INFO *cs, const char *a, const char8_t *b) {
+  return compare_through_strxfrm(cs, a, pointer_cast<const char *>(b));
+}
+
+int compare_through_strxfrm(CHARSET_INFO *cs, const char8_t *a,
+                            const char8_t *b) {
+  return compare_through_strxfrm(cs, pointer_cast<const char *>(a),
+                                 pointer_cast<const char *>(b));
+}
+#endif
 
 }  // namespace
 
@@ -2254,6 +2267,12 @@ uint64 hash(CHARSET_INFO *cs, const char *str) {
   return nr1;
 }
 
+#if defined(__cpp_char8_t) && __cpp_char8_t
+uint64 hash(CHARSET_INFO *cs, const char8_t *str) {
+  return hash(cs, pointer_cast<const char *>(str));
+}
+#endif
+
 /*
   NOTE: In this entire test, there's an infinitesimal chance
   that something that we expect doesn't match, still matches
@@ -2348,7 +2367,7 @@ TEST(StrxfrmLenTest, StrnxfrmLenIsLongEnoughForAllCharacters) {
   // Load one collation to get everything going.
   init_collation("utf8mb4_0900_ai_ci");
 
-  for (CHARSET_INFO *cs : all_charsets) {
+  for (const CHARSET_INFO *cs : all_charsets) {
     if (cs && (cs->state & MY_CS_AVAILABLE)) {
       SCOPED_TRACE(cs->m_coll_name);
       test_strnxfrmlen(init_collation(cs->m_coll_name));
@@ -2662,7 +2681,7 @@ TEST(StrmxfrmHashTest, HashStability) {
       "character sets, but should at least be enough to make the nr1 value go "
       "up past the 32-bit mark.";
 
-  for (CHARSET_INFO *cs : all_charsets) {
+  for (const CHARSET_INFO *cs : all_charsets) {
     if (cs && (cs->state & MY_CS_AVAILABLE)) {
       init_collation(cs->m_coll_name);
 
@@ -2693,6 +2712,16 @@ TEST(StrmxfrmHashTest, HashStability) {
       EXPECT_EQ(expected[cs->m_coll_name].hash_value.first, nr1);
       EXPECT_EQ(expected[cs->m_coll_name].hash_value.second, nr2);
     }
+  }
+}
+
+TEST(StrXfrmTest, LoadAndUnloadChinese) {
+  for (int i = 0; i < 10; ++i) {
+    CHARSET_INFO *csa = init_collation("utf8mb4_zh_0900_as_cs");
+    EXPECT_NE(csa, nullptr);
+    charset_uninit();
+    CHARSET_INFO *csb = init_collation("utf8mb4_zh_0900_as_cs");
+    EXPECT_NE(csb, nullptr);
   }
 }
 

@@ -1,16 +1,17 @@
-/* Copyright (c) 2006, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2006, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,21 +29,20 @@
 #include <time.h>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_command.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
 #include "my_psi_config.h"
 #include "my_sys.h"
 #include "my_thread.h"
 #include "mysql/components/services/bits/psi_statement_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_statement.h"
 #include "mysql/psi/mysql_thread.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/thread_type.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
@@ -67,6 +67,7 @@
 #include "sql/sql_error.h"  // Sql_condition
 #include "sql/system_variables.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "thr_mutex.h"
 
 /**
@@ -220,7 +221,6 @@ void pre_init_event_thread(THD *thd) {
   thd->security_context()->set_user_ptr(STRING_WITH_LEN("event_scheduler"));
   thd->get_protocol_classic()->get_net()->read_timeout = replica_net_timeout;
   thd->slave_thread = false;
-  thd->override_replica_filtering = THD::NO_OVERRIDE_REPLICA_FILTERING;
   thd->variables.option_bits |= OPTION_AUTO_IS_NULL;
   thd->get_protocol_classic()->set_client_capabilities(CLIENT_MULTI_RESULTS);
 
@@ -379,7 +379,14 @@ void Event_worker_thread::run(THD *thd, Event_queue_element_for_exec *event) {
   thd->m_statement_psi = MYSQL_START_STATEMENT(
       &state, event->get_psi_info()->m_key, event->dbname.str,
       event->dbname.length, thd->charset(), nullptr);
+
+  /*
+    Events from the scheduler 'spawn' in the server,
+    they have no parent session, hence no query attributes.
+  */
+  MYSQL_NOTIFY_STATEMENT_QUERY_ATTRIBUTES(thd->m_statement_psi, false);
 #endif
+
   /*
     We must make sure the schema is released and unlocked in the right
     order. Fail if we are unable to get a meta data lock on the schema
@@ -425,6 +432,13 @@ end:
 #ifdef HAVE_PSI_STATEMENT_INTERFACE
   MYSQL_END_STATEMENT(thd->m_statement_psi, thd->get_stmt_da());
   thd->m_statement_psi = nullptr;
+#endif
+
+#ifdef HAVE_PSI_STATEMENT_INTERFACE
+  thread = thd_get_psi(thd);
+  if (thread != nullptr) {
+    PSI_THREAD_CALL(abort_telemetry)(thread);
+  }
 #endif
 
   assert(thd->m_digest == nullptr);
@@ -714,7 +728,7 @@ error:
 
 bool Event_scheduler::is_running() {
   LOCK_DATA();
-  bool ret = (state == RUNNING);
+  const bool ret = (state == RUNNING);
   UNLOCK_DATA();
   return ret;
 }

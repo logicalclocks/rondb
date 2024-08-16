@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -102,11 +103,14 @@ bool Network_provider_manager::start_network_provider(
 
 bool Network_provider_manager::stop_all_network_providers() {
   bool retval = false;
+
   for (auto &&i : m_network_providers) {
     // Logical Sum of all stop() operations. If any of the operations fail,
     // it will report the whole operation as botched, but it will stop all
     // providers
     retval |= i.second->stop().first;
+
+    this->cleanup_incoming_connection(*(i.second));
   }
 
   set_incoming_connections_protocol(get_running_protocol());
@@ -118,7 +122,13 @@ bool Network_provider_manager::stop_network_provider(
     enum_transport_protocol provider_key) {
   auto net_provider = this->get_provider(provider_key);
 
-  return net_provider ? net_provider->stop().first : true;
+  auto cleanup_and_stop = [&]() {
+    this->cleanup_incoming_connection(*net_provider);
+
+    return net_provider->stop().first;
+  };
+
+  return net_provider ? cleanup_and_stop() : true;
 }
 
 const std::shared_ptr<Network_provider>
@@ -219,15 +229,16 @@ const std::shared_ptr<Network_provider> Network_provider_manager::get_provider(
 }
 
 connection_descriptor *Network_provider_manager::open_xcom_connection(
-    const char *server, xcom_port port, bool use_ssl, int connection_timeout) {
+    const char *server, xcom_port port, bool use_ssl, int connection_timeout,
+    network_provider_dynamic_log_level log_level) {
   auto provider = Network_provider_manager::getInstance().get_active_provider();
   connection_descriptor *xcom_connection = nullptr;
 
   if (provider) {
     Network_security_credentials credentials{"", "", use_ssl};
 
-    auto connection = provider.get()->open_connection(server, port, credentials,
-                                                      connection_timeout);
+    auto connection = provider.get()->open_connection(
+        server, port, credentials, connection_timeout, log_level);
 
     xcom_connection = new_connection(connection->fd
 #ifndef XCOM_WITHOUT_OPENSSL
@@ -240,12 +251,7 @@ connection_descriptor *Network_provider_manager::open_xcom_connection(
       set_protocol_stack(xcom_connection, provider->get_communication_stack());
     }
   } else {
-    xcom_connection = new_connection(-1
-#ifndef XCOM_WITHOUT_OPENSSL
-                                     ,
-                                     nullptr
-#endif
-    );
+    xcom_connection = new_connection(-1, nullptr);
   }
   return xcom_connection;
 }
@@ -382,4 +388,14 @@ void Network_provider_manager::finalize_secure_connections_context() {
   CLEANUP_NET_PARAMS_FIELD(ssl_params.cipher);
   CLEANUP_NET_PARAMS_FIELD(tls_params.tls_version);
   CLEANUP_NET_PARAMS_FIELD(tls_params.tls_ciphersuites);
+}
+
+void Network_provider_manager::cleanup_incoming_connection(
+    Network_provider &provider_ref) {
+  Network_connection *remaining_connection = provider_ref.get_new_connection();
+
+  if (remaining_connection != nullptr) {
+    provider_ref.close_connection(*remaining_connection);
+    delete remaining_connection;
+  }
 }

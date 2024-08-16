@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,30 +31,30 @@
 
 #define JAM_FILE_ID 48
 
-
 /**
- * 
+ *
  */
 class MasterLCPConf {
   /**
    * Sender(s) / Reciver(s)
    */
   friend class Dbdih;
-    
-  friend bool printMASTER_LCP_CONF(FILE *, const Uint32 *, Uint32, Uint16);  
-public:
+
+  friend bool printMASTER_LCP_CONF(FILE *, const Uint32 *, Uint32, Uint16);
+
+ public:
   static constexpr Uint32 SignalLength = 3;
 
   enum State {
-    LCP_STATUS_IDLE        = 0,
-    LCP_STATUS_ACTIVE      = 2,
-    LCP_TAB_COMPLETED      = 8,
-    LCP_TAB_SAVED          = 9
+    LCP_STATUS_IDLE = 0,
+    LCP_STATUS_ACTIVE = 2,
+    LCP_TAB_COMPLETED = 8,
+    LCP_TAB_SAVED = 9
   };
 
-  friend NdbOut& operator<<(NdbOut&, const State&);
-  
-private:  
+  friend NdbOut &operator<<(NdbOut &, const State &);
+
+ private:
   /**
    * Data replied
    */
@@ -62,7 +63,7 @@ private:
   Uint32 failedNodeId;
 };
 /**
- * 
+ *
  */
 class MasterLCPReq {
   /**
@@ -70,10 +71,12 @@ class MasterLCPReq {
    */
   friend class Dbdih;
 
-  friend bool printMASTER_LCP_REQ(FILE *, const Uint32 *, Uint32, Uint16);   
-public:
+  friend bool printMASTER_LCP_REQ(FILE *, const Uint32 *, Uint32, Uint16);
+
+ public:
   static constexpr Uint32 SignalLength = 2;
-private:
+
+ private:
   Uint32 masterRef;
   Uint32 failedNodeId;
 };
@@ -84,10 +87,12 @@ class MasterLCPRef {
    */
   friend class Dbdih;
 
-  friend bool printMASTER_LCP_REF(FILE *, const Uint32 *, Uint32, Uint16);   
-public:
+  friend bool printMASTER_LCP_REF(FILE *, const Uint32 *, Uint32, Uint16);
+
+ public:
   static constexpr Uint32 SignalLength = 2;
-private:  
+
+ private:
   /**
    * Data replied
    */

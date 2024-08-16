@@ -1,16 +1,17 @@
-/* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -21,32 +22,31 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include <ndb_global.h>
 #include "my_config.h"
 #include "util/require.h"
-#include <ndb_global.h>
 
 #include <algorithm>
 
-#include <NdbEnv.h>
 #include <NdbConfig.h>
+#include <NdbEnv.h>
 #include <NdbSleep.h>
-#include <portlib/NdbDir.hpp>
-#include <NdbAutoPtr.hpp>
 #include <portlib/NdbNuma.h>
+#include <NdbAutoPtr.hpp>
+#include <portlib/NdbDir.hpp>
 
-#include "vm/SimBlockList.hpp"
-#include "vm/WatchDog.hpp"
-#include "vm/ThreadConfig.hpp"
 #include "vm/Configuration.hpp"
+#include "vm/SimBlockList.hpp"
+#include "vm/ThreadConfig.hpp"
+#include "vm/WatchDog.hpp"
 #include "vm/mt.hpp"
 
+#include "main.hpp"
 #include "ndb_stacktrace.h"
 #include "ndbd.hpp"
-#include "main.hpp"
 
 #include <TransporterRegistry.hpp>
 
-#include <ConfigRetriever.hpp>
 #include <LogLevel.hpp>
 
 #if defined NDB_SOLARIS
@@ -59,12 +59,14 @@
 #include <LogBuffer.hpp>
 #include <OutputStream.hpp>
 
+#include "util/ndb_openssl3_compat.h"
+
 #define JAM_FILE_ID 484
 
+static constexpr bool openssl_version_ok =
+    (OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL);
 
-static void
-systemInfo(const Configuration & config, const LogLevel & logLevel)
-{
+static void systemInfo(const Configuration &config, const LogLevel &logLevel) {
 #ifdef _WIN32
   int processors = 0;
   int speed;
@@ -72,14 +74,14 @@ systemInfo(const Configuration & config, const LogLevel & logLevel)
   GetSystemInfo(&sinfo);
   processors = sinfo.dwNumberOfProcessors;
   HKEY hKey;
-  if(ERROR_SUCCESS==RegOpenKeyEx
-     (HKEY_LOCAL_MACHINE,
-      TEXT("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"),
-      0, KEY_READ, &hKey)) {
+  if (ERROR_SUCCESS ==
+      RegOpenKeyEx(HKEY_LOCAL_MACHINE,
+                   TEXT("HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"),
+                   0, KEY_READ, &hKey)) {
     DWORD dwMHz;
     DWORD cbData = sizeof(dwMHz);
-    if(ERROR_SUCCESS==RegQueryValueEx(hKey,
-				      "~MHz", 0, 0, (LPBYTE)&dwMHz, &cbData)) {
+    if (ERROR_SUCCESS ==
+        RegQueryValueEx(hKey, "~MHz", 0, 0, (LPBYTE)&dwMHz, &cbData)) {
       speed = int(dwMHz);
     }
     RegCloseKey(hKey);
@@ -90,9 +92,8 @@ systemInfo(const Configuration & config, const LogLevel & logLevel)
 
   memset(&pinfo, 0, sizeof(pinfo));
   int pid = 0;
-  while(processors < 16 && pid < 256){
-    if(!processor_info(pid++, &pinfo))
-      processors++;
+  while (processors < 16 && pid < 256) {
+    if (!processor_info(pid++, &pinfo)) processors++;
   }
   speed = pinfo.pi_clock;
 #endif
@@ -101,11 +102,12 @@ systemInfo(const Configuration & config, const LogLevel & logLevel)
     g_eventLogger->info("RonDB -- DB node %d", globalData.ownId);
     g_eventLogger->info("%s --", NDB_VERSION_STRING);
 #ifdef NDB_SOLARIS
-    g_eventLogger->info("NDB is running on a machine with %d processor(s) at %d MHz",
-                        processor, speed);
+    g_eventLogger->info(
+        "NDB is running on a machine with %d processor(s) at %d MHz", processor,
+        speed);
 #endif
   }
-  if(logLevel.getLogLevel(LogLevel::llStartUp) > 3){
+  if (logLevel.getLogLevel(LogLevel::llStartUp) > 3) {
     Uint32 t = config.timeBetweenWatchDogCheck();
     g_eventLogger->info("WatchDog timer is set to %d ms", t);
   }
@@ -215,22 +217,19 @@ systemInfo(const Configuration & config, const LogLevel & logLevel)
  * memory and also for schema transaction memory. GlobalSharedMemory cannot
  * be set lower than 128 MByte.
  */
-static int
-init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
-{
-  const ndb_mgm_configuration_iterator * p =
-    ed.theConfiguration->getOwnConfigIterator();
-  if (p == nullptr)
-  {
-    g_eventLogger->alert("Failed to get node config iterator, "
-                         "exiting.");
+static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
+  const ndb_mgm_configuration_iterator *p =
+      ed.theConfiguration->getOwnConfigIterator();
+  if (p == nullptr) {
+    g_eventLogger->alert(
+        "Failed to get node config iterator, "
+        "exiting.");
     return -1;
   }
 
   Uint32 numa = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_NUMA, &numa);
-  if (numa == 1)
-  {
+  if (numa == 1) {
     int res = NdbNuma_setInterleaved();
     g_eventLogger->info("numa_set_interleave_mask(numa_all_nodes) : %s",
                         res == 0 ? "OK" : "no numa support");
@@ -286,12 +285,12 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     g_eventLogger->alert("No data memory, exiting.");
     return -1;
   }
-  g_eventLogger->info("DataMemory set to %u MB", tupmem/32);
+  g_eventLogger->info("DataMemory set to %u MB", tupmem / 32);
 
   Uint32 logParts = NDB_DEFAULT_LOG_PARTS;
   ndb_mgm_get_int_parameter(p, CFG_DB_NO_REDOLOG_PARTS, &logParts);
 
-  Uint32 maxopen = logParts * 4; // 4 redo parts, max 4 files per part
+  Uint32 maxopen = logParts * 4;  // 4 redo parts, max 4 files per part
   Uint32 filebuffer = NDB_FILE_BUFFER_SIZE;
   Uint32 filepages = (filebuffer / GLOBAL_PAGE_SIZE) * maxopen;
   globalData.ndbLogParts = logParts;
@@ -305,12 +304,11 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     {
       redomem /= GLOBAL_PAGE_SIZE;
       Uint32 tmp = redomem & 15;
-      if (tmp != 0)
-      {
+      if (tmp != 0) {
         redomem += (16 - tmp);
       }
 
-      filepages += logParts * redomem; // Add to RG_FILE_BUFFERS
+      filepages += logParts * redomem;  // Add to RG_FILE_BUFFERS
     }
   }
 
@@ -321,7 +319,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   rl.m_resource_id = RG_FILE_BUFFERS;
   rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
   ed.m_mem_manager->set_resource_limit(rl);
-  g_eventLogger->info("RedoLogBuffer uses %u MB", filepages/32);
+  g_eventLogger->info("RedoLogBuffer uses %u MB", filepages / 32);
 
   Uint32 reserved_jb_pages = jbpages / 4;
   if (jbpages)
@@ -389,7 +387,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     Uint64 page_buffer = globalData.theDiskPageBufferMemory;
 
     Uint32 pages = 0;
-    pages += Uint32(page_buffer / GLOBAL_PAGE_SIZE); // in pages
+    pages += Uint32(page_buffer / GLOBAL_PAGE_SIZE);  // in pages
     pages += LCP_RESTORE_BUFFER * lqhInstances;
     pages += LCP_RESTORE_BUFFER * recoverInstances;
 
@@ -475,8 +473,9 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
-  g_eventLogger->info("QueryMemory can use memory from SharedGlobalMemory"
-                      " until 90%% used");
+  g_eventLogger->info(
+      "QueryMemory can use memory from SharedGlobalMemory"
+      " until 90%% used");
 
   /**
    * Replication Memory will use the configured amount of memory as reserved
@@ -578,49 +577,44 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   }
 
   Uint32 late_alloc = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_LATE_ALLOC,
-                            &late_alloc);
+  ndb_mgm_get_int_parameter(p, CFG_DB_LATE_ALLOC, &late_alloc);
 
   Uint32 memlock = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_MEMLOCK, &memlock);
 
-  if (late_alloc)
-  {
+  if (late_alloc) {
     /**
      * Only map these groups that are required for ndb to even "start"
      */
-    Uint32 rg[] = { RG_JOBBUFFER, RG_FILE_BUFFERS, RG_TRANSPORTER_BUFFERS, 0 };
+    Uint32 rg[] = {RG_JOBBUFFER, RG_FILE_BUFFERS, RG_TRANSPORTER_BUFFERS, 0};
     ed.m_mem_manager->map(watchCounter, memlock, rg);
-  }
-  else
-  {
-    ed.m_mem_manager->map(watchCounter, memlock); // Map all
+  } else {
+    ed.m_mem_manager->map(watchCounter, memlock);  // Map all
   }
   ed.m_mem_manager->set_prio_free_limits(0);
   ed.m_mem_manager->lock();
-  ed.m_mem_manager->check();
+  ed.m_mem_manager->check(__LINE__);
   ed.m_mem_manager->unlock();
   ed.m_mem_manager->init_memory_pools();
   return 0;                     // Success
 }
 
-
-static int
-get_multithreaded_config(EmulatorData& ed)
-{
+static int get_multithreaded_config(EmulatorData &ed) {
   // multithreaded is compiled in ndbd/ndbmtd for now
-  if (!globalData.isNdbMt)
-  {
+  if (!globalData.isNdbMt) {
     g_eventLogger->info("NDBMT: non-mt");
+    g_eventLogger->warning(
+        "Running ndbd with a single thread of signal execution.  "
+        "For multi-threaded signal execution run the ndbmtd binary.");
+
     return 0;
   }
 
-  THRConfig & conf = ed.theConfiguration->m_thr_config;
+  THRConfig &conf = ed.theConfiguration->m_thr_config;
   Uint32 threadcount = conf.getThreadCount();
   g_eventLogger->info("NDBMT: MaxNoOfExecutionThreads=%u", threadcount);
 
-  if (!globalData.isNdbMtLqh)
-    return 0;
+  if (!globalData.isNdbMtLqh) return 0;
 
   g_eventLogger->info("NDBMT: ldm_threads=%u ldm_workers=%u"
                       " query_workers=%u\n"
@@ -635,13 +629,9 @@ get_multithreaded_config(EmulatorData& ed)
   return 0;
 }
 
-
-static void
-ndbd_exit(int code)
-{
+static void ndbd_exit(int code) {
   // Don't allow negative return code
-  if (code < 0)
-    code = 255;
+  if (code < 0) code = 255;
 
   NdbSleep_MilliSleep(1);
 
@@ -653,12 +643,9 @@ ndbd_exit(int code)
 #endif
 }
 
-
 static FILE *angel_info_w = NULL;
 
-static void
-writeChildInfo(const char *token, int val)
-{
+static void writeChildInfo(const char *token, int val) {
   fprintf(angel_info_w, "%s=%d\n", token, val);
   fflush(angel_info_w);
 }
@@ -669,9 +656,7 @@ childReportSignal(int signum)
   writeChildInfo("signal", signum);
 }
 
-static void
-childExit(int error_code, int exit_code, Uint32 currentStartPhase)
-{
+static void childExit(int error_code, int exit_code, Uint32 currentStartPhase) {
   writeChildInfo("error", error_code);
   writeChildInfo("sphase", currentStartPhase);
   fprintf(angel_info_w, "\n");
@@ -679,9 +664,8 @@ childExit(int error_code, int exit_code, Uint32 currentStartPhase)
   ndbd_exit(exit_code);
 }
 
-static void
-childAbort(int error_code, int exit_code, Uint32 currentStartPhase)
-{
+static void childAbort(int error_code, int exit_code,
+                       Uint32 currentStartPhase) {
   writeChildInfo("error", error_code);
   writeChildInfo("sphase", currentStartPhase);
   fprintf(angel_info_w, "\n");
@@ -697,36 +681,28 @@ childAbort(int error_code, int exit_code, Uint32 currentStartPhase)
 #endif
 }
 
-extern "C"
-void
-handler_shutdown(int signum){
+extern "C" void handler_shutdown(int signum) {
   g_eventLogger->info("Received signal %d. Performing stop.", signum);
   globalData.theGracefulShutdownFlag = true;
 }
 
-extern NdbMutex * theShutdownMutex;
+extern NdbMutex *theShutdownMutex;
 
-extern "C"
-void
-handler_error(int signum){
+extern "C" void handler_error(int signum) {
   // only let one thread run shutdown
   static bool handling_error = false;
-  static my_thread_t thread_id; // Valid when handling_error is true
+  static my_thread_t thread_id;  // Valid when handling_error is true
 
-  if (handling_error &&
-      my_thread_equal(thread_id, my_thread_self()))
-  {
+  if (handling_error && my_thread_equal(thread_id, my_thread_self())) {
     // Shutdown thread received signal
 #ifndef _WIN32
-	signal(signum, SIG_DFL);
+    signal(signum, SIG_DFL);
     kill(getpid(), signum);
 #endif
-    while(true)
-      NdbSleep_MilliSleep(10);
+    while (true) NdbSleep_MilliSleep(10);
   }
-  if(theShutdownMutex && NdbMutex_Trylock(theShutdownMutex) != 0)
-    while(true)
-      NdbSleep_MilliSleep(10);
+  if (theShutdownMutex && NdbMutex_Trylock(theShutdownMutex) != 0)
+    while (true) NdbSleep_MilliSleep(10);
 
   thread_id = my_thread_self();
   handling_error = true;
@@ -735,18 +711,16 @@ handler_error(int signum){
   ndb_print_stacktrace();
   childReportSignal(signum);
   // restart the system
-  char errorData[64], *info= 0;
+  char errorData[64], *info = 0;
 #ifdef HAVE_STRSIGNAL
-  info= strsignal(signum);
+  info = strsignal(signum);
 #endif
-  BaseString::snprintf(errorData, sizeof(errorData), "Signal %d received; %s", signum,
-		       info ? info : "No text for signal available");
+  BaseString::snprintf(errorData, sizeof(errorData), "Signal %d received; %s",
+                       signum, info ? info : "No text for signal available");
   ERROR_SET_SIGNAL(fatal, NDBD_EXIT_OS_SIGNAL_RECEIVED, errorData, __FILE__);
 }
 
-
-static void
-catchsigs(bool foreground){
+static void catchsigs(bool foreground) {
   static const int signals_shutdown[] = {
 #ifdef SIGBREAK
     SIGBREAK,
@@ -777,60 +751,54 @@ catchsigs(bool foreground){
 #endif
   };
 
-  static const int signals_error[] = {
-    SIGABRT,
+  static const int signals_error[] = {SIGABRT,
 #ifdef SIGALRM
-    SIGALRM,
+                                      SIGALRM,
 #endif
 #ifdef SIGBUS
-    SIGBUS,
+                                      SIGBUS,
 #endif
-    SIGFPE,
-    SIGILL,
+                                      SIGFPE,  SIGILL,
 #ifdef SIGIO
-    SIGIO,
+                                      SIGIO,
 #endif
 #ifdef SIGPOLL
-    SIGPOLL,
+                                      SIGPOLL,
 #endif
-    SIGSEGV
-  };
+                                      SIGSEGV};
 
   static const int signals_ignore[] = {
 #ifdef SIGCHLD
-    /**
-     * Ignore SIGCHLD  - we have no children,
-     * but may inherit others' children
-     */
-    SIGCHLD,
+      /**
+       * Ignore SIGCHLD  - we have no children,
+       * but may inherit others' children
+       */
+      SIGCHLD,
 #endif
 #ifdef _WIN32
-    SIGINT
+      SIGINT
 #else
-    SIGPIPE
+      SIGPIPE
 #endif
   };
 
   size_t i;
-  for(i = 0; i < sizeof(signals_shutdown)/sizeof(signals_shutdown[0]); i++)
+  for (i = 0; i < sizeof(signals_shutdown) / sizeof(signals_shutdown[0]); i++)
     signal(signals_shutdown[i], handler_shutdown);
-  for(i = 0; i < sizeof(signals_error)/sizeof(signals_error[0]); i++)
+  for (i = 0; i < sizeof(signals_error) / sizeof(signals_error[0]); i++)
     signal(signals_error[i], handler_error);
-  for(i = 0; i < sizeof(signals_ignore)/sizeof(signals_ignore[0]); i++)
+  for (i = 0; i < sizeof(signals_ignore) / sizeof(signals_ignore[0]); i++)
     signal(signals_ignore[i], SIG_IGN);
 
 #ifdef SIGTRAP
-  if (!foreground)
-    signal(SIGTRAP, handler_error);
+  if (!foreground) signal(SIGTRAP, handler_error);
 #endif
-
 }
 
 #ifdef _WIN32
 static HANDLE g_shutdown_event;
 
-DWORD WINAPI shutdown_thread(LPVOID)
-{
+DWORD WINAPI shutdown_thread(LPVOID) {
   // Wait forever until the shutdown event is signaled
   WaitForSingleObject(g_shutdown_event, INFINITE);
 
@@ -840,10 +808,9 @@ DWORD WINAPI shutdown_thread(LPVOID)
 }
 #endif
 
-struct ThreadData
-{
-  FILE* f;
-  LogBuffer* logBuf;
+struct ThreadData {
+  FILE *f;
+  LogBuffer *logBuf;
   bool stop;
 };
 
@@ -853,28 +820,25 @@ struct ThreadData
  * to the log file.
  */
 
-void* async_log_func(void* args)
-{
-  ThreadData* data = (ThreadData*)args;
-  FILE* f = data->f;
-  LogBuffer* logBuf = data->logBuf;
+void *async_log_func(void *args) {
+  ThreadData *data = (ThreadData *)args;
+  FILE *f = data->f;
+  LogBuffer *logBuf = data->logBuf;
   const size_t get_bytes = 512;
   char buf[get_bytes + 1];
   size_t bytes;
   int part_bytes = 0, bytes_printed = 0;
 
-  while(!data->stop)
-  {
+  while (!data->stop) {
     part_bytes = 0;
     bytes_printed = 0;
-    if((bytes = logBuf->get(buf, get_bytes)))
-    {
+    if ((bytes = logBuf->get(buf, get_bytes))) {
       fwrite(buf, bytes, 1, f);
       fflush(f);
     }
   }
 
-  while((bytes = logBuf->get(buf, get_bytes, 1)))// flush remaining logs
+  while ((bytes = logBuf->get(buf, get_bytes, 1)))  // flush remaining logs
   {
     fwrite(buf, bytes, 1, f);
     fflush(f);
@@ -882,8 +846,7 @@ void* async_log_func(void* args)
 
   // print lost count in the end, if any
   size_t lost_count = logBuf->getLostCount();
-  if(lost_count)
-  {
+  if (lost_count) {
     fprintf(f, LostMsgHandler::LOST_BYTES_FMT, lost_count);
     fflush(f);
   }
@@ -891,17 +854,13 @@ void* async_log_func(void* args)
   return NULL;
 }
 
-static void log_memusage(const char* where=NULL)
-{
+static void log_memusage(const char *where = NULL) {
 #ifdef DEBUG_RSS
-  const char* location = (where != NULL)?where : "Unknown";
+  const char *location = (where != NULL) ? where : "Unknown";
   ndb_rusage ru;
-  if (Ndb_GetRUsage(&ru, true) != 0)
-  {
+  if (Ndb_GetRUsage(&ru, true) != 0) {
     g_eventLogger->error("Failed to get rusage");
-  }
-  else
-  {
+  } else {
     g_eventLogger->info("ndbd.cpp %s : RSS : %llu kB", location, ru.ru_rss);
   }
 #else
@@ -909,43 +868,33 @@ static void log_memusage(const char* where=NULL)
 #endif
 }
 
-void stop_async_log_func(NdbThread *thr, ThreadData& thr_args)
-{
-  if (thr)
-  {
+void stop_async_log_func(NdbThread *thr, ThreadData &thr_args) {
+  if (thr) {
     void *dummy_return_status;
     thr_args.stop = true;
     NdbThread_WaitFor(thr, &dummy_return_status);
   }
 }
 
-void
-ndbd_run(bool foreground, int report_fd,
-         const char* connect_str, int force_nodeid, const char* bind_address,
-         bool no_start, bool initial, bool initialstart,
-         unsigned allocated_nodeid, int connect_retries, int connect_delay,
-         size_t logbuffer_size)
-{
+void ndbd_run(bool foreground, int report_fd, const char *connect_str,
+              int force_nodeid, const char *bind_address, bool no_start,
+              bool initial, bool initialstart, unsigned allocated_nodeid,
+              int connect_retries, int connect_delay, size_t logbuffer_size,
+              const char *tls_search_path, int mgm_tls_req) {
   log_memusage("ndbd_run");
-  LogBuffer* logBuf = new LogBuffer(logbuffer_size);
-  BufferedOutputStream* ndbouts_bufferedoutputstream = new BufferedOutputStream(logBuf);
+  LogBuffer *logBuf = new LogBuffer(logbuffer_size);
+  BufferedOutputStream *ndbouts_bufferedoutputstream =
+      new BufferedOutputStream(logBuf);
 
   // Make ndbout point to the BufferedOutputStream.
   NdbOut_ReInit(ndbouts_bufferedoutputstream, ndbouts_bufferedoutputstream);
 
-  struct NdbThread* log_threadvar= NULL;
-  ThreadData thread_args=
-  {
-    stdout,
-    logBuf,
-    false
-  };
+  struct NdbThread *log_threadvar = NULL;
+  ThreadData thread_args = {stdout, logBuf, false};
   // Create log thread.
-  log_threadvar = NdbThread_Create(async_log_func,
-                       (void**)&thread_args,
-                       0,
-                       (char*)"async_log_thread",
-                       NDB_THREAD_PRIO_MEAN);
+  log_threadvar =
+      NdbThread_Create(async_log_func, (void **)&thread_args, 0,
+                       (char *)"async_log_thread", NDB_THREAD_PRIO_MEAN);
 #ifdef _WIN32
   {
     char shutdown_event_name[32];
@@ -953,8 +902,7 @@ ndbd_run(bool foreground, int report_fd,
               "ndbd_shutdown_%d", GetCurrentProcessId());
 
     g_shutdown_event = CreateEvent(NULL, true, false, shutdown_event_name);
-    if (g_shutdown_event == NULL)
-    {
+    if (g_shutdown_event == NULL) {
       g_eventLogger->error("Failed to create shutdown event, error: %d",
                            GetLastError());
       stop_async_log_func(log_threadvar, thread_args);
@@ -962,8 +910,7 @@ ndbd_run(bool foreground, int report_fd,
     }
 
     HANDLE thread = CreateThread(NULL, 0, &shutdown_thread, NULL, 0, NULL);
-    if (thread == NULL)
-    {
+    if (thread == NULL) {
       g_eventLogger->error("couldn't start shutdown thread, error: %d",
                            GetLastError());
       stop_async_log_func(log_threadvar, thread_args);
@@ -974,49 +921,41 @@ ndbd_run(bool foreground, int report_fd,
 
   ndb_init_stacktrace();
 
-  if (foreground)
-    g_eventLogger->info("Ndb started in foreground");
+  if (foreground) g_eventLogger->info("Ndb started in foreground");
 
-  if (report_fd)
-  {
+  if (report_fd) {
     g_eventLogger->debug("Opening report stream on fd: %d", report_fd);
     // Open a stream for sending extra status to angel
-    if (!(angel_info_w = fdopen(report_fd, "w")))
-    {
-      g_eventLogger->error("Failed to open stream for reporting "
-                           "to angel, error: %d (%s)", errno, strerror(errno));
+    if (!(angel_info_w = fdopen(report_fd, "w"))) {
+      g_eventLogger->error(
+          "Failed to open stream for reporting "
+          "to angel, error: %d (%s)",
+          errno, strerror(errno));
 
       stop_async_log_func(log_threadvar, thread_args);
       ndbd_exit(-1);
     }
-  }
-  else
-  {
+  } else {
     // No reporting requested, open /dev/null
-    const char* dev_null = IF_WIN("nul", "/dev/null");
-    if (!(angel_info_w = fopen(dev_null, "w")))
-    {
-      g_eventLogger->error("Failed to open stream for reporting to "
-                           "'%s', error: %d (%s)", dev_null, errno,
-                           strerror(errno));
+    const char *dev_null = IF_WIN("nul", "/dev/null");
+    if (!(angel_info_w = fopen(dev_null, "w"))) {
+      g_eventLogger->error(
+          "Failed to open stream for reporting to "
+          "'%s', error: %d (%s)",
+          dev_null, errno, strerror(errno));
       stop_async_log_func(log_threadvar, thread_args);
       ndbd_exit(-1);
     }
   }
 
-  if (initialstart)
-  {
+  if (initialstart) {
     g_eventLogger->info("Performing partial initial start of this Cluster");
-  }
-  else if (initial)
-  {
+  } else if (initial) {
     g_eventLogger->info(
-      "Initial start of data node, ignoring any info on disk");
-  }
-  else
-  {
+        "Initial start of data node, ignoring any info on disk");
+  } else {
     g_eventLogger->info(
-      "Normal start of data node using checkpoint and log info if existing");
+        "Normal start of data node using checkpoint and log info if existing");
   }
 
   log_memusage("init1");
@@ -1027,9 +966,8 @@ ndbd_run(bool foreground, int report_fd,
 
   log_memusage("Emulator init");
 
-  Configuration* theConfig = globalEmulatorData.theConfiguration;
-  if(!theConfig->init(no_start, initial, initialstart))
-  {
+  Configuration *theConfig = globalEmulatorData.theConfiguration;
+  if (!theConfig->init(no_start, initial, initialstart)) {
     g_eventLogger->error("Failed to init Configuration");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
@@ -1045,17 +983,15 @@ ndbd_run(bool foreground, int report_fd,
   */
   theConfig->fetch_configuration(connect_str, force_nodeid, bind_address,
                                  allocated_nodeid, connect_retries,
-                                 connect_delay);
+                                 connect_delay, tls_search_path, opt_mgm_tls);
 
   /**
     Set the NDB DataDir, this is where we will locate log files and data
     files unless specifically configured to be elsewhere.
   */
-  g_eventLogger->info("Changing directory to '%s'",
-                      NdbConfig_get_path(NULL));
+  g_eventLogger->info("Changing directory to '%s'", NdbConfig_get_path(NULL));
 
-  if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0)
-  {
+  if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0) {
     g_eventLogger->warning("Cannot change directory to '%s', error: %d",
                            NdbConfig_get_path(NULL), errno);
     // Ignore error
@@ -1086,16 +1022,43 @@ ndbd_run(bool foreground, int report_fd,
     theConfig->setupMemoryConfiguration(min_transmem_bytes);
   }
 
+  /* Find TLS key and certificate */
+  globalTransporterRegistry.init_tls(tls_search_path, NODE_TYPE_DB,
+                                     opt_mgm_tls);
+
+  /* Check TLS configuration */
+  const ndb_mgm_configuration_iterator *p =
+      globalEmulatorData.theConfiguration->getOwnConfigIterator();
+  require(p != nullptr);
+
+  Uint32 requireCert = 0, requireTls = 0;
+  ndb_mgm_get_int_parameter(p, CFG_NODE_REQUIRE_CERT, &requireCert);
+  ndb_mgm_get_int_parameter(p, CFG_DB_REQUIRE_TLS, &requireTls);
+
+  if ((requireCert || requireTls) && !globalTransporterRegistry.hasTlsCert()) {
+    if (openssl_version_ok)
+      g_eventLogger->error(
+          "Shutting down. This node does not have a valid TLS certificate.");
+    else
+      g_eventLogger->error(
+          "Shutting down. This version of OpenSSL is not supported.");
+    stop_async_log_func(log_threadvar, thread_args);
+    ndbd_exit(-1);
+  }
+
+  if (requireTls) {
+    g_eventLogger->info("This node will require TLS for all connections.");
+  }
+
   /**
     Printout various information about the threads in the
     run-time environment
   */
-  if (get_multithreaded_config(globalEmulatorData))
-  {
+  if (get_multithreaded_config(globalEmulatorData)) {
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
-  systemInfo(* theConfig, * theConfig->m_logLevel);
+  systemInfo(*theConfig, *theConfig->m_logLevel);
 
   /**
     Start the watch-dog thread before we start allocating memory.
@@ -1103,7 +1066,7 @@ ndbd_run(bool foreground, int report_fd,
     The watch-dog will have a special timeout for the phase where
     we allocate memory.
   */
-  NdbThread* pWatchdog = globalEmulatorData.theWatchDog->doStart();
+  NdbThread *pWatchdog = globalEmulatorData.theWatchDog->doStart();
 
   log_memusage("Watchdog started");
 
@@ -1115,10 +1078,9 @@ ndbd_run(bool foreground, int report_fd,
      * So we want the watchdog to monitor the process of initial allocation.
      */
     Uint32 watchCounter;
-    watchCounter = 9;           //  Means "doing allocation"
+    watchCounter = 9;  //  Means "doing allocation"
     globalEmulatorData.theWatchDog->registerWatchedThread(&watchCounter, 0);
-    if (init_global_memory_manager(globalEmulatorData, &watchCounter) != 0)
-    {
+    if (init_global_memory_manager(globalEmulatorData, &watchCounter) != 0) {
       stop_async_log_func(log_threadvar, thread_args);
       ndbd_exit(1);
     }
@@ -1127,33 +1089,29 @@ ndbd_run(bool foreground, int report_fd,
   g_eventLogger->info("Memory Allocation for global memory pools Completed");
   log_memusage("Global memory pools allocated");
 
-  const ndb_mgm_configuration_iterator *p =
-      globalEmulatorData.theConfiguration->getOwnConfigIterator();
-  require(p != nullptr);
-
-  bool have_password_option = g_filesystem_password_state.have_password_option();
+  bool have_password_option =
+      g_filesystem_password_state.have_password_option();
   Uint32 encrypted_file_system = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_ENCRYPTED_FILE_SYSTEM,
                             &encrypted_file_system);
-  if (have_password_option && encrypted_file_system == 0)
-  {
-    g_eventLogger->warning("Data node is not configured with "
+  if (have_password_option && encrypted_file_system == 0) {
+    g_eventLogger->warning(
+        "Data node is not configured with "
         "EncryptedFileSystem=1, filesystem password will be ignored");
   }
-  if (!have_password_option && encrypted_file_system == 1)
-  {
-    g_eventLogger->info("Data node configured to have encryption "
-                         "but password not provided");
+  if (!have_password_option && encrypted_file_system == 1) {
+    g_eventLogger->info(
+        "Data node configured to have encryption "
+        "but password not provided");
     ndbd_exit(-1);
   }
 
-  if (have_password_option && encrypted_file_system == 1)
-  {
+  if (have_password_option && encrypted_file_system == 1) {
     const char *pwd = g_filesystem_password_state.get_password();
     size_t pwd_size = g_filesystem_password_state.get_password_length();
-    if(pwd_size <=0)
-    {
-      g_eventLogger->info("Invalid filesystem password, "
+    if (pwd_size <= 0) {
+      g_eventLogger->info(
+          "Invalid filesystem password, "
           "empty password not allowed");
       ndbd_exit(-1);
     }
@@ -1161,7 +1119,7 @@ ndbd_run(bool foreground, int report_fd,
     memcpy(globalData.filesystemPassword, pwd, pwd_size);
     globalData.filesystemPassword[pwd_size] = '\0';
     globalData.filesystemPasswordLength = pwd_size;
-    require(globalData.filesystemPasswordLength> 0);
+    require(globalData.filesystemPasswordLength > 0);
   }
 
   /* Initialise g_conf_max_send_delay in mt.cpp */
@@ -1184,29 +1142,25 @@ ndbd_run(bool foreground, int report_fd,
 #ifdef VM_TRACE
   // Initialize signal logger before block constructors
   char *signal_log_name = NdbConfig_SignalLogFileName(globalData.ownId);
-  FILE * signalLog = fopen(signal_log_name, "a");
-  if (signalLog)
-  {
+  FILE *signalLog = fopen(signal_log_name, "a");
+  if (signalLog) {
     globalSignalLoggers.setOutputStream(signalLog);
     globalSignalLoggers.setOwnNodeId(globalData.ownId);
 
-    const char* p = NdbEnv_GetEnv("NDB_SIGNAL_LOG", (char*)0, 0);
-    if (p != 0)
-    {
+    const char *p = NdbEnv_GetEnv("NDB_SIGNAL_LOG", (char *)0, 0);
+    if (p != 0) {
       fprintf(signalLog, "START\n");
       fflush(signalLog);
 
       char buf[200];
       BaseString::snprintf(buf, sizeof(buf), "BLOCK=%s", p);
-      for (char* q = buf; *q != 0; q++)
-        *q = toupper(toascii(*q));
-      g_eventLogger->info("Turning on signal logging using block spec.: '%s'", buf);
+      for (char *q = buf; *q != 0; q++) *q = toupper(toascii(*q));
+      g_eventLogger->info("Turning on signal logging using block spec.: '%s'",
+                          buf);
       globalSignalLoggers.log(SignalLoggerManager::LogInOut, buf);
       globalData.testOn = 1;
     }
-  }
-  else
-  {
+  } else {
     // Failed to open signal log, print an error and ignore
     g_eventLogger->info("Failed to open signal logging file '%s', errno: %d",
                         signal_log_name, errno);
@@ -1271,19 +1225,17 @@ ndbd_run(bool foreground, int report_fd,
   }
   // Re-use the mgm handle as a transporter
   g_eventLogger->info("Reuse connection to NDB management server");
-  if(!globalTransporterRegistry.connect_client(
-		 theConfig->get_config_retriever()->get_mgmHandlePtr()))
-      ERROR_SET(fatal, NDBD_EXIT_CONNECTION_SETUP_FAILED,
-                "Failed to convert mgm connection to a transporter",
-                __FILE__);
-  g_eventLogger->info("Start transporter clients");
-  NdbThread* pTrp = globalTransporterRegistry.start_clients();
-  if (pTrp == 0)
-  {
+  if (!globalTransporterRegistry.connect_client(
+          theConfig->get_mgm_handle_ptr()))
+    ERROR_SET(fatal, NDBD_EXIT_CONNECTION_SETUP_FAILED,
+              "Failed to convert mgm connection to a transporter", __FILE__);
+  NdbThread *pTrp = globalTransporterRegistry.start_clients();
+  if (pTrp == 0) {
+    g_eventLogger->info("globalTransporterRegistry.start_clients() failed");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
-  NdbThread* pSockServ = globalEmulatorData.m_socket_server->startServer();
+  NdbThread *pSockServ = globalEmulatorData.m_socket_server->startServer();
 
   /**
     Report the new threads started, there is one thread started now to handle
@@ -1342,7 +1294,7 @@ extern bool opt_core;
 // instantiated and updated in NdbcntrMain.cpp
 extern Uint32 g_currentStartPhase;
 
-int simulate_error_during_shutdown= 0;
+int simulate_error_during_shutdown = 0;
 
 void
 NdbShutdown(int error_code,
@@ -1353,101 +1305,93 @@ NdbShutdown(int error_code,
   if(type == NST_ErrorInsert)
   {
     type = NST_Restart;
-    restartType = (NdbRestartType)
-      globalEmulatorData.theConfiguration->getRestartOnErrorInsert();
-    if(restartType == NRT_Default)
-    {
+    restartType =
+        (NdbRestartType)
+            globalEmulatorData.theConfiguration->getRestartOnErrorInsert();
+    if (restartType == NRT_Default) {
       type = NST_ErrorHandler;
       globalEmulatorData.theConfiguration->stopOnError(true);
     }
   }
 
-  if((type == NST_ErrorHandlerSignal) || // Signal handler has already locked mutex
-     (NdbMutex_Trylock(theShutdownMutex) == 0)){
+  if ((type ==
+       NST_ErrorHandlerSignal) ||  // Signal handler has already locked mutex
+      (NdbMutex_Trylock(theShutdownMutex) == 0)) {
     globalData.theRestartFlag = perform_stop;
 
     bool restart = false;
 
-    if((type != NST_Normal &&
-	globalEmulatorData.theConfiguration->stopOnError() == false) ||
-       type == NST_Restart)
-    {
-      restart  = true;
+    if ((type != NST_Normal &&
+         globalEmulatorData.theConfiguration->stopOnError() == false) ||
+        type == NST_Restart) {
+      restart = true;
     }
 
-    const char * shutting = "shutting down";
-    if(restart)
-    {
+    const char *shutting = "shutting down";
+    if (restart) {
       shutting = "restarting";
     }
 
-    switch(type){
-    case NST_Normal:
-      g_eventLogger->info("Shutdown initiated");
-      break;
-    case NST_Watchdog:
-      g_eventLogger->info("Watchdog %s system", shutting);
-      break;
-    case NST_ErrorHandler:
-      g_eventLogger->info("Error handler %s system", shutting);
-      break;
-    case NST_ErrorHandlerSignal:
-      g_eventLogger->info("Error handler signal %s system", shutting);
-      break;
-    case NST_Restart:
-      g_eventLogger->info("Restarting system");
-      break;
-    default:
-      g_eventLogger->info("Error handler %s system (unknown type: %u)",
-                          shutting, (unsigned)type);
-      type = NST_ErrorHandler;
-      break;
+    switch (type) {
+      case NST_Normal:
+        g_eventLogger->info("Shutdown initiated");
+        break;
+      case NST_Watchdog:
+        g_eventLogger->info("Watchdog %s system", shutting);
+        break;
+      case NST_ErrorHandler:
+        g_eventLogger->info("Error handler %s system", shutting);
+        break;
+      case NST_ErrorHandlerSignal:
+        g_eventLogger->info("Error handler signal %s system", shutting);
+        break;
+      case NST_Restart:
+        g_eventLogger->info("Restarting system");
+        break;
+      default:
+        g_eventLogger->info("Error handler %s system (unknown type: %u)",
+                            shutting, (unsigned)type);
+        type = NST_ErrorHandler;
+        break;
     }
 
-    const char * exitAbort = 0;
+    const char *exitAbort = 0;
     if (opt_core)
       exitAbort = "aborting";
     else
       exitAbort = "exiting";
 
-    if(type == NST_Watchdog)
-    {
+    if (type == NST_Watchdog) {
       /**
        * Very serious, don't attempt to free, just die!!
        */
       g_eventLogger->info("Watchdog shutdown completed - %s", exitAbort);
-      if (opt_core)
-      {
-	childAbort(error_code, -1,g_currentStartPhase);
-      }
-      else
-      {
-	childExit(error_code, -1,g_currentStartPhase);
+      if (opt_core) {
+        childAbort(error_code, -1, g_currentStartPhase);
+      } else {
+        childExit(error_code, -1, g_currentStartPhase);
       }
     }
 
 #ifndef _WIN32
-    if (simulate_error_during_shutdown)
-    {
+    if (simulate_error_during_shutdown) {
       kill(getpid(), simulate_error_during_shutdown);
-      while(true)
-	NdbSleep_MilliSleep(10);
+      while (true) NdbSleep_MilliSleep(10);
     }
 #endif
 
     globalEmulatorData.theWatchDog->doStop();
 
 #ifdef VM_TRACE
-    FILE * outputStream = globalSignalLoggers.setOutputStream(0);
-    if(outputStream != 0)
-      fclose(outputStream);
+    FILE *outputStream = globalSignalLoggers.setOutputStream(0);
+    if (outputStream != 0) fclose(outputStream);
 #endif
 
-    /**
-     * Don't touch transporter here (yet)
-     *   cause with ndbmtd, there are locks and nasty stuff
-     *   and we don't know which we are holding...
-     */
+      /**
+       * Don't touch transporter here (yet)
+       *   cause with ndbmtd, there are locks and nasty stuff
+       *   and we don't know which we are holding...
+       */
 #ifdef NOT_YET
 
     /**
@@ -1469,38 +1413,31 @@ NdbShutdown(int error_code,
     globalTransporterRegistry.removeAll();
 #endif
 
-    if(type == NST_ErrorInsert && opt_core)
-    {
+    if (type == NST_ErrorInsert && opt_core) {
       // Unload some structures to reduce size of core
       globalEmulatorData.theSimBlockList->unload();
       NdbMutex_Unlock(theShutdownMutex);
       globalEmulatorData.destroy();
     }
 
-    if(type != NST_Normal && type != NST_Restart)
-    {
+    if (type != NST_Normal && type != NST_Restart) {
       g_eventLogger->info("Error handler shutdown completed - %s", exitAbort);
-      if (opt_core)
-      {
-	childAbort(error_code, -1,g_currentStartPhase);
-      }
-      else
-      {
-	childExit(error_code, -1,g_currentStartPhase);
+      if (opt_core) {
+        childAbort(error_code, -1, g_currentStartPhase);
+      } else {
+        childExit(error_code, -1, g_currentStartPhase);
       }
     }
 
     /**
      * This is a normal restart, depend on angel
      */
-    if(type == NST_Restart){
-      childExit(error_code, restartType,g_currentStartPhase);
+    if (type == NST_Restart) {
+      childExit(error_code, restartType, g_currentStartPhase);
     }
 
     g_eventLogger->info("Shutdown completed - exiting");
-  }
-  else
-  {
+  } else {
     /**
      * Shutdown is already in progress
      */
@@ -1508,17 +1445,15 @@ NdbShutdown(int error_code,
     /**
      * If this is the watchdog, kill system the hard way
      */
-    if (type== NST_Watchdog)
-    {
+    if (type == NST_Watchdog) {
       g_eventLogger->info("Watchdog is killing system the hard way");
 #if defined VM_TRACE
-      childAbort(error_code, -1,g_currentStartPhase);
+      childAbort(error_code, -1, g_currentStartPhase);
 #else
       childExit(error_code, -1, g_currentStartPhase);
 #endif
     }
 
-    while(true)
-      NdbSleep_MilliSleep(10);
+    while (true) NdbSleep_MilliSleep(10);
   }
 }

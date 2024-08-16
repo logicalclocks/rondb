@@ -9,10 +9,10 @@ Note	####	Storing MySQL user name or password information in the connection meta
 #    GTID specified.
 [connection server1]
 SET SESSION sql_log_bin= 0;
-include/gtid_utils.inc
+include/rpl/gtid_utils.inc
 SET SESSION sql_log_bin= 1;
 CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
-include/rpl_sync.inc
+include/rpl/sync.inc
 
 ############################################################
 # 2. Force negative certification outcome of the next
@@ -35,7 +35,7 @@ SET @@GLOBAL.DEBUG= @debug_saved;
 INSERT INTO t1 VALUES (2);
 include/assert.inc ['There is no value 1 in table t1']
 include/assert.inc ['There is a value 2 in table t1']
-include/assert.inc [GTID_EXECUTED must contain 4 group transactions]
+include/assert.inc [GTID_EXECUTED must contain 2 group transactions]
 
 ############################################################
 # 3. Force error on before commit hook.
@@ -56,12 +56,12 @@ SET @@GLOBAL.DEBUG= @debug_saved;
 INSERT INTO t1 VALUES (4);
 include/assert.inc ['There is no value 3 in table t1']
 include/assert.inc ['There is a value 4 in table t1']
-include/assert.inc [GTID_EXECUTED must contain 5 group transactions]
+include/assert.inc [GTID_EXECUTED must contain 3 group transactions]
 
 ############################################################
 # 4. Clean up.
 DROP TABLE t1;
 SET SESSION sql_log_bin= 0;
-include/gtid_utils_end.inc
+include/rpl/gtid_utils_end.inc
 SET SESSION sql_log_bin= 1;
 include/group_replication_end.inc

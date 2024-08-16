@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,8 +23,12 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include <NdbSleep.h>
 #include "process_management.hpp"
+#include <NdbSleep.h>
+#include "storage/ndb/test/run-test/atrt.hpp"
+
+extern const char *opt_tls_search_path;
+extern unsigned long long opt_mgm_tls;
 
 bool ProcessManagement::startAllProcesses() {
   if (clusterProcessesStatus == ProcessesStatus::RUNNING) {
@@ -348,7 +353,14 @@ bool ProcessManagement::connectNdbMgm(atrt_process &proc) {
     return false;
   }
 
-  if (ndb_mgm_connect(handle, 30, 1, 0) != -1) {
+  tlsKeyManager.init_mgm_client(opt_tls_search_path);
+  if (tlsKeyManager.ctx()) {
+    g_logger.debug("Connecting to ndb mgm using TLS");
+  }
+  ndb_mgm_set_ssl_ctx(handle, tlsKeyManager.ctx());
+
+  if (ndb_mgm_connect_tls(handle, 30, 1, 0, opt_mgm_tls) != -1) {
+    g_logger.debug("Connected to ndb mgm %s", tmp.c_str());
     proc.m_ndb_mgm_handle = handle;
     return true;
   }
@@ -487,7 +499,7 @@ int ProcessManagement::checkNdbOrServersFailures() {
   for (unsigned i = 0; i < config.m_processes.size(); i++) {
     atrt_process &proc = *config.m_processes[i];
     bool skip =
-      proc.m_atrt_stopped || IF_WIN(proc.m_type & atrt_process::AP_MYSQLD, 0);
+        proc.m_atrt_stopped || IF_WIN(proc.m_type & atrt_process::AP_MYSQLD, 0);
     bool isRunning = proc.m_proc.m_status == "running";
     if ((types & proc.m_type) != 0 && !isRunning && !skip) {
       g_logger.critical("%s #%d not running on %s", proc.m_name.c_str(),
@@ -508,7 +520,7 @@ int ProcessManagement::checkNdbOrServersFailures() {
 }
 
 bool ProcessManagement::updateStatus(int types, bool fail_on_missing) {
-  Vector<Vector<SimpleCpcClient::Process> > m_procs;
+  Vector<Vector<SimpleCpcClient::Process>> m_procs;
 
   Vector<SimpleCpcClient::Process> dummy;
   m_procs.fill(config.m_hosts.size(), dummy);
@@ -556,7 +568,7 @@ bool ProcessManagement::updateStatus(int types, bool fail_on_missing) {
 }
 
 bool ProcessManagement::waitForProcessesToStop(int types, int retries,
-                                     int wait_between_retries_s) {
+                                               int wait_between_retries_s) {
   for (int attempts = 0; attempts < retries; attempts++) {
     bool last_attempt = attempts == (retries - 1);
 
@@ -585,7 +597,7 @@ bool ProcessManagement::waitForProcessesToStop(int types, int retries,
 }
 
 bool ProcessManagement::waitForProcessToStop(atrt_process &proc, int retries,
-                                   int wait_between_retries_s) {
+                                             int wait_between_retries_s) {
   for (int attempts = 0; attempts < retries; attempts++) {
     updateStatus(proc.m_type, false);
 
@@ -630,7 +642,7 @@ int ProcessManagement::remap(int i) {
   return i;
 }
 
-const char* ProcessManagement::getProcessTypeName(int types) {
+const char *ProcessManagement::getProcessTypeName(int types) {
   switch (types) {
     case ProcessManagement::P_CLIENTS:
       return "client";

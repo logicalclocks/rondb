@@ -1,15 +1,16 @@
-/* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -38,6 +39,24 @@ class Prepared_statement;
 struct handlerton;
 struct MYSQL_LEX_STRING;
 struct MYSQL_LEX_CSTRING;
+
+/**
+  What type of Sql_cmd we're dealing with (DML, DDL, ...).
+
+  "Other" may be used for commands that are neither DML or DDL, such as
+  shutdown.
+
+  Theoretically, a command can run through code paths of both DDL and DML
+  (e.g. CREATE TABLE ... AS SELECT ...), but at this point, a command
+  must identify as only one thing.
+*/
+enum enum_sql_cmd_type {
+  SQL_CMD_UNDETERMINED = 0,
+  SQL_CMD_DDL = 1,
+  SQL_CMD_DML = 2,
+  SQL_CMD_DCL = 4,
+  SQL_CMD_OTHER = 8
+};
 
 /**
   Representation of an SQL command.
@@ -141,13 +160,15 @@ class Sql_cmd {
   /// @returns true if statement is part of a stored procedure
   bool is_part_of_sp() const { return m_part_of_sp; }
 
-  /// @return true if SQL command is a DML statement
-  virtual bool is_dml() const { return false; }
+  /// @return SQL command type (DML, DDL, ... -- "undetermined" by default)
+  virtual enum enum_sql_cmd_type sql_cmd_type() const {
+    return SQL_CMD_UNDETERMINED;
+  }
 
   /// @return true if implemented as single table plan, DML statement only
   virtual bool is_single_table_plan() const {
     /* purecov: begin inspected */
-    assert(is_dml());
+    assert(sql_cmd_type() == SQL_CMD_DML);
     return false;
     /* purecov: end */
   }
@@ -162,9 +183,13 @@ class Sql_cmd {
     the statement is not eligible for execution in a secondary storage
     engine
   */
-  virtual const MYSQL_LEX_CSTRING *eligible_secondary_storage_engine() const {
+  virtual const MYSQL_LEX_CSTRING *eligible_secondary_storage_engine(
+      THD *) const {
     return nullptr;
   }
+
+  /** @return true if the operation is BULK LOAD. */
+  virtual bool is_bulk_load() const { return false; }
 
   /**
     Disable use of secondary storage engines in this statement. After
@@ -175,6 +200,8 @@ class Sql_cmd {
     assert(m_secondary_engine == nullptr);
     m_secondary_engine_enabled = false;
   }
+
+  void enable_secondary_storage_engine() { m_secondary_engine_enabled = true; }
 
   /**
     Has use of secondary storage engines been disabled for this statement?

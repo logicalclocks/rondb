@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,13 +24,15 @@
 #include "sql/sp_pcontext.h"
 
 #include <assert.h>
-#include "m_ctype.h"
-#include "m_string.h"
+#include <memory>
+
 #include "my_alloc.h"
 
 #include "my_inttypes.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/sql_class.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 
 bool sp_condition_value::equals(const sp_condition_value *cv) const {
   assert(cv);
@@ -148,7 +151,7 @@ sp_pcontext::sp_pcontext(THD *thd, sp_pcontext *prev,
 }
 
 sp_pcontext::~sp_pcontext() {
-  for (size_t i = 0; i < m_children.size(); ++i) destroy(m_children.at(i));
+  std::destroy_n(m_children.data(), m_children.size());
 }
 
 sp_pcontext *sp_pcontext::push_context(THD *thd,
@@ -162,7 +165,7 @@ sp_pcontext *sp_pcontext::push_context(THD *thd,
 sp_pcontext *sp_pcontext::pop_context() {
   m_parent->m_max_var_index += m_max_var_index;
 
-  uint submax = max_cursor_index();
+  const uint submax = max_cursor_index();
   if (submax > m_parent->m_max_cursor_index)
     m_parent->m_max_cursor_index = submax;
 

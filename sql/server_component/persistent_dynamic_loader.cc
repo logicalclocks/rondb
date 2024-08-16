@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,15 +33,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include <utility>
 #include <vector>
 
-#include "m_ctype.h"
-#include "m_string.h"
 #include "mutex_lock.h"
 #include "my_alloc.h"
 #include "my_base.h"
 #include "my_compiler.h"
 
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_sys.h"
 #include "mysql/components/service_implementation.h"
@@ -49,7 +47,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "persistent_dynamic_loader_imp.h"
 #include "scope_guard.h"
@@ -70,6 +70,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "thr_lock.h"
 #include "thr_mutex.h"
 
@@ -267,7 +268,7 @@ bool mysql_persistent_dynamic_loader_imp::init(void *thdp) {
 
       uint64 component_id =
           component_table->field[CT_FIELD_COMPONENT_ID]->val_int();
-      uint64 component_group_id =
+      const uint64 component_group_id =
           component_table->field[CT_FIELD_GROUP_ID]->val_int();
       String component_urn_str;
       component_table->field[CT_FIELD_COMPONENT_URN]->val_str(
@@ -379,7 +380,7 @@ DEFINE_BOOL_METHOD(mysql_persistent_dynamic_loader_imp::load,
     MUTEX_LOCK(lock, &component_id_by_urn_mutex);
 
     /* We don't replicate INSTALL COMPONENT */
-    Disable_binlog_guard binlog_guard(thd);
+    const Disable_binlog_guard binlog_guard(thd);
 
     TABLE *component_table;
     auto guard_close_tables = create_scope_guard([&thd] {
@@ -418,7 +419,8 @@ DEFINE_BOOL_METHOD(mysql_persistent_dynamic_loader_imp::load,
       component_table->field[CT_FIELD_COMPONENT_URN]->store(
           urns[i], strlen(urns[i]), system_charset);
 
-      int res = component_table->file->ha_write_row(component_table->record[0]);
+      const int res =
+          component_table->file->ha_write_row(component_table->record[0]);
       if (res != 0) {
         my_error(ER_COMPONENT_MANIPULATE_ROW_FAILED, MYF(0), urns[i], res);
         component_table->file->ha_release_auto_increment();
@@ -490,7 +492,7 @@ DEFINE_BOOL_METHOD(mysql_persistent_dynamic_loader_imp::unload,
     }
 
     /* We don't replicate UNINSTALL_COMPONENT */
-    Disable_binlog_guard binlog_guard(thd);
+    const Disable_binlog_guard binlog_guard(thd);
 
     /* Making component_id_by_urn copy so, that if any error occurs it will
        be restored
@@ -543,7 +545,7 @@ DEFINE_BOOL_METHOD(mysql_persistent_dynamic_loader_imp::unload,
       mysql_persistent_dynamic_loader_imp::component_id_by_urn.erase(it);
     }
 
-    bool result = dynamic_loader_srv->unload(urns, component_count);
+    const bool result = dynamic_loader_srv->unload(urns, component_count);
     if (result) {
       /* No need to specify error, underlying service implementation would add
         one. */

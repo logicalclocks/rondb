@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -46,7 +47,7 @@ class Table_ref;
   * OPTIMIZE TABLE
   * REPAIR TABLE
 */
-class Sql_cmd_ddl_table : public Sql_cmd {
+class Sql_cmd_ddl_table : public Sql_cmd_ddl {
  public:
   explicit Sql_cmd_ddl_table(Alter_info *alter_info);
 
@@ -69,7 +70,8 @@ class Sql_cmd_create_table final : public Sql_cmd_ddl_table {
     return SQLCOM_CREATE_TABLE;
   }
 
-  const MYSQL_LEX_CSTRING *eligible_secondary_storage_engine() const override;
+  const MYSQL_LEX_CSTRING *eligible_secondary_storage_engine(
+      THD *thd) const override;
 
   bool execute(THD *thd) override;
   bool prepare(THD *thd) override;
@@ -97,6 +99,15 @@ class Sql_cmd_create_index final : public Sql_cmd_create_or_drop_index_base {
   enum_sql_command sql_command_code() const override {
     return SQLCOM_CREATE_INDEX;
   }
+};
+
+class Sql_cmd_drop_table final : public Sql_cmd_ddl {
+ public:
+  enum_sql_command sql_command_code() const override {
+    return SQLCOM_DROP_TABLE;
+  }
+
+  bool execute(THD *thd [[maybe_unused]]) override { return false; }
 };
 
 class Sql_cmd_drop_index final : public Sql_cmd_create_or_drop_index_base {

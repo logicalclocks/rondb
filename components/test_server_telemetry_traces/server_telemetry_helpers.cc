@@ -1,15 +1,16 @@
-/* Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,7 +30,8 @@ static const char *query_attribute_return_charset = "utf8mb4";
  *  a given THD.
  *
  *  @param thd thread session handle
- *  @param filter set of allowed query attribute names (others ignored)
+ *  @param filter set of allowed query attribute names (others ignored), allow
+ *all if filter empty
  *  @param[out] outJson JSON output string
  *  @param log file logger
  *  @retval false  success
@@ -83,7 +85,7 @@ bool query_attrs_to_json(MYSQL_THD thd, const std::set<std::string> &filter,
     }
 
     // only fetch names within "filter" set input
-    if (filter.find(qa_name) == filter.end()) {
+    if (!filter.empty() && filter.find(qa_name) == filter.end()) {
       if (qa_iterator_srv->next(iter)) {
         // no more data
         break;
@@ -159,22 +161,21 @@ bool query_attr_read(MYSQL_THD thd, const char *name, std::string &value,
   bool is_null_val = true;
   if (qa_isnull_srv->get(iter, &is_null_val)) {
     log.write(
-        " query_attrs_to_json: failed to check is_null for a query "
+        " query_attr_read: failed to check is_null for a query "
         "attribute\n");
     goto end;
   }
   if (is_null_val) goto end;
 
   if (qa_string_srv->get(iter, &h_str_val)) {
-    log.write(
-        " query_attrs_to_json: failed to get query attribute string value\n");
+    log.write(" query_attr_read: failed to get query attribute string value\n");
     goto end;
   }
   char qa_value[1024];
   if (string_converter_srv->convert_to_buffer(h_str_val, qa_value,
                                               sizeof(qa_value),
                                               query_attribute_return_charset)) {
-    log.write(" query_attrs_to_json: failed to convert value string\n");
+    log.write(" query_attr_read: failed to convert value string\n");
     goto end;
   }
 

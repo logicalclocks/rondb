@@ -6,7 +6,7 @@ insert into t1 values (1,1);
 #
 # reset and restore schema
 drop table t1;
-reset master;
+reset binary logs and gtids;
 select * from t1 where 1=0 /* force discover table */;
 a	b
 #
@@ -15,14 +15,14 @@ a	b
 # check the binlog, should be empty apart from our marker
 # create dummy table to wait for to ensure Binlog contains any previous events
 create table binlogmarker (a int) engine=ndb;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	use `test`; create table binlogmarker (a int) engine=ndb
 #
 # reset and restore schema again
 drop table binlogmarker;
 drop table t1;
-reset master;
+reset binary logs and gtids;
 select * from t1 where 1=0 /* force discover table */;
 a	b
 #
@@ -31,7 +31,7 @@ a	b
 # check the binlog, should contain data
 # create dummy table to wait for to ensure Binlog contains any previous events
 create table binlogmarker (a int) engine=ndb;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 binlog.000001	#	Query	#	#	BEGIN
 binlog.000001	#	Table_map	#	#	table_id: # (test.t1)
@@ -83,10 +83,10 @@ PRIMARY KEY USING HASH (ACCOUNT_TYPE_ID))
 ENGINE = NDB;
 #
 # reset, restore and  binlog should _not_ happen
-reset master;
+reset binary logs and gtids;
 select count(*) from TRANSACTION;
 count(*)
 3444
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 DROP DATABASE BANK;

@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -47,11 +48,13 @@ class Group_transaction_listener {
     @param gr_consistency_level  the current consistency level for this session
     @param hold_timeout the max time to execute an action on this transaction
     @param channel_type type channel that receives transaction
+    @param thd server thd that represents client session
   */
   virtual int before_transaction_begin(my_thread_id thread_id,
                                        ulong gr_consistency_level,
                                        ulong hold_timeout,
-                                       enum_rpl_channel_type channel_type) = 0;
+                                       enum_rpl_channel_type channel_type,
+                                       const THD *thd) = 0;
 
   /**
     Executed before commit
@@ -114,10 +117,12 @@ class Group_transaction_observation_manager {
     @param gr_consistency_level  the current consistency level for this session
     @param hold_timeout the max time to execute an action on this transaction
     @param rpl_channel_type type channel that receives transaction
+    @param thd server thd that represents client session
   */
   int before_transaction_begin(my_thread_id thread_id,
                                ulong gr_consistency_level, ulong hold_timeout,
-                               enum_rpl_channel_type rpl_channel_type);
+                               enum_rpl_channel_type rpl_channel_type,
+                               const THD *thd);
 
   /*
     Executed before commit

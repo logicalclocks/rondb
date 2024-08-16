@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -97,7 +98,7 @@ void Key::store_in_buffer(uchar *buffer, size_t *buffer_position) const {
   store_field(buffer, buffer_position, reinterpret_cast<char *>(key.get()),
               key_len);
 
-  size_t padding =
+  const size_t padding =
       (sizeof(size_t) - (*buffer_position % sizeof(size_t))) % sizeof(size_t);
 
   *buffer_position += padding;
@@ -162,7 +163,7 @@ bool Key::load_from_buffer(uchar *buffer,
   memcpy(this->key.get(), buffer + buffer_position, key_len);
   buffer_position += key_len;
 
-  size_t padding =
+  const size_t padding =
       (sizeof(size_t) - (buffer_position % sizeof(size_t))) % sizeof(size_t);
   buffer_position += padding;
   assert(buffer_position % sizeof(size_t) == 0);
@@ -177,14 +178,14 @@ bool Key::load_from_buffer(uchar *buffer,
   The memory is aligned to sizeof(size_t)
 */
 size_t Key::get_key_pod_size() const {
-  size_t key_pod_size = 4 * sizeof(size_t) + key_id.length() +
-                        key_type.length() + user_id.length() + sizeof(key_len) +
-                        key_len;
+  const size_t key_pod_size = 4 * sizeof(size_t) + key_id.length() +
+                              key_type.length() + user_id.length() +
+                              sizeof(key_len) + key_len;
 
-  size_t padding =
+  const size_t padding =
       (sizeof(size_t) - (key_pod_size % sizeof(size_t))) % sizeof(size_t);
 
-  size_t key_pod_size_aligned = key_pod_size + padding;
+  const size_t key_pod_size_aligned = key_pod_size + padding;
   assert(key_pod_size_aligned % sizeof(size_t) == 0);
   return key_pod_size_aligned;
 }

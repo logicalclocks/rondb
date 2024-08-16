@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,6 +28,7 @@
 #include <algorithm>
 
 #include <mysqld_error.h>
+#include "sql/mysqld_cs.h"
 
 using std::string;
 using std::unique_ptr;
@@ -69,13 +71,13 @@ std::string Keys_container::get_keyring_storage_url() {
 
 void Keys_container::store_keys_metadata(IKey *key) {
   /* if key metadata not present store it */
-  Key_metadata km(key->get_key_id(), key->get_user_id());
+  const Key_metadata km(key->get_key_id(), key->get_user_id());
   keys_metadata.push_back(km);
 }
 
 bool Keys_container::store_key_in_hash(IKey *key) {
   // TODO: This can be written more succinctly with C++17's try_emplace.
-  string signature = *key->get_key_signature();
+  const string signature = *key->get_key_signature();
   if (keys_hash->count(signature) != 0)
     return true;
   else {
@@ -124,7 +126,7 @@ IKey *Keys_container::fetch_key(IKey *key) {
 }
 
 bool Keys_container::remove_keys_metadata(IKey *key) {
-  Key_metadata src(key->get_key_id(), key->get_user_id());
+  const Key_metadata src(key->get_key_id(), key->get_user_id());
   auto it =
       std::find_if(keys_metadata.begin(), keys_metadata.end(),
                    [src](Key_metadata const &dest) {

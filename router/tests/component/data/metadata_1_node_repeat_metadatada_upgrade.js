@@ -4,7 +4,7 @@ var gr_memberships = require("gr_memberships");
 var gr_node_host = "127.0.0.1";
 
 var group_replication_members_online = gr_memberships.single_host(
-    gr_node_host, [[mysqld.session.port, "ONLINE"]], "uuid");
+    gr_node_host, [[mysqld.session.port, "ONLINE", "PRIMARY"]], "uuid");
 
 var cluster_nodes = gr_memberships.single_host_cluster_nodes(
     gr_node_host, [[mysqld.session.port]], "uuid");
@@ -47,16 +47,16 @@ var options = {
   innodb_cluster_instances: cluster_nodes,
 };
 
-// first node is PRIMARY
-options.group_replication_primary_member =
-    options.group_replication_members[0][0];
 var common_responses = undefined;
 var common_responses_regex = undefined;
-var router_select_metadata = undefined;
 
 var router_start_transaction =
     common_stmts.get("router_start_transaction", options);
 var router_commit = common_stmts.get("router_commit", options);
+var router_rollback = common_stmts.get("router_rollback", options);
+var router_select_metadata =
+    common_stmts.get("router_select_metadata_v2_gr", options);
+
 
 if (mysqld.global.use_new_metadata === 1) {
   common_responses = common_stmts.prepare_statement_responses(
@@ -66,30 +66,7 @@ if (mysqld.global.use_new_metadata === 1) {
         "select_port",
         "router_select_schema_version",
         "router_select_cluster_type_v2",
-        "router_select_group_replication_primary_member",
-        "router_select_group_membership_with_primary_mode",
-        "router_check_member_state",
-        "router_select_members_count",
-      ],
-      options);
-
-  common_responses_regex = common_stmts.prepare_statement_responses_regex(
-      [
-        "router_update_attributes_v1",
-      ],
-      options);
-
-  router_select_metadata =
-      common_stmts.get("router_select_metadata_v2_gr", options);
-} else {
-  common_responses = common_stmts.prepare_statement_responses(
-      [
-        "router_set_session_options",
-        "router_set_gr_consistency_level",
-        "select_port",
-        "router_select_schema_version",
-        "router_select_group_replication_primary_member",
-        "router_select_group_membership_with_primary_mode",
+        "router_select_group_membership",
         "router_check_member_state",
         "router_select_members_count",
       ],
@@ -101,8 +78,16 @@ if (mysqld.global.use_new_metadata === 1) {
         "router_update_last_check_in_v2",
       ],
       options);
+} else {
+  common_responses = common_stmts.prepare_statement_responses(
+      [
+        "router_set_session_options",
+        "router_set_gr_consistency_level",
+        "router_select_schema_version",
+      ],
+      options);
 
-  router_select_metadata = common_stmts.get("router_select_metadata", options);
+  common_responses_regex = {};
 }
 
 
@@ -124,6 +109,9 @@ if (mysqld.global.use_new_metadata === 1) {
     } else if (stmt === router_commit.stmt) {
       mysqld.global.inside_transaction = 0;
       return router_commit;
+    } else if (stmt === router_rollback.stmt) {
+      mysqld.global.inside_transaction = 0;
+      return router_rollback;
     } else {
       return common_stmts.unknown_statement_response(stmt);
     }

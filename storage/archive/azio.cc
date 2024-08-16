@@ -8,7 +8,7 @@
  * For conditions of distribution and use, see copyright notice in zlib.h
  *
  * This file was modified by Oracle on 2015-01-23.
- * Modifications Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+ * Modifications Copyright (c) 2015, 2024, Oracle and/or its affiliates.
  */
 
 /* @(#) $Id$ */
@@ -71,7 +71,7 @@ int az_open(azio_stream *s, const char *path, int Flags, File fd) {
   s->stream.next_out = s->outbuf;
   assert(s->z_err == Z_OK);
   s->back = EOF;
-  s->crc = crc32(0L, Z_NULL, 0);
+  s->crc = crc32(0L, nullptr, 0);
   s->mode = 'r';
   /* this needs to be a define to version */
   s->version = (unsigned char)az_magic[1];
@@ -482,7 +482,7 @@ size_t ZEXPORT azread(azio_stream *s, voidp buf, size_t len, int *error) {
         check_header(s);
         if (s->z_err == Z_OK) {
           inflateReset(&(s->stream));
-          s->crc = crc32(0L, Z_NULL, 0);
+          s->crc = crc32(0L, nullptr, 0);
         }
       }
     }
@@ -621,7 +621,7 @@ int azrewind(azio_stream *s) {
   s->back = EOF;
   s->stream.avail_in = 0;
   s->stream.next_in = (Bytef *)s->inbuf;
-  s->crc = crc32(0L, Z_NULL, 0);
+  s->crc = crc32(0L, nullptr, 0);
   if (!s->transparent) (void)inflateReset(&s->stream);
   s->in = 0;
   s->out = 0;

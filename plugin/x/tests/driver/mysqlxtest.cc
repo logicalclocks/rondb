@@ -1,16 +1,17 @@
 /*
- * Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
  *
- * This program is also distributed with certain software (including
+ * This program is designed to work with certain software (including
  * but not limited to OpenSSL) that is licensed under separate terms,
  * as designated in a particular file or component or in included license
  * documentation.  The authors of MySQL hereby grant you an additional
  * permission to link the program and your derivative works with the
- * separately licensed software that they have included with MySQL.
+ * separately licensed software that they have either included with
+ * the program or referenced in the documentation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,10 +27,10 @@
 #include <fstream>
 #include <stdexcept>
 
-#include "my_dbug.h"      // NOLINT(build/include_subdir)
-#include "my_loglevel.h"  // NOLINT(build/include_subdir)
-#include "my_sys.h"       // NOLINT(build/include_subdir)
-#include "violite.h"      // NOLINT(build/include_subdir)
+#include "my_dbug.h"            // NOLINT(build/include_subdir)
+#include "my_sys.h"             // NOLINT(build/include_subdir)
+#include "mysql/my_loglevel.h"  // NOLINT(build/include_subdir)
+#include "violite.h"            // NOLINT(build/include_subdir)
 
 #include "plugin/x/tests/driver/driver_command_line_options.h"
 #include "plugin/x/tests/driver/processor/stream_processor.h"
@@ -68,7 +69,7 @@ bool parse_mysql_connstring(const std::string &connstring,
     char *tmp = tmp_buffer;
     DWORD tmp_size = sizeof(tmp_buffer);
     if (!GetUserNameA(tmp_buffer, &tmp_size)) {
-      tmp = NULL;
+      tmp = nullptr;
     }
 #else
     const char *tmp = getenv("USER");

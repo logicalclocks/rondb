@@ -40,6 +40,8 @@ include/start_group_replication.inc
 SET GLOBAL group_replication_autorejoin_tries = 3;
 SET @@GLOBAL.group_replication_exit_state_action = ABORT_SERVER;
 include/gr_provoke_majority_loss.inc
+# Kill and restart
+# Kill and restart
 
 ####
 # 2) Verify that the member in the partitioned group will try to rejoin
@@ -65,7 +67,7 @@ include/assert.inc [Auto-rejoin should be running]
 include/assert.inc [super_read_only should be enabled]
 include/assert.inc [We should have attempted 3 rejoins]
 SET DEBUG_SYNC = "now SIGNAL signal.autorejoin_continue";
-include/rpl_reconnect.inc
+include/rpl/reconnect.inc
 
 ####
 # 3) Verify that, with group_replication_exit_state_action set to

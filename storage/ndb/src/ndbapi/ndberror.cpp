@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +23,6 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
-
 
 #include <ndb_global.h>
 #include <ndberror.h>
@@ -35,7 +35,7 @@ typedef struct ErrorBundle {
   int code;
   int mysql_code;
   ndberror_classification classification;
-  const char * message;
+  const char *message;
 } ErrorBundle;
 
 /**
@@ -75,7 +75,7 @@ typedef struct ErrorBundle {
 /* default mysql error code for unmapped codes */
 #define DMEC -1
 
-static const char* empty_string = "";
+static const char *empty_string = "";
 
 /*
  * Error code ranges are reserved for respective block
@@ -103,8 +103,8 @@ static const char* empty_string = "";
  * 4700 - "" Event
  * 4800 - API, QueryBuilder
  * 5000 - Management server
- * 6000 - 6999 User error codes, to be used with 
- *   NdbInterpretedCode::interpret_exit_nok(). Do not define internal error 
+ * 6000 - 6999 User error codes, to be used with
+ *   NdbInterpretedCode::interpret_exit_nok(). Do not define internal error
  *   codes in this range!
  * 20000 - SPJ
  * 21000 - DICT FK
@@ -1066,70 +1066,58 @@ int NbErrorCodes = sizeof(ErrorCodes)/sizeof(ErrorBundle);
 
 typedef struct ErrorStatusMessage {
   ndberror_status status;
-  const char * message;
+  const char *message;
 } ErrorStatusMessage;
 
 typedef struct ErrorStatusClassification {
   ndberror_status status;
   ndberror_classification classification;
-  const char * message;
+  const char *message;
 } ErrorStatusClassification;
 
 /**
  * Mapping between classification and status
  */
-static
-const
-ErrorStatusMessage StatusMessageMapping[] = {
-  { ST_S, "Success"},
-  { ST_P, "Permanent error"},
-  { ST_T, "Temporary error"},
-  { ST_U ,"Unknown result"}
-};
+static const ErrorStatusMessage StatusMessageMapping[] = {
+    {ST_S, "Success"},
+    {ST_P, "Permanent error"},
+    {ST_T, "Temporary error"},
+    {ST_U, "Unknown result"}};
 
-static
-const
-int NbStatus = sizeof(StatusMessageMapping)/sizeof(ErrorStatusMessage);
+static const int NbStatus =
+    sizeof(StatusMessageMapping) / sizeof(ErrorStatusMessage);
 
-static
-const
-ErrorStatusClassification StatusClassificationMapping[] = {
-  { ST_S, NE, "No error"},
-  { ST_P, AE, "Application error"},
-  { ST_P, CE, "Configuration or application error"},
-  { ST_P, ND, "No data found"},
-  { ST_P, CV, "Constraint violation"},
-  { ST_P, SE, "Schema error"},
-  { ST_P, UD, "User defined error"},
-  { ST_P, IS, "Insufficient space"},
-  
-  { ST_T, TR, "Temporary Resource error"},
-  { ST_T, NR, "Node Recovery error"},
-  { ST_T, OL, "Overload error"},
-  { ST_T, TO, "Timeout expired"},
-  { ST_T, NS, "Node shutdown"},
-  { ST_T, IT, "Internal temporary"},
-  
-  { ST_U , UR, "Unknown result error"},
-  { ST_U , UE, "Unknown error code"},
-  
-  { ST_P, IE, "Internal error"},
-  { ST_P, NI, "Function not implemented"}
-};
+static const ErrorStatusClassification StatusClassificationMapping[] = {
+    {ST_S, NE, "No error"},
+    {ST_P, AE, "Application error"},
+    {ST_P, CE, "Configuration or application error"},
+    {ST_P, ND, "No data found"},
+    {ST_P, CV, "Constraint violation"},
+    {ST_P, SE, "Schema error"},
+    {ST_P, UD, "User defined error"},
+    {ST_P, IS, "Insufficient space"},
 
-static
-const
-int NbClassification = sizeof(StatusClassificationMapping)/sizeof(ErrorStatusClassification);
+    {ST_T, TR, "Temporary Resource error"},
+    {ST_T, NR, "Node Recovery error"},
+    {ST_T, OL, "Overload error"},
+    {ST_T, TO, "Timeout expired"},
+    {ST_T, NS, "Node shutdown"},
+    {ST_T, IT, "Internal temporary"},
 
-int ndb_error_get_next(int index, int* err_no,
-                       const char** status_msg,
-                       const char** class_msg,
-                       const char** error_msg)
-{
+    {ST_U, UR, "Unknown result error"},
+    {ST_U, UE, "Unknown error code"},
+
+    {ST_P, IE, "Internal error"},
+    {ST_P, NI, "Function not implemented"}};
+
+static const int NbClassification =
+    sizeof(StatusClassificationMapping) / sizeof(ErrorStatusClassification);
+
+int ndb_error_get_next(int index, int *err_no, const char **status_msg,
+                       const char **class_msg, const char **error_msg) {
   ndberror_struct error;
 
-  if (index >= NbErrorCodes)
-    return -1; // No error message with that index
+  if (index >= NbErrorCodes) return -1;  // No error message with that index
 
   error.code = ErrorCodes[index].code;
   ndberror_update(&error);
@@ -1139,81 +1127,74 @@ int ndb_error_get_next(int index, int* err_no,
   *status_msg = ndberror_status_message(error.status);
   *class_msg = ndberror_classification_message(error.classification);
 
-  return index+1;
+  return index + 1;
 }
 
-
-void
-ndberror_update(ndberror_struct * error){
-
+void ndberror_update(ndberror_struct *error) {
   int found = 0;
   int i;
 
-  for(i = 0; i<NbErrorCodes; i++){
-    if(ErrorCodes[i].code == error->code){
+  for (i = 0; i < NbErrorCodes; i++) {
+    if (ErrorCodes[i].code == error->code) {
       error->classification = ErrorCodes[i].classification;
-      error->message        = ErrorCodes[i].message;
-      error->mysql_code     = ErrorCodes[i].mysql_code;
+      error->message = ErrorCodes[i].message;
+      error->mysql_code = ErrorCodes[i].mysql_code;
       found = 1;
       break;
     }
   }
 
-  if(!found){
+  if (!found) {
     error->classification = UE;
-    error->message        = "Unknown error code";
-    error->mysql_code     = DMEC;
+    error->message = "Unknown error code";
+    error->mysql_code = DMEC;
   }
 
   found = 0;
-  for(i = 0; i<NbClassification; i++){
-    if(StatusClassificationMapping[i].classification == error->classification){
+  for (i = 0; i < NbClassification; i++) {
+    if (StatusClassificationMapping[i].classification ==
+        error->classification) {
       error->status = StatusClassificationMapping[i].status;
       found = 1;
       break;
     }
   }
-  if(!found){
+  if (!found) {
     error->status = ST_U;
   }
 }
 
-
-const char *ndberror_status_message(ndberror_status status)
-{
+const char *ndberror_status_message(ndberror_status status) {
   int i;
-  for (i= 0; i < NbStatus; i++)
+  for (i = 0; i < NbStatus; i++)
     if (StatusMessageMapping[i].status == status)
       return StatusMessageMapping[i].message;
   return empty_string;
 }
 
-const char *ndberror_classification_message(ndberror_classification classification)
-{
+const char *ndberror_classification_message(
+    ndberror_classification classification) {
   int i;
-  for (i= 0; i < NbClassification; i++)
+  for (i = 0; i < NbClassification; i++)
     if (StatusClassificationMapping[i].classification == classification)
       return StatusClassificationMapping[i].message;
   return empty_string;
 }
 
-int ndb_error_string(int err_no, char *str, int size)
-{
+int ndb_error_string(int err_no, char *str, int size) {
   ndberror_struct error;
   int len;
 
   assert(size > 1);
-  if(size <= 1)
-    return 0;
+  if (size <= 1) return 0;
 
   error.code = err_no;
   ndberror_update(&error);
 
-  len = (int)snprintf(str, size-1, "%s: %s: %s", error.message,
-		ndberror_status_message(error.status),
-		ndberror_classification_message(error.classification));
+  len = (int)snprintf(str, size - 1, "%s: %s: %s", error.message,
+                      ndberror_status_message(error.status),
+                      ndberror_classification_message(error.classification));
 
-  if (error.classification != UE)
-    return len;
+  if (error.classification != UE) return len;
   return -len;
 }

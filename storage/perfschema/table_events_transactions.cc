@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -58,7 +59,7 @@ Plugin_table table_events_transactions_current::m_table_def(
     "  EVENT_NAME VARCHAR(128) not null,\n"
     "  STATE ENUM('ACTIVE', 'COMMITTED', 'ROLLED BACK'),\n"
     "  TRX_ID BIGINT unsigned,\n"
-    "  GTID VARCHAR(64),\n"
+    "  GTID VARCHAR(90),\n"
     "  XID_FORMAT_ID INTEGER,\n"
     "  XID_GTRID VARCHAR(130),\n"
     "  XID_BQUAL VARCHAR(130),\n"
@@ -111,7 +112,7 @@ Plugin_table table_events_transactions_history::m_table_def(
     "  EVENT_NAME VARCHAR(128) not null,\n"
     "  STATE ENUM('ACTIVE', 'COMMITTED', 'ROLLED BACK'),\n"
     "  TRX_ID BIGINT unsigned,\n"
-    "  GTID VARCHAR(64),\n"
+    "  GTID VARCHAR(90),\n"
     "  XID_FORMAT_ID INTEGER,\n"
     "  XID_GTRID VARCHAR(130),\n"
     "  XID_BQUAL VARCHAR(130),\n"
@@ -164,7 +165,7 @@ Plugin_table table_events_transactions_history_long::m_table_def(
     "  EVENT_NAME VARCHAR(128) not null,\n"
     "  STATE ENUM('ACTIVE', 'COMMITTED', 'ROLLED BACK'),\n"
     "  TRX_ID BIGINT UNSIGNED,\n"
-    "  GTID VARCHAR(64),\n"
+    "  GTID VARCHAR(90),\n"
     "  XID_FORMAT_ID INTEGER,\n"
     "  XID_GTRID VARCHAR(130),\n"
     "  XID_BQUAL VARCHAR(130),\n"
@@ -262,8 +263,11 @@ int table_events_transactions_common::make_row(
                      m_row.m_source, sizeof(m_row.m_source),
                      m_row.m_source_length);
 
-  /* A GTID consists of the SID (source id) and GNO (transaction number).
-     The SID is stored in transaction->m_sid and the GNO is stored in
+  /* A GTID consists of the TSID (transaction source id) and GNO
+     (transaction number).
+     The TSID consists of transaction source UUID and a user-defined tag
+     (empty by default).
+     The TSID is stored in transaction->m_tsid and the GNO is stored in
      transaction->m_gtid_spec.gno.
 
      On a master, the GTID is assigned when the transaction commit.
@@ -282,13 +286,12 @@ int table_events_transactions_common::make_row(
 
      The Gtid_specification contains the GNO, as well as a type code
      that specifies which of the three modes is currently in effect.
-     Given a SID, it can generate the textual representation of the
+     Given a TSID, it can generate the textual representation of the
      GTID.
   */
-  rpl_sid *sid = &transaction->m_sid;
   Gtid_specification *gtid_spec = &transaction->m_gtid_spec;
-  m_row.m_gtid_length = gtid_spec->to_string(sid, m_row.m_gtid);
-
+  mysql::gtid::Tsid tsid(transaction->m_tsid);
+  m_row.m_gtid_length = gtid_spec->to_string(tsid, m_row.m_gtid);
   m_row.m_xid = transaction->m_xid;
   m_row.m_isolation_level = transaction->m_isolation_level;
   m_row.m_read_only = transaction->m_read_only;

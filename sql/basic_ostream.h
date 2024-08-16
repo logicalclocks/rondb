@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,11 +23,11 @@
 
 #ifndef BASIC_OSTREAM_INCLUDED
 #define BASIC_OSTREAM_INCLUDED
-#include <my_byteorder.h>
-#include "libbinlogevents/include/compression/compressor.h"
-#include "libbinlogevents/include/nodiscard.h"
+#include "my_byteorder.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
+#include "mysql/binlog/event/compression/compressor.h"
+#include "mysql/binlog/event/nodiscard.h"
 #include "sql_string.h"
 
 /**
@@ -171,9 +172,9 @@ class StringBuffer_ostream : public Basic_ostream,
 
 class Compressed_ostream : public Basic_ostream {
  private:
-  using Compressor_t = binary_log::transaction::compression::Compressor;
+  using Compressor_t = mysql::binlog::event::compression::Compressor;
   using Compressor_ptr_t = std::shared_ptr<Compressor_t>;
-  using Status_t = binary_log::transaction::compression::Compress_status;
+  using Status_t = mysql::binlog::event::compression::Compress_status;
   using Managed_buffer_sequence_t = Compressor_t::Managed_buffer_sequence_t;
   Compressor_ptr_t m_compressor;
   Managed_buffer_sequence_t &m_managed_buffer_sequence;

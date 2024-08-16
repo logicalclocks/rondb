@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -391,11 +392,15 @@ enum_gcs_error Gcs_xcom_interface::initialize(
     Proceed with initialization
     ---------------------------------------------------------------
   */
+  // Initalize statistic storage
+  m_stats_mgr = new Gcs_xcom_statistics_manager_interface_impl();
+  m_xcom_stats_storage = new Gcs_xcom_statistics_storage_impl(m_stats_mgr);
 
   // initialize xcom's data structures to pass configuration
   // from the application
   m_gcs_xcom_app_cfg.init();
   m_gcs_xcom_app_cfg.set_network_namespace_manager(m_netns_manager);
+  m_gcs_xcom_app_cfg.set_statists_storage_implementation(m_xcom_stats_storage);
   this->clean_group_interfaces();
   m_socket_util = new My_xp_socket_util_impl();
 
@@ -684,6 +689,12 @@ enum_gcs_error Gcs_xcom_interface::finalize() {
   delete m_socket_util;
   m_socket_util = nullptr;
 
+  delete m_stats_mgr;
+  m_stats_mgr = nullptr;
+
+  delete m_xcom_stats_storage;
+  m_xcom_stats_storage = nullptr;
+
   ::get_network_management_interface()->remove_all_network_provider();
   Gcs_xcom_utils::deinit_net();
 
@@ -761,7 +772,7 @@ gcs_xcom_group_interfaces *Gcs_xcom_interface::get_group_interfaces(
     group_interface = new gcs_xcom_group_interfaces();
     m_group_interfaces[group_identifier.get_group_id()] = group_interface;
 
-    Gcs_xcom_statistics *stats = new Gcs_xcom_statistics();
+    Gcs_xcom_statistics *stats = new Gcs_xcom_statistics(m_stats_mgr);
 
     group_interface->statistics_interface = stats;
 
@@ -772,7 +783,7 @@ gcs_xcom_group_interfaces *Gcs_xcom_interface::get_group_interfaces(
         net_manager_for_communication = ::get_network_management_interface();
 
     auto *xcom_communication = new Gcs_xcom_communication(
-        stats, s_xcom_proxy, vce, gcs_engine, group_identifier,
+        m_stats_mgr, s_xcom_proxy, vce, gcs_engine, group_identifier,
         std::move(net_manager_for_communication));
     group_interface->communication_interface = xcom_communication;
 
@@ -788,7 +799,7 @@ gcs_xcom_group_interfaces *Gcs_xcom_interface::get_group_interfaces(
     Gcs_xcom_control *xcom_control = new Gcs_xcom_control(
         m_node_address, m_xcom_peers, group_identifier, s_xcom_proxy,
         xcom_group_management, gcs_engine, se, vce, m_boot, m_socket_util,
-        std::move(net_manager_for_control));
+        std::move(net_manager_for_control), m_stats_mgr);
     group_interface->control_interface = xcom_control;
 
     xcom_control->set_join_behavior(
@@ -1347,6 +1358,44 @@ void cb_xcom_receive_data(synode_no message_id, synode_no origin,
   Gcs_xcom_nodes *xcom_nodes = new Gcs_xcom_nodes(site, nodes);
   assert(xcom_nodes->is_valid());
   free_node_set(&nodes);
+
+  // Check if the origin node still exists in Gcs_xcom_nodes for the provided
+  // site.
+  // If it does not exist, then drop this message and dump all necessary
+  // information about this message
+  auto const *node = xcom_nodes->get_node(origin.node);
+
+  if (!node) {
+    std::ostringstream log_message;
+
+    log_message << "Received a network packet from an unrecognised sender. "
+                   "Will ignore this message. No need to take any further "
+                   "action. If this behaviour persists, consider restarting "
+                   "the group at the next convenient time and reporting a "
+                   "bug containing the details presented next. Details: "
+                << "xcom_unique_id = " << get_my_xcom_id()
+                << ", node_id = " << xcom_nodes->get_node_no()
+                << ", message_id.group = " << message_id.group_id
+                << ", message_id.msgno = " << message_id.msgno
+                << ", message_id.node = " << message_id.node
+                << ", origin.group = " << origin.group_id
+                << ", origin.msgno = " << origin.msgno
+                << ", origin.node = " << origin.node
+                << ", start.group = " << site->start.group_id
+                << ", start.msgno = " << site->start.msgno
+                << ", start.node = " << site->start.node
+                << ", site.nodes_list_len= " << site->nodes.node_list_len;
+
+    log_message << ", site.nodes.addresses={";
+    for (u_int i = 0; i < site->nodes.node_list_len; i++) {
+      log_message << " node id[" << i
+                  << "]=" << site->nodes.node_list_val[i].address;
+    }
+    log_message << " }";
+    MYSQL_GCS_LOG_WARN(log_message.str().c_str());
+
+    return;
+  }
 
   Gcs_xcom_notification *notification =
       new Data_notification(do_cb_xcom_receive_data, message_id, origin,

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,28 +24,27 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-
 #define DBTUP_C
-#include <dblqh/Dblqh.hpp>
-#include <cstring>
-#include "Dbtup.hpp"
-#include <RefConvert.hpp>
 #include <ndb_limits.h>
-#include <pc.hpp>
+#include <portlib/ndb_prefetch.h>
 #include <AttributeDescriptor.hpp>
-#include "AttributeOffset.hpp"
 #include <AttributeHeader.hpp>
+#include <Checksum.hpp>
 #include <Interpreter.hpp>
-#include <signaldata/TupKey.hpp>
+#include <NdbSqlUtil.hpp>
+#include <RefConvert.hpp>
+#include <cstring>
+#include <dblqh/Dblqh.hpp>
+#include <pc.hpp>
 #include <signaldata/AttrInfo.hpp>
-#include <signaldata/TuxMaint.hpp>
+#include <signaldata/LqhKey.hpp>
 #include <signaldata/ScanFrag.hpp>
 #include <signaldata/TransIdAI.hpp>
-#include <signaldata/LqhKey.hpp>
-#include <NdbSqlUtil.hpp>
-#include <Checksum.hpp>
-#include <portlib/ndb_prefetch.h>
+#include <signaldata/TupKey.hpp>
+#include <signaldata/TuxMaint.hpp>
 #include "../dblqh/Dblqh.hpp"
+#include "AttributeOffset.hpp"
+#include "Dbtup.hpp"
 #include "AggInterpreter.hpp"
 
 #define JAM_FILE_ID 422
@@ -74,75 +74,96 @@
 #endif
 
 #ifdef DEBUG_DISK
-#define DEB_DISK(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_DISK(arglist)        \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
 #else
-#define DEB_DISK(arglist) do { } while (0)
+#define DEB_DISK(arglist) \
+  do {                    \
+  } while (0)
 #endif
 
 #ifdef DEBUG_LCP
-#define DEB_LCP(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_LCP(arglist)         \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
 #else
-#define DEB_LCP(arglist) do { } while (0)
+#define DEB_LCP(arglist) \
+  do {                   \
+  } while (0)
 #endif
 
 #ifdef DEBUG_DELETE
-#define DEB_DELETE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_DELETE(arglist)      \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
 #else
-#define DEB_DELETE(arglist) do { } while (0)
+#define DEB_DELETE(arglist) \
+  do {                      \
+  } while (0)
 #endif
 
 #ifdef DEBUG_LCP_SKIP_DELETE
-#define DEB_LCP_SKIP_DELETE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_LCP_SKIP_DELETE(arglist) \
+  do {                               \
+    g_eventLogger->info arglist;     \
+  } while (0)
 #else
-#define DEB_LCP_SKIP_DELETE(arglist) do { } while (0)
+#define DEB_LCP_SKIP_DELETE(arglist) \
+  do {                               \
+  } while (0)
 #endif
 
 #ifdef DEBUG_DELETE_NR
-#define DEB_DELETE_NR(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_DELETE_NR(arglist)   \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
 #else
-#define DEB_DELETE_NR(arglist) do { } while (0)
+#define DEB_DELETE_NR(arglist) \
+  do {                         \
+  } while (0)
 #endif
 
 #ifdef DEBUG_LCP_LGMAN
-#define DEB_LCP_LGMAN(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_LCP_LGMAN(arglist)   \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
 #else
-#define DEB_LCP_LGMAN(arglist) do { } while (0)
+#define DEB_LCP_LGMAN(arglist) \
+  do {                         \
+  } while (0)
 #endif
 
 // #define TRACE_INTERPRETER
 
 /* For debugging */
-static void
-dump_hex(const Uint32 *p, Uint32 len)
-{
-  if(len > 2560)
-    len= 160;
-  if(len==0)
-    return;
-  for(;;)
-  {
-    if(len>=4)
+static void dump_hex(const Uint32 *p, Uint32 len) {
+  if (len > 2560) len = 160;
+  if (len == 0) return;
+  for (;;) {
+    if (len >= 4)
       g_eventLogger->info("%8p %08X %08X %08X %08X", p, p[0], p[1], p[2], p[3]);
-    else if(len>=3)
+    else if (len >= 3)
       g_eventLogger->info("%8p %08X %08X %08X", p, p[0], p[1], p[2]);
-    else if(len>=2)
+    else if (len >= 2)
       g_eventLogger->info("%8p %08X %08X", p, p[0], p[1]);
     else
       g_eventLogger->info("%8p %08X", p, p[0]);
-    if(len <= 4)
-      break;
-    len-= 4;
-    p+= 4;
+    if (len <= 4) break;
+    len -= 4;
+    p += 4;
   }
 }
 
-void Dbtup::copyAttrinfo(Uint32 expectedLen,
-                         Uint32 attrInfoIVal)
-{
-  ndbassert( expectedLen > 0 || attrInfoIVal == RNIL );
+void Dbtup::copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
+  ndbassert(expectedLen > 0 || attrInfoIVal == RNIL);
 
-  if (expectedLen > 0)
-  {
+  if (expectedLen > 0) {
     ndbassert(attrInfoIVal != RNIL);
 
     /* Check length in section is as we expect */
@@ -174,8 +195,7 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
   SectionReader reader(attrinfoIVal, getSectionSegmentPool());
   const Uint32 readerLen = reader.getSize();
 
-  if (interpretedFlag)
-  {
+  if (interpretedFlag) {
     jam();
 
     // Read sectionPtr's
@@ -190,32 +210,26 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
 
     Uint32 paramOffs = 0;
     Uint32 paramLen = 0;
-    if (cinBuffer[4] == 0)
-    {
+    if (cinBuffer[4] == 0) {
       // No parameters supplied in this attrInfo
-    }
-    else if (storedPtr.p->storedParamNo == 0)
-    {
+    } else if (storedPtr.p->storedParamNo == 0) {
       // A single parameter, or the first of many, copy it out
       paramLen = cinBuffer[4];
       ndbrequire(reader.getWords(pos, paramLen));
       pos += paramLen;
       ndbassert(intmax_t{readerLen} == (pos - cinBuffer));
-    }
-    else
-    {
+    } else {
       // A set of parameters, skip up to the one specified by 'ParamNo'
-      for (uint i=0; i < storedPtr.p->storedParamNo; i++)
-      {
+      for (uint i = 0; i < storedPtr.p->storedParamNo; i++) {
         reader.getWord(pos);
         paramLen = *pos;
-        reader.step(paramLen-1);
+        reader.step(paramLen - 1);
         paramOffs += paramLen;
       }
       // Copy out the parameter specified
       reader.getWord(pos);
       paramLen = *pos;
-      reader.getWords(pos+1, paramLen-1);
+      reader.getWords(pos + 1, paramLen - 1);
       pos += paramLen;
     }
     cinBuffer[4] = paramLen;
@@ -272,9 +286,7 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
         ndbrequire(scan_rec_ptr->m_agg_interpreter->Init());
       }
     }
-  }
-  else
-  {
+  } else {
     jam();
     ndbassert(storedPtr.p->storedParamNo == 0);
 
@@ -282,12 +294,12 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
     reader.getWords(&cinBuffer[0], readerLen);
   }
 
-  // By convention we return total length of storedProc, not just what we copied.
+  // By convention we return total length of storedProc, not just what we
+  // copied.
   return readerLen;
 }
 
-void Dbtup::nextAttrInfoParam(Uint32 storedProcId)
-{
+void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
   jam();
 
   /* Get stored procedure */
@@ -300,12 +312,9 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId)
   storedPtr.p->storedParamNo++;
 }
 
-void
-Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
-                          const Tablerec * regTabPtr)
-{
-  if (regTabPtr->m_bits & Tablerec::TR_Checksum)
-  {
+void Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
+                               const Tablerec *regTabPtr) {
+  if (regTabPtr->m_bits & Tablerec::TR_Checksum) {
     jam();
     /**
      * Set a magic checksum when tuple isn't supposed to be read.
@@ -314,20 +323,15 @@ Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
   }
 }
 
-void
-Dbtup::updateChecksum(Tuple_header *tuple_ptr,
-                      const Tablerec *regTabPtr,
-                      Uint32 old_header,
-                      Uint32 new_header)
-{
+void Dbtup::updateChecksum(Tuple_header *tuple_ptr, const Tablerec *regTabPtr,
+                           Uint32 old_header, Uint32 new_header) {
   /**
    * This function is used when only updating the header bits in row.
    * We start by XOR:ing the old header, this negates the impact of the
    * old header since old_header ^ old_header = 0. Next we XOR with new
    * header to get the new checksum and finally we store the new checksum.
    */
-  if (regTabPtr->m_bits & Tablerec::TR_Checksum)
-  {
+  if (regTabPtr->m_bits & Tablerec::TR_Checksum) {
     Uint32 checksum = tuple_ptr->m_checksum;
     jam();
     checksum ^= old_header;
@@ -336,28 +340,22 @@ Dbtup::updateChecksum(Tuple_header *tuple_ptr,
   }
 }
 
-void
-Dbtup::setChecksum(Tuple_header* tuple_ptr,
-                   const Tablerec* regTabPtr)
-{
-  if (regTabPtr->m_bits & Tablerec::TR_Checksum)
-  {
+void Dbtup::setChecksum(Tuple_header *tuple_ptr, const Tablerec *regTabPtr) {
+  if (regTabPtr->m_bits & Tablerec::TR_Checksum) {
     jamDebug();
-    tuple_ptr->m_checksum= 0;
-    tuple_ptr->m_checksum= calculateChecksum(tuple_ptr, regTabPtr);
+    tuple_ptr->m_checksum = 0;
+    tuple_ptr->m_checksum = calculateChecksum(tuple_ptr, regTabPtr);
   }
 }
 
-Uint32
-Dbtup::calculateChecksum(Tuple_header* tuple_ptr,
-                         const Tablerec* regTabPtr)
-{
+Uint32 Dbtup::calculateChecksum(Tuple_header *tuple_ptr,
+                                const Tablerec *regTabPtr) {
   Uint32 checksum;
   Uint32 rec_size, *tuple_header;
-  rec_size= regTabPtr->m_offsets[MM].m_fix_header_size;
-  tuple_header= &tuple_ptr->m_header_bits;
+  rec_size = regTabPtr->m_offsets[MM].m_fix_header_size;
+  tuple_header = &tuple_ptr->m_header_bits;
   // includes tupVersion
-  //printf("%p - ", tuple_ptr);
+  // printf("%p - ", tuple_ptr);
 
   /**
    * We include every except the first word of the Tuple header
@@ -388,9 +386,8 @@ Dbtup::calculateChecksum(Tuple_header* tuple_ptr,
   return checksum;
 }
 
-int
-Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct, Tablerec *regTabPtr)
-{
+int Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct,
+                                  Tablerec *regTabPtr) {
   Uint32 checksum = calculateChecksum(req_struct->m_tuple_ptr, regTabPtr);
   Uint32 header_bits = req_struct->m_tuple_ptr->m_header_bits;
   Uint32 tableId = req_struct->fragPtrP->fragTableId;
@@ -404,13 +401,13 @@ Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct, Tablerec *regTabPtr)
       ", tab(%u,%u), page(%u,%u)",
       checksum, header_bits, req_struct->m_tuple_ptr->m_checksum, tableId,
       fragId, page_id, page_idx);
-  if (c_crashOnCorruptedTuple && !ERROR_INSERTED(4036))
-  {
+  if (c_crashOnCorruptedTuple && !ERROR_INSERTED(4036)) {
     g_eventLogger->info(" Exiting.");
     ndbabort();
   }
+  // Clear error 4036 caught in handleDeleteReq
   (void)ERROR_INSERTED_CLEAR(4036);
-  terrorCode= ZTUPLE_CORRUPTED_ERROR;
+  terrorCode = ZTUPLE_CORRUPTED_ERROR;
   tupkeyErrorLab(req_struct);
   return -1;
 }
@@ -418,10 +415,8 @@ Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct, Tablerec *regTabPtr)
 /* ----------------------------------------------------------------- */
 /* -----------       INSERT_ACTIVE_OP_LIST            -------------- */
 /* ----------------------------------------------------------------- */
-bool 
-Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
-                           KeyReqStruct* req_struct)
-{
+bool Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
+                                KeyReqStruct *req_struct) {
   /**
    * We are executing in the LDM thread since this is a write operation.
    * Thus we are protected from concurrent write activity from other
@@ -448,17 +443,14 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
   jam();
   OperationrecPtr prevOpPtr;
   ndbrequire(!regOperPtr.p->op_struct.bit_field.in_active_list);
-  req_struct->prevOpPtr.i= 
-    prevOpPtr.i= req_struct->m_tuple_ptr->m_operation_ptr_i;
-  regOperPtr.p->prevActiveOp= prevOpPtr.i;
-  regOperPtr.p->m_undo_buffer_space= 0;
+  req_struct->prevOpPtr.i = prevOpPtr.i =
+      req_struct->m_tuple_ptr->m_operation_ptr_i;
+  regOperPtr.p->prevActiveOp = prevOpPtr.i;
+  regOperPtr.p->m_undo_buffer_space = 0;
   ndbassert(!m_is_in_query_thread);
-  if (likely(prevOpPtr.i == RNIL))
-  {
+  if (likely(prevOpPtr.i == RNIL)) {
     return true;
-  }
-  else
-  {
+  } else {
     jam();
     jamLineDebug(Uint16(prevOpPtr.i));
     ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
@@ -502,29 +494,21 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
         {
           /* ZREFRESH after Delete - ok */
           return true;
-        }
-        else
-        {
-          terrorCode= ZTUPLE_DELETED_ERROR;
+        } else {
+          terrorCode = ZTUPLE_DELETED_ERROR;
           return false;
         }
-      } 
-      else if(op == ZINSERT && prevOp != ZDELETE)
-      {
-        terrorCode= ZINSERT_ERROR;
+      } else if (op == ZINSERT && prevOp != ZDELETE) {
+        terrorCode = ZINSERT_ERROR;
         return false;
-      }
-      else if (prevOp == ZREFRESH)
-      {
+      } else if (prevOp == ZREFRESH) {
         /* No operation after a ZREFRESH */
-        terrorCode= ZOP_AFTER_REFRESH_ERROR;
+        terrorCode = ZOP_AFTER_REFRESH_ERROR;
         return false;
       }
       return true;
-    }
-    else
-    {
-      terrorCode= ZMUST_BE_ABORTED_ERROR;
+    } else {
+      terrorCode = ZMUST_BE_ABORTED_ERROR;
       return false;
     }
   }
@@ -548,8 +532,7 @@ Dbtup::insertActiveOpList(OperationrecPtr regOperPtr,
   jamDataDebug(regOperPtr.i);
   regOperPtr.p->op_struct.bit_field.in_active_list = true;
   tuple_ptr->m_operation_ptr_i = regOperPtr.i;
-  if (unlikely(req_struct->prevOpPtr.i != RNIL))
-  {
+  if (unlikely(req_struct->prevOpPtr.i != RNIL)) {
     jam();
     req_struct->prevOpPtr.p->nextActiveOp = regOperPtr.i;
   }
@@ -562,11 +545,11 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
                   bool disk)
 {
   OperationrecPtr currOpPtr;
-  currOpPtr.i= req_struct->m_tuple_ptr->m_operation_ptr_i;
+  currOpPtr.i = req_struct->m_tuple_ptr->m_operation_ptr_i;
   const Uint32 bits = req_struct->m_tuple_ptr->m_header_bits;
 
-  if (unlikely(req_struct->m_reorg != ScanFragReq::REORG_ALL))
-  {
+  if (unlikely(req_struct->m_reorg != ScanFragReq::REORG_ALL)) {
+    ndbassert(req_struct->m_reorg != ScanFragReq::REORG_MOVED_COPY);
     const Uint32 moved = bits & Tuple_header::REORG_MOVE;
     if (! ((req_struct->m_reorg == ScanFragReq::REORG_NOT_MOVED &&
             moved == 0) ||
@@ -579,15 +562,13 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
        * but it is done for normal scans in this phase.
        */
       jamDebug();
-      terrorCode= ZTUPLE_DELETED_ERROR;
+      terrorCode = ZTUPLE_DELETED_ERROR;
       return false;
     }
   }
-  if (likely(currOpPtr.i == RNIL))
-  {
+  if (likely(currOpPtr.i == RNIL)) {
     jamDebug();
-    if (regTabPtr->need_expand(disk))
-    {
+    if (regTabPtr->need_expand(disk)) {
       jamDebug();
       prepare_read(req_struct, regTabPtr, disk);
     }
@@ -595,8 +576,8 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
   }
 
   do {
-    Uint32 savepointId= regOperPtr->savepointId;
-    bool dirty= req_struct->dirty_op;
+    Uint32 savepointId = regOperPtr->savepointId;
+    bool dirty = req_struct->dirty_op;
     Dblqh *ldm_lqh = nullptr;
     Dbtup *ldm_tup = this;
 
@@ -616,16 +597,13 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
     /**
      * Read committed in same trans reads latest copy
      */
-    if(dirty && !sameTrans)
-    {
+    if (dirty && !sameTrans) {
       jamDebug();
-      savepointId= 0;
-    }
-    else if(sameTrans)
-    {
+      savepointId = 0;
+    } else if (sameTrans) {
       // Use savepoint even in read committed mode
       jamDebug();
-      dirty= false;
+      dirty = false;
     }
 
     /* found == true indicates that savepoint is some state
@@ -657,7 +635,7 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
     {
       /* Tuple not visible to this read operation */
       jamDebug();
-      terrorCode= ZTUPLE_DELETED_ERROR;
+      terrorCode = ZTUPLE_DELETED_ERROR;
       break;
     }
 
@@ -665,16 +643,13 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
     {
       /* Read existing committed tuple */
       jamDebug();
-    }
-    else
-    {
+    } else {
       jamDebug();
-      req_struct->m_tuple_ptr=
-        get_copy_tuple(&currOpPtr.p->m_copy_tuple_location);
+      req_struct->m_tuple_ptr =
+          get_copy_tuple(&currOpPtr.p->m_copy_tuple_location);
     }
 
-    if (regTabPtr->need_expand(disk))
-    {
+    if (regTabPtr->need_expand(disk)) {
       jamDebug();
       prepare_read(req_struct, regTabPtr, disk);
     }
@@ -696,23 +671,21 @@ Dbtup::load_diskpage(Signal* signal,
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
 
-  Operationrec *  regOperPtr= operPtr.p;
-  Fragrecord * regFragPtr= prepare_fragptr.p;
-  Tablerec* regTabPtr = prepare_tabptr.p;
+  Operationrec *regOperPtr = operPtr.p;
+  Fragrecord *regFragPtr = prepare_fragptr.p;
+  Tablerec *regTabPtr = prepare_tabptr.p;
 
-  if (Local_key::isInvalid(lkey1, lkey2))
-  {
+  if (Local_key::isInvalid(lkey1, lkey2)) {
     jam();
-    regOperPtr->op_struct.bit_field.m_wait_log_buffer= 1;
-    regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit= 1;
-    if (unlikely((flags & 7) == ZREFRESH))
-    {
+    regOperPtr->op_struct.bit_field.m_wait_log_buffer = 1;
+    regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit = 1;
+    if (unlikely((flags & 7) == ZREFRESH)) {
       jam();
       /* Refresh of previously nonexistent DD tuple.
        * No diskpage to load at commit time
        */
-      regOperPtr->op_struct.bit_field.m_wait_log_buffer= 0;
-      regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit= 0;
+      regOperPtr->op_struct.bit_field.m_wait_log_buffer = 0;
+      regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit = 0;
     }
 
     /* In either case return 1 for 'proceed' */
@@ -728,12 +701,11 @@ Dbtup::load_diskpage(Signal* signal,
   regOperPtr->m_tuple_location.m_page_idx= page_idx;
 
   PagePtr page_ptr;
-  Uint32* tmp= get_ptr(&page_ptr, &regOperPtr->m_tuple_location, regTabPtr);
-  Tuple_header* ptr= (Tuple_header*)tmp;
+  Uint32 *tmp = get_ptr(&page_ptr, &regOperPtr->m_tuple_location, regTabPtr);
+  Tuple_header *ptr = (Tuple_header *)tmp;
 
   if (((flags & 7) == ZREAD) &&
-      ptr->m_header_bits & Tuple_header::DELETE_WAIT)
-  {
+      ptr->m_header_bits & Tuple_header::DELETE_WAIT) {
     jam();
     /**
      * Tuple is already deleted and must not be read at this point in
@@ -781,24 +753,22 @@ Dbtup::load_diskpage(Signal* signal,
     memcpy(&req.m_page, ptr->get_disk_ref_ptr(regTabPtr), sizeof(Local_key));
     req.m_table_id = regFragPtr->fragTableId;
     req.m_fragment_id = regFragPtr->fragmentId;
-    req.m_callback.m_callbackData= opRec;
-    req.m_callback.m_callbackFunction= 
-      safe_cast(&Dbtup::disk_page_load_callback);
+    req.m_callback.m_callbackData = opRec;
+    req.m_callback.m_callbackFunction =
+        safe_cast(&Dbtup::disk_page_load_callback);
 
 #ifdef ERROR_INSERT
-    if (ERROR_INSERTED(4022))
-    {
+    if (ERROR_INSERTED(4022)) {
       flags |= Page_cache_client::DELAY_REQ;
       const NDB_TICKS now = NdbTick_getCurrentTicks();
-      req.m_delay_until_time = NdbTick_AddMilliseconds(now,(Uint64)3000);
+      req.m_delay_until_time = NdbTick_AddMilliseconds(now, (Uint64)3000);
     }
-    if (ERROR_INSERTED(4035) && (rand() % 13) == 0)
-    {
+    if (ERROR_INSERTED(4035) && (rand() % 13) == 0) {
       // Disk access have to randomly wait max 16ms for a diskpage
       Uint64 delay = (Uint64)(rand() % 16) + 1;
       flags |= Page_cache_client::DELAY_REQ;
       const NDB_TICKS now = NdbTick_getCurrentTicks();
-      req.m_delay_until_time = NdbTick_AddMilliseconds(now,delay);
+      req.m_delay_until_time = NdbTick_AddMilliseconds(now, delay);
     }
 #endif
 
@@ -812,7 +782,7 @@ Dbtup::load_diskpage(Signal* signal,
       flags |= Page_cache_client::REF_REQ;
     }
     Page_cache_client pgman(this, c_pgman);
-    res= pgman.get_page(signal, req, flags);
+    res = pgman.get_page(signal, req, flags);
   }
 
   switch(flags & 7)
@@ -995,19 +965,16 @@ Dbtup::load_diskpage_scan(Signal* signal,
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
 
-  Operationrec *  regOperPtr= operPtr.p;
-  Fragrecord * regFragPtr= prepare_fragptr.p;
-  Tablerec* regTabPtr = prepare_tabptr.p;
+  Operationrec *regOperPtr = operPtr.p;
+  Fragrecord *regFragPtr = prepare_fragptr.p;
+  Tablerec *regTabPtr = prepare_tabptr.p;
 
   jam();
-  Uint32 page_idx= lkey2;
-  if (likely(tux_flag))
-  {
+  Uint32 page_idx = lkey2;
+  if (likely(tux_flag)) {
     jamDebug();
     regOperPtr->m_tuple_location.m_page_no = lkey1;
-  }
-  else
-  {
+  } else {
     jamDebug();
     Uint32 frag_page_id= lkey1;
     regOperPtr->m_tuple_location.m_page_no= getRealpid(regFragPtr,
@@ -1017,11 +984,10 @@ Dbtup::load_diskpage_scan(Signal* signal,
   regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit= 0;
 
   PagePtr page_ptr;
-  Uint32* tmp= get_ptr(&page_ptr, &regOperPtr->m_tuple_location, regTabPtr);
-  Tuple_header* ptr= (Tuple_header*)tmp;
+  Uint32 *tmp = get_ptr(&page_ptr, &regOperPtr->m_tuple_location, regTabPtr);
+  Tuple_header *ptr = (Tuple_header *)tmp;
 
-  if (ptr->m_header_bits & Tuple_header::DELETE_WAIT)
-  {
+  if (ptr->m_header_bits & Tuple_header::DELETE_WAIT) {
     jam();
     /**
      * Tuple is already deleted and must not be read at this point in
@@ -1105,8 +1071,7 @@ Dbtup::disk_page_load_scan_callback(Signal* signal,
   See DblqhMain.cpp for more documentation of prepare_* methods.
  */
 
-void Dbtup::prepare_tab_pointers_acc(Uint32 table_id, Uint32 frag_id)
-{
+void Dbtup::prepare_tab_pointers_acc(Uint32 table_id, Uint32 frag_id) {
   TablerecPtr tablePtr;
   tablePtr.i = table_id;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -1137,8 +1102,7 @@ void Dbtup::prepareTUPKEYREQ(Uint32 page_id,
   prepare_scanTUPKEYREQ(page_id, page_idx);
 }
 
-void Dbtup::prepare_scanTUPKEYREQ(Uint32 page_id, Uint32 page_idx)
-{
+void Dbtup::prepare_scanTUPKEYREQ(Uint32 page_id, Uint32 page_idx) {
   Local_key key;
   PagePtr pagePtr;
 #ifdef VM_TRACE
@@ -1148,8 +1112,7 @@ void Dbtup::prepare_scanTUPKEYREQ(Uint32 page_id, Uint32 page_idx)
   bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx) ||
         isCopyTuple(page_id, page_idx)));
 
-  if (is_page_key)
-  {
+  if (is_page_key) {
     Uint32 fixed_part_size_in_words =
       prepare_tabptr.p->m_offsets[MM].m_fix_header_size;
     acquire_frag_page_map_mutex_read(prepare_fragptr.p, jamBuffer());
@@ -1165,15 +1128,13 @@ void Dbtup::prepare_scanTUPKEYREQ(Uint32 page_id, Uint32 page_idx)
     prepare_page_idx = page_idx;
     prepare_tuple_ptr = tuple_ptr;
     prepare_page_no = page_id;
-    for (Uint32 i = 0; i < fixed_part_size_in_words; i+= 16)
-    {
+    for (Uint32 i = 0; i < fixed_part_size_in_words; i += 16) {
       NDB_PREFETCH_WRITE(tuple_ptr + i);
     }
   }
 }
 
-void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx)
-{
+void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx) {
   Local_key key;
   PagePtr pagePtr;
 #ifdef VM_TRACE
@@ -1186,7 +1147,7 @@ void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx)
   ndbrequire(is_page_key);
   {
     Uint32 fixed_part_size_in_words =
-      prepare_tabptr.p->m_offsets[MM].m_fix_header_size;
+        prepare_tabptr.p->m_offsets[MM].m_fix_header_size;
     key.m_page_no = page_id;
     key.m_page_idx = page_idx;
     Uint32 *tuple_ptr = get_ptr(&pagePtr,
@@ -1196,8 +1157,7 @@ void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx)
     prepare_pageptr = pagePtr;
     prepare_tuple_ptr = tuple_ptr;
     prepare_page_no = page_id;
-    for (Uint32 i = 0; i < fixed_part_size_in_words; i+= 16)
-    {
+    for (Uint32 i = 0; i < fixed_part_size_in_words; i += 16) {
       NDB_PREFETCH_WRITE(tuple_ptr + i);
     }
   }
@@ -1224,20 +1184,17 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     Local_key key;
     key.m_page_no = tupKeyReq->keyRef1;
     key.m_page_idx = tupKeyReq->keyRef2;
-    if (key.m_page_no != prepare_orig_local_key.m_page_no)
-    {
+    if (key.m_page_no != prepare_orig_local_key.m_page_no) {
       ndbout << "page_no = " << prepare_orig_local_key.m_page_no;
       ndbout << " keyRef1 = " << key.m_page_no << endl;
       error_found = true;
     }
-    if (key.m_page_idx != prepare_orig_local_key.m_page_idx)
-    {
+    if (key.m_page_idx != prepare_orig_local_key.m_page_idx) {
       ndbout << "page_idx = " << prepare_orig_local_key.m_page_idx;
       ndbout << " keyRef2 = " << key.m_page_idx << endl;
       error_found = true;
     }
-    if (error_found)
-    {
+    if (error_found) {
       ndbout << flush;
     }
     ndbassert(prepare_orig_local_key.m_page_no == key.m_page_no);
@@ -1283,27 +1240,26 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
    * This helps the compiler to understand that we won't change the
    * pointer here.
    */
-  Operationrec * const regOperPtr= operPtr.p;
+  Operationrec *const regOperPtr = operPtr.p;
 
   Dbtup::TransState trans_state = get_trans_state(regOperPtr);
 
-  req_struct.signal= signal;
+  req_struct.signal = signal;
   req_struct.operPtrP = regOperPtr;
   regOperPtr->fragmentPtr = prepare_fragptr.i;
   regOperPtr->prevActiveOp = RNIL;
   regOperPtr->nextActiveOp = RNIL;
-  req_struct.num_fired_triggers= 0;
+  req_struct.num_fired_triggers = 0;
   req_struct.no_exec_instructions = 0;
-  req_struct.read_length= 0;
-  req_struct.last_row= false;
+  req_struct.read_length = 0;
+  req_struct.last_row = false;
   req_struct.m_is_lcp = false;
   // MOZ Aggregation batch
   req_struct.agg_curr_batch_size_rows = 0;
   req_struct.agg_curr_batch_size_bytes = 0;
   req_struct.agg_n_res_recs = 0;
 
-  if (unlikely(trans_state != TRANS_IDLE))
-  {
+  if (unlikely(trans_state != TRANS_IDLE)) {
     TUPKEY_abort(&req_struct, 39);
     return false;
   }
@@ -1317,8 +1273,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   Uint32 disable_fk_checks = 0;
   Uint32 deferred_constraints = 0;
   Uint32 flags = lqhOpPtrP->m_flags;
-  if (lqhScanPtrP != nullptr)
-  {
+  if (lqhScanPtrP != nullptr) {
     Uint32 attrBufLen = lqhScanPtrP->scanAiLength;
     Uint32 dirtyOp = (lqhScanPtrP->scanLockHold == ZFALSE);
     Uint32 prioAFlag = lqhScanPtrP->prioAFlag;
@@ -1331,7 +1286,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.dirty_op = dirtyOp;
     req_struct.m_prio_a_flag = prioAFlag;
     req_struct.tc_operation_ptr = opRef;
-    req_struct.rec_blockref= applRef;
+    req_struct.rec_blockref = applRef;
     req_struct.interpreted_exec = interpreted_exec;
     req_struct.m_nr_copy_or_redo = 0;
     req_struct.m_use_rowid = 0;
@@ -1341,14 +1296,11 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_row_id.m_page_idx = ZNIL;
 #endif
     req_struct.scan_rec = lqhScanPtrP;
-  }
-  else
-  {
+  } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
     Uint32 row_id = TupKeyReq::getRowidFlag(tupKeyReq->request);
-    Uint32 interpreted_exec =
-      TupKeyReq::getInterpretedFlag(tupKeyReq->request);
+    Uint32 interpreted_exec = TupKeyReq::getInterpretedFlag(tupKeyReq->request);
     Uint32 opRef = lqhOpPtrP->applOprec;
     Uint32 applRef = lqhOpPtrP->applRef;
 
@@ -1357,17 +1309,16 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.log_size = attrBufLen;
     req_struct.attrinfo_len = attrBufLen;
     req_struct.tc_operation_ptr = opRef;
-    req_struct.rec_blockref= applRef;
+    req_struct.rec_blockref = applRef;
     req_struct.interpreted_exec = interpreted_exec;
 
     req_struct.m_prio_a_flag = 0;
     req_struct.m_nr_copy_or_redo =
-      ((LqhKeyReq::getNrCopyFlag(lqhOpPtrP->reqinfo) |
-        c_lqh->c_executing_redo_log) != 0);
-    disable_fk_checks =
-      ((flags & Dblqh::TcConnectionrec::OP_DISABLE_FK) != 0);
+        ((LqhKeyReq::getNrCopyFlag(lqhOpPtrP->reqinfo) |
+          c_lqh->c_executing_redo_log) != 0);
+    disable_fk_checks = ((flags & Dblqh::TcConnectionrec::OP_DISABLE_FK) != 0);
     deferred_constraints =
-      ((flags & Dblqh::TcConnectionrec::OP_DEFERRED_CONSTRAINTS) != 0);
+        ((flags & Dblqh::TcConnectionrec::OP_DEFERRED_CONSTRAINTS) != 0);
     const Uint32 row_id_page_no = tupKeyReq->m_row_id_page_no;
     const Uint32 row_id_page_idx = tupKeyReq->m_row_id_page_idx;
     req_struct.m_row_id.m_page_no = row_id_page_no;
@@ -1382,15 +1333,15 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     op_struct.bit_field.m_disable_fk_checks = disable_fk_checks;
     op_struct.bit_field.m_deferred_constraints = deferred_constraints;
 
-    const Uint32 triggers =
-      (flags & Dblqh::TcConnectionrec::OP_NO_TRIGGERS) ?
-      TupKeyReq::OP_NO_TRIGGERS :
-      (lqhOpPtrP->seqNoReplica == 0) ?
-      TupKeyReq::OP_PRIMARY_REPLICA : TupKeyReq::OP_BACKUP_REPLICA;
+    const Uint32 triggers = (flags & Dblqh::TcConnectionrec::OP_NO_TRIGGERS)
+                                ? TupKeyReq::OP_NO_TRIGGERS
+                                : (lqhOpPtrP->seqNoReplica == 0)
+                                      ? TupKeyReq::OP_PRIMARY_REPLICA
+                                      : TupKeyReq::OP_BACKUP_REPLICA;
     op_struct.bit_field.delete_insert_flag = false;
     op_struct.bit_field.m_gci_written = 0;
     op_struct.bit_field.m_reorg = lqhOpPtrP->m_reorg;
-    op_struct.bit_field.tupVersion= ZNIL;
+    op_struct.bit_field.tupVersion = ZNIL;
     op_struct.bit_field.m_triggers = triggers;
 
     regOperPtr->m_copy_tuple_location.setNull();
@@ -1415,7 +1366,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      * the operation we are about to execute.
      * The normal manner to do this would be to write:
      * regOperPtr->savePointId = tupKeyReq->savePointId;
-     * 
+     *
      * This normal manner would however not work so well due to
      * that the compiler has to issue assembler code that does
      * a load operation immediately followed by a store operation.
@@ -1437,7 +1388,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      * RSP: Top of Stack pointer, not available for L/S
      * RBP: Current Stack frame pointer, not available for L/S
      * RDI: Usually this-pointer, reference to Dbtup object here
-     * 
+     *
      * In this particular example we also need to have a register
      * for storing:
      * tupKeyReq, req_struct, regOperPtr.
@@ -1454,7 +1405,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      * The naming pattern is to define the temporary variable as
      * const Uint32 name_of_variable_to_assign = x->name;
      * y->name_of_variable_to_assign = name_of_variable_to_assign.
-     * 
+     *
      * In the case where the receiver of the data is a signal object
      * we use the pattern:
      * const Uint32 sig0 = x->name;
@@ -1495,7 +1446,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 
   const Uint32 transId1 = lqhOpPtrP->transid[0];
   const Uint32 transId2 = lqhOpPtrP->transid[1];
-  Tablerec * const regTabPtr = prepare_tabptr.p;
+  Tablerec *const regTabPtr = prepare_tabptr.p;
 
   /* Get AttrInfo section if this is a long TUPKEYREQ */
   Fragrecord *regFragPtr = prepare_fragptr.p;
@@ -1508,18 +1459,17 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   const Uint32 Roptype = regOperPtr->op_type;
 
   regOperPtr->m_any_value = 0;
+
   const Uint32 loc_prepare_page_id = prepare_page_no;
   /**
    * Check operation
    */
-  if (likely(Roptype == ZREAD))
-  {
+  if (likely(Roptype == ZREAD)) {
     jamDebug();
     regOperPtr->op_struct.bit_field.m_tuple_existed_at_start = 0;
     ndbassert(!Local_key::isInvalid(pageid, pageidx));
 
-    if (unlikely(isCopyTuple(pageid, pageidx)))
-    {
+    if (unlikely(isCopyTuple(pageid, pageidx))) {
       jamDebug();
       /**
        * Only LCP reads a copy-tuple "directly"
@@ -1527,9 +1477,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       ndbassert(disk_page == RNIL);
       ndbassert(!m_is_query_block);
       setup_lcp_read_copy_tuple(&req_struct, regOperPtr, regTabPtr);
-    }
-    else
-    {
+    } else {
       /**
        * Get pointer to tuple
        */
@@ -1547,27 +1495,25 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
        */
       acquire_frag_mutex_read(regFragPtr, pageid, jamBuffer());
       if (unlikely(req_struct.m_tuple_ptr->m_header_bits &
-            Tuple_header::FREE))
-      {
+                   Tuple_header::FREE)) {
         jam();
         terrorCode = ZTUPLE_DELETED_ERROR;
         tupkeyErrorLab(&req_struct);
         release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
         return false;
       }
-      if (unlikely(setup_read(&req_struct, regOperPtr, regTabPtr, 
-              disk_page != RNIL) == false))
-      {
+      if (unlikely(setup_read(&req_struct, regOperPtr, regTabPtr,
+                              disk_page != RNIL) == false)) {
         jam();
         tupkeyErrorLab(&req_struct);
         release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
         return false;
       }
       /* Check checksum with mutex protection. */
-      if (unlikely(((regTabPtr->m_bits & Tablerec::TR_Checksum) &&
-              (calculateChecksum(req_struct.m_tuple_ptr, regTabPtr) != 0)) ||
-            ERROR_INSERTED(4036)))
-      {
+      if (unlikely(
+              ((regTabPtr->m_bits & Tablerec::TR_Checksum) &&
+               (calculateChecksum(req_struct.m_tuple_ptr, regTabPtr) != 0)) ||
+              ERROR_INSERTED(4036))) {
         jam();
         release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
         corruptedTupleDetected(&req_struct, regTabPtr);
@@ -1575,12 +1521,11 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       }
       release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
     }
-    if (handleReadReq(signal, regOperPtr, regTabPtr, &req_struct) != -1)
-    {
-      req_struct.log_size= 0;
+    if (handleReadReq(signal, regOperPtr, regTabPtr, &req_struct) != -1) {
+      req_struct.log_size = 0;
       /* ---------------------------------------------------------------- */
-      // Read Operations need not to be taken out of any lists. 
-      // We also do not need to wait for commit since there is no changes 
+      // Read Operations need not to be taken out of any lists.
+      // We also do not need to wait for commit since there is no changes
       // to commit. Thus we
       // prepare the operation record already now for the next operation.
       // Write operations set the state to STARTED indicating that they
@@ -1604,23 +1549,18 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.changeMask.clear();
   Tuple_header *tuple_ptr = nullptr;
 
-  if (!Local_key::isInvalid(pageid, pageidx))
-  {
+  if (!Local_key::isInvalid(pageid, pageidx)) {
     regOperPtr->op_struct.bit_field.m_tuple_existed_at_start = 1;
-  }
-  else
-  {
+  } else {
     regOperPtr->op_struct.bit_field.in_active_list = false;
     regOperPtr->op_struct.bit_field.m_tuple_existed_at_start = 0;
     req_struct.prevOpPtr.i = RNIL;
-    if (Roptype == ZINSERT)
-    {
+    if (Roptype == ZINSERT) {
       // No tuple allocated yet
       jamDebug();
       goto do_insert;
     }
-    if (Roptype == ZREFRESH)
-    {
+    if (Roptype == ZREFRESH) {
       // No tuple allocated yet
       jamDebug();
       goto do_refresh;
@@ -1636,36 +1576,27 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   setup_fixed_part(&req_struct, regOperPtr, regTabPtr);
   tuple_ptr = req_struct.m_tuple_ptr;
 
-  if (prepareActiveOpList(operPtr, &req_struct))
-  {
+  if (prepareActiveOpList(operPtr, &req_struct)) {
     m_base_header_bits = tuple_ptr->m_header_bits;
-    if(Roptype == ZINSERT)
-    {
+    if (Roptype == ZINSERT) {
       jam();
-do_insert:
+    do_insert:
       Local_key accminupdate;
-      Local_key * accminupdateptr = &accminupdate;
-      if (unlikely(handleInsertReq(signal,
-              operPtr,
-              prepare_fragptr,
-              regTabPtr,
-              &req_struct,
-              &accminupdateptr,
-              false) == -1))
-      {
+      Local_key *accminupdateptr = &accminupdate;
+      if (unlikely(handleInsertReq(signal, operPtr, prepare_fragptr, regTabPtr,
+                                   &req_struct, &accminupdateptr,
+                                   false) == -1)) {
         return false;
       }
 
-      if (tuple_ptr != nullptr)
-      {
+      if (tuple_ptr != nullptr) {
         jam();
         acquire_frag_mutex(regFragPtr, pageid, jamBuffer());
         /**
          * Updates of checksum needs to be protected during non-initial
          * INSERTs.
          */
-        if (tuple_ptr->m_header_bits != m_base_header_bits)
-        {
+        if (tuple_ptr->m_header_bits != m_base_header_bits) {
           /**
            * The checksum is invalid if the ALLOC flag is set in the
            * header bits, but there is no problem in recalculating a
@@ -1679,10 +1610,8 @@ do_insert:
            */
           Uint32 old_header = tuple_ptr->m_header_bits;
           tuple_ptr->m_header_bits = m_base_header_bits;
-          updateChecksum(tuple_ptr,
-              regTabPtr,
-              old_header,
-              tuple_ptr->m_header_bits);
+          updateChecksum(tuple_ptr, regTabPtr, old_header,
+                         tuple_ptr->m_header_bits);
         }
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -1695,8 +1624,7 @@ do_insert:
         if (tuple_ptr != nullptr &&
             ((tuple_ptr->m_header_bits & Tuple_header::ALLOC) == 0) &&
             (regTabPtr->m_bits & Tablerec::TR_Checksum) &&
-            (calculateChecksum(tuple_ptr, regTabPtr) != 0))
-        {
+            (calculateChecksum(tuple_ptr, regTabPtr) != 0)) {
           ndbabort();
         }
 #endif
@@ -1729,9 +1657,7 @@ do_insert:
          */
         insertActiveOpList(operPtr, &req_struct, tuple_ptr);
         release_frag_mutex(regFragPtr, pageid, jamBuffer());
-      }
-      else
-      {
+      } else {
         /**
          * An initial INSERT operation requires no mutex, and it is
          * trivially already in the active list, even the flag is set
@@ -1741,15 +1667,11 @@ do_insert:
         jam();
       }
       terrorCode = 0;
-      checkImmediateTriggersAfterInsert(&req_struct,
-          regOperPtr,
-          regTabPtr,
-          disk_page != RNIL);
+      checkImmediateTriggersAfterInsert(&req_struct, regOperPtr, regTabPtr,
+                                        disk_page != RNIL);
 
-      if (likely(terrorCode == 0))
-      {
-        if (!regTabPtr->tuxCustomTriggers.isEmpty()) 
-        {
+      if (likely(terrorCode == 0)) {
+        if (!regTabPtr->tuxCustomTriggers.isEmpty()) {
           jam();
           /**
            * Ensure that no concurrent scans happens while I am
@@ -1761,19 +1683,15 @@ do_insert:
            * complete its operation before allowing write key access.
            */
           c_lqh->upgrade_to_write_key_frag_access();
-          executeTuxInsertTriggers(signal,
-              regOperPtr,
-              regFragPtr,
-              regTabPtr);
+          executeTuxInsertTriggers(signal, regOperPtr, regFragPtr, regTabPtr);
         }
       }
 
-      if (unlikely(terrorCode != 0))
-      {
+      if (unlikely(terrorCode != 0)) {
         jam();
         /*
          * TUP insert succeeded but immediate trigger firing or
-         * add of TUX entries failed.  
+         * add of TUX entries failed.
          * All TUX changes have been rolled back at this point.
          *
          * We will abort via tupkeyErrorLab() as usual.  This routine
@@ -1803,14 +1721,11 @@ do_insert:
        * of those operations towards each other anyways.
        */
       c_lqh->release_frag_access();
-      if (accminupdateptr)
-      {
+      if (accminupdateptr) {
         /**
          * Update ACC local-key, once *everything* has completed successfully
          */
-        c_lqh->accminupdate(signal,
-            regOperPtr->userpointer,
-            accminupdateptr);
+        c_lqh->accminupdate(signal, regOperPtr->userpointer, accminupdateptr);
       }
       returnTUPKEYCONF(signal, &req_struct, regOperPtr, TRANS_STARTED);
       return true;
@@ -1820,10 +1735,8 @@ do_insert:
 
     if (Roptype == ZUPDATE) {
       jamDebug();
-      if (unlikely(handleUpdateReq(signal, regOperPtr,
-              regFragPtr, regTabPtr,
-              &req_struct, disk_page != RNIL) == -1))
-      {
+      if (unlikely(handleUpdateReq(signal, regOperPtr, regFragPtr, regTabPtr,
+                                   &req_struct, disk_page != RNIL) == -1)) {
         return false;
       }
       /**
@@ -1850,10 +1763,8 @@ do_insert:
         jamDebug();
         Uint32 old_header = tuple_ptr->m_header_bits;
         tuple_ptr->m_header_bits = m_base_header_bits;
-        updateChecksum(tuple_ptr,
-            regTabPtr,
-            old_header,
-            tuple_ptr->m_header_bits);
+        updateChecksum(tuple_ptr, regTabPtr, old_header,
+                       tuple_ptr->m_header_bits);
       }
       insertActiveOpList(operPtr, &req_struct, tuple_ptr);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -1861,33 +1772,25 @@ do_insert:
       if (tuple_ptr != nullptr &&
           ((tuple_ptr->m_header_bits & Tuple_header::ALLOC) == 0) &&
           (regTabPtr->m_bits & Tablerec::TR_Checksum) &&
-          (calculateChecksum(tuple_ptr, regTabPtr) != 0))
-      {
+          (calculateChecksum(tuple_ptr, regTabPtr) != 0)) {
         ndbabort();
       }
 #endif
       release_frag_mutex(regFragPtr, pageid, jamBuffer());
       terrorCode = 0;
-      checkImmediateTriggersAfterUpdate(&req_struct,
-          regOperPtr,
-          regTabPtr,
-          disk_page != RNIL);
+      checkImmediateTriggersAfterUpdate(&req_struct, regOperPtr, regTabPtr,
+                                        disk_page != RNIL);
 
-      if (unlikely(terrorCode != 0))
-      {
+      if (unlikely(terrorCode != 0)) {
         tupkeyErrorLab(&req_struct);
         return false;
       }
 
-      if (!regTabPtr->tuxCustomTriggers.isEmpty())
-      {
+      if (!regTabPtr->tuxCustomTriggers.isEmpty()) {
         jam();
         c_lqh->upgrade_to_write_key_frag_access();
-        if (unlikely(executeTuxUpdateTriggers(signal,
-                regOperPtr,
-                regFragPtr,
-                regTabPtr) != 0))
-        {
+        if (unlikely(executeTuxUpdateTriggers(signal, regOperPtr, regFragPtr,
+                                              regTabPtr) != 0)) {
           jam();
           /*
            * See insert case.
@@ -1902,16 +1805,11 @@ do_insert:
       c_lqh->release_frag_access();
       returnTUPKEYCONF(signal, &req_struct, regOperPtr, TRANS_STARTED);
       return true;
-    }
-    else if(Roptype == ZDELETE)
-    {
+    } else if (Roptype == ZDELETE) {
       jam();
-      req_struct.log_size= 0;
-      if (unlikely(handleDeleteReq(signal, regOperPtr,
-              regFragPtr, regTabPtr,
-              &req_struct,
-              disk_page != RNIL) == -1))
-      {
+      req_struct.log_size = 0;
+      if (unlikely(handleDeleteReq(signal, regOperPtr, regFragPtr, regTabPtr,
+                                   &req_struct, disk_page != RNIL) == -1)) {
         return false;
       }
 
@@ -1931,13 +1829,10 @@ do_insert:
       acquire_frag_mutex(regFragPtr, pageid, jamBuffer());
       insertActiveOpList(operPtr, &req_struct, tuple_ptr);
       release_frag_mutex(regFragPtr, pageid, jamBuffer());
-      checkImmediateTriggersAfterDelete(&req_struct,
-          regOperPtr,
-          regTabPtr,
-          disk_page != RNIL);
+      checkImmediateTriggersAfterDelete(&req_struct, regOperPtr, regTabPtr,
+                                        disk_page != RNIL);
 
-      if (unlikely(terrorCode != 0))
-      {
+      if (unlikely(terrorCode != 0)) {
         tupkeyErrorLab(&req_struct);
         return false;
       }
@@ -1951,8 +1846,7 @@ do_insert:
       if (tuple_ptr != nullptr &&
           ((tuple_ptr->m_header_bits & Tuple_header::ALLOC) == 0) &&
           (regTabPtr->m_bits & Tablerec::TR_Checksum) &&
-          (calculateChecksum(tuple_ptr, regTabPtr) != 0))
-      {
+          (calculateChecksum(tuple_ptr, regTabPtr) != 0)) {
         release_frag_mutex(regFragPtr, pageid, jamBuffer());
         ndbabort();
       }
@@ -1961,28 +1855,21 @@ do_insert:
       c_lqh->release_frag_access();
       returnTUPKEYCONF(signal, &req_struct, regOperPtr, TRANS_STARTED);
       return true;
-    }
-    else if (Roptype == ZREFRESH)
-    {
+    } else if (Roptype == ZREFRESH) {
       /**
        * No TUX or immediate triggers, just detached triggers
        */
-do_refresh:
+    do_refresh:
       jamDebug();
       c_lqh->upgrade_to_exclusive_frag_access_no_return();
-      if (unlikely(handleRefreshReq(signal, operPtr,
-              prepare_fragptr, regTabPtr,
-              &req_struct, disk_page != RNIL) == -1))
-      {
+      if (unlikely(handleRefreshReq(signal, operPtr, prepare_fragptr, regTabPtr,
+                                    &req_struct, disk_page != RNIL) == -1)) {
         return false;
       }
-      if (tuple_ptr)
-      {
+      if (tuple_ptr) {
         jam();
         insertActiveOpList(operPtr, &req_struct, tuple_ptr);
-      }
-      else
-      {
+      } else {
         jam();
         operPtr.p->op_struct.bit_field.in_active_list = true;
       }
@@ -1991,31 +1878,25 @@ do_refresh:
       if (tuple_ptr != nullptr &&
           ((tuple_ptr->m_header_bits & Tuple_header::ALLOC) == 0) &&
           (regTabPtr->m_bits & Tablerec::TR_Checksum) &&
-          (calculateChecksum(tuple_ptr, regTabPtr) != 0))
-      {
+          (calculateChecksum(tuple_ptr, regTabPtr) != 0)) {
         ndbabort();
       }
 #endif
       c_lqh->release_frag_access();
       returnTUPKEYCONF(signal, &req_struct, regOperPtr, TRANS_STARTED);
       return true;
-    }
-    else
-    {
-      ndbabort(); // Invalid op type
+    } else {
+      ndbabort();  // Invalid op type
     }
   }
   tupkeyErrorLab(&req_struct);
   return false;
 }
 
-void
-Dbtup::setup_fixed_part(KeyReqStruct* req_struct,
-                        Operationrec* regOperPtr,
-                        Tablerec* regTabPtr)
-{
+void Dbtup::setup_fixed_part(KeyReqStruct *req_struct, Operationrec *regOperPtr,
+                             Tablerec *regTabPtr) {
   ndbassert(regOperPtr->op_type == ZINSERT ||
-      (! (req_struct->m_tuple_ptr->m_header_bits & Tuple_header::FREE)));
+            (!(req_struct->m_tuple_ptr->m_header_bits & Tuple_header::FREE)));
 
   Uint32* tab_descr = regTabPtr->tabDescriptor;
   Uint32 mm_check_offset = regTabPtr->get_check_offset(MM);
@@ -2024,38 +1905,35 @@ Dbtup::setup_fixed_part(KeyReqStruct* req_struct,
   req_struct->check_offset[MM] = mm_check_offset;
   req_struct->check_offset[DD] = dd_check_offset;
   req_struct->attr_descr = tab_descr;
-  NDB_PREFETCH_READ((char*)tab_descr);
+  NDB_PREFETCH_READ((char *)tab_descr);
 }
 
-void
-Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct* req_struct,
-                                 Operationrec* regOperPtr,
-                                 Tablerec* regTabPtr)
-{
+void Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct *req_struct,
+                                      Operationrec *regOperPtr,
+                                      Tablerec *regTabPtr) {
   Local_key tmp;
   tmp.m_page_no = req_struct->frag_page_id;
   tmp.m_page_idx = regOperPtr->m_tuple_location.m_page_idx;
   clearCopyTuple(tmp.m_page_no, tmp.m_page_idx);
 
-  Uint32 * copytuple = get_copy_tuple_raw(&tmp);
+  Uint32 *copytuple = get_copy_tuple_raw(&tmp);
   Local_key rowid;
-  memcpy(&rowid, copytuple+0, sizeof(Local_key));
+  memcpy(&rowid, copytuple + 0, sizeof(Local_key));
 
   req_struct->frag_page_id = rowid.m_page_no;
   regOperPtr->m_tuple_location.m_page_idx = rowid.m_page_idx;
 
   Uint32* tab_descr = regTabPtr->tabDescriptor;
-  Tuple_header * th = get_copy_tuple(copytuple);
+  Tuple_header *th = get_copy_tuple(copytuple);
   req_struct->m_page_ptr.setNull();
-  req_struct->m_tuple_ptr = (Tuple_header*)th;
+  req_struct->m_tuple_ptr = (Tuple_header *)th;
   th->m_operation_ptr_i = RNIL;
   ndbassert((th->m_header_bits & Tuple_header::COPY_TUPLE) != 0);
 
-  req_struct->attr_descr= tab_descr;
+  req_struct->attr_descr = tab_descr;
 
   bool disk = false;
-  if (regTabPtr->need_expand(disk))
-  {
+  if (regTabPtr->need_expand(disk)) {
     jam();
     prepare_read(req_struct, regTabPtr, disk);
   }
@@ -2064,12 +1942,9 @@ Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct* req_struct,
 /* ---------------------------------------------------------------- */
 /* ------------------------ CONFIRM REQUEST ----------------------- */
 /* ---------------------------------------------------------------- */
-inline
-void Dbtup::returnTUPKEYCONF(Signal* signal,
-                             KeyReqStruct *req_struct,
-                             Operationrec * regOperPtr,
-                             TransState trans_state)
-{
+inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
+                                    Operationrec *regOperPtr,
+                                    TransState trans_state) {
   /**
    * When we arrive here we have been executing read code and/or write
    * code to read/write the tuple. During this execution path we have
@@ -2078,21 +1953,21 @@ void Dbtup::returnTUPKEYCONF(Signal* signal,
    * shown useful by using the perf tool. So not an obvious prefetch.
    */
   NDB_PREFETCH_WRITE(regOperPtr);
-  TupKeyConf * tupKeyConf= (TupKeyConf *)signal->getDataPtrSend();  
+  TupKeyConf *tupKeyConf = (TupKeyConf *)signal->getDataPtrSend();
 
   Uint32 Rcreate_rowid = req_struct->m_use_rowid;
-  Uint32 RuserPointer= regOperPtr->userpointer;
-  Uint32 RnumFiredTriggers= req_struct->num_fired_triggers;
+  Uint32 RuserPointer = regOperPtr->userpointer;
+  Uint32 RnumFiredTriggers = req_struct->num_fired_triggers;
   const Uint32 RnoExecInstructions = req_struct->no_exec_instructions;
-  Uint32 log_size= req_struct->log_size;
-  Uint32 read_length= req_struct->read_length;
-  Uint32 last_row= req_struct->last_row;
+  Uint32 log_size = req_struct->log_size;
+  Uint32 read_length = req_struct->read_length;
+  Uint32 last_row = req_struct->last_row;
 
-  tupKeyConf->userPtr= RuserPointer;
-  tupKeyConf->readLength= read_length;
-  tupKeyConf->writeLength= log_size;
-  tupKeyConf->numFiredTriggers= RnumFiredTriggers;
-  tupKeyConf->lastRow= last_row;
+  tupKeyConf->userPtr = RuserPointer;
+  tupKeyConf->readLength = read_length;
+  tupKeyConf->writeLength = log_size;
+  tupKeyConf->numFiredTriggers = RnumFiredTriggers;
+  tupKeyConf->lastRow = last_row;
   tupKeyConf->rowid = Rcreate_rowid;
   tupKeyConf->noExecInstructions = RnoExecInstructions;
   tupKeyConf->agg_batch_size_rows = req_struct->agg_curr_batch_size_rows;
@@ -2102,61 +1977,49 @@ void Dbtup::returnTUPKEYCONF(Signal* signal,
   set_trans_state(regOperPtr, trans_state);
 }
 
-
 #define MAX_READ (MIN(sizeof(signal->theData), MAX_SEND_MESSAGE_BYTESIZE))
 
 /* ---------------------------------------------------------------- */
 /* ----------------------------- READ  ---------------------------- */
 /* ---------------------------------------------------------------- */
-int Dbtup::handleReadReq(Signal* signal,
-                         // UNUSED, is member of req_struct
-                         Operationrec* _regOperPtr,
-                         Tablerec* regTabPtr,
-                         KeyReqStruct* req_struct)
-{
+int Dbtup::handleReadReq(
+    Signal *signal,
+    // UNUSED, is member of req_struct
+    Operationrec *_regOperPtr,
+    Tablerec *regTabPtr, KeyReqStruct *req_struct) {
   Uint32 *dst;
   Uint32 dstLen, start_index;
-  const BlockReference sendBref= req_struct->rec_blockref;
+  const BlockReference sendBref = req_struct->rec_blockref;
   const Uint32 node = refToNode(sendBref);
-  if(node != 0 && node != getOwnNodeId())
-  {
-    start_index= 25;
-  }
-  else
-  {
+  if (node != 0 && node != getOwnNodeId()) {
+    start_index = 25;
+  } else {
     jamDebug();
     /**
      * execute direct
      */
-    start_index= AttrInfo::HeaderLength;  //3;
+    start_index = AttrInfo::HeaderLength;  // 3;
   }
-  dst= &signal->theData[start_index];
-  dstLen= (MAX_READ / 4) - start_index;
-  if (!req_struct->interpreted_exec)
-  {
+  dst = &signal->theData[start_index];
+  dstLen = (MAX_READ / 4) - start_index;
+  if (!req_struct->interpreted_exec) {
     jamDebug();
-    int ret = readAttributes(req_struct,
-                             &cinBuffer[0],
-                             req_struct->attrinfo_len,
-                             dst,
-                             dstLen);
-    if (likely(ret >= 0))
-    {
-      /* ------------------------------------------------------------------------- */
+    int ret = readAttributes(req_struct, &cinBuffer[0],
+                             req_struct->attrinfo_len, dst, dstLen);
+    if (likely(ret >= 0)) {
+      /* -------------------------------------------------------------------------
+       */
       // We have read all data into coutBuffer. Now send it to the API.
-      /* ------------------------------------------------------------------------- */
+      /* -------------------------------------------------------------------------
+       */
       jamDebug();
-      const Uint32 TnoOfDataRead= (Uint32) ret;
+      const Uint32 TnoOfDataRead = (Uint32)ret;
       sendReadAttrinfo(signal, req_struct, TnoOfDataRead);
       return 0;
-    }
-    else
-    {
+    } else {
       terrorCode = Uint32(-ret);
     }
-  }
-  else
-  {
+  } else {
     return interpreterStartLab(signal, req_struct);
   }
 
@@ -2165,31 +2028,29 @@ int Dbtup::handleReadReq(Signal* signal,
   return -1;
 }
 
-static
-void
-handle_reorg(Dbtup::KeyReqStruct * req_struct,
-             Dbtup::Fragrecord::FragState state)
-{
+static Uint32 get_reorg_flag(Dbtup::KeyReqStruct *req_struct,
+                             Dbtup::Fragrecord::FragState state) {
   Uint32 reorg = req_struct->m_reorg;
-  switch(state){
+  switch (state) {
     case Dbtup::Fragrecord::FS_FREE:
     case Dbtup::Fragrecord::FS_REORG_NEW:
     case Dbtup::Fragrecord::FS_REORG_COMMIT_NEW:
     case Dbtup::Fragrecord::FS_REORG_COMPLETE_NEW:
-      return;
+      return 0;
     case Dbtup::Fragrecord::FS_REORG_COMMIT:
     case Dbtup::Fragrecord::FS_REORG_COMPLETE:
-      if (reorg != ScanFragReq::REORG_NOT_MOVED)
-        return;
+      if (reorg != ScanFragReq::REORG_NOT_MOVED) return 0;
       break;
     case Dbtup::Fragrecord::FS_ONLINE:
-      if (reorg != ScanFragReq::REORG_MOVED)
-        return;
+      if (reorg != ScanFragReq::REORG_MOVED &&
+          reorg != ScanFragReq::REORG_MOVED_COPY)
+        return 0;
       break;
     default:
-      return;
+      return 0;
   }
-  req_struct->m_tuple_ptr->m_header_bits |= Dbtup::Tuple_header::REORG_MOVE;
+
+  return Dbtup::Tuple_header::REORG_MOVE;
 }
 
 /* ---------------------------------------------------------------- */
@@ -2214,15 +2075,12 @@ int Dbtup::handleUpdateReq(Signal* signal,
 
   Uint32 tup_version;
   change_mask_ptr = get_change_mask_ptr(regTabPtr, dst);
-  if (likely(operPtrP->is_first_operation()))
-  {
+  if (likely(operPtrP->is_first_operation())) {
     jamDebug();
-    org= req_struct->m_tuple_ptr;
-    tup_version= org->get_tuple_version();
+    org = req_struct->m_tuple_ptr;
+    tup_version = org->get_tuple_version();
     clear_change_mask_info(regTabPtr, change_mask_ptr);
-  }
-  else
-  {
+  } else {
     jam();
     Operationrec* prevOp= req_struct->prevOpPtr.p;
     tup_version= prevOp->op_struct.bit_field.tupVersion;
@@ -2238,7 +2096,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
    * Any updates made to the row and checksum is performed by the LDM
    * thread and thus protected by being in the same thread.
    */
-  req_struct->m_tuple_ptr= org;
+  req_struct->m_tuple_ptr = org;
   if (unlikely((regTabPtr->m_bits & Tablerec::TR_Checksum) &&
         (calculateChecksum(req_struct->m_tuple_ptr, regTabPtr) != 0)))
   {
@@ -2253,12 +2111,10 @@ int Dbtup::handleUpdateReq(Signal* signal,
   };
 
   disk = disk || (org->m_header_bits & Tuple_header::DISK_INLINE);
-  if (regTabPtr->need_expand(disk))
-  {
+  if (regTabPtr->need_expand(disk)) {
     jamDebug();
     expand_tuple(req_struct, sizes, org, regTabPtr, disk);
-    if (disk && operPtrP->m_undo_buffer_space == 0)
-    {
+    if (disk && operPtrP->m_undo_buffer_space == 0) {
       jam();
       operPtrP->op_struct.bit_field.m_wait_log_buffer = 1;
       operPtrP->op_struct.bit_field.m_load_diskpage_on_commit = 1;
@@ -2278,17 +2134,14 @@ int Dbtup::handleUpdateReq(Signal* signal,
             !req_struct->m_nr_copy_or_redo,
             jamBuffer());
       }
-      if(unlikely(terrorCode))
-      {
+      if (unlikely(terrorCode)) {
         jam();
         operPtrP->m_undo_buffer_space= 0;
         goto error;
       }
     }
-  }
-  else
-  {
-    memcpy(dst, org, 4*regTabPtr->m_offsets[MM].m_fix_header_size);
+  } else {
+    memcpy(dst, org, 4 * regTabPtr->m_offsets[MM].m_fix_header_size);
     req_struct->m_tuple_ptr->m_header_bits |= Tuple_header::COPY_TUPLE;
   }
 
@@ -2301,11 +2154,10 @@ int Dbtup::handleUpdateReq(Signal* signal,
   {
     jamDebug();
 
-    if (unlikely(regTabPtr->m_bits & Tablerec::TR_ExtraRowAuthorBits))
-    {
+    if (unlikely(regTabPtr->m_bits & Tablerec::TR_ExtraRowAuthorBits)) {
       jam();
       Uint32 attrId =
-        regTabPtr->getExtraAttrId<Tablerec::TR_ExtraRowAuthorBits>();
+          regTabPtr->getExtraAttrId<Tablerec::TR_ExtraRowAuthorBits>();
 
       store_extra_row_bits(attrId, regTabPtr, dst, /* default */ 0, false);
     }
@@ -2317,11 +2169,8 @@ int Dbtup::handleUpdateReq(Signal* signal,
       terrorCode = Uint32(-retValue);
       goto error;
     }
-  }
-  else
-  {
-    if (unlikely(interpreterStartLab(signal, req_struct) == -1))
-      return -1;
+  } else {
+    if (unlikely(interpreterStartLab(signal, req_struct) == -1)) return -1;
   }
 
   update_change_mask_info(regTabPtr,
@@ -2334,22 +2183,20 @@ int Dbtup::handleUpdateReq(Signal* signal,
        * optimize varpart of tuple,  move varpart of tuple from
        * big-free-size page list into small-free-size page list
        */
-      if(base->m_header_bits & Tuple_header::VAR_PART)
-      {
+      if (base->m_header_bits & Tuple_header::VAR_PART) {
         jam();
         optimize_var_part(req_struct, base, operPtrP,
             regFragPtr, regTabPtr);
       }
       break;
     case AttributeHeader::OPTIMIZE_MOVE_FIXPART:
-      //TODO: move fix part of tuple
+      // TODO: move fix part of tuple
       break;
     default:
       break;
   }
 
-  if (regTabPtr->need_shrink())
-  {
+  if (regTabPtr->need_shrink()) {
     jamDebug();
     shrink_tuple(req_struct, sizes+2, regTabPtr, disk);
     if (cmp[0] != cmp[1] &&
@@ -2365,9 +2212,9 @@ int Dbtup::handleUpdateReq(Signal* signal,
     }
   }
 
-  if (req_struct->m_reorg != ScanFragReq::REORG_ALL)
-  {
-    handle_reorg(req_struct, regFragPtr->fragStatus);
+  if (req_struct->m_reorg != ScanFragReq::REORG_ALL) {
+    req_struct->m_tuple_ptr->m_header_bits |=
+        get_reorg_flag(req_struct, regFragPtr->fragStatus);
   }
 
   req_struct->m_tuple_ptr->set_tuple_version(tup_version);
@@ -2418,20 +2265,19 @@ expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
 
   assert(bm_len <= max_bmlen);
 
-  if(bm_len > 0)
-    memcpy(dst_bm_ptr, src, 4*bm_len);
-  if(bm_len < max_bmlen)
+  if (bm_len > 0) memcpy(dst_bm_ptr, src, 4 * bm_len);
+  if (bm_len < max_bmlen)
     std::memset(dst_bm_ptr + bm_len, 0, 4 * (max_bmlen - bm_len));
 
   /**
    * Store max_bmlen for homogenous code in DbtupRoutines
    */
-  Uint32 tmp = (* dst_bm_ptr);
-  * dst_bm_ptr = (tmp & ~(Uint32)Dbtup::DYN_BM_LEN_MASK) | max_bmlen;
+  Uint32 tmp = (*dst_bm_ptr);
+  *dst_bm_ptr = (tmp & ~(Uint32)Dbtup::DYN_BM_LEN_MASK) | max_bmlen;
 
-  char *src_off_start= (char*)(src + bm_len);
-  assert((UintPtr(src_off_start)&3) == 0);
-  Uint16 *src_off_ptr= (Uint16*)src_off_start;
+  char *src_off_start = (char *)(src + bm_len);
+  assert((UintPtr(src_off_start) & 3) == 0);
+  Uint16 *src_off_ptr = (Uint16 *)src_off_start;
 
   /*
      Prepare the variable-sized dynamic attributes, copying out data from the
@@ -2442,29 +2288,25 @@ expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
   Uint16* dst_len_ptr= dst_off_ptr + no_attr;
   Uint16 this_src_off= row_len ? * src_off_ptr++ : 0;
   /* We need to reserve room for the offsets written by shrink_tuple+padding.*/
-  Uint16 dst_off= 4 * (max_bmlen + ((dynvar+2)>>1));
-  char *dst_ptr= (char*)dst_bm_ptr + dst_off;
-  for(Uint32 i= 0; i<dynvar; i++)
-  {
-    Uint16 j= order[dynfix+i];
-    Uint32 max_len= 4 *AttributeDescriptor::getSizeInWords(tabDesc[j]);
+  Uint16 dst_off = 4 * (max_bmlen + ((dynvar + 2) >> 1));
+  char *dst_ptr = (char *)dst_bm_ptr + dst_off;
+  for (Uint32 i = 0; i < dynvar; i++) {
+    Uint16 j = order[dynfix + i];
+    Uint32 max_len = 4 * AttributeDescriptor::getSizeInWords(tabDesc[j]);
     Uint32 len;
-    Uint32 pos = AttributeOffset::getNullFlagPos(tabDesc[j+1]);
-    if(bm_len > (pos >> 5) && BitmaskImpl::get(bm_len, src, pos))
-    {
-      Uint16 next_src_off= *src_off_ptr++;
-      len= next_src_off - this_src_off;
-      memcpy(dst_ptr, src_off_start+this_src_off, len);
-      this_src_off= next_src_off;
+    Uint32 pos = AttributeOffset::getNullFlagPos(tabDesc[j + 1]);
+    if (bm_len > (pos >> 5) && BitmaskImpl::get(bm_len, src, pos)) {
+      Uint16 next_src_off = *src_off_ptr++;
+      len = next_src_off - this_src_off;
+      memcpy(dst_ptr, src_off_start + this_src_off, len);
+      this_src_off = next_src_off;
+    } else {
+      len = 0;
     }
-    else
-    {
-      len= 0;
-    }
-    dst_off_ptr[i]= dst_off;
-    dst_len_ptr[i]= dst_off+len;
-    dst_off+= max_len;
-    dst_ptr+= max_len;
+    dst_off_ptr[i] = dst_off;
+    dst_len_ptr[i] = dst_off + len;
+    dst_off += max_len;
+    dst_ptr += max_len;
   }
   /*
      The fixed-size data is stored 32-bit aligned after the variable-sized
@@ -2483,43 +2325,35 @@ expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
   for(Uint32 i= dynfix; i>0; )
   {
     i--;
-    Uint16 j= order[i];
-    Uint32 fix_size= 4*AttributeDescriptor::getSizeInWords(tabDesc[j]);
-    dst_off_ptr[dynvar+i]= dst_off;
+    Uint16 j = order[i];
+    Uint32 fix_size = 4 * AttributeDescriptor::getSizeInWords(tabDesc[j]);
+    dst_off_ptr[dynvar + i] = dst_off;
     /* len offset array is not used for fixed size. */
-    Uint32 pos = AttributeOffset::getNullFlagPos(tabDesc[j+1]);
-    if(bm_len > (pos >> 5) && BitmaskImpl::get(bm_len, src, pos))
-    {
-      assert((UintPtr(dst_ptr)&3) == 0);
+    Uint32 pos = AttributeOffset::getNullFlagPos(tabDesc[j + 1]);
+    if (bm_len > (pos >> 5) && BitmaskImpl::get(bm_len, src, pos)) {
+      assert((UintPtr(dst_ptr) & 3) == 0);
       memcpy(dst_ptr, src_ptr, fix_size);
-      src_ptr+= fix_size;
+      src_ptr += fix_size;
     }
-    dst_off+= fix_size;
-    dst_ptr+= fix_size;
+    dst_off += fix_size;
+    dst_ptr += fix_size;
   }
 
   return (Uint32 *)dst_ptr;
 }
 
-static
-Uint32*
-shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
-                Uint32 *dst_ptr,
-                const Dbtup::Tablerec* tabPtrP,
-                const Uint32 * tabDesc,
-                const Uint16* order,
-                Uint32 dynvar,
-                Uint32 dynfix,
-                Uint32 ind)
-{
+static Uint32 *shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
+                               Uint32 *dst_ptr, const Dbtup::Tablerec *tabPtrP,
+                               const Uint32 *tabDesc, const Uint16 *order,
+                               Uint32 dynvar, Uint32 dynfix, Uint32 ind) {
   /**
    * Now build the dynamic part, if any.
    * First look for any trailing all-NULL words of the bitmap; we do
    * not need to store those.
    */
-  assert((UintPtr(dst->m_dyn_data_ptr)&3) == 0);
-  char *dyn_src_ptr= dst->m_dyn_data_ptr;
-  Uint32 bm_len = tabPtrP->m_offsets[ind].m_dyn_null_words; // In words
+  assert((UintPtr(dst->m_dyn_data_ptr) & 3) == 0);
+  char *dyn_src_ptr = dst->m_dyn_data_ptr;
+  Uint32 bm_len = tabPtrP->m_offsets[ind].m_dyn_null_words;  // In words
 
   /* If no dynamic variables, store nothing. */
   assert(bm_len);
@@ -2528,50 +2362,45 @@ shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
      * clear bm-len bits, so they won't incorrect indicate
      *   a non-zero map
      */
-    * ((Uint32 *)dyn_src_ptr) &= ~Uint32(Dbtup::DYN_BM_LEN_MASK);
+    *((Uint32 *)dyn_src_ptr) &= ~Uint32(Dbtup::DYN_BM_LEN_MASK);
 
-    Uint32 *bm_ptr= (Uint32 *)dyn_src_ptr + bm_len - 1;
-    while(*bm_ptr == 0)
-    {
+    Uint32 *bm_ptr = (Uint32 *)dyn_src_ptr + bm_len - 1;
+    while (*bm_ptr == 0) {
       bm_ptr--;
       bm_len--;
-      if(bm_len == 0)
-        break;
+      if (bm_len == 0) break;
     }
   }
 
-  if (bm_len)
-  {
+  if (bm_len) {
     /**
      * Copy the bitmap, counting the number of variable sized
      * attributes that are not NULL on the way.
      */
-    Uint32 *dyn_dst_ptr= dst_ptr;
-    Uint32 dyn_var_count= 0;
-    const Uint32 *src_bm_ptr= (Uint32 *)(dyn_src_ptr);
-    Uint32 *dst_bm_ptr= (Uint32 *)dyn_dst_ptr;
+    Uint32 *dyn_dst_ptr = dst_ptr;
+    Uint32 dyn_var_count = 0;
+    const Uint32 *src_bm_ptr = (Uint32 *)(dyn_src_ptr);
+    Uint32 *dst_bm_ptr = (Uint32 *)dyn_dst_ptr;
 
     /* ToDo: Put all of the dynattr code inside if(bm_len>0) { ... },
      * split to separate function. */
-    Uint16 dyn_dst_data_offset= 0;
-    const Uint32 *dyn_bm_var_mask_ptr= tabPtrP->dynVarSizeMask[ind];
-    for(Uint16 i= 0; i< bm_len; i++)
-    {
-      Uint32 v= src_bm_ptr[i];
-      dyn_var_count+= BitmaskImpl::count_bits(v & *dyn_bm_var_mask_ptr++);
-      dst_bm_ptr[i]= v;
+    Uint16 dyn_dst_data_offset = 0;
+    const Uint32 *dyn_bm_var_mask_ptr = tabPtrP->dynVarSizeMask[ind];
+    for (Uint16 i = 0; i < bm_len; i++) {
+      Uint32 v = src_bm_ptr[i];
+      dyn_var_count += BitmaskImpl::count_bits(v & *dyn_bm_var_mask_ptr++);
+      dst_bm_ptr[i] = v;
     }
 
     Uint32 tmp = *dyn_dst_ptr;
     assert(bm_len <= Dbtup::DYN_BM_LEN_MASK);
-    * dyn_dst_ptr = (tmp & ~(Uint32)Dbtup::DYN_BM_LEN_MASK) | bm_len;
-    dyn_dst_ptr+= bm_len;
-    dyn_dst_data_offset= 2*dyn_var_count + 2;
+    *dyn_dst_ptr = (tmp & ~(Uint32)Dbtup::DYN_BM_LEN_MASK) | bm_len;
+    dyn_dst_ptr += bm_len;
+    dyn_dst_data_offset = 2 * dyn_var_count + 2;
 
-    Uint16 *dyn_src_off_array= dst->m_dyn_offset_arr_ptr;
-    Uint16 *dyn_src_lenoff_array=
-      dyn_src_off_array + dst->m_dyn_len_offset;
-    Uint16* dyn_dst_off_array = (Uint16*)dyn_dst_ptr;
+    Uint16 *dyn_src_off_array = dst->m_dyn_offset_arr_ptr;
+    Uint16 *dyn_src_lenoff_array = dyn_src_off_array + dst->m_dyn_len_offset;
+    Uint16 *dyn_dst_off_array = (Uint16 *)dyn_dst_ptr;
 
     /**
      * Copy over the variable sized not-NULL attributes.
@@ -2579,21 +2408,19 @@ shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
      * we store one additional offset to be able to easily compute the
      * data length as the difference between offsets.
      */
-    Uint16 off_idx= 0;
-    for(Uint32 i= 0; i<dynvar; i++)
-    {
+    Uint16 off_idx = 0;
+    for (Uint32 i = 0; i < dynvar; i++) {
       /**
        * Note that we must use the destination (shrunken) bitmap here,
        * as the source (expanded) bitmap may have been already clobbered
        * (by offset data).
        */
-      Uint32 attrDesc2 = tabDesc[order[dynfix+i]+1];
+      Uint32 attrDesc2 = tabDesc[order[dynfix + i] + 1];
       Uint32 pos = AttributeOffset::getNullFlagPos(attrDesc2);
-      if (bm_len > (pos >> 5) && BitmaskImpl::get(bm_len, dst_bm_ptr, pos))
-      {
-        dyn_dst_off_array[off_idx++]= dyn_dst_data_offset;
-        Uint32 dyn_src_off= dyn_src_off_array[i];
-        Uint32 dyn_len= dyn_src_lenoff_array[i] - dyn_src_off;
+      if (bm_len > (pos >> 5) && BitmaskImpl::get(bm_len, dst_bm_ptr, pos)) {
+        dyn_dst_off_array[off_idx++] = dyn_dst_data_offset;
+        Uint32 dyn_src_off = dyn_src_off_array[i];
+        Uint32 dyn_len = dyn_src_lenoff_array[i] - dyn_src_off;
         memmove(((char *)dyn_dst_ptr) + dyn_dst_data_offset,
             dyn_src_ptr + dyn_src_off,
             dyn_len);
@@ -2601,17 +2428,18 @@ shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
       }
     }
     /* If all dynamic attributes are NULL, we store nothing. */
-    dyn_dst_off_array[off_idx]= dyn_dst_data_offset;
-    assert(dyn_dst_off_array + off_idx == (Uint16*)dyn_dst_ptr+dyn_var_count);
+    dyn_dst_off_array[off_idx] = dyn_dst_data_offset;
+    assert(dyn_dst_off_array + off_idx ==
+           (Uint16 *)dyn_dst_ptr + dyn_var_count);
 
-    char *dynvar_end_ptr= ((char *)dyn_dst_ptr) + dyn_dst_data_offset;
-    char *dyn_dst_data_ptr= (char *)(ALIGN_WORD(dynvar_end_ptr));
+    char *dynvar_end_ptr = ((char *)dyn_dst_ptr) + dyn_dst_data_offset;
+    char *dyn_dst_data_ptr = (char *)(ALIGN_WORD(dynvar_end_ptr));
 
     /**
      * Zero out any padding bytes. Might not be strictly necessary,
      * but seems cleaner than leaving random stuff in there.
      */
-    std::memset(dynvar_end_ptr, 0, dyn_dst_data_ptr-dynvar_end_ptr);
+    std::memset(dynvar_end_ptr, 0, dyn_dst_data_ptr - dynvar_end_ptr);
 
     /* *
      * Copy over the fixed-sized not-NULL attributes.
@@ -2619,11 +2447,10 @@ shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
      * overwriting not-yet-copied data, as the data is also stored in
      * reverse order.
      */
-    for(Uint32 i= dynfix; i > 0; )
-    {
+    for (Uint32 i = dynfix; i > 0;) {
       i--;
-      Uint16 j= order[i];
-      Uint32 attrDesc2 = tabDesc[j+1];
+      Uint16 j = order[i];
+      Uint32 attrDesc2 = tabDesc[j + 1];
       Uint32 pos = AttributeOffset::getNullFlagPos(attrDesc2);
       if(bm_len > (pos >>5 ) && BitmaskImpl::get(bm_len, dst_bm_ptr, pos))
       {
@@ -2635,7 +2462,7 @@ shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
         dyn_dst_data_ptr += fixsize;
       }
     }
-    dst_ptr = (Uint32*)dyn_dst_data_ptr;
+    dst_ptr = (Uint32 *)dyn_dst_data_ptr;
     assert((UintPtr(dst_ptr) & 3) == 0);
   }
   return (Uint32 *)dst_ptr;
@@ -2797,7 +2624,7 @@ int Dbtup::handleInsertReq(Signal* signal,
       regTabPtr->m_attributes[MM].m_no_of_dynamic);
   bool varalloc = vardynsize || regTabPtr->m_bits & Tablerec::TR_ForceVarPart;
   bool rowid = req_struct->m_use_rowid;
-  bool update_acc = false; 
+  bool update_acc = false;
   Uint32 real_page_id = regOperPtr.p->m_tuple_location.m_page_no;
   Uint32 frag_page_id = req_struct->frag_page_id;
 
@@ -2807,8 +2634,7 @@ int Dbtup::handleInsertReq(Signal* signal,
   };
   cmp[0] = cmp[1] = 0;
 
-  if (ERROR_INSERTED(4014))
-  {
+  if (ERROR_INSERTED(4014)) {
     dst = 0;
     goto trans_mem_error;
   }
@@ -2826,43 +2652,34 @@ int Dbtup::handleInsertReq(Signal* signal,
   {
     jamDebug();
     prepare_initial_insert(req_struct, regOperPtr.p, regTabPtr, is_refresh);
-  }
-  else
-  {
-    Operationrec* prevOp= req_struct->prevOpPtr.p;
+  } else {
+    Operationrec *prevOp = req_struct->prevOpPtr.p;
     ndbassert(prevOp->op_type == ZDELETE);
     tup_version= prevOp->op_struct.bit_field.tupVersion + 1;
 
     if(unlikely(!prevOp->is_first_operation()))
     {
       jam();
-      org= get_copy_tuple(&prevOp->m_copy_tuple_location);
-    }
-    else
-    {
+      org = get_copy_tuple(&prevOp->m_copy_tuple_location);
+    } else {
       jamDebug();
     }
-    if (regTabPtr->need_expand())
-    {
+    if (regTabPtr->need_expand()) {
       jamDebug();
       expand_tuple(req_struct, sizes, org, regTabPtr, !disk_insert);
       std::memset(req_struct->m_disk_ptr->m_null_bits+
           regTabPtr->m_offsets[DD].m_null_offset, 0xFF,
           4*regTabPtr->m_offsets[DD].m_null_words);
 
-      Uint32 bm_size_in_bytes= 4*(regTabPtr->m_offsets[MM].m_dyn_null_words);
-      if (bm_size_in_bytes)
-      {
-        Uint32* ptr = 
-          (Uint32*)req_struct->m_var_data[MM].m_dyn_data_ptr;
+      Uint32 bm_size_in_bytes = 4 * (regTabPtr->m_offsets[MM].m_dyn_null_words);
+      if (bm_size_in_bytes) {
+        Uint32 *ptr = (Uint32 *)req_struct->m_var_data[MM].m_dyn_data_ptr;
         std::memset(ptr, 0, bm_size_in_bytes);
-        * ptr = bm_size_in_bytes >> 2;
+        *ptr = bm_size_in_bytes >> 2;
       }
-    } 
-    else
-    {
+    } else {
       jamDebug();
-      memcpy(dst, org, 4*regTabPtr->m_offsets[MM].m_fix_header_size);
+      memcpy(dst, org, 4 * regTabPtr->m_offsets[MM].m_fix_header_size);
       tuple_ptr->m_header_bits |= Tuple_header::COPY_TUPLE;
     }
     std::memset(tuple_ptr->m_null_bits+
@@ -2871,11 +2688,9 @@ int Dbtup::handleInsertReq(Signal* signal,
   }
 
   int res;
-  if (disk_insert)
-  {
+  if (disk_insert) {
     jamDebug();
-    if (ERROR_INSERTED(4015))
-    {
+    if (ERROR_INSERTED(4015)) {
       terrorCode = 1501;
       goto log_space_error;
     }
@@ -2894,10 +2709,9 @@ int Dbtup::handleInsertReq(Signal* signal,
       jamDebug();
       jamDataDebug(regOperPtr.p->m_undo_buffer_space);
     }
-    if (unlikely(res))
-    {
+    if (unlikely(res)) {
       jam();
-      terrorCode= res;
+      terrorCode = res;
       goto log_space_error;
     }
   }
@@ -2906,17 +2720,15 @@ int Dbtup::handleInsertReq(Signal* signal,
     tup_version & ZTUP_VERSION_MASK;
   tuple_ptr->set_tuple_version(tup_version);
 
-  if (ERROR_INSERTED(4016))
-  {
+  if (ERROR_INSERTED(4016)) {
     terrorCode = ZAI_INCONSISTENCY_ERROR;
     goto update_error;
   }
 
-  if (regTabPtr->m_bits & Tablerec::TR_ExtraRowAuthorBits)
-  {
+  if (regTabPtr->m_bits & Tablerec::TR_ExtraRowAuthorBits) {
     jamDebug();
     Uint32 attrId =
-      regTabPtr->getExtraAttrId<Tablerec::TR_ExtraRowAuthorBits>();
+        regTabPtr->getExtraAttrId<Tablerec::TR_ExtraRowAuthorBits>();
 
     store_extra_row_bits(attrId, regTabPtr, tuple_ptr, /* default */ 0, false);
   }
@@ -2927,7 +2739,7 @@ int Dbtup::handleInsertReq(Signal* signal,
     jamDebug();
     Uint32 default_values_len;
     /* Get default values ptr + len for this table */
-    Uint32* default_values = get_default_ptr(regTabPtr, default_values_len);
+    Uint32 *default_values = get_default_ptr(regTabPtr, default_values_len);
     ndbrequire(default_values_len != 0 && default_values != NULL);
     /*
      * Update default values into row first,
@@ -2942,16 +2754,15 @@ int Dbtup::handleInsertReq(Signal* signal,
     }
   }
 
-  if (unlikely(req_struct->interpreted_exec))
-  {
+  if (unlikely(req_struct->interpreted_exec)) {
     jam();
 
     /* Interpreted insert only processes the finalUpdate section */
-    const Uint32 RinitReadLen= cinBuffer[0];
-    const Uint32 RexecRegionLen= cinBuffer[1];
-    const Uint32 RfinalUpdateLen= cinBuffer[2];
-    //const Uint32 RfinalRLen= cinBuffer[3];
-    //const Uint32 RsubLen= cinBuffer[4];
+    const Uint32 RinitReadLen = cinBuffer[0];
+    const Uint32 RexecRegionLen = cinBuffer[1];
+    const Uint32 RfinalUpdateLen = cinBuffer[2];
+    // const Uint32 RfinalRLen= cinBuffer[3];
+    // const Uint32 RsubLen= cinBuffer[4];
 
     const Uint32 offset = 5 + RinitReadLen + RexecRegionLen;
     req_struct->log_size = 0;
@@ -2981,9 +2792,7 @@ int Dbtup::handleInsertReq(Signal* signal,
       jam();
       goto update_error;
     }
-  }
-  else
-  {
+  } else {
     /* Normal insert */
     if (unlikely((res = updateAttributes(req_struct, &cinBuffer[0],
               req_struct->attrinfo_len)) < 0))
@@ -2994,8 +2803,7 @@ int Dbtup::handleInsertReq(Signal* signal,
     }
   }
 
-  if (ERROR_INSERTED(4017))
-  {
+  if (ERROR_INSERTED(4017)) {
     goto null_check_error;
   }
   if (unlikely(checkNullAttributes(req_struct,
@@ -3008,27 +2816,22 @@ int Dbtup::handleInsertReq(Signal* signal,
   if (req_struct->m_is_lcp)
   {
     jam();
-    sizes[2+MM] = req_struct->m_lcp_varpart_len;
-  }
-  else if (regTabPtr->need_shrink())
-  {
+    sizes[2 + MM] = req_struct->m_lcp_varpart_len;
+  } else if (regTabPtr->need_shrink()) {
     jamDebug();
     shrink_tuple(req_struct, sizes+2, regTabPtr, true);
   }
 
-  if (ERROR_INSERTED(4025))
-  {
+  if (ERROR_INSERTED(4025)) {
     goto mem_error;
   }
 
-  if (ERROR_INSERTED(4026))
-  {
+  if (ERROR_INSERTED(4026)) {
     CLEAR_ERROR_INSERT_VALUE;
     goto mem_error;
   }
 
-  if (ERROR_INSERTED(4027) && (rand() % 100) > 25)
-  {
+  if (ERROR_INSERTED(4027) && (rand() % 100) > 25) {
     goto mem_error;
   }
 
@@ -3041,8 +2844,7 @@ int Dbtup::handleInsertReq(Signal* signal,
   /**
    * Alloc memory
    */
-  if(mem_insert)
-  {
+  if (mem_insert) {
     terrorCode = 0;
     if (!rowid)
     {
@@ -3077,9 +2879,7 @@ int Dbtup::handleInsertReq(Signal* signal,
         goto mem_error;
       }
       req_struct->m_use_rowid = true;
-    }
-    else
-    {
+    } else {
       regOperPtr.p->m_tuple_location = req_struct->m_row_id;
       if (ERROR_INSERTED(4019))
       {
@@ -3127,18 +2927,15 @@ int Dbtup::handleInsertReq(Signal* signal,
 
     base = (Tuple_header*)ptr;
     regOperPtr.p->op_struct.bit_field.in_active_list = true;
-    base->m_operation_ptr_i= regOperPtr.i;
+    base->m_operation_ptr_i = regOperPtr.i;
     ndbassert(!m_is_in_query_thread);
 
 #ifdef DEBUG_DELETE
     char *insert_str;
-    if (req_struct->m_is_lcp)
-    {
-      insert_str = (char*)"LCP_INSERT";
-    }
-    else
-    {
-      insert_str = (char*)"INSERT";
+    if (req_struct->m_is_lcp) {
+      insert_str = (char *)"LCP_INSERT";
+    } else {
+      insert_str = (char *)"INSERT";
     }
     DEB_DELETE(("(%u)%s: tab(%u,%u) row(%u,%u)",
           instance(),
@@ -3236,6 +3033,12 @@ int Dbtup::handleInsertReq(Signal* signal,
 
       disk_ptr->set_base_record_ref(ref);
     }
+
+    if (req_struct->m_reorg != ScanFragReq::REORG_ALL) {
+      req_struct->m_tuple_ptr->m_header_bits |=
+          get_reorg_flag(req_struct, regFragPtr->fragStatus);
+    }
+
     setChecksum(req_struct->m_tuple_ptr, regTabPtr);
     /**
      * At this point we hold the fragment mutex to ensure that TUP scans
@@ -3251,8 +3054,8 @@ int Dbtup::handleInsertReq(Signal* signal,
   }
   else 
   {
-    if (ERROR_INSERTED(4020))
-    {
+    /* ! mem_insert */
+    if (ERROR_INSERTED(4020)) {
       c_lqh->upgrade_to_exclusive_frag_access();
       goto size_change_error;
     }
@@ -3275,19 +3078,28 @@ int Dbtup::handleInsertReq(Signal* signal,
      * finalizing the writes on the row.
      */
     m_base_header_bits &= ~(Uint32)Tuple_header::FREE;
-  }
 
-  if (req_struct->m_reorg != ScanFragReq::REORG_ALL)
-  {
-    handle_reorg(req_struct, regFragPtr->fragStatus);
+    if (req_struct->m_reorg != ScanFragReq::REORG_ALL) {
+      m_base_header_bits |= get_reorg_flag(req_struct, regFragPtr->fragStatus);
+    }
+
+    /**
+     * Fragment-locking :
+     *   No need to protect this checksum write, we only perform it here for
+     *   non-first inserts since first insert operations are handled above
+     *   while holding the mutex. For non-first operations the row is not
+     *   visible to other threads at this time, copy rows are not even visible
+     * to TUP scans, thus no need to protect it here. The row becomes visible
+     *   when inserted into the active list after returning from this call.
+     */
+    setChecksum(req_struct->m_tuple_ptr, regTabPtr);
   }
 
   /* Have been successful with disk + mem, update ACC to point to
    * new record if necessary
    * Failures in disk alloc will skip this part
    */
-  if (update_acc)
-  {
+  if (update_acc) {
     /* Acc stores the local key with the frag_page_id rather
      * than the real_page_id
      */
@@ -3296,25 +3108,11 @@ int Dbtup::handleInsertReq(Signal* signal,
 
     Local_key accKey = regOperPtr.p->m_tuple_location;
     accKey.m_page_no = frag_page_id;
-    ** accminupdateptr = accKey;
+    **accminupdateptr = accKey;
+  } else {
+    *accminupdateptr = 0;  // No accminupdate should be performed
   }
-  else
-  {
-    * accminupdateptr = 0; // No accminupdate should be performed
-  }
-  if (!mem_insert)
-  {
-    /**
-     * No need to protect this checksum write, we only perform it here for
-     * non-first inserts since first insert operations are handled above
-     * while holding the mutex. For non-first operations the row is not
-     * visible to others at this time, copy rows are not even visible to
-     * TUP scans, thus no need to protect it here. The row becomes visible
-     * when inserted into the active list after returning from this call.
-     */
-    jamDebug();
-    setChecksum(req_struct->m_tuple_ptr, regTabPtr);
-  }
+
   set_tuple_state(regOperPtr.p, TUPLE_PREPARED);
   return 0;
 
@@ -3325,24 +3123,22 @@ size_change_error:
 
 trans_mem_error:
   jam();
-  terrorCode= ZNO_COPY_TUPLE_MEMORY_ERROR;
+  terrorCode = ZNO_COPY_TUPLE_MEMORY_ERROR;
   regOperPtr.p->m_undo_buffer_space = 0;
-  if (mem_insert)
-    regOperPtr.p->m_tuple_location.setNull();
+  if (mem_insert) regOperPtr.p->m_tuple_location.setNull();
   regOperPtr.p->m_copy_tuple_location.setNull();
   tupkeyErrorLab(req_struct);
   return -1;
 
 null_check_error:
   jam();
-  terrorCode= ZNO_ILLEGAL_NULL_ATTR;
+  terrorCode = ZNO_ILLEGAL_NULL_ATTR;
   goto update_error;
 
 mem_error:
   jam();
-  if (terrorCode == 0)
-  {
-    terrorCode= ZMEM_NOMEM_ERROR;
+  if (terrorCode == 0) {
+    terrorCode = ZMEM_NOMEM_ERROR;
   }
   goto update_error;
 
@@ -3353,13 +3149,11 @@ alloc_rowid_error:
   jam();
 update_error:
   jam();
-  if (mem_insert)
-  {
+  if (mem_insert) {
     regOperPtr.p->m_tuple_location.setNull();
   }
 exit_error:
-  if (!regOperPtr.p->m_tuple_location.isNull())
-  {
+  if (!regOperPtr.p->m_tuple_location.isNull()) {
     jam();
     /* Memory allocated, abort insert, releasing memory if appropriate */
     signal->theData[0] = regOperPtr.i;
@@ -3398,14 +3192,13 @@ int Dbtup::handleDeleteReq(Signal* signal,
   }
 
   // delete must set but not increment tupVersion
-  if (unlikely(!regOperPtr->is_first_operation()))
-  {
+  if (unlikely(!regOperPtr->is_first_operation())) {
     jam();
-    Operationrec* prevOp= req_struct->prevOpPtr.p;
-    regOperPtr->op_struct.bit_field.tupVersion=
-      prevOp->op_struct.bit_field.tupVersion;
+    Operationrec *prevOp = req_struct->prevOpPtr.p;
+    regOperPtr->op_struct.bit_field.tupVersion =
+        prevOp->op_struct.bit_field.tupVersion;
     // make copy since previous op is committed before this one
-    const Tuple_header* org = get_copy_tuple(&prevOp->m_copy_tuple_location);
+    const Tuple_header *org = get_copy_tuple(&prevOp->m_copy_tuple_location);
     Uint32 len = regTabPtr->total_rec_size -
       Uint32(((Uint32*)dst) -
           get_copy_tuple_raw(&regOperPtr->m_copy_tuple_location));
@@ -3437,8 +3230,7 @@ int Dbtup::handleDeleteReq(Signal* signal,
   req_struct->changeMask.set();
   set_change_mask_info(regTabPtr, get_change_mask_ptr(regTabPtr, dst));
 
-  if (disk && regOperPtr->m_undo_buffer_space == 0)
-  {
+  if (disk && regOperPtr->m_undo_buffer_space == 0) {
     jam();
     ndbrequire(!(copy_bits & Tuple_header::DISK_ALLOC));
     regOperPtr->op_struct.bit_field.m_wait_log_buffer = 1;
@@ -3507,20 +3299,18 @@ int Dbtup::handleDeleteReq(Signal* signal,
     if (unlikely(terrorCode))
     {
       jam();
-      regOperPtr->m_undo_buffer_space= 0;
+      regOperPtr->m_undo_buffer_space = 0;
       goto error;
     }
   }
 
   set_tuple_state(regOperPtr, TUPLE_PREPARED);
 
-  if (req_struct->attrinfo_len == 0)
-  {
+  if (req_struct->attrinfo_len == 0) {
     return 0;
   }
 
-  if (regTabPtr->need_expand(disk))
-  {
+  if (regTabPtr->need_expand(disk)) {
     prepare_read(req_struct, regTabPtr, disk);
   }
 
@@ -3534,9 +3324,8 @@ int Dbtup::handleDeleteReq(Signal* signal,
       return corruptedTupleDetected(req_struct, regTabPtr);
     }
     Uint32 RlogSize;
-    int ret= handleReadReq(signal, regOperPtr, regTabPtr, req_struct);
-    if (ret == 0 && (RlogSize= req_struct->log_size))
-    {
+    int ret = handleReadReq(signal, regOperPtr, regTabPtr, req_struct);
+    if (ret == 0 && (RlogSize = req_struct->log_size)) {
       jam();
       sendLogAttrinfo(signal, req_struct, RlogSize, regOperPtr);
     }
@@ -3571,8 +3360,7 @@ Dbtup::handleRefreshReq(Signal* signal,
    * a refresh.
    */
   Uint32 refresh_case;
-  if (likely(regOperPtr.p->is_first_operation()))
-  {
+  if (likely(regOperPtr.p->is_first_operation())) {
     jam();
     if (Local_key::isInvalid(req_struct->frag_page_id,
           regOperPtr.p->m_tuple_location.m_page_idx))
@@ -3623,7 +3411,7 @@ Dbtup::handleRefreshReq(Signal* signal,
       // g_eventLogger->info("case 2");
       jam();
 
-      Tuple_header* origTuple = req_struct->m_tuple_ptr;
+      Tuple_header *origTuple = req_struct->m_tuple_ptr;
       Uint32 tup_version_save = origTuple->get_tuple_version();
       {
         /* Set new row version and update the tuple header */
@@ -3657,26 +3445,22 @@ Dbtup::handleRefreshReq(Signal* signal,
         updateChecksum(origTuple, regTabPtr, old_header, new_header);
         m_base_header_bits = origTuple->m_header_bits;
       }
-      if (unlikely(res == -1))
-      {
+      if (unlikely(res == -1)) {
         jam();
         return -1;
       }
     }
-  }
-  else
-  {
+  } else {
     /* Not first operation on tuple in transaction */
     jam();
 
     Uint32 tup_version_save =
-      req_struct->prevOpPtr.p->op_struct.bit_field.tupVersion;
+        req_struct->prevOpPtr.p->op_struct.bit_field.tupVersion;
     Uint32 new_tup_version = decr_tup_version(tup_version_save);
     req_struct->prevOpPtr.p->op_struct.bit_field.tupVersion = new_tup_version;
 
     int res;
-    if (req_struct->prevOpPtr.p->op_type == ZDELETE)
-    {
+    if (req_struct->prevOpPtr.p->op_type == ZDELETE) {
       refresh_case = Operationrec::RF_MULTI_NOT_EXIST;
       jam();
       /**
@@ -3706,9 +3490,7 @@ Dbtup::handleRefreshReq(Signal* signal,
         return -1;
       }
       regOperPtr.p->op_type = ZREFRESH;
-    }
-    else
-    {
+    } else {
       jam();
       refresh_case = Operationrec::RF_MULTI_EXIST;
       /**
@@ -3718,8 +3500,7 @@ Dbtup::handleRefreshReq(Signal* signal,
           regTabPtr, req_struct, disk);
     }
     req_struct->prevOpPtr.p->op_struct.bit_field.tupVersion = tup_version_save;
-    if (unlikely(res == -1))
-    {
+    if (unlikely(res == -1)) {
       jam();
       return -1;
     }
@@ -3750,8 +3531,7 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
    */
   attributeMask.clear();
   attributeMask.bitOR(req_struct->changeMask);
-  if (unlikely(is_refresh))
-  {
+  if (unlikely(is_refresh)) {
     /**
      * Update notNullAttributeMask  to only include primary keys
      */
@@ -3762,14 +3542,11 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
       tableMask.set(primarykeys[i] >> 16);
     attributeMask.bitAND(tableMask);
     attributeMask.bitXOR(tableMask);
-  }
-  else
-  {
+  } else {
     attributeMask.bitAND(regTabPtr->notNullAttributeMask);
     attributeMask.bitXOR(regTabPtr->notNullAttributeMask);
   }
-  if (!attributeMask.isclear())
-  {
+  if (!attributeMask.isclear()) {
     return false;
   }
   return true;
@@ -3835,37 +3612,32 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 /* ---------------------------------------------------------------- */
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */
 /* ---------------------------------------------------------------- */
-int Dbtup::interpreterStartLab(Signal* signal,
-                               KeyReqStruct *req_struct)
-{
-  Operationrec * const regOperPtr = req_struct->operPtrP;
+int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
+  Operationrec *const regOperPtr = req_struct->operPtrP;
   int TnoDataRW;
   Uint32 RtotalLen, start_index, dstLen;
   Uint32 *dst;
 
-  Uint32 RinitReadLen= cinBuffer[0];
-  Uint32 RexecRegionLen= cinBuffer[1];
-  Uint32 RfinalUpdateLen= cinBuffer[2];
-  Uint32 RfinalRLen= cinBuffer[3];
-  Uint32 RsubLen= cinBuffer[4];
+  Uint32 RinitReadLen = cinBuffer[0];
+  Uint32 RexecRegionLen = cinBuffer[1];
+  Uint32 RfinalUpdateLen = cinBuffer[2];
+  Uint32 RfinalRLen = cinBuffer[3];
+  Uint32 RsubLen = cinBuffer[4];
 
   jamDebug();
 
-  Uint32 RattrinbufLen= req_struct->attrinfo_len;
-  const BlockReference sendBref= req_struct->rec_blockref;
+  Uint32 RattrinbufLen = req_struct->attrinfo_len;
+  const BlockReference sendBref = req_struct->rec_blockref;
 
   const Uint32 node = refToNode(sendBref);
-  if(node != 0 && node != getOwnNodeId())
-  {
-    start_index= 25;
-  }
-  else
-  {
+  if (node != 0 && node != getOwnNodeId()) {
+    start_index = 25;
+  } else {
     jamDebug();
     /**
      * execute direct
      */
-    start_index= TransIdAI::HeaderLength;  //3;
+    start_index = TransIdAI::HeaderLength;  // 3;
   }
   dst= &signal->theData[start_index];
   dstLen= (MAX_READ / 4) - start_index;
@@ -3876,8 +3648,8 @@ int Dbtup::interpreterStartLab(Signal* signal,
   RtotalLen += RfinalRLen;
   RtotalLen += RsubLen;
 
-  Uint32 RattroutCounter= 0;
-  Uint32 RinstructionCounter= 5;
+  Uint32 RattroutCounter = 0;
+  Uint32 RinstructionCounter = 5;
 
   /* All information to be logged/propagated to replicas
    * is generated from here on so reset the log word count
@@ -3898,34 +3670,24 @@ int Dbtup::interpreterStartLab(Signal* signal,
     // length and finally the total length must be within the limits.
     /* ---------------------------------------------------------------- */
 
-    if (likely(RinitReadLen > 0))
-    {
-      if (likely(regOperPtr->op_type == ZREAD))
-      {
+    if (likely(RinitReadLen > 0)) {
+      if (likely(regOperPtr->op_type == ZREAD)) {
         jamDebug();
         RinstructionCounter += RinitReadLen;
-      }
-      else
-      {
+      } else {
         jamDebug();
         /* ---------------------------------------------------------------- */
         // The first step that can be taken in the interpreter is to read
         // data of the tuple before any updates have been applied.
         /* ---------------------------------------------------------------- */
-        TnoDataRW= readAttributes(req_struct,
-                                  &cinBuffer[5],
-                                  RinitReadLen,
-                                  &dst[0],
-                                  dstLen);
-        if (TnoDataRW >= 0)
-        {
+        TnoDataRW = readAttributes(req_struct, &cinBuffer[5], RinitReadLen,
+                                   &dst[0], dstLen);
+        if (TnoDataRW >= 0) {
           jamDebug();
-          RattroutCounter= TnoDataRW;
+          RattroutCounter = TnoDataRW;
           RinstructionCounter += RinitReadLen;
           RinitReadLen = 0;
-        }
-        else
-        {
+        } else {
           jam();
           terrorCode = Uint32(-TnoDataRW);
           tupkeyErrorLab(req_struct);
@@ -3933,8 +3695,7 @@ int Dbtup::interpreterStartLab(Signal* signal,
         }
       }
     }
-    if (RexecRegionLen > 0)
-    {
+    if (RexecRegionLen > 0) {
       jamDebug();
       /* ---------------------------------------------------------------- */
       // The next step is the actual interpreted execution. This executes
@@ -3956,10 +3717,8 @@ int Dbtup::interpreterStartLab(Signal* signal,
       {
         jamDebug();
         RinstructionCounter += RexecRegionLen;
-        RlogSize= TnoDataRW;
-      }
-      else
-      {
+        RlogSize = TnoDataRW;
+      } else {
         jamDebug();
         /**
          * TUPKEY REF is sent from within interpreter
@@ -3968,9 +3727,7 @@ int Dbtup::interpreterStartLab(Signal* signal,
       }
     }
 
-    if ((RlogSize > 0) ||
-        (RfinalUpdateLen > 0))
-    {
+    if ((RlogSize > 0) || (RfinalUpdateLen > 0)) {
       jamDebug();
       /* Operation updates row,
        * reset author pseudo-col before update takes effect
@@ -3978,26 +3735,23 @@ int Dbtup::interpreterStartLab(Signal* signal,
        * did not explicitly write the value, but that requires a bit
        * to record whether the value has been written.
        */
-      Tablerec* regTabPtr = req_struct->tablePtrP;
-      Tuple_header* dst = req_struct->m_tuple_ptr;
+      Tablerec *regTabPtr = req_struct->tablePtrP;
+      Tuple_header *dst = req_struct->m_tuple_ptr;
 
-      if (unlikely(regTabPtr->m_bits & Tablerec::TR_ExtraRowAuthorBits))
-      {
+      if (unlikely(regTabPtr->m_bits & Tablerec::TR_ExtraRowAuthorBits)) {
         Uint32 attrId =
-          regTabPtr->getExtraAttrId<Tablerec::TR_ExtraRowAuthorBits>();
+            regTabPtr->getExtraAttrId<Tablerec::TR_ExtraRowAuthorBits>();
 
         store_extra_row_bits(attrId, regTabPtr, dst, /* default */ 0, false);
       }
     }
 
-    if (unlikely(RfinalUpdateLen > 0))
-    {
+    if (unlikely(RfinalUpdateLen > 0)) {
       /* ---------------------------------------------------------------- */
       // We can also apply a set of updates without any conditions as part
       // of the interpreted execution.
       /* ---------------------------------------------------------------- */
-      if (regOperPtr->op_type == ZUPDATE)
-      {
+      if (regOperPtr->op_type == ZUPDATE) {
         jamDebug();
         TnoDataRW= updateAttributes(req_struct,
             &cinBuffer[RinstructionCounter],
@@ -4010,61 +3764,44 @@ int Dbtup::interpreterStartLab(Signal* signal,
               RfinalUpdateLen);
           RinstructionCounter += RfinalUpdateLen;
           RlogSize += RfinalUpdateLen;
-        }
-        else
-        {
+        } else {
           jam();
           terrorCode = Uint32(-TnoDataRW);
           tupkeyErrorLab(req_struct);
           return -1;
         }
-      }
-      else
-      {
+      } else {
         jamDebug();
         return TUPKEY_abort(req_struct, 19);
       }
     }
-    if (likely(RinitReadLen > 0))
-    {
+    if (likely(RinitReadLen > 0)) {
       jamDebug();
-      TnoDataRW= readAttributes(req_struct,
-                                &cinBuffer[5],
-                                RinitReadLen,
-                                &dst[0],
-                                dstLen);
-      if (TnoDataRW >= 0)
-      {
+      TnoDataRW = readAttributes(req_struct, &cinBuffer[5], RinitReadLen,
+                                 &dst[0], dstLen);
+      if (TnoDataRW >= 0) {
         jamDebug();
         RattroutCounter = TnoDataRW;
-      }
-      else
-      {
+      } else {
         jam();
         terrorCode = Uint32(-TnoDataRW);
         tupkeyErrorLab(req_struct);
         return -1;
       }
     }
-    if (RfinalRLen > 0)
-    {
+    if (RfinalRLen > 0) {
       jamDebug();
       /* ---------------------------------------------------------------- */
       // The final action is that we can also read the tuple after it has
       // been updated.
       /* ---------------------------------------------------------------- */
-      TnoDataRW= readAttributes(req_struct,
-                                &cinBuffer[RinstructionCounter],
-                                RfinalRLen,
-                                &dst[RattroutCounter],
-                                (dstLen - RattroutCounter));
-      if (TnoDataRW >= 0)
-      {
+      TnoDataRW = readAttributes(req_struct, &cinBuffer[RinstructionCounter],
+                                 RfinalRLen, &dst[RattroutCounter],
+                                 (dstLen - RattroutCounter));
+      if (TnoDataRW >= 0) {
         jamDebug();
         RattroutCounter += TnoDataRW;
-      }
-      else
-      {
+      } else {
         jam();
         terrorCode = Uint32(-TnoDataRW);
         tupkeyErrorLab(req_struct);
@@ -4096,7 +3833,7 @@ int Dbtup::interpreterStartLab(Signal* signal,
         if (ret != 0) {
           return TUPKEY_abort(req_struct, ret);
         }
-        uint32_t res_len = scan_rec_ptr->m_agg_interpreter->
+        Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
                                     PrepareAggResIfNeeded(signal, false);
         if (res_len != 0) {
           ndbrequire(req_struct->agg_curr_batch_size_rows == 0);
@@ -4133,14 +3870,11 @@ int Dbtup::interpreterStartLab(Signal* signal,
       sendReadAttrinfo(signal, req_struct, RattroutCounter);
     }
 
-    if (RlogSize > 0)
-    {
+    if (RlogSize > 0) {
       return sendLogAttrinfo(signal, req_struct, RlogSize, regOperPtr);
     }
     return 0;
-  }
-  else
-  {
+  } else {
     return TUPKEY_abort(req_struct, 22);
   }
 }
@@ -4195,7 +3929,7 @@ int Dbtup::sendLogAttrinfo(Signal* signal,
    * then attach to ATTRINFO and execute direct
    * to LQH
    */
-  ndbrequire( TlogSize > 0 );
+  ndbrequire(TlogSize > 0);
   ndbassert(!m_is_query_block);
   Uint32 longSectionIVal= RNIL;
   bool ok= appendToSection(longSectionIVal, 
@@ -4213,31 +3947,25 @@ int Dbtup::sendLogAttrinfo(Signal* signal,
    * the relevant user pointer and the attrinfo section's
    * IVAL
    */
-  signal->theData[0]= regOperPtr->userpointer;
-  signal->theData[1]= TlogSize;
-  signal->theData[2]= longSectionIVal;
+  signal->theData[0] = regOperPtr->userpointer;
+  signal->theData[1] = TlogSize;
+  signal->theData[2] = longSectionIVal;
 
   c_lqh->execTUP_ATTRINFO(signal);
   return 0;
 }
 
-inline
-Uint32 
-Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter)
-{         
-  Uint32 TbranchDirection= TheInstruction >> 31;
-  Uint32 TbranchLength= (TheInstruction >> 16) & 0x7fff;
+inline Uint32 Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter) {
+  Uint32 TbranchDirection = TheInstruction >> 31;
+  Uint32 TbranchLength = (TheInstruction >> 16) & 0x7fff;
   TprogramCounter--;
-  if (TbranchDirection == 1)
-  {
+  if (TbranchDirection == 1) {
     jamDebug();
     /* ---------------------------------------------------------------- */
     /*       WE JUMP BACKWARDS.                                         */
     /* ---------------------------------------------------------------- */
     return (TprogramCounter - TbranchLength);
-  }
-  else
-  {
+  } else {
     jamDebug();
     /* ---------------------------------------------------------------- */
     /*       WE JUMP FORWARD.                                           */
@@ -4246,10 +3974,8 @@ Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter)
   }
 }
 
-const Uint32 *
-Dbtup::lookupInterpreterParameter(Uint32 paramNo,
-                                  const Uint32 *subptr) const
-{
+const Uint32 *Dbtup::lookupInterpreterParameter(Uint32 paramNo,
+                                                const Uint32 *subptr) const {
   /**
    * The parameters...are stored in the subroutine section
    *
@@ -4262,20 +3988,17 @@ Dbtup::lookupInterpreterParameter(Uint32 paramNo,
   ndbassert(sublen > 0);
 
   Uint32 pos = 1;
-  while (paramNo)
-  {
-    const Uint32 * head = subptr + pos;
-    const Uint32 len = AttributeHeader::getDataSize(* head);
-    paramNo --;
+  while (paramNo) {
+    const Uint32 *head = subptr + pos;
+    const Uint32 len = AttributeHeader::getDataSize(*head);
+    paramNo--;
     pos += 1 + len;
-    if (unlikely(pos >= sublen))
-      return nullptr;
+    if (unlikely(pos >= sublen)) return nullptr;
   }
 
-  const Uint32 * head = subptr + pos;
-  const Uint32 len = AttributeHeader::getDataSize(* head);
-  if (unlikely(pos + 1 + len > sublen))
-    return nullptr;
+  const Uint32 *head = subptr + pos;
+  const Uint32 len = AttributeHeader::getDataSize(*head);
+  if (unlikely(pos + 1 + len > sublen)) return nullptr;
 
   return head;
 }
@@ -4292,19 +4015,19 @@ int Dbtup::interpreterNextLab(Signal* signal,
 {
   Uint32 theRegister;
   Uint32 theInstruction;
-  Uint32 TprogramCounter= 0;
-  Uint32* TcurrentProgram= mainProgram;
-  Uint32 TcurrentSize= TmainProgLen;
-  Uint32 TdataWritten= 0;
-  Uint32 RstackPtr= 0;
+  Uint32 TprogramCounter = 0;
+  Uint32 *TcurrentProgram = mainProgram;
+  Uint32 TcurrentSize = TmainProgLen;
+  Uint32 TdataWritten = 0;
+  Uint32 RstackPtr = 0;
   union {
     Uint32 TregMemBuffer[32];
     Uint64 align[16];
   };
-  (void)align; // kill warning
+  (void)align;  // kill warning
   Uint32 TstackMemBuffer[32];
 
-  Uint32& RnoOfInstructions = req_struct->no_exec_instructions;
+  Uint32 &RnoOfInstructions = req_struct->no_exec_instructions;
   ndbassert(RnoOfInstructions == 0);
   /* ---------------------------------------------------------------- */
   // Initialise all 8 registers to contain the NULL value.
@@ -4312,23 +4035,23 @@ int Dbtup::interpreterNextLab(Signal* signal,
   // They are handled as 64 bit values. Thus the 32 most significant
   // bits are zeroed for 32 bit values.
   /* ---------------------------------------------------------------- */
-  TregMemBuffer[0]= 0;
-  TregMemBuffer[4]= 0;
-  TregMemBuffer[8]= 0;
-  TregMemBuffer[12]= 0;
-  TregMemBuffer[16]= 0;
-  TregMemBuffer[20]= 0;
-  TregMemBuffer[24]= 0;
-  TregMemBuffer[28]= 0;
-  Uint32 tmpHabitant= ~0;
+  TregMemBuffer[0] = 0;
+  TregMemBuffer[4] = 0;
+  TregMemBuffer[8] = 0;
+  TregMemBuffer[12] = 0;
+  TregMemBuffer[16] = 0;
+  TregMemBuffer[20] = 0;
+  TregMemBuffer[24] = 0;
+  TregMemBuffer[28] = 0;
+  Uint32 tmpHabitant = ~0;
 
   while (RnoOfInstructions < 8000) {
     /* ---------------------------------------------------------------- */
     /* EXECUTE THE NEXT INTERPRETER INSTRUCTION.                        */
     /* ---------------------------------------------------------------- */
     RnoOfInstructions++;
-    theInstruction= TcurrentProgram[TprogramCounter];
-    theRegister= Interpreter::getReg1(theInstruction) << 2;
+    theInstruction = TcurrentProgram[TprogramCounter];
+    theRegister = Interpreter::getReg1(theInstruction) << 2;
 #ifdef TRACE_INTERPRETER
     g_eventLogger->info(
         "Interpreter :"
@@ -4336,853 +4059,731 @@ int Dbtup::interpreterNextLab(Signal* signal,
         RnoOfInstructions, TprogramCounter,
         Interpreter::getOpCode(theInstruction));
 #endif
-    if (TprogramCounter < TcurrentSize)
-    {
+    if (TprogramCounter < TcurrentSize) {
       TprogramCounter++;
       switch (Interpreter::getOpCode(theInstruction)) {
-      case Interpreter::READ_ATTR_INTO_REG:
-	jamDebug();
-	/* ---------------------------------------------------------------- */
-	// Read an attribute from the tuple into a register.
-	// While reading an attribute we allow the attribute to be an array
-	// as long as it fits in the 64 bits of the register.
-	/* ---------------------------------------------------------------- */
-	{
-	  Uint32 theAttrinfo= theInstruction;
-	  int TnoDataRW= readAttributes(req_struct,
-				     &theAttrinfo,
-				     (Uint32)1,
-				     &TregMemBuffer[theRegister],
-				     (Uint32)3);
-	  if (TnoDataRW == 2)
+        case Interpreter::READ_ATTR_INTO_REG:
+          jamDebug();
+          /* ---------------------------------------------------------------- */
+          // Read an attribute from the tuple into a register.
+          // While reading an attribute we allow the attribute to be an array
+          // as long as it fits in the 64 bits of the register.
+          /* ---------------------------------------------------------------- */
           {
-            /* ------------------------------------------------------------- */
-            // Two words read means that we get the instruction plus one 32 
-            // word read. Thus we set the register to be a 32 bit register.
-            /* ------------------------------------------------------------- */
-            TregMemBuffer[theRegister]= 0x50;
-            // arithmetic conversion if big-endian
-            * (Int64*)(TregMemBuffer+theRegister+2)= TregMemBuffer[theRegister+1];
+            Uint32 theAttrinfo = theInstruction;
+            int TnoDataRW =
+                readAttributes(req_struct, &theAttrinfo, (Uint32)1,
+                               &TregMemBuffer[theRegister], (Uint32)3);
+            if (TnoDataRW == 2) {
+              /* -------------------------------------------------------------
+               */
+              // Two words read means that we get the instruction plus one 32
+              // word read. Thus we set the register to be a 32 bit register.
+              /* -------------------------------------------------------------
+               */
+              TregMemBuffer[theRegister] = 0x50;
+              // arithmetic conversion if big-endian
+              *(Int64 *)(TregMemBuffer + theRegister + 2) =
+                  TregMemBuffer[theRegister + 1];
+            } else if (TnoDataRW == 3) {
+              /* -------------------------------------------------------------
+               */
+              // Three words read means that we get the instruction plus two
+              // 32 words read. Thus we set the register to be a 64 bit
+              // register.
+              /* -------------------------------------------------------------
+               */
+              TregMemBuffer[theRegister] = 0x60;
+              TregMemBuffer[theRegister + 3] = TregMemBuffer[theRegister + 2];
+              TregMemBuffer[theRegister + 2] = TregMemBuffer[theRegister + 1];
+            } else if (TnoDataRW == 1) {
+              /* -------------------------------------------------------------
+               */
+              // One word read means that we must have read a NULL value. We set
+              // the register to indicate a NULL value.
+              /* -------------------------------------------------------------
+               */
+              TregMemBuffer[theRegister] = 0;
+              TregMemBuffer[theRegister + 2] = 0;
+              TregMemBuffer[theRegister + 3] = 0;
+            } else if (TnoDataRW < 0) {
+              jamDebug();
+              terrorCode = Uint32(-TnoDataRW);
+              tupkeyErrorLab(req_struct);
+              return -1;
+            } else {
+              /* -------------------------------------------------------------
+               */
+              // Any other return value from the read attribute here is not
+              // allowed and will lead to a system crash.
+              /* -------------------------------------------------------------
+               */
+              ndbabort();
+            }
+            break;
           }
-          else if (TnoDataRW == 3)
-          {
-            /* ------------------------------------------------------------- */
-            // Three words read means that we get the instruction plus two 
-            // 32 words read. Thus we set the register to be a 64 bit register.
-            /* ------------------------------------------------------------- */
-            TregMemBuffer[theRegister]= 0x60;
-            TregMemBuffer[theRegister+3]= TregMemBuffer[theRegister+2];
-            TregMemBuffer[theRegister+2]= TregMemBuffer[theRegister+1];
-          }
-          else if (TnoDataRW == 1)
-          {
-            /* ------------------------------------------------------------- */
-            // One word read means that we must have read a NULL value. We set
-            // the register to indicate a NULL value.
-            /* ------------------------------------------------------------- */
-            TregMemBuffer[theRegister]= 0;
-            TregMemBuffer[theRegister + 2]= 0;
-            TregMemBuffer[theRegister + 3]= 0;
-          }
-          else if (TnoDataRW < 0)
-          {
-            jamDebug();
-            terrorCode = Uint32(-TnoDataRW);
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-          else
-          {
-            /* ------------------------------------------------------------- */
-            // Any other return value from the read attribute here is not 
-            // allowed and will lead to a system crash.
-            /* ------------------------------------------------------------- */
-            ndbabort();
+
+        case Interpreter::WRITE_ATTR_FROM_REG: {
+          jamDebug();
+          Uint32 TattrId = theInstruction >> 16;
+          Uint32 TattrDescrIndex = (TattrId * ZAD_SIZE);
+          Uint32 TattrDesc1 =
+            req_struct->tablePtrP->tabDescriptor[TattrDescrIndex];
+          Uint32 TregType = TregMemBuffer[theRegister];
+
+          /* --------------------------------------------------------------- */
+          // Calculate the number of words of this attribute.
+          // We allow writes into arrays as long as they fit into the 64 bit
+          // register size.
+          /* --------------------------------------------------------------- */
+          Uint32 TattrNoOfWords =
+              AttributeDescriptor::getSizeInWords(TattrDesc1);
+          Uint32 Toptype = req_struct->operPtrP->op_type;
+          Uint32 TdataForUpdate[3];
+          Uint32 Tlen;
+
+          AttributeHeader ah(TattrId, TattrNoOfWords << 2);
+          TdataForUpdate[0] = ah.m_value;
+          TdataForUpdate[1] = TregMemBuffer[theRegister + 2];
+          TdataForUpdate[2] = TregMemBuffer[theRegister + 3];
+          Tlen = TattrNoOfWords + 1;
+          if (Toptype == ZUPDATE) {
+            if (TattrNoOfWords <= 2) {
+              if (TattrNoOfWords == 1) {
+                // arithmetic conversion if big-endian
+                Int64 *tmp = new (&TregMemBuffer[theRegister + 2]) Int64;
+                TdataForUpdate[1] = Uint32(*tmp);
+                TdataForUpdate[2] = 0;
+              }
+              if (TregType == 0) {
+                /* --------------------------------------------------------- */
+                // Write a NULL value into the attribute
+                /* --------------------------------------------------------- */
+                ah.setNULL();
+                TdataForUpdate[0] = ah.m_value;
+                Tlen = 1;
+              }
+              int TnoDataRW =
+                  updateAttributes(req_struct, &TdataForUpdate[0], Tlen);
+              if (TnoDataRW >= 0) {
+                /* --------------------------------------------------------- */
+                // Write the written data also into the log buffer so that it
+                // will be logged.
+                /* --------------------------------------------------------- */
+                logMemory[TdataWritten + 0] = TdataForUpdate[0];
+                logMemory[TdataWritten + 1] = TdataForUpdate[1];
+                logMemory[TdataWritten + 2] = TdataForUpdate[2];
+                TdataWritten += Tlen;
+              } else {
+                terrorCode = Uint32(-TnoDataRW);
+                tupkeyErrorLab(req_struct);
+                return -1;
+              }
+            } else {
+              return TUPKEY_abort(req_struct, 15);
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 16);
           }
           break;
         }
 
-        case Interpreter::WRITE_ATTR_FROM_REG:
+        case Interpreter::LOAD_CONST_NULL:
+          jamDebug();
+          TregMemBuffer[theRegister] = 0; /* NULL INDICATOR */
+          break;
+
+        case Interpreter::LOAD_CONST16:
+          jamDebug();
+          TregMemBuffer[theRegister] = 0x50; /* 32 BIT UNSIGNED CONSTANT */
+          *(Int64 *)(TregMemBuffer + theRegister + 2) = theInstruction >> 16;
+          break;
+
+        case Interpreter::LOAD_CONST32:
+          jamDebug();
+          TregMemBuffer[theRegister] = 0x50; /* 32 BIT UNSIGNED CONSTANT */
+          *(Int64 *)(TregMemBuffer + theRegister + 2) =
+              *(TcurrentProgram + TprogramCounter);
+          TprogramCounter++;
+          break;
+
+        case Interpreter::LOAD_CONST64:
+          jamDebug();
+          TregMemBuffer[theRegister] = 0x60; /* 64 BIT UNSIGNED CONSTANT */
+          TregMemBuffer[theRegister + 2] =
+              *(TcurrentProgram + TprogramCounter++);
+          TregMemBuffer[theRegister + 3] =
+              *(TcurrentProgram + TprogramCounter++);
+          break;
+
+        case Interpreter::ADD_REG_REG:
+          jamDebug();
           {
+            Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+            Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
+
+            Uint32 TrightType = TregMemBuffer[TrightRegister];
+            Int64 Tright0 = *(Int64 *)(TregMemBuffer + TrightRegister + 2);
+
+            Uint32 TleftType = TregMemBuffer[theRegister];
+            Int64 Tleft0 = *(Int64 *)(TregMemBuffer + theRegister + 2);
+
+            if ((TleftType | TrightType) != 0) {
+              Uint64 Tdest0 = Tleft0 + Tright0;
+              *(Int64 *)(TregMemBuffer + TdestRegister + 2) = Tdest0;
+              TregMemBuffer[TdestRegister] = 0x60;
+            } else {
+              return TUPKEY_abort(req_struct, 20);
+            }
+            break;
+          }
+
+        case Interpreter::SUB_REG_REG:
+          jamDebug();
+          {
+            Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+            Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
+
+            Uint32 TrightType = TregMemBuffer[TrightRegister];
+            Int64 Tright0 = *(Int64 *)(TregMemBuffer + TrightRegister + 2);
+
+            Uint32 TleftType = TregMemBuffer[theRegister];
+            Int64 Tleft0 = *(Int64 *)(TregMemBuffer + theRegister + 2);
+
+            if ((TleftType | TrightType) != 0) {
+              Int64 Tdest0 = Tleft0 - Tright0;
+              *(Int64 *)(TregMemBuffer + TdestRegister + 2) = Tdest0;
+              TregMemBuffer[TdestRegister] = 0x60;
+            } else {
+              return TUPKEY_abort(req_struct, 20);
+            }
+            break;
+          }
+
+        case Interpreter::BRANCH:
+          TprogramCounter = brancher(theInstruction, TprogramCounter);
+          break;
+
+        case Interpreter::BRANCH_REG_EQ_NULL:
+          if (TregMemBuffer[theRegister] != 0) {
             jamDebug();
-            Uint32 TattrId = theInstruction >> 16;
-            Uint32 TattrDescrIndex = (TattrId * ZAD_SIZE);
-            Uint32 TattrDesc1 =
-              req_struct->tablePtrP->tabDescriptor[TattrDescrIndex];
-            Uint32 TregType= TregMemBuffer[theRegister];
-
-            /* --------------------------------------------------------------- */
-            // Calculate the number of words of this attribute.
-            // We allow writes into arrays as long as they fit into the 64 bit
-            // register size.
-            /* --------------------------------------------------------------- */
-            Uint32 TattrNoOfWords = AttributeDescriptor::getSizeInWords(TattrDesc1);
-            Uint32 Toptype = req_struct->operPtrP->op_type;
-            Uint32 TdataForUpdate[3];
-            Uint32 Tlen;
-
-            AttributeHeader ah(TattrId, TattrNoOfWords << 2);
-            TdataForUpdate[0]= ah.m_value;
-            TdataForUpdate[1]= TregMemBuffer[theRegister + 2];
-            TdataForUpdate[2]= TregMemBuffer[theRegister + 3];
-            Tlen= TattrNoOfWords + 1;
-            if (Toptype == ZUPDATE)
-            {
-              if (TattrNoOfWords <= 2)
-              {
-                if (TattrNoOfWords == 1)
-                {
-                  // arithmetic conversion if big-endian
-                  Int64 * tmp = new (&TregMemBuffer[theRegister + 2]) Int64;
-                  TdataForUpdate[1] = Uint32(* tmp);
-                  TdataForUpdate[2] = 0;
-                }
-                if (TregType == 0)
-                {
-                  /* --------------------------------------------------------- */
-                  // Write a NULL value into the attribute
-                  /* --------------------------------------------------------- */
-                  ah.setNULL();
-                  TdataForUpdate[0]= ah.m_value;
-                  Tlen= 1;
-                }
-                int TnoDataRW= updateAttributes(req_struct,
-                    &TdataForUpdate[0],
-                    Tlen);
-                if (TnoDataRW >= 0)
-                {
-                  /* --------------------------------------------------------- */
-                  // Write the written data also into the log buffer so that it 
-                  // will be logged.
-                  /* --------------------------------------------------------- */
-                  logMemory[TdataWritten + 0]= TdataForUpdate[0];
-                  logMemory[TdataWritten + 1]= TdataForUpdate[1];
-                  logMemory[TdataWritten + 2]= TdataForUpdate[2];
-                  TdataWritten += Tlen;
-                }
-                else
-                {
-                  terrorCode = Uint32(-TnoDataRW);
-                  tupkeyErrorLab(req_struct);
-                  return -1;
-                }
-              }
-              else
-              {
-                return TUPKEY_abort(req_struct, 15);
-	      }
-	    }
-            else
-            {
-	      return TUPKEY_abort(req_struct, 16);
-	    }
-	    break;
-          }
-      case Interpreter::LOAD_CONST_NULL:
-	jamDebug();
-	TregMemBuffer[theRegister]= 0;	/* NULL INDICATOR */
-	break;
-
-      case Interpreter::LOAD_CONST16:
-	jamDebug();
-	TregMemBuffer[theRegister]= 0x50;	/* 32 BIT UNSIGNED CONSTANT */
-	* (Int64*)(TregMemBuffer+theRegister+2)= theInstruction >> 16;
-	break;
-
-      case Interpreter::LOAD_CONST32:
-	jamDebug();
-	TregMemBuffer[theRegister]= 0x50;	/* 32 BIT UNSIGNED CONSTANT */
-	* (Int64*)(TregMemBuffer+theRegister+2)= * 
-	  (TcurrentProgram+TprogramCounter);
-	TprogramCounter++;
-	break;
-
-      case Interpreter::LOAD_CONST64:
-	jamDebug();
-	TregMemBuffer[theRegister]= 0x60;	/* 64 BIT UNSIGNED CONSTANT */
-        TregMemBuffer[theRegister + 2 ]= * (TcurrentProgram +
-                                             TprogramCounter++);
-        TregMemBuffer[theRegister + 3 ]= * (TcurrentProgram +
-                                             TprogramCounter++);
-	break;
-
-      case Interpreter::ADD_REG_REG:
-	jamDebug();
-	{
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-	  Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-	  
-
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-         
-	  if ((TleftType | TrightType) != 0)
-          {
-	    Uint64 Tdest0= Tleft0 + Tright0;
-	    * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
-	    TregMemBuffer[TdestRegister]= 0x60;
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 20);
-	  }
-	  break;
-	}
-
-      case Interpreter::SUB_REG_REG:
-	jamDebug();
-	{
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-	  Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-	  
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-         
-	  if ((TleftType | TrightType) != 0)
-          {
-	    Int64 Tdest0= Tleft0 - Tright0;
-	    * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
-	    TregMemBuffer[TdestRegister]= 0x60;
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 20);
-	  }
-	  break;
-	}
-
-      case Interpreter::BRANCH:
-	TprogramCounter= brancher(theInstruction, TprogramCounter);
-	break;
-
-      case Interpreter::BRANCH_REG_EQ_NULL:
-	if (TregMemBuffer[theRegister] != 0)
-        {
-	  jamDebug();
-	  continue;
-	}
-        else
-        {
-	  jamDebug();
-	  TprogramCounter= brancher(theInstruction, TprogramCounter);
-	}
-	break;
-
-      case Interpreter::BRANCH_REG_NE_NULL:
-	if (TregMemBuffer[theRegister] == 0)
-        {
-	  jamDebug();
-	  continue;
-	}
-        else
-        {
-	  jamDebug();
-	  TprogramCounter= brancher(theInstruction, TprogramCounter);
-	}
-	break;
-
-
-      case Interpreter::BRANCH_EQ_REG_REG:
-	{
-	  jamDebug();
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Uint32 Tleft0= TregMemBuffer[theRegister + 2];
-	  Uint32 Tleft1= TregMemBuffer[theRegister + 3];
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Uint32 Tright0= TregMemBuffer[TrightRegister + 2];
-	  Uint32 Tright1= TregMemBuffer[TrightRegister + 3];
-	  if ((TrightType | TleftType) != 0)
-          {
-	    jamDebug();
-	    if ((Tleft0 == Tright0) && (Tleft1 == Tright1))
-            {
-	      TprogramCounter= brancher(theInstruction, TprogramCounter);
-	    }
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 23);
-	  }
-	  break;
-	}
-
-      case Interpreter::BRANCH_NE_REG_REG:
-	{
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Uint32 Tleft0= TregMemBuffer[theRegister + 2];
-	  Uint32 Tleft1= TregMemBuffer[theRegister + 3];
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Uint32 Tright0= TregMemBuffer[TrightRegister + 2];
-	  Uint32 Tright1= TregMemBuffer[TrightRegister + 3];
-	  if ((TrightType | TleftType) != 0)
-          {
-	    jamDebug();
-	    if ((Tleft0 != Tright0) || (Tleft1 != Tright1))
-            {
-	      TprogramCounter= brancher(theInstruction, TprogramCounter);
-	    }
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 24);
-	  }
-	  break;
-	}
-
-      case Interpreter::BRANCH_LT_REG_REG:
-	{
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-	  
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-         
-
-	  if ((TrightType | TleftType) != 0)
-          {
-	    jamDebug();
-	    if (Tleft0 < Tright0)
-            {
-	      TprogramCounter= brancher(theInstruction, TprogramCounter);
-	    }
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 24);
-	  }
-	  break;
-	}
-
-      case Interpreter::BRANCH_LE_REG_REG:
-	{
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-	  
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-	  
-
-	  if ((TrightType | TleftType) != 0)
-          {
-	    jamDebug();
-	    if (Tleft0 <= Tright0)
-            {
-	      TprogramCounter= brancher(theInstruction, TprogramCounter);
-	    }
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 26);
-	  }
-	  break;
-	}
-
-      case Interpreter::BRANCH_GT_REG_REG:
-	{
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-	  
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-	  
-
-	  if ((TrightType | TleftType) != 0)
-          {
-	    jamDebug();
-	    if (Tleft0 > Tright0)
-            {
-	      TprogramCounter= brancher(theInstruction, TprogramCounter);
-	    }
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 27);
-	  }
-	  break;
-	}
-
-      case Interpreter::BRANCH_GE_REG_REG:
-	{
-	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-	  Uint32 TrightType= TregMemBuffer[TrightRegister];
-	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-	  
-	  Uint32 TleftType= TregMemBuffer[theRegister];
-	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-
-	  if ((TrightType | TleftType) != 0)
-          {
-	    jamDebug();
-	    if (Tleft0 >= Tright0)
-            {
-	      TprogramCounter= brancher(theInstruction, TprogramCounter);
-	    }
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 28);
-	  }
-	  break;
-	}
-
-      case Interpreter::BRANCH_ATTR_OP_ATTR:
-      case Interpreter::BRANCH_ATTR_OP_PARAM:
-      case Interpreter::BRANCH_ATTR_OP_ARG:{
-        jamDebug();
-        const Uint32 ins2 = TcurrentProgram[TprogramCounter];
-        Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
-        const Uint32 opCode = Interpreter::getOpCode(theInstruction);
-
-        if (tmpHabitant != attrId)
-        {
-	  Int32 TnoDataR = readAttributes(req_struct,
-					  &attrId, 1,
-					  tmpArea, tmpAreaSz);
-	  
-	  if (unlikely(TnoDataR < 0))
-          {
-	    jam();
-            terrorCode = Uint32(-TnoDataR);
-	    tupkeyErrorLab(req_struct);
-	    return -1;
-	  }
-	  tmpHabitant= attrId;
-        }
-
-        // get type
-	attrId >>= 16;
-	const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-	  (attrId * ZAD_SIZE);
-	const Uint32 TattrDesc1 = attrDescriptor[0];
-	const Uint32 TattrDesc2 = attrDescriptor[1];
-	const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
-	const CHARSET_INFO *cs = nullptr;
-	if (AttributeOffset::getCharsetFlag(TattrDesc2))
-	{
-	  const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-	  cs = req_struct->tablePtrP->charsetArray[pos];
-	}
-	const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
-
-        // get data for 1st argument, always an ATTR.
-        const AttributeHeader ah(tmpArea[0]);
-        const char* s1 = (char*)&tmpArea[1];
-        // fixed length in 5.0
-        Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-        if (unlikely(typeId == NDB_TYPE_BIT))
-        {
-          /* Size in bytes for bit fields can be incorrect due to
-           * rounding down
-           */
-          Uint32 bitFieldAttrLen= (AttributeDescriptor::getArraySize(TattrDesc1)
-                                   + 7) / 8;
-          attrLen= bitFieldAttrLen;
-        }
-
-	// 2'nd argument, literal, parameter or another attribute
-        Uint32 argLen = 0;
-        Uint32 step = 0;
-        const char* s2 = nullptr;
-
-        if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG))
-        {
-          // Compare ATTR with a literal value given by interpreter code
-          jamDebug();
-          argLen = Interpreter::getBranchCol_Len(ins2);
-          step = argLen;
-          s2 = (char*)&TcurrentProgram[TprogramCounter+1];
-        }
-        else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM)
-        {
-          // Compare ATTR with a parameter
-          jamDebug();
-          ndbassert(req_struct != nullptr);
-          ndbassert(req_struct->operPtrP != nullptr);
-
-          const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
-          const Uint32 *paramPos = subroutineProg;
-          const Uint32 *paramptr = lookupInterpreterParameter(paramNo,
-                                                              paramPos);
-          if (unlikely(paramptr == nullptr))
-          {
-            jam();
-            terrorCode = 99; // TODO
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-
-          argLen = AttributeHeader::getByteSize(* paramptr);
-          step = 0;
-          s2 = (char*)(paramptr + 1);
-        }
-        else if (opCode == Interpreter::BRANCH_ATTR_OP_ATTR)
-        {
-          // Compare ATTR with another ATTR
-          jamDebug();
-          Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(ins2) << 16;
-
-          // Attr2 to be read into tmpArea[] after Attr1.
-          const Uint32 firstAttrWords = attrLen+1;
-          assert(tmpAreaSz >= 2*firstAttrWords);
-          Int32 TnoDataR = readAttributes(req_struct,
-                                          &attr2Id, 1,
-                                          &tmpArea[firstAttrWords],
-                                          tmpAreaSz-firstAttrWords);
-          if (unlikely(TnoDataR < 0))
-          {
-            jam();
-            terrorCode = Uint32(-TnoDataR);
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-
-          const AttributeHeader ah2(tmpArea[firstAttrWords]);
-          if (!ah2.isNULL())
-          {
-            // Get type
-            attr2Id >>= 16;
-            const Uint32* attr2Descriptor = req_struct->tablePtrP->tabDescriptor +
-              (attr2Id * ZAD_SIZE);
-            const Uint32 Tattr2Desc1 = attr2Descriptor[0];
-            const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
-
-            argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
-            if (unlikely(type2Id == NDB_TYPE_BIT))
-            {
-              /* Size in bytes for bit fields can be incorrect due to
-               * rounding down
-               */
-              Uint32 bitFieldAttrLen= (AttributeDescriptor::getArraySize(Tattr2Desc1)
-                                       + 7) / 8;
-              argLen= bitFieldAttrLen;
-            }
-            s2 = (char*)&tmpArea[firstAttrWords+1];
-          }
-          step = 0;
-        } //!ah2.isNULL()
-
-        // Evaluate
-        const bool r1_null = ah.isNULL();
-        const bool r2_null = argLen == 0;
-        if (r1_null || r2_null)
-        {
-          // There are NULL-valued operands, check the NullSemantics
-          const Uint32 nullSemantics =
-              Interpreter::getNullSemantics(theInstruction);
-          if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT)
-          {
-            // Branch out of AND conjunction
+            continue;
+          } else {
+            jamDebug();
             TprogramCounter = brancher(theInstruction, TprogramCounter);
-            break;
           }
-          if (nullSemantics == Interpreter::IF_NULL_CONTINUE)
-          {
-            // Ignore NULL in OR conjunction,  -> next instruction
-            const Uint32 tmp = ((step + 3) >> 2) + 1;
-            TprogramCounter += tmp;
-            break;
+          break;
+
+        case Interpreter::BRANCH_REG_NE_NULL:
+          if (TregMemBuffer[theRegister] == 0) {
+            jamDebug();
+            continue;
+          } else {
+            jamDebug();
+            TprogramCounter = brancher(theInstruction, TprogramCounter);
           }
+          break;
+
+        case Interpreter::BRANCH_EQ_REG_REG: {
+          jamDebug();
+          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+
+          Uint32 TleftType = TregMemBuffer[theRegister];
+          Uint32 Tleft0 = TregMemBuffer[theRegister + 2];
+          Uint32 Tleft1 = TregMemBuffer[theRegister + 3];
+
+          Uint32 TrightType = TregMemBuffer[TrightRegister];
+          Uint32 Tright0 = TregMemBuffer[TrightRegister + 2];
+          Uint32 Tright1 = TregMemBuffer[TrightRegister + 3];
+          if ((TrightType | TleftType) != 0) {
+            jamDebug();
+            if ((Tleft0 == Tright0) && (Tleft1 == Tright1)) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 23);
+          }
+          break;
         }
 
-        const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
-        int res1;
-        if (cond <= Interpreter::GE)
-        {
-          /* Inequality - EQ, NE, LT, LE, GT, GE */
-          if (r1_null || r2_null)
-          {
-            // NULL==NULL and NULL<not-NULL
-            res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
-          }
-          else
-          {
-	    jamDebug();
-	    if (unlikely(sqlType.m_cmp == 0))
-	    {
-	      return TUPKEY_abort(req_struct, 40);
-	    }
-            res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
-          }
-	}
-        else
-        {
-          if ((cond == Interpreter::LIKE) ||
-              (cond == Interpreter::NOT_LIKE))
-          {
-            if (r1_null || r2_null)
-            {
-              // NULL like NULL is true (has no practical use)
-              res1 =  r1_null && r2_null ? 0 : -1;
+        case Interpreter::BRANCH_NE_REG_REG: {
+          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+
+          Uint32 TleftType = TregMemBuffer[theRegister];
+          Uint32 Tleft0 = TregMemBuffer[theRegister + 2];
+          Uint32 Tleft1 = TregMemBuffer[theRegister + 3];
+
+          Uint32 TrightType = TregMemBuffer[TrightRegister];
+          Uint32 Tright0 = TregMemBuffer[TrightRegister + 2];
+          Uint32 Tright1 = TregMemBuffer[TrightRegister + 3];
+          if ((TrightType | TleftType) != 0) {
+            jamDebug();
+            if ((Tleft0 != Tright0) || (Tleft1 != Tright1)) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
             }
-            else
-            {
+          } else {
+            return TUPKEY_abort(req_struct, 24);
+          }
+          break;
+        }
+
+        case Interpreter::BRANCH_LT_REG_REG: {
+          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+
+          Uint32 TrightType = TregMemBuffer[TrightRegister];
+          Int64 Tright0 = *(Int64 *)(TregMemBuffer + TrightRegister + 2);
+
+          Uint32 TleftType = TregMemBuffer[theRegister];
+          Int64 Tleft0 = *(Int64 *)(TregMemBuffer + theRegister + 2);
+
+          if ((TrightType | TleftType) != 0) {
+            jamDebug();
+            if (Tleft0 < Tright0) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 24);
+          }
+          break;
+        }
+
+        case Interpreter::BRANCH_LE_REG_REG: {
+          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+
+          Uint32 TrightType = TregMemBuffer[TrightRegister];
+          Int64 Tright0 = *(Int64 *)(TregMemBuffer + TrightRegister + 2);
+
+          Uint32 TleftType = TregMemBuffer[theRegister];
+          Int64 Tleft0 = *(Int64 *)(TregMemBuffer + theRegister + 2);
+
+          if ((TrightType | TleftType) != 0) {
+            jamDebug();
+            if (Tleft0 <= Tright0) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 26);
+          }
+          break;
+        }
+
+        case Interpreter::BRANCH_GT_REG_REG: {
+          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+
+          Uint32 TrightType = TregMemBuffer[TrightRegister];
+          Int64 Tright0 = *(Int64 *)(TregMemBuffer + TrightRegister + 2);
+
+          Uint32 TleftType = TregMemBuffer[theRegister];
+          Int64 Tleft0 = *(Int64 *)(TregMemBuffer + theRegister + 2);
+
+          if ((TrightType | TleftType) != 0) {
+            jamDebug();
+            if (Tleft0 > Tright0) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 27);
+          }
+          break;
+        }
+
+        case Interpreter::BRANCH_GE_REG_REG: {
+          Uint32 TrightRegister = Interpreter::getReg2(theInstruction) << 2;
+
+          Uint32 TrightType = TregMemBuffer[TrightRegister];
+          Int64 Tright0 = *(Int64 *)(TregMemBuffer + TrightRegister + 2);
+
+          Uint32 TleftType = TregMemBuffer[theRegister];
+          Int64 Tleft0 = *(Int64 *)(TregMemBuffer + theRegister + 2);
+
+          if ((TrightType | TleftType) != 0) {
+            jamDebug();
+            if (Tleft0 >= Tright0) {
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 28);
+          }
+          break;
+        }
+
+        case Interpreter::BRANCH_ATTR_OP_ATTR:
+        case Interpreter::BRANCH_ATTR_OP_PARAM:
+        case Interpreter::BRANCH_ATTR_OP_ARG: {
+          jamDebug();
+          const Uint32 ins2 = TcurrentProgram[TprogramCounter];
+          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
+          const Uint32 opCode = Interpreter::getOpCode(theInstruction);
+
+          if (tmpHabitant != attrId) {
+            Int32 TnoDataR =
+                readAttributes(req_struct, &attrId, 1, tmpArea, tmpAreaSz);
+
+            if (unlikely(TnoDataR < 0)) {
               jam();
-              if (unlikely(sqlType.m_like == 0))
-              {
+              terrorCode = Uint32(-TnoDataR);
+              tupkeyErrorLab(req_struct);
+              return -1;
+            }
+            tmpHabitant = attrId;
+          }
+
+          // get type
+          attrId >>= 16;
+          const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+            (attrId * ZAD_SIZE);
+          const Uint32 TattrDesc1 = attrDescriptor[0];
+          const Uint32 TattrDesc2 = attrDescriptor[1];
+          const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+          const CHARSET_INFO *cs = nullptr;
+          if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+            const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+            cs = req_struct->tablePtrP->charsetArray[pos];
+          }
+          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
+
+          // get data for 1st argument, always an ATTR.
+          const AttributeHeader ah(tmpArea[0]);
+          const char *s1 = (char *)&tmpArea[1];
+          // fixed length in 5.0
+          Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+          if (unlikely(typeId == NDB_TYPE_BIT)) {
+            /* Size in bytes for bit fields can be incorrect due to
+             * rounding down
+             */
+            Uint32 bitFieldAttrLen =
+                (AttributeDescriptor::getArraySize(TattrDesc1) + 7) / 8;
+            attrLen = bitFieldAttrLen;
+          }
+
+          // 2'nd argument, literal, parameter or another attribute
+          Uint32 argLen = 0;
+          Uint32 step = 0;
+          const char *s2 = nullptr;
+
+          if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG)) {
+            // Compare ATTR with a literal value given by interpreter code
+            jamDebug();
+            argLen = Interpreter::getBranchCol_Len(ins2);
+            step = argLen;
+            s2 = (char *)&TcurrentProgram[TprogramCounter + 1];
+          } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
+            // Compare ATTR with a parameter
+            jamDebug();
+            ndbassert(req_struct != nullptr);
+            ndbassert(req_struct->operPtrP != nullptr);
+
+            const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
+            const Uint32 *paramPos = subroutineProg;
+            const Uint32 *paramptr =
+                lookupInterpreterParameter(paramNo, paramPos);
+            if (unlikely(paramptr == nullptr)) {
+              jam();
+              terrorCode = 99;  // TODO
+              tupkeyErrorLab(req_struct);
+              return -1;
+            }
+
+            argLen = AttributeHeader::getByteSize(*paramptr);
+            step = 0;
+            s2 = (char *)(paramptr + 1);
+          } else if (opCode == Interpreter::BRANCH_ATTR_OP_ATTR) {
+            // Compare ATTR with another ATTR
+            jamDebug();
+            Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(ins2) << 16;
+
+            // Attr2 to be read into tmpArea[] after Attr1.
+            const Uint32 firstAttrWords = attrLen + 1;
+            assert(tmpAreaSz >= 2 * firstAttrWords);
+            Int32 TnoDataR = readAttributes(req_struct, &attr2Id, 1,
+                                            &tmpArea[firstAttrWords],
+                                            tmpAreaSz - firstAttrWords);
+            if (unlikely(TnoDataR < 0)) {
+              jam();
+              terrorCode = Uint32(-TnoDataR);
+              tupkeyErrorLab(req_struct);
+              return -1;
+            }
+
+            const AttributeHeader ah2(tmpArea[firstAttrWords]);
+            if (!ah2.isNULL()) {
+              // Get type
+              attr2Id >>= 16;
+              const Uint32* attr2Descriptor = req_struct->tablePtrP->tabDescriptor +
+                (attr2Id * ZAD_SIZE);
+              const Uint32 Tattr2Desc1 = attr2Descriptor[0];
+              const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
+
+              argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
+              if (unlikely(type2Id == NDB_TYPE_BIT)) {
+                /* Size in bytes for bit fields can be incorrect due to
+                 * rounding down
+                 */
+                Uint32 bitFieldAttrLen =
+                    (AttributeDescriptor::getArraySize(Tattr2Desc1) + 7) / 8;
+                argLen = bitFieldAttrLen;
+              }
+              s2 = (char *)&tmpArea[firstAttrWords + 1];
+            }
+            step = 0;
+          }  //! ah2.isNULL()
+
+          // Evaluate
+          const bool r1_null = ah.isNULL();
+          const bool r2_null = argLen == 0;
+          if (r1_null || r2_null) {
+            // There are NULL-valued operands, check the NullSemantics
+            const Uint32 nullSemantics =
+                Interpreter::getNullSemantics(theInstruction);
+            if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+              // Branch out of AND conjunction
+              TprogramCounter = brancher(theInstruction, TprogramCounter);
+              break;
+            }
+            if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+              // Ignore NULL in OR conjunction,  -> next instruction
+              const Uint32 tmp = ((step + 3) >> 2) + 1;
+              TprogramCounter += tmp;
+              break;
+            }
+          }
+
+          const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
+          int res1;
+          if (cond <= Interpreter::GE) {
+            /* Inequality - EQ, NE, LT, LE, GT, GE */
+            if (r1_null || r2_null) {
+              // NULL==NULL and NULL<not-NULL
+              res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
+            } else {
+              jamDebug();
+              if (unlikely(sqlType.m_cmp == 0)) {
                 return TUPKEY_abort(req_struct, 40);
               }
-              res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
+              res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+            }
+          } else {
+            if ((cond == Interpreter::LIKE) ||
+                (cond == Interpreter::NOT_LIKE)) {
+              if (r1_null || r2_null) {
+                // NULL like NULL is true (has no practical use)
+                res1 = r1_null && r2_null ? 0 : -1;
+              } else {
+                jam();
+                if (unlikely(sqlType.m_like == 0)) {
+                  return TUPKEY_abort(req_struct, 40);
+                }
+                res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
+              }
+            } else {
+              /* AND_XX_MASK condition */
+              ndbassert(cond <= Interpreter::AND_NE_ZERO);
+              if (unlikely(sqlType.m_mask == 0)) {
+                return TUPKEY_abort(req_struct, 40);
+              }
+              /* If either arg is NULL, we say COL AND MASK
+               * NE_ZERO and NE_MASK.
+               */
+              if (r1_null || r2_null) {
+                res1 = 1;
+              } else {
+                bool cmpZero = (cond == Interpreter::AND_EQ_ZERO) ||
+                               (cond == Interpreter::AND_NE_ZERO);
+
+                res1 = (*sqlType.m_mask)(s1, attrLen, s2, argLen, cmpZero);
+              }
             }
           }
-          else
-          {
-            /* AND_XX_MASK condition */
-            ndbassert(cond <= Interpreter::AND_NE_ZERO);
-            if (unlikely(sqlType.m_mask == 0))
-            {
-              return TUPKEY_abort(req_struct,40);
-            }
-            /* If either arg is NULL, we say COL AND MASK
-             * NE_ZERO and NE_MASK.
-             */
-            if (r1_null || r2_null)
-            {
-              res1= 1;
-            }
-            else
-            {
-              
-              bool cmpZero= 
-                (cond == Interpreter::AND_EQ_ZERO) ||
-                (cond == Interpreter::AND_NE_ZERO);
-              
-              res1 = (*sqlType.m_mask)(s1, attrLen, s2, argLen, cmpZero);
-            }
+
+          int res = 0;
+          switch ((Interpreter::BinaryCondition)cond) {
+            case Interpreter::EQ:
+              res = (res1 == 0);
+              break;
+            case Interpreter::NE:
+              res = (res1 != 0);
+              break;
+            // note the condition is backwards
+            case Interpreter::LT:
+              res = (res1 > 0);
+              break;
+            case Interpreter::LE:
+              res = (res1 >= 0);
+              break;
+            case Interpreter::GT:
+              res = (res1 < 0);
+              break;
+            case Interpreter::GE:
+              res = (res1 <= 0);
+              break;
+            case Interpreter::LIKE:
+              res = (res1 == 0);
+              break;
+            case Interpreter::NOT_LIKE:
+              res = (res1 == 1);
+              break;
+            case Interpreter::AND_EQ_MASK:
+              res = (res1 == 0);
+              break;
+            case Interpreter::AND_NE_MASK:
+              res = (res1 != 0);
+              break;
+            case Interpreter::AND_EQ_ZERO:
+              res = (res1 == 0);
+              break;
+            case Interpreter::AND_NE_ZERO:
+              res = (res1 != 0);
+              break;
+              // XXX handle invalid value
           }
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info(
+              "cond=%u attr(%d)='%.*s'(%d) str='%.*s'(%d) res1=%d res=%d", cond,
+              attrId >> 16, attrLen, s1, attrLen, argLen, s2, argLen, res1,
+              res);
+#endif
+          if (res)
+            TprogramCounter = brancher(theInstruction, TprogramCounter);
+          else {
+            Uint32 tmp = ((step + 3) >> 2) + 1;
+            TprogramCounter += tmp;
+          }
+          break;
         }
 
-        int res = 0;
-        switch ((Interpreter::BinaryCondition)cond) {
-        case Interpreter::EQ:
-          res = (res1 == 0);
+        case Interpreter::BRANCH_ATTR_EQ_NULL: {
+          jamDebug();
+          Uint32 ins2 = TcurrentProgram[TprogramCounter];
+          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
+
+          if (tmpHabitant != attrId) {
+            Int32 TnoDataR =
+                readAttributes(req_struct, &attrId, 1, tmpArea, tmpAreaSz);
+
+            if (unlikely(TnoDataR < 0)) {
+              jam();
+              terrorCode = Uint32(-TnoDataR);
+              tupkeyErrorLab(req_struct);
+              return -1;
+            }
+            tmpHabitant = attrId;
+          }
+
+          AttributeHeader ah(tmpArea[0]);
+          if (ah.isNULL()) {
+            TprogramCounter = brancher(theInstruction, TprogramCounter);
+          } else {
+            TprogramCounter++;
+          }
           break;
-        case Interpreter::NE:
-          res = (res1 != 0);
-          break;
-        // note the condition is backwards
-        case Interpreter::LT:
-          res = (res1 > 0);
-          break;
-        case Interpreter::LE:
-          res = (res1 >= 0);
-          break;
-        case Interpreter::GT:
-          res = (res1 < 0);
-          break;
-        case Interpreter::GE:
-          res = (res1 <= 0);
-          break;
-        case Interpreter::LIKE:
-          res = (res1 == 0);
-          break;
-        case Interpreter::NOT_LIKE:
-          res = (res1 == 1);
-          break;
-        case Interpreter::AND_EQ_MASK:
-          res = (res1 == 0);
-          break;
-        case Interpreter::AND_NE_MASK:
-          res = (res1 != 0);
-          break;
-        case Interpreter::AND_EQ_ZERO:
-          res = (res1 == 0);
-          break;
-        case Interpreter::AND_NE_ZERO:
-          res = (res1 != 0);
-          break;
-	  // XXX handle invalid value
         }
-#ifdef TRACE_INTERPRETER
-        g_eventLogger->info(
-            "cond=%u attr(%d)='%.*s'(%d) str='%.*s'(%d) res1=%d res=%d", cond,
-            attrId >> 16, attrLen, s1, attrLen, argLen, s2, argLen, res1, res);
-#endif
-        if (res)
-          TprogramCounter = brancher(theInstruction, TprogramCounter);
-        else 
-	{
-          Uint32 tmp = ((step + 3) >> 2) + 1;
-          TprogramCounter += tmp;
+
+        case Interpreter::BRANCH_ATTR_NE_NULL: {
+          jamDebug();
+          Uint32 ins2 = TcurrentProgram[TprogramCounter];
+          Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
+
+          if (tmpHabitant != attrId) {
+            Int32 TnoDataR =
+                readAttributes(req_struct, &attrId, 1, tmpArea, tmpAreaSz);
+
+            if (unlikely(TnoDataR < 0)) {
+              jam();
+              terrorCode = Uint32(-TnoDataR);
+              tupkeyErrorLab(req_struct);
+              return -1;
+            }
+            tmpHabitant = attrId;
+          }
+
+          AttributeHeader ah(tmpArea[0]);
+          if (ah.isNULL()) {
+            TprogramCounter++;
+          } else {
+            TprogramCounter = brancher(theInstruction, TprogramCounter);
+          }
+          break;
         }
-	break;
-      }
-	
-      case Interpreter::BRANCH_ATTR_EQ_NULL:{
-	jamDebug();
-	Uint32 ins2= TcurrentProgram[TprogramCounter];
-	Uint32 attrId= Interpreter::getBranchCol_AttrId(ins2) << 16;
-	
-	if (tmpHabitant != attrId)
-        {
-	  Int32 TnoDataR= readAttributes(req_struct,
-					  &attrId, 1,
-					  tmpArea, tmpAreaSz);
-	  
-	  if (unlikely(TnoDataR < 0))
-          {
-	    jam();
-            terrorCode = Uint32(-TnoDataR);
-	    tupkeyErrorLab(req_struct);
-	    return -1;
-	  }
-	  tmpHabitant= attrId;
-	}
-	
-	AttributeHeader ah(tmpArea[0]);
-	if (ah.isNULL())
-        {
-	  TprogramCounter= brancher(theInstruction, TprogramCounter);
-	}
-        else
-        {
-	  TprogramCounter ++;
-	}
-	break;
-      }
 
-      case Interpreter::BRANCH_ATTR_NE_NULL:
-      {
-	jamDebug();
-	Uint32 ins2= TcurrentProgram[TprogramCounter];
-	Uint32 attrId= Interpreter::getBranchCol_AttrId(ins2) << 16;
-	
-	if (tmpHabitant != attrId)
-        {
-	  Int32 TnoDataR= readAttributes(req_struct,
-					  &attrId, 1,
-					  tmpArea, tmpAreaSz);
-	  
-	  if (unlikely(TnoDataR < 0))
-          {
-	    jam();
-            terrorCode = Uint32(-TnoDataR);
-	    tupkeyErrorLab(req_struct);
-	    return -1;
-	  }
-	  tmpHabitant= attrId;
-	}
-	
-	AttributeHeader ah(tmpArea[0]);
-	if (ah.isNULL())
-        {
-	  TprogramCounter ++;
-	}
-        else
-        {
-	  TprogramCounter= brancher(theInstruction, TprogramCounter);
-	}
-	break;
-      }
-	
-      case Interpreter::EXIT_OK:
-	jamDebug();
+        case Interpreter::EXIT_OK:
+          jamDebug();
 #ifdef TRACE_INTERPRETER
-        g_eventLogger->info(" - exit_ok");
+          g_eventLogger->info(" - exit_ok");
 #endif
-	return TdataWritten;
+          return TdataWritten;
 
-      case Interpreter::EXIT_OK_LAST:
-	jamDebug();
+        case Interpreter::EXIT_OK_LAST:
+          jamDebug();
 #ifdef TRACE_INTERPRETER
-        g_eventLogger->info(" - exit_ok_last");
+          g_eventLogger->info(" - exit_ok_last");
 #endif
-	req_struct->last_row= true;
-	return TdataWritten;
-	
-      case Interpreter::EXIT_REFUSE:
-      {
-        /**
-         * This is a very common exit path, particularly
-         * for scans. It simply means that the row didn't
-         * fulfil the search condition.
-         */
-	jamDebug();
-#ifdef TRACE_INTERPRETER
-        g_eventLogger->info(" - exit_nok");
-#endif
-	terrorCode = theInstruction >> 16;
-        tupkeyErrorLab(req_struct);
-        return -1;
-      }
-      case Interpreter::CALL:
-	jamDebug();
-#ifdef TRACE_INTERPRETER
-        g_eventLogger->info(" - call addr=%u, subroutine len=%u ret addr=%u",
-                            theInstruction >> 16, TsubroutineLen,
-                            TprogramCounter);
-#endif
-	RstackPtr++;
-	if (RstackPtr < 32)
-        {
-          TstackMemBuffer[RstackPtr]= TprogramCounter;
-          TprogramCounter= theInstruction >> 16;
-	  if (TprogramCounter < TsubroutineLen)
-          {
-	    TcurrentProgram= subroutineProg;
-	    TcurrentSize= TsubroutineLen;
-	  }
-          else
-          {
-	    return TUPKEY_abort(req_struct, 30);
-	  }
-	}
-        else
-        {
-	  return TUPKEY_abort(req_struct, 31);
-	}
-	break;
+          req_struct->last_row = true;
+          return TdataWritten;
 
-      case Interpreter::RETURN:
-	jamDebug();
+        case Interpreter::EXIT_REFUSE: {
+          /**
+           * This is a very common exit path, particularly
+           * for scans. It simply means that the row didn't
+           * fulfil the search condition.
+           */
+          jamDebug();
 #ifdef TRACE_INTERPRETER
-        g_eventLogger->info(" - return to %u from stack level %u",
-                            TstackMemBuffer[RstackPtr], RstackPtr);
+          g_eventLogger->info(" - exit_nok");
 #endif
-	if (RstackPtr > 0)
-        {
-	  TprogramCounter= TstackMemBuffer[RstackPtr];
-	  RstackPtr--;
-	  if (RstackPtr == 0)
-          {
-	    jamDebug();
-	    /* ------------------------------------------------------------- */
-	    // We are back to the main program.
-	    /* ------------------------------------------------------------- */
-	    TcurrentProgram= mainProgram;
-	    TcurrentSize= TmainProgLen;
-	  }
-	}
-        else
-        {
-	  return TUPKEY_abort(req_struct, 32);
-	}
-	break;
+          terrorCode = theInstruction >> 16;
+          tupkeyErrorLab(req_struct);
+          return -1;
+        }
+        case Interpreter::CALL:
+          jamDebug();
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info(" - call addr=%u, subroutine len=%u ret addr=%u",
+                              theInstruction >> 16, TsubroutineLen,
+                              TprogramCounter);
+#endif
+          RstackPtr++;
+          if (RstackPtr < 32) {
+            TstackMemBuffer[RstackPtr] = TprogramCounter;
+            TprogramCounter = theInstruction >> 16;
+            if (TprogramCounter < TsubroutineLen) {
+              TcurrentProgram = subroutineProg;
+              TcurrentSize = TsubroutineLen;
+            } else {
+              return TUPKEY_abort(req_struct, 30);
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 31);
+          }
+          break;
 
-      default:
-	return TUPKEY_abort(req_struct, 33);
+        case Interpreter::RETURN:
+          jamDebug();
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info(" - return to %u from stack level %u",
+                              TstackMemBuffer[RstackPtr], RstackPtr);
+#endif
+          if (RstackPtr > 0) {
+            TprogramCounter = TstackMemBuffer[RstackPtr];
+            RstackPtr--;
+            if (RstackPtr == 0) {
+              jamDebug();
+              /* -------------------------------------------------------------
+               */
+              // We are back to the main program.
+              /* -------------------------------------------------------------
+               */
+              TcurrentProgram = mainProgram;
+              TcurrentSize = TmainProgLen;
+            }
+          } else {
+            return TUPKEY_abort(req_struct, 32);
+          }
+          break;
+
+        default:
+          return TUPKEY_abort(req_struct, 33);
       }
-    }
-    else
-    {
+    } else {
       return TUPKEY_abort(req_struct, 34);
     }
   }
@@ -5191,7 +4792,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 
 /**
  * expand_var_part - copy packed variable attributes to fully expanded size
- * 
+ *
  * dst:        where to start writing attribute data
  * dst_off_ptr where to write attribute offsets
  * src         pointer to packed attributes
@@ -5510,7 +5111,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
                                tabPtrP->m_offsets[ind].m_dyn_null_words);
       order += (num_dynvar + num_dynfix);
     }
-    
+
     ndbassert((UintPtr(src_ptr) & 3) == 0);
     src_ptr = src_ptr + step;
   }
@@ -5519,50 +5120,43 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
                         Tuple_header::DISK_INLINE);
 }
 
-void
-Dbtup::dump_tuple(const KeyReqStruct* req_struct, const Tablerec* tabPtrP)
-{
-  Uint16 mm_vars= tabPtrP->m_attributes[MM].m_no_of_varsize;
-  Uint16 mm_dyns= tabPtrP->m_attributes[MM].m_no_of_dynamic;
-  //Uint16 dd_tot= tabPtrP->m_no_of_disk_attributes;
-  const Tuple_header* ptr= req_struct->m_tuple_ptr;
-  Uint32 bits= ptr->m_header_bits;
-  const Uint32 *tuple_words= (Uint32 *)ptr;
+void Dbtup::dump_tuple(const KeyReqStruct *req_struct,
+                       const Tablerec *tabPtrP) {
+  Uint16 mm_vars = tabPtrP->m_attributes[MM].m_no_of_varsize;
+  Uint16 mm_dyns = tabPtrP->m_attributes[MM].m_no_of_dynamic;
+  // Uint16 dd_tot= tabPtrP->m_no_of_disk_attributes;
+  const Tuple_header *ptr = req_struct->m_tuple_ptr;
+  Uint32 bits = ptr->m_header_bits;
+  const Uint32 *tuple_words = (Uint32 *)ptr;
   const Uint32 *fix_p;
   Uint32 fix_len;
   const Uint32 *var_p;
   Uint32 var_len;
-  //const Uint32 *disk_p;
-  //Uint32 disk_len;
+  // const Uint32 *disk_p;
+  // Uint32 disk_len;
   const char *typ;
 
-  fix_p= tuple_words;
-  fix_len= tabPtrP->m_offsets[MM].m_fix_header_size;
-  if(req_struct->is_expanded)
-  {
-    typ= "expanded";
-    var_p= ptr->get_end_of_fix_part_ptr(tabPtrP);
-    var_len= 0;                                 // No dump of varpart in expanded
+  fix_p = tuple_words;
+  fix_len = tabPtrP->m_offsets[MM].m_fix_header_size;
+  if (req_struct->is_expanded) {
+    typ = "expanded";
+    var_p = ptr->get_end_of_fix_part_ptr(tabPtrP);
+    var_len = 0;  // No dump of varpart in expanded
 #if 0
     disk_p= (Uint32 *)req_struct->m_disk_ptr;
     disk_len= (dd_tot ? tabPtrP->m_offsets[DD].m_fix_header_size : 0);
 #endif
-  }
-  else if(! (bits & Tuple_header::COPY_TUPLE))
-  {
-    typ= "stored";
-    if(mm_vars+mm_dyns)
-    {
-      //const KeyReqStruct::Var_data* dst= &req_struct->m_var_data[MM];
-      const Var_part_ref *varref= ptr->get_var_part_ref_ptr(tabPtrP);
+  } else if (!(bits & Tuple_header::COPY_TUPLE)) {
+    typ = "stored";
+    if (mm_vars + mm_dyns) {
+      // const KeyReqStruct::Var_data* dst= &req_struct->m_var_data[MM];
+      const Var_part_ref *varref = ptr->get_var_part_ref_ptr(tabPtrP);
       Ptr<Page> tmp;
-      var_p= get_ptr(&tmp, * varref);
-      var_len= get_len(&tmp, * varref);
-    }
-    else
-    {
-      var_p= 0;
-      var_len= 0;
+      var_p = get_ptr(&tmp, *varref);
+      var_len = get_len(&tmp, *varref);
+    } else {
+      var_p = 0;
+      var_len = 0;
     }
 #if 0
     if(dd_tot)
@@ -5581,19 +5175,14 @@ Dbtup::dump_tuple(const KeyReqStruct* req_struct, const Tablerec* tabPtrP)
       disk_len= 0;
     }
 #endif
-  }
-  else
-  {
-    typ= "shrunken";
-    if(mm_vars+mm_dyns)
-    {
-      var_p= ptr->get_end_of_fix_part_ptr(tabPtrP);
-      var_len= *((Uint16 *)var_p) + 1;
-    }
-    else
-    {
-      var_p= 0;
-      var_len= 0;
+  } else {
+    typ = "shrunken";
+    if (mm_vars + mm_dyns) {
+      var_p = ptr->get_end_of_fix_part_ptr(tabPtrP);
+      var_len = *((Uint16 *)var_p) + 1;
+    } else {
+      var_p = 0;
+      var_len = 0;
     }
 #if 0
     disk_p= (Uint32 *)(req_struct->m_disk_ptr);
@@ -5790,13 +5379,13 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       /* Set up src_ptr for DD loop */
       src_ptr += flex_len;
     }
-    char* varstart;
+    char *varstart;
     Uint32 varlen;
-    const Uint32* dynstart;
+    const Uint32 *dynstart;
     if (num_vars)
     {
-      varstart = (char*)(((Uint16*)flex_data)+ num_vars + 1);
-      varlen = ((Uint16*)flex_data)[num_vars];
+      varstart = (char *)(((Uint16 *)flex_data) + num_vars + 1);
+      varlen = ((Uint16 *)flex_data)[num_vars];
       dynstart = ALIGN_WORD(varstart + varlen);
 #ifdef TUP_DATA_VALIDATION
       thrjam(req_struct->jamBuffer);
@@ -5827,10 +5416,8 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
   }
 }
 
-void
-Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
-		    const Tablerec* tabPtrP, bool disk)
-{
+void Dbtup::shrink_tuple(KeyReqStruct *req_struct, Uint32 sizes[2],
+                         const Tablerec *tabPtrP, bool disk) {
   ndbassert(tabPtrP->need_shrink());
   ndbassert(req_struct->is_expanded);
   Tuple_header* ptr= req_struct->m_tuple_ptr;
@@ -6037,24 +5624,21 @@ Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
 	  {
 	    ndbrequire(len == fix_sz + 1);
             Local_key tmp;
-            Var_part_ref* vpart = reinterpret_cast<Var_part_ref*>(part);
+            Var_part_ref *vpart = reinterpret_cast<Var_part_ref *>(part);
             vpart->copyout(&tmp);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
             ndbrequire(!"Looking for test coverage - found it!");
 #endif
-	    Ptr<Page> tmpPage;
-	    part= get_ptr(&tmpPage, *vpart);
-	    len= ((Var_page*)tmpPage.p)->get_entry_len(tmp.m_page_idx);
-	    Uint32 sz= ((mm_vars + 1) << 1) + (((Uint16*)part)[mm_vars]);
-	    ndbrequire(len >= ((sz + 3) >> 2));
-	  } 
-	  else
-	  {
-	    Uint32 sz= ((mm_vars + 1) << 1) + (((Uint16*)part)[mm_vars]);
-	    ndbrequire(len >= ((sz+3)>>2)+fix_sz);
-	  }
-	  if(ptr->m_operation_ptr_i != RNIL)
-	  {
+            Ptr<Page> tmpPage;
+            part = get_ptr(&tmpPage, *vpart);
+            len = ((Var_page *)tmpPage.p)->get_entry_len(tmp.m_page_idx);
+            Uint32 sz = ((mm_vars + 1) << 1) + (((Uint16 *)part)[mm_vars]);
+            ndbrequire(len >= ((sz + 3) >> 2));
+          } else {
+            Uint32 sz = ((mm_vars + 1) << 1) + (((Uint16 *)part)[mm_vars]);
+            ndbrequire(len >= ((sz + 3) >> 2) + fix_sz);
+          }
+          if (ptr->m_operation_ptr_i != RNIL) {
             OperationrecPtr operPtr;
             operPtr.i = ptr->m_operation_ptr_i;
 	    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
@@ -6074,14 +5658,12 @@ Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
 	  
 	}
       }
-      if(p == 0 && page->high_index > 1)
-	page->reorg((Var_page*)ctemp_page);
+      if (p == 0 && page->high_index > 1) page->reorg((Var_page *)ctemp_page);
     }
   }
-  
-  if(p == 0)
-  {
-    validate_page(regTabPtr, (Var_page*)1);
+
+  if (p == 0) {
+    validate_page(regTabPtr, (Var_page *)1);
   }
 }
 
@@ -6573,44 +6155,37 @@ Dbtup::handle_size_change_after_update(Signal *signal,
     Local_key ref;
     refptr->copyout(&ref);
     Uint32 alloc;
-    Uint32 idx= ref.m_page_idx;
-    if (bits & Tuple_header::VAR_PART)
-    {
+    Uint32 idx = ref.m_page_idx;
+    if (bits & Tuple_header::VAR_PART) {
       jamDebug();
-      if (copy_bits & Tuple_header::COPY_TUPLE)
-      {
+      if (copy_bits & Tuple_header::COPY_TUPLE) {
         jamDebug();
         ndbrequire(c_page_pool.getPtr(pagePtr, ref.m_page_no));
-        pageP = (Var_page*)pagePtr.p;
+        pageP = (Var_page *)pagePtr.p;
       }
       alloc = pageP->get_entry_len(idx);
-    }
-    else
-    {
+    } else {
       jamDebug();
       alloc = 0;
     }
-    Uint32 orig_size= alloc;
-    if(bits & Tuple_header::MM_GROWN)
-    {
+    Uint32 orig_size = alloc;
+    if (bits & Tuple_header::MM_GROWN) {
       jamDebug();
       /* Was grown before, so must fetch real original size from last word. */
-      Uint32 *old_var_part= pageP->get_ptr(idx);
-      ndbassert(alloc>0);
-      orig_size= old_var_part[alloc-1];
+      Uint32 *old_var_part = pageP->get_ptr(idx);
+      ndbassert(alloc > 0);
+      orig_size = old_var_part[alloc - 1];
     }
 
-    if (alloc)
-    {
+    if (alloc) {
       jamDebug();
 #ifdef VM_TRACE
-      if(!pageP->get_entry_chain(idx))
-        ndbout << *pageP << endl;
+      if (!pageP->get_entry_chain(idx)) ndbout << *pageP << endl;
 #endif
       ndbassert(pageP->get_entry_chain(idx));
     }
 
-    Uint32 needed= sizes[2+MM];
+    Uint32 needed = sizes[2 + MM];
 
     if(needed <= alloc)
     {
@@ -6679,11 +6254,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
      * pageP is not initialised and points to garbage.
      */
     bool require_exclusive_access =
-      alloc == 0 ||
-      pageP->free_space < add ||
-      !pageP->is_space_behind_entry(oldref.m_page_idx, add);
-    if (require_exclusive_access)
-    {
+        alloc == 0 || pageP->free_space < add ||
+        !pageP->is_space_behind_entry(oldref.m_page_idx, add);
+    if (require_exclusive_access) {
       jam();
       DEB_ELEM_COUNT(("(%u) realloc_var_part tab(%u,%u), var_lkey: (%u,%u),"
                       " alloc: %u, needed: %u",
@@ -6695,11 +6268,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                       alloc,
                       needed));
       c_lqh->upgrade_to_exclusive_frag_access();
-      Uint32 *new_var_part=realloc_var_part(&terrorCode,
-                                            regFragPtr, regTabPtr, pagePtr,
-                                            refptr, alloc, needed);
-      if (unlikely(new_var_part==NULL))
-      {
+      Uint32 *new_var_part = realloc_var_part(
+          &terrorCode, regFragPtr, regTabPtr, pagePtr, refptr, alloc, needed);
+      if (unlikely(new_var_part == NULL)) {
         jam();
         c_lqh->reset_old_fragment_lock_status();
         return -1;
@@ -6714,7 +6285,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                           Tuple_header::MM_GROWN |
                           Tuple_header::VAR_PART;
       m_base_header_bits = org->m_header_bits;
-      new_var_part[needed-1]= orig_size;
+      new_var_part[needed - 1] = orig_size;
 
       /**
        * Here we can change both header bits and the reference to the varpart,
@@ -6730,9 +6301,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
        */
       setChecksum(org, regTabPtr);
       c_lqh->downgrade_from_exclusive_frag_access();
-    }
-    else
-    {
+    } else {
       jamDebug();
       /**
        * Growing the entry in the page requires not exclusive access.
@@ -6759,15 +6328,11 @@ Dbtup::handle_size_change_after_update(Signal *signal,
   return 0;
 }
 
-int
-Dbtup::optimize_var_part(KeyReqStruct* req_struct,
-                         Tuple_header* org,
-                         Operationrec* regOperPtr,
-                         Fragrecord* regFragPtr,
-                         Tablerec* regTabPtr)
-{
+int Dbtup::optimize_var_part(KeyReqStruct *req_struct, Tuple_header *org,
+                             Operationrec *regOperPtr, Fragrecord *regFragPtr,
+                             Tablerec *regTabPtr) {
   jam();
-  Var_part_ref* refptr = org->get_var_part_ref_ptr(regTabPtr);
+  Var_part_ref *refptr = org->get_var_part_ref_ptr(regTabPtr);
 
   Local_key ref;
   refptr->copyout(&ref);
@@ -6776,26 +6341,20 @@ Dbtup::optimize_var_part(KeyReqStruct* req_struct,
   Ptr<Page> pagePtr;
   ndbrequire(c_page_pool.getPtr(pagePtr, ref.m_page_no));
 
-  Var_page* pageP = (Var_page*)pagePtr.p;
+  Var_page *pageP = (Var_page *)pagePtr.p;
   Uint32 var_part_size = pageP->get_entry_len(idx);
 
   /**
    * if the size of page list_index is MAX_FREE_LIST,
    * we think it as full page, then need not optimize
    */
-  if (pageP->list_index != MAX_FREE_LIST)
-  {
+  if (pageP->list_index != MAX_FREE_LIST) {
     jam();
     /*
-     * optimize var part of tuple by moving varpart, 
+     * optimize var part of tuple by moving varpart,
      * then we possibly reclaim free pages
      */
-    move_var_part(regFragPtr,
-                  regTabPtr,
-                  pagePtr,
-                  refptr,
-                  var_part_size,
-                  org);
+    move_var_part(regFragPtr, regTabPtr, pagePtr, refptr, var_part_size, org);
   }
 
   return 0;
@@ -6811,7 +6370,7 @@ Dbtup::nr_update_gci(Uint64 fragPtrI,
   fragPtr.i= fragPtrI;
   ndbrequire(c_fragment_pool.getPtr(fragPtr));
   TablerecPtr tablePtr;
-  tablePtr.i= fragPtr.p->fragTableId;
+  tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
   /**
@@ -6832,30 +6391,25 @@ Dbtup::nr_update_gci(Uint64 fragPtrI,
    */
   jamDebug();
   ndbrequire(!m_is_in_query_thread);
-  if (tablePtr.p->m_bits & Tablerec::TR_RowGCI || true)
-  {
+  if (tablePtr.p->m_bits & Tablerec::TR_RowGCI || true) {
     Local_key tmp = *key;
     PagePtr pagePtr;
 
     pagePtr.i = getRealpidCheck(fragPtr.p, tmp.m_page_no);
-    if (unlikely(pagePtr.i == RNIL))
-    {
+    if (unlikely(pagePtr.i == RNIL)) {
       jam();
       ndbassert(!tuple_exists);
       return 0;
     }
 
     c_page_pool.getPtr(pagePtr);
-    
-    Tuple_header* ptr = (Tuple_header*)
-      ((Fix_page*)pagePtr.p)->get_ptr(tmp.m_page_idx, 0);
 
-    if (tuple_exists)
-    {
+    Tuple_header *ptr =
+        (Tuple_header *)((Fix_page *)pagePtr.p)->get_ptr(tmp.m_page_idx, 0);
+
+    if (tuple_exists) {
       ndbrequire(!(ptr->m_header_bits & Tuple_header::FREE));
-    }
-    else
-    {
+    } else {
       ndbrequire(ptr->m_header_bits & Tuple_header::FREE);
     }
     update_gci(fragPtr.p, tablePtr.p, ptr, gci);
@@ -6872,17 +6426,16 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
   fragPtr.i= fragPtrI;
   ndbrequire(c_fragment_pool.getPtr(fragPtr));
   TablerecPtr tablePtr;
-  tablePtr.i= fragPtr.p->fragTableId;
+  tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
   Local_key tmp = *key;
-  
+
   ndbrequire(!m_is_in_query_thread);
   PagePtr pagePtr;
   /* Mutex protection only required here for query threads. */
   pagePtr.i = getRealpidCheck(fragPtr.p, tmp.m_page_no);
-  if (unlikely(pagePtr.i == RNIL))
-  {
+  if (unlikely(pagePtr.i == RNIL)) {
     jam();
     dst[0] = 0;
     return 0;
@@ -6894,59 +6447,52 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
   
   req_struct.m_lqh = c_lqh;
   req_struct.m_page_ptr = pagePtr;
-  req_struct.m_tuple_ptr = (Tuple_header*)ptr;
+  req_struct.m_tuple_ptr = (Tuple_header *)ptr;
   Uint32 bits = req_struct.m_tuple_ptr->m_header_bits;
 
   int ret = 0;
   copy = false;
-  if (! (bits & Tuple_header::FREE))
-  {
-    if (bits & Tuple_header::ALLOC)
-    {
+  if (!(bits & Tuple_header::FREE)) {
+    if (bits & Tuple_header::ALLOC) {
       OperationrecPtr opPtr;
       opPtr.i = req_struct.m_tuple_ptr->m_operation_ptr_i;
       ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(opPtr));
       ndbassert(!opPtr.p->m_copy_tuple_location.isNull());
-      req_struct.m_tuple_ptr=
-        get_copy_tuple(&opPtr.p->m_copy_tuple_location);
+      req_struct.m_tuple_ptr = get_copy_tuple(&opPtr.p->m_copy_tuple_location);
       copy = true;
     }
     Uint32 *tab_descr = tablePtr.p->tabDescriptor;
-    req_struct.check_offset[MM]= tablePtr.p->get_check_offset(MM);
-    req_struct.check_offset[DD]= tablePtr.p->get_check_offset(DD);
-    req_struct.attr_descr= tab_descr;
+    req_struct.check_offset[MM] = tablePtr.p->get_check_offset(MM);
+    req_struct.check_offset[DD] = tablePtr.p->get_check_offset(DD);
 
-    if (tablePtr.p->need_expand())
-      prepare_read(&req_struct, tablePtr.p, false);
-    
-    const Uint32* attrIds = tablePtr.p->readKeyArray;
-    const Uint32 numAttrs= tablePtr.p->noOfKeyAttr;
+    req_struct.attr_descr = tab_descr;
+
+    if (tablePtr.p->need_expand()) prepare_read(&req_struct, tablePtr.p, false);
+
+    const Uint32 *attrIds = tablePtr.p->readKeyArray;
+    const Uint32 numAttrs = tablePtr.p->noOfKeyAttr;
     // read pk attributes from original tuple
-    
+
     req_struct.tablePtrP = tablePtr.p;
     req_struct.fragPtrP = fragPtr.p;
-    
+
     // do it
-    ret = readAttributes(&req_struct,
-			 attrIds,
-			 numAttrs,
-			 dst,
-			 ZNIL);
-    
+    ret = readAttributes(&req_struct, attrIds, numAttrs, dst, ZNIL);
+
     // done
     if (likely(ret >= 0)) {
       // remove headers
-      Uint32 n= 0;
-      Uint32 i= 0;
+      Uint32 n = 0;
+      Uint32 i = 0;
       while (n < numAttrs) {
-	const AttributeHeader ah(dst[i]);
-	Uint32 size= ah.getDataSize();
-	ndbrequire(size != 0);
-	for (Uint32 j= 0; j < size; j++) {
-	  dst[i + j - n]= dst[i + j + 1];
-	}
-	n+= 1;
-	i+= 1 + size;
+        const AttributeHeader ah(dst[i]);
+        Uint32 size = ah.getDataSize();
+        ndbrequire(size != 0);
+        for (Uint32 j = 0; j < size; j++) {
+          dst[i + j - n] = dst[i + j + 1];
+        }
+        n += 1;
+        i += 1 + size;
       }
       ndbrequire((int)i == ret);
       ret -= numAttrs;
@@ -6954,13 +6500,10 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
       return ret;
     }
   }
-    
-  if (tablePtr.p->m_bits & Tablerec::TR_RowGCI)
-  {
+
+  if (tablePtr.p->m_bits & Tablerec::TR_RowGCI) {
     dst[ret] = *req_struct.m_tuple_ptr->get_mm_gci(tablePtr.p);
-  }
-  else
-  {
+  } else {
     dst[ret] = 0;
   }
   return ret;
@@ -6974,7 +6517,7 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
   fragPtr.i= fragPtrI;
   ndbrequire(c_fragment_pool.getPtr(fragPtr));
   TablerecPtr tablePtr;
-  tablePtr.i= fragPtr.p->fragTableId;
+  tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
   ndbrequire(!m_is_in_query_thread);
@@ -6984,16 +6527,15 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
    * concurrency from query threads that will bother us at this point in
    * time.
    */
-  Local_key tmp = * key;
-  tmp.m_page_no= getRealpid(fragPtr.p, tmp.m_page_no); 
-  
-  PagePtr pagePtr;
-  Tuple_header* ptr= (Tuple_header*)get_ptr(&pagePtr, &tmp, tablePtr.p);
+  Local_key tmp = *key;
+  tmp.m_page_no = getRealpid(fragPtr.p, tmp.m_page_no);
 
-  if (!tablePtr.p->tuxCustomTriggers.isEmpty()) 
-  {
+  PagePtr pagePtr;
+  Tuple_header *ptr = (Tuple_header *)get_ptr(&pagePtr, &tmp, tablePtr.p);
+
+  if (!tablePtr.p->tuxCustomTriggers.isEmpty()) {
     jam();
-    TuxMaintReq* req = (TuxMaintReq*)signal->getDataPtrSend();
+    TuxMaintReq *req = (TuxMaintReq *)signal->getDataPtrSend();
     req->tableId = fragPtr.p->fragTableId;
     req->fragId = fragPtr.p->fragmentId;
     req->pageId = tmp.m_page_no;
@@ -7002,17 +6544,15 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     req->opInfo = TuxMaintReq::OpRemove;
     removeTuxEntries(signal, tablePtr.p);
   }
-  
+
   Local_key disk;
   memcpy(&disk, ptr->get_disk_ref_ptr(tablePtr.p), sizeof(disk));
 
-  Uint32 lcpScan_ptr_i= fragPtr.p->m_lcp_scan_op;
+  Uint32 lcpScan_ptr_i = fragPtr.p->m_lcp_scan_op;
   Uint32 bits = ptr->m_header_bits;
   if (lcpScan_ptr_i != RNIL &&
-      ! (bits & (Tuple_header::LCP_SKIP |
-                 Tuple_header::LCP_DELETE |
-                 Tuple_header::ALLOC)))
-  {
+      !(bits & (Tuple_header::LCP_SKIP | Tuple_header::LCP_DELETE |
+                Tuple_header::ALLOC))) {
     /**
      * We are performing a node restart currently, at the same time we
      * are also running a LCP on the fragment. This can happen when the
@@ -7028,20 +6568,15 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     ScanOpPtr scanOp;
     scanOp.i = lcpScan_ptr_i;
     ndbrequire(c_scanOpPool.getValidPtr(scanOp));
-    if (is_rowid_in_remaining_lcp_set(pagePtr.p,
-                                      fragPtr.p,
-                                      *key,
-                                      *scanOp.p,
-                                      0))
-    {
+    if (is_rowid_in_remaining_lcp_set(pagePtr.p, fragPtr.p, *key, *scanOp.p,
+                                      0)) {
       KeyReqStruct req_struct(jamBuffer(), KRS_PREPARE);
       req_struct.m_lqh = c_lqh;
       req_struct.fragPtrP = fragPtr.p;
       Operationrec oprec;
       Tuple_header *copy;
-      if ((copy = alloc_copy_tuple(tablePtr.p,
-                                   &oprec.m_copy_tuple_location)) == 0)
-      {
+      if ((copy = alloc_copy_tuple(tablePtr.p, &oprec.m_copy_tuple_location)) ==
+          0) {
         /**
          * We failed to allocate the copy record, this is a critical error,
          * we will fail with an error message instruction to increase
@@ -7051,27 +6586,18 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
         BaseString::snprintf(buf, sizeof(buf),
                              "Out of memory when allocating copy tuple for"
                              " LCP keep list, increase SharedGlobalMemory");
-        progError(__LINE__,
-                  NDBD_EXIT_RESOURCE_ALLOC_ERROR,
-                  buf);
+        progError(__LINE__, NDBD_EXIT_RESOURCE_ALLOC_ERROR, buf);
       }
       req_struct.m_tuple_ptr = ptr;
       oprec.m_tuple_location = tmp;
       oprec.op_type = ZDELETE;
-      DEB_LCP_SKIP_DELETE(("(%u)nr_delete: tab(%u,%u), row(%u,%u),"
-                           " handle_lcp_keep_commit"
-                           ", set LCP_SKIP, bits: %x",
-                           instance(),
-                           fragPtr.p->fragTableId,
-                           fragPtr.p->fragmentId,
-                           key->m_page_no,
-                           key->m_page_idx,
-                           bits));
-      handle_lcp_keep_commit(key,
-                             &req_struct,
-                             &oprec,
-                             fragPtr.p,
-                             tablePtr.p);
+      DEB_LCP_SKIP_DELETE(
+          ("(%u)nr_delete: tab(%u,%u), row(%u,%u),"
+           " handle_lcp_keep_commit"
+           ", set LCP_SKIP, bits: %x",
+           instance(), fragPtr.p->fragTableId, fragPtr.p->fragmentId,
+           key->m_page_no, key->m_page_idx, bits));
+      handle_lcp_keep_commit(key, &req_struct, &oprec, fragPtr.p, tablePtr.p);
       jamDebug();
       acquire_frag_mutex(fragPtr.p, key->m_page_no, jamBuffer());
       ptr->m_header_bits |= Tuple_header::LCP_SKIP;
@@ -7095,32 +6621,26 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
   fragPtr.p->m_row_count--;
   fragPtr.p->m_lcp_changed_rows++;
 
-  DEB_DELETE_NR(("(%u)nr_delete, tab(%u,%u) row(%u,%u), gci: %u"
-                 ", row_count: %llu",
-                 instance(),
-                 fragPtr.p->fragTableId,
-                 fragPtr.p->fragmentId,
-                 key->m_page_no,
-                 key->m_page_idx,
-                 *ptr->get_mm_gci(tablePtr.p),
-                 fragPtr.p->m_row_count));
+  DEB_DELETE_NR((
+      "(%u)nr_delete, tab(%u,%u) row(%u,%u), gci: %u"
+      ", row_count: %llu",
+      instance(), fragPtr.p->fragTableId, fragPtr.p->fragmentId, key->m_page_no,
+      key->m_page_idx, *ptr->get_mm_gci(tablePtr.p), fragPtr.p->m_row_count));
 
   /**
    * No query threads active when restore and copy fragment process
    * is active. Thus no need to lock mutex here.
    */
   if (tablePtr.p->m_attributes[MM].m_no_of_varsize +
-      tablePtr.p->m_attributes[MM].m_no_of_dynamic)
-  {
+      tablePtr.p->m_attributes[MM].m_no_of_dynamic) {
     jam();
     free_var_rec(fragPtr.p, tablePtr.p, &tmp, pagePtr);
   } else {
     jam();
-    free_fix_rec(fragPtr.p, tablePtr.p, &tmp, (Fix_page*)pagePtr.p);
+    free_fix_rec(fragPtr.p, tablePtr.p, &tmp, (Fix_page *)pagePtr.p);
   }
 
-  if (tablePtr.p->m_no_of_disk_attributes)
-  {
+  if (tablePtr.p->m_no_of_disk_attributes) {
     jam();
     Ptr<GlobalPage> diskPagePtr;
     int res;
@@ -7145,46 +6665,38 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     int flags = Page_cache_client::COMMIT_REQ;
     
 #ifdef ERROR_INSERT
-    if (ERROR_INSERTED(4023) || ERROR_INSERTED(4024))
-    {
-      int rnd = rand() % 100;
-      int slp = 0;
-      if (ERROR_INSERTED(4024))
-      {
-	slp = 3000;
-      }
-      else if (rnd > 90)
-      {
-	slp = 3000;
-      }
-      else if (rnd > 70)
-      {
-	slp = 100;
-      }
+      if (ERROR_INSERTED(4023) || ERROR_INSERTED(4024)) {
+        int rnd = rand() % 100;
+        int slp = 0;
+        if (ERROR_INSERTED(4024)) {
+          slp = 3000;
+        } else if (rnd > 90) {
+          slp = 3000;
+        } else if (rnd > 70) {
+          slp = 100;
+        }
 
-      g_eventLogger->info("rnd: %d slp: %d", rnd, slp);
+        g_eventLogger->info("rnd: %d slp: %d", rnd, slp);
 
-      if (slp)
-      {
-	flags |= Page_cache_client::DELAY_REQ;
-        const NDB_TICKS now = NdbTick_getCurrentTicks();
-        preq.m_delay_until_time = NdbTick_AddMilliseconds(now,(Uint64)slp);
+        if (slp) {
+          flags |= Page_cache_client::DELAY_REQ;
+          const NDB_TICKS now = NdbTick_getCurrentTicks();
+          preq.m_delay_until_time = NdbTick_AddMilliseconds(now, (Uint64)slp);
+        }
       }
-    }
 #endif
-    {
-      Page_cache_client pgman(this, c_pgman);
-      res = pgman.get_page(signal, preq, flags);
-      diskPagePtr = pgman.m_ptr;
-      if (res == 0)
       {
-        goto timeslice;
-      }
-      /**
-       * We are processing node recovery and need to process a disk
-       * data page, if this fails we cannot proceed with node recovery.
-       */
-      ndbrequire(res > 0);
+        Page_cache_client pgman(this, c_pgman);
+        res = pgman.get_page(signal, preq, flags);
+        diskPagePtr = pgman.m_ptr;
+        if (res == 0) {
+          goto timeslice;
+        }
+        /**
+         * We are processing node recovery and need to process a disk
+         * data page, if this fails we cannot proceed with node recovery.
+         */
+        ndbrequire(res > 0);
 
       if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
       {
@@ -7217,25 +6729,19 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     PagePtr disk_page((Tup_page*)diskPagePtr.p, diskPagePtr.i);
     disk_page_set_dirty(disk_page, fragPtr.p);
 
-    switch(res){
-    case 0:
-      signal->theData[2] = disk_page.i;
-      goto timeslice;
-    case -1:
-      ndbrequire("NOT YET IMPLEMENTED" == 0);
-      break;
+    switch (res) {
+      case 0:
+        signal->theData[2] = disk_page.i;
+        goto timeslice;
+      case -1:
+        ndbrequire("NOT YET IMPLEMENTED" == 0);
+        break;
     }
-    disk_page_free(signal,
-                   tablePtr.p,
-                   fragPtr.p,
-		   &disk,
-                   *(PagePtr*)&disk_page,
-                   gci,
-                   key,
-                   sz);
+    disk_page_free(signal, tablePtr.p, fragPtr.p, &disk, *(PagePtr *)&disk_page,
+                   gci, key, sz);
     return 0;
   }
-  
+
   return 0;
 
 timeslice:
@@ -7243,9 +6749,8 @@ timeslice:
   return 1;
 }
 
-void
-Dbtup::nr_delete_page_callback(Signal* signal, 
-			       Uint32 userpointer, Uint32 page_id)//unused
+void Dbtup::nr_delete_page_callback(Signal *signal, Uint32 userpointer,
+                                    Uint32 page_id)  // unused
 {
   Ptr<GlobalPage> gpage;
   ndbrequire(m_global_page_pool.getPtr(gpage, page_id));
@@ -7292,32 +6797,24 @@ Dbtup::nr_delete_page_callback(Signal* signal,
     D("Logfile_client - nr_delete_page_callback");
     res= lgman.get_log_buffer(signal, sz, &cb);
   }
-  switch(res){
-  case 0:
-    jam();
-    return;
-  case -1:
-    ndbrequire("NOT YET IMPLEMENTED" == 0);
-    break;
+  switch (res) {
+    case 0:
+      jam();
+      return;
+    case -1:
+      ndbrequire("NOT YET IMPLEMENTED" == 0);
+      break;
   }
   jam();
-  disk_page_free(signal,
-                 tablePtr.p, fragPtr.p,
-		 &op.m_disk_ref,
-                 pagePtr,
-                 op.m_gci_hi,
-                 &op.m_row_id,
-                 sz);
-  
+  disk_page_free(signal, tablePtr.p, fragPtr.p, &op.m_disk_ref, pagePtr,
+                 op.m_gci_hi, &op.m_row_id, sz);
+
   c_lqh->nr_delete_complete(signal, &op);
   return;
 }
 
-void
-Dbtup::nr_delete_log_buffer_callback(Signal* signal, 
-				    Uint32 userpointer, 
-				    Uint32 unused)
-{
+void Dbtup::nr_delete_log_buffer_callback(Signal *signal, Uint32 userpointer,
+                                          Uint32 unused) {
   Dblqh::Nr_op_info op;
   op.m_ptr_i = userpointer;
   jam();
@@ -7334,7 +6831,7 @@ Dbtup::nr_delete_log_buffer_callback(Signal* signal,
 
   Ptr<GlobalPage> gpage;
   ndbrequire(m_global_page_pool.getPtr(gpage, op.m_page_id));
-  PagePtr pagePtr((Tup_page*)gpage.p, gpage.i);
+  PagePtr pagePtr((Tup_page *)gpage.p, gpage.i);
 
   Uint32 sz;
   if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)

@@ -1,18 +1,19 @@
 #ifndef ITEM_INCLUDED
 #define ITEM_INCLUDED
 
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,8 +41,6 @@
 #include "decimal.h"
 #include "field_types.h"  // enum_field_types
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "memory_debugging.h"
 #include "my_alloc.h"
 #include "my_bitmap.h"
@@ -52,14 +51,19 @@
 #include "my_sys.h"
 #include "my_table_map.h"
 #include "my_time.h"
+#include "mysql/strings/dtoa.h"
+#include "mysql/strings/m_ctype.h"
+#include "mysql/strings/my_strtoll10.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysql_time.h"
 #include "mysqld_error.h"
+#include "nulls.h"
+#include "sql-common/my_decimal.h"  // my_decimal
+#include "sql/auth/auth_acls.h"     // Access_bitmask
 #include "sql/enum_query_type.h"
 #include "sql/field.h"  // Derivation
 #include "sql/mem_root_array.h"
-#include "sql/my_decimal.h"            // my_decimal
 #include "sql/parse_location.h"        // POS
 #include "sql/parse_tree_node_base.h"  // Parse_tree_node
 #include "sql/sql_array.h"             // Bounds_checked_array
@@ -70,10 +74,12 @@
 #include "sql/thr_malloc.h"
 #include "sql/trigger_def.h"  // enum_trigger_variable_type
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "template_utils.h"
 
 class Item;
 class Item_field;
+class Item_func;
 class Item_singlerow_subselect;
 class Item_sum;
 class Json_wrapper;
@@ -97,20 +103,20 @@ void item_init(void); /* Init item functions */
   For predicates that are always satisfied. Must be 1.0 or the filter
   calculation logic will break down.
 */
-#define COND_FILTER_ALLPASS 1.0f
+constexpr float COND_FILTER_ALLPASS{1.0f};
 /// Filtering effect for equalities: col1 = col2
-#define COND_FILTER_EQUALITY 0.1f
+constexpr float COND_FILTER_EQUALITY{0.1f};
 /// Filtering effect for inequalities: col1 > col2
-#define COND_FILTER_INEQUALITY 0.3333f
+constexpr float COND_FILTER_INEQUALITY{0.3333f};
 /// Filtering effect for between: col1 BETWEEN a AND b
-#define COND_FILTER_BETWEEN 0.1111f
+constexpr float COND_FILTER_BETWEEN{0.1111f};
 /**
    Value is out-of-date, will need recalculation.
    This is used by post-greedy-search logic which changes the access method and
   thus makes obsolete the filtering value calculated by best_access_path(). For
   example, test_if_skip_sort_order().
 */
-#define COND_FILTER_STALE -1.0f
+constexpr float COND_FILTER_STALE{-1.0f};
 /**
    A special subcase of the above:
    - if this is table/index/range scan, and
@@ -126,11 +132,11 @@ void item_init(void); /* Init item functions */
    - the constant condition's effect has to be moved to filter_effect for
    EXPLAIN.
 */
-#define COND_FILTER_STALE_NO_CONST -2.0f
+constexpr float COND_FILTER_STALE_NO_CONST{-2.0f};
 
 static inline uint32 char_to_byte_length_safe(uint32 char_length_arg,
                                               uint32 mbmaxlen_arg) {
-  ulonglong tmp = ((ulonglong)char_length_arg) * mbmaxlen_arg;
+  const ulonglong tmp = ((ulonglong)char_length_arg) * mbmaxlen_arg;
   return (tmp > UINT_MAX32) ? (uint32)UINT_MAX32 : (uint32)tmp;
 }
 
@@ -674,7 +680,8 @@ class Settable_routine_parameter {
                       MODE_OUT   - UPDATE_ACL
                       MODE_INOUT - SELECT_ACL | UPDATE_ACL
   */
-  virtual void set_required_privilege(ulong privilege [[maybe_unused]]) {}
+  virtual void set_required_privilege(Access_bitmask privilege
+                                      [[maybe_unused]]) {}
 
   /*
     Set parameter value.
@@ -775,6 +782,85 @@ class Item_tree_walker {
   const Item *stopped_at_item{nullptr};
 };
 
+/// Increment *num if it is less than its maximal value.
+template <typename T>
+void SafeIncrement(T *num) {
+  if (*num < std::numeric_limits<T>::max()) {
+    *num += 1;
+  }
+}
+
+/**
+   This class represents the cost of evaluating an Item. @see SortPredicates
+   to see how this is used.
+*/
+class CostOfItem final {
+ public:
+  /// Set '*this' to represent the cost of 'item'.
+  void Compute(const Item &item) {
+    if (!m_computed) {
+      ComputeInternal(item);
+    }
+  }
+
+  void MarkExpensive() {
+    assert(!m_computed);
+    m_is_expensive = true;
+  }
+
+  /// Add the cost of accessing a Field_str.
+  void AddStrFieldCost() {
+    assert(!m_computed);
+    SafeIncrement(&m_str_fields);
+  }
+
+  /// Add the cost of accessing any other Field.
+  void AddFieldCost() {
+    assert(!m_computed);
+    SafeIncrement(&m_other_fields);
+  }
+
+  bool IsExpensive() const {
+    assert(m_computed);
+    return m_is_expensive;
+  }
+
+  /**
+     Get the cost of field access when evaluating the Item associated with this
+     object. The cost unit is arbitrary, but the relative cost of different
+     items reflect the fact that operating on Field_str is more expensive than
+     other Field subclasses.
+  */
+  double FieldCost() const {
+    assert(m_computed);
+    return m_other_fields * kOtherFieldCost + m_str_fields * kStrFieldCost;
+  }
+
+ private:
+  /// The cost of accessing a Field_str, relative to other Field types.
+  /// (The value was determined using benchmarks.)
+  static constexpr double kStrFieldCost = 1.8;
+
+  /// The cost of accessing a Field other than Field_str. 1.0 by definition.
+  static constexpr double kOtherFieldCost = 1.0;
+
+  /// True if 'ComputeInternal()' has been called.
+  bool m_computed{false};
+
+  /// True if the associated Item calls user defined functions or stored
+  /// procedures.
+  bool m_is_expensive{false};
+
+  /// The number of Field_str objects accessed by the associated Item.
+  uint8 m_str_fields{0};
+
+  /// The number of other Field objects accessed by the associated Item.
+  uint8 m_other_fields{0};
+
+  /// Compute the cost of 'root' and its descendants.
+  void ComputeInternal(const Item &root);
+};
+
 /**
    This class represents a subquery contained in some subclass of
    Item_subselect, @see FindContainedSubqueries().
@@ -851,7 +937,6 @@ class Item : public Parse_tree_node {
   typedef Parse_tree_node super;
 
   friend class udf_handler;
-  virtual bool is_expensive_processor(uchar *) { return false; }
 
  protected:
   /**
@@ -884,36 +969,30 @@ class Item : public Parse_tree_node {
                               const std::nothrow_t &) noexcept {}
 
   enum Type {
-    INVALID_ITEM = 0,
-    FIELD_ITEM,
-    FUNC_ITEM,
-    SUM_FUNC_ITEM,
-    STRING_ITEM,
-    INT_ITEM,
-    REAL_ITEM,
-    NULL_ITEM,
-    VARBIN_ITEM,
-    METADATA_COPY_ITEM,
-    FIELD_AVG_ITEM,
-    DEFAULT_VALUE_ITEM,
-    PROC_ITEM,
-    COND_ITEM,
-    REF_ITEM,
-    FIELD_STD_ITEM,
-    FIELD_VARIANCE_ITEM,
-    INSERT_VALUE_ITEM,
-    SUBSELECT_ITEM,
-    ROW_ITEM,
-    CACHE_ITEM,
-    TYPE_HOLDER,
-    PARAM_ITEM,
-    TRIGGER_FIELD_ITEM,
-    DECIMAL_ITEM,
-    XPATH_NODESET,
-    XPATH_NODESET_CMP,
-    VIEW_FIXER_ITEM,
-    FIELD_BIT_ITEM,
-    VALUES_COLUMN_ITEM
+    INVALID_ITEM,
+    FIELD_ITEM,          ///< A reference to a field (column) in a table.
+    FUNC_ITEM,           ///< A function call reference.
+    SUM_FUNC_ITEM,       ///< A grouped aggregate function, or window function.
+    AGGR_FIELD_ITEM,     ///< A special field for certain aggregate operations.
+    STRING_ITEM,         ///< A string literal value.
+    INT_ITEM,            ///< An integer literal value.
+    DECIMAL_ITEM,        ///< A decimal literal value.
+    REAL_ITEM,           ///< A floating-point literal value.
+    NULL_ITEM,           ///< A NULL value.
+    HEX_BIN_ITEM,        ///< A hexadecimal or binary literal value.
+    DEFAULT_VALUE_ITEM,  ///< A default value for a column.
+    COND_ITEM,           ///< An AND or OR condition.
+    REF_ITEM,            ///< An indirect reference to another item.
+    INSERT_VALUE_ITEM,   ///< A value from a VALUES function (deprecated).
+    SUBQUERY_ITEM,       ///< A subquery or predicate referencing a subquery.
+    ROW_ITEM,            ///< A row of other items.
+    CACHE_ITEM,          ///< An internal item used to cache values.
+    TYPE_HOLDER_ITEM,    ///< An internal item used to help aggregate a type.
+    PARAM_ITEM,          ///< A dynamic parameter used in a prepared statement.
+    ROUTINE_FIELD_ITEM,  ///< A variable inside a routine (proc, func, trigger)
+    TRIGGER_FIELD_ITEM,  ///< An OLD or NEW field, used in trigger definitions.
+    XPATH_NODESET_ITEM,  ///< Used in XPATH expressions.
+    VALUES_COLUMN_ITEM   ///< A value from a VALUES clause.
   };
 
   enum cond_result { COND_UNDEF, COND_OK, COND_TRUE, COND_FALSE };
@@ -1005,6 +1084,7 @@ class Item : public Parse_tree_node {
       case MYSQL_TYPE_INVALID:
         return INVALID_RESULT;
       case MYSQL_TYPE_NULL:
+        return STRING_RESULT;
       case MYSQL_TYPE_TYPED_ARRAY:
         break;
     }
@@ -1108,7 +1188,7 @@ class Item : public Parse_tree_node {
     Hide the contextualize*() functions: call/override the itemize()
     in Item class tree instead.
   */
-  bool contextualize(Parse_context *) override {
+  bool do_contextualize(Parse_context *) override {
     assert(0);
     return true;
   }
@@ -1139,6 +1219,12 @@ class Item : public Parse_tree_node {
    */
   static bool bit_func_returns_binary(const Item *a, const Item *b);
 
+  /**
+    The core function that does the actual itemization. itemize() is just a
+    wrapper over this.
+  */
+  virtual bool do_itemize(Parse_context *pc, Item **res);
+
  public:
   /**
     The same as contextualize() but with additional parameter
@@ -1147,6 +1233,9 @@ class Item : public Parse_tree_node {
     constructor): we can access/change parser contexts from the itemize()
     function.
 
+    Derived classes should not override this. If needed, they should
+    override do_itemize().
+
     @param        pc    current parse context
     @param  [out] res   pointer to "this" or to a newly allocated
                         replacement object to use in the Item tree instead
@@ -1154,7 +1243,28 @@ class Item : public Parse_tree_node {
     @retval false       success
     @retval true        syntax/OOM/etc error
   */
-  virtual bool itemize(Parse_context *pc, Item **res);
+  // Visual Studio with MSVC_CPPCHECK=ON gives warning C26435:
+  // Function <fun> should specify exactly one of
+  //    'virtual', 'override', or 'final'
+  MY_COMPILER_DIAGNOSTIC_PUSH()
+  MY_COMPILER_MSVC_DIAGNOSTIC_IGNORE(26435)
+  virtual bool itemize(Parse_context *pc, Item **res) final {
+    // For condition#2 below ... If position is empty, this item was not
+    // created in the parser; so don't show it in the parse tree.
+    if (pc->m_show_parse_tree == nullptr || this->m_pos.is_empty())
+      return do_itemize(pc, res);
+
+    Show_parse_tree *tree = pc->m_show_parse_tree.get();
+
+    if (begin_parse_tree(tree)) return true;
+
+    if (do_itemize(pc, res)) return true;
+
+    if (end_parse_tree(tree)) return true;
+
+    return false;
+  }
+  MY_COMPILER_DIAGNOSTIC_POP()
 
   void rename(char *new_name);
   void init_make_field(Send_field *tmp_field, enum enum_field_types type);
@@ -1392,10 +1502,37 @@ class Item : public Parse_tree_node {
     m_data_type = static_cast<uint8>(data_type);
   }
 
+  inline void set_data_type_null() {
+    set_data_type(MYSQL_TYPE_NULL);
+    collation.set(&my_charset_bin, DERIVATION_IGNORABLE);
+    max_length = 0;
+    set_nullable(true);
+  }
+
   inline void set_data_type_bool() {
     set_data_type(MYSQL_TYPE_LONGLONG);
     collation.set_numeric();
+    decimals = 0;
     max_length = 1;
+  }
+
+  /**
+    Set the data type of the Item to be a specific integer type
+
+    @param type          Integer type
+    @param unsigned_prop Whether the integer is signed or not
+    @param max_width     Maximum width of field in number of digits
+  */
+  inline void set_data_type_int(enum_field_types type, bool unsigned_prop,
+                                uint32 max_width) {
+    assert(type == MYSQL_TYPE_TINY || type == MYSQL_TYPE_SHORT ||
+           type == MYSQL_TYPE_INT24 || type == MYSQL_TYPE_LONG ||
+           type == MYSQL_TYPE_LONGLONG);
+    set_data_type(type);
+    collation.set_numeric();
+    unsigned_flag = unsigned_prop;
+    decimals = 0;
+    fix_char_length(max_width);
   }
 
   /**
@@ -1406,6 +1543,7 @@ class Item : public Parse_tree_node {
   inline void set_data_type_longlong() {
     set_data_type(MYSQL_TYPE_LONGLONG);
     collation.set_numeric();
+    decimals = 0;
     fix_char_length(21);
   }
 
@@ -1526,11 +1664,18 @@ class Item : public Parse_tree_node {
   /**
     Set the Item to be of BLOB type.
 
-    @param max_l Maximum number of bytes in data type
+    @param type   Actual blob data type
+    @param max_l  Maximum number of characters in data type
   */
-  inline void set_data_type_blob(uint32 max_l) {
-    set_data_type(MYSQL_TYPE_LONG_BLOB);
-    max_length = max_l;
+  inline void set_data_type_blob(enum_field_types type, uint32 max_l) {
+    assert(type == MYSQL_TYPE_TINY_BLOB || type == MYSQL_TYPE_BLOB ||
+           type == MYSQL_TYPE_MEDIUM_BLOB || type == MYSQL_TYPE_LONG_BLOB);
+    set_data_type(type);
+    ulonglong max_width = max_l * collation.collation->mbmaxlen;
+    if (max_width > Field::MAX_LONG_BLOB_WIDTH) {
+      max_width = Field::MAX_LONG_BLOB_WIDTH;
+    }
+    max_length = max_width;
     decimals = DECIMAL_NOT_SPECIFIED;
   }
 
@@ -1603,16 +1748,20 @@ class Item : public Parse_tree_node {
   void set_data_type_year() {
     set_data_type(MYSQL_TYPE_YEAR);
     collation.set_numeric();
-    fix_char_length(5);  // YYYY + sign
+    decimals = 0;
+    fix_char_length(4);  // YYYY
+    unsigned_flag = true;
   }
 
   /**
     Set the data type of the Item to be bit.
+
+    @param max_bits Maximum number of bits to store in this field.
   */
-  void set_data_type_bit() {
+  void set_data_type_bit(uint32 max_bits) {
     set_data_type(MYSQL_TYPE_BIT);
     collation.set_numeric();
-    fix_char_length(21);
+    max_length = max_bits;
     unsigned_flag = true;
   }
 
@@ -1649,7 +1798,7 @@ class Item : public Parse_tree_node {
   virtual Item_result cast_to_int_type() const { return result_type(); }
   virtual enum Type type() const = 0;
 
-  void aggregate_type(Bounds_checked_array<Item *> items);
+  bool aggregate_type(const char *name, Item **items, uint count);
 
   /*
     Return information about function monotonicity. See comment for
@@ -2321,10 +2470,11 @@ class Item : public Parse_tree_node {
      @param  thd            Thread handle
      @param  str            String to print to
      @param  query_type     How to format the item
-     @param  used_alias     Whether item was referenced with alias.
+     @param  used_alias     The alias with which this item was referenced, or
+                            nullptr if it was not referenced with an alias.
   */
   void print_for_order(const THD *thd, String *str, enum_query_type query_type,
-                       bool used_alias) const;
+                       const char *used_alias) const;
 
   /**
     Updates used tables, not null tables information and accumulates
@@ -2337,10 +2487,11 @@ class Item : public Parse_tree_node {
   */
   virtual void update_used_tables() {}
 
-  virtual void split_sum_func(THD *, Ref_item_array, mem_root_deque<Item *> *) {
+  virtual bool split_sum_func(THD *, Ref_item_array, mem_root_deque<Item *> *) {
+    return false;
   }
   /* Called for items that really have to be split */
-  void split_sum_func2(THD *thd, Ref_item_array ref_item_array,
+  bool split_sum_func2(THD *thd, Ref_item_array ref_item_array,
                        mem_root_deque<Item *> *fields, Item **ref,
                        bool skip_registered);
   virtual bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate) = 0;
@@ -2452,7 +2603,8 @@ class Item : public Parse_tree_node {
 
   virtual bool walk(Item_processor processor, enum_walk walk [[maybe_unused]],
                     uchar *arg) {
-    return (this->*processor)(arg);
+    return ((walk & enum_walk::PREFIX) && (this->*processor)(arg)) ||
+           ((walk & enum_walk::POSTFIX) && (this->*processor)(arg));
   }
 
   /** @see WalkItem, CompileItem, TransformItem */
@@ -2580,6 +2732,9 @@ class Item : public Parse_tree_node {
    public:
     List<Item> *m_item_fields_or_view_refs;
     Query_block *m_transformed_block;
+    /// Used to compute \c Item_field's \c m_protected_by_any_value. Pushed and
+    /// popped when walking arguments of \c Item_func_any_value.a
+    uint m_any_value_level{0};
     Collect_item_fields_or_view_refs(List<Item> *fields_or_vr,
                                      Query_block *transformed_block)
         : m_item_fields_or_view_refs(fields_or_vr),
@@ -2725,6 +2880,7 @@ class Item : public Parse_tree_node {
     */
     Query_block *const m_root;
 
+    friend class Item;
     friend class Item_sum;
     friend class Item_subselect;
     friend class Item_ref;
@@ -2733,11 +2889,12 @@ class Item : public Parse_tree_node {
      Clean up after removing the item from the item tree.
 
      param arg pointer to a Cleanup_after_removal_context object
+     @todo: If class ORDER is refactored so that all indirect
+     grouping/ordering expressions are represented with Item_ref
+     objects, all implementations of cleanup_after_removal() except
+     the one for Item_ref can be removed.
   */
-  virtual bool clean_up_after_removal(uchar *arg [[maybe_unused]]) {
-    assert(arg != nullptr);
-    return false;
-  }
+  virtual bool clean_up_after_removal(uchar *arg);
 
   /// @see Distinct_check::check_query()
   virtual bool aggregate_check_distinct(uchar *) { return false; }
@@ -2872,7 +3029,13 @@ class Item : public Parse_tree_node {
   virtual Item *equal_fields_propagator(uchar *) { return this; }
   // Mark the item to not be part of substitution.
   virtual bool disable_constant_propagation(uchar *) { return false; }
+
+  struct Replace_equal {
+    // Stack of pointers to enclosing functions
+    List<Item_func> stack;
+  };
   virtual Item *replace_equal_field(uchar *) { return this; }
+  virtual bool replace_equal_field_checker(uchar **) { return true; }
   /*
     Check if an expression value has allowed arguments, like DATE/DATETIME
     for date functions. Also used by partitioning code to reject
@@ -3025,6 +3188,16 @@ class Item : public Parse_tree_node {
           m_default_value(default_value) {}
   };
 
+  struct Item_func_call_replacement : Item_replacement {
+    Item_func *m_target;  ///< The function call to be replaced
+    Item_field *m_item;   ///< The replacement field
+    Item_func_call_replacement(Item_func *func_target, Item_field *item,
+                               Query_block *select)
+        : Item_replacement(select, select),
+          m_target(func_target),
+          m_item(item) {}
+  };
+
   struct Item_view_ref_replacement : Item_replacement {
     Item *m_target;  ///< The item identifying the view_ref to be replaced
     Field *m_field;  ///< The replacement field
@@ -3056,6 +3229,7 @@ class Item : public Parse_tree_node {
     operation of the original transformed query block.
   */
   virtual Item *replace_item_field(uchar *) { return this; }
+  virtual Item *replace_func_call(uchar *) { return this; }
   virtual Item *replace_item_view_ref(uchar *) { return this; }
   virtual Item *replace_aggregate(uchar *) { return this; }
   virtual Item *replace_outer_ref(uchar *) { return this; }
@@ -3135,22 +3309,9 @@ class Item : public Parse_tree_node {
   String *check_well_formed_result(String *str, bool send_error, bool truncate);
   bool eq_by_collation(Item *item, bool binary_cmp, const CHARSET_INFO *cs);
 
-  /*
-    Test whether an expression is expensive to compute. Used during
-    optimization to avoid computing expensive expressions during this
-    phase. Also used to force temp tables when sorting on expensive
-    functions.
-    TODO:
-    Normally we should have a method:
-      cost Item::execution_cost(),
-    where 'cost' is either 'double' or some structure of various cost
-    parameters.
-  */
-  virtual bool is_expensive() {
-    if (is_expensive_cache < 0)
-      is_expensive_cache =
-          walk(&Item::is_expensive_processor, enum_walk::POSTFIX, nullptr);
-    return is_expensive_cache;
+  CostOfItem cost() const {
+    m_cost.Compute(*this);
+    return m_cost;
   }
 
   /**
@@ -3166,7 +3327,7 @@ class Item : public Parse_tree_node {
       Return MAX_DOUBLE_STR_LENGTH to prevent truncation of data without having
       to evaluate the value of the item.
     */
-    uint32 max_len =
+    const uint32 max_len =
         data_type() == MYSQL_TYPE_DOUBLE ? MAX_DOUBLE_STR_LENGTH : max_length;
     if (result_type() == STRING_RESULT)
       return max_len / collation.collation->mbmaxlen;
@@ -3201,6 +3362,9 @@ class Item : public Parse_tree_node {
      @retval false Otherwise.
   */
   bool is_blob_field() const;
+
+  /// @returns number of references to an item.
+  uint reference_count() const { return m_ref_count; }
 
   /// Increment reference count
   void increment_ref_count() {
@@ -3257,13 +3421,20 @@ class Item : public Parse_tree_node {
   void set_wf() { m_accum_properties |= PROP_WINDOW_FUNCTION; }
 
   /**
-    @return true if this item or any of its descendants within the same query
-    has a reference to a ROLLUP expression
-  */
-  bool has_rollup_expr() const { return m_accum_properties & PROP_ROLLUP_EXPR; }
+     @return true if this item or any of its descendants within the same query
+     has a reference to a GROUP BY modifier (such as ROLLUP)
+   */
+  bool has_grouping_set_dep() const {
+    return (m_accum_properties & PROP_HAS_GROUPING_SET_DEP);
+  }
 
-  /// Set the property: this item (tree) contains a reference to a ROLLUP expr
-  void set_rollup_expr() { m_accum_properties |= PROP_ROLLUP_EXPR; }
+  /**
+    Set the property: this item (tree) contains a reference to a GROUP BY
+    modifier (such as ROLLUP)
+  */
+  void set_group_by_modifier() {
+    m_accum_properties |= PROP_HAS_GROUPING_SET_DEP;
+  }
 
   /**
     @return true if this item or any of underlying items is a GROUPING function
@@ -3313,12 +3484,15 @@ class Item : public Parse_tree_node {
   */
   bool can_be_substituted_for_gc(bool array = false) const;
 
-  void aggregate_decimal_properties(Item **item, uint nitems);
-  void aggregate_float_properties(Item **item, uint nitems);
-  void aggregate_char_length(Item **args, uint nitems);
-  void aggregate_temporal_properties(Item **item, uint nitems);
-  bool aggregate_string_properties(const char *name, Item **item, uint nitems);
-  void aggregate_num_type(Item_result result_type, Item **item, uint nitems);
+  void aggregate_float_properties(enum_field_types type, Item **items,
+                                  uint nitems);
+  void aggregate_decimal_properties(Item **items, uint nitems);
+  uint32 aggregate_char_width(Item **items, uint nitems);
+  void aggregate_temporal_properties(enum_field_types type, Item **items,
+                                     uint nitems);
+  bool aggregate_string_properties(enum_field_types type, const char *name,
+                                   Item **items, uint nitems);
+  void aggregate_bit_properties(Item **items, uint nitems);
 
   /**
     This function applies only to Item_field objects referred to by an Item_ref
@@ -3330,6 +3504,14 @@ class Item : public Parse_tree_node {
     return false;
   }
   virtual bool strip_db_table_name_processor(uchar *) { return false; }
+
+  /**
+     Compute the cost of evaluating this Item.
+     @param root_cost The cost object to which the cost should be added.
+  */
+  virtual void compute_cost(CostOfItem *root_cost [[maybe_unused]]) const {}
+
+  bool is_abandoned() const { return m_abandoned; }
 
  private:
   virtual bool subq_opt_away_processor(uchar *) { return false; }
@@ -3434,8 +3616,14 @@ class Item : public Parse_tree_node {
   uint m_ref_count{0};
   bool m_abandoned{false};    ///< true if item has been fully de-referenced
   const bool is_parser_item;  ///< true if allocated directly by parser
-  int8 is_expensive_cache;    ///< Cache of result of is_expensive()
   uint8 m_data_type;          ///< Data type assigned to Item
+
+  /**
+     The cost of evaluating this item. This is only needed for predicates,
+     therefore we use lazy evaluation.
+  */
+  mutable CostOfItem m_cost;
+
  public:
   bool fixed;  ///< True if item has been resolved
   /**
@@ -3506,14 +3694,15 @@ class Item : public Parse_tree_node {
   static constexpr uint8 PROP_WINDOW_FUNCTION = 0x08;
   /**
     Set if the item or one or more of the underlying items contains a
-    ROLLUP expression. The rolled up expression itself is not so marked.
+    GROUP BY modifier (such as ROLLUP).
   */
-  static constexpr uint8 PROP_ROLLUP_EXPR = 0x10;
+  static constexpr uint8 PROP_HAS_GROUPING_SET_DEP = 0x10;
   /**
     Set if the item or one or more of the underlying items is a GROUPING
     function.
   */
   static constexpr uint8 PROP_GROUPING_FUNC = 0x20;
+
   uint8 m_accum_properties;
 
  public:
@@ -3572,6 +3761,15 @@ template <class T>
 inline bool WalkItem(Item *item, enum_walk walk, T &&functor) {
   return item->walk(&Item::walk_helper_thunk<T>, walk,
                     reinterpret_cast<uchar *>(&functor));
+}
+
+/**
+   Overload for const 'item' and functor taking 'const Item*' argument.
+*/
+template <class T>
+inline bool WalkItem(const Item *item, enum_walk walk, T &&functor) {
+  auto to_const = [&](const Item *descendant) { return functor(descendant); };
+  return WalkItem(const_cast<Item *>(item), walk, to_const);
 }
 
 /**
@@ -3703,9 +3901,6 @@ class Item_splocal final : public Item_sp_variable,
                            private Settable_routine_parameter {
   uint m_var_idx;
 
-  Type m_type;
-  Item_result m_result_type;
-
  public:
   /*
     If this variable is a parameter in LIMIT clause.
@@ -3748,10 +3943,12 @@ class Item_splocal final : public Item_sp_variable,
              enum_query_type query_type) const override;
 
  public:
-  inline uint get_var_idx() const { return m_var_idx; }
+  uint get_var_idx() const { return m_var_idx; }
 
-  inline enum Type type() const override { return m_type; }
-  inline Item_result result_type() const override { return m_result_type; }
+  Type type() const override { return ROUTINE_FIELD_ITEM; }
+  Item_result result_type() const override {
+    return type_to_result(data_type());
+  }
   bool val_json(Json_wrapper *result) override;
 
  private:
@@ -3816,7 +4013,7 @@ class Item_name_const final : public Item {
  public:
   Item_name_const(const POS &pos, Item *name_arg, Item *val);
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   bool fix_fields(THD *, Item **) override;
 
   enum Type type() const override;
@@ -3854,15 +4051,15 @@ bool agg_item_charsets(DTCollation &c, const char *name, Item **items,
 inline bool agg_item_charsets_for_string_result(DTCollation &c,
                                                 const char *name, Item **items,
                                                 uint nitems, int item_sep = 1) {
-  uint flags = MY_COLL_ALLOW_SUPERSET_CONV | MY_COLL_ALLOW_COERCIBLE_CONV |
-               MY_COLL_ALLOW_NUMERIC_CONV;
+  const uint flags = MY_COLL_ALLOW_SUPERSET_CONV |
+                     MY_COLL_ALLOW_COERCIBLE_CONV | MY_COLL_ALLOW_NUMERIC_CONV;
   return agg_item_charsets(c, name, items, nitems, flags, item_sep, false);
 }
 inline bool agg_item_charsets_for_comparison(DTCollation &c, const char *name,
                                              Item **items, uint nitems,
                                              int item_sep = 1) {
-  uint flags = MY_COLL_ALLOW_SUPERSET_CONV | MY_COLL_ALLOW_COERCIBLE_CONV |
-               MY_COLL_DISALLOW_NONE;
+  const uint flags = MY_COLL_ALLOW_SUPERSET_CONV |
+                     MY_COLL_ALLOW_COERCIBLE_CONV | MY_COLL_DISALLOW_NONE;
   return agg_item_charsets(c, name, items, nitems, flags, item_sep, true);
 }
 
@@ -3878,7 +4075,7 @@ class Item_num : public Item_basic_constant {
   bool check_partition_func_processor(uchar *) override { return false; }
 };
 
-#define NO_FIELD_INDEX ((uint16)(-1))
+inline constexpr uint16 NO_FIELD_INDEX((uint16)(-1));
 
 class Item_ident : public Item {
   typedef Item super;
@@ -4021,7 +4218,7 @@ class Item_ident : public Item {
         cached_table(item->cached_table),
         depended_from(item->depended_from) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   const char *full_name() const override;
   void set_orignal_db_name(const char *name_arg) { m_orig_db_name = name_arg; }
@@ -4087,16 +4284,6 @@ class Item_ident : public Item {
   bool is_alias_of_expr() const { return m_alias_of_expr; }
   /// Marks that this Item's name is alias of SELECT expression
   void set_alias_of_expr() { m_alias_of_expr = true; }
-
-  bool walk(Item_processor processor, enum_walk walk, uchar *arg) override {
-    /*
-      Item_ident processors like aggregate_check*() use
-      enum_walk::PREFIX|enum_walk::POSTFIX and depend on the processor being
-      called twice then.
-    */
-    return ((walk & enum_walk::PREFIX) && (this->*processor)(arg)) ||
-           ((walk & enum_walk::POSTFIX) && (this->*processor)(arg));
-  }
 
   /**
     Argument structure for walk processor Item::update_depended_from
@@ -4179,9 +4366,9 @@ class Item_field : public Item_ident {
     For fields referencing such tables, table number is always 0, and other
     uses of table_ref is not needed.
   */
-  Table_ref *table_ref;
+  Table_ref *table_ref{nullptr};
   /// Source field
-  Field *field;
+  Field *field{nullptr};
 
  private:
   /// Result field
@@ -4209,29 +4396,33 @@ class Item_field : public Item_ident {
   */
   const Item_field *m_base_item_field{nullptr};
 
- public:
   /**
+    State used for transforming scalar subqueries to JOINs with derived tables,
+    cf.  \c transform_grouped_to_derived. Has accessor.
+  */
+  bool m_protected_by_any_value{false};
+
+  /**
+    Holds a list of items whose values must be equal to the value of
+    this field, during execution.
+
     Used during optimization to perform multiple equality analysis,
     this analysis should be performed during preparation instead, so that
     Item_field can be const after preparation.
   */
-  Item_equal *item_equal{nullptr};
+  Item_equal *m_multi_equality{nullptr};
+
+ public:
   /**
     Index for this field in table->field array. Holds NO_FIELD_INDEX
     if index value is not known.
   */
-  uint16 field_index;
-
-  void set_item_equal(Item_equal *item_equal_arg) {
-    if (item_equal == nullptr && item_equal_arg != nullptr) {
-      item_equal = item_equal_arg;
-    }
-  }
+  uint16 field_index{NO_FIELD_INDEX};
+  Item_equal *multi_equality() const { return m_multi_equality; }
 
   void set_item_equal_all_join_nests(Item_equal *item_equal) {
-    if (item_equal != nullptr) {
-      item_equal_all_join_nests = item_equal;
-    }
+    assert(item_equal != nullptr);
+    item_equal_all_join_nests = item_equal;
   }
 
   // A list of fields that are considered "equal" to this field. E.g., a query
@@ -4251,15 +4442,14 @@ class Item_field : public Item_ident {
     if any_privileges set to true then here real effective privileges will
     be stored
   */
-  uint have_privileges;
+  Access_bitmask have_privileges{0};
   /* field need any privileges (for VIEW creation) */
-  bool any_privileges;
+  bool any_privileges{false};
   /*
     if this field is used in a context where covering prefix keys
     are supported.
   */
   bool can_use_prefix_key{false};
-
   Item_field(Name_resolution_context *context_arg, const char *db_arg,
              const char *table_name_arg, const char *field_name_arg);
   Item_field(const POS &pos, const char *db_arg, const char *table_name_arg,
@@ -4269,7 +4459,7 @@ class Item_field : public Item_ident {
              Field *field);
   Item_field(Field *field);
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   enum Type type() const override { return FIELD_ITEM; }
   bool eq(const Item *item, bool binary_cmp) const override;
@@ -4449,6 +4639,12 @@ class Item_field : public Item_ident {
              select list item.
   */
   virtual bool is_asterisk() const { return false; }
+  /// See \c m_protected_by_any_value
+  bool protected_by_any_value() const { return m_protected_by_any_value; }
+
+  void compute_cost(CostOfItem *root_cost) const override {
+    field->add_to_cost(root_cost);
+  }
 };
 
 /**
@@ -4477,7 +4673,7 @@ class Item_asterisk : public Item_field {
                 const char *opt_table_name)
       : super(pos, opt_schema_name, opt_table_name, "*") {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   bool fix_fields(THD *, Item **) override {
     assert(false);  // should never happen: see setup_wild()
     return true;
@@ -4507,12 +4703,9 @@ class Item_null : public Item_basic_constant {
   typedef Item_basic_constant super;
 
   void init() {
-    set_nullable(true);
+    set_data_type_null();
     null_value = true;
-    set_data_type(MYSQL_TYPE_NULL);
-    max_length = 0;
     fixed = true;
-    collation.set(&my_charset_bin, DERIVATION_IGNORABLE);
   }
 
  protected:
@@ -4730,7 +4923,7 @@ class Item_param final : public Item, private Settable_routine_parameter {
 
   Item_param(const POS &pos, MEM_ROOT *root, uint pos_in_query_arg);
 
-  bool itemize(Parse_context *pc, Item **item) override;
+  bool do_itemize(Parse_context *pc, Item **item) override;
 
   Item_result result_type() const override { return m_result_type; }
   enum Type type() const override { return PARAM_ITEM; }
@@ -5201,7 +5394,7 @@ class Item_float : public Item_num {
     return value;
   }
   longlong val_int() override {
-    assert(fixed == 1);
+    assert(fixed);
     if (value <= LLONG_MIN) {
       return LLONG_MIN;
     } else if (value > LLONG_MAX_DOUBLE) {
@@ -5368,7 +5561,7 @@ class Item_string : public Item_basic_constant {
   double val_real() override;
   longlong val_int() override;
   String *val_str(String *) override {
-    assert(fixed == 1);
+    assert(fixed);
     return &str_value;
   }
   my_decimal *val_decimal(my_decimal *) override;
@@ -5490,7 +5683,7 @@ class Item_blob final : public Item_partition_func_safe_string {
                                         &my_charset_bin) {
     set_data_type(MYSQL_TYPE_BLOB);
   }
-  enum Type type() const override { return TYPE_HOLDER; }
+  enum Type type() const override { return STRING_ITEM; }
   bool check_function_as_value_generator(uchar *args) override {
     Check_function_as_value_generator_parameters *func_arg =
         pointer_cast<Check_function_as_value_generator_parameters *>(args);
@@ -5541,18 +5734,16 @@ class Item_hex_string : public Item_basic_constant {
     set_data_type(MYSQL_TYPE_VARCHAR);
   }
 
-  Item_hex_string(const char *str, uint str_length);
   Item_hex_string(const POS &pos, const LEX_STRING &literal);
 
-  enum Type type() const override { return VARBIN_ITEM; }
+  enum Type type() const override { return HEX_BIN_ITEM; }
   double val_real() override {
     assert(fixed);
     return (double)(ulonglong)Item_hex_string::val_int();
   }
   longlong val_int() override;
-  Item *clone_item() const override {
-    return new Item_hex_string(str_value.ptr(), max_length);
-  }
+  Item *clone_item() const override;
+
   String *val_str(String *) override {
     assert(fixed);
     return &str_value;
@@ -5705,9 +5896,6 @@ class Item_ref : public Item_ident {
   bool pusheddown_depended_from{false};
 
  private:
-  /// True if referenced item has been unlinked, used during item tree removal
-  bool m_unlinked{false};
-
   Field *result_field{nullptr}; /* Save result here */
 
  protected:
@@ -5793,16 +5981,16 @@ class Item_ref : public Item_ident {
     const table_map map = ref_item()->used_tables();
     if (map != 0) return map;
     // rollup constant: ensure it is non-constant by returning RAND_TABLE_BIT
-    if (has_rollup_expr()) return RAND_TABLE_BIT;
+    if (has_grouping_set_dep()) return RAND_TABLE_BIT;
     return 0;
   }
   void update_used_tables() override {
     if (depended_from == nullptr) ref_item()->update_used_tables();
     /*
-      Reset all flags except rollup, since we do not mark the rollup expression
-      itself.
+      Reset all flags except GROUP BY modifier, since we do not mark the rollup
+      expression itself.
     */
-    m_accum_properties &= PROP_ROLLUP_EXPR;
+    m_accum_properties &= PROP_HAS_GROUPING_SET_DEP;
     add_accum_properties(ref_item());
   }
 
@@ -5893,7 +6081,7 @@ class Item_ref : public Item_ident {
   }
   bool get_time(MYSQL_TIME *ltime) override {
     assert(fixed);
-    bool result = ref_item()->get_time(ltime);
+    const bool result = ref_item()->get_time(ltime);
     null_value = ref_item()->null_value;
     return result;
   }
@@ -6263,7 +6451,7 @@ class Item_time_with_ref final : public Item_temporal_with_ref {
 class Item_metadata_copy final : public Item {
  public:
   explicit Item_metadata_copy(Item *item) {
-    bool nullable = item->is_nullable();
+    const bool nullable = item->is_nullable();
     null_value = nullable;
     set_nullable(nullable);
     decimals = item->decimals;
@@ -6276,7 +6464,8 @@ class Item_metadata_copy final : public Item {
     collation.set(item->collation);
   }
 
-  enum Type type() const override { return METADATA_COPY_ITEM; }
+  // This is unused - use same code as type holder item.
+  enum Type type() const override { return TYPE_HOLDER_ITEM; }
   Item_result result_type() const override { return cached_result_type; }
   table_map used_tables() const override { return 1; }
 
@@ -6343,7 +6532,7 @@ class Cached_item {
              return value should be ignored.
   */
   virtual bool cmp() = 0;
-  Item *get_item() { return item; }
+  Item *get_item() const { return item; }
   Item **get_item_ptr() { return &item; }
 };
 
@@ -6409,7 +6598,7 @@ class Item_default_value final : public Item_field {
  public:
   Item_default_value(const POS &pos, Item *a = nullptr)
       : super(pos, nullptr, nullptr, nullptr), arg(a) {}
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   enum Type type() const override { return DEFAULT_VALUE_ITEM; }
   bool eq(const Item *item, bool binary_cmp) const override;
   bool fix_fields(THD *, Item **) override;
@@ -6485,9 +6674,9 @@ class Item_insert_value final : public Item_field {
         arg(a),
         m_is_values_function(false) {}
 
-  bool itemize(Parse_context *pc, Item **res) override {
+  bool do_itemize(Parse_context *pc, Item **res) override {
     if (skip_itemize(res)) return false;
-    return Item_field::itemize(pc, res) || arg->itemize(pc, &arg);
+    return Item_field::do_itemize(pc, res) || arg->itemize(pc, &arg);
   }
 
   enum Type type() const override { return INSERT_VALUE_ITEM; }
@@ -6558,7 +6747,8 @@ class Item_trigger_field final : public Item_field,
 
   Item_trigger_field(Name_resolution_context *context_arg,
                      enum_trigger_variable_type trigger_var_type_arg,
-                     const char *field_name_arg, ulong priv, const bool ro)
+                     const char *field_name_arg, Access_bitmask priv,
+                     const bool ro)
       : Item_field(context_arg, nullptr, nullptr, field_name_arg),
         trigger_var_type(trigger_var_type_arg),
         next_trig_field_list(nullptr),
@@ -6568,7 +6758,8 @@ class Item_trigger_field final : public Item_field,
         read_only(ro) {}
   Item_trigger_field(const POS &pos,
                      enum_trigger_variable_type trigger_var_type_arg,
-                     const char *field_name_arg, ulong priv, const bool ro)
+                     const char *field_name_arg, Access_bitmask priv,
+                     const bool ro)
       : Item_field(pos, nullptr, nullptr, field_name_arg),
         trigger_var_type(trigger_var_type_arg),
         field_idx((uint)-1),
@@ -6589,7 +6780,7 @@ class Item_trigger_field final : public Item_field,
   Item *copy_or_same(THD *) override { return this; }
   Item *get_tmp_table_item(THD *thd) override { return copy_or_same(thd); }
   void cleanup() override;
-  void set_required_privilege(ulong privilege) override {
+  void set_required_privilege(Access_bitmask privilege) override {
     want_privilege = privilege;
   }
 
@@ -6613,7 +6804,7 @@ class Item_trigger_field final : public Item_field,
   }
 
   bool set_value(THD *thd, Item **it) {
-    bool ret = set_value(thd, nullptr, it);
+    const bool ret = set_value(thd, nullptr, it);
     if (!ret)
       bitmap_set_bit(triggers->get_subject_table()->fields_set_during_insert,
                      field_idx);
@@ -6630,7 +6821,7 @@ class Item_trigger_field final : public Item_field,
     set_required_privilege() is called to appropriately update
     want_privilege).
   */
-  ulong want_privilege;
+  Access_bitmask want_privilege;
   GRANT_INFO *table_grants;
   /*
     Trigger field is read-only unless it belongs to the NEW row in a
@@ -7081,7 +7272,7 @@ class Item_type_holder final : public Item_aggregate_type {
   /// Query_expression::get_unit_column_types() always contains named items.
   Item_type_holder(THD *thd, Item *item) : super(thd, item) {}
 
-  enum Type type() const override { return TYPE_HOLDER; }
+  enum Type type() const override { return TYPE_HOLDER_ITEM; }
 
   double val_real() override;
   longlong val_int() override;

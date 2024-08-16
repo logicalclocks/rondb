@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -139,16 +140,14 @@ a read-ahead function.
 void buf_read_ibuf_merge_pages(bool sync, const space_id_t *space_ids,
                                const page_no_t *page_nos, ulint n_stored);
 
-/** Issues read requests for pages which recovery wants to read in.
-@param[in]      sync            true if the caller wants this function to wait
-for the highest address page to get read in, before this function returns
+/** Issues asynchronous read requests for pages which recovery wants to read in.
 @param[in]      space_id        tablespace id
 @param[in]      page_nos        array of page numbers to read, with the
 highest page number the last in the array
 @param[in]      n_stored        number of page numbers in the array */
 
-void buf_read_recv_pages(bool sync, space_id_t space_id,
-                         const page_no_t *page_nos, ulint n_stored);
+void buf_read_recv_pages(space_id_t space_id, const page_no_t *page_nos,
+                         ulint n_stored);
 
 /** @name Modes used in read-ahead
 @{ */

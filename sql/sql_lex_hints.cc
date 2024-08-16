@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -114,8 +115,8 @@ int Hint_scanner::scan() {
   }
 }
 
-void HINT_PARSER_error(THD *thd [[maybe_unused]], Hint_scanner *scanner,
-                       PT_hint_list **, const char *msg) {
+void my_hint_parser_error(THD *thd [[maybe_unused]], Hint_scanner *scanner,
+                          PT_hint_list **, const char *msg) {
   if (strcmp(msg, "syntax error") == 0)
     msg = ER_THD(thd, ER_WARN_OPTIMIZER_HINT_SYNTAX_ERROR);
   scanner->syntax_warning(msg);
@@ -134,8 +135,8 @@ void HINT_PARSER_error(THD *thd [[maybe_unused]], Hint_scanner *scanner,
 
 void Hint_scanner::syntax_warning(const char *msg) const {
   /* Push an error into the error stack */
-  ErrConvString err(raw_yytext, input_buf_end - raw_yytext,
-                    thd->variables.character_set_client);
+  const ErrConvString err(raw_yytext, input_buf_end - raw_yytext,
+                          thd->variables.character_set_client);
 
   push_warning_printf(thd, Sql_condition::SL_WARNING, ER_PARSE_ERROR,
                       ER_THD(thd, ER_PARSE_ERROR), msg, err.ptr(),

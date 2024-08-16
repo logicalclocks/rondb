@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -72,6 +73,7 @@
 #include "sql/item_func.h"
 #include "sql/item_sum.h"  // Item_sum
 #include "sql/key.h"       // key_cmp_if_same
+#include "sql/range_optimizer/range_optimizer.h"
 #include "sql/sql_bitmap.h"
 #include "sql/sql_class.h"
 #include "sql/sql_const.h"
@@ -103,7 +105,7 @@ static ulonglong get_exact_record_count(Table_ref *tables) {
   ulonglong count = 1;
   for (Table_ref *tl = tables; tl; tl = tl->next_leaf) {
     ha_rows tmp = 0;
-    int error = tl->table->file->ha_records(&tmp);
+    const int error = tl->table->file->ha_records(&tmp);
     if (error != 0) return ULLONG_MAX;
     count *= tmp;
   }
@@ -348,7 +350,7 @@ bool optimize_aggregated_query(THD *thd, Query_block *select,
       using stats.records.
     */
     tables_filled &= !(tl->schema_table || tl->uses_materialization());
-    ulonglong table_flags = tl->table->file->ha_table_flags();
+    const ulonglong table_flags = tl->table->file->ha_table_flags();
     if ((table_flags & HA_STATS_RECORDS_IS_EXACT) && tables_filled &&
         !tl->table->force_index) {
       error = tl->fetch_number_of_rows();
@@ -682,6 +684,50 @@ bool is_simple_predicate(Item_func *func_item, Item **args, bool *inv_order) {
 }
 
 /**
+  Check if a predicate should make the endpoint for the MIN/MAX optimization
+  move towards -Inf for MAX or towards +Inf for MIN.
+
+  It is assumed that the current endpoint is stored in the field accessed by
+  "cond", and that "cond" represents a comparison of a field and constant values
+  using the <, >, <=, >= or BETWEEN operator.
+*/
+static bool move_endpoint(bool is_max, Item *cond) {
+  const Item_func::Functype type = down_cast<Item_func *>(cond)->functype();
+  assert(is_function_of_type(cond, Item_func::LT_FUNC) ||
+         is_function_of_type(cond, Item_func::LE_FUNC) ||
+         is_function_of_type(cond, Item_func::GT_FUNC) ||
+         is_function_of_type(cond, Item_func::GE_FUNC) ||
+         is_function_of_type(cond, Item_func::BETWEEN));
+
+  if (type != Item_func::BETWEEN) {
+    // For <, <=, >, >= operators, just check if "cond" evaluates to true on the
+    // current endpoint. If it does not, it represents a stricter condition than
+    // those seen before, so the endpoint should be moved.
+    return cond->val_int() == 0;
+  }
+
+  // For BETWEEN, we check similarly, but only using the upper bound constant
+  // for MAX and the lower bound constant for MIN.
+  Item_func_between *const between = down_cast<Item_func_between *>(cond);
+  Item_func_inequality *compare_endpoints = nullptr;
+  if (is_max) {
+    compare_endpoints =
+        new Item_func_le(between->get_arg(0), between->get_arg(2));
+  } else {
+    compare_endpoints =
+        new Item_func_ge(between->get_arg(0), between->get_arg(1));
+  }
+
+  if (compare_endpoints == nullptr) return false;
+
+  if (compare_endpoints->set_cmp_func()) return true;
+  compare_endpoints->update_used_tables();
+  compare_endpoints->quick_fix_field();
+
+  return compare_endpoints->val_int() == 0;
+}
+
+/**
   Check whether a condition matches a key to get {MAX|MIN}(field):.
 
    For the index specified by the keyinfo parameter and an index that
@@ -772,7 +818,8 @@ static bool matching_cond(bool max_fl, Index_lookup *ref, KEY *keyinfo,
   bool is_null = false;          // IS NULL
   bool between = false;          // BETWEEN ... AND ...
 
-  switch (((Item_func *)cond)->functype()) {
+  const Item_func::Functype functype = down_cast<Item_func *>(cond)->functype();
+  switch (functype) {
     case Item_func::ISNULL_FUNC:
       is_null = true;
       [[fallthrough]];
@@ -807,12 +854,21 @@ static bool matching_cond(bool max_fl, Index_lookup *ref, KEY *keyinfo,
       return false;  // Can't optimize function
   }
 
-  Item *args[3];
+  Item *args[] = {nullptr, nullptr, nullptr};
   bool inv;
 
   /* Test if this is a comparison of a field and constant */
   if (!is_simple_predicate(down_cast<Item_func *>(cond), args, &inv))
     return false;
+
+  // Test if the field and the constant values can be compared in an index.
+  Field *const field = down_cast<Item_field *>(args[0])->field;
+  for (Item *value : {args[1], args[2]}) {
+    if (value != nullptr &&
+        !comparable_in_index(cond, field, Field::itRAW, functype, value)) {
+      return false;
+    }
+  }
 
   if (!is_null_safe_eq && !is_null &&
       (args[1]->is_null() || (between && args[2]->is_null())))
@@ -827,16 +883,17 @@ static bool matching_cond(bool max_fl, Index_lookup *ref, KEY *keyinfo,
 
   {
     if (part > field_part) return false;  // Field is beyond the tested parts
-    if (part->field->eq(((Item_field *)args[0])->field))
+    if (part->field->eq(field)) {
       break;  // Found a part of the key for the field
+    }
   }
 
-  bool is_field_part = part == field_part;
+  const bool is_field_part = part == field_part;
   if (!(is_field_part || eq_type)) return false;
 
-  key_part_map org_key_part_used = *key_part_used;
+  const key_part_map org_key_part_used = *key_part_used;
   if (eq_type || between || max_fl == less_fl) {
-    size_t length = (key_ptr - ref->key_buff) + part->store_length;
+    const size_t length = (key_ptr - ref->key_buff) + part->store_length;
     if (ref->key_length < length) {
       /* Ultimately ref->key_length will contain the length of the search key */
       ref->key_length = length;
@@ -861,7 +918,7 @@ static bool matching_cond(bool max_fl, Index_lookup *ref, KEY *keyinfo,
 
   if (org_key_part_used != *key_part_used ||
       (is_field_part && (between || eq_type || max_fl == less_fl) &&
-       !cond->val_int())) {
+       move_endpoint(max_fl, cond))) {
     /*
       It's the first predicate for this part or a predicate of the
       following form  that moves upper/lower bounds for max/min values:
@@ -895,7 +952,7 @@ static bool matching_cond(bool max_fl, Index_lookup *ref, KEY *keyinfo,
         check for TYPE_OK here. analyze_field_constant() does not yet handle
         string constants.
       */
-      type_conversion_status retval =
+      const type_conversion_status retval =
           value->save_in_field_no_warnings(part->field, true);
       if (!(retval == TYPE_OK ||
             (retval == TYPE_NOTE_TRUNCATED && part->field->is_text_key_type() &&
@@ -908,7 +965,7 @@ static bool matching_cond(bool max_fl, Index_lookup *ref, KEY *keyinfo,
     }
     if (is_field_part) {
       if (between || eq_type)
-        *range_fl &= ~(NO_MAX_RANGE | NO_MIN_RANGE);
+        *range_fl &= ~(NO_MAX_RANGE | NO_MIN_RANGE | NEAR_MAX | NEAR_MIN);
       else {
         *range_fl &= ~(max_fl ? NO_MAX_RANGE : NO_MIN_RANGE);
         if (noeq_type)

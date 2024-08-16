@@ -1,16 +1,17 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -46,6 +47,7 @@
 
 #include "include/compression.h"
 #include "include/mutex_lock.h"
+#include "m_string.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/components/services/bits/psi_memory_bits.h"
 #include "mysql/components/services/bits/psi_stage_bits.h"
@@ -54,6 +56,7 @@
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/status_var.h"
+#include "mysql/strings/int2str.h"
 #include "sql/changestreams/apply/replication_thread_status.h"
 #include "sql/rpl_channel_service_interface.h"
 #ifdef HAVE_SYS_TIME_H
@@ -74,11 +77,6 @@
 
 #include "errmsg.h"  // CR_*
 #include "lex_string.h"
-#include "libbinlogevents/include/binlog_event.h"
-#include "libbinlogevents/include/control_events.h"
-#include "libbinlogevents/include/debug_vars.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "mutex_lock.h"  // MUTEX_LOCK
 #include "my_bitmap.h"   // MY_BITMAP
 #include "my_byteorder.h"
@@ -87,16 +85,20 @@
 #include "my_dbug.h"
 #include "my_dir.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_sys.h"
 #include "my_systime.h"
 #include "my_thread_local.h"  // thread_local_key_t
 #include "mysql.h"            // MYSQL
+#include "mysql/binlog/event/binlog_event.h"
+#include "mysql/binlog/event/control_events.h"
+#include "mysql/binlog/event/debug_vars.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_file.h"
 #include "mysql/psi/mysql_memory.h"
 #include "mysql/psi/mysql_thread.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/thread_type.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
@@ -159,6 +161,9 @@
 #include "sql/transaction_info.h"
 #include "sql_common.h"  // end_server
 #include "sql_string.h"
+#include "str2int.h"
+#include "string_with_len.h"
+#include "strmake.h"
 #include "typelib.h"
 #ifndef NDEBUG
 #include "rpl_debug_points.h"
@@ -168,8 +173,12 @@
 struct mysql_cond_t;
 struct mysql_mutex_t;
 
-using binary_log::checksum_crc32;
-using binary_log::Log_event_header;
+using mysql::binlog::event::Binary_log_event;
+using mysql::binlog::event::checksum_crc32;
+using mysql::binlog::event::enum_binlog_checksum_alg;
+using mysql::binlog::event::Log_event_footer;
+using mysql::binlog::event::Log_event_type;
+using mysql::binlog::event::Log_event_type_helper;
 using std::max;
 using std::min;
 
@@ -199,12 +208,6 @@ const char *relay_log_basename = nullptr;
 const ulong mts_slave_worker_queue_len_max = 16384;
 
 /*
-  Statistics go to the error log every # of seconds when
-  --log_error_verbosity > 2
-*/
-const long mts_online_stat_period = 60 * 2;
-
-/*
   MTS load-ballancing parameter.
   Time unit in microsecs to sleep by MTS Coordinator to avoid extra thread
   signalling in the case of Worker queues are close to be filled up.
@@ -230,12 +233,7 @@ const ulong mts_worker_underrun_level = 10;
 /*
   When slave thread exits, we need to remember the temporary tables so we
   can re-use them on slave start.
-
-  TODO: move the vars below under Master_info
 */
-
-int disconnect_slave_event_count = 0, abort_slave_event_count = 0;
-
 static thread_local Master_info *RPL_MASTER_INFO = nullptr;
 
 /**
@@ -297,10 +295,26 @@ enum enum_slave_apply_event_and_update_pos_retval {
 };
 
 static int process_io_rotate(Master_info *mi, Rotate_log_event *rev);
-static bool wait_for_relay_log_space(Relay_log_info *rli);
+
+/// @brief Checks whether relay log space will be exceeded after queueing
+/// additional 'queued_size' bytes. If yes, function will
+/// request relay log purge, rotate the relay log and wait for notification
+/// from coordinator
+/// @retval true Event may be queued by the receiver
+/// @retval false Failed to reclaim required relay log space
+static inline bool wait_for_relay_log_space(Relay_log_info *rli,
+                                            std::size_t queued_size);
+/// @brief Checks whether relay log space limit will be exceeded after queueing
+/// additional 'queued_size' bytes
+/// @param rli Pointer to connection metadata object for the considered channel
+/// @param queued_size Number of bytes we want to queue
+/// @retval true Limit exceeded
+/// @retval false Current size + 'queued_size' is within limits
+static inline bool exceeds_relay_log_limit(Relay_log_info *rli,
+                                           std::size_t queued_size);
 static inline bool io_slave_killed(THD *thd, Master_info *mi);
 static inline bool monitor_io_replica_killed(THD *thd, Master_info *mi);
-static inline bool is_autocommit_off_and_infotables(THD *thd);
+static inline bool is_autocommit_off(THD *thd);
 static void print_replica_skip_errors(void);
 static int safe_connect(THD *thd, MYSQL *mysql, Master_info *mi,
                         const std::string &host = std::string(),
@@ -427,7 +441,7 @@ ReplicaInitializer::ReplicaInitializer(bool opt_initialize,
                                        char **replica_skip_erors)
     : m_opt_initialize_replica(!opt_initialize),
       m_opt_skip_replica_start(opt_initialize),
-      m_thread_mask(SLAVE_SQL | SLAVE_IO) {
+      m_thread_mask(REPLICA_SQL | REPLICA_IO) {
   if (m_opt_initialize_replica) {
     // Make @@replica_skip_errors show the nice human-readable value.
     set_replica_skip_errors(replica_skip_erors);
@@ -493,7 +507,7 @@ void ReplicaInitializer::start_replication_threads(bool skip_replica_start) {
 
 void ReplicaInitializer::start_threads() {
   /*
-    Loop through the channel_map and start slave threads for each channel.
+    Loop through the channel_map and start replica threads for each channel.
   */
   for (mi_map::iterator it = channel_map.begin(); it != channel_map.end();
        it++) {
@@ -549,7 +563,7 @@ int ReplicaInitializer::init_replica() {
 
   /*
     This is called when mysqld starts. Before client connections are
-    accepted. However bootstrap may conflict with us if it does START SLAVE.
+    accepted. However bootstrap may conflict with us if it does START REPLICA.
     So it's safer to take the lock.
   */
   channel_map.wrlock();
@@ -567,7 +581,7 @@ int ReplicaInitializer::init_replica() {
     channels and add them into channel_map
   */
   if ((error = Rpl_info_factory::create_slave_info_objects(
-           opt_mi_repository_id, opt_rli_repository_id, m_thread_mask,
+           INFO_REPOSITORY_TABLE, INFO_REPOSITORY_TABLE, m_thread_mask,
            &channel_map)))
     LogErr(ERROR_LEVEL,
            ER_RPL_REPLICA_FAILED_TO_CREATE_OR_RECOVER_INFO_REPOSITORIES);
@@ -615,8 +629,8 @@ bool start_slave(THD *thd) {
   if (channel_map.get_num_instances() == 1) {
     mi = channel_map.get_default_channel_mi();
     assert(mi);
-    if (start_slave(thd, &thd->lex->slave_connection, &thd->lex->mi,
-                    thd->lex->slave_thd_opt, mi, true))
+    if (start_slave(thd, &thd->lex->replica_connection, &thd->lex->mi,
+                    thd->lex->replica_thd_opt, mi, true))
       return true;
   } else {
     /*
@@ -624,8 +638,9 @@ bool start_slave(THD *thd) {
       if sql_replica_skip_counter > 0. It throws an error to the session.
     */
     mysql_mutex_lock(&LOCK_sql_replica_skip_counter);
-    /* sql_replica_skip_counter > 0 && !(START SLAVE IO_THREAD) */
-    if (sql_replica_skip_counter > 0 && !(thd->lex->slave_thd_opt & SLAVE_IO)) {
+    /* sql_replica_skip_counter > 0 && !(START REPLICA IO_THREAD) */
+    if (sql_replica_skip_counter > 0 &&
+        !(thd->lex->replica_thd_opt & REPLICA_IO)) {
       my_error(ER_REPLICA_CHANNEL_SQL_SKIP_COUNTER, MYF(0));
       mysql_mutex_unlock(&LOCK_sql_replica_skip_counter);
       return true;
@@ -642,8 +657,8 @@ bool start_slave(THD *thd) {
           && mi->host[0];            // host is set
 
       if (channel_configured) {
-        if (start_slave(thd, &thd->lex->slave_connection, &thd->lex->mi,
-                        thd->lex->slave_thd_opt, mi, true)) {
+        if (start_slave(thd, &thd->lex->replica_connection, &thd->lex->mi,
+                        thd->lex->replica_thd_opt, mi, true)) {
           LogErr(ERROR_LEVEL, ER_RPL_REPLICA_CANT_START_REPLICA_FOR_CHANNEL,
                  mi->get_channel());
           error = true;
@@ -707,7 +722,7 @@ int stop_slave(THD *thd) {
 }
 
 /**
-  Entry point to the START SLAVE command. The function
+  Entry point to the START REPLICA command. The function
   decides to start replication threads on several channels
   or a single given channel.
 
@@ -736,10 +751,10 @@ bool start_slave_cmd(THD *thd) {
 
   if (!lex->mi.for_channel) {
     /*
-      If slave_until options are provided when multiple channels exist
+      If replica_until options are provided when multiple channels exist
       without explicitly providing FOR CHANNEL clause, error out.
     */
-    if (lex->mi.slave_until && channel_map.get_num_instances() > 1) {
+    if (lex->mi.replica_until && channel_map.get_num_instances() > 1) {
       my_error(ER_REPLICA_MULTIPLE_CHANNELS_CMD, MYF(0));
       goto err;
     }
@@ -753,22 +768,23 @@ bool start_slave_cmd(THD *thd) {
       disable this command here as, in some cases, group replication does not
       support them.
 
-      For channel group_replication_applier we disable START SLAVE [IO_THREAD]
+      For channel group_replication_applier we disable START REPLICA [IO_THREAD]
       command.
 
-      For channel group_replication_recovery we disable START SLAVE command
+      For channel group_replication_recovery we disable START REPLICA command
       and its two thread variants.
     */
     if (mi &&
         channel_map.is_group_replication_channel_name(mi->get_channel()) &&
-        ((!thd->lex->slave_thd_opt || (thd->lex->slave_thd_opt & SLAVE_IO)) ||
-         (!(channel_map.is_group_replication_channel_name(mi->get_channel(),
-                                                          true)) &&
-          (thd->lex->slave_thd_opt & SLAVE_SQL)))) {
+        ((!thd->lex->replica_thd_opt ||
+          (thd->lex->replica_thd_opt & REPLICA_IO)) ||
+         (!(channel_map.is_group_replication_applier_channel_name(
+              mi->get_channel())) &&
+          (thd->lex->replica_thd_opt & REPLICA_SQL)))) {
       const char *command = "START REPLICA FOR CHANNEL";
-      if (thd->lex->slave_thd_opt & SLAVE_IO)
+      if (thd->lex->replica_thd_opt & REPLICA_IO)
         command = "START REPLICA IO_THREAD FOR CHANNEL";
-      else if (thd->lex->slave_thd_opt & SLAVE_SQL)
+      else if (thd->lex->replica_thd_opt & REPLICA_SQL)
         command = "START REPLICA SQL_THREAD FOR CHANNEL";
 
       my_error(ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0), command,
@@ -777,12 +793,12 @@ bool start_slave_cmd(THD *thd) {
       goto err;
     }
     /*
-      START SLAVE for channel group_replication_applier is disallowed while
+      START REPLICA for channel group_replication_applier is disallowed while
       Group Replication is running.
     */
     if (mi &&
-        channel_map.is_group_replication_channel_name(mi->get_channel(),
-                                                      true) &&
+        channel_map.is_group_replication_applier_channel_name(
+            mi->get_channel()) &&
         is_group_replication_running()) {
       const char *command =
           "START REPLICA FOR CHANNEL while Group Replication is running";
@@ -792,8 +808,8 @@ bool start_slave_cmd(THD *thd) {
     }
 
     if (mi)
-      res = start_slave(thd, &thd->lex->slave_connection, &thd->lex->mi,
-                        thd->lex->slave_thd_opt, mi, true);
+      res = start_slave(thd, &thd->lex->replica_connection, &thd->lex->mi,
+                        thd->lex->replica_thd_opt, mi, true);
     else if (strcmp(channel_map.get_default_channel(), lex->mi.channel))
       my_error(ER_REPLICA_CHANNEL_DOES_NOT_EXIST, MYF(0), lex->mi.channel);
 
@@ -805,7 +821,7 @@ err:
 }
 
 /**
-  Entry point for the STOP SLAVE command. This function stops replication
+  Entry point for the STOP REPLICA command. This function stops replication
   threads for all channels or a single channel based on the  command
   options supplied.
 
@@ -831,9 +847,10 @@ bool stop_slave_cmd(THD *thd) {
   }
 
   MDL_lock_guard backup_sentry{thd};
-  /* During provisioning we stop slave after acquiring backup lock. */
+  /* During provisioning we stop replica after acquiring backup lock. */
   if (!Clone_handler::is_provisioning() &&
-      (!thd->lex->slave_thd_opt || (thd->lex->slave_thd_opt & SLAVE_SQL))) {
+      (!thd->lex->replica_thd_opt ||
+       (thd->lex->replica_thd_opt & REPLICA_SQL))) {
     if (backup_sentry.lock(MDL_key::BACKUP_LOCK, MDL_INTENTION_EXCLUSIVE)) {
       my_error(ER_RPL_CANT_STOP_REPLICA_WHILE_LOCKED_BACKUP, MYF(0));
       channel_map.unlock();
@@ -851,22 +868,23 @@ bool stop_slave_cmd(THD *thd) {
       disable this command here as, in some cases, group replication does not
       support them.
 
-      For channel group_replication_applier we disable STOP SLAVE [IO_THREAD]
+      For channel group_replication_applier we disable STOP REPLICA [IO_THREAD]
       command.
 
-      For channel group_replication_recovery we disable STOP SLAVE command
+      For channel group_replication_recovery we disable STOP REPLICA command
       and its two thread variants.
     */
     if (mi &&
         channel_map.is_group_replication_channel_name(mi->get_channel()) &&
-        ((!thd->lex->slave_thd_opt || (thd->lex->slave_thd_opt & SLAVE_IO)) ||
-         (!(channel_map.is_group_replication_channel_name(mi->get_channel(),
-                                                          true)) &&
-          (thd->lex->slave_thd_opt & SLAVE_SQL)))) {
+        ((!thd->lex->replica_thd_opt ||
+          (thd->lex->replica_thd_opt & REPLICA_IO)) ||
+         (!(channel_map.is_group_replication_applier_channel_name(
+              mi->get_channel())) &&
+          (thd->lex->replica_thd_opt & REPLICA_SQL)))) {
       const char *command = "STOP REPLICA FOR CHANNEL";
-      if (thd->lex->slave_thd_opt & SLAVE_IO)
+      if (thd->lex->replica_thd_opt & REPLICA_IO)
         command = "STOP REPLICA IO_THREAD FOR CHANNEL";
-      else if (thd->lex->slave_thd_opt & SLAVE_SQL)
+      else if (thd->lex->replica_thd_opt & REPLICA_SQL)
         command = "STOP REPLICA SQL_THREAD FOR CHANNEL";
 
       my_error(ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0), command,
@@ -876,12 +894,12 @@ bool stop_slave_cmd(THD *thd) {
       return true;
     }
     /*
-      STOP SLAVE for channel group_replication_applier is disallowed while
+      STOP REPLICA for channel group_replication_applier is disallowed while
       Group Replication is running.
     */
     if (mi &&
-        channel_map.is_group_replication_channel_name(mi->get_channel(),
-                                                      true) &&
+        channel_map.is_group_replication_applier_channel_name(
+            mi->get_channel()) &&
         is_group_replication_running()) {
       const char *command =
           "STOP REPLICA FOR CHANNEL while Group Replication is running";
@@ -926,9 +944,9 @@ enum enum_read_rotate_from_relay_log_status {
    @param filename
           Relay log name which needs to be parsed.
 
-   @param[out] master_log_file
-          Set the master_log_file to the log file name that is extracted from
-          rotate event. The master_log_file should contain string of len
+   @param[out] source_log_file
+          Set the source_log_file to the log file name that is extracted from
+          rotate event. The source_log_file should contain string of len
           FN_REFLEN.
 
    @param[out] master_log_pos
@@ -940,7 +958,7 @@ enum enum_read_rotate_from_relay_log_status {
    @retval ERROR: On error
  */
 static enum_read_rotate_from_relay_log_status read_rotate_from_relay_log(
-    char *filename, char *master_log_file, my_off_t *master_log_pos) {
+    char *filename, char *source_log_file, my_off_t *master_log_pos) {
   DBUG_TRACE;
 
   Relaylog_file_reader relaylog_file_reader(opt_replica_sql_verify_checksum);
@@ -956,9 +974,9 @@ static enum_read_rotate_from_relay_log_status read_rotate_from_relay_log(
   while (!done && (ev = relaylog_file_reader.read_event_object()) != nullptr) {
     DBUG_PRINT("info", ("Read event of type %s", ev->get_type_str()));
     switch (ev->get_type_code()) {
-      case binary_log::FORMAT_DESCRIPTION_EVENT:
+      case mysql::binlog::event::FORMAT_DESCRIPTION_EVENT:
         break;
-      case binary_log::ROTATE_EVENT:
+      case mysql::binlog::event::ROTATE_EVENT:
         /*
           Check for rotate event from the master. Ignore the ROTATE event if it
           is a fake rotate event with server_id=0.
@@ -966,18 +984,16 @@ static enum_read_rotate_from_relay_log_status read_rotate_from_relay_log(
         if (ev->server_id && ev->server_id != ::server_id) {
           Rotate_log_event *rotate_ev = (Rotate_log_event *)ev;
           assert(FN_REFLEN >= rotate_ev->ident_len + 1);
-          memcpy(master_log_file, rotate_ev->new_log_ident,
+          memcpy(source_log_file, rotate_ev->new_log_ident,
                  rotate_ev->ident_len + 1);
           *master_log_pos = rotate_ev->pos;
           ret = FOUND_ROTATE;
           done = true;
         }
         break;
-      case binary_log::PREVIOUS_GTIDS_LOG_EVENT:
-        break;
-      case binary_log::IGNORABLE_LOG_EVENT:
-        break;
-      case binary_log::STOP_EVENT:
+      case mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT:
+      case mysql::binlog::event::IGNORABLE_LOG_EVENT:
+      case mysql::binlog::event::STOP_EVENT:
         break;
       default:
         LogErr(ERROR_LEVEL, ER_RPL_RECOVERY_NO_ROTATE_EVENT_FROM_SOURCE);
@@ -998,7 +1014,7 @@ static enum_read_rotate_from_relay_log_status read_rotate_from_relay_log(
    Reads relay logs one by one starting from the first relay log. Looks for
    the first rotate event from the master. If rotate is not found in the relay
    log search continues to next relay log. If rotate event from master is
-   found then the extracted master_log_file and master_log_pos are used to set
+   found then the extracted source_log_file and master_log_pos are used to set
    rli->group_master_log_name and rli->group_master_log_pos. If an error has
    occurred the error code is returned back.
 
@@ -1011,7 +1027,7 @@ static enum_read_rotate_from_relay_log_status read_rotate_from_relay_log(
    found
    @retval 2 When no rotate event from master was found. This can happen when
              slave server was restarted immediately after executing CHANGE
-   MASTER
+   REPLICATION SOURCE
  */
 static int find_first_relay_log_with_rotate_from_master(Relay_log_info *rli) {
   DBUG_TRACE;
@@ -1019,7 +1035,7 @@ static int find_first_relay_log_with_rotate_from_master(Relay_log_info *rli) {
   LOG_INFO linfo;
   bool got_rotate_from_master = false;
   int pos;
-  char master_log_file[FN_REFLEN];
+  char source_log_file[FN_REFLEN];
   my_off_t master_log_pos = 0;
 
   if (channel_map.is_group_replication_channel_name(rli->get_channel())) {
@@ -1030,7 +1046,7 @@ static int find_first_relay_log_with_rotate_from_master(Relay_log_info *rli) {
 
   for (pos = rli->relay_log.find_log_pos(&linfo, nullptr, true); !pos;
        pos = rli->relay_log.find_next_log(&linfo, true)) {
-    switch (read_rotate_from_relay_log(linfo.log_file_name, master_log_file,
+    switch (read_rotate_from_relay_log(linfo.log_file_name, source_log_file,
                                        &master_log_pos)) {
       case ERROR:
         error = 1;
@@ -1056,7 +1072,7 @@ static int find_first_relay_log_with_rotate_from_master(Relay_log_info *rli) {
     goto err;
   }
   if (!error && got_rotate_from_master) {
-    rli->set_group_master_log_name(master_log_file);
+    rli->set_group_master_log_name(source_log_file);
     rli->set_group_master_log_pos(master_log_pos);
   }
 err:
@@ -1103,9 +1119,9 @@ static void recover_relay_log(Master_info *mi) {
   */
   if (global_gtid_mode.get() == Gtid_mode::ON &&
       !channel_map.is_group_replication_channel_name(rli->get_channel())) {
-    rli->get_sid_lock()->wrlock();
-    (const_cast<Gtid_set *>(rli->get_gtid_set()))->clear_set_and_sid_map();
-    rli->get_sid_lock()->unlock();
+    rli->get_tsid_lock()->wrlock();
+    (const_cast<Gtid_set *>(rli->get_gtid_set()))->clear_set_and_tsid_map();
+    rli->get_tsid_lock()->unlock();
   }
 }
 
@@ -1191,7 +1207,7 @@ int init_recovery(Master_info *mi) {
 /*
   Relay log recovery in the case of MTS, is handled by the following function.
   Gaps in MTS execution are filled using implicit execution of
-  START SLAVE UNTIL SQL_AFTER_MTS_GAPS call. Once slave reaches a consistent
+  START REPLICA UNTIL SQL_AFTER_MTS_GAPS call. Once slave reaches a consistent
   gapless state receiver thread's positions are initialized to applier thread's
   positions and the old relay logs are discarded. This completes the recovery
   process.
@@ -1254,7 +1270,7 @@ static inline int fill_mts_gaps_and_recover(Master_info *mi) {
 err:
   /*
     If recovery failed means we failed to initialize rli object in the case
-    of MTS. We should not allow the START SLAVE command to work as we do in
+    of MTS. We should not allow the START REPLICA command to work as we do in
     the case of STS. i.e if init_recovery call fails then we set inited=0.
   */
   rli->end_info();
@@ -1264,10 +1280,9 @@ err:
   return recovery_error;
 }
 
-int load_mi_and_rli_from_repositories(Master_info *mi, bool ignore_if_no_info,
-                                      int thread_mask,
-                                      bool skip_received_gtid_set_recovery,
-                                      bool force_load) {
+int load_mi_and_rli_from_repositories(
+    Master_info *mi, bool ignore_if_no_info, int thread_mask,
+    bool skip_received_gtid_set_and_relaylog_recovery, bool force_load) {
   DBUG_TRACE;
   assert(mi != nullptr && mi->rli != nullptr);
   int init_error = 0;
@@ -1283,10 +1298,10 @@ int load_mi_and_rli_from_repositories(Master_info *mi, bool ignore_if_no_info,
 
   /*
     When info tables are used and autocommit= 0 we force a new
-    transaction start to avoid table access deadlocks when START SLAVE
-    is executed after RESET SLAVE.
+    transaction start to avoid table access deadlocks when START REPLICA
+    is executed after RESET REPLICA.
   */
-  if (is_autocommit_off_and_infotables(thd)) {
+  if (is_autocommit_off(thd)) {
     if (trans_begin(thd)) {
       init_error = 1;
       goto end;
@@ -1295,10 +1310,10 @@ int load_mi_and_rli_from_repositories(Master_info *mi, bool ignore_if_no_info,
 
   /*
     This takes care of the startup dependency between the master_info
-    and relay_info. It initializes the master info if the SLAVE_IO
+    and relay_info. It initializes the master info if the REPLICA_IO
     thread is being started and the relay log info if either the
-    SLAVE_SQL thread is being started or was not initialized as it is
-    required by the SLAVE_IO thread.
+    REPLICA_SQL thread is being started or was not initialized as it is
+    required by the REPLICA_IO thread.
   */
   check_return = mi->check_info();
   if (check_return == ERROR_CHECKING_REPOSITORY) {
@@ -1307,7 +1322,7 @@ int load_mi_and_rli_from_repositories(Master_info *mi, bool ignore_if_no_info,
   }
 
   if (!ignore_if_no_info || check_return != REPOSITORY_DOES_NOT_EXIST) {
-    if ((thread_mask & SLAVE_IO) != 0) {
+    if ((thread_mask & REPLICA_IO) != 0) {
       if (!mi->inited || force_load) {
         if (mi->mi_init_info()) {
           init_error = 1;
@@ -1322,9 +1337,10 @@ int load_mi_and_rli_from_repositories(Master_info *mi, bool ignore_if_no_info,
     goto end;
   }
   if (!ignore_if_no_info || check_return != REPOSITORY_DOES_NOT_EXIST) {
-    if ((thread_mask & SLAVE_SQL) != 0 || !(mi->rli->inited)) {
+    if ((thread_mask & REPLICA_SQL) != 0 || !(mi->rli->inited)) {
       if (!mi->rli->inited || force_load) {
-        if (mi->rli->rli_init_info(skip_received_gtid_set_recovery)) {
+        if (mi->rli->rli_init_info(
+                skip_received_gtid_set_and_relaylog_recovery)) {
           init_error = 1;
         } else {
           /*
@@ -1350,10 +1366,10 @@ int load_mi_and_rli_from_repositories(Master_info *mi, bool ignore_if_no_info,
 end:
   /*
     When info tables are used and autocommit= 0 we force transaction
-    commit to avoid table access deadlocks when START SLAVE is executed
-    after RESET SLAVE.
+    commit to avoid table access deadlocks when START REPLICA is executed
+    after RESET REPLICA.
   */
-  if (is_autocommit_off_and_infotables(thd))
+  if (is_autocommit_off(thd))
     if (trans_commit(thd)) init_error = 1;
 
   mysql_mutex_unlock(&mi->rli->data_lock);
@@ -1442,8 +1458,7 @@ bool reset_info(Master_info *mi) {
   mi->init_master_log_pos();
   mi->master_uuid[0] = 0;
 
-  if (mi->reset && opt_mi_repository_id == INFO_REPOSITORY_TABLE &&
-      opt_rli_repository_id == INFO_REPOSITORY_TABLE && mi->flush_info(true)) {
+  if (mi->reset && mi->flush_info(true)) {
     my_error(ER_CONNECTION_METADATA, MYF(0));
     return true;
   }
@@ -1452,9 +1467,7 @@ bool reset_info(Master_info *mi) {
       (!mi->rli->is_privilege_checks_user_null() ||  // if PCU is not null
        mi->rli->is_row_format_required() ||          // or RRF is 1
        Relay_log_info::PK_CHECK_STREAM !=            // or RTPKC != STREAM
-           mi->rli->get_require_table_primary_key_check()) &&
-      opt_rli_repository_id == INFO_REPOSITORY_TABLE &&  // in TABLE repository.
-      opt_mi_repository_id == INFO_REPOSITORY_TABLE;
+           mi->rli->get_require_table_primary_key_check());
 
   if ((have_relay_log_data_to_persist && mi->rli->clear_info()) ||
       (!have_relay_log_data_to_persist && mi->rli->remove_info())) {
@@ -1713,7 +1726,7 @@ int terminate_slave_threads(Master_info *mi, int thread_mask,
   */
   ulong total_stop_wait_timeout = stop_wait_timeout;
 
-  if (thread_mask & (SLAVE_SQL | SLAVE_FORCE_ALL)) {
+  if (thread_mask & (REPLICA_SQL | SLAVE_FORCE_ALL)) {
     DBUG_PRINT("info", ("Terminating SQL thread"));
     mi->rli->abort_slave = true;
 
@@ -1731,9 +1744,9 @@ int terminate_slave_threads(Master_info *mi, int thread_mask,
       return error;
     }
 
-    DBUG_PRINT("info", ("Flushing relay-log info file."));
+    DBUG_PRINT("info", ("Flushing applier metadata."));
     if (current_thd)
-      THD_STAGE_INFO(current_thd, stage_flushing_relay_log_info_file);
+      THD_STAGE_INFO(current_thd, stage_flushing_applier_metadata);
 
     /*
       Flushes the relay log info regardless of the sync_relay_log_info option.
@@ -1761,7 +1774,7 @@ int terminate_slave_threads(Master_info *mi, int thread_mask,
     }
   }
 
-  if (thread_mask & (SLAVE_IO | SLAVE_FORCE_ALL)) {
+  if (thread_mask & (REPLICA_IO | SLAVE_FORCE_ALL)) {
     DBUG_PRINT("info", ("Terminating IO thread"));
     mi->abort_slave = true;
     DBUG_EXECUTE_IF("pause_after_queue_event",
@@ -1814,7 +1827,7 @@ int terminate_slave_threads(Master_info *mi, int thread_mask,
     DBUG_PRINT("info", ("Flushing relay log and source info repository."));
     if (current_thd)
       THD_STAGE_INFO(current_thd,
-                     stage_flushing_relay_log_and_source_info_repository);
+                     stage_flushing_applier_and_connection_metadata);
 
     /*
       Flushes the master info regardless of the sync_source_info option and
@@ -2097,23 +2110,23 @@ bool start_slave_threads(bool need_lock_slave, bool wait_for_start,
     lock_cond_sql = &mi->rli->run_lock;
   }
 
-  if (thread_mask & SLAVE_IO)
+  if (thread_mask & REPLICA_IO)
     is_error = start_slave_thread(key_thread_replica_io, handle_slave_io,
                                   lock_io, lock_cond_io, cond_io,
                                   &mi->slave_running, &mi->slave_run_id, mi);
 
-  if (!is_error && (thread_mask & (SLAVE_IO | SLAVE_MONITOR)) &&
+  if (!is_error && (thread_mask & (REPLICA_IO | SLAVE_MONITOR)) &&
       mi->is_source_connection_auto_failover() &&
       !Source_IO_monitor::get_instance()->is_monitoring_process_running()) {
     is_error = Source_IO_monitor::get_instance()->launch_monitoring_process(
         key_thread_replica_monitor_io);
 
     if (is_error)
-      terminate_slave_threads(mi, thread_mask & (SLAVE_IO | SLAVE_MONITOR),
+      terminate_slave_threads(mi, thread_mask & (REPLICA_IO | SLAVE_MONITOR),
                               rpl_stop_replica_timeout, need_lock_slave);
   }
 
-  if (!is_error && (thread_mask & SLAVE_SQL)) {
+  if (!is_error && (thread_mask & REPLICA_SQL)) {
     /*
       MTS-recovery gaps gathering is placed onto common execution path
       for either START-SLAVE and --skip-start-replica= 0
@@ -2129,7 +2142,7 @@ bool start_slave_threads(bool need_lock_slave, bool wait_for_start,
           key_thread_replica_sql, handle_slave_sql, lock_sql, lock_cond_sql,
           cond_sql, &mi->rli->slave_running, &mi->rli->slave_run_id, mi);
     if (is_error)
-      terminate_slave_threads(mi, thread_mask & (SLAVE_IO | SLAVE_MONITOR),
+      terminate_slave_threads(mi, thread_mask & (REPLICA_IO | SLAVE_MONITOR),
                               rpl_stop_replica_timeout, need_lock_slave);
   }
   return is_error;
@@ -2149,10 +2162,10 @@ void end_slave() {
 
   /*
     This is called when the server terminates, in close_connections().
-    It terminates slave threads. However, some CHANGE MASTER etc may still be
-    running presently. If a START SLAVE was in progress, the mutex lock below
-    will make us wait until slave threads have started, and START SLAVE
-    returns, then we terminate them here.
+    It terminates slave threads. However, some CHANGE REPLICATION SOURCE etc may
+    still be running presently. If a START REPLICA was in progress, the mutex
+    lock below will make us wait until slave threads have started, and START
+    REPLICA returns, then we terminate them here.
   */
   channel_map.wrlock();
 
@@ -2189,7 +2202,7 @@ void delete_slave_info_objects() {
       end_info(mi);
       if (mi->rli) delete mi->rli;
       delete mi;
-      it->second = 0;
+      it->second = nullptr;
     }
   }
 
@@ -2203,7 +2216,7 @@ void delete_slave_info_objects() {
       end_info(mi);
       if (mi->rli) delete mi->rli;
       delete mi;
-      it->second = 0;
+      it->second = nullptr;
     }
   }
 
@@ -2211,21 +2224,16 @@ void delete_slave_info_objects() {
 }
 
 /**
-   Check if multi-statement transaction mode and master and slave info
-   repositories are set to table.
+   Check if in multi-statement transaction mode
 
    @param thd    THD object
 
    @retval true  Success
    @retval false Failure
 */
-static bool is_autocommit_off_and_infotables(THD *thd) {
+static bool is_autocommit_off(THD *thd) {
   DBUG_TRACE;
-  return (thd && thd->in_multi_stmt_transaction_mode() &&
-          (opt_mi_repository_id == INFO_REPOSITORY_TABLE ||
-           opt_rli_repository_id == INFO_REPOSITORY_TABLE))
-             ? true
-             : false;
+  return (thd && thd->in_multi_stmt_transaction_mode());
 }
 
 static bool monitor_io_replica_killed(THD *thd, Master_info *mi) {
@@ -2639,8 +2647,9 @@ static int get_master_uuid(MYSQL *mysql, Master_info *mi) {
   relying on the binlog's version. This is not perfect: imagine an upgrade
   of the master without waiting that all slaves are in sync with the master;
   then a slave could be fooled about the binlog's format. This is what happens
-  when people upgrade a 3.23 master to 4.0 without doing RESET MASTER: 4.0
-  slaves are fooled. So we do this only to distinguish between 3.23 and more
+  when people upgrade a 3.23 master to 4.0 without doing
+  RESET BINARY LOGS AND GTIDS: 4.0 slaves are fooled.
+  So we do this only to distinguish between 3.23 and more
   recent masters (it's too late to change things for 3.23).
 
   RETURNS
@@ -2724,9 +2733,9 @@ static int get_master_version_and_clock(MYSQL *mysql, Master_info *mi) {
       mi->rli->relay_log.relay_log_checksum_alg;
 
   assert(mi->get_mi_description_event()->common_footer->checksum_alg !=
-         binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+         mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
   assert(mi->rli->relay_log.relay_log_checksum_alg !=
-         binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+         mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
 
   mysql_mutex_unlock(&mi->data_lock);
   mysql_mutex_unlock(mi->rli->relay_log.get_log_lock());
@@ -2889,7 +2898,8 @@ static int get_master_version_and_clock(MYSQL *mysql, Master_info *mi) {
         "@source_binlog_checksum = @@global.binlog_checksum";
     master_res = nullptr;
     // initially undefined
-    mi->checksum_alg_before_fd = binary_log::BINLOG_CHECKSUM_ALG_UNDEF;
+    mi->checksum_alg_before_fd =
+        mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF;
     /*
       @c checksum_alg_before_fd is queried from master in this block.
       If master is old checksum-unaware the value stays undefined.
@@ -2898,7 +2908,8 @@ static int get_master_version_and_clock(MYSQL *mysql, Master_info *mi) {
     */
     rc = mysql_real_query(mysql, query, static_cast<ulong>(strlen(query)));
     if (rc != 0) {
-      mi->checksum_alg_before_fd = binary_log::BINLOG_CHECKSUM_ALG_OFF;
+      mi->checksum_alg_before_fd =
+          mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF;
       if (check_io_slave_killed(mi->info_thd, mi, nullptr))
         goto slave_killed_err;
 
@@ -2941,9 +2952,9 @@ static int get_master_version_and_clock(MYSQL *mysql, Master_info *mi) {
 
         DBUG_EXECUTE_IF("undefined_algorithm_on_replica",
                         mi->checksum_alg_before_fd =
-                            binary_log::BINLOG_CHECKSUM_ALG_UNDEF;);
+                            mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF;);
         if (mi->checksum_alg_before_fd ==
-            binary_log::BINLOG_CHECKSUM_ALG_UNDEF) {
+            mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF) {
           errmsg =
               "The replica I/O thread was stopped because a fatal error is "
               "encountered "
@@ -2956,9 +2967,9 @@ static int get_master_version_and_clock(MYSQL *mysql, Master_info *mi) {
 
         // valid outcome is either of
         assert(mi->checksum_alg_before_fd ==
-                   binary_log::BINLOG_CHECKSUM_ALG_OFF ||
+                   mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF ||
                mi->checksum_alg_before_fd ==
-                   binary_log::BINLOG_CHECKSUM_ALG_CRC32);
+                   mysql::binlog::event::BINLOG_CHECKSUM_ALG_CRC32);
       } else if (check_io_slave_killed(mi->info_thd, mi, nullptr))
         goto slave_killed_err;
       else if (is_network_error(mysql_errno(mysql))) {
@@ -2981,7 +2992,7 @@ static int get_master_version_and_clock(MYSQL *mysql, Master_info *mi) {
       master_res = nullptr;
     }
   } else
-    mi->checksum_alg_before_fd = binary_log::BINLOG_CHECKSUM_ALG_OFF;
+    mi->checksum_alg_before_fd = mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF;
 
   if (DBUG_EVALUATE_IF("bug32442749_simulate_null_checksum", 1, 0)) {
     const char query[] = "SET @source_binlog_checksum= NULL";
@@ -3078,71 +3089,52 @@ slave_killed_err:
   return 2;
 }
 
-static bool wait_for_relay_log_space(Relay_log_info *rli) {
+static bool exceeds_relay_log_limit(Relay_log_info *rli,
+                                    std::size_t queued_size) {
+  return (rli->log_space_limit != 0 &&
+          rli->log_space_limit < rli->log_space_total + queued_size);
+}
+
+static bool wait_for_relay_log_space(Relay_log_info *rli,
+                                     std::size_t queued_size) {
   bool slave_killed = false;
   Master_info *mi = rli->mi;
   PSI_stage_info old_stage;
   THD *thd = mi->info_thd;
   DBUG_TRACE;
 
+  // from now on, until the time is_receiver_waiting_for_rl_space is
+  // cleared, every rotation made by coordinator and executed
+  // outside of a transaction, will purge the currently rotated log
+  rli->is_receiver_waiting_for_rl_space.store(true);
+
+  // rotate now to avoid deadlock with FLUSH RELAY LOGS, which calls
+  // rotate_relay_log with a default locking order, see rotate_relay_log
+  // Before rotation, is_receiver_waiting_for_rl_space is already set, so
+  // after exiting the rotate_relay_log, coordinator executing rotation
+  // requested here will see the correct value of the
+  // 'is_receiver_waiting_for_rl_space' and will purge applied logs
+  // with force option
+  rotate_relay_log(mi, true, true, true);
+
+  // capture the log name to which we rotated:
+  mysql_mutex_lock(rli->relay_log.get_log_lock());
+  std::string receiver_log = rli->relay_log.get_log_fname();
+  mysql_mutex_unlock(rli->relay_log.get_log_lock());
+
   mysql_mutex_lock(&rli->log_space_lock);
   thd->ENTER_COND(&rli->log_space_cond, &rli->log_space_lock,
                   &stage_waiting_for_relay_log_space, &old_stage);
-  while (rli->log_space_limit < rli->log_space_total &&
+  while (exceeds_relay_log_limit(rli, queued_size) &&
          !(slave_killed = io_slave_killed(thd, mi)) &&
-         !rli->ignore_log_space_limit)
+         rli->coordinator_log_after_purge != receiver_log) {
     mysql_cond_wait(&rli->log_space_cond, &rli->log_space_lock);
-
-  /*
-    Makes the IO thread read only one event at a time
-    until the SQL thread is able to purge the relay
-    logs, freeing some space.
-
-    Therefore, once the SQL thread processes this next
-    event, it goes to sleep (no more events in the queue),
-    sets ignore_log_space_limit=true and wakes the IO thread.
-    However, this event may have been enough already for
-    the SQL thread to purge some log files, freeing
-    rli->log_space_total .
-
-    This guarantees that the SQL and IO thread move
-    forward only one event at a time (to avoid deadlocks),
-    when the relay space limit is reached. It also
-    guarantees that when the SQL thread is prepared to
-    rotate (to be able to purge some logs), the IO thread
-    will know about it and will rotate.
-
-    NOTE: The ignore_log_space_limit is only set when the SQL
-          thread sleeps waiting for events.
-
-   */
-  if (rli->ignore_log_space_limit) {
-#ifndef NDEBUG
-    {
-      char llbuf1[22], llbuf2[22];
-      DBUG_PRINT("info", ("log_space_limit=%s "
-                          "log_space_total=%s "
-                          "ignore_log_space_limit=%d "
-                          "sql_force_rotate_relay=%d",
-                          llstr(rli->log_space_limit, llbuf1),
-                          llstr(rli->log_space_total, llbuf2),
-                          (int)rli->ignore_log_space_limit,
-                          (int)rli->sql_force_rotate_relay));
-    }
-#endif
-    if (rli->sql_force_rotate_relay) {
-      DBUG_EXECUTE_IF("rpl_before_forced_rotate", {
-        rpl_replica_debug_point(DBUG_RPL_S_BEFORE_FORCED_ROTATE);
-      });
-      rotate_relay_log(mi, true, true, false);
-      rli->sql_force_rotate_relay = false;
-    }
-
-    rli->ignore_log_space_limit = false;
   }
-
   mysql_mutex_unlock(&rli->log_space_lock);
   thd->EXIT_COND(&old_stage);
+
+  rli->is_receiver_waiting_for_rl_space.store(false);
+
   return slave_killed;
 }
 
@@ -3537,10 +3529,7 @@ static bool show_slave_status_send_data(THD *thd, Master_info *mi,
       until_type = "None";
       break;
     case Relay_log_info::UNTIL_MASTER_POS:
-      if (thd->lex->is_replication_deprecated_syntax_used())
-        until_type = "Master";
-      else
-        until_type = "Source";
+      until_type = "Source";
       break;
     case Relay_log_info::UNTIL_RELAY_POS:
       until_type = "Relay";
@@ -3575,7 +3564,7 @@ static bool show_slave_status_send_data(THD *thd, Master_info *mi,
   protocol->store(mi->ssl_key, &my_charset_bin);
 
   /*
-     The pseudo code to compute Seconds_Behind_Master:
+     The pseudo code to compute Seconds_Behind_Source:
      if (SQL thread is running)
      {
        if (SQL thread processed all the available relay log)
@@ -3586,7 +3575,7 @@ static bool show_slave_status_send_data(THD *thd, Master_info *mi,
             print NULL;
        }
         else
-          compute Seconds_Behind_Master;
+          compute Seconds_Behind_Source;
       }
       else
        print NULL;
@@ -3667,10 +3656,10 @@ static bool show_slave_status_send_data(THD *thd, Master_info *mi,
     }
     protocol->store(buff, &my_charset_bin);
   }
-  // Master_Server_id
+  // Source_Server_id
   protocol->store((uint32)mi->master_id);
   protocol->store(mi->master_uuid, &my_charset_bin);
-  // Master_Info_File
+  // Master_info_file
   protocol->store(mi->get_description_info(), &my_charset_bin);
   // SQL_Delay
   protocol->store((uint32)mi->rli->get_sql_delay());
@@ -3680,19 +3669,19 @@ static bool show_slave_status_send_data(THD *thd, Master_info *mi,
     protocol->store((uint32)(t < sql_delay_end ? sql_delay_end - t : 0));
   } else
     protocol->store_null();
-  // Slave_SQL_Running_State
+  // Replica_SQL_Running_State
   protocol->store(slave_sql_running_state, &my_charset_bin);
-  // Master_Retry_Count
+  // Source_Retry_Count
   protocol->store((ulonglong)mi->retry_count);
-  // Master_Bind
+  // Source_Bind
   protocol->store(mi->bind_addr, &my_charset_bin);
   // Last_IO_Error_Timestamp
   protocol->store(mi->last_error().timestamp, &my_charset_bin);
   // Last_SQL_Error_Timestamp
   protocol->store(mi->rli->last_error().timestamp, &my_charset_bin);
-  // Master_Ssl_Crl
+  // Source_Ssl_Crl
   protocol->store(mi->ssl_crl, &my_charset_bin);
-  // Master_Ssl_Crlpath
+  // Source_Ssl_Crlpath
   protocol->store(mi->ssl_crlpath, &my_charset_bin);
   // Retrieved_Gtid_Set
   protocol->store(io_gtid_set_buffer, &my_charset_bin);
@@ -3705,11 +3694,11 @@ static bool show_slave_status_send_data(THD *thd, Master_info *mi,
   protocol->store(&tmp);
   // channel_name
   protocol->store(mi->get_channel(), &my_charset_bin);
-  // Master_TLS_Version
+  // Source_TLS_Version
   protocol->store(mi->tls_version, &my_charset_bin);
-  // Master_public_key_path
+  // Source_public_key_path
   protocol->store(mi->public_key_path, &my_charset_bin);
-  // Get_master_public_key
+  // Get_Source_public_key
   protocol->store(mi->get_public_key ? 1 : 0);
 
   protocol->store(mi->network_namespace_str(), &my_charset_bin);
@@ -3761,12 +3750,12 @@ bool show_slave_status(THD *thd) {
 
   if (io_gtid_set_buffer_array == nullptr) return true;
 
-  global_sid_lock->wrlock();
+  global_tsid_lock->wrlock();
 
   const Gtid_set *sql_gtid_set = gtid_state->get_executed_gtids();
   sql_gtid_set_size = sql_gtid_set->to_string(&sql_gtid_set_buffer);
 
-  global_sid_lock->unlock();
+  global_tsid_lock->unlock();
 
   idx = 0;
   for (mi_map::iterator it = channel_map.begin(); it != channel_map.end();
@@ -3782,7 +3771,7 @@ bool show_slave_status(THD *thd) {
 
     if (Master_info::is_configured(mi)) {
       const Gtid_set *io_gtid_set = mi->rli->get_gtid_set();
-      mi->rli->get_sid_lock()->wrlock();
+      mi->rli->get_tsid_lock()->wrlock();
 
       /*
          @todo: a single memory allocation improves speed,
@@ -3799,14 +3788,14 @@ bool show_slave_status(THD *thd) {
         }
         my_free(io_gtid_set_buffer_array);
 
-        mi->rli->get_sid_lock()->unlock();
+        mi->rli->get_tsid_lock()->unlock();
         return true;
       } else
         max_io_gtid_set_size = max_io_gtid_set_size > io_gtid_set_size
                                    ? max_io_gtid_set_size
                                    : io_gtid_set_size;
 
-      mi->rli->get_sid_lock()->unlock();
+      mi->rli->get_tsid_lock()->unlock();
     }
     idx++;
   }
@@ -3814,10 +3803,6 @@ bool show_slave_status(THD *thd) {
   mem_root_deque<Item *> field_list(thd->mem_root);
   show_slave_status_metadata(&field_list, max_io_gtid_set_size,
                              sql_gtid_set_size);
-
-  // TODO: once the old syntax is removed, remove this as well.
-  if (thd->lex->is_replication_deprecated_syntax_used())
-    rename_fields_use_old_replica_source_terms(thd, field_list);
 
   if (thd->send_result_metadata(field_list,
                                 Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF)) {
@@ -3864,7 +3849,7 @@ err:
   @retval false success
   @retval true failure
 
-  Currently, show slave status works for a channel too, in multisource
+  Currently, show replica status works for a channel too, in multisource
   replication. But using performance schema tables is better.
 
 */
@@ -3875,15 +3860,15 @@ bool show_slave_status(THD *thd, Master_info *mi) {
   DBUG_TRACE;
 
   if (mi != nullptr) {
-    global_sid_lock->wrlock();
+    global_tsid_lock->wrlock();
     const Gtid_set *sql_gtid_set = gtid_state->get_executed_gtids();
     sql_gtid_set_size = sql_gtid_set->to_string(&sql_gtid_set_buffer);
-    global_sid_lock->unlock();
+    global_tsid_lock->unlock();
 
-    mi->rli->get_sid_lock()->wrlock();
+    mi->rli->get_tsid_lock()->wrlock();
     const Gtid_set *io_gtid_set = mi->rli->get_gtid_set();
     io_gtid_set_size = io_gtid_set->to_string(&io_gtid_set_buffer);
-    mi->rli->get_sid_lock()->unlock();
+    mi->rli->get_tsid_lock()->unlock();
 
     if (sql_gtid_set_size < 0 || io_gtid_set_size < 0) {
       my_eof(thd);
@@ -3893,14 +3878,10 @@ bool show_slave_status(THD *thd, Master_info *mi) {
     }
   }
 
-  /* Fill the metadata required for show slave status. */
+  /* Fill the metadata required for show replica status. */
 
   mem_root_deque<Item *> field_list(thd->mem_root);
   show_slave_status_metadata(&field_list, io_gtid_set_size, sql_gtid_set_size);
-
-  // TODO: once the old syntax is removed, remove this as well.
-  if (thd->lex->is_replication_deprecated_syntax_used())
-    rename_fields_use_old_replica_source_terms(thd, field_list);
 
   if (thd->send_result_metadata(field_list,
                                 Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF)) {
@@ -3965,8 +3946,8 @@ bool show_slave_status_cmd(THD *thd) {
       need to disable the SHOW REPLICA STATUS command as its output is not
       compatible with this command.
     */
-    if (channel_map.is_group_replication_channel_name(mi->get_channel(),
-                                                      true)) {
+    if (channel_map.is_group_replication_applier_channel_name(
+            mi->get_channel())) {
       my_error(ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0),
                "SHOW REPLICA STATUS", mi->get_channel());
       channel_map.unlock();
@@ -4011,9 +3992,7 @@ void set_slave_thread_options(THD *thd) {
     info tables updates which do not commit, like Rotate, Stop and
     skipped events handling.
   */
-  if ((thd->variables.option_bits & OPTION_NOT_AUTOCOMMIT) &&
-      (opt_mi_repository_id == INFO_REPOSITORY_TABLE ||
-       opt_rli_repository_id == INFO_REPOSITORY_TABLE)) {
+  if ((thd->variables.option_bits & OPTION_NOT_AUTOCOMMIT)) {
     thd->variables.option_bits |= OPTION_AUTOCOMMIT;
     thd->variables.option_bits &= ~OPTION_NOT_AUTOCOMMIT;
     thd->server_status |= SERVER_STATUS_AUTOCOMMIT;
@@ -4064,7 +4043,6 @@ int init_replica_thread(THD *thd, SLAVE_THD_TYPE thd_type) {
                                  : SYSTEM_THREAD_SLAVE_IO;
   thd->get_protocol_classic()->init_net(nullptr);
   thd->slave_thread = true;
-  thd->override_replica_filtering = THD::NO_OVERRIDE_REPLICA_FILTERING;
   thd->enable_slow_log = opt_log_slow_replica_statements;
   set_slave_thread_options(thd);
 
@@ -4155,7 +4133,7 @@ static inline bool slave_sleep(THD *thd, time_t seconds, killed_func func,
 static void fix_gtid_set(MYSQL_RPL *rpl, uchar *packet_gtid_set) {
   Gtid_set *gtid_set = (Gtid_set *)rpl->gtid_set_arg;
 
-  gtid_set->encode(packet_gtid_set);
+  gtid_set->encode(packet_gtid_set, rpl->flags & MYSQL_RPL_SKIP_TAGGED_GTIDS);
 }
 
 static int request_dump(THD *thd, MYSQL *mysql, MYSQL_RPL *rpl, Master_info *mi,
@@ -4182,39 +4160,45 @@ static int request_dump(THD *thd, MYSQL *mysql, MYSQL_RPL *rpl, Master_info *mi,
   rpl->server_id = server_id;
   rpl->flags = binlog_flags;
 
-  Sid_map sid_map(nullptr); /* No lock needed */
+  Tsid_map tsid_map(nullptr); /* No lock needed */
   /*
     Note: should be declared at the same level as the mysql_binlog_open() call,
     as the latter might call fix_gtid_set() which in turns calls
     gtid_executed->encode().
   */
-  Gtid_set gtid_executed(&sid_map);
+  Gtid_set gtid_executed(&tsid_map);
 
   if (command == COM_BINLOG_DUMP_GTID) {
     // get set of GTIDs
-    mi->rli->get_sid_lock()->wrlock();
+    mi->rli->get_tsid_lock()->wrlock();
 
     if (gtid_executed.add_gtid_set(mi->rli->get_gtid_set()) !=
         RETURN_STATUS_OK) {
-      mi->rli->get_sid_lock()->unlock();
+      mi->rli->get_tsid_lock()->unlock();
       return 1;
     }
-    mi->rli->get_sid_lock()->unlock();
+    mi->rli->get_tsid_lock()->unlock();
 
-    global_sid_lock->wrlock();
+    global_tsid_lock->wrlock();
     gtid_state->dbug_print();
 
     if (gtid_executed.add_gtid_set(gtid_state->get_executed_gtids()) !=
         RETURN_STATUS_OK) {
-      global_sid_lock->unlock();
+      global_tsid_lock->unlock();
       return 1;
     }
-    global_sid_lock->unlock();
+    global_tsid_lock->unlock();
 
     rpl->file_name = nullptr; /* No need to set rpl.file_name_length */
     rpl->start_position = 4;
     rpl->flags |= MYSQL_RPL_GTID;
-    rpl->gtid_set_encoded_size = gtid_executed.get_encoded_length();
+    if (mysql_get_server_version(mysql) < MYSQL_TAGGED_GTIDS_VERSION_SUPPORT) {
+      rpl->flags |= MYSQL_RPL_SKIP_TAGGED_GTIDS;
+    }
+    DBUG_EXECUTE_IF("com_binlog_dump_gtids_force_skipping_tagged_gtids",
+                    { rpl->flags |= MYSQL_RPL_SKIP_TAGGED_GTIDS; });
+    rpl->gtid_set_encoded_size = gtid_executed.get_encoded_length(
+        rpl->flags & MYSQL_RPL_SKIP_TAGGED_GTIDS);
     rpl->fix_gtid_set = fix_gtid_set;
     rpl->gtid_set_arg = (void *)&gtid_executed;
   } else {
@@ -4263,14 +4247,6 @@ static ulong read_event(MYSQL *mysql, MYSQL_RPL *rpl, Master_info *mi,
   DBUG_TRACE;
 
   *suppress_warnings = false;
-  /*
-    my_real_read() will time us out
-    We check if we were told to die, and if not, try reading again
-  */
-#ifndef NDEBUG
-  if (disconnect_slave_event_count && !(mi->events_until_exit--))
-    return packet_error;
-#endif
 
   if (mysql_binlog_fetch(mysql, rpl)) {
     uint err{mysql_errno(mysql)};
@@ -4302,8 +4278,8 @@ static ulong read_event(MYSQL *mysql, MYSQL_RPL *rpl, Master_info *mi,
 }
 
 /**
-  If this is a lagging slave (specified with CHANGE MASTER TO MASTER_DELAY = X),
-  delays accordingly. Also unlocks rli->data_lock.
+  If this is a lagging slave (specified with CHANGE REPLICATION SOURCE TO
+  SOURCE_DELAY = X), delays accordingly. Also unlocks rli->data_lock.
 
   Design note: this is the place to unlock rli->data_lock. The lock
   must be held when reading delay info from rli, but it should not be
@@ -4327,12 +4303,11 @@ static int sql_delay_event(Log_event *ev, THD *thd, Relay_log_info *rli) {
   assert(!rli->belongs_to_client());
 
   if (sql_delay) {
-    int type = ev->get_type_code();
+    auto type = ev->get_type_code();
     time_t sql_delay_end = 0;
 
     if (rli->commit_timestamps_status == Relay_log_info::COMMIT_TS_UNKNOWN &&
-        (type == binary_log::GTID_LOG_EVENT ||
-         type == binary_log::ANONYMOUS_GTID_LOG_EVENT)) {
+        Log_event_type_helper::is_any_gtid_event(type)) {
       if (static_cast<Gtid_log_event *>(ev)->has_commit_timestamps &&
           DBUG_EVALUATE_IF("sql_delay_without_timestamps", 0, 1)) {
         rli->commit_timestamps_status = Relay_log_info::COMMIT_TS_FOUND;
@@ -4342,8 +4317,7 @@ static int sql_delay_event(Log_event *ev, THD *thd, Relay_log_info *rli) {
     }
 
     if (rli->commit_timestamps_status == Relay_log_info::COMMIT_TS_FOUND) {
-      if (type == binary_log::GTID_LOG_EVENT ||
-          type == binary_log::ANONYMOUS_GTID_LOG_EVENT) {
+      if (Log_event_type_helper::is_any_gtid_event(type)) {
         /*
           Calculate when we should execute the event.
           The immediate master timestamp is expressed in microseconds.
@@ -4360,9 +4334,9 @@ static int sql_delay_event(Log_event *ev, THD *thd, Relay_log_info *rli) {
         the immediate master does not support commit timestamps
         in Gtid_log_events
       */
-      if (type != binary_log::ROTATE_EVENT &&
-          type != binary_log::FORMAT_DESCRIPTION_EVENT &&
-          type != binary_log::PREVIOUS_GTIDS_LOG_EVENT) {
+      if (type != mysql::binlog::event::ROTATE_EVENT &&
+          type != mysql::binlog::event::FORMAT_DESCRIPTION_EVENT &&
+          type != mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT) {
         // Calculate when we should execute the event.
         sql_delay_end = ev->common_header->when.tv_sec +
                         rli->mi->clock_diff_with_master + sql_delay;
@@ -4377,21 +4351,26 @@ static int sql_delay_event(Log_event *ev, THD *thd, Relay_log_info *rli) {
       if (sql_delay_end > now) {
         nap_time = sql_delay_end - now;
 
-        DBUG_PRINT("info",
-                   ("sql_delay= %lu "
-                    "now= %ld "
-                    "sql_delay_end= %ld "
-                    "nap_time= %ld",
-                    sql_delay, (long)now, (long)sql_delay_end, (long)nap_time));
-        DBUG_PRINT("info", ("delaying replication event %lu secs", nap_time));
+        DBUG_PRINT(
+            "info",
+            ("sql_delay= %lu "
+             "now= %ld "
+             "sql_delay_end= %ld "
+             "nap_time= %ld",
+             static_cast<unsigned long>(sql_delay), static_cast<long>(now),
+             static_cast<long>(sql_delay_end), static_cast<long>(nap_time)));
+        DBUG_PRINT("info", ("delaying replication event %lu secs",
+                            static_cast<unsigned long>(nap_time)));
         rli->start_sql_delay(sql_delay_end);
         mysql_mutex_unlock(&rli->data_lock);
         return slave_sleep(thd, nap_time, sql_slave_killed, rli);
       } else {
-        DBUG_PRINT("info", ("sql_delay= %lu "
-                            "now= %ld "
-                            "sql_delay_end= %ld ",
-                            sql_delay, (long)now, (long)sql_delay_end));
+        DBUG_PRINT("info",
+                   ("sql_delay= %lu "
+                    "now= %ld "
+                    "sql_delay_end= %ld ",
+                    static_cast<unsigned long>(sql_delay),
+                    static_cast<long>(now), static_cast<long>(sql_delay_end)));
       }
     }
   }
@@ -4420,9 +4399,9 @@ static int sql_delay_event(Log_event *ev, THD *thd, Relay_log_info *rli) {
      sql thread instead of being used for executing BINLOG
      statements), it does the following things: (1) skips events if it
      is needed according to the server id or slave_skip_counter; (2)
-     unlocks rli->data_lock; (3) sleeps if required by 'CHANGE MASTER
-     TO MASTER_DELAY=X'; (4) maintains the running state of the sql
-     thread (rli->thread_state).
+     unlocks rli->data_lock; (3) sleeps if required by 'CHANGE REPLICATION
+  SOURCE TO SOURCE_DELAY=X'; (4) maintains the running state of the sql thread
+  (rli->thread_state).
 
    - Reports errors as needed.
 
@@ -4543,8 +4522,9 @@ apply_event_and_update_pos(Log_event **ptr_ev, THD *thd, Relay_log_info *rli) {
 
     if (!exec_res && (ev->worker != rli)) {
       if (ev->worker) {
-        Slave_job_item item = {ev, rli->get_event_relay_log_number(),
-                               rli->get_event_start_pos()};
+        Slave_job_item item = {ev, rli->get_event_start_pos(), {'\0'}};
+        if (rli->get_event_relay_log_name())
+          strcpy(item.event_relay_log_name, rli->get_event_relay_log_name());
         Slave_job_item *job_item = &item;
         Slave_worker *w = (Slave_worker *)ev->worker;
         // specially marked group typically with OVER_MAX_DBS_IN_EVENT_MTS db:s
@@ -4611,19 +4591,23 @@ apply_event_and_update_pos(Log_event **ptr_ev, THD *thd, Relay_log_info *rli) {
       }
       *ptr_ev = nullptr;  // announcing the event is passed to w-worker
 
-      if (rli->is_parallel_exec() && rli->mts_events_assigned % 1024 == 1) {
+      if (rli->is_parallel_exec() &&
+          rli->mts_online_stat_curr > mts_online_stat_count) {
         time_t my_now = time(nullptr);
 
-        if ((my_now - rli->mts_last_online_stat) >= mts_online_stat_period) {
+        if (((my_now - rli->mts_last_online_stat) >= mts_online_stat_period) ||
+            DBUG_EVALUATE_IF("simulate_log_err_ER_RPL_MTA_STATISTICS", 1, 0)) {
           LogErr(INFORMATION_LEVEL, ER_RPL_MTA_STATISTICS,
                  rli->get_for_channel_str(),
                  static_cast<unsigned long>(my_now - rli->mts_last_online_stat),
-                 rli->mts_events_assigned, rli->mts_wq_overrun_cnt,
+                 rli->mts_events_assigned, rli->mts_wq_overrun_cnt.load(),
                  rli->mts_wq_overfill_cnt, rli->wq_size_waits_cnt,
                  rli->mts_total_wait_overlap.load(),
                  rli->mts_wq_no_underrun_cnt, rli->mts_total_wait_worker_avail);
           rli->mts_last_online_stat = my_now;
         }
+
+        rli->mts_online_stat_curr = 0;
       }
     }
   } else
@@ -4649,10 +4633,10 @@ apply_event_and_update_pos(Log_event **ptr_ev, THD *thd, Relay_log_info *rli) {
     */
     int error = 0;
     if (*ptr_ev &&
-        ((ev->get_type_code() != binary_log::XID_EVENT &&
+        ((ev->get_type_code() != mysql::binlog::event::XID_EVENT &&
           !is_committed_ddl(*ptr_ev)) ||
          skip_event ||
-         (rli->is_mts_recovery() && !is_gtid_event(ev) &&
+         (rli->is_mts_recovery() && !is_any_gtid_event(ev) &&
           (ev->ends_group() || !rli->mts_recovery_group_seen_begin) &&
           bitmap_is_set(&rli->recovery_groups, rli->mts_recovery_index)))) {
 #ifndef NDEBUG
@@ -4713,22 +4697,23 @@ apply_event_and_update_pos(Log_event **ptr_ev, THD *thd, Relay_log_info *rli) {
       */
       assert(*ptr_ev == ev || rli->is_parallel_exec() ||
              (!ev->worker &&
-              (ev->get_type_code() == binary_log::INTVAR_EVENT ||
-               ev->get_type_code() == binary_log::RAND_EVENT ||
-               ev->get_type_code() == binary_log::USER_VAR_EVENT ||
-               ev->get_type_code() == binary_log::ROWS_QUERY_LOG_EVENT)));
+              (ev->get_type_code() == mysql::binlog::event::INTVAR_EVENT ||
+               ev->get_type_code() == mysql::binlog::event::RAND_EVENT ||
+               ev->get_type_code() == mysql::binlog::event::USER_VAR_EVENT ||
+               ev->get_type_code() ==
+                   mysql::binlog::event::ROWS_QUERY_LOG_EVENT)));
 
       rli->inc_event_relay_log_pos();
     }
 
     if (!error && rli->is_mts_recovery() &&
-        ev->get_type_code() != binary_log::ROTATE_EVENT &&
-        ev->get_type_code() != binary_log::FORMAT_DESCRIPTION_EVENT &&
-        ev->get_type_code() != binary_log::PREVIOUS_GTIDS_LOG_EVENT) {
+        ev->get_type_code() != mysql::binlog::event::ROTATE_EVENT &&
+        ev->get_type_code() != mysql::binlog::event::FORMAT_DESCRIPTION_EVENT &&
+        ev->get_type_code() != mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT) {
       if (ev->starts_group()) {
         rli->mts_recovery_group_seen_begin = true;
       } else if ((ev->ends_group() || !rli->mts_recovery_group_seen_begin) &&
-                 !is_gtid_event(ev)) {
+                 !is_any_gtid_event(ev)) {
         rli->mts_recovery_index++;
         if (--rli->mts_recovery_group_cnt == 0) {
           rli->mts_recovery_index = 0;
@@ -4872,7 +4857,7 @@ static bool coord_handle_partial_binlogged_transaction(Relay_log_info *rli,
 
   This function may fail to apply the event for the following reasons:
 
-   - The position specified by the UNTIL condition of the START SLAVE
+   - The position specified by the UNTIL condition of the START REPLICA
      command is reached.
 
    - It was not possible to read the event from the log.
@@ -4904,12 +4889,7 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
    */
   mysql_mutex_lock(&rli->data_lock);
 
-  Log_event *ev = nullptr;
-#ifndef NDEBUG
-  if (!abort_slave_event_count || rli->events_until_exit--)
-#endif
-    ev = in;
-
+  Log_event *ev = in;
   Log_event **ptr_ev = nullptr;
   RLI_current_event_raii rli_c_ev(rli, ev);
 
@@ -4963,7 +4943,8 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
     */
     if ((!rli->is_parallel_exec() || rli->last_master_timestamp == 0) &&
         !(ev->is_artificial_event() || ev->is_relay_log_event() ||
-          ev->get_type_code() == binary_log::FORMAT_DESCRIPTION_EVENT ||
+          ev->get_type_code() ==
+              mysql::binlog::event::FORMAT_DESCRIPTION_EVENT ||
           ev->server_id == 0)) {
       rli->last_master_timestamp =
           ev->common_header->when.tv_sec + (time_t)ev->exec_time;
@@ -4990,8 +4971,8 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
        */
       DBUG_EXECUTE_IF(
           "incomplete_group_in_relay_log",
-          if ((ev->get_type_code() == binary_log::XID_EVENT) ||
-              ((ev->get_type_code() == binary_log::QUERY_EVENT) &&
+          if ((ev->get_type_code() == mysql::binlog::event::XID_EVENT) ||
+              ((ev->get_type_code() == mysql::binlog::event::QUERY_EVENT) &&
                strcmp("COMMIT", ((Query_log_event *)ev)->query) == 0)) {
             rli->abort_slave = 1;
             mysql_mutex_unlock(&rli->data_lock);
@@ -5011,7 +4992,7 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
       worker roll back the current group and gracefully finish its work,
       before starting to apply the new (complete) copy of the group.
     */
-    if (ev->get_type_code() == binary_log::FORMAT_DESCRIPTION_EVENT &&
+    if (ev->get_type_code() == mysql::binlog::event::FORMAT_DESCRIPTION_EVENT &&
         ev->server_id != ::server_id && ev->common_header->log_pos != 0 &&
         rli->is_parallel_exec() && rli->curr_group_seen_gtid) {
       if (coord_handle_partial_binlogged_transaction(rli, ev))
@@ -5021,6 +5002,16 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
         */
         return 1;
     }
+
+    DBUG_EXECUTE_IF("wait_on_exec_relay_log_event", {
+      if (ev->get_type_code() == mysql::binlog::event::WRITE_ROWS_EVENT) {
+        const char act[] =
+            "now SIGNAL signal.waiting_on_event_execution "
+            "WAIT_FOR signal.can_continue_execution";
+        assert(opt_debug_sync_timeout > 0);
+        assert(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
+      }
+    };);
 
     /* ptr_ev can change to NULL indicating MTS coorinator passed to a Worker */
     exec_res = apply_event_and_update_pos(ptr_ev, thd, rli);
@@ -5038,12 +5029,13 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
       assert(*ptr_ev == ev);  // event remains to belong to Coordinator
 
       DBUG_EXECUTE_IF("dbug.calculate_sbm_after_previous_gtid_log_event", {
-        if (ev->get_type_code() == binary_log::PREVIOUS_GTIDS_LOG_EVENT) {
+        if (ev->get_type_code() ==
+            mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT) {
           rpl_replica_debug_point(DBUG_RPL_S_SBM_AFTER_PREVIOUS_GTID_EV, thd);
         }
       };);
       DBUG_EXECUTE_IF("dbug.calculate_sbm_after_fake_rotate_log_event", {
-        if (ev->get_type_code() == binary_log::ROTATE_EVENT &&
+        if (ev->get_type_code() == mysql::binlog::event::ROTATE_EVENT &&
             ev->is_artificial_event()) {
           rpl_replica_debug_point(DBUG_RPL_S_SBM_AFTER_FAKE_ROTATE_EV, thd);
         }
@@ -5055,8 +5047,9 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
         ROWS_QUERY_LOG_EVENT is destroyed at the end of the current statement
         clean-up routine.
       */
-      if (ev->get_type_code() != binary_log::FORMAT_DESCRIPTION_EVENT &&
-          ev->get_type_code() != binary_log::ROWS_QUERY_LOG_EVENT) {
+      if (ev->get_type_code() !=
+              mysql::binlog::event::FORMAT_DESCRIPTION_EVENT &&
+          ev->get_type_code() != mysql::binlog::event::ROWS_QUERY_LOG_EVENT) {
         DBUG_PRINT("info", ("Deleting the event after it has been executed"));
         delete ev;
         /*
@@ -5107,8 +5100,8 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
           /*
             The transactions has to be rolled back before
             load_mi_and_rli_from_repositories is called. Because
-            load_mi_and_rli_from_repositories will starts a new
-            transaction if master_info_repository is TABLE.
+            load_mi_and_rli_from_repositories will start a new
+            transaction.
           */
           rli->cleanup_context(thd, true);
           /*
@@ -5123,7 +5116,7 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
              We need to figure out if there is a test case that covers
              this part. \Alfranio.
           */
-          if (load_mi_and_rli_from_repositories(rli->mi, false, SLAVE_SQL,
+          if (load_mi_and_rli_from_repositories(rli->mi, false, REPLICA_SQL,
                                                 false, true))
             LogErr(ERROR_LEVEL,
                    ER_RPL_REPLICA_FAILED_TO_INIT_CONNECTION_METADATA_STRUCTURE,
@@ -5345,10 +5338,6 @@ extern "C" void *handle_slave_io(void *arg) {
 
     /* Inform waiting threads that slave has started */
     mi->slave_run_id++;
-
-#ifndef NDEBUG
-    mi->events_until_exit = disconnect_slave_event_count;
-#endif
 
     thd = new THD;  // note that constructor of THD uses DBUG_ !
     THD_CHECK_SENTRY(thd);
@@ -5597,9 +5586,9 @@ extern "C" void *handle_slave_io(void *arg) {
         retry_count = 0;  // ok event, reset retry counter
         THD_STAGE_INFO(thd, stage_queueing_source_event_to_the_relay_log);
         event_buf = (const char *)mysql->net.read_pos + 1;
+        [[maybe_unused]] auto &ev_type = event_buf[EVENT_TYPE_OFFSET];
         DBUG_PRINT("info", ("IO thread received event of type %s",
-                            Log_event::get_type_str(
-                                (Log_event_type)event_buf[EVENT_TYPE_OFFSET])));
+                            Log_event::get_type_str(ev_type)));
         if (RUN_HOOK(binlog_relay_io, after_read_event,
                      (thd, mi, (const char *)mysql->net.read_pos + 1, event_len,
                       &event_buf, &event_len))) {
@@ -5621,6 +5610,31 @@ extern "C" void *handle_slave_io(void *arg) {
           };);
         }
 #endif
+        std::size_t queued_size = event_len;
+        if (Log_event_type_helper::is_any_gtid_event(
+                static_cast<Log_event_type>(event_buf[EVENT_TYPE_OFFSET]))) {
+          mysql_mutex_lock(rli->relay_log.get_log_lock());
+          Gtid_log_event gtid_ev(event_buf, mi->get_mi_description_event());
+          mysql_mutex_unlock(rli->relay_log.get_log_lock());
+          if (!gtid_ev.is_valid()) {
+            mi->report(ERROR_LEVEL, ER_REPLICA_RELAY_LOG_WRITE_FAILURE,
+                       ER_THD(thd, ER_REPLICA_RELAY_LOG_WRITE_FAILURE),
+                       "could not queue event from source");
+            goto err;
+          }
+          queued_size = gtid_ev.get_trx_length();
+        }
+        // allow waiting only if we are outside of a transaction
+        if (rli->log_space_limit && exceeds_relay_log_limit(rli, queued_size) &&
+            !mi->transaction_parser.is_inside_transaction()) {
+          if (wait_for_relay_log_space(rli, queued_size)) {
+            LogErr(
+                ERROR_LEVEL,
+                ER_RPL_REPLICA_IO_THREAD_ABORTED_WAITING_FOR_RELAY_LOG_SPACE);
+            goto err;
+          }
+        }
+
         QUEUE_EVENT_RESULT queue_res = queue_event(mi, event_buf, event_len);
         if (queue_res == QUEUE_EVENT_ERROR_QUEUING) {
           mi->report(ERROR_LEVEL, ER_REPLICA_RELAY_LOG_WRITE_FAILURE,
@@ -5662,24 +5676,13 @@ extern "C" void *handle_slave_io(void *arg) {
 
         /*
           See if the relay logs take too much space.
-          We don't lock mi->rli->log_space_lock here; this dirty read saves time
-          and does not introduce any problem:
-          - if mi->rli->ignore_log_space_limit is 1 but becomes 0 just after (so
-          the clean value is 0), then we are reading only one more event as we
-          should, and we'll block only at the next event. No big deal.
-          - if mi->rli->ignore_log_space_limit is 0 but becomes 1 just after (so
-          the clean value is 1), then we are going into
-          wait_for_relay_log_space() for no reason, but this function will do a
-          clean read, notice the clean value and exit immediately.
         */
 #ifndef NDEBUG
         {
           char llbuf1[22], llbuf2[22];
-          DBUG_PRINT("info", ("log_space_limit=%s log_space_total=%s "
-                              "ignore_log_space_limit=%d",
+          DBUG_PRINT("info", ("log_space_limit=%s log_space_total=%s ",
                               llstr(rli->log_space_limit, llbuf1),
-                              llstr(rli->log_space_total, llbuf2),
-                              (int)rli->ignore_log_space_limit));
+                              llstr(rli->log_space_total, llbuf2)));
         }
 #endif
 
@@ -5688,49 +5691,48 @@ extern "C" void *handle_slave_io(void *arg) {
           rli->log_space_total = 20;
         };);
 
-        if (rli->log_space_limit &&
-            rli->log_space_limit < rli->log_space_total &&
-            !rli->ignore_log_space_limit)
-          if (wait_for_relay_log_space(rli)) {
-            LogErr(
-                ERROR_LEVEL,
-                ER_RPL_REPLICA_IO_THREAD_ABORTED_WAITING_FOR_RELAY_LOG_SPACE);
-            goto err;
-          }
         DBUG_EXECUTE_IF("flush_after_reading_user_var_event", {
-          if (event_buf[EVENT_TYPE_OFFSET] == binary_log::USER_VAR_EVENT)
+          if (ev_type == mysql::binlog::event::USER_VAR_EVENT)
             rpl_replica_debug_point(DBUG_RPL_S_FLUSH_AFTER_USERV_EV);
         });
         DBUG_EXECUTE_IF(
             "stop_io_after_reading_gtid_log_event",
-            if (event_buf[EVENT_TYPE_OFFSET] == binary_log::GTID_LOG_EVENT)
-                thd->killed = THD::KILLED_NO_VALUE;);
+            if (Log_event_type_helper::is_assigned_gtid_event(
+                    static_cast<Log_event_type>(ev_type))) {
+              thd->killed = THD::KILLED_NO_VALUE;
+            });
         DBUG_EXECUTE_IF(
             "stop_io_after_reading_query_log_event",
-            if (event_buf[EVENT_TYPE_OFFSET] == binary_log::QUERY_EVENT)
-                thd->killed = THD::KILLED_NO_VALUE;);
+            if (ev_type == mysql::binlog::event::QUERY_EVENT) {
+              thd->killed = THD::KILLED_NO_VALUE;
+            });
         DBUG_EXECUTE_IF(
             "stop_io_after_reading_user_var_log_event",
-            if (event_buf[EVENT_TYPE_OFFSET] == binary_log::USER_VAR_EVENT)
-                thd->killed = THD::KILLED_NO_VALUE;);
+            if (ev_type == mysql::binlog::event::USER_VAR_EVENT) {
+              thd->killed = THD::KILLED_NO_VALUE;
+            });
         DBUG_EXECUTE_IF(
             "stop_io_after_reading_table_map_event",
-            if (event_buf[EVENT_TYPE_OFFSET] == binary_log::TABLE_MAP_EVENT)
-                thd->killed = THD::KILLED_NO_VALUE;);
+            if (ev_type == mysql::binlog::event::TABLE_MAP_EVENT) {
+              thd->killed = THD::KILLED_NO_VALUE;
+            });
         DBUG_EXECUTE_IF(
             "stop_io_after_reading_xid_log_event",
-            if (event_buf[EVENT_TYPE_OFFSET] == binary_log::XID_EVENT)
-                thd->killed = THD::KILLED_NO_VALUE;);
+            if (ev_type == mysql::binlog::event::XID_EVENT) {
+              thd->killed = THD::KILLED_NO_VALUE;
+            });
         DBUG_EXECUTE_IF(
             "stop_io_after_reading_write_rows_log_event",
-            if (event_buf[EVENT_TYPE_OFFSET] == binary_log::WRITE_ROWS_EVENT)
-                thd->killed = THD::KILLED_NO_VALUE;);
+            if (ev_type == mysql::binlog::event::WRITE_ROWS_EVENT) {
+              thd->killed = THD::KILLED_NO_VALUE;
+            });
         DBUG_EXECUTE_IF(
             "stop_io_after_reading_unknown_event",
-            if (event_buf[EVENT_TYPE_OFFSET] >= binary_log::ENUM_END_EVENT)
-                thd->killed = THD::KILLED_NO_VALUE;);
+            if (ev_type >= mysql::binlog::event::ENUM_END_EVENT) {
+              thd->killed = THD::KILLED_NO_VALUE;
+            });
         DBUG_EXECUTE_IF("stop_io_after_queuing_event",
-                        thd->killed = THD::KILLED_NO_VALUE;);
+                        { thd->killed = THD::KILLED_NO_VALUE; });
         /*
           After event is flushed to relay log file, memory used
           by thread's mem_root is not required any more.
@@ -5805,6 +5807,7 @@ extern "C" void *handle_slave_io(void *arg) {
             thd->clear_active_vio();
             mysql_close(mysql);
             mi->mysql = nullptr;
+            mysql = nullptr;
           }
           goto connect_init;
         }
@@ -5833,19 +5836,20 @@ extern "C" void *handle_slave_io(void *arg) {
         Here we need to clear the active VIO before closing the
         connection with the master.  The reason is that THD::awake()
         might be called from terminate_slave_thread() because somebody
-        issued a STOP SLAVE.  If that happends, the shutdown_active_vio()
+        issued a STOP REPLICA.  If that happends, the shutdown_active_vio()
         can be called in the middle of closing the VIO associated with
         the 'mysql' object, causing a crash.
       */
       thd->clear_active_vio();
       mysql_close(mysql);
       mi->mysql = nullptr;
+      mysql = nullptr;
     }
     write_ignored_events_info_to_relay_log(thd, mi);
     THD_STAGE_INFO(thd, stage_waiting_for_replica_mutex_on_exit);
     mysql_mutex_lock(&mi->run_lock);
     /*
-      Clean information used to start slave in order to avoid
+      Clean information used to start replica in order to avoid
       security issues.
     */
     mi->reset_start_info();
@@ -5891,7 +5895,7 @@ extern "C" void *handle_slave_io(void *arg) {
   }
   my_thread_end();
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
-  ERR_remove_thread_state(0);
+  ERR_remove_thread_state(nullptr);
 #endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
   my_thread_exit(nullptr);
   return (nullptr);  // Avoid compiler warnings
@@ -6000,13 +6004,12 @@ static void *handle_slave_worker(void *arg) {
   thd->rli_slave = w;
   thd->init_query_mem_roots();
 
-  if (channel_map.is_group_replication_channel_name(rli->get_channel())) {
-    if (channel_map.is_group_replication_channel_name(rli->get_channel(),
-                                                      true)) {
-      thd->rpl_thd_ctx.set_rpl_channel_type(GR_APPLIER_CHANNEL);
-    } else {
-      thd->rpl_thd_ctx.set_rpl_channel_type(GR_RECOVERY_CHANNEL);
-    }
+  if (channel_map.is_group_replication_applier_channel_name(
+          rli->get_channel())) {
+    thd->rpl_thd_ctx.set_rpl_channel_type(GR_APPLIER_CHANNEL);
+  } else if (channel_map.is_group_replication_recovery_channel_name(
+                 rli->get_channel())) {
+    thd->rpl_thd_ctx.set_rpl_channel_type(GR_RECOVERY_CHANNEL);
   } else {
     thd->rpl_thd_ctx.set_rpl_channel_type(RPL_STANDARD_CHANNEL);
   }
@@ -6040,6 +6043,8 @@ static void *handle_slave_worker(void *arg) {
           rli->get_require_table_primary_key_check()) {
     thd->variables.sql_generate_invisible_primary_key = true;
   }
+
+  thd->variables.restrict_fk_on_non_standard_key = false;
 
   thd_manager->add_thd(thd);
   thd_added = true;
@@ -6162,7 +6167,7 @@ err:
 
   my_thread_end();
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
-  ERR_remove_thread_state(0);
+  ERR_remove_thread_state(nullptr);
 #endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
   my_thread_exit(nullptr);
   return nullptr;
@@ -6238,18 +6243,18 @@ bool mts_recovery_groups(Relay_log_info *rli) {
 
   /*
     When info tables are used and autocommit= 0 we force a new
-    transaction start to avoid table access deadlocks when START SLAVE
-    is executed after STOP SLAVE with MTS enabled.
+    transaction start to avoid table access deadlocks when START REPLICA
+    is executed after STOP REPLICA with MTS enabled.
   */
-  if (is_autocommit_off_and_infotables(thd))
+  if (is_autocommit_off(thd))
     if (trans_begin(thd)) goto err;
 
   for (uint id = 0; id < rli->recovery_parallel_workers; id++) {
     Slave_worker *worker =
-        Rpl_info_factory::create_worker(opt_rli_repository_id, id, rli, true);
+        Rpl_info_factory::create_worker(INFO_REPOSITORY_TABLE, id, rli, true);
 
     if (!worker) {
-      if (is_autocommit_off_and_infotables(thd)) trans_rollback(thd);
+      if (is_autocommit_off(thd)) trans_rollback(thd);
       goto err;
     }
 
@@ -6278,10 +6283,10 @@ bool mts_recovery_groups(Relay_log_info *rli) {
 
   /*
     When info tables are used and autocommit= 0 we force transaction
-    commit to avoid table access deadlocks when START SLAVE is executed
-    after STOP SLAVE with MTS enabled.
+    commit to avoid table access deadlocks when START REPLICA is executed
+    after STOP REPLICA with MTS enabled.
   */
-  if (is_autocommit_off_and_infotables(thd))
+  if (is_autocommit_off(thd))
     if (trans_commit(thd)) goto err;
 
   /*
@@ -6343,9 +6348,11 @@ bool mts_recovery_groups(Relay_log_info *rli) {
              (ev = relaylog_file_reader.read_event_object())) {
         assert(ev->is_valid());
 
-        if (ev->get_type_code() == binary_log::ROTATE_EVENT ||
-            ev->get_type_code() == binary_log::FORMAT_DESCRIPTION_EVENT ||
-            ev->get_type_code() == binary_log::PREVIOUS_GTIDS_LOG_EVENT) {
+        if (ev->get_type_code() == mysql::binlog::event::ROTATE_EVENT ||
+            ev->get_type_code() ==
+                mysql::binlog::event::FORMAT_DESCRIPTION_EVENT ||
+            ev->get_type_code() ==
+                mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT) {
           delete ev;
           ev = nullptr;
           continue;
@@ -6361,7 +6368,7 @@ bool mts_recovery_groups(Relay_log_info *rli) {
         if (ev->starts_group()) {
           flag_group_seen_begin = true;
         } else if ((ev->ends_group() || !flag_group_seen_begin) &&
-                   !is_gtid_event(ev)) {
+                   !is_any_gtid_event(ev)) {
           int ret = 0;
           LOG_POS_COORD ev_coord = {
               const_cast<char *>(rli->get_group_master_log_name()),
@@ -6535,7 +6542,7 @@ bool mta_checkpoint_routine(Relay_log_info *rli, bool force) {
 
   /*
     Update the rli->last_master_timestamp for reporting correct
-    Seconds_behind_master.
+    Seconds_behind_source.
 
     If GAQ is empty, set it to zero.
     Else, update it with the timestamp of the first job of the Slave_job_queue
@@ -6575,7 +6582,7 @@ static int slave_start_single_worker(Relay_log_info *rli, ulong i) {
 
   mysql_mutex_assert_owner(&rli->run_lock);
 
-  if (!(w = Rpl_info_factory::create_worker(opt_rli_repository_id, i, rli,
+  if (!(w = Rpl_info_factory::create_worker(INFO_REPOSITORY_TABLE, i, rli,
                                             false))) {
     LogErr(ERROR_LEVEL, ER_RPL_REPLICA_WORKER_THREAD_CREATION_FAILED,
            rli->get_for_channel_str());
@@ -6688,6 +6695,7 @@ static int slave_start_workers(Relay_log_info *rli, ulong n, bool *mts_inited) {
   rli->curr_group_isolated = false;
   rli->rli_checkpoint_seqno = 0;
   rli->mts_last_online_stat = time(nullptr);
+  rli->mta_coordinator_has_waited_stat = time(nullptr);
   rli->mts_group_status = Relay_log_info::MTS_NOT_IN_GROUP;
   clear_gtid_monitoring_info = true;
 
@@ -6707,7 +6715,7 @@ end:
   /*
     Free the buffer that was being used to report worker's status through
     the table performance_schema.table_replication_applier_status_by_worker
-    between stop slave and next start slave.
+    between stop replica and next start replica.
   */
   for (int i = static_cast<int>(rli->workers_copy_pfs.size()) - 1; i >= 0;
        i--) {
@@ -6748,7 +6756,7 @@ static void slave_stop_workers(Relay_log_info *rli, bool *mts_inited) {
     goto end;
 
   /*
-    If request for stop slave is received notify worker
+    If request for stop replica is received notify worker
     to stop.
   */
   // Initialize worker exit count and max_updated_index to 0 during each stop.
@@ -6759,7 +6767,7 @@ static void slave_stop_workers(Relay_log_info *rli, bool *mts_inited) {
   if (!rli->workers.empty()) {
     for (int i = static_cast<int>(rli->workers.size()) - 1; i >= 0; i--) {
       Slave_worker *w = rli->workers[i];
-      struct slave_job_item item = {nullptr, 0, 0};
+      struct slave_job_item item = {nullptr, 0, {'\0'}};
       struct slave_job_item *job_item = &item;
       mysql_mutex_lock(&w->jobs_lock);
 
@@ -6806,7 +6814,7 @@ static void slave_stop_workers(Relay_log_info *rli, bool *mts_inited) {
 
     /*
       Make copies for reporting through the performance schema tables.
-      This is preserved until the next START SLAVE.
+      This is preserved until the next START REPLICA.
     */
     Slave_worker *worker_copy = new Slave_worker(
         nullptr,
@@ -6853,7 +6861,7 @@ static void slave_stop_workers(Relay_log_info *rli, bool *mts_inited) {
        "found (count) workers occupied = %lu "
        "waited when workers occupied = %llu",
        rli->mts_events_assigned, diff_timespec(&stats_end, &rli->stats_begin),
-       rli->mts_wq_overrun_cnt, rli->mts_wq_overfill_cnt,
+       rli->mts_wq_overrun_cnt.load(), rli->mts_wq_overfill_cnt,
        rli->wq_size_waits_cnt, rli->mts_total_wait_overlap.load(),
        rli->mts_wq_no_underrun_cnt, rli->mts_total_wait_worker_avail));
 
@@ -6979,9 +6987,6 @@ extern "C" void *handle_slave_sql(void *arg) {
     mysql_mutex_lock(&rli->run_lock);
     assert(!rli->slave_running);
     errmsg = nullptr;
-#ifndef NDEBUG
-    rli->events_until_exit = abort_slave_event_count;
-#endif
 
     thd = new THD;  // note that constructor of THD uses DBUG_ !
     thd->thread_stack = (char *)&thd;  // remember where our stack is
@@ -7008,13 +7013,12 @@ extern "C" void *handle_slave_sql(void *arg) {
 
     rli->set_commit_order_manager(commit_order_mngr);
 
-    if (channel_map.is_group_replication_channel_name(rli->get_channel())) {
-      if (channel_map.is_group_replication_channel_name(rli->get_channel(),
-                                                        true)) {
-        thd->rpl_thd_ctx.set_rpl_channel_type(GR_APPLIER_CHANNEL);
-      } else {
-        thd->rpl_thd_ctx.set_rpl_channel_type(GR_RECOVERY_CHANNEL);
-      }
+    if (channel_map.is_group_replication_applier_channel_name(
+            rli->get_channel())) {
+      thd->rpl_thd_ctx.set_rpl_channel_type(GR_APPLIER_CHANNEL);
+    } else if (channel_map.is_group_replication_recovery_channel_name(
+                   rli->get_channel())) {
+      thd->rpl_thd_ctx.set_rpl_channel_type(GR_RECOVERY_CHANNEL);
     } else {
       thd->rpl_thd_ctx.set_rpl_channel_type(RPL_STANDARD_CHANNEL);
     }
@@ -7030,8 +7034,8 @@ extern "C" void *handle_slave_sql(void *arg) {
 
     if (init_replica_thread(thd, SLAVE_THD_SQL)) {
       /*
-        TODO: this is currently broken - slave start and change master
-        will be stuck if we fail here
+        TODO: this is currently broken - slave start and change replication
+        source will be stuck if we fail here
       */
       mysql_cond_broadcast(&rli->start_cond);
       mysql_mutex_unlock(&rli->run_lock);
@@ -7073,6 +7077,8 @@ extern "C" void *handle_slave_sql(void *arg) {
       thd->variables.sql_generate_invisible_primary_key = true;
     }
 
+    thd->variables.restrict_fk_on_non_standard_key = false;
+
     rli->transaction_parser.reset();
 
     thd_manager->add_thd(thd);
@@ -7104,11 +7110,11 @@ extern "C" void *handle_slave_sql(void *arg) {
     }
     /*
       We are going to set slave_running to 1. Assuming slave I/O thread is
-      alive and connected, this is going to make Seconds_Behind_Master be 0
+      alive and connected, this is going to make Seconds_Behind_Source be 0
       i.e. "caught up". Even if we're just at start of thread. Well it's ok, at
       the moment we start we can think we are caught up, and the next second we
       start receiving data so we realize we are not caught up and
-      Seconds_Behind_Master grows. No big deal.
+      Seconds_Behind_Source grows. No big deal.
     */
     rli->abort_slave = false;
 
@@ -7116,11 +7122,11 @@ extern "C" void *handle_slave_sql(void *arg) {
       Reset errors for a clean start (otherwise, if the master is idle, the SQL
       thread may execute no Query_log_event, so the error will remain even
       though there's no problem anymore). Do not reset the master timestamp
-      (imagine the slave has caught everything, the STOP SLAVE and START SLAVE:
-      as we are not sure that we are going to receive a query, we want to
-      remember the last master timestamp (to say how many seconds behind we are
-      now.
-      But the master timestamp is reset by RESET SLAVE & CHANGE MASTER.
+      (imagine the slave has caught everything, the STOP REPLICA and START
+      REPLICA: as we are not sure that we are going to receive a query, we want
+      to remember the last master timestamp (to say how many seconds behind we
+      are now. But the master timestamp is reset by RESET REPLICA & CHANGE
+      MASTER.
     */
     rli->clear_error();
     if (rli->workers_array_initialized) {
@@ -7153,11 +7159,6 @@ extern "C" void *handle_slave_sql(void *arg) {
 
     DEBUG_SYNC(thd, "after_start_replica");
 
-    // tell the I/O thread to take relay_log_space_limit into account from now
-    // on
-    mysql_mutex_lock(&rli->log_space_lock);
-    rli->ignore_log_space_limit = false;
-    mysql_mutex_unlock(&rli->log_space_lock);
     rli->trans_retries = 0;  // start from "no error"
     DBUG_PRINT("info", ("rli->trans_retries: %lu", rli->trans_retries));
 
@@ -7377,8 +7378,6 @@ extern "C" void *handle_slave_sql(void *arg) {
                ("Signaling possibly waiting source_pos_wait() functions"));
     mysql_cond_broadcast(&rli->data_cond);
     mysql_mutex_unlock(&rli->data_lock);
-    rli->ignore_log_space_limit = false; /* don't need any lock */
-    rli->sql_force_rotate_relay = false;
     /* we die so won't remember charset - re-update them on next thread start */
     rli->cached_charset_invalidate();
     rli->save_temporary_tables = thd->temporary_tables;
@@ -7432,7 +7431,7 @@ extern "C" void *handle_slave_sql(void *arg) {
   }
   my_thread_end();
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
-  ERR_remove_thread_state(0);
+  ERR_remove_thread_state(nullptr);
 #endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
   my_thread_exit(nullptr);
   return nullptr;  // Avoid compiler warnings
@@ -7460,14 +7459,6 @@ static int process_io_rotate(Master_info *mi, Rotate_log_event *rev) {
 
   if (unlikely(!rev->is_valid())) return 1;
 
-#ifndef NDEBUG
-  /*
-    If we do not do this, we will be getting the first
-    rotate event forever, so we need to not disconnect after one.
-  */
-  if (disconnect_slave_event_count) mi->events_until_exit++;
-#endif
-
   /*
     Master will send a FD event immediately after the Roate event, so don't log
     the current FD event.
@@ -7491,71 +7482,72 @@ int heartbeat_queue_event(bool is_valid, Master_info *&mi,
                           std::string binlog_name, uint64_t position,
                           unsigned long &inc_pos, bool &do_flush_mi) {
   if (!is_valid) {
-    char errbuf[1024];
-    char llbuf[22];
-    sprintf(errbuf,
-            "inconsistent heartbeat event content; the event's data: "
-            "log_file_name %-.512s log_pos %s",
-            binlog_name.c_str(), llstr(position, llbuf));
-    mi->report(ERROR_LEVEL, ER_REPLICA_HEARTBEAT_FAILURE,
-               ER_THD(current_thd, ER_REPLICA_HEARTBEAT_FAILURE), errbuf);
-    return 1;
-  }
-  mysql_mutex_lock(&mi->data_lock);
-  mi->received_heartbeats++;
-  mi->last_heartbeat = my_getsystime() / 10;
-  std::string mi_log_filename{
-      mi->get_master_log_name() != nullptr ? mi->get_master_log_name() : ""};
-
-  /*
-    compare local and event's versions of log_file, log_pos.
-
-    Heartbeat is sent only after an event corresponding to the coordinates
-    the heartbeat carries.
-    Slave can not have a difference in coordinates except in the
-    special case when mi->get_master_log_name(), mi->get_master_log_pos()
-    have never been updated by Rotate event i.e when slave does not have
-    any history with the master (and thereafter mi->get_master_log_pos() is
-    NULL).
-
-    TODO: handling `when' for SHOW REPLICA STATUS' snds behind
-  */
-  if (mi_log_filename.compare(binlog_name) != 0) {
-    std::ostringstream oss;
-    oss << "Replication heartbeat event contained the filename '" << binlog_name
-        << "' which is different from '" << mi_log_filename
-        << "' that was specified in earlier Rotate events.";
     mi->report(ERROR_LEVEL, ER_REPLICA_HEARTBEAT_FAILURE,
                ER_THD(current_thd, ER_REPLICA_HEARTBEAT_FAILURE),
-               oss.str().c_str());
-    return 1;
-  } else if (mi->get_master_log_pos() > position) {
-    std::ostringstream oss;
-    oss << "Replication heartbeat event contained the position " << position
-        << " which is smaller than the position " << mi->get_master_log_pos()
-        << " that was computed from earlier events received in the stream. "
-        << "The filename is '" << mi_log_filename << "'.";
-    mi->report(ERROR_LEVEL, ER_REPLICA_HEARTBEAT_FAILURE,
-               ER_THD(current_thd, ER_REPLICA_HEARTBEAT_FAILURE),
-               oss.str().c_str());
+               "heartbeat event content seems corrupted");
     return 1;
   }
-  /*
-    During GTID protocol, if the master skips transactions,
-    a heartbeat event is sent to the slave at the end of last
-    skipped transaction to update coordinates.
+  {
+    MUTEX_LOCK(lock, &mi->data_lock);
+    mi->received_heartbeats++;
+    mi->last_heartbeat = my_getsystime() / 10;
+    std::string mi_log_filename{
+        mi->get_master_log_name() != nullptr ? mi->get_master_log_name() : ""};
 
-    I/O thread receives the heartbeat event and updates mi
-    only if the received heartbeat position is greater than
-    mi->get_master_log_pos(). This event is written to the
-    relay log as an ignored Rotate event. SQL thread reads
-    the rotate event only to update the coordinates corresponding
-    to the last skipped transaction. Note that,
-    we update only the positions and not the file names, as a ROTATE
-    EVENT from the master prior to this will update the file name.
-  */
-  if (mi->is_auto_position() && mi->get_master_log_pos() < position &&
-      !mi_log_filename.empty()) {
+    /*
+      compare local and event's versions of log_file, log_pos.
+
+      Heartbeat is sent only after an event corresponding to the coordinates
+      the heartbeat carries.
+      Slave can not have a difference in coordinates except in the
+      special case when mi->get_master_log_name(), mi->get_master_log_pos()
+      have never been updated by Rotate event i.e when slave does not have
+      any history with the master (and thereafter mi->get_master_log_pos() is
+      NULL).
+
+      TODO: handling `when' for SHOW REPLICA STATUS' ends behind
+    */
+    if (mi_log_filename.compare(binlog_name) != 0 ||
+        DBUG_EVALUATE_IF("simulate_heartbeart_bogus_data_error", true, false)) {
+      std::ostringstream oss;
+      oss << "Replication heartbeat event contained the filename '"
+          << binlog_name << "' which is different from '" << mi_log_filename
+          << "' that was specified in earlier Rotate events.";
+      mi->report(ERROR_LEVEL, ER_REPLICA_HEARTBEAT_FAILURE,
+                 ER_THD(current_thd, ER_REPLICA_HEARTBEAT_FAILURE),
+                 oss.str().c_str());
+      return 1;
+    } else if (mi->get_master_log_pos() > position ||
+               DBUG_EVALUATE_IF("fail_heartbeat_event_lock_leak_testing", 1,
+                                0)) {
+      std::ostringstream oss;
+      oss << "Replication heartbeat event contained the position " << position
+          << " which is smaller than the position " << mi->get_master_log_pos()
+          << " that was computed from earlier events received in the stream. "
+          << "The filename is '" << mi_log_filename << "'.";
+      mi->report(ERROR_LEVEL, ER_REPLICA_HEARTBEAT_FAILURE,
+                 ER_THD(current_thd, ER_REPLICA_HEARTBEAT_FAILURE),
+                 oss.str().c_str());
+      return 1;
+    }
+    /*
+      During GTID protocol, if the master skips transactions,
+      a heartbeat event is sent to the slave at the end of last
+      skipped transaction to update coordinates.
+
+      I/O thread receives the heartbeat event and updates mi
+      only if the received heartbeat position is greater than
+      mi->get_master_log_pos(). This event is written to the
+      relay log as an ignored Rotate event. SQL thread reads
+      the rotate event only to update the coordinates corresponding
+      to the last skipped transaction. Note that,
+      we update only the positions and not the file names, as a ROTATE
+      EVENT from the master prior to this will update the file name.
+    */
+    if ((mi->is_auto_position() == false ||
+         mi->get_master_log_pos() >= position || mi_log_filename.empty()))
+      return 0;
+
     DBUG_EXECUTE_IF("reached_heart_beat_queue_event",
                     { rpl_replica_debug_point(DBUG_RPL_S_HEARTBEAT_EV); };);
     mi->set_master_log_pos(position);
@@ -7564,14 +7556,11 @@ int heartbeat_queue_event(bool is_valid, Master_info *&mi,
        Put this heartbeat event in the relay log as a Rotate Event.
     */
     inc_pos = 0;
-    mysql_mutex_unlock(&mi->data_lock);
-    if (write_rotate_to_master_pos_into_relay_log(mi->info_thd, mi, false
-                                                  /* force_flush_mi_info */))
-      return 0;
-    do_flush_mi = false; /* write_rotate_... above flushed master info */
-  } else
-    mysql_mutex_unlock(&mi->data_lock);
-
+  }
+  if (write_rotate_to_master_pos_into_relay_log(mi->info_thd, mi, false
+                                                /* force_flush_mi_info */))
+    return 0;
+  do_flush_mi = false; /* write_rotate_... above flushed master info */
   return 0;
 }
 
@@ -7619,7 +7608,8 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
     that changes FD_queue.
   */
   enum_binlog_checksum_alg checksum_alg =
-      mi->checksum_alg_before_fd != binary_log::BINLOG_CHECKSUM_ALG_UNDEF
+      mi->checksum_alg_before_fd !=
+              mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF
           ? mi->checksum_alg_before_fd
           : mi->rli->relay_log.relay_log_checksum_alg;
 
@@ -7631,15 +7621,15 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
   ulonglong immediate_commit_timestamp = 0;
   ulonglong original_commit_timestamp = 0;
   bool info_error{false};
-  binary_log::Log_event_basic_info log_event_info;
+  mysql::binlog::event::Log_event_basic_info log_event_info;
   ulonglong compressed_transaction_bytes = 0;
   ulonglong uncompressed_transaction_bytes = 0;
-  auto compression_type = binary_log::transaction::compression::type::NONE;
+  auto compression_type = mysql::binlog::event::compression::type::NONE;
   Log_event_type event_type = (Log_event_type)buf[EVENT_TYPE_OFFSET];
 
-  assert(checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_OFF ||
-         checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_UNDEF ||
-         checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_CRC32);
+  assert(checksum_alg == mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF ||
+         checksum_alg == mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF ||
+         checksum_alg == mysql::binlog::event::BINLOG_CHECKSUM_ALG_CRC32);
 
   DBUG_TRACE;
 
@@ -7654,7 +7644,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
     FD_queue checksum alg description does not apply in a case of
     FD itself. The one carries both parts of the checksum data.
   */
-  if (event_type == binary_log::FORMAT_DESCRIPTION_EVENT) {
+  if (event_type == mysql::binlog::event::FORMAT_DESCRIPTION_EVENT) {
     checksum_alg = Log_event_footer::get_checksum_alg(buf, event_len);
   }
 
@@ -7664,12 +7654,12 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
   // should hold unless manipulations with RL. Tests that do that
   // will have to refine the clause.
   assert(mi->rli->relay_log.relay_log_checksum_alg !=
-         binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+         mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
 
   // Emulate the network corruption
   DBUG_EXECUTE_IF(
       "corrupt_queue_event",
-      if (event_type != binary_log::FORMAT_DESCRIPTION_EVENT) {
+      if (event_type != mysql::binlog::event::FORMAT_DESCRIPTION_EVENT) {
         char *debug_event_buf_c = const_cast<char *>(buf);
         int debug_cor_pos = rand() % (event_len - BINLOG_CHECKSUM_LEN);
         debug_event_buf_c[debug_cor_pos] = ~debug_event_buf_c[debug_cor_pos];
@@ -7678,7 +7668,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
                     debug_cor_pos));
         DBUG_SET("");
       });
-  binary_log_debug::debug_checksum_test =
+  mysql::binlog::event::debug::debug_checksum_test =
       DBUG_EVALUATE_IF("simulate_checksum_test_failure", true, false);
   if (Log_event_footer::event_checksum_test(
           const_cast<uchar *>(pointer_cast<const uchar *>(buf)), event_len,
@@ -7708,10 +7698,10 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
   */
   DBUG_EXECUTE_IF(
       "simulate_unknown_ignorable_log_event_with_xid",
-      if (event_type == binary_log::XID_EVENT) {
+      if (event_type == mysql::binlog::event::XID_EVENT) {
         uchar *ev_buf = const_cast<uchar *>(pointer_cast<const uchar *>(buf));
         /* Overwrite the log event type with an unknown type. */
-        ev_buf[EVENT_TYPE_OFFSET] = binary_log::ENUM_END_EVENT + 1;
+        ev_buf[EVENT_TYPE_OFFSET] = mysql::binlog::event::ENUM_END_EVENT + 1;
         /* Set LOG_EVENT_IGNORABLE_F for the log event. */
         int2store(ev_buf + FLAGS_OFFSET,
                   uint2korr(ev_buf + FLAGS_OFFSET) | LOG_EVENT_IGNORABLE_F);
@@ -7750,10 +7740,10 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       issues, but it can happen.
 
       Transaction boundary errors might happen mostly because of bad master
-      positioning in 'CHANGE MASTER TO' (or bad manipulation of master.info)
-      when GTID auto positioning is off. Errors can also happen when using
-      cross-version replication, replicating from a master that supports more
-      event types than this slave.
+      positioning in 'CHANGE REPLICATION SOURCE TO' (or bad manipulation of
+      master.info) when GTID auto positioning is off. Errors can also happen
+      when using cross-version replication, replicating from a master that
+      supports more event types than this slave.
 
       The IO thread will keep working and queuing events regardless of the
       transaction parser error, but we will throw another warning message to
@@ -7766,7 +7756,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
   }
 
   switch (event_type) {
-    case binary_log::STOP_EVENT:
+    case mysql::binlog::event::STOP_EVENT:
       /*
         We needn't write this event to the relay log. Indeed, it just indicates
         a master server shutdown. The only thing this does is cleaning. But
@@ -7781,7 +7771,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       */
       do_flush_mi = false;
       goto end;
-    case binary_log::ROTATE_EVENT: {
+    case mysql::binlog::event::ROTATE_EVENT: {
       Format_description_log_event *fde = mi->get_mi_description_event();
       enum_binlog_checksum_alg fde_checksum_alg = fde->footer()->checksum_alg;
       if (fde_checksum_alg != checksum_alg)
@@ -7807,9 +7797,9 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
                 the fake Rotate gets checksummed here.
       */
       if (uint4korr(&buf[0]) == 0 &&
-          checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_OFF &&
+          checksum_alg == mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF &&
           mi->rli->relay_log.relay_log_checksum_alg !=
-              binary_log::BINLOG_CHECKSUM_ALG_OFF) {
+              mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF) {
         ha_checksum rot_crc = checksum_crc32(0L, nullptr, 0);
         event_len += BINLOG_CHECKSUM_LEN;
         memcpy(rot_buf, buf, event_len - BINLOG_CHECKSUM_LEN);
@@ -7823,7 +7813,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
                mi->rli->relay_log.relay_log_checksum_alg);
         /* the first one */
         assert(mi->checksum_alg_before_fd !=
-               binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+               mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
         save_buf = buf;
         buf = rot_buf;
       } else
@@ -7832,9 +7822,9 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
             the fake Rotate's checksum is stripped off before relay-logging.
           */
           if (uint4korr(&buf[0]) == 0 &&
-              checksum_alg != binary_log::BINLOG_CHECKSUM_ALG_OFF &&
+              checksum_alg != mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF &&
               mi->rli->relay_log.relay_log_checksum_alg ==
-                  binary_log::BINLOG_CHECKSUM_ALG_OFF) {
+                  mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF) {
         event_len -= BINLOG_CHECKSUM_LEN;
         memcpy(rot_buf, buf, event_len);
         int4store(&rot_buf[EVENT_LEN_OFFSET],
@@ -7844,7 +7834,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
                mi->rli->relay_log.relay_log_checksum_alg);
         /* the first one */
         assert(mi->checksum_alg_before_fd !=
-               binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+               mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
         save_buf = buf;
         buf = rot_buf;
       }
@@ -7855,7 +7845,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       inc_pos = 0;
       break;
     }
-    case binary_log::FORMAT_DESCRIPTION_EVENT: {
+    case mysql::binlog::event::FORMAT_DESCRIPTION_EVENT: {
       /*
         Create an event, and save it (when we rotate the relay log, we will have
         to write this event again).
@@ -7866,7 +7856,8 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
         change), so we needn't any lock (no rli->data_lock, no log lock).
       */
       // mark it as undefined that is irrelevant anymore
-      mi->checksum_alg_before_fd = binary_log::BINLOG_CHECKSUM_ALG_UNDEF;
+      mi->checksum_alg_before_fd =
+          mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF;
       Format_description_log_event *new_fdle;
       Log_event *ev = nullptr;
       if (binlog_event_deserialize(reinterpret_cast<const unsigned char *>(buf),
@@ -7878,9 +7869,9 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
 
       new_fdle = dynamic_cast<Format_description_log_event *>(ev);
       if (new_fdle->common_footer->checksum_alg ==
-          binary_log::BINLOG_CHECKSUM_ALG_UNDEF)
+          mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF)
         new_fdle->common_footer->checksum_alg =
-            binary_log::BINLOG_CHECKSUM_ALG_OFF;
+            mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF;
 
       mi->set_mi_description_event(new_fdle);
 
@@ -7903,7 +7894,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
 
     } break;
 
-    case binary_log::HEARTBEAT_LOG_EVENT: {
+    case mysql::binlog::event::HEARTBEAT_LOG_EVENT: {
       /*
         HB (heartbeat) cannot come before RL (Relay)
       */
@@ -7911,14 +7902,14 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       std::string mi_log_filename{mi->get_master_log_name() != nullptr
                                       ? mi->get_master_log_name()
                                       : ""};
-      if (heartbeat_queue_event(hb.is_valid(), mi, mi_log_filename,
+      if (heartbeat_queue_event(hb.is_valid(), mi, hb.get_log_ident(),
                                 hb.header()->log_pos, inc_pos, do_flush_mi))
         goto err;
       else
         goto end;
     } break;
 
-    case binary_log::HEARTBEAT_LOG_EVENT_V2: {
+    case mysql::binlog::event::HEARTBEAT_LOG_EVENT_V2: {
       /*
         HB (heartbeat) cannot come before RL (Relay)
       */
@@ -7929,13 +7920,13 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       std::string mi_log_filename{mi->get_master_log_name() != nullptr
                                       ? mi->get_master_log_name()
                                       : ""};
-      if (heartbeat_queue_event(hb.is_valid(), mi, mi_log_filename,
+      if (heartbeat_queue_event(hb.is_valid(), mi, hb_log_filename,
                                 hb_log_position, inc_pos, do_flush_mi))
         goto err;
       else
         goto end;
     } break;
-    case binary_log::PREVIOUS_GTIDS_LOG_EVENT: {
+    case mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT: {
       /*
         This event does not have any meaning for the slave and
         was just sent to show the slave the master is making
@@ -7957,9 +7948,9 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       goto end;
     } break;
 
-    case binary_log::TRANSACTION_PAYLOAD_EVENT: {
-      binary_log::Transaction_payload_event tpe(buf,
-                                                mi->get_mi_description_event());
+    case mysql::binlog::event::TRANSACTION_PAYLOAD_EVENT: {
+      mysql::binlog::event::Transaction_payload_event tpe(
+          buf, mi->get_mi_description_event());
       compression_type = tpe.get_compression_type();
       compressed_transaction_bytes = tpe.get_payload_size();
       uncompressed_transaction_bytes = tpe.get_uncompressed_size();
@@ -7971,7 +7962,8 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       break;
     }
 
-    case binary_log::GTID_LOG_EVENT: {
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT: {
       /*
         This can happen if the master uses GTID_MODE=OFF_PERMISSIVE, and
         sends GTID events to the slave. A possible scenario is that user
@@ -7991,20 +7983,20 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       }
       Gtid_log_event gtid_ev(buf, mi->get_mi_description_event());
       if (!gtid_ev.is_valid()) goto err;
-      rli->get_sid_lock()->rdlock();
-      gtid.sidno = gtid_ev.get_sidno(rli->get_gtid_set()->get_sid_map());
-      rli->get_sid_lock()->unlock();
+      rli->get_tsid_lock()->rdlock();
+      gtid.sidno = gtid_ev.get_sidno(rli->get_gtid_set()->get_tsid_map());
+      rli->get_tsid_lock()->unlock();
       if (gtid.sidno < 0) goto err;
       gtid.gno = gtid_ev.get_gno();
       original_commit_timestamp = gtid_ev.original_commit_timestamp;
       immediate_commit_timestamp = gtid_ev.immediate_commit_timestamp;
       compressed_transaction_bytes = uncompressed_transaction_bytes =
-          gtid_ev.transaction_length - gtid_ev.get_event_length();
+          gtid_ev.get_trx_length() - gtid_ev.get_event_length();
 
       inc_pos = event_len;
     } break;
 
-    case binary_log::ANONYMOUS_GTID_LOG_EVENT: {
+    case mysql::binlog::event::ANONYMOUS_GTID_LOG_EVENT: {
       /*
         This cannot normally happen, because the master has a check that
         prevents it from sending anonymous events when auto_position is
@@ -8053,7 +8045,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       original_commit_timestamp = anon_gtid_ev.original_commit_timestamp;
       immediate_commit_timestamp = anon_gtid_ev.immediate_commit_timestamp;
       compressed_transaction_bytes = uncompressed_transaction_bytes =
-          anon_gtid_ev.transaction_length - anon_gtid_ev.get_event_length();
+          anon_gtid_ev.get_trx_length() - anon_gtid_ev.get_event_length();
     }
       [[fallthrough]];
     default:
@@ -8067,11 +8059,11 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
   */
   DBUG_EXECUTE_IF(
       "simulate_unknown_ignorable_log_event",
-      if (event_type == binary_log::WRITE_ROWS_EVENT ||
-          event_type == binary_log::PREVIOUS_GTIDS_LOG_EVENT) {
+      if (event_type == mysql::binlog::event::WRITE_ROWS_EVENT ||
+          event_type == mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT) {
         char *event_buf = const_cast<char *>(buf);
         /* Overwrite the log event type with an unknown type. */
-        event_buf[EVENT_TYPE_OFFSET] = binary_log::ENUM_END_EVENT + 1;
+        event_buf[EVENT_TYPE_OFFSET] = mysql::binlog::event::ENUM_END_EVENT + 1;
         /* Set LOG_EVENT_IGNORABLE_F for the log event. */
         int2store(event_buf + FLAGS_OFFSET,
                   uint2korr(event_buf + FLAGS_OFFSET) | LOG_EVENT_IGNORABLE_F);
@@ -8110,8 +8102,8 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
        /* everything is filtered out from non-master */
        (s_id != mi->master_id ||
         /* for the master meta information is necessary */
-        (event_type != binary_log::FORMAT_DESCRIPTION_EVENT &&
-         event_type != binary_log::ROTATE_EVENT)))) {
+        (event_type != mysql::binlog::event::FORMAT_DESCRIPTION_EVENT &&
+         event_type != mysql::binlog::event::ROTATE_EVENT)))) {
     /*
       Do not write it to the relay log.
       a) We still want to increment mi->get_master_log_pos(), so that we won't
@@ -8130,9 +8122,9 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
       as well as rli->group_relay_log_pos.
     */
     if (!(s_id == ::server_id && !mi->rli->replicate_same_server_id) ||
-        (event_type != binary_log::FORMAT_DESCRIPTION_EVENT &&
-         event_type != binary_log::ROTATE_EVENT &&
-         event_type != binary_log::STOP_EVENT)) {
+        (event_type != mysql::binlog::event::FORMAT_DESCRIPTION_EVENT &&
+         event_type != mysql::binlog::event::ROTATE_EVENT &&
+         event_type != mysql::binlog::event::STOP_EVENT)) {
       rli->relay_log.lock_binlog_end_pos();
       mi->set_master_log_pos(mi->get_master_log_pos() + inc_pos);
       memcpy(rli->ign_master_log_name_end, mi->get_master_log_name(),
@@ -8149,6 +8141,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
          (ulong)mi->get_master_log_pos(), uint4korr(buf + SERVER_ID_OFFSET)));
   } else {
     bool is_error = false;
+    DBUG_EXECUTE_IF("simulate_truncated_relay_log_event", { event_len -= 5; });
     /* write the event to the relay log */
     if (likely(rli->relay_log.write_buffer(buf, event_len, mi) == 0)) {
       DBUG_SIGNAL_WAIT_FOR(current_thd,
@@ -8167,7 +8160,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
         there is one) when calling mi->started_queueing().
       */
 #ifndef NDEBUG
-      if (event_type == binary_log::ANONYMOUS_GTID_LOG_EVENT) {
+      if (event_type == mysql::binlog::event::ANONYMOUS_GTID_LOG_EVENT) {
         if (!mi->get_queueing_trx_gtid()->is_empty()) {
           DBUG_PRINT("info",
                      ("Discarding Gtid(%d, %" PRId64 ") as the transaction "
@@ -8188,15 +8181,14 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
         transaction be queued. The call to mi->started_queueing() will save
         the GTID to be used later.
       */
-      if (event_type == binary_log::GTID_LOG_EVENT ||
-          event_type == binary_log::ANONYMOUS_GTID_LOG_EVENT) {
+      if (Log_event_type_helper::is_any_gtid_event(event_type)) {
         // set the timestamp for the start time of queueing this transaction
         mi->started_queueing(gtid, original_commit_timestamp,
                              immediate_commit_timestamp);
 
         auto gtid_monitoring_info = mi->get_gtid_monitoring_info();
         gtid_monitoring_info->update(
-            binary_log::transaction::compression::type::NONE,
+            mysql::binlog::event::compression::type::NONE,
             compressed_transaction_bytes, uncompressed_transaction_bytes);
       }
     } else {
@@ -8288,10 +8280,21 @@ static int connect_to_master_via_namespace(THD *thd, MYSQL *mysql,
                                            const uint port) {
   if (mi->is_set_network_namespace()) {
 #ifdef HAVE_SETNS
-    if (set_network_namespace(mi->network_namespace)) return 1;
+    if (set_network_namespace(mi->network_namespace)) {
+      std::stringstream ss;
+      ss << "failed to set network namespace '";
+      ss << mi->network_namespace;
+      ss << "'";
+      mi->report(ERROR_LEVEL, ER_REPLICA_FATAL_ERROR,
+                 ER_THD(thd, ER_REPLICA_FATAL_ERROR), ss.str().c_str());
+      return 1;
+    }
 #else
     // Network namespace not supported by the platform. Report error.
     LogErr(ERROR_LEVEL, ER_NETWORK_NAMESPACES_NOT_SUPPORTED);
+    mi->report(ERROR_LEVEL, ER_REPLICA_FATAL_ERROR,
+               ER_THD(thd, ER_REPLICA_FATAL_ERROR),
+               ER_THD(thd, ER_NETWORK_NAMESPACES_NOT_SUPPORTED));
     return 1;
 #endif
     // Save default value of network namespace
@@ -8343,9 +8346,6 @@ int connect_to_master(THD *thd, MYSQL *mysql, Master_info *mi, bool reconnect,
   size_t password_size = sizeof(password);
   DBUG_TRACE;
   set_replica_max_allowed_packet(thd, mysql);
-#ifndef NDEBUG
-  mi->events_until_exit = disconnect_slave_event_count;
-#endif
   ulong client_flag = CLIENT_REMEMBER_OPTIONS;
 
   /* Always reset public key to remove cached copy */
@@ -8542,7 +8542,6 @@ int connect_to_master(THD *thd, MYSQL *mysql, Master_info *mi, bool reconnect,
 
     thd->set_active_vio(mysql->net.vio);
   }
-  mysql->reconnect = true;
   DBUG_PRINT("exit", ("replica_was_killed: %d", replica_was_killed));
   return replica_was_killed;
 }
@@ -8563,14 +8562,6 @@ static int safe_reconnect(THD *thd, MYSQL *mysql, Master_info *mi,
                                          /*reconnect=*/true, suppress_warnings,
                                          host, port);
 }
-
-/*
-  Rotate a relay log (this is used only by FLUSH LOGS; the automatic rotation
-  because of size is simpler because when we do it we already have all relevant
-  locks; here we don't, so this function is mainly taking locks).
-  Returns nothing as we cannot catch any error (MYSQL_BIN_LOG::new_file()
-  is void).
-*/
 
 int rotate_relay_log(Master_info *mi, bool log_master_fd, bool need_lock,
                      bool need_log_space_lock) {
@@ -8595,7 +8586,6 @@ int rotate_relay_log(Master_info *mi, bool log_master_fd, bool need_lock,
     goto end;
   }
 
-  /* If the relay log is closed, new_file() will do nothing. */
   if (log_master_fd)
     error =
         rli->relay_log.new_file_without_locking(mi->get_mi_description_event());
@@ -8644,13 +8634,14 @@ int flush_relay_logs(Master_info *mi, THD *thd) {
       if ((!is_group_replication_plugin_loaded() ||  // GR is disabled
            !mi->transaction_parser
                 .is_inside_transaction() ||  // not inside a transaction
-           !channel_map.is_group_replication_channel_name(
-               mi->get_channel(), true) ||  // channel isn't GR applier channel
-           !mi->slave_running) &&           // the I/O thread isn't running
-          DBUG_EVALUATE_IF("deferred_flush_relay_log",
-                           !channel_map.is_group_replication_channel_name(
-                               mi->get_channel(), true),
-                           true)) {
+           !channel_map.is_group_replication_applier_channel_name(
+               mi->get_channel()) ||  // channel isn't GR applier channel
+           !mi->slave_running) &&     // the I/O thread isn't running
+          DBUG_EVALUATE_IF(
+              "deferred_flush_relay_log",
+              !channel_map.is_group_replication_applier_channel_name(
+                  mi->get_channel()),
+              true)) {
         if (rotate_relay_log(mi)) error = 1;
       }
       // Postpone the rotate action, delegating it to the I/O thread
@@ -8782,7 +8773,7 @@ bool reencrypt_relay_logs() {
 uint sql_replica_skip_counter;
 
 /**
-   Executes a START SLAVE statement.
+   Executes a START REPLICA statement.
 
   @param thd                 Pointer to THD object for the client thread
                              executing the statement.
@@ -8806,8 +8797,8 @@ uint sql_replica_skip_counter;
    @retval false success
    @retval true error
 */
-bool start_slave(THD *thd, LEX_SLAVE_CONNECTION *connection_param,
-                 LEX_MASTER_INFO *master_param, int thread_mask_input,
+bool start_slave(THD *thd, LEX_REPLICA_CONNECTION *connection_param,
+                 LEX_SOURCE_INFO *master_param, int thread_mask_input,
                  Master_info *mi, bool set_mts_settings) {
   bool is_error = false;
   int thread_mask;
@@ -8815,7 +8806,7 @@ bool start_slave(THD *thd, LEX_SLAVE_CONNECTION *connection_param,
   DBUG_TRACE;
 
   /*
-    START SLAVE command should ignore 'read-only' and 'super_read_only'
+    START REPLICA command should ignore 'read-only' and 'super_read_only'
     options so that it can update 'mysql.slave_master_info' and
     'mysql.slave_relay_log_info' replication repository tables.
   */
@@ -8855,12 +8846,12 @@ bool start_slave(THD *thd, LEX_SLAVE_CONNECTION *connection_param,
     if (load_mi_and_rli_from_repositories(mi, false, thread_mask)) {
       is_error = true;
       my_error(ER_CONNECTION_METADATA, MYF(0));
-    } else if (*mi->host || !(thread_mask & SLAVE_IO)) {
+    } else if (*mi->host || !(thread_mask & REPLICA_IO)) {
       /*
         If we will start IO thread we need to take care of possible
-        options provided through the START SLAVE if there is any.
+        options provided through the START REPLICA if there is any.
       */
-      if (thread_mask & SLAVE_IO) {
+      if (thread_mask & REPLICA_IO) {
         if (connection_param->user) {
           mi->set_start_user_configured(true);
           mi->set_user(connection_param->user);
@@ -8880,7 +8871,7 @@ bool start_slave(THD *thd, LEX_SLAVE_CONNECTION *connection_param,
         not and they are specified we will ignore them and warn user
         about this fact.
       */
-      if (thread_mask & SLAVE_SQL) {
+      if (thread_mask & REPLICA_SQL) {
         /*
           sql_replica_skip_counter only effects the applier thread which is
           first started. So after sql_replica_skip_counter is copied to
@@ -8949,7 +8940,8 @@ bool start_slave(THD *thd, LEX_SLAVE_CONNECTION *connection_param,
     Clean up start information if there was an attempt to start
     the IO thread to avoid any security issue.
   */
-  if (is_error && (thread_mask & SLAVE_IO) == SLAVE_IO) mi->reset_start_info();
+  if (is_error && (thread_mask & REPLICA_IO) == REPLICA_IO)
+    mi->reset_start_info();
 
   unlock_slave_threads(mi);
 
@@ -8959,7 +8951,7 @@ bool start_slave(THD *thd, LEX_SLAVE_CONNECTION *connection_param,
 }
 
 /**
-  Execute a STOP SLAVE statement.
+  Execute a STOP REPLICA statement.
 
   @param thd              Pointer to THD object for the client thread executing
                           the statement.
@@ -8990,7 +8982,7 @@ int stop_slave(THD *thd, Master_info *mi, bool net_report, bool for_one_channel,
   if (!thd) thd = current_thd;
 
   /*
-    STOP SLAVE command should ignore 'read-only' and 'super_read_only'
+    STOP REPLICA command should ignore 'read-only' and 'super_read_only'
     options so that it can update 'mysql.slave_master_info' and
     'mysql.slave_relay_log_info' replication repository tables.
   */
@@ -9023,14 +9015,15 @@ int stop_slave(THD *thd, Master_info *mi, bool net_report, bool for_one_channel,
     was stopped (as we don't want to touch the other thread), so set the
     bit to 0 for the other thread
   */
-  if (thd->lex->slave_thd_opt) {
-    thread_mask &= thd->lex->slave_thd_opt;
+  if (thd->lex->replica_thd_opt) {
+    thread_mask &= thd->lex->replica_thd_opt;
 
     /*
       If we are stopping IO thread, we also need to consider
       IO Monitor thread.
     */
-    if ((thread_mask & SLAVE_IO) && mi->is_source_connection_auto_failover()) {
+    if ((thread_mask & REPLICA_IO) &&
+        mi->is_source_connection_auto_failover()) {
       thread_mask |= SLAVE_MONITOR;
     }
   }
@@ -9048,11 +9041,11 @@ int stop_slave(THD *thd, Master_info *mi, bool net_report, bool for_one_channel,
   }
 
   /*
-    If the slave has open temp tables and there is a following CHANGE MASTER
-    there is a possibility that the temporary tables are left open forever.
-    Though we dont restrict failover here, we do warn users. In future, we
-    should have a command to delete open temp tables the slave has replicated.
-    See WL#7441 regarding this command.
+    If the slave has open temp tables and there is a following CHANGE
+    REPLICATION SOURCE there is a possibility that the temporary tables are left
+    open forever. Though we dont restrict failover here, we do warn users. In
+    future, we should have a command to delete open temp tables the slave has
+    replicated. See WL#7441 regarding this command.
   */
 
   if (mi->rli->atomic_channel_open_temp_tables && *push_temp_tables_warning) {
@@ -9092,7 +9085,7 @@ int stop_slave(THD *thd, Master_info *mi, bool net_report, bool for_one_channel,
 }
 
 /**
-  Execute a RESET SLAVE (for all channels), used in Multisource replication.
+  Execute a RESET REPLICA (for all channels), used in Multisource replication.
   If resetting of a particular channel fails, it exits out.
 
   @param[in]  thd  THD object of the client.
@@ -9109,10 +9102,10 @@ int reset_slave(THD *thd) {
   Master_info *mi = nullptr;
   int result = 0;
   mi_map::iterator it, gr_channel_map_it;
-  if (thd->lex->reset_slave_info.all) {
+  if (thd->lex->reset_replica_info.all) {
     /* First do reset_slave for default channel */
     mi = channel_map.get_default_channel_mi();
-    if (mi && reset_slave(thd, mi, thd->lex->reset_slave_info.all)) return 1;
+    if (mi && reset_slave(thd, mi, thd->lex->reset_replica_info.all)) return 1;
     /* Do while iteration for rest of the channels */
     it = channel_map.begin();
     while (it != channel_map.end()) {
@@ -9122,7 +9115,7 @@ int reset_slave(THD *thd) {
       }
       mi = it->second;
       assert(mi);
-      if ((result = reset_slave(thd, mi, thd->lex->reset_slave_info.all)))
+      if ((result = reset_slave(thd, mi, thd->lex->reset_replica_info.all)))
         break;
       it = channel_map.begin();
     }
@@ -9140,7 +9133,7 @@ int reset_slave(THD *thd) {
                  "RESET REPLICA ALL FOR CHANNEL", mi->get_channel());
         return 1;
       }
-      if ((result = reset_slave(thd, mi, thd->lex->reset_slave_info.all)))
+      if ((result = reset_slave(thd, mi, thd->lex->reset_replica_info.all)))
         break;
       gr_channel_map_it = channel_map.begin(GROUP_REPLICATION_CHANNEL);
     }
@@ -9149,7 +9142,7 @@ int reset_slave(THD *thd) {
     while (it != channel_map.end()) {
       mi = it->second;
       assert(mi);
-      if ((result = reset_slave(thd, mi, thd->lex->reset_slave_info.all)))
+      if ((result = reset_slave(thd, mi, thd->lex->reset_replica_info.all)))
         break;
       it++;
     }
@@ -9168,7 +9161,7 @@ int reset_slave(THD *thd) {
                  "RESET REPLICA FOR CHANNEL", mi->get_channel());
         return 1;
       }
-      if ((result = reset_slave(thd, mi, thd->lex->reset_slave_info.all)))
+      if ((result = reset_slave(thd, mi, thd->lex->reset_replica_info.all)))
         break;
       gr_channel_map_it++;
     }
@@ -9179,7 +9172,7 @@ int reset_slave(THD *thd) {
 /**
   Execute a RESET REPLICA statement.
   Locks slave threads and unlocks the slave threads after executing
-  reset slave.
+  reset replica.
   The method also takes the mi->channel_wrlock; if this {mi} object
   is deleted (when the parameter reset_all is true) its destructor unlocks
   the lock. In case of error, the method shall always unlock the
@@ -9204,7 +9197,7 @@ int reset_slave(THD *thd, Master_info *mi, bool reset_all) {
       strcmp(mi->get_channel(), channel_map.get_default_channel()) == 0;
 
   /*
-    RESET SLAVE command should ignore 'read-only' and 'super_read_only'
+    RESET REPLICA command should ignore 'read-only' and 'super_read_only'
     options so that it can update 'mysql.slave_master_info' and
     'mysql.slave_relay_log_info' replication repository tables.
   */
@@ -9251,7 +9244,7 @@ int reset_slave(THD *thd, Master_info *mi, bool reset_all) {
   (void)RUN_HOOK(binlog_relay_io, after_reset_slave, (thd, mi));
 
   /*
-     RESET SLAVE ALL deletes the channels(except default channel), so their mi
+     RESET REPLICA ALL deletes the channels(except default channel), so their mi
      and rli objects are removed. For default channel, its mi and rli are
      deleted and recreated to keep in clear status.
   */
@@ -9273,8 +9266,8 @@ int reset_slave(THD *thd, Master_info *mi, bool reset_all) {
 
     if (is_default) {
       if (!Rpl_info_factory::create_mi_and_rli_objects(
-              opt_mi_repository_id, opt_rli_repository_id,
-              channel_map.get_default_channel(), true, &channel_map)) {
+              INFO_REPOSITORY_TABLE, INFO_REPOSITORY_TABLE,
+              channel_map.get_default_channel(), &channel_map)) {
         error = ER_CONNECTION_METADATA;
         my_message(ER_CONNECTION_METADATA, ER_THD(thd, ER_CONNECTION_METADATA),
                    MYF(0));
@@ -9289,9 +9282,9 @@ err:
 }
 
 /**
-  Entry function for RESET SLAVE command. Function either resets
+  Entry function for RESET REPLICA command. Function either resets
   the slave for all channels or for a single channel.
-  When RESET SLAVE ALL is given, the slave_info_objects (mi, rli & workers)
+  When RESET REPLICA ALL is given, the slave_info_objects (mi, rli & workers)
   are destroyed.
 
   @param[in]           thd          the client thread with the command.
@@ -9320,12 +9313,12 @@ bool reset_slave_cmd(THD *thd) {
     mi = channel_map.get_mi(lex->mi.channel);
     /*
       If the channel being used is a group replication channel and
-      group_replication is still running we need to disable RESET SLAVE [ALL]
+      group_replication is still running we need to disable RESET REPLICA [ALL]
       command.
     */
     if (mi &&
-        channel_map.is_group_replication_channel_name(mi->get_channel(),
-                                                      true) &&
+        channel_map.is_group_replication_applier_channel_name(
+            mi->get_channel()) &&
         is_group_replication_running()) {
       my_error(ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0),
                "RESET REPLICA [ALL] FOR CHANNEL", mi->get_channel());
@@ -9334,7 +9327,7 @@ bool reset_slave_cmd(THD *thd) {
     }
 
     if (mi)
-      res = reset_slave(thd, mi, thd->lex->reset_slave_info.all);
+      res = reset_slave(thd, mi, thd->lex->reset_replica_info.all);
     else if (strcmp(channel_map.get_default_channel(), lex->mi.channel))
       my_error(ER_REPLICA_CHANNEL_DOES_NOT_EXIST, MYF(0), lex->mi.channel);
   }
@@ -9345,7 +9338,7 @@ bool reset_slave_cmd(THD *thd) {
 }
 
 /**
-  This function checks if the given CHANGE MASTER/REPLICATION SOURCE command
+  This function checks if the given CHANGE REPLICATION SOURCE command
   has any receive option being set or changed.
 
   - used in change_master().
@@ -9357,7 +9350,7 @@ bool reset_slave_cmd(THD *thd) {
   @retval true  At least one receive option was found.
 */
 static bool have_change_replication_source_receive_option(
-    const LEX_MASTER_INFO *lex_mi) {
+    const LEX_SOURCE_INFO *lex_mi) {
   bool have_receive_option = false;
 
   DBUG_TRACE;
@@ -9366,26 +9359,26 @@ static bool have_change_replication_source_receive_option(
   if (lex_mi->host || lex_mi->user || lex_mi->password ||
       lex_mi->log_file_name || lex_mi->pos || lex_mi->bind_addr ||
       lex_mi->network_namespace || lex_mi->port || lex_mi->connect_retry ||
-      lex_mi->server_id || lex_mi->ssl != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->ssl_verify_server_cert != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->heartbeat_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->retry_count_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->server_id || lex_mi->ssl != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->ssl_verify_server_cert != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->heartbeat_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->retry_count_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->ssl_key || lex_mi->ssl_cert || lex_mi->ssl_ca ||
       lex_mi->ssl_capath || lex_mi->tls_version ||
-      lex_mi->tls_ciphersuites != LEX_MASTER_INFO::UNSPECIFIED ||
+      lex_mi->tls_ciphersuites != LEX_SOURCE_INFO::UNSPECIFIED ||
       lex_mi->ssl_cipher || lex_mi->ssl_crl || lex_mi->ssl_crlpath ||
-      lex_mi->repl_ignore_server_ids_opt == LEX_MASTER_INFO::LEX_MI_ENABLE ||
+      lex_mi->repl_ignore_server_ids_opt == LEX_SOURCE_INFO::LEX_MI_ENABLE ||
       lex_mi->public_key_path ||
-      lex_mi->get_public_key != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->get_public_key != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->zstd_compression_level || lex_mi->compression_algorithm ||
-      lex_mi->require_row_format != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+      lex_mi->require_row_format != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     have_receive_option = true;
 
   return have_receive_option;
 }
 
 /**
-  This function checks if the given CHANGE MASTER/REPLICATION SOURCE command
+  This function checks if the given CHANGE REPLICATION SOURCE command
   has any execute option being set or changed.
 
   - used in change_master().
@@ -9404,18 +9397,19 @@ static bool have_change_replication_source_receive_option(
   @retval true  At least one execute option was there.
 */
 static bool have_change_replication_source_execute_option(
-    const LEX_MASTER_INFO *lex_mi, bool *need_relay_log_purge) {
+    const LEX_SOURCE_INFO *lex_mi, bool *need_relay_log_purge) {
   bool have_execute_option = false;
 
   DBUG_TRACE;
 
-  /* Check if *at least one* execute option is given on change master command*/
+  /* Check if *at least one* execute option is given on change replication
+   * source command*/
   if (lex_mi->relay_log_name || lex_mi->relay_log_pos ||
       lex_mi->sql_delay != -1 || lex_mi->privilege_checks_username != nullptr ||
       lex_mi->privilege_checks_none ||
-      lex_mi->require_row_format != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->require_row_format != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->require_table_primary_key_check !=
-          LEX_MASTER_INFO::LEX_MI_PK_CHECK_UNCHANGED)
+          LEX_SOURCE_INFO::LEX_MI_PK_CHECK_UNCHANGED)
     have_execute_option = true;
 
   if (lex_mi->relay_log_name || lex_mi->relay_log_pos)
@@ -9437,18 +9431,18 @@ static bool have_change_replication_source_execute_option(
   @retval true  At least one option affects both the applier and receiver.
 */
 static bool have_change_replication_source_applier_and_receive_option(
-    const LEX_MASTER_INFO *lex_mi) {
+    const LEX_SOURCE_INFO *lex_mi) {
   bool have_applier_receive_option = false;
 
   DBUG_TRACE;
 
   /* Check if *at least one* receive option is given to change rep source*/
   if (lex_mi->assign_gtids_to_anonymous_transactions_type !=
-          LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED ||
-      lex_mi->auto_position != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+          LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED ||
+      lex_mi->auto_position != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->m_source_connection_auto_failover !=
-          LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->m_gtid_only != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+          LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->m_gtid_only != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     have_applier_receive_option = true;
 
   return have_applier_receive_option;
@@ -9461,15 +9455,15 @@ static bool have_change_replication_source_applier_and_receive_option(
    - used in change_receive_options
 
    @param  lex_mi      pointer to structure holding all options specified
-                       as part of change master to statement
+                       as part of change replication source to statement
    @param  mi          pointer to structure holding all options specified
-                       as part of change master to statement after performing
-                       necessary checks
+                       as part of change replication source to statement after
+   performing necessary checks
 
    @retval false    in case of success
    @retval true     in case of failures
 */
-static bool change_master_set_compression(THD *, const LEX_MASTER_INFO *lex_mi,
+static bool change_master_set_compression(THD *, const LEX_SOURCE_INFO *lex_mi,
                                           Master_info *mi) {
   DBUG_TRACE;
 
@@ -9495,8 +9489,8 @@ static bool change_master_set_compression(THD *, const LEX_MASTER_INFO *lex_mi,
 }
 
 /**
-   This function is called if the change master command had at least one
-   receive option. This function then sets or alters the receive option(s)
+   This function is called if the change replication source command had at least
+  one receive option. This function then sets or alters the receive option(s)
    given in the command. The execute options are handled in the function
    change_execute_options()
 
@@ -9506,11 +9500,11 @@ static bool change_master_set_compression(THD *, const LEX_MASTER_INFO *lex_mi,
   @param thd    Pointer to THD object for the client thread executing the
                 statement.
 
-  @param lex_mi structure that holds all change master options given on the
-                change master command.
-                Coming from the an executing statement or set directly this
-                shall contain connection settings like hostname, user, password
-                and other settings like the number of connection retries.
+  @param lex_mi structure that holds all change replication source options given
+  on the change replication source command. Coming from the an executing
+  statement or set directly this shall contain connection settings like
+  hostname, user, password and other settings like the number of connection
+  retries.
 
   @param mi     Pointer to Master_info object belonging to the replica channel
                 to be configured
@@ -9518,7 +9512,7 @@ static bool change_master_set_compression(THD *, const LEX_MASTER_INFO *lex_mi,
   @retval 0    no error i.e., success.
   @retval !=0  error.
 */
-static int change_receive_options(THD *thd, LEX_MASTER_INFO *lex_mi,
+static int change_receive_options(THD *thd, LEX_SOURCE_INFO *lex_mi,
                                   Master_info *mi) {
   int ret = 0; /* return value. Set if there is an error. */
 
@@ -9592,25 +9586,26 @@ static int change_receive_options(THD *thd, LEX_MASTER_INFO *lex_mi,
     or 'group_replication_applier' channel wants to set the port number
     to '0' as there is no actual network usage on these channels.
   */
-  if (lex_mi->port || lex_mi->port_opt == LEX_MASTER_INFO::LEX_MI_ENABLE)
+  if (lex_mi->port || lex_mi->port_opt == LEX_SOURCE_INFO::LEX_MI_ENABLE)
     mi->port = lex_mi->port;
   if (lex_mi->connect_retry) mi->connect_retry = lex_mi->connect_retry;
-  if (lex_mi->retry_count_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+  if (lex_mi->retry_count_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     mi->retry_count = lex_mi->retry_count;
 
-  if (lex_mi->heartbeat_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+  if (lex_mi->heartbeat_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     mi->heartbeat_period = lex_mi->heartbeat_period;
   else if (lex_mi->host || lex_mi->port) {
     /*
       If the user specified host or port or both without heartbeat_period,
       we use default value for heartbeat_period. By default, We want to always
       have heartbeat enabled when we switch master unless
-      master_heartbeat_period is explicitly set to zero (heartbeat disabled).
+      source_heartbeat_period is explicitly set to zero (heartbeat disabled).
 
-      Here is the default value for heartbeat period if CHANGE MASTER did not
-      specify it.  (no data loss in conversion as hb period has a max)
+      Here is the default value for heartbeat period if CHANGE REPLICATION
+      SOURCE did not specify it.  (no data loss in conversion as hb period has a
+      max)
     */
-    mi->heartbeat_period = std::min<float>(SLAVE_MAX_HEARTBEAT_PERIOD,
+    mi->heartbeat_period = std::min<float>(REPLICA_MAX_HEARTBEAT_PERIOD,
                                            (replica_net_timeout / 2.0f));
     assert(mi->heartbeat_period > (float)0.001 || mi->heartbeat_period == 0);
 
@@ -9621,10 +9616,10 @@ static int change_receive_options(THD *thd, LEX_MASTER_INFO *lex_mi,
   }
 
   /*
-    reset the last time server_id list if the current CHANGE MASTER
+    reset the last time server_id list if the current CHANGE REPLICATION SOURCE
     is mentioning IGNORE_SERVER_IDS= (...)
   */
-  if (lex_mi->repl_ignore_server_ids_opt == LEX_MASTER_INFO::LEX_MI_ENABLE)
+  if (lex_mi->repl_ignore_server_ids_opt == LEX_SOURCE_INFO::LEX_MI_ENABLE)
     mi->ignore_server_ids->dynamic_ids.clear();
   for (size_t i = 0; i < lex_mi->repl_ignore_server_ids.size(); i++) {
     ulong s_id = lex_mi->repl_ignore_server_ids[i];
@@ -9638,20 +9633,20 @@ static int change_receive_options(THD *thd, LEX_MASTER_INFO *lex_mi,
     }
   }
 
-  if (lex_mi->ssl != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
-    mi->ssl = (lex_mi->ssl == LEX_MASTER_INFO::LEX_MI_ENABLE);
+  if (lex_mi->ssl != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
+    mi->ssl = (lex_mi->ssl == LEX_SOURCE_INFO::LEX_MI_ENABLE);
 
-  if (lex_mi->ssl_verify_server_cert != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+  if (lex_mi->ssl_verify_server_cert != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     mi->ssl_verify_server_cert =
-        (lex_mi->ssl_verify_server_cert == LEX_MASTER_INFO::LEX_MI_ENABLE);
+        (lex_mi->ssl_verify_server_cert == LEX_SOURCE_INFO::LEX_MI_ENABLE);
 
   if (lex_mi->public_key_path)
     strmake(mi->public_key_path, lex_mi->public_key_path,
             sizeof(mi->public_key_path) - 1);
 
-  if (lex_mi->get_public_key != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+  if (lex_mi->get_public_key != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     mi->get_public_key =
-        (lex_mi->get_public_key == LEX_MASTER_INFO::LEX_MI_ENABLE);
+        (lex_mi->get_public_key == LEX_SOURCE_INFO::LEX_MI_ENABLE);
 
   if (lex_mi->ssl_ca)
     strmake(mi->ssl_ca, lex_mi->ssl_ca, sizeof(mi->ssl_ca) - 1);
@@ -9660,10 +9655,10 @@ static int change_receive_options(THD *thd, LEX_MASTER_INFO *lex_mi,
   if (lex_mi->tls_version)
     strmake(mi->tls_version, lex_mi->tls_version, sizeof(mi->tls_version) - 1);
 
-  if (LEX_MASTER_INFO::SPECIFIED_NULL == lex_mi->tls_ciphersuites) {
+  if (LEX_SOURCE_INFO::SPECIFIED_NULL == lex_mi->tls_ciphersuites) {
     mi->tls_ciphersuites.first = true;
     mi->tls_ciphersuites.second.clear();
-  } else if (LEX_MASTER_INFO::SPECIFIED_STRING == lex_mi->tls_ciphersuites) {
+  } else if (LEX_SOURCE_INFO::SPECIFIED_STRING == lex_mi->tls_ciphersuites) {
     mi->tls_ciphersuites.first = false;
     mi->tls_ciphersuites.second.assign(lex_mi->tls_ciphersuites_string);
   }
@@ -9687,16 +9682,16 @@ err:
 }
 
 /**
-   This function is called if the change master command had at least one
-   execute option. This function then sets or alters the execute option(s)
+   This function is called if the change replication source command had at least
+  one execute option. This function then sets or alters the execute option(s)
    given in the command. The receive options are handled in the function
    change_receive_options()
 
    - used in change_master().
    - Execute threads should be stopped before this function is called.
 
-  @param lex_mi structure that holds all change master options given on the
-                change master command.
+  @param lex_mi structure that holds all change replication source options given
+  on the change replication source command.
 
   @param mi     Pointer to Master_info object belonging to the replica channel
                 that will be configured
@@ -9704,7 +9699,7 @@ err:
   @return       false if the execute options were successfully set and true,
                 otherwise.
 */
-static bool change_execute_options(LEX_MASTER_INFO *lex_mi, Master_info *mi) {
+static bool change_execute_options(LEX_SOURCE_INFO *lex_mi, Master_info *mi) {
   DBUG_TRACE;
 
   if (lex_mi->privilege_checks_username != nullptr ||
@@ -9722,27 +9717,27 @@ static bool change_execute_options(LEX_MASTER_INFO *lex_mi, Master_info *mi) {
     }
   }
 
-  if (lex_mi->require_row_format != LEX_MASTER_INFO::LEX_MI_UNCHANGED) {
+  if (lex_mi->require_row_format != LEX_SOURCE_INFO::LEX_MI_UNCHANGED) {
     mi->rli->set_require_row_format(lex_mi->require_row_format ==
-                                    LEX_MASTER_INFO::LEX_MI_ENABLE);
+                                    LEX_SOURCE_INFO::LEX_MI_ENABLE);
   }
 
   if (lex_mi->require_table_primary_key_check !=
-      LEX_MASTER_INFO::LEX_MI_PK_CHECK_UNCHANGED) {
+      LEX_SOURCE_INFO::LEX_MI_PK_CHECK_UNCHANGED) {
     switch (lex_mi->require_table_primary_key_check) {
-      case (LEX_MASTER_INFO::LEX_MI_PK_CHECK_STREAM):
+      case (LEX_SOURCE_INFO::LEX_MI_PK_CHECK_STREAM):
         mi->rli->set_require_table_primary_key_check(
             Relay_log_info::PK_CHECK_STREAM);
         break;
-      case (LEX_MASTER_INFO::LEX_MI_PK_CHECK_ON):
+      case (LEX_SOURCE_INFO::LEX_MI_PK_CHECK_ON):
         mi->rli->set_require_table_primary_key_check(
             Relay_log_info::PK_CHECK_ON);
         break;
-      case (LEX_MASTER_INFO::LEX_MI_PK_CHECK_OFF):
+      case (LEX_SOURCE_INFO::LEX_MI_PK_CHECK_OFF):
         mi->rli->set_require_table_primary_key_check(
             Relay_log_info::PK_CHECK_OFF);
         break;
-      case (LEX_MASTER_INFO::LEX_MI_PK_CHECK_GENERATE):
+      case (LEX_SOURCE_INFO::LEX_MI_PK_CHECK_GENERATE):
         if (channel_map.is_group_replication_channel_name(lex_mi->channel)) {
           my_error(ER_REQUIRE_TABLE_PRIMARY_KEY_CHECK_GENERATE_WITH_GR, MYF(0));
           return true;
@@ -9790,12 +9785,12 @@ static bool change_execute_options(LEX_MASTER_INFO *lex_mi, Master_info *mi) {
 
   @return       false if successfully set, true otherwise.
 */
-static bool change_applier_receiver_options(THD *thd, LEX_MASTER_INFO *lex_mi,
+static bool change_applier_receiver_options(THD *thd, LEX_SOURCE_INFO *lex_mi,
                                             Master_info *mi) {
   if (lex_mi->m_source_connection_auto_failover !=
-      LEX_MASTER_INFO::LEX_MI_UNCHANGED) {
+      LEX_SOURCE_INFO::LEX_MI_UNCHANGED) {
     if (lex_mi->m_source_connection_auto_failover ==
-        LEX_MASTER_INFO::LEX_MI_ENABLE) {
+        LEX_SOURCE_INFO::LEX_MI_ENABLE) {
       mi->set_source_connection_auto_failover();
       /*
         Send replication channel SOURCE_CONNECTION_AUTO_FAILOVER attribute of
@@ -9855,15 +9850,15 @@ static bool change_applier_receiver_options(THD *thd, LEX_MASTER_INFO *lex_mi,
     }
   }
 
-  if (lex_mi->auto_position != LEX_MASTER_INFO::LEX_MI_UNCHANGED) {
+  if (lex_mi->auto_position != LEX_SOURCE_INFO::LEX_MI_UNCHANGED) {
     mi->set_auto_position(
-        (lex_mi->auto_position == LEX_MASTER_INFO::LEX_MI_ENABLE));
+        (lex_mi->auto_position == LEX_SOURCE_INFO::LEX_MI_ENABLE));
   }
 
   if (lex_mi->assign_gtids_to_anonymous_transactions_type !=
-      LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED) {
+      LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED) {
     if (lex_mi->assign_gtids_to_anonymous_transactions_type >
-        LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF) {
+        LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF) {
       push_warning(
           thd, Sql_condition::SL_NOTE,
           ER_USING_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_AS_LOCAL_OR_UUID,
@@ -9873,19 +9868,19 @@ static bool change_applier_receiver_options(THD *thd, LEX_MASTER_INFO *lex_mi,
     }
 
     switch (lex_mi->assign_gtids_to_anonymous_transactions_type) {
-      case (LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL):
+      case (LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL):
         mi->rli->m_assign_gtids_to_anonymous_transactions_info.set_info(
             Assign_gtids_to_anonymous_transactions_info::enum_type::AGAT_LOCAL,
             ::server_uuid);
         break;
-      case (LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID):
+      case (LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID):
         if (mi->rli->m_assign_gtids_to_anonymous_transactions_info.set_info(
                 Assign_gtids_to_anonymous_transactions_info::enum_type::
                     AGAT_UUID,
                 lex_mi->assign_gtids_to_anonymous_transactions_manual_uuid))
           return true;
         break;
-      case (LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF):
+      case (LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF):
         mi->rli->m_assign_gtids_to_anonymous_transactions_info.set_info(
             Assign_gtids_to_anonymous_transactions_info::enum_type::AGAT_OFF,
             "");
@@ -9896,36 +9891,12 @@ static bool change_applier_receiver_options(THD *thd, LEX_MASTER_INFO *lex_mi,
     }
   }
 
-  if (lex_mi->m_gtid_only != LEX_MASTER_INFO::LEX_MI_UNCHANGED) {
+  if (lex_mi->m_gtid_only != LEX_SOURCE_INFO::LEX_MI_UNCHANGED) {
     mi->set_gtid_only_mode(
-        (lex_mi->m_gtid_only == LEX_MASTER_INFO::LEX_MI_ENABLE));
+        (lex_mi->m_gtid_only == LEX_SOURCE_INFO::LEX_MI_ENABLE));
   }
 
   return false;
-}
-
-/**
-  This function shall issue a deprecation warning if
-  there are server ids tokenized from the CHANGE MASTER
-  TO command while @@global.gtid_mode=ON.
- */
-static void issue_deprecation_warnings_for_channel(THD *thd) {
-  LEX_MASTER_INFO *lex_mi = &thd->lex->mi;
-
-  /*
-    Deprecation of GTID_MODE + IGNORE_SERVER_IDS
-
-    Generate deprecation warning when user executes CHANGE
-    MASTER TO IGNORE_SERVER_IDS if GTID_MODE=ON.
-  */
-  if (lex_mi->repl_ignore_server_ids.size() > 0 &&
-      global_gtid_mode.get() == Gtid_mode::ON) {
-    push_warning_printf(thd, Sql_condition::SL_WARNING,
-                        ER_WARN_DEPRECATED_SYNTAX,
-                        ER_THD(thd, ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT),
-                        "CHANGE MASTER TO ... IGNORE_SERVER_IDS='...' "
-                        "(when @@GLOBAL.GTID_MODE = ON)");
-  }
 }
 
 /**
@@ -9941,7 +9912,7 @@ static void issue_deprecation_warnings_for_channel(THD *thd) {
   @return       false if the configuration is valid
                 true  some configuration option is invalid with GTID_MODE
 */
-static int validate_gtid_option_restrictions(const LEX_MASTER_INFO *lex_mi,
+static int validate_gtid_option_restrictions(const LEX_SOURCE_INFO *lex_mi,
                                              Master_info *mi) {
   int error = 0;
 
@@ -9950,7 +9921,7 @@ static int validate_gtid_option_restrictions(const LEX_MASTER_INFO *lex_mi,
       GTID_MODE != OFF
   */
   if (global_gtid_mode.get() == Gtid_mode::OFF) {
-    if (lex_mi->auto_position == LEX_MASTER_INFO::LEX_MI_ENABLE) {
+    if (lex_mi->auto_position == LEX_SOURCE_INFO::LEX_MI_ENABLE) {
       error = ER_AUTO_POSITION_REQUIRES_GTID_MODE_NOT_OFF;
       my_error(ER_AUTO_POSITION_REQUIRES_GTID_MODE_NOT_OFF, MYF(0));
       return error;
@@ -9962,7 +9933,7 @@ static int validate_gtid_option_restrictions(const LEX_MASTER_INFO *lex_mi,
       requires GTID_MODE = ON
   */
   if (lex_mi->assign_gtids_to_anonymous_transactions_type >
-      LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF) {
+      LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF) {
     error = ER_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_REQUIRES_GTID_MODE_ON;
     my_error(ER_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_REQUIRES_GTID_MODE_ON,
              MYF(0));
@@ -9973,7 +9944,7 @@ static int validate_gtid_option_restrictions(const LEX_MASTER_INFO *lex_mi,
     CHANGE REPLICATION SOURCE TO GTID_ONLY= 1 requires
       GTID_MODE = ON
   */
-  if (lex_mi->m_gtid_only == LEX_MASTER_INFO::LEX_MI_ENABLE) {
+  if (lex_mi->m_gtid_only == LEX_SOURCE_INFO::LEX_MI_ENABLE) {
     error = ER_CHANGE_REPLICATION_SOURCE_NO_OPTIONS_FOR_GTID_ONLY;
     my_error(ER_CHANGE_REPLICATION_SOURCE_NO_OPTIONS_FOR_GTID_ONLY, MYF(0),
              mi->get_channel());
@@ -9985,7 +9956,7 @@ static int validate_gtid_option_restrictions(const LEX_MASTER_INFO *lex_mi,
       GTID_MODE = ON
   */
   if (lex_mi->m_source_connection_auto_failover ==
-      LEX_MASTER_INFO::LEX_MI_ENABLE) {
+      LEX_SOURCE_INFO::LEX_MI_ENABLE) {
     error = ER_RPL_ASYNC_RECONNECT_GTID_MODE_OFF;
     my_error(ER_RPL_ASYNC_RECONNECT_GTID_MODE_OFF, MYF(0));
     return error;
@@ -10015,13 +9986,13 @@ static int validate_gtid_option_restrictions(const LEX_MASTER_INFO *lex_mi,
 bool is_option_enabled_or_will_be(bool base_value, int option_value) {
   bool var_enabled = base_value;
   switch (option_value) {
-    case LEX_MASTER_INFO::LEX_MI_ENABLE:
+    case LEX_SOURCE_INFO::LEX_MI_ENABLE:
       var_enabled = true;
       break;
-    case LEX_MASTER_INFO::LEX_MI_DISABLE:
+    case LEX_SOURCE_INFO::LEX_MI_DISABLE:
       var_enabled = false;
       break;
-    case LEX_MASTER_INFO::LEX_MI_UNCHANGED:
+    case LEX_SOURCE_INFO::LEX_MI_UNCHANGED:
       break;
     default:
       assert(0);
@@ -10047,7 +10018,7 @@ bool is_option_enabled_or_will_be(bool base_value, int option_value) {
   @return 0     if no issues are found
           != 0  the error number associated to the issue, if one is found
 */
-int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
+int evaluate_inter_option_dependencies(const LEX_SOURCE_INFO *lex_mi,
                                        Master_info *mi) {
   int error = 0;
 
@@ -10059,13 +10030,13 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
       mi->is_auto_position(), lex_mi->auto_position);
   bool will_auto_position_be_disable =
       mi->is_auto_position() &&
-      lex_mi->auto_position == LEX_MASTER_INFO::LEX_MI_DISABLE;
+      lex_mi->auto_position == LEX_SOURCE_INFO::LEX_MI_DISABLE;
 
   bool is_or_will_require_row_format_be_enabled = is_option_enabled_or_will_be(
       mi->rli->is_row_format_required(), lex_mi->require_row_format);
   bool will_require_row_format_be_disable =
       mi->rli->is_row_format_required() &&
-      lex_mi->require_row_format == LEX_MASTER_INFO::LEX_MI_DISABLE;
+      lex_mi->require_row_format == LEX_SOURCE_INFO::LEX_MI_DISABLE;
 
   bool is_or_will_source_connection_auto_failover_be_enabled =
       is_option_enabled_or_will_be(mi->is_source_connection_auto_failover(),
@@ -10075,24 +10046,24 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
       mi->is_gtid_only_mode(), lex_mi->m_gtid_only);
   bool will_gtid_only_mode_be_disable =
       mi->is_gtid_only_mode() &&
-      lex_mi->m_gtid_only == LEX_MASTER_INFO::LEX_MI_DISABLE;
+      lex_mi->m_gtid_only == LEX_SOURCE_INFO::LEX_MI_DISABLE;
 
   auto assign_gtids_to_anonymous_transactions_type =
       mi->rli->m_assign_gtids_to_anonymous_transactions_info.get_type();
   switch (lex_mi->assign_gtids_to_anonymous_transactions_type) {
-    case LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF:
+    case LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF:
       assign_gtids_to_anonymous_transactions_type =
           Assign_gtids_to_anonymous_transactions_info::enum_type::AGAT_OFF;
       break;
-    case LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL:
+    case LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL:
       assign_gtids_to_anonymous_transactions_type =
           Assign_gtids_to_anonymous_transactions_info::enum_type::AGAT_LOCAL;
       break;
-    case LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID:
+    case LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID:
       assign_gtids_to_anonymous_transactions_type =
           Assign_gtids_to_anonymous_transactions_info::enum_type::AGAT_UUID;
       break;
-    case LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED:
+    case LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED:
       break;
     default:
       assert(0);
@@ -10108,8 +10079,8 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
   */
   if (lex_mi->log_file_name != nullptr || lex_mi->pos != 0 ||
       lex_mi->relay_log_name != nullptr || lex_mi->relay_log_pos != 0) {
-    if (lex_mi->auto_position == LEX_MASTER_INFO::LEX_MI_ENABLE ||
-        (lex_mi->auto_position != LEX_MASTER_INFO::LEX_MI_DISABLE &&
+    if (lex_mi->auto_position == LEX_SOURCE_INFO::LEX_MI_ENABLE ||
+        (lex_mi->auto_position != LEX_SOURCE_INFO::LEX_MI_DISABLE &&
          mi->is_auto_position())) {
       error = ER_BAD_REPLICA_AUTO_POSITION;
       my_error(error, MYF(0));
@@ -10135,7 +10106,7 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
       SOURCE_AUTO_POSITION = 1
       REQUIRE_ROW_FORMAT = 1
    */
-  if (lex_mi->m_gtid_only == LEX_MASTER_INFO::LEX_MI_ENABLE &&
+  if (lex_mi->m_gtid_only == LEX_SOURCE_INFO::LEX_MI_ENABLE &&
       (!is_or_will_auto_position_be_enabled ||
        !is_or_will_require_row_format_be_enabled)) {
     error = ER_CHANGE_REPLICATION_SOURCE_NO_OPTIONS_FOR_GTID_ONLY;
@@ -10148,7 +10119,7 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
       SOURCE_AUTO_POSITION = 1
   */
   if (lex_mi->m_source_connection_auto_failover ==
-          LEX_MASTER_INFO::LEX_MI_ENABLE &&
+          LEX_SOURCE_INFO::LEX_MI_ENABLE &&
       !is_or_will_auto_position_be_enabled) {
     error = ER_RPL_ASYNC_RECONNECT_AUTO_POSITION_OFF;
     my_error(error, MYF(0));
@@ -10156,9 +10127,9 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
   }
 
   /*
-    We need to check if there is an empty master_host. Otherwise
-    change master succeeds, a master.info file is created containing
-    empty master_host string and when issuing: start replica; an error
+    We need to check if there is an empty source_host. Otherwise
+    change replication source succeeds, a master.info file is created containing
+    empty source_host string and when issuing: start replica; an error
     is thrown stating that the server is not configured as replica.
     (See BUG#28796).
   */
@@ -10173,7 +10144,7 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
     secondary member.
   */
   if (lex_mi->m_source_connection_auto_failover !=
-          LEX_MASTER_INFO::LEX_MI_UNCHANGED &&
+          LEX_SOURCE_INFO::LEX_MI_UNCHANGED &&
       is_group_replication_member_secondary()) {
     error = ER_OPERATION_NOT_ALLOWED_ON_GR_SECONDARY;
     my_error(error, MYF(0));
@@ -10185,14 +10156,14 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
     can't use the same value as the group replication name or view change uuid
   */
   if (lex_mi->assign_gtids_to_anonymous_transactions_type >
-      LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF) {
+      LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_OFF) {
     std::string group_name = get_group_replication_group_name();
     if (group_name.length() > 0) {
       bool is_same = false;
       auto type = lex_mi->assign_gtids_to_anonymous_transactions_type;
-      if (type == LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL)
+      if (type == LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL)
         if (!(group_name.compare(::server_uuid))) is_same = true;
-      if (type == LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID)
+      if (type == LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID)
         if (!(group_name.compare(
                 lex_mi->assign_gtids_to_anonymous_transactions_manual_uuid)))
           is_same = true;
@@ -10210,9 +10181,9 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
         return error;
         /* purecov: end */
       } else {
-        if (type == LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL)
+        if (type == LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_LOCAL)
           if (!(view_change_uuid.compare(::server_uuid))) is_same = true;
-        if (type == LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID)
+        if (type == LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UUID)
           if (!(view_change_uuid.compare(
                   lex_mi->assign_gtids_to_anonymous_transactions_manual_uuid)))
             is_same = true;
@@ -10230,7 +10201,8 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
   /*
     CHANGE REPLICATION SOURCE TO ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS
       auto_position cannot be disable if either source_connection_auto_failover
-      option is enabled or getting enabled in current CHANGE MASTER statement.
+      option is enabled or getting enabled in current CHANGE REPLICATION SOURCE
+    statement.
   */
   if (will_auto_position_be_disable &&
       is_or_will_source_connection_auto_failover_be_enabled) {
@@ -10278,6 +10250,20 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
       }
     }
   }
+
+  /*
+    Emitting error after user executes CHANGE REPLICATION
+    SOURCE TO IGNORE_SERVER_IDS if GTID_MODE=ON.
+   */
+  if (lex_mi->repl_ignore_server_ids.size() > 0 &&
+      global_gtid_mode.get() == Gtid_mode::ON) {
+    error = ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED;
+    my_error(error, MYF(0),
+             "CHANGE REPLICATION SOURCE TO ... IGNORE_SERVER_IDS='...'"
+             " when @@GLOBAL.GTID_MODE = ON",
+             mi->get_channel());
+    return error;
+  }
   return error;
 }
 
@@ -10293,10 +10279,10 @@ int evaluate_inter_option_dependencies(const LEX_MASTER_INFO *lex_mi,
   @param mi     Pointer to Master_info object
 */
 static void log_invalid_position_warning(THD *thd,
-                                         const LEX_MASTER_INFO *lex_mi,
+                                         const LEX_SOURCE_INFO *lex_mi,
                                          Master_info *mi) {
-  if (lex_mi->m_gtid_only == LEX_MASTER_INFO::LEX_MI_DISABLE ||
-      lex_mi->auto_position == LEX_MASTER_INFO::LEX_MI_DISABLE) {
+  if (lex_mi->m_gtid_only == LEX_SOURCE_INFO::LEX_MI_DISABLE ||
+      lex_mi->auto_position == LEX_SOURCE_INFO::LEX_MI_DISABLE) {
     if (mi->is_receiver_position_info_invalid() ||
         mi->rli->is_applier_source_position_info_invalid()) {
       push_warning_printf(
@@ -10332,14 +10318,14 @@ static void log_invalid_position_warning(THD *thd,
           remove_mta_info: if true remove MTA worker info
 */
 static std::pair<bool, bool> validate_change_replication_source_options(
-    THD *thd, const LEX_MASTER_INFO *lex_mi, Master_info *mi, int thread_mask) {
+    THD *thd, const LEX_SOURCE_INFO *lex_mi, Master_info *mi, int thread_mask) {
   bool mta_remove_worker_info = false;
-  if ((thread_mask & SLAVE_SQL) == 0)  // If execute threads are stopped
+  if ((thread_mask & REPLICA_SQL) == 0)  // If execute threads are stopped
   {
     if (mi->rli->mts_recovery_group_cnt) {
       /*
         Change-Master can't be done if there is a mts group gap.
-        That requires mts-recovery which START SLAVE provides.
+        That requires mts-recovery which START REPLICA provides.
       */
       assert(mi->rli->recovery_parallel_workers);
       my_error(ER_MTA_CHANGE_SOURCE_CANT_RUN_WITH_GAPS, MYF(0));
@@ -10357,10 +10343,10 @@ static std::pair<bool, bool> validate_change_replication_source_options(
 
   /*
     When give a warning?
-    CHANGE MASTER command is used in three ways:
+    CHANGE REPLICATION SOURCE command is used in three ways:
     a) To change a connection configuration but remain connected to
        the same master.
-    b) To change positions in binary or relay log(eg: master_log_pos).
+    b) To change positions in binary or relay log(eg: SOURCE_LOG_POS).
     c) To change the master you are replicating from.
     We give a warning in cases b and c.
   */
@@ -10413,7 +10399,7 @@ static std::pair<bool, bool> validate_change_replication_source_options(
   @return returns true if an error occurred, false otherwise
 */
 static bool update_change_replication_source_options(
-    THD *thd, LEX_MASTER_INFO *lex_mi, Master_info *mi,
+    THD *thd, LEX_SOURCE_INFO *lex_mi, Master_info *mi,
     bool have_both_receive_execute_option, bool have_execute_option,
     bool have_receive_option) {
   if (have_both_receive_execute_option) {
@@ -10440,7 +10426,7 @@ static bool update_change_replication_source_options(
 }
 
 /**
-  Execute a CHANGE MASTER statement.
+  Execute a CHANGE REPLICATION SOURCE statement.
 
   Apart from changing the receive/execute configurations/positions,
   this function also does the following:
@@ -10469,7 +10455,7 @@ static bool update_change_replication_source_options(
   @retval 0   success
   @retval !=0 error
 */
-int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
+int change_master(THD *thd, Master_info *mi, LEX_SOURCE_INFO *lex_mi,
                   bool preserve_logs) {
   int error = 0;
 
@@ -10487,8 +10473,8 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
   int thread_mask;
   /*
     Relay logs are purged only if both receive and execute threads are
-    stopped before executing CHANGE MASTER and relay_log_file/relay_log_pos
-    options are not used.
+    stopped before executing CHANGE REPLICATION SOURCE and
+    relay_log_file/relay_log_pos options are not used.
   */
   bool need_relay_log_purge = true;
 
@@ -10505,15 +10491,16 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
   DBUG_TRACE;
 
   /*
-    CHANGE MASTER command should ignore 'read-only' and 'super_read_only'
-    options so that it can update 'mysql.slave_master_info' replication
-    repository tables.
+    CHANGE REPLICATION SOURCE command should ignore 'read-only' and
+    'super_read_only' options so that it can update 'mysql.slave_master_info'
+    replication repository tables.
   */
   thd->set_skip_readonly_check();
   mi->channel_wrlock();
   /*
-    When we change master, we first decide which thread is running and
-    which is not. We dont want this assumption to break while we change master.
+    When we change replication source, we first decide which thread is running
+    and which is not. We dont want this assumption to break while we change
+    replication source.
 
     Suppose we decide that receiver thread is running and thus it is
     safe to change receive related options in mi. By this time if
@@ -10532,26 +10519,29 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
   if (thread_mask) /* If any thread is running */
   {
     /*
-      Prior to WL#6120, we imposed the condition that STOP SLAVE is required
-      before CHANGE MASTER. Since the slave threads die on STOP SLAVE, it was
-      fine if we purged relay logs.
+      Prior to WL#6120, we imposed the condition that STOP REPLICA is required
+      before CHANGE REPLICATION SOURCE. Since the slave threads die on STOP
+      REPLICA, it was fine if we purged relay logs.
 
-      Now that we do allow CHANGE MASTER with a running receiver/applier thread,
-      we need to make sure that the relay logs are purged only if both
-      receiver and applier threads are stopped otherwise we could lose events.
+      Now that we do allow CHANGE REPLICATION SOURCE with a running
+      receiver/applier thread, we need to make sure that the relay logs are
+      purged only if both receiver and applier threads are stopped otherwise we
+      could lose events.
 
       The idea behind purging relay logs if both the threads are stopped is to
       keep consistency with the old behavior. If the user/application is doing
-      a CHANGE MASTER without stopping any one thread, the relay log purge
-      should be controlled via the 'relay_log_purge' option.
+      a CHANGE REPLICATION SOURCE without stopping any one thread, the relay log
+      purge should be controlled via the 'relay_log_purge' option.
     */
     need_relay_log_purge = false;
   }
 
-  /* Check if at least one receive option is given on change master */
+  /* Check if at least one receive option is given on change replication source
+   */
   have_receive_option = have_change_replication_source_receive_option(lex_mi);
 
-  /* Check if at least one execute option is given on change master */
+  /* Check if at least one execute option is given on change replication source
+   */
   have_execute_option = have_change_replication_source_execute_option(
       lex_mi, &need_relay_log_purge);
   /* Check if at least one execute option affects both the applier and receiver
@@ -10566,23 +10556,23 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
      Then tell the user the replica must stop
    */
   if ((have_both_receive_execute_option &&
-       ((thread_mask & SLAVE_IO) || (thread_mask & SLAVE_SQL))) ||
-      (have_receive_option && have_execute_option && (thread_mask & SLAVE_IO) &&
-       (thread_mask & SLAVE_SQL))) {
+       ((thread_mask & REPLICA_IO) || (thread_mask & REPLICA_SQL))) ||
+      (have_receive_option && have_execute_option &&
+       (thread_mask & REPLICA_IO) && (thread_mask & REPLICA_SQL))) {
     error = ER_REPLICA_CHANNEL_MUST_STOP;
     my_error(ER_REPLICA_CHANNEL_MUST_STOP, MYF(0), mi->get_channel());
     goto err;
   }
 
   /* With receiver thread running, we dont allow changing receive options. */
-  if (have_receive_option && (thread_mask & SLAVE_IO)) {
+  if (have_receive_option && (thread_mask & REPLICA_IO)) {
     error = ER_REPLICA_CHANNEL_IO_THREAD_MUST_STOP;
     my_error(ER_REPLICA_CHANNEL_IO_THREAD_MUST_STOP, MYF(0), mi->get_channel());
     goto err;
   }
 
   /* With an execute thread running, we don't allow changing execute options. */
-  if (have_execute_option && (thread_mask & SLAVE_SQL)) {
+  if (have_execute_option && (thread_mask & REPLICA_SQL)) {
     error = ER_REPLICA_CHANNEL_SQL_THREAD_MUST_STOP;
     my_error(ER_REPLICA_CHANNEL_SQL_THREAD_MUST_STOP, MYF(0),
              mi->get_channel());
@@ -10590,7 +10580,7 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
   }
 
   /* If GTID_MODE is different from ON check if some options are invalid
-     We hold channel_map lock for the duration of the CHANGE MASTER.
+     We hold channel_map lock for the duration of the CHANGE REPLICATION SOURCE.
      This is important since it prevents that a concurrent
      connection changes to GTID_MODE=OFF between this check and the
      point where AUTO_POSITION is stored in the table and in mi.
@@ -10664,19 +10654,20 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
 
   /*
     If user didn't specify neither host nor port nor any log name nor any log
-    pos, i.e. he specified only user/password/master_connect_retry,
-    master_delay, he probably  wants replication to resume from where it had
+    pos, i.e. he specified only user/password/source_connect_retry,
+    source_delay, he probably  wants replication to resume from where it had
     left, i.e. from the coordinates of the **SQL** thread (imagine the case
     where the I/O is ahead of the SQL; restarting from the coordinates of the
     I/O would lose some events which is probably unwanted when you are just
-    doing minor changes like changing master_connect_retry). Note: coordinates
+    doing minor changes like changing source_connect_retry). Note: coordinates
     of the SQL thread must be read before the block which resets them.
   */
   if (need_relay_log_purge) {
     /*
       A side-effect is that if only the I/O thread was started, this thread may
-      restart from ''/4 after the CHANGE MASTER. That's a minor problem (it is a
-      much more unlikely situation than the one we are fixing here).
+      restart from ''/4 after the CHANGE REPLICATION SOURCE. That's a minor
+      problem (it is a much more unlikely situation than the one we are fixing
+      here).
     */
     if (!lex_mi->host && !lex_mi->port && !lex_mi->log_file_name &&
         !lex_mi->pos && !mi->rli->is_applier_source_position_info_invalid()) {
@@ -10700,14 +10691,14 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
            mi->bind_addr);
 
   /* If the receiver is stopped, flush master_info to disk. */
-  if ((thread_mask & SLAVE_IO) == 0 && flush_master_info(mi, true)) {
+  if ((thread_mask & REPLICA_IO) == 0 && flush_master_info(mi, true)) {
     error = ER_RELAY_LOG_INIT;
     my_error(ER_RELAY_LOG_INIT, MYF(0),
              "Failed to flush connection metadata repository");
     goto err;
   }
 
-  if ((thread_mask & SLAVE_SQL) == 0) /* Applier module is not executing */
+  if ((thread_mask & REPLICA_SQL) == 0) /* Applier module is not executing */
   {
     if (need_relay_log_purge) {
       /*
@@ -10732,12 +10723,12 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
       /*
         Coordinates in rli were spoilt by purge_relay_logs(),
         so restore them to good values. If we left them to ''/0, that would
-        work. But that would fail in the case of 2 successive CHANGE MASTER
-        (without a START SLAVE in between): because first one would set the
-        coords in mi to the good values of those in rli, then set those i>n rli
-        to ''/0, then second CHANGE MASTER would set the coords in mi to those
-        of rli, i.e. to ''/0: we have lost all copies of the original good
-        coordinates. That's why we always save good coords in rli.
+        work. But that would fail in the case of 2 successive CHANGE REPLICATION
+        SOURCE (without a START REPLICA in between): because first one would set
+        the coords in mi to the good values of those in rli, then set those i>n
+        rli to ''/0, then second CHANGE REPLICATION SOURCE would set the coords
+        in mi to those of rli, i.e. to ''/0: we have lost all copies of the
+        original good coordinates. That's why we always save good coords in rli.
 */
       if (!mi->is_receiver_position_info_invalid()) {
         mi->rli->set_group_master_log_pos(mi->get_master_log_pos());
@@ -10772,8 +10763,8 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
 
     /*
       If we don't write new coordinates to disk now, then old will remain in
-      relay-log.info until START SLAVE is issued; but if mysqld is shutdown
-      before START SLAVE, then old will remain in relay-log.info, and will be
+      relay-log.info until START REPLICA is issued; but if mysqld is shutdown
+      before START REPLICA, then old will remain in relay-log.info, and will be
       the in-memory value at restart (thus causing errors, as the old relay log
       does not exist anymore).
 
@@ -10787,7 +10778,7 @@ int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
       goto err;
     }
 
-  } /* end 'if (thread_mask & SLAVE_SQL == 0)' */
+  } /* end 'if (thread_mask & REPLICA_SQL == 0)' */
 
   log_invalid_position_warning(thd, lex_mi, mi);
 
@@ -10825,19 +10816,6 @@ int add_new_channel(Master_info **mi, const char *channel) {
   Ident_name_check ident_check_status;
 
   /*
-    Refuse to create a new channel if the repositories does not support this.
-  */
-
-  if (opt_mi_repository_id == INFO_REPOSITORY_FILE ||
-      opt_rli_repository_id == INFO_REPOSITORY_FILE) {
-    LogErr(ERROR_LEVEL,
-           ER_RPL_REPLICA_NEW_C_M_NEEDS_REPOS_TYPE_OTHER_THAN_FILE);
-    error = ER_REPLICA_NEW_CHANNEL_WRONG_REPOSITORY;
-    my_error(ER_REPLICA_NEW_CHANNEL_WRONG_REPOSITORY, MYF(0));
-    goto err;
-  }
-
-  /*
     Return if max num of replication channels exceeded already.
   */
 
@@ -10863,7 +10841,7 @@ int add_new_channel(Master_info **mi, const char *channel) {
   }
 
   if (!((*mi) = Rpl_info_factory::create_mi_and_rli_objects(
-            opt_mi_repository_id, opt_rli_repository_id, channel, false,
+            INFO_REPOSITORY_TABLE, INFO_REPOSITORY_TABLE, channel,
             &channel_map))) {
     error = ER_CONNECTION_METADATA;
     my_error(ER_CONNECTION_METADATA, MYF(0));
@@ -10877,49 +10855,49 @@ err:
 
 /**
    Method used to check if the user is trying to update any other option for
-   the change master apart from the MASTER_USER and MASTER_PASSWORD.
+   the change replication source apart from the SOURCE_USER and SOURCE_PASSWORD.
    In case user tries to update any other parameter apart from these two,
    this method will return error.
 
-   @param  lex_mi structure that holds all change master options given on
-           the change master command.
+   @param  lex_mi structure that holds all change replication source options
+   given on the change replication source command.
 
-   @retval true - The CHANGE MASTER is updating a unsupported parameter for the
-                  recovery channel.
+   @retval true - The CHANGE REPLICATION SOURCE is updating a unsupported
+   parameter for the recovery channel.
 
-   @retval false - Everything is fine. The CHANGE MASTER can execute with the
-                   given option(s) for the recovery channel.
+   @retval false - Everything is fine. The CHANGE REPLICATION SOURCE can execute
+   with the given option(s) for the recovery channel.
 */
 static bool is_invalid_change_master_for_group_replication_recovery(
-    const LEX_MASTER_INFO *lex_mi) {
+    const LEX_SOURCE_INFO *lex_mi) {
   DBUG_TRACE;
   bool have_extra_option_received = false;
 
-  /* Check if *at least one* receive/execute option is given on change master
-   * command*/
+  /* Check if *at least one* receive/execute option is given on change
+   * replication source command*/
   if (lex_mi->host || lex_mi->log_file_name || lex_mi->pos ||
       lex_mi->bind_addr || lex_mi->port || lex_mi->connect_retry ||
       lex_mi->server_id ||
-      lex_mi->auto_position != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->ssl != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->ssl_verify_server_cert != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->heartbeat_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->retry_count_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->auto_position != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->ssl != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->ssl_verify_server_cert != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->heartbeat_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->retry_count_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->ssl_key || lex_mi->ssl_cert || lex_mi->ssl_ca ||
       lex_mi->ssl_capath || lex_mi->tls_version ||
-      lex_mi->tls_ciphersuites != LEX_MASTER_INFO::UNSPECIFIED ||
+      lex_mi->tls_ciphersuites != LEX_SOURCE_INFO::UNSPECIFIED ||
       lex_mi->ssl_cipher || lex_mi->ssl_crl || lex_mi->ssl_crlpath ||
-      lex_mi->repl_ignore_server_ids_opt == LEX_MASTER_INFO::LEX_MI_ENABLE ||
+      lex_mi->repl_ignore_server_ids_opt == LEX_SOURCE_INFO::LEX_MI_ENABLE ||
       lex_mi->relay_log_name || lex_mi->relay_log_pos ||
       lex_mi->sql_delay != -1 || lex_mi->public_key_path ||
-      lex_mi->get_public_key != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->get_public_key != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->zstd_compression_level || lex_mi->compression_algorithm ||
-      lex_mi->require_row_format != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->require_row_format != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->m_source_connection_auto_failover !=
-          LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+          LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->assign_gtids_to_anonymous_transactions_type !=
-          LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED ||
-      lex_mi->m_gtid_only != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+          LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED ||
+      lex_mi->m_gtid_only != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     have_extra_option_received = true;
 
   return have_extra_option_received;
@@ -10927,55 +10905,55 @@ static bool is_invalid_change_master_for_group_replication_recovery(
 
 /**
    Method used to check if the user is trying to update any other option for
-   the change master apart from the PRIVILEGE_CHECKS_USER.
+   the change replication source apart from the PRIVILEGE_CHECKS_USER.
    In case user tries to update any other parameter apart from this one, this
    method will return error.
 
-   @param  lex_mi structure that holds all change master options given on
-           the change master command.
+   @param  lex_mi structure that holds all change replication source options
+   given on the change replication source command.
 
-   @retval true - The CHANGE MASTER is updating a unsupported parameter for the
-                  recovery channel.
+   @retval true - The CHANGE REPLICATION SOURCE is updating a unsupported
+   parameter for the recovery channel.
 
-   @retval false - Everything is fine. The CHANGE MASTER can execute with the
-                   given option(s) for the recovery channel.
+   @retval false - Everything is fine. The CHANGE REPLICATION SOURCE can execute
+   with the given option(s) for the recovery channel.
 */
 static bool is_invalid_change_master_for_group_replication_applier(
-    const LEX_MASTER_INFO *lex_mi) {
+    const LEX_SOURCE_INFO *lex_mi) {
   DBUG_TRACE;
   bool have_extra_option_received = false;
 
-  /* Check if *at least one* receive/execute option is given on change master
-   * command*/
+  /* Check if *at least one* receive/execute option is given on change
+   * replication source command*/
   if (lex_mi->host || lex_mi->user || lex_mi->password ||
       lex_mi->log_file_name || lex_mi->pos || lex_mi->bind_addr ||
       lex_mi->port || lex_mi->connect_retry || lex_mi->server_id ||
-      lex_mi->auto_position != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->ssl != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->ssl_verify_server_cert != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->heartbeat_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
-      lex_mi->retry_count_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->auto_position != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->ssl != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->ssl_verify_server_cert != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->heartbeat_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->retry_count_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->ssl_key || lex_mi->ssl_cert || lex_mi->ssl_ca ||
       lex_mi->ssl_capath || lex_mi->tls_version || lex_mi->ssl_cipher ||
       lex_mi->ssl_crl || lex_mi->ssl_crlpath ||
-      lex_mi->repl_ignore_server_ids_opt == LEX_MASTER_INFO::LEX_MI_ENABLE ||
+      lex_mi->repl_ignore_server_ids_opt == LEX_SOURCE_INFO::LEX_MI_ENABLE ||
       lex_mi->relay_log_name || lex_mi->relay_log_pos ||
       lex_mi->sql_delay != -1 || lex_mi->public_key_path ||
-      lex_mi->get_public_key != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->get_public_key != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->zstd_compression_level || lex_mi->compression_algorithm ||
-      lex_mi->require_row_format != LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+      lex_mi->require_row_format != LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->m_source_connection_auto_failover !=
-          LEX_MASTER_INFO::LEX_MI_UNCHANGED ||
+          LEX_SOURCE_INFO::LEX_MI_UNCHANGED ||
       lex_mi->assign_gtids_to_anonymous_transactions_type !=
-          LEX_MASTER_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED ||
-      lex_mi->m_gtid_only != LEX_MASTER_INFO::LEX_MI_UNCHANGED)
+          LEX_SOURCE_INFO::LEX_MI_ANONYMOUS_TO_GTID_UNCHANGED ||
+      lex_mi->m_gtid_only != LEX_SOURCE_INFO::LEX_MI_UNCHANGED)
     have_extra_option_received = true;
 
   return have_extra_option_received;
 }
 
 /**
-  Entry point for the CHANGE MASTER command. Function
+  Entry point for the CHANGE REPLICATION SOURCE command. Function
   decides to create a new channel or create an existing one.
 
   @param[in]        thd        the client thread that issued the command.
@@ -10992,19 +10970,20 @@ bool change_master_cmd(THD *thd) {
 
   channel_map.wrlock();
 
-  /* The slave must have been initialized to allow CHANGE MASTER statements */
+  /* The slave must have been initialized to allow CHANGE REPLICATION SOURCE
+   * statements */
   if (!is_slave_configured()) {
     my_error(ER_REPLICA_CONFIGURATION, MYF(0));
     res = true;
     goto err;
   }
 
-  if (channel_map.is_group_replication_channel_name(lex->mi.channel, true)) {
+  if (channel_map.is_group_replication_applier_channel_name(lex->mi.channel)) {
     /*
       If the chosen name is for group_replication_applier channel we allow the
       channel creation based on the check as to which field is being updated.
     */
-    LEX_MASTER_INFO *lex_mi = &thd->lex->mi;
+    LEX_SOURCE_INFO *lex_mi = &thd->lex->mi;
     if (is_invalid_change_master_for_group_replication_applier(lex_mi)) {
       my_error(ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0),
                "CHANGE REPLICATION SOURCE with the given parameters",
@@ -11017,8 +10996,8 @@ bool change_master_cmd(THD *thd) {
       group_replication_applier channel only has the SQL thread, the IO thread
       job is done by GR pipeline, which queues events into the relay log after
       going through certification.
-      Thence for CHANGE MASTER execution pre-conditions we need to check if
-      the full GR stack is stopped.
+      Thence for CHANGE REPLICATION SOURCE execution pre-conditions we need to
+      check if the full GR stack is stopped.
     */
     if (is_group_replication_running()) {
       my_error(ER_GRP_OPERATION_NOT_ALLOWED_GR_MUST_STOP, MYF(0));
@@ -11029,9 +11008,8 @@ bool change_master_cmd(THD *thd) {
 
   // If the channel being used is group_replication_recovery we allow the
   // channel creation based on the check as to which field is being updated.
-  if (channel_map.is_group_replication_channel_name(lex->mi.channel) &&
-      !channel_map.is_group_replication_channel_name(lex->mi.channel, true)) {
-    LEX_MASTER_INFO *lex_mi = &thd->lex->mi;
+  if (channel_map.is_group_replication_recovery_channel_name(lex->mi.channel)) {
+    LEX_SOURCE_INFO *lex_mi = &thd->lex->mi;
     if (is_invalid_change_master_for_group_replication_recovery(lex_mi)) {
       my_error(ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0),
                "CHANGE REPLICATION SOURCE with the given parameters",
@@ -11043,7 +11021,7 @@ bool change_master_cmd(THD *thd) {
 
   /*
     Error out if number of replication channels are > 1 if FOR CHANNEL
-    clause is not provided in the CHANGE MASTER command.
+    clause is not provided in the CHANGE REPLICATION SOURCE command.
   */
   if (!lex->mi.for_channel && channel_map.get_num_instances() > 1) {
     my_error(ER_REPLICA_MULTIPLE_CHANNELS_CMD, MYF(0));
@@ -11073,12 +11051,6 @@ bool change_master_cmd(THD *thd) {
                  mi->rli, lex->mi.channel)))
           goto err;
       }
-
-      /*
-        Issuing deprecation warnings after the change (we make
-        sure that we don't issue warning if there is an error).
-      */
-      issue_deprecation_warnings_for_channel(thd);
 
       my_ok(thd);
     }
@@ -11133,7 +11105,7 @@ static int check_slave_sql_config_conflict(const Relay_log_info *rli) {
         (channel_mts_submode != MTS_PARALLEL_TYPE_LOGICAL_CLOCK ||
          (channel_mts_submode == MTS_PARALLEL_TYPE_LOGICAL_CLOCK &&
           !opt_replica_preserve_commit_order)) &&
-        channel_map.is_group_replication_channel_name(channel, true)) {
+        channel_map.is_group_replication_applier_channel_name(channel)) {
       my_error(ER_REPLICA_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0),
                "START REPLICA SQL_THREAD when REPLICA_PARALLEL_WORKERS > 0 "
                "and REPLICA_PARALLEL_TYPE != LOGICAL_CLOCK "
@@ -11277,7 +11249,7 @@ static void check_replica_configuration_restrictions() {
 static bool check_replica_configuration_errors(Master_info *mi,
                                                int thread_mask) {
   if (global_gtid_mode.get() != Gtid_mode::ON) {
-    if (mi->is_auto_position() && (thread_mask & SLAVE_IO) &&
+    if (mi->is_auto_position() && (thread_mask & REPLICA_IO) &&
         global_gtid_mode.get() == Gtid_mode::OFF) {
       my_error(ER_CANT_USE_AUTO_POSITION_WITH_GTID_MODE_OFF, MYF(0),
                mi->get_for_channel_str());
@@ -11299,8 +11271,8 @@ static bool check_replica_configuration_errors(Master_info *mi,
          Assign_gtids_to_anonymous_transactions_info::enum_type::AGAT_OFF)) {
       /*
         This function may be called either during server start (when
-        --skip-start-replica is not used) or during START SLAVE. The error
-        should only be generated during START SLAVE. During server start, an
+        --skip-start-replica is not used) or during START REPLICA. The error
+        should only be generated during START REPLICA. During server start, an
         error has already been written to the log for this case (in
         init_replica).
       */
@@ -11344,5 +11316,22 @@ static bool check_replica_configuration_errors(Master_info *mi,
       return true;
     }
   }
+  // Emit error when IGNORE_SERVER_IDS are configured along with
+  // GTID_MODE = ON on server start
+  if (mi != nullptr && mi->is_ignore_server_ids_configured() &&
+      global_gtid_mode.get() == Gtid_mode::ON) {
+    if (current_thd)
+      my_error(ER_START_REPLICA_CHANNEL_INVALID_CONFIGURATION, MYF(0),
+               mi->rli->get_channel(),
+               "IGNORE_SERVER_IDS are configured along "
+               "with GTID MODE = ON");
+
+    LogErr(ERROR_LEVEL, ER_START_REPLICA_CHANNEL_INVALID_CONFIGURATION_LOG,
+           mi->rli->get_channel(),
+           "IGNORE_SERVER_IDS are configured along "
+           "with GTID MODE = ON");
+    return true;
+  }
+
   return false;
 }

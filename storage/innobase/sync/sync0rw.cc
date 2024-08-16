@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 Copyright (c) 2008, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -13,12 +13,13 @@ This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -517,7 +518,7 @@ bool rw_lock_sx_lock_low(rw_lock_t *lock, ulint pass, ut::Location location) {
     /* Decrement occurred: we are the SX lock owner. */
     rw_lock_set_writer_id_and_recursion_flag(lock, !pass);
 
-    lock->sx_recursive = 1;
+    lock->sx_recursive.store(1, std::memory_order_relaxed);
 
   } else {
     /* Decrement failed: It already has an X or SX lock by this
@@ -527,7 +528,7 @@ bool rw_lock_sx_lock_low(rw_lock_t *lock, ulint pass, ut::Location location) {
         lock->writer_thread.load(std::memory_order_relaxed) ==
             std::this_thread::get_id()) {
       /* This thread owns an X or SX lock */
-      if (lock->sx_recursive++ == 0) {
+      if (lock->increment_sx_recursive() == 0) {
         /* This thread is making first SX-lock request
         and it must be holding at least one X-lock here
         because:

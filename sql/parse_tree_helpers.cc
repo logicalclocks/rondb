@@ -1,15 +1,16 @@
-/* Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,6 +37,7 @@
 #include "my_sqlcommand.h"
 #include "my_sys.h"
 #include "mysql/mysql_lex_string.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "sql/current_thd.h"
@@ -59,6 +61,7 @@
 #include "sql/sql_plugin_ref.h"
 #include "sql/trigger_def.h"
 #include "sql_string.h"
+#include "strmake.h"
 
 /**
   Create an object to represent a SP variable in the Item-hierarchy.
@@ -132,7 +135,7 @@ Item_splocal *create_item_for_sp_var(THD *thd, LEX_CSTRING name,
   in case of out-of-memory error.
 */
 LEX_CSTRING make_string(THD *thd, const char *start_ptr, const char *end_ptr) {
-  size_t length = end_ptr - start_ptr;
+  const size_t length = end_ptr - start_ptr;
   return {strmake_root(thd->mem_root, start_ptr, length), length};
 }
 
@@ -233,8 +236,8 @@ bool sp_create_assignment_instr(THD *thd, const char *expr_end_ptr) {
 
     const char *expr_start_ptr = sp->m_parser_data.get_option_start_ptr();
 
-    LEX_CSTRING expr{expr_start_ptr,
-                     static_cast<size_t>(expr_end_ptr - expr_start_ptr)};
+    const LEX_CSTRING expr{expr_start_ptr,
+                           static_cast<size_t>(expr_end_ptr - expr_start_ptr)};
 
     /* Construct SET-statement query. */
 
@@ -260,7 +263,7 @@ bool sp_create_assignment_instr(THD *thd, const char *expr_end_ptr) {
   }
 
   /* Remember option_type of the currently parsed LEX. */
-  enum_var_type inner_option_type = lex->option_type;
+  const enum_var_type inner_option_type = lex->option_type;
 
   if (sp->restore_lex(thd)) return true;
 

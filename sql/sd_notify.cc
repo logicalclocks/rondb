@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -128,9 +129,13 @@ void notify() {
            "Invalid systemd notify socket, cannot send: ", note.c_str());
     return;
   }
-  LogErr(INFORMATION_LEVEL, ER_SYSTEMD_NOTIFY_DEBUG,
-         "Send to systemd notify socket: ", note.c_str());
 #endif /* WITH_SYSTEMD_DEBUG */
+
+  // when systemd is enabled, irrespective of whether it's compiled with or
+  // without WITH_SYSTEMD_DEBUG, we want to log every systemd message to
+  // error-logs.
+  LogErr(INFORMATION_LEVEL, ER_SYSTEMD_NOTIFY_DEBUG,
+         "systemd notify: ", note.c_str());
 
   while (true) {
     size_t remaining = end - src;

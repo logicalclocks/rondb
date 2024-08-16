@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,11 +34,11 @@ using namespace std;
 
 ostream &operator<<(ostream &os, const Datetime &) {
   const char format[] = "%Y-%m-%d %X";
-  time_t t(time(nullptr));
-  tm tm(*localtime(&t));
+  const time_t t(time(nullptr));
+  const tm tm(*localtime(&t));
 
   const size_t date_length{50};
-  std::unique_ptr<char[]> date{new char[date_length]};
+  const std::unique_ptr<char[]> date{new char[date_length]};
   strftime(date.get(), date_length, format, &tm);
 
   os << date.get() << " ";
@@ -49,7 +50,7 @@ ostream &operator<<(ostream &os, const Gen_spaces &gen) {
 }
 
 int Log::Log_buff::sync() {
-  string sout(str());
+  const string sout(str());
   if (m_enabled && sout.length() > 0) {
     m_os << Datetime() << "[" << m_logc << "]"
          << Gen_spaces(8 - m_logc.length()) << sout;

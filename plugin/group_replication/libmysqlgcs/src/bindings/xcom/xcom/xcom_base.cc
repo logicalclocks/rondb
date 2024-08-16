@@ -1,15 +1,16 @@
-/* Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1392,6 +1393,7 @@ int local_server(task_arg arg) {
       /* Take ownership of the tail of the list, otherwise we lose it when we
          free ep->request. */
       ep->next_request = xcom_input_request_extract_next(ep->request);
+
       unchecked_replace_pax_msg(&ep->request_pax_msg,
                                 pax_msg_new_0(null_synode));
       assert(ep->request_pax_msg->refcnt == 1);
@@ -1737,6 +1739,9 @@ static void push_msg_3p(site_def const *site, pax_machine *p, pax_msg *msg,
   if (wait_forced_config) {
     force_pax_machine(p, 1);
   }
+
+  // Forced to do a 3p PAXOS. Adding it to the statistics.
+  cfg_app_get_storage_statistics()->add_three_phase_paxos();
 
   assert(msgno.msgno != 0);
   prepare_push_3p(site, p, msg, msgno, msg_type);
@@ -2360,6 +2365,7 @@ static int proposer_task(task_arg arg) {
   size_t nr_batched_app_data;
   int remote_retry;
   synode_allocation_type synode_allocation;
+  uint64_t start_propose_clock;
   ENV_INIT
   END_ENV_INIT
   END_ENV;
@@ -2404,6 +2410,10 @@ static int proposer_task(task_arg arg) {
         !is_view(ep->client_msg->p->a->body.c_t)) {
       ep->size = app_data_size(ep->client_msg->p->a);
       ep->nr_batched_app_data = 1;
+
+      // Add an extra message in statistics
+      cfg_app_get_storage_statistics()->add_message();
+
       while (AUTOBATCH && ep->size <= MAX_BATCH_SIZE &&
              ep->nr_batched_app_data <= MAX_BATCH_APP_DATA &&
              !link_empty(&prop_input_queue
@@ -2415,6 +2425,10 @@ static int proposer_task(task_arg arg) {
         atmp = tmp->p->a;
         ep->size += app_data_size(atmp);
         ep->nr_batched_app_data++;
+
+        // Add an extra message in statistics
+        cfg_app_get_storage_statistics()->add_message();
+
         /* Abort batching if config or too big batch */
         if (is_config(atmp->body.c_t) || is_view(atmp->body.c_t) ||
             ep->nr_batched_app_data > MAX_BATCH_APP_DATA ||
@@ -2434,10 +2448,15 @@ static int proposer_task(task_arg arg) {
         IFDBG(D_NONE, FN; PTREXP(ep->client_msg->p->a); STRLIT("extracted ");
               SYCEXP(ep->client_msg->p->a->app_key));
       }
+    } else {
+      // Add an extra message in statistics for control messages like
+      // Views and COnfigurations.
+      cfg_app_get_storage_statistics()->add_message();
     }
 
     ep->start_propose = task_now();
     ep->delay = 0.0;
+    ep->start_propose_clock = get_time_since_the_epoch();
 
     assert(!ep->client_msg->p->a->chosen);
 
@@ -2610,8 +2629,17 @@ static int proposer_task(task_arg arg) {
   next : {
     double now = task_now();
     double used = now - ep->start_propose;
+
+    auto proposal_end_time = get_time_since_the_epoch();
+    auto time_to_propose = proposal_end_time - ep->start_propose_clock;
+
     add_to_filter(used);
     prop_finished++;
+    // Add sucessfull proposal round
+    cfg_app_get_storage_statistics()->add_sucessful_paxos_round();
+    cfg_app_get_storage_statistics()->set_last_proposal_time(proposal_end_time);
+    cfg_app_get_storage_statistics()->add_proposal_time(time_to_propose);
+
     IFDBG(D_NONE, FN; STRLIT("completed ep->msgno "); SYCEXP(ep->msgno);
           NDBG(used, f); NDBG(median_time(), f);
           STRLIT("seconds since last push "); NDBG(now - ep->start_push, f););
@@ -5524,6 +5552,36 @@ static client_reply_code xcom_get_event_horizon(
   return REQUEST_OK;
 }
 
+static bool add_node_test_connectivity_to_added_nodes(
+    node_address *nodes_to_change, u_int number_of_nodes_to_change) {
+  char name[IP_MAX_SIZE];
+  xcom_port port = 0;
+
+  for (u_int i = 0; i < number_of_nodes_to_change; i++) {
+    memset(name, 0, IP_MAX_SIZE);
+
+    node_address node_to_change = nodes_to_change[i];
+
+    if (get_ip_and_port(node_to_change.address, name, &port)) {
+      G_INFO("Error parsing ip:port for new server. Incorrect value is %s",
+             node_to_change.address);
+      return true;
+    }
+
+    if (!is_able_to_connect_to_node(name, port)) {
+      G_INFO(
+          "Error connecting back to %s on a node being added to the group "
+          "using this member as seed. Please retry adding "
+          "this node to the group, after troubleshooting any issue that you "
+          "might have on a bi-directional link.",
+          node_to_change.address);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 static u_int allow_add_node(app_data_ptr a) {
   /* Get information on the current site definition */
   const site_def *new_site_def = get_site_def();
@@ -5547,6 +5605,11 @@ static u_int allow_add_node(app_data_ptr a) {
         "to "
         "communicate using IPv6, only IPv4.Please configure this server to "
         "join the group using an IPv4 address instead.");
+    return 0;
+  }
+
+  if (add_node_test_connectivity_to_added_nodes(nodes_to_change,
+                                                nr_nodes_to_add)) {
     return 0;
   }
 

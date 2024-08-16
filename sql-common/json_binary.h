@@ -1,18 +1,19 @@
 #ifndef JSON_BINARY_INCLUDED
 #define JSON_BINARY_INCLUDED
 
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -143,7 +144,6 @@
 #include <stddef.h>
 #include <cassert>
 #include <cstdint>
-#include <functional>
 #include <string>
 
 /*
@@ -156,11 +156,11 @@
 
 #ifdef MYSQL_SERVER
 class Field_json;
-class Json_dom;
 class Json_wrapper;
 class THD;
 #endif
 
+class Json_dom;
 class String;
 
 #if defined(WIN32) && defined(EXPORT_JSON_FUNCTIONS)
@@ -171,20 +171,37 @@ class String;
 
 namespace json_binary {
 
+void write_offset_or_size(char *dest, size_t offset_or_size, bool large);
+
+bool append_offset_or_size(String *dest, size_t offset_or_size, bool large);
+
+bool append_int16(String *dest, int16_t value);
+
+bool attempt_inline_value(const Json_dom *value, String *dest, size_t pos,
+                          bool large);
+
+uint32_t read_offset_or_size(const char *data, bool large);
+
+bool inlined_type(uint8_t type, bool large);
+
+uint8_t offset_size(bool large);
+uint8_t key_entry_size(bool large);
+uint8_t value_entry_size(bool large);
+
 /**
   Serialize the JSON document represented by dom to binary format in
   the destination string, replacing any content already in the
   destination string.
 
-  @param[in]     thd   THD handle
   @param[in]     dom   the input DOM tree
+  @param error_handler a handler that is invoked if an error occurs
   @param[in,out] dest  the destination string
   @retval false on success
   @retval true if an error occurred
-*/
-#ifdef MYSQL_SERVER
-bool serialize(const THD *thd, const Json_dom *dom, String *dest);
-#endif
+      */
+bool serialize(const Json_dom *dom,
+               const JsonSerializationErrorHandler &error_handler,
+               String *dest);
 
 /**
   Class used for reading JSON values that are stored in the binary
@@ -243,6 +260,22 @@ class Value {
   uint32_t get_data_length() const {
     assert(m_type == STRING || m_type == OPAQUE);
     return m_length;
+  }
+
+  /**
+    Get the length in bytes of the STRING or OPAQUE value represented by
+    this instance.
+  */
+  EXPORT_JSON_FUNCTION
+  uint32_t get_container_length() const {
+    assert(m_type == ARRAY || m_type == OBJECT);
+    return m_length;
+  }
+
+  EXPORT_JSON_FUNCTION
+  const char *get_container_data() const {
+    assert(m_type == ARRAY || m_type == OBJECT);
+    return m_data;
   }
 
   /** Get the value of an INT. */
@@ -311,9 +344,13 @@ class Value {
   EXPORT_JSON_FUNCTION
   bool is_backed_by(const String *str) const;
 
+  EXPORT_JSON_FUNCTION
+  bool raw_binary(const JsonSerializationErrorHandler &error_handler,
+                  String *buf) const;
+  EXPORT_JSON_FUNCTION
+  bool get_free_space(const JsonSerializationErrorHandler &error_handler,
+                      size_t *space) const;
 #ifdef MYSQL_SERVER
-  bool raw_binary(const THD *thd, String *buf) const;
-  bool get_free_space(const THD *thd, size_t *space) const;
   bool update_in_shadow(const Field_json *field, size_t pos,
                         Json_wrapper *new_value, size_t data_offset,
                         size_t data_length, const char *original,
@@ -397,7 +434,7 @@ class Value {
   */
   EXPORT_JSON_FUNCTION
   bool to_std_string(std::string *buffer,
-                     const JsonDocumentDepthHandler &depth_handler) const;
+                     const JsonErrorHandler &depth_handler) const;
 
   /**
     Format the JSON value to an external JSON string in buffer in the format of
@@ -413,8 +450,8 @@ class Value {
     @retval true on error
   */
   EXPORT_JSON_FUNCTION
-  bool to_pretty_std_string(
-      std::string *buffer, const JsonDocumentDepthHandler &depth_handler) const;
+  bool to_pretty_std_string(std::string *buffer,
+                            const JsonErrorHandler &depth_handler) const;
 
   /**
     Compare two Values
@@ -429,6 +466,12 @@ class Value {
 #ifdef MYSQL_SERVER
   int eq(const Value &val) const;
 #endif
+
+  EXPORT_JSON_FUNCTION
+  size_t key_entry_offset(size_t pos) const;
+
+  EXPORT_JSON_FUNCTION
+  size_t value_entry_offset(size_t pos) const;
 
  private:
   /*
@@ -477,8 +520,6 @@ class Value {
   */
   bool m_large;
 
-  size_t key_entry_offset(size_t pos) const;
-  size_t value_entry_offset(size_t pos) const;
   bool first_value_offset(size_t *offset) const;
   bool element_offsets(size_t pos, size_t *start, size_t *end,
                        bool *inlined) const;
@@ -498,7 +539,6 @@ Value parse_binary(const char *data, size_t len);
   How much space is needed for a JSON value when it is stored in the binary
   format.
 
-  @param[in]  thd     THD handle
   @param[in]  value   the JSON value to add to a document
   @param[in]  large   true if the large storage format is used
   @param[out] needed  gets set to the amount of bytes needed to store
@@ -507,8 +547,7 @@ Value parse_binary(const char *data, size_t len);
   @retval true if an error occurred while calculating the needed space
 */
 #ifdef MYSQL_SERVER
-bool space_needed(const THD *thd, const Json_wrapper *value, bool large,
-                  size_t *needed);
+bool space_needed(const Json_wrapper *value, bool large, size_t *needed);
 #endif
 
 /**

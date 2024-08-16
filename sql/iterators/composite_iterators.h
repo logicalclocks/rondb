@@ -1,18 +1,19 @@
 #ifndef SQL_ITERATORS_COMPOSITE_ITERATORS_H_
 #define SQL_ITERATORS_COMPOSITE_ITERATORS_H_
 
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -39,8 +40,9 @@
  */
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
+#include <sys/types.h>
 #include <memory>
 #include <string>
 #include <utility>
@@ -54,7 +56,7 @@
 #include "sql/join_type.h"
 #include "sql/mem_root_array.h"
 #include "sql/pack_rows.h"
-#include "sql/table.h"
+#include "sql/sql_array.h"
 #include "sql_string.h"
 
 class Cached_item;
@@ -63,11 +65,12 @@ class Item;
 class JOIN;
 class KEY;
 struct MaterializePathParameters;
-class Query_expression;
 class SJ_TMP_TABLE;
+class Table_ref;
 class THD;
 class Table_function;
 class Temp_table_param;
+struct TABLE;
 
 /**
   An iterator that takes in a stream of rows and passes through only those that
@@ -425,10 +428,10 @@ class CacheInvalidatorIterator final : public RowIterator {
 
 namespace materialize_iterator {
 /**
-   A query block to be materialized by MaterializeIterator.
+   An operand (query block) to be materialized by MaterializeIterator.
    (@see MaterializeIterator for details.)
 */
-struct QueryBlock {
+struct Operand {
   /// The iterator to read the actual rows from.
   unique_ptr_destroy_only<RowIterator> subquery_iterator;
 
@@ -442,9 +445,9 @@ struct QueryBlock {
   /// what ExecuteIteratorQuery() needs to do at the top level.)
   JOIN *join;
 
-  /// If true, unique constraint checking via hash key is disabled
+  /// If true, de-duplication checking via hash key is disabled
   /// when materializing this query block (ie., we simply avoid calling
-  /// check_unique_constraint() for each row). Used when materializing
+  /// check_unique_fields() for each row). Used when materializing
   /// UNION DISTINCT and UNION ALL parts into the same table.
   /// We'd like to just use a unique constraint via unique index instead,
   /// but there might be other indexes on the destination table
@@ -486,6 +489,9 @@ struct QueryBlock {
   // Used for informing the iterators about various shared state in the
   // materialization (including coordinating rematerializations).
   FollowTailIterator *recursive_reader = nullptr;
+
+  /// The estimated number of rows produced by this block
+  double m_estimated_output_rows{0.0};
 };
 
 /**
@@ -494,7 +500,7 @@ struct QueryBlock {
   @see MaterializeIterator.
 
   @param thd Thread handler.
-  @param query_blocks_to_materialize List of query blocks to materialize.
+  @param operands List of operands (query blocks) to materialize.
   @param path_params MaterializePath settings.
   @param table_iterator Iterator used for accessing the temporary table
     after materialization.
@@ -507,12 +513,10 @@ struct QueryBlock {
     join.
   @return the iterator.
 */
-RowIterator *CreateIterator(THD *thd,
-                            Mem_root_array<materialize_iterator::QueryBlock>
-                                query_blocks_to_materialize,
-                            const MaterializePathParameters *path_params,
-                            unique_ptr_destroy_only<RowIterator> table_iterator,
-                            JOIN *join);
+RowIterator *CreateIterator(
+    THD *thd, Mem_root_array<materialize_iterator::Operand> operands,
+    const MaterializePathParameters *path_params,
+    unique_ptr_destroy_only<RowIterator> table_iterator, JOIN *join);
 
 }  // namespace materialize_iterator
 

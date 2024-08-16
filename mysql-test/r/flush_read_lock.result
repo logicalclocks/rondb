@@ -37,7 +37,7 @@ include/only_with_option.inc [GLOBAL.xa_detach_on_prepare = 1]
 # with FTWRL. This is class #4 -- incompatible
 # becuase issue implicit COMMIT which is not a no-op.
 # Finally, there are administrative statements (such as 
-# RESET SLAVE) that do not take any locks and do not
+# RESET REPLICA) that do not take any locks and do not
 # issue COMMIT.
 # This is class #5.
 # The goal of this coverage is to test statements
@@ -83,7 +83,7 @@ create event e1 on schedule every 1 minute do begin end;
 # with various statements.
 #
 # These tests don't cover some classes of statements:
-# - Replication-related - CHANGE MASTER TO, START/STOP SLAVE and etc
+# - Replication-related - CHANGE REPLICATION SOURCE TO, START/STOP REPLICA and etc
 #   (all compatible with FTWRL).
 # - Plugin-related - INSTALL/UNINSTALL (incompatible with FTWRL,
 #   require plugin support).
@@ -106,9 +106,9 @@ Success: Was able to run FTWRL while 'alter table t1_temp add column c1 int' was
 #
 # 1.2) ALTER DATABASE should be incompatible with FTWRL.
 #
-Success: Was not able to run 'alter database mysqltest1 default character set utf8' under FTWRL.
-Success: 'alter database mysqltest1 default character set utf8' is blocked by FTWRL active in another connection.
-Success: FTWRL is blocked when 'alter database mysqltest1 default character set utf8' is active in another connection.
+Success: Was not able to run 'alter database mysqltest1 default character set utf8mb3' under FTWRL.
+Success: 'alter database mysqltest1 default character set utf8mb3' is blocked by FTWRL active in another connection.
+Success: FTWRL is blocked when 'alter database mysqltest1 default character set utf8mb3' is active in another connection.
 #
 # 1.3) ALTER PROCEDURE should be incompatible with FTWRL.
 #
@@ -231,20 +231,21 @@ set debug_sync= "RESET";
 #
 # Provide format description BINLOG statement first.
 BINLOG '
-MfmqTA8BAAAAZwAAAGsAAAABAAQANS41LjctbTMtZGVidWctbG9nAAAAAAAAAAAAAAAAAAAAAAAA
-AAAAAAAAAAAAAAAAAAAx+apMEzgNAAgAEgAEBAQEEgAAVAAEGggAAAAICAgCAA==
+BHzAZQ8BAAAAewAAAH8AAAAAAAQAOC40LjAtZGVidWcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAEfMBlEwANAAgAAAAABAAEAAAAYwAEGggAAAAAAAACAAAACgoKKioAEjQA
+CigAAAG9bFwE
 ';
 # Now test compatibility for BINLOG statement which is 
 # equivalent to INSERT INTO t1_base VALUES (1).
 # Skip last part of compatibility testing as this statement
 # releases metadata locks in non-standard place.
 Success: Was not able to run 'BINLOG '
-MfmqTBMBAAAALgAAAN0AAAAAACgAAAAAAAEABHRlc3QAB3QxX2Jhc2UAAQMAAQ==
-MfmqTBcBAAAAIgAAAP8AAAAAACgAAAAAAAEAAf/+AQAAAA==
+BnzAZRMBAAAANQAAAPYtAAAAACUBAAAAAAEABHRlc3QAB3QxX2Jhc2UAAQMAAQEBACYsoOE=
+BnzAZR4BAAAAKAAAAB4uAAAAACUBAAAAAAEAAgAB/wACAAAAyb0y+g==
 '' under FTWRL.
 Success: 'BINLOG '
-MfmqTBMBAAAALgAAAN0AAAAAACgAAAAAAAEABHRlc3QAB3QxX2Jhc2UAAQMAAQ==
-MfmqTBcBAAAAIgAAAP8AAAAAACgAAAAAAAEAAf/+AQAAAA==
+BnzAZRMBAAAANQAAAPYtAAAAACUBAAAAAAEABHRlc3QAB3QxX2Jhc2UAAQMAAQEBACYsoOE=
+BnzAZR4BAAAAKAAAAB4uAAAAACUBAAAAAAEAAgAB/wACAAAAyb0y+g==
 '' is blocked by FTWRL active in another connection.
 #
 # 5) CALL statement. This statement uses resources in two

@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,8 +24,7 @@
 #ifndef SQL_JOIN_OPTIMIZER_ESTIMATE_SELECTIVITY
 #define SQL_JOIN_OPTIMIZER_ESTIMATE_SELECTIVITY
 
-#include <string>
-
+class CompanionSet;
 class THD;
 class Item;
 
@@ -32,6 +32,7 @@ class Item;
   For the given condition, to try estimate its filtering selectivity,
   on a 0..1 scale (where 1.0 lets all records through).
  */
-double EstimateSelectivity(THD *thd, Item *condition, std::string *trace);
+double EstimateSelectivity(THD *thd, Item *condition,
+                           const CompanionSet &companion_set);
 
 #endif  // SQL_JOIN_OPTIMIZER_ESTIMATE_SELECTIVITY

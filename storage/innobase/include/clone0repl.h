@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -43,16 +44,18 @@ this program; if not, write to the Free Software Foundation, Inc.,
 class Clone_persist_gtid;
 
 /** Serialized GTID information size */
-static const size_t GTID_INFO_SIZE = 64;
+inline constexpr size_t GTID_INFO_SIZE = 64;
 
 /** GTID format version. */
-static const uint32_t GTID_VERSION = 1;
+inline constexpr uint32_t GTID_VERSION = 2;
 
 /** Serialized GTID */
 using Gtid_info = std::array<unsigned char, GTID_INFO_SIZE>;
 
+struct Gtid_desc;
+
 /** List of GTIDs */
-using Gitd_info_list = std::vector<Gtid_info>;
+using Gtid_info_list = std::vector<Gtid_desc>;
 
 /** GTID descriptor with version information. */
 struct Gtid_desc {
@@ -231,7 +234,7 @@ class Clone_persist_gtid {
                    bool early_timeout, Clone_Alert_Func cbk);
 
   /** @return current active GTID list */
-  Gitd_info_list &get_active_list() {
+  Gtid_info_list &get_active_list() {
     ut_ad(trx_sys_serialisation_mutex_own());
     return (get_list(m_active_number));
   }
@@ -239,7 +242,7 @@ class Clone_persist_gtid {
   /** @return GTID list by number.
   @param[in]    list_number     list number
   @return GTID list reference. */
-  Gitd_info_list &get_list(uint64_t list_number) {
+  Gtid_info_list &get_list(uint64_t list_number) {
     int list_index = (list_number & static_cast<uint64_t>(1));
     return (m_gtids[list_index]);
   }
@@ -305,10 +308,10 @@ class Clone_persist_gtid {
   /** Persist GTID to gtid_executed table.
   @param[in]            flush_list_number       list number to flush
   @param[in,out]        table_gtid_set          GTIDs in table during recovery
-  @param[in,out]        sid_map                 SID map for GTIDs
+  @param[in,out]        tsid_map                TSID map for GTIDs
   @return mysql error code. */
   int write_to_table(uint64_t flush_list_number, Gtid_set &table_gtid_set,
-                     Sid_map &sid_map);
+                     Tsid_map &tsid_map);
 
   /** Update transaction number up to which GTIDs are flushed to table.
   @param[in]    new_gtid_trx_no GTID transaction number */
@@ -340,7 +343,7 @@ class Clone_persist_gtid {
   /** Two lists of GTID. One of them is active where running transactions
   add their GTIDs. Other list is used to persist them to table from time
   to time. */
-  Gitd_info_list m_gtids[2];
+  Gtid_info_list m_gtids[2];
 
   /** Number of the current GTID list. Increased when list is switched */
   std::atomic<uint64_t> m_active_number;

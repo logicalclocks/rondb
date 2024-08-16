@@ -1,15 +1,16 @@
-/* Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,15 +29,15 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
   found, it is prepended to the buffered log-events.
 */
 
-#include <my_time.h>          // MYSQL_TIME_STATUS
-#include <mysql_time.h>       // MYSQL_TIME
-#include <iostream>           // std::cerr
-#include "log_sink_buffer.h"  // struct log_line_buffer
-#include "log_sink_trad.h"    // parse_trad_field()
-#include "my_dir.h"           // MY_STAT
-#include "my_loglevel.h"
+#include <my_time.h>                                 // MYSQL_TIME_STATUS
+#include <mysql_time.h>                              // MYSQL_TIME
+#include <iostream>                                  // std::cerr
+#include "log_sink_buffer.h"                         // struct log_line_buffer
+#include "log_sink_trad.h"                           // parse_trad_field()
+#include "my_dir.h"                                  // MY_STAT
 #include "mysql/components/services/log_builtins.h"  // LogEvent()
 #include "mysql/components/services/log_service.h"
+#include "mysql/my_loglevel.h"
 #include "mysqld_error.h"  // ER_STACKTRACE
 #include "sql/log.h"       // iso8601_timestamp_to_microseconds()
 #include "sql/sql_list.h"  // List
@@ -449,8 +450,8 @@ static log_service_error log_error_read_backtrace_loop(const char *log_file,
     - the parse function suggests we stop (LOG_SERVICE_MISC_ERROR)
   */
   do {
-    size_t processed = (size_t)(line_start - chunk);
-    size_t rest = size - processed;
+    const size_t processed = (size_t)(line_start - chunk);
+    const size_t rest = size - processed;
 
     // Find EOL ('\n'). If last line is partial, skip it.
     if ((line_end = (char *)memchr(line_start, '\n', rest)) == nullptr) break;

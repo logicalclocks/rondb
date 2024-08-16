@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -105,6 +106,13 @@ static const RestApiTestParams rest_api_valid_methods[]{
      /*request_authentication =*/true,
      {
          {"/idleServerConnections",
+          [](const JsonValue *value) -> void {
+            ASSERT_NE(value, nullptr);
+            ASSERT_TRUE(value->IsInt());
+
+            ASSERT_GE(value->GetInt(), 0);
+          }},
+         {"/stashedServerConnections",
           [](const JsonValue *value) -> void {
             ASSERT_NE(value, nullptr);
             ASSERT_TRUE(value->IsInt());
@@ -255,8 +263,10 @@ TEST_F(RestConnectionPoolApiTest, section_twice) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 
@@ -282,8 +292,10 @@ TEST_F(RestConnectionPoolApiTest, section_has_key) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 
@@ -307,8 +319,10 @@ TEST_F(RestConnectionPoolApiTest, no_auth) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 
@@ -332,8 +346,10 @@ TEST_F(RestConnectionPoolApiTest, invalid_realm) {
 
   const std::string conf_file{create_config_file(
       conf_dir_.name(), mysql_harness::join(config_sections, "\n"))};
-  auto &router =
-      launch_router({"-c", conf_file}, EXIT_FAILURE, true, false, -1s);
+  auto &router = router_spawner()
+                     .wait_for_sync_point(Spawner::SyncPoint::NONE)
+                     .expected_exit_code(EXIT_FAILURE)
+                     .spawn({"-c", conf_file});
 
   check_exit_code(router, EXIT_FAILURE, 10s);
 

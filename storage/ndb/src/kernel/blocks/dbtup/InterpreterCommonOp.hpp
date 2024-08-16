@@ -26,7 +26,7 @@
 
 #include "NdbAggregationCommon.hpp"
 
-bool TestIfSumOverflowsUint64(uint64_t arg1, uint64_t arg2) {
+bool TestIfSumOverflowsUint64(Uint64 arg1, Uint64 arg2) {
   return ULLONG_MAX - arg1 < arg2;
 }
 
@@ -41,7 +41,7 @@ void ResetRegister(Register* reg) {
   SetRegisterNull(reg);
 }
 
-int32_t RegPlusReg(const Register& a, const Register& b, Register* res) {
+Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -63,35 +63,35 @@ int32_t RegPlusReg(const Register& a, const Register& b, Register* res) {
   }
 
   if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    int64_t res_val = static_cast<uint64_t>(val0) + static_cast<uint64_t>(val1);
+    Int64 val0 = a.value.val_int64;
+    Int64 val1 = b.value.val_int64;
+    Int64 res_val = static_cast<Uint64>(val0) + static_cast<Uint64>(val1);
     bool res_unsigned = false;
 
     if (a.is_unsigned) {
       if (b.is_unsigned || val1 >= 0) {
-        if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)val1)) {
+        if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
           // overflows;
           return -1;
         } else {
           res_unsigned = true;
         }
       } else {
-        if ((uint64_t)val0 > (uint64_t)(LLONG_MAX)) {
+        if ((Uint64)val0 > (Uint64)(LLONG_MAX)) {
           res_unsigned = true;
         }
       }
     } else {
       if (b.is_unsigned) {
         if (val0 >= 0) {
-          if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)val1)) {
+          if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
             // overflows;
             return -1;
           } else {
             res_unsigned = true;
           }
         } else {
-          if ((uint64_t)val1 > (uint64_t)(LLONG_MAX)) {
+          if ((Uint64)val1 > (Uint64)(LLONG_MAX)) {
             res_unsigned = true;
           }
         }
@@ -115,7 +115,7 @@ int32_t RegPlusReg(const Register& a, const Register& b, Register* res) {
     }
     if ((unsigned_flag && !res_unsigned && res_val < 0) ||
         (!unsigned_flag && res_unsigned &&
-         (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
+         (Uint64)res_val > (Uint64)LLONG_MAX)) {
       // overload
       return -1;
     } else {
@@ -152,7 +152,7 @@ int32_t RegPlusReg(const Register& a, const Register& b, Register* res) {
   return 0;
 }
 
-int32_t RegMinusReg(const Register& a, const Register& b,
+Int32 RegMinusReg(const Register& a, const Register& b,
                            Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
@@ -175,14 +175,14 @@ int32_t RegMinusReg(const Register& a, const Register& b,
   }
 
   if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    int64_t res_val = static_cast<uint64_t>(val0) - static_cast<uint64_t>(val1);
+    Int64 val0 = a.value.val_int64;
+    Int64 val1 = b.value.val_int64;
+    Int64 res_val = static_cast<Uint64>(val0) - static_cast<Uint64>(val1);
     bool res_unsigned = false;
 
     if (a.is_unsigned) {
       if (b.is_unsigned) {
-        if (static_cast<uint64_t>(val0) < static_cast<uint64_t>(val1)) {
+        if (static_cast<Uint64>(val0) < static_cast<Uint64>(val1)) {
           if (res_val >= 0) {
             // overflow
             return -1;
@@ -192,11 +192,11 @@ int32_t RegMinusReg(const Register& a, const Register& b,
         }
       } else {
         if (val1 >= 0) {
-          if (static_cast<uint64_t>(val0) > static_cast<uint64_t>(val1)) {
+          if (static_cast<Uint64>(val0) > static_cast<Uint64>(val1)) {
             res_unsigned = true;
           }
         } else {
-          if (TestIfSumOverflowsUint64((uint64_t)val0, (uint64_t)-val1)) {
+          if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)-val1)) {
             // overflow
             return -1;
           } else {
@@ -206,8 +206,8 @@ int32_t RegMinusReg(const Register& a, const Register& b,
       }
     } else {
       if (b.is_unsigned) {
-        if (static_cast<uint64_t>(val0) - LLONG_MIN <
-            static_cast<uint64_t>(val1)) {
+        if (static_cast<Uint64>(val0) - LLONG_MIN <
+            static_cast<Uint64>(val1)) {
           // overflow
           return -1;
         } else {
@@ -230,7 +230,7 @@ int32_t RegMinusReg(const Register& a, const Register& b,
     }
     if ((unsigned_flag && !res_unsigned && res_val < 0) ||
         (!unsigned_flag && res_unsigned &&
-         (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
+         (Uint64)res_val > (Uint64)LLONG_MAX)) {
       // overflow
       return -1;
     } else {
@@ -266,7 +266,7 @@ int32_t RegMinusReg(const Register& a, const Register& b,
   return 0;
 }
 
-int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
+Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -288,11 +288,11 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
   }
 
   if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
-    int64_t res_val;
-    uint64_t res_val0;
-    uint64_t res_val1;
+    Int64 val0 = a.value.val_int64;
+    Int64 val1 = b.value.val_int64;
+    Int64 res_val;
+    Uint64 res_val0;
+    Uint64 res_val1;
 
     if (val0 == 0 || val1 == 0) {
       res->type = res_type;
@@ -315,7 +315,7 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
         }
         if ((unsigned_flag && !res_unsigned && val0 < 0) ||
             (!unsigned_flag && res_unsigned &&
-             (uint64_t)val0 > (uint64_t)LLONG_MAX)) {
+             (Uint64)val0 > (Uint64)LLONG_MAX)) {
           // overflow
           return -1;
         } else {
@@ -342,7 +342,7 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
         }
         if ((unsigned_flag && !res_unsigned && val1 < 0) ||
             (!unsigned_flag && res_unsigned &&
-             (uint64_t)val1 > (uint64_t)LLONG_MAX)) {
+             (Uint64)val1 > (Uint64)LLONG_MAX)) {
           // overflow
           return -1;
         } else {
@@ -365,24 +365,24 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
       val1 = -val1;
     }
 
-    uint32_t a0 = 0xFFFFFFFFUL & val0;
-    uint32_t a1 = static_cast<uint64_t>(val0) >> 32;
-    uint32_t b0 = 0xFFFFFFFFUL & val1;
-    uint32_t b1 = static_cast<uint64_t>(val1) >> 32;
+    Uint32 a0 = 0xFFFFFFFFUL & val0;
+    Uint32 a1 = static_cast<Uint64>(val0) >> 32;
+    Uint32 b0 = 0xFFFFFFFFUL & val1;
+    Uint32 b1 = static_cast<Uint64>(val1) >> 32;
 
     if (a1 && b1) {
       // overflow
       return -1;
     }
 
-    res_val1 = static_cast<uint64_t>(a1) * b0 + static_cast<uint64_t>(a0) * b1;
+    res_val1 = static_cast<Uint64>(a1) * b0 + static_cast<Uint64>(a0) * b1;
     if (res_val1 > 0xFFFFFFFFUL) {
       // overflow
       return -1;
     }
 
     res_val1 = res_val1 << 32;
-    res_val0 = static_cast<uint64_t>(a0) * b0;
+    res_val0 = static_cast<Uint64>(a0) * b0;
     if (TestIfSumOverflowsUint64(res_val1, res_val0)) {
       // overflow
       return -1;
@@ -391,7 +391,7 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
     }
 
     if (a_negative != b_negative) {
-      if (static_cast<uint64_t>(res_val) > static_cast<uint64_t>(LLONG_MAX)) {
+      if (static_cast<Uint64>(res_val) > static_cast<Uint64>(LLONG_MAX)) {
         // overflow
         return -1;
       } else {
@@ -409,7 +409,7 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
     }
     if ((unsigned_flag && !res_unsigned && res_val < 0) ||
         (!unsigned_flag && res_unsigned &&
-         (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
+         (Uint64)res_val > (Uint64)LLONG_MAX)) {
       // overflow
       return -1;
     } else {
@@ -444,7 +444,7 @@ int32_t RegMulReg(const Register& a, const Register& b, Register* res) {
   return 0;
 }
 
-int32_t RegDivReg(const Register& a, const Register& b, Register* res) {
+Int32 RegDivReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -466,10 +466,10 @@ int32_t RegDivReg(const Register& a, const Register& b, Register* res) {
   }
 
   if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
+    Int64 val0 = a.value.val_int64;
+    Int64 val1 = b.value.val_int64;
     bool val0_negative, val1_negative, res_negative, res_unsigned;
-    uint64_t uval0, uval1, res_val;
+    Uint64 uval0, uval1, res_val;
 
     val0_negative = !a.is_unsigned && val0 < 0;
     val1_negative = !b.is_unsigned && val1 < 0;
@@ -481,17 +481,17 @@ int32_t RegDivReg(const Register& a, const Register& b, Register* res) {
       SetRegisterNull(res);
       res->is_unsigned = res_unsigned;
     } else {
-      uval0 = static_cast<uint64_t>(val0_negative &&
+      uval0 = static_cast<Uint64>(val0_negative &&
           val0 != LLONG_MIN ? -val0 : val0);
-      uval1 = static_cast<uint64_t>(val1_negative &&
+      uval1 = static_cast<Uint64>(val1_negative &&
           val1 != LLONG_MIN ? -val1 : val1);
       res_val = uval0 / uval1;
       if (res_negative) {
-        if (res_val > static_cast<uint64_t>(LLONG_MAX)) {
+        if (res_val > static_cast<Uint64>(LLONG_MAX)) {
           // overflow
           return -1;
         } else {
-          res_val = static_cast<uint64_t>(-static_cast<int64_t>(res_val));
+          res_val = static_cast<Uint64>(-static_cast<Int64>(res_val));
         }
       }
       // Check if res_val is overflow
@@ -502,9 +502,9 @@ int32_t RegDivReg(const Register& a, const Register& b, Register* res) {
         assert(res_type == NDB_TYPE_DOUBLE);
         unsigned_flag = (a.is_unsigned & b.is_unsigned);
       }
-      if ((unsigned_flag && !res_unsigned && (int64_t)res_val < 0) ||
+      if ((unsigned_flag && !res_unsigned && (Int64)res_val < 0) ||
           (!unsigned_flag && res_unsigned &&
-           (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
+           (Uint64)res_val > (Uint64)LLONG_MAX)) {
         // overflow
         return -1;
       } else {
@@ -548,7 +548,7 @@ int32_t RegDivReg(const Register& a, const Register& b, Register* res) {
   return 0;
 }
 
-int32_t RegModReg(const Register& a, const Register& b, Register* res) {
+Int32 RegModReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -570,10 +570,10 @@ int32_t RegModReg(const Register& a, const Register& b, Register* res) {
   }
 
   if (res_type == NDB_TYPE_BIGINT) {
-    int64_t val0 = a.value.val_int64;
-    int64_t val1 = b.value.val_int64;
+    Int64 val0 = a.value.val_int64;
+    Int64 val1 = b.value.val_int64;
     bool val0_negative, val1_negative, res_unsigned;
-    uint64_t uval0, uval1, res_val;
+    Uint64 uval0, uval1, res_val;
 
     val0_negative = !a.is_unsigned && val0 < 0;
     val1_negative = !b.is_unsigned && val1 < 0;
@@ -584,9 +584,9 @@ int32_t RegModReg(const Register& a, const Register& b, Register* res) {
       SetRegisterNull(res);
       res->is_unsigned = res_unsigned;
     } else {
-      uval0 = static_cast<uint64_t>(val0_negative &&
+      uval0 = static_cast<Uint64>(val0_negative &&
           val0 != LLONG_MIN ? -val0 : val0);
-      uval1 = static_cast<uint64_t>(val1_negative &&
+      uval1 = static_cast<Uint64>(val1_negative &&
           val1 != LLONG_MIN ? -val1 : val1);
       res_val = uval0 % uval1;
       res_val = res_unsigned ? res_val : -res_val;
@@ -599,9 +599,9 @@ int32_t RegModReg(const Register& a, const Register& b, Register* res) {
         assert(res_type == NDB_TYPE_DOUBLE);
         unsigned_flag = (a.is_unsigned & b.is_unsigned);
       }
-      if ((unsigned_flag && !res_unsigned && (int64_t)res_val < 0) ||
+      if ((unsigned_flag && !res_unsigned && (Int64)res_val < 0) ||
           (!unsigned_flag && res_unsigned &&
-           (uint64_t)res_val > (uint64_t)LLONG_MAX)) {
+           (Uint64)res_val > (Uint64)LLONG_MAX)) {
         return -1;
       } else {
         if (unsigned_flag) {

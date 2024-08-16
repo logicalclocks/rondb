@@ -1,16 +1,17 @@
 /*
- * Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
  *
- * This program is also distributed with certain software (including
+ * This program is designed to work with certain software (including
  * but not limited to OpenSSL) that is licensed under separate terms,
  * as designated in a particular file or component or in included license
  * documentation.  The authors of MySQL hereby grant you an additional
  * permission to link the program and your derivative works with the
- * separately licensed software that they have included with MySQL.
+ * separately licensed software that they have either included with
+ * the program or referenced in the documentation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -448,8 +449,8 @@ void Client::on_client_addr() {
 
 void Client::on_accept() {
   DBUG_TRACE;
-  log_debug("%s: Accepted client connection from %s (sock:%i)", client_id(),
-            client_address(), m_connection->get_fd());
+  log_debug("%s: Accepted client connection from %s (sock:" MY_SOCKET_FMT ")",
+            client_id(), client_address(), m_connection->get_fd());
 
   DBUG_EXECUTE_IF("client_accept_timeout", {
     int32_t i = 0;
@@ -892,7 +893,6 @@ void Client::set_is_interactive(const bool flag) {
    The method can be called from different thread/xpl_client.
  */
 bool Client::is_handler_thd(const THD *thd) const {
-  log_debug("is_handler_thd(this:%p)", this);
   DEBUG_SYNC(const_cast<THD *>(thd), "syncpoint_is_handled_by_thd");
 
   // When accessing the session we need to hold it in

@@ -1,15 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,8 +26,9 @@
 
 #include <queue>
 
-#include "libbinlogevents/include/compression/payload_event_buffer_istream.h"
-#include "libbinlogevents/include/nodiscard.h"
+#include "mysql/binlog/event/compression/payload_event_buffer_istream.h"
+#include "mysql/binlog/event/nodiscard.h"
+#include "mysql/binlog/event/resource/memory_resource.h"  // Memory_resource
 #include "sql/binlog_reader.h"
 #include "sql/raii/targeted_stringstream.h"
 
@@ -66,14 +68,15 @@ namespace binlog {
 class Decompressing_event_object_istream {
  public:
   using Buffer_stream_t =
-      binary_log::transaction::compression::Payload_event_buffer_istream;
+      mysql::binlog::event::compression::Payload_event_buffer_istream;
   using Buffer_view_t = Buffer_stream_t::Buffer_view_t;
   using Buffer_ptr_t = Buffer_stream_t::Buffer_ptr_t;
   using Event_ptr_t = std::shared_ptr<Log_event>;
   using Tple_ptr_t = std::shared_ptr<const Transaction_payload_log_event>;
-  using Fde_ref_t = const Format_description_event &;
-  using Status_t = binary_log::transaction::compression::Decompress_status;
+  using Fde_ref_t = const mysql::binlog::event::Format_description_event &;
+  using Status_t = mysql::binlog::event::compression::Decompress_status;
   using Grow_calculator_t = Buffer_stream_t::Grow_calculator_t;
+  using Memory_resource_t = mysql::binlog::event::resource::Memory_resource;
 
   /// Construct stream over a file, decompressing payload events.
   ///
@@ -82,8 +85,10 @@ class Decompressing_event_object_istream {
   /// events.
   ///
   /// @param reader The source file to read from.
+  /// @param memory_resource Instrumented memory allocator object
   explicit Decompressing_event_object_istream(
-      IBasic_binlog_file_reader &reader);
+      IBasic_binlog_file_reader &reader,
+      const Memory_resource_t &memory_resource = Memory_resource_t());
 
   /// Construct stream over a Transaction_payload_log_event.
   ///
@@ -96,9 +101,12 @@ class Decompressing_event_object_istream {
   /// @param transaction_payload_log_event The source file to read from.
   ///
   /// @param format_description_event The FD event used to parse events.
+  ///
+  /// @param memory_resource Instrumented memory allocator object
   Decompressing_event_object_istream(
       const Tple_ptr_t &transaction_payload_log_event,
-      Fde_ref_t format_description_event);
+      Fde_ref_t format_description_event,
+      const Memory_resource_t &memory_resource = Memory_resource_t());
 
   /// Construct stream over a Transaction_payload_log_event.
   ///
@@ -112,9 +120,12 @@ class Decompressing_event_object_istream {
   /// @param transaction_payload_log_event The source file to read from.
   ///
   /// @param format_description_event The FD event used to parse events.
+  ///
+  /// @param memory_resource Instrumented memory allocator object
   Decompressing_event_object_istream(
       const Transaction_payload_log_event &transaction_payload_log_event,
-      Fde_ref_t format_description_event);
+      Fde_ref_t format_description_event,
+      const Memory_resource_t &memory_resource = Memory_resource_t());
 
 #ifdef NDEBUG
   ~Decompressing_event_object_istream() = default;
@@ -211,6 +222,8 @@ class Decompressing_event_object_istream {
   /// embedded event of a TPLE.
   int m_embedded_event_number{0};
 
+  Memory_resource_t m_memory_resource;
+
   /// Return the current FDE.
   std::function<Fde_ref_t()> m_get_format_description_event;
 
@@ -266,7 +279,8 @@ class Decompressing_event_object_istream {
     m_embedded_event_number = 1;
     assert(!m_buffer_istream);
     try {
-      m_buffer_istream = std::make_unique<Buffer_stream_t>(ownership_tple);
+      m_buffer_istream = std::make_unique<Buffer_stream_t>(ownership_tple, 0,
+                                                           m_memory_resource);
     } catch (...) {
       // Leave m_buffer_istream empty.
       // Report error on next invocation of `operator>>`.

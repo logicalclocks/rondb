@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include "client/client_priv.h"
+#include "client/include/client_priv.h"
 #include "my_config.h"
 #include "mysql/service_mysql_alloc.h"  // my_malloc, my_strdup
 
@@ -30,16 +31,38 @@
 
 client_query_attributes *global_attrs = nullptr;
 
-bool client_query_attributes::push_param(char *name, char *value) {
+bool client_query_attributes::push_param(const char *name, const char *value) {
+  return push_param(name, strlen(name), value, strlen(value));
+}
+
+bool client_query_attributes::push_param(const char *name, size_t name_length,
+                                         const char *value,
+                                         size_t value_length) {
   if (count >= max_count) return true;
-  names[count] = my_strdup(PSI_NOT_INSTRUMENTED, name, MYF(0));
+
+  /* Copy name */
+  char *name_copy =
+      (char *)my_malloc(PSI_NOT_INSTRUMENTED, name_length + 1, MYF(0));
+  if (name_length) {
+    memcpy(name_copy, name, name_length);
+  }
+  name_copy[name_length] = 0;
+
+  names[count] = name_copy;
+
+  /* Copy value */
+  char *value_copy =
+      (char *)my_malloc(PSI_NOT_INSTRUMENTED, value_length + 1, MYF(0));
+  if (value_length) {
+    memcpy(value_copy, value, value_length);
+  }
+  value_copy[value_length] = 0;
+
   memset(&values[count], 0, sizeof(MYSQL_BIND));
-  unsigned val_len = strlen(value);
-  values[count].buffer = my_malloc(PSI_NOT_INSTRUMENTED, val_len + 1, MYF(0));
-  if (val_len) memcpy(values[count].buffer, value, val_len);
-  ((unsigned char *)values[count].buffer)[val_len] = 0;
-  values[count].buffer_length = val_len;
+  values[count].buffer = value_copy;
+  values[count].buffer_length = value_length;
   values[count].buffer_type = MYSQL_TYPE_STRING;
+
   count++;
   return false;
 }
@@ -47,7 +70,14 @@ bool client_query_attributes::push_param(char *name, char *value) {
 int client_query_attributes::set_params(MYSQL *mysql) {
   if (count == 0) return 0;
 
-  int rc = mysql_bind_param(mysql, count, values, names);
+  const int rc = mysql_bind_param(mysql, count, values, names);
+  return rc;
+}
+
+int client_query_attributes::set_params_stmt(MYSQL_STMT *stmt) {
+  if (count == 0) return 0;
+
+  const int rc = mysql_stmt_bind_named_param(stmt, values, count, names);
   return rc;
 }
 

@@ -4,6 +4,7 @@ var options = {
   cluster_type: "gr",
   gr_id: mysqld.global.gr_id,
   bootstrap_report_host_pattern: "host.foo.bar",
+  router_version: mysqld.global.router_version,
 };
 
 var common_responses = common_stmts.prepare_statement_responses(
@@ -12,9 +13,8 @@ var common_responses = common_stmts.prepare_statement_responses(
       "router_set_gr_consistency_level",
       "router_select_schema_version",
       "router_select_cluster_type_v2",
-      "router_select_group_membership_with_primary_mode",
-      "router_select_group_replication_primary_member",
-      "router_select_metadata_v2",
+      "router_select_current_instance_attributes",
+      "router_select_group_membership",
       "router_count_clusters_v2",
       "router_check_member_state",
       "router_select_members_count",
@@ -32,12 +32,14 @@ var common_responses_regex = common_stmts.prepare_statement_responses_regex(
     [
       "router_insert_into_routers",
       "router_create_user_if_not_exists",
+      "router_check_auth_plugin",
       "router_grant_on_metadata_db",
       "router_grant_on_pfs_db",
       "router_grant_on_routers",
       "router_grant_on_v2_routers",
       "router_update_routers_in_metadata",
       "router_update_router_options_in_metadata",
+      "router_select_config_defaults_stored_gr_cluster",
 
       // to avoid creating yet another .js just for one test, below entry was
       // added so this .js can be reused by test:

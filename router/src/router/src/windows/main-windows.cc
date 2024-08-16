@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -127,7 +128,7 @@ ServiceStatus check_service_operations(int argc, char **argv,
                            [&conf_opts](const std::string &value) {
                              conf_opts.config_file = value;
                            });
-    add_service_options(arg_handler, conf_opts);
+    add_service_options(arg_handler, &conf_opts);
 
     try {
       arg_handler.process(std::vector<std::string>({argv + 1, argv + argc}));
@@ -161,11 +162,11 @@ ServiceStatus check_service_operations(int argc, char **argv,
 
         {
           char abs_path[1024];
-          GetFullPathName(argv[0], sizeof(abs_path), abs_path, NULL);
+          GetFullPathName(argv[0], sizeof(abs_path), abs_path, nullptr);
           add_quoted_string(full_service_path, abs_path);
           full_service_path.append(" -c ");
           GetFullPathName(conf_opts.config_file.c_str(), sizeof(abs_path),
-                          abs_path, NULL);
+                          abs_path, nullptr);
           add_quoted_string(full_service_path, abs_path);
         }
         full_service_path.append(" --service ");
@@ -222,7 +223,7 @@ void do_windows_cleanup() noexcept {
   if (g_service.IsNT() && g_windows_service) {
     g_service.Stop();
   } else {
-    g_service.SetShutdownEvent(0);
+    g_service.SetShutdownEvent(nullptr);
   }
 }
 

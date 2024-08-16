@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -434,7 +435,8 @@ class PFS_readonly_acl : public ACL_internal_table_access {
 
   ~PFS_readonly_acl() override = default;
 
-  ACL_internal_access_result check(ulong want_access, ulong *granted_access,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *granted_access,
                                    bool any_combination_will_do) const override;
 };
 
@@ -451,7 +453,8 @@ class PFS_truncatable_acl : public ACL_internal_table_access {
 
   ~PFS_truncatable_acl() override = default;
 
-  ACL_internal_access_result check(ulong want_access, ulong *granted_access,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *granted_access,
                                    bool any_combination_will_do) const override;
 };
 
@@ -468,7 +471,8 @@ class PFS_updatable_acl : public ACL_internal_table_access {
 
   ~PFS_updatable_acl() override = default;
 
-  ACL_internal_access_result check(ulong want_access, ulong *granted_access,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *granted_access,
                                    bool any_combination_will_do) const override;
 };
 
@@ -485,7 +489,8 @@ class PFS_editable_acl : public ACL_internal_table_access {
 
   ~PFS_editable_acl() override = default;
 
-  ACL_internal_access_result check(ulong want_access, ulong *granted_access,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *granted_access,
                                    bool any_combination_will_do) const override;
 };
 
@@ -501,7 +506,8 @@ class PFS_unknown_acl : public ACL_internal_table_access {
 
   ~PFS_unknown_acl() override = default;
 
-  ACL_internal_access_result check(ulong want_access, ulong *granted_access,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *granted_access,
                                    bool any_combination_will_do) const override;
 };
 
@@ -516,7 +522,8 @@ class PFS_readonly_world_acl : public PFS_readonly_acl {
   PFS_readonly_world_acl() = default;
 
   ~PFS_readonly_world_acl() override = default;
-  ACL_internal_access_result check(ulong want_access, ulong *save_priv,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *save_priv,
                                    bool any_combination_will_do) const override;
 };
 
@@ -531,7 +538,8 @@ class PFS_truncatable_world_acl : public PFS_truncatable_acl {
   PFS_truncatable_world_acl() = default;
 
   ~PFS_truncatable_world_acl() override = default;
-  ACL_internal_access_result check(ulong want_access, ulong *save_priv,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *save_priv,
                                    bool any_combination_will_do) const override;
 };
 
@@ -546,7 +554,8 @@ class PFS_readonly_processlist_acl : public PFS_readonly_acl {
   PFS_readonly_processlist_acl() = default;
 
   ~PFS_readonly_processlist_acl() override = default;
-  ACL_internal_access_result check(ulong want_access, ulong *save_priv,
+  ACL_internal_access_result check(Access_bitmask want_access,
+                                   Access_bitmask *save_priv,
                                    bool any_combination_will_do) const override;
 };
 

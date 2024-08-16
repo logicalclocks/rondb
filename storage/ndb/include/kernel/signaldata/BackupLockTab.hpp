@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,7 +28,6 @@
 
 #define JAM_FILE_ID 82
 
-
 /* This class is used for both REQ, CONF, and REF. */
 
 class BackupLockTab {
@@ -37,22 +37,15 @@ class BackupLockTab {
   /* Receiver(s). */
   friend class Dbdict;
 
-public:
+ public:
   static constexpr Uint32 SignalLength = 7;
 
-private:
+ private:
   /* Values for m_lock_unlock. */
-  enum {
-    UNLOCK_TABLE = 0,
-    LOCK_TABLE = 1
-  };
+  enum { UNLOCK_TABLE = 0, LOCK_TABLE = 1 };
 
   /* Values for m_backup_state. */
-  enum {
-    BACKUP_FRAGMENT_INFO = 0,
-    GET_TABINFO_CONF = 1,
-    CLEANUP = 2
-  };
+  enum { BACKUP_FRAGMENT_INFO = 0, GET_TABINFO_CONF = 1, CLEANUP = 2 };
 
   Uint32 m_senderRef;
   Uint32 m_tableId;
@@ -63,7 +56,6 @@ private:
   Uint32 m_backupRecordPtr_I;
   Uint32 m_tablePtr_I;
 };
-
 
 #undef JAM_FILE_ID
 

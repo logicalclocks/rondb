@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1997, 2023, Oracle and/or its affiliates.
+Copyright (c) 1997, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -62,12 +63,6 @@ class MVCC {
   @param own_mutex      true if caller owns trx_sys_t::mutex */
   void view_close(ReadView *&view, bool own_mutex);
 
-  /**
-  Release a view that is inactive but not closed. Caller must own
-  the trx_sys_t::mutex.
-  @param view           View to release */
-  void view_release(ReadView *&view);
-
   /** Clones the oldest view and stores it in view. No need to
   call view_close(). The caller owns the view that is passed in.
   It will also move the closed views from the m_views list to the
@@ -116,7 +111,6 @@ class MVCC {
   marked read views from the views list to the freed list.
   @return oldest view if found or NULL */
   inline ReadView *get_oldest_view() const;
-  ReadView *get_view_created_by_trx_id(trx_id_t trx_id) const;
 
  private:
   // Prevent copying

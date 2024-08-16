@@ -1,16 +1,17 @@
 /*
- Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+ Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,36 +23,35 @@
  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include <HugoTransactions.hpp>
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
-#include <HugoTransactions.hpp>
-#include <UtilTransactions.hpp>
 #include <NdbRestarter.hpp>
+#include <UtilTransactions.hpp>
 
-
-#define CHECK(b) if (!(b)) { \
-  g_err << "ERR: "<< step->getName() \
-         << " failed on line " << __LINE__ << endl; \
-  result = NDBT_FAILED; \
-  continue; } 
-
+#define CHECK(b)                                                          \
+  if (!(b)) {                                                             \
+    g_err << "ERR: " << step->getName() << " failed on line " << __LINE__ \
+          << endl;                                                        \
+    result = NDBT_FAILED;                                                 \
+    continue;                                                             \
+  }
 
 #include "Bank.hpp"
 
-const char* _database = "BANK";
+const char *_database = "BANK";
 
-int runCreateBank(NDBT_Context* ctx, NDBT_Step* step){
+int runCreateBank(NDBT_Context *ctx, NDBT_Step *step) {
   Bank bank(ctx->m_cluster_connection, _database);
   int overWriteExisting = true;
-  if (bank.createAndLoadBank(overWriteExisting) != NDBT_OK)
-    return NDBT_FAILED;
+  if (bank.createAndLoadBank(overWriteExisting) != NDBT_OK) return NDBT_FAILED;
   return NDBT_OK;
 }
 
-int runBankTimer(NDBT_Context* ctx, NDBT_Step* step){
+int runBankTimer(NDBT_Context *ctx, NDBT_Step *step) {
   Bank bank(ctx->m_cluster_connection, _database);
-  int wait = 30; // Max seconds between each "day"
-  int yield = 1; // Loops before bank returns 
+  int wait = 30;  // Max seconds between each "day"
+  int yield = 1;  // Loops before bank returns
 
   while (ctx->isTestStopped() == false) {
     bank.performIncreaseTime(wait, yield);
@@ -59,10 +59,10 @@ int runBankTimer(NDBT_Context* ctx, NDBT_Step* step){
   return NDBT_OK;
 }
 
-int runBankTransactions(NDBT_Context* ctx, NDBT_Step* step){
+int runBankTransactions(NDBT_Context *ctx, NDBT_Step *step) {
   Bank bank(ctx->m_cluster_connection, _database);
-  int wait = 10; // Max ms between each transaction
-  int yield = 100; // Loops before bank returns 
+  int wait = 10;    // Max ms between each transaction
+  int yield = 100;  // Loops before bank returns
 
   while (ctx->isTestStopped() == false) {
     bank.performTransactions(wait, yield);
@@ -70,13 +70,13 @@ int runBankTransactions(NDBT_Context* ctx, NDBT_Step* step){
   return NDBT_OK;
 }
 
-int runBankGL(NDBT_Context* ctx, NDBT_Step* step){
+int runBankGL(NDBT_Context *ctx, NDBT_Step *step) {
   Bank bank(ctx->m_cluster_connection, _database);
-  int yield = 20; // Loops before bank returns 
+  int yield = 20;  // Loops before bank returns
   int result = NDBT_OK;
 
   while (ctx->isTestStopped() == false) {
-    if (bank.performMakeGLs(yield) != NDBT_OK){
+    if (bank.performMakeGLs(yield) != NDBT_OK) {
       ndbout << "bank.performMakeGLs FAILED" << endl;
       result = NDBT_FAILED;
     }
@@ -84,10 +84,10 @@ int runBankGL(NDBT_Context* ctx, NDBT_Step* step){
   return NDBT_OK;
 }
 
-int runBankSum(NDBT_Context* ctx, NDBT_Step* step){
+int runBankSum(NDBT_Context *ctx, NDBT_Step *step) {
   Bank bank(ctx->m_cluster_connection, _database);
-  int wait = 2000; // Max ms between each sum of accounts
-  int yield = 1; // Loops before bank returns 
+  int wait = 2000;  // Max ms between each sum of accounts
+  int yield = 1;    // Loops before bank returns
   int result = NDBT_OK;
 
   while (ctx->isTestStopped() == false) {
@@ -99,7 +99,7 @@ int runBankSum(NDBT_Context* ctx, NDBT_Step* step){
   return result;
 }
 
-int runDropBank(NDBT_Context* ctx, NDBT_Step* step){
+int runDropBank(NDBT_Context *ctx, NDBT_Step *step) {
   Bank bank(ctx->m_cluster_connection, _database);
   if (bank.dropBank() != NDBT_OK)
   {
@@ -109,27 +109,26 @@ int runDropBank(NDBT_Context* ctx, NDBT_Step* step){
   return NDBT_OK;
 }
 
-int runBankController(NDBT_Context* ctx, NDBT_Step* step){
-  Ndb* pNdb = GETNDB(step);
+int runBankController(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
   int loops = ctx->getNumLoops();
   int records = ctx->getNumRecords();
   int l = 0;
   int result = NDBT_OK;
 
-  while (l < loops && result != NDBT_FAILED){
-
-    if (pNdb->waitUntilReady() != 0){
+  while (l < loops && result != NDBT_FAILED) {
+    if (pNdb->waitUntilReady() != 0) {
       result = NDBT_FAILED;
       continue;
     }
 
     // Sleep for a while
     NdbSleep_SecSleep(records);
-    
+
     l++;
   }
 
-  if (pNdb->waitUntilReady() != 0){
+  if (pNdb->waitUntilReady() != 0) {
     result = NDBT_FAILED;
   }
 
@@ -139,8 +138,7 @@ int runBankController(NDBT_Context* ctx, NDBT_Step* step){
 }
 
 NDBT_TESTSUITE(testBank);
-TESTCASE("Bank", 
-	 "Run the bank\n"){
+TESTCASE("Bank", "Run the bank\n") {
   INITIALIZER(runCreateBank);
   STEP(runBankTimer);
   STEP(runBankTransactions);
@@ -148,11 +146,10 @@ TESTCASE("Bank",
   // TODO  STEP(runBankSum);
   STEP(runBankController);
   FINALIZER(runDropBank);
-
 }
 NDBT_TESTSUITE_END(testBank)
 
-int main(int argc, const char** argv){
+int main(int argc, const char **argv) {
   ndb_init();
   // Tables should not be auto created
   NDBT_TESTSUITE_INSTANCE(testBank);
@@ -160,5 +157,3 @@ int main(int argc, const char** argv){
 
   return testBank.execute(argc, argv);
 }
-
-

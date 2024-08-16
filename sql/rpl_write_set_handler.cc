@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,12 +33,12 @@
 #include <vector>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "my_base.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_murmur3.h"  // murmur3_32
 #include "my_xxhash.h"   // IWYU pragma: keep
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "sql-common/json_binary.h"
 #include "sql-common/json_dom.h"
@@ -53,30 +54,6 @@
 #include "template_utils.h"
 
 #define HASH_STRING_SEPARATOR "½"
-
-const char *transaction_write_set_hashing_algorithms[] = {"OFF", "MURMUR32",
-                                                          "XXHASH64", nullptr};
-
-const char *get_write_set_algorithm_string(unsigned int algorithm) {
-  switch (algorithm) {
-    case HASH_ALGORITHM_OFF:
-      return "OFF";
-    case HASH_ALGORITHM_MURMUR32:
-      return "MURMUR32";
-    case HASH_ALGORITHM_XXHASH64:
-      return "XXHASH64";
-    default:
-      return "UNKNOWN ALGORITHM";
-  }
-}
-
-template <class type>
-uint64 calc_hash(ulong algorithm, type T, size_t len) {
-  if (algorithm == HASH_ALGORITHM_MURMUR32)
-    return (murmur3_32((const uchar *)T, len, 0));
-  else
-    return (MY_XXH64((const uchar *)T, len, 0));
-}
 
 #ifndef NDEBUG
 static void debug_check_for_write_sets(
@@ -704,10 +681,8 @@ static bool generate_hash_pke(const std::string &pke, THD *thd
 #endif
 ) {
   DBUG_TRACE;
-  assert(thd->variables.transaction_write_set_extraction != HASH_ALGORITHM_OFF);
 
-  uint64 hash = calc_hash<const char *>(
-      thd->variables.transaction_write_set_extraction, pke.c_str(), pke.size());
+  uint64 hash = MY_XXH64(pke.c_str(), pke.size(), 0);
   if (thd->get_transaction()->get_transaction_write_set_ctx()->add_write_set(
           hash))
     return true;

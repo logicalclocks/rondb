@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,6 +30,7 @@
 #include "my_dbug.h"
 #include "my_systime.h"
 #include "plugin/group_replication/include/plugin.h"
+#include "plugin/group_replication/include/plugin_handlers/metrics_handler.h"
 #include "plugin/group_replication/include/plugin_server_include.h"
 
 /*
@@ -221,6 +223,9 @@ void Pipeline_stats_member_message::encode_payload(
   char aux_transaction_gtids_present = m_transaction_gtids_present ? '1' : '0';
   encode_payload_item_char(buffer, PIT_TRANSACTION_GTIDS_PRESENT,
                            aux_transaction_gtids_present);
+
+  encode_payload_item_int8(buffer, PIT_SENT_TIMESTAMP,
+                           Metrics_handler::get_current_time());
 }
 
 void Pipeline_stats_member_message::decode_payload(const unsigned char *buffer,
@@ -265,7 +270,6 @@ void Pipeline_stats_member_message::decode_payload(const unsigned char *buffer,
       case PIT_TRANSACTIONS_NEGATIVE_CERTIFIED:
         if (slider + payload_item_length <= end) {
           uint64 transactions_negative_certified_aux = uint8korr(slider);
-          slider += payload_item_length;
           m_transactions_negative_certified =
               static_cast<int64>(transactions_negative_certified_aux);
         }
@@ -274,7 +278,6 @@ void Pipeline_stats_member_message::decode_payload(const unsigned char *buffer,
       case PIT_TRANSACTIONS_ROWS_VALIDATING:
         if (slider + payload_item_length <= end) {
           uint64 transactions_rows_validating_aux = uint8korr(slider);
-          slider += payload_item_length;
           m_transactions_rows_validating =
               static_cast<int64>(transactions_rows_validating_aux);
         }
@@ -284,7 +287,6 @@ void Pipeline_stats_member_message::decode_payload(const unsigned char *buffer,
         if (slider + payload_item_length <= end) {
           m_transactions_committed_all_members.assign(
               slider, slider + payload_item_length);
-          slider += payload_item_length;
         }
         break;
 
@@ -292,14 +294,12 @@ void Pipeline_stats_member_message::decode_payload(const unsigned char *buffer,
         if (slider + payload_item_length <= end) {
           m_transaction_last_conflict_free.assign(slider,
                                                   slider + payload_item_length);
-          slider += payload_item_length;
         }
         break;
 
       case PIT_TRANSACTIONS_LOCAL_ROLLBACK:
         if (slider + payload_item_length <= end) {
           uint64 transactions_local_rollback_aux = uint8korr(slider);
-          slider += payload_item_length;
           m_transactions_local_rollback =
               static_cast<int64>(transactions_local_rollback_aux);
         }
@@ -308,7 +308,6 @@ void Pipeline_stats_member_message::decode_payload(const unsigned char *buffer,
       case PIT_FLOW_CONTROL_MODE:
         if (slider + payload_item_length <= end) {
           unsigned char flow_control_mode_aux = *slider;
-          slider += payload_item_length;
           m_flow_control_mode = (Flow_control_mode)flow_control_mode_aux;
         }
         break;
@@ -316,13 +315,22 @@ void Pipeline_stats_member_message::decode_payload(const unsigned char *buffer,
       case PIT_TRANSACTION_GTIDS_PRESENT:
         if (slider + payload_item_length <= end) {
           unsigned char aux_transaction_gtids_present = *slider;
-          slider += payload_item_length;
           m_transaction_gtids_present =
               (aux_transaction_gtids_present == '1') ? true : false;
         }
         break;
     }
+
+    // Seek to next payload item.
+    slider += payload_item_length;
   }
+}
+
+uint64_t Pipeline_stats_member_message::get_sent_timestamp(
+    const unsigned char *buffer, size_t length) {
+  DBUG_TRACE;
+  return Plugin_gcs_message::get_sent_timestamp(buffer, length,
+                                                PIT_SENT_TIMESTAMP);
 }
 
 Pipeline_stats_member_collector::Pipeline_stats_member_collector()

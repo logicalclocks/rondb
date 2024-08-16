@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -155,7 +156,9 @@ int table_esms_by_digest::rnd_next() {
 
   for (m_pos.set_at(&m_next_pos); m_pos.m_index < digest_max; m_pos.next()) {
     digest_stat = &statements_digest_stat_array[m_pos.m_index];
+
     if (digest_stat->m_lock.is_populated()) {
+      /* Filter out record[0] when never used. */
       if (digest_stat->m_first_seen != 0) {
         m_next_pos.set_after(&m_pos);
         return make_row(digest_stat);
@@ -177,6 +180,7 @@ int table_esms_by_digest::rnd_pos(const void *pos) {
   digest_stat = &statements_digest_stat_array[m_pos.m_index];
 
   if (digest_stat->m_lock.is_populated()) {
+    /* Filter out record[0] when never used. */
     if (digest_stat->m_first_seen != 0) {
       return make_row(digest_stat);
     }
@@ -203,11 +207,15 @@ int table_esms_by_digest::index_next() {
 
   for (m_pos.set_at(&m_next_pos); m_pos.m_index < digest_max; m_pos.next()) {
     digest_stat = &statements_digest_stat_array[m_pos.m_index];
-    if (digest_stat->m_first_seen != 0) {
-      if (m_opened_index->match(digest_stat)) {
-        if (!make_row(digest_stat)) {
-          m_next_pos.set_after(&m_pos);
-          return 0;
+
+    if (digest_stat->m_lock.is_populated()) {
+      /* Filter out record[0] when never used. */
+      if (digest_stat->m_first_seen != 0) {
+        if (m_opened_index->match(digest_stat)) {
+          if (!make_row(digest_stat)) {
+            m_next_pos.set_after(&m_pos);
+            return 0;
+          }
         }
       }
     }

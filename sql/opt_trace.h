@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -459,7 +460,12 @@ class Opt_trace_struct {
   */
   Opt_trace_struct(Opt_trace_context *ctx_arg, bool requires_key_arg,
                    const char *key, Opt_trace_context::feature_value feature)
-      : started(false) {
+      : started(false),
+        requires_key(false),
+        has_disabled_I_S(false),
+        empty(false),
+        stmt(nullptr),
+        saved_key(nullptr) {
     // A first inlined test
     if (unlikely(ctx_arg->is_started())) {
       // Tracing enabled: must fully initialize the structure.
@@ -571,16 +577,14 @@ class Opt_trace_struct {
      @param  item   the Item
      @return a reference to the structure
   */
-  Opt_trace_struct &add(const char *key, Item *item) {
+  Opt_trace_struct &add(const char *key, const Item *item) {
     if (likely(!started)) return *this;
     return do_add(key, item);
   }
-  Opt_trace_struct &add(Item *item) {
+  Opt_trace_struct &add(const Item *item) {
     if (likely(!started)) return *this;
     return do_add(nullptr, item);
   }
-
- public:
   Opt_trace_struct &add(const char *key, bool value) {
     if (likely(!started)) return *this;
     return do_add(key, value);
@@ -742,7 +746,7 @@ class Opt_trace_struct {
   */
   Opt_trace_struct &do_add(const char *key, const char *value,
                            size_t val_length, bool escape);
-  Opt_trace_struct &do_add(const char *key, Item *item);
+  Opt_trace_struct &do_add(const char *key, const Item *item);
   Opt_trace_struct &do_add(const char *key, bool value);
   Opt_trace_struct &do_add(const char *key, longlong value);
   Opt_trace_struct &do_add(const char *key, ulonglong value);
@@ -1069,7 +1073,7 @@ int fill_optimizer_trace_info(THD *thd, Table_ref *tables, Item *);
 */
 #define OPT_TRACE_TRANSFORM(trace, object_level0, object_level1, \
                             select_number, from, to)             \
-  Opt_trace_object object_level0(trace);                         \
+  const Opt_trace_object object_level0(trace);                   \
   Opt_trace_object object_level1(trace, "transformation");       \
   object_level1.add_select_number(select_number);                \
   object_level1.add_alnum("from", from).add_alnum("to", to);

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -52,6 +53,7 @@
 #include "mysql/psi/mysql_mutex.h"
 #include "mysys/mysys_priv.h"
 #include "mysys_err.h"
+#include "nulls.h"
 
 #ifdef WIN32
 #include <fcntl.h>  // O_EXCL
@@ -172,8 +174,8 @@ static int create_temp_file_uuid(char *to, const std::string &dir,
   full_path_builder << dir_with_separator << reduced_prefix << encoded_uuid;
   strcpy(to, full_path_builder.str().c_str());
 
-  HANDLE hfile = CreateFile(to, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  HANDLE hfile = CreateFile(to, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hfile == INVALID_HANDLE_VALUE) {
     my_osmaperr(GetLastError());
     set_my_errno(errno);
@@ -262,7 +264,7 @@ File create_temp_file(char *to, const char *dir, const char *prefix,
   */
   if ((file = my_open(to, (mode & ~O_EXCL), MyFlags)) < 0) {
     /* Open failed, remove the file created by GetTempFileName */
-    int tmp = my_errno();
+    const int tmp = my_errno();
     (void)my_delete(to, MYF(0));
     set_my_errno(tmp);
     return file;

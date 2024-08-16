@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,15 +29,14 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include "m_ctype.h"
-
 #include "my_dir.h"
 #include "my_inttypes.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_rnd.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "scripts/sql_commands_help_data.h"
 #include "scripts/sql_commands_system_data.h"
@@ -147,7 +147,7 @@ bool Compiled_in_command_iterator::begin(void) {
   } else {
     char password[GENERATED_PASSWORD_LENGTH + 1];
     char escaped_password[GENERATED_PASSWORD_LENGTH * 2 + 1];
-    ulong saved_verbosity = log_error_verbosity;
+    const ulong saved_verbosity = log_error_verbosity;
 
     if (generate_password(password, GENERATED_PASSWORD_LENGTH)) {
       LogErr(ERROR_LEVEL, ER_INIT_FAILED_TO_GENERATE_ROOT_PASSWORD);
@@ -225,7 +225,7 @@ void Compiled_in_command_iterator::end(void) {
 */
 bool initialize_create_data_directory(const char *data_home) {
   MY_DIR *dir;
-  int flags =
+  const int flags =
 #ifdef _WIN32
       0
 #else

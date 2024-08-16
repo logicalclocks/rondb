@@ -4,10 +4,10 @@
 --source include/have_binlog_format_row.inc
 call mtr.add_suppression("Binary logging not possible");
 call mtr.add_suppression("Attempting backtrace");
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 CREATE TABLE t1(c1 INT);
---let $start_pos = query_get_value(SHOW MASTER STATUS, Position, 1)
+--let $start_pos = query_get_value(SHOW BINARY LOG STATUS, Position, 1)
 
 SET debug = "+d,simulate_init_io_cache_failure";
 --error ER_ERROR_WHEN_EXECUTING_COMMAND
@@ -32,7 +32,7 @@ SET debug = "+d,simulate_ostream_write_failure";
 INSERT INTO t1 VALUES(1);
 
 --exec echo "restart" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
---enable_reconnect
+--source include/wait_until_disconnected.inc
 --source include/wait_until_connected_again.inc
 
 --error 1

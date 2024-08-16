@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,9 +35,9 @@
 #include <time.h>
 #include <string>
 
-#include "client/client_priv.h"
+#include "client/include/client_priv.h"
 #include "compression.h"
-#include "m_ctype.h"
+#include "m_string.h"
 #include "my_alloc.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
@@ -46,14 +47,20 @@
 #include "my_macros.h"
 #include "my_thread.h" /* because of signal()	*/
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
 #include "print_version.h"
 #include "sql_common.h"
+#include "str2int.h"
+#include "strxmov.h"
 #include "typelib.h"
 #include "welcome_copyright_notice.h" /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 #define MAX_MYSQL_VAR 8192
 #define SHUTDOWN_DEF_TIMEOUT 3600 /* Wait for shutdown */
 #define MAX_TRUNC_LENGTH 3
+#define FIRST_SOURCE_COMMAND_VERSION 80200
 
 const char *host = nullptr;
 char *user = nullptr;
@@ -78,7 +85,7 @@ static bool opt_show_warnings = false;
 static uint opt_zstd_compress_level = default_zstd_compression_level;
 static char *opt_compress_algorithm = nullptr;
 #if defined(_WIN32)
-static char *shared_memory_base_name = 0;
+static char *shared_memory_base_name = nullptr;
 #endif
 static uint opt_protocol = 0;
 static myf error_flags; /* flags to pass to my_printf_error, like ME_BELL */
@@ -93,10 +100,10 @@ static uint ex_val_max_len[MAX_MYSQL_VAR];
 static bool ex_status_printed = false; /* First output is not relative. */
 static uint ex_var_count, max_var_length, max_val_length;
 
-#include "sslopt-vars.h"
+#include "client/include/sslopt-vars.h"
 
-#include "caching_sha2_passwordopt-vars.h"
-#include "multi_factor_passwordopt-vars.h"
+#include "client/include/caching_sha2_passwordopt-vars.h"
+#include "client/include/multi_factor_passwordopt-vars.h"
 
 static void usage(void);
 extern "C" bool get_one_option(int optid, const struct my_option *opt,
@@ -148,7 +155,6 @@ enum commands {
   ADMIN_FLUSH_PRIVILEGES,
   ADMIN_START_REPLICA,
   ADMIN_STOP_REPLICA,
-  ADMIN_FLUSH_THREADS,
   ADMIN_START_SLAVE,
   ADMIN_STOP_SLAVE
 };
@@ -173,7 +179,6 @@ static const char *command_names[] = {"create",
                                       "flush-privileges",
                                       "start-replica",
                                       "stop-replica",
-                                      "flush-threads",
                                       "start-slave",
                                       "stop-slave",
                                       NullS};
@@ -229,10 +234,10 @@ static struct my_option my_long_options[] = {
      REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr},
     {"no-beep", 'b', "Turn off beep on error.", &opt_nobeep, &opt_nobeep,
      nullptr, GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, nullptr},
-#include "multi_factor_passwordopt-longopts.h"
+#include "client/include/multi_factor_passwordopt-longopts.h"
 #ifdef _WIN32
-    {"pipe", 'W', "Use named pipes to connect to server.", 0, 0, 0, GET_NO_ARG,
-     NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"pipe", 'W', "Use named pipes to connect to server.", nullptr, nullptr,
+     nullptr, GET_NO_ARG, NO_ARG, 0, 0, 0, nullptr, 0, nullptr},
 #endif
     {"port", 'P',
      "Port number to use for connection or 0 for default to, in "
@@ -254,8 +259,8 @@ static struct my_option my_long_options[] = {
 #if defined(_WIN32)
     {"shared-memory-base-name", OPT_SHARED_MEMORY_BASE_NAME,
      "Base name of shared memory.", &shared_memory_base_name,
-     &shared_memory_base_name, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0,
-     0},
+     &shared_memory_base_name, nullptr, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0,
+     nullptr, 0, nullptr},
 #endif
     {"silent", 's', "Silently exit if one can't connect to server.", nullptr,
      nullptr, nullptr, GET_NO_ARG, NO_ARG, 0, 0, 0, nullptr, 0, nullptr},
@@ -264,9 +269,9 @@ static struct my_option my_long_options[] = {
     {"sleep", 'i', "Execute commands repeatedly with a sleep between.",
      &interval, &interval, nullptr, GET_INT, REQUIRED_ARG, 0, 0, 0, nullptr, 0,
      nullptr},
-#include "sslopt-longopts.h"
+#include "client/include/sslopt-longopts.h"
 
-#include "caching_sha2_passwordopt-longopts.h"
+#include "client/include/caching_sha2_passwordopt-longopts.h"
 
     {"user", 'u', "User for login if not current user.", &user, &user, nullptr,
      GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr},
@@ -338,7 +343,7 @@ bool get_one_option(int optid, const struct my_option *opt [[maybe_unused]],
     case '#':
       DBUG_PUSH(argument ? argument : "d:t:o,/tmp/mysqladmin.trace");
       break;
-#include "sslopt-case.h"
+#include "client/include/sslopt-case.h"
 
     case 'V':
       print_version();
@@ -472,7 +477,7 @@ int main(int argc, char *argv[]) {
       The following just determines the exit-code we'll give.
     */
 
-    unsigned int err = mysql_errno(&mysql);
+    const unsigned int err = mysql_errno(&mysql);
     if (err >= CR_MIN_ERROR && err <= CR_MAX_ERROR)
       error = 1;
     else {
@@ -589,7 +594,6 @@ static bool sql_connect(MYSQL *mysql, uint wait) {
               mysql, [](const char *err) { fprintf(stderr, "%s\n", err); }))
         return true;
 
-      mysql->reconnect = true;
       if (info) {
         fputs("\n", stderr);
         (void)fflush(stderr);
@@ -670,11 +674,10 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
     If this behaviour is ever changed, Docs should be notified.
   */
 
-  struct rand_struct rand_st;
-
   for (; argc > 0; argv++, argc--) {
     int option;
     bool log_warnings = true;
+    std::string admin_reset_command = "RESET REPLICA, BINARY LOGS AND GTIDS";
     switch (option = find_type(argv[0], &command_typelib, FIND_TYPE_BASIC)) {
       case ADMIN_CREATE: {
         char buff[FN_REFLEN + 20];
@@ -746,16 +749,13 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
         }
         break;
       case ADMIN_REFRESH:
-        if (mysql_refresh(mysql, (uint) ~(REFRESH_GRANT | REFRESH_STATUS |
-                                          REFRESH_READ_LOCK | REFRESH_REPLICA |
-                                          REFRESH_MASTER))) {
-          my_printf_error(0, "refresh failed; error: '%s'", error_flags,
-                          mysql_error(mysql));
-          return -1;
+        if (mysql_get_server_version(mysql) < FIRST_SOURCE_COMMAND_VERSION) {
+          admin_reset_command = "RESET REPLICA, MASTER";
         }
-        break;
-      case ADMIN_FLUSH_THREADS:
-        if (mysql_refresh(mysql, (uint)REFRESH_THREADS)) {
+
+        if (mysql_query(mysql, "FLUSH PRIVILEGES, STATUS") ||
+            mysql_query(mysql, "FLUSH TABLES WITH READ LOCK") ||
+            mysql_query(mysql, admin_reset_command.c_str())) {
           my_printf_error(0, "refresh failed; error: '%s'", error_flags,
                           mysql_error(mysql));
           return -1;
@@ -819,7 +819,6 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
         }
         pos = argv[1];
         for (;;) {
-          /* We don't use mysql_kill(), since it only handles 32-bit IDs. */
           char buff[26], *out; /* "KILL " + max 20 digs + NUL */
           out = strxmov(buff, "KILL ", NullS);
           ullstr(my_strtoull(pos, nullptr, 0), out);
@@ -964,8 +963,7 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
       }
       case ADMIN_FLUSH_HOSTS: {
         if (mysql_query(mysql,
-                        "TRUNCATE TABLE performance_schema.host_cache") &&
-            mysql_query(mysql, "flush hosts")) {
+                        "TRUNCATE TABLE performance_schema.host_cache")) {
           my_printf_error(0, "refresh failed; error: '%s'", error_flags,
                           mysql_error(mysql));
           return -1;
@@ -990,14 +988,9 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
       }
       case ADMIN_PASSWORD: {
         char buff[128];
-        time_t start_time;
         char *typed_password = nullptr, *verified = nullptr, *tmp = nullptr;
         bool log_off = true, err = false;
         size_t password_len;
-
-        /* Do initialization the same way as we do in mysqld */
-        start_time = time((time_t *)nullptr);
-        randominit(&rand_st, (ulong)start_time, (ulong)start_time / 2);
 
         if (argc < 1) {
           my_printf_error(0, "Too few arguments to change password",
@@ -1026,7 +1019,7 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
 
         if (typed_password[0]) {
 #ifdef _WIN32
-          size_t pw_len = strlen(typed_password);
+          const size_t pw_len = strlen(typed_password);
           if (pw_len > 1 && typed_password[0] == '\'' &&
               typed_password[pw_len - 1] == '\'')
             printf(
@@ -1139,21 +1132,13 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
         break;
 
       case ADMIN_PING:
-        mysql->reconnect = false; /* We want to know of reconnects */
         if (!mysql_ping(mysql)) {
           if (option_silent < 2) puts("mysqld is alive");
         } else {
-          if (mysql_errno(mysql) == CR_SERVER_GONE_ERROR) {
-            mysql->reconnect = true;
-            if (!mysql_ping(mysql))
-              puts("connection was down, but mysqld is now alive");
-          } else {
-            my_printf_error(0, "mysqld doesn't answer to ping, error: '%s'",
-                            error_flags, mysql_error(mysql));
-            return -1;
-          }
+          my_printf_error(0, "mysqld doesn't answer to ping, error: '%s'",
+                          error_flags, mysql_error(mysql));
+          return -1;
         }
-        mysql->reconnect = true; /* Automatic reconnect is default */
         break;
       default:
         my_printf_error(0, "Unknown command: '%-.60s'", error_flags, argv[0]);
@@ -1222,7 +1207,6 @@ static void usage(void) {
   flush-logs            Flush all logs\n\
   flush-status		Clear status variables\n\
   flush-tables          Flush all tables\n\
-  flush-threads         Flush the thread cache\n\
   flush-privileges      Reload grant tables (same as reload)\n\
   kill id,id,...	Kill mysql threads");
   puts(

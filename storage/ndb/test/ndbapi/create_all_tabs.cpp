@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
     Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,54 +26,48 @@
 
 #include <ndb_global.h>
 
-#include <NdbOut.hpp>
-#include <NdbApi.hpp>
 #include <NDBT.hpp>
+#include <NdbApi.hpp>
+#include <NdbOut.hpp>
 
 #include <getarg.h>
 
-
-
-int main(int argc, const char** argv){
+int main(int argc, const char **argv) {
   ndb_init();
 
   int _temp = false;
   int _help = 0;
-  
+
   struct getargs args[] = {
-    { "temp", 't', arg_flag, &_temp, "Temporary table", "temp" },
-    { "usage", '?', arg_flag, &_help, "Print help", "" }
-  };
+      {"temp", 't', arg_flag, &_temp, "Temporary table", "temp"},
+      {"usage", '?', arg_flag, &_help, "Print help", ""}};
   int num_args = sizeof(args) / sizeof(args[0]);
   int optind = 0;
-  char desc[] = 
-    "This program will create all standard tables in Ndb.\n"\
-    "The tables is  selected from a fixed list of tables\n"\
-    "defined in NDBT_Tables class\n";
-  
-  if(getarg(args, num_args, argc, argv, &optind) || _help) {
+  char desc[] =
+      "This program will create all standard tables in Ndb.\n"
+      "The tables is  selected from a fixed list of tables\n"
+      "defined in NDBT_Tables class\n";
+
+  if (getarg(args, num_args, argc, argv, &optind) || _help) {
     arg_printusage(args, num_args, argv[0], desc);
     return NDBT_ProgramExit(NDBT_WRONGARGS);
   }
 
   // Connect to Ndb
   Ndb_cluster_connection con;
-  if(con.connect(12, 5, 1) != 0)
-  {
+  con.configure_tls(opt_tls_search_path, opt_mgm_tls);
+  if (con.connect(12, 5, 1) != 0) {
     return NDBT_ProgramExit(NDBT_FAILED);
   }
-  Ndb MyNdb(&con, "TEST_DB" );
-  
-  if(MyNdb.init() != 0){
+  Ndb MyNdb(&con, "TEST_DB");
+
+  if (MyNdb.init() != 0) {
     NDB_ERR(MyNdb.getNdbError());
     return NDBT_ProgramExit(NDBT_FAILED);
   }
-  
-  while(MyNdb.waitUntilReady() != 0)
+
+  while (MyNdb.waitUntilReady() != 0)
     ndbout << "Waiting for ndb to become ready..." << endl;
 
   return NDBT_Tables::createAllTables(&MyNdb, _temp);
-
- }
-
-
+}

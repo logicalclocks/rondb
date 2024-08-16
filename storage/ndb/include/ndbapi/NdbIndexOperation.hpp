@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,15 +35,14 @@ class NdbResultSet;
  * @class NdbIndexOperation
  * @brief Class of index operations for use in transactions
  */
-class NdbIndexOperation : public NdbOperation
-{
+class NdbIndexOperation : public NdbOperation {
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
   friend class Ndb;
   friend class NdbImpl;
   friend class NdbTransaction;
 #endif
 
-public:
+ public:
   /**
    * @name Define Standard Operation
    * @{
@@ -101,12 +101,12 @@ public:
 
   /**
    * Define the NdbOperation to be a standard operation of type committedRead.
-   * When calling NdbTransaction::execute, this operation 
+   * When calling NdbTransaction::execute, this operation
    * read latest committed value of the record.
    *
-   * This means that if another transaction is updating the 
-   * record, then the current transaction will not wait.  
-   * It will instead use the latest committed value of the 
+   * This means that if another transaction is updating the
+   * record, then the current transaction will not wait.
+   * It will instead use the latest committed value of the
    * record.
    *
    * @return 0 if successful otherwise -1.
@@ -117,7 +117,7 @@ public:
 #endif
 
   /**
-   * Define the NdbIndexOperation to be a standard operation of type 
+   * Define the NdbIndexOperation to be a standard operation of type
    * updateTuple.
    *
    * When calling NdbTransaction::execute, this operation
@@ -128,7 +128,7 @@ public:
   int updateTuple() override;
 
   /**
-   * Define the NdbIndexOperation to be a standard operation of type 
+   * Define the NdbIndexOperation to be a standard operation of type
    * deleteTuple.
    *
    * When calling NdbTransaction::execute, this operation
@@ -141,11 +141,11 @@ public:
   /**
    * Get index object for this operation
    */
-  const NdbDictionary::Index * getIndex() const;
+  const NdbDictionary::Index *getIndex() const;
 
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
   /**
-   * Define the NdbIndexOperation to be a standard operation of type 
+   * Define the NdbIndexOperation to be a standard operation of type
    * dirtyUpdate.
    *
    * When calling NdbTransaction::execute, this operation
@@ -159,7 +159,7 @@ public:
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
   /** @} *********************************************************************/
   /**
-   * @name Define Interpreted Program Operation 
+   * @name Define Interpreted Program Operation
    * @{
    */
 
@@ -184,22 +184,21 @@ public:
    */
   int interpretedDeleteTuple() override;
 #endif
-  
+
   /** @} *********************************************************************/
 
-private:
-  NdbIndexOperation(Ndb* aNdb);
+ private:
+  NdbIndexOperation(Ndb *aNdb);
   ~NdbIndexOperation() override;
 
-  int receiveTCINDXREF(const NdbApiSignal* aSignal);
+  int receiveTCINDXREF(const NdbApiSignal *aSignal);
 
   // Overloaded methods from NdbCursorOperation
-  int indxInit(const class NdbIndexImpl* anIndex,
-	       const class NdbTableImpl* aTable, 
-	       NdbTransaction*);
+  int indxInit(const class NdbIndexImpl *anIndex,
+               const class NdbTableImpl *aTable, NdbTransaction *);
 
   // Private attributes
-  const NdbIndexImpl* m_theIndex;
+  const NdbIndexImpl *m_theIndex;
   friend struct Ndb_free_list_t<NdbIndexOperation>;
 };
 

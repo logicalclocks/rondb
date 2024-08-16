@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -56,10 +57,10 @@
 #include "m_string.h"
 #include "my_dbug.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "my_thread.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_thread.h"
 #include "mysqld_error.h"
 #include "sql-common/net_ns.h"
@@ -410,7 +411,7 @@ class TCP_socket {
           dummy IPv6-socket. Do not instrument that socket by P_S.
         */
 
-        MYSQL_SOCKET s = mysql_socket_socket(0, AF_INET6, SOCK_STREAM, 0);
+        const MYSQL_SOCKET s = mysql_socket_socket(0, AF_INET6, SOCK_STREAM, 0);
         ipv6_available = mysql_socket_getfd(s) != INVALID_SOCKET;
         if (ipv6_available) mysql_socket_close(s);
       }
@@ -429,9 +430,9 @@ class TCP_socket {
         if (!ai_ptr) {
 #ifdef _WIN32
           Socket_error_message_buf msg_buff;
-          FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, socket_errno,
+          FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, socket_errno,
                         MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                        (LPTSTR)msg_buff, sizeof(msg_buff), NULL);
+                        (LPTSTR)msg_buff, sizeof(msg_buff), nullptr);
           LogErr(ERROR_LEVEL, ER_CONN_TCP_ERROR_WITH_STRERROR, msg_buff);
 #else
           LogErr(ERROR_LEVEL, ER_CONN_TCP_ERROR_WITH_STRERROR, strerror(errno));
@@ -450,9 +451,9 @@ class TCP_socket {
       if (!ai_ptr) {
 #ifdef _WIN32
         Socket_error_message_buf msg_buff;
-        FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, socket_errno,
+        FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, socket_errno,
                       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                      (LPTSTR)msg_buff, sizeof(msg_buff), NULL);
+                      (LPTSTR)msg_buff, sizeof(msg_buff), nullptr);
         LogErr(ERROR_LEVEL, ER_CONN_TCP_ERROR_WITH_STRERROR, msg_buff);
 #else
         LogErr(ERROR_LEVEL, ER_CONN_TCP_ERROR_WITH_STRERROR, strerror(errno));
@@ -508,9 +509,9 @@ class TCP_socket {
     if (mysql_socket_getfd(listener_socket) == INVALID_SOCKET) {
 #ifdef _WIN32
       Socket_error_message_buf msg_buff;
-      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, socket_errno,
+      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, socket_errno,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)msg_buff,
-                    sizeof(msg_buff), NULL);
+                    sizeof(msg_buff), nullptr);
       LogErr(ERROR_LEVEL, ER_CONN_TCP_ERROR_WITH_STRERROR, msg_buff);
 #else
       LogErr(ERROR_LEVEL, ER_CONN_TCP_ERROR_WITH_STRERROR, strerror(errno));
@@ -574,9 +575,9 @@ class TCP_socket {
       DBUG_PRINT("error", ("Got error: %d from bind", socket_errno));
 #ifdef _WIN32
       Socket_error_message_buf msg_buff;
-      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, socket_errno,
+      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, socket_errno,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)msg_buff,
-                    sizeof(msg_buff), NULL);
+                    sizeof(msg_buff), nullptr);
       LogErr(ERROR_LEVEL, ER_CONN_TCP_BIND_FAIL, msg_buff);
 #else
       LogErr(ERROR_LEVEL, ER_CONN_TCP_BIND_FAIL, strerror(socket_errno));
@@ -589,9 +590,9 @@ class TCP_socket {
     if (mysql_socket_listen(listener_socket, static_cast<int>(m_backlog)) < 0) {
 #ifdef _WIN32
       Socket_error_message_buf msg_buff;
-      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, socket_errno,
+      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, socket_errno,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)msg_buff,
-                    sizeof(msg_buff), NULL);
+                    sizeof(msg_buff), nullptr);
       LogErr(ERROR_LEVEL, ER_CONN_TCP_START_FAIL, msg_buff);
 #else
       LogErr(ERROR_LEVEL, ER_CONN_TCP_START_FAIL, strerror(errno));
@@ -929,9 +930,9 @@ static bool accept_connection(MYSQL_SOCKET listen_sock,
     if ((connection_errors_accept++ & 255) == 0) {  // This can happen often
 #ifdef _WIN32
       Socket_error_message_buf msg_buff;
-      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, socket_errno,
+      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, socket_errno,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)msg_buff,
-                    sizeof(msg_buff), NULL);
+                    sizeof(msg_buff), nullptr);
       LogErr(ERROR_LEVEL, ER_CONN_SOCKET_ACCEPT_FAILED, msg_buff);
 #else
       LogErr(ERROR_LEVEL, ER_CONN_SOCKET_ACCEPT_FAILED, strerror(errno));
@@ -959,7 +960,7 @@ bool check_connection_refused_by_tcp_wrapper(MYSQL_SOCKET connect_sock) {
   struct request_info req;
   signal(SIGCHLD, SIG_DFL);
   request_init(&req, RQ_DAEMON, libwrap_name, RQ_FILE,
-               mysql_socket_getfd(connect_sock), NULL);
+               mysql_socket_getfd(connect_sock), nullptr);
   fromhost(&req);
 
   if (!hosts_access(&req)) {
@@ -1073,15 +1074,16 @@ static bool handle_admin_socket(
   fd_set client_fds;
   FD_ZERO(&client_fds);
   FD_SET(mysql_socket_getfd(admin_socket), &client_fds);
-  int max_used_connection = mysql_socket_getfd(admin_socket);
+  const int max_used_connection = mysql_socket_getfd(admin_socket);
 #endif
 
   while (!connection_events_loop_aborted()) {
 #ifdef HAVE_POLL
-    int retval = poll(fds, NUMBER_OF_POLLED_FDS, -1);
+    const int retval = poll(fds, NUMBER_OF_POLLED_FDS, -1);
 #else
     fd_set read_fds = client_fds;
-    int retval = select(max_used_connection, &read_fds, 0, 0, 0);
+    const int retval =
+        select(max_used_connection, &read_fds, nullptr, nullptr, nullptr);
 #endif
 
     if (retval < 0 && socket_errno != SOCKET_EINTR) {
@@ -1114,7 +1116,7 @@ static bool handle_admin_socket(
 #endif
 
     MYSQL_SOCKET connect_sock;
-    bool accept_retval = accept_connection(admin_socket, &connect_sock);
+    const bool accept_retval = accept_connection(admin_socket, &connect_sock);
 
 #ifdef HAVE_SETNS
     if (!network_namespace_for_listening_socket.empty() &&
@@ -1219,7 +1221,7 @@ static inline bool spawn_admin_thread(MYSQL_SOCKET admin_socket,
 
   if (arg_for_admin_socket_thread == nullptr) return true;
 
-  int ret = mysql_thread_create(
+  const int ret = mysql_thread_create(
       key_thread_handle_con_admin_sockets, &admin_socket_thread_id,
       &admin_socket_thread_attrib, admin_socket_thread,
       (void *)arg_for_admin_socket_thread);
@@ -1350,7 +1352,7 @@ Channel_info *Mysqld_socket_listener::listen_for_connection_event() {
 #else
   m_select_info.m_read_fds = m_select_info.m_client_fds;
   int retval = select((int)m_select_info.m_max_used_connection,
-                      &m_select_info.m_read_fds, 0, 0, 0);
+                      &m_select_info.m_read_fds, nullptr, nullptr, nullptr);
 #endif
 
   if (retval < 0 && socket_errno != SOCKET_EINTR) {

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -124,7 +125,7 @@ void PasswordVault::load_passwords() {
   DATA_BLOB buf_decrypted;
   buf_encrypted.pbData = reinterpret_cast<BYTE *>(buf.get());
   buf_encrypted.cbData = end - begin;
-  if (!CryptUnprotectData(&buf_encrypted, NULL, NULL, NULL, NULL, 0,
+  if (!CryptUnprotectData(&buf_encrypted, nullptr, nullptr, nullptr, nullptr, 0,
                           &buf_decrypted)) {
     DWORD code = GetLastError();
     throw std::runtime_error(
@@ -166,7 +167,7 @@ void PasswordVault::store_passwords() {
   buf_decrypted.pbData =
       reinterpret_cast<BYTE *>(const_cast<char *>(data.c_str()));
   buf_decrypted.cbData = ss.str().size();
-  if (!CryptProtectData(&buf_decrypted, NULL, NULL, NULL, NULL,
+  if (!CryptProtectData(&buf_decrypted, nullptr, nullptr, nullptr, nullptr,
                         CRYPTPROTECT_LOCAL_MACHINE, &buf_encrypted)) {
     DWORD code = GetLastError();
     throw std::runtime_error(

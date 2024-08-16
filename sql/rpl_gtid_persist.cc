@@ -1,15 +1,16 @@
-/* Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,25 +25,24 @@
 
 #include "my_config.h"
 
-#include "my_loglevel.h"
+#include "mysql/my_loglevel.h"
 #include "sql/derror.h"
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
 #include <list>
 
-#include "libbinlogevents/include/control_events.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_base.h"
 #include "my_command.h"
 #include "my_dbug.h"
 #include "my_sys.h"
 #include "my_thread.h"
+#include "mysql/binlog/event/control_events.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_thread.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/thread_type.h"
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/current_thd.h"
@@ -61,6 +61,7 @@
 #include "sql/sql_parse.h"  // mysql_reset_thd_for_next_command
 #include "sql/system_variables.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 
 using std::list;
 using std::string;
@@ -206,12 +207,14 @@ bool Gtid_table_access_context::deinit(THD *thd, TABLE *table, bool error,
 }
 
 int Gtid_table_persistor::fill_fields(Field **fields, const char *sid,
-                                      rpl_gno gno_start, rpl_gno gno_end) {
+                                      const char *tag, rpl_gno gno_start,
+                                      rpl_gno gno_end) {
   DBUG_TRACE;
 
   /* Store SID */
   fields[0]->set_notnull();
-  if (fields[0]->store(sid, binary_log::Uuid::TEXT_LENGTH, &my_charset_bin)) {
+  if (fields[0]->store(sid, mysql::gtid::Uuid::TEXT_LENGTH, &my_charset_bin) !=
+      0U) {
     my_error(ER_RPL_INFO_DATA_TOO_LONG, MYF(0), fields[0]->field_name);
     goto err;
   }
@@ -230,13 +233,21 @@ int Gtid_table_persistor::fill_fields(Field **fields, const char *sid,
     goto err;
   }
 
+  // Store tag
+  fields[3]->set_notnull();
+  if (fields[3]->store(tag, strlen(tag), &my_charset_bin)) {
+    my_error(ER_RPL_INFO_DATA_TOO_LONG, MYF(0), fields[3]->field_name);
+    goto err;
+  }
+
   return 0;
 err:
   return -1;
 }
 
 int Gtid_table_persistor::write_row(TABLE *table, const char *sid,
-                                    rpl_gno gno_start, rpl_gno gno_end) {
+                                    const char *tag, rpl_gno gno_start,
+                                    rpl_gno gno_end) {
   DBUG_TRACE;
   int error = 0;
   Field **fields = nullptr;
@@ -244,7 +255,7 @@ int Gtid_table_persistor::write_row(TABLE *table, const char *sid,
   fields = table->field;
   empty_record(table);
 
-  if (fill_fields(fields, sid, gno_start, gno_end)) return -1;
+  if (fill_fields(fields, sid, tag, gno_start, gno_end)) return -1;
 
   /* Inserts a new row into the gtid_executed table. */
   error = table->file->ha_write_row(table->record[0]);
@@ -268,7 +279,8 @@ int Gtid_table_persistor::write_row(TABLE *table, const char *sid,
 }
 
 int Gtid_table_persistor::update_row(TABLE *table, const char *sid,
-                                     rpl_gno gno_start, rpl_gno new_gno_end) {
+                                     const char *tag, rpl_gno gno_start,
+                                     rpl_gno new_gno_end) {
   DBUG_TRACE;
   int error = 0;
   Field **fields = nullptr;
@@ -279,7 +291,8 @@ int Gtid_table_persistor::update_row(TABLE *table, const char *sid,
 
   /* Store SID */
   fields[0]->set_notnull();
-  if (fields[0]->store(sid, binary_log::Uuid::TEXT_LENGTH, &my_charset_bin)) {
+  if (fields[0]->store(sid, mysql::gtid::Uuid::TEXT_LENGTH, &my_charset_bin) !=
+      0U) {
     my_error(ER_RPL_INFO_DATA_TOO_LONG, MYF(0), fields[0]->field_name);
     return -1;
   }
@@ -289,6 +302,13 @@ int Gtid_table_persistor::update_row(TABLE *table, const char *sid,
   if (fields[1]->store(gno_start, true /* unsigned = true*/)) {
     my_error(ER_RPL_INFO_DATA_TOO_LONG, MYF(0), fields[1]->field_name);
     return -1;
+  }
+
+  // Store tag, to be able to use the key
+  fields[3]->set_notnull();
+  if (fields[3]->store(tag, strlen(tag), &my_charset_bin)) {
+    my_error(ER_RPL_INFO_DATA_TOO_LONG, MYF(0), fields[3]->field_name);
+    goto end;
   }
 
   key_copy(user_key, table->record[0], table->key_info,
@@ -318,6 +338,7 @@ int Gtid_table_persistor::update_row(TABLE *table, const char *sid,
 
   /* Update a row in the gtid_executed table. */
   error = table->file->ha_update_row(table->record[1], table->record[0]);
+
   if (DBUG_EVALUATE_IF("simulate_error_on_compress_gtid_table", (error = -1),
                        error)) {
     table->file->print_error(error, MYF(0));
@@ -341,13 +362,13 @@ int Gtid_table_persistor::save(THD *thd, const Gtid *gtid) {
   int error = 0;
   TABLE *table = nullptr;
   Gtid_table_access_context table_access_ctx;
-  char buf[binary_log::Uuid::TEXT_LENGTH + 1];
 
   /* Get source id */
-  global_sid_lock->rdlock();
-  rpl_sid sid = global_sid_map->sidno_to_sid(gtid->sidno);
-  global_sid_lock->unlock();
-  sid.to_string(buf);
+  global_tsid_lock->rdlock();
+  const auto &tsid = global_tsid_map->sidno_to_tsid(gtid->sidno);
+  global_tsid_lock->unlock();
+  std::string sid_str = tsid.get_uuid().to_string();
+  std::string tag_str = tsid.get_tag().to_string();
 
   if (table_access_ctx.init(&thd, &table, true)) {
     error = 1;
@@ -355,8 +376,10 @@ int Gtid_table_persistor::save(THD *thd, const Gtid *gtid) {
   }
 
   /* Write directly to gtid_executed table only to satisfy debug test. */
-  DBUG_EXECUTE_IF("disable_se_persists_gtid",
-                  { error = write_row(table, buf, gtid->gno, gtid->gno); });
+  DBUG_EXECUTE_IF("disable_se_persists_gtid", {
+    error = write_row(table, sid_str.c_str(), tag_str.c_str(), gtid->gno,
+                      gtid->gno);
+  });
 
   thd->request_persist_gtid_by_se();
 
@@ -383,15 +406,11 @@ int Gtid_table_persistor::save(const Gtid_set *gtid_set, bool compress) {
   Gtid_table_access_context table_access_ctx;
   THD *thd = current_thd;
 
+  DBUG_EXECUTE_IF("crash_before_gtid_table_persistor_save",
+                  { DBUG_SUICIDE(); });
+
   if (table_access_ctx.init(&thd, &table, true)) {
-    error = 1;
-    /*
-      Gtid table is not ready to be used, so failed to
-      open it. Ignore the error.
-    */
-    thd->clear_error();
-    if (!thd->get_stmt_da()->is_set())
-      thd->get_stmt_da()->set_ok_status(0, 0, nullptr);
+    error = ret = 1;
     goto end;
   }
 
@@ -423,13 +442,15 @@ int Gtid_table_persistor::save(TABLE *table, const Gtid_set *gtid_set) {
   /* Get GTID intervals from gtid_set. */
   gtid_set->get_gtid_intervals(&gtid_intervals);
   for (iter = gtid_intervals.begin(); iter != gtid_intervals.end(); iter++) {
-    /* Get source id. */
-    char buf[binary_log::Uuid::TEXT_LENGTH + 1];
-    rpl_sid sid = gtid_set->get_sid_map()->sidno_to_sid(iter->sidno);
-    sid.to_string(buf);
+    /* Get transaction source id. */
+    const auto &tsid = gtid_set->get_tsid_map()->sidno_to_tsid(iter->sidno);
+    auto sid_str = tsid.get_uuid().to_string();
+    auto tag_str = tsid.get_tag().to_string();
 
     /* Save the gtid interval into table. */
-    if ((error = write_row(table, buf, iter->gno_start, iter->gno_end))) break;
+    if ((error = write_row(table, sid_str.c_str(), tag_str.c_str(),
+                           iter->gno_start, iter->gno_end)))
+      break;
   }
 
   gtid_intervals.clear();
@@ -535,12 +556,16 @@ int Gtid_table_persistor::compress_first_consecutive_range(TABLE *table,
   int err = 0;
   /* Record the source id of the first consecutive gtid. */
   string sid;
+  /* Record the tag of the first consecutive gtid. */
+  string tag;
   /* Record the first GNO of the first consecutive gtid. */
   rpl_gno gno_start = 0;
   /* Record the last GNO of the last consecutive gtid. */
   rpl_gno gno_end = 0;
   /* Record the gtid interval of the current gtid. */
   string cur_sid;
+  /* Record the tag of the current gtid. */
+  string cur_tag;
   rpl_gno cur_gno_start = 0;
   rpl_gno cur_gno_end = 0;
   /*
@@ -557,12 +582,12 @@ int Gtid_table_persistor::compress_first_consecutive_range(TABLE *table,
   err = table->file->ha_index_first(table->record[0]);
   /* Compress the first consecutive range of gtids. */
   while (!err) {
-    get_gtid_interval(table, cur_sid, cur_gno_start, cur_gno_end);
+    get_gtid_interval(table, cur_sid, cur_tag, cur_gno_start, cur_gno_end);
     /*
       Check if gtid intervals of previous gtid and current gtid
       are consecutive.
     */
-    if (sid == cur_sid && gno_end + 1 == cur_gno_start) {
+    if (sid == cur_sid && tag == cur_tag && gno_end + 1 == cur_gno_start) {
       find_first_consecutive_gtids = true;
       gno_end = cur_gno_end;
       /* Delete the consecutive gtid. We do not delete the first
@@ -576,6 +601,7 @@ int Gtid_table_persistor::compress_first_consecutive_range(TABLE *table,
 
       /* Record the gtid interval of the first consecutive gtid. */
       sid = cur_sid;
+      tag = cur_tag;
       gno_start = cur_gno_start;
       gno_end = cur_gno_end;
     }
@@ -588,12 +614,13 @@ int Gtid_table_persistor::compress_first_consecutive_range(TABLE *table,
 
   if (err != HA_ERR_END_OF_FILE && err != 0)
     ret = -1;
-  else if (find_first_consecutive_gtids)
+  else if (find_first_consecutive_gtids) {
     /*
       Update the gno_end of the first consecutive gtid with the gno_end of
       the last consecutive gtid for the first consecutive range of gtids.
     */
-    ret = update_row(table, sid.c_str(), gno_start, gno_end);
+    ret = update_row(table, sid.c_str(), tag.c_str(), gno_start, gno_end);
+  }
 
   return ret;
 }
@@ -630,18 +657,22 @@ string Gtid_table_persistor::encode_gtid_text(TABLE *table) {
   /* Fetch gtid interval from the table */
   table->field[0]->val_str(&str);
   string gtid_text(str.c_ptr_safe());
-  gtid_text.append(Gtid_set::default_string_format.sid_gno_separator);
+  table->field[3]->val_str(&str);
+  if (str.is_empty() == false) {
+    gtid_text.append(Gtid_set::default_string_format.tag_sid_separator);
+    gtid_text.append(str.c_ptr_safe());
+  }
+  gtid_text.append(Gtid_set::default_string_format.tsid_gno_separator);
   table->field[1]->val_str(&str);
   gtid_text.append(str.c_ptr_safe());
   gtid_text.append(Gtid_set::default_string_format.gno_start_end_separator);
   table->field[2]->val_str(&str);
   gtid_text.append(str.c_ptr_safe());
-
   return gtid_text;
 }
 
 void Gtid_table_persistor::get_gtid_interval(TABLE *table, string &sid,
-                                             rpl_gno &gno_start,
+                                             string &tag, rpl_gno &gno_start,
                                              rpl_gno &gno_end) {
   DBUG_TRACE;
   char buff[MAX_FIELD_WIDTH];
@@ -652,6 +683,11 @@ void Gtid_table_persistor::get_gtid_interval(TABLE *table, string &sid,
   sid = string(str.c_ptr_safe());
   gno_start = table->field[1]->val_int();
   gno_end = table->field[2]->val_int();
+  table->field[3]->val_str(&str);
+  tag.clear();
+  if (str.is_empty() == false) {
+    tag = string(str.c_ptr_safe());
+  }
 }
 
 int Gtid_table_persistor::fetch_gtids(Gtid_set *gtid_set) {
@@ -677,18 +713,18 @@ int Gtid_table_persistor::fetch_gtids(Gtid_set *gtid_set) {
 
     /**
       @todo:
-      - take only global_sid_lock->rdlock(), and take
-        gtid_state->sid_lock for each iteration.
+      - take only global_tsid_lock->rdlock(), and take
+        gtid_state->tsid_lock for each iteration.
       - Add wrapper around Gtid_set::add_gno_interval and call that
         instead.
     */
-    global_sid_lock->wrlock();
+    global_tsid_lock->wrlock();
     if (gtid_set->add_gtid_text(encode_gtid_text(table).c_str()) !=
         RETURN_STATUS_OK) {
-      global_sid_lock->unlock();
+      global_tsid_lock->unlock();
       break;
     }
-    global_sid_lock->unlock();
+    global_tsid_lock->unlock();
   }
 
   table->file->ha_rnd_end();
@@ -848,9 +884,9 @@ void terminate_compress_gtid_table_thread() {
   mysql_cond_signal(&COND_compress_gtid_table);
   mysql_mutex_unlock(&LOCK_compress_gtid_table);
 
-  if (compress_thread_id.thread != 0) {
+  if (compress_thread_id.thread != null_thread_initializer) {
     error = my_thread_join(&compress_thread_id, nullptr);
-    compress_thread_id.thread = 0;
+    compress_thread_id.thread = null_thread_initializer;
   }
 
   if (error != 0)

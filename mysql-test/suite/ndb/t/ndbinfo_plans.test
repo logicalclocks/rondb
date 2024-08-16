@@ -46,13 +46,19 @@ let $extra= query_get_value(explain select count(*) from counters, Extra, 1);
 echo $extra;
 
 ## Information schema reveals row counts as seen by optimizer
-## (but filter out cpu-related tables where results are not predictable)
+# Filtered out:
+#   * cpu-related tables, where results are not predictable
+#   * config_params, which changes when parameters are added, but will
+#     be accurate
+#   * config_values, which is queried separately below, along with an
+#     explanatory comment that is copied to the result file
 set ndbinfo_show_hidden=1;
 --horizontal_results
 SELECT table_name, table_rows, avg_row_length
   FROM information_schema.tables
   WHERE table_schema='ndbinfo' AND table_type = 'BASE TABLE'
   AND table_name not like '%cpu%'
+  AND table_name not in ('ndb$config_params', 'ndb$config_values')
   ORDER BY table_name;
 
 --disable_query_log
@@ -92,8 +98,17 @@ END|;
 --delimiter ;
 --enable_query_log
 
-## List the tables where estimated size equals actual size.
 CALL populate_sizes();
+
+# Query config_values separately for clarity.
+SELECT table_name, est_rows, actual_rows from rowcounts
+WHERE table_name = "ndb$config_values";
+## Note:
+## the estimate for config_values relies on a constant in NdbinfoTables.cpp
+## which must be manually maintained in order for the test to pass.
+
+##
+## List the tables where estimated size equals actual size.
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
   ORDER BY table_name;
@@ -170,14 +185,27 @@ explain format=tree select * from memory_per_fragment;
 
 ## WL#11968 tables and views
 ##
+# Get event_id's by table name, this is to be independent
+# on which id has been assigned
+let $event_ids = `SELECT GROUP_CONCAT(event_id)
+                    FROM events e JOIN dictionary_tables t using(table_id)
+                    WHERE table_name IN ('ndb_schema',
+                                         'ndb_schema_result',
+                                         'ndb_index_stat_head',
+                                         'ndb_apply_status')
+                    GROUP BY 'all'`;
+#echo event_ids: $event_ids;
+--replace_result $event_ids <event_ids>
 --horizontal_results
-SELECT event_id, e.name, table_name
+eval SELECT e.name, table_name
   FROM events e JOIN dictionary_tables t using(table_id)
-  WHERE event_id < 6 ORDER BY event_id;
+  WHERE event_id IN ($event_ids) ORDER BY table_name;
 
 ## Query uses primary keys on both tables:
-EXPLAIN SELECT event_id, e.name, table_name FROM events e
-  JOIN dictionary_tables t using(table_id) WHERE event_id < 6 ORDER BY event_id;
+--replace_result $event_ids <event_ids>
+eval EXPLAIN SELECT event_id, e.name, table_name FROM events e
+  JOIN dictionary_tables t using(table_id)
+  WHERE event_id IN ($event_ids)  ORDER BY event_id;
 
 SELECT * from events where event_id = -1;
 SELECT table_event from events where event_id = 1;

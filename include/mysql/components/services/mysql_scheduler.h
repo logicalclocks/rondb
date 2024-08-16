@@ -1,15 +1,16 @@
-/* Copyright (c) 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -117,30 +118,5 @@ DECLARE_BOOL_METHOD(create,
 DECLARE_BOOL_METHOD(destroy, (mysql_scheduler_runnable_handle handle));
 
 END_SERVICE_DEFINITION(mysql_scheduler)
-
-/**
-  @ingroup group_components_services_inventory
-  Notification service for the scheduler customers.
-  The scheduler will broadcast this at important events of its operation
-  that may be of interest to customers.
-  Currently only supports STARTED event:
-  When the scheduler starts some of its "customers" may be already
-  loaded and have allowed delayed initialization.
-  To avoid polling for scheduler implementations, the scheduler
-  will broadcast to all implementations of this service at its startup so
-  they can register their scheduled tasks.
-  This is useful for e.g. customers loading prior to the scheduler and
-  willing to register their tasks when the scheduler is present.
-*/
-BEGIN_SERVICE_DEFINITION(mysql_scheduler_notify)
-/**
-  @retval true   failure
-  @retval false  success
-  @param what    Notification kind. One of:
-                    * STARTED : the sheduler is open for service. Clients
-                                 should re-try registering their tasks.
-*/
-DECLARE_BOOL_METHOD(emit, (const char *what));
-END_SERVICE_DEFINITION(mysql_scheduler_notify)
 
 #endif /* MYSQL_SCHEDULER_H */

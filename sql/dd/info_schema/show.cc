@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,8 +26,8 @@
 #include <string.h>
 
 #include "lex_string.h"
-#include "m_string.h"
 #include "my_sqlcommand.h"
+#include "nulls.h"
 #include "sql/dd/info_schema/show_query_builder.h"  // Select_lex_builder
 #include "sql/dd/info_schema/table_stats.h"
 #include "sql/dd/string_type.h"
@@ -36,6 +37,7 @@
 #include "sql/sql_lex.h"
 #include "sql/table.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 
 namespace dd {
 namespace info_schema {
@@ -1083,6 +1085,10 @@ Query_block *build_show_procedures_query(const POS &pos, THD *thd, String *wild,
   static const LEX_CSTRING field_type = {STRING_WITH_LEN("ROUTINE_TYPE")};
   static const LEX_CSTRING alias_type = {STRING_WITH_LEN("Type")};
 
+  static const LEX_CSTRING field_language = {
+      STRING_WITH_LEN("EXTERNAL_LANGUAGE")};
+  static const LEX_CSTRING alias_language = {STRING_WITH_LEN("Language")};
+
   static const LEX_CSTRING field_definer = {STRING_WITH_LEN("DEFINER")};
   static const LEX_CSTRING alias_definer = {STRING_WITH_LEN("Definer")};
 
@@ -1123,6 +1129,7 @@ Query_block *build_show_procedures_query(const POS &pos, THD *thd, String *wild,
   if (sub_query.add_select_item(field_db, alias_db) ||
       sub_query.add_select_item(field_name, alias_name) ||
       sub_query.add_select_item(field_type, alias_type) ||
+      sub_query.add_select_item(field_language, alias_language) ||
       sub_query.add_select_item(field_definer, alias_definer) ||
       sub_query.add_select_item(field_modified, alias_modified) ||
       sub_query.add_select_item(field_created, alias_created) ||

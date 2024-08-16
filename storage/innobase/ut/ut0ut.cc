@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2023, Oracle and/or its affiliates.
+Copyright (c) 1994, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -483,6 +484,10 @@ const char *ut_strerr(dberr_t num) {
       return "Auto-increment read failed";
     case DB_FILE_READ_BEYOND_SIZE:
       return "File read failure because of the read being beyond file size.";
+    case DB_DATA_NOT_SORTED:
+      return "Data is not sorted.";
+    case DB_BULK_TOO_BIG_RECORD:
+      return "Row is too big for LOAD BULK DATA operation.";
     case DB_ERROR_UNSET:;
       /* Fall through. */
 

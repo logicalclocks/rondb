@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,79 +23,145 @@
 
 #include "sql/iterators/hash_join_buffer.h"
 
-#include <assert.h>
-#include <cstddef>
-#include <cstring>
-#include <iterator>
-#include <new>
-#include <unordered_map>
+#include <algorithm>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
 
-#include "field_types.h"
-#include "m_ctype.h"
+#include <ankerl/unordered_dense.h>
+
 #include "my_alloc.h"
-#include "my_bit.h"
-#include "my_bitmap.h"
 #include "my_compiler.h"
-
 #include "my_inttypes.h"
-#include "sql/field.h"
-#include "sql/handler.h"
+#include "my_sys.h"
+#include "mysqld_error.h"
+#include "sql/current_thd.h"
 #include "sql/item_cmpfunc.h"
-#include "sql/join_optimizer/bit_utils.h"
 #include "sql/psi_memory_key.h"
 #include "sql/sql_class.h"
-#include "sql/sql_executor.h"
-#include "sql/sql_optimizer.h"
-#include "sql/table.h"
-#include "tables_contained_in.h"
+#include "sql/system_variables.h"
 #include "template_utils.h"
 
 using pack_rows::TableCollection;
 
-namespace hash_join_buffer {
-
-LinkedImmutableString
-HashJoinRowBuffer::StoreLinkedImmutableStringFromTableBuffers(
-    LinkedImmutableString next_ptr, bool *full) {
-  size_t row_size_upper_bound = m_row_size_upper_bound;
-  if (m_tables.has_blob_column()) {
+LinkedImmutableString StoreLinkedImmutableStringFromTableBuffers(
+    MEM_ROOT *mem_root, MEM_ROOT *overflow_mem_root, TableCollection tables,
+    LinkedImmutableString next_ptr, size_t row_size_upper_bound, bool *full) {
+  if (tables.has_blob_column()) {
     // The row size upper bound can have changed.
-    row_size_upper_bound = ComputeRowSizeUpperBound(m_tables);
+    row_size_upper_bound = ComputeRowSizeUpperBound(tables);
   }
 
   const size_t required_value_bytes =
       LinkedImmutableString::RequiredBytesForEncode(row_size_upper_bound);
 
-  std::pair<char *, char *> block = m_mem_root.Peek();
+  std::pair<char *, char *> block = mem_root->Peek();
   if (static_cast<size_t>(block.second - block.first) < required_value_bytes) {
     // No room in this block; ask for a new one and try again.
-    m_mem_root.ForceNewBlock(required_value_bytes);
-    block = m_mem_root.Peek();
+    mem_root->ForceNewBlock(required_value_bytes);
+    block = mem_root->Peek();
   }
   bool committed = false;
   char *start_of_value, *dptr;
   LinkedImmutableString ret{nullptr};
   if (static_cast<size_t>(block.second - block.first) >= required_value_bytes) {
     dptr = start_of_value = block.first;
-  } else {
+  } else if (overflow_mem_root != nullptr) {
     dptr = start_of_value =
-        pointer_cast<char *>(m_overflow_mem_root.Alloc(required_value_bytes));
+        pointer_cast<char *>(overflow_mem_root->Alloc(required_value_bytes));
     if (dptr == nullptr) {
       return LinkedImmutableString{nullptr};
     }
     committed = true;
     *full = true;
+  } else if (full == nullptr) {
+    // Used by set operations, we handle empty return and spill to disk
+    return ret;
+  } else {
+    my_error(ER_OUTOFMEMORY, MYF(ME_FATALERROR),
+             current_thd->variables.set_operations_buffer_size);
+    return ret;  // spill to disk
   }
 
   ret = LinkedImmutableString::EncodeHeader(next_ptr, &dptr);
   dptr = pointer_cast<char *>(
-      StoreFromTableBuffersRaw(m_tables, pointer_cast<uchar *>(dptr)));
+      StoreFromTableBuffersRaw(tables, pointer_cast<uchar *>(dptr)));
 
   if (!committed) {
     const size_t actual_length = dptr - pointer_cast<char *>(start_of_value);
-    m_mem_root.RawCommit(actual_length);
+    mem_root->RawCommit(actual_length);
   }
   return ret;
+}
+
+namespace hash_join_buffer {
+
+namespace {
+
+class KeyEquals {
+ public:
+  // This is a marker from C++17 that signals to the container that
+  // operator() can be called with arguments of which one of the types
+  // differs from the container's key type (ImmutableStringWithLength),
+  // and thus enables map.find(Key). The type itself does not matter.
+  using is_transparent = void;
+
+  bool operator()(const Key &str1,
+                  const ImmutableStringWithLength &other) const {
+    return str1 == other.Decode();
+  }
+
+  bool operator()(const ImmutableStringWithLength &str1,
+                  const ImmutableStringWithLength &str2) const {
+    return str1 == str2;
+  }
+};
+
+class KeyHasher {
+ public:
+  // This is a marker from C++17 that signals to the container that
+  // operator() can be called with an argument that differs from the
+  // container's key type (ImmutableStringWithLength), and thus enables
+  // map.find(Key). The type itself does not matter.
+  using is_transparent = void;
+
+  // This is a marker telling ankerl::unordered_dense that the hash function has
+  // good quality.
+  using is_avalanching = void;
+
+  uint64_t operator()(Key key) const {
+    return ankerl::unordered_dense::hash<Key>()(key);
+  }
+
+  uint64_t operator()(ImmutableStringWithLength key) const {
+    return operator()(key.Decode());
+  }
+};
+
+}  // namespace
+
+// A wrapper class around ankerl::unordered_dense::segmented_map, so that it can
+// be forward-declared in the header file. This is done to limit the number of
+// files that include directly or indirectly headers from the third-party
+// library.
+class HashJoinRowBuffer::HashMap
+    : public ankerl::unordered_dense::segmented_map<ImmutableStringWithLength,
+                                                    LinkedImmutableString,
+                                                    KeyHasher, KeyEquals> {
+ public:
+  // Inherit the constructors from the base class.
+  using ankerl::unordered_dense::segmented_map<ImmutableStringWithLength,
+                                               LinkedImmutableString, KeyHasher,
+                                               KeyEquals>::segmented_map;
+};
+
+LinkedImmutableString
+HashJoinRowBuffer::StoreLinkedImmutableStringFromTableBuffers(
+    LinkedImmutableString next_ptr, bool *full) {
+  return ::StoreLinkedImmutableStringFromTableBuffers(
+      &m_mem_root, &m_overflow_mem_root, m_tables, next_ptr,
+      m_row_size_upper_bound, full);
 }
 
 // A convenience form of LoadIntoTableBuffers() that also verifies the end
@@ -116,8 +183,8 @@ HashJoinRowBuffer::HashJoinRowBuffer(
     size_t max_mem_available)
     : m_join_conditions(std::move(join_conditions)),
       m_tables(std::move(tables)),
-      m_mem_root(key_memory_hash_join, 16384 /* 16 kB */),
-      m_overflow_mem_root(key_memory_hash_join, 256),
+      m_mem_root(key_memory_hash_op, 16384 /* 16 kB */),
+      m_overflow_mem_root(key_memory_hash_op, 256),
       m_hash_map(nullptr),
       m_max_mem_available(
           std::max<size_t>(max_mem_available, 16384 /* 16 kB */)) {
@@ -125,8 +192,12 @@ HashJoinRowBuffer::HashJoinRowBuffer(
   m_mem_root.set_max_capacity(0);
 }
 
+// Define the destructor here instead of in the header, so that the header can
+// forward declare types of member variables (m_hash_map in particular).
+HashJoinRowBuffer::~HashJoinRowBuffer() = default;
+
 bool HashJoinRowBuffer::Init() {
-  if (m_hash_map.get() != nullptr) {
+  if (m_hash_map != nullptr) {
     // Reset the unique_ptr, so that the hash map destructors are called before
     // clearing the MEM_ROOT.
     m_hash_map.reset(nullptr);
@@ -143,10 +214,9 @@ bool HashJoinRowBuffer::Init() {
   // table.
   m_row_size_upper_bound = ComputeRowSizeUpperBound(m_tables);
 
-  m_hash_map.reset(new hash_map_type(
-      /*bucket_count=*/10, KeyHasher()));
+  m_hash_map.reset(new HashMap());
   if (m_hash_map == nullptr) {
-    my_error(ER_OUTOFMEMORY, MYF(ME_FATALERROR), sizeof(hash_map_type));
+    my_error(ER_OUTOFMEMORY, MYF(ME_FATALERROR), sizeof(*m_hash_map));
     return true;
   }
 
@@ -211,7 +281,7 @@ StoreRowResult HashJoinRowBuffer::StoreRow(THD *thd,
     // Keep bytes_to_commit == 0; the value is already committed.
   }
 
-  std::pair<hash_map_type::iterator, bool> key_it_and_inserted;
+  std::pair<HashMap::iterator, bool> key_it_and_inserted;
   try {
     key_it_and_inserted =
         m_hash_map->emplace(key, LinkedImmutableString{nullptr});
@@ -226,7 +296,10 @@ StoreRowResult HashJoinRowBuffer::StoreRow(THD *thd,
     // Update the capacity available for the MEM_ROOT; our total may
     // have gone slightly over already, and if so, we will signal
     // that and immediately start spilling to disk.
-    size_t bytes_used = m_hash_map->calcNumBytesTotal(m_hash_map->mask() + 1);
+    const size_t bytes_used =
+        m_hash_map->bucket_count() * sizeof(HashMap::bucket_type) +
+        m_hash_map->values().capacity() *
+            sizeof(HashMap::value_container_type::value_type);
     if (bytes_used >= m_max_mem_available) {
       // 0 means no limit, so set the minimum possible limit.
       m_mem_root.set_max_capacity(1);
@@ -257,6 +330,19 @@ StoreRowResult HashJoinRowBuffer::StoreRow(THD *thd,
   } else {
     return StoreRowResult::ROW_STORED;
   }
+}
+
+size_t HashJoinRowBuffer::size() const { return m_hash_map->size(); }
+
+std::optional<LinkedImmutableString> HashJoinRowBuffer::find(Key key) const {
+  const auto it = m_hash_map->find(key);
+  if (it == m_hash_map->end()) return {};
+  return it->second;
+}
+
+std::optional<LinkedImmutableString> HashJoinRowBuffer::first_row() const {
+  if (m_hash_map->empty()) return {};
+  return m_hash_map->begin()->second;
 }
 
 }  // namespace hash_join_buffer

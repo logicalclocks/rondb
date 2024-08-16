@@ -17,7 +17,7 @@ CALL mtr.add_suppression("Unsafe statement written to the binary log using state
 CREATE TABLE t1 (m INT, n INT) ENGINE=MYISAM;
 CREATE TABLE t2 (b INT, c INT) ENGINE=BLACKHOLE;
 CREATE TABLE t3 (e INT, f INT) ENGINE=NDB;
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 SET SESSION BINLOG_FORMAT=STATEMENT;
 INSERT INTO t1 VALUES (1,1), (1,2), (2,1), (2,2);
 INSERT INTO t2 VALUES (1,1), (1,2), (2,1), (2,2);
@@ -28,6 +28,6 @@ INSERT INTO t3 VALUES (1,1), (1,2), (2,1), (2,2);
 UPDATE t1, t3 SET m = 2, e = 3 WHERE n = f;
 UPDATE t3, t2 SET e = 2, b = 3 WHERE f = c;
 COMMIT;
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 DROP TABLE t1, t2, t3;
 

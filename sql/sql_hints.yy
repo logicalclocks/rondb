@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -60,9 +61,13 @@ static bool parse_int(longlong *to, const char *from, size_t from_length)
   return error != 0 || end != from + from_length;
 }
 
+// ODR violation here as well, so rename yysymbol_kind_t
+#define yysymbol_kind_t my_hint_parser_symbol_kind_t
+
 %}
 
 %define api.pure
+%define api.prefix {my_hint_parser_}
 
 %parse-param { class THD *thd }
 %parse-param { class Hint_scanner *scanner }
@@ -133,10 +138,12 @@ static bool parse_int(longlong *to, const char *from, size_t from_length)
 %token HINT_ARG_FLOATING_POINT_NUMBER 1049
 
 /*
-  YYUNDEF in internal to Bison. Please don't change its number, or change
+  YYUNDEF is internal to Bison. Please don't change its number, or change
   it in sync with YYUNDEF in sql_yacc.yy.
+  We would like to have this:
+    %token YYUNDEF 1150
+  here, but that creates conflicts in gen_lex_token.cc. See comments there.
 */
-%token YYUNDEF 1150
 
 /*
   Please add new tokens right above this line.
@@ -208,14 +215,14 @@ start:
         | hint_list error HINT_CLOSE
           { *ret= $1; }
         | error HINT_CLOSE
-          { *ret= NULL; }
+          { *ret= nullptr; }
         ;
 
 hint_list:
           hint
           {
             $$= NEW_PTN PT_hint_list(thd->mem_root);
-            if ($$ == NULL || $$->push_back($1))
+            if ($$ == nullptr || $$->push_back($1))
               YYABORT; // OOM
           }
         | hint_list hint
@@ -244,12 +251,12 @@ max_execution_time_hint:
             {
               scanner->syntax_warning(ER_THD(thd,
                                              ER_WARN_BAD_MAX_EXECUTION_TIME));
-              $$= NULL;
+              $$= nullptr;
             }
             else
             {
               $$= NEW_PTN PT_hint_max_execution_time(n);
-              if ($$ == NULL)
+              if ($$ == nullptr)
                 YYABORT; // OOM
             }
           }
@@ -354,70 +361,70 @@ qb_level_hint:
           SEMIJOIN_HINT '(' opt_qb_name semijoin_strategies ')'
           {
             $$= NEW_PTN PT_qb_level_hint($3, true, SEMIJOIN_HINT_ENUM, $4);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           NO_SEMIJOIN_HINT '(' opt_qb_name semijoin_strategies ')'
           {
             $$= NEW_PTN PT_qb_level_hint($3, false, SEMIJOIN_HINT_ENUM, $4);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           SUBQUERY_HINT '(' opt_qb_name subquery_strategy ')'
           {
             $$= NEW_PTN PT_qb_level_hint($3, true, SUBQUERY_HINT_ENUM, $4);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           JOIN_PREFIX_HINT '(' opt_hint_param_table_list ')'
           {
             $$= NEW_PTN PT_qb_level_hint(NULL_CSTR, true, JOIN_PREFIX_HINT_ENUM, $3);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           JOIN_PREFIX_HINT '(' HINT_ARG_QB_NAME opt_hint_param_table_list_empty_qb ')'
           {
             $$= NEW_PTN PT_qb_level_hint($3, true, JOIN_PREFIX_HINT_ENUM, $4);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           JOIN_SUFFIX_HINT '(' opt_hint_param_table_list ')'
           {
             $$= NEW_PTN PT_qb_level_hint(NULL_CSTR, true, JOIN_SUFFIX_HINT_ENUM, $3);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           JOIN_SUFFIX_HINT '(' HINT_ARG_QB_NAME opt_hint_param_table_list_empty_qb ')'
           {
             $$= NEW_PTN PT_qb_level_hint($3, true, JOIN_SUFFIX_HINT_ENUM, $4);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           JOIN_ORDER_HINT '(' opt_hint_param_table_list ')'
           {
             $$= NEW_PTN PT_qb_level_hint(NULL_CSTR, true, JOIN_ORDER_HINT_ENUM, $3);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           JOIN_ORDER_HINT '(' HINT_ARG_QB_NAME opt_hint_param_table_list_empty_qb ')'
           {
             $$= NEW_PTN PT_qb_level_hint($3, true, JOIN_ORDER_HINT_ENUM, $4);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           |
           JOIN_FIXED_ORDER_HINT '(' opt_qb_name  ')'
           {
             $$= NEW_PTN PT_qb_level_hint($3, true, JOIN_FIXED_ORDER_HINT_ENUM, 0);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
           ;
@@ -452,27 +459,27 @@ table_level_hint:
           table_level_hint_type_on '(' opt_hint_param_table_list ')'
           {
             $$= NEW_PTN PT_table_level_hint(NULL_CSTR, $3, true, $1);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         | table_level_hint_type_on
           '(' HINT_ARG_QB_NAME opt_hint_param_table_list_empty_qb ')'
           {
             $$= NEW_PTN PT_table_level_hint($3, $4, true, $1);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         | table_level_hint_type_off '(' opt_hint_param_table_list ')'
           {
             $$= NEW_PTN PT_table_level_hint(NULL_CSTR, $3, false, $1);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         | table_level_hint_type_off
           '(' HINT_ARG_QB_NAME opt_hint_param_table_list_empty_qb ')'
           {
             $$= NEW_PTN PT_table_level_hint($3, $4, false, $1);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         ;
@@ -482,14 +489,14 @@ index_level_hint:
           '(' hint_param_table_ext opt_hint_param_index_list ')'
           {
             $$= NEW_PTN PT_key_level_hint($3, $4, true, $1);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         | key_level_hint_type_off
           '(' hint_param_table_ext opt_hint_param_index_list ')'
           {
             $$= NEW_PTN PT_key_level_hint($3, $4, false, $1);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         ;
@@ -614,7 +621,7 @@ qb_name_hint:
           QB_NAME_HINT '(' HINT_ARG_IDENT ')'
           {
             $$= NEW_PTN PT_hint_qb_name($3);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         ;
@@ -623,7 +630,7 @@ set_var_hint:
           SET_VAR_HINT '(' set_var_ident '=' set_var_arg ')'
           {
             $$= NEW_PTN PT_hint_sys_var($3, $5);
-            if ($$ == NULL)
+            if ($$ == nullptr)
               YYABORT; // OOM
           }
         ;
@@ -652,12 +659,12 @@ set_var_num_item:
             if (parse_int(&n, $1.str, $1.length))
             {
               scanner->syntax_warning(ER_THD(thd, ER_WRONG_SIZE_NUMBER));
-              $$= NULL;
+              $$= nullptr;
             }
             else
             {
               $$= NEW_PTN Item_int((ulonglong)n);
-              if ($$ == NULL)
+              if ($$ == nullptr)
                 YYABORT; // OOM
             }
           }
@@ -671,7 +678,7 @@ set_var_num_item:
             if (parse_int(&n, $1.str, $1.length - 1))
             {
               scanner->syntax_warning(ER_THD(thd, ER_WRONG_SIZE_NUMBER));
-              $$= NULL;
+              $$= nullptr;
             }
             else
             {
@@ -681,18 +688,18 @@ set_var_num_item:
               case 'M': multiplier= 1024 * 1024; break;
               case 'G': multiplier= 1024 * 1024 * 1024; break;
               default:
-                assert(0); // should not happen
+                assert(false);  // should not happen
                 YYABORT;        // for sure
               }
               if (1.0L * n * multiplier > LLONG_MAX_DOUBLE)
               {
                 scanner->syntax_warning(ER_THD(thd, ER_WRONG_SIZE_NUMBER));
-                $$= NULL;
+                $$= nullptr;
               }
               else
               {
                 $$= NEW_PTN Item_int((ulonglong)n * multiplier);
-                if ($$ == NULL)
+                if ($$ == nullptr)
                   YYABORT; // OOM
               }
             }
@@ -708,7 +715,7 @@ set_var_string_item:
         set_var_text_value
         {
           $$= NEW_PTN Item_string($1.str, $1.length, thd->charset());
-          if ($$ == NULL)
+          if ($$ == nullptr)
             YYABORT; // OOM
         }
 

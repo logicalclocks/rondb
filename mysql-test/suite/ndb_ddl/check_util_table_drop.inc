@@ -21,27 +21,25 @@ SHOW CREATE TABLE t1;
 
 --connection mysqld5
 # Clear the binlog to prepare for checking if a LOST_EVENTS appears later
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 
 --echo # Drop mysql.$util_table_name from NDB
 --exec $NDB_DROP_TABLE -d mysql $util_table_name
 
---connection mysqld1
---echo # mysqld1: Wait until ready again...
---source include/ndb_not_readonly.inc
-
---connection mysqld3
---echo # mysqld3: Wait until ready again...
---source include/ndb_not_readonly.inc
-
---connection mysqld5
---echo # mysqld5: Wait until ready again...
---source include/ndb_not_readonly.inc
+# Wait for all servers connected again
+let $i = 1;
+while($i <= $NUM_MYSQLDS)
+{
+  --connection mysqld$i
+  --echo # mysqld$i: Wait until ready again...
+  --source include/ndb_not_readonly.inc
+  inc $i;
+}
 
 --connection mysqld5
 # NOTE! Neither drop of ndb_schema or ndb_schema_result should have a LOST_EVENT
 --echo # Check if a LOST_EVENTS event was written to the binlog
---source include/show_binlog_events.inc
+--source include/rpl/deprecated/show_binlog_events.inc
 
 --connection mysqld1
 ALTER TABLE t1 ADD COLUMN b int not null;

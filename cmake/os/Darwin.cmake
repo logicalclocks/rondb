@@ -1,15 +1,16 @@
-# Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -45,12 +46,10 @@ IF(NOT FORCE_UNSUPPORTED_COMPILER)
 ENDIF()
 
 # This is used for the version_compile_machine variable.
-IF(CMAKE_SIZEOF_VOID_P MATCHES 8)
-  IF(APPLE_ARM)
-    SET(MYSQL_MACHINE_TYPE "arm64")
-  ELSE()
-    SET(MYSQL_MACHINE_TYPE "x86_64")
-  ENDIF()
+IF(APPLE_ARM)
+  SET(MYSQL_MACHINE_TYPE "arm64")
+ELSE()
+  SET(MYSQL_MACHINE_TYPE "x86_64")
 ENDIF()
 
 # CMAKE_CXX_ARCHIVE_CREATE is by default
@@ -69,6 +68,12 @@ ENDIF()
 # Use this by default for Ninja and Makefiles.
 IF(APPLE_XCODE)
   SET(WITH_LIBTOOL_DEFAULT ON)
+  if (XCODE_VERSION VERSION_LESS 14)
+     set( CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "" CACHE INTERNAL "" )
+  else()
+     set( CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-" CACHE INTERNAL "" )
+     set( CMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS "--deep -o linker-signed --timestamp" CACHE INTERNAL "")
+  endif()
 ELSE()
   SET(WITH_LIBTOOL_DEFAULT OFF)
 ENDIF()

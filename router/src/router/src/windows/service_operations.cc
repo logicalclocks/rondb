@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,7 +29,7 @@
 #ifdef _WIN32
 
 void add_service_options(CmdArgHandler &arg_handler,
-                         ServiceConfOptions &conf_opts) {
+                         ServiceConfOptions *conf_opts) {
   using OptionNames = CmdOption::OptionNames;
 
   arg_handler.add_option(
@@ -38,10 +39,12 @@ void add_service_options(CmdArgHandler &arg_handler,
           "automatically at system boot (<SERVICE_NAME>='" +
           std::string(kDefaultServiceName) + "' if not provided)",
       CmdOptionValueReq::optional, "SERVICE_NAME",
-      [&](const std::string &name) {
-        conf_opts.operation = ServiceOperation::Install;
-        conf_opts.service_name = name.empty() ? kDefaultServiceName : name;
-        conf_opts.service_display_name =
+      [=](const std::string &name) {
+        if (conf_opts == nullptr) return;
+
+        conf_opts->operation = ServiceOperation::Install;
+        conf_opts->service_name = name.empty() ? kDefaultServiceName : name;
+        conf_opts->service_display_name =
             name.empty() ? kDefaultServiceDisplayName : name;
       });
 
@@ -52,10 +55,12 @@ void add_service_options(CmdArgHandler &arg_handler,
           "(<SERVICE_NAME>='" +
           std::string(kDefaultServiceName) + "' if not provided)",
       CmdOptionValueReq::optional, "SERVICE_NAME",
-      [&](const std::string &name) {
-        conf_opts.operation = ServiceOperation::InstallManual;
-        conf_opts.service_name = name.empty() ? kDefaultServiceName : name;
-        conf_opts.service_display_name =
+      [=](const std::string &name) {
+        if (conf_opts == nullptr) return;
+
+        conf_opts->operation = ServiceOperation::InstallManual;
+        conf_opts->service_name = name.empty() ? kDefaultServiceName : name;
+        conf_opts->service_display_name =
             name.empty() ? kDefaultServiceDisplayName : name;
       });
 
@@ -65,10 +70,12 @@ void add_service_options(CmdArgHandler &arg_handler,
           " from a Windows services (<SERVICE_NAME>='" +
           std::string(kDefaultServiceName) + "' if not provided)",
       CmdOptionValueReq::optional, "SERVICE_NAME",
-      [&](const std::string &name) {
-        conf_opts.operation = ServiceOperation::Remove;
-        conf_opts.service_name = name.empty() ? kDefaultServiceName : name;
-        conf_opts.service_display_name =
+      [=](const std::string &name) {
+        if (conf_opts == nullptr) return;
+
+        conf_opts->operation = ServiceOperation::Remove;
+        conf_opts->service_name = name.empty() ? kDefaultServiceName : name;
+        conf_opts->service_display_name =
             name.empty() ? kDefaultServiceDisplayName : name;
       });
 
@@ -80,10 +87,12 @@ void add_service_options(CmdArgHandler &arg_handler,
           "command line. (<SERVICE_NAME>='" +
           std::string(kDefaultServiceName) + "' if not provided)",
       CmdOptionValueReq::optional, "SERVICE_NAME",
-      [&](const std::string &name) {
-        conf_opts.operation = ServiceOperation::Start;
-        conf_opts.service_name = name.empty() ? kDefaultServiceName : name;
-        conf_opts.service_display_name =
+      [=](const std::string &name) {
+        if (conf_opts == nullptr) return;
+
+        conf_opts->operation = ServiceOperation::Start;
+        conf_opts->service_name = name.empty() ? kDefaultServiceName : name;
+        conf_opts->service_display_name =
             name.empty() ? kDefaultServiceDisplayName : name;
       });
 }

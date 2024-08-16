@@ -1,15 +1,16 @@
-/* Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -68,7 +69,7 @@ static inline longlong sint8korr(const uchar *A) {
 }
 
 static inline void int2store(uchar *T, uint16 A) {
-  uint def_temp = A;
+  const uint def_temp = A;
   *(T) = (uchar)(def_temp);
   *(T + 1) = (uchar)(def_temp >> 8);
 }
@@ -91,7 +92,7 @@ static inline void int7store(uchar *T, ulonglong A) {
 }
 
 static inline void int8store(uchar *T, ulonglong A) {
-  uint def_temp = (uint)A, def_temp2 = (uint)(A >> 32);
+  const uint def_temp = (uint)A, def_temp2 = (uint)(A >> 32);
   int4store(T, def_temp);
   int4store(T + 4, def_temp2);
 }

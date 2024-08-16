@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -83,8 +83,7 @@ class RDRSRonDBConnection {
    * Return resource back to the pool.
    *
    * @param ndb_object ndb objct
-   * @param stauts of last operation performed using this ndb object. it can be null
-   * @return void
+   * @param status of last operation performed using this ndb object. it can be null
    */
   void ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *status);
 
@@ -111,9 +110,10 @@ class RDRSRonDBConnection {
  private:
   /**
    * Purge. Delete all Ndb objects and shutdown connection
-   * @paran end. If true then it will also free the memory
+   * @param end If true then it will also free the memory
    * used to store nodeIds and connection string
    *
+   * @return RS_Status
    */
   RS_Status Shutdown(bool end);
 };

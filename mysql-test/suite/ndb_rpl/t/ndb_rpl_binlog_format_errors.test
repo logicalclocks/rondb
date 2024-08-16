@@ -36,17 +36,13 @@
 # decide_logging_format(). Condition 8 requires a self-logging engine which
 # is the case of NDB and therefore it is tested in this script.
 
-# Need debug so that 'SET @@session.debug' works.
---source include/have_debug.inc
-# Need example plugin because it is the only statement-only engine.
---source include/have_example_plugin.inc
 # The test changes binlog_format, so there is no reason to run it
 # under more than one binlog format.
 --source include/have_binlog_format_row.inc
 --source include/have_ndb.inc
 # The test requires MyISAM engine
 --source include/have_myisam.inc
---source suite/ndb_rpl/ndb_master-slave.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
 
 --disable_query_log
 CALL mtr.add_suppression("Unsafe statement written to the binary log using statement format since BINLOG_FORMAT = STATEMENT");
@@ -57,16 +53,16 @@ CALL mtr.add_suppression("Cannot execute statement: impossible to write to binar
 
 
 --echo [on master]
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 
 CREATE TABLE t (a VARCHAR(100)) ENGINE = MYISAM;
 CREATE TABLE t_self_logging (a VARCHAR(100)) ENGINE = NDB;
 
 --echo [on slave]
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
 --echo [on master]
---source include/rpl_connection_master.inc
+--source include/rpl/connection_source.inc
 
 --echo ==== Test ====
 
@@ -82,6 +78,6 @@ SELECT * FROM t /* Should be empty */;
 
 --echo ==== Clean up ====
 DROP TABLE t, t_self_logging;
---source include/sync_slave_sql_with_master.inc
+--source include/rpl/sync_to_replica.inc
 
---source include/rpl_end.inc
+--source include/rpl/deinit.inc

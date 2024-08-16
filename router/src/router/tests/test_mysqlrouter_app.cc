@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -67,15 +68,15 @@ using mysqlrouter::SysUserOperationsBase;
 
 class MockSysUserOperations : public SysUserOperationsBase {
  public:
-  MOCK_METHOD2(initgroups, int(const char *, gid_type));
-  MOCK_METHOD1(setgid, int(gid_t));
-  MOCK_METHOD1(setuid, int(uid_t));
-  MOCK_METHOD1(setegid, int(gid_t));
-  MOCK_METHOD1(seteuid, int(uid_t));
-  MOCK_METHOD0(geteuid, uid_t());
-  MOCK_METHOD1(getpwnam, struct passwd *(const char *));
-  MOCK_METHOD1(getpwuid, struct passwd *(uid_t));
-  MOCK_METHOD3(chown, int(const char *, uid_t, gid_t));
+  MOCK_METHOD(int, initgroups, (const char *, gid_type), (override));
+  MOCK_METHOD(int, setgid, (gid_t), (override));
+  MOCK_METHOD(int, setuid, (uid_t), (override));
+  MOCK_METHOD(int, setegid, (gid_t), (override));
+  MOCK_METHOD(int, seteuid, (uid_t), (override));
+  MOCK_METHOD(uid_t, geteuid, (), (override));
+  MOCK_METHOD(struct passwd *, getpwnam, (const char *), (override));
+  MOCK_METHOD(struct passwd *, getpwuid, (uid_t), (override));
+  MOCK_METHOD(int, chown, (const char *, uid_t, gid_t), (override));
 };
 
 #endif  // #ifndef _WIN32
@@ -276,8 +277,9 @@ TEST_F(AppTest, CmdLineExtraConfigNoDefaultFail) {
     // in success
     bool parse_ok = mysqlrouter::substitute_envvar(path);
     if (parse_ok) {
-      std::string real_path =
-          mysqlrouter::substitute_variable(path, "{origin}", g_program_name);
+      std::string real_path = mysqlrouter::substitute_variable(
+          path, "{origin}",
+          mysql_harness::Path(g_program_name).dirname().str());
       ASSERT_FALSE(mysql_harness::Path(real_path).exists())
           << "expected that '" << real_path << "' (part of CONFIG_FILES='"
           << CONFIG_FILES << "') does not exist";
@@ -547,8 +549,8 @@ TEST_F(AppTest, SetConfigUserBeforeInitializingLogger) {
   const char *user = "mysqlrouter";
 
   std::string tmp_dir = mysql_harness::get_tmp_dir("AppTest");
-  std::shared_ptr<void> exit_guard(
-      nullptr, [&](void *) { mysql_harness::delete_dir_recursive(tmp_dir); });
+  Scope_guard exit_guard(
+      [&]() { mysql_harness::delete_dir_recursive(tmp_dir); });
 
   // copy config file and add user option to [DEFAULT] section
   {

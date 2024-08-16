@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -187,10 +188,10 @@ int table_global_variables::make_row(const System_variable *system_var) {
     We are about to return a row to the SQL layer.
     Notify the audit plugins that a global variable is read.
   */
-  mysql_audit_notify(current_thd, AUDIT_EVENT(MYSQL_AUDIT_GLOBAL_VARIABLE_GET),
-                     m_row.m_variable_name.m_str,
-                     m_row.m_variable_value.get_str(),
-                     m_row.m_variable_value.get_length());
+  mysql_event_tracking_global_variable_notify(
+      current_thd, AUDIT_EVENT(EVENT_TRACKING_GLOBAL_VARIABLE_GET),
+      m_row.m_variable_name.m_str, m_row.m_variable_value.get_str(),
+      m_row.m_variable_value.get_length());
 
   return 0;
 }

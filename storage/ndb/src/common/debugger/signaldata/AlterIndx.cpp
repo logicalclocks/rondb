@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
     Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,15 +27,13 @@
 #include <signaldata/AlterIndx.hpp>
 #include <signaldata/DictSignal.hpp>
 
-bool
-printALTER_INDX_REQ(FILE* output, const Uint32* theData, Uint32 len, Uint16)
-{
-  if (len < AlterIndxReq::SignalLength)
-  {
+bool printALTER_INDX_REQ(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16) {
+  if (len < AlterIndxReq::SignalLength) {
     assert(false);
     return false;
   }
-  const AlterIndxReq* sig = (const AlterIndxReq*)theData;
+  const AlterIndxReq *sig = (const AlterIndxReq *)theData;
   fprintf(output, " clientRef: 0x%x", sig->clientRef);
   fprintf(output, " clientData: %u", sig->clientData);
   fprintf(output, "\n");
@@ -42,9 +41,9 @@ printALTER_INDX_REQ(FILE* output, const Uint32* theData, Uint32 len, Uint16)
   fprintf(output, " transKey: %u", sig->transKey);
   fprintf(output, "\n");
   fprintf(output, " requestInfo: type: %u extra: %u flags: [%s]",
-                  DictSignal::getRequestType(sig->requestInfo),
-                  DictSignal::getRequestExtra(sig->requestInfo),
-                  DictSignal::getRequestFlagsText(sig->requestInfo));
+          DictSignal::getRequestType(sig->requestInfo),
+          DictSignal::getRequestExtra(sig->requestInfo),
+          DictSignal::getRequestFlagsText(sig->requestInfo));
   fprintf(output, "\n");
   fprintf(output, " indexId: %u", sig->indexId);
   fprintf(output, " indexVersion: 0x%x", sig->indexVersion);
@@ -52,15 +51,13 @@ printALTER_INDX_REQ(FILE* output, const Uint32* theData, Uint32 len, Uint16)
   return true;
 }
 
-bool
-printALTER_INDX_CONF(FILE* output, const Uint32* theData, Uint32 len, Uint16)
-{
-  if (len < AlterIndxConf::SignalLength)
-  {
+bool printALTER_INDX_CONF(FILE *output, const Uint32 *theData, Uint32 len,
+                          Uint16) {
+  if (len < AlterIndxConf::SignalLength) {
     assert(false);
     return false;
   }
-  const AlterIndxConf* sig = (const AlterIndxConf*)theData;
+  const AlterIndxConf *sig = (const AlterIndxConf *)theData;
   fprintf(output, " senderRef: 0x%x", sig->senderRef);
   fprintf(output, " clientData: %u", sig->clientData);
   fprintf(output, "\n");
@@ -72,15 +69,13 @@ printALTER_INDX_CONF(FILE* output, const Uint32* theData, Uint32 len, Uint16)
   return true;
 }
 
-bool
-printALTER_INDX_REF(FILE* output, const Uint32* theData, Uint32 len, Uint16)
-{
-  if (len < AlterIndxRef::SignalLength)
-  {
+bool printALTER_INDX_REF(FILE *output, const Uint32 *theData, Uint32 len,
+                         Uint16) {
+  if (len < AlterIndxRef::SignalLength) {
     assert(false);
     return false;
   }
-  const AlterIndxRef* sig = (const AlterIndxRef*)theData;
+  const AlterIndxRef *sig = (const AlterIndxRef *)theData;
   fprintf(output, " senderRef: 0x%x", sig->senderRef);
   fprintf(output, " clientData: %u", sig->clientData);
   fprintf(output, "\n");

@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -78,12 +79,14 @@ class Page_load : private ut::Non_copyable {
         m_page_no(page_no),
         m_level(level),
         m_is_comp(dict_table_is_comp(index->table)),
-        m_flush_observer(observer) {
+        m_flush_observer(observer),
+        m_n_blocks_buf_fixed(0) {
     ut_ad(!dict_index_is_spatial(m_index));
   }
 
   /** Destructor */
   ~Page_load() noexcept {
+    ut_ad(m_n_blocks_buf_fixed == 0);
     if (m_heap != nullptr) {
       /* mtr is allocated using heap. */
       if (m_mtr != nullptr) {
@@ -284,6 +287,9 @@ class Page_load : private ut::Non_copyable {
 
   /** Page modified flag. */
   bool m_modified{};
+
+  /** Number of blocks which are buffer fixed but not pushed to mtr memo */
+  int32_t m_n_blocks_buf_fixed{};
 
   friend class Btree_load;
 };
@@ -810,6 +816,7 @@ void Page_load::release() noexcept {
 
   /* We fix the block because we will re-pin it soon. */
   buf_block_buf_fix_inc(m_block, UT_LOCATION_HERE);
+  m_n_blocks_buf_fixed++;
 
   m_modify_clock = m_block->get_modify_clock(IF_DEBUG(true));
 
@@ -851,6 +858,8 @@ void Page_load::latch() noexcept {
   }
 
   buf_block_buf_fix_dec(m_block);
+  m_n_blocks_buf_fixed--;
+  ut_ad(m_n_blocks_buf_fixed >= 0);
 
   /* The caller is going to use the m_block, so it needs to be buffer-fixed
   even after the decrement above. This works like this:
@@ -974,11 +983,13 @@ dberr_t Btree_load::page_commit(Page_load *page_loader,
 }
 
 void Btree_load::log_free_check() noexcept {
-  if (log_free_check_is_required()) {
+  ut_ad(m_n_recs > 0);
+  bool is_req = log_free_check_is_required();
+  DBUG_EXECUTE_IF("btree_load_simulate_log_free", is_req = true;);
+
+  if (is_req) {
     release();
-
     ::log_free_check();
-
     latch();
   }
 }
@@ -996,6 +1007,7 @@ Btree_load::~Btree_load() noexcept {
 }
 
 void Btree_load::release() noexcept {
+  ut_ad(m_n_recs > 0);
   auto page_loader = m_page_loaders[0];
   page_loader->release();
 }
@@ -1043,6 +1055,7 @@ dberr_t Btree_load::prepare_space(Page_load *&page_loader, size_t level,
     auto err = page_commit(page_loader, sibling_page_loader, true);
 
     if (err != DB_SUCCESS) {
+      sibling_page_loader->finish();
       sibling_page_loader->rollback();
       ut::delete_(sibling_page_loader);
       return err;
@@ -1170,6 +1183,9 @@ dberr_t Btree_load::insert(dtuple_t *tuple, size_t level) noexcept {
           })
 
       err = insert(page_loader, tuple, big_rec, rec_size);
+      if (err == DB_SUCCESS) {
+        ++m_n_recs;
+      }
     }
   }
 
@@ -1308,8 +1324,6 @@ dberr_t Btree_load::build(Cursor &cursor) noexcept {
       break;
     }
 
-    ++m_n_recs;
-
     IF_ENABLED("ddl_btree_load_interrupt",
                interrupt_check = TRX_INTERRUPTED_CHECK;);
 
@@ -1319,6 +1333,5 @@ dberr_t Btree_load::build(Cursor &cursor) noexcept {
       break;
     }
   }
-
   return err == DB_END_OF_INDEX ? DB_SUCCESS : err;
 }

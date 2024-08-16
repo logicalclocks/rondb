@@ -1,17 +1,18 @@
 /*
- Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+ Copyright (c) 2010, 2024, Oracle and/or its affiliates.
  Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,17 +26,18 @@
 
 #ifdef TEST_MYSQL_UTILS_TEST
 
-#include <string.h> // not using namespaces yet
-#include <stdio.h> // not using namespaces yet
-#include <stdlib.h> // not using namespaces yet
+#include <stdio.h>   // not using namespaces yet
+#include <stdlib.h>  // not using namespaces yet
+#include <string.h>  // not using namespaces yet
 
-#include <util/NdbTap.hpp>
 #include <util/BaseString.hpp>
+#include <util/NdbTap.hpp>
 
+#include "CharsetMap.hpp"
 #include "dbug_utils.hpp"
 #include "decimal_utils.hpp"
-#include "CharsetMap.hpp"
 
+#include "decimal.h"
 #include "my_sys.h"
 #include "mysql.h"
 
@@ -45,136 +47,134 @@
 
 // return non-zero value on failed condition
 // C99's __func__ not supported by some C++ compilers yet (Solaris)
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            fflush(stdout);                                             \
-            fprintf(stderr, "\n!!! failed check: " TOSTRING(cond)       \
-                    ", file: " __FILE__                                 \
-                    ", line: " TOSTRING(__LINE__)                       \
-                    ".\n");                                             \
-            fflush(stderr);                                             \
-            return 1;                                                   \
-        }                                                               \
-    } while (0)
+#define CHECK(cond)                                                   \
+  do {                                                                \
+    if (!(cond)) {                                                    \
+      fflush(stdout);                                                 \
+      fprintf(stderr, "\n!!! failed check: " TOSTRING(                \
+                          cond) ", file: " __FILE__                   \
+                                ", line: " TOSTRING(__LINE__) ".\n"); \
+      fflush(stderr);                                                 \
+      return 1;                                                       \
+    }                                                                 \
+  } while (0)
 
-int test_dbug_utils()
-{
-    printf("\n==== DBUG Utilities ====\n");
-    const int DBUG_BUF_SIZE = 1024;
-    char buffer[DBUG_BUF_SIZE];
+int test_dbug_utils() {
+  printf("\n==== DBUG Utilities ====\n");
+  const int DBUG_BUF_SIZE = 1024;
+  char buffer[DBUG_BUF_SIZE];
 
-    const char * s = "some initial string";
-    const char * const s0 = "";
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s0));
+  const char *s = "some initial string";
+  const char *const s0 = "";
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s0));
 
-    s = dbugExplain(nullptr, DBUG_BUF_SIZE);
-    CHECK(!s);
+  s = dbugExplain(nullptr, DBUG_BUF_SIZE);
+  CHECK(!s);
 
-    s = dbugExplain(buffer, 0);
-    CHECK(!s);
+  s = dbugExplain(buffer, 0);
+  CHECK(!s);
 
-    const char * const s1 = "t";
-    dbugSet(s1);
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s1));
+  const char *const s1 = "t";
+  dbugSet(s1);
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s1));
 
-    dbugSet(nullptr);
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s1));
+  dbugSet(nullptr);
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s1));
 
-    /* Build dbug string honoring setting of TMPDIR
-       using the format "d,somename:o,<TMPDIR>/somepath"
-     */
-    BaseString tmp("d,somename:o,");
-    const char* tmpd = getenv("TMPDIR");
-    if(tmpd)
-      tmp.append(tmpd);
-    else
-      tmp.append("/tmp");
-    tmp.append("/somepath");
-    const char * const s2 = tmp.c_str();
-    dbugPush(s2);
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s2));
+  /* Build dbug string honoring setting of TMPDIR
+     using the format "d,somename:o,<TMPDIR>/somepath"
+   */
+  BaseString tmp("d,somename:o,");
+  const char *tmpd = getenv("TMPDIR");
+  if (tmpd)
+    tmp.append(tmpd);
+  else
+    tmp.append("/tmp");
+  tmp.append("/somepath");
+  const char *const s2 = tmp.c_str();
+  dbugPush(s2);
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s2));
 
-    dbugPush(nullptr);
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s2));
+  dbugPush(nullptr);
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s2));
 
-    const char * const s3 = "d,a,b,c,x,y,z";
-    dbugPush(s3);
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || (strspn(s, s3) == strlen(s3))); // allow for different order
+  const char *const s3 = "d,a,b,c,x,y,z";
+  dbugPush(s3);
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || (strspn(s, s3) == strlen(s3)));  // allow for different order
 
-    dbugPop();
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s2));
+  dbugPop();
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s2));
 
-    dbugPop();
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s1));
+  dbugPop();
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s1));
 
-    dbugPush(nullptr);
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s1));
+  dbugPush(nullptr);
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s1));
 
-    dbugPop();
-    s = dbugExplain(buffer, DBUG_BUF_SIZE);
-    CHECK(!s || !strcmp(s, s0));
+  dbugPop();
+  s = dbugExplain(buffer, DBUG_BUF_SIZE);
+  CHECK(!s || !strcmp(s, s0));
 
-    return 0;
+  return 0;
 }
 
-int test_decimal(const char *s, int prec, int scale, int expected_rv)
-{
-    char bin_buff[128], str_buff[128];
-    int r1, r2 = 0;
-    int bin_len;
-    /*
-     * If scale is negative, set bin_len to zero to pass following checks.
-     * Call to decimal_bin2str is expected to fail with E_DEC_BAD_SCALE.
-     */
-    if (scale < 0) bin_len = 0;
-    else bin_len = decimal_bin_size(prec, scale);
-    CHECK(bin_len >= 0);
-    CHECK((unsigned)bin_len <= sizeof(bin_buff));
+int test_decimal(const char *s, int prec, int scale, int expected_rv) {
+  char bin_buff[128], str_buff[128];
+  int r1, r2 = 0;
+  int bin_len;
+  /*
+   * If scale is negative, set bin_len to zero to pass following checks.
+   * Call to decimal_bin2str is expected to fail with E_DEC_BAD_SCALE.
+   */
+  if (scale < 0)
+    bin_len = 0;
+  else
+    bin_len = decimal_bin_size(prec, scale);
+  CHECK(bin_len >= 0);
+  CHECK((unsigned)bin_len <= sizeof(bin_buff));
 
-    str_buff[0] = 0;
+  str_buff[0] = 0;
 
-    // cast: decimal_str2bin expects 'int' for size_t strlen()
-    r1 = decimal_str2bin(s, (int)strlen(s), prec, scale, bin_buff, 128);
-    if(r1 <= E_DEC_OVERFLOW) {
-      r2 = decimal_bin2str(bin_buff, bin_len, prec, scale, str_buff, 128);
-      CHECK(r2 == E_DEC_OK);
-    }
-    printf("[%-2d,%-2d] %-29s => res=%d,%d     %s\n",
-           prec, scale, s, r1, r2, str_buff);
+  // cast: decimal_str2bin expects 'int' for size_t strlen()
+  r1 = decimal_str2bin(s, (int)strlen(s), prec, scale, bin_buff, 128);
+  if (r1 <= E_DEC_OVERFLOW) {
+    r2 = decimal_bin2str(bin_buff, bin_len, prec, scale, str_buff, 128);
+    CHECK(r2 == E_DEC_OK);
+  }
+  printf("[%-2d,%-2d] %-29s => res=%d,%d     %s\n", prec, scale, s, r1, r2,
+         str_buff);
 
-    if(r1 != expected_rv)
-        printf("decimal_str2bin returned %d when %d was expected.\n",
-               r1, expected_rv);
-    CHECK(r1 == expected_rv);
+  if (r1 != expected_rv)
+    printf("decimal_str2bin returned %d when %d was expected.\n", r1,
+           expected_rv);
+  CHECK(r1 == expected_rv);
 
-    return 0;
+  return 0;
 }
 
-int test_decimal_conv()
-{
-    printf("\n==== decimal_str2bin() / decimal_bin2str() ====\n");
-    CHECK(test_decimal("100", 3, -1, E_DEC_BAD_SCALE) == 0);
-    CHECK(test_decimal("3.3", 2, 1, E_DEC_OK) == 0);
-    CHECK(test_decimal("124.000", 20, 4, E_DEC_OK) == 0);
-    CHECK(test_decimal("-11", 14, 1, E_DEC_OK) == 0);
-    CHECK(test_decimal("1.123456000000000", 20, 16, E_DEC_OK) == 0);
-    CHECK(test_decimal("-20.333", 4, 2, E_DEC_TRUNCATED) == 0);
-    CHECK(test_decimal("0", 20, 10, E_DEC_OK) == 0);
-    CHECK(test_decimal("1 ", 20, 10, E_DEC_OK) == 0);
-    CHECK(test_decimal("1,35", 20, 10, E_DEC_OK) == 0);
-    CHECK(test_decimal("text", 20, 10, E_DEC_BAD_NUM) == 0);
+int test_decimal_conv() {
+  printf("\n==== decimal_str2bin() / decimal_bin2str() ====\n");
+  CHECK(test_decimal("100", 3, -1, E_DEC_BAD_SCALE) == 0);
+  CHECK(test_decimal("3.3", 2, 1, E_DEC_OK) == 0);
+  CHECK(test_decimal("124.000", 20, 4, E_DEC_OK) == 0);
+  CHECK(test_decimal("-11", 14, 1, E_DEC_OK) == 0);
+  CHECK(test_decimal("1.123456000000000", 20, 16, E_DEC_OK) == 0);
+  CHECK(test_decimal("-20.333", 4, 2, E_DEC_TRUNCATED) == 0);
+  CHECK(test_decimal("0", 20, 10, E_DEC_OK) == 0);
+  CHECK(test_decimal("1 ", 20, 10, E_DEC_OK) == 0);
+  CHECK(test_decimal("1,35", 20, 10, E_DEC_OK) == 0);
+  CHECK(test_decimal("text", 20, 10, E_DEC_BAD_NUM) == 0);
 
-    return 0;
+  return 0;
 }
 
 int test_charset_map()
@@ -320,24 +320,22 @@ int test_charset_map()
     return 0;
 }
 
-int main()
-{
-    ndb_init();
-    // TAP: print number of tests to run
-    plan(3);
+int main() {
+  ndb_init();
+  // TAP: print number of tests to run
+  plan(3);
 
-    // init MySQL lib
-    if (my_init())
-        BAIL_OUT("my_init() failed");
+  // init MySQL lib
+  if (my_init()) BAIL_OUT("my_init() failed");
 
-    // TAP: report test result: ok(passed, non-null format string)
-    ok(test_dbug_utils() == 0, "subtest: dbug_utils");
-    ok(test_decimal_conv() == 0, "subtest: decimal_conv");
-    ok(test_charset_map() == 0, "subtest: charset_map");
+  // TAP: report test result: ok(passed, non-null format string)
+  ok(test_dbug_utils() == 0, "subtest: dbug_utils");
+  ok(test_decimal_conv() == 0, "subtest: decimal_conv");
+  ok(test_charset_map() == 0, "subtest: charset_map");
 
-    ndb_end(0);
-    // TAP: print summary report and return exit status
-    return exit_status();
+  ndb_end(0);
+  // TAP: print summary report and return exit status
+  return exit_status();
 }
 
 #endif

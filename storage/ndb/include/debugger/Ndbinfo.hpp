@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2009, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2009, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,20 +33,14 @@
 
 #define JAM_FILE_ID 230
 
-
 class Ndbinfo {
-public:
-
-  enum ColumnType {
-    String = 1,
-    Number = 2,
-    Number64 = 3
-  };
+ public:
+  enum ColumnType { String = 1, Number = 2, Number64 = 3 };
 
   struct Column {
-    const char* name;
+    const char *name;
     ColumnType coltype;
-    const char* comment;
+    const char *comment;
   };
 
   enum TableId {
@@ -83,23 +78,26 @@ public:
     TABLE_DIST_STATUS_TABLEID =  31,
     TABLE_FRAGMENTS_TABLEID =    32,
     TABLE_REPLICAS_TABLEID =     33,
-    TABLE_DIST_STATUS_ALL_TABLEID =34,
-    TABLE_FRAGMENTS_ALL_TABLEID =35,
+    TABLE_DIST_STATUS_ALL_TABLEID = 34,
+    TABLE_FRAGMENTS_ALL_TABLEID = 35,
     TABLE_REPLICAS_ALL_TABLEID = 36,
     STORED_TABLES_TABLEID =      37,
     PROCESSES_TABLEID =          38,
     CONFIG_NODES_TABLEID =       39,
     PGMAN_TIME_TRACK_STATS_TABLEID = 40,
-    DISKSTAT_TABLEID =           41,
-    DISKSTATS_1SEC_TABLEID =     42,
-    HWINFO_TABLEID =             43,
-    CPUINFO_TABLEID =            44,
-    CPUDATA_TABLEID =            45,
-    CPUDATA_50MS_TABLEID =       46,
-    CPUDATA_1SEC_TABLEID =       47,
-    CPUDATA_20SEC_TABLEID =      48,
-    TABLE_MEM_USE_TABLEID =      49,
-    TABLE_MAP_TABLEID =          50
+    DISKSTAT_TABLEID = 41,
+    DISKSTATS_1SEC_TABLEID = 42,
+    HWINFO_TABLEID = 43,
+    CPUINFO_TABLEID = 44,
+    CPUDATA_TABLEID = 45,
+    CPUDATA_50MS_TABLEID = 46,
+    CPUDATA_1SEC_TABLEID = 47,
+    CPUDATA_20SEC_TABLEID = 48,
+    TABLE_MEM_USE_TABLEID = 49,
+    TABLE_MAP_TABLEID = 50,
+    CERTIFICATES_TABLEID = 51,
+    THREADBLOCK_DETAILS_TABLEID = 52,
+    TRANSPORTER_DETAILS_TABLEID = 53
   };
 
   enum BufferId {
@@ -129,58 +127,49 @@ public:
 
   struct Table {
     struct Members {
-      const char* name;
+      const char *name;
       int ncols;
       int flags;
       std::function<Uint32(const struct Counts &)> estimate_rows;
-      const char* comment;
+      const char *comment;
     } m;
     Column col[1];
 
-    int columns(void) const {
-      return m.ncols;
-    }
+    int columns(void) const { return m.ncols; }
   };
-  static int getNumTables();
-  static const Table& getTable(int i);
-  static const Table& getTable(Uint32 i);
+  static int getNumTableEntries();
+  static const Table *getTable(int i);
+  static const Table *getTable(Uint32 i);
 
   class Row {
     friend class SimulatedBlock;
-    Uint32* start;      // Start of row buffer
-    Uint32* curr;       // Current position in row buffer
-    Uint32* end;        // End of buffer
+    Uint32 *start;      // Start of row buffer
+    Uint32 *curr;       // Current position in row buffer
+    Uint32 *end;        // End of buffer
     int col_counter;    // Current column counter
-    DbinfoScan& m_req;  // The scan parameters
+    DbinfoScan &m_req;  // The scan parameters
     Row();              // Not impl
-    Row(const Row&);    // Not impl
+    Row(const Row &);   // Not impl
   public:
+    Row(class Signal *signal, DbinfoScanReq &req);
 
-    Row(class Signal* signal, DbinfoScanReq& req);
+    Uint32 getLength(void) const { return (Uint32)(curr - start); }
 
-    Uint32 getLength(void) const {
-      return (Uint32)(curr - start);
-    }
+    Uint32 *getDataPtr() const { return start; }
 
-    Uint32* getDataPtr() const {
-      return start;
-    }
-
-    void write_string(const char* col);
+    void write_null();
+    void write_string(const char *col);
     void write_uint32(Uint32 value);
     void write_uint64(Uint64 value);
 
-    int columns(void) const {
-      return col_counter;
-    }
+    int columns(void) const { return col_counter; }
 
   private:
-    bool check_buffer_space(class AttributeHeader& ah) const;
-    void check_attribute_type(class AttributeHeader& ah, ColumnType) const;
+    bool check_buffer_space(class AttributeHeader &ah) const;
+    void check_attribute_type(class AttributeHeader &ah, ColumnType) const;
   };
 
-  struct ScanCursor
-  {
+  struct ScanCursor {
     Uint32 senderRef;
     Uint32 saveSenderRef;
     Uint32 currRef; // The current node, block and instance
@@ -204,10 +193,10 @@ public:
     static constexpr Uint32 MOREDATA_SHIFT = 0;
     static constexpr Uint32 MOREDATA_MASK = 1;
 
-    static bool getHasMoreData(const UintR & flags){
+    static bool getHasMoreData(const UintR &flags) {
       return (bool)((flags >> MOREDATA_SHIFT) & MOREDATA_MASK);
     }
-    static void setHasMoreData(UintR & flags, bool value){
+    static void setHasMoreData(UintR &flags, bool value) {
       flags = (flags & ~(MOREDATA_MASK << MOREDATA_SHIFT)) |
               ((value & MOREDATA_MASK) << MOREDATA_SHIFT);
     }
@@ -217,23 +206,18 @@ public:
     friend class SimulatedBlock;
     Uint32 rows;
     Uint32 bytes;
-    Ratelimit(const Ratelimit&);// Not impl
+    Ratelimit(const Ratelimit &);  // Not impl
   public:
-    Ratelimit() :
-      rows(0),
-      bytes(0){
-    }
+    Ratelimit() : rows(0), bytes(0) {}
 
-    bool need_break(const DbinfoScan& scan) const
-    {
+    bool need_break(const DbinfoScan &scan) const {
       const Uint32 MAX_ROWS = 256;
 
       // Upgrade zero to MAX_ROWS 
       Uint32 maxRows = scan.maxRows ? scan.maxRows : MAX_ROWS; 
 
       // Limit maxRows to MAX_ROWS
-      if (maxRows > MAX_ROWS)
-        maxRows = MAX_ROWS;
+      if (maxRows > MAX_ROWS) maxRows = MAX_ROWS;
 
       if (maxRows != 0 && rows >= maxRows)
         return true; // More than max rows already sent
@@ -244,7 +228,7 @@ public:
   };
 
   struct pool_entry {
-    const char* poolname;
+    const char *poolname;
     Uint64 used;
     Uint64 total;
     Uint64 entry_size;
@@ -293,7 +277,6 @@ public:
     Uint64 val;
   };
 };
-
 
 #undef JAM_FILE_ID
 

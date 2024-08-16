@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -71,20 +72,18 @@
 #include "mysql/harness/stdx/monitor.h"
 #include "mysql_router_thread.h"
 #include "mysql_routing_base.h"
+#include "mysqlrouter/base_protocol.h"
 #include "mysqlrouter/io_thread.h"
 #include "mysqlrouter/routing.h"
 #include "mysqlrouter/routing_component.h"
-#include "mysqlrouter/routing_export.h"
 #include "mysqlrouter/uri.h"
 #include "plugin_config.h"
-#include "protocol/base_protocol.h"
 #include "socket_container.h"
-#include "ssl_mode.h"
 #include "tcp_address.h"
 
 namespace mysql_harness {
 class PluginFuncEnv;
-}
+}  // namespace mysql_harness
 
 struct Nothing {};
 class MySQLRouting;
@@ -94,6 +93,8 @@ class ROUTING_EXPORT AcceptingEndpoint {
   AcceptingEndpoint(net::io_context &io_ctx,
                     const std::string &parent_routing_name)
       : io_ctx_(io_ctx), parent_routing_name_(parent_routing_name) {}
+
+  AcceptingEndpoint(const AcceptingEndpoint &) = delete;
 
   virtual stdx::expected<void, std::error_code> setup() = 0;
   virtual stdx::expected<void, std::error_code> cancel() = 0;
@@ -284,8 +285,6 @@ class ROUTING_EXPORT MySQLRouting : public MySQLRoutingBase {
 
   routing::RoutingStrategy get_routing_strategy() const override;
 
-  routing::AccessMode get_mode() const override;
-
   std::vector<mysql_harness::TCPAddress> get_destinations() const override;
 
   std::vector<MySQLRoutingAPI::ConnData> get_connections() override;
@@ -357,7 +356,7 @@ class ROUTING_EXPORT MySQLRouting : public MySQLRoutingBase {
   /** @brief Routing strategy to use when getting next destination */
   routing::RoutingStrategy routing_strategy_;
 
-  /** @brief Access mode of the servers in the routing */
+  /** @brief access_mode of the servers in the routing */
   routing::AccessMode access_mode_;
 
   /** @brief Maximum active connections

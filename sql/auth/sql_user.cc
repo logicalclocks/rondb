@@ -1,14 +1,15 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,8 +32,6 @@
 #include <vector>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "map_helpers.h"
 #include "mutex_lock.h"  // Mutex_lock
 #include "my_alloc.h"
@@ -41,7 +40,6 @@
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_sqlcommand.h"
 #include "my_sys.h"
 #include "my_time.h"
@@ -50,18 +48,21 @@
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
 #include "mysql/components/services/validate_password.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql/plugin.h"
 #include "mysql/plugin_audit.h"
 #include "mysql/plugin_auth.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysql_time.h"
 #include "mysqld_error.h"
-#include "password.h" /* my_make_scrambled_password */
+#include "nulls.h"
 #include "scope_guard.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"
+#include "sql/auth/authentication_policy.h"
 #include "sql/auth/dynamic_privilege_table.h"
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/dd/cache/dictionary_client.h"
@@ -94,6 +95,8 @@
 #include "sql/table.h"
 #include "sql/thd_raii.h"
 #include "sql_string.h"
+#include "string_with_len.h"
+#include "strxmov.h"
 #include "violite.h"
 /* key_restore */
 
@@ -120,14 +123,16 @@
   @param comma   If true, append a ',' before the the user.
  */
 void log_user(THD *thd, String *str, LEX_USER *user, bool comma = true) {
-  String from_user(user->user.str, user->user.length, system_charset_info);
-  String from_plugin(user->first_factor_auth_info.plugin.str,
-                     user->first_factor_auth_info.plugin.length,
-                     system_charset_info);
-  String from_auth(user->first_factor_auth_info.auth.str,
-                   user->first_factor_auth_info.auth.length,
-                   system_charset_info);
-  String from_host(user->host.str, user->host.length, system_charset_info);
+  const String from_user(user->user.str, user->user.length,
+                         system_charset_info);
+  const String from_plugin(user->first_factor_auth_info.plugin.str,
+                           user->first_factor_auth_info.plugin.length,
+                           system_charset_info);
+  const String from_auth(user->first_factor_auth_info.auth.str,
+                         user->first_factor_auth_info.auth.length,
+                         system_charset_info);
+  const String from_host(user->host.str, user->host.length,
+                         system_charset_info);
 
   if (comma) str->append(',');
   append_query_string(thd, system_charset_info, &from_user, str);
@@ -571,7 +576,7 @@ static bool auth_verify_password_history(
 
   uint32 count = 0;
 
-  int rc = table->file->ha_index_init(0, true);
+  const int rc = table->file->ha_index_init(0, true);
 
   if (rc) {
     table->file->print_error(rc, MYF(0));
@@ -690,7 +695,7 @@ static bool auth_verify_password_history(
   }
 end:
   if (table->file->inited != handler::NONE) {
-    int rc_end = table->file->ha_index_end();
+    const int rc_end = table->file->ha_index_end();
 
     if (rc_end) {
       /* purecov: begin inspected */
@@ -813,7 +818,7 @@ static bool handle_password_history_table(THD *thd, Table_ref *tables,
 
 end:
   if (table->file->inited != handler::NONE) {
-    int rc_end = table->file->ha_index_end();
+    const int rc_end = table->file->ha_index_end();
 
     if (rc_end) {
       /* purecov: begin inspected */
@@ -937,7 +942,8 @@ char translate_byte_to_password_char(unsigned char c) {
   static const std::string translation = std::string(
       "1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY"
       "Z,.-;:_+*!%&/(){}[]<>@");
-  int index = round(((float)c * ((float)(translation.length() - 1) / 255.0)));
+  const int index =
+      round(((float)c * ((float)(translation.length() - 1) / 255.0)));
   return translation[index];
 }
 
@@ -1042,33 +1048,35 @@ bool turn_off_sandbox_mode(THD *thd, LEX_USER *user) {
   Helper method to compare plugin name with authentication_policy for the
   nth factor.
 
-  @param factor    nth factor which needs to be checked.
-  @param plugin    plugin name for nth factor.
-  @param list      authentication_policy value
+  @param plugin         plugin name for nth factor.
+  @param factor_no      nth factor which needs to be checked.
+  @param policy_factors authentication policy factors.
 
   @retval false if plugin matches the policy at nth_factor
   @retval true  if plugin names does not match
 */
-static bool compare_plugin_with_policy(const uint factor,
-                                       const std::string plugin,
-                                       std::vector<std::string> &list) {
+static bool compare_plugin_with_policy(
+    const char *plugin, const uint factor_no,
+    const authentication_policy::Factors &policy_factors) {
   /* if policy does not allow factor factors to be defined report error. */
-  if (list.size() < factor) return true;
+  if (policy_factors.size() < factor_no) return true;
+
+  auto &policy_factor(policy_factors[factor_no - 1]);
   /*
     if plugin name is specified then it must be an exact match against policy
     or should match *.
   */
-  if (plugin.length()) {
-    if (list[factor - 1].length() && list[factor - 1].compare("*") &&
-        my_strcasecmp(system_charset_info, list[factor - 1].c_str(),
-                      plugin.c_str()))
+  if (plugin != nullptr && plugin[0] != 0) {
+    if (!policy_factor.is_optional() && !policy_factor.is_whichever() &&
+        my_strcasecmp(system_charset_info,
+                      policy_factor.get_mandatory_plugin().c_str(), plugin))
       return true;
   } else {
     /*
       if IDENTIFIED BY is specified and plugin length is 0, then policies nth
       factor should contain concrete value.
     */
-    if (list[factor - 1].length() == 0 || list[factor - 1].compare("*") == 0)
+    if (policy_factor.is_optional() || policy_factor.is_whichever())
       return true;
   }
   return false;
@@ -1085,20 +1093,19 @@ static bool compare_plugin_with_policy(const uint factor,
   @param user_name    user on which authentication policy has to be verified
   @param command      sql command to refer to CREATE or ALTER USER
   @param mfa          handler to mfa attributes for given user_name
+  @param policy_factors authentication policy factors
 
   @retval false success allow CREATE/ALTER user
   @retval true  failure CREATE/ALTER user should report error
 */
-static bool check_for_authentication_policy(THD *thd, LEX_USER *user_name,
-                                            enum_sql_command command,
-                                            I_multi_factor_auth *mfa) {
+static bool check_for_authentication_policy(
+    THD *thd, LEX_USER *user_name, enum_sql_command command,
+    I_multi_factor_auth *mfa,
+    const authentication_policy::Factors &policy_factors) {
   bool policy_priv_exist =
       thd->security_context()
           ->has_global_grant(STRING_WITH_LEN("AUTHENTICATION_POLICY_ADMIN"))
           .first;
-  mysql_mutex_lock(&LOCK_authentication_policy);
-  std::vector<std::string> &auth_policy_list = authentication_policy_list;
-  mysql_mutex_unlock(&LOCK_authentication_policy);
   List_iterator<LEX_MFA> mfa_list_it(user_name->mfa_list);
   LEX_MFA *tmp_mfa = nullptr;
   LEX_MFA *second_factor = nullptr;
@@ -1109,16 +1116,15 @@ static bool check_for_authentication_policy(THD *thd, LEX_USER *user_name,
       (mfa ? mfa->get_multi_factor_auth_list() : nullptr);
 
   DBUG_TRACE;
-  assert(!auth_policy_list.empty());
+  assert(!policy_factors.empty());
 
   uint nth_factor = user_name->first_factor_auth_info.nth_factor;
   /* check 1FA method */
   if (user_name->first_factor_auth_info.uses_identified_by_clause ||
       user_name->first_factor_auth_info.uses_identified_with_clause ||
       command == SQLCOM_CREATE_USER) {
-    if (compare_plugin_with_policy(nth_factor,
-                                   user_name->first_factor_auth_info.plugin.str,
-                                   auth_policy_list))
+    if (compare_plugin_with_policy(user_name->first_factor_auth_info.plugin.str,
+                                   nth_factor, policy_factors))
       goto error;
   }
   while ((tmp_mfa = mfa_list_it++)) {
@@ -1130,8 +1136,8 @@ static bool check_for_authentication_policy(THD *thd, LEX_USER *user_name,
     /* ensure plugin method matches against the policy */
     if (tmp_mfa->add_factor || tmp_mfa->modify_factor ||
         command == SQLCOM_CREATE_USER) {
-      if (compare_plugin_with_policy(nth_factor, tmp_mfa->plugin.str,
-                                     auth_policy_list))
+      if (compare_plugin_with_policy(tmp_mfa->plugin.str, nth_factor,
+                                     policy_factors))
         goto error;
     } else if (tmp_mfa->drop_factor) {
       if (nth_factor == 2) {
@@ -1143,20 +1149,20 @@ static bool check_for_authentication_policy(THD *thd, LEX_USER *user_name,
           third_factor_plugin_name = mfa_list->get_mfa_list()[1]
                                          ->get_multi_factor_auth_info()
                                          ->get_plugin_str();
-          if (compare_plugin_with_policy(nth_factor, third_factor_plugin_name,
-                                         auth_policy_list))
+          if (compare_plugin_with_policy(third_factor_plugin_name, nth_factor,
+                                         policy_factors))
             goto error;
-        } else if (auth_policy_list.size() >= nth_factor &&
-                   auth_policy_list[nth_factor - 1].length())
+        } else if (policy_factors.size() >= nth_factor &&
+                   !policy_factors[nth_factor - 1].is_optional())
           goto error;
       } else {
         /*
           3rd factor can be dropped only when authentication policy has an
           empty value in 3rd placeholder or policy list size is 1
         */
-        if ((auth_policy_list.size() == nth_factor &&
-             auth_policy_list[nth_factor - 1].length()) ||
-            auth_policy_list.size() == (nth_factor - 2))
+        if ((policy_factors.size() == nth_factor &&
+             !policy_factors[nth_factor - 1].is_optional()) ||
+            policy_factors.size() == (nth_factor - 2))
           goto error;
       }
     } else if (nth_factor == 2 && mfa_list && mfa_list->is_passwordless()) {
@@ -1167,8 +1173,8 @@ static bool check_for_authentication_policy(THD *thd, LEX_USER *user_name,
       second_factor_plugin_name = mfa_list->get_mfa_list()[0]
                                       ->get_multi_factor_auth_info()
                                       ->get_plugin_str();
-      if (compare_plugin_with_policy(nth_factor - 1, second_factor_plugin_name,
-                                     auth_policy_list)) {
+      if (compare_plugin_with_policy(second_factor_plugin_name, nth_factor - 1,
+                                     policy_factors)) {
         nth_factor = 1;
         goto error;
       }
@@ -1179,13 +1185,13 @@ static bool check_for_authentication_policy(THD *thd, LEX_USER *user_name,
     policy
   */
   if (command == SQLCOM_CREATE_USER) {
-    if (auth_policy_list.size() > nth_factor && !second_factor) {
+    if (policy_factors.size() > nth_factor && !second_factor) {
       nth_factor = 2;
-      if (auth_policy_list[1].length()) goto error;
+      if (!policy_factors[1].is_optional()) goto error;
     }
-    if (auth_policy_list.size() > nth_factor && !third_factor) {
+    if (policy_factors.size() > nth_factor && !third_factor) {
       nth_factor = 3;
-      if (auth_policy_list[2].length()) goto error;
+      if (!policy_factors[2].is_optional()) goto error;
     }
   }
   /*
@@ -1194,17 +1200,17 @@ static bool check_for_authentication_policy(THD *thd, LEX_USER *user_name,
   */
   if (second_factor && third_factor) {
     if (second_factor->drop_factor && third_factor->drop_factor) {
-      if (auth_policy_list.size() == 3) {
-        if (auth_policy_list[1].length()) {
+      if (policy_factors.size() == 3) {
+        if (!policy_factors[1].is_optional()) {
           nth_factor = 2;
           goto error;
-        } else if (auth_policy_list[2].length()) {
+        } else if (!policy_factors[2].is_optional()) {
           nth_factor = 3;
           goto error;
         }
       }
-      if (auth_policy_list.size() == 2) {
-        if (auth_policy_list[1].length()) {
+      if (policy_factors.size() == 2) {
+        if (!policy_factors[1].is_optional()) {
           nth_factor = 2;
           goto error;
         }
@@ -1278,11 +1284,13 @@ bool set_and_validate_user_attributes(
   unsigned int buflen = MAX_FIELD_WIDTH, inbuflen;
   const char *inbuf;
   const char *password = nullptr;
-  enum_sql_command command = thd->lex->sql_command;
+  const enum_sql_command command = thd->lex->sql_command;
   bool current_password_empty = false;
   bool new_password_empty = false;
   char new_password[MAX_FIELD_WIDTH]{0};
   unsigned int new_password_length = 0;
+  authentication_policy::Factors policy_factors;
+  authentication_policy::get_policy_factors(policy_factors);
 
   what_to_set.m_what = NONE_ATTR;
   what_to_set.m_user_attributes = acl_table::USER_ATTRIBUTE_NONE;
@@ -1328,6 +1336,66 @@ bool set_and_validate_user_attributes(
       should be a no-op and be ignored.
     */
     assert(command == SQLCOM_CREATE_USER || command == SQLCOM_CREATE_ROLE);
+
+    /* use the default plugin when it's not supplied */
+    if (!Str->first_factor_auth_info.uses_identified_with_clause)
+      authentication_policy::get_first_factor_default_plugin(
+          thd->mem_root, &Str->first_factor_auth_info.plugin);
+
+    /*
+      Make sure the hashed credentials are set so the statement is logged
+      correctly. We need the plugin reference for this.
+    */
+    st_mysql_auth *auth = nullptr;
+    assert(plugin == nullptr);
+    if (Str->first_factor_auth_info.uses_identified_by_clause ||
+        Str->first_factor_auth_info.uses_authentication_string_clause) {
+      plugin =
+          my_plugin_lock_by_name(nullptr, Str->first_factor_auth_info.plugin,
+                                 MYSQL_AUTHENTICATION_PLUGIN);
+
+      /* check if plugin is loaded */
+      if (!plugin) {
+        what_to_set.m_what = NONE_ATTR;
+        my_error(ER_PLUGIN_IS_NOT_LOADED, MYF(0),
+                 Str->first_factor_auth_info.plugin.str);
+        return true;
+      }
+      auth = (st_mysql_auth *)plugin_decl(plugin)->info;
+    }
+
+    if (Str->first_factor_auth_info.uses_identified_by_clause) {
+      inbuf = Str->first_factor_auth_info.auth.str;
+      inbuflen = (unsigned)Str->first_factor_auth_info.auth.length;
+      if (auth->generate_authentication_string(outbuf, &buflen, inbuf,
+                                               inbuflen)) {
+        plugin_unlock(nullptr, plugin);
+        what_to_set.m_what = NONE_ATTR;
+        /*
+          generate_authentication_string may return error status
+          without setting actual error.
+        */
+        if (!thd->is_error()) {
+          String error_user;
+          log_user(thd, &error_user, Str, false);
+          my_error(ER_CANNOT_USER, MYF(0), cmd, error_user.c_ptr_safe());
+        }
+        return true;
+      }
+      password = strmake_root(thd->mem_root, outbuf, buflen);
+      Str->first_factor_auth_info.auth = {password, buflen};
+    } else if (Str->first_factor_auth_info.uses_authentication_string_clause) {
+      assert(!is_role);
+      if (auth->validate_authentication_string(
+              const_cast<char *>(Str->first_factor_auth_info.auth.str),
+              (unsigned)Str->first_factor_auth_info.auth.length)) {
+        my_error(ER_PASSWORD_FORMAT, MYF(0));
+        plugin_unlock(nullptr, plugin);
+        what_to_set.m_what = NONE_ATTR;
+        return true;
+      }
+    }
+    if (plugin) plugin_unlock(nullptr, plugin);
     what_to_set.m_what = NONE_ATTR;
     return false;
   }
@@ -1368,7 +1436,8 @@ bool set_and_validate_user_attributes(
           so that binlog entry is correct.
         */
         if (!Str->first_factor_auth_info.uses_identified_with_clause)
-          Str->first_factor_auth_info.plugin = default_auth_plugin_name;
+          authentication_policy::get_first_factor_default_plugin(
+              thd->mem_root, &Str->first_factor_auth_info.plugin);
         break;
       }
       case SQLCOM_ALTER_USER: {
@@ -1504,28 +1573,43 @@ bool set_and_validate_user_attributes(
             acl_user->password_reuse_interval;
     }
   } else { /* User does not exist */
+    size_t factor_idx(0);
+    LEX_MFA *lex_mfa(nullptr);
     /*
-      when authentication_policy = 'mysql_native_password,,' and
-      --default-authentication-plugin = 'caching_sha2_password'
-      set default as mysql_native_password.
-      --authentication_policy has precedence over
-      --default-authentication-plugin with 1 exception as below:
-      when authentication_policy = '*,,' and
-      --default-authentication-plugin = 'mysql_native_password'
-      set default as mysql_native_password
-      in case no concrete plugin can be extracted from --authentication_policy
-      for first factor, server picks plugin name from
-      --default-authentication-plugin
+      If 1. factor plugin name is not present in the statement,
+      set the plugin to one defined by authentication_policy
     */
-    if (!Str->first_factor_auth_info.uses_identified_with_clause) {
-      mysql_mutex_lock(&LOCK_authentication_policy);
-      if (authentication_policy_list[0].compare("*") == 0)
-        Str->first_factor_auth_info.plugin = default_auth_plugin_name;
-      else
-        lex_string_strmake(thd->mem_root, &Str->first_factor_auth_info.plugin,
-                           authentication_policy_list[0].c_str(),
-                           authentication_policy_list[0].length());
-      mysql_mutex_unlock(&LOCK_authentication_policy);
+
+    if (Str->first_factor_auth_info.plugin.length <= 0)
+      authentication_policy::get_first_factor_default_plugin(
+          thd->mem_root, &Str->first_factor_auth_info.plugin);
+
+    /*
+      Loop over factors not present in the statement, but defined in the policy.
+
+      If the policy factor defines default plugin
+      add that plugin to the lex factor.
+    */
+
+    for (factor_idx = Str->mfa_list.size() + 1;
+         factor_idx < policy_factors.size(); ++factor_idx) {
+      if (policy_factors[factor_idx].is_optional())
+        break;  // rest of factors must be optional too
+
+      const std::string &plugin_name(
+          policy_factors[factor_idx].get_default_plugin());
+      if (plugin_name.empty()) continue;  // no default plugin defined
+
+      lex_mfa = new (thd->mem_root) LEX_MFA;
+      if (lex_mfa == nullptr) return true;
+
+      lex_string_strmake(thd->mem_root, &lex_mfa->plugin, plugin_name.c_str(),
+                         plugin_name.length());
+      lex_mfa->auth = EMPTY_CSTR;
+      lex_mfa->uses_identified_by_clause = false;
+      lex_mfa->uses_identified_with_clause = true;
+      lex_mfa->nth_factor = factor_idx + 1;
+      Str->mfa_list.push_back(lex_mfa);
     }
 
     if (command == SQLCOM_GRANT) {
@@ -1836,7 +1920,8 @@ bool set_and_validate_user_attributes(
   plugin_unlock(nullptr, plugin);
 
   if (check_for_authentication_policy(thd, Str, command,
-                                      (acl_user ? acl_user->m_mfa : nullptr)))
+                                      (acl_user ? acl_user->m_mfa : nullptr),
+                                      policy_factors))
     return true;
 
   /* initialize MFA */
@@ -1904,13 +1989,13 @@ bool set_and_validate_user_attributes(
     }
     if (mfa) {
       /* validate auth plugins in Multi factor authentication methods */
-      if (mfa->validate_plugins_in_auth_chain(thd)) return true;
+      if (mfa->validate_plugins_in_auth_chain(thd, policy_factors)) return true;
       /*
         Once alter is done check that new mfa methods are inline with
         authentication policy.
       */
       if (command == SQLCOM_ALTER_USER &&
-          mfa->validate_against_authentication_policy(thd))
+          mfa->validate_against_authentication_policy(thd, policy_factors))
         return true;
       /*
         Fill in details related to Multi factor authentication methods into
@@ -1958,14 +2043,14 @@ bool change_password(THD *thd, LEX_USER *lex_user, const char *new_password,
   LEX_USER *combo = nullptr;
   std::set<LEX_USER *> users;
   acl_table::Pod_user_what_to_update what_to_set;
-  size_t new_password_len = strlen(new_password);
+  const size_t new_password_len = strlen(new_password);
   bool transactional_tables;
   bool result = false;
   bool commit_result = false;
   std::string authentication_plugin;
   bool is_role;
   int ret;
-  sql_mode_t old_sql_mode = thd->variables.sql_mode;
+  const sql_mode_t old_sql_mode = thd->variables.sql_mode;
 
   DBUG_TRACE;
   assert(lex_user && lex_user->host.str);
@@ -1985,7 +2070,7 @@ bool change_password(THD *thd, LEX_USER *lex_user, const char *new_password,
     statement based replication and will be reset to the originals
     values when we are out of this function scope
   */
-  Save_and_Restore_binlog_format_state binlog_format_state(thd);
+  const Save_and_Restore_binlog_format_state binlog_format_state(thd);
 
   if ((ret = open_grant_tables(thd, tables, &transactional_tables)))
     return ret != 1;
@@ -2045,7 +2130,8 @@ bool change_password(THD *thd, LEX_USER *lex_user, const char *new_password,
     memset(&(thd->lex->mqh), 0, sizeof(thd->lex->mqh));
     thd->lex->alter_password.cleanup();
 
-    bool is_privileged_user = is_privileged_user_for_credential_change(thd);
+    const bool is_privileged_user =
+        is_privileged_user_for_credential_change(thd);
     /*
       Change_password() only sets the password for one user at a time and
       it does not support the generation of random passwords. Instead it's
@@ -2105,8 +2191,8 @@ bool change_password(THD *thd, LEX_USER *lex_user, const char *new_password,
     commit_result = log_and_commit_acl_ddl(thd, transactional_tables, &users,
                                            &user_params, false, !result);
 
-    mysql_audit_notify(
-        thd, AUDIT_EVENT(MYSQL_AUDIT_AUTHENTICATION_CREDENTIAL_CHANGE),
+    mysql_event_tracking_authentication_notify(
+        thd, AUDIT_EVENT(EVENT_TRACKING_AUTHENTICATION_CREDENTIAL_CHANGE),
         thd->is_error() || result, lex_user->user.str, lex_user->host.str,
         authentication_plugin.c_str(), is_role, nullptr, nullptr);
   } /* Critical section */
@@ -2220,7 +2306,7 @@ static int handle_grant_struct(enum enum_acl_lists struct_no, bool drop,
   auto matches = [user_from, &result](const char *user, const char *host) {
     if (!user) user = "";
     if (!host) host = "";
-    bool match =
+    const bool match =
         strcmp(user_from->user.str, user) == 0 &&
         my_strcasecmp(system_charset_info, user_from->host.str, host) == 0;
     if (match) result = 1;
@@ -2562,23 +2648,24 @@ end:
 
 /**
   This function checks if a user which is referenced as a definer account
-  in objects like view, trigger, event, procedure or function has SET_USER_ID
-  privilege or not and report error or warning based on that.
+  in objects like view, trigger, event, procedure or function has
+  ALLOW_NONEXISTENT_DEFINER privilege or not and
+  report error or warning based on that.
 
   @param thd               The current thread
   @param user_name         user name which is referenced as a definer account
   @param object_type       Can be a view, trigger, event, procedure or function
 
-  @retval false      user_name has SET_USER_ID privilege
-  @retval true       user_name does not have SET_USER_ID privilege
+  @retval false      user_name is allowed as an orphaned definer
+  @retval true       user_name cannot be used as an orphaned definer
 */
-bool check_set_user_id_priv(THD *thd, const LEX_USER *user_name,
-                            const std::string &object_type) {
+static bool stop_if_orphaned_definer(THD *thd, const LEX_USER *user_name,
+                                     const std::string &object_type) {
   String wrong_user;
   log_user(thd, &wrong_user, const_cast<LEX_USER *>(user_name), false);
-  if (!(thd->security_context()
-            ->has_global_grant(STRING_WITH_LEN("SET_USER_ID"))
-            .first)) {
+  if (!thd->security_context()
+           ->has_global_grant(STRING_WITH_LEN("ALLOW_NONEXISTENT_DEFINER"))
+           .first) {
     std::string operation;
     switch (thd->lex->sql_command) {
       case SQLCOM_CREATE_USER:
@@ -2616,15 +2703,8 @@ bool check_set_user_id_priv(THD *thd, const LEX_USER *user_name,
   if the user is referenced as definer in stored programs like procedures,
   functions, triggers, events and views or not.
 
-  If the executing user does not have the SET_USER_ID privilege, and the user
-  in the argument list is referenced as the definer of some entity, we will
-  report an error and return.
-
-  If the executing user has the SET_USER_ID privilege, and the user in the
-  argument list is referenced as the definer of some entity, we will report
-  a warning and continue execution. In this case we will not return, because
-  there may be additional users in the argument list, and if we ignore them,
-  it may mean that a relevant warning would not be reported.
+  If the the user in the argument list is referenced as the definer
+  of some entity, we will report an error and return.
 
   @param thd               The current thread.
   @param list              The users to check for.
@@ -2639,7 +2719,7 @@ static bool check_orphaned_definers(THD *thd, List<LEX_USER> &list) {
   }
   LEX_USER *user_name;
   List_iterator<LEX_USER> user_list(list);
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
 
   // iterate over each user to check if it is referenced in other objects.
   while ((user_name = user_list++) != nullptr) {
@@ -2647,25 +2727,25 @@ static bool check_orphaned_definers(THD *thd, List<LEX_USER> &list) {
 
     // Check events.
     if (thd->dd_client()->is_user_definer<dd::Event>(*user_name, &is_definer) ||
-        (is_definer && check_set_user_id_priv(thd, user_name, "an event")))
+        (is_definer && stop_if_orphaned_definer(thd, user_name, "an event")))
       return true;
 
     // Check views.
     if (thd->dd_client()->is_user_definer<dd::View>(*user_name, &is_definer) ||
-        (is_definer && check_set_user_id_priv(thd, user_name, "a view")))
+        (is_definer && stop_if_orphaned_definer(thd, user_name, "a view")))
       return true;
 
     // Check stored routines.
     if (thd->dd_client()->is_user_definer<dd::Routine>(*user_name,
                                                        &is_definer) ||
         (is_definer &&
-         check_set_user_id_priv(thd, user_name, "a stored routine")))
+         stop_if_orphaned_definer(thd, user_name, "a stored routine")))
       return true;
 
     // Check triggers.
     if (thd->dd_client()->is_user_definer<dd::Trigger>(*user_name,
                                                        &is_definer) ||
-        (is_definer && check_set_user_id_priv(thd, user_name, "a trigger")))
+        (is_definer && stop_if_orphaned_definer(thd, user_name, "a trigger")))
       return true;
   }
 
@@ -2681,7 +2761,6 @@ static bool check_orphaned_definers(THD *thd, List<LEX_USER> &list) {
     mysql_create_user()
     thd                         The current thread.
     list                        The users to create.
-
   RETURN
     false       OK.
     true        Error.
@@ -2710,7 +2789,7 @@ bool mysql_create_user(THD *thd, List<LEX_USER> &list, bool if_not_exists,
     statement based replication and will be reset to the originals
     values when we are out of this function scope
   */
-  Save_and_Restore_binlog_format_state binlog_format_state(thd);
+  const Save_and_Restore_binlog_format_state binlog_format_state(thd);
 
   /* CREATE USER may be skipped on replication client. */
   if ((result = open_grant_tables(thd, tables, &transactional_tables)))
@@ -2828,9 +2907,9 @@ bool mysql_create_user(THD *thd, List<LEX_USER> &list, bool if_not_exists,
 
         /* Check for anonymous user in roles' list */
         while ((role = role_it++) && result == 0) {
-          Auth_id role_id(role);
+          const Auth_id role_id(role);
           if (role->user.length == 0 || *(role->user.str) == '\0') {
-            std::string to_user = create_authid_str_from(tmp_user_name);
+            const std::string to_user = create_authid_str_from(tmp_user_name);
             my_error(ER_FAILED_ROLE_GRANT, MYF(0), role_id.auth_str().c_str(),
                      to_user.c_str());
             break;
@@ -2849,7 +2928,7 @@ bool mysql_create_user(THD *thd, List<LEX_USER> &list, bool if_not_exists,
         /* SYSTEM_USER requirement */
         role_it.rewind();
         while ((role = role_it++) && result == 0) {
-          Auth_id role_id(role);
+          const Auth_id role_id(role);
           if (thd->security_context()->can_operate_with(role_id,
                                                         consts::system_user)) {
             result = 1;
@@ -2861,7 +2940,7 @@ bool mysql_create_user(THD *thd, List<LEX_USER> &list, bool if_not_exists,
           acl_user = find_acl_user(tmp_user_name->host.str,
                                    tmp_user_name->user.str, true);
         if (acl_user == nullptr) {
-          std::string authid = create_authid_str_from(tmp_user_name);
+          const std::string authid = create_authid_str_from(tmp_user_name);
           my_error(ER_USER_DOES_NOT_EXIST, MYF(0), authid.c_str());
           result = 1;
         }
@@ -2869,13 +2948,13 @@ bool mysql_create_user(THD *thd, List<LEX_USER> &list, bool if_not_exists,
         /* Perform role grants */
         role_it.rewind();
         while ((role = role_it++) && result == 0) {
-          Auth_id role_id(role);
+          const Auth_id role_id(role);
           if (!is_granted_role(tmp_user_name->user, tmp_user_name->host,
                                role->user, role->host)) {
             ACL_USER *acl_role =
                 find_acl_user(role->host.str, role->user.str, true);
             if (acl_role == nullptr) {
-              std::string authid = create_authid_str_from(role);
+              const std::string authid = create_authid_str_from(role);
               my_error(ER_USER_DOES_NOT_EXIST, MYF(0), authid.c_str());
               result = 1;
             } else {
@@ -2980,7 +3059,7 @@ bool mysql_drop_user(THD *thd, List<LEX_USER> &list, bool if_exists,
   LEX_USER *user_name, *tmp_user_name;
   List_iterator<LEX_USER> user_list(list);
   Table_ref tables[ACL_TABLES::LAST_ENTRY];
-  sql_mode_t old_sql_mode = thd->variables.sql_mode;
+  const sql_mode_t old_sql_mode = thd->variables.sql_mode;
   bool transactional_tables;
   std::set<LEX_USER *> audit_users;
   DBUG_TRACE;
@@ -3002,7 +3081,7 @@ bool mysql_drop_user(THD *thd, List<LEX_USER> &list, bool if_exists,
     statement based replication and will be reset to the originals
     values when we are out of this function scope
   */
-  Save_and_Restore_binlog_format_state binlog_format_state(thd);
+  const Save_and_Restore_binlog_format_state binlog_format_state(thd);
 
   /* DROP USER may be skipped on replication client. */
   if ((result = open_grant_tables(thd, tables, &transactional_tables)))
@@ -3025,10 +3104,10 @@ bool mysql_drop_user(THD *thd, List<LEX_USER> &list, bool if_exists,
     while ((user = user_list++) != nullptr) {
       if (std::find_if(mandatory_roles.begin(), mandatory_roles.end(),
                        [&](Role_id &id) -> bool {
-                         Role_id id2(user->user, user->host);
+                         const Role_id id2(user->user, user->host);
                          return id == id2;
                        }) != mandatory_roles.end()) {
-        Role_id authid(user->user, user->host);
+        const Role_id authid(user->user, user->host);
         std::string out;
         authid.auth_str(&out);
         my_error(ER_MANDATORY_ROLE, MYF(0), out.c_str());
@@ -3047,8 +3126,8 @@ bool mysql_drop_user(THD *thd, List<LEX_USER> &list, bool if_exists,
 
       audit_users.insert(tmp_user_name);
 
-      int ret = handle_grant_data(thd, tables, true, user_name, nullptr,
-                                  on_drop_role_priv);
+      const int ret = handle_grant_data(thd, tables, true, user_name, nullptr,
+                                        on_drop_role_priv);
       if (ret <= 0) {
         if (ret < 0) {
           result = 1;
@@ -3094,8 +3173,8 @@ bool mysql_drop_user(THD *thd, List<LEX_USER> &list, bool if_exists,
       LEX_USER *audit_user;
       for (LEX_USER *one_user : audit_users) {
         if ((audit_user = get_current_user(thd, one_user)))
-          mysql_audit_notify(
-              thd, AUDIT_EVENT(MYSQL_AUDIT_AUTHENTICATION_AUTHID_DROP),
+          mysql_event_tracking_authentication_notify(
+              thd, AUDIT_EVENT(EVENT_TRACKING_AUTHENTICATION_AUTHID_DROP),
               thd->is_error(), audit_user->user.str, audit_user->host.str,
               audit_user->first_factor_auth_info.plugin.str,
               is_role_id(audit_user), nullptr, nullptr);
@@ -3167,7 +3246,7 @@ bool mysql_rename_user(THD *thd, List<LEX_USER> &list) {
     statement based replication and will be reset to the originals
     values when we are out of this function scope
   */
-  Save_and_Restore_binlog_format_state binlog_format_state(thd);
+  const Save_and_Restore_binlog_format_state binlog_format_state(thd);
 
   /* RENAME USER may be skipped on replication client. */
   if ((result = open_grant_tables(thd, tables, &transactional_tables)))
@@ -3291,8 +3370,8 @@ bool mysql_rename_user(THD *thd, List<LEX_USER> &list) {
 
       if ((((user_from = get_current_user(thd, audit_user_from)) &&
             ((user_to = get_current_user(thd, audit_user_to))))))
-        mysql_audit_notify(
-            thd, AUDIT_EVENT(MYSQL_AUDIT_AUTHENTICATION_AUTHID_RENAME),
+        mysql_event_tracking_authentication_notify(
+            thd, AUDIT_EVENT(EVENT_TRACKING_AUTHENTICATION_AUTHID_RENAME),
             thd->is_error(), user_from->user.str, user_from->host.str,
             user_from->first_factor_auth_info.plugin.str, is_role_id(user_from),
             user_to->user.str, user_to->user.str);
@@ -3337,7 +3416,7 @@ bool mysql_alter_user(THD *thd, List<LEX_USER> &list, bool if_exists) {
   std::set<LEX_USER *> reset_users;
   std::set<LEX_USER *> mfa_users;
   Userhostpassword_list generated_passwords;
-  std::vector<std::string> server_challenge;
+  server_challenge_info_vector server_challenge;
   DBUG_TRACE;
 
   /*
@@ -3346,7 +3425,7 @@ bool mysql_alter_user(THD *thd, List<LEX_USER> &list, bool if_exists) {
     statement based replication and will be reset to the originals
     values when we are out of this function scope
   */
-  Save_and_Restore_binlog_format_state binlog_format_state(thd);
+  const Save_and_Restore_binlog_format_state binlog_format_state(thd);
 
   if ((result = open_grant_tables(thd, tables, &transactional_tables)))
     return result != 1;
@@ -3543,8 +3622,8 @@ bool mysql_alter_user(THD *thd, List<LEX_USER> &list, bool if_exists) {
     LEX_USER *audit_user;
     for (LEX_USER *one_user : audit_users) {
       if ((audit_user = get_current_user(thd, one_user)))
-        mysql_audit_notify(
-            thd, AUDIT_EVENT(MYSQL_AUDIT_AUTHENTICATION_CREDENTIAL_CHANGE),
+        mysql_event_tracking_authentication_notify(
+            thd, AUDIT_EVENT(EVENT_TRACKING_AUTHENTICATION_CREDENTIAL_CHANGE),
             thd->is_error(), audit_user->user.str, audit_user->host.str,
             audit_user->first_factor_auth_info.plugin.str,
             is_role_id(audit_user), nullptr, nullptr);
@@ -3576,7 +3655,7 @@ bool mysql_alter_user(THD *thd, List<LEX_USER> &list, bool if_exists) {
                                  : pointer_cast<const char *>("")),
               (user->host.length ? user->host.str
                                  : pointer_cast<const char *>("")));
-          acl_user->m_mfa->get_server_challenge(server_challenge);
+          acl_user->m_mfa->get_server_challenge_info(server_challenge);
         }
       }
     }
@@ -3595,15 +3674,20 @@ bool mysql_alter_user(THD *thd, List<LEX_USER> &list, bool if_exists) {
         mem_root_deque<Item *> field_list(thd->mem_root);
         field_list.push_back(
             new Item_string("Server_challenge", 16, system_charset_info));
+        field_list.push_back(
+            new Item_string("Client_plugin", 13, system_charset_info));
         Query_result_send output;
         if (output.send_result_set_metadata(thd, field_list,
                                             Protocol::SEND_NUM_ROWS))
           result = 1;
         mem_root_deque<Item *> item_list(thd->mem_root);
         for (auto sc : server_challenge) {
-          Item *item =
-              new Item_string(sc.c_str(), sc.length(), system_charset_info);
-          item_list.push_back(item);
+          Item *item_challenge = new Item_string(
+              sc.first.c_str(), sc.first.length(), system_charset_info);
+          Item *item_plugin = new Item_string(
+              sc.second.c_str(), sc.second.length(), system_charset_info);
+          item_list.push_back(item_challenge);
+          item_list.push_back(item_plugin);
           if (output.send_data(thd, item_list)) result = 1;
           item_list.clear();
         }

@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,13 +30,13 @@
 #include <atomic>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_psi_config.h"
 #include "mysql/components/services/bits/psi_statement_bits.h"
 #include "mysql/psi/mysql_sp.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "mysys_err.h"          // EE_OUTOFMEMORY
+#include "nulls.h"              // NullS
 #include "sql/derror.h"         // ER_THD
 #include "sql/error_handler.h"  // Internal_error_handler
 #include "sql/sp.h"             // sp_add_used_routine
@@ -51,6 +52,8 @@
 #include "sql/system_variables.h"
 #include "sql/trigger_creation_ctx.h"  // Trigger_creation_ctx
 #include "sql_string.h"
+#include "string_with_len.h"
+#include "strxmov.h"
 
 class sp_rcontext;
 struct MEM_ROOT;
@@ -115,7 +118,7 @@ static bool construct_definer_value(MEM_ROOT *mem_root, LEX_CSTRING *definer,
                                     const LEX_CSTRING &definer_user,
                                     const LEX_CSTRING &definer_host) {
   char definer_buf[USER_HOST_BUFF_SIZE];
-  size_t definer_len =
+  const size_t definer_len =
       strxmov(definer_buf, definer_user.str, "@", definer_host.str, NullS) -
       definer_buf;
 
@@ -250,7 +253,7 @@ Trigger *Trigger::create_from_parser(THD *thd, TABLE *subject_table,
 
   // Create a new Trigger instance.
 
-  my_timeval created_timestamp_not_set = {0, 0};
+  const my_timeval created_timestamp_not_set = {0, 0};
   Trigger *t = new (&subject_table->mem_root) Trigger(
       trigger_name, &subject_table->mem_root, subject_table->s->db,
       subject_table->s->table_name, definition, definition_utf8,
@@ -429,7 +432,7 @@ bool Trigger::create_full_trigger_definition(
 */
 
 bool Trigger::parse(THD *thd, bool is_upgrade) {
-  sql_mode_t sql_mode_saved = thd->variables.sql_mode;
+  const sql_mode_t sql_mode_saved = thd->variables.sql_mode;
   thd->variables.sql_mode = m_sql_mode;
 
   Parser_state parser_state;
@@ -468,7 +471,7 @@ bool Trigger::parse(THD *thd, bool is_upgrade) {
   thd->lex = &lex;
   lex_start(thd);
 
-  LEX_CSTRING current_db_name_saved = thd->db();
+  const LEX_CSTRING current_db_name_saved = thd->db();
   thd->reset_db(m_db_name);
 
   Deprecated_trigger_syntax_handler error_handler;

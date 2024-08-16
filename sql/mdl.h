@@ -1,17 +1,18 @@
 #ifndef MDL_H
 #define MDL_H
-/* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,9 +30,9 @@
 #include <new>
 #include <unordered_map>
 
-#include "m_string.h"
 #include "my_alloc.h"
 #include "my_compiler.h"
+#include "strmake.h"
 
 #include "my_inttypes.h"
 #include "my_psi_config.h"
@@ -125,7 +126,7 @@ class MDL_context_owner {
   /**
     Does the owner still have connection to the client?
   */
-  virtual bool is_connected() = 0;
+  virtual bool is_connected(bool = false) = 0;
 
   /**
     Indicates that owner thread might have some commit order (non-MDL) waits
@@ -535,10 +536,10 @@ struct MDL_key {
     end = strmake(start, name, NAME_LEN);
     m_object_name_length = static_cast<uint16>(end - start);
 
-    size_t col_len = strlen(column_name);
+    const size_t col_len = strlen(column_name);
     assert(col_len <= NAME_LEN);
     start = end + 1;
-    size_t remaining =
+    const size_t remaining =
         MAX_MDLKEY_LENGTH - m_db_name_length - m_object_name_length - 3;
     uint16 extra_length = 0;
 
@@ -710,9 +711,10 @@ struct MDL_key {
     m_object_name_length = m_length - m_db_name_length - 3;
   }
   void mdl_key_init(const MDL_key *rhs) {
-    uint16 copy_length = rhs->use_normalized_object_name()
-                             ? rhs->m_length + rhs->m_object_name_length + 1
-                             : rhs->m_length;
+    const uint16 copy_length =
+        rhs->use_normalized_object_name()
+            ? rhs->m_length + rhs->m_object_name_length + 1
+            : rhs->m_length;
     memcpy(m_ptr, rhs->m_ptr, copy_length);
     m_length = rhs->m_length;
     m_db_name_length = rhs->m_db_name_length;

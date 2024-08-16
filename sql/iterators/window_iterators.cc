@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -290,7 +291,7 @@ bool read_frame_buffer_row(int64 rowno, Window *w,
 {
   int use_idx = 0;  // closest prior position found, a priori 0 (row 1)
   int diff = w->last_rowno_in_cache();  // maximum a priori
-  TABLE *t = w->frame_buffer();
+  TABLE *fb = w->frame_buffer();
 
   // Find the saved position closest to where we want to go
   for (int i = w->m_frame_buffer_positions.size() - 1; i >= 0; i--) {
@@ -306,10 +307,9 @@ bool read_frame_buffer_row(int64 rowno, Window *w,
 
   Window::Frame_buffer_position *cand = &w->m_frame_buffer_positions[use_idx];
 
-  int error =
-      t->file->ha_rnd_pos(w->frame_buffer()->record[0], cand->m_position);
+  int error = fb->file->ha_rnd_pos(fb->record[0], cand->m_position);
   if (error) {
-    t->file->print_error(error, MYF(0));
+    fb->file->print_error(error, MYF(0));
     return true;
   }
 
@@ -326,8 +326,7 @@ bool read_frame_buffer_row(int64 rowno, Window *w,
       If we have just switched to INNODB due to MEM overflow, a rescan is
       required, so skip assert if we have INNODB.
     */
-    assert(w->frame_buffer()->s->db_type()->db_type == DB_TYPE_INNODB ||
-           cnt <= 1 ||
+    assert(fb->s->db_type()->db_type == DB_TYPE_INNODB || cnt <= 1 ||
            // unless we have a frame beyond the current row, 1. time
            // in which case we need to do some scanning...
            (w->last_row_output() == 0 &&
@@ -339,9 +338,9 @@ bool read_frame_buffer_row(int64 rowno, Window *w,
            for_nth_value);
 
     for (int i = 0; i < cnt; i++) {
-      error = t->file->ha_rnd_next(t->record[0]);
+      error = fb->file->ha_rnd_next(fb->record[0]);
       if (error) {
-        t->file->print_error(error, MYF(0));
+        fb->file->print_error(error, MYF(0));
         return true;
       }
     }
@@ -1018,7 +1017,7 @@ bool process_buffered_windowing_record(THD *thd, Temp_table_param *param,
           if (!first_row_in_range_frame_seen)
             // empty frame, optimize starting point for next row
             w.set_first_rowno_in_range_frame(rowno);
-          w.restore_pos(reason);
+          w.restore_pos(Window_retrieve_cached_row_reason::LAST_IN_FRAME);
           break;
         }  // else: row is within range, process
 
@@ -1370,13 +1369,20 @@ bool process_buffered_windowing_record(THD *thd, Temp_table_param *param,
                 thd, &w, rowno,
                 Window_retrieve_cached_row_reason::LAST_IN_FRAME))
           return true;
-
+        if (rowno == first && !found_first)
+          w.copy_pos(Window_retrieve_cached_row_reason::LAST_IN_FRAME,
+                     Window_retrieve_cached_row_reason::FIRST_IN_FRAME);
         if (w.before_frame()) {
           if (!found_first) new_first_rowno_in_frame++;
           continue;
         } else if (w.after_frame()) {
           w.set_last_rowno_in_range_frame(rowno - 1);
-          if (!found_first) w.set_first_rowno_in_range_frame(rowno);
+          if (!found_first) {
+            w.set_first_rowno_in_range_frame(rowno);
+            if (rowno > first)  // if equal, we just copied hint above
+              w.copy_pos(Window_retrieve_cached_row_reason::LAST_IN_FRAME,
+                         Window_retrieve_cached_row_reason::FIRST_IN_FRAME);
+          }
           /*
             We read one row too far, so reinstate previous hint for last in
             frame. We will likely be reading the last row in frame

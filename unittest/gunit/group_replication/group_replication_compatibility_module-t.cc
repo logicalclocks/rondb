@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -191,72 +192,108 @@ TEST_F(CompatibilityModuleTest, Incompatibility) {
   ASSERT_EQ(COMPATIBLE, ret);
 }
 
-TEST_F(CompatibilityModuleTest, LTS80) {
-  Member_version server_8034(0x080034);  // version: 8.0.34
-  Member_version server_8035(0x080035);  // version: 8.0.35
-  Member_version server_8036(0x080036);  // version: 8.0.36
-  Member_version server_8037(0x080037);  // version: 8.0.37
-  Member_version server_8038(0x080038);  // version: 8.0.38
-  Member_version server_8100(0x080100);  // version: 8.1.0
+TEST_F(CompatibilityModuleTest, isLTS) {
+  Member_version server_080037(0x080037);  // version: 8.0.37
+  Member_version server_080300(0x080300);  // version: 8.3.0
+  Member_version server_080400(0x080400);  // version: 8.4.0
+  Member_version server_080401(0x080401);  // version: 8.4.1
+  Member_version server_080499(0x080499);  // version: 8.4.99
+  Member_version server_090000(0x090000);  // version: 9.0.0
+
+  std::set<Member_version> all_versions;
+  all_versions.insert(server_080401);
+  all_versions.insert(server_080400);
+  all_versions.insert(server_080499);
+  ASSERT_TRUE(Compatibility_module::do_all_versions_belong_to_the_same_lts(
+      all_versions));
+
+  all_versions.clear();
+  all_versions.insert(server_080300);
+  all_versions.insert(server_080400);
+  ASSERT_FALSE(Compatibility_module::do_all_versions_belong_to_the_same_lts(
+      all_versions));
+
+  all_versions.clear();
+  all_versions.insert(server_080400);
+  all_versions.insert(server_090000);
+  ASSERT_FALSE(Compatibility_module::do_all_versions_belong_to_the_same_lts(
+      all_versions));
+
+  all_versions.clear();
+  all_versions.insert(server_080400);
+  all_versions.insert(server_080037);
+  ASSERT_FALSE(Compatibility_module::do_all_versions_belong_to_the_same_lts(
+      all_versions));
+}
+
+TEST_F(CompatibilityModuleTest, LTSCompatibility) {
+  Member_version server_080300(0x080300);  // version: 8.3.0
+  Member_version server_080400(0x080400);  // version: 8.4.0
+  Member_version server_080401(0x080401);  // version: 8.4.1
+  Member_version server_080410(0x080410);  // version: 8.4.10
+  Member_version server_080420(0x080420);  // version: 8.4.20
+  Member_version server_080442(0x080442);  // version: 8.4.42
+  Member_version server_080499(0x080499);  // version: 8.4.99
+  Member_version server_090000(0x090000);  // version: 9.0.0
 
   /*
-    Group with 8.0.36
-    Try to add a 8.0.34
+    Group with 8.4.1
+    Try to add a 8.3.0
   */
   std::set<Member_version> all_versions;
-  all_versions.insert(server_8036);
-  all_versions.insert(server_8034);
+  all_versions.insert(server_080401);
+  all_versions.insert(server_080300);
   Compatibility_type ret = module->check_incompatibility(
-      server_8034, server_8036, true, all_versions);
+      server_080300, server_080401, true, all_versions);
   ASSERT_EQ(INCOMPATIBLE_LOWER_VERSION, ret);
 
   /*
-    Group with 8.0.36
-    Try to add a 8.0.35
+    Group with 8.4.1
+    Try to add a 8.4.0
   */
   all_versions.clear();
-  all_versions.insert(server_8036);
-  all_versions.insert(server_8035);
-  ret = module->check_incompatibility(server_8035, server_8036, true,
+  all_versions.insert(server_080401);
+  all_versions.insert(server_080400);
+  ret = module->check_incompatibility(server_080400, server_080401, true,
                                       all_versions);
   ASSERT_EQ(COMPATIBLE, ret);
 
   /*
-    Group with 8.0.36, 8.0.37, 8.0.38
-    Try to add a 8.0.35
+    Group with 8.4.20, 8.4.42, 8.4.99
+    Try to add a 8.4.10
   */
   all_versions.clear();
-  all_versions.insert(server_8036);
-  all_versions.insert(server_8037);
-  all_versions.insert(server_8038);
-  all_versions.insert(server_8035);
+  all_versions.insert(server_080420);
+  all_versions.insert(server_080442);
+  all_versions.insert(server_080499);
+  all_versions.insert(server_080410);
 
-  ret = module->check_incompatibility(server_8035, server_8036, true,
+  ret = module->check_incompatibility(server_080410, server_080420, true,
                                       all_versions);
   ASSERT_EQ(COMPATIBLE, ret);
 
-  ret = module->check_incompatibility(server_8035, server_8037, true,
+  ret = module->check_incompatibility(server_080410, server_080442, true,
                                       all_versions);
   ASSERT_EQ(COMPATIBLE, ret);
 
-  ret = module->check_incompatibility(server_8035, server_8038, true,
+  ret = module->check_incompatibility(server_080410, server_080499, true,
                                       all_versions);
   ASSERT_EQ(COMPATIBLE, ret);
 
   /*
-    Group with 8.0.36, 8.1.0
-    Try to add a 8.0.35
+    Group with 8.4.1, 9.0.0
+    Try to add a 8.4.0
   */
   all_versions.clear();
-  all_versions.insert(server_8036);
-  all_versions.insert(server_8100);
-  all_versions.insert(server_8035);
+  all_versions.insert(server_080401);
+  all_versions.insert(server_090000);
+  all_versions.insert(server_080400);
 
-  ret = module->check_incompatibility(server_8035, server_8036, true,
+  ret = module->check_incompatibility(server_080400, server_080401, true,
                                       all_versions);
   ASSERT_EQ(INCOMPATIBLE_LOWER_VERSION, ret);
 
-  ret = module->check_incompatibility(server_8035, server_8100, true,
+  ret = module->check_incompatibility(server_080400, server_090000, true,
                                       all_versions);
   ASSERT_EQ(INCOMPATIBLE_LOWER_VERSION, ret);
 }

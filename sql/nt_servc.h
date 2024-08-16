@@ -10,7 +10,7 @@
   Copyright Abandoned 1998 Irena Pancirov - Irnet Snc
   This file is public domain and comes with NO WARRANTY of any kind
 
-  Modifications Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+  Modifications Copyright (c) 2000, 2024, Oracle and/or its affiliates.
   All rights reserved.
 */
 
@@ -55,8 +55,8 @@ class NTService {
 
   // service install / un-install
   BOOL Install(int startType, LPCSTR szInternName, LPCSTR szDisplayName,
-               LPCSTR szFullPath, LPCSTR szAccountName = NULL,
-               LPCSTR szPassword = NULL);
+               LPCSTR szFullPath, LPCSTR szAccountName = nullptr,
+               LPCSTR szPassword = nullptr);
   BOOL SeekStatus(LPCSTR szInternName, int OperationType);
   BOOL Remove(LPCSTR szInternName);
   BOOL IsService(LPCSTR ServiceName);

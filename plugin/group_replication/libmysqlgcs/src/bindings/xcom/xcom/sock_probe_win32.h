@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -86,16 +87,17 @@ static int init_sock_probe(sock_probe *s) {
   DWORD retval = 0;
   PIP_ADAPTER_ADDRESSES curr_addresses;
 
-  if (s == NULL) {
+  if (s == nullptr) {
     return 1;
   }
 
   out_buflen = WORKING_BUFFER_SIZE;
 
   s->addresses = (IP_ADAPTER_ADDRESSES *)xcom_malloc(out_buflen);
-  if (s->addresses == NULL) return 1;
+  if (s->addresses == nullptr) return 1;
 
-  retval = GetAdaptersAddresses(family, flags, NULL, s->addresses, &out_buflen);
+  retval =
+      GetAdaptersAddresses(family, flags, nullptr, s->addresses, &out_buflen);
 
   curr_addresses = s->addresses;
   while (curr_addresses) {
@@ -128,7 +130,7 @@ static void close_sock_probe(sock_probe *s) {
 
 /* Return the number of IP interfaces on this machine.*/
 static int number_of_interfaces(sock_probe *s) {
-  if (s == NULL) {
+  if (s == nullptr) {
     return 0;
   }
   return s->number_of_interfaces;
@@ -136,7 +138,7 @@ static int number_of_interfaces(sock_probe *s) {
 
 /* Return TRUE if interface #count is running. */
 static bool_t is_if_running(sock_probe *s, int /* count */) {
-  if (s == NULL) {
+  if (s == nullptr) {
     return 0;
   }
   return 1; /* We will always report active because GetAdaptersAddresses */
@@ -152,8 +154,8 @@ typedef struct interface_info interface_info;
 static interface_info get_interface(sock_probe *s, int count) {
   int i = 0;
   interface_info retval;
-  retval.network_address = NULL;
-  retval.network_interface = NULL;
+  retval.network_address = nullptr;
+  retval.network_interface = nullptr;
 
   idx_check_fail(count, number_of_interfaces(s)) {
     PIP_ADAPTER_ADDRESSES curr_addresses = s->addresses;
@@ -188,7 +190,7 @@ static interface_info get_interface(sock_probe *s, int count) {
  *
  * @param s an initialized sock_probe structure
  * @param count the interface index to return
- * @param out the return value sockaddr. NULL in case of error.
+ * @param out the return value sockaddr. nullptr in case of error.
  * @param addr_operation either request the sockaddr for the physical address or
  * for a netmask
  */
@@ -196,13 +198,13 @@ static void get_sockaddr(sock_probe *s, int count, struct sockaddr **out,
                          SockaddrOp addr_operation) {
   interface_info interface_info;
 
-  if (s == NULL) {
-    *out = NULL;
+  if (s == nullptr) {
+    *out = nullptr;
   }
 
   interface_info = get_interface(s, count);
-  if (interface_info.network_interface == NULL) {
-    *out = NULL;
+  if (interface_info.network_interface == nullptr) {
+    *out = nullptr;
     return;
   }
 
@@ -261,8 +263,8 @@ static void get_sockaddr_netmask(sock_probe *s, int count,
 static char *get_if_name(sock_probe *s, int count) {
   interface_info interface_info = get_interface(s, count);
 
-  if (interface_info.network_address == NULL) {
-    return NULL;
+  if (interface_info.network_address == nullptr) {
+    return nullptr;
   }
 
   return interface_info.network_interface->AdapterName;

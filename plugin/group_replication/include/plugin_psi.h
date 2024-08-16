@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -89,7 +90,6 @@ extern PSI_mutex_key key_GR_LOCK_applier_module_run,
     key_GR_LOCK_count_down_latch,
     key_GR_LOCK_delayed_init_run,
     key_GR_LOCK_delayed_init_server_ready,
-    key_GR_LOCK_force_members_running,
     key_GR_LOCK_group_action_coordinator_process,
     key_GR_LOCK_group_action_coordinator_thread,
     key_GR_LOCK_group_action_coordinator_thread_end,
@@ -111,6 +111,8 @@ extern PSI_mutex_key key_GR_LOCK_applier_module_run,
     key_GR_LOCK_primary_election_validation_notification,
     key_GR_LOCK_recovery,
     key_GR_LOCK_recovery_donor_selection,
+    key_GR_LOCK_recovery_metadata_receive,
+    key_GR_LOCK_recovery_metadata_module_receive,
     key_GR_LOCK_recovery_module_run,
     key_GR_LOCK_server_ongoing_transaction_handler,
     key_GR_LOCK_message_service_run,
@@ -158,6 +160,7 @@ extern PSI_cond_key key_GR_COND_applier_module_run,
     key_GR_COND_primary_election_secondary_process_run,
     key_GR_COND_primary_election_validation_notification,
     key_GR_COND_recovery,
+    key_GR_COND_recovery_metadata_receive,
     key_GR_COND_recovery_module_run,
     key_GR_COND_message_service_run,
     key_GR_COND_session_thread_method_exec,
@@ -244,7 +247,9 @@ extern PSI_memory_key key_write_set_encoded,
     key_consistent_transactions,
     key_consistent_transactions_prepared,
     key_consistent_transactions_waiting,
-    key_consistent_transactions_delayed_view_change;
+    key_consistent_transactions_delayed_view_change,
+    key_compression_data,
+    key_recovery_metadata_message_buffer;
 /* clang-format on */
 
 #endif /* PLUGIN_PSI_INCLUDED */

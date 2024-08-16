@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,6 +24,7 @@
 #include "sql/sp_rcontext.h"
 
 #include <atomic>
+#include <memory>
 #include <new>
 
 #include "my_alloc.h"
@@ -64,9 +66,9 @@ sp_rcontext::sp_rcontext(const sp_pcontext *root_parsing_ctx,
       m_ccount(0) {}
 
 sp_rcontext::~sp_rcontext() {
-  if (m_var_table) {
+  if (m_var_table != nullptr) {
     free_blobs(m_var_table);
-    destroy(m_var_table);
+    ::destroy_at(m_var_table);
   }
 
   delete_container_pointers(m_activated_handlers);
@@ -86,7 +88,7 @@ sp_rcontext *sp_rcontext::create(THD *thd, const sp_pcontext *root_parsing_ctx,
 
   if (ctx->alloc_arrays(thd) || ctx->init_var_table(thd) ||
       ctx->init_var_items(thd)) {
-    destroy(ctx);
+    ::destroy_at(ctx);
     return nullptr;
   }
 
@@ -95,13 +97,13 @@ sp_rcontext *sp_rcontext::create(THD *thd, const sp_pcontext *root_parsing_ctx,
 
 bool sp_rcontext::alloc_arrays(THD *thd) {
   {
-    size_t n = m_root_parsing_ctx->max_cursor_index();
+    const size_t n = m_root_parsing_ctx->max_cursor_index();
     m_cstack.reset(
         static_cast<sp_cursor **>(thd->alloc(n * sizeof(sp_cursor *))), n);
   }
 
   {
-    size_t n = m_root_parsing_ctx->get_num_case_exprs();
+    const size_t n = m_root_parsing_ctx->get_num_case_exprs();
     m_case_expr_holders.reset(
         static_cast<Item_cache **>(thd->mem_calloc(n * sizeof(Item_cache *))),
         n);
@@ -129,7 +131,7 @@ bool sp_rcontext::init_var_table(THD *thd) {
 }
 
 bool sp_rcontext::init_var_items(THD *thd) {
-  uint num_vars = m_root_parsing_ctx->max_var_index();
+  const uint num_vars = m_root_parsing_ctx->max_var_index();
 
   m_var_items.reset(static_cast<Item **>(thd->alloc(num_vars * sizeof(Item *))),
                     num_vars);
@@ -363,9 +365,9 @@ bool sp_rcontext::handle_sql_condition(THD *thd, uint *ip,
   */
   if (!handler_entry) return false;
 
-  uint continue_ip = handler_entry->handler->type == sp_handler::CONTINUE
-                         ? cur_spi->get_cont_dest()
-                         : 0;
+  const uint continue_ip = handler_entry->handler->type == sp_handler::CONTINUE
+                               ? cur_spi->get_cont_dest()
+                               : 0;
 
   /* Add a frame to handler-call-stack. */
   Handler_call_frame *frame = new (std::nothrow)
@@ -458,7 +460,7 @@ bool sp_cursor::open(THD *thd) {
     return true;
   }
 
-  bool rc = mysql_open_cursor(thd, &m_result, &m_server_side_cursor);
+  const bool rc = mysql_open_cursor(thd, &m_result, &m_server_side_cursor);
 
   // If execution failed, ensure that the cursor is closed.
   if (rc && m_server_side_cursor != nullptr) {

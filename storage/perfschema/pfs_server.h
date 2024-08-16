@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -58,7 +59,7 @@
 #define PFS_MAX_MUTEX_CLASS 350
 #endif
 #ifndef PFS_MAX_RWLOCK_CLASS
-#define PFS_MAX_RWLOCK_CLASS 60
+#define PFS_MAX_RWLOCK_CLASS 100
 #endif
 #ifndef PFS_MAX_COND_CLASS
 #define PFS_MAX_COND_CLASS 150
@@ -82,7 +83,13 @@
 #define PFS_STATEMENTS_STACK_SIZE 10
 #endif
 #ifndef PFS_MAX_MEMORY_CLASS
-#define PFS_MAX_MEMORY_CLASS 450
+#define PFS_MAX_MEMORY_CLASS 470
+#endif
+#ifndef PFS_MAX_METER_CLASS
+#define PFS_MAX_METER_CLASS 30
+#endif
+#ifndef PFS_MAX_METRIC_CLASS
+#define PFS_MAX_METRIC_CLASS 600
 #endif
 
 #ifndef PFS_MAX_GLOBAL_SERVER_ERRORS
@@ -275,6 +282,18 @@ struct PFS_global_param {
   */
   ulong m_memory_class_sizing;
 
+  /**
+    Maximum number of instrumented meter classes.
+    @sa meter_class_lost.
+  */
+  ulong m_meter_class_sizing;
+
+  /**
+    Maximum number of instrumented metric classes.
+    @sa metric_class_lost.
+  */
+  ulong m_metric_class_sizing;
+
   long m_metadata_lock_sizing;
 
   long m_max_digest_length;
@@ -375,18 +394,6 @@ void init_pfs_instrument_array();
   Process one PFS_INSTRUMENT configuration string.
 */
 int add_pfs_instr_to_array(const char *name, const char *value);
-
-/**
-  Register/unregister notification service.
-*/
-int register_pfs_notification_service();
-int unregister_pfs_notification_service();
-
-/**
-  Register/unregister resource group service.
-*/
-int register_pfs_resource_group_service();
-int unregister_pfs_resource_group_service();
 
 /**
   Shutdown the performance schema.

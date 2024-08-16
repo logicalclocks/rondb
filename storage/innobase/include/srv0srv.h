@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 Copyright (c) 2008, 2009, Google Inc.
 Copyright (c) 2009, Percona Inc.
 
@@ -21,12 +21,13 @@ This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -63,6 +64,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "trx0types.h"
 #include "ut0counter.h"
 
+#include <cstdint>
 #include <future>
 
 /* Global counters used inside InnoDB. */
@@ -628,8 +630,8 @@ extern ulong srv_io_capacity;
 
 /* We use this dummy default value at startup for max_io_capacity.
 The real value is set based on the value of io_capacity. */
-constexpr uint32_t SRV_MAX_IO_CAPACITY_DUMMY_DEFAULT = ~0U;
-constexpr uint32_t SRV_MAX_IO_CAPACITY_LIMIT = ~0U;
+constexpr uint32_t SRV_MAX_IO_CAPACITY_DUMMY_DEFAULT = UINT32_MAX;
+constexpr uint32_t SRV_MAX_IO_CAPACITY_LIMIT = UINT32_MAX;
 extern ulong srv_max_io_capacity;
 /* Returns the number of IO operations that is X percent of the
 capacity. PCT_IO(5) -> returns the number of IO operations that
@@ -818,6 +820,8 @@ extern mysql_pfs_key_t trx_recovery_rollback_thread_key;
 extern mysql_pfs_key_t srv_ts_alter_encrypt_thread_key;
 extern mysql_pfs_key_t parallel_read_thread_key;
 extern mysql_pfs_key_t parallel_rseg_init_thread_key;
+extern mysql_pfs_key_t bulk_flusher_thread_key;
+extern mysql_pfs_key_t bulk_alloc_thread_key;
 #endif /* UNIV_PFS_THREAD */
 #endif /* !UNIV_HOTBACKUP */
 
@@ -871,25 +875,23 @@ extern PSI_stage_info srv_stage_clone_page_copy;
 /** Alternatives for the file flush option in Unix.
 @see innodb_flush_method_names */
 enum srv_unix_flush_t {
-  SRV_UNIX_FSYNC = 0,  /*!< fsync, the default */
-  SRV_UNIX_O_DSYNC,    /*!< open log files in O_SYNC mode */
-  SRV_UNIX_LITTLESYNC, /*!< do not call os_file_flush()
-                       when writing data files, but do flush
-                       after writing to log files */
-  SRV_UNIX_NOSYNC,     /*!< do not flush after writing */
-  SRV_UNIX_O_DIRECT,   /*!< invoke os_file_set_nocache() on
-                       data files. This implies using
-                       non-buffered IO but still using fsync,
-                       the reason for which is that some FS
-                       do not flush meta-data when
-                       unbuffered IO happens */
+  /** fsync, the default if O_DIRECT is not supported */
+  SRV_UNIX_FSYNC = 0,
+  /** open log files in O_SYNC mode */
+  SRV_UNIX_O_DSYNC,
+  /** do not call os_file_flush() when writing data files, but do flush after
+     writing to log files */
+  SRV_UNIX_LITTLESYNC,
+  /** do not flush after writing */
+  SRV_UNIX_NOSYNC,
+  /** invoke os_file_set_nocache() on data files. This implies using
+     non-buffered IO but still using fsync, the reason for which is that some FS
+     do not flush meta-data when unbuffered IO happens. Default if supported */
+  SRV_UNIX_O_DIRECT,
+  /** do not use fsync() when using direct IO i.e.: it can be set to avoid the
+     fsync() call that we make when using SRV_UNIX_O_DIRECT. However, in this
+     case user/DBA should be sure about the integrity of the meta-data */
   SRV_UNIX_O_DIRECT_NO_FSYNC
-  /*!< do not use fsync() when using
-  direct IO i.e.: it can be set to avoid
-  the fsync() call that we make when
-  using SRV_UNIX_O_DIRECT. However, in
-  this case user/DBA should be sure about
-  the integrity of the meta-data */
 };
 extern enum srv_unix_flush_t srv_unix_file_flush_method;
 

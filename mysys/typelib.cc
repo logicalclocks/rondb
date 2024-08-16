@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -34,13 +35,14 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_alloc.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_macros.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
+#include "template_utils.h"
 #include "typelib.h"
 
 #define is_field_separator(X) ((X) == ',' || (X) == '=')
@@ -252,7 +254,7 @@ static TYPELIB on_off_default_typelib = {
 static int parse_name(const TYPELIB *lib, const char **strpos,
                       const char *end) {
   const char *pos = *strpos;
-  int find = find_type(pos, lib, FIND_TYPE_COMMA_TERM);
+  const int find = find_type(pos, lib, FIND_TYPE_COMMA_TERM);
   for (; pos != end && *pos != '=' && *pos != ','; pos++)
     ;
   *strpos = pos;
@@ -309,7 +311,7 @@ uint64_t find_set_from_flags(const TYPELIB *lib, int default_name,
       const char *pos = start;
       uint value;
 
-      int flag_no = parse_name(lib, &pos, end);
+      const int flag_no = parse_name(lib, &pos, end);
       if (flag_no <= 0) goto err;
 
       if (flag_no == default_name) {
@@ -317,7 +319,7 @@ uint64_t find_set_from_flags(const TYPELIB *lib, int default_name,
         if (set_defaults) goto err;
         set_defaults = true;
       } else {
-        uint64_t bit = (1ULL << (flag_no - 1));
+        const uint64_t bit = (1ULL << (flag_no - 1));
         /* parse the '=on|off|default' */
         if ((flags_to_clear | flags_to_set) & bit || pos >= end ||
             *pos++ != '=' ||

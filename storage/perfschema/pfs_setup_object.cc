@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -213,14 +214,14 @@ int insert_setup_object(enum_object_type object_type,
     pfs->m_timed = timed;
 
     int res;
-    pfs->m_lock.dirty_to_allocated(&dirty_state);
     res = lf_hash_insert(&setup_object_hash, pins, &pfs);
     if (likely(res == 0)) {
       setup_objects_version++;
+      pfs->m_lock.dirty_to_allocated(&dirty_state);
       return 0;
     }
 
-    global_setup_object_container.deallocate(pfs);
+    global_setup_object_container.dirty_to_free(&dirty_state, pfs);
 
     if (res > 0) {
       return HA_ERR_FOUND_DUPP_KEY;

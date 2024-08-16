@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -66,15 +67,15 @@ static enum_var_type sysvar_type(const char *type_name) {
   - creates temporary THD for an operation, if needed
   - validates that SESSION type is not used with temporary THD
 
-  @param hlp: Execution context handle.
-  @param variable_type:  One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
+  @param hlp Execution context handle.
+  @param variable_type  One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
                          For any other value (including NULL), GLOBAL is
   assumed. SESSION is not supported for a temporary THD.
-  @param variable_name:  MySQL string of the variable name.
-  @param var_type: Reference to output variable type enumeration (avoids parsing
+  @param variable_name  MySQL string of the variable name.
+  @param var_type Reference to output variable type enumeration (avoids parsing
   type multiple times).
-  @retval FALSE: Success
-  @retval TRUE:  Failure, error set
+  @retval FALSE Success
+  @retval TRUE  Failure, error set
 */
 static bool prepare_thread_and_validate(Set_variables_helper &hlp,
                                         const char *variable_type,
@@ -107,20 +108,25 @@ static bool prepare_thread_and_validate(Set_variables_helper &hlp,
 /**
   Common system variable update code (used by different variable value types).
 
-  @param hlp: An execution context
-  @param var_type:  Enum type matching one of GLOBAL, SESSION, PERSIST,
+  @param hlp An execution context
+  @param var_type  Enum type matching one of GLOBAL, SESSION, PERSIST,
   PERSIST_ONLY.
-  @param variable_base:  MySQL string of the variable prefix, NULL if none.
-  @param variable_name:  MySQL string of the variable name.
-  @param variable_value: Pointer to Item object storing the value of the correct
-  @retval false: Success
-  @retval true:  Failure, error set
+  @param variable_base  MySQL string of the variable prefix, NULL if none.
+  @param variable_name  MySQL string of the variable name.
+  @param variable_value Pointer to Item object storing the value of the correct
+  @retval false Success
+  @retval true  Failure, error set
 */
 static bool common_system_variable_update_set(Set_variables_helper &hlp,
                                               enum_var_type var_type,
                                               my_h_string variable_base,
                                               my_h_string variable_name,
                                               Item *variable_value) {
+  /* Cannot set system variable when server is shutting down. */
+  rwlock_scoped_lock rdlock(&LOCK_server_shutting_down, false, __FILE__,
+                            __LINE__);
+  if (server_shutting_down) return true;
+
   String *base = reinterpret_cast<String *>(variable_base);
   String *name = reinterpret_cast<String *>(variable_name);
 
@@ -139,16 +145,16 @@ static bool common_system_variable_update_set(Set_variables_helper &hlp,
   variable_value. Works only for system variables taking unsigned string values.
   May generate an SQL error that it stores into the current THD (if available).
 
-  @param hthd: THD session handle. If NULL, then a temporary THD will be created
+  @param hthd THD session handle. If NULL, then a temporary THD will be created
                and then deleted.
-  @param variable_type:  One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
+  @param variable_type  One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
                          For any other value (including NULL), GLOBAL is
   assumed. SESSION is not supported for a temporary THD.
-  @param variable_base:  MySQL string of the variable prefix, NULL if none.
-  @param variable_name:  MySQL string of the variable name.
-  @param variable_value: MySQL string value to pass to the variable.
-  @retval FALSE: Success
-  @retval TRUE:  Failure, error set
+  @param variable_base  MySQL string of the variable prefix, NULL if none.
+  @param variable_name  MySQL string of the variable name.
+  @param variable_value MySQL string value to pass to the variable.
+  @retval FALSE Success
+  @retval TRUE  Failure, error set
   @sa @ref mysql_service_mysql_system_variable_update_string_t
 */
 DEFINE_BOOL_METHOD(mysql_system_variable_update_imp::set_string,
@@ -192,15 +198,15 @@ DEFINE_BOOL_METHOD(mysql_system_variable_update_imp::set_string,
 
    @param hthd thread session handle. if NULL a temporary one will be created
    and then deleted.
-   @param variable_type: One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
+   @param variable_type One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
                          For any other value (including NULL), GLOBAL is
    assumed. SESSION is not supported for a temporary THD.
-   @param variable_base: a mysql string of the variable name prefix. NULL if
+   @param variable_base a mysql string of the variable name prefix. NULL if
    none
-   @param variable_name: MySQL string of the variable name
-   @param variable_value: long long to set as value
-   @retval FALSE: success
-   @retval TRUE: failure, error set. For error info, see THD if supplied.
+   @param variable_name MySQL string of the variable name
+   @param variable_value long long to set as value
+   @retval FALSE success
+   @retval TRUE failure, error set. For error info, see THD if supplied.
 */
 DEFINE_BOOL_METHOD(mysql_system_variable_update_imp::set_signed,
                    (MYSQL_THD hthd, const char *variable_type,
@@ -232,15 +238,15 @@ DEFINE_BOOL_METHOD(mysql_system_variable_update_imp::set_signed,
 
    @param hthd thread session handle. if NULL a temporary one will be created
    and then deleted.
-   @param variable_type: One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
+   @param variable_type One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
                          For any other value (including NULL), GLOBAL is
    assumed. SESSION is not supported for a temporary THD.
-   @param variable_base: a mysql string of the variable name prefix. NULL if
+   @param variable_base a mysql string of the variable name prefix. NULL if
    none
-   @param variable_name: MySQL string of the variable name
-   @param variable_value: unsigned long long to set as value
-   @retval FALSE: success
-   @retval TRUE: failure, error set. For error info, see THD if supplied.
+   @param variable_name MySQL string of the variable name
+   @param variable_value unsigned long long to set as value
+   @retval FALSE success
+   @retval TRUE failure, error set. For error info, see THD if supplied.
 */
 DEFINE_BOOL_METHOD(mysql_system_variable_update_imp::set_unsigned,
                    (MYSQL_THD hthd, const char *variable_type,
@@ -272,14 +278,14 @@ DEFINE_BOOL_METHOD(mysql_system_variable_update_imp::set_unsigned,
 
    @param hthd thread session handle. if NULL a temporary one will be created
    and then removed.
-   @param variable_type: One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
+   @param variable_type One of GLOBAL, SESSION, PERSIST, PERSIST_ONLY.
                          For any other value (including NULL), GLOBAL is
    assumed. SESSION is not supported for a temporary THD.
-   @param variable_base: a mysql string of the variable name prefix. NULL if
+   @param variable_base a mysql string of the variable name prefix. NULL if
    none
-   @param variable_name: MySQL string of the variable name
-   @retval FALSE: success
-   @retval TRUE: failure, error set. For error info, see THD if supplied.
+   @param variable_name MySQL string of the variable name
+   @retval FALSE success
+   @retval TRUE failure, error set. For error info, see THD if supplied.
 */
 DEFINE_BOOL_METHOD(mysql_system_variable_update_imp::set_default,
                    (MYSQL_THD hthd, const char *variable_type,

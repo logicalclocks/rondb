@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -102,6 +103,21 @@ class Ndb_dd_client {
 
   bool store_table(dd::Table *install_table, int ndb_table_id);
 
+  /**
+     @brief Acquire requested locks in list and register acquired lock tickets
+
+     @param mdl_requests       List of MDL requests
+     @param lock_wait_timeout  Seconds to wait before timeout
+
+     @return true if acquired successfully, false if not
+   */
+  bool mdl_locks_acquire(MDL_request_list mdl_requests,
+                         ulong lock_wait_timeout);
+  /**
+     @brief Release EXPLICIT locks held by the previous registered tickets
+   */
+  void mdl_locks_release();
+
  public:
   Ndb_dd_client(class THD *thd);
 
@@ -110,30 +126,101 @@ class Ndb_dd_client {
   /**
     @brief Acquire IX MDL on the schema
 
-    @param schema_name Schema name
+    @param schema_name  Schema name
 
     @return true if the MDL was acquired successfully, false if not
   */
   bool mdl_lock_schema(const char *schema_name);
+
+  /**
+    @brief Acquire X MDL on the schema
+
+    @param schema_name        Schema name
+    @param custom_lock_wait   Use `lock_wait_timeout` for MDL acquire timeout
+    @param lock_wait_timeout  Custom lock acquire timeout if `custom_lock_wait`
+                              is true (in seconds)
+
+    @return true if the MDL was acquired successfully, false if not
+  */
   bool mdl_lock_schema_exclusive(const char *schema_name,
                                  bool custom_lock_wait = false,
                                  ulong lock_wait_timeout = 0);
+
+  /**
+    @brief Acquire IX MDL on the table
+
+    @param schema_name  Schema name
+    @param table_name   Table name
+
+    @return true if the MDL was acquired successfully, false if not
+  */
   bool mdl_lock_table(const char *schema_name, const char *table_name);
+
+  /**
+    @brief Acquire X MDL on the table
+
+    @param schema_name        Schema name
+    @param table_name         Table name
+    @param custom_lock_wait   Use `lock_wait_timeout` for MDL acquire timeout
+    @param lock_wait_timeout  Custom lock acquire timeout if `custom_lock_wait`
+                              is true (in seconds)
+
+    @return true if the MDL was acquired successfully, false if not
+  */
   bool mdl_locks_acquire_exclusive(const char *schema_name,
                                    const char *table_name,
                                    bool custom_lock_wait = false,
                                    ulong lock_wait_timeout = 0);
+
+  /**
+    @brief Acquire IX or SR MDL on the Logfile Group
+
+    @param logfile_group_name   Logfile Group name
+    @param intention_exclusive  Use IX (true) or SR (false)
+
+    @return true if the MDL was acquired successfully, false if not
+  */
   bool mdl_lock_logfile_group(const char *logfile_group_name,
                               bool intention_exclusive);
+
+  /**
+    @brief Acquire X on the Logfile Group
+
+    @param logfile_group_name  Logfile Group name
+    @param custom_lock_wait    Use `lock_wait_timeout` for MDL acquire timeout
+    @param lock_wait_timeout   Custom lock acquire timeout if `custom_lock_wait`
+                               is true (in seconds)
+
+    @return true if the MDL was acquired successfully, false if not
+  */
   bool mdl_lock_logfile_group_exclusive(const char *logfile_group_name,
                                         bool custom_lock_wait = false,
                                         ulong lock_wait_timeout = 0);
+
+  /**
+    @brief Acquire IX or SR MDL on the tablespace
+
+    @param tablespace_name      Tablespace name
+    @param intention_exclusive  Use IX (true) or SR (false)
+
+    @return true if the MDL was acquired successfully, false if not
+  */
   bool mdl_lock_tablespace(const char *tablespace_name,
                            bool intention_exclusive);
+
+  /**
+    @brief Acquire X on the tablespace
+
+    @param tablespace_name    Tablespace name
+    @param custom_lock_wait   Use `lock_wait_timeout` for MDL acquire timeout
+    @param lock_wait_timeout  Custom lock acquire timeout if `custom_lock_wait`
+                              is true (in seconds)
+
+    @return true if the MDL was acquired successfully, false if not
+  */
   bool mdl_lock_tablespace_exclusive(const char *tablespace_name,
                                      bool custom_lock_wait = false,
                                      ulong lock_wait_timeout = 0);
-  void mdl_locks_release();
 
   // Transaction handling functions
   void commit();
@@ -234,10 +321,15 @@ class Ndb_dd_client {
   bool get_schema_uuid(dd::String_type *value) const;
   bool update_schema_uuid(const char *value) const;
 
+#ifndef NDEBUG
   // Print all NDB tables registered in DD to stderr
   bool dump_NDB_tables();
   // Shuffle the se_private_id of all NDB tables installed in DD
   bool dbug_shuffle_spi_for_NDB_tables();
+  // Change the version of one table in DD
+  bool change_version_for_table(const char *schema_name, const char *table_name,
+                                uint new_version);
+#endif
 };
 
 #endif

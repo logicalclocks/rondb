@@ -1,15 +1,16 @@
-## Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+## Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 ##
 ## This program is free software; you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License, version 2.0,
 ## as published by the Free Software Foundation.
 ##
-## This program is also distributed with certain software (including
+## This program is designed to work with certain software (including
 ## but not limited to OpenSSL) that is licensed under separate terms,
 ## as designated in a particular file or component or in included license
 ## documentation.  The authors of MySQL hereby grant you an additional
 ## permission to link the program and your derivative works with the
-## separately licensed software that they have included with MySQL.
+## separately licensed software that they have either included with
+## the program or referenced in the documentation.
 ##
 ## This program is distributed in the hope that it will be useful,
 ## but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -931,8 +932,7 @@ WARN_LOGFILE           =
 INPUT                  = ./client \
                          ./components \
                          ./include \
-                         ./libbinlogevents \
-                         ./libbinlogstandalone \
+                         ./libs/mysql \
                          ./libservices \
                          ./mysql-test/mysql-test-run.dox \
                          ./mysys \
@@ -1024,6 +1024,7 @@ RECURSIVE              = YES
 EXCLUDE                = cmd-line-utils \
                          client/mysqlbinlog.cc \
                          components/test \
+                         components/test_server_telemetry_metrics \
                          components/test_server_telemetry_traces \
                          extra \
                          generated \
@@ -1032,7 +1033,6 @@ EXCLUDE                = cmd-line-utils \
                          include/sql_state.h \
                          internal \
                          libevent \
-                         plugin/innodb_memcached \
                          plugin/test_services \
                          plugin/test_service_sql_api \
                          source_downloads \
@@ -1048,7 +1048,6 @@ EXCLUDE                = cmd-line-utils \
                          storage/ndb/clusterj \
                          storage/ndb/include \
                          storage/ndb/mcc \
-                         storage/ndb/memcache \
                          storage/ndb/ndbapi-examples \
                          storage/ndb/nodejs \
                          storage/ndb/plugin \

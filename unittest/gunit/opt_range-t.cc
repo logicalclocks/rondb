@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,6 +35,7 @@
 #include "sql/range_optimizer/range_analysis.h"
 #include "sql/range_optimizer/range_optimizer.h"
 #include "sql/range_optimizer/tree.h"
+#include "string_with_len.h"
 #include "unittest/gunit/fake_range_opt_param.h"
 #include "unittest/gunit/fake_table.h"
 #include "unittest/gunit/handler-t.h"
@@ -1642,7 +1644,7 @@ TEST_F(OptRangeTest, RowConstructorIn2) {
   m_opt_param->add_key();
 
   // We build the expression (field_1, field_2) IN ((3, 4), (1, 2)) ...
-  PT_item_list *all_args = new (current_thd->mem_root) PT_item_list;
+  PT_item_list *all_args = new (current_thd->mem_root) PT_item_list(POS());
   all_args->push_front(new_Item_row(1, 2));
   all_args->push_front(new_Item_row(3, 4));
   all_args->push_front(new_Item_row(m_opt_param->table->field, 2));
@@ -1673,7 +1675,7 @@ TEST_F(OptRangeTest, RowConstructorIn3) {
   m_opt_param->add_key();
 
   // We build the expression (field_1, field_2) IN ((3, 4), (1, 2)) ...
-  PT_item_list *all_args = new (current_thd->mem_root) PT_item_list;
+  PT_item_list *all_args = new (current_thd->mem_root) PT_item_list(POS());
   all_args->push_front(new_Item_row(1, 2, 3));
   all_args->push_front(new_Item_row(4, 5, 6));
   all_args->push_front(new_Item_row(m_opt_param->table->field, 3));

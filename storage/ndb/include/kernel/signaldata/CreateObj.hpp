@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,6 @@
 
 #define JAM_FILE_ID 107
 
-
 /**
  * CreateObj
  *
@@ -45,13 +45,13 @@ struct CreateObjReq {
   /**
    * For printing
    */
-  friend bool printCREATE_OBJ_REQ(FILE*, const Uint32*, Uint32, Uint16);
-  
-public:
+  friend bool printCREATE_OBJ_REQ(FILE *, const Uint32 *, Uint32, Uint16);
+
+ public:
   static constexpr Uint32 SignalLength = 10;
   static constexpr Uint32 GSN = GSN_CREATE_OBJ_REQ;
-  
-private:
+
+ private:
   Uint32 op_key;
   Uint32 senderRef;
   Uint32 senderData;
@@ -65,7 +65,7 @@ private:
   Uint32 objVersion;
   Uint32 gci;
 
-  SECTION( DICT_OBJ_INFO = 0 );
+  SECTION(DICT_OBJ_INFO = 0);
 };
 
 struct CreateObjRef {
@@ -74,24 +74,21 @@ struct CreateObjRef {
    */
   friend class Dbdict;
   friend class SafeCounter;
-  
+
   /**
    * For printing
    */
   friend bool printCREATE_OBJ_REF(FILE *, const Uint32 *, Uint32, Uint16);
-  
+
   static constexpr Uint32 SignalLength = 6;
   static constexpr Uint32 GSN = GSN_CREATE_OBJ_REF;
 
-  enum ErrorCode {
-    NF_FakeErrorREF = 255
-  };
-
+  enum ErrorCode { NF_FakeErrorREF = 255 };
 
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 errorCode;
-  Uint32 errorLine; 
+  Uint32 errorLine;
   Uint32 errorKey;
   Uint32 errorStatus;
 };
@@ -101,20 +98,19 @@ struct CreateObjConf {
    * Sender(s) / Reciver(s)
    */
   friend class Dbdict;
-  
+
   /**
    * For printing
    */
   friend bool printCREATE_OBJ_CONF(FILE *, const Uint32 *, Uint32, Uint16);
-  
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 2;
 
-private:
+ private:
   Uint32 senderRef;
   Uint32 senderData;
 };
-
 
 #undef JAM_FILE_ID
 

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,37 +25,33 @@
 */
 
 //****************************************************************************
-// 
+//
 // NAME
 //      Backup - Database backup / restore
 //
 //===========================================================================
 #include "Backup.hpp"
 
-#include <Properties.hpp>
 #include <Configuration.hpp>
-#include <signaldata/RedoStateRep.hpp>
 #include <EventLogger.hpp>
+#include <Properties.hpp>
+#include <signaldata/RedoStateRep.hpp>
+#include "portlib/ndb_file.h"
 
 #define JAM_FILE_ID 472
 
+// extern const unsigned Ndbcntr::g_sysTableCount;
 
-//extern const unsigned Ndbcntr::g_sysTableCount;
-
-Backup::Backup(Block_context& ctx,
-               Uint32 instanceNumber,
-               Uint32 blockNo) :
-  SimulatedBlock(blockNo, ctx, instanceNumber),
-  m_delete_lcp_file_list(c_deleteLcpFilePool),
-  c_nodes(c_nodePool),
-  c_backups(c_backupPool)
-{
+Backup::Backup(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
+    : SimulatedBlock(blockNo, ctx, instanceNumber),
+      m_delete_lcp_file_list(c_deleteLcpFilePool),
+      c_nodes(c_nodePool),
+      c_backups(c_backupPool) {
   BLOCK_CONSTRUCTOR(Backup);
-  
+
   c_masterNodeId = getOwnNodeId();
 
-  if (blockNo == BACKUP)
-  {
+  if (blockNo == BACKUP) {
     // Add received signals
     addRecSignal(GSN_READ_CONFIG_REQ, &Backup::execREAD_CONFIG_REQ);
     addRecSignal(GSN_STTOR, &Backup::execSTTOR);
@@ -127,10 +124,10 @@ Backup::Backup(Block_context& ctx,
     addRecSignal(GSN_STOP_BACKUP_REQ, &Backup::execSTOP_BACKUP_REQ);
     addRecSignal(GSN_STOP_BACKUP_REF, &Backup::execSTOP_BACKUP_REF);
     addRecSignal(GSN_STOP_BACKUP_CONF, &Backup::execSTOP_BACKUP_CONF);
-  
-    //addRecSignal(GSN_BACKUP_STATUS_REQ, &Backup::execBACKUP_STATUS_REQ);
-    //addRecSignal(GSN_BACKUP_STATUS_CONF, &Backup::execBACKUP_STATUS_CONF);
-  
+
+    // addRecSignal(GSN_BACKUP_STATUS_REQ, &Backup::execBACKUP_STATUS_REQ);
+    // addRecSignal(GSN_BACKUP_STATUS_CONF, &Backup::execBACKUP_STATUS_CONF);
+
     addRecSignal(GSN_UTIL_SEQUENCE_REF, &Backup::execUTIL_SEQUENCE_REF);
     addRecSignal(GSN_UTIL_SEQUENCE_CONF, &Backup::execUTIL_SEQUENCE_CONF);
 
@@ -155,7 +152,7 @@ Backup::Backup(Block_context& ctx,
     addRecSignal(GSN_BACKUP_CONF, &Backup::execBACKUP_CONF);
     addRecSignal(GSN_BACKUP_ABORT_REP, &Backup::execBACKUP_ABORT_REP);
     addRecSignal(GSN_BACKUP_COMPLETE_REP, &Backup::execBACKUP_COMPLETE_REP);
-  
+
     addRecSignal(GSN_LCP_PREPARE_REQ, &Backup::execLCP_PREPARE_REQ);
     addRecSignal(GSN_END_LCPREQ, &Backup::execEND_LCPREQ);
 
@@ -169,9 +166,7 @@ Backup::Backup(Block_context& ctx,
     addRecSignal(GSN_CHECK_NODE_RESTARTCONF,
                  &Backup::execCHECK_NODE_RESTARTCONF);
     m_is_query_block = false;
-  }
-  else
-  {
+  } else {
     m_is_query_block = true;
     ndbrequire(blockNo == QBACKUP);
 
@@ -186,17 +181,17 @@ Backup::Backup(Block_context& ctx,
   }
 
   {
-    CallbackEntry& ce = m_callbackEntry[THE_NULL_CALLBACK];
+    CallbackEntry &ce = m_callbackEntry[THE_NULL_CALLBACK];
     ce.m_function = TheNULLCallback.m_callbackFunction;
     ce.m_flags = 0;
   }
-  { // 1
-    CallbackEntry& ce = m_callbackEntry[SYNC_LOG_LCP_LSN];
+  {  // 1
+    CallbackEntry &ce = m_callbackEntry[SYNC_LOG_LCP_LSN];
     ce.m_function = safe_cast(&Backup::sync_log_lcp_lsn_callback);
     ce.m_flags = 0;
   }
   {
-    CallbackTable& ct = m_callbackTable;
+    CallbackTable &ct = m_callbackTable;
     ct.m_count = COUNT_CALLBACKS;
     ct.m_entry = m_callbackEntry;
     m_callbackTableAddr = &ct;
@@ -229,24 +224,20 @@ Backup::Backup(Block_context& ctx,
   m_last_lcp_dd_percentage = Uint32(0);
   m_undo_log_level_percentage = Uint32(0);
 }
-  
-Backup::~Backup()
-{
-}
+
+Backup::~Backup() {}
 
 BLOCK_FUNCTIONS(Backup)
 
-void
-Backup::execREAD_CONFIG_REQ(Signal* signal)
-{
-  const ReadConfigReq * req = (ReadConfigReq*)signal->getDataPtr();
+void Backup::execREAD_CONFIG_REQ(Signal *signal) {
+  const ReadConfigReq *req = (ReadConfigReq *)signal->getDataPtr();
   Uint32 ref = req->senderRef;
   Uint32 senderData = req->senderData;
   ndbrequire(req->noOfParameters == 0);
   jamEntry();
 
-  const ndb_mgm_configuration_iterator * p = 
-    m_ctx.m_config.getOwnConfigIterator();
+  const ndb_mgm_configuration_iterator *p =
+      m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
   c_defaults.m_disk_write_speed_min = 10 * (1024 * 1024);
@@ -259,37 +250,37 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
 
   Uint32 noBackups = 0, noTables = 0, noFrags = 0;
   Uint32 noDeleteLcpFile = 0;
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_DISCLESS, 
-					&c_defaults.m_diskless));
-  ndb_mgm_get_int_parameter(p, CFG_DB_O_DIRECT,
-                            &c_defaults.m_o_direct);
+  ndbrequire(
+      !ndb_mgm_get_int_parameter(p, CFG_DB_DISCLESS, &c_defaults.m_diskless));
+  ndb_mgm_get_int_parameter(p, CFG_DB_O_DIRECT, &c_defaults.m_o_direct);
+  if (!ndb_file::have_direct_io_support())
+    c_defaults.m_o_direct = 0;  // Message in NDBFS::execREAD_CONFIG
 
   Uint32 encrypted_filesystem = 0;
-  ndb_mgm_get_int_parameter(
-      p, CFG_DB_ENCRYPTED_FILE_SYSTEM, &encrypted_filesystem);
+  ndb_mgm_get_int_parameter(p, CFG_DB_ENCRYPTED_FILE_SYSTEM,
+                            &encrypted_filesystem);
   c_encrypted_filesystem = encrypted_filesystem;
 
   ndb_mgm_get_int64_parameter(p, CFG_DB_MIN_DISK_WRITE_SPEED,
-			      &c_defaults.m_disk_write_speed_min);
+                              &c_defaults.m_disk_write_speed_min);
   ndb_mgm_get_int64_parameter(p, CFG_DB_MAX_DISK_WRITE_SPEED,
-			      &c_defaults.m_disk_write_speed_max);
-  ndb_mgm_get_int64_parameter(p,
-                CFG_DB_MAX_DISK_WRITE_SPEED_OTHER_NODE_RESTART,
-                &c_defaults.m_disk_write_speed_max_other_node_restart);
-  ndb_mgm_get_int64_parameter(p,
-                CFG_DB_MAX_DISK_WRITE_SPEED_OWN_RESTART,
-                &c_defaults.m_disk_write_speed_max_own_restart);
+                              &c_defaults.m_disk_write_speed_max);
+  ndb_mgm_get_int64_parameter(
+      p, CFG_DB_MAX_DISK_WRITE_SPEED_OTHER_NODE_RESTART,
+      &c_defaults.m_disk_write_speed_max_other_node_restart);
+  ndb_mgm_get_int64_parameter(p, CFG_DB_MAX_DISK_WRITE_SPEED_OWN_RESTART,
+                              &c_defaults.m_disk_write_speed_max_own_restart);
   ndb_mgm_get_int_parameter(p, CFG_DB_BACKUP_DISK_WRITE_PCT,
                             &c_defaults.m_backup_disk_write_pct);
 
   ndb_mgm_get_int_parameter(p, CFG_DB_DISK_SYNCH_SIZE,
-			    &c_defaults.m_disk_synch_size);
+                            &c_defaults.m_disk_synch_size);
   ndb_mgm_get_int_parameter(p, CFG_DB_COMPRESSED_BACKUP,
-			    &c_defaults.m_compressed_backup);
+                            &c_defaults.m_compressed_backup);
   ndb_mgm_get_int_parameter(p, CFG_DB_COMPRESSED_LCP,
-			    &c_defaults.m_compressed_lcp);
+                            &c_defaults.m_compressed_lcp);
   ndb_mgm_get_int_parameter(p, CFG_DB_REQUIRE_ENCRYPTED_BACKUP,
-			    &c_defaults.m_encryption_required);
+                            &c_defaults.m_encryption_required);
 
   m_enable_partial_lcp = 1; /* Default to enabled */
   ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_PARTIAL_LCP,
@@ -303,8 +294,7 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_RECOVERY_WORK, &m_recovery_work);
 
   m_insert_recovery_work = 40; /* Default to 40% */
-  ndb_mgm_get_int_parameter(p,
-                            CFG_DB_INSERT_RECOVERY_WORK,
+  ndb_mgm_get_int_parameter(p, CFG_DB_INSERT_RECOVERY_WORK,
                             &m_insert_recovery_work);
 
   m_cfg_mt_backup = 1; /* Default to enabled */
@@ -313,37 +303,33 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
 
   jam();
   m_backup_report_frequency = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_BACKUP_REPORT_FREQUENCY, 
-			    &m_backup_report_frequency);
+  ndb_mgm_get_int_parameter(p, CFG_DB_BACKUP_REPORT_FREQUENCY,
+                            &m_backup_report_frequency);
 
   ndb_mgm_get_int_parameter(p, CFG_DB_PARALLEL_BACKUPS, &noBackups);
 
- /* Check config parameter for ndmtd named EnableMultithreadedBackup. If
-  * set to 1, ndbmtd will attempt to execute backups as multithreaded backups.
-  * In a multithreaded backup, all the LDMs in a node perform backup work.
-  * The multithreaded backup directory structure is different from the existing
-  * backup directory structure.
-  *
-  * It is not guaranteed that a setting of EnableMultithreadedBackup=1 will
-  * result in a multithreaded backup, since multithreaded backups are only run
-  * if all the data nodes have more than one LDM.
-  *
-  * If EnableMultithreadedBackup=0, backup will always be single-threaded.
-  * The default is EnableMultithreadedBackup=1.
-  */
+  /* Check config parameter for ndmtd named EnableMultithreadedBackup. If
+   * set to 1, ndbmtd will attempt to execute backups as multithreaded backups.
+   * In a multithreaded backup, all the LDMs in a node perform backup work.
+   * The multithreaded backup directory structure is different from the existing
+   * backup directory structure.
+   *
+   * It is not guaranteed that a setting of EnableMultithreadedBackup=1 will
+   * result in a multithreaded backup, since multithreaded backups are only run
+   * if all the data nodes have more than one LDM.
+   *
+   * If EnableMultithreadedBackup=0, backup will always be single-threaded.
+   * The default is EnableMultithreadedBackup=1.
+   */
   m_cfg_mt_backup = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_MT_BACKUP,
-                            &m_cfg_mt_backup);
+  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_MT_BACKUP, &m_cfg_mt_backup);
 
   //  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_NO_TABLES, &noTables));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE, &noTables));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DIH_FRAG_CONNECT, &noFrags));
-  ndbrequire(!ndb_mgm_get_int_parameter(p,
-                                        CFG_LQH_FRAG,
-                                        &noDeleteLcpFile));
+  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_LQH_FRAG, &noDeleteLcpFile));
 
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     noTables = 0;
     noFrags = 0;
     noDeleteLcpFile = 0;
@@ -363,8 +349,8 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
    */
   c_nodePool.setSize(MAX_NDB_NODES);
   c_backupPool.setSize(noBackups + 1);
-  c_backupFilePool.setSize(3 * noBackups +
-                           4 + (2*BackupFormat::NDB_MAX_FILES_PER_LCP));
+  c_backupFilePool.setSize(3 * noBackups + 4 +
+                           (2 * BackupFormat::NDB_MAX_FILES_PER_LCP));
   c_tablePool.setSize(noBackups * noTables + 2);
 
   c_transient_pools[BACKUP_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
@@ -392,12 +378,10 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   c_deleteLcpFilePool.init(RT_BACKUP_DELETE_LCP, pc);
 
   c_tableMapSize = noBackups * noTables;
-  c_tableMap = (Uint32*)allocRecord("c_tableMap",
-                                    sizeof(Uint32),
-                                    c_tableMapSize);
+  c_tableMap =
+      (Uint32 *)allocRecord("c_tableMap", sizeof(Uint32), c_tableMapSize);
 
-  for (Uint32 i = 0; i < c_tableMapSize; i++)
-  {
+  for (Uint32 i = 0; i < c_tableMapSize; i++) {
     c_tableMap[i] = RNIL;
   }
 
@@ -446,15 +430,13 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
 
   Uint32 szLogBuf = BACKUP_DEFAULT_LOGBUFFER_SIZE;
   ndb_mgm_get_int_parameter(p, CFG_DB_BACKUP_LOG_BUFFER_MEM, &szLogBuf);
-  if (maxWriteSize < szWrite)
-  {
+  if (maxWriteSize < szWrite) {
     /**
      * max can't be lower than min
      */
     maxWriteSize = szWrite;
   }
-  if ((maxWriteSize % szWrite) != 0)
-  {
+  if ((maxWriteSize % szWrite) != 0) {
     /**
      * max needs to be a multiple of min
      */
@@ -463,11 +445,11 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   }
 
   /**
-   * Data buffer size must at least be big enough for a max-sized 
+   * Data buffer size must at least be big enough for a max-sized
    * scan batch.
    */
   ndbrequire(szDataBuf >= (BACKUP_MIN_BUFF_WORDS * 4));
-    
+
   /**
    * add min writesize to buffer size...and the alignment added here and there
    * Need buffer size to be >= max-sized scan batch + min write size
@@ -489,11 +471,11 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   Uint32 szMem = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_BACKUP_MEM, &szMem);
 
-  if (szMem != (32 * 1024 * 1024))
-  {
+  if (szMem != (32 * 1024 * 1024)) {
     jam();
-    g_eventLogger->info("BackupMemory parameter setting ignored,"
-                        " BackupMemory deprecated");
+    g_eventLogger->info(
+        "BackupMemory parameter setting ignored,"
+        " BackupMemory deprecated");
   }
 
   /**
@@ -506,11 +488,10 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
    * in ArrayPool.
    */
   Uint32 noPages =
-    (szDataBuf + sizeof(Page32) - 1) / sizeof(Page32) +
-    (szLogBuf + sizeof(Page32) - 1) / sizeof(Page32) +
-    ((2 * BackupFormat::NDB_MAX_FILES_PER_LCP) * 
-      ((c_defaults.m_lcp_buffer_size + sizeof(Page32) - 1) /
-           sizeof(Page32)));
+      (szDataBuf + sizeof(Page32) - 1) / sizeof(Page32) +
+      (szLogBuf + sizeof(Page32) - 1) / sizeof(Page32) +
+      ((2 * BackupFormat::NDB_MAX_FILES_PER_LCP) *
+       ((c_defaults.m_lcp_buffer_size + sizeof(Page32) - 1) / sizeof(Page32)));
 
   Uint32 seizeNumPages = noPages + (1*NO_OF_PAGES_META_FILE)+ 9;
   if (!m_is_query_block)
@@ -525,7 +506,7 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
 
   jam();
 
-  { // Init all tables
+  {  // Init all tables
     Table_list tables(c_tablePool);
     TablePtr ptr;
     while (tables.seizeFirst(ptr)){
@@ -534,8 +515,7 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
       ptr.p->tableId = RNIL;
     }
     jam();
-    while (tables.releaseFirst())
-    {
+    while (tables.releaseFirst()) {
       ;
     }
     jam();
@@ -544,27 +524,25 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   {
     BackupFile_list ops(c_backupFilePool);
     BackupFilePtr ptr;
-    while (ops.seizeFirst(ptr)){
-      new (ptr.p) BackupFile(* this, c_pagePool);
+    while (ops.seizeFirst(ptr)) {
+      new (ptr.p) BackupFile(*this, c_pagePool);
     }
     jam();
-    while (ops.releaseFirst())
-    {
+    while (ops.releaseFirst()) {
       ;
     }
     jam();
   }
-  
+
   {
     BackupRecord_sllist recs(c_backupPool);
     BackupRecordPtr ptr;
-    while (recs.seizeFirst(ptr)){
-      new (ptr.p) BackupRecord(* this, c_tablePool, 
-			       c_backupFilePool, c_triggerPool);
+    while (recs.seizeFirst(ptr)) {
+      new (ptr.p)
+          BackupRecord(*this, c_tablePool, c_backupFilePool, c_triggerPool);
     }
     jam();
-    while (recs.releaseFirst())
-    {
+    while (recs.releaseFirst()) {
       ;
     }
     jam();
@@ -576,25 +554,23 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
     ndbrequire(c_pagePool.seizeId(p, 0));
     c_startOfPages = (Uint32 *)p.p;
     c_pagePool.release(p);
-    
-    NewVARIABLE* bat = allocateBat(1);
+
+    NewVARIABLE *bat = allocateBat(1);
     bat[0].WA = c_startOfPages;
-    bat[0].nrr = c_pagePool.getSize()*sizeof(Page32)/sizeof(Uint32);
+    bat[0].nrr = c_pagePool.getSize() * sizeof(Page32) / sizeof(Uint32);
   }
 
-  ReadConfigConf * conf = (ReadConfigConf*)signal->getDataPtrSend();
+  ReadConfigConf *conf = (ReadConfigConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = senderData;
-  sendSignal(ref, GSN_READ_CONFIG_CONF, signal, 
-	     ReadConfigConf::SignalLength, JBB);
+  sendSignal(ref, GSN_READ_CONFIG_CONF, signal, ReadConfigConf::SignalLength,
+             JBB);
 }
 
 /* Broken out in its own routine to enable setting via DUMP command. */
-void Backup::calculate_real_disk_write_speed_parameters(void)
-{
-  if (c_defaults.m_disk_write_speed_max < c_defaults.m_disk_write_speed_min)
-  {
-    /** 
+void Backup::calculate_real_disk_write_speed_parameters(void) {
+  if (c_defaults.m_disk_write_speed_max < c_defaults.m_disk_write_speed_min) {
+    /**
      * By setting max disk write speed equal or smaller than the minimum
      * we will remove the adaptiveness of the LCP speed.
      */
@@ -605,9 +581,8 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
   }
 
   if (c_defaults.m_disk_write_speed_max_other_node_restart <
-        c_defaults.m_disk_write_speed_max)
-  {
-    /** 
+      c_defaults.m_disk_write_speed_max) {
+    /**
      * By setting max disk write speed during restart equal or smaller than
      * the maximum we will remove the extra adaptiveness of the LCP speed
      * at other nodes restarts.
@@ -617,13 +592,12 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
         "MaxDiskWriteSpeed larger than MaxDiskWriteSpeedOtherNodeRestart"
         " setting both to MaxDiskWriteSpeed");
     c_defaults.m_disk_write_speed_max_other_node_restart =
-      c_defaults.m_disk_write_speed_max;
+        c_defaults.m_disk_write_speed_max;
   }
 
   if (c_defaults.m_disk_write_speed_max_own_restart <
-        c_defaults.m_disk_write_speed_max_other_node_restart)
-  {
-    /** 
+      c_defaults.m_disk_write_speed_max_other_node_restart) {
+    /**
      * By setting restart disk write speed during our restart equal or
      * smaller than the maximum we will remove the extra adaptiveness of the
      * LCP speed at other nodes restarts.
@@ -633,7 +607,7 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
         "Setting MaxDiskWriteSpeedOwnRestart to "
         "MaxDiskWriteSpeedOtherNodeRestart since it was smaller");
     c_defaults.m_disk_write_speed_max_own_restart =
-      c_defaults.m_disk_write_speed_max_other_node_restart;
+        c_defaults.m_disk_write_speed_max_other_node_restart;
   }
 
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
@@ -683,26 +657,25 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
     second to words per second.
   */
   c_defaults.m_disk_write_speed_min /=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
   c_defaults.m_disk_write_speed_max /=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
   c_defaults.m_disk_write_speed_max_other_node_restart /=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
   c_defaults.m_disk_write_speed_max_own_restart /=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
 
 }
 
-void Backup::restore_disk_write_speed_numbers(void)
-{
+void Backup::restore_disk_write_speed_numbers(void) {
   c_defaults.m_disk_write_speed_min *=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
   c_defaults.m_disk_write_speed_max *=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
   c_defaults.m_disk_write_speed_max_other_node_restart *=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
   c_defaults.m_disk_write_speed_max_own_restart *=
-    CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
+      CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
 
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
 

@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -125,7 +126,8 @@ Gcs_xcom_control::Gcs_xcom_control(
     Gcs_xcom_view_change_control_interface *view_control, bool boot,
     My_xp_socket_util *socket_util,
     std::unique_ptr<Network_provider_operations_interface>
-        comms_operation_interface)
+        comms_operation_interface,
+    Gcs_xcom_statistics_manager_interface *stats_mgr)
     : m_gid(nullptr),
       m_gid_hash(0),
       m_xcom_proxy(xcom_proxy),
@@ -142,6 +144,7 @@ Gcs_xcom_control::Gcs_xcom_control(
       m_suspicions_processing_thread(),
       m_sock_probe_interface(nullptr),
       m_comms_operation_interface(std::move(comms_operation_interface)),
+      m_stats_mgr(stats_mgr),
       m_xcom_running(false),
       m_leave_view_requested(false),
       m_leave_view_delivered(false),
@@ -1264,6 +1267,11 @@ bool Gcs_xcom_control::xcom_receive_local_view(synode_no const config_id,
             MYSQL_GCS_LOG_TRACE("My node_id is (%d) Non-member node considered "
                                 "suspicious in the cluster: %s",
                                 node_no, (*it)->get_member_id().c_str());)
+
+    // Register suspicious per node, for statistical purposes
+    for (auto &&suspect_member_id : unreachable) {
+      m_stats_mgr->add_suspicious_for_a_node(suspect_member_id.get_member_id());
+    }
 
     // always notify local views
     for (callback_it = event_listeners.begin();

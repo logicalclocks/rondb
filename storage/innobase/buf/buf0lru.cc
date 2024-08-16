@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -656,7 +657,6 @@ static bool flush_page_flush_list(buf_pool_t *buf_pool, buf_page_t *bpage) {
 
   buf_flush_list_mutex_enter(buf_pool);
 
-  ut_ad(!mutex_own(block_mutex));
   ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
 
   return flushed;
@@ -1254,41 +1254,26 @@ buf_block_t *buf_LRU_get_free_only(buf_pool_t *buf_pool) {
 static void buf_LRU_check_size_of_non_data_objects(
     const buf_pool_t *buf_pool) /*!< in: buffer pool instance */
 {
+  const size_t mb = (buf_pool->curr_size / (1024 * 1024 / UNIV_PAGE_SIZE));
+
   if (!recv_recovery_is_on() && buf_pool->curr_size == buf_pool->old_size &&
       UT_LIST_GET_LEN(buf_pool->free) + UT_LIST_GET_LEN(buf_pool->LRU) <
           buf_pool->curr_size / 20) {
-    ib::fatal(UT_LOCATION_HERE, ER_IB_MSG_132)
-        << "Over 95 percent of the buffer pool is"
-           " occupied by lock heaps or the adaptive hash index!"
-           " Check that your transactions do not set too many"
-           " row locks. Your buffer pool size is "
-        << (buf_pool->curr_size / (1024 * 1024 / UNIV_PAGE_SIZE))
-        << " MB."
-           " Maybe you should make the buffer pool bigger?"
-           " We intentionally generate a seg fault to print"
-           " a stack trace on Linux!";
+    const bool buf_pool_full = true;
+    LogErr(ERROR_LEVEL, ER_IB_BUFFER_POOL_FULL,
+           "buf_LRU_check_size_of_non_data_objects()", mb);
+    ut_a(!buf_pool_full);
 
   } else if (!recv_recovery_is_on() &&
              buf_pool->curr_size == buf_pool->old_size &&
              (UT_LIST_GET_LEN(buf_pool->free) +
               UT_LIST_GET_LEN(buf_pool->LRU)) < buf_pool->curr_size / 3) {
     if (!buf_lru_switched_on_innodb_mon.exchange(true)) {
-      /* Over 67 % of the buffer pool is occupied by lock
-      heaps or the adaptive hash index. This may be a memory
-      leak! */
+      /* Over 67 % of the buffer pool is occupied by lock heaps or the adaptive
+      hash index or BUF_BLOCK_MEMORY pages. This may be a memory leak! */
 
-      ib::warn(ER_IB_MSG_133)
-          << "Over 67 percent of the buffer pool is"
-             " occupied by lock heaps or the adaptive hash"
-             " index! Check that your transactions do not"
-             " set too many row locks. Your buffer pool"
-             " size is "
-          << (buf_pool->curr_size / (1024 * 1024 / UNIV_PAGE_SIZE))
-          << " MB. Maybe you should make the buffer pool"
-             " bigger?. Starting the InnoDB Monitor to print"
-             " diagnostics, including lock heap and hash"
-             " index sizes.";
-
+      LogErr(WARNING_LEVEL, ER_IB_BUFFER_POOL_OVERUSE,
+             "buf_LRU_check_size_of_non_data_objects()", mb);
       srv_innodb_needs_monitoring++;
     }
 

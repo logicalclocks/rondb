@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,12 +29,14 @@
 #include <memory>
 
 #include "my_config.h"  // NOLINT(build/include_subdir)
-                        // NOLINT(build/include_subdir)
+
+#include "my_inttypes.h"  // NOLINT(build/include_subdir)
 #include "mysql/service_plugin_registry.h"
 #include "violite.h"  // NOLINT(build/include_subdir)
 
 #include "plugin/x/src/xpl_performance_schema.h"
 #include "sql/replication.h"
+#include "sql/ssl_acceptor_context_operator.h"
 #include "unittest/gunit/xplugin/xpl/mock/component_services.h"
 
 #ifdef HAVE_ARPA_INET_H
@@ -49,6 +52,10 @@
 const char *my_localhost;
 std::atomic<int32> connection_events_loop_aborted_flag;
 bool opt_initialize = false;
+
+Ssl_acceptor_context_container *mysql_main;
+
+bool Lock_and_access_ssl_acceptor_context::have_ssl() { return true; }
 
 int ip_to_hostname(struct sockaddr_storage *, const char *, char **,
                    uint32_t *) {
@@ -133,6 +140,8 @@ void conditional_sync_point(std::string) {}
 
 uint opt_debug_sync_timeout;
 void debug_sync(THD *, char const *, size_t) {}
+
+sigset_t mysqld_signal_mask;
 
 #ifdef HAVE_SETNS
 bool set_network_namespace(const std::string &) { return false; }

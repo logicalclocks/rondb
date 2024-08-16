@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -38,8 +39,8 @@ Compression_stats::ZERO_TRX_ROW() {
   return instance;
 }
 
-Compression_stats::Compression_stats(
-    log_type log, binary_log::transaction::compression::type t)
+Compression_stats::Compression_stats(log_type log,
+                                     mysql::binlog::event::compression::type t)
     : m_log_type(log),
       m_type(t),
       m_counter_transactions(0),
@@ -65,7 +66,7 @@ Compression_stats::~Compression_stats() { destroy(); }
 
 log_type Compression_stats::get_log_type() const { return m_log_type; }
 
-binary_log::transaction::compression::type Compression_stats::get_type() const {
+mysql::binlog::event::compression::type Compression_stats::get_type() const {
   return m_type;
 }
 
@@ -242,11 +243,11 @@ Transaction_compression::~Transaction_compression() {
 
 void Transaction_compression::init() {
   DBUG_TRACE;
-  auto comp_types = std::set<binary_log::transaction::compression::type>();
+  auto comp_types = std::set<mysql::binlog::event::compression::type>();
   auto log_types = std::set<binlog::monitoring::log_type>();
 
-  comp_types.insert(binary_log::transaction::compression::type::NONE);
-  comp_types.insert(binary_log::transaction::compression::type::ZSTD);
+  comp_types.insert(mysql::binlog::event::compression::type::NONE);
+  comp_types.insert(mysql::binlog::event::compression::type::ZSTD);
 
   log_types.insert(binlog::monitoring::log_type::BINARY);
   log_types.insert(binlog::monitoring::log_type::RELAY);
@@ -272,9 +273,9 @@ void Transaction_compression::reset() {
 }
 
 void Transaction_compression::update(
-    log_type log_type, binary_log::transaction::compression::type comp_type,
+    log_type log_type, mysql::binlog::event::compression::type comp_type,
     Gtid &gtid, uint64_t transaction_timestamp, uint64_t comp_bytes,
-    uint64_t uncomp_bytes, Sid_map *sid_map) {
+    uint64_t uncomp_bytes, Tsid_map *tsid_map) {
   DBUG_TRACE;
   Gtid_specification spec;
   char gtid_buf[Gtid::MAX_TEXT_LENGTH + 1];
@@ -282,12 +283,12 @@ void Transaction_compression::update(
     spec.set_anonymous();
   else
     spec.set(gtid);
-  auto gtid_buf_len = spec.to_string(sid_map, gtid_buf, true);
+  auto gtid_buf_len = spec.to_string(tsid_map, gtid_buf, true);
   std::string gtid_string(gtid_buf, gtid_buf_len);
 
 #ifndef NDEBUG
   auto key = std::make_pair<binlog::monitoring::log_type &,
-                            binary_log::transaction::compression::type &>(
+                            mysql::binlog::event::compression::type &>(
       log_type, comp_type);
 
   assert(m_stats.find(key) != m_stats.end() && m_stats[key] != nullptr);

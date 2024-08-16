@@ -1,15 +1,16 @@
-/* Copyright (c) 2001, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2001, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -42,8 +43,9 @@
 /*
   HAVE_BACKTRACE - Linux, FreeBSD, OSX, Solaris
   _WIN32 - Windows
+  HAVE_EXT_BACKTRACE - Unixes without backtrace(3)
 */
-#if defined(HAVE_BACKTRACE) || defined(_WIN32)
+#if defined(HAVE_BACKTRACE) || defined(_WIN32) || defined(HAVE_EXT_BACKTRACE)
 #define HAVE_STACKTRACE 1
 void my_init_stacktrace();
 void my_print_stacktrace(const uchar *stack_bottom, ulong thread_stack);
@@ -53,7 +55,7 @@ void my_safe_puts_stderr(const char *val, size_t max_len);
 void my_set_exception_pointers(EXCEPTION_POINTERS *ep);
 void my_create_minidump(const char *name, HANDLE process, DWORD pid);
 #endif
-#endif /* HAVE_BACKTRACE || _WIN32 */
+#endif /* HAVE_BACKTRACE || _WIN32 || HAVE_EXT_BACKTRACE */
 
 void my_write_core(int sig);
 

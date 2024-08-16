@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,43 +34,18 @@
 #include "mysql/harness/net_ts/impl/socket.h"
 #include "mysql/harness/net_ts/io_context.h"
 #include "mysql/harness/stdx/expected_ostream.h"
-#include "mysql_routing.h"  // AccessMode
+#include "mysql_routing.h"  // Mode
 #include "test/helpers.h"   // init_test_logger
 
 using namespace std::chrono_literals;
 
 using ::testing::Eq;
-using ::testing::Return;
 using ::testing::StrEq;
 
 class RoutingTests : public ::testing::Test {
  protected:
   net::io_context io_ctx_;
 };
-
-TEST_F(RoutingTests, AccessModes) {
-  using routing::AccessMode;
-
-  ASSERT_EQ(static_cast<int>(AccessMode::kReadWrite), 1);
-  ASSERT_EQ(static_cast<int>(AccessMode::kReadOnly), 2);
-}
-
-TEST_F(RoutingTests, AccessModeLiteralNames) {
-  using routing::AccessMode;
-  using routing::get_access_mode;
-
-  ASSERT_THAT(get_access_mode("read-write"), Eq(AccessMode::kReadWrite));
-  ASSERT_THAT(get_access_mode("read-only"), Eq(AccessMode::kReadOnly));
-}
-
-TEST_F(RoutingTests, GetAccessLiteralName) {
-  using routing::AccessMode;
-  using routing::get_access_mode_name;
-
-  ASSERT_THAT(get_access_mode_name(AccessMode::kReadWrite),
-              StrEq("read-write"));
-  ASSERT_THAT(get_access_mode_name(AccessMode::kReadOnly), StrEq("read-only"));
-}
 
 TEST_F(RoutingTests, Defaults) {
   ASSERT_EQ(routing::kDefaultWaitTimeout, 0);
@@ -143,18 +119,6 @@ TEST_F(RoutingTests, set_destinations_from_cvs) {
     EXPECT_NO_THROW(routing.set_destinations_from_csv(cvs));
   }
 
-  // no routing strategy, should go with default
-  {
-    RoutingConfig conf_inv;
-    conf_inv.routing_strategy = routing::RoutingStrategy::kUndefined;
-    conf_inv.bind_address = mysql_harness::TCPAddress{"0.0.0.0", 7001};
-    conf_inv.protocol = Protocol::Type::kXProtocol;
-    conf_inv.connect_timeout = 1;
-    MySQLRouting routing_inv(conf_inv, io_ctx_);
-    const std::string csv = "127.0.0.1:2002,127.0.0.1:2004";
-    EXPECT_NO_THROW(routing_inv.set_destinations_from_csv(csv));
-  }
-
   // no address
   {
     const std::string csv = "";
@@ -177,7 +141,6 @@ TEST_F(RoutingTests, set_destinations_from_cvs) {
     RoutingConfig conf_classic;
     conf_classic.routing_strategy = routing::RoutingStrategy::kNextAvailable;
     conf_classic.bind_address = mysql_harness::TCPAddress{address, 3306};
-    conf_classic.mode = routing::AccessMode::kReadWrite;
     conf_classic.protocol = Protocol::Type::kClassicProtocol;
     conf_classic.connect_timeout = 1;
     MySQLRouting routing_classic(conf_classic, io_ctx_);
@@ -191,7 +154,6 @@ TEST_F(RoutingTests, set_destinations_from_cvs) {
     RoutingConfig conf_x;
     conf_x.routing_strategy = routing::RoutingStrategy::kNextAvailable;
     conf_x.bind_address = mysql_harness::TCPAddress{address, 33060};
-    conf_x.mode = routing::AccessMode::kReadWrite;
     conf_x.protocol = Protocol::Type::kXProtocol;
     conf_x.connect_timeout = 1;
     MySQLRouting routing_x(conf_x, io_ctx_);

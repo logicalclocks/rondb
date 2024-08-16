@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <bit>
 #include <bitset>
 #include <unordered_set>
 #include <vector>
@@ -493,8 +495,8 @@ TEST(DPhypTest, SmallStar) {
   EXPECT_CALL(mr, FoundSingleNode(2));
   EXPECT_CALL(mr, FoundSingleNode(3));
 
-  for (int i = 1; i < 16; ++i) {
-    if (IsSingleBitSet(i)) {
+  for (NodeMap i = 1; i < 16; ++i) {
+    if (std::has_single_bit(i)) {
       EXPECT_CALL(mr, HasSeen(i))
           .Times(AnyNumber())
           .WillRepeatedly(Return(true));
@@ -559,7 +561,7 @@ TEST(DPhypTest, Clique) {
 
   // Look at all possible non-zero subsets of the clique.
   for (NodeMap subset = 1; subset < (NodeMap{1} << num_elements); ++subset) {
-    if (IsSingleBitSet(subset)) {
+    if (std::has_single_bit(subset)) {
       // Single node, so should have a single single-node subplan.
       ASSERT_EQ(1, receiver.seen_subplans.count(subset));
       EXPECT_EQ(0, receiver.seen_subplans.find(subset)->second.left);

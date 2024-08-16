@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -164,7 +165,7 @@ when SDI is corrupted.
 @param[in,out]  tablespace      tablespace object
 @retval         false           success
 @retval         true            failure */
-bool dict_sdi_drop(dd::Tablespace *) {
+bool dict_sdi_drop(dd::Tablespace *tablespace [[maybe_unused]]) {
 #if 0  /* TODO: Enable in WL#9761 */
         uint32  space_id;
         if (dict_sdi_exists(tablespace, &space_id)
@@ -314,9 +315,6 @@ bool dict_sdi_set(handlerton *hton, const dd::Tablespace &tablespace,
                                 << " sdi_key: type: " << sdi_key->type
                                 << " id: " << sdi_key->id << ")";);
 
-  /* Used for testing purpose for DDLs from Memcached */
-  DBUG_EXECUTE_IF("skip_sdi", return (false););
-
   if (dd_tablespace_is_discarded(&tablespace)) {
     /* Claim success. */
     return (false);
@@ -420,9 +418,6 @@ bool dict_sdi_delete(const dd::Tablespace &tablespace, const dd::Table *table,
                                 << "," << tablespace.id()
                                 << " sdi_key: type: " << sdi_key->type
                                 << " id: " << sdi_key->id << ")";);
-
-  /* Used for testing purpose for DDLs from Memcached */
-  DBUG_EXECUTE_IF("skip_sdi", return (false););
 
   if (dd_tablespace_is_discarded(&tablespace)) {
     /* Claim success. */

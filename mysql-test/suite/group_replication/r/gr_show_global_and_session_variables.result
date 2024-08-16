@@ -37,8 +37,6 @@ SET @@SESSION.group_replication_group_seeds= "";
 ERROR HY000: Variable 'group_replication_group_seeds' is a GLOBAL variable and should be set with SET GLOBAL
 SET @@SESSION.group_replication_poll_spin_loops= 1;
 ERROR HY000: Variable 'group_replication_poll_spin_loops' is a GLOBAL variable and should be set with SET GLOBAL
-SET @@SESSION.group_replication_recovery_complete_at= "TRANSACTIONS_APPLIED";
-ERROR HY000: Variable 'group_replication_recovery_complete_at' is a GLOBAL variable and should be set with SET GLOBAL
 SET @@SESSION.group_replication_recovery_reconnect_interval= 10;
 ERROR HY000: Variable 'group_replication_recovery_reconnect_interval' is a GLOBAL variable and should be set with SET GLOBAL
 SET @@SESSION.group_replication_recovery_retry_count= 1;
@@ -99,8 +97,14 @@ SET @@SESSION.group_replication_view_change_uuid= "AUTOMATIC";
 ERROR HY000: Variable 'group_replication_view_change_uuid' is a GLOBAL variable and should be set with SET GLOBAL
 SET @@SESSION.group_replication_paxos_single_leader= 1;
 ERROR HY000: Variable 'group_replication_paxos_single_leader' is a GLOBAL variable and should be set with SET GLOBAL
+SET @@SESSION.group_replication_preemptive_garbage_collection= ON;
+ERROR HY000: Variable 'group_replication_preemptive_garbage_collection' is a GLOBAL variable and should be set with SET GLOBAL
+SET @@SESSION.group_replication_preemptive_garbage_collection_rows_threshold= 100000;
+ERROR HY000: Variable 'group_replication_preemptive_garbage_collection_rows_threshold' is a GLOBAL variable and should be set with SET GLOBAL
 Warnings:
-Warning	1681	'group_replication_recovery_complete_at' is deprecated and will be removed in a future release.
+Warning	1681	'group_replication_allow_local_lower_version_join' is deprecated and will be removed in a future release.
+Warnings:
+Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 
 # Test#3: Verify group replication related variables at SESSION scope.
 SET @@SESSION.group_replication_consistency= "EVENTUAL";
@@ -109,7 +113,8 @@ SET @@SESSION.group_replication_consistency= DEFAULT;
 # Test#4: Verify GLOBAL and SESSION variables
 include/start_group_replication.inc
 Warnings:
-Warning	1681	'group_replication_recovery_complete_at' is deprecated and will be removed in a future release.
+Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
+Warning	1681	'group_replication_allow_local_lower_version_join' is deprecated and will be removed in a future release.
 SET GLOBAL group_replication_recovery_ssl_crl= 'crl-client-revoked.crl';
 SET GLOBAL group_replication_recovery_tls_ciphersuites= "";
 include/assert.inc [Verify GLOBAL value of group_replication_allow_local_lower_version_join]
@@ -164,10 +169,6 @@ include/assert.inc [Verify GLOBAL value of group_replication_poll_spin_loops]
 include/assert.inc [Verify GLOBAL value of group_replication_poll_spin_loops]
 include/assert.inc [Verify SESSION value of group_replication_poll_spin_loops]
 include/assert.inc [Verify SESSION value of group_replication_poll_spin_loops]
-include/assert.inc [Verify GLOBAL value of group_replication_recovery_complete_at]
-include/assert.inc [Verify GLOBAL value of group_replication_recovery_complete_at]
-include/assert.inc [Verify SESSION value of group_replication_recovery_complete_at]
-include/assert.inc [Verify SESSION value of group_replication_recovery_complete_at]
 include/assert.inc [Verify GLOBAL value of group_replication_recovery_reconnect_interval]
 include/assert.inc [Verify GLOBAL value of group_replication_recovery_reconnect_interval]
 include/assert.inc [Verify SESSION value of group_replication_recovery_reconnect_interval]
@@ -289,9 +290,19 @@ include/assert.inc [Verify GLOBAL value of group_replication_paxos_single_leader
 include/assert.inc [Verify GLOBAL value of group_replication_paxos_single_leader]
 include/assert.inc [Verify SESSION value of group_replication_paxos_single_leader]
 include/assert.inc [Verify SESSION value of group_replication_paxos_single_leader]
+include/assert.inc [Verify GLOBAL value of group_replication_preemptive_garbage_collection]
+include/assert.inc [Verify GLOBAL value of group_replication_preemptive_garbage_collection]
+include/assert.inc [Verify SESSION value of group_replication_preemptive_garbage_collection]
+include/assert.inc [Verify SESSION value of group_replication_preemptive_garbage_collection]
+include/assert.inc [Verify GLOBAL value of group_replication_preemptive_garbage_collection_rows_threshold]
+include/assert.inc [Verify GLOBAL value of group_replication_preemptive_garbage_collection_rows_threshold]
+include/assert.inc [Verify SESSION value of group_replication_preemptive_garbage_collection_rows_threshold]
+include/assert.inc [Verify SESSION value of group_replication_preemptive_garbage_collection_rows_threshold]
 
 # Clean up
 include/stop_group_replication.inc
 Warnings:
-Warning	1681	'group_replication_recovery_complete_at' is deprecated and will be removed in a future release.
+Warning	1681	'group_replication_allow_local_lower_version_join' is deprecated and will be removed in a future release.
+Warnings:
+Warning	1681	'group_replication_view_change_uuid' is deprecated and will be removed in a future release.
 include/group_replication_end.inc

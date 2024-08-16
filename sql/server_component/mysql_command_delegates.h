@@ -1,15 +1,16 @@
-/* Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2022, 2024, Oracle and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
  *
- * This program is also distributed with certain software (including
+ * This program is designed to work with certain software (including
  * but not limited to OpenSSL) that is licensed under separate terms,
  * as designated in a particular file or component or in included license
  * documentation.  The authors of MySQL hereby grant you an additional
  * permission to link the program and your derivative works with the
- * separately licensed software that they have included with MySQL.
+ * separately licensed software that they have either included with
+ * the program or referenced in the documentation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,13 +26,13 @@
 #define MYSQL_COMMAND_DELEGATES_H
 
 #include <include/decimal.h>
-#include <include/m_ctype.h>
 #include <include/my_compiler.h>
 #include <include/mysql.h>
 #include <include/mysql/service_command.h>
 #include <mysql/components/my_service.h>
 #include <mysql/components/services/mysql_admin_session.h>
 #include <mysql/components/services/mysql_command_consumer.h>
+#include <mysql/strings/m_ctype.h>
 
 class Command_delegate {
  public:
@@ -44,7 +45,7 @@ class Command_delegate {
   Command_delegate &operator=(Command_delegate &&) = default;
 
   const st_command_service_cbs *callbacks() const {
-    static st_command_service_cbs cbs = {
+    static const st_command_service_cbs cbs = {
         &Command_delegate::call_start_result_metadata,
         &Command_delegate::call_field_metadata,
         &Command_delegate::call_end_result_metadata,
@@ -309,7 +310,7 @@ class Command_delegate {
                                       uint warn_count) {
     assert(ctx);
     Command_delegate *self = static_cast<Command_delegate *>(ctx);
-    int tmp = self->end_result_metadata(server_status, warn_count);
+    const int tmp = self->end_result_metadata(server_status, warn_count);
     return tmp;
   }
 

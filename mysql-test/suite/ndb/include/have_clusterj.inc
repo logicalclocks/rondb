@@ -1,3 +1,4 @@
+let MYSQL_BASE_VERSION=`SELECT SUBSTRING_INDEX(VERSION(), ".", 2)`;
 --perl
 use strict;
 
@@ -17,6 +18,7 @@ my $vardir = $ENV{MYSQLTEST_VARDIR} or die "Need MYSQLTEST_VARDIR";
 my $mysql_test_dir = $ENV{MYSQL_TEST_DIR} or die "Need MYSQL_TEST_DIR";
 my $basedir = dirname($mysql_test_dir);
 my $version = $ENV{MYSQL_SERVER_VERSION};
+my $using_tls = $ENV{NDB_TEST_REQUIRES_TLS};
 
 # In the RPM case, binaries and libraries are installed in the
 # default system locations, instead of having our own private base
@@ -38,21 +40,22 @@ my $clusterj_jar = my_find_file($bindir,
                                 [ "storage/ndb/clusterj", 
                                   "share/java",
                                   "share/mysql/java",
-                                  "share/mysql-8.0/java",
+                                  "share/mysql-$ENV{MYSQL_BASE_VERSION}/java",
                                   "lib/java"
                                 ],
                                 "clusterj-$version.jar",
                                 NOT_REQUIRED);
 
-my $clusterj_test_jar = my_find_file($bindir,
-                                     [ "storage/ndb/clusterj/clusterj-test",
-                                       "share/java",
-                                       "share/mysql/java",
-                                       "share/mysql-8.0/java",
-                                       "lib/java"
-                                     ],
-                                     "clusterj-test-$version.jar",
-                                     NOT_REQUIRED);
+my $clusterj_test_jar =
+  my_find_file($bindir,
+               [ "storage/ndb/clusterj/clusterj-test",
+                 "share/java",
+                 "share/mysql/java",
+                 "share/mysql-$ENV{MYSQL_BASE_VERSION}/java",
+                 "lib/java"
+               ],
+               "clusterj-test-$version.jar",
+               NOT_REQUIRED);
 
 # The expected installation locations are lib, lib/mysql, lib64/mysql, lib/x86_64-linux-gnu
 my $ndbclient_lib = my_find_file($bindir,
@@ -124,6 +127,12 @@ sub write_properties {
   add($F, 'password', '');
   add($F, 'database', $db);
   add($F, 'max.transactions', '1024');
+
+  if($using_tls) {
+    add($F, 'tls.path', "$vardir/std_data/ndb-tls/active");
+    add($F, 'tls.strict', '1');
+  }
+
   $F->close();
 }
 

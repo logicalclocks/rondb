@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -78,8 +79,11 @@ Query_term *Query_term::pushdown_limit_order_by(Query_term_set_op *parent) {
     case QT_EXCEPT: {
       auto setop = down_cast<Query_term_set_op *>(this);
       for (Query_term *&child : setop->m_children) {
+        const uint sibling_idx = child->sibling_idx();
         child = child->pushdown_limit_order_by(
             down_cast<Query_term_set_op *>(this));
+        // Make sure the new child inherits the old child's sibling index
+        child->set_sibling_idx(sibling_idx);
       }
     } break;
     case QT_UNARY: {
@@ -113,6 +117,11 @@ Query_term *Query_term::pushdown_limit_order_by(Query_term_set_op *parent) {
           child_block->order_list = this_block->order_list;
           child_block->absorb_limit_of(this_block);
           child_block->m_windows.prepend(&this_block->m_windows);
+          child_block->select_n_where_fields +=
+              this_block->select_n_where_fields;
+          child_block->n_sum_items += this_block->n_sum_items;
+          child_block->n_child_sum_items += this_block->n_child_sum_items;
+          child_block->n_scalar_subqueries += this_block->n_scalar_subqueries;
 
           if (this_block->first_inner_query_expression() != nullptr) {
             // Change context of any items in ORDER BY to child block
@@ -253,8 +262,7 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
   std::string str;
   char buffer[256];
   while (p) {
-    Mem_root_array<MaterializePathParameters::QueryBlock> *query_blocks =
-        nullptr;
+    Mem_root_array<MaterializePathParameters::Operand> *operands = nullptr;
     Mem_root_array<AppendPathParameters> *append_children = nullptr;
     snprintf(buffer, sizeof(buffer), "AP: %p ", p);
     str.append(buffer);
@@ -277,7 +285,7 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
         break;
       case AccessPath::MATERIALIZE:
         str.append("AccessPath::MATERIALIZE ");
-        query_blocks = &p->materialize().param->query_blocks;
+        operands = &p->materialize().param->m_operands;
         str.append(p->materialize().param->table->alias);
         p = p->materialize().table_path;
         break;
@@ -291,7 +299,9 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
         break;
       case AccessPath::AGGREGATE:
         str.append("AccessPath::AGGREGATE ");
-        str.append(p->aggregate().rollup ? "ROLLUP" : "");
+        if (p->aggregate().olap != UNSPECIFIED_OLAP_TYPE) {
+          str.append(GroupByModifierString(p->aggregate().olap));
+        }
         p = p->aggregate().child;
         break;
       case AccessPath::FILTER:
@@ -365,8 +375,8 @@ static void dumpAccessPath(int level, AccessPath *p, std::ostringstream &buf) {
     ret.clear();
     str.clear();
     ++level;
-    if (query_blocks != nullptr)
-      for (MaterializePathParameters::QueryBlock subp : *query_blocks) {
+    if (operands != nullptr)
+      for (MaterializePathParameters::Operand subp : *operands) {
         dumpAccessPath(level + 1, subp.subquery_path, buf);
       }
     if (append_children != nullptr)

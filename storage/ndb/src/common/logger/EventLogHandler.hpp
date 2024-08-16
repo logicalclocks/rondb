@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,12 +41,11 @@
  *
  * // To log a message(normally an error) before g_eventLogger has been created
  * EventLogHandler::printf(LL_ERROR, "MySQL Cluster Management Server",
- *                         "Failed to create shutdown event, error: %d", err); 
+ *                         "Failed to create shutdown event, error: %d", err);
  */
-class EventLogHandler : public LogHandler
-{
-public:
-  EventLogHandler(const char* source_name);
+class EventLogHandler : public LogHandler {
+ public:
+  EventLogHandler(const char *source_name);
   virtual ~EventLogHandler();
 
   virtual bool open();
@@ -55,19 +55,20 @@ public:
   virtual bool setParam(const BaseString &param, const BaseString &value);
 
   // Write message to event log without an open EventLogHandler
-  static int printf(Logger::LoggerLevel m_level, const char* source_name,
-                    const char* msg, ...) ATTRIBUTE_FORMAT(printf, 3, 4);
-private:
-  virtual void writeHeader(const char* pCategory, Logger::LoggerLevel level,
+  static int printf(Logger::LoggerLevel m_level, const char *source_name,
+                    const char *msg, ...) ATTRIBUTE_FORMAT(printf, 3, 4);
+
+ private:
+  virtual void writeHeader(const char *pCategory, Logger::LoggerLevel level,
                            time_t now);
-  virtual void writeMessage(const char* pMsg);
+  virtual void writeMessage(const char *pMsg);
   virtual void writeFooter();
 
-  EventLogHandler(const EventLogHandler&); // Not impl.
-  EventLogHandler operator = (const EventLogHandler&); // Not impl.
-  bool operator == (const EventLogHandler&); // Not impl.
+  EventLogHandler(const EventLogHandler &);            // Not impl.
+  EventLogHandler operator=(const EventLogHandler &);  // Not impl.
+  bool operator==(const EventLogHandler &);            // Not impl.
 
-  const char* m_source_name;
+  const char *m_source_name;
   HANDLE m_event_source;
   Logger::LoggerLevel m_level;
 };

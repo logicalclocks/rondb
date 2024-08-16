@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -42,8 +43,13 @@ class Shared_spin_lock_test : public ::testing::Test {
 TEST_F(Shared_spin_lock_test, Lock_unlock_test) {
   lock::Shared_spin_lock lock1;
   lock::Shared_spin_lock lock2;
-  std::atomic_flag t1_sync{true};
-  std::atomic_flag t2_sync{true};
+  std::atomic_flag t1_sync;
+  std::atomic_flag t2_sync;
+
+  // Workaround for Visual Studio. error C2440:
+  // 'initializing': cannot convert from 'bool' to 'std::atomic_flag'
+  (void)atomic_flag_test_and_set(&t1_sync);
+  (void)atomic_flag_test_and_set(&t2_sync);
 
   lock1.try_exclusive();
   lock2.acquire_shared();
@@ -149,7 +155,10 @@ TEST_F(Shared_spin_lock_test, Lock_unlock_test) {
 
 TEST_F(Shared_spin_lock_test, Starvation_test) {
   lock::Shared_spin_lock lock;
-  std::atomic_flag sync{true};
+  std::atomic_flag sync;
+
+  // Workaround for Visual Studio, see above.
+  (void)atomic_flag_test_and_set(&sync);
 
   lock.acquire_shared();
   EXPECT_EQ(lock.acquire_exclusive().is_shared_acquisition(),
@@ -193,8 +202,12 @@ TEST_F(Shared_spin_lock_test, Starvation_test) {
 
 TEST_F(Shared_spin_lock_test, Sentry_class_test) {
   lock::Shared_spin_lock lock1;
-  std::atomic_flag t1_sync{true};
-  std::atomic_flag t2_sync{true};
+  std::atomic_flag t1_sync;
+  std::atomic_flag t2_sync;
+
+  // Workaround for Visual Studio, see above.
+  (void)atomic_flag_test_and_set(&t1_sync);
+  (void)atomic_flag_test_and_set(&t2_sync);
 
   std::thread t1([&]() -> void {
     lock::Shared_spin_lock::Guard sentry1{

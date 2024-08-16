@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -31,6 +32,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "clone0repl.h"
 #include "clone0api.h"
 #include "clone0clone.h"
+#include "mysql/gtid/gtid.h"
 #include "sql/field.h"
 #include "sql/mysqld.h"
 #include "sql/rpl_gtid_persist.h"
@@ -65,7 +67,7 @@ void Clone_persist_gtid::add(const Gtid_desc &gtid_desc) {
   auto &current_gtids = get_active_list();
 
   /* Add input GTID to the set */
-  current_gtids.push_back(gtid_desc.m_info);
+  current_gtids.push_back(gtid_desc);
   /* Atomic increment. */
   int current_value = ++m_num_gtid_mem;
 
@@ -345,9 +347,11 @@ void Clone_persist_gtid::get_gtid_info(trx_t *trx, Gtid_desc &gtid_desc) {
     ut_o(return );
   }
 
-  gtid_desc.m_version = GTID_VERSION;
-  auto &trx_gtid = thd->owned_gtid;
-  auto &trx_sid = thd->owned_sid;
+  uint32_t encoded_version = GTID_VERSION;
+  DBUG_EXECUTE_IF("gtid_persistor_use_gtid_version_one", encoded_version = 1;);
+  gtid_desc.m_version = encoded_version;
+  const auto &trx_gtid = thd->owned_gtid;
+  const auto &trx_tsid = thd->owned_tsid;
 
   ut_ad(trx_gtid.sidno > 0);
   ut_ad(trx_gtid.gno > 0);
@@ -356,9 +360,16 @@ void Clone_persist_gtid::get_gtid_info(trx_t *trx, Gtid_desc &gtid_desc) {
   /* Build GTID string. */
   gtid_desc.m_info.fill(0);
   auto char_buf = reinterpret_cast<char *>(&gtid_desc.m_info[0]);
-  auto len = trx_gtid.to_string(trx_sid, char_buf);
+  mysql::gtid::Gtid tsid_gtid(trx_tsid, trx_gtid.gno);
+  std::size_t len = 0;
+  if (unlikely(encoded_version ==
+               1)) {  // encode version 1, for debug purposes only
+    len = trx_gtid.to_string(trx_tsid, char_buf);
+  } else {  // encode version 2
+    len = tsid_gtid.encode_gtid_tagged(
+        reinterpret_cast<unsigned char *>(char_buf));
+  }
   ut_a((size_t)len <= GTID_INFO_SIZE);
-
   gtid_desc.m_is_set = true;
 }
 
@@ -407,9 +418,9 @@ bool Clone_persist_gtid::debug_skip_write(bool compression) {
 
 int Clone_persist_gtid::write_to_table(uint64_t flush_list_number,
                                        Gtid_set &table_gtid_set,
-                                       Sid_map &sid_map) {
+                                       Tsid_map &tsid_map) {
   int err = 0;
-  Gtid_set write_gtid_set(&sid_map, nullptr);
+  Gtid_set write_gtid_set(&tsid_map, nullptr);
 
   /* Allocate some intervals from stack */
   static const int PREALLOCATED_INTERVAL_COUNT = 64;
@@ -418,9 +429,21 @@ int Clone_persist_gtid::write_to_table(uint64_t flush_list_number,
 
   auto &flush_list = get_list(flush_list_number);
   /* Extract GTIDs from flush list. */
-  for (auto &gtid_info : flush_list) {
-    auto gtid_str = reinterpret_cast<const char *>(&gtid_info[0]);
-    auto status = write_gtid_set.add_gtid_text(gtid_str);
+  for (auto &gtid_desc : flush_list) {
+    auto status = RETURN_STATUS_UNREPORTED_ERROR;
+    if (gtid_desc.m_version == 1) {
+      auto gtid_str = reinterpret_cast<const char *>(&(gtid_desc.m_info[0]));
+      status = write_gtid_set.add_gtid_text(gtid_str);
+    } else {  // version 2
+      auto gtid_str =
+          reinterpret_cast<const unsigned char *>(&(gtid_desc.m_info[0]));
+      mysql::gtid::Gtid saved_gtid;
+      auto gtid_bytes_read =
+          saved_gtid.decode_gtid_tagged(gtid_str, GTID_INFO_SIZE);
+      if (gtid_bytes_read != 0) {
+        status = write_gtid_set.add_gtid(saved_gtid);
+      }
+    }
     if (status != RETURN_STATUS_OK) {
       err = ER_INTERNAL_ERROR;
       return (err);
@@ -477,8 +500,8 @@ void Clone_persist_gtid::update_gtid_trx_no(trx_id_t new_gtid_trx_no) {
 
 void Clone_persist_gtid::flush_gtids(THD *thd) {
   int err = 0;
-  Sid_map sid_map(nullptr);
-  Gtid_set table_gtid_set(&sid_map, nullptr);
+  Tsid_map tsid_map(nullptr);
+  Gtid_set table_gtid_set(&tsid_map, nullptr);
 
   DBUG_EXECUTE_IF("gtid_persist_flush_disable", return;);
 
@@ -502,7 +525,7 @@ void Clone_persist_gtid::flush_gtids(THD *thd) {
     auto flush_list_number = switch_active_list();
     /* Exit trx mutex during write to table. */
     trx_sys_serialisation_mutex_exit();
-    err = write_to_table(flush_list_number, table_gtid_set, sid_map);
+    err = write_to_table(flush_list_number, table_gtid_set, tsid_map);
     m_flush_in_progress.store(false);
     /* Compress always after recovery, if GTIDs are added. */
     if (!m_thread_active.load()) {
@@ -730,7 +753,7 @@ void Clone_persist_gtid::wait_flush(bool compress_gtid, bool early_timeout,
   auto request_number = request_immediate_flush(compress_gtid);
   os_event_set(m_event);
 
-  /* For RESET MASTER we must wait for the flush. */
+  /* For RESET BINARY LOGS AND GTIDS we must wait for the flush. */
   auto thd = thd_get_current_thd();
   if (thd != nullptr && thd->is_log_reset()) {
     early_timeout = false;

@@ -1,16 +1,17 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,38 +26,37 @@
 #define NDB_DBTUP_PROXY
 
 #include <LocalProxy.hpp>
+#include <signaldata/BuildIndxImpl.hpp>
 #include <signaldata/CreateTab.hpp>
 #include <signaldata/DropTab.hpp>
-#include <signaldata/BuildIndxImpl.hpp>
 
 #define JAM_FILE_ID 403
 
-
 class DbtupProxy : public LocalProxy {
-public:
-  DbtupProxy(Block_context& ctx);
+ public:
+  DbtupProxy(Block_context &ctx);
   ~DbtupProxy() override;
   BLOCK_DEFINES(DbtupProxy);
 
-protected:
-  SimulatedBlock* newWorker(Uint32 instanceNo) override;
+ protected:
+  SimulatedBlock *newWorker(Uint32 instanceNo) override;
 
-  class Pgman* c_pgman; // PGMAN proxy
+  class Pgman *c_pgman;  // PGMAN proxy
   class Tsman *c_tsman;
 
   Uint32 c_tableRecSize;
-  Uint32* c_tableRec;    // bool => table exists
+  Uint32 *c_tableRec;  // bool => table exists
 
   // GSN_READ_CONFIG_REQ
-  void callREAD_CONFIG_REQ(Signal*) override;
+  void callREAD_CONFIG_REQ(Signal *) override;
 
   // GSN_STTOR
-  void callSTTOR(Signal*) override;
+  void callSTTOR(Signal *) override;
 
   // GSN_CREATE_TAB_REQ
-  void execCREATE_TAB_REQ(Signal*);
+  void execCREATE_TAB_REQ(Signal *);
   // GSN_DROP_TAB_REQ
-  void execDROP_TAB_REQ(Signal*);
+  void execDROP_TAB_REQ(Signal *);
 
   // GSN_BUILD_INDX_IMPL_REQ
   struct Ss_BUILD_INDX_IMPL_REQ : SsParallel {
@@ -66,16 +66,16 @@ protected:
       m_sendCONF = (SsFUNCREP)&DbtupProxy::sendBUILD_INDX_IMPL_CONF;
     }
     enum { poolSize = 1 };
-    static SsPool<Ss_BUILD_INDX_IMPL_REQ>& pool(LocalProxy* proxy) {
-      return ((DbtupProxy*)proxy)->c_ss_BUILD_INDX_IMPL_REQ;
+    static SsPool<Ss_BUILD_INDX_IMPL_REQ> &pool(LocalProxy *proxy) {
+      return ((DbtupProxy *)proxy)->c_ss_BUILD_INDX_IMPL_REQ;
     }
   };
   SsPool<Ss_BUILD_INDX_IMPL_REQ> c_ss_BUILD_INDX_IMPL_REQ;
-  void execBUILD_INDX_IMPL_REQ(Signal*);
-  void sendBUILD_INDX_IMPL_REQ(Signal*, Uint32 ssId, SectionHandle*);
-  void execBUILD_INDX_IMPL_CONF(Signal*);
-  void execBUILD_INDX_IMPL_REF(Signal*);
-  void sendBUILD_INDX_IMPL_CONF(Signal*, Uint32 ssId);
+  void execBUILD_INDX_IMPL_REQ(Signal *);
+  void sendBUILD_INDX_IMPL_REQ(Signal *, Uint32 ssId, SectionHandle *);
+  void execBUILD_INDX_IMPL_CONF(Signal *);
+  void execBUILD_INDX_IMPL_REF(Signal *);
+  void sendBUILD_INDX_IMPL_CONF(Signal *, Uint32 ssId);
 
   // client methods
   friend class Dbtup_client;
@@ -85,8 +85,8 @@ protected:
   struct Proxy_undo {
     Uint32 m_type;
     Uint32 m_len;
-    const Uint32* m_ptr;
-    Uint32 m_data[MAX_UNDO_DATA]; // copied from m_ptr at once
+    const Uint32 *m_ptr;
+    Uint32 m_data[MAX_UNDO_DATA];  // copied from m_ptr at once
     Uint64 m_lsn;
     // from undo entry and page
     Local_key m_key;
@@ -108,17 +108,17 @@ protected:
   };
   Proxy_undo c_proxy_undo;
 
-  void disk_restart_undo(Signal*, Uint64 lsn,
-                         Uint32 type, const Uint32 * ptr, Uint32 len);
+  void disk_restart_undo(Signal *, Uint64 lsn, Uint32 type, const Uint32 *ptr,
+                         Uint32 len);
 
   // next 3 are helper methods
-  void disk_restart_undo_callback(Signal*, Uint32, Uint32 page_id);
+  void disk_restart_undo_callback(Signal *, Uint32, Uint32 page_id);
 
-  void disk_restart_undo_finish(Signal*);
+  void disk_restart_undo_finish(Signal *);
 
-  void disk_restart_undo_send_next(Signal*, Uint32);
+  void disk_restart_undo_send_next(Signal *, Uint32);
 
-  void disk_restart_undo_send(Signal*, Uint32 i);
+  void disk_restart_undo_send(Signal *, Uint32 i);
 
   // TSMAN
 
@@ -135,7 +135,6 @@ protected:
 			      const Local_key* key,
                               Uint32 bits);
 };
-
 
 #undef JAM_FILE_ID
 

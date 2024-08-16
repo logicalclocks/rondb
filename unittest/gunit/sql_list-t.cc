@@ -1,15 +1,16 @@
-/* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,12 +31,15 @@
 #include <gtest/gtest.h>
 #include <stddef.h>
 
+#include <memory>
+
 #include "my_inttypes.h"
 #include "my_thread.h"
 #include "sql/sql_error.h"
 #include "sql/sql_list.h"
 #include "sql/thr_malloc.h"
 #include "sql_string.h"
+#include "template_utils.h"
 #include "unittest/gunit/gunit_test_main.h"
 
 namespace sql_list_unittest {
@@ -82,7 +86,7 @@ TEST_F(SqlListTest, ConstructAndDestruct) {
   EXPECT_TRUE(m_int_list.is_empty());
   List<int> *p_int_list = new (*THR_MALLOC) List<int>;
   EXPECT_TRUE(p_int_list->is_empty());
-  destroy(p_int_list);
+  ::destroy_at(p_int_list);
 }
 
 // Tests basic operations push and pop.

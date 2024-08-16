@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,16 +31,16 @@
 #include <mutex>
 
 #include "lex_string.h"
-#include "libbinlogevents/include/control_events.h"  // XA_prepare_event
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sqlcommand.h"
-#include "sql/malloc_allocator.h"  // Malloc_allocator
-#include "sql/psi_memory_key.h"    // key_memory_xa_recovered_transactions
-#include "sql/sql_cmd.h"           // Sql_cmd
-#include "sql/sql_list.h"          // List
-#include "sql/sql_plugin_ref.h"    // plugin_ref
-#include "sql/xa_aux.h"            // serialize_xid
+#include "mysql/binlog/event/control_events.h"  // XA_prepare_event
+#include "sql/malloc_allocator.h"               // Malloc_allocator
+#include "sql/psi_memory_key.h"  // key_memory_xa_recovered_transactions
+#include "sql/sql_cmd.h"         // Sql_cmd
+#include "sql/sql_list.h"        // List
+#include "sql/sql_plugin_ref.h"  // plugin_ref
+#include "sql/xa_aux.h"          // serialize_xid
 
 class Protocol;
 class THD;
@@ -221,7 +222,7 @@ typedef struct xid_t {
 
     @return This object reference.
    */
-  xid_t &operator=(binary_log::XA_prepare_event::MY_XID const &rhs);
+  xid_t &operator=(mysql::binlog::event::XA_prepare_event::MY_XID const &rhs);
   /**
     Compares for equality two instances of `xid_t`.
 

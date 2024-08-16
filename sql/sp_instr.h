@@ -1,15 +1,16 @@
-/* Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,6 @@
 
 #include "field_types.h"
 #include "lex_string.h"
-#include "m_string.h"
 #include "my_alloc.h"
 #include "my_compiler.h"
 
@@ -44,6 +44,7 @@
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 
 class Item;
 class Item_case_expr;
@@ -692,6 +693,11 @@ class sp_instr_freturn : public sp_lex_instr {
   }
 
   LEX_CSTRING get_expr_query() const override { return m_expr_query; }
+
+  void adjust_sql_command(LEX *lex) override {
+    assert(lex->sql_command == SQLCOM_SELECT);
+    lex->sql_command = SQLCOM_END;
+  }
 
  private:
   /// RETURN-expression item.

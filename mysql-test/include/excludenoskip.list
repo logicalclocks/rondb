@@ -18,8 +18,6 @@ have_mac_os.inc
 not_mac_os.inc
 freebsd.inc
 not_freebsd.inc
-have_32bit.inc
-have_64bit.inc
 have_32bit_ulong.inc
 have_64bit_ulong.inc
 have_little_endian.inc
@@ -47,10 +45,8 @@ costmodel_planchange.test
 have_met_timezone.inc
 # Checks if server is started with Moscow leap timezone. Including the below inc file until Bug#25188986 is fixed.
 have_moscow_leap_timezone.inc
-
-# 32/64 bits time_t
-have_32bits_time.inc
-have_64bits_time.inc
+# Skip filesystems which do not support O_DIRECT mode, e.g. when using --mem option on Linux
+have_odirect.inc
 
 # 2.0 Binlog formats
 # Below files are included because rpl suite runs each test with 3 different
@@ -98,7 +94,7 @@ not_log_bin.inc
 # 4.3 Tests are run only on Dev builds compiled with -DWITH_DEBUG=1 option
 # Additional references for more details:
 # https://dev.mysql.com/doc/internals/en/cmake-build-types.html
-mysqlbinlog_have_debug.inc
+have_mysqlbinlog_debug.inc
 have_innochecksum_debug.inc
 have_udf.inc
 have_mecab.inc
@@ -107,6 +103,7 @@ federated_bug_25714.test
 
 # 4.4
 check_openssl_version.inc
+check_openssl.inc
 have_tlsv13.inc
 not_have_tlsv13.inc
 not_tlsv13.inc
@@ -122,6 +119,7 @@ have_innodb_4k.inc
 have_innodb_64k.inc
 have_innodb_8k.inc
 have_innodb_max_16k.inc
+have_innodb_min_16k.inc
 have_innodb_min_8k.inc
 not_have_innodb_4k.inc
 
@@ -141,6 +139,10 @@ have_statement_timeout.inc
 # contains more than 2 InnoDB undo tablespaces.  That can be done using
 # --bootstrap=--init-file=std_data/explicit_undo_32.sql
 have_innodb_default_undo_tablespaces.inc
+
+# 4.9 General utility to skip if a specific command line option is used.
+# The usage is described in the .inc file.
+skip_by_command_line_option.inc
 
 # 5.0 Different protocols
 # Reason for inclusion: Tests should run only with supported protocols and
@@ -197,28 +199,19 @@ have_group_replication_plugin.inc
 have_group_replication_plugin_base.inc
 not_group_replication_plugin.inc
 
-# 13.0 Memcached plugin is not available on all PB2 builds. Only supported by
-# Linux, Solaris and OS X platforms.
-have_memcached_plugin.inc
-have_memcached_sasl.inc
-
 # 14.0 MTR tests that runs only with specific rpl modes:
 
 # 14.1 Some rpl tests can run only with MTS_LC, MTS_DB and Non MTS
 have_replica_parallel_type_logical_clock.inc
 have_replica_parallel_type_database.inc
-only_mts_replica_parallel_workers.inc
-only_mts_replica_parallel_type_logical_clock.inc
-only_mts_replica_parallel_type_database.inc
-not_mts_replica_parallel_workers.inc
-only_replica_preserve_commit_order.inc
+have_replica_parallel_workers.inc
+have_replica_parallel_type_logical_clock.inc
+have_replica_parallel_type_database.inc
+not_replica_parallel_workers.inc
+have_replica_preserve_commit_order.inc
 # 14.2 rpl misc files
-have_slave_repository_type_table.inc
-not_relay_log_info_file.inc
-not_master_info_file.inc
-have_transaction_write_set_extraction.inc
 have_default_replica_transaction_retries.inc
-have_default_slave_rows_search_algorithms.inc
+
 
 #14.3 Some replication tests cannot run with GTID_ONLY == 1
 not_rpl_gtid_only.inc
@@ -257,10 +250,13 @@ require_icu_version.inc
 not_have_zstd_proper_ver.inc
 have_zstd_proper_ver.inc
 
-#21.0 fips realted test will be run only on system where opensssl fips module is installed
+#21.0 fips related test will be run only on system where OpenSSL fips module is installed
 # currently we are checking via this env $OPENSSL_FIPS_INSTALLED
 not_have_fips.inc
 have_fips.inc
+# Checking via env $OPENSSL3_FIPS_ACTIVE
+fips_active.inc
+not_fips_active.inc
 
 # 22.0 Tests for "disk full" conditions. Need special environment.
 # Shall not run on PB2.
@@ -268,13 +264,6 @@ redo_log_archive_05.test
 
 # 23.0 Tests that do/don't need clone plugin.
 have_clone_plugin.inc
-
-# 24.0 Binlog_transaction_dependency_tracking
-# The below files included because default value of
-# binlog_transaction_dependency_tracking is COMMIT_ORDER and few rpl suite runs
-# with binlog_transaction_dependency_tracking=WRITESET and all the test may not
-# be meant to run on binlog_transaction_dependency_tracking=WRITESET.
-have_binlog_transaction_dependency_tracking_commit_order.inc
 
 # 25.0 Binlog_transaction_compression
 # The below file is included because by default
@@ -327,3 +316,22 @@ have_ruby.inc
 
 # 33. Skip tests on platforms that don't support the FIDO plugins
 have_fido_plugin.inc
+have_webauthn_plugin.inc
+
+# 34.0 Tests skipped due to conflicting use of ./mtr --defaults-extra-file
+
+# 34.1 ./mtr-defaults-extra-file=suite/ndb/encrypted_filesystem.cnf (and ndb/secure.cnf)
+ndb_redo_log_reader.test
+ndb_secretsfile1.test
+
+# 34.2 ./mtr-defaults-extra-file=suite/ndb/tls.cnf (and ndb/secure.cnf)
+api_require_trp.test
+clusterj.test
+no_path.test
+require_mgm_tls.test
+sign_keys.test
+test_mgmd.test
+tls_off_certs.test
+
+# 35. These tests require a server with LTS version
+have_mysql_version_maturity_lts.inc

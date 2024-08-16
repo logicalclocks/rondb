@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -248,7 +249,7 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
   join_type type = JT_UNKNOWN;
 
   auto cleanup = create_scope_guard([&range_scan, table] {
-    destroy(range_scan);
+    if (range_scan != nullptr) ::destroy_at(range_scan);
     table->set_keyread(false);
     table->file->ha_index_or_rnd_end();
     free_io_cache(table);
@@ -259,8 +260,10 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
   const bool using_limit = limit != HA_POS_ERROR;
 
   if (limit == 0 && thd->lex->is_explain()) {
-    Modification_plan plan(thd, MT_DELETE, table, "LIMIT is zero", true, 0);
-    bool err = explain_single_table_modification(thd, thd, &plan, query_block);
+    const Modification_plan plan(thd, MT_DELETE, table, "LIMIT is zero", true,
+                                 0);
+    const bool err =
+        explain_single_table_modification(thd, thd, &plan, query_block);
     return err;
   }
 
@@ -324,10 +327,10 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
     table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK);
     ha_rows const maybe_deleted = table->file->stats.records;
 
-    Modification_plan plan(thd, MT_DELETE, table, "Deleting all rows", false,
-                           maybe_deleted);
+    const Modification_plan plan(thd, MT_DELETE, table, "Deleting all rows",
+                                 false, maybe_deleted);
     if (lex->is_explain()) {
-      bool err =
+      const bool err =
           explain_single_table_modification(thd, thd, &plan, query_block);
       return err;
     }
@@ -370,9 +373,9 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
       no_rows = true;
 
       if (lex->is_explain()) {
-        Modification_plan plan(thd, MT_DELETE, table, "Impossible WHERE", true,
-                               0);
-        bool err =
+        const Modification_plan plan(thd, MT_DELETE, table, "Impossible WHERE",
+                                     true, 0);
+        const bool err =
             explain_single_table_modification(thd, thd, &plan, query_block);
         return err;
       }
@@ -391,10 +394,10 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
     if (table->all_partitions_pruned_away) {
       no_rows = true;
       if (lex->is_explain()) {
-        Modification_plan plan(thd, MT_DELETE, table,
-                               "No matching rows after partition pruning", true,
-                               0);
-        bool err =
+        const Modification_plan plan(thd, MT_DELETE, table,
+                                     "No matching rows after partition pruning",
+                                     true, 0);
+        const bool err =
             explain_single_table_modification(thd, thd, &plan, query_block);
         return err;
       }
@@ -421,7 +424,8 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
     wrapper.add_utf8_table(delete_table_ref);
 
     if (!no_rows && conds != nullptr) {
-      Key_map keys_to_use(Key_map::ALL_BITS), needed_reg_dummy;
+      const Key_map keys_to_use(Key_map::ALL_BITS);
+      Key_map needed_reg_dummy;
       MEM_ROOT temp_mem_root(key_memory_test_quick_select_exec,
                              thd->variables.range_alloc_block_size);
       no_rows = test_quick_select(
@@ -435,9 +439,9 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
 
     if (no_rows) {
       if (lex->is_explain()) {
-        Modification_plan plan(thd, MT_DELETE, table, "Impossible WHERE", true,
-                               0);
-        bool err =
+        const Modification_plan plan(thd, MT_DELETE, table, "Impossible WHERE",
+                                     true, 0);
+        const bool err =
             explain_single_table_modification(thd, thd, &plan, query_block);
         return err;
       }
@@ -491,12 +495,13 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
       delete_table_ref->fetch_number_of_rows();
       rows = table->file->stats.records;
     }
-    Modification_plan plan(thd, MT_DELETE, table, type, range_scan, conds,
-                           usable_index, limit, false, need_sort, false, rows);
+    const Modification_plan plan(thd, MT_DELETE, table, type, range_scan, conds,
+                                 usable_index, limit, false, need_sort, false,
+                                 rows);
     DEBUG_SYNC(thd, "planned_single_delete");
 
     if (lex->is_explain()) {
-      bool err =
+      const bool err =
           explain_single_table_modification(thd, thd, &plan, query_block);
       return err;
     }
@@ -662,7 +667,7 @@ cleanup:
         we replicate statement-based; otherwise, 'ha_delete_row()' was used to
         delete specific rows which we might log row-based.
       */
-      int log_result =
+      const int log_result =
           thd->binlog_query(query_type, thd->query().str, thd->query().length,
                             transactional_table, false, false, errcode);
 
@@ -698,16 +703,16 @@ bool Sql_cmd_delete::prepare_inner(THD *thd) {
   Opt_trace_object trace_wrapper(trace);
   Opt_trace_object trace_prepare(trace, "delete_preparation");
   trace_prepare.add_select_number(select->select_number);
-  Opt_trace_array trace_steps(trace, "steps");
+  const Opt_trace_array trace_steps(trace, "steps");
 
   apply_semijoin = multitable;
 
   if (select->setup_tables(thd, table_list, false))
     return true; /* purecov: inspected */
 
-  ulong want_privilege_saved = thd->want_privilege;
+  const Access_bitmask want_privilege_saved = thd->want_privilege;
   thd->want_privilege = SELECT_ACL;
-  enum enum_mark_columns mark_used_columns_saved = thd->mark_used_columns;
+  const enum enum_mark_columns mark_used_columns_saved = thd->mark_used_columns;
   thd->mark_used_columns = MARK_COLUMNS_READ;
 
   if (select->derived_table_count || select->table_func_count) {
@@ -772,7 +777,7 @@ bool Sql_cmd_delete::prepare_inner(THD *thd) {
   // enables it to perform optimizations like sort avoidance and semi-join
   // flattening even if features specific to single-table DELETE (that is, ORDER
   // BY and LIMIT) are used.
-  if (lex->using_hypergraph_optimizer) {
+  if (lex->using_hypergraph_optimizer()) {
     multitable = true;
   }
 
@@ -784,7 +789,7 @@ bool Sql_cmd_delete::prepare_inner(THD *thd) {
     if (!select->m_table_nest.empty())
       propagate_nullability(&select->m_table_nest, false);
 
-    Prepared_stmt_arena_holder ps_holder(thd);
+    const Prepared_stmt_arena_holder ps_holder(thd);
     result = new (thd->mem_root) Query_result_delete;
     if (result == nullptr) return true; /* purecov: inspected */
 
@@ -889,9 +894,9 @@ bool Sql_cmd_delete::prepare_inner(THD *thd) {
 bool Sql_cmd_delete::execute_inner(THD *thd) {
   if (is_empty_query()) {
     if (lex->is_explain()) {
-      Modification_plan plan(thd, MT_DELETE, /*table_arg=*/nullptr,
-                             "No matching rows after partition pruning", true,
-                             0);
+      const Modification_plan plan(thd, MT_DELETE, /*table_arg=*/nullptr,
+                                   "No matching rows after partition pruning",
+                                   true, 0);
       return explain_single_table_modification(thd, thd, &plan,
                                                lex->query_block);
     }
@@ -921,7 +926,7 @@ DeleteRowsIterator::DeleteRowsIterator(
       m_tables_to_delete_from(tables_to_delete_from),
       m_immediate_tables(immediate_tables),
       // The old optimizer does not use hash join in DELETE statements.
-      m_hash_join_tables(thd->lex->using_hypergraph_optimizer
+      m_hash_join_tables(thd->lex->using_hypergraph_optimizer()
                              ? GetHashJoinTables(join->root_access_path())
                              : 0),
       m_tempfiles(thd->mem_root),
@@ -1262,8 +1267,8 @@ table_map GetImmediateDeleteTables(const JOIN *join, table_map delete_tables) {
   // using the hypergraph optimizer is when there is an impossible WHERE clause,
   // in which case join order optimization is short-circuited. See
   // JOIN::create_access_paths_for_zero_rows().
-  if (join->thd->lex->using_hypergraph_optimizer) {
-    assert(join->root_access_path()->type == AccessPath::ZERO_ROWS);
+  if (join->thd->lex->using_hypergraph_optimizer()) {
+    assert(join->zero_result_cause != nullptr);
     return 0;
   }
 

@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,8 +29,8 @@
 #include <time.h>
 
 #include <algorithm>
+#include <bit>
 
-#include "my_bit.h"
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -45,7 +46,7 @@
 #include <fcntl.h>
 #include <process.h>
 #endif
-#include "m_ctype.h"
+#include "mysql/strings/m_ctype.h"
 
 /*
   Old options is used when recreating database, from myisamchk
@@ -399,9 +400,8 @@ int mi_create(const char *name, uint keys, MI_KEYDEF *keydefs, uint columns,
       share.state.rec_per_key_part[key_segs - 1] = 1L;
     length += key_length;
     /* Get block length for key, if defined by user */
-    block_length =
-        (keydef->block_length ? my_round_up_to_next_power(keydef->block_length)
-                              : myisam_block_size);
+    block_length = keydef->block_length ? std::bit_ceil(keydef->block_length)
+                                        : myisam_block_size;
     block_length = std::max(block_length, MI_MIN_KEY_BLOCK_LENGTH);
     block_length = std::min(block_length, MI_MAX_KEY_BLOCK_LENGTH);
 
@@ -499,8 +499,8 @@ int mi_create(const char *name, uint keys, MI_KEYDEF *keydefs, uint columns,
   mi_int2store(share.state.header.unique_key_parts, unique_key_parts);
 
   mi_set_all_keys_active(share.state.key_map, keys);
-  aligned_key_start = my_round_up_to_next_power(
-      max_key_block_length ? max_key_block_length : myisam_block_size);
+  aligned_key_start = std::bit_ceil(max_key_block_length ? max_key_block_length
+                                                         : myisam_block_size);
 
   share.base.keystart = share.state.state.key_file_length =
       MY_ALIGN(info_length, aligned_key_start);

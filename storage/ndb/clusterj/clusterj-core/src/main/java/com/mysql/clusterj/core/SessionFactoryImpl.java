@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2010, 2024, Oracle and/or its affiliates.
    Copyright (c) 2020, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -67,6 +68,8 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     /** NdbCluster connect properties */
     String CLUSTER_CONNECTION_SERVICE;
     String CLUSTER_CONNECT_STRING;
+    String CLUSTER_TLS_SEARCH_PATH;
+    int CLUSTER_STRICT_TLS;
     int CLUSTER_CONNECT_TIMEOUT_MGM;
     int CLUSTER_CONNECT_RETRIES;
     int CLUSTER_CONNECT_DELAY;
@@ -187,6 +190,10 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         CLUSTER_RECONNECT_TIMEOUT = getIntProperty(props,
                 PROPERTY_CONNECTION_RECONNECT_TIMEOUT, DEFAULT_PROPERTY_CONNECTION_RECONNECT_TIMEOUT);
         CLUSTER_CONNECT_STRING = getRequiredStringProperty(props, PROPERTY_CLUSTER_CONNECTSTRING);
+        CLUSTER_TLS_SEARCH_PATH = getStringProperty(props, PROPERTY_TLS_SEARCH_PATH,
+                Constants.DEFAULT_PROPERTY_TLS_SEARCH_PATH);
+        CLUSTER_STRICT_TLS = getIntProperty(props, PROPERTY_MGM_STRICT_TLS,
+                Constants.DEFAULT_PROPERTY_MGM_STRICT_TLS);
         CLUSTER_CONNECT_RETRIES = getIntProperty(props, PROPERTY_CLUSTER_CONNECT_RETRIES,
                 Constants.DEFAULT_PROPERTY_CLUSTER_CONNECT_RETRIES);
         CLUSTER_CONNECT_TIMEOUT_MGM = getIntProperty(props, PROPERTY_CLUSTER_CONNECT_TIMEOUT_MGM,
@@ -385,6 +392,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         try {
             result = service.create(CLUSTER_CONNECT_STRING, nodeId, CLUSTER_CONNECT_TIMEOUT_MGM);
             result.setByteBufferPoolSizes(CLUSTER_BYTE_BUFFER_POOL_SIZES);
+            result.configureTls(CLUSTER_TLS_SEARCH_PATH, CLUSTER_STRICT_TLS);
             result.connect(CLUSTER_CONNECT_RETRIES, CLUSTER_CONNECT_DELAY,true);
             result.waitUntilReady(CLUSTER_CONNECT_TIMEOUT_BEFORE,CLUSTER_CONNECT_TIMEOUT_AFTER);
             // Cluster connection successful.

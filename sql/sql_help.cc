@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,6 @@
 #include <string>
 #include <utility>
 
-#include "m_ctype.h"
 #include "mem_root_deque.h"
 #include "my_alloc.h"
 #include "my_base.h"
@@ -38,6 +38,7 @@
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/debug_sync.h"
 #include "sql/field.h"
@@ -320,7 +321,7 @@ static int get_topics_for_keyword(THD *thd, TABLE *topics, TABLE *relations,
   for (; !key_res && key_id == (int16)rkey_id->val_int();
        key_res = relations->file->ha_index_next(relations->record[0])) {
     uchar topic_id_buff[8];
-    longlong topic_id = rtopic_id->val_int();
+    const longlong topic_id = rtopic_id->val_int();
     Field *field = find_fields[help_topic_help_topic_id].field;
     field->store(topic_id, true);
     field->get_key_image(topic_id_buff, field->pack_length(), Field::itRAW);
@@ -594,7 +595,7 @@ bool mysqld_help(THD *thd, const char *mask) {
   List<String> topics_list, categories_list, subcategories_list;
   String name, description, example;
   int count_topics, count_categories;
-  size_t mlen = strlen(mask);
+  const size_t mlen = strlen(mask);
   size_t i;
   MEM_ROOT *mem_root = thd->mem_root;
   Query_block *const query_block = thd->lex->query_block;

@@ -1,15 +1,16 @@
-# Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,7 +29,7 @@ INCLUDE_DIRECTORIES(
 INCLUDE(${CMAKE_SOURCE_DIR}/storage/innobase/innodb.cmake)
 
 IF(WITH_LTO OR CMAKE_COMPILER_FLAG_WITH_LTO)
-  IF(MY_COMPILER_IS_GNU AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10)
+  IF(MY_COMPILER_IS_GNU)
     # -Walloc-size-larger-than=PTRDIFF_MAX is enabled by default.
     STRING_APPEND(CMAKE_EXE_LINKER_FLAGS " -Wno-alloc-size-larger-than")
   ENDIF()
@@ -75,9 +76,6 @@ FOREACH(test ${TESTS})
   LIST(APPEND ALL_INNODB_TESTS ${test}-t.cc)
 ENDFOREACH()
 
-IF(WIN32)
-  LIST(APPEND ALL_INNODB_TESTS ../../../sql/nt_servc.cc)
-ENDIF()
 MYSQL_ADD_EXECUTABLE(merge_innodb_tests-t ${ALL_INNODB_TESTS}
   ENABLE_EXPORTS
   ADD_TEST merge_innodb_tests-t
@@ -94,9 +92,6 @@ ADD_DEPENDENCIES(merge_innodb_tests-t GenError)
 
 FOREACH(test ${TESTS})
   SET(SRC_FILES ${test}-t.cc)
-  IF(WIN32)
-    LIST(APPEND SRC_FILES ../../../sql/nt_servc.cc)
-  ENDIF()
   MYSQL_ADD_EXECUTABLE(${test}-t ${SRC_FILES}
     ENABLE_EXPORTS
     EXCLUDE_FROM_ALL

@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -1175,13 +1176,13 @@ static inline int inline_mysql_socket_shutdown(
   int result;
 
 #ifdef _WIN32
-  static LPFN_DISCONNECTEX DisconnectEx = NULL;
-  if (DisconnectEx == NULL) {
+  static LPFN_DISCONNECTEX DisconnectEx = nullptr;
+  if (DisconnectEx == nullptr) {
     DWORD dwBytesReturned;
     GUID guidDisconnectEx = WSAID_DISCONNECTEX;
     WSAIoctl(mysql_socket.fd, SIO_GET_EXTENSION_FUNCTION_POINTER,
              &guidDisconnectEx, sizeof(GUID), &DisconnectEx,
-             sizeof(DisconnectEx), &dwBytesReturned, NULL, NULL);
+             sizeof(DisconnectEx), &dwBytesReturned, nullptr, nullptr);
   }
 #endif
 
@@ -1198,8 +1199,8 @@ static inline int inline_mysql_socket_shutdown(
 /* Instrumented code */
 #ifdef _WIN32
       if (DisconnectEx)
-        result = (DisconnectEx(mysql_socket.fd, (LPOVERLAPPED)NULL, (DWORD)0,
-                               (DWORD)0) == TRUE)
+        result = (DisconnectEx(mysql_socket.fd, (LPOVERLAPPED) nullptr,
+                               (DWORD)0, (DWORD)0) == TRUE)
                      ? 0
                      : -1;
       else
@@ -1219,7 +1220,7 @@ static inline int inline_mysql_socket_shutdown(
 /* Non instrumented code */
 #ifdef _WIN32
   if (DisconnectEx)
-    result = (DisconnectEx(mysql_socket.fd, (LPOVERLAPPED)NULL, (DWORD)0,
+    result = (DisconnectEx(mysql_socket.fd, (LPOVERLAPPED) nullptr, (DWORD)0,
                            (DWORD)0) == TRUE)
                  ? 0
                  : -1;

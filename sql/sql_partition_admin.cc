@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,7 +30,6 @@
 #include <memory>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "my_base.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -38,6 +38,7 @@
 #include "my_thread_local.h"
 #include "mysql/plugin.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"            // check_access
@@ -85,9 +86,9 @@ bool Sql_cmd_alter_table_exchange_partition::execute(THD *thd) {
     referenced from this structure will be modified.
     @todo move these into constructor...
   */
-  HA_CREATE_INFO create_info(*lex->create_info);
+  const HA_CREATE_INFO create_info(*lex->create_info);
   Alter_info alter_info(*m_alter_info, thd->mem_root);
-  ulong priv_needed = ALTER_ACL | DROP_ACL | INSERT_ACL | CREATE_ACL;
+  const ulong priv_needed = ALTER_ACL | DROP_ACL | INSERT_ACL | CREATE_ACL;
 
   DBUG_TRACE;
 
@@ -188,7 +189,7 @@ static bool compare_table_with_partition(THD *thd, TABLE *table,
   Alter_table_ctx part_alter_ctx;  // Not used
   DBUG_TRACE;
 
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
   const dd::Table *part_table_def = nullptr;
   if (!part_table->s->tmp_table) {
     if (thd->dd_client()->acquire(part_table->s->db.str,
@@ -424,7 +425,7 @@ bool Sql_cmd_alter_table_exchange_partition::exchange_partition(
     return true;
   }
 
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
   dd::Table *part_table_def = nullptr;
   dd::Table *swap_table_def = nullptr;
 
@@ -448,8 +449,8 @@ bool Sql_cmd_alter_table_exchange_partition::exchange_partition(
 
   DEBUG_SYNC(thd, "swap_partition_before_exchange");
 
-  int ha_error = part_handler->exchange_partition(swap_part_id, part_table_def,
-                                                  swap_table_def);
+  const int ha_error = part_handler->exchange_partition(
+      swap_part_id, part_table_def, swap_table_def);
 
   if (ha_error) {
     handlerton *hton = part_table->file->ht;
@@ -646,7 +647,7 @@ bool Sql_cmd_alter_table_truncate_partition::execute(THD *thd) {
     downgrade_mdl_guard.reset(ticket);
   }
 
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
   dd::Table *table_def = nullptr;
 
   if (thd->dd_client()->acquire_for_modification<dd::Table>(
@@ -718,7 +719,7 @@ bool Sql_cmd_alter_table_truncate_partition::execute(THD *thd) {
         When db_stat is 0, we can pass nullptr as dd::Table since it
         won't be used.
       */
-      destroy(&table);
+      ::destroy_at(&table);
       error = open_table_from_share(thd, &share, "", 0, (uint)READ_ALL, 0,
                                     &table, true, nullptr);
 

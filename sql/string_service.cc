@@ -1,15 +1,16 @@
-/* Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,13 +32,14 @@
 #include <stddef.h>
 #include <sys/types.h>
 
-#include "m_ctype.h"
 #include "my_compiler.h"
 #include "my_inttypes.h"
 #include "mysql/psi/psi_memory.h"
 #include "mysql/service_mysql_alloc.h"
 #include "mysql/service_mysql_string.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql_string.h"
+#include "template_utils.h"
 
 PSI_memory_key key_memory_string_iterator;
 
@@ -52,7 +54,7 @@ int mysql_string_convert_to_char_ptr(mysql_string_handle string_handle,
                                      char *buffer, unsigned int buffer_size,
                                      int *error) {
   String *str = (String *)string_handle;
-  int len =
+  const int len =
       (int)my_convert(buffer, buffer_size - 1, &my_charset_utf8mb3_general_ci,
                       str->ptr(), str->length(), str->charset(), (uint *)error);
   buffer[len] = '\0';
@@ -116,7 +118,7 @@ int mysql_string_iterator_next(mysql_string_iterator_handle iterator_handle) {
 int mysql_string_iterator_isupper(
     mysql_string_iterator_handle iterator_handle) {
   st_string_iterator *iterator = (st_string_iterator *)iterator_handle;
-  return (iterator->ctype & _MY_U);
+  return (iterator->ctype & MY_CHAR_U);
 }
 
 /*
@@ -126,7 +128,7 @@ int mysql_string_iterator_isupper(
 int mysql_string_iterator_islower(
     mysql_string_iterator_handle iterator_handle) {
   st_string_iterator *iterator = (st_string_iterator *)iterator_handle;
-  return (iterator->ctype & _MY_L);
+  return (iterator->ctype & MY_CHAR_L);
 }
 
 /*
@@ -136,7 +138,7 @@ int mysql_string_iterator_islower(
 int mysql_string_iterator_isdigit(
     mysql_string_iterator_handle iterator_handle) {
   st_string_iterator *iterator = (st_string_iterator *)iterator_handle;
-  return (iterator->ctype & _MY_NMR);
+  return (iterator->ctype & MY_CHAR_NMR);
 }
 
 /*

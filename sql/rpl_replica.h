@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,7 +28,6 @@
 #include <sys/types.h>
 #include <atomic>
 
-#include "m_string.h"
 #include "my_bitmap.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -43,12 +43,19 @@
 class Master_info;
 class Relay_log_info;
 class THD;
-struct LEX_MASTER_INFO;
+struct LEX_SOURCE_INFO;
 struct mysql_cond_t;
 struct mysql_mutex_t;
 class Rpl_channel_filters;
 
-typedef struct struct_slave_connection LEX_SLAVE_CONNECTION;
+/*
+  Statistics go to the error log every # of seconds when
+  --log_error_verbosity > 2
+*/
+const long mts_online_stat_period = 60 * 2;
+const long mts_online_stat_count = 1024;
+
+typedef struct struct_replica_connection LEX_REPLICA_CONNECTION;
 
 typedef enum {
   SLAVE_THD_IO,
@@ -58,9 +65,9 @@ typedef enum {
 } SLAVE_THD_TYPE;
 
 /**
-  MASTER_DELAY can be at most (1 << 31) - 1.
+  SOURCE_DELAY can be at most (1 << 31) - 1.
 */
-#define MASTER_DELAY_MAX (0x7FFFFFFF)
+#define SOURCE_DELAY_MAX (0x7FFFFFFF)
 #if INT_MAX < 0x7FFFFFFF
 #error "don't support platforms where INT_MAX < 0x7FFFFFFF"
 #endif
@@ -80,7 +87,7 @@ typedef enum {
 /**
    The maximum is defined as (ULONG_MAX/1000) with 4 bytes ulong
 */
-#define SLAVE_MAX_HEARTBEAT_PERIOD 4294967
+#define REPLICA_MAX_HEARTBEAT_PERIOD 4294967
 
 #define REPLICA_NET_TIMEOUT 60
 
@@ -145,8 +152,8 @@ extern bool server_id_supplied;
   ### m_channel_lock ###
 
   It is used to SERIALIZE ALL administrative commands of replication: START
-  SLAVE, STOP SLAVE, CHANGE MASTER, RESET SLAVE, delete_slave_info_objects
-  (when mysqld stops)
+  SLAVE, STOP REPLICA, CHANGE REPLICATION SOURCE, RESET REPLICA,
+  delete_slave_info_objects (when mysqld stops)
 
   This thus protects us against a handful of deadlocks, being the know ones
   around lock_slave_threads and the mixed order they are acquired in some
@@ -172,9 +179,9 @@ extern bool server_id_supplied;
   Protects some moving members of the struct: counters (log name,
   position).
 
-  ### sid_lock ###
+  ### tsid_lock ###
 
-  Protects the retrieved GTID set and it's SID map from updates.
+  Protects the retrieved GTID set and it's TSID map from updates.
 
   ## In Relay_log_info (rli) ##
 
@@ -208,15 +215,15 @@ extern bool server_id_supplied;
   it set with the position that other threads reading from the currently active
   log file (the "hot" one) should not cross.
 
-  ## Gtid_state (gtid_state, global_sid_map) ##
+  ## Gtid_state (gtid_state, global_tsid_map) ##
 
-  ### global_sid_lock ###
+  ### global_tsid_lock ###
 
   Protects all Gtid_state GTID sets (lost_gtids, executed_gtids,
-  gtids_only_in_table, previous_gtids_logged, owned_gtids) and the global SID
+  gtids_only_in_table, previous_gtids_logged, owned_gtids) and the global TSID
   map from updates.
 
-  The global_sid_lock must not be taken after LOCK_reset_gtid_table.
+  The global_tsid_lock must not be taken after LOCK_reset_gtid_table.
 
   ## Gtid_mode (gtid_mode) ##
 
@@ -236,7 +243,7 @@ extern bool server_id_supplied;
 
     Sys_var_gtid_mode::global_update:
       Gtid_mode::lock.wrlock, channel_map->wrlock, binlog.LOCK_log,
-  global_sid_lock->wrlock
+  global_tsid_lock->wrlock
 
     change_master_cmd:
       channel_map.wrlock, (change_master)
@@ -252,13 +259,13 @@ extern bool server_id_supplied;
       rli.data_lock, (relay_log.reset_logs)
 
     relay_log.reset_logs:
-      .LOCK_log, .LOCK_index, .sid_lock->wrlock
+      .LOCK_log, .LOCK_index, .tsid_lock->wrlock
 
     init_relay_log_pos:
       rli.data_lock
 
     queue_event:
-      rli.LOCK_log, relay_log.sid_lock->rdlock, mi.data_lock
+      rli.LOCK_log, relay_log.tsid_lock->rdlock, mi.data_lock
 
     stop_slave:
       channel_map rdlock,
@@ -269,33 +276,32 @@ extern bool server_id_supplied;
 
     start_slave:
       mi.channel_wrlock, mi.run_lock, rli.run_lock, rli.data_lock,
-      global_sid_lock->wrlock
+      global_tsid_lock->wrlock
 
     mysql_bin_log.reset_logs:
-      .LOCK_log, .LOCK_index, global_sid_lock->wrlock
+      .LOCK_log, .LOCK_index, global_tsid_lock->wrlock
 
     purge_relay_logs:
       rli.data_lock, (relay.reset_logs) THD::LOCK_thd_data,
-      relay.LOCK_log, relay.LOCK_index, global_sid_lock->wrlock
+      relay.LOCK_log, relay.LOCK_index, global_tsid_lock->wrlock
 
-    reset_master:
+    reset_binary_logs_and_gtids:
       (binlog.reset_logs) THD::LOCK_thd_data, binlog.LOCK_log,
-      binlog.LOCK_index, global_sid_lock->wrlock, LOCK_reset_gtid_table
+      binlog.LOCK_index, global_tsid_lock->wrlock, LOCK_reset_gtid_table
 
     reset_slave:
       mi.channel_wrlock, mi.run_lock, rli.run_lock, (purge_relay_logs)
       rli.data_lock, THD::LOCK_thd_data, relay.LOCK_log, relay.LOCK_index,
-      global_sid_lock->wrlock
+      global_tsid_lock->wrlock
 
     purge_logs:
       .LOCK_index, LOCK_thd_list, thd.linfo.lock
 
       [Note: purge_logs contains a known bug: LOCK_index should not be
       taken before LOCK_thd_list.  This implies that, e.g.,
-      purge_source_logs_to_file can deadlock with reset_master.  However,
-      although purge_first_log and reset_slave take locks in reverse
-      order, they cannot deadlock because they both first acquire
-      rli.data_lock.]
+      purge_source_logs_to_file can deadlock with reset_binary_logs_and_gtids.
+  However, although purge_first_log and reset_slave take locks in reverse order,
+  they cannot deadlock because they both first acquire rli.data_lock.]
 
     purge_source_logs_to_file, purge_source_logs_before_date, purge:
       (binlog.purge_logs) binlog.LOCK_index, LOCK_thd_list, thd.linfo.lock
@@ -307,7 +313,7 @@ extern bool server_id_supplied;
     MYSQL_BIN_LOG::new_file_impl:
       .LOCK_log, .LOCK_index,
       ( [ if binlog: LOCK_prep_xids ]
-      | global_sid_lock->wrlock
+      | global_tsid_lock->wrlock
       )
 
     rotate_relay_log:
@@ -319,7 +325,7 @@ extern bool server_id_supplied;
     rli_init_info:
       rli.data_lock,
       ( relay.log_lock
-      | global_sid_lock->wrlock
+      | global_tsid_lock->wrlock
       | (relay.open_binlog)
       | (init_relay_log_pos) rli.data_lock, relay.log_lock
       )
@@ -334,7 +340,7 @@ extern bool server_id_supplied;
             ( binlog.LOCK_log, binlog.LOCK_index
             | relay.LOCK_log, relay.LOCK_index
             ),
-            ( rli.log_space_lock | global_sid_lock->wrlock )
+            ( rli.log_space_lock | global_tsid_lock->wrlock )
           | binlog.LOCK_log, binlog.LOCK_index, LOCK_prep_xids
           | thd.LOCK_data
           )
@@ -345,13 +351,11 @@ extern bool server_id_supplied;
     | mi.data_lock, rli.data_lock
 */
 
-extern ulong master_retry_count;
+extern ulong source_retry_count;
 extern MY_BITMAP slave_error_mask;
 extern char slave_skip_error_names[];
 extern bool use_slave_mask;
 extern char *replica_load_tmpdir;
-extern const char *master_info_file;
-extern const char *relay_log_info_file;
 extern char *opt_relay_logname, *opt_relaylog_index_name;
 extern bool opt_relaylog_index_name_supplied;
 extern bool opt_relay_logname_supplied;
@@ -374,7 +378,7 @@ class ReplicaInitializer {
   /// @param[in] opt_skip_replica_start When true, skips the start of
   /// replication threads
   /// @param[in] filters Replication filters
-  /// @param[in] replica_skip_erors
+  /// @param[in] replica_skip_erors TBD
   ReplicaInitializer(bool opt_initialize, bool opt_skip_replica_start,
                      Rpl_channel_filters &filters, char **replica_skip_erors);
 
@@ -433,7 +437,7 @@ class ReplicaInitializer {
 bool start_slave_cmd(THD *thd);
 bool stop_slave_cmd(THD *thd);
 bool change_master_cmd(THD *thd);
-int change_master(THD *thd, Master_info *mi, LEX_MASTER_INFO *lex_mi,
+int change_master(THD *thd, Master_info *mi, LEX_SOURCE_INFO *lex_mi,
                   bool preserve_logs = false);
 bool reset_slave_cmd(THD *thd);
 bool show_slave_status_cmd(THD *thd);
@@ -463,22 +467,23 @@ int init_recovery(Master_info *mi);
   does not exist, nothing is done.
 
   @param thread_mask Indicate which repositories will be initialized:
-  if (thread_mask&SLAVE_IO)!=0, then mi->init_info is called; if
-  (thread_mask&SLAVE_SQL)!=0, then mi->rli->init_info is called.
+  if (thread_mask&REPLICA_IO)!=0, then mi->init_info is called; if
+  (thread_mask&REPLICA_SQL)!=0, then mi->rli->init_info is called.
 
   @param force_load repositories will only read information if they
   are not yet initialized. When true this flag forces the repositories
   to load information from table or file.
 
-  @param skip_received_gtid_set_recovery When true, skips the received GTID
-                                         set recovery.
+  @param skip_received_gtid_set_and_relaylog_recovery When true, skips the
+  received GTID set and relay log recovery.
 
   @retval 0 Success
   @retval nonzero Error
 */
 int load_mi_and_rli_from_repositories(
     Master_info *mi, bool ignore_if_no_info, int thread_mask,
-    bool skip_received_gtid_set_recovery = false, bool force_load = false);
+    bool skip_received_gtid_set_and_relaylog_recovery = false,
+    bool force_load = false);
 void end_info(Master_info *mi);
 /**
   Clear the information regarding the `Master_info` and `Relay_log_info` objects
@@ -560,8 +565,8 @@ bool start_slave_threads(bool need_lock_slave, bool wait_for_start,
                          Master_info *mi, int thread_mask);
 bool start_slave(THD *thd);
 int stop_slave(THD *thd);
-bool start_slave(THD *thd, LEX_SLAVE_CONNECTION *connection_param,
-                 LEX_MASTER_INFO *master_param, int thread_mask_input,
+bool start_slave(THD *thd, LEX_REPLICA_CONNECTION *connection_param,
+                 LEX_SOURCE_INFO *master_param, int thread_mask_input,
                  Master_info *mi, bool set_mts_settings);
 int stop_slave(THD *thd, Master_info *mi, bool net_report, bool for_one_channel,
                bool *push_temp_table_warning);
@@ -586,6 +591,21 @@ void end_slave();                 /* release slave threads */
 void delete_slave_info_objects(); /* clean up slave threads data */
 void set_slave_thread_options(THD *thd);
 void set_slave_thread_default_charset(THD *thd, Relay_log_info const *rli);
+
+/// @brief Rotates the relay log
+/// @details Locking order:
+/// a) log_lock, log_space_lock
+/// b) log_lock, end_pos_lock
+/// @param mi Pointer to connection metadata object
+/// @param log_master_fd Information on whether rotate came from:
+/// - true - the origin is replica, this function will insert a source FDE
+/// - false - the origin is the source, we don't need to insert FDE as it
+///   will be send by the source
+/// @param need_lock When true, we acquire relay log lock,
+/// otherwise the caller must hold it
+/// @param need_log_space_lock When true, we acquire the log protecting
+/// data structures responsible for handling the relay_log_space_limit,
+/// otherwise the caller must hold it
 int rotate_relay_log(Master_info *mi, bool log_master_fd = true,
                      bool need_lock = true, bool need_log_space_lock = true);
 typedef enum {
@@ -632,13 +652,8 @@ int connect_to_master(THD *thd, MYSQL *mysql, Master_info *mi, bool reconnect,
 bool net_request_file(NET *net, const char *fname);
 
 extern bool replicate_same_server_id;
-
-extern int disconnect_slave_event_count, abort_slave_event_count;
-
 /* the master variables are defaults read from my.cnf or command line */
 extern uint report_port;
-extern const char *master_info_file;
-extern const char *relay_log_info_file;
 extern char *report_user;
 extern char *report_host, *report_password;
 

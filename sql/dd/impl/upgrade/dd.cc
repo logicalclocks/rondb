@@ -1,15 +1,16 @@
-/* Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -592,6 +593,18 @@ bool update_meta_data(THD *thd) {
   }
 
   /*
+    8.3.0 introduced a new "auto-update" property for histograms.
+    We add this property to any existing histograms and set it to false.
+  */
+  if (bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade_from_before(
+          bootstrap::DD_VERSION_80300)) {
+    if (dd::execute_query(thd,
+                          "UPDATE mysql.column_statistics SET histogram = "
+                          "json_set(histogram, '$.\"auto-update\"', false)"))
+      return dd::end_transaction(thd, true);
+  }
+
+  /*
     Turn foreign key checks back on and commit explicitly.
   */
   if (dd::execute_query(thd, "SET FOREIGN_KEY_CHECKS= 1"))
@@ -710,20 +723,36 @@ bool migrate_meta_data(THD *thd, const std::set<String_type> &create_set,
   }
 
   /********************* Migration of mysql.events *********************/
-  /* Upgrade from 80013 or earlier. */
+  /*
+    Upgrade for versions before 80014:
+      SQL mode 'INVALID_DATES' was renamed to 'ALLOW_INVALID_DATES'
+    Upgrade for versions before 80200:
+      The status enum changes from
+        'ENABLED','DISABLED','SLAVESIDE_DISABLED'
+      to
+        'ENABLED','DISABLED','REPLICA_SIDE_DISABLED'
+  */
   static_assert(dd::tables::Events::NUMBER_OF_FIELDS == 24,
                 "SQL statements rely on a specific table definition");
-  if (is_dd_upgrade_from_before(bootstrap::DD_VERSION_80014)) {
+  if (is_dd_upgrade_from_before(bootstrap::DD_VERSION_80200)) {
     /*
-      SQL mode 'INVALID_DATES' was renamed to 'ALLOW_INVALID_DATES'.
-      Migrate the SQL mode as an integer.
+      For versions before 80014
+         Migrate the SQL mode as an integer.
+      For versions before 80200
+         Replace SLAVESIDE_DISABLED with REPLICA_SIDE_DISABLED
+
+      Since the change for versions lower than 80014 is idempotent
+      we simplify the code and execute it as well for all versions
+      lower than 80200 but higher than 80014
     */
     if (migrate_table(
             "events",
             "INSERT INTO events SELECT  id, schema_id, name, definer, "
             "  time_zone, definition, definition_utf8, execute_at, "
             "  interval_value, interval_field, sql_mode+0, starts, ends, "
-            "  status, on_completion, created, last_altered, "
+            "  IF(status = 'SLAVESIDE_DISABLED', 'REPLICA_SIDE_DISABLED', "
+            "status), "
+            "  on_completion, created, last_altered, "
             "  last_executed, comment, originator, client_collation_id, "
             "  connection_collation_id, schema_collation_id, options "
             "  FROM mysql.events")) {
@@ -1154,7 +1183,7 @@ bool upgrade_tables(THD *thd) {
       update_object_ids(thd, create_set, remove_set, mysql_schema_id,
                         target_table_schema_id, target_table_schema_name,
                         actual_table_schema_id) ||
-      update_versions(thd, false))
+      update_versions(thd))
     return true;
 
   LogErr(SYSTEM_LEVEL, ER_DD_UPGRADE_COMPLETED,

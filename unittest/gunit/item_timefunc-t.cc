@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,13 +31,12 @@
 #include <string>
 
 #include "decimal.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_time.h"
+#include "sql-common/my_decimal.h"
 #include "sql/item.h"
 #include "sql/item_timefunc.h"
-#include "sql/my_decimal.h"
 #include "sql/parse_location.h"
 #include "sql/parse_tree_node_base.h"
 #include "sql/sql_class.h"
@@ -44,6 +44,7 @@
 #include "sql/sql_lex.h"
 #include "sql/system_variables.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "unittest/gunit/test_utils.h"
 
 namespace item_timefunc_unittest {
@@ -83,8 +84,11 @@ static void CheckMetadataConsistency(THD *thd, Item *item) {
   ASSERT_FALSE(item->fix_fields(thd, ref));
   ASSERT_EQ(item, ref[0]);
 
-  // Expect a signed integer return type.
-  EXPECT_FALSE(item->unsigned_flag);
+  // Expect a signed integer return type, except for YEAR.
+  if (item->data_type() == MYSQL_TYPE_YEAR)
+    EXPECT_TRUE(item->unsigned_flag);
+  else
+    EXPECT_FALSE(item->unsigned_flag);
   EXPECT_EQ(0, item->decimals);
 
   const int64_t int_result = item->val_int();

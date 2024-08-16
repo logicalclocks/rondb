@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -69,10 +70,10 @@ public:
      Context is maintained in rope_offset.
      The caller must initialize rope_offset to 0 before the first read.
   */
-  int readBuffered(char* buf, Uint32 buf_size, Uint32 & rope_offset) const;
+  int readBuffered(char *buf, Uint32 buf_size, Uint32 &rope_offset) const;
 
-  int compare(const char * s) const { return compare(s, (Uint32)strlen(s) + 1);}
-  int compare(const char *, Uint32 len) const; 
+  int compare(const char *s) const { return compare(s, (Uint32)strlen(s) + 1); }
+  int compare(const char *, Uint32 len) const;
 
   bool equal(const LcConstRope& r2) const;
 
@@ -111,10 +112,10 @@ public:
   bool assign(const char * s, Uint32 l) { return assign(s, l, hash(s, l));}
   bool assign(const char *, Uint32 len, Uint32 hash);
 
-  bool appendBuffer(const char * buf, Uint32 len);
+  bool appendBuffer(const char *buf, Uint32 len);
 
   void erase();
-  
+
   static Uint32 hash(const char * str, Uint32 len, Uint32 starter = 0);
 
 private:
@@ -151,4 +152,3 @@ LcConstRope::empty() const {
 #undef JAM_FILE_ID
 
 #endif
-

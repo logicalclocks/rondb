@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -113,6 +114,8 @@ void MetadataCache::refresh_thread() {
       log_info("Failed refreshing metadata: %s", e.what());
       on_refresh_failed(true);
     }
+
+    meta_data_->disconnect();
 
     if (refresh_ok) {
       if (!ready_announced_) {
@@ -238,11 +241,12 @@ bool metadata_cache::ManagedInstance::operator==(
          role == other.role && host == other.host && port == other.port &&
          xport == other.xport && hidden == other.hidden &&
          disconnect_existing_sessions_when_hidden ==
-             other.disconnect_existing_sessions_when_hidden;
+             other.disconnect_existing_sessions_when_hidden &&
+         ignore == other.ignore;
 }
 
 metadata_cache::ManagedInstance::ManagedInstance(
-    InstanceType p_type, const std::string &p_mysql_server_uuid,
+    mysqlrouter::InstanceType p_type, const std::string &p_mysql_server_uuid,
     const ServerMode p_mode, const ServerRole p_role, const std::string &p_host,
     const uint16_t p_port, const uint16_t p_xport)
     : type(p_type),
@@ -251,14 +255,21 @@ metadata_cache::ManagedInstance::ManagedInstance(
       role(p_role),
       host(p_host),
       port(p_port),
-      xport(p_xport) {}
+      xport(p_xport),
+      hidden(mysqlrouter::kNodeTagHiddenDefault),
+      disconnect_existing_sessions_when_hidden(
+          mysqlrouter::kNodeTagDisconnectWhenHiddenDefault) {}
 
-metadata_cache::ManagedInstance::ManagedInstance(InstanceType p_type) {
+metadata_cache::ManagedInstance::ManagedInstance(
+    mysqlrouter::InstanceType p_type)
+    : hidden(mysqlrouter::kNodeTagHiddenDefault),
+      disconnect_existing_sessions_when_hidden(
+          mysqlrouter::kNodeTagDisconnectWhenHiddenDefault) {
   type = p_type;
 }
 
-metadata_cache::ManagedInstance::ManagedInstance(InstanceType p_type,
-                                                 const TCPAddress &addr)
+metadata_cache::ManagedInstance::ManagedInstance(
+    mysqlrouter::InstanceType p_type, const TCPAddress &addr)
     : ManagedInstance(p_type) {
   host = addr.address();
   port = addr.port();
@@ -337,7 +348,7 @@ std::string get_hidden_info(const metadata_cache::ManagedInstance &instance) {
   // if both values are default return empty string
   if (instance.hidden || !instance.disconnect_existing_sessions_when_hidden) {
     result =
-        "hidden=" + (instance.hidden ? "yes"s : "no"s) +
+        " hidden=" + (instance.hidden ? "yes"s : "no"s) +
         " disconnect_when_hidden=" +
         (instance.disconnect_existing_sessions_when_hidden ? "yes"s : "no"s);
   }
@@ -374,11 +385,11 @@ void MetadataCache::on_refresh_failed(bool terminated,
       if (clearing) cluster_topology_.clear_all_members();
     }
     if (clearing) {
+      on_instances_changed(md_servers_reachable, {}, {});
       const auto log_level =
           refresh_state_changed ? LogLevel::kInfo : LogLevel::kDebug;
       log_custom(log_level,
                  "... cleared current routing table as a precaution");
-      on_instances_changed(md_servers_reachable, {}, {});
     }
   }
 }
@@ -607,11 +618,15 @@ MetadataCache::get_rest_user_auth_data(const std::string &user) {
 }
 
 bool MetadataCache::update_auth_cache() {
-  if (meta_data_ && auth_metadata_fetch_enabled_) {
+  if (meta_data_ && auth_metadata_fetch_enabled_ &&
+      !cluster_topology_.metadata_servers.empty()) {
     try {
-      rest_auth_([this](auto &rest_auth) {
+      const metadata_cache::metadata_server_t md_server =
+          cluster_topology_.metadata_servers[0];
+
+      rest_auth_([this, md_server](auto &rest_auth) {
         rest_auth.rest_auth_data_ =
-            meta_data_->fetch_auth_credentials(target_cluster_);
+            meta_data_->fetch_auth_credentials(md_server, target_cluster_);
         rest_auth.last_credentials_update_ = std::chrono::system_clock::now();
       });
       return true;

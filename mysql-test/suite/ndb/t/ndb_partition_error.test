@@ -1,8 +1,5 @@
 -- source include/have_ndb.inc
 
-# Turn on support for the "new" extended partition syntax
-set new=on;
-
 #
 # Partition by range, generate node group error
 #

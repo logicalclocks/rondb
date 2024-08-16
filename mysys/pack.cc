@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -179,4 +180,37 @@ uint net_field_length_size(const uchar *pos) {
   if (*pos == 252) return 3;
   if (*pos == 253) return 4;
   return 9;
+}
+
+/**
+  @brief Calculates length of the field in case value of this field includes
+  length of this field (self)
+
+  @param length Size of the field without self
+
+  @return Size of the field including self
+*/
+uint64_t net_length_size_including_self(uint64_t length) {
+#ifndef NDEBUG
+  const uint64_t length_without_self = length;
+#endif
+  // minimal length of the net_field_length is 1
+  length += 1;
+  assert(length - length_without_self == 1);
+  if (length >= 251) {
+    // length will use at least 3 bytes
+    length += 2;
+    assert(length - length_without_self == 3);
+    if (length >= 65536) {
+      // length will use at least 4 bytes
+      length += 1;
+      assert(length - length_without_self == 4);
+      if (length >= 16777216) {
+        // length will use 9 bytes
+        length += 5;
+        assert(length - length_without_self == 9);
+      }
+    }
+  }
+  return length;
 }

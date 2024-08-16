@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,19 +26,16 @@
 #ifndef ALTER_INDX_HPP
 #define ALTER_INDX_HPP
 
-#include "SignalData.hpp"
-#include <Bitmask.hpp>
 #include <trigger_definitions.h>
+#include <Bitmask.hpp>
+#include "SignalData.hpp"
 
 #define JAM_FILE_ID 81
-
 
 struct AlterIndxReq {
   static constexpr Uint32 SignalLength = 7;
 
-  enum RequestFlag {
-    RF_BUILD_OFFLINE = 1 << 8
-  };
+  enum RequestFlag { RF_BUILD_OFFLINE = 1 << 8 };
 
   Uint32 clientRef;
   Uint32 clientData;
@@ -52,7 +50,9 @@ struct AlterIndxConf {
   static constexpr Uint32 SignalLength = 5;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 indexId;
   Uint32 indexVersion;
@@ -75,7 +75,9 @@ struct AlterIndxRef {
   static constexpr Uint32 SignalLength = 9;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 indexId;
   Uint32 indexVersion;
@@ -84,7 +86,6 @@ struct AlterIndxRef {
   Uint32 errorNodeId;
   Uint32 masterNodeId;
 };
-
 
 #undef JAM_FILE_ID
 

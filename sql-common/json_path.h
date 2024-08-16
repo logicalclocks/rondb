@@ -1,18 +1,19 @@
 #ifndef SQL_JSON_PATH_INCLUDED
 #define SQL_JSON_PATH_INCLUDED
 
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,17 +35,13 @@
 #include <assert.h>
 #include <stddef.h>
 #include <algorithm>
-#include <functional>
 #include <new>
 #include <string>
 #include <utility>
 
 #include "my_alloc.h"  // MEM_ROOT
-                       // assert
-#include "my_inttypes.h"
-#include "my_sys.h"
+#include "mysql/psi/psi_memory.h"
 #include "prealloced_array.h"  // Prealloced_array
-#include "sql-common/json_error_handler.h"
 
 class String;
 
@@ -476,13 +473,10 @@ class Json_path_clone final : public Json_seekable_path {
    @param[in] path_expression The string form of the path expression.
    @param[out] path The Json_path object to be initialized.
    @param[out] bad_index If null is returned, the parsing failed around here.
-   @param[in] depth_handler Pointer to a function that should handle error
-                            occurred when depth is exceeded.
    @return false on success, true on error
 */
 bool parse_path(size_t path_length, const char *path_expression,
-                Json_path *path, size_t *bad_index,
-                const JsonDocumentDepthHandler &depth_handler);
+                Json_path *path, size_t *bad_index);
 
 /**
   A helper function that uses the above one as workhorse. Entry point for

@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -39,17 +40,20 @@ class PT_window : public Parse_tree_node, public Window {
   typedef Parse_tree_node super;
 
  public:
-  PT_window(PT_order_list *partition_by, PT_order_list *order_by,
-            PT_frame *frame)
-      : Window(partition_by, order_by, frame) {}
+  PT_window(const POS &pos, PT_order_list *partition_by,
+            PT_order_list *order_by, PT_frame *frame)
+      : super(pos), Window(partition_by, order_by, frame) {}
 
-  PT_window(PT_order_list *partition_by, PT_order_list *order_by,
-            PT_frame *frame, Item_string *inherit)
-      : Window(partition_by, order_by, frame, inherit) {}
+  PT_window(const POS &pos, PT_order_list *partition_by,
+            PT_order_list *order_by, PT_frame *frame, Item_string *inherit)
+      : super(pos), Window(partition_by, order_by, frame, inherit) {}
 
-  PT_window(Item_string *name) : Window(name) {}
+  PT_window(const POS &pos, Item_string *name) : super(pos), Window(name) {}
 
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
+
+ protected:
+  void add_json_info(Json_object *obj) override;
 };
 
 /**
@@ -61,9 +65,9 @@ class PT_window_list : public Parse_tree_node {
   List<Window> m_windows;
 
  public:
-  PT_window_list() = default;
+  explicit PT_window_list(const POS &pos) : super(pos) {}
 
-  bool contextualize(Parse_context *pc) override;
+  bool do_contextualize(Parse_context *pc) override;
 
   bool push_back(PT_window *w) { return m_windows.push_back(w); }
 };

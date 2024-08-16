@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,8 +29,8 @@ class String;
 class THD;
 class Query_block;
 class Table_ident;
-struct YYLTYPE;
-typedef YYLTYPE POS;
+
+#include "sql/parse_location.h"
 
 namespace dd {
 namespace info_schema {
@@ -54,7 +55,7 @@ namespace info_schema {
       ORDER BY `Charset`;
   @endcode
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param wild - The value of LIKE clause.
   @param where_cond - @<where_clause@> clause provided by user.
@@ -87,7 +88,7 @@ Query_block *build_show_character_set_query(const POS &pos, THD *thd,
       ORDER BY `Collation`;
   @endcode
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param wild - The value of LIKE clause.
   @param where_cond - @<where_clause@> clause provided by user.
@@ -114,7 +115,7 @@ Query_block *build_show_collation_query(const POS &pos, THD *thd,
       ORDER BY `Database`;
   @endcode
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param wild - The value of LIKE clause.
   @param where_cond - @<where_clause@> clause provided by user.
@@ -192,7 +193,7 @@ Query_block *build_show_databases_query(const POS &pos, THD *thd, String *wild,
   Note that the thd->lex->verbose == true would mean user has
   provide keyword 'FULL'.
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param wild - The value of LIKE clause.
   @param where_cond - @<where_clause@> clause provided by user.
@@ -253,7 +254,7 @@ Query_block *build_show_tables_query(const POS &pos, THD *thd, String *wild,
   Note that the thd->lex->verbose == true would mean user has
   provide keyword 'FULL'.
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param table_ident  - Database and Table name of table being used.
   @param wild - The value of LIKE clause.
@@ -320,7 +321,7 @@ Query_block *build_show_columns_query(const POS &pos, THD *thd,
   @endcode
 
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param table_ident  - Database and Table name of table being used.
   @param where_cond - @<where_clause@> clause provided by user.
@@ -376,7 +377,7 @@ Query_block *build_show_keys_query(const POS &pos, THD *thd,
 
   @endcode
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param wild - The value of LIKE clause.
   @param where_cond - @<where_clause@> clause provided by user.
@@ -401,6 +402,7 @@ Query_block *build_show_triggers_query(const POS &pos, THD *thd, String *wild,
       Db,
       Name,
       Type,
+      Language,
       Definer,
       Modified,
       Created,
@@ -414,6 +416,7 @@ Query_block *build_show_triggers_query(const POS &pos, THD *thd, String *wild,
          ROUTINE_SCHEMA AS `Db`,
          ROUTINE_NAME AS `Name`,
          ROUTINE_TYPE AS `Type`,
+         EXTERNAL_LANGUAGE AS `Language`,
          DEFINER AS `Definer`,
          LAST_ALTERED AS `Modified`,
          CREATED AS `Created`,
@@ -430,7 +433,7 @@ Query_block *build_show_triggers_query(const POS &pos, THD *thd, String *wild,
 
   @endcode
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param wild - The value of LIKE clause.
   @param where_cond - @<where_clause@> clause provided by user.
@@ -492,7 +495,7 @@ Query_block *build_show_procedures_query(const POS &pos, THD *thd, String *wild,
 
   @endcode
 
-  @param pos  - YYLTYPE position of parsing context.
+  @param pos  - POS position of parsing context.
   @param thd  - Current thread.
   @param wild - The value of LIKE clause.
   @param where_cond - @<where_clause@> clause provided by user.

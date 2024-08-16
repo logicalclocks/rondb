@@ -1,15 +1,16 @@
-/*  Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/*  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License, version 2.0,
     as published by the Free Software Foundation.
 
-    This program is also distributed with certain software (including
+    This program is designed to work with certain software (including
     but not limited to OpenSSL) that is licensed under separate terms,
     as designated in a particular file or component or in included license
     documentation.  The authors of MySQL hereby grant you an additional
     permission to link the program and your derivative works with the
-    separately licensed software that they have included with MySQL.
+    separately licensed software that they have either included with
+    the program or referenced in the documentation.
 
     This program is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,7 +27,6 @@
 #include <new>
 
 #include "lex_string.h"
-#include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sqlcommand.h"
@@ -56,6 +56,7 @@
 #include "sql/system_variables.h"
 #include "sql/transaction.h"  // trans_commit_stmt
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "template_utils.h"
 
 /**
@@ -87,7 +88,7 @@ class Service_visitor : public Select_lex_visitor {
       case Item::DECIMAL_ITEM:
       case Item::REAL_ITEM:
       case Item::NULL_ITEM:
-      case Item::VARBIN_ITEM:
+      case Item::HEX_BIN_ITEM:
       case Item::CACHE_ITEM:
         return m_processor(item, m_arg);
       default:
@@ -122,7 +123,7 @@ class Plugin_error_handler : public Internal_error_handler {
   bool handle_condition(THD *, uint sql_errno_u, const char *sqlstate,
                         Sql_condition::enum_severity_level *,
                         const char *msg) override {
-    int sql_errno = static_cast<int>(sql_errno_u);
+    const int sql_errno = static_cast<int>(sql_errno_u);
     if (m_handle_error != nullptr)
       return m_handle_error(sql_errno, sqlstate, msg, m_state) != 0;
     return false;
@@ -221,10 +222,10 @@ void mysql_parser_join_thread(my_thread_handle *thread_id) {
 void mysql_parser_set_current_database(MYSQL_THD thd,
                                        const MYSQL_LEX_STRING db) {
   if (db.length == 0) {
-    LEX_CSTRING db_const = {nullptr, 0};
+    const LEX_CSTRING db_const = {nullptr, 0};
     thd->set_db(db_const);
   } else {
-    LEX_CSTRING db_const = {db.str, db.length};
+    const LEX_CSTRING db_const = {db.str, db.length};
     thd->set_db(db_const);
   }
 }
@@ -261,10 +262,10 @@ int mysql_parser_parse(MYSQL_THD thd, const MYSQL_LEX_STRING query,
     thd->lex->context_analysis_only |= CONTEXT_ANALYSIS_ONLY_PREPARE;
   }
 
-  Plugin_error_handler error_handler(thd, handle_condition,
-                                     condition_handler_state);
+  const Plugin_error_handler error_handler(thd, handle_condition,
+                                           condition_handler_state);
 
-  int parse_status = parse_sql(thd, &parser_state, nullptr);
+  const int parse_status = parse_sql(thd, &parser_state, nullptr);
 
   /*
     Handled conditions are thrown away at this point - they are supposedly

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -121,18 +122,18 @@
 #include <string.h>
 #include <sys/types.h>
 #include <algorithm>
+#include <bit>
 
 #include "keycache.h"
-#include "my_bit.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_pointer_arithmetic.h"
 #include "my_sys.h"
 #include "my_thread_local.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_alloc.h"
@@ -241,9 +242,7 @@ static int fail_hlink(HASH_LINK *hlink);
 static int cache_empty(KEY_CACHE *keycache);
 #endif
 
-static inline uint next_power(uint value) {
-  return (uint)my_round_up_to_next_power((uint32)value) << 1;
-}
+static inline uint next_power(uint value) { return std::bit_ceil(value) << 1; }
 
 /*
   Initialize a key cache
@@ -2935,7 +2934,7 @@ static int flush_cached_blocks(KEY_CACHE *keycache,
                                enum flush_type type) {
   int error;
   int last_errno = 0;
-  uint count = (uint)(end - cache);
+  const uint count = (uint)(end - cache);
 
   /* Don't lock the cache during the flush */
   mysql_mutex_unlock(&keycache->cache_lock);

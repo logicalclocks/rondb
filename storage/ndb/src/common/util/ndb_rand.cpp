@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2007, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2007, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,7 +25,7 @@
 
 #include <ndb_rand.h>
 
-static unsigned long next= 1;
+static unsigned long next = 1;
 
 #define NDB_RAND_MAX 32767
 
@@ -38,20 +39,14 @@ static unsigned long next= 1;
  * This is the POSIX example for "generating the same sequence on
  * different machines". Although that is not one of our requirements.
  */
-int ndb_rand(void)
-{
-  next= next * 1103515245 + 12345;
-  return((unsigned)(next/65536) % 32768);
+int ndb_rand(void) {
+  next = next * 1103515245 + 12345;
+  return ((unsigned)(next / 65536) % 32768);
 }
 
-void ndb_srand(unsigned seed)
-{
-  next= seed;
-}
+void ndb_srand(unsigned seed) { next = seed; }
 
-int
-ndb_rand_r(unsigned * seed)
-{
-  * seed = (* seed) * 1103515245 + 12345;
+int ndb_rand_r(unsigned *seed) {
+  *seed = (*seed) * 1103515245 + 12345;
   return ((unsigned)(*seed / 65536) % 32768);
 }

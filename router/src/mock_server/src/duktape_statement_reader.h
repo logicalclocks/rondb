@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -60,18 +61,9 @@ class DuktapeStatementReaderFactory {
 
     std::vector<AsyncNotice> get_async_notices() override { return {}; }
 
-    stdx::expected<classic_protocol::message::server::Greeting, std::error_code>
-    server_greeting(bool /* with_tls */) override {
-      return stdx::make_unexpected(
-          make_error_code(std::errc::no_such_file_or_directory));
-    }
-
-    stdx::expected<handshake_data, ErrorResponse> handshake() override {
-      return stdx::make_unexpected(ErrorResponse(1064, what_, "HY000"));
-    }
-
-    std::chrono::microseconds server_greeting_exec_time() override {
-      return {};
+    stdx::expected<handshake_data, ErrorResponse> handshake(
+        bool /* is_greeting */) override {
+      return stdx::unexpected(ErrorResponse(1064, what_, "HY000"));
     }
 
     void set_session_ssl_info(const SSL * /* ssl */) override {}
@@ -120,16 +112,17 @@ class DuktapeStatementReader : public StatementReaderBase {
 
   std::vector<AsyncNotice> get_async_notices() override;
 
+  stdx::expected<handshake_data, ErrorResponse> handshake(
+      bool with_tls) override;
+
+ private:
   stdx::expected<classic_protocol::message::server::Greeting, std::error_code>
-  server_greeting(bool with_tls) override;
+  server_greeting();
 
-  stdx::expected<handshake_data, ErrorResponse> handshake() override;
-
-  std::chrono::microseconds server_greeting_exec_time() override;
+  std::chrono::microseconds server_greeting_exec_time();
 
   void set_session_ssl_info(const SSL *ssl) override;
 
- private:
   struct Pimpl;
   std::unique_ptr<Pimpl> pimpl_;
   bool has_notices_{false};

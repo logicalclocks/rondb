@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,7 +37,6 @@
 #include <mysql/components/minimal_chassis.h>
 #include <mysql/components/services/dynamic_loader_scheme_file.h>
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "my_command.h"
 #include "my_compress.h"
 #include "my_getopt.h"
@@ -60,10 +60,12 @@
 #include "mysql/components/services/bits/psi_statement_bits.h"
 #include "mysql/components/services/bits/psi_thread_bits.h"
 #include "mysql/status_var.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"  // SERVER_VERSION_LENGTH
 #ifdef _WIN32
 #include "sql/nt_servc.h"
 #endif  // _WIN32
+#include "aggregated_stats.h"
 #include "sql/sql_bitmap.h"
 #include "sql/sql_const.h"  // UUID_LENGTH
 
@@ -108,10 +110,9 @@ typedef Bitmap<((MAX_INDEXES + 7) / 8 * 8)> Key_map; /* Used for finding keys */
 #define TEST_NO_TEMP_TABLES \
   8192 /**< No temp table engine is loaded, so use dummy costs. */
 
-#define SPECIAL_NO_NEW_FUNC 2     /* Skip new functions */
-#define SPECIAL_SKIP_SHOW_DB 4    /* Don't allow 'show db' */
-#define SPECIAL_NO_RESOLVE 64     /* Don't use gethostname */
-#define SPECIAL_NO_HOST_CACHE 512 /* Don't cache hosts */
+#define SPECIAL_NO_NEW_FUNC 2  /* Skip new functions */
+#define SPECIAL_SKIP_SHOW_DB 4 /* Don't allow 'show db' */
+#define SPECIAL_NO_RESOLVE 64  /* Don't use gethostname */
 #define SPECIAL_SHORT_LOG_FORMAT 1024
 
 extern bool dynamic_plugins_are_initialized;
@@ -150,11 +151,6 @@ bool gtid_server_init();
 void gtid_server_cleanup();
 void clean_up_mysqld_mutexes();
 
-extern MYSQL_PLUGIN_IMPORT CHARSET_INFO *files_charset_info;
-extern MYSQL_PLUGIN_IMPORT CHARSET_INFO *national_charset_info;
-extern MYSQL_PLUGIN_IMPORT CHARSET_INFO *table_alias_charset;
-extern CHARSET_INFO *character_set_filesystem;
-
 enum enum_server_operational_state {
   SERVER_BOOTING,      /* Server is not operational. It is starting */
   SERVER_OPERATING,    /* Server is fully initialized and operating */
@@ -175,10 +171,8 @@ extern bool opt_disable_networking, opt_skip_show_db;
 extern bool opt_skip_name_resolve;
 extern bool opt_help;
 extern bool opt_verbose;
-extern bool opt_character_set_client_handshake;
 extern MYSQL_PLUGIN_IMPORT std::atomic<int32>
     connection_events_loop_aborted_flag;
-extern bool opt_no_dd_upgrade;
 extern long opt_upgrade_mode;
 extern bool opt_initialize;
 extern bool opt_safe_user_create;
@@ -208,12 +202,6 @@ extern bool read_only, opt_readonly;
 extern bool super_read_only, opt_super_readonly;
 extern bool lower_case_file_system;
 
-enum enum_slave_rows_search_algorithms {
-  SLAVE_ROWS_TABLE_SCAN = (1U << 0),
-  SLAVE_ROWS_INDEX_SCAN = (1U << 1),
-  SLAVE_ROWS_HASH_SCAN = (1U << 2)
-};
-extern ulonglong slave_rows_search_algorithms_options;
 extern bool opt_require_secure_transport;
 
 extern bool opt_replica_preserve_commit_order;
@@ -232,7 +220,7 @@ extern bool opt_allow_suspicious_udfs;
 extern const char *opt_secure_file_priv;
 extern bool opt_log_slow_admin_statements, opt_log_slow_replica_statements;
 extern bool sp_automatic_privileges, opt_noacl;
-extern bool opt_old_style_user_limits, trust_function_creators;
+extern bool trust_function_creators;
 extern bool check_proxy_users, mysql_native_password_proxy_users,
     sha256_password_proxy_users;
 #ifdef _WIN32
@@ -250,7 +238,6 @@ extern bool using_udf_functions;
 extern bool locked_in_memory;
 extern bool opt_using_transactions;
 extern ulong current_pid;
-extern ulong expire_logs_days;
 extern ulong binlog_expire_logs_seconds;
 extern bool opt_binlog_expire_logs_auto_purge;
 extern uint sync_binlog_period, sync_relaylog_period, sync_relayloginfo_period,
@@ -275,7 +262,6 @@ extern const char *timestamp_type_names[];
 extern char *opt_general_logname, *opt_slow_logname, *opt_bin_logname,
     *opt_relay_logname;
 extern char *mysql_home_ptr, *pidfile_name_ptr;
-extern char *default_auth_plugin;
 extern uint default_password_lifetime;
 extern bool password_require_current;
 /*
@@ -327,7 +313,6 @@ extern uint replica_net_timeout;
 extern ulong opt_mts_replica_parallel_workers;
 extern ulonglong opt_mts_pending_jobs_size_max;
 extern ulong rpl_stop_replica_timeout;
-extern bool log_bin_use_v1_row_events;
 extern ulong what_to_log, flush_time;
 extern ulong max_prepared_stmt_count, prepared_stmt_count;
 extern ulong open_files_limit;
@@ -358,7 +343,6 @@ enum enum_binlog_error_action {
 };
 extern const char *binlog_error_action_list[];
 extern char *opt_authentication_policy;
-extern std::vector<std::string> authentication_policy_list;
 
 extern ulong stored_program_cache_size;
 extern ulong back_log;
@@ -374,6 +358,7 @@ extern const char *in_left_expr_name;
 extern SHOW_VAR status_vars[];
 extern struct System_variables max_system_variables;
 extern struct System_status_var global_status_var;
+extern struct aggregated_stats global_aggregated_stats;
 extern struct rand_struct sql_rand;
 extern handlerton *myisam_hton;
 extern handlerton *heap_hton;
@@ -383,12 +368,11 @@ extern uint opt_server_id_bits;
 extern ulong opt_server_id_mask;
 extern const char *load_default_groups[];
 extern struct my_option my_long_early_options[];
-extern bool mysqld_server_started;
+extern "C" MYSQL_PLUGIN_IMPORT bool mysqld_server_started;
 extern "C" MYSQL_PLUGIN_IMPORT int orig_argc;
 extern "C" MYSQL_PLUGIN_IMPORT char **orig_argv;
+extern bool server_shutting_down;
 extern my_thread_attr_t connection_attrib;
-extern bool old_mode;
-extern bool avoid_temporal_upgrade;
 extern LEX_STRING opt_init_connect, opt_init_replica;
 extern ulong connection_errors_internal;
 extern ulong connection_errors_peer_addr;
@@ -476,7 +460,7 @@ extern PSI_rwlock_key key_rwlock_LOCK_logger;
 extern PSI_rwlock_key key_rwlock_channel_map_lock;
 extern PSI_rwlock_key key_rwlock_channel_lock;
 extern PSI_rwlock_key key_rwlock_gtid_mode_lock;
-extern PSI_rwlock_key key_rwlock_receiver_sid_lock;
+extern PSI_rwlock_key key_rwlock_receiver_tsid_lock;
 extern PSI_rwlock_key key_rwlock_rpl_filter_lock;
 extern PSI_rwlock_key key_rwlock_channel_to_filter_lock;
 extern PSI_rwlock_key key_rwlock_resource_group_mgr_map_lock;
@@ -572,8 +556,8 @@ extern PSI_stage_info stage_execution_of_init_command;
 extern PSI_stage_info stage_explaining;
 extern PSI_stage_info
     stage_finished_reading_one_binlog_switching_to_next_binlog;
-extern PSI_stage_info stage_flushing_relay_log_and_source_info_repository;
-extern PSI_stage_info stage_flushing_relay_log_info_file;
+extern PSI_stage_info stage_flushing_applier_and_connection_metadata;
+extern PSI_stage_info stage_flushing_applier_metadata;
 extern PSI_stage_info stage_freeing_items;
 extern PSI_stage_info stage_fulltext_initialization;
 extern PSI_stage_info stage_init;
@@ -727,8 +711,8 @@ extern mysql_mutex_t LOCK_tls_ctx_options;
 extern mysql_mutex_t LOCK_admin_tls_ctx_options;
 extern mysql_mutex_t LOCK_rotate_binlog_master_key;
 extern mysql_mutex_t LOCK_partial_revokes;
-extern mysql_mutex_t LOCK_authentication_policy;
 extern mysql_mutex_t LOCK_global_conn_mem_limit;
+extern mysql_mutex_t LOCK_authentication_policy;
 
 extern mysql_cond_t COND_server_started;
 extern mysql_cond_t COND_compress_gtid_table;
@@ -737,6 +721,7 @@ extern mysql_cond_t COND_manager;
 extern mysql_rwlock_t LOCK_sys_init_connect;
 extern mysql_rwlock_t LOCK_sys_init_replica;
 extern mysql_rwlock_t LOCK_system_variables_hash;
+extern mysql_rwlock_t LOCK_server_shutting_down;
 
 extern ulong opt_ssl_fips_mode;
 
@@ -812,10 +797,6 @@ void set_mysqld_partial_revokes(bool value);
 
 bool check_and_update_partial_revokes_sysvar(THD *thd);
 
-bool parse_authentication_policy(char *val,
-                                 std::vector<std::string> &policy_list);
-bool validate_authentication_policy(char *val);
-bool update_authentication_policy();
 #ifdef _WIN32
 
 bool is_windows_service();
@@ -833,6 +814,7 @@ extern mysql_component_t mysql_component_performance_schema;
 /* This variable is a registry handler, defined in mysql_server component and
    used as a output parameter for minimal chassis. */
 extern SERVICE_TYPE_NO_CONST(registry) * srv_registry;
+extern SERVICE_TYPE_NO_CONST(registry) * srv_registry_no_lock;
 /* These global variables which are defined and used in
    mysql_server component */
 extern SERVICE_TYPE(dynamic_loader_scheme_file) * scheme_file_srv;
@@ -844,4 +826,22 @@ extern Deployed_components *g_deployed_components;
 extern bool opt_persist_sensitive_variables_in_plaintext;
 
 void persisted_variables_refresh_keyring_support();
+
+/**
+  Stores the value of argc during server start up that contains
+  the count of arguments specified by the user in the
+  configuration files and command line.
+  The server refers the cached argument count during
+  plugin and component installation.
+*/
+extern int argc_cached;
+/**
+  Stores the value of argv during server start up that contains
+  the vector of arguments specified by the user in the
+  configuration files and command line.
+  The server refers the cached argument vector during
+  plugin and component installation.
+*/
+extern char **argv_cached;
+
 #endif /* MYSQLD_INCLUDED */

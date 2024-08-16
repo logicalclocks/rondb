@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,20 +26,20 @@
 
 #include <memory>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
-#include "sql/current_thd.h"            // current_thd
-#include "sql/dd/upgrade_57/upgrade.h"  // dd::upgrade_57::in_progress()
-#include "sql/field.h"                  // Field
+#include "sql/current_thd.h"  // current_thd
+#include "sql/field.h"        // Field
 #include "sql/iterators/row_iterator.h"
-#include "sql/mysqld.h"     // key_LOCK_cost_const
-#include "sql/sql_base.h"   // open_and_lock_tables
-#include "sql/sql_class.h"  // THD
+#include "sql/mysqld.h"         // key_LOCK_cost_const
+#include "sql/opt_costmodel.h"  // Optimizer
+#include "sql/sql_base.h"       // open_and_lock_tables
+#include "sql/sql_class.h"      // THD
 #include "sql/sql_const.h"
 #include "sql/sql_executor.h"   // unique_ptr_destroy_only<RowIterator>
 #include "sql/sql_lex.h"        // lex_start/lex_end
@@ -54,17 +55,10 @@ Cost_constant_cache *cost_constant_cache = nullptr;
 
 static void read_cost_constants(Cost_model_constants *cost_constants);
 
-/**
-  Minimal initialization of the object. The main initialization is done
-  by calling init().
-*/
-
-Cost_constant_cache::Cost_constant_cache()
-    : current_cost_constants(nullptr), m_inited(false) {}
-
 Cost_constant_cache::~Cost_constant_cache() {
   // Verify that close has been called
   assert(current_cost_constants == nullptr);
+  assert(current_cost_constants_hypergraph == nullptr);
   assert(m_inited == false);
 }
 
@@ -76,11 +70,23 @@ void Cost_constant_cache::init() {
   // Initialize the mutex that is used for protecting the cost constants
   mysql_mutex_init(key_LOCK_cost_const, &LOCK_cost_const, MY_MUTEX_INIT_FAST);
 
+  // Original optimizer.
+
   // Create cost constants from constants found in the source code
-  Cost_model_constants *cost_constants = create_defaults();
+  Cost_model_constants *cost_constants = create_defaults(Optimizer::kOriginal);
 
   // Set this to be the current set of cost constants
-  update_current_cost_constants(cost_constants);
+  update_current_cost_constants(cost_constants, Optimizer::kOriginal);
+
+  // Hypergraph optimizer.
+
+  // Create cost constants from constants found in the source code
+  Cost_model_constants *cost_constants_hypergraph =
+      create_defaults(Optimizer::kHypergraph);
+
+  // Set this to be the current set of cost constants
+  update_current_cost_constants(cost_constants_hypergraph,
+                                Optimizer::kHypergraph);
 
   m_inited = true;
 }
@@ -98,6 +104,11 @@ void Cost_constant_cache::close() {
     current_cost_constants = nullptr;
   }
 
+  if (current_cost_constants_hypergraph) {
+    release_cost_constants(current_cost_constants_hypergraph);
+    current_cost_constants_hypergraph = nullptr;
+  }
+
   // To ensure none is holding the mutex when deleting it, lock/unlock it.
   mysql_mutex_lock(&LOCK_cost_const);
   mysql_mutex_unlock(&LOCK_cost_const);
@@ -111,25 +122,40 @@ void Cost_constant_cache::reload() {
   DBUG_TRACE;
   assert(m_inited = true);
 
-  // Create cost constants from the constants defined in the source code
-  Cost_model_constants *cost_constants = create_defaults();
+  // Original optimizer costs.
 
-  // Update the cost constants from the database tables
+  // Create cost constants from the constants defined in the source code.
+  Cost_model_constants *cost_constants = create_defaults(Optimizer::kOriginal);
+
+  // Update the cost constants from the database tables.
   read_cost_constants(cost_constants);
 
   // Set this to be the current set of cost constants
-  update_current_cost_constants(cost_constants);
+  update_current_cost_constants(cost_constants, Optimizer::kOriginal);
+
+  // Hypergraph costs.
+
+  // Create cost constants from the constants defined in the source code.
+  Cost_model_constants *cost_constants_hypergraph =
+      create_defaults(Optimizer::kHypergraph);
+
+  // Set this to be the current set of cost constants.
+  update_current_cost_constants(cost_constants_hypergraph,
+                                Optimizer::kHypergraph);
 }
 
-Cost_model_constants *Cost_constant_cache::create_defaults() const {
-  // Create default cost constants
-  Cost_model_constants *cost_constants = new Cost_model_constants();
-
+Cost_model_constants *Cost_constant_cache::create_defaults(
+    Optimizer optimizer) const {
+  Cost_model_constants *cost_constants = new Cost_model_constants(optimizer);
   return cost_constants;
 }
 
 void Cost_constant_cache::update_current_cost_constants(
-    Cost_model_constants *new_cost_constants) {
+    Cost_model_constants *new_cost_constants, Optimizer optimizer) {
+  Cost_model_constants **old_cost_constants =
+      (optimizer == Optimizer::kOriginal) ? &current_cost_constants
+                                          : &current_cost_constants_hypergraph;
+
   /*
     Increase the ref counter to ensure that the new cost constants
     are not deleted until next time we have a new set of cost constants.
@@ -145,15 +171,15 @@ void Cost_constant_cache::update_current_cost_constants(
   mysql_mutex_lock(&LOCK_cost_const);
 
   // Release the current cost constants by decrementing the ref counter
-  if (current_cost_constants) {
-    const unsigned int ref_count = current_cost_constants->dec_ref_count();
+  if (*old_cost_constants) {
+    const unsigned int ref_count = (*old_cost_constants)->dec_ref_count();
 
     // If there is none using the current cost constants then delete them
-    if (ref_count == 0) delete current_cost_constants;
+    if (ref_count == 0) delete *old_cost_constants;
   }
 
   // Start to use the new cost constants
-  current_cost_constants = new_cost_constants;
+  *old_cost_constants = new_cost_constants;
 
   mysql_mutex_unlock(&LOCK_cost_const);
 }
@@ -411,14 +437,8 @@ static void read_cost_constants(Cost_model_constants *cost_constants) {
       created. This happens when handlertons are initialized. Hence, during
       --initialize, up to the point after plugins are initialized, we may
       suppress this warning.
-      The warning may also be emitted during upgrade from a mysql 5.7 version
-      where the cost model tables are not present. This happens at the same
-      point as above because the cost model tables are upgraded at a later
-      stage in the upgrade process. Thus, we can suppress the warning also in
-      this case.
     */
-    if (dynamic_plugins_are_initialized ||
-        (!opt_initialize && !dd::upgrade_57::in_progress())) {
+    if (dynamic_plugins_are_initialized || !opt_initialize) {
       LogErr(WARNING_LEVEL, ER_FAILED_TO_OPEN_COST_CONSTANT_TABLES);
     }
   }

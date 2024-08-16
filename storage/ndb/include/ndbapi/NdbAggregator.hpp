@@ -34,7 +34,7 @@ class NdbTableImpl;
 #define MAX_AGGREGATION_OP_SIZE 256
 
 typedef struct AggregationError {
-  uint32_t errno_;
+  Uint32 errno_;
   const char* err_msg_;
 } AggregationError;
 
@@ -76,21 +76,21 @@ class NdbAggregator {
  public:
   class Column {
    public:
-    Column(uint32_t id, NdbDictionary::Column::Type type, uint32_t byte_size,
+    Column(Uint32 id, NdbDictionary::Column::Type type, Uint32 byte_size,
            bool is_null, char* ptr, bool end) :
       id_(id), type_(type), byte_size_(byte_size), is_null_(is_null),
       ptr_(ptr), end_(end) {
       }
-    uint32_t id() {
+    Uint32 id() {
       return id_;
     }
     NdbDictionary::Column::Type type() {
       return type_;
     }
-    uint32_t byte_size() {
+    Uint32 byte_size() {
       return byte_size_;
     }
-    uint32_t is_null() {
+    Uint32 is_null() {
       return is_null_;
     }
     const char* ptr() {
@@ -100,31 +100,31 @@ class NdbAggregator {
       return end_;
     }
 
-    int8_t data_int8() {
-      return *(int8_t*)(ptr_);
+    Int8 data_int8() {
+      return *(Int8*)(ptr_);
     }
-    uint8_t data_uint8() {
-      return *(uint8_t*)(ptr_);
+    Uint8 data_uint8() {
+      return *(Uint8*)(ptr_);
     }
-    int16_t data_int16() {
-      return *(int16_t*)(ptr_);
+    Int16 data_int16() {
+      return *(Int16*)(ptr_);
     }
-    uint16_t data_uint16() {
-      return *(uint16_t*)(ptr_);
+    Uint16 data_uint16() {
+      return *(Uint16*)(ptr_);
     }
-    int32_t data_medium();
-    uint32_t data_umedium();
-    int32_t data_int32() {
-      return *(int32_t*)(ptr_);
+    Int32 data_medium();
+    Uint32 data_umedium();
+    Int32 data_int32() {
+      return *(Int32*)(ptr_);
     }
-    uint32_t data_uint32() {
-      return *(uint32_t*)(ptr_);
+    Uint32 data_uint32() {
+      return *(Uint32*)(ptr_);
     }
-    int64_t data_int64() {
-      return *(int64_t*)(ptr_);
+    Int64 data_int64() {
+      return *(Int64*)(ptr_);
     }
-    uint64_t data_uint64() {
-      return *(uint64_t*)(ptr_);
+    Uint64 data_uint64() {
+      return *(Uint64*)(ptr_);
     }
     float data_float() {
       float val;
@@ -141,9 +141,9 @@ class NdbAggregator {
     }
 
    private:
-    uint32_t id_;
+    Uint32 id_;
     NdbDictionary::Column::Type type_;
-    uint32_t byte_size_;
+    Uint32 byte_size_;
     bool is_null_;
     char* ptr_;
     bool end_;
@@ -177,10 +177,10 @@ class NdbAggregator {
       return end_;
     }
 
-    int64_t data_int64() {
+    Int64 data_int64() {
       return data_.val_int64;
     }
-    uint64_t data_uint64() {
+    Uint64 data_uint64() {
       return data_.val_uint64;
     }
     double data_double() {
@@ -210,21 +210,21 @@ class NdbAggregator {
    private:
     const NdbAggregator* aggregator_;
     GBHashEntry group_records_;
-    uint32_t curr_group_pos_;
+    Uint32 curr_group_pos_;
     GBHashEntry result_records_;
-    uint32_t curr_result_pos_;
+    Uint32 curr_result_pos_;
     bool end_;
   };
 
   NdbAggregator(const NdbDictionary::Table* table);
   ~NdbAggregator();
-  const uint32_t* buffer() const {
+  const Uint32* buffer() const {
     return &buffer_[0];
   }
-  uint32_t instructions_length() const {
+  Uint32 instructions_length() const {
     return instructions_length_;
   }
-  uint32_t n_gb_cols() const {
+  Uint32 n_gb_cols() const {
     return n_gb_cols_;
   }
   bool finalized() const {
@@ -243,27 +243,27 @@ class NdbAggregator {
     return disk_columns_;
   }
 
-  int32_t ProcessRes(char* buf);
+  Int32 ProcessRes(char* buf);
 
-  bool LoadColumn(const char* name, uint32_t reg_id);
-  bool LoadColumn(int32_t col_id, uint32_t reg_id);
-  bool LoadUint64(uint64_t value, uint32_t reg_id);
-  bool LoadInt64(int64_t value, uint32_t reg_id);
-  bool LoadDouble(double value, uint32_t reg_id);
-  bool Mov(uint32_t reg_1, uint32_t reg_2);
-  bool Add(uint32_t reg_1, uint32_t reg_2);
-  bool Minus(uint32_t reg_1, uint32_t reg_2);
-  bool Mul(uint32_t reg_1, uint32_t reg_2);
-  bool Div(uint32_t reg_1, uint32_t reg_2);
-  bool Mod(uint32_t reg_1, uint32_t reg_2);
+  bool LoadColumn(const char* name, Uint32 reg_id);
+  bool LoadColumn(Int32 col_id, Uint32 reg_id);
+  bool LoadUint64(Uint64 value, Uint32 reg_id);
+  bool LoadInt64(Int64 value, Uint32 reg_id);
+  bool LoadDouble(double value, Uint32 reg_id);
+  bool Mov(Uint32 reg_1, Uint32 reg_2);
+  bool Add(Uint32 reg_1, Uint32 reg_2);
+  bool Minus(Uint32 reg_1, Uint32 reg_2);
+  bool Mul(Uint32 reg_1, Uint32 reg_2);
+  bool Div(Uint32 reg_1, Uint32 reg_2);
+  bool Mod(Uint32 reg_1, Uint32 reg_2);
 
-  bool Sum(uint32_t agg_id, uint32_t reg_id);
-  bool Max(uint32_t agg_id, uint32_t reg_id);
-  bool Min(uint32_t agg_id, uint32_t reg_id);
-  bool Count(uint32_t agg_id, uint32_t reg_id);
+  bool Sum(Uint32 agg_id, Uint32 reg_id);
+  bool Max(Uint32 agg_id, Uint32 reg_id);
+  bool Min(Uint32 agg_id, Uint32 reg_id);
+  bool Count(Uint32 agg_id, Uint32 reg_id);
 
   bool GroupBy(const char* name);
-  bool GroupBy(int32_t col_id);
+  bool GroupBy(Int32 col_id);
 
   bool Finalize();
 
@@ -277,28 +277,28 @@ class NdbAggregator {
  private:
   bool TypeSupported(NdbDictionary::Column::Type type);
   const NdbTableImpl* table_impl_;
-  uint32_t buffer_[MAX_AGG_PROGRAM_WORD_SIZE];
+  Uint32 buffer_[MAX_AGG_PROGRAM_WORD_SIZE];
 
-  uint32_t n_gb_cols_;
-  uint32_t n_agg_results_;
+  Uint32 n_gb_cols_;
+  Uint32 n_agg_results_;
   AggResItem* agg_results_;
-  uint32_t agg_ops_[MAX_AGG_N_RESULTS];
+  Uint32 agg_ops_[MAX_AGG_N_RESULTS];
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_;
 
   bool finalized_;
   bool finished_;
-  uint32_t curr_prog_pos_;
-  uint32_t instructions_length_;
+  Uint32 curr_prog_pos_;
+  Uint32 instructions_length_;
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>::iterator iter_;
 
   AggregationError error_;
-  void SetError(uint32_t errno) {
-    error_ = g_errors_[errno];
+  void SetError(Uint32 err_no) {
+    error_ = g_errors_[err_no];
   }
-  bool CheckRegs(uint32_t reg_1, uint32_t reg_2);
-  bool CheckAggAndReg(uint32_t agg_id, uint32_t reg_id);
+  bool CheckRegs(Uint32 reg_1, Uint32 reg_2);
+  bool CheckAggAndReg(Uint32 agg_id, Uint32 reg_id);
   bool result_record_fetched_;
-  uint32_t result_size_est_;
+  Uint32 result_size_est_;
   bool disk_columns_;
 };
 #endif  // NDBAGGREGATOR_H_

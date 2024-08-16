@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -63,7 +64,7 @@ Sql_cmd *PT_handler_close::make_cmd(THD *thd) {
     return nullptr;
   }
 
-  LEX_CSTRING db = {any_db, strlen(any_db)};
+  const LEX_CSTRING db = {any_db, strlen(any_db)};
   auto table =
       new (thd->mem_root) Table_ident(thd->get_protocol(), db, m_table, false);
   if (table == nullptr ||
@@ -74,7 +75,7 @@ Sql_cmd *PT_handler_close::make_cmd(THD *thd) {
   return &m_cmd;
 }
 
-bool PT_handler_read_base::contextualize(Parse_context *pc) {
+bool PT_handler_read_base::do_contextualize(Parse_context *pc) {
   THD *const thd = pc->thd;
   LEX *const lex = thd->lex;
   Query_block *const select = lex->current_query_block();
@@ -85,14 +86,14 @@ bool PT_handler_read_base::contextualize(Parse_context *pc) {
   }
 
   // ban subqueries in WHERE and LIMIT clauses
-  lex->expr_allows_subselect = false;
+  lex->expr_allows_subquery = false;
 
   Item *one = new (thd->mem_root) Item_int(1);
   if (one == nullptr) return true;  // OOM
   select->select_limit = one;
   select->offset_limit = nullptr;
 
-  LEX_CSTRING db = {any_db, strlen(any_db)};
+  const LEX_CSTRING db = {any_db, strlen(any_db)};
   auto table =
       new (pc->mem_root) Table_ident(thd->get_protocol(), db, m_table, false);
   if (table == nullptr ||
@@ -107,7 +108,7 @@ bool PT_handler_read_base::contextualize(Parse_context *pc) {
   if (m_opt_limit_clause != nullptr && m_opt_limit_clause->contextualize(pc))
     return true;
 
-  lex->expr_allows_subselect = true;
+  lex->expr_allows_subquery = true;
 
   /* Stored functions are not supported for HANDLER READ. */
   if (lex->uses_stored_routines()) {
@@ -123,7 +124,7 @@ Sql_cmd *PT_handler_table_scan::make_cmd(THD *thd) {
   thd->lex->sql_command = SQLCOM_HA_READ;
 
   Parse_context pc(thd, thd->lex->current_query_block());
-  if (super::contextualize(&pc)) return nullptr;
+  if (super::do_contextualize(&pc)) return nullptr;
 
   return new (thd->mem_root)
       Sql_cmd_handler_read(m_direction, nullptr, nullptr, HA_READ_KEY_EXACT);
@@ -133,7 +134,7 @@ Sql_cmd *PT_handler_index_scan::make_cmd(THD *thd) {
   thd->lex->sql_command = SQLCOM_HA_READ;
 
   Parse_context pc(thd, thd->lex->current_query_block());
-  if (super::contextualize(&pc)) return nullptr;
+  if (super::do_contextualize(&pc)) return nullptr;
 
   return new (thd->mem_root)
       Sql_cmd_handler_read(m_direction, m_index, nullptr, HA_READ_KEY_EXACT);
@@ -142,11 +143,11 @@ Sql_cmd *PT_handler_index_scan::make_cmd(THD *thd) {
 Sql_cmd *PT_handler_index_range_scan::make_cmd(THD *thd) {
   thd->lex->sql_command = SQLCOM_HA_READ;
 
-  thd->lex->expr_allows_subselect = false;
+  thd->lex->expr_allows_subquery = false;
   Parse_context pc(thd, thd->lex->current_query_block());
-  if (m_keypart_values->contextualize(&pc) || super::contextualize(&pc))
+  if (m_keypart_values->contextualize(&pc) || super::do_contextualize(&pc))
     return nullptr;
-  thd->lex->expr_allows_subselect = true;
+  thd->lex->expr_allows_subquery = true;
 
   return new (thd->mem_root)
       Sql_cmd_handler_read(enum_ha_read_modes::RKEY, m_index,

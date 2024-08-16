@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -222,7 +223,8 @@ TEST_F(ComponentTestFrameworkTest, sleepy_blind_tester) {
    */
 
   ProcessWrapper &testee = launch_command(
-      g_this_exec_path, {arglist_prefix_ + "sleepy_blind_testee"});
+      g_this_exec_path, {"--gtest_also_run_disabled_tests",
+                         arglist_prefix_ + "sleepy_blind_testee"});
 
   EXPECT_EQ(testee.wait_for_exit(kSleepDuration + kSleepDuration / 2), 0);
 }
@@ -250,9 +252,11 @@ TEST_F(ComponentTestFrameworkTest, sleepy_blind_autoresponder_tester) {
         return "";
       }};
 
-  auto &testee = launch_command(
-      g_this_exec_path, {arglist_prefix_ + "sleepy_blind_autoresponder_testee"},
-      EXIT_SUCCESS, true, -1ms, responder);
+  auto &testee =
+      launch_command(g_this_exec_path,
+                     {"--gtest_also_run_disabled_tests",
+                      arglist_prefix_ + "sleepy_blind_autoresponder_testee"},
+                     EXIT_SUCCESS, true, -1ms, responder);
 
   // wait for child (while reading and issuing autoresponses)
   EXPECT_EQ(testee.wait_for_exit(kSleepDuration + kSleepDuration / 2), 0);
@@ -271,7 +275,8 @@ TEST_F(ComponentTestFrameworkTest, wait_for_exit_with_low_timeout_tester) {
 
   ProcessWrapper &testee = launch_command(
       g_this_exec_path,
-      {arglist_prefix_ + "wait_for_exit_with_low_timeout_testee"});
+      {"--gtest_also_run_disabled_tests",
+       arglist_prefix_ + "wait_for_exit_with_low_timeout_testee"});
 
   // wait with very short timeout
   EXPECT_THROW_LIKE(testee.wait_for_exit(std::chrono::seconds(0)),

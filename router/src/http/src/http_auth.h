@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,9 +28,9 @@
 
 #include <string>
 #include <system_error>
+#include <vector>
 
-#include "mysqlrouter/http_request.h"
-#include "mysqlrouter/http_server_export.h"
+#include "mysqlrouter/http_server_lib_export.h"
 
 #include "http_auth_realm.h"
 
@@ -38,7 +39,7 @@
  *
  * @see https://tools.ietf.org/html/rfc7230#section-3.2.6
  */
-class HTTP_SERVER_EXPORT HttpQuotedString {
+class HTTP_SERVER_LIB_EXPORT HttpQuotedString {
  public:
   static std::string quote(const std::string &str);
 };
@@ -52,7 +53,7 @@ class HTTP_SERVER_EXPORT HttpQuotedString {
  *
  * @see https://tools.ietf.org/html/rfc7235#section-4.1
  */
-class HTTP_SERVER_EXPORT HttpAuthChallenge {
+class HTTP_SERVER_LIB_EXPORT HttpAuthChallenge {
  public:
   /**
    * construct challenge message.
@@ -103,7 +104,7 @@ class HTTP_SERVER_EXPORT HttpAuthChallenge {
  *
  * @see https://tools.ietf.org/html/rfc7235#section-4.2
  */
-class HTTP_SERVER_EXPORT HttpAuthCredentials {
+class HTTP_SERVER_LIB_EXPORT HttpAuthCredentials {
  public:
   /**
    * construct Authorization message from fields.

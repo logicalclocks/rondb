@@ -1,6 +1,6 @@
 /***********************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 Copyright (c) 2009, Percona Inc.
 
 Portions of this file contain modifications contributed and copyrighted
@@ -14,12 +14,13 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -70,6 +71,9 @@ string so that it never conflicts with MySQL schema directory. */
 struct fil_node_t;
 
 extern bool os_has_said_disk_full;
+
+/** Number of retries for partial I/O's */
+constexpr size_t NUM_RETRIES_ON_PARTIAL_IO = 10;
 
 /** Number of pending read operations */
 extern std::atomic<ulint> os_n_pending_reads;
@@ -527,50 +531,15 @@ class IORequest {
 #endif /* HAVE_FALLOC_PUNCH_HOLE_AND_KEEP_SIZE || _WIN32 */
   }
 
+  static std::string type_str(const ulint type);
+
   /** @return string representation. */
   std::string to_string() const {
     std::ostringstream os;
-
     os << "bs: " << m_block_size << " flags:";
-
-    if (m_type & READ) {
-      os << " READ";
-    } else if (m_type & WRITE) {
-      os << " WRITE";
-    } else if (m_type & DBLWR) {
-      os << " DBLWR";
-    }
-
-    /** Enumerations below can be ORed to READ/WRITE above*/
-
-    /** Data file */
-    if (m_type & DATA_FILE) {
-      os << " | DATA_FILE";
-    }
-
-    if (m_type & LOG) {
-      os << " | LOG";
-    }
-
-    if (m_type & DISABLE_PARTIAL_IO_WARNINGS) {
-      os << " | DISABLE_PARTIAL_IO_WARNINGS";
-    }
-
-    if (m_type & DO_NOT_WAKE) {
-      os << " | IGNORE_MISSING";
-    }
-
-    if (m_type & PUNCH_HOLE) {
-      os << " | PUNCH_HOLE";
-    }
-
-    if (m_type & NO_COMPRESSION) {
-      os << " | NO_COMPRESSION";
-    }
-
+    os << type_str(m_type);
     os << ", comp: " << m_compression.to_string();
     os << ", enc: " << m_encryption.to_string(m_encryption.get_type());
-
     return (os.str());
   }
 
@@ -746,20 +715,11 @@ for each entry.
 bool os_file_scan_directory(const char *path, os_dir_cbk_t scan_cbk,
                             bool is_drop);
 
-/** NOTE! Use the corresponding macro os_file_create_simple(), not directly
-this function!
-A simple function to open or create a file.
-@param[in]      name            name of the file or path as a null-terminated
-                                string
-@param[in]      create_mode     create mode
-@param[in]      access_type     OS_FILE_READ_ONLY or OS_FILE_READ_WRITE
-@param[in]      read_only       if true, read only checks are enforced
-@param[out]     success         true if succeed, false if error
-@return handle to the file, not defined if error, error number
-        can be retrieved with os_file_get_last_error */
-os_file_t os_file_create_simple_func(const char *name, ulint create_mode,
-                                     ulint access_type, bool read_only,
-                                     bool *success);
+/** Clang on Windows warns about umask not found. */
+MY_COMPILER_DIAGNOSTIC_PUSH()
+#ifdef _WIN32
+MY_COMPILER_CLANG_DIAGNOSTIC_IGNORE("-Wdocumentation")
+#endif
 
 /** NOTE! Use the corresponding macro
 os_file_create_simple_no_error_handling(), not directly this function!
@@ -771,12 +731,22 @@ null-terminated string
                                 OS_FILE_READ_ALLOW_DELETE; the last option
                                 is used by a backup program reading the file
 @param[in]      read_only       if true read only mode checks are enforced
+@param[in]      umask           UNIX access permission to be set when creating a
+                                file. Use os_umask_default to use global default
+                                umask.
 @param[out]     success         true if succeeded
 @return own: handle to the file, not defined if error, error number
         can be retrieved with os_file_get_last_error */
-[[nodiscard]] pfs_os_file_t os_file_create_simple_no_error_handling_func(
-    const char *name, ulint create_mode, ulint access_type, bool read_only,
-    bool *success);
+[[nodiscard]] pfs_os_file_t
+    os_file_create_simple_no_error_handling_func(const char *name,
+                                                 ulint create_mode,
+                                                 ulint access_type,
+                                                 bool read_only,
+#ifndef _WIN32
+                                                 mode_t umask,
+#endif
+                                                 bool *success);
+MY_COMPILER_DIAGNOSTIC_POP()
 
 /** Tries to disable OS caching on an opened file descriptor.
 @param[in]      fd              file descriptor to alter
@@ -936,7 +906,6 @@ schema instrumented if "UNIV_PFS_IO" is defined. They would point to
 wrapper functions with performance schema instrumentation in such case.
 
 os_file_create
-os_file_create_simple
 os_file_create_simple_no_error_handling
 os_file_close
 os_file_rename
@@ -952,14 +921,24 @@ The wrapper functions have the prefix of "innodb_". */
   pfs_os_file_create_func(key, name, create, purpose, type, read_only,       \
                           success, UT_LOCATION_HERE)
 
-#define os_file_create_simple(key, name, create, access, read_only, success) \
-  pfs_os_file_create_simple_func(key, name, create, access, read_only,       \
-                                 success, UT_LOCATION_HERE)
+#ifndef _WIN32
+#define os_file_create_simple_no_error_handling(key, name, create_mode,     \
+                                                access, read_only, success) \
+  pfs_os_file_create_simple_no_error_handling_func(                         \
+      key, name, create_mode, access, read_only, os_innodb_umask_default,   \
+      success, UT_LOCATION_HERE)
 
+#define os_file_create_simple_no_error_handling_with_umask(                  \
+    key, name, create_mode, access, read_only, umask, success)               \
+  pfs_os_file_create_simple_no_error_handling_func(key, name, create_mode,   \
+                                                   access, read_only, umask, \
+                                                   success, UT_LOCATION_HERE)
+#else
 #define os_file_create_simple_no_error_handling(key, name, create_mode,     \
                                                 access, read_only, success) \
   pfs_os_file_create_simple_no_error_handling_func(                         \
       key, name, create_mode, access, read_only, success, UT_LOCATION_HERE)
+#endif
 
 #define os_file_close_pfs(file) pfs_os_file_close_func(file, UT_LOCATION_HERE)
 
@@ -1007,23 +986,11 @@ The wrapper functions have the prefix of "innodb_". */
 #define os_file_delete_if_exists(key, name, exist) \
   pfs_os_file_delete_if_exists_func(key, name, exist, UT_LOCATION_HERE)
 
-/** NOTE! Please use the corresponding macro os_file_create_simple(),
-not directly this function!
-A performance schema instrumented wrapper function for
-os_file_create_simple() which opens or creates a file.
-@param[in]      key             Performance Schema Key
-@param[in]      name            name of the file or path as a null-terminated
-                                string
-@param[in]      create_mode     create mode
-@param[in]      access_type     OS_FILE_READ_ONLY or OS_FILE_READ_WRITE
-@param[in]      read_only       if true read only mode checks are enforced
-@param[out]     success         true if succeeded
-@param[in]      src_location    location where func invoked
-@return own: handle to the file, not defined if error, error number
-        can be retrieved with os_file_get_last_error */
-[[nodiscard]] static inline pfs_os_file_t pfs_os_file_create_simple_func(
-    mysql_pfs_key_t key, const char *name, ulint create_mode, ulint access_type,
-    bool read_only, bool *success, ut::Location src_location);
+/** Clang on Windows warns about umask not found. */
+MY_COMPILER_DIAGNOSTIC_PUSH()
+#ifdef _WIN32
+MY_COMPILER_CLANG_DIAGNOSTIC_IGNORE("-Wdocumentation")
+#endif
 
 /** NOTE! Please use the corresponding macro
 os_file_create_simple_no_error_handling(), not directly this function!
@@ -1038,14 +1005,22 @@ monitor file creation/open.
                                 OS_FILE_READ_ALLOW_DELETE; the last option is
                                 used by a backup program reading the file
 @param[in]      read_only       if true read only mode checks are enforced
+@param[in]      umask           UNIX access permission to be set when creating a
+                                file. Use os_umask_default to use global default
+                                umask.
 @param[out]     success         true if succeeded
 @param[in]      src_location    location where func invoked
 @return own: handle to the file, not defined if error, error number
         can be retrieved with os_file_get_last_error */
 [[nodiscard]] static inline pfs_os_file_t
-pfs_os_file_create_simple_no_error_handling_func(
-    mysql_pfs_key_t key, const char *name, ulint create_mode, ulint access_type,
-    bool read_only, bool *success, ut::Location src_location);
+    pfs_os_file_create_simple_no_error_handling_func(
+        mysql_pfs_key_t key, const char *name, ulint create_mode,
+        ulint access_type, bool read_only,
+#ifndef _WIN32
+        mode_t umask,
+#endif
+        bool *success, ut::Location src_location);
+MY_COMPILER_DIAGNOSTIC_POP()
 
 /** NOTE! Please use the corresponding macro os_file_create(), not directly
 this function!
@@ -1067,9 +1042,11 @@ Add instrumentation to monitor file creation/open.
 @param[in]      src_location    location where func invoked
 @return own: handle to the file, not defined if error, error number
         can be retrieved with os_file_get_last_error */
-[[nodiscard]] static inline pfs_os_file_t pfs_os_file_create_func(
-    mysql_pfs_key_t key, const char *name, ulint create_mode, ulint purpose,
-    ulint type, bool read_only, bool *success, ut::Location src_location);
+[[nodiscard]] static inline pfs_os_file_t
+    pfs_os_file_create_func(mysql_pfs_key_t key, const char *name,
+                            ulint create_mode, ulint purpose, ulint type,
+                            bool read_only, bool *success,
+                            ut::Location src_location);
 
 /** NOTE! Please use the corresponding macro os_file_close(), not directly
 this function!
@@ -1293,14 +1270,26 @@ to original un-instrumented file I/O APIs */
 #define os_file_create(key, name, create, purpose, type, read_only, success) \
   os_file_create_func(name, create, purpose, type, read_only, success)
 
-#define os_file_create_simple(key, name, create_mode, access, read_only, \
-                              success)                                   \
-  os_file_create_simple_func(name, create_mode, access, read_only, success)
+#ifndef _WIN32
+
+#define os_file_create_simple_no_error_handling(key, name, create_mode,     \
+                                                access, read_only, success) \
+  os_file_create_simple_no_error_handling_func(                             \
+      name, create_mode, access, read_only, os_innodb_umask_default, success)
+
+#define os_file_create_simple_no_error_handling_with_umask(               \
+    key, name, create_mode, access, read_only, umask, success)            \
+  os_file_create_simple_no_error_handling_func(name, create_mode, access, \
+                                               read_only, umask, success)
+
+#else
 
 #define os_file_create_simple_no_error_handling(key, name, create_mode,     \
                                                 access, read_only, success) \
   os_file_create_simple_no_error_handling_func(name, create_mode, access,   \
                                                read_only, success)
+
+#endif
 
 #define os_file_close_pfs(file) os_file_close_func(file)
 
@@ -1744,13 +1733,20 @@ ulint os_file_compressed_page_size(const byte *buf);
         of the original data + footer if it is a compressed page */
 ulint os_file_original_page_size(const byte *buf);
 
-/** Set the file create umask
-@param[in]      umask           The umask to use for file creation. */
-void os_file_set_umask(ulint umask);
+#ifndef _WIN32
+/** Set the global file create umask. This value is to be set once, at startup
+and never modified.
+@param[in]      umask           The umask to use for all InnoDB file creation.
+*/
+void os_file_set_umask(mode_t umask);
 
-/** Get the file create umask
-@return the umask to use for file creation. */
-ulint os_file_get_umask();
+/** A magic constant for the umask parameter that indicates caller wants the
+`os_innodb_umask` value to be used. The `os_innodb_umask` is a static value,
+private to this module, and to the file creation methods, so it should not be
+used directly. */
+constexpr mode_t os_innodb_umask_default = std::numeric_limits<mode_t>::max();
+
+#endif
 
 /** Free storage space associated with a section of the file.
 @param[in]      fh              Open file handle
@@ -1912,6 +1908,70 @@ till it succeeds.
 dberr_t os_file_write_retry(IORequest &type, const char *name,
                             pfs_os_file_t file, const void *buf,
                             os_offset_t offset, ulint n);
+
+/** Helper class for doing synchronous file IO. Currently, the objective
+is to hide the OS specific code, so that the higher level functions aren't
+peppered with "#ifdef". Makes the code flow difficult to follow.  */
+class SyncFileIO {
+ public:
+  /** Constructor
+  @param[in]    fh      File handle
+  @param[in,out]        buf     Buffer to read/write
+  @param[in]    n       Number of bytes to read/write
+  @param[in]    offset  Offset where to read or write */
+  SyncFileIO(os_file_t fh, void *buf, ulint n, os_offset_t offset)
+      : m_fh(fh),
+        m_buf(buf),
+        m_n(static_cast<ssize_t>(n)),
+        m_offset(offset),
+        m_orig_bytes(n) {
+    ut_ad(m_n > 0);
+  }
+
+  /** Destructor */
+  ~SyncFileIO() = default;
+
+  /** Do the read/write
+  @param[in]    request The IO context and type
+  @return the number of bytes read/written or negative value on error */
+  ssize_t execute(const IORequest &request);
+
+  /** Do the read/write with retry.
+  @param[in] request The IO context and type
+  @param[in] max_retries  the maximum number of retries on partial i/o.
+  @return DB_SUCCESS on success, an error code on failure. */
+  dberr_t execute_with_retry(
+      const IORequest &request,
+      const size_t max_retries = NUM_RETRIES_ON_PARTIAL_IO);
+
+  /** Move the read/write offset up to where the partial IO succeeded.
+  @param[in]    n_bytes The number of bytes to advance */
+  void advance(ssize_t n_bytes) {
+    m_offset += n_bytes;
+
+    ut_ad(m_n >= n_bytes);
+
+    m_n -= n_bytes;
+
+    m_buf = reinterpret_cast<uchar *>(m_buf) + n_bytes;
+  }
+
+ private:
+  /** Open file handle */
+  os_file_t m_fh;
+
+  /** Buffer to read/write */
+  void *m_buf;
+
+  /** Number of bytes to read/write */
+  ssize_t m_n;
+
+  /** Offset from where to read/write */
+  os_offset_t m_offset;
+
+  /** The total number of bytes to be read/written. */
+  const size_t m_orig_bytes;
+};
 
 #include "os0file.ic"
 #endif /* UNIV_NONINL */

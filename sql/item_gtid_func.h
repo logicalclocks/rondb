@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -53,7 +54,7 @@ class Item_wait_for_executed_gtid_set final : public Item_int_func {
     null_on_null = false;
   }
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   const char *func_name() const override {
     return "wait_for_executed_gtid_set";
@@ -61,31 +62,6 @@ class Item_wait_for_executed_gtid_set final : public Item_int_func {
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1)) return true;
     if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_DOUBLE)) return true;
-    set_nullable(true);
-    return false;
-  }
-};
-
-class Item_master_gtid_set_wait final : public Item_int_func {
-  typedef Item_int_func super;
-
-  String gtid_value;
-  String channel_value;
-
- public:
-  Item_master_gtid_set_wait(const POS &pos, Item *a);
-  Item_master_gtid_set_wait(const POS &pos, Item *a, Item *b);
-  Item_master_gtid_set_wait(const POS &pos, Item *a, Item *b, Item *c);
-
-  bool itemize(Parse_context *pc, Item **res) override;
-  longlong val_int() override;
-  const char *func_name() const override {
-    return "wait_until_sql_thread_after_gtids";
-  }
-  bool resolve_type(THD *thd) override {
-    if (param_type_is_default(thd, 0, 1)) return true;
-    if (param_type_is_default(thd, 1, 2, MYSQL_TYPE_DOUBLE)) return true;
-    if (param_type_is_default(thd, 2, 3)) return true;
     set_nullable(true);
     return false;
   }

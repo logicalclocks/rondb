@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -12,12 +12,13 @@ This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -42,6 +43,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <current_thd.h>
 #include <sql_thd_internal_api.h>
 
+#include <scope_guard.h>
 #include "btr0sea.h"
 #include "dict0dd.h"
 #include "dict0mem.h"
@@ -122,6 +124,9 @@ static uint32_t crash_before_alter_encrypt_space_log_counter = 1;
 /** Crash injection counter used after writing ALTER ENCRYPT TABLESPACE log */
 static uint32_t crash_after_alter_encrypt_space_log_counter = 1;
 
+/** Crash injection counter used during post ddl in each step. */
+static uint32_t crash_post_ddl_apply_step_counter = 1;
+
 void ddl_log_crash_reset(THD *, SYS_VAR *, void *, const void *save) {
   const bool reset = *static_cast<const bool *>(save);
 
@@ -140,6 +145,7 @@ void ddl_log_crash_reset(THD *, SYS_VAR *, void *, const void *save) {
     crash_before_drop_log_counter = 1;
     crash_after_drop_log_counter = 1;
     crash_after_replay_counter = 1;
+    crash_post_ddl_apply_step_counter = 1;
   }
 }
 
@@ -459,6 +465,7 @@ void DDL_Log_Table::create_tuple(ulint id, const dict_index_t *index) {
 }
 
 dberr_t DDL_Log_Table::insert(const DDL_Record &record) {
+  ut_ad(record.validate());
   dberr_t error;
   dict_index_t *index = m_table->first_index();
   dtuple_t *entry;
@@ -1484,21 +1491,26 @@ dberr_t Log_DDL::replay_all() {
     if (err != DB_SUCCESS) {
       break;
     }
-  }
 
-  if (err != DB_SUCCESS) {
-    return err;
-  }
+    /* Delete the DDL log immediately after applying. Applying the whole set of
+    logs is not idempotent. */
+    DDL_Records current_records;
+    current_records.push_back(record);
 
-  err = delete_by_ids(records);
-  ut_ad(err == DB_SUCCESS || err == DB_TOO_MANY_CONCURRENT_TRXS);
+    err = delete_by_ids(current_records);
+    ut_ad(err == DB_SUCCESS || err == DB_TOO_MANY_CONCURRENT_TRXS);
+    if (err != DB_SUCCESS) {
+      break;
+    }
+  }
 
   for (auto record : records) {
+    /* Skip delete if the record object is already added to
+    ts_encrypt_ddl_records. */
     if (record->get_deletable()) {
       ut::delete_(record);
     }
   }
-
   return (err);
 }
 
@@ -1517,19 +1529,44 @@ dberr_t Log_DDL::replay_by_thread_id(ulint thread_id) {
         ut_ad(record->get_id() != rec->get_id());
       }
     } else {
+      DBUG_INJECT_CRASH("ddl_log_post_ddl_apply_step",
+                        crash_post_ddl_apply_step_counter++);
       log_ddl->replay(*record);
     }
+    /* Delete the DDL log immediately after applying. Applying the whole set
+    of logs is not idempotent e.g. typically the rollback actions of a DDL
+    rebuilding a table are as follows.
+    1. Delete the newly created tablespace file t1.ibd
+    2. Rename the saved old tablespace file tmp_name.ibd to t1.ibd
+
+    If there is a crash after performing both [1] and [2] before removing the
+    log entries, we would try to repeat the actions again post recovery and
+    end up deleting the file for the base table. We should remove each log
+    entry immediately after applying it. */
+    DBUG_INJECT_CRASH("ddl_log_post_ddl_apply_step",
+                      crash_post_ddl_apply_step_counter++);
+
+    /* A crash at this point would replay the last ddl log again. It is fine
+    as a single ddl log execution for a table/tablespace is idempotent. */
+    DDL_Records current_records;
+    current_records.push_back(record);
+    err = delete_by_ids(current_records);
+
+    ut_ad(err == DB_SUCCESS || err == DB_TOO_MANY_CONCURRENT_TRXS);
+    if (err != DB_SUCCESS) {
+      /* ER_IB_MSG_DDL_LOG_DELETE_BY_ID_TMCT must have already been logged. */
+      break;
+    }
   }
-
-  err = delete_by_ids(records);
-  ut_ad(err == DB_SUCCESS || err == DB_TOO_MANY_CONCURRENT_TRXS);
-
+  DBUG_INJECT_CRASH("ddl_log_post_ddl_apply_step",
+                    crash_post_ddl_apply_step_counter++);
   for (auto record : records) {
+    /* Skip delete if the record object is already added to
+    ts_encrypt_ddl_records. */
     if (record->get_deletable()) {
       ut::delete_(record);
     }
   }
-
   return (err);
 }
 

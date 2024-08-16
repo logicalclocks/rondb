@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,7 +33,6 @@
 #include <optional>
 
 #include "field_types.h"
-#include "m_ctype.h"
 #include "my_byteorder.h"
 #include "my_compare.h"
 #include "my_compiler.h"
@@ -40,15 +40,16 @@
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysql_time.h"
 #include "mysqld_error.h"
+#include "sql-common/my_decimal.h"
 #include "sql/current_thd.h"
 #include "sql/field.h"
 #include "sql/item_timefunc.h"  // Item_func_now_local
-#include "sql/my_decimal.h"
-#include "sql/sql_class.h"  // THD
+#include "sql/sql_class.h"      // THD
 #include "sql/sql_const.h"
 #include "sql/sql_error.h"
 #include "sql/sql_time.h"
@@ -293,7 +294,7 @@ static void do_copy_blob(Copy_field *, const Field *from_field,
                          Field *to_field) {
   const Field_blob *from_blob = down_cast<const Field_blob *>(from_field);
   Field_blob *to_blob = down_cast<Field_blob *>(to_field);
-  uint32 from_length = from_blob->get_length();
+  const uint32 from_length = from_blob->get_length();
   to_blob->set_ptr(std::min(from_length, to_field->max_data_length()),
                    from_blob->get_blob_data());
   if (to_blob->get_length() < from_length) {
@@ -336,15 +337,15 @@ static void do_field_varbinary_pre50(Copy_field *copy, const Field *from_field,
   from_field->val_str(&copy->tmp);
 
   /* Use the same function as in 4.1 to trim trailing spaces */
-  size_t length = my_lengthsp_8bit(&my_charset_bin, copy->tmp.c_ptr_quick(),
-                                   from_field->field_length);
+  const size_t length = my_charset_latin1.cset->lengthsp(
+      &my_charset_latin1, copy->tmp.c_ptr_quick(), from_field->field_length);
 
   to_field->store(copy->tmp.c_ptr_quick(), length, copy->tmp.charset());
 }
 
 static void do_field_int(Copy_field *, const Field *from_field,
                          Field *to_field) {
-  longlong value = from_field->val_int();
+  const longlong value = from_field->val_int();
   to_field->store(value, from_field->is_flag_set(UNSIGNED_FLAG));
 }
 
@@ -561,7 +562,7 @@ Copy_field::Copy_func *Copy_field::get_copy_func() {
   THD *thd = current_thd;
   if (m_to_field->is_array() && m_from_field->is_array()) return do_copy_blob;
 
-  bool compatible_db_low_byte_first =
+  const bool compatible_db_low_byte_first =
       (m_to_field->table->s->db_low_byte_first ==
        m_from_field->table->s->db_low_byte_first);
   if (m_to_field->type() == MYSQL_TYPE_GEOMETRY) {
@@ -861,7 +862,7 @@ type_conversion_status field_conv_slow(Field *to, const Field *from) {
       the `to` field, so in case conversion errors are ignored we can read zeros
       instead of garbage.
     */
-    type_conversion_status store_res = to->store_time(&ltime);
+    const type_conversion_status store_res = to->store_time(&ltime);
     return res ? TYPE_ERR_BAD_VALUE : store_res;
   } else if ((from->result_type() == STRING_RESULT &&
               (to->result_type() == STRING_RESULT ||

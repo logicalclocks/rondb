@@ -1,15 +1,16 @@
-/* Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -21,7 +22,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "sql/rpl_binlog_sender.h"
-#include "libbinlogevents/include/codecs/factory.h"
+#include "mysql/binlog/event/codecs/factory.h"
 
 #include <stdio.h>
 #include <algorithm>
@@ -31,19 +32,18 @@
 #include <utility>
 
 #include "lex_string.h"
-#include "libbinlogevents/include/binlog_event.h"  // binary_log::max_log_event_size
-#include "m_string.h"
 #include "map_helpers.h"
 #include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
 #include "my_pointer_arithmetic.h"
 #include "my_sys.h"
 #include "my_thread.h"
 #include "mysql.h"
+#include "mysql/binlog/event/binlog_event.h"  // mysql::binlog::event::max_log_event_size
 #include "mysql/components/services/bits/psi_stage_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_file.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "scope_guard.h"
@@ -64,19 +64,25 @@
 #include "sql/sql_class.h"      // THD
 #include "sql/system_variables.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "typelib.h"
 #include "unsafe_string_append.h"
 
 #ifndef NDEBUG
 static uint binlog_dump_count = 0;
 #endif
-using binary_log::checksum_crc32;
+using mysql::binlog::event::checksum_crc32;
 
 const uint32 Binlog_sender::PACKET_MIN_SIZE = 4096;
 const uint32 Binlog_sender::PACKET_MAX_SIZE = UINT_MAX32;
 const ushort Binlog_sender::PACKET_SHRINK_COUNTER_THRESHOLD = 100;
 const float Binlog_sender::PACKET_GROW_FACTOR = 2.0;
 const float Binlog_sender::PACKET_SHRINK_FACTOR = 0.5;
+
+using mysql::binlog::event::Binary_log_event;
+using mysql::binlog::event::enum_binlog_checksum_alg;
+using mysql::binlog::event::Log_event_footer;
+using mysql::binlog::event::Log_event_type;
 
 /**
   @class Observe_transmission_guard
@@ -106,27 +112,29 @@ class Observe_transmission_guard {
     @param prev_event_type The type of the event processed just before the
                            current one
   */
-  Observe_transmission_guard(bool &flag, binary_log::Log_event_type event_type,
-                             const char *event_ptr,
-                             binary_log::enum_binlog_checksum_alg checksum_alg,
-                             binary_log::Log_event_type prev_event_type)
+  Observe_transmission_guard(
+      bool &flag, mysql::binlog::event::Log_event_type event_type,
+      const char *event_ptr,
+      mysql::binlog::event::enum_binlog_checksum_alg checksum_alg,
+      mysql::binlog::event::Log_event_type prev_event_type)
       : m_saved(flag), m_to_set(flag) {
     if (opt_replication_sender_observe_commit_only) {
       switch (event_type) {
-        case binary_log::TRANSACTION_PAYLOAD_EVENT:
-        case binary_log::XID_EVENT:
-        case binary_log::XA_PREPARE_LOG_EVENT: {
+        case mysql::binlog::event::TRANSACTION_PAYLOAD_EVENT:
+        case mysql::binlog::event::XID_EVENT:
+        case mysql::binlog::event::XA_PREPARE_LOG_EVENT: {
           m_to_set = true;
           break;
         }
-        case binary_log::QUERY_EVENT: {
+        case mysql::binlog::event::QUERY_EVENT: {
           bool first_event_after_gtid =
-              prev_event_type == binary_log::ANONYMOUS_GTID_LOG_EVENT ||
-              prev_event_type == binary_log::GTID_LOG_EVENT;
+              mysql::binlog::event::Log_event_type_helper::is_any_gtid_event(
+                  prev_event_type);
 
           Format_description_log_event fd_ev;
           fd_ev.common_footer->checksum_alg = checksum_alg;
-          Query_log_event ev(event_ptr, &fd_ev, binary_log::QUERY_EVENT);
+          Query_log_event ev(event_ptr, &fd_ev,
+                             mysql::binlog::event::QUERY_EVENT);
           if (first_event_after_gtid)
             m_to_set = (strcmp("BEGIN", ev.query) != 0);
           else
@@ -173,7 +181,7 @@ class Sender_context_guard {
                       of the next event processing round.
   */
   Sender_context_guard(Binlog_sender &target,
-                       binary_log::Log_event_type event_type)
+                       mysql::binlog::event::Log_event_type event_type)
       : m_target(target), m_event_type(event_type) {}
 
   /**
@@ -188,7 +196,7 @@ class Sender_context_guard {
   /** The object to be guarded */
   Binlog_sender &m_target;
   /** The currently being processed event type */
-  binary_log::Log_event_type m_event_type;
+  mysql::binlog::event::Log_event_type m_event_type;
 };
 
 /**
@@ -251,7 +259,7 @@ Binlog_sender::Binlog_sender(THD *thd, const char *start_file,
       m_flag(flag),
       m_observe_transmission(false),
       m_transmit_started(false),
-      m_prev_event_type(binary_log::UNKNOWN_EVENT) {}
+      m_prev_event_type(mysql::binlog::event::UNKNOWN_EVENT) {}
 
 void Binlog_sender::init() {
   DBUG_TRACE;
@@ -344,7 +352,7 @@ void Binlog_sender::init() {
   m_wait_new_events =
       !((thd->server_id == 0) || ((m_flag & BINLOG_DUMP_NON_BLOCK) != 0));
   /* Binary event can be vary large. So set it to max allowed packet. */
-  thd->variables.max_allowed_packet = binary_log::max_log_event_size;
+  thd->variables.max_allowed_packet = mysql::binlog::event::max_log_event_size;
 
 #ifndef NDEBUG
   if (opt_sporadic_binlog_dump_fail && (binlog_dump_count++ % 2))
@@ -583,9 +591,10 @@ int Binlog_sender::send_events(File_reader &reader, my_off_t end_pos) {
 
       /*
         It is reading events before end_pos of active binlog file. In theory,
-        it should never return nullptr. But RESET MASTER doesn't check if there
-        is any dump thread working. So it is possible that the active binlog
-        file is reopened and truncated to 0 after RESET MASTER.
+        it should never return nullptr. But RESET BINARY LOGS AND GTIDS doesn't
+        check if there is any dump thread working. So it is possible that the
+        active binlog file is reopened and truncated to 0 after
+        RESET BINARY LOGS AND GTIDS.
       */
       set_fatal_error(log_read_error_msg(Binlog_read_error::SYSTEM_IO));
       return 1;
@@ -595,7 +604,7 @@ int Binlog_sender::send_events(File_reader &reader, my_off_t end_pos) {
     if (unlikely(check_event_type(event_type, log_file, log_pos))) return 1;
 
     DBUG_EXECUTE_IF("dump_thread_wait_before_send_xid", {
-      if (event_type == binary_log::XID_EVENT) {
+      if (event_type == mysql::binlog::event::XID_EVENT) {
         thd->get_protocol()->flush();
         const char act[] =
             "now "
@@ -680,7 +689,7 @@ int Binlog_sender::send_events(File_reader &reader, my_off_t end_pos) {
 
 bool Binlog_sender::check_event_type(Log_event_type type, const char *log_file,
                                      my_off_t log_pos) {
-  if (type == binary_log::ANONYMOUS_GTID_LOG_EVENT) {
+  if (type == mysql::binlog::event::ANONYMOUS_GTID_LOG_EVENT) {
     /*
       Normally, there will not be any anonymous events when
       auto_position is enabled, since both the master and the slave
@@ -716,7 +725,8 @@ bool Binlog_sender::check_event_type(Log_event_type type, const char *log_file,
       set_fatal_error(buf);
       return true;
     }
-  } else if (type == binary_log::GTID_LOG_EVENT) {
+  } else if (mysql::binlog::event::Log_event_type_helper::
+                 is_assigned_gtid_event(type)) {
     /*
       Normally, there will not be any GTID events when master has
       GTID_MODE=OFF, since GTID events are not generated when
@@ -742,16 +752,17 @@ inline bool Binlog_sender::skip_event(const uchar *event_ptr,
 
   uint8 event_type = (Log_event_type)event_ptr[LOG_EVENT_OFFSET];
   switch (event_type) {
-    case binary_log::GTID_LOG_EVENT: {
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT: {
       Format_description_log_event fd_ev;
       fd_ev.common_footer->checksum_alg = m_event_checksum_alg;
       Gtid_log_event gtid_ev(reinterpret_cast<const char *>(event_ptr), &fd_ev);
       Gtid gtid;
-      gtid.sidno = gtid_ev.get_sidno(m_exclude_gtid->get_sid_map());
+      gtid.sidno = gtid_ev.get_sidno(m_exclude_gtid->get_tsid_map());
       gtid.gno = gtid_ev.get_gno();
       return m_exclude_gtid->contains_gtid(gtid);
     }
-    case binary_log::ROTATE_EVENT:
+    case mysql::binlog::event::ROTATE_EVENT:
       return false;
   }
   return in_exclude_group;
@@ -860,26 +871,23 @@ int Binlog_sender::check_start_file() {
     name_ptr = index_entry_name;
   } else if (m_using_gtid_protocol) {
     /*
-      In normal scenarios, it is not possible that Slave will
-      contain more gtids than Master with resepctive to Master's
-      UUID. But it could be possible case if Master's binary log
-      is truncated(due to raid failure) or Master's binary log is
+      In normal scenarios, it is not possible that Replica will
+      contain more gtids than Source with respective to Source's
+      UUID. But it could be possible case if Source's binary log
+      is truncated(due to raid failure) or Source's binary log is
       deleted but GTID_PURGED was not set properly. That scenario
       needs to be validated, i.e., it should *always* be the case that
-      Slave's gtid executed set (+retrieved set) is a subset of
-      Master's gtid executed set with respective to Master's UUID.
+      Replica's gtid executed set (+retrieved set) is a subset of
+      Source's gtid executed set with respective to Source's UUID.
       If it happens, dump thread will be stopped during the handshake
-      with Slave (thus the Slave's I/O thread will be stopped with the
-      error. Otherwise, it can lead to data inconsistency between Master
-      and Slave.
+      with Replica (thus the Replica's I/O thread will be stopped with the
+      error. Otherwise, it can lead to data inconsistency between Source
+      and Replica.
     */
-    Sid_map *slave_sid_map = m_exclude_gtid->get_sid_map();
-    assert(slave_sid_map);
-    global_sid_lock->wrlock();
-    const rpl_sid &server_sid = gtid_state->get_server_sid();
-    rpl_sidno subset_sidno = slave_sid_map->sid_to_sidno(server_sid);
+    global_tsid_lock->wrlock();
+    const auto &server_tsid = gtid_state->get_server_tsid();
     Gtid_set gtid_executed_and_owned(
-        gtid_state->get_executed_gtids()->get_sid_map());
+        gtid_state->get_executed_gtids()->get_tsid_map());
 
     // gtids = executed_gtids & owned_gtids
     if (gtid_executed_and_owned.add_gtid_set(
@@ -889,9 +897,8 @@ int Binlog_sender::check_start_file() {
     gtid_state->get_owned_gtids()->get_gtids(gtid_executed_and_owned);
 
     if (!m_exclude_gtid->is_subset_for_sid(&gtid_executed_and_owned,
-                                           gtid_state->get_server_sidno(),
-                                           subset_sidno)) {
-      global_sid_lock->unlock();
+                                           server_tsid.get_uuid())) {
+      global_tsid_lock->unlock();
       set_fatal_error(ER_THD(m_thd, ER_REPLICA_HAS_MORE_GTIDS_THAN_SOURCE));
       return 1;
     }
@@ -923,11 +930,11 @@ int Binlog_sender::check_start_file() {
     */
     if (!gtid_state->get_lost_gtids()->is_subset(m_exclude_gtid)) {
       mysql_bin_log.report_missing_purged_gtids(m_exclude_gtid, errmsg);
-      global_sid_lock->unlock();
+      global_tsid_lock->unlock();
       set_fatal_error(errmsg.c_str());
       return 1;
     }
-    global_sid_lock->unlock();
+    global_tsid_lock->unlock();
     Gtid first_gtid = {0, 0};
     if (mysql_bin_log.find_first_log_not_in_gtid_set(
             index_entry_name, m_exclude_gtid, &first_gtid, errmsg)) {
@@ -992,7 +999,7 @@ extern TYPELIB binlog_checksum_typelib;
 void Binlog_sender::init_checksum_alg() {
   DBUG_TRACE;
 
-  m_slave_checksum_alg = binary_log::BINLOG_CHECKSUM_ALG_UNDEF;
+  m_slave_checksum_alg = mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF;
 
   /* Protects m_thd->user_vars. */
   mysql_mutex_lock(&m_thd->LOCK_thd_data);
@@ -1004,7 +1011,8 @@ void Binlog_sender::init_checksum_alg() {
   if (uv && uv->ptr()) {
     m_slave_checksum_alg = static_cast<enum_binlog_checksum_alg>(
         find_type(uv->ptr(), &binlog_checksum_typelib, 1) - 1);
-    assert(m_slave_checksum_alg < binary_log::BINLOG_CHECKSUM_ALG_ENUM_END);
+    assert(m_slave_checksum_alg <
+           mysql::binlog::event::BINLOG_CHECKSUM_ALG_ENUM_END);
   }
 
   mysql_mutex_unlock(&m_thd->LOCK_thd_data);
@@ -1039,7 +1047,7 @@ int Binlog_sender::fake_rotate_event(const char *next_log_file,
     real and fake Rotate events (if necessary)
   */
   int4store(header, 0);
-  header[EVENT_TYPE_OFFSET] = binary_log::ROTATE_EVENT;
+  header[EVENT_TYPE_OFFSET] = mysql::binlog::event::ROTATE_EVENT;
   int4store(header + SERVER_ID_OFFSET, server_id);
   int4store(header + EVENT_LEN_OFFSET, static_cast<uint32>(event_len));
   int4store(header + LOG_POS_OFFSET, 0);
@@ -1101,7 +1109,8 @@ int Binlog_sender::send_format_description_event(File_reader &reader,
        Log_event::get_type_str((Log_event_type)event_ptr[EVENT_TYPE_OFFSET])));
 
   if (event_ptr == nullptr ||
-      event_ptr[EVENT_TYPE_OFFSET] != binary_log::FORMAT_DESCRIPTION_EVENT) {
+      event_ptr[EVENT_TYPE_OFFSET] !=
+          mysql::binlog::event::FORMAT_DESCRIPTION_EVENT) {
     set_fatal_error("Could not find format_description_event in binlog file");
     return 1;
   }
@@ -1121,11 +1130,13 @@ int Binlog_sender::send_format_description_event(File_reader &reader,
   m_event_checksum_alg =
       Log_event_footer::get_checksum_alg((const char *)event_ptr, event_len);
 
-  assert(m_event_checksum_alg < binary_log::BINLOG_CHECKSUM_ALG_ENUM_END ||
-         m_event_checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
+  assert(m_event_checksum_alg <
+             mysql::binlog::event::BINLOG_CHECKSUM_ALG_ENUM_END ||
+         m_event_checksum_alg ==
+             mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF);
 
   /* Slave does not support checksum, but binary events include checksum */
-  if (m_slave_checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_UNDEF &&
+  if (m_slave_checksum_alg == mysql::binlog::event::BINLOG_CHECKSUM_ALG_UNDEF &&
       event_checksum_on()) {
     set_fatal_error(
         "Replica can not handle replication events with the "
@@ -1185,7 +1196,8 @@ int Binlog_sender::has_previous_gtid_log_event(File_reader &reader,
     return 1;
   }
 
-  *found = (event[EVENT_TYPE_OFFSET] == binary_log::PREVIOUS_GTIDS_LOG_EVENT);
+  *found = (event[EVENT_TYPE_OFFSET] ==
+            mysql::binlog::event::PREVIOUS_GTIDS_LOG_EVENT);
   return 0;
 }
 
@@ -1270,7 +1282,7 @@ int Binlog_sender::send_heartbeat_event_v1(my_off_t log_pos) {
 
   /* Timestamp field */
   int4store(header, 0);
-  header[EVENT_TYPE_OFFSET] = binary_log::HEARTBEAT_LOG_EVENT;
+  header[EVENT_TYPE_OFFSET] = mysql::binlog::event::HEARTBEAT_LOG_EVENT;
   int4store(header + SERVER_ID_OFFSET, server_id);
   int4store(header + EVENT_LEN_OFFSET, event_len);
   int4store(header + LOG_POS_OFFSET, static_cast<uint32>(log_pos));
@@ -1283,12 +1295,12 @@ int Binlog_sender::send_heartbeat_event_v2(my_off_t log_pos) {
   DBUG_TRACE;
   DBUG_EXECUTE_IF("heartbeat_event_with_position_greater_than_4_gb",
                   { assert(log_pos > 4294967296); };);
-  auto codec = binary_log::codecs::Factory::build_codec(
-      binary_log::HEARTBEAT_LOG_EVENT_V2);
+  auto codec = mysql::binlog::event::codecs::Factory::build_codec(
+      mysql::binlog::event::HEARTBEAT_LOG_EVENT_V2);
   const char *filename = m_linfo.log_file_name;
   const char *p = filename + dirname_length(filename);
   const std::string log_filename{p, strlen(p)};
-  binary_log::Heartbeat_event_v2 hb{};
+  mysql::binlog::event::Heartbeat_event_v2 hb{};
   const size_t binlog_checksum_size =
       (event_checksum_on() ? BINLOG_CHECKSUM_LEN : 0);
   const size_t max_event_len =
@@ -1312,7 +1324,7 @@ int Binlog_sender::send_heartbeat_event_v2(my_off_t log_pos) {
   // craft the header by hand
   /* Timestamp field */
   int4store(header, 0);
-  header[EVENT_TYPE_OFFSET] = binary_log::HEARTBEAT_LOG_EVENT_V2;
+  header[EVENT_TYPE_OFFSET] = mysql::binlog::event::HEARTBEAT_LOG_EVENT_V2;
   int4store(header + SERVER_ID_OFFSET, server_id);
   int4store(header + EVENT_LEN_OFFSET, event_len);
   int4store(header + LOG_POS_OFFSET, static_cast<uint32>(log_pos));

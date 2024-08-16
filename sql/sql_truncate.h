@@ -1,18 +1,19 @@
 #ifndef SQL_TRUNCATE_INCLUDED
 #define SQL_TRUNCATE_INCLUDED
 
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,7 +29,7 @@
 
 #include "my_sqlcommand.h"
 #include "sql/dd/types/table.h"
-#include "sql/sql_cmd.h"
+#include "sql/sql_cmd_ddl.h"
 
 class MDL_ticket;
 class THD;
@@ -40,7 +41,7 @@ using Up_table = std::unique_ptr<dd::Table>;
 /**
   Sql_cmd_truncate_table represents the TRUNCATE statement.
 */
-class Sql_cmd_truncate_table : public Sql_cmd {
+class Sql_cmd_truncate_table : public Sql_cmd_ddl {
   /** Set if a lock must be downgraded after truncate is done. */
   MDL_ticket *m_ticket_downgrade = nullptr;
 

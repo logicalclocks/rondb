@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,6 +31,8 @@
 #include <initializer_list>
 #include <limits>
 
+#include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/item_regexp_func.h"
 #include "sql/parse_tree_items.h"
 #include "unittest/gunit/benchmark.h"
@@ -145,8 +148,8 @@ static std::string make_matched_string() {
 }
 
 CHARSET_INFO *init_collation(const char *name) {
-  MY_CHARSET_LOADER loader;
-  return my_collation_get_by_name(&loader, name, MYF(0));
+  MY_CHARSET_ERRMSG errmsg;
+  return my_collation_get_by_name(name, MYF(0), &errmsg);
 }
 
 Item_string *make_string_item(const std::string *str) {

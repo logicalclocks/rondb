@@ -1,15 +1,16 @@
-# Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,7 +33,7 @@ CREATE_WIX_LICENCE_AND_RTF("${CMAKE_SOURCE_DIR}/LICENSE")
 
 SET(CPACK_WIX_CONFIG ${CMAKE_CURRENT_SOURCE_DIR}/CPackWixConfig.cmake)
 SET(CPACK_WIX_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/mysql_server_extra.wxs;
-  ${CMAKE_CURRENT_SOURCE_DIR}/custom_ui.wxs;
+  ${CMAKE_CURRENT_BINARY_DIR}/custom_ui.wxs;
   ${CMAKE_CURRENT_BINARY_DIR}/redist_check.wxs")
 SET(CPACK_MSI_SETUP ${CMAKE_CURRENT_SOURCE_DIR}/cpack_msi_setup.cmake)
 
@@ -44,6 +45,11 @@ CONFIGURE_FILE(
 CONFIGURE_FILE(
   ${CMAKE_CURRENT_SOURCE_DIR}/redist_check.wxs.in
   ${CMAKE_CURRENT_BINARY_DIR}/redist_check.wxs
+  @ONLY)
+
+CONFIGURE_FILE(
+  ${CMAKE_CURRENT_SOURCE_DIR}/custom_ui.wxs.in
+  ${CMAKE_CURRENT_BINARY_DIR}/custom_ui.wxs
   @ONLY)
 
 CONFIGURE_FILE(

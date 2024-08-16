@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -214,23 +215,24 @@
   @{
 */
 
-#define REFRESH_GRANT 1    /**< Refresh grant tables, FLUSH PRIVILEGES */
-#define REFRESH_LOG 2      /**< Start on new log file, FLUSH LOGS */
-#define REFRESH_TABLES 4   /**< close all tables, FLUSH TABLES */
-#define REFRESH_HOSTS 8    /**< Flush host cache, FLUSH HOSTS */
-#define REFRESH_STATUS 16  /**< Flush status variables, FLUSH STATUS */
-#define REFRESH_THREADS 32 /**< Flush thread cache */
+#define REFRESH_GRANT 1  /**< Refresh grant tables, FLUSH PRIVILEGES */
+#define REFRESH_LOG 2    /**< Start on new log file, FLUSH LOGS */
+#define REFRESH_TABLES 4 /**< close all tables, FLUSH TABLES */
+#define UNUSED_8                                                           \
+  8 /**< Previously REFRESH_HOSTS but not used anymore. Use TRUNCATE TABLE \
+       performance_schema.host_cache instead */
+#define REFRESH_STATUS 16 /**< Flush status variables, FLUSH STATUS */
+#define UNUSED_32 32      /**< Removed. Used to be flush thread cache */
 #define REFRESH_REPLICA                         \
-  64 /**< Reset master info and restart replica \
+  64 /**< Reset source info and restart replica \
         thread, RESET REPLICA */
-#define REFRESH_SLAVE                                        \
-  REFRESH_REPLICA /**< Reset master info and restart replica \
-        thread, RESET REPLICA. This is deprecated,           \
-        use REFRESH_REPLICA instead. */
 
-#define REFRESH_MASTER                                                 \
-  128                            /**< Remove all bin logs in the index \
-                                    and truncate the index, RESET MASTER */
+#define REFRESH_SOURCE                       \
+  128 /**< Remove all bin logs in the index  \
+         and truncate the index. Also resets \
+         GTID information. Command:          \
+         RESET BINARY LOGS AND GTIDS */
+
 #define REFRESH_ERROR_LOG 256    /**< Rotate only the error log */
 #define REFRESH_ENGINE_LOG 512   /**< Flush all storage engine logs */
 #define REFRESH_BINARY_LOG 1024  /**< Flush the binary log */
@@ -1124,31 +1126,7 @@ struct rand_struct {
 
 /* Prototypes to password functions */
 
-/*
-  These functions are used for authentication by client and server and
-  implemented in sql/password.c
-*/
-
-void randominit(struct rand_struct *, unsigned long seed1, unsigned long seed2);
-double my_rnd(struct rand_struct *);
-void create_random_string(char *to, unsigned int length,
-                          struct rand_struct *rand_st);
-
-void hash_password(unsigned long *to, const char *password,
-                   unsigned int password_len);
-void make_scrambled_password_323(char *to, const char *password);
-void scramble_323(char *to, const char *message, const char *password);
-bool check_scramble_323(const unsigned char *reply, const char *message,
-                        unsigned long *salt);
-void get_salt_from_password_323(unsigned long *res, const char *password);
-void make_password_from_salt_323(char *to, const unsigned long *salt);
-
-void make_scrambled_password(char *to, const char *password);
-void scramble(char *to, const char *message, const char *password);
-bool check_scramble(const unsigned char *reply, const char *message,
-                    const unsigned char *hash_stage2);
-void get_salt_from_password(unsigned char *res, const char *password);
-void make_password_from_salt(char *to, const unsigned char *hash_stage2);
+/* used in both client and server */
 char *octet2hex(char *to, const char *str, unsigned int len);
 
 /* end of password.c */
@@ -1170,15 +1148,8 @@ const char *mysql_errno_to_sqlstate(unsigned int mysql_errno);
 
 /* Some other useful functions */
 
-// Need to be extern "C" for the time being, due to memcached.
-#ifdef __cplusplus
-extern "C" {
-#endif
 bool my_thread_init(void);
 void my_thread_end(void);
-#ifdef __cplusplus
-}
-#endif
 
 #ifdef STDCALL
 unsigned long STDCALL net_field_length(unsigned char **packet);
@@ -1189,8 +1160,146 @@ uint64_t net_field_length_ll(unsigned char **packet);
 unsigned char *net_store_length(unsigned char *pkg, unsigned long long length);
 unsigned int net_length_size(unsigned long long num);
 unsigned int net_field_length_size(const unsigned char *pos);
+uint64_t net_length_size_including_self(uint64_t length_without_self);
 
 #define NULL_LENGTH ((unsigned long)~0) /**< For ::net_store_length() */
 #define MYSQL_STMT_HEADER 4
 #define MYSQL_LONG_DATA_HEADER 6
+
+/* clang-format off */
+/**
+  Describes the current state of Asynchronous connection phase state machine
+
+  @startuml
+  [*] --> CONNECT_STAGE_INVALID
+  [*] --> CONNECT_STAGE_NOT_STARTED
+
+  CONNECT_STAGE_NOT_STARTED --> CONNECT_STAGE_NET_BEGIN_CONNECT
+  CONNECT_STAGE_NOT_STARTED --> CONNECT_STAGE_COMPLETE
+
+  CONNECT_STAGE_NET_BEGIN_CONNECT --> CONNECT_STAGE_NET_WAIT_CONNECT
+  CONNECT_STAGE_NET_BEGIN_CONNECT --> CONNECT_STAGE_NET_COMPLETE_CONNECT
+  CONNECT_STAGE_NET_BEGIN_CONNECT --> STATE_MACHINE_FAILED
+
+  CONNECT_STAGE_NET_WAIT_CONNECT --> CONNECT_STAGE_NET_COMPLETE_CONNECT
+  CONNECT_STAGE_NET_WAIT_CONNECT --> STATE_MACHINE_FAILED
+
+  CONNECT_STAGE_NET_COMPLETE_CONNECT --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_NET_COMPLETE_CONNECT --> CONNECT_STAGE_READ_GREETING
+
+  CONNECT_STAGE_READ_GREETING --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_READ_GREETING --> CONNECT_STAGE_PARSE_HANDSHAKE
+
+  CONNECT_STAGE_PARSE_HANDSHAKE --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_PARSE_HANDSHAKE --> CONNECT_STAGE_ESTABLISH_SSL
+
+  CONNECT_STAGE_ESTABLISH_SSL --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_ESTABLISH_SSL --> CONNECT_STAGE_AUTHENTICATE
+
+  CONNECT_STAGE_AUTHENTICATE --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTHENTICATE --> CONNECT_STAGE_AUTH_BEGIN
+
+  CONNECT_STAGE_AUTH_BEGIN --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_BEGIN --> CONNECT_STAGE_AUTH_RUN_FIRST_AUTHENTICATE_USER
+
+  CONNECT_STAGE_AUTH_RUN_FIRST_AUTHENTICATE_USER --> CONNECT_STAGE_AUTH_HANDLE_FIRST_AUTHENTICATE_USER
+
+  CONNECT_STAGE_AUTH_HANDLE_FIRST_AUTHENTICATE_USER --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_HANDLE_FIRST_AUTHENTICATE_USER --> CONNECT_STAGE_AUTH_READ_CHANGE_USER_RESULT
+
+  CONNECT_STAGE_AUTH_READ_CHANGE_USER_RESULT --> CONNECT_STAGE_AUTH_HANDLE_CHANGE_USER_REQUEST
+
+  CONNECT_STAGE_AUTH_HANDLE_CHANGE_USER_REQUEST --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_HANDLE_CHANGE_USER_REQUEST --> CONNECT_STAGE_AUTH_RUN_SECOND_AUTHENTICATE_USER
+  CONNECT_STAGE_AUTH_HANDLE_CHANGE_USER_REQUEST --> CONNECT_STAGE_AUTH_INIT_MULTI_AUTH
+  CONNECT_STAGE_AUTH_HANDLE_CHANGE_USER_REQUEST --> CONNECT_STAGE_AUTH_FINISH_AUTH
+
+  CONNECT_STAGE_AUTH_RUN_SECOND_AUTHENTICATE_USER --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_RUN_SECOND_AUTHENTICATE_USER --> CONNECT_STAGE_AUTH_HANDLE_SECOND_AUTHENTICATE_USER
+
+  CONNECT_STAGE_AUTH_HANDLE_SECOND_AUTHENTICATE_USER --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_HANDLE_SECOND_AUTHENTICATE_USER --> CONNECT_STAGE_AUTH_INIT_MULTI_AUTH
+  CONNECT_STAGE_AUTH_HANDLE_SECOND_AUTHENTICATE_USER --> CONNECT_STAGE_AUTH_FINISH_AUTH
+
+  CONNECT_STAGE_AUTH_INIT_MULTI_AUTH --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_INIT_MULTI_AUTH --> CONNECT_STAGE_AUTH_DO_MULTI_PLUGIN_AUTH
+
+  CONNECT_STAGE_AUTH_DO_MULTI_PLUGIN_AUTH --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_DO_MULTI_PLUGIN_AUTH --> CONNECT_STAGE_AUTH_HANDLE_MULTI_AUTH_RESPONSE
+
+  CONNECT_STAGE_AUTH_HANDLE_MULTI_AUTH_RESPONSE --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_HANDLE_MULTI_AUTH_RESPONSE --> CONNECT_STAGE_AUTH_INIT_MULTI_AUTH
+  CONNECT_STAGE_AUTH_HANDLE_MULTI_AUTH_RESPONSE --> CONNECT_STAGE_AUTH_FINISH_AUTH
+
+  CONNECT_STAGE_AUTH_FINISH_AUTH --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_AUTH_FINISH_AUTH --> CONNECT_STAGE_PREP_SELECT_DATABASE
+
+  CONNECT_STAGE_PREP_SELECT_DATABASE --> CONNECT_STAGE_COMPLETE
+  CONNECT_STAGE_PREP_SELECT_DATABASE --> CONNECT_STAGE_PREP_INIT_COMMANDS
+
+  CONNECT_STAGE_PREP_INIT_COMMANDS --> CONNECT_STAGE_COMPLETE
+  CONNECT_STAGE_PREP_INIT_COMMANDS --> CONNECT_STAGE_SEND_ONE_INIT_COMMAND
+
+  CONNECT_STAGE_SEND_ONE_INIT_COMMAND --> CONNECT_STAGE_SEND_ONE_INIT_COMMAND
+  CONNECT_STAGE_SEND_ONE_INIT_COMMAND --> STATE_MACHINE_FAILED
+  CONNECT_STAGE_SEND_ONE_INIT_COMMAND --> CONNECT_STAGE_COMPLETE
+
+  STATE_MACHINE_FAILED --> [*]
+  CONNECT_STAGE_COMPLETE --> [*]
+  CONNECT_STAGE_INVALID --> [*]
+  @enduml
+*/
+/* clang-format on */
+enum connect_stage {
+  /** MYSQL not valid or an unknown state */
+  CONNECT_STAGE_INVALID = 0,
+  /** not connected */
+  CONNECT_STAGE_NOT_STARTED,
+  /** begin connection to the server */
+  CONNECT_STAGE_NET_BEGIN_CONNECT,
+  /** wait for connection to be established */
+  CONNECT_STAGE_NET_WAIT_CONNECT,
+  /** init the local data structures post connect */
+  CONNECT_STAGE_NET_COMPLETE_CONNECT,
+  /** read the first packet */
+  CONNECT_STAGE_READ_GREETING,
+  /** parse the first packet */
+  CONNECT_STAGE_PARSE_HANDSHAKE,
+  /** tls establishment */
+  CONNECT_STAGE_ESTABLISH_SSL,
+  /** authentication phase */
+  CONNECT_STAGE_AUTHENTICATE,
+  /** determine the plugin to use */
+  CONNECT_STAGE_AUTH_BEGIN,
+  /** run first auth plugin */
+  CONNECT_STAGE_AUTH_RUN_FIRST_AUTHENTICATE_USER,
+  /** handle the result of the first auth plugin run */
+  CONNECT_STAGE_AUTH_HANDLE_FIRST_AUTHENTICATE_USER,
+  /** read the implied changed user auth, if any */
+  CONNECT_STAGE_AUTH_READ_CHANGE_USER_RESULT,
+  /** Check if server asked to use a different authentication plugin */
+  CONNECT_STAGE_AUTH_HANDLE_CHANGE_USER_REQUEST,
+  /** Start the authentication process again with the plugin which
+  server asked for */
+  CONNECT_STAGE_AUTH_RUN_SECOND_AUTHENTICATE_USER,
+  /** Start multi factor authentication */
+  CONNECT_STAGE_AUTH_INIT_MULTI_AUTH,
+  /** Final cleanup */
+  CONNECT_STAGE_AUTH_FINISH_AUTH,
+  /** Now read the results of the second plugin run */
+  CONNECT_STAGE_AUTH_HANDLE_SECOND_AUTHENTICATE_USER,
+  /** Invoke client plugins multi-auth authentication method */
+  CONNECT_STAGE_AUTH_DO_MULTI_PLUGIN_AUTH,
+  /** Handle response from client plugins authentication method */
+  CONNECT_STAGE_AUTH_HANDLE_MULTI_AUTH_RESPONSE,
+  /** Authenticated, set initial database if specified */
+  CONNECT_STAGE_PREP_SELECT_DATABASE,
+  /** Prepare to send a sequence of init commands. */
+  CONNECT_STAGE_PREP_INIT_COMMANDS,
+  /** Send an init command.  This is called once per init command until
+  they've all been run (or a failure occurs) */
+  CONNECT_STAGE_SEND_ONE_INIT_COMMAND,
+  /** Connected or no async connect in progress */
+  CONNECT_STAGE_COMPLETE
+};
 #endif

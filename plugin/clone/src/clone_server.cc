@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -87,7 +88,7 @@ int Server::clone() {
       if (m_storage_initialized) {
         assert(err != 0);
         /* Don't abort clone if worker thread fails during attach. */
-        int in_err = (command == COM_ATTACH) ? 0 : err;
+        const int in_err = (command == COM_ATTACH) ? 0 : err;
 
         hton_clone_end(get_thd(), get_storage_vector(), m_tasks, in_err);
         m_storage_initialized = false;
@@ -356,7 +357,7 @@ int Server::deserialize_init_buffer(const uchar *init_buf, size_t init_len) {
 
   /* Extract DDL timeout */
   {
-    uint32_t client_ddl_timeout = uint4korr(init_buf);
+    const uint32_t client_ddl_timeout = uint4korr(init_buf);
     init_buf += 4;
     init_len -= 4;
 
@@ -401,8 +402,9 @@ int Server::send_key_value(Command_Response rcmd, String_Key &key_str,
   auto buf_len = key_str.length();
   buf_len += 4;
 
-  bool send_value = (rcmd == COM_RES_CONFIG || rcmd == COM_RES_PLUGIN_V2 ||
-                     rcmd == COM_RES_CONFIG_V3);
+  const bool send_value =
+      (rcmd == COM_RES_CONFIG || rcmd == COM_RES_PLUGIN_V2 ||
+       rcmd == COM_RES_CONFIG_V3);
 
   /** Add length for value. */
   if (send_value) {

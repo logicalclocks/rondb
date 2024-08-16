@@ -202,11 +202,17 @@ INSERT INTO t VALUES
 (1, '1999-02-28', '1999-11-28 14:45:00'),
 (2, '1999-12-31', '2000-01-01 00:00:00');
 
-# used to give an error for negative result (1999 - 2000 above)
+--error ER_DATA_OUT_OF_RANGE
 SELECT ((year(QC_DATE) - year(QC_TIMESTAMP))) FROM t
   WHERE QC_DATE_KEY = 2;
 
 DROP TABLE t;
+
+CREATE TABLE y(y1 YEAR, y2 YEAR);
+INSERT INTO y VALUES(2020,2022);
+--error ER_DATA_OUT_OF_RANGE
+SELECT y1-y2 FROM y;
+DROP TABLE y;
 
 --echo #
 --echo # WL#13537: Deprecate display width for the YEAR datatype
@@ -291,3 +297,27 @@ SELECT HOUR(GREATEST(y1, y2))
 FROM t1;
 
 DROP TABLE t1;
+
+--echo #
+--echo # Bug#35244286 Missing year function?
+--echo #
+
+CREATE VIEW v1(c0) AS (SELECT CAST(2048 as year));
+SHOW CREATE VIEW v1;
+SELECT c0 FROM v1;
+DROP VIEW v1;
+
+CREATE TABLE t5 (c1 YEAR AS (CAST(1985 AS YEAR)));
+SHOW CREATE TABLE t5;
+DROP TABLE t5;
+
+--echo # Bug#36094867: Intersect decimal precision assert error
+
+CREATE TABLE t0 (c0 YEAR);
+CREATE TABLE t1 (c0 INTEGER);
+
+SELECT x FROM (SELECT NULL FROM t1 GROUP BY t1.c0) AS x(x)
+INTERSECT
+SELECT t0.c0 FROM t0;
+
+DROP TABLE t0, t1;

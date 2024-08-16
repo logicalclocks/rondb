@@ -1,15 +1,16 @@
-/* Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,6 +27,7 @@
 #include <sys/types.h>
 
 #include <algorithm>
+#include <memory>
 #include <utility>  // move
 
 #include "memory_debugging.h"
@@ -112,7 +114,9 @@ class Query_result_materialize final : public Query_result_union {
  public:
   Query_result_materialize(Query_result *result_arg)
       : Query_result_union(), m_result(result_arg) {}
-  ~Query_result_materialize() override { destroy(m_cursor); }
+  ~Query_result_materialize() override {
+    if (m_cursor != nullptr) ::destroy_at(m_cursor);
+  }
   void set_result(Query_result *result_arg) {
     m_result = result_arg;
     if (m_cursor != nullptr) {
@@ -186,9 +190,10 @@ bool mysql_open_cursor(THD *thd, Query_result *result,
   Query_result_materialize *result_materialize = nullptr;
   LEX *lex = thd->lex;
 
-  Sql_cmd_dml *sql_cmd = lex->m_sql_cmd != nullptr && lex->m_sql_cmd->is_dml()
-                             ? down_cast<Sql_cmd_dml *>(lex->m_sql_cmd)
-                             : nullptr;
+  Sql_cmd_dml *sql_cmd =
+      lex->m_sql_cmd != nullptr && lex->m_sql_cmd->sql_cmd_type() == SQL_CMD_DML
+          ? down_cast<Sql_cmd_dml *>(lex->m_sql_cmd)
+          : nullptr;
 
   // Only DML statements may have assigned a cursor.
   if (sql_cmd == nullptr) {
@@ -210,7 +215,7 @@ bool mysql_open_cursor(THD *thd, Query_result *result,
        materialization exists, reuse this object.
   */
   if (!sql_cmd->is_prepared()) {
-    Prepared_stmt_arena_holder ps_arena_holder(thd);
+    const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
     result_materialize = new (thd->mem_root) Query_result_materialize(result);
     if (result_materialize == nullptr) return true;
@@ -230,7 +235,7 @@ bool mysql_open_cursor(THD *thd, Query_result *result,
   thd->m_statement_psi = nullptr;
   DBUG_EXECUTE_IF("bug33218625_kill_injection", thd->killed = THD::KILL_QUERY;);
 
-  bool rc = mysql_execute_command(thd);
+  const bool rc = mysql_execute_command(thd);
 
   thd->m_digest = parent_digest;
   DEBUG_SYNC(thd, "after_table_close");
@@ -471,7 +476,7 @@ bool Query_result_materialize::prepare(THD *thd,
   if (create_result_table(thd, *unit->get_unit_column_types(), false,
                           thd->variables.option_bits | TMP_TABLE_ALL_COLUMNS,
                           "", false, false)) {
-    destroy(m_cursor);
+    ::destroy_at(m_cursor);
     return true;
   }
   m_cursor->set_table(table);

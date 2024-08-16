@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -178,6 +179,8 @@ class sp_rcontext {
     return m_var_items.array() + var_idx;
   }
 
+  Field *get_return_field() const { return m_return_value_fld; }
+
   bool set_return_value(THD *thd, Item **return_value_item);
 
   bool is_return_value_set() const { return m_return_value_set; }
@@ -205,7 +208,7 @@ class sp_rcontext {
 
   /// Get the Handler_call_frame representing the currently active handler.
   Handler_call_frame *current_handler_frame() const {
-    return m_activated_handlers.size() ? m_activated_handlers.back() : NULL;
+    return m_activated_handlers.size() ? m_activated_handlers.back() : nullptr;
   }
 
   /// Handle current SQL condition (if any).

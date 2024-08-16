@@ -1,18 +1,19 @@
 #ifndef ITEM_CMPFUNC_INCLUDED
 #define ITEM_CMPFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,12 +41,12 @@
 #include "my_time.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_time.h"
+#include "sql-common/my_decimal.h"
 #include "sql/enum_query_type.h"
 #include "sql/item.h"
 #include "sql/item_func.h"       // Item_int_func
 #include "sql/item_row.h"        // Item_row
 #include "sql/mem_root_array.h"  // Mem_root_array
-#include "sql/my_decimal.h"
 #include "sql/parse_location.h"  // POS
 #include "sql/sql_const.h"
 #include "sql/sql_list.h"
@@ -244,6 +245,8 @@ class Arg_comparator {
   uint get_child_comparator_count() const { return comparator_count; }
 
   Arg_comparator *get_child_comparators() const { return comparators; }
+
+  bool compare_as_json() const { return func == &Arg_comparator::compare_json; }
 
   /// @returns true if the class has decided that values should be extracted
   ///   from the Items using function pointers set up by this class.
@@ -503,10 +506,10 @@ class Item_in_optimizer final : public Item_bool_func {
     set_subquery();
   }
   bool fix_fields(THD *, Item **) override;
-  bool fix_left(THD *thd, Item **ref);
+  bool fix_left(THD *thd);
   void fix_after_pullout(Query_block *parent_query_block,
                          Query_block *removed_query_block) override;
-  void split_sum_func(THD *thd, Ref_item_array ref_item_array,
+  bool split_sum_func(THD *thd, Ref_item_array ref_item_array,
                       mem_root_deque<Item *> *fields) override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
@@ -674,6 +677,14 @@ class Item_bool_func2 : public Item_bool_func {
   const Arg_comparator *get_comparator() const { return &cmp; }
   Item *replace_scalar_subquery(uchar *) override;
   friend class Arg_comparator;
+  bool allow_replacement(Item_field *const original,
+                         Item *const subst) override {
+    /*
+      If UNKNOWN results can be treated as false (e.g when placed in WHERE, ON
+      or HAVING), a non-nullable field can be replaced with a nullable one.
+    */
+    return ignore_unknown() || original->is_nullable() || !subst->is_nullable();
+  }
 };
 
 /**
@@ -715,7 +726,7 @@ class Item_func_xor final : public Item_bool_func2 {
 
   enum Functype functype() const override { return XOR_FUNC; }
   const char *func_name() const override { return "xor"; }
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   void apply_is_true() override {}
   Item *truth_transformer(THD *, Bool_test) override;
@@ -1132,64 +1143,59 @@ class Item_func_equal final : public Item_eq_base {
                              double rows_in_table) override;
 };
 
+/// '<,>,=<,=>' operators.
+class Item_func_inequality : public Item_func_comparison {
+ public:
+  Item_func_inequality(Item *a, Item *b) : Item_func_comparison(a, b) {}
+
+  float get_filtering_effect(THD *thd, table_map filter_for_table,
+                             table_map read_tables,
+                             const MY_BITMAP *fields_to_ignore,
+                             double rows_in_table) override;
+
+  bool gc_subst_analyzer(uchar **) override { return true; }
+};
+
 /**
   Implements the comparison operator greater than or equals (>=)
 */
-class Item_func_ge final : public Item_func_comparison {
+class Item_func_ge final : public Item_func_inequality {
  public:
-  Item_func_ge(Item *a, Item *b) : Item_func_comparison(a, b) {}
+  Item_func_ge(Item *a, Item *b) : Item_func_inequality(a, b) {}
   longlong val_int() override;
   enum Functype functype() const override { return GE_FUNC; }
   enum Functype rev_functype() const override { return LE_FUNC; }
   cond_result eq_cmp_result() const override { return COND_TRUE; }
   const char *func_name() const override { return ">="; }
   Item *negated_item() override;
-  bool gc_subst_analyzer(uchar **) override { return true; }
-
-  float get_filtering_effect(THD *thd, table_map filter_for_table,
-                             table_map read_tables,
-                             const MY_BITMAP *fields_to_ignore,
-                             double rows_in_table) override;
 };
 
 /**
   Implements the comparison operator greater than (>)
 */
-class Item_func_gt final : public Item_func_comparison {
+class Item_func_gt final : public Item_func_inequality {
  public:
-  Item_func_gt(Item *a, Item *b) : Item_func_comparison(a, b) {}
+  Item_func_gt(Item *a, Item *b) : Item_func_inequality(a, b) {}
   longlong val_int() override;
   enum Functype functype() const override { return GT_FUNC; }
   enum Functype rev_functype() const override { return LT_FUNC; }
   cond_result eq_cmp_result() const override { return COND_FALSE; }
   const char *func_name() const override { return ">"; }
   Item *negated_item() override;
-  bool gc_subst_analyzer(uchar **) override { return true; }
-
-  float get_filtering_effect(THD *thd, table_map filter_for_table,
-                             table_map read_tables,
-                             const MY_BITMAP *fields_to_ignore,
-                             double rows_in_table) override;
 };
 
 /**
   Implements the comparison operator less than or equals (<=)
 */
-class Item_func_le final : public Item_func_comparison {
+class Item_func_le final : public Item_func_inequality {
  public:
-  Item_func_le(Item *a, Item *b) : Item_func_comparison(a, b) {}
+  Item_func_le(Item *a, Item *b) : Item_func_inequality(a, b) {}
   longlong val_int() override;
   enum Functype functype() const override { return LE_FUNC; }
   enum Functype rev_functype() const override { return GE_FUNC; }
   cond_result eq_cmp_result() const override { return COND_TRUE; }
   const char *func_name() const override { return "<="; }
   Item *negated_item() override;
-  bool gc_subst_analyzer(uchar **) override { return true; }
-
-  float get_filtering_effect(THD *thd, table_map filter_for_table,
-                             table_map read_tables,
-                             const MY_BITMAP *fields_to_ignore,
-                             double rows_in_table) override;
 };
 
 /**
@@ -1227,21 +1233,15 @@ class Item_func_reject_if : public Item_bool_func {
 /**
   Implements the comparison operator less than (<)
 */
-class Item_func_lt final : public Item_func_comparison {
+class Item_func_lt final : public Item_func_inequality {
  public:
-  Item_func_lt(Item *a, Item *b) : Item_func_comparison(a, b) {}
+  Item_func_lt(Item *a, Item *b) : Item_func_inequality(a, b) {}
   longlong val_int() override;
   enum Functype functype() const override { return LT_FUNC; }
   enum Functype rev_functype() const override { return GT_FUNC; }
   cond_result eq_cmp_result() const override { return COND_FALSE; }
   const char *func_name() const override { return "<"; }
   Item *negated_item() override;
-  bool gc_subst_analyzer(uchar **) override { return true; }
-
-  float get_filtering_effect(THD *thd, table_map filter_for_table,
-                             table_map read_tables,
-                             const MY_BITMAP *fields_to_ignore,
-                             double rows_in_table) override;
 };
 
 /**
@@ -1249,6 +1249,9 @@ class Item_func_lt final : public Item_func_comparison {
 */
 class Item_func_ne final : public Item_func_comparison {
  public:
+  /// A lower limit for the selectivity of 'field != unknown_value'.
+  static constexpr double kMinSelectivityForUnknownValue = 0.2;
+
   Item_func_ne(Item *a, Item *b) : Item_func_comparison(a, b) {}
   longlong val_int() override;
   enum Functype functype() const override { return NE_FUNC; }
@@ -1296,8 +1299,22 @@ class Item_func_opt_neg : public Item_int_func {
     negated = !negated;
     return this;
   }
+  bool allow_replacement(Item_field *const original,
+                         Item *const subst) override {
+    /*
+      If UNKNOWN results can be treated as false (e.g when placed in WHERE, ON
+      or HAVING), a non-nullable field can be replaced with a nullable one.
+    */
+    return ignore_unknown() || original->is_nullable() || !subst->is_nullable();
+  }
+
   bool eq(const Item *item, bool binary_cmp) const override;
   bool subst_argument_checker(uchar **) override { return true; }
+
+ protected:
+  void add_json_info(Json_object *obj) override {
+    obj->add_alias("negated", create_dom_ptr<Json_boolean>(negated));
+  }
 };
 
 class Item_func_between final : public Item_func_opt_neg {
@@ -1397,7 +1414,7 @@ class Item_func_interval final : public Item_int_func {
     allowed_arg_cols = 0;  // Fetch this value from first argument
   }
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   longlong val_int() override;
   bool resolve_type(THD *) override;
   const char *func_name() const override { return "interval"; }
@@ -1484,6 +1501,11 @@ class Item_func_any_value final : public Item_func_coalesce {
   const char *func_name() const override { return "any_value"; }
   bool aggregate_check_group(uchar *arg) override;
   bool aggregate_check_distinct(uchar *arg) override;
+  bool collect_item_field_or_view_ref_processor(uchar *arg) override;
+
+ private:
+  // used when walk'ing with collect_item_field_or_view_ref_processor
+  bool m_phase_post{false};
 };
 
 class Item_func_if final : public Item_func {
@@ -1546,6 +1568,7 @@ class Item_func_nullif final : public Item_bool_func2 {
   }
   bool resolve_type(THD *thd) override;
   bool resolve_type_inner(THD *thd) override;
+  TYPELIB *get_typelib() const override;
   const char *func_name() const override { return "nullif"; }
   enum Functype functype() const override { return NULLIF_FUNC; }
 
@@ -1985,6 +2008,12 @@ class Item_func_case final : public Item_func {
   DTCollation cmp_collation;
   cmp_item *cmp_items[5]; /* For all result types */
   cmp_item *case_item;
+
+ protected:
+  void add_json_info(Json_object *obj) override {
+    obj->add_alias("has_case_expression",
+                   create_dom_ptr<Json_boolean>(get_first_expr_num() != -1));
+  }
 
  public:
   Item_func_case(const POS &pos, mem_root_deque<Item *> *list,
@@ -2451,7 +2480,7 @@ class Item_cond : public Item_bool_func {
     list.prepend(nlist);
   }
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
 
   bool fix_fields(THD *, Item **ref) override;
   void fix_after_pullout(Query_block *parent_query_block,
@@ -2464,7 +2493,7 @@ class Item_cond : public Item_bool_func {
   void update_used_tables() override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
-  void split_sum_func(THD *thd, Ref_item_array ref_item_array,
+  bool split_sum_func(THD *thd, Ref_item_array ref_item_array,
                       mem_root_deque<Item *> *fields) override;
   void apply_is_true() override { abort_on_null = true; }
   void copy_andor_arguments(THD *thd, Item_cond *item);

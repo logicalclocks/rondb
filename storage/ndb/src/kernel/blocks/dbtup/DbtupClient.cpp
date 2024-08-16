@@ -1,16 +1,17 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,32 +28,24 @@
 
 #define JAM_FILE_ID 417
 
-
-Dbtup_client::Dbtup_client(SimulatedBlock* block,
-                           SimulatedBlock* dbtup)
-  :m_jamBuf(block->jamBuffer())
-{
+Dbtup_client::Dbtup_client(SimulatedBlock *block, SimulatedBlock *dbtup)
+    : m_jamBuf(block->jamBuffer()) {
   assert(m_jamBuf == getThrJamBuf());
-  if (dbtup->isNdbMtLqh() && dbtup->instance() == 0)
-  {
+  if (dbtup->isNdbMtLqh() && dbtup->instance() == 0) {
     thrjam(m_jamBuf);
-    m_dbtup_proxy = (DbtupProxy*)dbtup;
+    m_dbtup_proxy = (DbtupProxy *)dbtup;
     m_dbtup = 0;
-  }
-  else
-  {
+  } else {
     thrjam(m_jamBuf);
     m_dbtup_proxy = 0;
-    m_dbtup = (Dbtup*)dbtup;
+    m_dbtup = (Dbtup *)dbtup;
   }
 }
 
 // LGMAN
 
-void
-Dbtup_client::disk_restart_undo(Signal* signal, Uint64 lsn,
-                                Uint32 type, const Uint32 * ptr, Uint32 len)
-{
+void Dbtup_client::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
+                                     const Uint32 *ptr, Uint32 len) {
   if (m_dbtup_proxy != 0) {
     m_dbtup_proxy->disk_restart_undo(signal, lsn, type, ptr, len);
     return;
@@ -92,25 +85,14 @@ Dbtup_client::disk_restart_alloc_extent(Uint32 tableId,
                                             pages);
 }
 
-void
-Dbtup_client::disk_restart_page_bits(Uint32 tableId,
-                                     Uint32 fragId,
-                                     Uint32 create_table_version,
-                                     const Local_key* key,
-                                     Uint32 bits)
-{
+void Dbtup_client::disk_restart_page_bits(Uint32 tableId, Uint32 fragId,
+                                          Uint32 create_table_version,
+                                          const Local_key *key, Uint32 bits) {
   if (m_dbtup_proxy != 0) {
-    m_dbtup_proxy->disk_restart_page_bits(tableId,
-                                          fragId,
-                                          create_table_version,
-                                          key,
-                                          bits);
+    m_dbtup_proxy->disk_restart_page_bits(tableId, fragId, create_table_version,
+                                          key, bits);
     return;
   }
-  m_dbtup->disk_restart_page_bits(m_jamBuf,
-                                  tableId,
-                                  fragId,
-                                  create_table_version,
-                                  key, 
-                                  bits);
+  m_dbtup->disk_restart_page_bits(m_jamBuf, tableId, fragId,
+                                  create_table_version, key, bits);
 }

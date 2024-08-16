@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -137,16 +138,18 @@ long Sql_service_commands::internal_kill_session(
   Sql_resultset rset;
   long srv_err = 0;
   if (!sql_interface->is_session_killed(sql_interface->get_session())) {
-    COM_DATA data;
-    data.com_kill.id = *((unsigned long *)session_id);
-    srv_err = sql_interface->execute(data, COM_PROCESS_KILL, &rset);
+    std::stringstream str;
+    str << "KILL " << *((unsigned long *)session_id);
+    srv_err = sql_interface->execute_query(str.str());
     if (srv_err == 0) {
       LogPluginErr(
-          INFORMATION_LEVEL, ER_GRP_RPL_KILLED_SESSION_ID, data.com_kill.id,
+          INFORMATION_LEVEL, ER_GRP_RPL_KILLED_SESSION_ID,
+          (int)*((unsigned long *)session_id),
           sql_interface->is_session_killed(sql_interface->get_session()));
     } else {
       LogPluginErr(INFORMATION_LEVEL, ER_GRP_RPL_KILLED_FAILED_ID,
-                   data.com_kill.id, srv_err); /* purecov: inspected */
+                   (int)*((unsigned long *)session_id),
+                   srv_err); /* purecov: inspected */
     }
   }
   return srv_err;

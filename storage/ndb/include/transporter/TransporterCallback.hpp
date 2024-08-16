@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +23,6 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
-
 
 //**************************************************************************** 
 // 
@@ -50,7 +50,7 @@ class Transporter;
  * upper layer (NDB API, single-threaded kernel, or multi-threaded kernel).
  */
 class TransporterReceiveHandle : public TransporterReceiveData {
-public:
+ public:
   /**
    * This method is called to deliver a signal to the upper layer.
    *
@@ -59,10 +59,9 @@ public:
    *
    * @returns true if no more signals should be delivered
    */
-  virtual bool deliver_signal(SignalHeader * const header,
-                              Uint8 prio,
+  virtual bool deliver_signal(SignalHeader *const header, Uint8 prio,
                               TransporterError &error_code,
-                              Uint32 * const signalData,
+                              Uint32 *const signalData,
                               LinearSectionPtr ptr[3]) = 0;
 
   /**
@@ -151,7 +150,7 @@ public:
  * kernel, or multi-threaded kernel).
  */
 class TransporterCallback {
-public:
+ public:
   /**
    * Enable or disable the send buffers.
    *
@@ -183,8 +182,8 @@ public:
    * failures, e.g. a couple of direct transitions from CONNECTING
    * to DISCONNECTING in the TransporterRegistry.
    */
-  virtual void enable_send_buffer(TrpId, bool) = 0;
-  virtual void disable_send_buffer(TrpId, bool) = 0;
+  virtual void enable_send_buffer(TrpId) = 0;
+  virtual void disable_send_buffer(TrpId) = 0;
 
   /**
    * The transporter periodically calls this method, indicating the number
@@ -208,10 +207,10 @@ public:
    *
    * See src/common/transporter/trp.txt for more information.
    */
-  virtual void lock_transporter(TrpId) { }
-  virtual void unlock_transporter(TrpId) { }
-  virtual void lock_send_transporter(TrpId) { }
-  virtual void unlock_send_transporter(TrpId) { }
+  virtual void lock_transporter(TrpId) {}
+  virtual void unlock_transporter(TrpId) {}
+  virtual void lock_send_transporter(TrpId) {}
+  virtual void unlock_send_transporter(TrpId) {}
 
   /**
    * ToDo: In current patch, these are not used, instead we use default
@@ -224,7 +223,7 @@ public:
    * The is called from the thread holding receiving data from the
    * transporter, under the protection of the transporter lock.
    */
-  virtual void reportWakeup() { }
+  virtual void reportWakeup() {}
 
   /**
    * Ask upper layer to supply a list of struct iovec's with data to
@@ -242,8 +241,7 @@ public:
    *
    * Nothing should be returned for a transporter with a disabled send buffer.
    */
-  virtual Uint32 get_bytes_to_send_iovec(TrpId id,
-                                         struct iovec *dst,
+  virtual Uint32 get_bytes_to_send_iovec(TrpId id, struct iovec *dst,
                                          Uint32) = 0;
 
   /**
@@ -263,7 +261,6 @@ public:
 
   virtual ~TransporterCallback() {}
 };
-
 
 /**
  * This interface implements send buffer access for the
@@ -289,8 +286,7 @@ public:
  * disconnected.
  */
 class TransporterSendBufferHandle {
-public:
-
+ public:
   /**
    * - Allocate send buffer for default send buffer handling.
    *
@@ -319,8 +315,7 @@ public:
    * send buffers, it may be disabled before the written data is
    * actually sent. The buffer contents is then silently discarded.
    */
-  virtual bool isSendEnabled(TrpId) const
-  { return true; }
+  virtual bool isSendEnabled(TrpId) const { return true; }
 
   /**
    * Get space for packing a signal into, allocate more buffer as needed.
@@ -329,11 +324,8 @@ public:
    * delivered through get_bytes_to_send_iovec() or not) for a transporter;
    * the method must return NULL rather than allow to exceed this amount.
    */
-  virtual Uint32 *getWritePtr(TrpId,
-                              Uint32 lenBytes,
-                              Uint32 prio,
-                              Uint32 max_use,
-                              SendStatus *error) = 0;
+  virtual Uint32 *getWritePtr(TrpId, Uint32 lenBytes, Uint32 prio,
+                              Uint32 max_use, SendStatus *error) = 0;
   /**
    * Called when new signal is packed.
    *
@@ -341,16 +333,14 @@ public:
    * was made available to send with get_bytes_to_send_iovec(), but has not
    * yet been marked as really sent from bytes_sent()).
    */
-  virtual Uint32 updateWritePtr(TrpId,
-                                Uint32 lenBytes,
-                                Uint32 prio) = 0;
+  virtual Uint32 updateWritePtr(TrpId, Uint32 lenBytes, Uint32 prio) = 0;
 
   /**
    * Provide a mechanism to check the level of risk in using the send buffer.
    * This is useful in long-running activities to ensure that they don't
    * jeopardize short, high priority actions in the cluster.
    */
-  //virtual void getSendBufferLevel(TrpId, SB_LevelType &level) = 0;
+  // virtual void getSendBufferLevel(TrpId, SB_LevelType &level) = 0;
 
   /**
    * Called during prepareSend() if send buffer gets full, to do an emergency

@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,8 +32,8 @@
 #include <unordered_set>
 #include <utility>
 
-#include "m_ctype.h"
 #include "my_inttypes.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/malloc_allocator.h"
 #include "sql/mem_root_allocator.h"
 #include "template_utils.h"
@@ -135,6 +136,15 @@ class Collation_key_equal {
   const CHARSET_INFO *cs;
   decltype(cs->coll->strnncollsp) strnncollsp;
 };
+
+/// @brief Allocator type used in Map_myalloc
+template <class Key, class Value>
+using Map_allocator_type = Malloc_allocator<std::pair<const Key, Value>>;
+
+/// @brief Map using custom Malloc_allocator allocator
+template <class Key, class Value, class Compare = std::less<Key>>
+using Map_myalloc =
+    std::map<Key, Value, Compare, Map_allocator_type<Key, Value>>;
 
 /**
   std::unordered_map, but with my_malloc, so that you can track the memory

@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -41,10 +42,17 @@ Cost_model_server::~Cost_model_server() {
   }
 }
 
-void Cost_model_server::init() {
+void Cost_model_server::init(Optimizer optimizer) {
   if (cost_constant_cache && m_server_cost_constants == nullptr) {
     // Get the current set of cost constants
-    m_cost_constants = cost_constant_cache->get_cost_constants();
+    switch (optimizer) {
+      case Optimizer::kOriginal:
+        m_cost_constants = cost_constant_cache->get_cost_constants();
+        break;
+      case Optimizer::kHypergraph:
+        m_cost_constants = cost_constant_cache->get_cost_constants_hypergraph();
+        break;
+    }
     assert(m_cost_constants != nullptr);
 
     // Get the cost constants for server operations
@@ -95,7 +103,7 @@ double Cost_model_table::page_read_cost_index(uint index, double pages) const {
   assert(m_initialized);
   assert(pages >= 0.0);
 
-  double in_mem = m_table->file->index_in_memory_estimate(index);
+  const double in_mem = m_table->file->index_in_memory_estimate(index);
 
   const double pages_in_mem = pages * in_mem;
   const double pages_on_disk = pages - pages_in_mem;

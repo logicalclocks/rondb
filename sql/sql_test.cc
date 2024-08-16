@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,7 +33,6 @@
 
 #include "keycache.h"
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
@@ -43,6 +43,7 @@
 #include "my_sys.h"
 #include "my_thread_local.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "prealloced_array.h"
 #include "sql/events.h"
 #include "sql/field.h"
@@ -161,8 +162,8 @@ void TEST_join(JOIN *join) {
 void print_keyuse_array(THD *thd, Opt_trace_context *trace,
                         const Key_use_array *keyuse_array) {
   if (unlikely(!trace->is_started())) return;
-  Opt_trace_object wrapper(trace);
-  Opt_trace_array trace_key_uses(trace, "ref_optimizer_key_uses");
+  const Opt_trace_object wrapper(trace);
+  const Opt_trace_array trace_key_uses(trace, "ref_optimizer_key_uses");
   DBUG_PRINT("opt", ("Key_use array (%zu elements)", keyuse_array->size()));
   for (uint i = 0; i < keyuse_array->size(); i++) {
     const Key_use &keyuse = keyuse_array->at(i);

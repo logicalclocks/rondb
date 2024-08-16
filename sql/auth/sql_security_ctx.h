@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,16 +25,16 @@
 #include <string.h>
 #include <sys/types.h>
 #include <algorithm>
+#include <cinttypes>
 #include <utility>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_dbug.h"
 #include "my_hostname.h"  // HOSTNAME_LENGTH
 #include "mysql_com.h"    // USERNAME_LENGTH
 #include "sql/auth/auth_common.h"
 #include "sql/auth/partial_revokes.h"
+#include "sql/mysqld_cs.h"
 #include "sql/sql_const.h"
 #include "sql_string.h"
 
@@ -90,10 +91,18 @@ class Security_context {
   size_t get_num_active_roles() const;
   void get_active_roles(THD *, List<LEX_USER> &);
   void checkout_access_maps(void);
-  ulong db_acl(LEX_CSTRING db, bool use_pattern_scan = true) const;
-  ulong procedure_acl(LEX_CSTRING db, LEX_CSTRING procedure_name);
-  ulong function_acl(LEX_CSTRING db, LEX_CSTRING procedure_name);
-  ulong table_acl(LEX_CSTRING db, LEX_CSTRING table);
+  Access_bitmask db_acl(LEX_CSTRING db, bool use_pattern_scan = true) const;
+  static Access_bitmask check_db_level_access(THD *thd,
+                                              const Security_context *sctx,
+                                              const char *host, const char *ip,
+                                              const char *user, const char *db,
+                                              size_t db_len,
+                                              bool db_is_pattern = false);
+  Access_bitmask check_db_level_access(THD *thd, const char *db, size_t db_len,
+                                       bool db_is_pattern = false) const;
+  Access_bitmask procedure_acl(LEX_CSTRING db, LEX_CSTRING procedure_name);
+  Access_bitmask function_acl(LEX_CSTRING db, LEX_CSTRING procedure_name);
+  Access_bitmask table_acl(LEX_CSTRING db, LEX_CSTRING table);
   Grant_table_aggregate table_and_column_acls(LEX_CSTRING db,
                                               LEX_CSTRING table);
   bool has_with_admin_acl(const LEX_CSTRING &role_name,
@@ -101,8 +110,8 @@ class Security_context {
   bool any_sp_acl(const LEX_CSTRING &db);
   bool any_table_acl(const LEX_CSTRING &db);
 
-  bool is_table_blocked(ulong priv, TABLE const *table);
-  bool has_column_access(ulong priv, TABLE const *table,
+  bool is_table_blocked(Access_bitmask priv, TABLE const *table);
+  bool has_column_access(Access_bitmask priv, TABLE const *table,
                          std::vector<std::string> column);
 
   /**
@@ -204,15 +213,16 @@ class Security_context {
   /**
     Getter method for member m_master_access.
   */
-  ulong master_access() const;
+  Access_bitmask master_access() const;
 
-  ulong master_access(const std::string &db_name) const;
+  Access_bitmask master_access(const std::string &db_name) const;
 
   const Restrictions restrictions() const;
 
-  void set_master_access(ulong master_access);
+  void set_master_access(Access_bitmask master_access);
 
-  void set_master_access(ulong master_access, const Restrictions &restrictions);
+  void set_master_access(Access_bitmask master_access,
+                         const Restrictions &restrictions);
 
   /**
     Check if a an account has been assigned to the security context
@@ -244,20 +254,20 @@ class Security_context {
    *                 privileges.
     @return True if the security context fulfills the access requirements.
   */
-  bool check_access(ulong want_access, const std::string &db_name = "",
+  bool check_access(Access_bitmask want_access, const std::string &db_name = "",
                     bool match_any = false);
 
   /**
    Returns the schema level effective privileges (with applied roles)
    for the currently active schema.
   */
-  ulong current_db_access() const;
+  Access_bitmask current_db_access() const;
 
   /**
     Cache the schema level effective privileges (apply roles first!) for the
     currently active schema.
   */
-  void cache_current_db_access(ulong db_access);
+  void cache_current_db_access(Access_bitmask db_access);
 
   /**
     Getter method for member m_password_expired.
@@ -294,7 +304,7 @@ class Security_context {
 
   void execute_drop_policy(void);
 
-  bool is_access_restricted_on_db(ulong want_access,
+  bool is_access_restricted_on_db(Access_bitmask want_access,
                                   const std::string &db_name) const;
 
   void clear_db_restrictions();
@@ -310,12 +320,13 @@ class Security_context {
   void init();
   void destroy();
   void copy_security_ctx(const Security_context &src_sctx);
-  ulong filter_access(const ulong access, const std::string &db_name) const;
+  Access_bitmask filter_access(const Access_bitmask access,
+                               const std::string &db_name) const;
   void init_restrictions(const Restrictions &restrictions);
   std::pair<bool, bool> fetch_global_grant(const ACL_USER &acl_user,
                                            const std::string &privilege,
                                            bool cumulative = false);
-  bool has_table_access(ulong priv, Table_ref *table);
+  bool has_table_access(Access_bitmask priv, Table_ref *table);
 
  private:
   /**
@@ -355,12 +366,12 @@ class Security_context {
   /**
     Global privileges from mysql.user.
   */
-  ulong m_master_access;
+  Access_bitmask m_master_access;
 
   /**
     Privileges for current db
   */
-  ulong m_db_access;
+  Access_bitmask m_db_access;
 
   /**
     password expiration flag.
@@ -451,20 +462,22 @@ inline LEX_CSTRING Security_context::external_user() const {
   return ext_user;
 }
 
-inline ulong Security_context::master_access() const { return m_master_access; }
+inline Access_bitmask Security_context::master_access() const {
+  return m_master_access;
+}
 
 inline const Restrictions Security_context::restrictions() const {
   return m_restrictions;
 }
 
-inline void Security_context::set_master_access(ulong master_access) {
+inline void Security_context::set_master_access(Access_bitmask master_access) {
   DBUG_TRACE;
   m_master_access = master_access;
-  DBUG_PRINT("info", ("Cached master access is %lu", m_master_access));
+  DBUG_PRINT("info", ("Cached master access is %" PRIu32, m_master_access));
 }
 
 inline void Security_context::set_master_access(
-    ulong master_access, const Restrictions &restrictions) {
+    Access_bitmask master_access, const Restrictions &restrictions) {
   set_master_access(master_access);
   init_restrictions(restrictions);
 }
@@ -477,9 +490,12 @@ inline bool Security_context::has_account_assigned() const {
   return m_priv_host[0] != '\0';
 }
 
-inline ulong Security_context::current_db_access() const { return m_db_access; }
+inline Access_bitmask Security_context::current_db_access() const {
+  return m_db_access;
+}
 
-inline void Security_context::cache_current_db_access(ulong db_access) {
+inline void Security_context::cache_current_db_access(
+    Access_bitmask db_access) {
   m_db_access = db_access;
 }
 

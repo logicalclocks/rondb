@@ -1,18 +1,19 @@
 #ifndef ITEM_GEOFUNC_INCLUDED
 #define ITEM_GEOFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -245,7 +246,7 @@ class Item_func_geometry_from_text : public Item_geometry_func {
                                Item *option, Functype functype)
       : Item_geometry_func(pos, a, srid, option), m_functype(functype) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override;
   String *val_str(String *) override;
   bool resolve_type(THD *thd) override {
@@ -312,7 +313,7 @@ class Item_func_geometry_from_wkb : public Item_geometry_func {
                               Functype functype)
       : Item_geometry_func(pos, a, srid, option), m_functype(functype) {}
 
-  bool itemize(Parse_context *pc, Item **res) override;
+  bool do_itemize(Parse_context *pc, Item **res) override;
   const char *func_name() const override;
   String *val_str(String *) override;
 };
@@ -338,7 +339,7 @@ class Item_func_as_wkb : public Item_geometry_func {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_GEOMETRY)) return true;
     if (param_type_is_default(thd, 1, 2)) return true;
     if (Item_geometry_func::resolve_type(thd)) return true;
-    set_data_type_blob(Field::MAX_LONG_BLOB_WIDTH);
+    set_data_type_blob(MYSQL_TYPE_LONG_BLOB, Field::MAX_LONG_BLOB_WIDTH);
     return false;
   }
 };
@@ -1665,6 +1666,7 @@ class Item_func_distance : public Item_real_func {
   }
 
   double val_real() override;
+  enum Functype functype() const override { return SP_DISTANCE_FUNC; }
   const char *func_name() const override { return "st_distance"; }
 };
 

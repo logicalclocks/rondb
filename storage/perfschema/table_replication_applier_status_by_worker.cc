@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -66,7 +67,7 @@ Plugin_table table_replication_applier_status_by_worker::m_table_def(
     "  LAST_ERROR_TIMESTAMP TIMESTAMP(6) not null,\n"
     "  PRIMARY KEY (CHANNEL_NAME, WORKER_ID) USING HASH,\n"
     "  KEY (THREAD_ID) USING HASH,\n"
-    "  LAST_APPLIED_TRANSACTION CHAR(57),\n"
+    "  LAST_APPLIED_TRANSACTION CHAR(90),\n"
     "  LAST_APPLIED_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP TIMESTAMP(6)\n"
     "                                                     not null,\n"
     "  LAST_APPLIED_TRANSACTION_IMMEDIATE_COMMIT_TIMESTAMP TIMESTAMP(6)\n"
@@ -75,7 +76,7 @@ Plugin_table table_replication_applier_status_by_worker::m_table_def(
     "                                                 not null,\n"
     "  LAST_APPLIED_TRANSACTION_END_APPLY_TIMESTAMP TIMESTAMP(6)\n"
     "                                               not null,\n"
-    "  APPLYING_TRANSACTION CHAR(57),\n"
+    "  APPLYING_TRANSACTION CHAR(90),\n"
     "  APPLYING_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP TIMESTAMP(6)\n"
     "                                                 not null,\n"
     "  APPLYING_TRANSACTION_IMMEDIATE_COMMIT_TIMESTAMP TIMESTAMP(6)\n"
@@ -545,7 +546,7 @@ void table_replication_applier_status_by_worker::populate_trx_info(
     Trx_monitoring_info const &applying_trx,
     Trx_monitoring_info const &last_applied_trx) {
   // The processing info is always visible
-  applying_trx.copy_to_ps_table(global_sid_map, m_row.applying_trx,
+  applying_trx.copy_to_ps_table(global_tsid_map, m_row.applying_trx,
                                 &m_row.applying_trx_length,
                                 &m_row.applying_trx_original_commit_timestamp,
                                 &m_row.applying_trx_immediate_commit_timestamp,
@@ -557,7 +558,7 @@ void table_replication_applier_status_by_worker::populate_trx_info(
                                 &m_row.applying_trx_retries_count);
 
   last_applied_trx.copy_to_ps_table(
-      global_sid_map, m_row.last_applied_trx, &m_row.last_applied_trx_length,
+      global_tsid_map, m_row.last_applied_trx, &m_row.last_applied_trx_length,
       &m_row.last_applied_trx_original_commit_timestamp,
       &m_row.last_applied_trx_immediate_commit_timestamp,
       &m_row.last_applied_trx_start_apply_timestamp,

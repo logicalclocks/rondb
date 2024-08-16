@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -74,9 +75,9 @@ Item_row::Item_row(Item *head, const mem_root_deque<Item *> &tail)
   }
 }
 
-bool Item_row::itemize(Parse_context *pc, Item **res) {
+bool Item_row::do_itemize(Parse_context *pc, Item **res) {
   if (skip_itemize(res)) return false;
-  if (super::itemize(pc, res)) return true;
+  if (super::do_itemize(pc, res)) return true;
   for (uint i = 0; i < arg_count; i++) {
     if (items[i]->itemize(pc, &items[i])) return true;
   }
@@ -91,7 +92,7 @@ void Item_row::illegal_method_call(const char *method [[maybe_unused]]) const {
 }
 
 bool Item_row::fix_fields(THD *thd, Item **) {
-  assert(fixed == 0);
+  assert(!fixed);
   null_value = false;
   set_nullable(false);
   bool types_assigned = true;
@@ -129,16 +130,21 @@ void Item_row::cleanup() {
   Item::cleanup();
 }
 
-void Item_row::split_sum_func(THD *thd, Ref_item_array ref_item_array,
+bool Item_row::split_sum_func(THD *thd, Ref_item_array ref_item_array,
                               mem_root_deque<Item *> *fields) {
   Item **arg, **arg_end;
-  for (arg = items, arg_end = items + arg_count; arg != arg_end; arg++)
-    (*arg)->split_sum_func2(thd, ref_item_array, fields, arg, true);
+  for (arg = items, arg_end = items + arg_count; arg != arg_end; arg++) {
+    if ((*arg)->split_sum_func2(thd, ref_item_array, fields, arg, true)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void Item_row::update_used_tables() {
   used_tables_cache = 0;
-  m_accum_properties = 0;
+  // Reset all flags except Grouping Set dependency
+  m_accum_properties &= PROP_HAS_GROUPING_SET_DEP;
   not_null_tables_cache = 0;
   for (uint i = 0; i < arg_count; i++) {
     items[i]->update_used_tables();
@@ -203,6 +209,19 @@ Item *Item_row::transform(Item_transformer transformer, uchar *arg) {
     if (items[i] == nullptr) return nullptr; /* purecov: inspected */
   }
   return (this->*transformer)(arg);
+}
+
+Item *Item_row::compile(Item_analyzer analyzer, uchar **arg_p,
+                        Item_transformer transformer, uchar *arg_t) {
+  if (!(this->*analyzer)(arg_p)) return this;
+  for (uint i = 0; i < arg_count; i++) {
+    uchar *arg_v = *arg_p;
+    Item *new_item = items[i]->compile(analyzer, &arg_v, transformer, arg_t);
+    if (new_item == nullptr) return nullptr;
+    if (items[i] != new_item)
+      current_thd->change_item_tree(&items[i], new_item);
+  }
+  return (this->*transformer)(arg_t);
 }
 
 void Item_row::bring_value() {

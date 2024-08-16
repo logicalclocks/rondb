@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -99,6 +100,19 @@ class Until_option {
     return ret;
   }
 
+  /**
+     check if the until option is waiting for more transactions to be read from
+     the relay log.
+
+     @return bool
+       @retval true all log events where read.
+       @retval false waiting for more log events to be read.
+  */
+  bool is_satisfied_all_transactions_read_from_relay_log() {
+    DBUG_TRACE;
+    return check_all_transactions_read_from_relay_log();
+  }
+
  protected:
   Relay_log_info *m_rli;
 
@@ -112,6 +126,7 @@ class Until_option {
   virtual bool check_at_start_slave() = 0;
   virtual bool check_before_dispatching_event(const Log_event *ev) = 0;
   virtual bool check_after_dispatching_event() = 0;
+  virtual bool check_all_transactions_read_from_relay_log() = 0;
 };
 
 /**
@@ -134,8 +149,8 @@ class Until_position : public Until_option {
   /**
      Initialize the until position when starting the slave.
 
-     @param[in] log_name the log name in START SLAVE UNTIL option.
-     @param[in] log_pos the log position in START SLAVE UNTIL option.
+     @param[in] log_name the log name in START REPLICA UNTIL option.
+     @param[in] log_pos the log position in START REPLICA UNTIL option.
 
      @return int
        @retval 0 if succeeds.
@@ -184,7 +199,7 @@ class Until_position : public Until_option {
   bool check_position(const char *log_name, my_off_t log_pos);
 
  private:
-  /* They store the log name and log position in START SLAVE UNTIL option */
+  /* They store the log name and log position in START REPLICA UNTIL option */
   char m_until_log_name[FN_REFLEN];
   ulonglong m_until_log_pos;
 
@@ -199,7 +214,7 @@ class Until_position : public Until_option {
 /**
    @class Until_master_position
 
-   It is for UNTIL master_log_file and master_log_pos
+   It is for UNTIL SOURCE_LOG_FILE and SOURCE_LOG_POS
 */
 class Until_master_position : public Until_position {
  public:
@@ -217,6 +232,7 @@ class Until_master_position : public Until_position {
   bool check_at_start_slave() override;
   bool check_before_dispatching_event(const Log_event *ev) override;
   bool check_after_dispatching_event() override;
+  bool check_all_transactions_read_from_relay_log() override;
 };
 
 /**
@@ -232,6 +248,7 @@ class Until_relay_position : public Until_position {
   bool check_at_start_slave() override;
   bool check_before_dispatching_event(const Log_event *ev) override;
   bool check_after_dispatching_event() override;
+  bool check_all_transactions_read_from_relay_log() override;
 };
 
 /**
@@ -247,7 +264,7 @@ class Until_gtids : public Until_option {
   /**
      Initialize the until gtids when starting the slave.
 
-     @param[in] gtid_set_str the gtid set in START SLAVE UNTIL option.
+     @param[in] gtid_set_str the gtid set in START REPLICA UNTIL option.
 
      @return int
        @retval 0 if succeeds.
@@ -257,7 +274,7 @@ class Until_gtids : public Until_option {
 
  protected:
   /**
-    Stores the gtids of START SLAVE UNTIL SQL_*_GTIDS.
+    Stores the gtids of START REPLICA UNTIL SQL_*_GTIDS.
     Each time a gtid is about to be processed, we check if it is in the
     set. Depending on until_condition, SQL thread is stopped before or
     after applying the gtid.
@@ -265,7 +282,7 @@ class Until_gtids : public Until_option {
   Gtid_set m_gtids;
 
   Until_gtids(Relay_log_info *rli)
-      : Until_option(rli), m_gtids(global_sid_map) {}
+      : Until_option(rli), m_gtids(global_tsid_map) {}
 };
 
 /**
@@ -281,6 +298,7 @@ class Until_before_gtids : public Until_gtids {
   bool check_at_start_slave() override;
   bool check_before_dispatching_event(const Log_event *ev) override;
   bool check_after_dispatching_event() override;
+  bool check_all_transactions_read_from_relay_log() override;
 };
 
 /**
@@ -291,11 +309,51 @@ class Until_before_gtids : public Until_gtids {
 class Until_after_gtids : public Until_gtids {
  public:
   Until_after_gtids(Relay_log_info *rli) : Until_gtids(rli) {}
+  ~Until_after_gtids() override;
 
  private:
   bool check_at_start_slave() override;
   bool check_before_dispatching_event(const Log_event *ev) override;
   bool check_after_dispatching_event() override;
+  bool check_all_transactions_read_from_relay_log() override;
+
+  /**
+   Checks if all the customer specified transactions have been executed or not.
+
+   @return bool
+     @retval true   all customer specified transactions have been executed
+     @retval false  customer specified all transactions have not been executed
+                    yet
+  */
+  bool check_all_transactions_executed();
+
+  /**
+   If last transaction has ben completely received wait for the worker thread
+   to finish executing the transactions.
+   @return bool
+     @retval true   error happened in wait like worker error out, shutdown etc.
+     @retval false  all specified transactions have been executed
+  */
+  bool wait_for_gtid_set();
+
+  /**
+     Print message to the error log for the last message.
+     Caller of the function should hold a read or write lock on
+     global_tsid_lock.
+  */
+  void last_transaction_executed_message();
+
+  /*
+    Gtid_set of transactions read from the Relay Log for application in this
+    channel and known exectuted GTID in the server, transactions may still be in
+    execution in worker threads.
+  */
+  std::unique_ptr<Gtid_set> m_gtids_known_to_channel{nullptr};
+
+  /*
+    Last transaction has been received and dispatched to worker.
+  */
+  bool m_last_transaction_in_execution{false};
 };
 
 /**
@@ -313,7 +371,7 @@ class Until_view_id : public Until_option {
   /**
      Initialize the view_id when starting the slave.
 
-     @param[in] view_id the view_id in START SLAVE UNTIO option.
+     @param[in] view_id the view_id in START REPLICA UNTIO option.
 
      @return int
        @retval 0 if succeeds.
@@ -341,6 +399,7 @@ class Until_view_id : public Until_option {
   bool check_at_start_slave() override;
   bool check_before_dispatching_event(const Log_event *ev) override;
   bool check_after_dispatching_event() override;
+  bool check_all_transactions_read_from_relay_log() override;
 };
 
 /**
@@ -361,6 +420,7 @@ class Until_mts_gap : public Until_option {
   bool check_at_start_slave() override;
   bool check_before_dispatching_event(const Log_event *ev) override;
   bool check_after_dispatching_event() override;
+  bool check_all_transactions_read_from_relay_log() override;
 };
 
 #endif  // DEFINED_RPL_REPLICA_UNTIL_OPTIONS_H

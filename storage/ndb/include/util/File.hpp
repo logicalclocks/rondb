@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,22 +29,31 @@
 #include <ndb_global.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <io.h>
+#define S_IRUSR _S_IREAD
+#define S_IRGRP _S_IREAD
+#define S_IROTH _S_IREAD
+#define S_IWUSR _S_IWRITE
+#define S_IWGRP _S_IWRITE
+#define S_IWOTH _S_IWRITE
+#endif
+
 /**
  * This class provides a file abstraction . It has operations
  * to create, read, write and delete a file.
  *
  * @version #@ $Id: File.hpp,v 1.5 2002/04/26 13:15:38 ejonore Exp $
  */
-class File_class
-{
-public:
+class File_class {
+ public:
   /**
    * Returns time for last contents modification of a file.
    *
    * @param aFileName a filename to check.
    * @return the time for last contents modificaton of the file.
    */
-  static time_t mtime(const char* aFileName);      
+  static time_t mtime(const char *aFileName);
 
   /**
    * Returns true if the file exist.
@@ -51,7 +61,7 @@ public:
    * @param aFileName a filename to check.
    * @return true if the file exists.
    */
-  static bool exists(const char* aFileName);      
+  static bool exists(const char *aFileName);
 
   /**
    * Returns the size of a file.
@@ -59,7 +69,7 @@ public:
    * @param f a pointer to a FILE descriptor.
    * @return the size of the file.
    */
-  static ndb_off_t size(FILE* f);
+  static ndb_off_t size(FILE *f);
 
   /**
    * Renames a file.
@@ -68,7 +78,7 @@ public:
    * @param newFileName the new name of the file.
    * @return true if successful.
    */
-  static bool rename(const char* currFileName, const char* newFileName);
+  static bool rename(const char *currFileName, const char *newFileName);
 
   /**
    * Removes/deletes a file.
@@ -76,23 +86,24 @@ public:
    * @param aFileName the file to remove.
    * @return true if successful.
    */
-  static bool remove(const char* aFileName);      
-  
+  static bool remove(const char *aFileName);
+
   /**
    * Default constructor.
    */
   File_class();
 
   /**
-   * Creates a new File  with the specified filename and file mode. 
+   * Creates a new File  with the specified filename and file mode.
    * The real file itself will not be created unless open() is called!
    *
    * To see the available file modes use 'man 3 fopen'.
    *
    * @param aFileName a filename.
-   * @param mode the mode which the file should be opened/created with, default "r".
+   * @param mode the mode which the file should be opened/created with, default
+   * "r".
    */
-  File_class(const char* aFileName, const char* mode = "r");
+  File_class(const char *aFileName, const char *mode = "r");
 
   /**
    * Destructor.
@@ -100,7 +111,7 @@ public:
   ~File_class();
 
   /**
-   * Opens/creates the file. If open() fails then 'errno' and perror() 
+   * Opens/creates the file. If open() fails then 'errno' and perror()
    * should be used to determine the exact failure cause.
    *
    * @return true if successful. Check errno if unsuccessful.
@@ -109,14 +120,14 @@ public:
 
   /**
    * Opens/creates the file with the specified name and mode.
-   * If open() fails then 'errno' and perror() should be used to 
+   * If open() fails then 'errno' and perror() should be used to
    * determine the exact failure cause.
    *
    * @param aFileName the file to open.
    * @param mode the file mode to use.
-   * @return true if successful. Check errno if unsuccessful.   
+   * @return true if successful. Check errno if unsuccessful.
    */
-  bool open(const char* aFileName, const char* mode);
+  bool open(const char *aFileName, const char *mode);
 
   /**
    * Check if the file is open
@@ -141,11 +152,11 @@ public:
    * Read from the file. See fread() for more info.
    *
    * @param buf the buffer to read into.
-   * @param itemSize the size of each item. 
+   * @param itemSize the size of each item.
    * @param nitems read max n number of items.
    * @return 0 if successful.
    */
-  int read(void* buf, size_t itemSize, size_t nitems) const;
+  int read(void *buf, size_t itemSize, size_t nitems) const;
 
   /**
    * Read char from the file. See fread() for more info.
@@ -155,7 +166,7 @@ public:
    * @param length the length of the buffer.
    * @return 0 if successful.
    */
-  int readChar(char* buf, long start, long length) const;  
+  int readChar(char *buf, long start, long length) const;
 
   /**
    * Read chars from the file. See fread() for more info.
@@ -163,17 +174,17 @@ public:
    * @param buf the buffer to read into.
    * @return 0 if successful.
    */
-  int readChar(char* buf);  
+  int readChar(char *buf);
 
   /**
    * Write to file. See fwrite() for more info.
    *
    * @param buf the buffer to read from.
-   * @param itemSize the size of each item. 
+   * @param itemSize the size of each item.
    * @param nitems write max n number of items.
    * @return 0 if successful.
    */
-  int write(const void* buf, size_t itemSize, size_t nitems);     
+  int write(const void *buf, size_t itemSize, size_t nitems);
 
   /**
    * Write chars to file. See fwrite() for more info.
@@ -183,7 +194,7 @@ public:
    * @param length the length of the buffer.
    * @return 0 if successful.
    */
-  int writeChar(const char* buf, long start, long length);   
+  int writeChar(const char *buf, long start, long length);
 
   /**
    * Write chars to file. See fwrite() for more info.
@@ -191,7 +202,7 @@ public:
    * @param buf the buffer to read from.
    * @return 0 if successful.
    */
-  int writeChar(const char* buf); 
+  int writeChar(const char *buf);
 
   /**
    * Returns the file size.
@@ -205,7 +216,7 @@ public:
    *
    * @return the filename.
    */
-  const char* getName() const;
+  const char *getName() const;
 
   /**
    * Flush the buffer.
@@ -214,42 +225,32 @@ public:
    */
   int flush() const;
 
-private:
-  FILE* m_file;
+ private:
+  FILE *m_file;
   char m_fileName[PATH_MAX];
-  const char* m_fileMode;
+  const char *m_fileMode;
   /* Prohibit */
-  File_class (const File_class& aCopy);
-  File_class operator = (const File_class&); 
-  bool operator == (const File_class&);
+  File_class(const File_class &aCopy);
+  File_class operator=(const File_class &);
+  bool operator==(const File_class &);
 };
 
 /**
  * simple File guard to make sure no file is left open
  */
-class FileGuard
-{
-  FILE * f;
-public:
+class FileGuard {
+  FILE *f;
 
-  FileGuard(FILE * f1)
-    : f(f1)
-  {
-  }
+ public:
+  FileGuard(FILE *f1) : f(f1) {}
 
-  void close()
-  {
-    if (f)
-    {
+  void close() {
+    if (f) {
       fclose(f);
       f = nullptr;
     }
   }
 
-  ~FileGuard()
-  {
-    close();
-  }
+  ~FileGuard() { close(); }
 };
 #endif
-

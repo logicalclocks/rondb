@@ -1,18 +1,19 @@
 /*****************************************************************************
 
 Copyright (c) 2009, 2010 Facebook, Inc.
-Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -488,7 +489,7 @@ uint64_t use_pclmul::polynomial_mul_rev(uint32_t rev_u) {
 #ifdef CRC32_ARM64
 /** This function performs just a "type casts" from uint64_t to poly64_t.
 @param[in]  w   The 64 coefficients of the polynomial
-@return the polynomial w(x) = sum_{i=0}^{63} { (w&(1ULL<<i)) * x^{i} }
+@return the polynomial w(x) = sum_{i=0}^{63} { (w&(1ULL << i)) * x^{i} }
 */
 static inline poly64_t uint64_t_to_poly_64_t(uint64_t w) {
   /* This should compile down to nothing */
@@ -497,7 +498,8 @@ static inline poly64_t uint64_t_to_poly_64_t(uint64_t w) {
 /** This function takes a polynomial and extracts the 64 least significant
 coefficients.
 @param[in]  w   The polynomial w(x) = sum_{i=0}^{127} { a_i * x^{i} }
-@return The lowest 64 coefficients, i.e. (result & (1ULL<<i)) == a_i for 0<=i<64
+@return
+   The lowest 64 coefficients, i.e. (result & (1ULL << i)) == a_i for 0<=i<64
 */
 static inline uint64_t less_significant_half_of_poly128_t_to_uint64_t(
     poly128_t w) {

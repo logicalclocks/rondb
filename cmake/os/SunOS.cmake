@@ -1,15 +1,16 @@
-# Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -45,11 +46,8 @@ ENDIF()
 STRING_APPEND(CMAKE_C_LINK_FLAGS   " -m64")
 STRING_APPEND(CMAKE_CXX_LINK_FLAGS " -m64")
 
-# We require at least SunStudio 12.6 (CC 5.15)
 IF(NOT FORCE_UNSUPPORTED_COMPILER)
-  IF(MY_COMPILER_IS_SUNPRO)
-    MESSAGE(FATAL_ERROR "Oracle Studio is not supported.")
-  ELSEIF(MY_COMPILER_IS_CLANG)
+  IF(MY_COMPILER_IS_CLANG)
     MESSAGE(WARNING "Clang is experimental!!")
   ELSEIF(MY_COMPILER_IS_GNU)
     # 9.2.0 generated code which dumped core in optimized mode.
@@ -78,4 +76,5 @@ SET(CMAKE_THREAD_LIBS_INIT -lpthread CACHE INTERNAL "" FORCE)
 # Solaris specific large page support
 CHECK_SYMBOL_EXISTS(MHA_MAPSIZE_VA sys/mman.h  HAVE_SOLARIS_LARGE_PAGES)
 
+SET(LINK_FLAG_NO_UNDEFINED "-Wl,--no-undefined")
 SET(LINK_FLAG_Z_DEFS "-z,defs")

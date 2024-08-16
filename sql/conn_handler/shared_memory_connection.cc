@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,14 +30,18 @@
 #include "channel_info.h"                // Channel_info
 #include "connection_handler_manager.h"  // Connection_handler_manager
 #include "init_net_server_extension.h"   // init_net_server_extension
+#include "m_string.h"
 #include "my_byteorder.h"
 #include "my_shm_defaults.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/strings/int2str.h"
+#include "nulls.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"  // connection_events_loop_aborted
 #include "sql/psi_memory_key.h"
 #include "sql/sql_class.h"  // THD
-#include "violite.h"        // Vio
+#include "strxmov.h"
+#include "violite.h"  // Vio
 
 ///////////////////////////////////////////////////////////////////////////
 // Channel_info_shared_mem implementation
@@ -90,7 +95,7 @@ class Channel_info_shared_mem : public Channel_info {
   THD *create_thd() override {
     THD *thd = Channel_info::create_thd();
 
-    if (thd != NULL) {
+    if (thd != nullptr) {
       init_net_server_extension(thd);
       thd->security_context()->set_host_ptr(my_localhost, strlen(my_localhost));
     }
@@ -133,7 +138,7 @@ void Shared_mem_listener::close_shared_mem() {
 }
 
 bool Shared_mem_listener::setup_listener() {
-  const char *errmsg = NULL;
+  const char *errmsg = nullptr;
   LogErr(INFORMATION_LEVEL, ER_CONN_SHM_LISTENER);
   /*
     get enough space base-name + '_' + longest suffix we might ever send
@@ -164,20 +169,20 @@ bool Shared_mem_listener::setup_listener() {
   m_suffix_pos = strxmov(m_temp_buffer, m_shared_mem_name.c_str(), "_", NullS);
   my_stpcpy(m_suffix_pos, "CONNECT_REQUEST");
   if ((m_event_connect_request =
-           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == 0) {
+           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create request event";
     goto error;
   }
   my_stpcpy(m_suffix_pos, "CONNECT_ANSWER");
   if ((m_event_connect_answer =
-           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == 0) {
+           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create answer event";
     goto error;
   }
 
   my_stpcpy(m_suffix_pos, "CONNECT_NAMED_MUTEX");
   m_connect_named_mutex = CreateMutex(m_sa_mutex, false, m_temp_buffer);
-  if (m_connect_named_mutex == NULL) {
+  if (m_connect_named_mutex == nullptr) {
     errmsg = "Unable to create connect named mutex.";
     goto error;
   }
@@ -189,12 +194,12 @@ bool Shared_mem_listener::setup_listener() {
   my_stpcpy(m_suffix_pos, "CONNECT_DATA");
   if ((m_connect_file_map = CreateFileMapping(
            INVALID_HANDLE_VALUE, m_sa_mapping, PAGE_READWRITE, 0,
-           sizeof(m_connect_number), m_temp_buffer)) == 0) {
+           sizeof(m_connect_number), m_temp_buffer)) == nullptr) {
     errmsg = "Could not create file mapping";
     goto error;
   }
   if ((m_connect_map = (char *)MapViewOfFile(m_connect_file_map, FILE_MAP_WRITE,
-                                             0, 0, sizeof(DWORD))) == 0) {
+                                             0, 0, sizeof(DWORD))) == nullptr) {
     errmsg = "Could not create shared memory service";
     goto error;
   }
@@ -218,7 +223,7 @@ Channel_info *Shared_mem_listener::listen_for_connection_event() {
   /*
     it can be after shutdown command
   */
-  if (connection_events_loop_aborted()) return NULL;
+  if (connection_events_loop_aborted()) return nullptr;
 
   char connect_number_char[22];
   longlong10_to_str(m_connect_number, connect_number_char, -10);
@@ -234,49 +239,49 @@ Channel_info *Shared_mem_listener::listen_for_connection_event() {
   m_suffix_pos = strxmov(m_temp_buffer, m_shared_mem_name.c_str(), "_",
                          connect_number_char, "_", NullS);
 
-  const char *errmsg = NULL;
-  ulong smem_buffer_length = shared_memory_buffer_length + 4;
+  const char *errmsg = nullptr;
+  const ulong smem_buffer_length = shared_memory_buffer_length + 4;
 
   my_stpcpy(m_suffix_pos, "DATA");
-  if ((m_handle_client_file_map =
-           CreateFileMapping(INVALID_HANDLE_VALUE, m_sa_mapping, PAGE_READWRITE,
-                             0, smem_buffer_length, m_temp_buffer)) == 0) {
+  if ((m_handle_client_file_map = CreateFileMapping(
+           INVALID_HANDLE_VALUE, m_sa_mapping, PAGE_READWRITE, 0,
+           smem_buffer_length, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create file mapping";
     goto errorconn;
   }
   if ((m_handle_client_map =
            (char *)MapViewOfFile(m_handle_client_file_map, FILE_MAP_WRITE, 0, 0,
-                                 smem_buffer_length)) == 0) {
+                                 smem_buffer_length)) == nullptr) {
     errmsg = "Could not create memory map";
     goto errorconn;
   }
   my_stpcpy(m_suffix_pos, "CLIENT_WROTE");
   if ((m_event_client_wrote =
-           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == 0) {
+           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create client write event";
     goto errorconn;
   }
   my_stpcpy(m_suffix_pos, "CLIENT_READ");
   if ((m_event_client_read =
-           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == 0) {
+           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create client read event";
     goto errorconn;
   }
   my_stpcpy(m_suffix_pos, "SERVER_READ");
   if ((m_event_server_read =
-           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == 0) {
+           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create server read event";
     goto errorconn;
   }
   my_stpcpy(m_suffix_pos, "SERVER_WROTE");
   if ((m_event_server_wrote =
-           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == 0) {
+           CreateEvent(m_sa_event, false, false, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create server write event";
     goto errorconn;
   }
   my_stpcpy(m_suffix_pos, "CONNECTION_CLOSED");
   if ((m_event_conn_closed =
-           CreateEvent(m_sa_event, true, false, m_temp_buffer)) == 0) {
+           CreateEvent(m_sa_event, true, false, m_temp_buffer)) == nullptr) {
     errmsg = "Could not create closed connection event";
     goto errorconn;
   }
@@ -287,7 +292,7 @@ Channel_info *Shared_mem_listener::listen_for_connection_event() {
         m_handle_client_file_map, m_handle_client_map, m_event_server_wrote,
         m_event_server_read, m_event_client_wrote, m_event_client_read,
         m_event_conn_closed);
-    if (channel_info != NULL) {
+    if (channel_info != nullptr) {
       int4store(m_connect_map, m_connect_number);
       if (!SetEvent(m_event_connect_answer)) {
         errmsg = "Could not send answer event";
@@ -317,7 +322,7 @@ errorconn:
   if (m_event_client_wrote) CloseHandle(m_event_client_wrote);
   if (m_event_client_read) CloseHandle(m_event_client_read);
   if (m_event_conn_closed) CloseHandle(m_event_conn_closed);
-  return NULL;
+  return nullptr;
 }
 
 void Shared_mem_listener::close_listener() {

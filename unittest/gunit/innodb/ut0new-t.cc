@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,25 +38,7 @@ namespace innodb_ut0new_unittest {
 static auto pfs_key = 12345;
 
 inline bool ptr_is_suitably_aligned(void *ptr) {
-#if (defined(LINUX_RHEL6) || (defined(LINUX_RHEL7))) && (SIZEOF_VOIDP == 4)
-  // This is a "workaround" for 32-bit OL6/7 platform which do not respect
-  // the alignment requirements. TL;DR 32-bit OL6/7/8 have a violation so that
-  // the pointer returned by malloc is not suitably aligned
-  // (ptr % alignof(max_align_t) is _not_ 0). This was found out through the
-  // suite of ut0new* unit-tests and since then these unit-tests are failing
-  // on those platforms.
-  //
-  // For more details see
-  // https://mybug.mysql.oraclecorp.com/orabugs/bug.php?id=33137030.
-  //
-  // As it stands, issue is identified and confirmed but OL6 and OL7 platforms
-  // will not receive a backport of a fix that has been deployed to OL8. By
-  // returning true, we allow the unit-tests to continue running in faith that
-  // nothing will become broken.
-  return true;
-#else
   return reinterpret_cast<std::uintptr_t>(ptr) % alignof(max_align_t) == 0;
-#endif
 }
 
 /* test edge cases */

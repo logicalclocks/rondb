@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,12 +37,12 @@
 
 #include "map_helpers.h"
 #include "mutex_lock.h"
-#include "my_loglevel.h"
 #include "my_psi_config.h"
 #include "my_systime.h"  // my_micro_time()
 #include "mysql/components/services/bits/mysql_mutex_bits.h"
 #include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "thr_mutex.h"
 
 #ifndef _WIN32
@@ -61,13 +62,13 @@
 #include <unordered_map>
 #include <utility>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_sys.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"  // specialflag
@@ -332,9 +333,7 @@ static void add_hostname(const char *ip_string, const char *hostname,
                          bool validated, Host_errors *errors) {
   mysql_mutex_assert_not_owner(&hostname_cache_mutex);
 
-  if (specialflag & SPECIAL_NO_HOST_CACHE) return;
-
-  ulonglong now = my_micro_time();
+  const ulonglong now = my_micro_time();
 
   MUTEX_LOCK(hostname_lock, &hostname_cache_mutex);
   if (hostname_cache_size() != 0)
@@ -348,7 +347,7 @@ void inc_host_errors(const char *ip_string, Host_errors *errors) {
 
   if (!ip_string) return;
 
-  ulonglong now = my_micro_time();
+  const ulonglong now = my_micro_time();
 
   MUTEX_LOCK(hostname_lock, &hostname_cache_mutex);
 
@@ -470,39 +469,39 @@ int ip_to_hostname(struct sockaddr_storage *ip_storage, const char *ip_string,
   }
 
   /* Check first if we have host name in the cache. */
-
-  if (!(specialflag & SPECIAL_NO_HOST_CACHE)) {
-    ulonglong now = my_micro_time();
-
+  {
     MUTEX_LOCK(hostname_lock, &hostname_cache_mutex);
 
-    Host_entry *entry = hostname_cache_search(ip_string);
+    if (hostname_cache_size() > 0) {
+      Host_entry *entry = hostname_cache_search(ip_string);
 
-    if (entry) {
-      entry->m_last_seen = now;
-      *connect_errors = entry->m_errors.m_connect;
+      if (entry) {
+        const ulonglong now = my_micro_time();
+        entry->m_last_seen = now;
+        *connect_errors = entry->m_errors.m_connect;
 
-      if (entry->m_errors.m_connect >= max_connect_errors) {
-        entry->m_errors.m_host_blocked++;
-        entry->set_error_timestamps(now);
-        return RC_BLOCKED_HOST;
-      }
+        if (entry->m_errors.m_connect >= max_connect_errors) {
+          entry->m_errors.m_host_blocked++;
+          entry->set_error_timestamps(now);
+          return RC_BLOCKED_HOST;
+        }
 
-      /*
-        If there is an IP -> HOSTNAME association in the cache,
-        but for a hostname that was not validated,
-        do not return that hostname: perform the network validation again.
-      */
-      if (entry->m_host_validated) {
-        if (entry->m_hostname_length)
-          *hostname = my_strdup(key_memory_host_cache_hostname,
-                                entry->m_hostname, MYF(0));
+        /*
+          If there is an IP -> HOSTNAME association in the cache,
+          but for a hostname that was not validated,
+          do not return that hostname: perform the network validation again.
+        */
+        if (entry->m_host_validated) {
+          if (entry->m_hostname_length)
+            *hostname = my_strdup(key_memory_host_cache_hostname,
+                                  entry->m_hostname, MYF(0));
 
-        DBUG_PRINT("info", ("IP (%s) has been found in the cache. "
-                            "Hostname: '%s'",
-                            ip_string, (*hostname ? *hostname : "null")));
+          DBUG_PRINT("info", ("IP (%s) has been found in the cache. "
+                              "Hostname: '%s'",
+                              ip_string, (*hostname ? *hostname : "null")));
 
-        return 0;
+          return 0;
+        }
       }
     }
   }
@@ -557,13 +556,13 @@ int ip_to_hostname(struct sockaddr_storage *ip_storage, const char *ip_string,
   });
 
   DBUG_EXECUTE_IF("getnameinfo_fake_max_length", {
-    std::string s(HOSTNAME_LENGTH, 'a');
+    const std::string s(HOSTNAME_LENGTH, 'a');
     strcpy(hostname_buffer, s.c_str());
     err_code = 0;
   });
 
   DBUG_EXECUTE_IF("getnameinfo_fake_max_length_plus_1", {
-    std::string s(HOSTNAME_LENGTH + 1, 'a');
+    const std::string s(HOSTNAME_LENGTH + 1, 'a');
     strcpy(hostname_buffer, s.c_str());
     err_code = 0;
   });

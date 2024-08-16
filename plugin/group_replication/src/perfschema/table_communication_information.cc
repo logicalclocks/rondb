@@ -1,8 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; version 2 of the License.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -15,6 +23,7 @@
 
 #include <mysql/psi/mysql_mutex.h>
 #include "my_time.h"
+#include "sql-common/json_dom.h"
 
 #include <iterator>
 #include <tuple>
@@ -40,6 +49,8 @@ namespace perfschema {
   A row in the replication_group_communication_information table.
 */
 struct Replication_group_communication_information {
+  // Json_wrapper suspicious_per_node;
+  std::string suspicious_per_node;
   uint32_t write_concurrency{0};
   Member_version mysql_version{0x00000};
   unsigned long single_writer_capable{0};
@@ -96,15 +107,31 @@ bool Replication_group_communication_information_table_handle::
   }
 
   for (const auto &preferred_leader : preferred_leaders) {
-    auto member_id =
-        group_member_mgr->get_group_member_info_by_member_id(preferred_leader);
-    if (member_id) row.found_preferred_leaders.emplace_back(member_id);
+    Group_member_info *member_info = new Group_member_info();
+    if (nullptr == member_info) {
+      return ERROR;
+    }
+
+    if (!group_member_mgr->get_group_member_info_by_member_id(preferred_leader,
+                                                              *member_info)) {
+      row.found_preferred_leaders.emplace_back(member_info);
+    } else {
+      delete member_info;
+    }
   }
 
   for (const auto &actual_leader : actual_leaders) {
-    auto member_id =
-        group_member_mgr->get_group_member_info_by_member_id(actual_leader);
-    if (member_id) row.found_actual_leaders.emplace_back(member_id);
+    Group_member_info *member_info = new Group_member_info();
+    if (nullptr == member_info) {
+      return ERROR;
+    }
+
+    if (!group_member_mgr->get_group_member_info_by_member_id(actual_leader,
+                                                              *member_info)) {
+      row.found_actual_leaders.emplace_back(member_info);
+    } else {
+      delete member_info;
+    }
   }
 
   // If we are running a version that does not support Single Leader,
@@ -125,6 +152,50 @@ bool Replication_group_communication_information_table_handle::
           local_member_info->get_allow_single_leader());
     }
   }
+
+  // Retrieve all active group nodes, get the number of suspicious from
+  // GCS and cross both informations in order to produce a JSON string
+  // that maps UUIDs from the servers and their suspicious
+  std::list<Gcs_node_suspicious> suspicious_list;
+  gcs_module->get_suspicious_count(suspicious_list);
+
+  auto all_active_members = group_member_mgr->get_all_members();
+
+  std::stringstream json_str;
+  json_str << "{";
+  // Foreach active member in the group...
+  for (const auto &active_member : *all_active_members) {
+    uint64_t number_of_suspicious = 0;
+
+    auto find_node_in_suspicious_list = [&](Gcs_node_suspicious &elem) {
+      return active_member->get_gcs_member_id().get_member_id().compare(
+                 elem.m_node_address) == 0;
+    };
+
+    //...find out if the node is the suspicious list using the GCS ID
+    auto found_active_member =
+        std::find_if(suspicious_list.begin(), suspicious_list.end(),
+                     find_node_in_suspicious_list);
+
+    // Save the number of suspicious. It is 0, if the node is not in the list.
+    if (found_active_member != suspicious_list.end())
+      number_of_suspicious = (*found_active_member).m_node_suspicious_count;
+
+    json_str << "\"";
+    json_str << active_member->get_uuid().c_str();
+    json_str << "\":";
+    json_str << number_of_suspicious;
+    json_str << ",";
+  }
+  json_str.seekp(-1, json_str.cur);
+  json_str << "}";
+
+  row.suspicious_per_node.assign(json_str.str());
+
+  for (auto active_member_info : *all_active_members) {
+    delete active_member_info;
+  }
+  delete all_active_members;
 
   return OK;
 }
@@ -238,6 +309,11 @@ int Pfs_table_communication_information::read_column_value(
           field, {t->row.single_writer_capable, false});
       break;
     }
+    case 5: {  // MEMBER_FAILURE_SUSPICIONS_COUNT
+      column_blob_service->set(field, t->row.suspicious_per_node.c_str(),
+                               t->row.suspicious_per_node.size());
+      break;
+    }
   }
   return 0;
 }
@@ -273,7 +349,11 @@ bool Pfs_table_communication_information::init() {
       "WRITE_CONSENSUS_LEADERS_ACTUAL LONGTEXT not null, "
       "WRITE_CONSENSUS_SINGLE_LEADER_CAPABLE BOOLEAN not null COMMENT 'What "
       "the option group_replication_paxos_single_leader was set to at the time "
-      "this member joined the group. '";
+      "this member joined the group. ',"
+      " MEMBER_FAILURE_SUSPICIONS_COUNT LONGTEXT "
+      "not null COMMENT 'A list of pairs between a group member address and "
+      "the number "
+      "of times the local node has seen it as suspected'";
   m_share.m_ref_length =
       sizeof Replication_group_communication_information_table_handle::
           current_pos;

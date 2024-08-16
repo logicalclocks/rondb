@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,14 +38,16 @@
 #include "common.h"
 #include "mysql/harness/config_option.h"
 #include "mysql/harness/config_parser.h"
+#include "mysql/harness/dynamic_config.h"
 #include "mysql/harness/loader.h"
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/plugin.h"
 #include "mysql/harness/plugin_config.h"
-
+#include "mysql/harness/section_config_exposer.h"
 #include "mysqlrouter/connection_pool.h"
 #include "mysqlrouter/connection_pool_component.h"
 #include "mysqlrouter/connection_pool_plugin_export.h"
+#include "mysqlrouter/supported_connection_pool_options.h"
 #include "scope_guard.h"
 
 IMPORT_LOG_FUNCTIONS()
@@ -52,16 +55,10 @@ IMPORT_LOG_FUNCTIONS()
 template <class T>
 using IntOption = mysql_harness::IntOption<T>;
 
-static constexpr const std::string_view kSectionName{"connection_pool"};
-
-static constexpr const char kMaxIdleServerConnections[]{
-    "max_idle_server_connections"};
-static constexpr const char kIdleTimeout[]{"idle_timeout"};
-
-static constexpr std::array supported_options{
-    kMaxIdleServerConnections,
-    kIdleTimeout,
-};
+static constexpr std::string_view kSectionName{"connection_pool"};
+static constexpr uint32_t kDefaultMaxIdleServerConnections{
+    0};                                            // disabled by default
+static constexpr uint32_t kDefaultIdleTimeout{5};  // in seconds
 
 class ConnectionPoolPluginConfig : public mysql_harness::BasePluginConfig {
  public:
@@ -72,23 +69,24 @@ class ConnectionPoolPluginConfig : public mysql_harness::BasePluginConfig {
       const mysql_harness::ConfigSection *section)
       : mysql_harness::BasePluginConfig(section),
         max_idle_server_connections(get_option(
-            section, kMaxIdleServerConnections, IntOption<uint32_t>{})),
-        idle_timeout(get_option(section, kIdleTimeout, IntOption<uint32_t>{})) {
-  }
+            section, connection_pool::options::kMaxIdleServerConnections,
+            IntOption<uint32_t>{})),
+        idle_timeout(get_option(section, connection_pool::options::kIdleTimeout,
+                                IntOption<uint32_t>{})) {}
 
-  std::string get_default(const std::string &option) const override {
+  std::string get_default(std::string_view option) const override {
     const std::map<std::string_view, std::string> defaults{
-        {kMaxIdleServerConnections, "0"},  // disabled by default
-        {kIdleTimeout, "5"},               // in seconds
+        {connection_pool::options::kMaxIdleServerConnections,
+         std::to_string(kDefaultMaxIdleServerConnections)},
+        {connection_pool::options::kIdleTimeout,
+         std::to_string(kDefaultIdleTimeout)},
     };
 
     auto it = defaults.find(option);
-
     return it == defaults.end() ? std::string() : it->second;
   }
 
-  [[nodiscard]] bool is_required(
-      const std::string & /* option */) const override {
+  [[nodiscard]] bool is_required(std::string_view /* option */) const override {
     return false;
   }
 };
@@ -150,6 +148,48 @@ const static std::array<const char *, 2> required = {{
     "io",
 }};
 
+namespace {
+
+class ConnectionPoolConfigExposer : public mysql_harness::SectionConfigExposer {
+ public:
+  using DC = mysql_harness::DynamicConfig;
+  ConnectionPoolConfigExposer(
+      bool initial, const ConnectionPoolPluginConfig &plugin_config,
+      const mysql_harness::ConfigSection &default_section)
+      : mysql_harness::SectionConfigExposer(initial, default_section,
+                                            DC::SectionId{kSectionName, ""}),
+        plugin_config_(plugin_config) {}
+
+  void expose() override {
+    expose_option(connection_pool::options::kMaxIdleServerConnections,
+                  plugin_config_.max_idle_server_connections,
+                  kDefaultMaxIdleServerConnectionsBootstrap, true);
+    expose_option(connection_pool::options::kIdleTimeout,
+                  plugin_config_.idle_timeout, kDefaultIdleTimeout);
+  }
+
+ private:
+  const ConnectionPoolPluginConfig &plugin_config_;
+};
+
+}  // namespace
+
+static void expose_configuration(mysql_harness::PluginFuncEnv *env,
+                                 const char * /*key*/, bool initial) {
+  const mysql_harness::AppInfo *info = get_app_info(env);
+
+  if (!info->config) return;
+
+  for (const mysql_harness::ConfigSection *section : info->config->sections()) {
+    if (section->name == kSectionName) {
+      ConnectionPoolPluginConfig config{section};
+      ConnectionPoolConfigExposer(initial, config,
+                                  info->config->get_default_section())
+          .expose();
+    }
+  }
+}
+
 extern "C" {
 mysql_harness::Plugin CONNECTION_POOL_PLUGIN_EXPORT
     harness_plugin_connection_pool = {
@@ -168,7 +208,8 @@ mysql_harness::Plugin CONNECTION_POOL_PLUGIN_EXPORT
         nullptr,  // start
         nullptr,  // stop
         false,    // declares_readiness
-        supported_options.size(),
-        supported_options.data(),
+        connection_pool_supported_options.size(),
+        connection_pool_supported_options.data(),
+        expose_configuration,
 };
 }

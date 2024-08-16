@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,18 +27,23 @@
 #define MYSQL_HARNESS_TLS_SERVER_CONTEXT_INCLUDED
 
 #include <array>
-#include <bitset>
 #include <string>
 #include <vector>
 
 #include "mysql/harness/stdx/expected.h"
+#include "mysql/harness/stdx/flags.h"
 #include "mysql/harness/tls_context.h"
 #include "mysql/harness/tls_export.h"
 
-namespace TlsVerifyOpts {
-constexpr size_t kFailIfNoPeerCert = 1 << 0;
-constexpr size_t kClientOnce = 1 << 1;
-}  // namespace TlsVerifyOpts
+enum class TlsVerifyOpts {
+  kFailIfNoPeerCert = 0,
+  kClientOnce = 1,
+};
+
+namespace stdx {
+template <>
+struct is_flags<TlsVerifyOpts> : std::true_type {};
+}  // namespace stdx
 
 /**
  * TLS Context for the server side.
@@ -57,18 +63,10 @@ class HARNESS_TLS_EXPORT TlsServerContext : public TlsContext {
    * construct a TLS Context for server-side.
    */
   TlsServerContext(TlsVersion min_version = TlsVersion::TLS_1_2,
-                   TlsVersion max_version = TlsVersion::AUTO);
-
-  /**
-   * load key and cert.
-   *
-   * cerifiticate is verified against the key
-   *
-   * @param private_key_file filename of a PEM file containing a key
-   * @param cert_chain_file filename of a PEM file containing a certificate
-   */
-  stdx::expected<void, std::error_code> load_key_and_cert(
-      const std::string &private_key_file, const std::string &cert_chain_file);
+                   TlsVersion max_version = TlsVersion::AUTO,
+                   bool session_cache_mode = false,
+                   size_t session_cache_size = 0,
+                   unsigned int session_cache_timeout = 0);
 
   /**
    * init temporary DH parameters.
@@ -96,8 +94,8 @@ class HARNESS_TLS_EXPORT TlsServerContext : public TlsContext {
    * @param tls_opts extra options for PEER
    * @throws std::illegal_argument if verify is NONE and tls_opts is != 0
    */
-  stdx::expected<void, std::error_code> verify(TlsVerify verify,
-                                               std::bitset<2> tls_opts = 0);
+  stdx::expected<void, std::error_code> verify(
+      TlsVerify verify, stdx::flags<TlsVerifyOpts> tls_opts = {});
 
   /**
    * get the security level.

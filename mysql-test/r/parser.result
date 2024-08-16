@@ -449,9 +449,9 @@ ERROR 42000: Incorrect parameter count in the call to native function 'locate'
 select locate(1, 2, 3, 4);
 ERROR 42000: Incorrect parameter count in the call to native function 'locate'
 select log();
-ERROR 42000: Incorrect parameter count in the call to native function 'log'
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ')' at line 1
 select log(1, 2, 3);
-ERROR 42000: Incorrect parameter count in the call to native function 'log'
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ', 3)' at line 1
 select make_set();
 ERROR 42000: Incorrect parameter count in the call to native function 'make_set'
 select make_set(1);
@@ -645,11 +645,11 @@ DROP TABLE t;
 #
 # Bug#13819100 BROKEN SYNTAX ACCEPTED FOR START SLAVE, STOP SLAVE
 #
-STOP SLAVE ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, ;
+STOP REPLICA ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, ;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ',,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,' at line 1
-STOP SLAVE ,,,,,,,,,,,,, sql_thread, ,,,,,,,,,,,,,,,,,,, ;
+STOP REPLICA ,,,,,,,,,,,,, sql_thread, ,,,,,,,,,,,,,,,,,,, ;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ',,,,,,,,,,,,, sql_thread, ,,,,,,,,,,,,,,,,,,,' at line 1
-STOP SLAVE ,,,,,,,,,,,,, io_thread, ,,,,,,,,,,,,,,,,,,, ;
+STOP REPLICA ,,,,,,,,,,,,, io_thread, ,,,,,,,,,,,,,,,,,,, ;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ',,,,,,,,,,,,, io_thread, ,,,,,,,,,,,,,,,,,,,' at line 1
 #
 # Bug#13819132 BROKEN SYNTAX ACCEPTED FOR START TRANSACTION
@@ -2211,7 +2211,7 @@ ALTER DATABASE db COLLATE DEFAULT;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'DEFAULT' at line 1
 ALTER TABLE t COLLATE DEFAULT;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'DEFAULT' at line 1
-SET NAMES utf8 COLLATE DEFAULT;
+SET NAMES utf8mb3 COLLATE DEFAULT;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'DEFAULT' at line 1
 SET NAMES DEFAULT COLLATE DEFAULT;
 ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'COLLATE DEFAULT' at line 1
@@ -2471,14 +2471,14 @@ x VARCHAR(10)
 COLLATE ascii_bin
 COLLATE ascii_bin
 );
-ERROR 42000: Multiple COLLATE clauses near 'ascii_bin
+ERROR 42000: Multiple COLLATE clauses near 'COLLATE ascii_bin
 )' at line 4
 CREATE TABLE t2 (
 x VARCHAR(10)
 COLLATE ascii_bin
 COLLATE ascii_general_ci
 );
-ERROR 42000: Multiple COLLATE clauses near 'ascii_general_ci
+ERROR 42000: Multiple COLLATE clauses near 'COLLATE ascii_general_ci
 )' at line 4
 CREATE TABLE t3 (
 x VARCHAR(10)
@@ -2486,7 +2486,7 @@ COLLATE ascii_bin
 NOT NULL
 COLLATE ascii_bin
 );
-ERROR 42000: Multiple COLLATE clauses near 'ascii_bin
+ERROR 42000: Multiple COLLATE clauses near 'COLLATE ascii_bin
 )' at line 5
 CREATE TABLE t3 (
 x VARCHAR(10)
@@ -2504,7 +2504,7 @@ GENERATED ALWAYS AS(NULL)
 COLLATE ascii_bin
 COLLATE ascii_bin
 );
-ERROR 42000: Multiple COLLATE clauses near 'ascii_bin
+ERROR 42000: Multiple COLLATE clauses near 'COLLATE ascii_bin
 )' at line 5
 #
 # Bug#28961997: REMOVE PARENTHESES INFORMATION FROM AST
@@ -2798,3 +2798,61 @@ Warnings:
 Warning	4119	Using FULL as unquoted identifier is deprecated, please use quotes or rename the identifier.
 SET @@sql_mode=@save_sql_mode;
 DROP TABLE `full`;
+#
+# WL#14189: Replace old terms in CHANGE MASTER TO and START SLAVE params
+# Check keywords can still be used in other contexts.
+#
+CREATE TABLE get_source_public_key(i INT);
+CREATE TABLE source_auto_position(i INT);
+CREATE TABLE source_bind(i INT);
+CREATE TABLE source_compression_algorithm(i INT);
+CREATE TABLE source_connect_retry(i INT);
+CREATE TABLE source_delay(i INT);
+CREATE TABLE source_heartbeat_period(i INT);
+CREATE TABLE source_host(i INT);
+CREATE TABLE source_log_file(i INT);
+CREATE TABLE source_log_pos(i INT);
+CREATE TABLE source_password(i INT);
+CREATE TABLE source_port(i INT);
+CREATE TABLE source_public_key_path(i INT);
+CREATE TABLE source_retry_count(i INT);
+CREATE TABLE source_ssl(i INT);
+CREATE TABLE source_ssl_ca(i INT);
+CREATE TABLE source_ssl_capath(i INT);
+CREATE TABLE source_ssl_cert(i INT);
+CREATE TABLE source_ssl_cipher(i INT);
+CREATE TABLE source_ssl_crl(i INT);
+CREATE TABLE source_ssl_crlpath(i INT);
+CREATE TABLE source_ssl_key(i INT);
+CREATE TABLE source_ssl_verify_server_cert(i INT);
+CREATE TABLE source_tls_ciphersuites(i INT);
+CREATE TABLE source_tls_version(i INT);
+CREATE TABLE source_user(i INT);
+CREATE TABLE source_zstd_compression_level(i INT);
+DROP TABLE get_source_public_key;
+DROP TABLE source_auto_position;
+DROP TABLE source_bind;
+DROP TABLE source_compression_algorithm;
+DROP TABLE source_connect_retry;
+DROP TABLE source_delay;
+DROP TABLE source_heartbeat_period;
+DROP TABLE source_host;
+DROP TABLE source_log_file;
+DROP TABLE source_log_pos;
+DROP TABLE source_password;
+DROP TABLE source_port;
+DROP TABLE source_public_key_path;
+DROP TABLE source_retry_count;
+DROP TABLE source_ssl;
+DROP TABLE source_ssl_ca;
+DROP TABLE source_ssl_capath;
+DROP TABLE source_ssl_cert;
+DROP TABLE source_ssl_cipher;
+DROP TABLE source_ssl_crl;
+DROP TABLE source_ssl_crlpath;
+DROP TABLE source_ssl_key;
+DROP TABLE source_ssl_verify_server_cert;
+DROP TABLE source_tls_ciphersuites;
+DROP TABLE source_tls_version;
+DROP TABLE source_user;
+DROP TABLE source_zstd_compression_level;

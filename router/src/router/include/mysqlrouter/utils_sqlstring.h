@@ -1,16 +1,17 @@
 /*
- * Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+ * Copyright (c) 2015, 2024, Oracle and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
  *
- * This program is also distributed with certain software (including
+ * This program is designed to work with certain software (including
  * but not limited to OpenSSL) that is licensed under separate terms,
  * as designated in a particular file or component or in included license
  * documentation.  The authors of MySQL hereby grant you an additional
  * permission to link the program and your derivative works with the
- * separately licensed software that they have included with MySQL.
+ * separately licensed software that they have either included with
+ * the program or referenced in the documentation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,7 +26,7 @@
 #ifndef _UTILS_SQLSTRING_H_
 #define _UTILS_SQLSTRING_H_
 
-#include "mysqlrouter/router_export.h"
+#include "mysqlrouter/router_mysql_export.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS 1
@@ -44,17 +45,17 @@ enum SqlStringFlags {
   EndOfInput = 1 << 7
 };
 
-std::string ROUTER_LIB_EXPORT
+std::string ROUTER_MYSQL_EXPORT
 escape_sql_string(const std::string &string,
                   bool wildcards = false);  // "strings" or 'strings'
-std::string ROUTER_LIB_EXPORT
+std::string ROUTER_MYSQL_EXPORT
 escape_backticks(const std::string &string);  // `identifier`
-std::string ROUTER_LIB_EXPORT quote_identifier(const std::string &identifier,
-                                               const char quote_char);
-std::string ROUTER_LIB_EXPORT
+std::string ROUTER_MYSQL_EXPORT quote_identifier(const std::string &identifier,
+                                                 const char quote_char);
+std::string ROUTER_MYSQL_EXPORT
 quote_identifier_if_needed(const std::string &ident, const char quote_char);
 
-class ROUTER_LIB_EXPORT sqlstring {
+class ROUTER_MYSQL_EXPORT sqlstring {
  public:
   struct sqlstringformat {
     int _flags;

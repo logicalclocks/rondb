@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -59,9 +60,8 @@ void Hypergraph::ModifyEdge(unsigned edge_idx, NodeMap new_left,
   NodeMap left = edges[edge_idx].left;
   NodeMap right = edges[edge_idx].right;
 
-  const bool old_is_simple = IsSingleBitSet(left) && IsSingleBitSet(right);
-  const bool new_is_simple =
-      IsSingleBitSet(new_left) && IsSingleBitSet(new_right);
+  const bool old_is_simple = IsSimpleEdge(left, right);
+  const bool new_is_simple = IsSimpleEdge(new_left, new_right);
 
   if (!old_is_simple && !new_is_simple) {
     // An optimized fast-path for changing a complex edge into
@@ -117,7 +117,7 @@ void Hypergraph::ModifyEdge(unsigned edge_idx, NodeMap new_left,
 void Hypergraph::AttachEdgeToNodes(size_t left_first_idx,
                                    size_t right_first_idx, NodeMap left,
                                    NodeMap right) {
-  if (IsSingleBitSet(left) && IsSingleBitSet(right)) {
+  if (IsSimpleEdge(left, right)) {
     size_t left_node = *BitsSetIn(left).begin();
     size_t right_node = *BitsSetIn(right).begin();
 

@@ -1,18 +1,19 @@
 #ifndef ITEM_JSON_FUNC_INCLUDED
 #define ITEM_JSON_FUNC_INCLUDED
 
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,19 +27,21 @@
 #include <assert.h>
 #include <sys/types.h>
 
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <utility>  // std::forward
 
-#include "m_ctype.h"
-
+#include "field_types.h"
+#include "my_alloc.h"
 #include "my_inttypes.h"
+#include "my_table_map.h"
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysql_time.h"
-#include "prealloced_array.h"      // Prealloced_array
+#include "prealloced_array.h"  // Prealloced_array
+#include "sql-common/json_error_handler.h"
 #include "sql-common/json_path.h"  // Json_path
 #include "sql/enum_query_type.h"
 #include "sql/field.h"
@@ -53,7 +56,9 @@
 
 class Json_schema_validator;
 class Json_array;
+class Json_diff_vector;
 class Json_dom;
+class Json_object;
 class Json_scalar_holder;
 class Json_wrapper;
 class PT_item_list;
@@ -61,6 +66,8 @@ class THD;
 class my_decimal;
 enum Cast_target : unsigned char;
 enum class Json_on_response_type : uint16;
+enum class enum_json_diff_status;
+
 struct Cast_type;
 struct TABLE;
 
@@ -511,6 +518,7 @@ class Item_func_json_length final : public Item_int_func {
   }
 
   const char *func_name() const override { return "json_length"; }
+  enum Functype functype() const override { return JSON_LENGTH_FUNC; }
 
   longlong val_int() override;
 };
@@ -525,6 +533,7 @@ class Item_func_json_depth final : public Item_int_func {
   Item_func_json_depth(const POS &pos, Item *a) : Item_int_func(pos, a) {}
 
   const char *func_name() const override { return "json_depth"; }
+  enum Functype functype() const override { return JSON_DEPTH_FUNC; }
 
   bool resolve_type(THD *thd) override {
     if (param_type_is_default(thd, 0, 1, MYSQL_TYPE_JSON)) return true;
@@ -574,6 +583,7 @@ class Item_func_json_extract final : public Item_json_func {
       : Item_json_func(thd, pos, a, b) {}
 
   const char *func_name() const override { return "json_extract"; }
+  enum Functype functype() const override { return JSON_EXTRACT_FUNC; }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -711,6 +721,7 @@ class Item_func_json_array final : public Item_json_func {
   }
 
   const char *func_name() const override { return "json_array"; }
+  enum Functype functype() const override { return JSON_ARRAY_FUNC; }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -737,6 +748,7 @@ class Item_func_json_row_object final : public Item_json_func {
   }
 
   const char *func_name() const override { return "json_object"; }
+  enum Functype functype() const override { return JSON_OBJECT_FUNC; }
 
   bool resolve_type(THD *thd) override {
     if (Item_json_func::resolve_type(thd)) return true;
@@ -881,7 +893,7 @@ class Item_func_json_quote : public Item_str_func {
      Any interior character could be replaced by a 6 character
      escape sequence. Plus we will add 2 framing quote characters.
     */
-    uint32 max_char_length = (6 * args[0]->max_char_length()) + 2;
+    const uint32 max_char_length = (6 * args[0]->max_char_length()) + 2;
     set_data_type_string(max_char_length, &my_charset_utf8mb4_bin);
     return false;
   }
@@ -992,6 +1004,9 @@ class Item_func_array_cast final : public Item_func {
     reallocation on each row.
   */
   unique_ptr_destroy_only<Json_array> m_result_array;
+
+ protected:
+  void add_json_info(Json_object *obj) override;
 
  public:
   Item_func_array_cast(const POS &pos, Item *a, Cast_target type, uint len_arg,
@@ -1243,10 +1258,18 @@ using Json_dom_ptr = std::unique_ptr<Json_dom>;
 
 bool parse_json(const String &res, Json_dom_ptr *dom, bool require_str_or_json,
                 const JsonParseErrorHandler &error_handler,
-                const JsonDocumentDepthHandler &depth_handler);
+                const JsonErrorHandler &depth_handler);
 
-typedef Prealloced_array<size_t, 16> Sorted_index_array;
-bool sort_and_remove_dups(const Json_wrapper &orig, Sorted_index_array *v);
+/**
+  Apply a sequence of JSON diffs to the value stored in a JSON column.
+
+    @param field  the column to update
+    @param diffs  the diffs to apply
+    @return an enum_json_diff_status value that tells if the diffs were
+    applied successfully
+ */
+enum_json_diff_status apply_json_diffs(Field_json *field,
+                                       const Json_diff_vector *diffs);
 
 bool save_json_to_field(THD *thd, Field *field, const Json_wrapper *w,
                         bool no_error);

@@ -1,15 +1,16 @@
-/* Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2004, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,9 +30,9 @@
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_systime.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_sp.h"
@@ -207,7 +208,7 @@ void Event_queue::update_event(THD *thd, LEX_CSTRING dbname, LEX_CSTRING name,
   DBUG_PRINT("enter", ("thd: %p  et=[%s.%s]", thd, dbname.str, name.str));
 
   if ((new_element->m_status == Event_parse_data::DISABLED) ||
-      (new_element->m_status == Event_parse_data::SLAVESIDE_DISABLED)) {
+      (new_element->m_status == Event_parse_data::REPLICA_SIDE_DISABLED)) {
     DBUG_PRINT("info", ("The event is disabled."));
     /*
       Destroy the object but don't skip to end: because we may have to remove
@@ -387,7 +388,7 @@ void Event_queue::recalculate_activation_times(THD *thd) {
     Prevent InnoDB from automatically committing the InnoDB transaction after
     updating the data-dictionary table.
   */
-  Disable_autocommit_guard autocommit_guard(thd);
+  const Disable_autocommit_guard autocommit_guard(thd);
 
   /*
     The disabled elements are moved to the end during the `fix`.
@@ -396,8 +397,8 @@ void Event_queue::recalculate_activation_times(THD *thd) {
     have removed all. The queue has been ordered in a way the disabled
     events are at the end.
   */
-  dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
-  Implicit_substatement_state_guard substatement_guard(thd);
+  const dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+  const Implicit_substatement_state_guard substatement_guard(thd);
   std::vector<std::unique_ptr<Event_queue_element>> events_to_drop;
   for (size_t i = queue.size(); i > 0; i--) {
     Event_queue_element *element = queue[i - 1];

@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -132,7 +133,7 @@ class Modification_plan {
      to mark modified tables etc.
 */
 
-class Query_result_explain final : public Query_result_send {
+class Query_result_explain : public Query_result_send {
  protected:
   /**
     Pointer to underlying Query_result_insert, Query_result_update or
@@ -146,6 +147,7 @@ class Query_result_explain final : public Query_result_send {
       : Query_result_send(), interceptor(interceptor_arg) {
     unit = unit_arg;
   }
+  bool use_protocol_adapter() const override { return false; }
 
  protected:
   bool prepare(THD *thd, const mem_root_deque<Item *> &list,
@@ -163,6 +165,31 @@ class Query_result_explain final : public Query_result_send {
     Query_result_send::cleanup();
     interceptor->cleanup();
   }
+};
+
+/**
+ * Wrapper class for writing EXPLAIN output to a user variable.
+ *
+ * This class overrides Query_result_send::send_data() to write the output of
+ * the EXPLAIN query to the user variable specified by m_variable_name.
+ */
+class Query_result_explain_into_var final : public Query_result_explain {
+ public:
+  Query_result_explain_into_var(Query_expression *expr, Query_result *child,
+                                std::string_view variable_name)
+      : Query_result_explain(expr, child), m_variable_name(variable_name) {}
+
+  bool send_result_set_metadata(THD *, const mem_root_deque<Item *> &,
+                                uint) override {
+    return false;
+  }
+
+  bool send_data(THD *thd, const mem_root_deque<Item *> &items) override;
+
+  bool send_eof(THD *thd) override;
+
+ private:
+  std::string_view m_variable_name;
 };
 
 bool explain_single_table_modification(THD *explain_thd, const THD *query_thd,

@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,15 +31,12 @@
 #include <unordered_map>
 #include <utility>
 
-#include "m_ctype.h"
-#include "m_string.h"  // strmake
 #include "map_helpers.h"
 #include "mutex_lock.h"  // Mutex_lock
 #include "my_byteorder.h"
 #include "my_command.h"
 #include "my_dbug.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_psi_config.h"
 #include "my_sys.h"
@@ -46,9 +44,11 @@
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_file.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // check_global_access
@@ -74,6 +74,7 @@
 #include "sql/sql_list.h"
 #include "sql/system_variables.h"
 #include "sql_string.h"
+#include "strmake.h"
 #include "thr_mutex.h"
 #include "typelib.h"
 
@@ -219,7 +220,7 @@ void unregister_replica(THD *thd, bool only_mine, bool need_lock_slave_list) {
 }
 
 /**
-  Execute a SHOW REPLICAS / SHOW SLAVE HOSTS statement.
+  Execute a SHOW REPLICAS statement.
 
   @param thd Pointer to THD object for the client thread executing the
   statement.
@@ -242,10 +243,6 @@ bool show_replicas(THD *thd) {
   field_list.push_back(new Item_return_int("Source_Id", 10, MYSQL_TYPE_LONG));
   field_list.push_back(new Item_empty_string("Replica_UUID", UUID_LENGTH));
 
-  // TODO: once the old syntax is removed, remove this as well.
-  if (thd->lex->is_replication_deprecated_syntax_used())
-    rename_fields_use_old_replica_source_terms(thd, field_list);
-
   if (thd->send_result_metadata(field_list,
                                 Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
     return true;
@@ -265,7 +262,7 @@ bool show_replicas(THD *thd) {
     protocol->store((uint32)si->master_id);
 
     if (si->valid_replica_uuid) {
-      char text_buf[binary_log::Uuid::TEXT_LENGTH + 1];
+      char text_buf[mysql::gtid::Uuid::TEXT_LENGTH + 1];
       si->replica_uuid.to_string(text_buf);
       protocol->store(text_buf, &my_charset_bin);
     } else {
@@ -475,12 +472,6 @@ bool show_replicas(THD *thd) {
     <td>0</td><td colspan="2">---</td></tr>
   <tr><td>@ref sect_protocol_replication_event_write_rows_v0</td>
     <td>0</td><td colspan="2">---</td></tr>
-  <tr><td>@ref sect_protocol_replication_event_delete_rows_v1</td>
-    <td>8/6</td><td colspan="2">---</td></tr>
-  <tr><td>@ref sect_protocol_replication_event_update_rows_v1</td>
-    <td>8/6</td><td colspan="2">---</td></tr>
-  <tr><td>@ref sect_protocol_replication_event_write_rows_v1</td>
-    <td>8/6</td><td colspan="2">---</td></tr>
   <tr><td>@ref sect_protocol_replication_event_incident</td>
     <td>2</td><td colspan="2">---</td></tr>
   <tr><td>@ref sect_protocol_replication_event_heartbeat</td>
@@ -564,8 +555,8 @@ bool show_replicas(THD *thd) {
   logs.
 
   It is added by the master after the replication connection was idle for
-  `x` seconds to update the slave's `Seconds_behind_master timestamp in the
-  SHOW SLAVE STATUS output.
+  `x` seconds to update the slave's  Seconds_behind_source timestamp in the
+  SHOW REPLICA STATUS output.
 
   It has no payload nor post-header.
 
@@ -797,9 +788,6 @@ bool show_replicas(THD *thd) {
   @subsection sect_protocol_replication_event_delete_rows_v0 DELETE_ROWS_EVENTv0
   @subsection sect_protocol_replication_event_update_rows_v0 UPDATE_ROWS_EVENTv0
   @subsection sect_protocol_replication_event_write_rows_v0 WRITE_ROWS_EVENTv0
-  @subsection sect_protocol_replication_event_delete_rows_v1 DELETE_ROWS_EVENTv1
-  @subsection sect_protocol_replication_event_update_rows_v1 UPDATE_ROWS_EVENTv1
-  @subsection sect_protocol_replication_event_write_rows_v1 WRITE_ROWS_EVENTv1
   @subsection sect_protocol_replication_event_delete_rows_v2 DELETE_ROWS_EVENTv2
   @subsection sect_protocol_replication_event_update_rows_v2 UPDATE_ROWS_EVENTv2
   @subsection sect_protocol_replication_event_write_rows_v2 WRITE_ROWS_EVENTv2
@@ -834,7 +822,7 @@ bool show_replicas(THD *thd) {
       <td>seconds since unix epoch</td></tr>
   <tr><td>@ref a_protocol_type_int1 "int&lt;1&gt;"</td>
       <td>event_type</td>
-      <td>See binary_log::Log_event_type</td></tr>
+      <td>See mysql::binlog::event::Log_event_type</td></tr>
   <tr><td>@ref a_protocol_type_int4 "int&lt;4&gt;"</td>
       <td>server-id</td>
       <td>server-id of the originating mysql-server. Used to filter out events
@@ -939,6 +927,7 @@ bool com_binlog_dump(THD *thd, char *packet, size_t packet_length) {
 
   assert(!thd->status_var_aggregated);
   thd->status_var.com_other++;
+  global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
   thd->enable_slow_log = opt_log_slow_admin_statements;
   if (check_global_access(thd, REPL_SLAVE_ACL)) return false;
 
@@ -995,12 +984,13 @@ bool com_binlog_dump_gtid(THD *thd, char *packet, size_t packet_length) {
   char *gtid_string = nullptr;
   const uchar *packet_position = (uchar *)packet;
   size_t packet_bytes_todo = packet_length;
-  Sid_map sid_map(
-      nullptr /*no sid_lock because this is a completely local object*/);
-  Gtid_set slave_gtid_executed(&sid_map);
+  Tsid_map tsid_map(
+      nullptr /*no tsid_lock because this is a completely local object*/);
+  Gtid_set slave_gtid_executed(&tsid_map);
 
   assert(!thd->status_var_aggregated);
   thd->status_var.com_other++;
+  global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
   thd->enable_slow_log = opt_log_slow_admin_statements;
   if (check_global_access(thd, REPL_SLAVE_ACL)) return false;
 
@@ -1183,31 +1173,34 @@ void kill_zombie_dump_threads(THD *thd) {
 }
 
 /**
-  Execute a RESET MASTER statement.
+  Execute a RESET BINARY LOGS AND GTIDS statement.
 
   @param thd Pointer to THD object of the client thread executing the
   statement.
-  @param unlock_global_read_lock Unlock the global read lock acquired
-  by RESET MASTER.
+
+  @param unlock_global_read_lock Unlock the global read lock aquired
+  by RESET BINARY LOGS AND GTIDS.
+
   @retval false success
   @retval true error
 */
-bool reset_master(THD *thd, bool unlock_global_read_lock) {
+bool reset_binary_logs_and_gtids(THD *thd, bool unlock_global_read_lock) {
   bool ret = false;
 
   /*
-    RESET MASTER command should ignore 'read-only' and 'super_read_only'
-    options so that it can update 'mysql.gtid_executed' replication repository
-    table.
+    RESET BINARY LOGS AND GTIDS command should ignore 'read-only' and
+    'super_read_only' options so that it can update 'mysql.gtid_executed'
+    replication repository table.
 
     Please note that skip_readonly_check flag should be set even when binary log
-    is not enabled, as RESET MASTER command will clear 'gtid_executed' table.
+    is not enabled, as RESET BINARY LOGS AND GTIDS command will clear
+    'gtid_executed' table.
   */
   thd->set_skip_readonly_check();
 
   /*
-    No RESET MASTER commands are allowed while Group Replication is running
-    unless executed during a clone operation as part of the process.
+    No RESET BINARY LOGS AND GTIDS commands are allowed while Group Replication
+    is running unless executed during a clone operation as part of the process.
   */
   if (is_group_replication_running() && !is_group_replication_cloning()) {
     my_error(ER_CANT_RESET_SOURCE, MYF(0), "Group Replication is running");
@@ -1229,15 +1222,15 @@ bool reset_master(THD *thd, bool unlock_global_read_lock) {
     */
     ret = mysql_bin_log.reset_logs(thd);
   } else {
-    global_sid_lock->wrlock();
+    global_tsid_lock->wrlock();
     ret = (gtid_state->clear(thd) != 0);
-    global_sid_lock->unlock();
+    global_tsid_lock->unlock();
   }
 
 end:
   /*
     Unlock the global read lock (which was acquired by this
-    session as part of RESET MASTER) before running the hook
+    session as part of RESET BINARY LOGS AND GTIDS) before running the hook
     which informs plugins.
   */
   if (unlock_global_read_lock) {
@@ -1255,7 +1248,7 @@ end:
 }
 
 /**
-  Execute a SHOW MASTER STATUS statement.
+  Execute a SHOW BINARY LOG STATUS statement.
 
   @param thd Pointer to THD object for the client thread executing the
   statement.
@@ -1263,22 +1256,22 @@ end:
   @retval false success
   @retval true failure
 */
-bool show_master_status(THD *thd) {
+bool show_binary_log_status(THD *thd) {
   Protocol *protocol = thd->get_protocol();
   char *gtid_set_buffer = nullptr;
   int gtid_set_size = 0;
 
   DBUG_TRACE;
 
-  global_sid_lock->wrlock();
+  global_tsid_lock->wrlock();
   const Gtid_set *gtid_set = gtid_state->get_executed_gtids();
   if ((gtid_set_size = gtid_set->to_string(&gtid_set_buffer)) < 0) {
-    global_sid_lock->unlock();
+    global_tsid_lock->unlock();
     my_eof(thd);
     my_free(gtid_set_buffer);
     return true;
   }
-  global_sid_lock->unlock();
+  global_tsid_lock->unlock();
 
   mem_root_deque<Item *> field_list(thd->mem_root);
   field_list.push_back(new Item_empty_string("File", FN_REFLEN));

@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 2006, 2023, Oracle and/or its affiliates.
+Copyright (c) 2006, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -331,15 +332,40 @@ void ib_errf(THD *thd,             /*!< in/out: session */
  void push_warning_printf(
          THD *thd, Sql_condition::enum_warning_level level,
          uint code, const char *format, ...);
- */
-void ib_senderrf(THD *thd,             /*!< in/out: session */
-                 ib_log_level_t level, /*!< in: warning level */
-                 uint32_t code,        /*!< MySQL error code */
-                 ...);                 /*!< Args */
+
+ @param[in,out]  thd    session
+ @param[in]      level  warning level
+ @param[in]      code   MySQL error code
+ @param[in]      ...    Args */
+void ib_senderrf(THD *thd, ib_log_level_t level, uint32_t code, ...);
+
+namespace ib {
+/** Sends an error to the client about low-level `errno` causing high-level
+  `err` in the specified `context`. It is a helper to be used when a low-level
+  IO operation has failed and set `errno`.
+  @param[in]  thd  The connection thread to which to send the error
+  @param[in]  err  The high-level error code in InnoDB caused by low-level errno
+  @param[in]  context  The human-readable string explaining what was going on */
+inline void send_errno_error(THD *thd, int err, const std::string &context) {
+  ib_senderrf(thd, IB_LOG_LEVEL_ERROR, err, errno, strerror(errno),
+              context.c_str());
+}
+
+/** Sends a warning to the client about low-level `errno` causing high-level
+  `err` in the specified `context`. It is a helper to be used when a low-level
+  IO operation has failed and set `errno`.
+  @param[in]  thd  The connection thread to which to send the warning
+  @param[in]  err  The high-level error code in InnoDB caused by low-level errno
+  @param[in]  context  The human-readable string explaining what was going on */
+inline void send_errno_warn(THD *thd, int err, const std::string &context) {
+  ib_senderrf(thd, IB_LOG_LEVEL_WARN, err, errno, strerror(errno),
+              context.c_str());
+}
+
+}  // namespace ib
 
 extern const char *TROUBLESHOOTING_MSG;
 extern const char *TROUBLESHOOT_DATADICT_MSG;
-extern const char *BUG_REPORT_MSG;
 extern const char *FORCE_RECOVERY_MSG;
 extern const char *ERROR_CREATING_MSG;
 extern const char *OPERATING_SYSTEM_ERROR_MSG;
@@ -446,7 +472,7 @@ ulong thd_parallel_read_threads(THD *thd);
 
 /** Return the maximum buffer size to use for DDL.
 @param[in]      thd       Session instance, or nullptr to query the global
-                          innodb_parallel_read_threads value.
+                          innodb_ddl_buffer_size value.
 @return memory upper limit in bytes. */
 [[nodiscard]] ulong thd_ddl_buffer_size(THD *thd);
 

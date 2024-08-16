@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -72,6 +73,11 @@ PSI_memory_key key_memory_xa_recovered_transactions;
 PSI_memory_key key_memory_Row_data_memory_memory;
 PSI_memory_key key_memory_Rpl_info_file_buffer;
 PSI_memory_key key_memory_Rpl_info_table;
+PSI_memory_key key_memory_rpl_thd_context;
+PSI_memory_key key_memory_applier;
+PSI_memory_key key_memory_recovery;
+PSI_memory_key key_memory_show_binlog_events;
+PSI_memory_key key_memory_relaylog_recovery;
 PSI_memory_key key_memory_REPLICA_INFO;
 PSI_memory_key key_memory_ST_SCHEMA_TABLE;
 PSI_memory_key key_memory_Slave_applier_json_diff_vector;
@@ -95,7 +101,6 @@ PSI_memory_key key_memory_acl_memex;
 PSI_memory_key key_memory_acl_cache;
 PSI_memory_key key_memory_acl_map_cache;
 PSI_memory_key key_memory_binlog_cache_mngr;
-PSI_memory_key key_memory_binlog_pos;
 PSI_memory_key key_memory_binlog_recover_exec;
 PSI_memory_key key_memory_binlog_statement_buffer;
 PSI_memory_key key_memory_bison_stack;
@@ -107,7 +112,7 @@ PSI_memory_key key_memory_global_system_variables;
 PSI_memory_key key_memory_errmsgs_handler;
 PSI_memory_key key_memory_handlerton_objects;
 PSI_memory_key key_memory_hash_index_key_buffer;
-PSI_memory_key key_memory_hash_join;
+PSI_memory_key key_memory_hash_op;
 PSI_memory_key key_memory_help;
 PSI_memory_key key_memory_histograms;
 PSI_memory_key key_memory_host_cache_hostname;
@@ -278,7 +283,7 @@ static PSI_memory_info all_server_memory[] = {
      PSI_DOCUMENT_ME},
     {&key_memory_Owned_gtids_sidno_to_hash, "Owned_gtids::sidno_to_hash", 0, 0,
      PSI_DOCUMENT_ME},
-    {&key_memory_Sid_map_Node, "Sid_map::Node", 0, 0, PSI_DOCUMENT_ME},
+    {&key_memory_tsid_map_Node, "Tsid_map::Node", 0, 0, PSI_DOCUMENT_ME},
     {&key_memory_Gtid_state_group_commit_sidno,
      "Gtid_state::group_commit_sidno_locks", 0, 0, PSI_DOCUMENT_ME},
     {&key_memory_Mutex_cond_array_Mutex_cond, "Mutex_cond_array::Mutex_cond", 0,
@@ -293,7 +298,6 @@ static PSI_memory_info all_server_memory[] = {
     {&key_memory_rpl_replica_check_temp_dir, "rpl_replica::check_temp_dir", 0,
      0, PSI_DOCUMENT_ME},
     {&key_memory_REPLICA_INFO, "REPLICA_INFO", 0, 0, PSI_DOCUMENT_ME},
-    {&key_memory_binlog_pos, "binlog_pos", 0, 0, PSI_DOCUMENT_ME},
     {&key_memory_HASH_ROW_ENTRY, "HASH_ROW_ENTRY", 0, 0, PSI_DOCUMENT_ME},
     {&key_memory_binlog_statement_buffer, "binlog_statement_buffer", 0, 0,
      PSI_DOCUMENT_ME},
@@ -369,7 +373,7 @@ static PSI_memory_info all_server_memory[] = {
     {&key_memory_log_sink_pfs, "log_sink_pfs", PSI_FLAG_ONLY_GLOBAL_STAT, 0,
      PSI_DOCUMENT_ME},
     {&key_memory_histograms, "histograms", 0, 0, PSI_DOCUMENT_ME},
-    {&key_memory_hash_join, "hash_join", PSI_FLAG_MEM_COLLECT, 0,
+    {&key_memory_hash_op, "hashed_operation", PSI_FLAG_MEM_COLLECT, 0,
      PSI_DOCUMENT_ME},
     {&key_memory_rm_table_foreach_root, "rm_table::foreach_root",
      PSI_FLAG_THREAD, 0,
@@ -386,11 +390,20 @@ static PSI_memory_info all_server_memory[] = {
      "Memory allocated for in-memory maps for persisted variables"},
     {&key_memory_persisted_variables_unordered_set,
      "Persisted_variables::unordered_set", PSI_FLAG_ONLY_GLOBAL_STAT, 0,
-     "Memory allocated for in-memory sets for persisted variables"}};
+     "Memory allocated for in-memory sets for persisted variables"},
+    {&key_memory_rpl_thd_context, "Rpl_thd_context", 0, 0, PSI_DOCUMENT_ME},
+    {&key_memory_applier,
+     "Mts_submode_database::set_multi_threaded_applier_context", 0, 0,
+     PSI_DOCUMENT_ME},
+    {&key_memory_recovery, "Binlog_recovery::recover", 0, 0, PSI_DOCUMENT_ME},
+    {&key_memory_show_binlog_events, "show_binlog_events", 0, 0,
+     PSI_DOCUMENT_ME},
+    {&key_memory_relaylog_recovery, "Relay_log_sanitizer::analyze_logs", 0, 0,
+     PSI_DOCUMENT_ME}};
 
 void register_server_memory_keys() {
   const char *category = "sql";
-  int count = static_cast<int>(array_elements(all_server_memory));
+  const int count = static_cast<int>(array_elements(all_server_memory));
   mysql_memory_register(category, all_server_memory, count);
 }
 

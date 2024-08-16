@@ -1,15 +1,16 @@
-/* Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,18 +30,18 @@
 
 #include "binlog/decompressing_event_object_istream.h"
 #include "lex_string.h"
-#include "m_string.h"
 #include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_systime.h"
 #include "my_thread.h"
 #include "mysql/components/services/bits/psi_stage_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/int2str.h"
 #include "mysqld_error.h"
 #include "sql/binlog_reader.h"
 #include "sql/debug_sync.h"
@@ -48,6 +49,8 @@
 #include "sql/log_event.h"  // Query_log_event
 #include "sql/mdl.h"
 #include "sql/mysqld.h"  // stage_worker_....
+#include "sql/psi_memory_key.h"
+#include "sql/psi_memory_resource.h"
 #include "sql/query_options.h"
 #include "sql/rpl_filter.h"
 #include "sql/rpl_replica.h"
@@ -57,6 +60,7 @@
 #include "sql/sql_class.h"                         // THD
 #include "sql/system_variables.h"
 #include "sql/table.h"
+#include "string_with_len.h"
 
 /**
  Does necessary arrangement before scheduling next event.
@@ -187,13 +191,14 @@ bool Mts_submode_database::set_multi_threaded_applier_context(
     const Relay_log_info &rli, Log_event &ev) {
   // if this is a transaction payload event, we need to set the proper
   // databases that its internal events update
-  if (ev.get_type_code() == binary_log::TRANSACTION_PAYLOAD_EVENT) {
+  if (ev.get_type_code() == mysql::binlog::event::TRANSACTION_PAYLOAD_EVENT) {
     Mts_db_names toset;
     bool max_mts_dbs_in_event = false;
     std::set<std::string> dbs;
     auto &tple = *dynamic_cast<Transaction_payload_log_event *>(&ev);
     binlog::Decompressing_event_object_istream istream(
-        tple, *rli.get_rli_description_event());
+        tple, *rli.get_rli_description_event(),
+        psi_memory_resource(key_memory_applier));
 
     std::shared_ptr<Log_event> inner;
     while (istream >> inner) {
@@ -207,7 +212,7 @@ bool Mts_submode_database::set_multi_threaded_applier_context(
 
       // The following queries should run in isolation, thence setting
       // OVER_MAX_DBS_IN_EVENT_MTS
-      if ((inner->get_type_code() == binary_log::QUERY_EVENT)) {
+      if ((inner->get_type_code() == mysql::binlog::event::QUERY_EVENT)) {
         auto *qev = dynamic_cast<Query_log_event *>(inner.get());
         if (qev->is_query_prefix_match(STRING_WITH_LEN("XA COMMIT")) ||
             qev->is_query_prefix_match(STRING_WITH_LEN("XA ROLLBACK"))) {
@@ -588,8 +593,9 @@ int Mts_submode_logical_clock::schedule_next_event(Relay_log_info *rli,
     - A DDL or an implicit DML commit.
   */
   switch (ev->get_type_code()) {
-    case binary_log::GTID_LOG_EVENT:
-    case binary_log::ANONYMOUS_GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_LOG_EVENT:
+    case mysql::binlog::event::ANONYMOUS_GTID_LOG_EVENT:
+    case mysql::binlog::event::GTID_TAGGED_LOG_EVENT:
       // TODO: control continuity
       ptr_group->sequence_number = sequence_number =
           static_cast<Gtid_log_event *>(ev)->sequence_number;
@@ -880,13 +886,13 @@ Slave_worker *Mts_submode_logical_clock::get_least_occupied_worker(
    */
   if (rli->last_assigned_worker) {
     worker = rli->last_assigned_worker;
-    assert(ev->get_type_code() != binary_log::USER_VAR_EVENT ||
+    assert(ev->get_type_code() != mysql::binlog::event::USER_VAR_EVENT ||
            worker->id == 0 || rli->curr_group_seen_begin ||
            rli->curr_group_seen_gtid);
   } else {
     worker = get_free_worker(rli);
 
-    assert(ev->get_type_code() != binary_log::USER_VAR_EVENT ||
+    assert(ev->get_type_code() != mysql::binlog::event::USER_VAR_EVENT ||
            rli->curr_group_seen_begin || rli->curr_group_seen_gtid);
 
     if (worker == nullptr) {
@@ -935,7 +941,7 @@ Slave_worker *Mts_submode_logical_clock::get_least_occupied_worker(
   // stopped.
   assert(worker != nullptr || thd->killed);
   /* The master my have send  db partition info. make sure we never use them*/
-  if (ev->get_type_code() == binary_log::QUERY_EVENT)
+  if (ev->get_type_code() == mysql::binlog::event::QUERY_EVENT)
     static_cast<Query_log_event *>(ev)->mts_accessed_dbs = 0;
 
   return worker;

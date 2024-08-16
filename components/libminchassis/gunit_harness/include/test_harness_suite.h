@@ -1,15 +1,16 @@
-/* Copyright (c) 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -39,12 +40,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
   provide. Usually the harness is test oriented and mocks the services so
   that the test can run.
 
-  @param test_service_t The service type of the service to test
-  @param component_name The name of the component to load, or nullptr to avoid
+  @tparam test_service_t The service type of the service to test
+  @tparam component_name The name of the component to load, or nullptr to avoid
   loading extra components
-  @param service_name The name of the service to instantiate, or nullptr to
+  @tparam service_name The name of the service to instantiate, or nullptr to
   avoid fetching service refs
-  @param component_instance The instance of the test harness component to load
+  @tparam component_instance The instance of the test harness component to load
   with the minchassis, or nullptr if none
 
   @sa @ref PAGE_COMPONENT_MOCK_UNIT_TEST_TOOLS.

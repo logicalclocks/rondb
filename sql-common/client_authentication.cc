@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -39,9 +40,9 @@
 #include <openssl/rsa.h>
 #include "crypt_genhash_impl.h"
 #include "errmsg.h"
-#include "m_ctype.h"
 #include "mysql/client_authentication.h"
 #include "mysql/psi/mysql_mutex.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysys_err.h"
 #include "sql_common.h"
 #include "sql_string.h"
@@ -178,7 +179,7 @@ static bool encrypt_RSA_public_key(const unsigned char *password,
 */
 
 int sha256_password_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql) {
-  bool uses_password = mysql->passwd[0] != 0;
+  const bool uses_password = mysql->passwd[0] != 0;
   unsigned char encrypted_password[MAX_CIPHER_LENGTH];
   static char request_public_key = '\1';
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
@@ -439,11 +440,11 @@ net_async_status sha256_password_auth_client_nonblocking(MYSQL_PLUGIN_VIO *vio,
                                                          int *result) {
   DBUG_TRACE;
   net_async_status status = NET_ASYNC_NOT_READY;
-  bool uses_password = mysql->passwd[0] != 0;
+  const bool uses_password = mysql->passwd[0] != 0;
   static char request_public_key = '\1';
   bool got_public_key_from_server = false;
   int io_result;
-  bool connection_is_secure = (mysql_get_ssl_cipher(mysql) != nullptr);
+  const bool connection_is_secure = (mysql_get_ssl_cipher(mysql) != nullptr);
   unsigned char *pkt;
   unsigned int passwd_len =
       static_cast<unsigned int>(strlen(mysql->passwd) + 1);
@@ -576,7 +577,7 @@ net_async_status sha256_password_auth_client_nonblocking(MYSQL_PLUGIN_VIO *vio,
 
 err:
   if (got_public_key_from_server) free_rsa_key(ctx);
-  result = CR_ERROR;
+  *result = CR_ERROR;
   return NET_ASYNC_COMPLETE;
 }
 /* caching_sha2_password */
@@ -617,7 +618,7 @@ static char perform_full_authentication = '\4';
     @retval CR_OK Authentication succeeded.
 */
 int caching_sha2_password_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql) {
-  bool uses_password = mysql->passwd[0] != 0;
+  const bool uses_password = mysql->passwd[0] != 0;
   unsigned char encrypted_password[MAX_CIPHER_LENGTH];
   // static char request_public_key= '\1';
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
@@ -807,12 +808,12 @@ err:
 net_async_status caching_sha2_password_auth_client_nonblocking(
     MYSQL_PLUGIN_VIO *vio, MYSQL *mysql, int *result) {
   DBUG_TRACE;
-  bool uses_password = mysql->passwd[0] != 0;
+  const bool uses_password = mysql->passwd[0] != 0;
   int io_result;
   net_async_status status = NET_ASYNC_NOT_READY;
-  bool connection_is_secure = is_secure_transport(mysql);
+  const bool connection_is_secure = is_secure_transport(mysql);
   bool got_public_key_from_server = false;
-  unsigned int passwd_len =
+  const unsigned int passwd_len =
       static_cast<unsigned int>(strlen(mysql->passwd) + 1);
   unsigned char *pkt;
   mysql_async_auth *ctx = ASYNC_DATA(mysql)->connect_context->auth_context;
@@ -1030,7 +1031,7 @@ net_async_status caching_sha2_password_auth_client_nonblocking(
 
 err:
   if (got_public_key_from_server) free_rsa_key(ctx);
-  result = CR_ERROR;
+  *result = CR_ERROR;
   return NET_ASYNC_COMPLETE;
 }
 

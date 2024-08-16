@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -50,6 +51,7 @@
 #include "sql/locking_service.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
+#include "string_with_len.h"
 
 #ifdef WIN32
 #define PLUGIN_EXPORT extern "C" __declspec(dllexport)
@@ -105,9 +107,8 @@ class atomic_boolean {
     @retval false the atomic boolean value is different from the argument value
   */
   bool is_set(bool value = true) {
-    int32 cmp = value ? m_true : m_false, actual_value;
-
-    actual_value = m_value.load();
+    const int32 cmp = value ? m_true : m_false;
+    const int32 actual_value = m_value.load();
 
     return actual_value == cmp;
   }
@@ -118,7 +119,7 @@ class atomic_boolean {
     @param new_value value to set
   */
   void set(bool new_value) {
-    int32 new_val = new_value ? m_true : m_false;
+    const int32 new_val = new_value ? m_true : m_false;
     m_value.store(new_val);
   }
 };
@@ -297,10 +298,10 @@ static int parse_vtokens(char *input, enum command type) {
   const char *separator = ";";
   int result = 0;
   THD *thd = current_thd;
-  ulonglong thd_session_number = THDVAR(thd, session_number);
-  ulonglong tmp_token_number = (ulonglong)session_number.load();
+  const ulonglong thd_session_number = THDVAR(thd, session_number);
+  const ulonglong tmp_token_number = (ulonglong)session_number.load();
 
-  bool vtokens_unchanged = (thd_session_number == tmp_token_number);
+  const bool vtokens_unchanged = (thd_session_number == tmp_token_number);
 
   token = my_strtok_r(input, separator, &lasts_token);
 
@@ -445,7 +446,7 @@ static int version_token_check(MYSQL_THD thd,
   const struct mysql_event_general *event_general =
       (const struct mysql_event_general *)event;
   const uchar *command = (const uchar *)event_general->general_command.str;
-  size_t length = event_general->general_command.length;
+  const size_t length = event_general->general_command.length;
 
   assert(event_class == MYSQL_AUDIT_GENERAL_CLASS);
 
@@ -664,7 +665,7 @@ PLUGIN_EXPORT char *version_tokens_set(UDF_INIT *, UDF_ARGS *args, char *result,
                                        unsigned long *length, unsigned char *,
                                        unsigned char *error) {
   char *hash_str;
-  int len = args->lengths[0];
+  const int len = args->lengths[0];
   int vtokens_count = 0;
   std::stringstream ss;
 
@@ -744,7 +745,7 @@ PLUGIN_EXPORT char *version_tokens_edit(UDF_INIT *, UDF_ARGS *args,
                                         char *result, unsigned long *length,
                                         unsigned char *, unsigned char *error) {
   char *hash_str;
-  int len = args->lengths[0];
+  const int len = args->lengths[0];
   std::stringstream ss;
   int vtokens_count = 0;
 
@@ -1012,9 +1013,9 @@ PLUGIN_EXPORT bool version_tokens_lock_shared_init(UDF_INIT *initid,
 PLUGIN_EXPORT long long version_tokens_lock_shared(UDF_INIT *, UDF_ARGS *args,
                                                    unsigned char *,
                                                    unsigned char *error) {
-  long long timeout = args->args[args->arg_count - 1] ?  // Null ?
-                          *((long long *)args->args[args->arg_count - 1])
-                                                      : -1;
+  const long long timeout = args->args[args->arg_count - 1] ?  // Null ?
+                                *((long long *)args->args[args->arg_count - 1])
+                                                            : -1;
 
   if (timeout < 0) {
     my_error(ER_DATA_OUT_OF_RANGE, MYF(0), "timeout",
@@ -1040,9 +1041,9 @@ PLUGIN_EXPORT long long version_tokens_lock_exclusive(UDF_INIT *,
                                                       UDF_ARGS *args,
                                                       unsigned char *,
                                                       unsigned char *error) {
-  long long timeout = args->args[args->arg_count - 1] ?  // Null ?
-                          *((long long *)args->args[args->arg_count - 1])
-                                                      : -1;
+  const long long timeout = args->args[args->arg_count - 1] ?  // Null ?
+                                *((long long *)args->args[args->arg_count - 1])
+                                                            : -1;
 
   if (timeout < 0) {
     my_error(ER_DATA_OUT_OF_RANGE, MYF(0), "timeout",

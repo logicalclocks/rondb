@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2023, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,6 +28,8 @@
 
 #include "forwarding_processor.h"
 
+#include "router_require.h"
+
 /**
  * forwards COM_CHANGE_USER from client to the server.
  */
@@ -39,6 +42,9 @@ class ChangeUserForwarder : public ForwardingProcessor {
     Connect,
     Connected,
     Response,
+    FetchUserAttrs,
+    FetchUserAttrsDone,
+    SendAuthOk,
     Ok,
     Error,
     Done,
@@ -53,11 +59,20 @@ class ChangeUserForwarder : public ForwardingProcessor {
   stdx::expected<Result, std::error_code> command();
   stdx::expected<Result, std::error_code> connect();
   stdx::expected<Result, std::error_code> connected();
+  stdx::expected<Result, std::error_code> fetch_user_attrs();
+  stdx::expected<Result, std::error_code> fetch_user_attrs_done();
+  stdx::expected<Result, std::error_code> send_auth_ok();
   stdx::expected<Result, std::error_code> response();
   stdx::expected<Result, std::error_code> ok();
   stdx::expected<Result, std::error_code> error();
 
+  RouterRequireFetcher::Result required_connection_attributes_fetcher_result_;
+
   Stage stage_{Stage::Command};
+
+  TraceEvent *trace_event_command_{};
+  TraceEvent *trace_event_connect_and_forward_command_{};
+  TraceEvent *trace_event_forward_command_{};
 };
 
 #endif

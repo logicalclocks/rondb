@@ -2,3 +2,12 @@
 
 [cluster_config.1]
 DataMemory=200M
+MaxNoOfTables=4096
+SharedGlobalMemory=500M
+
+[cluster_config.slave]
+DataMemory=200M
+MaxNoOfTables=4096
+SharedGlobalMemory=500M
+
+

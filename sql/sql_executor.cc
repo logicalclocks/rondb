@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,19 +35,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
-#include <iterator>
+#include <cstring>
 #include <memory>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "field_types.h"
-#include "lex_string.h"
-#include "m_ctype.h"
 #include "mem_root_deque.h"
 #include "my_alloc.h"
 #include "my_base.h"
@@ -54,12 +53,14 @@
 #include "my_byteorder.h"
 #include "my_checksum.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
+#include "my_hash_combine.h"
 #include "my_sqlcommand.h"
 #include "my_sys.h"
 #include "my_table_map.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"
 #include "sql-common/json_dom.h"  // Json_wrapper
@@ -71,7 +72,8 @@
 #include "sql/item_cmpfunc.h"
 #include "sql/item_func.h"
 #include "sql/item_sum.h"  // Item_sum
-#include "sql/iterators/sorting_iterator.h"
+#include "sql/iterators/basic_row_iterators.h"
+#include "sql/iterators/row_iterator.h"
 #include "sql/iterators/timing_iterator.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/join_optimizer/bit_utils.h"
@@ -89,29 +91,29 @@
 #include "sql/opt_explain_format.h"
 #include "sql/opt_trace.h"  // Opt_trace_object
 #include "sql/query_options.h"
+#include "sql/query_term.h"
 #include "sql/record_buffer.h"  // Record_buffer
 #include "sql/sort_param.h"
 #include "sql/sql_array.h"  // Bounds_checked_array
-#include "sql/sql_base.h"   // fill_record
-#include "sql/sql_bitmap.h"
 #include "sql/sql_class.h"
+#include "sql/sql_cmd.h"
 #include "sql/sql_const.h"
 #include "sql/sql_delete.h"
-#include "sql/sql_executor.h"
 #include "sql/sql_list.h"
 #include "sql/sql_optimizer.h"  // JOIN
 #include "sql/sql_resolver.h"
 #include "sql/sql_select.h"
+#include "sql/sql_sort.h"
 #include "sql/sql_tmp_table.h"  // create_tmp_table
 #include "sql/sql_update.h"
 #include "sql/table.h"
 #include "sql/temp_table_param.h"
 #include "sql/visible_fields.h"
 #include "sql/window.h"
-#include "tables_contained_in.h"
 #include "template_utils.h"
 #include "thr_lock.h"
 
+using std::any_of;
 using std::make_pair;
 using std::max;
 using std::min;
@@ -126,13 +128,13 @@ static bool alloc_group_fields(JOIN *join, ORDER *group);
 /// Maximum amount of space (in bytes) to allocate for a Record_buffer.
 static constexpr size_t MAX_RECORD_BUFFER_SIZE = 128 * 1024;  // 128KB
 
-string RefToString(const Index_lookup &ref, const KEY *key,
+string RefToString(const Index_lookup &ref, const KEY &key,
                    bool include_nulls) {
   string ret;
 
   if (ref.keypart_hash != nullptr) {
     assert(!include_nulls);
-    ret = key->key_part[0].field->field_name;
+    ret = key.key_part[0].field->field_name;
     ret += "=hash(";
     for (unsigned key_part_idx = 0; key_part_idx < ref.key_parts;
          ++key_part_idx) {
@@ -152,7 +154,7 @@ string RefToString(const Index_lookup &ref, const KEY *key,
     if (key_part_idx != 0) {
       ret += ", ";
     }
-    const Field *field = key->key_part[key_part_idx].field;
+    const Field *field = key.key_part[key_part_idx].field;
     if (field->is_field_for_functional_index()) {
       // Do not print out the column name if the column represents a functional
       // index. Instead, print out the indexed expression.
@@ -169,7 +171,7 @@ string RefToString(const Index_lookup &ref, const KEY *key,
     if (include_nulls && key_buff == ref.null_ref_key) {
       ret += " or NULL";
     }
-    key_buff += key->key_part[key_part_idx].store_length;
+    key_buff += key.key_part[key_part_idx].store_length;
   }
   return ret;
 }
@@ -185,7 +187,7 @@ bool JOIN::create_intermediate_table(
     when there is ORDER BY or GROUP BY or aggregate/window functions, because
     in all these cases we need all result rows.
   */
-  ha_rows tmp_rows_limit =
+  const ha_rows tmp_rows_limit =
       ((order.empty() || skip_sort_order) && tmp_table_group.empty() &&
        !windowing && !query_block->with_sum_func)
           ? m_select_limit
@@ -195,7 +197,7 @@ bool JOIN::create_intermediate_table(
       new (thd->mem_root) Temp_table_param(thd->mem_root, tmp_table_param);
   tab->tmp_table_param->skip_create_table = true;
 
-  bool distinct_arg =
+  const bool distinct_arg =
       select_distinct &&
       // GROUP BY is absent or has been done in a previous step
       group_list.empty() &&
@@ -327,9 +329,9 @@ bool has_rollup_result(Item *item) {
   return false;
 }
 
-bool is_rollup_group_wrapper(Item *item) {
+bool is_rollup_group_wrapper(const Item *item) {
   return item->type() == Item::FUNC_ITEM &&
-         down_cast<Item_func *>(item)->functype() ==
+         down_cast<const Item_func *>(item)->functype() ==
              Item_func::ROLLUP_GROUP_ITEM_FUNC;
 }
 
@@ -472,7 +474,7 @@ static bool update_const_equal_items(THD *thd, Item *cond, JOIN_TAB *tab) {
              down_cast<Item_func *>(cond)->functype() ==
                  Item_func::MULT_EQUAL_FUNC) {
     Item_equal *item_equal = (Item_equal *)cond;
-    bool contained_const = item_equal->const_arg() != nullptr;
+    const bool contained_const = item_equal->const_arg() != nullptr;
     if (item_equal->update_const(thd)) return true;
     if (!contained_const && item_equal->const_arg()) {
       /* Update keys for range analysis */
@@ -519,7 +521,7 @@ void setup_tmptable_write_func(QEP_TAB *tab, Opt_trace_object *trace) {
   JOIN *join = tab->join();
   TABLE *table = tab->table();
   Temp_table_param *const tmp_tbl = tab->tmp_table_param;
-  uint phase = tab->ref_item_slice;
+  const uint phase = tab->ref_item_slice;
   const char *description = nullptr;
   assert(table);
 
@@ -812,7 +814,7 @@ static AccessPath *NewInvalidatorAccessPathForTable(
 
   // Copy costs.
   invalidator->set_num_output_rows(path->num_output_rows());
-  invalidator->cost = path->cost;
+  invalidator->set_cost(path->cost());
 
   QEP_TAB *tab2 = &qep_tab->join()->qep_tab[table_index_to_invalidate];
   if (tab2->invalidators == nullptr) {
@@ -825,8 +827,9 @@ static AccessPath *NewInvalidatorAccessPathForTable(
 
 static table_map ConvertQepTabMapToTableMap(JOIN *join, qep_tab_map tables) {
   table_map map = 0;
-  for (QEP_TAB *tab : TablesContainedIn(join, tables)) {
-    map |= tab->table_ref->map();
+  for (size_t idx : BitsSetIn(tables)) {
+    assert(idx < join->tables);
+    map |= join->qep_tab[idx].table_ref->map();
   }
   return map;
 }
@@ -941,7 +944,7 @@ void ConvertItemsToCopy(const mem_root_deque<Item *> &items, Field **fields,
 /// @returns true if 'item' is a join condition for a join involving the given
 ///   table (both equi-join and non-equi-join condition).
 static bool IsJoinCondition(const Item *item, const QEP_TAB *qep_tab) {
-  table_map used_tables = item->used_tables();
+  const table_map used_tables = item->used_tables();
   if ((~qep_tab->table_ref->map() & used_tables) != 0) {
     // This is a join condition (either equi-join or non-equi-join).
     return true;
@@ -984,7 +987,7 @@ static bool CheckIfFieldsAvailableForCond(Item *item, table_map build_tables,
     }
     return true;
   } else {
-    table_map used_tables = item->used_tables();
+    const table_map used_tables = item->used_tables();
     return (Overlaps(used_tables, build_tables) &&
             Overlaps(used_tables, probe_tables) &&
             IsSubset(used_tables, build_tables | probe_tables));
@@ -1004,9 +1007,9 @@ static void AttachSemiJoinCondition(Item *join_cond,
                                     QEP_TAB *current_table,
                                     qep_tab_map left_tables,
                                     plan_idx semi_join_table_idx) {
-  table_map build_table_map = ConvertQepTabMapToTableMap(
+  const table_map build_table_map = ConvertQepTabMapToTableMap(
       current_table->join(), current_table->idx_map());
-  table_map probe_table_map =
+  const table_map probe_table_map =
       ConvertQepTabMapToTableMap(current_table->join(), left_tables);
   if (CheckIfFieldsAvailableForCond(join_cond, build_table_map,
                                     probe_table_map)) {
@@ -1302,7 +1305,7 @@ static Substructure FindSubstructure(
   QEP_TAB *qep_tab = &qep_tabs[this_idx];
   bool is_outer_join =
       qep_tab->last_inner() != NO_PLAN_IDX && qep_tab->last_inner() < last_idx;
-  plan_idx outer_join_end =
+  const plan_idx outer_join_end =
       qep_tab->last_inner() + 1;  // Only valid if is_outer_join.
 
   // See if this table marks the end of the left side of a semijoin.
@@ -1468,8 +1471,8 @@ static bool IsTableScan(AccessPath *path) {
   return path->type == AccessPath::TABLE_SCAN;
 }
 
-AccessPath *GetAccessPathForDerivedTable(THD *thd, QEP_TAB *qep_tab,
-                                         AccessPath *table_path) {
+static AccessPath *GetAccessPathForDerivedTable(THD *thd, QEP_TAB *qep_tab,
+                                                AccessPath *table_path) {
   return GetAccessPathForDerivedTable(
       thd, qep_tab->table_ref, qep_tab->table(), qep_tab->rematerialize,
       qep_tab->invalidators, /*need_rowid=*/false, table_path);
@@ -1477,28 +1480,30 @@ AccessPath *GetAccessPathForDerivedTable(THD *thd, QEP_TAB *qep_tab,
 
 /**
    Recalculate the cost of 'path'.
+   @param thd Current thread.
    @param path the access path for which we update the cost numbers.
-   @param outer_query_block the query block to which 'path belongs.
+   @param outer_query_block the query block to which 'path' belongs.
 */
-static void RecalculateTablePathCost(AccessPath *path,
+static void RecalculateTablePathCost(THD *thd, AccessPath *path,
                                      const Query_block &outer_query_block) {
   switch (path->type) {
     case AccessPath::FILTER: {
       const AccessPath &child = *path->filter().child;
       path->set_num_output_rows(child.num_output_rows());
-      path->init_cost = child.init_cost;
+      path->set_init_cost(child.init_cost());
 
       const FilterCost filterCost =
           EstimateFilterCost(current_thd, path->num_output_rows(),
                              path->filter().condition, &outer_query_block);
 
-      path->cost = child.cost + (path->filter().materialize_subqueries
-                                     ? filterCost.cost_if_materialized
-                                     : filterCost.cost_if_not_materialized);
+      path->set_cost(child.cost() +
+                     (path->filter().materialize_subqueries
+                          ? filterCost.cost_if_materialized
+                          : filterCost.cost_if_not_materialized));
     } break;
 
     case AccessPath::SORT:
-      EstimateSortCost(path);
+      EstimateSortCost(thd, path);
       break;
 
     case AccessPath::LIMIT_OFFSET:
@@ -1521,14 +1526,18 @@ static void RecalculateTablePathCost(AccessPath *path,
       EstimateMaterializeCost(current_thd, path);
       break;
 
+    case AccessPath::WINDOW:
+      EstimateWindowCost(path);
+      break;
+
     default:
       assert(false);
   }
 }
 
 AccessPath *MoveCompositeIteratorsFromTablePath(
-    AccessPath *path, const Query_block &outer_query_block) {
-  assert(path->cost >= 0.0);
+    THD *thd, AccessPath *path, const Query_block &outer_query_block) {
+  assert(path->cost() >= 0.0);
   AccessPath *table_path = path->materialize().table_path;
   AccessPath *bottom_of_table_path = nullptr;
   // For EXPLAIN, we recalculate the cost to reflect the new order of
@@ -1547,12 +1556,16 @@ AccessPath *MoveCompositeIteratorsFromTablePath(
       case AccessPath::CONST_TABLE:
       case AccessPath::INDEX_SCAN:
       case AccessPath::INDEX_RANGE_SCAN:
+      case AccessPath::DYNAMIC_INDEX_RANGE_SCAN:
         // We found our real bottom.
         path->materialize().table_path = sub_path;
         if (explain) {
           EstimateMaterializeCost(current_thd, path);
         }
         return true;
+      case AccessPath::SAMPLE_SCAN: /* LCOV_EXCL_LINE */
+        // SampleScan can be executed only in the secondary engine.
+        assert(false); /* LCOV_EXCL_LINE */
       default:
         // New possible bottom, so keep going.
         bottom_of_table_path = sub_path;
@@ -1602,11 +1615,13 @@ AccessPath *MoveCompositeIteratorsFromTablePath(
         bottom_of_table_path->stream().child = path;
         break;
       case AccessPath::MATERIALIZE:
-        assert(bottom_of_table_path->materialize().param->query_blocks.size() ==
+        assert(bottom_of_table_path->materialize().param->m_operands.size() ==
                1);
-        bottom_of_table_path->materialize()
-            .param->query_blocks[0]
-            .subquery_path = path;
+        bottom_of_table_path->materialize().param->m_operands[0].subquery_path =
+            path;
+        break;
+      case AccessPath::WINDOW:
+        bottom_of_table_path->window().child = path;
         break;
       default:
         assert(false);
@@ -1616,11 +1631,11 @@ AccessPath *MoveCompositeIteratorsFromTablePath(
   }
 
   if (explain) {
-    // Update cost from the bottom an up, so that the cost of each path
+    // Update cost from the bottom and up, so that the cost of each path
     // includes the cost of its descendants.
     for (auto ancestor = ancestor_paths.end() - 1;
          ancestor >= ancestor_paths.begin(); ancestor--) {
-      RecalculateTablePathCost(*ancestor, outer_query_block);
+      RecalculateTablePathCost(thd, *ancestor, outer_query_block);
     }
   }
 
@@ -1682,7 +1697,7 @@ AccessPath *GetAccessPathForDerivedTable(
             : false);
     EstimateMaterializeCost(thd, path);
     path = MoveCompositeIteratorsFromTablePath(
-        path, *query_expression->outer_query_block());
+        thd, path, *query_expression->outer_query_block());
     if (query_expression->offset_limit_cnt != 0) {
       // LIMIT is handled inside MaterializeIterator, but OFFSET is not.
       // SQL_CALC_FOUND_ROWS cannot occur in a derived table's definition.
@@ -1726,10 +1741,10 @@ AccessPath *GetAccessPathForDerivedTable(
         query_expression->m_reject_multiple_rows);
     EstimateMaterializeCost(thd, path);
     path = MoveCompositeIteratorsFromTablePath(
-        path, *query_expression->outer_query_block());
+        thd, path, *query_expression->outer_query_block());
   }
 
-  path->cost_before_filter = path->cost;
+  path->set_cost_before_filter(path->cost());
   path->num_output_rows_before_filter = path->num_output_rows();
 
   table_ref->access_path_for_derived = path;
@@ -1740,7 +1755,8 @@ AccessPath *GetAccessPathForDerivedTable(
   Get the RowIterator used for scanning the given table, with any required
   materialization operations done first.
  */
-AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab, QEP_TAB *qep_tabs) {
+static AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab,
+                                      QEP_TAB *qep_tabs) {
   AccessPath *table_path;
   if (qep_tab->materialize_table == QEP_TAB::MATERIALIZE_DERIVED) {
     table_path =
@@ -1750,6 +1766,8 @@ AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab, QEP_TAB *qep_tabs) {
     table_path = NewMaterializedTableFunctionAccessPath(
         thd, qep_tab->table(), qep_tab->table_ref->table_function,
         qep_tab->access_path());
+
+    CopyBasicProperties(*qep_tab->access_path(), table_path);
   } else if (qep_tab->materialize_table == QEP_TAB::MATERIALIZE_SEMIJOIN) {
     Semijoin_mat_exec *sjm = qep_tab->sj_mat_exec();
 
@@ -1762,8 +1780,8 @@ AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab, QEP_TAB *qep_tabs) {
                        qep_tab->table()->visible_field_ptr(),
                        &sjm->table_param);
 
-    int join_start = sjm->inner_table_index;
-    int join_end = join_start + sjm->table_count;
+    const int join_start = sjm->inner_table_index;
+    const int join_end = join_start + sjm->table_count;
 
     // Handle this subquery as a we would a completely separate join,
     // even though the tables are part of the same JOIN object
@@ -1808,7 +1826,7 @@ AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab, QEP_TAB *qep_tabs) {
     subtree_path = PossiblyAttachFilter(subtree_path, not_null_conditions, thd,
                                         &conditions_depend_on_outer_tables);
 
-    bool copy_items_in_materialize =
+    const bool copy_items_in_materialize =
         true;  // We never have windowing functions within semijoins.
     table_path = NewMaterializeAccessPath(
         thd,
@@ -1822,6 +1840,8 @@ AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab, QEP_TAB *qep_tabs) {
         sjm->table_param.end_write_records,
         /*reject_multiple_rows=*/false);
     EstimateMaterializeCost(thd, table_path);
+    table_path = MoveCompositeIteratorsFromTablePath(
+        thd, table_path, *qep_tab->join()->query_block);
 
 #ifndef NDEBUG
     // Make sure we clear this table out when the join is reset,
@@ -1852,7 +1872,8 @@ AccessPath *GetTableAccessPath(THD *thd, QEP_TAB *qep_tab, QEP_TAB *qep_tabs) {
 void SetCostOnTableAccessPath(const Cost_model_server &cost_model,
                               const POSITION *pos, bool is_after_filter,
                               AccessPath *path) {
-  double num_rows_after_filtering = pos->rows_fetched * pos->filter_effect;
+  const double num_rows_after_filtering =
+      pos->rows_fetched * pos->filter_effect;
   if (is_after_filter) {
     path->set_num_output_rows(num_rows_after_filtering);
   } else {
@@ -1861,14 +1882,14 @@ void SetCostOnTableAccessPath(const Cost_model_server &cost_model,
 
   // Note that we don't try to adjust for the filtering here;
   // we estimate the same cost as the table itself.
-  double cost =
+  const double cost =
       pos->read_cost + cost_model.row_evaluate_cost(num_rows_after_filtering);
   if (pos->prefix_rowcount <= 0.0) {
-    path->cost = cost;
+    path->set_cost(cost);
   } else {
     // Scale the estimated cost to being for one loop only, to match the
     // measured costs.
-    path->cost = cost * num_rows_after_filtering / pos->prefix_rowcount;
+    path->set_cost(cost * num_rows_after_filtering / pos->prefix_rowcount);
   }
 }
 
@@ -1897,15 +1918,15 @@ void SetCostOnNestedLoopAccessPath(const Cost_model_server &cost_model,
 
   // Mirrors set_prefix_join_cost(), even though the cost calculation doesn't
   // make a lot of sense.
-  double inner_expected_rows_before_filter =
+  const double inner_expected_rows_before_filter =
       pos_inner->filter_effect > 0.0
           ? (inner->num_output_rows() / pos_inner->filter_effect)
           : 0.0;
-  double joined_rows =
+  const double joined_rows =
       outer->num_output_rows() * inner_expected_rows_before_filter;
   path->set_num_output_rows(joined_rows * pos_inner->filter_effect);
-  path->cost = outer->cost + pos_inner->read_cost +
-               cost_model.row_evaluate_cost(joined_rows);
+  path->set_cost(outer->cost() + pos_inner->read_cost +
+                 cost_model.row_evaluate_cost(joined_rows));
 }
 
 void SetCostOnHashJoinAccessPath(const Cost_model_server &cost_model,
@@ -1925,14 +1946,34 @@ void SetCostOnHashJoinAccessPath(const Cost_model_server &cost_model,
 
   // Mirrors set_prefix_join_cost(), even though the cost calculation doesn't
   // make a lot of sense.
-  double joined_rows = outer->num_output_rows() * inner->num_output_rows();
+  const double joined_rows =
+      outer->num_output_rows() * inner->num_output_rows();
   path->set_num_output_rows(joined_rows * pos_outer->filter_effect);
-  path->cost = inner->cost + pos_outer->read_cost +
-               cost_model.row_evaluate_cost(joined_rows);
+  path->set_cost(inner->cost() + pos_outer->read_cost +
+                 cost_model.row_evaluate_cost(joined_rows));
 }
 
 static bool ConditionIsAlwaysTrue(Item *item) {
   return item->const_item() && item->val_bool();
+}
+
+/// Find all the tables below "path" that have been pruned and replaced by a
+/// ZERO_ROWS access path.
+static table_map GetPrunedTables(const AccessPath *path) {
+  table_map pruned_tables = 0;
+
+  WalkAccessPaths(
+      path, /*join=*/nullptr, WalkAccessPathPolicy::STOP_AT_MATERIALIZATION,
+      [&pruned_tables](const AccessPath *subpath, const JOIN *) {
+        if (subpath->type == AccessPath::ZERO_ROWS) {
+          pruned_tables |=
+              GetUsedTableMap(subpath, /*include_pruned_tables=*/true);
+          return true;  // Stop recursing into this subtree.
+        }
+        return false;
+      });
+
+  return pruned_tables;
 }
 
 // Create a hash join iterator with the given build and probe input. We will
@@ -1956,9 +1997,9 @@ static AccessPath *CreateHashJoinAccessPath(
     qep_tab_map build_tables, AccessPath *probe_path, qep_tab_map probe_tables,
     JoinType join_type, vector<Item *> *join_conditions,
     table_map *conditions_depend_on_outer_tables) {
-  table_map left_table_map =
+  const table_map left_table_map =
       ConvertQepTabMapToTableMap(qep_tab->join(), probe_tables);
-  table_map right_table_map =
+  const table_map right_table_map =
       ConvertQepTabMapToTableMap(qep_tab->join(), build_tables);
 
   // Move out equi-join conditions and non-equi-join conditions, so we can
@@ -2108,32 +2149,27 @@ static AccessPath *CreateHashJoinAccessPath(
   // refer to tables that exist. If some table was pruned away due to
   // being replaced by ZeroRowsAccessPath, but the equijoin condition still
   // refers to it, it could become degenerate: The only rows it could ever
-  // see would be NULL-complemented rows, which would never match.
+  // see would be NULL-complemented rows, so if the join condition is
+  // NULL-rejecting on the pruned table, it will never match.
   // In this case, we can remove the entire build path (ie., propagate the
   // zero-row property to our own join).
   //
   // We also remove the join conditions, to avoid using time on extracting their
   // hash values. (Also, Item_eq_base::append_join_key_for_hash_join has an
   // assert that this case should never happen, so it would trigger.)
-  const table_map probe_used_tables =
-      GetUsedTableMap(probe_path, /*include_pruned_tables=*/false);
-  const table_map build_used_tables =
-      GetUsedTableMap(build_path, /*include_pruned_tables=*/false);
-  for (const HashJoinCondition &condition : hash_join_conditions) {
-    if ((!condition.left_uses_any_table(probe_used_tables) &&
-         !condition.right_uses_any_table(probe_used_tables)) ||
-        (!condition.left_uses_any_table(build_used_tables) &&
-         !condition.right_uses_any_table(build_used_tables))) {
-      if (build_path->type != AccessPath::ZERO_ROWS) {
-        string cause = "Join condition " +
-                       ItemToString(condition.join_condition()) +
-                       " requires pruned table";
-        build_path = NewZeroRowsAccessPath(
-            thd, build_path, strdup_root(thd->mem_root, cause.c_str()));
-      }
-      expr->equijoin_conditions.clear();
-      break;
+  if (const table_map pruned_tables =
+          GetPrunedTables(probe_path) | GetPrunedTables(build_path);
+      pruned_tables != 0 &&
+      any_of(hash_join_conditions.begin(), hash_join_conditions.end(),
+             [pruned_tables](const HashJoinCondition &condition) {
+               return Overlaps(pruned_tables,
+                               condition.join_condition()->not_null_tables());
+             })) {
+    if (build_path->type != AccessPath::ZERO_ROWS) {
+      build_path = NewZeroRowsAccessPath(
+          thd, build_path, "Join condition requires pruned table");
     }
+    expr->equijoin_conditions.clear();
   }
 
   JoinPredicate *pred = new (thd->mem_root) JoinPredicate;
@@ -2406,7 +2442,7 @@ AccessPath *ConnectJoins(plan_idx upper_first_idx, plan_idx first_idx,
 
     bool add_limit_1;
     plan_idx substructure_end;
-    Substructure substructure =
+    const Substructure substructure =
         FindSubstructure(qep_tabs, first_idx, i, last_idx, calling_context,
                          &add_limit_1, &substructure_end, unhandled_duplicates);
 
@@ -2422,8 +2458,8 @@ AccessPath *ConnectJoins(plan_idx upper_first_idx, plan_idx first_idx,
     QEP_TAB *qep_tab = &qep_tabs[i];
     if (substructure == Substructure::OUTER_JOIN ||
         substructure == Substructure::SEMIJOIN) {
-      qep_tab_map left_tables = TablesBetween(first_idx, i);
-      qep_tab_map right_tables = TablesBetween(i, substructure_end);
+      const qep_tab_map left_tables = TablesBetween(first_idx, i);
+      const qep_tab_map right_tables = TablesBetween(i, substructure_end);
 
       // Outer or semijoin, consisting of a subtree (possibly of only one
       // table), so we send the entire subtree down to a recursive invocation
@@ -2702,7 +2738,7 @@ AccessPath *ConnectJoins(plan_idx upper_first_idx, plan_idx first_idx,
 
     AccessPath *table_path = GetTableAccessPath(thd, qep_tab, qep_tabs);
 
-    qep_tab_map right_tables = qep_tab->idx_map();
+    const qep_tab_map right_tables = qep_tab->idx_map();
     qep_tab_map left_tables = 0;
 
     // Get the left side tables of this join.
@@ -2761,7 +2797,7 @@ AccessPath *ConnectJoins(plan_idx upper_first_idx, plan_idx first_idx,
     }
 
     if (!qep_tab->condition_is_pushed_to_sort()) {  // See the comment on #2.
-      double expected_rows = table_path->num_output_rows();
+      const double expected_rows = table_path->num_output_rows();
       table_path = PossiblyAttachFilter(table_path, predicates_below_join, thd,
                                         conditions_depend_on_outer_tables);
       POSITION *pos = qep_tab->position();
@@ -2910,7 +2946,8 @@ static table_map get_update_or_delete_target_tables(const JOIN *join) {
 
 // If this is the top-level query block of a multi-table UPDATE or multi-table
 // DELETE statement, wrap the path in an UPDATE_ROWS or DELETE_ROWS path.
-AccessPath *JOIN::attach_access_path_for_update_or_delete(AccessPath *path) {
+AccessPath *JOIN::attach_access_path_for_update_or_delete(
+    AccessPath *path) const {
   if (thd->lex->m_sql_cmd == nullptr) {
     // It is not an UPDATE or DELETE statement.
     return path;
@@ -2934,7 +2971,7 @@ AccessPath *JOIN::attach_access_path_for_update_or_delete(AccessPath *path) {
     const table_map target_tables = get_update_or_delete_target_tables(this);
     path = NewUpdateRowsAccessPath(
         thd, path, target_tables,
-        GetImmediateUpdateTable(this, IsSingleBitSet(target_tables)));
+        GetImmediateUpdateTable(this, std::has_single_bit(target_tables)));
   } else if (command == SQLCOM_DELETE_MULTI) {
     const table_map target_tables = get_update_or_delete_target_tables(this);
     path =
@@ -2956,6 +2993,25 @@ void JOIN::create_access_paths() {
   m_root_access_path = path;
 }
 
+static AccessPath *add_filter_access_path(THD *thd, AccessPath *path,
+                                          Item *condition,
+                                          const Query_block *query_block) {
+  AccessPath *filter_path = NewFilterAccessPath(thd, path, condition);
+  CopyBasicProperties(*path, filter_path);
+  if (thd->lex->using_hypergraph_optimizer()) {
+    // We cannot call EstimateFilterCost() in the pre-hypergraph optimizer,
+    // as on repeated execution of a prepared query, the condition may contain
+    // references to subqueries that are destroyed and not re-optimized yet.
+    const FilterCost filter_cost = EstimateFilterCost(
+        thd, filter_path->num_output_rows(), condition, query_block);
+    filter_path->set_cost(filter_path->cost() +
+                          filter_cost.cost_if_not_materialized);
+    filter_path->set_init_cost(filter_path->init_cost() +
+                               filter_cost.init_cost_if_not_materialized);
+  }
+  return filter_path;
+}
+
 AccessPath *JOIN::create_root_access_path_for_join() {
   if (select_count) {
     return NewUnqualifiedCountAccessPath(thd);
@@ -2965,10 +3021,15 @@ AccessPath *JOIN::create_root_access_path_for_join() {
   AccessPath *path = nullptr;
   if (query_block->is_table_value_constructor) {
     best_rowcount = query_block->row_value_list->size();
-    path = NewTableValueConstructorAccessPath(thd);
-    path->set_num_output_rows(query_block->row_value_list->size());
-    path->cost = 0.0;
-    path->init_cost = 0.0;
+    path = NewTableValueConstructorAccessPath(thd, this);
+    path->set_num_output_rows(best_rowcount);
+    path->set_cost(0.0);
+    path->set_init_cost(0.0);
+    // Table value constructors may get a synthetic WHERE clause from an
+    // IN-to-EXISTS transformation. If so, add a filter for it.
+    if (where_cond != nullptr) {
+      path = add_filter_access_path(thd, path, where_cond, query_block);
+    }
   } else if (const_tables == primary_tables) {
     // Only const tables, so add a fake single row to join in all
     // the const tables (only inner-joined tables are promoted to
@@ -3042,9 +3103,8 @@ AccessPath *JOIN::create_root_access_path_for_join() {
       // (We can also aggregate as we go after the materialization step;
       // see below. We won't be aggregating twice, though.)
       if (!qep_tab->tmp_table_param->precomputed_group_by) {
-        path = NewAggregateAccessPath(thd, path,
-                                      rollup_state != RollupState::NONE);
-        EstimateAggregateCost(path, query_block);
+        path = NewAggregateAccessPath(thd, path, query_block->olap);
+        EstimateAggregateCost(thd, path, query_block);
       }
     }
 
@@ -3145,7 +3205,7 @@ AccessPath *JOIN::create_root_access_path_for_join() {
 
         // Switch to the right slice if applicable, so that we fetch out the
         // correct items from order_arg.
-        Switch_ref_item_slice slice_switch(this, qep_tab->ref_item_slice);
+        const Switch_ref_item_slice slice_switch(this, qep_tab->ref_item_slice);
         dup_filesort = new (thd->mem_root) Filesort(
             thd, {qep_tab->table()}, /*keep_buffers=*/false, order,
             HA_POS_ERROR, /*remove_duplicates=*/true, force_sort_rowids,
@@ -3287,35 +3347,23 @@ AccessPath *JOIN::create_root_access_path_for_join() {
     }
 #endif
     if (!tmp_table_param.precomputed_group_by) {
-      path =
-          NewAggregateAccessPath(thd, path, rollup_state != RollupState::NONE);
-      EstimateAggregateCost(path, query_block);
+      path = NewAggregateAccessPath(thd, path, query_block->olap);
+      EstimateAggregateCost(thd, path, query_block);
     }
   }
 
   return path;
 }
 
-AccessPath *JOIN::attach_access_paths_for_having_and_limit(AccessPath *path) {
+AccessPath *JOIN::attach_access_paths_for_having_and_limit(
+    AccessPath *path) const {
   // Attach HAVING and LIMIT if needed.
   // NOTE: We can have HAVING even without GROUP BY, although it's not very
   // useful.
   // We don't currently bother with materializing subqueries
   // in HAVING, as they should be rare.
   if (having_cond != nullptr) {
-    AccessPath *old_path = path;
-    path = NewFilterAccessPath(thd, path, having_cond);
-    CopyBasicProperties(*old_path, path);
-    if (thd->lex->using_hypergraph_optimizer) {
-      // We cannot call EstimateFilterCost() in the pre-hypergraph optimizer,
-      // as on repeated execution of a prepared query, the condition may contain
-      // references to subqueries that are destroyed and not re-optimized yet.
-      const FilterCost filter_cost = EstimateFilterCost(
-          thd, path->num_output_rows(), having_cond, query_block);
-
-      path->cost += filter_cost.cost_if_not_materialized;
-      path->init_cost += filter_cost.init_cost_if_not_materialized;
-    }
+    path = add_filter_access_path(thd, path, having_cond, query_block);
   }
 
   // Note: For select_count, LIMIT 0 is handled in JOIN::optimize() for the
@@ -3417,7 +3465,7 @@ int do_sj_dups_weedout(THD *thd, SJ_TMP_TABLE *sjtbl) {
     }
   }
 
-  if (!check_unique_constraint(sjtbl->tmp_table)) return 1;
+  if (!check_unique_fields(sjtbl->tmp_table)) return 1;
   error = sjtbl->tmp_table->file->ha_write_row(sjtbl->tmp_table->record[0]);
   if (error) {
     /* If this is a duplicate error, return immediately */
@@ -3533,7 +3581,7 @@ int join_read_const_table(JOIN_TAB *tab, POSITION *pos) {
 
   if (tab->join_cond() && !table->has_null_row()) {
     // We cannot handle outer-joined tables with expensive join conditions here:
-    assert(!tab->join_cond()->is_expensive());
+    assert(!tab->join_cond()->cost().IsExpensive());
     if (tab->join_cond()->val_int() == 0) table->set_null_row();
     if (thd->is_error()) return 1;
   }
@@ -3797,7 +3845,8 @@ AccessPath *QEP_TAB::access_path() {
         AccessPath *table_scan_path = NewTableScanAccessPath(
             join()->thd, table(), /*count_examined_rows=*/true);
         table_scan_path->set_num_output_rows(table()->file->stats.records);
-        table_scan_path->cost = table()->file->table_scan_cost().total_cost();
+        table_scan_path->set_cost(
+            table()->file->table_scan_cost().total_cost());
         path = NewAlternativeAccessPath(join()->thd, path, table_scan_path,
                                         used_ref);
         break;
@@ -3866,7 +3915,7 @@ static bool cmp_field_value(Field *field, ptrdiff_t diff) {
     // Fetch the JSON value on the right side of the comparison.
     Json_wrapper right_wrapper;
     json_field->move_field_offset(diff);
-    bool err = json_field->val_json(&right_wrapper);
+    const bool err = json_field->val_json(&right_wrapper);
     json_field->move_field_offset(-diff);
     if (err) return true; /* purecov: inspected */
 
@@ -3894,7 +3943,7 @@ static bool cmp_field_value(Field *field, ptrdiff_t diff) {
 
 static bool group_rec_cmp(ORDER *group, uchar *rec0, uchar *rec1) {
   DBUG_TRACE;
-  ptrdiff_t diff = rec1 - rec0;
+  const ptrdiff_t diff = rec1 - rec0;
 
   for (ORDER *grp = group; grp; grp = grp->next) {
     Field *field = grp->field_in_tmp_table;
@@ -3911,9 +3960,9 @@ static bool group_rec_cmp(ORDER *group, uchar *rec0, uchar *rec1) {
     false records are the same
 */
 
-static bool table_rec_cmp(TABLE *table) {
+bool table_rec_cmp(TABLE *table) {
   DBUG_TRACE;
-  ptrdiff_t diff = table->record[1] - table->record[0];
+  const ptrdiff_t diff = table->record[1] - table->record[0];
   Field **fields = table->visible_field_ptr();
 
   for (uint i = 0; i < table->visible_field_count(); i++) {
@@ -3929,9 +3978,9 @@ static bool table_rec_cmp(TABLE *table) {
   @returns generated hash
 */
 
-ulonglong unique_hash(const Field *field, ulonglong *hash_val) {
-  uint64 seed1 = 0, seed2 = 4;
-  ulonglong crc = *hash_val;
+ulonglong calc_field_hash(const Field *field, ulonglong *hash_val) {
+  uint64_t seed1 = 0, seed2 = 4;
+  uint64_t crc = *hash_val;
 
   if (field->is_null()) {
     /*
@@ -3957,7 +4006,7 @@ ulonglong unique_hash(const Field *field, ulonglong *hash_val) {
     }
     field->charset()->coll->hash_sort(field->charset(), data_ptr,
                                       field->data_length(), &seed1, &seed2);
-    crc ^= seed1;
+    my_hash_combine(crc, seed1);
   } else {
     const uchar *pos = field->data_ptr();
     const uchar *end = pos + field->data_length();
@@ -3984,7 +4033,7 @@ static ulonglong unique_hash_group(ORDER *group) {
   for (ORDER *ord = group; ord; ord = ord->next) {
     Field *field = ord->field_in_tmp_table;
     assert(field);
-    unique_hash(field, &crc);
+    calc_field_hash(field, &crc);
   }
 
   return crc;
@@ -3995,18 +4044,18 @@ static ulonglong unique_hash_group(ORDER *group) {
   @param table the table for which we want a hash of its fields
   @return the hash value
 */
-static ulonglong unique_hash_fields(TABLE *table) {
+ulonglong calc_row_hash(TABLE *table) {
   ulonglong crc = 0;
   Field **fields = table->visible_field_ptr();
 
   for (uint i = 0; i < table->visible_field_count(); i++)
-    unique_hash(fields[i], &crc);
+    calc_field_hash(fields[i], &crc);
 
   return crc;
 }
 
 /**
-  Check unique_constraint.
+  Check whether a row is already present in the tmp table
 
   @details Calculates record's hash and checks whether the record given in
   table->record[0] is already present in the tmp table.
@@ -4022,7 +4071,7 @@ static ulonglong unique_hash_fields(TABLE *table) {
     true  record wasn't found
 */
 
-bool check_unique_constraint(TABLE *table) {
+bool check_unique_fields(TABLE *table) {
   ulonglong hash;
 
   if (!table->hash_field) return true;
@@ -4032,7 +4081,7 @@ bool check_unique_constraint(TABLE *table) {
   if (table->group)
     hash = unique_hash_group(table->group);
   else
-    hash = unique_hash_fields(table);
+    hash = calc_row_hash(table);
   table->hash_field->store(hash, true);
   int res = table->file->ha_index_read_map(table->record[1],
                                            table->hash_field->field_ptr(),
@@ -4051,7 +4100,7 @@ bool check_unique_constraint(TABLE *table) {
 }
 
 bool construct_lookup(THD *thd, TABLE *table, Index_lookup *ref) {
-  enum enum_check_fields save_check_for_truncated_fields =
+  const enum enum_check_fields save_check_for_truncated_fields =
       thd->check_for_truncated_fields;
   thd->check_for_truncated_fields = CHECK_FIELD_IGNORE;
   my_bitmap_map *old_map = dbug_tmp_use_all_columns(table, table->write_set);
@@ -4202,7 +4251,7 @@ bool copy_fields(Temp_table_param *param, const THD *thd, bool reverse_copy) {
  */
 static bool replace_embedded_rollup_references_with_tmp_fields(
     THD *thd, Item *item, mem_root_deque<Item *> *fields) {
-  if (!item->has_rollup_expr()) {
+  if (!item->has_grouping_set_dep()) {
     return false;
   }
   const auto replace_functor = [thd, item, fields](Item *sub_item, Item *,
@@ -4238,14 +4287,15 @@ static bool replace_embedded_rollup_references_with_tmp_fields(
   @param [out] res_fields            new list of all items
   @param added_non_hidden_fields     number of visible fields added by subquery
                                      to derived transformation
-
+  @param windowing                   true if creating a tmp table for windowing
+                                     materialization
   @returns false if success, true if error
 */
 
 bool change_to_use_tmp_fields(mem_root_deque<Item *> *fields, THD *thd,
                               Ref_item_array ref_item_array,
                               mem_root_deque<Item *> *res_fields,
-                              size_t added_non_hidden_fields) {
+                              size_t added_non_hidden_fields, bool windowing) {
   DBUG_TRACE;
 
   res_fields->clear();
@@ -4265,13 +4315,18 @@ bool change_to_use_tmp_fields(mem_root_deque<Item *> *fields, THD *thd,
     else if (item->type() == Item::FIELD_ITEM)
       new_item = item->get_tmp_table_item(thd);
     else if (item->type() == Item::FUNC_ITEM &&
-             ((Item_func *)item)->functype() == Item_func::SUSERVAR_FUNC) {
+             ((Item_func *)item)->functype() == Item_func::SUSERVAR_FUNC &&
+             (!windowing || item->has_wf())) {
       field = item->get_tmp_table_field();
       if (field != nullptr) {
         /*
           Replace "@:=<expression>" with "@:=<tmp table column>". Otherwise, we
           would re-evaluate <expression>, and if expression were a subquery,
           this would access already-unlocked tables.
+          We do not perform the special handling for tmp tables used for
+          windowing, though.
+          TODO: remove this code cf. deprecated setting of variable in
+          expressions when it is finally disallowed.
         */
         Item_func_set_user_var *suv =
             new Item_func_set_user_var(thd, (Item_func_set_user_var *)item);
@@ -4512,15 +4567,15 @@ bool change_to_use_tmp_fields_except_sums(mem_root_deque<Item *> *fields,
 
     } else if ((select->is_implicitly_grouped() &&
                 ((item->used_tables() & ~(RAND_TABLE_BIT | INNER_TABLE_BIT)) ==
-                 0)) ||                    // (1)
-               item->has_rollup_expr()) {  // (2)
+                 0)) ||                         // (1)
+               item->has_grouping_set_dep()) {  // (2)
       /*
         We go here when:
         (1) The Query_block is implicitly grouped and 'item' does not
             depend on any table. Then that field should be evaluated exactly
             once, whether there are zero or more rows in the temporary table
             (@see create_tmp_table()).
-        (2) 'item' has a rollup expression. Then we delay processing
+        (2) 'item' has a group by modifier. Then we delay processing
             until below; see comment further down.
       */
       new_item = item->copy_or_same(thd);
@@ -4541,7 +4596,7 @@ bool change_to_use_tmp_fields_except_sums(mem_root_deque<Item *> *fields,
   }
 
   for (Item *item : *fields) {
-    if (!is_rollup_group_wrapper(item) && item->has_rollup_expr()) {
+    if (!is_rollup_group_wrapper(item) && item->has_grouping_set_dep()) {
       // An item that isn't a rollup wrapper itself, but depends on one (or
       // multiple). We need to go into those items, find the rollup wrappers,
       // and replace them with rollup wrappers around the temporary fields,
@@ -4660,6 +4715,41 @@ bool MaterializeIsDoingDeduplication(TABLE *table) {
 }
 
 /**
+  For the given access path, set "count_examined_rows" to the value
+  specified. For index merge scans, we set "count_examined_rows"
+  for all the child paths too.
+  @param path     Access path (A range scan)
+  @param count_examined_rows See AccessPath::count_examined_rows.
+*/
+static void set_count_examined_rows(AccessPath *path,
+                                    const bool count_examined_rows) {
+  path->count_examined_rows = count_examined_rows;
+  switch (path->type) {
+    case AccessPath::INDEX_MERGE:
+      for (AccessPath *child : *path->index_merge().children) {
+        set_count_examined_rows(child, count_examined_rows);
+      }
+      break;
+    case AccessPath::ROWID_INTERSECTION:
+      for (AccessPath *child : *path->rowid_intersection().children) {
+        set_count_examined_rows(child, count_examined_rows);
+      }
+      if (path->rowid_intersection().cpk_child != nullptr) {
+        set_count_examined_rows(path->rowid_intersection().cpk_child,
+                                count_examined_rows);
+      }
+      break;
+    case AccessPath::ROWID_UNION:
+      for (AccessPath *child : *path->rowid_union().children) {
+        set_count_examined_rows(child, count_examined_rows);
+      }
+      break;
+    default:
+      return;
+  }
+}
+
+/**
   create_table_access_path is used to scan by using a number of different
   methods. Which method to use is set-up in this call so that you can
   create an iterator from the returned access path and fetch rows through
@@ -4681,7 +4771,7 @@ AccessPath *create_table_access_path(THD *thd, TABLE *table,
                                      bool count_examined_rows) {
   AccessPath *path;
   if (range_scan != nullptr) {
-    range_scan->count_examined_rows = count_examined_rows;
+    set_count_examined_rows(range_scan, count_examined_rows);
     path = range_scan;
   } else if (table_ref != nullptr && table_ref->is_recursive_reference()) {
     path = NewFollowTailAccessPath(thd, table, count_examined_rows);

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,12 +25,15 @@
 
 #include <thread>
 
+#include "mysql/harness/filesystem.h"
 #include "router_component_test.h"
 
 #include "dim.h"
 #include "filesystem_utils.h"
 #include "mock_server_testutils.h"
+#include "mysqlrouter/utils.h"  // copy_file
 #include "random_generator.h"
+#include "router_component_testutils.h"
 
 using namespace std::chrono_literals;
 using namespace std::string_literals;
@@ -55,6 +59,27 @@ void RouterComponentTest::TearDown() {
   if (::testing::Test::HasFailure()) {
     dump_all();
   }
+}
+
+void RouterComponentTest::prepare_config_dir_with_default_certs(
+    const std::string &config_dir) {
+  mysql_harness::Path dst_dir(config_dir);
+  auto datadir = dst_dir.join("data");
+
+  mysql_harness::mkdir(datadir.str(), 0700, true);
+
+  copy_default_certs_to_datadir(datadir.str());
+}
+
+void RouterComponentTest::copy_default_certs_to_datadir(
+    const std::string &dst_dir) {
+  mysql_harness::Path to(dst_dir);
+  mysql_harness::Path from(SSL_TEST_DATA_DIR);
+
+  mysqlrouter::copy_file(from.join("server-key.pem").str(),
+                         to.join("router-key.pem").str());
+  mysqlrouter::copy_file(from.join("server-cert.pem").str(),
+                         to.join("router-cert.pem").str());
 }
 
 void RouterComponentTest::sleep_for(std::chrono::milliseconds duration) {
@@ -87,6 +112,17 @@ bool RouterComponentTest::wait_log_contains(const ProcessWrapper &router,
   return found;
 }
 
+void RouterComponentTest::check_log_contains(
+    const ProcessWrapper &router, const std::string &expected_string,
+    size_t expected_occurences /*=1*/) {
+  const std::string log_content = router.get_logfile_content();
+  ASSERT_EQ(expected_occurences,
+            count_str_occurences(log_content, expected_string))
+      << "Expected: " << expected_string << "\n"
+      << "in:\n"
+      << log_content;
+}
+
 constexpr const char RouterComponentBootstrapTest::kRootPassword[];
 
 const RouterComponentBootstrapTest::OutputResponder
@@ -117,10 +153,13 @@ void RouterComponentBootstrapTest::bootstrap_failover(
     const std::vector<std::string> &extra_router_options) {
   std::string cluster_name("mycluster");
 
-  std::vector<std::pair<std::string, unsigned>> gr_members;
+  std::vector<uint16_t> classic_ports;
   for (const auto &mock_server_config : mock_server_configs) {
-    gr_members.emplace_back(mock_server_config.ip, mock_server_config.port);
+    classic_ports.emplace_back(mock_server_config.port);
   }
+
+  const auto cluster_nodes = classic_ports_to_cluster_nodes(classic_ports);
+  const auto gr_nodes = classic_ports_to_gr_nodes(classic_ports);
 
   std::vector<std::tuple<ProcessWrapper &, unsigned int>> mock_servers;
 
@@ -150,30 +189,23 @@ void RouterComponentBootstrapTest::bootstrap_failover(
         launch_mysql_server_mock(mock_server_config.js_filename, port,
                                  EXIT_SUCCESS, false, http_port),
         port);
-    set_mock_bootstrap_data(http_port, cluster_name, gr_members,
-                            metadata_version,
-                            mock_server_config.cluster_specific_id);
+    set_mock_metadata(http_port, mock_server_config.cluster_specific_id,
+                      gr_nodes, 0, cluster_nodes, 0, false, "127.0.0.1", "",
+                      metadata_version, cluster_name);
   }
 
   std::vector<std::string> router_cmdline;
 
-  if (router_options.size()) {
+  if (!router_options.empty()) {
     router_cmdline = router_options;
   } else {
-    router_cmdline.emplace_back("--bootstrap=" + gr_members[0].first + ":" +
-                                std::to_string(gr_members[0].second));
+    router_cmdline.emplace_back("--bootstrap=127.0.0.1:" +
+                                std::to_string(cluster_nodes[0].classic_port));
 
     router_cmdline.emplace_back("--connect-timeout");
     router_cmdline.emplace_back("1");
     router_cmdline.emplace_back("-d");
     router_cmdline.emplace_back(bootstrap_dir.name());
-  }
-
-  if (getenv("WITH_VALGRIND")) {
-    // for the bootstrap tests that are using this method the "--disable-rest"
-    // is not relevant so we use it for VALGRIND testing as it saves huge amount
-    // of time that generating the certificates takes
-    router_cmdline.emplace_back("--disable-rest");
   }
 
   for (const auto &opt : extra_router_options) {
@@ -220,6 +252,12 @@ void RouterComponentBootstrapTest::bootstrap_failover(
     ASSERT_NO_FATAL_FAILURE(
         check_config_file_access_rights(state_file, /*read_only=*/false));
   }
+}
+
+void RouterComponentBootstrapWithDefaultCertsTest::SetUp() {
+  RouterComponentTest::SetUp();
+
+  prepare_config_dir_with_default_certs(bootstrap_dir.name());
 }
 
 std::ostream &operator<<(

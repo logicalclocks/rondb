@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2023, Oracle and/or its affiliates.
+Copyright (c) 1996, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -293,7 +294,8 @@ bool btr_pcur_t::restore_position(ulint latch_mode, mtr_t *mtr,
 }
 
 void btr_pcur_t::move_to_next_page(mtr_t *mtr) {
-  dict_table_t *table = get_btr_cur()->index->table;
+  auto index = get_btr_cur()->index;
+  dict_table_t *table = index->table;
 
   ut_ad(m_pos_state == BTR_PCUR_IS_POSITIONED);
   ut_ad(m_latch_mode != BTR_NO_LATCHES);
@@ -324,14 +326,17 @@ void btr_pcur_t::move_to_next_page(mtr_t *mtr) {
 
   auto block = get_block();
 
-  auto next_block = btr_block_get(
-      page_id_t(block->page.id.space(), next_page_no), block->page.size, mode,
-      UT_LOCATION_HERE, get_btr_cur()->index, mtr);
+  auto next_block =
+      btr_block_get(page_id_t(block->page.id.space(), next_page_no),
+                    block->page.size, mode, UT_LOCATION_HERE, index, mtr);
 
   auto next_page = buf_block_get_frame(next_block);
 
 #ifdef UNIV_BTR_DEBUG
   if (!import_ctx) {
+    const page_no_t prev_of_next = btr_page_get_prev(next_page, mtr);
+    const page_no_t cur_page = get_block()->page.id.page_no();
+    ut_a(cur_page == prev_of_next);
     ut_a(page_is_comp(next_page) == page_is_comp(page));
     ut_a(btr_page_get_prev(next_page, mtr) == get_block()->page.id.page_no());
   } else {

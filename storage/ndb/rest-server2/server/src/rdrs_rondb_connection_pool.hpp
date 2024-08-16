@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -100,7 +100,7 @@ class RDRSRonDBConnectionPool {
   /**
    * @brief Get ndb object for data operation
    *
-   * @param ndb_object.
+   * @param ndb_object Ndb object
    *
    * @return RS_Status A struct representing the status of the operation:
    */
@@ -109,7 +109,7 @@ class RDRSRonDBConnectionPool {
   /**
    * @brief Return NDB Object back to the pool
    *
-   * @param ndb_object.
+   * @param ndb_object Ndb object
    *
    * @return RS_Status A struct representing the status of the operation:
    */
@@ -118,7 +118,7 @@ class RDRSRonDBConnectionPool {
   /**
    * @brief Get ndb object for metadata operation
    *
-   * @param ndb_object.
+   * @param ndb_object Ndb object
    *
    * @return RS_Status A struct representing the status of the operation:
    */
@@ -127,8 +127,8 @@ class RDRSRonDBConnectionPool {
   /**
    * @brief Return NDB Object back to the pool
    *
-   * @param ndb_object.
-   * @param status
+   * @param ndb_object Ndb object
+   * @param status Status
    *
    * @return RS_Status A struct representing the status of the operation:
    */
@@ -144,7 +144,7 @@ class RDRSRonDBConnectionPool {
   /**
    * @brief Get connection statistis
    *
-   * @return
+   * @return RonDB_Stats
    */
   RonDB_Stats GetStats();
 };

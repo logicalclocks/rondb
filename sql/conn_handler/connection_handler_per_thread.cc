@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2013, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,6 @@
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_psi_config.h"
 #include "my_thread.h"
@@ -41,6 +41,7 @@
 #include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/bits/psi_thread_bits.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_socket.h"
@@ -206,7 +207,7 @@ static THD *init_new_thd(Channel_info *channel_info) {
       increment slow_launch_threads counter if it took more than
       slow_launch_time seconds to create the pthread.
     */
-    ulonglong launch_time =
+    const ulonglong launch_time =
         thd->start_utime - channel_info->get_prior_thr_create_utime();
     if (launch_time >= slow_launch_time * 1000000ULL)
       Per_thread_connection_handler::slow_launch_threads++;
@@ -291,7 +292,8 @@ static void *handle_connection(void *arg) {
 #endif /* HAVE_PSI_THREAD_INTERFACE */
     mysql_thread_set_psi_id(thd->thread_id());
     mysql_thread_set_psi_THD(thd);
-    MYSQL_SOCKET socket = thd->get_protocol_classic()->get_vio()->mysql_socket;
+    const MYSQL_SOCKET socket =
+        thd->get_protocol_classic()->get_vio()->mysql_socket;
     mysql_socket_set_thread_owner(socket);
     thd_manager->add_thd(thd);
 
@@ -310,12 +312,17 @@ static void *handle_connection(void *arg) {
 
     // Clean up errors now, before possibly waiting for a new connection.
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
-    ERR_remove_thread_state(0);
+    ERR_remove_thread_state(nullptr);
 #endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
     thd_manager->remove_thd(thd);
     Connection_handler_manager::dec_connection_count();
 
 #ifdef HAVE_PSI_THREAD_INTERFACE
+    /* Stop telemetry, while THD is still available. */
+    if (psi != nullptr) {
+      PSI_THREAD_CALL(abort_telemetry)(psi);
+    }
+
     /* Decouple THD and the thread instrumentation. */
     thd->set_psi(nullptr);
     mysql_thread_set_psi_THD(nullptr);
@@ -362,7 +369,7 @@ void Per_thread_connection_handler::modify_thread_cache_size(
   if (thread_cache_size == 0) {
     mysql_cond_broadcast(&COND_thread_cache);
   } else {
-    ulong num_threads = blocked_pthread_count - thread_cache_size;
+    const ulong num_threads = blocked_pthread_count - thread_cache_size;
     for (ulong i = 0; i < num_threads; i++)
       mysql_cond_signal(&COND_thread_cache);
   }
@@ -434,4 +441,11 @@ handle_error:
 
 uint Per_thread_connection_handler::get_max_threads() const {
   return max_connections;
+}
+
+ulong Per_thread_connection_handler::get_blocked_pthread_count() {
+  mysql_mutex_lock(&LOCK_thread_cache);
+  const ulong res = blocked_pthread_count;
+  mysql_mutex_unlock(&LOCK_thread_cache);
+  return res;
 }

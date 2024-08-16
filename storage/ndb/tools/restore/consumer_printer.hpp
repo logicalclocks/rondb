@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,30 +28,30 @@
 
 #include "consumer.hpp"
 
-class BackupPrinter : public BackupConsumer 
-{
-  NdbOut & m_ndbout;
-public:
-  BackupPrinter(NdbOut & out = ndbout) : m_ndbout(out)
-  {
+class BackupPrinter : public BackupConsumer {
+  NdbOut &m_ndbout;
+
+ public:
+  BackupPrinter(NdbOut &out = ndbout) : m_ndbout(out) {
     m_print = false;
     m_print_log = false;
     m_print_sql_log = false;
     m_print_data = false;
     m_print_meta = false;
     m_logCount = 0;
-    m_dataCount = 0;  
+    m_dataCount = 0;
   }
-  
+
   bool table(const TableS &) override;
 #ifdef USE_MYSQL
-  virtual bool table(const TableS &, MYSQL* mysqlp);
+  virtual bool table(const TableS &, MYSQL *mysqlp);
 #endif
   bool tuple(const TupleS &, Uint32 fragId) override;
   bool logEntry(const LogEntry &) override;
   void endOfTuples() override {}
   void endOfLogEntrys() override;
-  bool update_apply_status(const RestoreMetaData &metaData, bool snapshotstart) override;
+  bool update_apply_status(const RestoreMetaData &metaData,
+                           bool snapshotstart) override;
   bool delete_epoch_tuple() override;
   bool m_print;
   bool m_print_log;
@@ -58,7 +59,7 @@ public:
   bool m_print_data;
   bool m_print_meta;
   Uint32 m_logCount;
-  Uint32 m_dataCount;  
+  Uint32 m_dataCount;
 };
 
 #endif

@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -297,7 +298,8 @@ void log_sink_buffer_flush(enum log_sink_buffer_flush_mode mode) {
     if (mode != LOG_BUFFER_DISCARD_ONLY) {
       // Fetch integer timestamp of when we buffered the event.
       ulonglong now = 0;
-      int index_buff = log_line_index_by_type(&llp->ll, LOG_ITEM_LOG_BUFFERED);
+      const int index_buff =
+          log_line_index_by_type(&llp->ll, LOG_ITEM_LOG_BUFFERED);
 
       if (index_buff >= 0) now = llp->ll.item[index_buff].data.data_integer;
 
@@ -314,7 +316,7 @@ void log_sink_buffer_flush(enum log_sink_buffer_flush_mode mode) {
                               strlen(local_time_buff) + 1, MYF(0));
 
       if (date != nullptr) {
-        int index_time =
+        const int index_time =
             log_line_index_by_type(&llp->ll, LOG_ITEM_LOG_TIMESTAMP);
 
         if (index_time >= 0) {

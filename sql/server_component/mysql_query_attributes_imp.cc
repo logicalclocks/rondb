@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,15 +24,16 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "mysql_query_attributes_imp.h"
 
 #include <decimal.h>
-#include <m_ctype.h>
 #include <my_byteorder.h>
 #include <my_time.h>
 #include <mysql/com_data.h>
+#include <mysql/strings/dtoa.h>
+#include <mysql/strings/m_ctype.h>
 #include <mysql_time.h>
 #include <sql/current_thd.h>
-#include <sql/my_decimal.h>
 #include <sql/sql_class.h>
 #include <sql_string.h>
+#include "sql-common/my_decimal.h"
 
 namespace mysql_query_attributes {
 
@@ -117,8 +119,6 @@ class iterator {
 DEFINE_BOOL_METHOD(mysql_query_attributes_imp::create,
                    (MYSQL_THD hthd, const char *name,
                     mysqlh_query_attributes_iterator *out_iterator)) {
-  String name_val;
-
   mysql_query_attributes::iterator *iter =
       new mysql_query_attributes::iterator();
 
@@ -195,42 +195,42 @@ static String *query_parameter_val_str(const PS_PARAM *param,
     // the expected data types listed in the manual
     case MYSQL_TYPE_TINY:
       if (param->length == 1) {
-        int8 value = (int8)*param->value;
+        const int8 value = (int8)*param->value;
         str = new String[1];
         str->set_int(value, param->unsigned_type != 0, cs);
       }
       break;
     case MYSQL_TYPE_SHORT:
       if (param->length == 2) {
-        int16 value = sint2korr(param->value);
+        const int16 value = sint2korr(param->value);
         str = new String[1];
         str->set_int(value, param->unsigned_type != 0, cs);
       }
       break;
     case MYSQL_TYPE_LONG:
       if (param->length == 4) {
-        int32 value = sint4korr(param->value);
+        const int32 value = sint4korr(param->value);
         str = new String[1];
         str->set_int(value, param->unsigned_type != 0, cs);
       }
       break;
     case MYSQL_TYPE_LONGLONG:
       if (param->length == 8) {
-        longlong value = sint8korr(param->value);
+        const longlong value = sint8korr(param->value);
         str = new String[1];
         str->set_int(value, param->unsigned_type != 0, cs);
       }
       break;
     case MYSQL_TYPE_FLOAT:
       if (param->length == 4) {
-        float value = float4get(param->value);
+        const float value = float4get(param->value);
         str = new String[1];
         str->set_real(value, DECIMAL_NOT_SPECIFIED, cs);
       }
       break;
     case MYSQL_TYPE_DOUBLE:
       if (param->length == 8) {
-        double value = float8get(param->value);
+        const double value = float8get(param->value);
         str = new String[1];
         str->set_real(value, DECIMAL_NOT_SPECIFIED, cs);
       }

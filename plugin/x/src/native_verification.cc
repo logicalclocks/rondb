@@ -1,16 +1,17 @@
 /*
- * Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+ * Copyright (c) 2017, 2024, Oracle and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
  *
- * This program is also distributed with certain software (including
+ * This program is designed to work with certain software (including
  * but not limited to OpenSSL) that is licensed under separate terms,
  * as designated in a particular file or component or in included license
  * documentation.  The authors of MySQL hereby grant you an additional
  * permission to link the program and your derivative works with the
- * separately licensed software that they have included with MySQL.
+ * separately licensed software that they have either included with
+ * the program or referenced in the documentation.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,6 +27,7 @@
 
 #include <cstdint>
 
+#include "config.h"
 #include "my_inttypes.h"  // fix 'ulong' in 'password.h' NOLINT(build/include_subdir)
 #include "mysql_com.h"  // NOLINT(build/include_subdir)
 #include "password.h"   // NOLINT(build/include_subdir)
@@ -39,12 +41,17 @@ bool Native_verification::verify_authentication_string(
 
   if (db_string.empty()) return false;
 
+#if !defined(WITHOUT_MYSQL_NATIVE_PASSWORD) || \
+    WITHOUT_MYSQL_NATIVE_PASSWORD == 0
   uint8_t db_hash[SCRAMBLE_LENGTH + 1] = {0};
   uint8_t user_hash[SCRAMBLE_LENGTH + 1] = {0};
   ::get_salt_from_password(db_hash, db_string.c_str());
   ::get_salt_from_password(user_hash, client_string.c_str());
   return 0 == ::check_scramble(static_cast<const uint8_t *>(user_hash),
                                k_salt.c_str(), db_hash);
+#else
+  return false;
+#endif
 }
 
 }  // namespace xpl

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,6 +32,7 @@
 #include "mysqlrouter/metadata.h"
 #include "mysqlrouter/metadata_cache.h"
 #include "mysqlrouter/mysql_session.h"
+#include "router_options.h"
 #include "tcp_address.h"
 
 #include <chrono>
@@ -97,10 +99,8 @@ class METADATA_CACHE_EXPORT ClusterMetadata : public MetaData {
 
   /** @brief Disconnects from the Metadata server
    *
-   * This is a no-op, as MySQLSession object used underneath for
-   * connection handling employs RAII, making this method unnecessary.
    */
-  void disconnect() noexcept override {}
+  void disconnect() noexcept override { metadata_connection_.reset(); }
 
   /** @brief Gets the object representing the session to the metadata server
    */
@@ -118,6 +118,7 @@ class METADATA_CACHE_EXPORT ClusterMetadata : public MetaData {
       const unsigned router_id) override;
 
   auth_credentials_t fetch_auth_credentials(
+      const metadata_cache::metadata_server_t &md_server,
       const mysqlrouter::TargetCluster &target_cluster) override;
 
   std::optional<metadata_cache::metadata_server_t> find_rw_server(
@@ -128,7 +129,7 @@ class METADATA_CACHE_EXPORT ClusterMetadata : public MetaData {
 
   std::optional<std::chrono::seconds>
   get_periodic_stats_update_frequency() noexcept override {
-    return {};
+    return router_options_.get_stats_updates_frequency();
   }
 
  protected:
@@ -157,6 +158,8 @@ class METADATA_CACHE_EXPORT ClusterMetadata : public MetaData {
   // connection to metadata server (it may also be shared with GR status queries
   // for optimisation purposes)
   std::shared_ptr<mysqlrouter::MySQLSession> metadata_connection_;
+
+  RouterOptions router_options_;
 };
 
 std::string as_string(const char *input_str);
@@ -168,9 +171,5 @@ bool set_instance_ports(metadata_cache::ManagedInstance &instance,
 
 void set_instance_attributes(metadata_cache::ManagedInstance &instance,
                              const std::string &attributes);
-
-bool get_hidden(const std::string &attributes, std::string &out_warning);
-bool get_disconnect_existing_sessions_when_hidden(const std::string &attributes,
-                                                  std::string &out_warning);
 
 #endif  // METADATA_CACHE_CLUSTER_METADATA_INCLUDED

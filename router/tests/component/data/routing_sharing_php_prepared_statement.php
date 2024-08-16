@@ -26,6 +26,15 @@ function query($m, $qry) {
   return result_as_array($m->query($qry));
 }
 
+if ($with_sharing) {
+  foreach ([
+    "ROUTER SET trace = 1",
+  ] as $qry) {
+    print("# " . $qry . "\n\n");
+    print(json_encode(query($mysqli, $qry), JSON_PRETTY_PRINT) . "\n\n");
+  }
+}
+
 foreach ([
   "DO 1",
   "SELECT 1",
@@ -38,8 +47,13 @@ foreach ([
 
    {
     print("## SHOW WARNINGS\n\n");
-    $warn_res = query($mysqli, "SHOW WARNINGS");
-    count($warn_res) == 0 or throw new Exception("expected row-count == 0, got " . count($warn_res));
+    $trace_res = query($mysqli, "SHOW WARNINGS");
+    if ($with_sharing) {
+      count($trace_res) > 0 or throw new Exception("expected row-count > 0, got " . count($trace_res));
+      print($trace_res[0][2] . "\n\n");
+      $trace = json_decode($trace_res[0][2]);
+      ($trace->{"attributes"}->{"mysql.sharing_blocked"} == true) or throw new Exception("expected sharing to be blocked.");
+    }
   }
 
   print("## -> execute (1)\n\n");
@@ -53,8 +67,13 @@ foreach ([
 
   {
     print("## SHOW WARNINGS\n\n");
-    $warn_res = query($mysqli, "SHOW WARNINGS");
-    count($warn_res) == 0 or throw new Exception("expected row-count == 0, got " . count($warn_res));
+    $trace_res = query($mysqli, "SHOW WARNINGS");
+    if ($with_sharing) {
+      count($trace_res) > 0 or throw new Exception("expected row-count > 0, got " . count($trace_res));
+      print($trace_res[0][2] . "\n\n");
+      $trace = json_decode($trace_res[0][2]);
+      ($trace->{"attributes"}->{"mysql.sharing_blocked"} == true) or throw new Exception("expected sharing to be blocked.");
+    }
   }
 
   print("## -> execute (2)\n\n");
@@ -64,8 +83,13 @@ foreach ([
 
   {
     print("## SHOW WARNINGS\n\n");
-    $warn_res = query($mysqli, "SHOW WARNINGS");
-    count($warn_res) == 0 or throw new Exception("expected row-count == 0, got " . count($warn_res));
+    $trace_res = query($mysqli, "SHOW WARNINGS");
+    if ($with_sharing) {
+      count($trace_res) > 0 or throw new Exception("expected row-count > 0, got " . count($trace_res));
+      print($trace_res[0][2] . "\n\n");
+      $trace = json_decode($trace_res[0][2]);
+      ($trace->{"attributes"}->{"mysql.sharing_blocked"} == true) or throw new Exception("expected sharing to be blocked.");
+    }
   }
 
   $stmt->close();

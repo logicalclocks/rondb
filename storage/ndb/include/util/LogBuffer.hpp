@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,46 +27,42 @@
 #define LOG_BUFFER_H
 
 #include <ndb_global.h>
-#include "portlib/ndb_compiler.h"
 #include <algorithm>
+#include "portlib/ndb_compiler.h"
 
 #include <NdbMutex.h>
 
-class LostMsgHandler
-{
-public:
- static constexpr char LOST_MESSAGES_FMT[] = "*** %zu MESSAGES LOST ***";
- static constexpr char LOST_BYTES_FMT[] = "\n*** %zu BYTES LOST ***\n";
- static_assert(sizeof(size_t) <= 8);  // 20 decimal digits enough for size_t
- static constexpr size_t MAX_LOST_MESSAGE_SIZE =
-     std::max(sizeof(LOST_MESSAGES_FMT), sizeof(LOST_BYTES_FMT)) + 20;
+class LostMsgHandler {
+ public:
+  static constexpr char LOST_MESSAGES_FMT[] = "*** %zu MESSAGES LOST ***";
+  static constexpr char LOST_BYTES_FMT[] = "\n*** %zu BYTES LOST ***\n";
+  static_assert(sizeof(size_t) <= 8);  // 20 decimal digits enough for size_t
+  static constexpr size_t MAX_LOST_MESSAGE_SIZE =
+      std::max(sizeof(LOST_MESSAGES_FMT), sizeof(LOST_BYTES_FMT)) + 20;
 
- /* Return size in bytes which must be appended to describe the lost messages */
- virtual size_t getSizeOfLostMsg(size_t lost_bytes, size_t lost_msgs) = 0;
+  /* Return size in bytes which must be appended to describe the lost messages
+   */
+  virtual size_t getSizeOfLostMsg(size_t lost_bytes, size_t lost_msgs) = 0;
 
- /* Write lost message summary into the buffer for the lost message summary */
- virtual bool writeLostMsg(char* buf,
-                           size_t buf_size,
-                           size_t lost_bytes,
-                           size_t lost_msgs) = 0;
+  /* Write lost message summary into the buffer for the lost message summary */
+  virtual bool writeLostMsg(char *buf, size_t buf_size, size_t lost_bytes,
+                            size_t lost_msgs) = 0;
 
- virtual ~LostMsgHandler() {}
+  virtual ~LostMsgHandler() {}
 };
 
-class ByteStreamLostMsgHandler : public LostMsgHandler
-{
-public:
- ByteStreamLostMsgHandler() {}
- /* Return size in bytes which must be appended to describe the lost messages */
- size_t getSizeOfLostMsg(size_t lost_bytes, size_t lost_msgs) override;
+class ByteStreamLostMsgHandler : public LostMsgHandler {
+ public:
+  ByteStreamLostMsgHandler() {}
+  /* Return size in bytes which must be appended to describe the lost messages
+   */
+  size_t getSizeOfLostMsg(size_t lost_bytes, size_t lost_msgs) override;
 
- /* Write lost message summary into the buffer for the lost message summary */
- bool writeLostMsg(char* buf,
-                   size_t buf_size,
-                   size_t lost_bytes,
-                   size_t lost_msgs) override;
+  /* Write lost message summary into the buffer for the lost message summary */
+  bool writeLostMsg(char *buf, size_t buf_size, size_t lost_bytes,
+                    size_t lost_msgs) override;
 
- ~ByteStreamLostMsgHandler() override {}
+  ~ByteStreamLostMsgHandler() override {}
 };
 
 /**
@@ -87,24 +84,20 @@ public:
  *    available, a 'lost bytes' message is added to the buffer before the new
  *    entry.
  *
- * get() can either be blocking or non-blocking depending on what the user wants.
- * get() blocks for at most 'timeout_ms' when 'timeout_ms' is non-zero
+ * get() can either be blocking or non-blocking depending on what the user
+ * wants. get() blocks for at most 'timeout_ms' when 'timeout_ms' is non-zero
  * and there's no data in the log buffer.
  * get() is non-blocking when 'timeout_ms' is zero.
  */
 
-class LogBuffer
-{
-
-public:
-
+class LogBuffer {
+ public:
   /**
    * @param size Size of log buffer in bytes
    * @param lost_msg_handler Delegate to handle lost messages
    */
-  explicit LogBuffer(size_t size= 32768,
-                     LostMsgHandler* lost_msg_handler=
-                         new ByteStreamLostMsgHandler());
+  explicit LogBuffer(size_t size = 32768, LostMsgHandler *lost_msg_handler =
+                                              new ByteStreamLostMsgHandler());
 
   ~LogBuffer();
 
@@ -123,8 +116,8 @@ public:
    * @return Number of characters appended on success and
    * 0 if there's insufficient space in the log buffer.
    */
-  int append(const char* fmt, va_list ap, size_t len, bool append_ln=false)
-    ATTRIBUTE_FORMAT(printf, 2, 0);
+  int append(const char *fmt, va_list ap, size_t len, bool append_ln = false)
+      ATTRIBUTE_FORMAT(printf, 2, 0);
   /**
    * Append data to the buffer.
    * Thread safe.
@@ -134,7 +127,7 @@ public:
    * @return Number of characters appended on success and
    * 0 if there's insufficient space in the log buffer.
    */
-  size_t append(const void* buf, size_t size);
+  size_t append(const void *buf, size_t size);
 
   /**
    * Remove data from the log buffer and copy to "buf".
@@ -149,7 +142,7 @@ public:
    * 0 if no data was retrieved, i.e log buffer was empty even after
    * waiting for timeout_ms
    */
-  size_t get(char* buf, size_t size, uint timeout_ms = 5000);
+  size_t get(char *buf, size_t size, uint timeout_ms = 5000);
 
   /**
    * @return Data in bytes the log buffer holds currently, not thread safe
@@ -170,29 +163,30 @@ public:
    */
   void stop();
   bool is_stopped() const;
-private:
-  char* m_log_buf; // pointer to the start of log buffer memory
-  size_t m_max_size; // max. number of bytes that can fit
-  char* m_read_ptr; // pointer to a byte in the log buffer to read from
+
+ private:
+  char *m_log_buf;    // pointer to the start of log buffer memory
+  size_t m_max_size;  // max. number of bytes that can fit
+  char *m_read_ptr;   // pointer to a byte in the log buffer to read from
 
   /**
    * Candidate for pointer to memory to which the next write could
    * happen.
    */
-  char* m_write_ptr;
+  char *m_write_ptr;
 
   /**
    * Logical end of buffer while reading.
    * It's the last valid byte that can be read.
    */
-  char* m_buf_end;
+  char *m_buf_end;
 
   /**
    * Pointer to last byte of the buffer. Data is never written to
    * this location. It is only an extra unused byte to indicate the
    * end of the log buffer in memory. */
-  char* m_top;
-  size_t m_size; // number of bytes used
+  char *m_top;
+  size_t m_size;  // number of bytes used
 
   // number of bytes of data lost since the previous loss
   size_t m_lost_bytes;
@@ -200,10 +194,10 @@ private:
   // the number of unsuccessful append() calls
   size_t m_lost_messages;
 
-  LostMsgHandler* m_lost_msg_handler;
+  LostMsgHandler *m_lost_msg_handler;
 
   NdbMutex *m_mutex;
-  struct NdbCondition* m_cond;
+  struct NdbCondition *m_cond;
   bool m_stop;
 
   /**
@@ -215,7 +209,7 @@ private:
    * @param bytes The number of bytes to be written to the buffer.
    * @return Valid pointer on success, NULL if there's not enough space.
    */
-  char* getWritePtr(size_t bytes) const;
+  char *getWritePtr(size_t bytes) const;
 
   /**
    * Used to update the write pointer(m_write_ptr).
@@ -247,7 +241,6 @@ private:
    * @return true on success, false on failure.
    */
   bool checkInvariants() const;
-
 };
 
 #endif

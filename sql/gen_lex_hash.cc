@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -165,7 +166,7 @@ static void insert_into_hash(hash_lex_struct *root, const char *name,
   }
 
   if (root->first_char == -1) {
-    int index2 = root->iresult;
+    const int index2 = root->iresult;
     const char *name2 = symbols[index2].name + len_from_begin;
     root->first_char = (int)(uchar)name2[0];
     root->last_char = (char)root->first_char;
@@ -175,10 +176,10 @@ static void insert_into_hash(hash_lex_struct *root, const char *name,
     tails->iresult = index2;
   }
 
-  size_t real_size = (root->last_char - root->first_char + 1);
+  const size_t real_size = (root->last_char - root->first_char + 1);
 
   if (root->first_char > (*name)) {
-    size_t new_size = root->last_char - (*name) + 1;
+    const size_t new_size = root->last_char - (*name) + 1;
     if (new_size < real_size) printf("error!!!!\n");
     tails = root->char_tails;
     tails = (hash_lex_struct *)realloc((char *)tails,
@@ -192,7 +193,7 @@ static void insert_into_hash(hash_lex_struct *root, const char *name,
   }
 
   if (root->last_char < (*name)) {
-    size_t new_size = (*name) - root->first_char + 1;
+    const size_t new_size = (*name) - root->first_char + 1;
     if (new_size < real_size) printf("error!!!!\n");
     tails = root->char_tails;
     tails = (hash_lex_struct *)realloc((char *)tails,
@@ -249,7 +250,7 @@ void hash_map_info::set_links(hash_lex_struct *st, int len) {
   hash_lex_struct *cur, *end = st + len;
   for (cur = st; cur < end; cur++) {
     if (cur->first_char != 0 && cur->first_char != -1) {
-      int ilink = cur->char_tails->ithis;
+      const int ilink = cur->char_tails->ithis;
       hash_map[cur->ithis * 4 + 2] = ilink % 256;
       hash_map[cur->ithis * 4 + 3] = ilink / 256;
       set_links(cur->char_tails, cur->last_char - cur->first_char + 1);

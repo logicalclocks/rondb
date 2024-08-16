@@ -1,17 +1,18 @@
 /*
-  Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2003, 2024, Oracle and/or its affiliates.
   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,11 +26,8 @@
 
 #include <signaldata/FsReadWriteReq.hpp>
 
-bool printFSREADWRITEREQ(FILE *output,
-                         const Uint32 *theData,
-                         Uint32 /*len*/,
-                         Uint16 /*receiverBlockNo*/)
-{
+bool printFSREADWRITEREQ(FILE *output, const Uint32 *theData, Uint32 /*len*/,
+                         Uint16 /*receiverBlockNo*/) {
   bool ret = true;
 
   const FsReadWriteReq *const sig = (const FsReadWriteReq *)theData;
@@ -45,35 +43,33 @@ bool printFSREADWRITEREQ(FILE *output,
     fprintf(output, "No sync,");
 
   fprintf(output, " Format=");
-  switch(sig->getFormatFlag(sig->operationFlag)){
-  case FsReadWriteReq::fsFormatListOfPairs:
-    fprintf(output, "List of pairs)\n");
-    break;
-  case FsReadWriteReq::fsFormatArrayOfPages:
-    fprintf(output, "Array of pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatListOfMemPages:
-    fprintf(output, "List of mem pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatGlobalPage:
-    fprintf(output, "List of global pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatSharedPage:
-    fprintf(output, "List of shared pages)\n");
-    break;
-  case FsReadWriteReq::fsFormatMemAddress:
-    fprintf(output, "Memory offset and file offset)\n");
-    break;
-  default:
-    fprintf(output, "fsFormatMax not handled\n");
-    ret = false;
-    break;
+  switch (sig->getFormatFlag(sig->operationFlag)) {
+    case FsReadWriteReq::fsFormatListOfPairs:
+      fprintf(output, "List of pairs)\n");
+      break;
+    case FsReadWriteReq::fsFormatArrayOfPages:
+      fprintf(output, "Array of pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatListOfMemPages:
+      fprintf(output, "List of mem pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatGlobalPage:
+      fprintf(output, "List of global pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatSharedPage:
+      fprintf(output, "List of shared pages)\n");
+      break;
+    case FsReadWriteReq::fsFormatMemAddress:
+      fprintf(output, "Memory offset and file offset)\n");
+      break;
+    default:
+      fprintf(output, "fsFormatMax not handled\n");
+      ret = false;
+      break;
   }
-    
-  fprintf(output, " varIndex: %d\n", 
-	  sig->varIndex);    
-  fprintf(output, " numberOfPages: %d\n", 
-	  sig->numberOfPages);
+
+  fprintf(output, " varIndex: %d\n", sig->varIndex);
+  fprintf(output, " numberOfPages: %d\n", sig->numberOfPages);
   fprintf(output, " PartialFlag: %d\n",
           sig->getPartialReadFlag(sig->operationFlag));
   if (sig->getFormatFlag(sig->operationFlag) !=

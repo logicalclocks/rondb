@@ -1,14 +1,15 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -19,24 +20,42 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include "util/cstrbuf.h"
+#include <cstdio>
+#include "util/require.h"
+
+int cstrbuf_vsnprintf_noerr(char str[], size_t size, const char fmt[],
+                            std::va_list ap) noexcept {
+  int r = std::vsnprintf(str, size, fmt, ap);
+  /*
+   * vsnprintf can possibly fail with EILSEQ or EOVERFLOW both typically
+   * indicates bugs in application.
+   *
+   * EILSEQ indicates invalid wide character code.
+   * EOVERFLOW indicates either that size of str is more than INT_MAX or that
+   * the size of needed buffer to be returned exceeds INT_MAX.
+   *
+   * This wrapper function asserts that vsnprintf always succeeds.
+   */
+  require(r >= 0);
+  return r;
+}
+
 #ifdef TEST_CSTRBUF
 
-#include "util/require.h"
-#include "unittest/mytap/tap.h"
-#include "util/cstrbuf.h"
-#include "util/span.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
+#include "unittest/mytap/tap.h"
+#include "util/span.h"
 
-int main()
-{
-  plan(37);
+int main() {
+  plan(39);
 
   char buf[30];
 
-  constexpr size_t ptr_size = sizeof(void*);
+  constexpr size_t ptr_size = sizeof(void *);
   static_assert(sizeof(size_t) == ptr_size);
 
   // cstrbuf with static extent
@@ -133,6 +152,10 @@ int main()
   const int trettisju = 37;
   ok1(cbuf7.append("XYZDFABC") == 1);
   ok1(cbuf7.appendf("name: %d", trettisju) == 1);
+
+  cbuf7.clear();
+  ok1(cbuf7.appendf("%d", 0) == 0);
+  ok1(std::strcmp(cbuf7.c_str(), "0") == 0);
 
   return exit_status();
 }

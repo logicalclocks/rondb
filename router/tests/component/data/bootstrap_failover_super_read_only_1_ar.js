@@ -1,9 +1,6 @@
 var common_stmts = require("common_statements");
 var gr_memberships = require("gr_memberships");
 
-
-var gr_members = gr_memberships.members(mysqld.global.gr_members);
-
 if (mysqld.global.gr_id === undefined) {
   mysqld.global.gr_id = "CLUSTER-ID";
 }
@@ -12,7 +9,8 @@ var options = {
   cluster_id: mysqld.global.gr_id,
   cluster_type: "ar",
   innodb_cluster_name: mysqld.global.cluster_name,
-  innodb_cluster_instances: gr_members,
+  innodb_cluster_instances: gr_memberships.cluster_nodes(
+      mysqld.global.gr_node_host, mysqld.global.cluster_nodes),
 };
 
 var common_responses = common_stmts.prepare_statement_responses(
@@ -24,7 +22,6 @@ var common_responses = common_stmts.prepare_statement_responses(
       "router_select_replication_group_name",
       "router_select_view_id_bootstrap_ar",
       "router_select_cluster_id_v2_ar",
-      "router_select_metadata_v2",
       "router_count_clusters_v2_ar",
       "router_show_cipher_status",
       "router_select_cluster_instances_v2_ar",
@@ -38,6 +35,7 @@ var common_responses_regex = common_stmts.prepare_statement_responses_regex(
     [
       "router_delete_old_accounts",
       "router_create_user",
+      "router_check_auth_plugin",
       "router_grant_on_metadata_db",
       "router_grant_on_pfs_db",
       "router_grant_on_routers",

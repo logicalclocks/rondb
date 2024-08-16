@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -43,6 +44,7 @@
 #include "sql/handler.h"
 #include "sql/iterators/row_iterator.h"
 #include "sql/mem_root_array.h"
+#include "sql/range_optimizer/range_optimizer.h"
 #include "sql/sql_bitmap.h"
 #include "sql/sql_class.h"  // THD
 #include "sql/sql_executor.h"
@@ -131,6 +133,63 @@ int IndexScanIterator<true>::Read() {  // Backward read.
 
 template class IndexScanIterator<true>;
 template class IndexScanIterator<false>;
+
+IndexDistanceScanIterator::IndexDistanceScanIterator(THD *thd, TABLE *table,
+                                                     int idx,
+                                                     QUICK_RANGE *query_mbr,
+                                                     double expected_rows,
+                                                     ha_rows *examined_rows)
+    : TableRowIterator(thd, table),
+      m_record(table->record[0]),
+      m_idx(idx),
+      m_query_mbr(query_mbr),
+      m_expected_rows(expected_rows),
+      m_examined_rows(examined_rows) {}
+
+// WL9440: purecov should be removed from below functions
+// i.e. IndexDistanceScanIterator destructor, IndexDistanceScanIterator::Init(),
+// IndexDistanceScanIterator::Read() when innodb implements index distance scan.
+
+bool IndexDistanceScanIterator::Init() {
+  if (!table()->file->inited) {
+    int error = table()->file->ha_index_init(m_idx, true);
+    if (error) {
+      /* purecov: begin deadcode */
+      PrintError(error);
+      return true;
+      /* purecov: end */
+    }
+
+    if (set_record_buffer(table(), m_expected_rows)) {
+      return true;
+    }
+  }
+  m_first = true;
+  return false;
+}
+
+int IndexDistanceScanIterator::Read() {  // Forward read.
+  int error;
+  if (m_first) {
+    error = table()->file->ha_index_read_map(m_record, m_query_mbr->min_key,
+                                             m_query_mbr->min_keypart_map,
+                                             m_query_mbr->rkey_func_flag);
+    m_first = false;
+  } else {
+    /* purecov: begin deadcode */
+    error = table()->file->ha_index_next_same(m_record, m_query_mbr->min_key,
+                                              m_query_mbr->min_length);
+    /* purecov: end */
+  }
+
+  if (error) return HandleError(error);
+  /* purecov: begin deadcode */
+  if (m_examined_rows != nullptr) {
+    ++*m_examined_rows;
+  }
+  /* purecov: end */
+  return 0;
+}
 
 /**
   The default implementation of unlock-row method of RowIterator,

@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -191,8 +192,6 @@ bool Sql_cmd_call::execute_inner(THD *thd) {
     return true;
   }
 
-  // bits to be cleared in thd->server_status
-  uint bits_to_be_cleared = 0;
   /*
     Check that the stored procedure doesn't contain Dynamic SQL and doesn't
     return result sets: such stored procedures can't be called from
@@ -204,25 +203,26 @@ bool Sql_cmd_call::execute_inner(THD *thd) {
     if (sp->is_not_allowed_in_function(where)) return true;
   }
 
-  if (mysql_audit_notify(thd, AUDIT_EVENT(MYSQL_AUDIT_STORED_PROGRAM_EXECUTE),
-                         proc_name->m_db.str, proc_name->m_name.str, nullptr))
+  if (mysql_event_tracking_stored_program_notify(
+          thd, AUDIT_EVENT(EVENT_TRACKING_STORED_PROGRAM_EXECUTE),
+          proc_name->m_db.str, proc_name->m_name.str, nullptr))
     return true;
 
+  /*
+    If sp_head::MULTI_RESULTS is set, then set SERVER_MORE_RESULTS_EXISTS if
+    not set already and remember that it should be cleared.
+  */
+  uint bits_to_be_cleared = (~thd->server_status & SERVER_MORE_RESULTS_EXISTS);
   if (sp->m_flags & sp_head::MULTI_RESULTS) {
     if (!thd->get_protocol()->has_client_capability(CLIENT_MULTI_RESULTS)) {
       // Client does not support multiple result sets
       my_error(ER_SP_BADSELECT, MYF(0), sp->m_qname.str);
       return true;
     }
-    /*
-      If SERVER_MORE_RESULTS_EXISTS is not set,
-      then remember that it should be cleared
-    */
-    bits_to_be_cleared = (~thd->server_status & SERVER_MORE_RESULTS_EXISTS);
     thd->server_status |= SERVER_MORE_RESULTS_EXISTS;
   }
 
-  ha_rows select_limit = thd->variables.select_limit;
+  const ha_rows select_limit = thd->variables.select_limit;
   thd->variables.select_limit = HA_POS_ERROR;
 
   /*
@@ -232,7 +232,7 @@ bool Sql_cmd_call::execute_inner(THD *thd) {
       into binlog.
     So just execute the statement.
   */
-  bool result = sp->execute_procedure(thd, proc_args);
+  const bool result = sp->execute_procedure(thd, proc_args);
 
   thd->variables.select_limit = select_limit;
 

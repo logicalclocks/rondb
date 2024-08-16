@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -121,6 +122,8 @@ static bool populate_table(THD *thd, LEX *lex) {
   if (optimize_secondary_engine(thd)) return true;
 
   if (unit->execute(thd)) return true;
+
+  notify_plugins_after_select(thd, lex->m_sql_cmd);
 
   return false;
 }
@@ -320,6 +323,20 @@ bool Sql_cmd_create_table::execute(THD *thd) {
         [lex] { lex->set_secondary_engine_execution_context(nullptr); });
     if (open_tables_for_query(thd, lex->query_tables, false)) return true;
 
+    // Use the hypergraph optimizer for the SELECT statement, if enabled.
+    const bool need_hypergraph_optimizer =
+        thd->optimizer_switch_flag(OPTIMIZER_SWITCH_HYPERGRAPH_OPTIMIZER);
+
+    if (!query_expression->is_prepared()) {
+      // Use the desired optimizer during following preparation
+      lex->set_using_hypergraph_optimizer(need_hypergraph_optimizer);
+    }
+    if (need_hypergraph_optimizer != lex->using_hypergraph_optimizer() &&
+        ask_to_reprepare(thd)) {
+      return true;
+    }
+    assert(need_hypergraph_optimizer == lex->using_hypergraph_optimizer());
+
     /* The table already exists */
     if (create_table->table || create_table->is_view()) {
       if (create_info.options & HA_LEX_CREATE_IF_NOT_EXISTS) {
@@ -330,7 +347,7 @@ bool Sql_cmd_create_table::execute(THD *thd) {
         return false;
       } else {
         my_error(ER_TABLE_EXISTS_ERROR, MYF(0), create_info.alias);
-        return false;
+        return true;
       }
     }
 
@@ -357,7 +374,7 @@ bool Sql_cmd_create_table::execute(THD *thd) {
     Query_result_create *result;
     if (!query_expression->is_prepared()) {
       const Prepare_error_tracker tracker(thd);
-      Prepared_stmt_arena_holder ps_arena_holder(thd);
+      const Prepared_stmt_arena_holder ps_arena_holder(thd);
       result = new (thd->mem_root)
           Query_result_create(create_table, &query_block->fields,
                               lex->duplicates, query_expression_tables);
@@ -365,10 +382,6 @@ bool Sql_cmd_create_table::execute(THD *thd) {
         lex->link_first_table_back(create_table, link_to_local);
         return true;
       }
-
-      // Use the hypergraph optimizer for the SELECT statement, if enabled.
-      lex->using_hypergraph_optimizer =
-          thd->optimizer_switch_flag(OPTIMIZER_SWITCH_HYPERGRAPH_OPTIMIZER);
 
       if (query_expression->prepare(thd, result, nullptr, SELECT_NO_UNLOCK,
                                     0)) {
@@ -393,7 +406,8 @@ bool Sql_cmd_create_table::execute(THD *thd) {
     result->set_two_fields(&create_info, &alter_info);
 
     // For objects acquired during table creation.
-    dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+    const dd::cache::Dictionary_client::Auto_releaser releaser(
+        thd->dd_client());
 
     Ignore_error_handler ignore_handler;
     Strict_error_handler strict_handler;
@@ -405,8 +419,11 @@ bool Sql_cmd_create_table::execute(THD *thd) {
     res = populate_table(thd, lex);
 
     // Count the number of statements offloaded to a secondary storage engine.
-    if (using_secondary_storage_engine() && lex->unit->is_executed())
+    if (using_secondary_storage_engine() && lex->unit->is_executed()) {
       ++thd->status_var.secondary_engine_execution_count;
+      global_aggregated_stats.get_shard(thd->thread_id())
+          .secondary_engine_execution_count++;
+    }
 
     if (lex->is_ignore() || thd->is_strict_mode()) thd->pop_internal_handler();
     lex->cleanup(false);
@@ -462,7 +479,7 @@ bool Sql_cmd_create_table::execute(THD *thd) {
 }
 
 const MYSQL_LEX_CSTRING *
-Sql_cmd_create_table::eligible_secondary_storage_engine() const {
+Sql_cmd_create_table::eligible_secondary_storage_engine(THD *) const {
   // Now check if the opened tables are available in a secondary
   // storage engine. Only use the secondary tables if all the tables
   // have a secondary tables, and they are all in the same secondary

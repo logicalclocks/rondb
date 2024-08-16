@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,8 +38,6 @@
 
 #include "field_types.h"
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_alloc.h"
 #include "my_base.h"
 #include "my_bitmap.h"
@@ -51,6 +50,8 @@
 #include "mysql/mysql_lex_string.h"
 #include "mysql/psi/mysql_table.h"  // IWYU pragma: keep
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
+#include "mysql/udf_registration_types.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "pfs_table_provider.h"
@@ -105,6 +106,7 @@
 #include "sql/trigger_def.h"
 #include "sql/visible_fields.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 #include "template_utils.h"
 #include "thr_lock.h"
 
@@ -515,13 +517,13 @@ bool Sql_cmd_insert_values::execute_inner(THD *thd) {
   bool has_error = false;
 
   {  // Statement plan is available within these braces
-    Modification_plan plan(
+    const Modification_plan plan(
         thd, (lex->sql_command == SQLCOM_INSERT) ? MT_INSERT : MT_REPLACE,
         insert_table, nullptr, false, 0);
     DEBUG_SYNC(thd, "planned_single_insert");
 
     if (lex->is_explain()) {
-      bool err =
+      const bool err =
           explain_single_table_modification(thd, thd, &plan, query_block);
       return err;
     }
@@ -719,7 +721,7 @@ bool Sql_cmd_insert_values::execute_inner(THD *thd) {
     inserted, the id of the last "inserted" row (if IGNORE, that value may not
     have been really inserted but ignored).
   */
-  ulonglong id =
+  const ulonglong id =
       (thd->first_successful_insert_id_in_cur_stmt > 0)
           ? thd->first_successful_insert_id_in_cur_stmt
           : (thd->arg_of_last_insert_id_function
@@ -746,7 +748,7 @@ bool Sql_cmd_insert_values::execute_inner(THD *thd) {
           id);
   } else {
     char buff[160];
-    ha_rows updated =
+    const ha_rows updated =
         thd->get_protocol()->has_client_capability(CLIENT_FOUND_ROWS)
             ? info.stats.touched
             : info.stats.updated;
@@ -809,7 +811,7 @@ static bool check_view_insertability(THD *thd, Table_ref *view,
   const uint num = view->view_query()->query_block->num_visible_fields();
   TABLE *const table = insert_table_ref->table;
   MY_BITMAP used_fields;
-  enum_mark_columns save_mark_used_columns = thd->mark_used_columns;
+  const enum_mark_columns save_mark_used_columns = thd->mark_used_columns;
 
   const uint used_fields_buff_size = bitmap_buffer_size(table->s->fields);
   uint32 *const used_fields_buff = (uint32 *)thd->alloc(used_fields_buff_size);
@@ -826,7 +828,7 @@ static bool check_view_insertability(THD *thd, Table_ref *view,
   thd->mark_used_columns = MARK_COLUMNS_NONE;
 
   // No privilege checking is done for these columns
-  Column_privilege_tracker column_privilege(thd, 0);
+  const Column_privilege_tracker column_privilege(thd, 0);
 
   /* check simplicity and prepare unique test of view */
   Field_translator *const trans_start = view->field_translation;
@@ -884,7 +886,7 @@ static bool check_view_insertability(THD *thd, Table_ref *view,
 */
 static bool fix_join_cond_for_insert(THD *thd, Table_ref *tr) {
   if (tr->join_cond() && !tr->join_cond()->fixed) {
-    Column_privilege_tracker column_privilege(thd, SELECT_ACL);
+    const Column_privilege_tracker column_privilege(thd, SELECT_ACL);
 
     if (tr->join_cond()->fix_fields(thd, nullptr))
       return true; /* purecov: inspected */
@@ -1126,7 +1128,7 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
   TABLE *const insert_table = lex->insert_table_leaf->table;
 
   uint field_count = insert_field_list.size();
-  table_map map = lex->insert_table_leaf->map();
+  const table_map map = lex->insert_table_leaf->map();
 
   uint value_list_counter = 0;
   for (const List_item *values : insert_many_values) {
@@ -1217,7 +1219,7 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
   }
 
   if (table_list->is_merged()) {
-    Column_privilege_tracker column_privilege(thd, SELECT_ACL);
+    const Column_privilege_tracker column_privilege(thd, SELECT_ACL);
 
     if (table_list->prepare_check_option(thd))
       return true; /* purecov: inspected */
@@ -1558,7 +1560,7 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
 bool Sql_cmd_insert_base::prepare_values_table(THD *thd) {
   // Insert_item_value items will be allocated for the field_translation of the
   // VALUES table. They should be persistent for prepared statements.
-  Prepared_stmt_arena_holder ps_arena_holder(thd);
+  const Prepared_stmt_arena_holder ps_arena_holder(thd);
 
   if (insert_field_list.empty()) {
     Table_ref *insert_table = lex->query_block->get_table_list();
@@ -1674,7 +1676,7 @@ bool Sql_cmd_insert_base::resolve_update_expressions(THD *thd) {
 
   const bool select_insert = insert_many_values.empty();
 
-  table_map map = lex->insert_table_leaf->map();
+  const table_map map = lex->insert_table_leaf->map();
 
   lex->in_update_value_clause = true;
 
@@ -1694,7 +1696,7 @@ bool Sql_cmd_insert_base::resolve_update_expressions(THD *thd) {
 
   lex->in_update_value_clause = false;
 
-  if (select_insert && !lex->using_hypergraph_optimizer) {
+  if (select_insert && !lex->using_hypergraph_optimizer()) {
     /*
       Traverse the update values list and substitute fields from the
       select for references (Item_ref objects) to them. This is done in
@@ -2073,7 +2075,7 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
           memcpy(table->record[0], table->record[1], record_length);
 
           // Checking if the row being conflicted is visible by the view.
-          bool found_row_in_view = view->replace_filter->val_int();
+          const bool found_row_in_view = view->replace_filter->val_int();
 
           // Restoring the record back.
           memcpy(table->record[0], record0_saved, record_length);
@@ -2343,7 +2345,8 @@ bool Query_result_insert::send_data(THD *thd,
   DBUG_TRACE;
   bool error = false;
 
-  Autoinc_field_has_explicit_non_null_value_reset_guard after_each_row(table);
+  const Autoinc_field_has_explicit_non_null_value_reset_guard after_each_row(
+      table);
   thd->check_for_truncated_fields = CHECK_FIELD_WARN;
   store_values(thd, values);
   thd->check_for_truncated_fields = CHECK_FIELD_ERROR_FOR_NULL;
@@ -2934,7 +2937,7 @@ bool Query_result_create::start_execution(THD *thd) {
     bulk_insert_started = true;
   }
 
-  enum_check_fields save_check_for_truncated_fields =
+  const enum_check_fields save_check_for_truncated_fields =
       thd->check_for_truncated_fields;
   thd->check_for_truncated_fields = CHECK_FIELD_WARN;
 
@@ -2971,7 +2974,7 @@ int Query_result_create::binlog_show_create_table(THD *thd) {
 
   Table_ref *save_next_global = create_table->next_global;
   create_table->next_global = select_tables;
-  int error = thd->decide_logging_format(create_table);
+  const int error = thd->decide_logging_format(create_table);
   create_table->next_global = save_next_global;
 
   if (error) return error;
@@ -3107,7 +3110,8 @@ bool Query_result_create::send_eof(THD *thd) {
                                         thd->variables.lock_wait_timeout)))
       error = true;
     else {
-      dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
+      const dd::cache::Dictionary_client::Auto_releaser releaser(
+          thd->dd_client());
       const dd::Table *new_table = nullptr;
       if (thd->dd_client()->acquire(create_table->db, create_table->table_name,
                                     &new_table))
@@ -3275,7 +3279,7 @@ void Query_result_create::abort_result_set(THD *thd) {
     log state.
   */
   {
-    Disable_binlog_guard binlog_guard(thd);
+    const Disable_binlog_guard binlog_guard(thd);
     Query_result_insert::abort_result_set(thd);
     thd->get_transaction()->reset_unsafe_rollback_flags(Transaction_ctx::STMT);
   }
@@ -3338,12 +3342,12 @@ bool Sql_cmd_insert_base::accept(THD *thd, Select_lex_visitor *visitor) {
 }
 
 const MYSQL_LEX_CSTRING *
-Sql_cmd_insert_select::eligible_secondary_storage_engine() const {
+Sql_cmd_insert_select::eligible_secondary_storage_engine(THD *thd) const {
   // ON DUPLICATE KEY UPDATE cannot be offloaded
   if (!update_field_list.empty()) return nullptr;
 
   // Don't use secondary storage engines for REPLACE INTO SELECT statements
   if (is_replace) return nullptr;
 
-  return get_eligible_secondary_engine();
+  return get_eligible_secondary_engine(thd);
 }

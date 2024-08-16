@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,15 +25,16 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include <sys/types.h>
 
 #include <mysql/components/minimal_chassis.h>
-#include "m_ctype.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "mysql/components/service_implementation.h"
 #include "mysql/components/services/mysql_string.h"
 #include "mysql/psi/psi_memory.h"
 #include "mysql/service_mysql_alloc.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_string_service_imp.h"
 #include "sql_string.h"
+#include "template_utils.h"
 
 PSI_memory_key key_memory_string_service_iterator;
 
@@ -180,8 +182,8 @@ DEFINE_BOOL_METHOD(mysql_string_imp::convert_to_buffer,
     CHARSET_INFO *cs =
         get_charset_by_csname(charset_name, MY_CS_PRIMARY, MYF(0));
     if (cs == nullptr) return true;
-    size_t len = my_convert(out_buffer, length - 1, cs, str->ptr(),
-                            str->length(), str->charset(), &error);
+    const size_t len = my_convert(out_buffer, length - 1, cs, str->ptr(),
+                                  str->length(), str->charset(), &error);
     out_buffer[len] = '\0';
 
     return false;
@@ -224,8 +226,9 @@ DEFINE_BOOL_METHOD(mysql_string_imp::convert_to_buffer_v2,
     uint error;
     const CHARSET_INFO *dest_cs = from_api(dest_charset);
     String *src = from_api(src_string);
-    size_t len = my_convert(dest_buffer, dest_length - 1, dest_cs, src->ptr(),
-                            src->length(), src->charset(), &error);
+    const size_t len =
+        my_convert(dest_buffer, dest_length - 1, dest_cs, src->ptr(),
+                   src->length(), src->charset(), &error);
     dest_buffer[len] = 0;
 
     return false;
@@ -252,7 +255,7 @@ DEFINE_BOOL_METHOD(mysql_string_imp::get_char,
     String *str = reinterpret_cast<String *>(string);
     if (str == nullptr || index >= str->length()) return true;
     my_charset_conv_mb_wc mb_wc = (str->charset())->cset->mb_wc;
-    int ret = str->charpos(index);
+    const int ret = str->charpos(index);
     if (ret < 0) return true;
     const char *ptr = (str->ptr() + ret);
     if ((*mb_wc)(str->charset(), out_char, pointer_cast<const uchar *>(ptr),
@@ -375,7 +378,7 @@ DEFINE_BOOL_METHOD(mysql_string_imp::is_upper,
   try {
     st_string_iterator *iterator = (st_string_iterator *)iter;
     if (iterator == nullptr) return true;
-    *out = (iterator->ctype & _MY_U);
+    *out = (iterator->ctype & MY_CHAR_U) != 0;
     return false;
   } catch (...) {
     mysql_components_handle_std_exception(__func__);
@@ -388,7 +391,7 @@ DEFINE_BOOL_METHOD(mysql_string_imp::is_lower,
   try {
     st_string_iterator *iterator = (st_string_iterator *)iter;
     if (iterator == nullptr) return true;
-    *out = (iterator->ctype & _MY_L);
+    *out = (iterator->ctype & MY_CHAR_L) != 0;
     return false;
   } catch (...) {
     mysql_components_handle_std_exception(__func__);
@@ -401,7 +404,7 @@ DEFINE_BOOL_METHOD(mysql_string_imp::is_digit,
   try {
     st_string_iterator *iterator = (st_string_iterator *)iter;
     if (iterator == nullptr) return true;
-    *out = (iterator->ctype & _MY_NMR);
+    *out = (iterator->ctype & MY_CHAR_NMR) != 0;
     return false;
   } catch (...) {
     mysql_components_handle_std_exception(__func__);

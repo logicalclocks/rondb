@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,6 +33,7 @@
 
 #include "sql/item.h"
 #include "sql/join_optimizer/access_path.h"
+#include "sql/join_optimizer/relational_expression.h"
 #include "sql/range_optimizer/path_helpers.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_optimizer.h"
@@ -588,16 +590,16 @@ void ndb_pushed_builder_ctx::construct(Join_nest *nest_ctx,
     }
     case AccessPath::MATERIALIZE: {
       MaterializePathParameters *param = path->materialize().param;
-      for (const MaterializePathParameters::QueryBlock &query_block :
-           param->query_blocks) {
+      for (const MaterializePathParameters::Operand &operand :
+           param->m_operands) {
         // MATERIALIZE are evaluated and stored in a temporary table.
         // They comes in different variants, where they may be 'const',
         // later scanned, or a temporary index created for later lookups.
         // Generally we need to handle them as completely separate queries,
         // without any relation to an upper Join_scope -> 'Query_scope'
-        if (query_block.join == m_join) {  // Within Query_block?
+        if (operand.join == m_join) {  // Within Query_block?
           construct(new (m_thd->mem_root) Query_scope(nest_ctx, "materialized"),
-                    query_block.subquery_path);
+                    operand.subquery_path);
         }
       }
       break;

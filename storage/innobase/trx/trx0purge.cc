@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2023, Oracle and/or its affiliates.
+Copyright (c) 1996, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -260,8 +261,6 @@ void trx_purge_sys_initialize(uint32_t n_purge_threads,
   new (&purge_sys->view) ReadView();
 
   trx_sys->mvcc->clone_oldest_view(&purge_sys->view);
-
-  purge_sys->view_active = true;
 
   purge_sys->rseg_iter = ut::new_withkey<TrxUndoRsegsIterator>(
       UT_NEW_THIS_FILE_PSI_KEY, purge_sys);
@@ -2406,11 +2405,7 @@ ulint trx_purge(ulint n_purge_threads, /*!< in: number of purge tasks
 
   rw_lock_x_lock(&purge_sys->latch, UT_LOCATION_HERE);
 
-  purge_sys->view_active = false;
-
   trx_sys->mvcc->clone_oldest_view(&purge_sys->view);
-
-  purge_sys->view_active = true;
 
   rw_lock_x_unlock(&purge_sys->latch);
 
@@ -2423,40 +2418,23 @@ ulint trx_purge(ulint n_purge_threads, /*!< in: number of purge tasks
   /* Fetch the UNDO recs that need to be purged. */
   n_pages_handled = trx_purge_attach_undo_recs(n_purge_threads, batch_size);
 
-  /* Do we do an asynchronous purge or not ? */
-  if (n_purge_threads > 1) {
-    /* Submit the tasks to the work queue. */
-    for (ulint i = 0; i < n_purge_threads - 1; ++i) {
-      thr = que_fork_scheduler_round_robin(purge_sys->query, thr);
-
-      ut_a(thr != nullptr);
-
-      srv_que_task_enqueue_low(thr);
-    }
-
+  /* Submit the tasks to the work queue. */
+  for (ulint i = 0; i < n_purge_threads - 1; ++i) {
     thr = que_fork_scheduler_round_robin(purge_sys->query, thr);
+
     ut_a(thr != nullptr);
 
-    purge_sys->n_submitted += n_purge_threads - 1;
-
-    goto run_synchronously;
-
-    /* Do it synchronously. */
-  } else {
-    thr = que_fork_scheduler_round_robin(purge_sys->query, nullptr);
-    ut_ad(thr);
-
-  run_synchronously:
-    ++purge_sys->n_submitted;
-
-    que_run_threads(thr);
-
-    purge_sys->n_completed.fetch_add(1);
-
-    if (n_purge_threads > 1) {
-      trx_purge_wait_for_workers_to_complete();
-    }
+    srv_que_task_enqueue_low(thr);
   }
+
+  thr = que_fork_scheduler_round_robin(purge_sys->query, thr);
+  ut_a(thr != nullptr);
+
+  purge_sys->n_submitted += n_purge_threads - 1;
+
+  que_run_threads(thr);
+
+  trx_purge_wait_for_workers_to_complete();
 
   ut_a(purge_sys->n_submitted == purge_sys->n_completed);
 

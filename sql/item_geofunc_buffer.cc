@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -50,13 +51,14 @@
 #include <boost/geometry/strategies/strategies.hpp>
 #include <boost/iterator/iterator_facade.hpp>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
+#include "nulls.h"
 #include "sql/current_thd.h"
 #include "sql/dd/cache/dictionary_client.h"
 #include "sql/dd/types/spatial_reference_system.h"
@@ -156,7 +158,8 @@ String *Item_func_buffer_strategy::val_str(String * /* str_arg */) {
 
     int4store(result_buf, i);
     result_buf += 4;
-    enum_buffer_strategies istrat = static_cast<enum_buffer_strategies>(i);
+    const enum_buffer_strategies istrat =
+        static_cast<enum_buffer_strategies>(i);
 
     /*
       The end_flat and point_square strategies must have no more arguments;
@@ -170,7 +173,7 @@ String *Item_func_buffer_strategy::val_str(String * /* str_arg */) {
         return error_str();
       }
 
-      double val = args[1]->val_real();
+      const double val = args[1]->val_real();
       if ((null_value = args[1]->null_value)) {
         assert(is_nullable());
         return nullptr;

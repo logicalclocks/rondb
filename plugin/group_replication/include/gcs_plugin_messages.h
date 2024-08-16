@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -165,8 +166,11 @@ class Plugin_gcs_message {
     // senders/consumers outside the GR plugin.
     CT_MESSAGE_SERVICE_MESSAGE = 13,
 
+    // This cargo type is used for GR Recovery Metadata
+    CT_RECOVERY_METADATA_MESSAGE = 14,
+
     // No valid type codes can appear after this one.
-    CT_MAX = 14
+    CT_MAX = 15
   };
 
  private:
@@ -251,6 +255,26 @@ class Plugin_gcs_message {
       const unsigned char *buffer, const unsigned char **payload_item_data,
       size_t *payload_item_length);
 
+  /**
+    Return the raw data of the payload item of a given payload type of a given
+    message buffer.
+
+    @param[in]  buffer              the buffer to decode from.
+    @param[in]  end                 the end of buffer from which it decode.
+    @param[in]  payload_item_type   the payload type to be searched.
+    @param[out] payload_item_data   the data for the given payload type.
+    @param[out] payload_item_length the length of the data for the given
+                                    payload type.
+
+    @return the operation status
+      @retval false    OK
+      @retval true     Error
+  */
+  static bool get_payload_item_type_raw_data(
+      const unsigned char *buffer, const unsigned char *end,
+      uint16 payload_item_type, const unsigned char **payload_item_data,
+      unsigned long long *payload_item_length);
+
  protected:
   /**
     Plugin_gcs_message constructor. Only to be called by derivative classes
@@ -258,6 +282,27 @@ class Plugin_gcs_message {
     @param[in] cargo_type Message type to be sent
    */
   explicit Plugin_gcs_message(enum_cargo_type cargo_type);
+
+  /**
+    Return the time at which the message contained in the buffer was sent.
+    @see Metrics_handler::get_current_time()
+
+    @note The method
+      static uint64_t get_sent_timestamp(const unsigned char *buffer,
+                                         size_t length);
+    must be implemented on all children classes in order to allow read
+    the sent timestamp without requiring a object creation and complete
+    message deserialization.
+
+    @param[in] buffer                       the buffer to decode from.
+    @param[in] length                       the buffer length
+    @param[in] timestamp_payload_item_type  the payload item type of the
+                                            timestamp.
+
+    @return the time on which the message was sent.
+  */
+  static int64_t get_sent_timestamp(const unsigned char *buffer, size_t length,
+                                    const uint16 timestamp_payload_item_type);
 
   /**
     Encodes the header of this instance into the buffer.
@@ -399,8 +444,8 @@ class Plugin_gcs_message {
     @param[out] type   the type of the payload item
     @param[out] value  the value of the payload item
   */
-  void decode_payload_item_int8(const unsigned char **buffer, uint16 *type,
-                                uint64 *value);
+  static void decode_payload_item_int8(const unsigned char **buffer,
+                                       uint16 *type, uint64 *value);
 
   /**
     Encodes the given payload item (type, length and value) into the buffer as

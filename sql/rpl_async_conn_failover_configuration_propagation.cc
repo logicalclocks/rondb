@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,6 +29,7 @@
 #include <mysql/components/services/group_replication_status_service.h>
 #include "mysql/components/services/log_builtins.h"
 #include "sql-common/json_dom.h"
+#include "sql-common/json_error_handler.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"  // srv_registry
 #include "sql/rpl_async_conn_failover_table_operations.h"
@@ -595,6 +597,7 @@ bool Rpl_acf_configuration_handler::send_managed_data(
     return true;
   }
 
+  const THD *const thd = current_thd;
   for (auto managed_detail : managed_list) {
     auto managed = configuration.add_managed();
     managed->set_channel(std::get<0>(managed_detail));
@@ -603,7 +606,13 @@ bool Rpl_acf_configuration_handler::send_managed_data(
 
     // Convert Json_wrapper to binary format
     String buffer;
-    if (std::get<3>(managed_detail).to_binary(current_thd, &buffer)) {
+    if (std::get<3>(managed_detail)
+            .to_binary(JsonSerializationDefaultErrorHandler(thd), &buffer)) {
+      return true;
+    }
+    if (buffer.length() > thd->variables.max_allowed_packet) {
+      my_error(ER_WARN_ALLOWED_PACKET_OVERFLOWED, MYF(0),
+               "json_binary::serialize", thd->variables.max_allowed_packet);
       return true;
     }
 
@@ -742,6 +751,7 @@ bool Rpl_acf_configuration_handler::get_configuration(
     return error;
   }
 
+  const THD *const thd = current_thd;
   configuration.set_managed_version(table_managed.get_version());
   for (RPL_FAILOVER_MANAGED_JSON_TUPLE managed_tuple : managed_list) {
     protobuf_replication_asynchronous_connection_failover::Managed *managed =
@@ -752,7 +762,13 @@ bool Rpl_acf_configuration_handler::get_configuration(
 
     // Convert Json_wrapper to binary format
     String buffer;
-    if (std::get<3>(managed_tuple).to_binary(current_thd, &buffer)) {
+    if (std::get<3>(managed_tuple)
+            .to_binary(JsonSerializationDefaultErrorHandler(thd), &buffer)) {
+      return true;
+    }
+    if (buffer.length() > thd->variables.max_allowed_packet) {
+      my_error(ER_WARN_ALLOWED_PACKET_OVERFLOWED, MYF(0),
+               "json_binary::serialize", thd->variables.max_allowed_packet);
       return true;
     }
 

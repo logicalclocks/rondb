@@ -42,10 +42,10 @@
 class AggInterpreter {
  public:
 #ifdef MOZ_AGG_MALLOC
-  AggInterpreter(const uint32_t* prog, uint32_t prog_len, bool print, int64_t frag_id/*,
-                 Ndbd_mem_manager* mm, void* page_addr, uint32_t page_ref*/):
+  AggInterpreter(const Uint32* prog, Uint32 prog_len, bool print, Int64 frag_id/*,
+                 Ndbd_mem_manager* mm, void* page_addr, Uint32 page_ref*/):
 #else
-  AggInterpreter(const uint32_t* prog, uint32_t prog_len, bool print, int64_t frag_id):
+  AggInterpreter(const Uint32* prog, Uint32 prog_len, bool print, Int64 frag_id):
 #endif // MOZ_AGG_MALLOC
     prog_len_(prog_len), cur_pos_(0),
     inited_(false), n_gb_cols_(0), gb_cols_(nullptr),
@@ -58,11 +58,11 @@ class AggInterpreter {
       assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
       prog_ = prog_buf_;
 #else
-      prog_ = new uint32_t[prog_len];
+      prog_ = new Uint32[prog_len];
 #endif // MOZ_AGG_MALLOC
-      memcpy(prog_, prog, prog_len * sizeof(uint32_t));
-      memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(uint32_t));
-      memset(decimal_buf_, 0, sizeof(int32_t) * DECIMAL_BUFF_LENGTH);
+      memcpy(prog_, prog, prog_len * sizeof(Uint32));
+      memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
+      memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
 #ifdef MOZ_AGG_MALLOC
       /* For using Ndbd_mem_manager*/
       /*
@@ -102,15 +102,15 @@ class AggInterpreter {
 
   bool Init();
 
-  int32_t ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
+  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
   void Print();
-  uint32_t PrepareAggResIfNeeded(Signal* signal, bool force);
-  uint32_t NumOfResRecords(bool last_time = false);
+  Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
+  Uint32 NumOfResRecords(bool last_time = false);
   static void MergePrint(const AggInterpreter* in1, const AggInterpreter* in2);
   const std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map() {
     return gb_map_;
   }
-  int64_t frag_id() {
+  Int64 frag_id() {
     return frag_id_;
   }
 #ifdef MOZ_AGG_MALLOC
@@ -120,55 +120,55 @@ class AggInterpreter {
   Ndbd_mem_manager* mm() {
     return mm_;
   }
-  uint32_t page_ref() {
+  Uint32 page_ref() {
     return page_ref_;
   }
   */
 #endif // MOZ_AGG_MALLOC
 
  private:
-  uint32_t* prog_;
-  uint32_t prog_len_;
-  uint32_t cur_pos_;
+  Uint32* prog_;
+  Uint32 prog_len_;
+  Uint32 cur_pos_;
   bool inited_;
   Register registers_[kRegTotal];
 
-  uint32_t n_gb_cols_;
-  uint32_t* gb_cols_;
-  uint32_t n_agg_results_;
+  Uint32 n_gb_cols_;
+  Uint32* gb_cols_;
+  Uint32 n_agg_results_;
   AggResItem* agg_results_;
-  uint32_t agg_prog_start_pos_;
+  Uint32 agg_prog_start_pos_;
 
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_;
-  uint32_t n_groups_;
-  uint32_t buf_[READ_BUF_WORD_SIZE];
-  uint32_t buf_pos_;
-  static uint32_t g_buf_len_;
+  Uint32 n_groups_;
+  Uint32 buf_[READ_BUF_WORD_SIZE];
+  Uint32 buf_pos_;
+  static Uint32 g_buf_len_;
   bool print_;
-  uint64_t processed_rows_;
-  uint32_t result_size_;
-  static uint32_t g_result_header_size_;
-  static uint32_t g_result_header_size_per_group_;
+  Uint64 processed_rows_;
+  Uint32 result_size_;
+  static Uint32 g_result_header_size_;
+  static Uint32 g_result_header_size_per_group_;
 
-  int64_t frag_id_;
-  int32_t decimal_buf_[DECIMAL_BUFF_LENGTH];
+  Int64 frag_id_;
+  Int32 decimal_buf_[DECIMAL_BUFF_LENGTH];
 
 #ifdef MOZ_AGG_MALLOC
   /* For using Ndbd_mem_manager */
   /*
   Ndbd_mem_manager* mm_;
   void* page_addr_;
-  uint32_t page_ref_;
+  Uint32 page_ref_;
   */
 
-  uint32_t prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
-  uint32_t gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];
+  Uint32 prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
+  Uint32 gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];
   AggResItem agg_results_buf_[MAX_AGG_N_RESULTS];
   std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp> gb_map_buf_;
 
   char mem_buf_[MAX_AGG_RESULT_BATCH_BYTES];
-  uint32_t alloc_len_;
-  char* MemAlloc(uint32_t len);
+  Uint32 alloc_len_;
+  char* MemAlloc(Uint32 len);
 #endif // MOZ_AGG_MALLOC
 };
 #endif  // AGGINTERPRETER_H_

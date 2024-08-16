@@ -467,7 +467,7 @@ ENGINE =NDB;
 
 --connection server1
 
--- source include/ndb_restore_master.inc
+-- source common/rpl/ndb_restore_source.inc
 
 # Set low interval so changes are detected quickly
 SET @old_ndb_metadata_check_interval = @@global.ndb_metadata_check_interval;

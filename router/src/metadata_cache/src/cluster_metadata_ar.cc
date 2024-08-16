@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,11 +25,13 @@
 
 #include "cluster_metadata_ar.h"
 
+#include "log_suppressor.h"
 #include "mysql/harness/logging/logging.h"
 #include "mysqlrouter/mysql_session.h"
 #include "mysqlrouter/utils.h"  // strtoull_checked
 #include "mysqlrouter/utils_sqlstring.h"
 
+using metadata_cache::LogSuppressor;
 using mysqlrouter::MySQLSession;
 using mysqlrouter::sqlstring;
 using mysqlrouter::strtoull_checked;
@@ -39,7 +42,7 @@ ARClusterMetadata::~ARClusterMetadata() = default;
 stdx::expected<metadata_cache::ClusterTopology, std::error_code>
 ARClusterMetadata::fetch_cluster_topology(
     const std::atomic<bool> &terminated,
-    mysqlrouter::TargetCluster &target_cluster, const unsigned /*router_id*/,
+    mysqlrouter::TargetCluster &target_cluster, const unsigned router_id,
     const metadata_cache::metadata_servers_list_t &metadata_servers,
     bool /* needs_writable_node */, const std::string & /*clusterset_id*/,
     bool /*whole_topology*/, std::size_t &instance_id) {
@@ -49,7 +52,7 @@ ARClusterMetadata::fetch_cluster_topology(
 
   for (size_t i = 0; i < metadata_servers.size(); ++i) {
     if (terminated) {
-      return stdx::make_unexpected(make_error_code(
+      return stdx::unexpected(make_error_code(
           metadata_cache::metadata_errc::metadata_refresh_terminated));
     }
     const auto &metadata_server = metadata_servers[i];
@@ -96,6 +99,10 @@ ARClusterMetadata::fetch_cluster_topology(
         continue;
       }
 
+      router_options_.read_from_metadata(*metadata_connection_.get(), router_id,
+                                         version,
+                                         mysqlrouter::ClusterType::RS_V2);
+
       result = fetch_topology_from_member(*metadata_connection_, view_id,
                                           cluster_id);
 
@@ -114,7 +121,7 @@ ARClusterMetadata::fetch_cluster_topology(
   const auto &cluster_members = result.get_all_members();
 
   if (cluster_members.empty()) {
-    return stdx::make_unexpected(make_error_code(
+    return stdx::unexpected(make_error_code(
         metadata_cache::metadata_errc::no_metadata_read_successful));
   }
 
@@ -189,7 +196,7 @@ metadata_cache::ClusterTopology ARClusterMetadata::fetch_topology_from_member(
     cluster.id = as_string(row[0]);
     cluster.name = as_string(row[1]);
     metadata_cache::ManagedInstance instance{
-        metadata_cache::InstanceType::AsyncMember};
+        mysqlrouter::InstanceType::AsyncMember};
     instance.mysql_server_uuid = as_string(row[2]);
 
     if (!set_instance_ports(instance, row, 3, 4)) {
@@ -206,7 +213,19 @@ metadata_cache::ClusterTopology ARClusterMetadata::fetch_topology_from_member(
 
     set_instance_attributes(instance, as_string(row[6]));
 
-    cluster.members.push_back(instance);
+    std::string warning;
+    if (instance.type == mysqlrouter::InstanceType::AsyncMember) {
+      cluster.members.push_back(instance);
+    } else {
+      warning = "Ignoring unsupported instance " + instance.host + ":" +
+                std::to_string(instance.port) + ", type: '" +
+                mysqlrouter::to_string(instance.type).c_str() + "'";
+    }
+
+    LogSuppressor::instance().log_message(
+        LogSuppressor::MessageId::kIncompatibleInstanceType,
+        instance.mysql_server_uuid, warning, !warning.empty());
+
     return true;  // get next row if available
   };
 

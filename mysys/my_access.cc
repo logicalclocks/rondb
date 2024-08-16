@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -31,11 +32,12 @@
 
 #include <errno.h>
 
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"  // IWYU pragma: keep
+#include "mysql/strings/m_ctype.h"
+#include "nulls.h"
 
 #ifdef _WIN32
 
@@ -172,7 +174,7 @@ int check_if_legal_tablename(const char *name) {
   @return true if the drive exists, false otherwise.
 */
 static bool does_drive_exists(char drive_letter) {
-  DWORD drive_mask = GetLogicalDrives();
+  const DWORD drive_mask = GetLogicalDrives();
   drive_letter = toupper(drive_letter);
 
   return (drive_letter >= 'A' && drive_letter <= 'Z') &&
@@ -199,7 +201,7 @@ bool is_filename_allowed(const char *name [[maybe_unused]],
     For Windows, check if the file name contains : character.
     Start from end of path and search if the file name contains :
   */
-  const char *ch = NULL;
+  const char *ch = nullptr;
   for (ch = name + length - 1; ch >= name; --ch) {
     if (FN_LIBCHAR == *ch || '/' == *ch)
       break;

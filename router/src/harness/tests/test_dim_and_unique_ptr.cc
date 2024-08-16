@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -41,10 +42,10 @@ using ::testing::_;
 
 class Notifier {
  public:
-  MOCK_METHOD1(called_ctor, void(const std::string &));
-  MOCK_METHOD1(called_dtor, void(const std::string &));
-  MOCK_METHOD1(called_deleter, void(const std::string &));
-  MOCK_METHOD1(called_do_something, void(const std::string &));
+  MOCK_METHOD(void, called_ctor, (const std::string &));
+  MOCK_METHOD(void, called_dtor, (const std::string &));
+  MOCK_METHOD(void, called_deleter, (const std::string &));
+  MOCK_METHOD(void, called_do_something, (const std::string &));
 };
 
 // GMock objects cannot be global, because EXPECT_CALL()s are evaluated in their
@@ -306,7 +307,8 @@ class TestDIM : public mysql_harness::DIM {
 
  public:
   TestDIM(const TestDIM &) = delete;
-  TestDIM &operator==(const TestDIM &) = delete;
+  TestDIM &operator=(const TestDIM &) = delete;
+
   static TestDIM &instance() {
     static TestDIM manager;
     return manager;

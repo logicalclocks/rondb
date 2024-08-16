@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2023, Oracle and/or its affiliates.
+Copyright (c) 1995, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -545,9 +546,7 @@ bool BlockReporter::verify_zip_checksum() const {
         break;
       }
     }
-
     report_empty_page(empty);
-
     /* Empty page */
     return (empty);
   }
@@ -561,11 +560,8 @@ bool BlockReporter::verify_zip_checksum() const {
   page_no_t page_no = mach_read_from_4(m_read_buf + FIL_PAGE_OFFSET);
   space_id_t space_id = mach_read_from_4(m_read_buf + FIL_PAGE_SPACE_ID);
   const page_id_t page_id(space_id, page_no);
-
   const uint32_t calc = calc_zip_checksum(curr_algo);
-
   print_compressed_checksum(calc, stored);
-
   if (stored == calc) {
     return (true);
   }
@@ -581,7 +577,6 @@ bool BlockReporter::verify_zip_checksum() const {
           page_warn_strict_checksum(curr_algo, SRV_CHECKSUM_ALGORITHM_NONE,
                                     page_id);
         }
-
         return (true);
       }
 
@@ -602,7 +597,6 @@ bool BlockReporter::verify_zip_checksum() const {
           page_warn_strict_checksum(curr_algo, SRV_CHECKSUM_ALGORITHM_INNODB,
                                     page_id);
         }
-
         return (true);
       }
 
@@ -658,7 +652,6 @@ bool BlockReporter::verify_zip_checksum() const {
       /* no default so the compiler will emit a warning if new enum
       is added and not handled here */
   }
-
   return (false);
 }
 

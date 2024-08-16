@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,9 +28,9 @@
 
 #include "lex_string.h"
 #include "my_dbug.h"
-#include "my_loglevel.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysqld_error.h"
 #include "sql/dd/cache/dictionary_client.h"  // dd::cache::Dictionary_client
 #include "sql/dd/impl/utils.h"
@@ -44,6 +45,8 @@
 #include "sql/tztime.h"  // Time_zone
 #include "sql_string.h"
 
+struct CHARSET_INFO;
+
 namespace dd {
 
 static const char *failsafe_object = "Event status option";
@@ -54,8 +57,8 @@ int get_old_status(Event::enum_event_status event_status) {
       return Event_parse_data::ENABLED;
     case Event::ES_DISABLED:
       return Event_parse_data::DISABLED;
-    case Event::ES_SLAVESIDE_DISABLED:
-      return Event_parse_data::SLAVESIDE_DISABLED;
+    case Event::ES_REPLICA_SIDE_DISABLED:
+      return Event_parse_data::REPLICA_SIDE_DISABLED;
   }
 
   /* purecov: begin deadcode */
@@ -81,8 +84,8 @@ static Event::enum_event_status get_enum_event_status(int event_status) {
       return Event::ES_ENABLED;
     case Event_parse_data::DISABLED:
       return Event::ES_DISABLED;
-    case Event_parse_data::SLAVESIDE_DISABLED:
-      return Event::ES_SLAVESIDE_DISABLED;
+    case Event_parse_data::REPLICA_SIDE_DISABLED:
+      return Event::ES_REPLICA_SIDE_DISABLED;
   }
 
   /* purecov: begin deadcode */

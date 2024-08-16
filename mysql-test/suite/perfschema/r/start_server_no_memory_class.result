@@ -123,6 +123,7 @@ name
 memory/performance_schema/accounts
 memory/performance_schema/cond_class
 memory/performance_schema/cond_instances
+memory/performance_schema/data_container
 memory/performance_schema/events_errors_summary_by_account_by_error
 memory/performance_schema/events_errors_summary_by_host_by_error
 memory/performance_schema/events_errors_summary_by_thread_by_error
@@ -175,6 +176,8 @@ memory/performance_schema/memory_summary_by_thread_by_event_name
 memory/performance_schema/memory_summary_by_user_by_event_name
 memory/performance_schema/memory_summary_global_by_event_name
 memory/performance_schema/metadata_locks
+memory/performance_schema/meter_class
+memory/performance_schema/metric_class
 memory/performance_schema/mutex_class
 memory/performance_schema/mutex_instances
 memory/performance_schema/prepared_statements_instances

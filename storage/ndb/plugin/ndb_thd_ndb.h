@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,15 +27,15 @@
 #define NDB_THD_NDB_H
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
-#include "map_helpers.h"
-#include "storage/ndb/plugin/ndb_applier.h"
 #include "storage/ndb/plugin/ndb_share.h"
 #include "storage/ndb/plugin/ndb_thd.h"
 
 class THD;
 class Relay_log_info;
+class Ndb_applier;
 
 /*
   Class for ndbcluster thread specific data
@@ -42,15 +43,17 @@ class Relay_log_info;
 class Thd_ndb {
   THD *const m_thd;
 
-  Thd_ndb(THD *);
+  Thd_ndb(THD *thd, const char *name);
   ~Thd_ndb();
 
   uint32 options;
   uint32 trans_options;
   class Ndb_DDL_transaction_ctx *m_ddl_ctx;
+  // Thread name that owns this connection (usually the PFS thread name)
+  const char *const m_thread_name;
 
  public:
-  static Thd_ndb *seize(THD *);
+  static Thd_ndb *seize(THD *thd, const char *name = nullptr);
   static void release(Thd_ndb *thd_ndb);
 
   // Keeps track of stats for tables taking part in transaction
@@ -330,7 +333,7 @@ class Thd_ndb {
   bool valid_ndb(void) const;
   bool recycle_ndb(void);
 
-  const THD *get_thd() const { return m_thd; }
+  THD *get_thd() const { return m_thd; }
 
   int sql_command() const { return thd_sql_command(m_thd); }
 
@@ -388,6 +391,12 @@ class Thd_ndb {
   */
   void clear_ddl_transaction_ctx();
 
+  /*
+    @brief  Create a string to identify the owner thread of this Thd_ndb
+    @return String identification of the owner thread
+  */
+  std::string get_info_str() const;
+
  private:
   std::unique_ptr<Ndb_applier> m_applier;
 
@@ -418,6 +427,29 @@ class Thd_ndb {
      @return pointer to Ndb_applier for Thd_ndb which is replication applier
    */
   Ndb_applier *get_applier() const { return m_applier.get(); }
+};
+
+/**
+  @brief RAII style class for seizing and relasing a Thd_ndb
+*/
+class Thd_ndb_guard {
+  THD *const m_thd;
+  Thd_ndb *const m_thd_ndb;
+  Thd_ndb_guard() = delete;
+  Thd_ndb_guard(const Thd_ndb_guard &) = delete;
+
+ public:
+  Thd_ndb_guard(THD *thd, const char *name)
+      : m_thd(thd), m_thd_ndb(Thd_ndb::seize(m_thd, name)) {
+    thd_set_thd_ndb(m_thd, m_thd_ndb);
+  }
+
+  ~Thd_ndb_guard() {
+    Thd_ndb::release(m_thd_ndb);
+    thd_set_thd_ndb(m_thd, nullptr);
+  }
+
+  const Thd_ndb *get_thd_ndb() const { return m_thd_ndb; }
 };
 
 #endif

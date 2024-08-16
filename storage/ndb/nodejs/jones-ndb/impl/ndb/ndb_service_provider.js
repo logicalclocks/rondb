@@ -1,17 +1,18 @@
 /*
- Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+ Copyright (c) 2014, 2024, Oracle and/or its affiliates.
  Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
  
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,8 @@ var fs = require("fs");
 var assert = require("assert");
 var conf = require("./path_config");
 
-var DatetimeConverter = require(path.join(conf.converters_dir, "NdbDatetimeConverter"));
+var DatetimeConverter =
+    require(path.join(conf.converters_dir, "NdbDatetimeConverter"));
 var TimeConverter = require(path.join(conf.converters_dir, "NdbTimeConverter"));
 var DateConverter = require(path.join(conf.converters_dir, "NdbDateConverter"));
 var propertiesDocFile = path.join(conf.root_dir, "DefaultConnectionProperties");
@@ -44,11 +46,13 @@ var gypConfigFile = path.join(conf.root_dir, "config.gypi");
 var NdbMetadataManager, DBConnectionPool;
 try {
   NdbMetadataManager = require("./NdbMetadataManager.js");
-} catch(ignore) {}
+} catch (ignore) {
+}
 
 try {
   DBConnectionPool   = require("./NdbConnectionPool.js").DBConnectionPool;
-} catch(ignore) {}
+} catch (ignore) {
+}
 
 
 exports.loadRequiredModules = function() {
@@ -58,16 +62,17 @@ exports.loadRequiredModules = function() {
   /* Load the binary */
   try {
     require(conf.binary);
-  } catch(e) {
-    ldp = process.platform === 'darwin' ? 'DYLD_LIBRARY_PATH' : 'LD_LIBRARY_PATH';
+  } catch (e) {
+    ldp =
+        process.platform === 'darwin' ? 'DYLD_LIBRARY_PATH' : 'LD_LIBRARY_PATH';
     msg = "\n\n" +
       "  The ndb adapter cannot load the compiled module ndb_adapter.node.\n";
-    if(existsSync(conf.binary)) {
+    if (existsSync(conf.binary)) {
       msg +=
       "  This module has been built, but was not succesfully loaded.  Perhaps\n" +
       "  setting " + ldp + " to the mysql lib directory (containing\n" +
       "  libndbclient) will resolve the problem.\n\n";
-      if(existsSync(gypConfigFile)) {
+      if (existsSync(gypConfigFile)) {
         try {
 	  /* 'utf8' here is a json, rather than MySQL, setting. */
           jsonconfig = fs.readFileSync(gypConfigFile, 'utf8');
@@ -75,13 +80,11 @@ exports.loadRequiredModules = function() {
           libpath = path.join(jsonconfig.variables.mysql_path, "lib");
           msg += "  e.g.:\n";
           msg += "  export " + ldp + "=" + libpath + "\n\n";
-        }
-        catch(ignore) {}
+        } catch (ignore) {
       }
     }
-    else {
-      msg +=
-      "  For help building jones-ndb, run \"node configure\" \n\n";
+    } else {
+      msg += "  For help building jones-ndb, run \"node configure\" \n\n";
     }
     msg += "Original error: \n---------------\n" + e.message;
     err = new Error(msg);
@@ -92,7 +95,7 @@ exports.loadRequiredModules = function() {
   /* Load jones-mysql */
   try {
     require("jones-mysql");
-  } catch(e2) {
+  } catch (e2) {
     msg = "jones-ndb requires mysql for metadata operations.\n";
     msg += "Original error: " + e2.message;
     err = new Error(msg);
@@ -111,7 +114,8 @@ function registerDefaultTypeConverters(dbConnectionPool) {
   dbConnectionPool.registerTypeConverter("DATETIME", DatetimeConverter);
   dbConnectionPool.registerTypeConverter("TIME", TimeConverter);
   dbConnectionPool.registerTypeConverter("DATE", DateConverter);
-  dbConnectionPool.registerTypeConverter("JSON", jones.converters.SerializedObjectConverter);
+  dbConnectionPool.registerTypeConverter(
+      "JSON", jones.converters.SerializedObjectConverter);
   // TODO: converter for Timestamp microseconds <==> JS Date 
 }
 
@@ -138,4 +142,3 @@ exports.getDBMetadataManager = function(properties) {
 };
 
 exports.config = conf;
-

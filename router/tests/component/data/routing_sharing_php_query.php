@@ -41,6 +41,15 @@ $json
 EOF;
 }
 
+if ($with_sharing) {
+  foreach ([
+    "ROUTER SET trace = 1",
+  ] as $qry) {
+    print("# " . $qry . "\n\n");
+    print(json_encode(query($mysqli, $qry), JSON_PRETTY_PRINT) . "\n\n");
+  }
+}
+
 foreach ([
   "SELECT 1",
 ] as $qry) {
@@ -50,5 +59,12 @@ foreach ([
 }
 
 print("## `SHOW WARNINGS`\n\n");
-$warn_res = query($mysqli, "SHOW WARNINGS");
-count($warn_res) == 0 or throw new Exception("expected row-count == 0, got " . count($warn_res));
+$trace_res = query($mysqli, "SHOW WARNINGS");
+if ($with_sharing) {
+  count($trace_res) > 0 or throw new Exception("expected row-count > 0, got " . count($trace_res));
+
+  print(markdown_json_block($trace_res[0][2]));
+
+  $trace = json_decode($trace_res[0][2]);
+  ($trace->{"attributes"}->{"mysql.sharing_blocked"} == false) or throw new Exception("expected sharing to be allowed.");
+}

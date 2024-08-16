@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,6 +33,7 @@
 #include <atomic>
 #include <list>
 #include <map>
+#include <memory>
 #include <utility>
 
 #include "plugin/group_replication/include/hold_transactions.h"
@@ -39,6 +41,10 @@
 #include "plugin/group_replication/include/pipeline_interfaces.h"
 #include "plugin/group_replication/include/plugin_observers/group_transaction_observation_manager.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_member_identifier.h"
+
+class Transaction_consistency_info;
+using Transaction_consistency_info_uptr =
+    std::unique_ptr<Transaction_consistency_info>;
 
 /**
   @class Transaction_consistency_info
@@ -112,7 +118,8 @@ class Transaction_consistency_info {
     @param[in]  thread_id         the thread that is executing the transaction
     @param[in]  local_transaction true if this transaction did originate from
                                   this server
-    @param[in]  sid               transaction sid
+    @param[in]  tsid              transaction tsid
+    @param[in]  is_tsid_specified information on whether tsid is specified
     @param[in]  sidno             transaction sidno
     @param[in]  gno               transaction gno
     @param[in]  consistency_level the transaction consistency
@@ -121,8 +128,8 @@ class Transaction_consistency_info {
                                   transaction before it is allowed to commit
   */
   Transaction_consistency_info(
-      my_thread_id thread_id, bool local_transaction, const rpl_sid *sid,
-      rpl_sidno sidno, rpl_gno gno,
+      my_thread_id thread_id, bool local_transaction, const gr::Gtid_tsid &tsid,
+      bool is_tsid_specified, rpl_sidno sidno, rpl_gno gno,
       enum_group_replication_consistency_level consistency_level,
       Members_list *members_that_must_prepare_the_transaction);
 
@@ -231,11 +238,27 @@ class Transaction_consistency_info {
   int handle_member_leave(
       const std::vector<Gcs_member_identifier> &leaving_members);
 
+  /**
+    Return the time at which the wait for the transaction prepare
+    acknowledge from others members did start.
+    @see Metrics_handler::get_current_time()
+
+    @return the wait for remote transaction acknowledge begin time.
+  */
+  uint64_t get_begin_timestamp() const;
+
+  /**
+    Return the string representation of UUID and tag.
+
+    @return the string representation of UUID and tag.
+  */
+  std::string get_tsid_string() const;
+
  private:
   my_thread_id m_thread_id;
   const bool m_local_transaction;
-  const bool m_sid_specified;
-  rpl_sid m_sid;
+  const bool m_tsid_specified;
+  gr::Gtid_tsid m_tsid;
   const rpl_sidno m_sidno;
   const rpl_gno m_gno;
   const enum_group_replication_consistency_level m_consistency_level;
@@ -244,19 +267,20 @@ class Transaction_consistency_info {
       m_members_that_must_prepare_the_transaction_lock;
   bool m_transaction_prepared_locally;
   bool m_transaction_prepared_remotely;
+  const uint64_t m_begin_timestamp;
 };
 
 typedef std::pair<rpl_sidno, rpl_gno> Transaction_consistency_manager_key;
 typedef std::pair<Transaction_consistency_manager_key,
-                  Transaction_consistency_info *>
+                  Transaction_consistency_info_uptr>
     Transaction_consistency_manager_pair;
 typedef std::pair<Pipeline_event *, Transaction_consistency_manager_key>
     Transaction_consistency_manager_pevent_pair;
 typedef std::map<
-    Transaction_consistency_manager_key, Transaction_consistency_info *,
+    Transaction_consistency_manager_key, Transaction_consistency_info_uptr,
     std::less<Transaction_consistency_manager_key>,
     Malloc_allocator<std::pair<const Transaction_consistency_manager_key,
-                               Transaction_consistency_info *>>>
+                               Transaction_consistency_info_uptr>>>
     Transaction_consistency_manager_map;
 
 /**
@@ -292,7 +316,8 @@ class Transaction_consistency_manager : public Group_transaction_listener {
       @retval 0      OK
       @retval !=0    error
   */
-  int after_certification(Transaction_consistency_info *transaction_info);
+  int after_certification(
+      std::unique_ptr<Transaction_consistency_info> transaction_info);
 
   /**
     Call action after a transaction being prepared on this member
@@ -317,7 +342,8 @@ class Transaction_consistency_manager : public Group_transaction_listener {
     If this sid is NULL that means this transaction sid is the group
     name.
 
-    @param[in]  sid            the transaction sid
+    @param[in]  tsid           the transaction tsid
+    @param[in]  is_tsid_specified information on whether tsid is specified
     @param[in]  gno            the transaction gno
     @param[in]  gcs_member_id  the member id
 
@@ -325,7 +351,8 @@ class Transaction_consistency_manager : public Group_transaction_listener {
       @retval 0      OK
       @retval !=0    error
   */
-  int handle_remote_prepare(const rpl_sid *sid, rpl_gno gno,
+  int handle_remote_prepare(const gr::Gtid_tsid &tsid, bool is_tsid_specified,
+                            rpl_gno gno,
                             const Gcs_member_identifier &gcs_member_id);
 
   /**
@@ -372,6 +399,7 @@ class Transaction_consistency_manager : public Group_transaction_listener {
     @param[in]  timeout           maximum time to wait
     @param[in]  rpl_channel_type  type of the channel that receives the
                                   transaction
+    @param[in]  thd               server thd represent client connection
 
     @return Operation status
       @retval 0      OK
@@ -379,7 +407,8 @@ class Transaction_consistency_manager : public Group_transaction_listener {
   */
   int before_transaction_begin(my_thread_id thread_id,
                                ulong gr_consistency_level, ulong timeout,
-                               enum_rpl_channel_type rpl_channel_type) override;
+                               enum_rpl_channel_type rpl_channel_type,
+                               const THD *thd) override;
 
   /**
     Call action once a Sync_before_execution_message is received,
@@ -483,6 +512,7 @@ class Transaction_consistency_manager : public Group_transaction_listener {
                                   transaction
     @param[in]  consistency_level the transaction consistency
     @param[in]  timeout           maximum time to wait
+    @param[in]  thd               server thd represent client connection
 
     @return Operation status
       @retval 0      OK
@@ -490,8 +520,8 @@ class Transaction_consistency_manager : public Group_transaction_listener {
   */
   int transaction_begin_sync_before_execution(
       my_thread_id thread_id,
-      enum_group_replication_consistency_level consistency_level,
-      ulong timeout) const;
+      enum_group_replication_consistency_level consistency_level, ulong timeout,
+      const THD *thd) const;
 
   /**
     Help method called by transaction begin action that, if there are

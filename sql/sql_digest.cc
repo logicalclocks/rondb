@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,17 +29,18 @@
 
 #include <assert.h>
 #include "lex_string.h"
-#include "m_ctype.h"
 
 #include "my_inttypes.h"
 #include "my_macros.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "sha2.h"                   // SHA256
 #include "sql/lexer_yystype.h"      // Lexer_yystype
 #include "sql/sql_digest_stream.h"  // sql_digest_state
 #include "sql/sql_yacc.h"           // Generated code.
 #include "sql_string.h"             // String
+#include "template_utils.h"
 
 #define LEX_TOKEN_WITH_DEFINITION
 #include "sql/lex_token.h"
@@ -53,7 +55,7 @@ ulong get_max_digest_length() { return max_digest_length; }
 */
 inline uint read_token(const sql_digest_storage *digest_storage, uint index,
                        uint *tok) {
-  size_t safe_byte_count = digest_storage->m_byte_count;
+  const size_t safe_byte_count = digest_storage->m_byte_count;
 
   if (index + SIZE_OF_A_TOKEN <= safe_byte_count &&
       safe_byte_count <= digest_storage->m_token_array_length) {
@@ -93,7 +95,7 @@ inline uint read_identifier(const sql_digest_storage *digest_storage,
                             uint index, const char **id_string,
                             int *id_length) {
   uint new_index;
-  uint safe_byte_count = digest_storage->m_byte_count;
+  const uint safe_byte_count = digest_storage->m_byte_count;
 
   /* READ: never assert on data, reading can be racy when used concurrently
    * (pfs). */
@@ -109,7 +111,7 @@ inline uint read_identifier(const sql_digest_storage *digest_storage,
       (index + bytes_needed) <= safe_byte_count) {
     const unsigned char *src = &digest_storage->m_token_array[index];
     /* Read the length of identifier */
-    uint length = src[0] | (src[1] << 8);
+    const uint length = src[0] | (src[1] << 8);
     bytes_needed += length;
     /* If we can read entire identifier from token array */
     if ((index + bytes_needed) <= safe_byte_count) {
@@ -134,7 +136,7 @@ inline void store_token_identifier(sql_digest_storage *digest_storage,
   /* WRITE: ok to assert, storing a token is race free. */
   assert(digest_storage->m_byte_count <= digest_storage->m_token_array_length);
 
-  size_t bytes_needed = 2 * SIZE_OF_A_TOKEN + id_length;
+  const size_t bytes_needed = 2 * SIZE_OF_A_TOKEN + id_length;
   if (digest_storage->m_byte_count + bytes_needed <=
       (unsigned int)digest_storage->m_token_array_length) {
     unsigned char *dest =
@@ -169,7 +171,7 @@ void compute_digest_hash(const sql_digest_storage *digest_storage,
 void compute_digest_text(const sql_digest_storage *digest_storage,
                          String *digest_text) {
   assert(digest_storage != nullptr);
-  uint byte_count = digest_storage->m_byte_count;
+  const uint byte_count = digest_storage->m_byte_count;
   String *digest_output = digest_text;
   uint tok = 0;
   uint current_byte = 0;
@@ -209,7 +211,7 @@ void compute_digest_text(const sql_digest_storage *digest_storage,
   char id_buffer[NAME_LEN + 1] = {'\0'};
   const char *id_string;
   size_t id_length;
-  bool convert_text = !my_charset_same(from_cs, to_cs);
+  const bool convert_text = !my_charset_same(from_cs, to_cs);
 
   while (current_byte < byte_count) {
     current_byte = read_token(digest_storage, current_byte, &tok);
@@ -317,7 +319,7 @@ static inline uint peek_token(const sql_digest_storage *digest, uint index) {
 static inline void peek_last_two_tokens(
     const sql_digest_storage *digest_storage, uint last_id_index, uint *t1,
     uint *t2) {
-  uint byte_count = digest_storage->m_byte_count;
+  const uint byte_count = digest_storage->m_byte_count;
   uint peek_index = byte_count;
 
   if (last_id_index + SIZE_OF_A_TOKEN <= peek_index) {
@@ -345,7 +347,7 @@ static inline void peek_last_two_tokens(
 static inline void peek_last_three_tokens(
     const sql_digest_storage *digest_storage, uint last_id_index, uint *t1,
     uint *t2, uint *t3) {
-  uint byte_count = digest_storage->m_byte_count;
+  const uint byte_count = digest_storage->m_byte_count;
   uint peek_index = byte_count;
 
   if (last_id_index + SIZE_OF_A_TOKEN <= peek_index) {
@@ -577,7 +579,7 @@ sql_digest_state *digest_add_token(sql_digest_state *state, uint token,
     case TOK_IDENT_AT: {
       Lexer_yystype *lex_token = yylval;
       char *yytext = lex_token->lex_str.str;
-      size_t yylen = lex_token->lex_str.length;
+      const size_t yylen = lex_token->lex_str.length;
 
       /*
         REDUCE:

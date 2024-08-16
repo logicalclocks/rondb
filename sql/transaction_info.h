@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,6 +35,7 @@
 #include "sql/rpl_transaction_ctx.h"            // Rpl_transaction_ctx
 #include "sql/rpl_transaction_write_set_ctx.h"  // Transaction_write_set_ctx
 #include "sql/xa.h"                             // XID_STATE
+#include "strmake.h"
 
 class Ha_trx_info;
 class Ha_trx_info_list;
@@ -124,11 +126,11 @@ class Transaction_ctx {
       return m_unsafe_rollback_flags;
     }
     void set_unsafe_rollback_flags(unsigned int flags) {
-      DBUG_PRINT("debug", ("set_unsafe_rollback_flags: %d", flags));
+      DBUG_PRINT("debug", ("set_unsafe_rollback_flags: %u", flags));
       m_unsafe_rollback_flags = flags;
     }
     void add_unsafe_rollback_flags(unsigned int flags) {
-      DBUG_PRINT("debug", ("add_unsafe_rollback_flags: %d", flags));
+      DBUG_PRINT("debug", ("add_unsafe_rollback_flags: %u", flags));
       m_unsafe_rollback_flags |= flags;
     }
     void reset_unsafe_rollback_flags() {

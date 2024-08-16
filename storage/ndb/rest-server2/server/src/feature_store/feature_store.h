@@ -36,7 +36,6 @@ typedef struct Training_Dataset_Feature {
   int td_join_id;
   int idx;
   int label;
-  int transformation_function_id;
   int feature_view_id;
 } Training_Dataset_Feature;
 

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,7 +35,6 @@
 #include <unordered_map>
 #include <utility>
 
-#include "m_ctype.h"
 #include "m_string.h"  // my_stpcpy
 #include "map_helpers.h"
 #include "my_alloc.h"
@@ -43,7 +43,6 @@
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
-#include "my_loglevel.h"
 #include "my_macros.h"
 #include "my_psi_config.h"
 #include "my_sharedlib.h"
@@ -56,11 +55,14 @@
 #include "mysql/components/services/bits/psi_rwlock_bits.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_memory.h"
 #include "mysql/psi/mysql_rwlock.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"  // ER_*
-#include "sql/derror.h"    // ER_THD
+#include "nulls.h"
+#include "sql/derror.h"  // ER_THD
 #include "sql/field.h"
 #include "sql/handler.h"
 #include "sql/iterators/row_iterator.h"
@@ -78,6 +80,8 @@
 #include "sql/thd_raii.h"
 #include "sql/thr_malloc.h"
 #include "sql/transaction.h"  // trans_*
+#include "string_with_len.h"
+#include "strxnmov.h"
 #include "thr_lock.h"
 #include "udf_registration_imp.h"
 

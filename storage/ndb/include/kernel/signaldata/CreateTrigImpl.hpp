@@ -1,15 +1,16 @@
-/* Copyright (c) 2007, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2007, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,23 +24,17 @@
 #ifndef CREATE_TRIG_IMPL_HPP
 #define CREATE_TRIG_IMPL_HPP
 
-#include "SignalData.hpp"
-#include <Bitmask.hpp>
 #include <AttributeList.hpp>
+#include <Bitmask.hpp>
+#include "SignalData.hpp"
 
 #define JAM_FILE_ID 104
 
-
-struct CreateTrigImplReq
-{
-  enum RequestType
-  {
-    CreateTriggerOnline = 1,
-    CreateTriggerOffline = 2
-  };
+struct CreateTrigImplReq {
+  enum RequestType { CreateTriggerOnline = 1, CreateTriggerOffline = 2 };
 
   static constexpr Uint32 SignalLength = 11 + 3;
-  SECTION( ATTRIBUTE_MASK_SECTION = 0 );
+  SECTION(ATTRIBUTE_MASK_SECTION = 0);
 
   // tableVersion, indexVersion, name section used only within DICT
 
@@ -54,7 +49,7 @@ struct CreateTrigImplReq
   Uint32 triggerId;
   Uint32 triggerInfo;
   Uint32 receiverRef;
-  Uint32 upgradeExtra[3]; // Send TriggerId's as defined in 6.3 here
+  Uint32 upgradeExtra[3];  // Send TriggerId's as defined in 6.3 here
 };
 
 struct CreateTrigImplConf {
@@ -62,7 +57,7 @@ struct CreateTrigImplConf {
 
   Uint32 senderRef;
   Uint32 senderData;
-  Uint32 tableId;       // BACKUP and SUMA want these back from TUP
+  Uint32 tableId;  // BACKUP and SUMA want these back from TUP
   Uint32 triggerId;
   Uint32 triggerInfo;
 };
@@ -95,7 +90,6 @@ struct CreateTrigImplRef {
   Uint32 errorNodeId;
   Uint32 masterNodeId;
 };
-
 
 #undef JAM_FILE_ID
 

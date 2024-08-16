@@ -98,6 +98,8 @@ session_variables
 setup_actors
 setup_consumers
 setup_instruments
+setup_meters
+setup_metrics
 setup_objects
 setup_threads
 socket_instances
@@ -627,7 +629,7 @@ events_transactions_current	CREATE TABLE `events_transactions_current` (
   `EVENT_NAME` varchar(128) NOT NULL,
   `STATE` enum('ACTIVE','COMMITTED','ROLLED BACK') DEFAULT NULL,
   `TRX_ID` bigint unsigned DEFAULT NULL,
-  `GTID` varchar(64) DEFAULT NULL,
+  `GTID` varchar(90) DEFAULT NULL,
   `XID_FORMAT_ID` int DEFAULT NULL,
   `XID_GTRID` varchar(130) DEFAULT NULL,
   `XID_BQUAL` varchar(130) DEFAULT NULL,
@@ -656,7 +658,7 @@ events_transactions_history	CREATE TABLE `events_transactions_history` (
   `EVENT_NAME` varchar(128) NOT NULL,
   `STATE` enum('ACTIVE','COMMITTED','ROLLED BACK') DEFAULT NULL,
   `TRX_ID` bigint unsigned DEFAULT NULL,
-  `GTID` varchar(64) DEFAULT NULL,
+  `GTID` varchar(90) DEFAULT NULL,
   `XID_FORMAT_ID` int DEFAULT NULL,
   `XID_GTRID` varchar(130) DEFAULT NULL,
   `XID_BQUAL` varchar(130) DEFAULT NULL,
@@ -685,7 +687,7 @@ events_transactions_history_long	CREATE TABLE `events_transactions_history_long`
   `EVENT_NAME` varchar(128) NOT NULL,
   `STATE` enum('ACTIVE','COMMITTED','ROLLED BACK') DEFAULT NULL,
   `TRX_ID` bigint unsigned DEFAULT NULL,
-  `GTID` varchar(64) DEFAULT NULL,
+  `GTID` varchar(90) DEFAULT NULL,
   `XID_FORMAT_ID` int DEFAULT NULL,
   `XID_GTRID` varchar(130) DEFAULT NULL,
   `XID_BQUAL` varchar(130) DEFAULT NULL,

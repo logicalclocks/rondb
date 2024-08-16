@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -60,9 +61,19 @@ class Recovery_state_transfer {
   /**
     Initialize the state transfer class and reset the class flags
 
-    @param rec_view_id  The view id to use on this round
+    @param view_id         The view id to use for the recovery.
+    @param is_vcle_enabled  the flag determine if View_change_log_event
+                             is enabled.
+
   */
-  void initialize(const std::string &rec_view_id);
+  void initialize(const std::string &view_id, bool is_vcle_enabled);
+
+  /**
+    Set the gtids to use for the recovery until condition.
+
+    @param after_gtids  the gtids to use for the recovery until condition.
+  */
+  void set_until_condition_after_gtids(const std::string &after_gtids);
 
   /** Abort the state transfer */
   void abort_state_transfer();
@@ -315,6 +326,19 @@ class Recovery_state_transfer {
   void donor_failover();
 
   /**
+    Verify member has after_gtids received from replication donor already
+    present in member's gtid_executed.
+
+    @param local_gtid_executed_string the local member gtid_executed string
+
+    @return the operation status
+      @retval true     after_gtids there in member's gtid_executed.
+      @retval false    after_gtids not there in member's gtid_executed.
+  */
+  bool verify_member_has_after_gtids_present(
+      std::string &local_gtid_executed_string);
+
+  /**
     Establish a master/slave connection to the selected donor.
 
     @return the operation status
@@ -378,10 +402,32 @@ class Recovery_state_transfer {
   int purge_recovery_slave_threads_repos();
 
  private:
+  /**
+    Verifies if after_gtids sent by sender is successfully applied when recovery
+    is using CHANNEL_UNTIL_APPLIER_AFTER_GTIDS for start replica until condition
+
+    @retval false after_gtids is successfully applied.
+    @retval true  Error in applying after_gtids.
+  */
+  bool verify_after_gtids_applied();
+
+  /** The recovery channel name */
+  std::string m_recovery_channel_name;
+
   /* The member uuid*/
   std::string member_uuid;
+
   /* The associated view id for the current recovery session */
   std::string view_id;
+
+  /* The gtids used by the replication until condition for the recovery. */
+  std::string m_after_gtids;
+
+  /*
+    The replication until condition that can be applied to
+    channels for the recovery.
+  */
+  enum_channel_until_condition m_until_condition;
 
   /* The selected donor member*/
   Group_member_info *selected_donor;

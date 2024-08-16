@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -55,7 +56,7 @@ int my_msync(int fd, void *addr, size_t len, int flags) {
 #elif defined(_WIN32)
 
 static SECURITY_ATTRIBUTES mmap_security_attributes = {
-    sizeof(SECURITY_ATTRIBUTES), 0, TRUE};
+    sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
 
 void *my_mmap(void *addr [[maybe_unused]], size_t len, int prot,
               int flags [[maybe_unused]], File fd, my_off_t offset) {
@@ -68,8 +69,8 @@ void *my_mmap(void *addr [[maybe_unused]], size_t len, int prot,
   if (hFile == INVALID_HANDLE_VALUE) return MAP_FAILED;
 
   hFileMap = CreateFileMapping(hFile, &mmap_security_attributes, PAGE_READWRITE,
-                               0, (DWORD)len, NULL);
-  if (hFileMap == 0) return MAP_FAILED;
+                               0, (DWORD)len, nullptr);
+  if (hFileMap == nullptr) return MAP_FAILED;
 
   ptr = MapViewOfFile(hFileMap,
                       prot & PROT_WRITE ? FILE_MAP_WRITE : FILE_MAP_READ,

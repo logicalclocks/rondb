@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,11 +29,10 @@
 #include <cstring>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_alloc.h"
 
 #include "my_sqlcommand.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "sql/derror.h"
 #include "sql/item_subselect.h"
@@ -46,6 +46,7 @@
 #include "sql/sql_const.h"
 #include "sql/sql_error.h"
 #include "sql/sql_lex.h"
+#include "string_with_len.h"
 
 extern struct st_opt_hint_info opt_hint_info[];
 
@@ -221,8 +222,8 @@ void PT_hint::print_warn(THD *thd, uint err_code,
                       ER_THD_NONCONST(thd, err_code), str.c_ptr_safe());
 }
 
-bool PT_qb_level_hint::contextualize(Parse_context *pc) {
-  if (super::contextualize(pc)) return true;
+bool PT_qb_level_hint::do_contextualize(Parse_context *pc) {
+  if (super::do_contextualize(pc)) return true;
 
   Opt_hints_qb *qb = find_qb_hints(pc, &qb_name, this);
   if (qb == nullptr) return false;  // TODO: Should this generate a warning?
@@ -334,8 +335,8 @@ void PT_qb_level_hint::append_args(const THD *thd, String *str) const {
   }
 }
 
-bool PT_hint_list::contextualize(Parse_context *pc) {
-  if (super::contextualize(pc)) return true;
+bool PT_hint_list::do_contextualize(Parse_context *pc) {
+  if (super::do_contextualize(pc)) return true;
 
   if (!get_qb_hints(pc, pc->select)) return true;
 
@@ -350,8 +351,8 @@ bool PT_hint_list::contextualize(Parse_context *pc) {
   return false;
 }
 
-bool PT_table_level_hint::contextualize(Parse_context *pc) {
-  if (super::contextualize(pc)) return true;
+bool PT_table_level_hint::do_contextualize(Parse_context *pc) {
+  if (super::do_contextualize(pc)) return true;
 
   if (table_list.empty())  // Query block level hint
   {
@@ -402,8 +403,8 @@ void PT_key_level_hint::append_args(const THD *thd, String *str) const {
   }
 }
 
-bool PT_key_level_hint::contextualize(Parse_context *pc) {
-  if (super::contextualize(pc)) return true;
+bool PT_key_level_hint::do_contextualize(Parse_context *pc) {
+  if (super::do_contextualize(pc)) return true;
 
   Opt_hints_qb *qb = find_qb_hints(pc, &table_name.opt_query_block, this);
   if (qb == nullptr) return false;
@@ -474,8 +475,8 @@ bool PT_key_level_hint::contextualize(Parse_context *pc) {
   return false;
 }
 
-bool PT_hint_qb_name::contextualize(Parse_context *pc) {
-  if (super::contextualize(pc)) return true;
+bool PT_hint_qb_name::do_contextualize(Parse_context *pc) {
+  if (super::do_contextualize(pc)) return true;
 
   Opt_hints_qb *qb = pc->select->opt_hints_qb;
 
@@ -493,8 +494,8 @@ bool PT_hint_qb_name::contextualize(Parse_context *pc) {
   return false;
 }
 
-bool PT_hint_max_execution_time::contextualize(Parse_context *pc) {
-  if (super::contextualize(pc)) return true;
+bool PT_hint_max_execution_time::do_contextualize(Parse_context *pc) {
+  if (super::do_contextualize(pc)) return true;
 
   if (pc->thd->lex->sql_command != SQLCOM_SELECT ||  // not a SELECT statement
       pc->thd->lex->sphead ||                        // or in a SP/trigger/event
@@ -520,7 +521,7 @@ bool PT_hint_max_execution_time::contextualize(Parse_context *pc) {
   return false;
 }
 
-bool PT_hint_sys_var::contextualize(Parse_context *pc) {
+bool PT_hint_sys_var::do_contextualize(Parse_context *pc) {
   if (!sys_var_value) {
     // No warning here, warning is issued by parser.
     return false;
@@ -562,8 +563,8 @@ bool PT_hint_sys_var::contextualize(Parse_context *pc) {
                                             sys_var_value);
 }
 
-bool PT_hint_resource_group::contextualize(Parse_context *pc) {
-  if (super::contextualize(pc)) return true;
+bool PT_hint_resource_group::do_contextualize(Parse_context *pc) {
+  if (super::do_contextualize(pc)) return true;
 
   auto res_grp_mgr = resourcegroups::Resource_group_mgr::instance();
   if (!res_grp_mgr->resource_group_support()) {

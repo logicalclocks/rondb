@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,39 +26,37 @@
 #ifndef FS_OPEN_REQ_H
 #define FS_OPEN_REQ_H
 
-#include "util/ndb_math.h"
 #include "SignalData.hpp"
+#include "util/ndb_math.h"
 
 #define JAM_FILE_ID 148
 
-struct EncryptionKeyMaterial
-{
+struct EncryptionKeyMaterial {
   static constexpr Uint32 MAX_LENGTH = 512;
   static_assert(MAX_LENGTH >= MAX_BACKUP_ENCRYPTION_PASSWORD_LENGTH + 4);
 
   Uint32 length = 0;
   alignas(Uint32) unsigned char data[MAX_LENGTH];
 
-  Uint32 get_needed_words() const
-  {
+  Uint32 get_needed_words() const {
     return ndb_ceil_div<Uint32>(sizeof(length) + length, 4);
   }
 };
 static_assert(sizeof(EncryptionKeyMaterial) % 4 == 0);
 
 /**
- * 
- * SENDER:  
+ *
+ * SENDER:
  * RECIVER: Ndbfs
  */
 class FsOpenReq {
   /**
    * Reciver(s)
    */
-  friend class Ndbfs;         // Reciver
-  friend class AsyncFile;     // Uses FsOpenReq to decode file open flags
-  friend class PosixAsyncFile; // FIXME
-  friend class Win32AsyncFile; // FIXME
+  friend class Ndbfs;           // Reciver
+  friend class AsyncFile;       // Uses FsOpenReq to decode file open flags
+  friend class PosixAsyncFile;  // FIXME
+  friend class Win32AsyncFile;  // FIXME
   friend class Filename;
   friend class VoidFs;
   friend class AsyncIoThread;
@@ -68,7 +67,7 @@ class FsOpenReq {
    */
   friend class Backup;
   friend class Dbdict;
-  friend class Ndbcntr;       // For initial start...
+  friend class Ndbcntr;  // For initial start...
   friend class Dbdih;
   friend class Lgman;
   friend class Tsman;
@@ -82,14 +81,15 @@ class FsOpenReq {
   /**
    * For printing
    */
-  friend bool printFSOPENREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
+  friend bool printFSOPENREQ(FILE *output, const Uint32 *theData, Uint32 len,
+                             Uint16 receiverBlockNo);
 
-public:
+ public:
   /**
    * Length of signal
    */
   static constexpr Uint32 SignalLength = 11;
-  SECTION( FILENAME = 0 );
+  SECTION(FILENAME = 0);
   SECTION(ENCRYPT_KEY_MATERIAL = 1);
 
  private:
@@ -97,29 +97,29 @@ public:
    * DATA VARIABLES
    */
 
-  UintR userReference;        // DATA 0
-  UintR userPointer;          // DATA 1
-  UintR fileNumber[4];        // DATA 2 - 5
-  UintR fileFlags;            // DATA 6
+  UintR userReference;  // DATA 0
+  UintR userPointer;    // DATA 1
+  UintR fileNumber[4];  // DATA 2 - 5
+  UintR fileFlags;      // DATA 6
   Uint32 page_size;
   Uint32 file_size_hi;
   Uint32 file_size_lo;
-  Uint32 auto_sync_size; // In bytes
-  
-public:
+  Uint32 auto_sync_size;  // In bytes
+
+ public:
   static constexpr Uint32 OM_READONLY = 0;
   static constexpr Uint32 OM_WRITEONLY = 1;
   static constexpr Uint32 OM_READWRITE = 2;
   static constexpr Uint32 OM_READ_WRITE_MASK = 3;
 
-  static constexpr Uint32 OM_APPEND = 0x8; // Not Implemented on W2k
+  static constexpr Uint32 OM_APPEND = 0x8;  // Not Implemented on W2k
   static constexpr Uint32 OM_SYNC = 0x10;
   static constexpr Uint32 OM_CREATE = 0x100;
   static constexpr Uint32 OM_TRUNCATE = 0x200;
-  static constexpr Uint32 OM_AUTOSYNC = 0x400; 
+  static constexpr Uint32 OM_AUTOSYNC = 0x400;
 
   static constexpr Uint32 OM_CREATE_IF_NONE = 0x0800;
-  static constexpr Uint32 OM_INIT = 0x1000; // 
+  static constexpr Uint32 OM_INIT = 0x1000;  //
   static constexpr Uint32 OM_CHECK_SIZE = 0x2000;
   static constexpr Uint32 OM_DIRECT = 0x4000;
   static constexpr Uint32 OM_GZ = 0x8000;
@@ -153,23 +153,31 @@ public:
     S_CTL = 8
   };
 
-  enum BasePathSpec
-  {
-    BP_FS = 0,     // FileSystemPath
-    BP_BACKUP = 1, // BackupDataDir
-    BP_DD_DF = 2,  // FileSystemPathDataFiles
-    BP_DD_UF = 3,  // FileSystemPathUndoFiles
+  enum BasePathSpec {
+    BP_FS = 0,      // FileSystemPath
+    BP_BACKUP = 1,  // BackupDataDir
+    BP_DD_DF = 2,   // FileSystemPathDataFiles
+    BP_DD_UF = 3,   // FileSystemPathUndoFiles
     BP_MAX = 4
   };
-  
+
+  enum Versions {
+    V_BLOCK = 1,     // D#/block/T#/F#/S#P#.Suffix
+    V_BACKUP = 2,    // BACKUP/.../BACKUP-...Suffix
+    V_DISK = 3,      // D#/
+    V_FILENAME = 4,  // Relative to BP or absolute path
+    V_LCP = 5,       // LCP/#/T#F#.Suffix
+    V_BASEPATH = 6   // Basepath
+  };
+
   static Uint32 getVersion(const Uint32 fileNumber[]);
   static Uint32 getSuffix(const Uint32 fileNumber[]);
 
   static void setVersion(Uint32 fileNumber[], Uint8 val);
   static void setSuffix(Uint32 fileNumber[], Uint8 val);
-  
+
   /**
-   * V1
+   * V1 - Block
    */
   static Uint32 v1_getDisk(const Uint32 fileNumber[]);
   static Uint32 v1_getTable(const Uint32 fileNumber[]);
@@ -218,6 +226,12 @@ public:
   static void v5_setLcpNo(Uint32 fileNumber[], Uint32 no);
   static void v5_setTableId(Uint32 fileNumber[], Uint32 no);
   static void v5_setFragmentId(Uint32 fileNumber[], Uint32 no);
+
+  /**
+   * V6 - Basepath
+   */
+  static Uint32 v6_getBasePath(const Uint32 fileNumber[]);
+  static void v6_setBasePath(Uint32 fileNumber[], Uint32 no);
 };
 
 DECLARE_SIGNAL_SCOPE(GSN_FSOPENREQ, Local);
@@ -226,14 +240,13 @@ DECLARE_SIGNAL_SCOPE(GSN_FSOPENREQ, Local);
  * File flags (set according to solaris standard)
  *
  o = Open mode                -  2 Bits -> max 3
- c = create new file          -  1 Bit 
+ c = create new file          -  1 Bit
  t = truncate existing        -  1 Bit
 
            1111111111222222222233
  01234567890123456789012345678901
  oo      ct
 */
-
 
 /**
  * -- v1 --
@@ -245,7 +258,7 @@ DECLARE_SIGNAL_SCOPE(GSN_FSOPENREQ, Local);
  *   d = v1_disk    8 - 15
  *   s = v1_suffix 16 - 23
  *   v = version   24 - 31
- * 
+ *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  * ppppppppddddddddssssssssvvvvvvvv
@@ -256,7 +269,7 @@ DECLARE_SIGNAL_SCOPE(GSN_FSOPENREQ, Local);
  * File number[3] =
  *   v = version   24 - 31
  *   s = v1_suffix 16 - 23
- * 
+ *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  *                 ssssssssvvvvvvvv
@@ -271,169 +284,145 @@ DECLARE_SIGNAL_SCOPE(GSN_FSOPENREQ, Local);
  *           1111111111222222222233
  * 01234567890123456789012345678901
  *                 ssssssssvvvvvvvv
- */ 
-inline 
-Uint32 FsOpenReq::getVersion(const Uint32 fileNumber[]){
+ */
+inline Uint32 FsOpenReq::getVersion(const Uint32 fileNumber[]) {
   return (fileNumber[3] >> 24) & 0xff;
 }
 
-inline
-void FsOpenReq::setVersion(Uint32 fileNumber[], Uint8 val){
+inline void FsOpenReq::setVersion(Uint32 fileNumber[], Uint8 val) {
   const Uint32 t = fileNumber[3];
   fileNumber[3] = (t & 0x00FFFFFF) | (((Uint32)val) << 24);
 }
 
-inline 
-Uint32 FsOpenReq::getSuffix(const Uint32 fileNumber[]){
-  return (fileNumber[3] >> 16)& 0xff;
+inline Uint32 FsOpenReq::getSuffix(const Uint32 fileNumber[]) {
+  return (fileNumber[3] >> 16) & 0xff;
 }
 
-inline
-void FsOpenReq::setSuffix(Uint32 fileNumber[], Uint8 val){
+inline void FsOpenReq::setSuffix(Uint32 fileNumber[], Uint8 val) {
   const Uint32 t = fileNumber[3];
   fileNumber[3] = (t & 0xFF00FFFF) | (((Uint32)val) << 16);
 }
 
-inline 
-Uint32 FsOpenReq::v1_getDisk(const Uint32 fileNumber[]){
-  return  (fileNumber[3]>>8) & 0xff;
+inline Uint32 FsOpenReq::v1_getDisk(const Uint32 fileNumber[]) {
+  return (fileNumber[3] >> 8) & 0xff;
 }
 
-inline
-void FsOpenReq::v1_setDisk(Uint32 fileNumber[], Uint8 val){
+inline void FsOpenReq::v1_setDisk(Uint32 fileNumber[], Uint8 val) {
   const Uint32 t = fileNumber[3];
   fileNumber[3] = (t & 0xFFFF00FF) | (((Uint32)val) << 8);
 }
 
-inline 
-Uint32 FsOpenReq::v1_getTable(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v1_getTable(const Uint32 fileNumber[]) {
   return fileNumber[0];
 }
 
-inline
-void FsOpenReq::v1_setTable(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v1_setTable(Uint32 fileNumber[], Uint32 val) {
   fileNumber[0] = val;
 }
 
-inline 
-Uint32 FsOpenReq::v1_getFragment(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v1_getFragment(const Uint32 fileNumber[]) {
   return fileNumber[1];
 }
 
-inline
-void FsOpenReq::v1_setFragment(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v1_setFragment(Uint32 fileNumber[], Uint32 val) {
   fileNumber[1] = val;
 }
 
-inline
-Uint32 FsOpenReq::v1_getS(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v1_getS(const Uint32 fileNumber[]) {
   return fileNumber[2];
 }
 
-inline
-void FsOpenReq::v1_setS(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v1_setS(Uint32 fileNumber[], Uint32 val) {
   fileNumber[2] = val;
 }
 
-inline
-Uint32 FsOpenReq::v1_getP(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v1_getP(const Uint32 fileNumber[]) {
   return fileNumber[3] & 0xff;
 }
 
-inline
-void FsOpenReq::v1_setP(Uint32 fileNumber[], Uint8 val){
+inline void FsOpenReq::v1_setP(Uint32 fileNumber[], Uint8 val) {
   const Uint32 t = fileNumber[3];
   fileNumber[3] = (t & 0xFFFFFF00) | val;
 }
 
 /****************/
-inline 
-Uint32 FsOpenReq::v2_getSequence(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v2_getSequence(const Uint32 fileNumber[]) {
   return fileNumber[0];
 }
 
-inline
-void FsOpenReq::v2_setSequence(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v2_setSequence(Uint32 fileNumber[], Uint32 val) {
   fileNumber[0] = val;
 }
 
-inline 
-Uint32 FsOpenReq::v2_getNodeId(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v2_getNodeId(const Uint32 fileNumber[]) {
   return (fileNumber[1] & 0x0000FFFF);
 }
 
-inline
-void FsOpenReq::v2_setNodeId(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v2_setNodeId(Uint32 fileNumber[], Uint32 val) {
   const Uint32 t = fileNumber[1];
   fileNumber[1] = (t & 0xFFFF0000) | (((Uint32)val) & 0x0000FFFF);
 }
 
-inline 
-Uint32 FsOpenReq::v2_getPartNum(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v2_getPartNum(const Uint32 fileNumber[]) {
   return ((fileNumber[1] >> 16) & 0x0000FFFF);
 }
 
-inline
-void FsOpenReq::v2_setPartNum(Uint32 fileNumber[], Uint32 val){
-  Uint32 t = fileNumber[1] ;
+inline void FsOpenReq::v2_setPartNum(Uint32 fileNumber[], Uint32 val) {
+  Uint32 t = fileNumber[1];
   fileNumber[1] = (t & 0x0000FFFF) | ((val << 16) & 0xFFFF0000);
 }
 
-inline
-Uint32 FsOpenReq::v2_getCount(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v2_getCount(const Uint32 fileNumber[]) {
   return (fileNumber[2] & 0x0000FFFF);
 }
 
-inline
-void FsOpenReq::v2_setCount(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v2_setCount(Uint32 fileNumber[], Uint32 val) {
   const Uint32 t = fileNumber[2];
   fileNumber[2] = (t & 0xFFFF0000) | (((Uint32)val) & 0x0000FFFF);
 }
 
-inline
-Uint32 FsOpenReq::v2_getTotalParts(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v2_getTotalParts(const Uint32 fileNumber[]) {
   return ((fileNumber[2] >> 16) & 0x0000FFFF);
 }
 
-inline
-void FsOpenReq::v2_setTotalParts(Uint32 fileNumber[], Uint32 val){
-  Uint32 t = fileNumber[2] ;
+inline void FsOpenReq::v2_setTotalParts(Uint32 fileNumber[], Uint32 val) {
+  Uint32 t = fileNumber[2];
   fileNumber[2] = (t & 0x0000FFFF) | ((val << 16) & 0xFFFF0000);
 }
 
 /****************/
-inline 
-Uint32 FsOpenReq::v5_getTableId(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v5_getTableId(const Uint32 fileNumber[]) {
   return fileNumber[0];
 }
 
-inline
-void FsOpenReq::v5_setTableId(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v5_setTableId(Uint32 fileNumber[], Uint32 val) {
   fileNumber[0] = val;
 }
 
-inline 
-Uint32 FsOpenReq::v5_getLcpNo(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v5_getLcpNo(const Uint32 fileNumber[]) {
   return fileNumber[1];
 }
 
-inline
-void FsOpenReq::v5_setLcpNo(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v5_setLcpNo(Uint32 fileNumber[], Uint32 val) {
   fileNumber[1] = val;
 }
 
-inline 
-Uint32 FsOpenReq::v5_getFragmentId(const Uint32 fileNumber[]){
+inline Uint32 FsOpenReq::v5_getFragmentId(const Uint32 fileNumber[]) {
   return fileNumber[2];
 }
 
-inline
-void FsOpenReq::v5_setFragmentId(Uint32 fileNumber[], Uint32 val){
+inline void FsOpenReq::v5_setFragmentId(Uint32 fileNumber[], Uint32 val) {
   fileNumber[2] = val;
 }
 
+inline Uint32 FsOpenReq::v6_getBasePath(const Uint32 fileNumber[]) {
+  return fileNumber[1];
+}
+
+inline void FsOpenReq::v6_setBasePath(Uint32 fileNumber[], Uint32 val) {
+  fileNumber[1] = val;
+}
 
 #undef JAM_FILE_ID
 
 #endif
-

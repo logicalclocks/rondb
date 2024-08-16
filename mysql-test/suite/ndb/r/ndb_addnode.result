@@ -56,15 +56,27 @@ insert into t10 values (1,1,1), (2,2,2), (3,3,3), (4,4,4), (5,5,5), (6,6,6),(7,7
 "Table t1 Partition info"
 TABLE_INFO
 PartitionCount: 8
+select count(0) as row_count from t1;
+row_count
+10000
 "Table t2 Partition info"
 TABLE_INFO
 PartitionCount: 8
+select count(0) as row_count from t2;
+row_count
+10000
 "Table t5 Partition info"
 TABLE_INFO
 PartitionCount: 8
+select count(0) as row_count from t5;
+row_count
+10000
 "Table t6 Partition info"
 TABLE_INFO
 PartitionCount: 8
+select count(0) as row_count from t6;
+row_count
+10000
 "Table t6 blob dat Partition info"
 TABLE_INFO
 PartitionCount: 8
@@ -147,9 +159,6 @@ id=233 (not connected, accepting connect from localhost)
 id=255 (not connected, accepting connect from localhost)
 Drop Node Group 1 done
 Nodegroup 1 created
-set @@new = 1;
-Warnings:
-Warning	1287	'@@new' is deprecated and will be removed in a future release.
 create table t7(id int primary key, uk int) engine=ndb
 partition by list(id) (
 partition p0 values in (0),
@@ -158,6 +167,8 @@ partition p2 values in (2),
 partition p3 values in (3),
 partition p4 values in (4)
 );
+Warnings:
+Warning	6035	'PARTITION BY LIST' for 'ndbcluster' storage engine is deprecated and will be removed in a future release.
 drop table t7;
 create table t3(id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb;
 create table t4(id int NOT NULL PRIMARY KEY, data char(8))
@@ -390,9 +401,15 @@ test/def/t10	Unique hash index	37	4	4	15
 "Table t1 Partition info"
 TABLE_INFO
 PartitionCount: 16
+select count(0) as row_count from t1;
+row_count
+10000
 "Table t2 Partition info"
 TABLE_INFO
 PartitionCount: 16
+select count(0) as row_count from t2;
+row_count
+10000
 "Table t3 Partition info"
 TABLE_INFO
 PartitionCount: 16
@@ -402,6 +419,9 @@ PartitionCount: 16
 "Table t5 Partition info"
 TABLE_INFO
 PartitionCount: 8
+select count(0) as row_count from t5;
+row_count
+10000
 select count(0) as row_count from t6;
 row_count
 10000

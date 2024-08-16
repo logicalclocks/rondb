@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,9 +28,8 @@
 #include <string.h>
 #include <algorithm>
 
-#include "m_ctype.h"
-
 #include "my_table_map.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql/udf_registration_types.h"
 #include "mysqld_error.h"
 #include "sql/derror.h"  // ER_THD
@@ -47,6 +47,7 @@
 #include "sql/sql_optimizer.h"  // JOIN class
 #include "sql/sql_select.h"
 #include "sql/table.h"
+#include "string_with_len.h"
 
 struct MEM_ROOT;
 
@@ -133,7 +134,7 @@ Opt_hints *Opt_hints::find_by_name(const LEX_CSTRING *name_arg,
 void Opt_hints::print(const THD *thd, String *str, enum_query_type query_type) {
   for (uint i = 0; i < MAX_HINT_ENUM; i++) {
     if (opt_hint_info[i].irregular_hint) continue;
-    opt_hints_enum hint = static_cast<opt_hints_enum>(i);
+    const opt_hints_enum hint = static_cast<opt_hints_enum>(i);
     /*
        If printing a normalized query, also unresolved hints will be printed.
        (This is needed by query rewrite plugins which request
@@ -503,7 +504,7 @@ static bool set_join_hint_deps(JOIN *join,
   // Add dependencies that are related to non-hint tables
   for (uint i = 0; i < join->tables; i++) {
     JOIN_TAB *tab = &join->join_tab[i];
-    table_map dependent_tables =
+    const table_map dependent_tables =
         get_other_dep(type, hint_tab_map, tab->table_ref->map());
     update_nested_join_deps(join, tab, dependent_tables);
     tab->dependent |= dependent_tables;
@@ -647,7 +648,7 @@ bool Opt_hints_table::update_index_hint_maps(THD *thd, TABLE *tbl) {
   tbl->keys_in_use_for_query = tbl->keys_in_use_for_group_by =
       tbl->keys_in_use_for_order_by = usable_index_map;
 
-  bool force_index = is_force_index_hint(INDEX_HINT_ENUM);
+  const bool force_index = is_force_index_hint(INDEX_HINT_ENUM);
   tbl->force_index = (force_index || is_force_index_hint(JOIN_INDEX_HINT_ENUM));
   tbl->force_index_group =
       (force_index || is_force_index_hint(GROUP_INDEX_HINT_ENUM));
@@ -895,7 +896,7 @@ bool hint_key_state(const THD *thd, const Table_ref *table, uint keyno,
   if (table_hints && keyno != MAX_KEY) {
     Opt_hints_key *key_hints = table_hints->keyinfo_array.size() > 0
                                    ? table_hints->keyinfo_array[keyno]
-                                   : NULL;
+                                   : nullptr;
     bool ret_val = false;
     if (get_hint_state(key_hints, table_hints, type_arg, &ret_val))
       return ret_val;
@@ -948,7 +949,7 @@ bool compound_hint_key_enabled(const TABLE *table, uint keyno,
 
 bool idx_merge_hint_state(THD *thd, const TABLE *table,
                           bool *use_cheapest_index_merge) {
-  bool force_index_merge =
+  const bool force_index_merge =
       hint_table_state(thd, table->pos_in_table_list, INDEX_MERGE_HINT_ENUM, 0);
   if (force_index_merge) {
     assert(table->pos_in_table_list->opt_hints_table);

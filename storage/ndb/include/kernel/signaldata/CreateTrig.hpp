@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,37 +26,30 @@
 #ifndef CREATE_TRIG_HPP
 #define CREATE_TRIG_HPP
 
-#include "SignalData.hpp"
-#include <Bitmask.hpp>
 #include <trigger_definitions.h>
 #include <AttributeList.hpp>
+#include <Bitmask.hpp>
+#include "SignalData.hpp"
 
 #define JAM_FILE_ID 100
 
+struct CreateTrigReq {
+  enum OnlineFlag { CreateTriggerOnline = 1, CreateTriggerOffline = 2 };
 
-struct CreateTrigReq
-{
-  enum OnlineFlag
-  {
-    CreateTriggerOnline = 1,
-    CreateTriggerOffline = 2
-  };
-
-  enum EndpointFlag
-  {
+  enum EndpointFlag {
     MainTrigger = 0,
-    TriggerDst = 1, // TC  "consuming" block(s)
-    TriggerSrc = 2  // LQH "producing" block(s)
+    TriggerDst = 1,  // TC  "consuming" block(s)
+    TriggerSrc = 2   // LQH "producing" block(s)
   };
 
   static constexpr Uint32 SignalLength = 13;
-  SECTION( TRIGGER_NAME_SECTION = 0 );
-  SECTION( ATTRIBUTE_MASK_SECTION = 1 );
+  SECTION(TRIGGER_NAME_SECTION = 0);
+  SECTION(ATTRIBUTE_MASK_SECTION = 1);
 
   static Uint32 getOnlineFlag(Uint32 i) { return i & 3; }
-  static void setOnlineFlag(Uint32 & i, Uint32 v) { i |= (v & 3); }
-  static Uint32 getEndpointFlag(Uint32 i) { return (i >> 2) & 3;}
-  static void setEndpointFlag(Uint32 & i, Uint32 v) { i |= ((v & 3) << 2); }
+  static void setOnlineFlag(Uint32 &i, Uint32 v) { i |= (v & 3); }
+  static Uint32 getEndpointFlag(Uint32 i) { return (i >> 2) & 3; }
+  static void setEndpointFlag(Uint32 &i, Uint32 v) { i |= ((v & 3) << 2); }
 
   Uint32 clientRef;
   Uint32 clientData;
@@ -65,19 +59,21 @@ struct CreateTrigReq
   Uint32 requestInfo;
   Uint32 tableId;
   Uint32 tableVersion;
-  Uint32 indexId;       // only for index trigger
+  Uint32 indexId;  // only for index trigger
   Uint32 indexVersion;
-  Uint32 triggerNo;     // only for index trigger
-  Uint32 forceTriggerId;// only for NR/SR
-  Uint32 triggerInfo;   // type | timing | event | flags
-  Uint32 receiverRef;   // receiver for subscription trigger
+  Uint32 triggerNo;       // only for index trigger
+  Uint32 forceTriggerId;  // only for NR/SR
+  Uint32 triggerInfo;     // type | timing | event | flags
+  Uint32 receiverRef;     // receiver for subscription trigger
 };
 
 struct CreateTrigConf {
   static constexpr Uint32 SignalLength = 7;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 tableId;
   Uint32 indexId;
@@ -85,8 +81,7 @@ struct CreateTrigConf {
   Uint32 triggerInfo;
 };
 
-struct CreateTrigRef
-{
+struct CreateTrigRef {
   enum ErrorCode {
     NoError = 0,
     Busy = 701,
@@ -106,7 +101,9 @@ struct CreateTrigRef
   static constexpr Uint32 SignalLength = 10;
 
   Uint32 senderRef;
-  union { Uint32 clientData, senderData; };
+  union {
+    Uint32 clientData, senderData;
+  };
   Uint32 transId;
   Uint32 tableId;
   Uint32 indexId;
@@ -116,7 +113,6 @@ struct CreateTrigRef
   Uint32 errorNodeId;
   Uint32 masterNodeId;
 };
-
 
 #undef JAM_FILE_ID
 

@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -100,6 +101,7 @@ class Plugin_gcs_events_handler : public Gcs_communication_event_listener,
    received via on_message_received(...)
    */
   void handle_transactional_message(const Gcs_message &message) const;
+  void handle_recovery_metadata(const Gcs_message &message) const;
   void handle_transactional_with_guarantee_message(
       const Gcs_message &message) const;
   void handle_transaction_prepared_message(const Gcs_message &message) const;
@@ -281,7 +283,7 @@ class Plugin_gcs_events_handler : public Gcs_communication_event_listener,
 
     @param[in]  new_view        the view delivered by the GCS
   */
-  void log_members_leaving_message(const Gcs_view &new_view) const;
+  void log_messages_during_member_leave(const Gcs_view &new_view) const;
 
   /**
     This function return all members present in vector of Gcs_member_identifier
@@ -296,6 +298,13 @@ class Plugin_gcs_events_handler : public Gcs_communication_event_listener,
   void get_hosts_from_view(const std::vector<Gcs_member_identifier> &members,
                            std::string &all_hosts,
                            std::string &primary_host) const;
+
+  /**
+    Leave group on recovering metadata error.
+
+    @param[in]    error_message   Log error message on member leave.
+  */
+  void leave_group_on_recovery_metadata_error(std::string error_message) const;
 
   Applier_module_interface *applier_module;
   Recovery_module *recovery_module;

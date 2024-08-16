@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,12 +29,13 @@
 #include <string_view>
 
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "sql/dd/cache/multi_map_base.h"
@@ -127,6 +129,10 @@ class MDL_checker {
 
   static bool is_locked(THD *thd, const dd::Abstract_table *table,
                         enum_mdl_type lock_type) {
+    // At this stage of the call stack, getting table==nullptr is highly
+    // unlikely, but if it did happen, a crash would be more appropriate.
+    assert(table != nullptr);
+
     // The schema must be auto released to avoid disturbing the context
     // at the origin of the function call.
     dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
@@ -137,8 +143,7 @@ class MDL_checker {
     if (thd->dd_client()->acquire(table->schema_id(), &schema)) return false;
 
     // Skip check for temporary tables.
-    if (!table || is_prefix(table->name().c_str(), tmp_file_prefix))
-      return true;
+    if (is_prefix(table->name().c_str(), tmp_file_prefix)) return true;
 
     // Likewise, if there is no schema, we cannot have a proper lock.
     // This may in theory happen during bootstrapping since the meta data for

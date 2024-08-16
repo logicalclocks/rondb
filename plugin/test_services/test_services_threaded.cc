@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -122,7 +123,7 @@ static void *test_services(void *p [[maybe_unused]]) {
 static int test_services_plugin_init(void *p) {
   DBUG_TRACE;
 
-  int ret = 0;
+  const int ret = 0;
   if (init_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs)) return 1;
   struct test_services_context *con;
   my_thread_attr_t attr; /* Thread attributes */

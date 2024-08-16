@@ -18,17 +18,17 @@ RESET PERSIST event_scheduler;
 CREATE DATABASE bug27374791;
 USE bug27374791;
 CREATE TABLE T( i int);
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 BEGIN;
 INSERT INTO T values (9);
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 SET PERSIST max_connections=31;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 RESET PERSIST;
-include/show_binlog_events.inc
+include/rpl/deprecated/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
 SET GLOBAL max_connections=DEFAULT;
 DROP DATABASE bug27374791;
@@ -176,7 +176,7 @@ SELECT @@global.optimizer_trace_offset;
 -1
 SELECT @@global.optimizer_switch;
 @@global.optimizer_switch
-index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on
+index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on
 SELECT @@global.enforce_gtid_consistency;
 @@global.enforce_gtid_consistency
 OFF
@@ -195,7 +195,7 @@ VARIABLE_NAME	VARIABLE_VALUE
 binlog_cache_size	32768
 collation_database	utf8mb4_0900_ai_ci
 enforce_gtid_consistency	0
-optimizer_switch	index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on
+optimizer_switch	index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on
 optimizer_trace_offset	-1
 sql_mode	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
 # Restart server
@@ -211,7 +211,7 @@ SELECT @@global.optimizer_trace_offset;
 -1
 SELECT @@global.optimizer_switch;
 @@global.optimizer_switch
-index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on
+index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on
 SELECT @@global.enforce_gtid_consistency;
 @@global.enforce_gtid_consistency
 OFF
@@ -223,7 +223,7 @@ VARIABLE_NAME	VARIABLE_VALUE
 binlog_cache_size	32768
 collation_database	utf8mb4_0900_ai_ci
 enforce_gtid_consistency	0
-optimizer_switch	index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on
+optimizer_switch	index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on,hash_join=on,subquery_to_derived=off,prefer_ordering_index=on,hypergraph_optimizer=off,derived_condition_pushdown=on,hash_set_operations=on
 optimizer_trace_offset	-1
 sql_mode	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
 # Cleanup
@@ -250,9 +250,7 @@ RESET PERSIST size;
 ERROR HY000: Variable size does not exist in persisted config file
 SELECT JSON_OBJECTAGG(id,x) FROM t;
 ERROR 42S22: Unknown column 'id' in 'field list'
-RESET SLAVE;
-Warnings:
-Warning	1287	'RESET SLAVE' is deprecated and will be removed in a future release. Please use RESET REPLICA instead
+RESET REPLICA;
 DROP DATABASE bug27903874;
 #
 # Bug #27512616: SET PERSIST COMMAND FAILS TO MAP DEFAULT(NULL) VALUES IN
@@ -396,19 +394,19 @@ RESET PERSIST;
 # Bug #30030648: NO DEPRECATION WARNING ON SERVER RESTART FOR SET PERSISTED OPTIONS
 #
 # should report warning
-SET GLOBAL avoid_temporal_upgrade=TRUE;
+SET GLOBAL delayed_insert_limit=100;
 Warnings:
-Warning	1287	'@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+Warning	1287	'@@delayed_insert_limit' is deprecated and will be removed in a future release.
 # should report warning
-SET PERSIST_ONLY avoid_temporal_upgrade=TRUE;
+SET PERSIST_ONLY delayed_insert_limit=100;
 Warnings:
-Warning	1287	'@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+Warning	1287	'@@delayed_insert_limit' is deprecated and will be removed in a future release.
 # should report warning
-SET PERSIST avoid_temporal_upgrade=TRUE;
+SET PERSIST delayed_insert_limit=100;
 Warnings:
-Warning	1287	'@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+Warning	1287	'@@delayed_insert_limit' is deprecated and will be removed in a future release.
 # Restart server
-include/assert_grep.inc [Assert that there is a warning at bootstrap when setting --avoid_temporal_upgrade]
+include/assert_grep.inc [Assert that there is a warning at bootstrap when setting --delayed_insert_limit]
 RESET PERSIST;
 #
 # Bug #28749668: SKIP_NAME_RESOLVE CAN BE PERSIT_ONLY-ED TO ON, BUT NOT OFF
@@ -476,25 +474,23 @@ RESET PERSIST;
 # Bug #33388488: NO DEPRECATION WARNING ON SERVER RESTART IF TWO OR MORE
 # PERSISTED OPTIONS
 #
-SET PERSIST transaction_write_set_extraction='XXHASH64';
+SET PERSIST temptable_use_mmap=FALSE;
 Warnings:
-Warning	1287	'@@transaction_write_set_extraction' is deprecated and will be removed in a future release.
-SET PERSIST avoid_temporal_upgrade=TRUE;
+Warning	1287	'temptable_use_mmap' is deprecated and will be removed in a future release.
+SET PERSIST delayed_insert_limit=100;
 Warnings:
-Warning	1287	'@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+Warning	1287	'@@delayed_insert_limit' is deprecated and will be removed in a future release.
 # restart:--log_error=LOG_ERR --no-console
-include/assert_grep.inc [Assert that there is a warning at bootstrap when setting transaction_write_set_extraction]
-include/assert_grep.inc [Assert that there is a warning at bootstrap when setting avoid_temporal_upgrade]
+include/assert_grep.inc [Assert that there is a warning at bootstrap when setting temptable_use_mmap]
+include/assert_grep.inc [Assert that there is a warning at bootstrap when setting delayed_insert_limit]
 RESET PERSIST;
-SET PERSIST_ONLY transaction_write_set_extraction='XXHASH64';
+SET PERSIST_ONLY temptable_use_mmap=FALSE;
+SET PERSIST_ONLY delayed_insert_limit=100;
 Warnings:
-Warning	1287	'@@transaction_write_set_extraction' is deprecated and will be removed in a future release.
-SET PERSIST_ONLY avoid_temporal_upgrade=TRUE;
-Warnings:
-Warning	1287	'@@avoid_temporal_upgrade' is deprecated and will be removed in a future release.
+Warning	1287	'@@delayed_insert_limit' is deprecated and will be removed in a future release.
 # restart:--log_error=LOG_ERR --no-console
-include/assert_grep.inc [Assert that there is a warning at bootstrap when setting transaction_write_set_extraction]
-include/assert_grep.inc [Assert that there is a warning at bootstrap when setting avoid_temporal_upgrade]
+include/assert_grep.inc [Assert that there is a warning at bootstrap when setting temptable_use_mmap]
+include/assert_grep.inc [Assert that there is a warning at bootstrap when setting delayed_insert_limit]
 RESET PERSIST;
 # restart:
 #
@@ -521,4 +517,14 @@ RESET PERSIST test_component.bool_ro_sys_var;
 RESET PERSIST replica_preserve_commit_order;
 SET GLOBAL replica_preserve_commit_order = DEFAULT;
 UNINSTALL COMPONENT "file://component_test_sys_var_service";
+#
+# Bug #34897517: Can't set report_host to NULL
+#
+SET PERSIST_ONLY report_host = NULL;
+ERROR HY000: Trying to persist a NULL into a variable 'report_host' that's settable only on command line is not supported
+SET PERSIST_ONLY report_host = DEFAULT;
+ERROR HY000: Trying to persist a NULL into a variable 'report_host' that's settable only on command line is not supported
+SET PERSIST ssl_crl = NULL;
+RESET PERSIST ssl_crl;
+SET GLOBAL ssl_crl = DEFAULT;
 # End of the 8.0 tests

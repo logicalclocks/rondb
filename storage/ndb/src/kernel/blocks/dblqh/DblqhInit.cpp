@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,19 +24,18 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-#include "util/require.h"
 #include <pc.hpp>
+#include "util/require.h"
 #define DBLQH_C
-#include "Dblqh.hpp"
 #include <ndb_limits.h>
+#include "Dblqh.hpp"
 #include "DblqhCommon.hpp"
 #include "debugger/EventLogger.hpp"
 
 #define JAM_FILE_ID 452
 
-
-#define LQH_DEBUG(x) { ndbout << "LQH::" << x << endl; }
+#define LQH_DEBUG(x) \
+  { ndbout << "LQH::" << x << endl; }
 
 #define COMMIT_ACK_MARKER_HASH_SIZE 16384
 
@@ -49,8 +49,7 @@ Uint64 Dblqh::getTransactionMemoryNeed(
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_LDM_RESERVED_OPERATIONS,
                                        &lqh_op_recs));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_LQH_RESERVED_SCAN_RECORDS,
+    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LQH_RESERVED_SCAN_RECORDS,
                                        &lqh_scan_recs));
     lqh_op_recs += (globalData.ndbMtQueryWorkers * 1000);
   }
@@ -65,7 +64,7 @@ Uint64 Dblqh::getTransactionMemoryNeed(
   Uint32 lqh_commit_ack_markers = COMMIT_ACK_MARKER_HASH_SIZE;
   Uint64 commit_ack_marker_byte_count = 0;
   commit_ack_marker_byte_count +=
-    CommitAckMarker_pool::getMemoryNeed(lqh_commit_ack_markers);
+      CommitAckMarker_pool::getMemoryNeed(lqh_commit_ack_markers);
   commit_ack_marker_byte_count *= ldm_instance_count;
   return (op_byte_count + scan_byte_count + commit_ack_marker_byte_count);
 }
@@ -127,16 +126,13 @@ void Dblqh::initData()
   m_fragment_lock_status = FRAGMENT_UNLOCKED;
   m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
 
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     caddfragrecFileSize = 0;
     cgcprecFileSize = 0;
     clcpFileSize = 0;
     cpageRefFileSize = 0;
     clogPartFileSize = 0;
-  }
-  else
-  {
+  } else {
     caddfragrecFileSize = ZADDFRAGREC_FILE_SIZE;
     cgcprecFileSize = ZGCPREC_FILE_SIZE;
     clcpFileSize = ZNO_CONCURRENT_LCP;
@@ -163,7 +159,7 @@ void Dblqh::initData()
   pageRefRecord = 0;
   tablerec = 0;
   tcNodeFailRecord = 0;
-  
+
   // Records with constant sizes
 
   cLqhTimeOutCount = 1;
@@ -204,8 +200,8 @@ void Dblqh::initData()
   c_free_mb_tail_problem_limit = 4;
 
   cTotalLqhKeyReqCount = 0;
-  c_max_redo_lag = 30; // seconds
-  c_max_redo_lag_counter = 3; // 3 strikes and you're out
+  c_max_redo_lag = 30;         // seconds
+  c_max_redo_lag_counter = 3;  // 3 strikes and you're out
 
   c_max_parallel_scans_per_frag = 32;
 
@@ -213,12 +209,12 @@ void Dblqh::initData()
   c_lcpFragWatchdog.reset();
   c_lcpFragWatchdog.thread_active = false;
 
-  c_keyOverloads           = 0;
-  c_keyOverloadsTcNode     = 0;
-  c_keyOverloadsReaderApi  = 0;
-  c_keyOverloadsPeerNode   = 0;
+  c_keyOverloads = 0;
+  c_keyOverloadsTcNode = 0;
+  c_keyOverloadsReaderApi = 0;
+  c_keyOverloadsPeerNode = 0;
   c_keyOverloadsSubscriber = 0;
-  c_scanSlowDowns          = 0;
+  c_scanSlowDowns = 0;
 
   c_fragmentsStarted = 0;
   c_fragmentsStartedWithCopy = 0;
@@ -257,24 +253,17 @@ void Dblqh::initData()
   c_max_keep_gci_in_lcp = 0;
   c_first_set_min_keep_gci = false;
   m_restart_local_latest_lcp_id = 0;
-}//Dblqh::initData()
+}  // Dblqh::initData()
 
-void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
-                        Uint64 logPageFileSize)
-{
+void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg,
+                        Uint64 logPageFileSize) {
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   {
-    void* tmp[] = { 
-      &addfragptr,
-      &fragptr,
-      &prim_tab_fragptr,
-      &gcpPtr,
-      &lcpPtr,
-      &scanptr,
-      &tabptr,
-      &m_tc_connect_ptr,
-    }; 
-    init_global_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+    void *tmp[] = {
+        &addfragptr, &fragptr, &prim_tab_fragptr, &gcpPtr,
+        &lcpPtr,     &scanptr, &tabptr,           &m_tc_connect_ptr,
+    };
+    init_global_ptrs(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
 #endif
   // Records with dynamic sizes
@@ -287,72 +276,57 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
                                                 sizeof(AddFragRecord),
                                                 caddfragrecFileSize);
 
-    gcpRecord = (GcpRecord*)allocRecord("GcpRecord",
-                                        sizeof(GcpRecord),
-                                        cgcprecFileSize);
+    gcpRecord = (GcpRecord *)allocRecord("GcpRecord", sizeof(GcpRecord),
+                                         cgcprecFileSize);
 
-    lcpRecord = (LcpRecord*)allocRecord("LcpRecord",
-                                        sizeof(LcpRecord), 
-                                        clcpFileSize);
+    lcpRecord =
+        (LcpRecord *)allocRecord("LcpRecord", sizeof(LcpRecord), clcpFileSize);
 
-    for(Uint32 i = 0; i<clcpFileSize; i++)
-    {
-      new (&lcpRecord[i])LcpRecord();
+    for (Uint32 i = 0; i < clcpFileSize; i++) {
+      new (&lcpRecord[i]) LcpRecord();
     }
 
-    logPartRecord = (LogPartRecord*)allocRecord("LogPartRecord",
-                                                sizeof(LogPartRecord),
-                                                clogPartFileSize);
+    logPartRecord = (LogPartRecord *)allocRecord(
+        "LogPartRecord", sizeof(LogPartRecord), clogPartFileSize);
 
-    logFileRecord = (LogFileRecord*)allocRecord("LogFileRecord",
-                                                sizeof(LogFileRecord),
-                                                clogFileFileSize);
+    logFileRecord = (LogFileRecord *)allocRecord(
+        "LogFileRecord", sizeof(LogFileRecord), clogFileFileSize);
 
-    logFileOperationRecord = (LogFileOperationRecord*)
-      allocRecord("LogFileOperationRecord",
-		  sizeof(LogFileOperationRecord),
-		  clfoFileSize);
+    logFileOperationRecord = (LogFileOperationRecord *)allocRecord(
+        "LogFileOperationRecord", sizeof(LogFileOperationRecord), clfoFileSize);
 
-    if (clogPartFileSize == 0)
-    {
+    if (clogPartFileSize == 0) {
       /*
        * If the number of fragment log parts are fewer than number of LDMs,
        * some LDM will not own any log part.
        */
       ndbrequire(logPageFileSize == 0);
       ndbrequire(clogFileFileSize == 0);
-    }
-    else
-    {
+    } else {
       ndbrequire(logPageFileSize % clogPartFileSize == 0);
     }
     const Uint32 target_pages_per_logpart =
         clogPartFileSize > 0 ? logPageFileSize / clogPartFileSize : 0;
     Uint32 total_logpart_pages = 0;
     LogPartRecordPtr logPartPtr;
-    for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++)
-    {
+    for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++) {
       ptrAss(logPartPtr, logPartRecord);
       new (logPartPtr.p) LogPartRecord();
       AllocChunk chunks[16];
-      const Uint32 chunkcnt = allocChunks(chunks,
-                                          16,
-                                          RG_FILE_BUFFERS,
-                                          target_pages_per_logpart,
-                                          CFG_DB_REDO_BUFFER);
+      const Uint32 chunkcnt =
+          allocChunks(chunks, 16, RG_FILE_BUFFERS, target_pages_per_logpart,
+                      CFG_DB_REDO_BUFFER);
       require(chunkcnt > 0);
       const Uint32 endPageI =
           chunks[chunkcnt - 1].ptrI + chunks[chunkcnt - 1].cnt;
-      if (chunkcnt > 1)
-      {
+      if (chunkcnt > 1) {
         g_eventLogger->info(
             "Redo log part buffer memory %u was split over %u chunks.",
-            logPartPtr.i,
-            chunkcnt);
+            logPartPtr.i, chunkcnt);
       }
       Ptr<GlobalPage> pagePtr;
       ndbrequire(m_shared_page_pool.getPtr(pagePtr, chunks[0].ptrI));
-      logPartPtr.p->logPageRecord = (LogPageRecord*)pagePtr.p;
+      logPartPtr.p->logPageRecord = (LogPageRecord *)pagePtr.p;
       /*
        * Since there can be gaps in page number range, logPageFileSize can be
        * bigger than the number of pages.
@@ -360,26 +334,24 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
       logPartPtr.p->logPageFileSize = endPageI - chunks[0].ptrI;
       logPartPtr.p->firstFreeLogPage = RNIL;
       logPartPtr.p->logPageCount = 0;
-      for (Int32 i = chunkcnt - 1; i >= 0; i--)
-      {
+      for (Int32 i = chunkcnt - 1; i >= 0; i--) {
         const Uint32 cnt = chunks[i].cnt;
         ndbrequire(cnt != 0);
 
         Ptr<GlobalPage> pagePtr;
         ndbrequire(m_shared_page_pool.getPtr(pagePtr, chunks[i].ptrI));
-        LogPageRecord * base = (LogPageRecord*)pagePtr.p;
+        LogPageRecord *base = (LogPageRecord *)pagePtr.p;
         ndbrequire(base >= logPartPtr.p->logPageRecord);
         const Uint32 ptrI = Uint32(base - logPartPtr.p->logPageRecord);
 
-        for (Uint32 j = 0; j<cnt; j++)
-        {
+        for (Uint32 j = 0; j < cnt; j++) {
           refresh_watch_dog();
           base[j].logPageWord[ZNEXT_PAGE] = ptrI + j + 1;
-          base[j].logPageWord[ZPOS_IN_FREE_LIST]= 1;
-          base[j].logPageWord[ZPOS_IN_WRITING]= 0;
+          base[j].logPageWord[ZPOS_IN_FREE_LIST] = 1;
+          base[j].logPageWord[ZPOS_IN_WRITING] = 0;
         }
 
-        base[cnt-1].logPageWord[ZNEXT_PAGE] = logPartPtr.p->firstFreeLogPage;
+        base[cnt - 1].logPageWord[ZNEXT_PAGE] = logPartPtr.p->firstFreeLogPage;
         logPartPtr.p->firstFreeLogPage = ptrI;
 
         logPartPtr.p->logPageCount += cnt;
@@ -396,31 +368,28 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
        * there may be holes in array.
        */
       logPartPtr.p->m_redo_page_cache.m_pool.set(
-          (RedoCacheLogPageRecord*)&logPartPtr.p->logPageRecord[0],
+          (RedoCacheLogPageRecord *)&logPartPtr.p->logPageRecord[0],
           logPartPtr.p->logPageFileSize);
       logPartPtr.p->m_redo_page_cache.m_hash.setSize(1023);
       logPartPtr.p->m_redo_page_cache.m_first_page = 0;
 
-      const Uint32 * base = (Uint32*)logPartPtr.p->logPageRecord;
-      const RedoCacheLogPageRecord* tmp1 =
-        (RedoCacheLogPageRecord*)logPartPtr.p->logPageRecord;
+      const Uint32 *base = (Uint32 *)logPartPtr.p->logPageRecord;
+      const RedoCacheLogPageRecord *tmp1 =
+          (RedoCacheLogPageRecord *)logPartPtr.p->logPageRecord;
       ndbrequire(&base[ZPOS_PAGE_NO] == &tmp1->m_page_no);
       ndbrequire(&base[ZPOS_PAGE_FILE_NO] == &tmp1->m_file_no);
       total_logpart_pages += logPartPtr.p->logPageCount;
     }
-    if (total_logpart_pages < logPageFileSize)
-    {
+    if (total_logpart_pages < logPageFileSize) {
       g_eventLogger->warning(
           "Not all redo log buffer memory was allocated, got %u pages of %ju.",
-          total_logpart_pages,
-          uintmax_t{logPageFileSize});
+          total_logpart_pages, uintmax_t{logPageFileSize});
     }
 
     m_redo_open_file_cache.m_pool.set(logFileRecord, clogFileFileSize);
 
-    pageRefRecord = (PageRefRecord*)allocRecord("PageRefRecord",
-                                                sizeof(PageRefRecord),
-                                                cpageRefFileSize);
+    pageRefRecord = (PageRefRecord *)allocRecord(
+        "PageRefRecord", sizeof(PageRefRecord), cpageRefFileSize);
 
     c_scanTakeOverHash.setSize(2048);
     NdbMutex_Init(&c_scanTakeOverMutex);
@@ -457,8 +426,8 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
     UINT32_MAX);
 
   Uint32 reserveTcConnRecs = 0;
-  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
-              CFG_LDM_RESERVED_OPERATIONS, &reserveTcConnRecs));
+  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LDM_RESERVED_OPERATIONS,
+                                        &reserveTcConnRecs));
 
   if (m_is_query_block)
   {
@@ -513,59 +482,46 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
   {
     reserveScanRecs = 500;
   }
-  c_scanRecordPool.init(
-    ScanRecord::TYPE_ID,
-    pc,
-    reserveScanRecs,
-    UINT32_MAX);
-  while (c_scanRecordPool.startup())
-  {
+  c_scanRecordPool.init(ScanRecord::TYPE_ID, pc, reserveScanRecs, UINT32_MAX);
+  while (c_scanRecordPool.startup()) {
     refresh_watch_dog();
   }
 
   Uint32 reserveCommitAckMarkers = COMMIT_ACK_MARKER_HASH_SIZE;
 
-  if (m_is_query_block)
-  {
+  if (m_is_query_block) {
     reserveCommitAckMarkers = 1;
   }
-  m_commitAckMarkerPool.init(
-    CommitAckMarker::TYPE_ID,
-    pc,
-    reserveCommitAckMarkers,
-    UINT32_MAX);
-  while (m_commitAckMarkerPool.startup())
-  {
+  m_commitAckMarkerPool.init(CommitAckMarker::TYPE_ID, pc,
+                             reserveCommitAckMarkers, UINT32_MAX);
+  while (m_commitAckMarkerPool.startup()) {
     refresh_watch_dog();
   }
   m_commitAckMarkerHash.setSize(COMMIT_ACK_MARKER_HASH_SIZE);
-  
-  tcNodeFailRecord = (TcNodeFailRecord*)allocRecord("TcNodeFailRecord",
-						    sizeof(TcNodeFailRecord),
-						    ctcNodeFailrecFileSize);
-  
-/*
-  ndbout << "FRAGREC SIZE = " << sizeof(Fragrecord) << endl;
-  ndbout << "TAB SIZE = " << sizeof(Tablerec) << endl;
-  ndbout << "GCP SIZE = " << sizeof(GcpRecord) << endl;
-  ndbout << "LCP SIZE = " << sizeof(LcpRecord) << endl;
-  ndbout << "LCPLOC SIZE = " << sizeof(LcpLocRecord) << endl;
-  ndbout << "LOGPART SIZE = " << sizeof(LogPartRecord) << endl;
-  ndbout << "LOGFILE SIZE = " << sizeof(LogFileRecord) << endl;
-  ndbout << "TC SIZE = " << sizeof(TcConnectionrec) << endl;
-  ndbout << "HOST SIZE = " << sizeof(HostRecord) << endl;
-  ndbout << "LFO SIZE = " << sizeof(LogFileOperationRecord) << endl;
-  ndbout << "PR SIZE = " << sizeof(PageRefRecord) << endl;
-  ndbout << "SCAN SIZE = " << sizeof(ScanRecord) << endl;
-*/
 
-  if (!m_is_query_block)
-  {
+  tcNodeFailRecord = (TcNodeFailRecord *)allocRecord(
+      "TcNodeFailRecord", sizeof(TcNodeFailRecord), ctcNodeFailrecFileSize);
+
+  /*
+    ndbout << "FRAGREC SIZE = " << sizeof(Fragrecord) << endl;
+    ndbout << "TAB SIZE = " << sizeof(Tablerec) << endl;
+    ndbout << "GCP SIZE = " << sizeof(GcpRecord) << endl;
+    ndbout << "LCP SIZE = " << sizeof(LcpRecord) << endl;
+    ndbout << "LCPLOC SIZE = " << sizeof(LcpLocRecord) << endl;
+    ndbout << "LOGPART SIZE = " << sizeof(LogPartRecord) << endl;
+    ndbout << "LOGFILE SIZE = " << sizeof(LogFileRecord) << endl;
+    ndbout << "TC SIZE = " << sizeof(TcConnectionrec) << endl;
+    ndbout << "HOST SIZE = " << sizeof(HostRecord) << endl;
+    ndbout << "LFO SIZE = " << sizeof(LogFileOperationRecord) << endl;
+    ndbout << "PR SIZE = " << sizeof(PageRefRecord) << endl;
+    ndbout << "SCAN SIZE = " << sizeof(ScanRecord) << endl;
+  */
+
+  if (!m_is_query_block) {
     LogPartRecordPtr logPartPtr;
-    NewVARIABLE* bat = allocateBat(clogPartFileSize);
+    NewVARIABLE *bat = allocateBat(clogPartFileSize);
     // Initialize BAT for interface to file system
-    for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++)
-    {
+    for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++) {
       Uint32 i = logPartPtr.i;
       ptrAss(logPartPtr, logPartRecord);
       bat[i].WA = &logPartPtr.p->logPageRecord->logPageWord[0];
@@ -580,59 +536,50 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
   if (ctransidHashSize < TRANSID_HASH_SIZE) {
     ctransidHashSize = TRANSID_HASH_SIZE;
   }
-  ctransidHash = (Uint32*)allocRecord("TransIdHash",
-                                       sizeof(Uint32),
-                                       ctransidHashSize);
+  ctransidHash =
+      (Uint32 *)allocRecord("TransIdHash", sizeof(Uint32), ctransidHashSize);
 
   for (Uint32 i = 0; i < ctransidHashSize; i++) {
     ctransidHash[i] = RNIL;
   }
-}//Dblqh::initRecords()
+}  // Dblqh::initRecords()
 
-bool
-Dblqh::getParam(const char* name, Uint32* count)
-{
-  if (name != NULL && count != NULL)
-  {
+bool Dblqh::getParam(const char *name, Uint32 *count) {
+  if (name != NULL && count != NULL) {
     /* FragmentInfoPool
      * We increase the size of the fragment info pool
-     * to handle fragmented SCANFRAGREQ signals from 
+     * to handle fragmented SCANFRAGREQ signals from
      * TC
      */
-    if (strcmp(name, "FragmentInfoPool") == 0)
-    {
+    if (strcmp(name, "FragmentInfoPool") == 0) {
       /* Worst case is every TC block sending
        * a single fragmented request concurrently
        * This could change in future if TCs can
-       * interleave fragments from different 
+       * interleave fragments from different
        * requests
        */
       const Uint32 TC_BLOCKS_PER_NODE = 1;
-      *count= ((MAX_NDB_NODES -1) * TC_BLOCKS_PER_NODE) + 10;
+      *count = ((MAX_NDB_NODES - 1) * TC_BLOCKS_PER_NODE) + 10;
       return true;
     }
   }
   return false;
 }
 
-Dblqh::Dblqh(Block_context& ctx,
-             Uint32 instanceNumber,
-             Uint32 blockNo):
-  SimulatedBlock(blockNo, ctx, instanceNumber),
-  m_reserved_scans(c_scanRecordPool),
-  c_scanTakeOverHash(c_scanRecordPool),
-  c_lcp_waiting_fragments(c_fragment_pool),
-  c_lcp_restoring_fragments(c_fragment_pool),
-  c_lcp_complete_fragments(c_fragment_pool),
-  c_queued_lcp_frag_ord(c_fragment_pool),
-  c_copy_fragment_queue(c_copy_fragment_pool),
-  c_copy_active_queue(c_copy_active_pool),
-  m_commitAckMarkerHash(m_commitAckMarkerPool)
-{
+Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
+    : SimulatedBlock(blockNo, ctx, instanceNumber),
+      m_reserved_scans(c_scanRecordPool),
+      c_scanTakeOverHash(c_scanRecordPool),
+      c_lcp_waiting_fragments(c_fragment_pool),
+      c_lcp_restoring_fragments(c_fragment_pool),
+      c_lcp_complete_fragments(c_fragment_pool),
+      c_queued_lcp_frag_ord(c_fragment_pool),
+      c_copy_fragment_queue(c_copy_fragment_pool),
+      c_copy_active_queue(c_copy_active_pool),
+      m_commitAckMarkerHash(m_commitAckMarkerPool) {
   BLOCK_CONSTRUCTOR(Dblqh);
 
-  if (blockNo == DBLQH)
-  {
+  if (blockNo == DBLQH) {
     addRecSignal(GSN_LOCAL_LATEST_LCP_ID_REP,
                  &Dblqh::execLOCAL_LATEST_LCP_ID_REP);
     addRecSignal(GSN_PACKED_SIGNAL, &Dblqh::execPACKED_SIGNAL);
@@ -730,7 +677,7 @@ Dblqh::Dblqh(Block_context& ctx,
     addRecSignal(GSN_LCP_ALL_COMPLETE_CONF, &Dblqh::execLCP_ALL_COMPLETE_CONF);
 
     addRecSignal(GSN_LCP_FRAG_ORD, &Dblqh::execLCP_FRAG_ORD);
-  
+
     addRecSignal(GSN_START_FRAGREQ, &Dblqh::execSTART_FRAGREQ);
     addRecSignal(GSN_START_RECREF, &Dblqh::execSTART_RECREF);
     addRecSignal(GSN_GCP_SAVEREQ, &Dblqh::execGCP_SAVEREQ);
@@ -773,11 +720,10 @@ Dblqh::Dblqh(Block_context& ctx,
     addRecSignal(GSN_RESTORE_LCP_CONF, &Dblqh::execRESTORE_LCP_CONF);
 
     addRecSignal(GSN_UPDATE_FRAG_DIST_KEY_ORD,
-	         &Dblqh::execUPDATE_FRAG_DIST_KEY_ORD);
+                 &Dblqh::execUPDATE_FRAG_DIST_KEY_ORD);
 
-    addRecSignal(GSN_PREPARE_COPY_FRAG_REQ,
-                 &Dblqh::execPREPARE_COPY_FRAG_REQ);
-  
+    addRecSignal(GSN_PREPARE_COPY_FRAG_REQ, &Dblqh::execPREPARE_COPY_FRAG_REQ);
+
     addRecSignal(GSN_DROP_FRAG_REQ, &Dblqh::execDROP_FRAG_REQ);
     addRecSignal(GSN_DROP_FRAG_REF, &Dblqh::execDROP_FRAG_REF);
     addRecSignal(GSN_DROP_FRAG_CONF, &Dblqh::execDROP_FRAG_CONF);
@@ -796,18 +742,13 @@ Dblqh::Dblqh(Block_context& ctx,
                  &Dblqh::execREAD_LOCAL_SYSFILE_CONF);
     addRecSignal(GSN_WRITE_LOCAL_SYSFILE_CONF,
                  &Dblqh::execWRITE_LOCAL_SYSFILE_CONF);
-    addRecSignal(GSN_UNDO_LOG_LEVEL_REP,
-                 &Dblqh::execUNDO_LOG_LEVEL_REP);
-    addRecSignal(GSN_CUT_REDO_LOG_TAIL_REQ,
-                 &Dblqh::execCUT_REDO_LOG_TAIL_REQ);
+    addRecSignal(GSN_UNDO_LOG_LEVEL_REP, &Dblqh::execUNDO_LOG_LEVEL_REP);
+    addRecSignal(GSN_CUT_REDO_LOG_TAIL_REQ, &Dblqh::execCUT_REDO_LOG_TAIL_REQ);
     addRecSignal(GSN_COPY_FRAG_NOT_IN_PROGRESS_REP,
                  &Dblqh::execCOPY_FRAG_NOT_IN_PROGRESS_REP);
-    addRecSignal(GSN_SET_LOCAL_LCP_ID_CONF,
-                 &Dblqh::execSET_LOCAL_LCP_ID_CONF);
-    addRecSignal(GSN_START_NODE_LCP_REQ,
-                 &Dblqh::execSTART_NODE_LCP_REQ);
-    addRecSignal(GSN_START_LOCAL_LCP_ORD,
-                 &Dblqh::execSTART_LOCAL_LCP_ORD);
+    addRecSignal(GSN_SET_LOCAL_LCP_ID_CONF, &Dblqh::execSET_LOCAL_LCP_ID_CONF);
+    addRecSignal(GSN_START_NODE_LCP_REQ, &Dblqh::execSTART_NODE_LCP_REQ);
+    addRecSignal(GSN_START_LOCAL_LCP_ORD, &Dblqh::execSTART_LOCAL_LCP_ORD);
     addRecSignal(GSN_START_FULL_LOCAL_LCP_ORD,
                  &Dblqh::execSTART_FULL_LOCAL_LCP_ORD);
     addRecSignal(GSN_HALT_COPY_FRAG_REQ,
@@ -823,9 +764,7 @@ Dblqh::Dblqh(Block_context& ctx,
     m_tux_block = DBTUX;
     m_backup_block = BACKUP;
     m_restore_block = RESTORE;
-  }
-  else
-  {
+  } else {
     ndbrequire(blockNo == DBQLQH);
     m_is_query_block = true;
     m_is_in_query_thread = true;
@@ -868,7 +807,7 @@ Dblqh::Dblqh(Block_context& ctx,
     addRecSignal(GSN_ACC_CHECK_SCAN, &Dblqh::execACC_CHECK_SCAN);
     addRecSignal(GSN_TRANSID_AI, &Dblqh::execTRANSID_AI);
     addRecSignal(GSN_INCL_NODEREQ, &Dblqh::execINCL_NODEREQ);
-    addRecSignal(GSN_TIME_SIGNAL,  &Dblqh::execTIME_SIGNAL);
+    addRecSignal(GSN_TIME_SIGNAL, &Dblqh::execTIME_SIGNAL);
     addRecSignal(GSN_DBINFO_SCANREQ, &Dblqh::execDBINFO_SCANREQ);
     addRecSignal(GSN_PUSH_ABORT_TRAIN_ORD, &Dblqh::execPUSH_ABORT_TRAIN_ORD);
   }
@@ -890,9 +829,8 @@ Dblqh::Dblqh(Block_context& ctx,
   RSS_OP_COUNTER_INIT(cnoOfAllocatedFragrec);
 
   c_transient_pools[DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX] =
-    &tcConnect_pool;
-  c_transient_pools[DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX] =
-    &c_scanRecordPool;
+      &tcConnect_pool;
+  c_transient_pools[DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX] = &c_scanRecordPool;
   c_transient_pools[DBLQH_COMMIT_ACK_MARKER_TRANSIENT_POOL_INDEX] =
     &m_commitAckMarkerPool;
   c_transient_pools[DBLQH_MAP_FRAGMENT_RECORD_TRANSIENT_POOL_INDEX] =
@@ -901,7 +839,7 @@ Dblqh::Dblqh(Block_context& ctx,
     &c_copy_active_pool;
   static_assert(c_transient_pool_count == 5);
   c_transient_pools_shrinking.clear();
-}//Dblqh::Dblqh()
+}  // Dblqh::Dblqh()
 
 Dblqh::~Dblqh()
 {
@@ -913,8 +851,7 @@ Dblqh::~Dblqh()
   NdbMutex_Deinit(&c_scanTakeOverMutex);
   NdbMutex_Deinit(&m_read_redo_log_data_mutex);
   deinit_restart_synch();
-  if (!m_is_query_block)
-  {
+  if (!m_is_query_block) {
     NdbMutex_Destroy(m_lock_tup_page_mutex);
     NdbMutex_Destroy(m_lock_acc_page_mutex);
     if (!isNdbMtLqh() || instance() == 1)
@@ -927,8 +864,7 @@ Dblqh::~Dblqh()
     }
     {
       LogPartRecordPtr logPartPtr;
-      for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++)
-      {
+      for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++) {
         ptrAss(logPartPtr, logPartRecord);
         logPartPtr.p->m_redo_page_cache.m_pool.clear();
         NdbMutex_Deinit(&logPartPtr.p->m_log_part_mutex);
@@ -937,63 +873,40 @@ Dblqh::~Dblqh()
 
     m_redo_open_file_cache.m_pool.clear();
 
-  // Records with dynamic sizes
+    // Records with dynamic sizes
     deallocRecord((void **)&addFragRecord, "AddFragRecord",
-                  sizeof(AddFragRecord),
-                  caddfragrecFileSize);
+                  sizeof(AddFragRecord), caddfragrecFileSize);
 
-    deallocRecord((void**)&gcpRecord,
-                  "GcpRecord",
-                  sizeof(GcpRecord),
+    deallocRecord((void **)&gcpRecord, "GcpRecord", sizeof(GcpRecord),
                   cgcprecFileSize);
-  
-    deallocRecord((void**)&lcpRecord,
-                  "LcpRecord",
-                  sizeof(LcpRecord),
+
+    deallocRecord((void **)&lcpRecord, "LcpRecord", sizeof(LcpRecord),
                   clcpFileSize);
 
-    deallocRecord((void**)&logPartRecord,
-                  "LogPartRecord",
-                  sizeof(LogPartRecord), 
-                  clogPartFileSize);
-  
-    deallocRecord((void**)&logFileRecord,
-                  "LogFileRecord",
-                  sizeof(LogFileRecord),
-                  clogFileFileSize);
+    deallocRecord((void **)&logPartRecord, "LogPartRecord",
+                  sizeof(LogPartRecord), clogPartFileSize);
 
-    deallocRecord((void**)&logFileOperationRecord,
-                  "LogFileOperationRecord",
-                  sizeof(LogFileOperationRecord),
-                  clfoFileSize);
-  
-    deallocRecord((void**)&pageRefRecord,
-                  "PageRefRecord",
-                  sizeof(PageRefRecord),
-                  cpageRefFileSize);
-  
+    deallocRecord((void **)&logFileRecord, "LogFileRecord",
+                  sizeof(LogFileRecord), clogFileFileSize);
 
-    deallocRecord((void**)&tablerec,
-                  "Tablerec",
-                  sizeof(Tablerec),
+    deallocRecord((void **)&logFileOperationRecord, "LogFileOperationRecord",
+                  sizeof(LogFileOperationRecord), clfoFileSize);
+
+    deallocRecord((void **)&pageRefRecord, "PageRefRecord",
+                  sizeof(PageRefRecord), cpageRefFileSize);
+
+    deallocRecord((void **)&tablerec, "Tablerec", sizeof(Tablerec),
                   ctabrecFileSize);
   }
 
-  deallocRecord((void**)&hostRecord,
-                "HostRecord",
-                sizeof(HostRecord),
+  deallocRecord((void **)&hostRecord, "HostRecord", sizeof(HostRecord),
                 chostFileSize);
-  
-  deallocRecord((void**)&tcNodeFailRecord,
-                "TcNodeFailRecord",
-                sizeof(TcNodeFailRecord),
-                ctcNodeFailrecFileSize);
 
-  deallocRecord((void**)&ctransidHash,
-                "TransIdHash",
-                sizeof(Uint32),
+  deallocRecord((void **)&tcNodeFailRecord, "TcNodeFailRecord",
+                sizeof(TcNodeFailRecord), ctcNodeFailrecFileSize);
+
+  deallocRecord((void **)&ctransidHash, "TransIdHash", sizeof(Uint32),
                 ctransidHashSize);
-}//Dblqh::~Dblqh()
+}  // Dblqh::~Dblqh()
 
 BLOCK_FUNCTIONS(Dblqh)
-

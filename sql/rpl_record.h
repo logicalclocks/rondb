@@ -1,15 +1,16 @@
-/* Copyright (c) 2007, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2007, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -160,9 +161,9 @@ size_t pack_row(TABLE *table, MY_BITMAP const *cols, uchar *row_data,
   @param only_seek If true, this is a seek operation rather than a
   read operation.  It will only compute the row_image_end_p pointer,
   and not read anything into the table and not apply any JSON diffs.
-  (This is used in slave_rows_search_algorithms=HASH_SCAN, which (1)
-  unpacks and hashes the before-image for all rows in the event, (2)
-  scans the table, and for each matching row it (3) unpacks the
+  (This is used in HASH_SCAN, which (1) unpacks and hashes the
+  before-image for all rows in the event, (2)vscans the table, and
+  for each matching row it (3) unpacks the
   after-image and applies on the table. In step (1) it needs to unpack
   the after-image too, in order to move the read position forwards,
   and then it should use only_seek=true.  This is an optimization, but

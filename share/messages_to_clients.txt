@@ -1,15 +1,16 @@
-# Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # Without limiting anything contained in the foregoing, this file,
 # which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -4085,7 +4086,7 @@ OBSOLETE_ER_DUMP_NOT_IMPLEMENTED
         swe "Tabellhanteraren klarar inte en binär kopiering av tabellen"
         ukr "Цей тип таблиці не підтримує бінарну передачу таблиці"
 OBSOLETE_ER_FLUSH_MASTER_BINLOG_CLOSED
-        eng "Binlog closed, cannot RESET SOURCE"
+        eng "Binlog closed, cannot RESET BINARY LOGS AND GTIDS"
         ger "Binlog geschlossen. Kann RESET MASTER nicht ausführen"
         jpn "バイナリログがクローズされています。RESET MASTER を実行できません。"
         por "Binlog fechado. Não pode fazer RESET MASTER"
@@ -5674,11 +5675,11 @@ ER_FORBID_SCHEMA_CHANGE
         eng "Changing schema from '%-.192s' to '%-.192s' is not allowed."
         ger "Wechsel des Schemas von '%-.192s' auf '%-.192s' ist nicht erlaubt"
 ER_ROW_IS_REFERENCED_2 23000
-        eng "Cannot delete or update a parent row: a foreign key constraint fails (%.192s)"
-        ger "Kann Eltern-Zeile nicht löschen oder aktualisieren: eine Fremdschlüsselbedingung schlägt fehl (%.192s)"
+        eng "Cannot delete or update a parent row: a foreign key constraint fails%.192s"
+        ger "Kann Eltern-Zeile nicht löschen oder aktualisieren: eine Fremdschlüsselbedingung schlägt fehl%.192s"
 ER_NO_REFERENCED_ROW_2 23000
-        eng "Cannot add or update a child row: a foreign key constraint fails (%.192s)"
-        ger "Kann Kind-Zeile nicht hinzufügen oder aktualisieren: eine Fremdschlüsselbedingung schlägt fehl (%.192s)"
+        eng "Cannot add or update a child row: a foreign key constraint fails%.192s"
+        ger "Kann Kind-Zeile nicht hinzufügen oder aktualisieren: eine Fremdschlüsselbedingung schlägt fehl%.192s"
 ER_SP_BAD_VAR_SHADOW 42000
         eng "Variable '%-.64s' must be quoted with `...`, or renamed"
         ger "Variable '%-.64s' muss mit `...` geschützt oder aber umbenannt werden"
@@ -7742,7 +7743,7 @@ ER_USER_COLUMN_OLD_LENGTH
   eng "It seems that your db schema is old. The %s column is 77 characters long and should be 93 characters long. Please perform the MySQL upgrade procedure."
 
 ER_CANT_RESET_SOURCE
-  eng "RESET SOURCE is not allowed because %-.384s."
+  eng "RESET BINARY LOGS AND GTIDS is not allowed because %-.384s."
 
 ER_GROUP_REPLICATION_MAX_GROUP_SIZE
   eng "The START GROUP_REPLICATION command failed since the group already has 9 members."
@@ -8372,7 +8373,7 @@ ER_CANNOT_ALTER_SRID_DUE_TO_INDEX
 ER_WARN_BINLOG_PARTIAL_UPDATES_DISABLED
   eng "When %.192s, the option binlog_row_value_options=%.192s will be ignored and updates will be written in full format to binary log."
 
-ER_WARN_BINLOG_V1_ROW_EVENTS_DISABLED
+OBSOLETE_ER_WARN_BINLOG_V1_ROW_EVENTS_DISABLED
   eng "When %.192s, the option log_bin_use_v1_row_events=1 will be ignored and row events will be written in new format to binary log."
 
 ER_WARN_BINLOG_PARTIAL_UPDATES_SUGGESTS_PARTIAL_IMAGES
@@ -8484,7 +8485,7 @@ ER_SCHEMA_DIR_UNKNOWN
 ER_ONLY_IMPLEMENTED_FOR_SRID_0_AND_4326 22S00
   eng "Function %.192s is only defined for SRID 0 and SRID 4326."
 
-ER_BINLOG_EXPIRE_LOG_DAYS_AND_SECS_USED_TOGETHER
+OBSOLETE_ER_BINLOG_EXPIRE_LOG_DAYS_AND_SECS_USED_TOGETHER
   eng "The option expire_logs_days and binlog_expire_logs_seconds cannot be used together. Please use binlog_expire_logs_seconds to set the expire time (expire_logs_days is deprecated)"
 
 #
@@ -8960,7 +8961,7 @@ ER_DEPENDENT_BY_FUNCTIONAL_INDEX
   eng "Column '%s' has a functional index dependency and cannot be dropped or renamed."
 
 ER_PLUGIN_NOT_EARLY
-  eng "Plugin '%s' is not to be used as an "early" plugin. Don't add it to --early-plugin-load, keyring migration etc."
+  eng "Plugin '%s' is not to be used as an \"early\" plugin. Don't add it to --early-plugin-load, keyring migration etc."
   bgn "Приставката '%s' не може да се използва като ранна приставка. Не я добавайте в --early-plugin-load и т.н."
 
 ER_INNODB_REDO_LOG_ARCHIVE_START_SUBDIR_PATH
@@ -9370,7 +9371,7 @@ ER_HOSTNAME_TOO_LONG
   eng "Hostname cannot be longer than %d characters."
 
 # When using this error message, use the ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT error code.
-ER_WARN_CLIENT_DEPRECATED_PARTITION_PREFIX_KEY
+OBSOLETE_ER_WARN_CLIENT_DEPRECATED_PARTITION_PREFIX_KEY
   eng "Column '%.64s.%.64s.%.64s' having prefix key part '%.64s(%u)' is ignored by the partitioning function. Use of prefixed columns in the PARTITION BY KEY() clause is deprecated and will be removed in a future release."
 
 ER_GROUP_REPLICATION_USER_EMPTY_MSG
@@ -9383,10 +9384,10 @@ ER_GROUP_REPLICATION_PASSWORD_LENGTH
   eng "The START GROUP_REPLICATION command failed since the password provided for the recovery channel exceeds the maximum length of 32 characters."
 
 ER_SUBQUERY_TRANSFORM_REJECTED
-  eng "Statement requires a transform of a subquery to a non-SET operation (like IN2EXISTS, or subquery-to-LATERAL-derived-table). This is not allowed with optimizer switch 'subquery_to_derived' on".
+  eng "Statement requires a transform of a subquery to a non-SET operation (like IN2EXISTS, or subquery-to-LATERAL-derived-table). This is not allowed with optimizer switch 'subquery_to_derived' on."
 
 ER_DA_GRP_RPL_RECOVERY_ENDPOINT_FORMAT
-  eng "Invalid input value for recovery socket endpoints '%s'. Please, provide a valid, comma separated, list of endpoints (IP:port)".
+  eng "Invalid input value for recovery socket endpoints '%s'. Please, provide a valid, comma separated, list of endpoints (IP:port)."
 
 ER_DA_GRP_RPL_RECOVERY_ENDPOINT_INVALID
   eng "The server is not listening on endpoint '%s'. Only endpoints that the server is listening on are valid recovery endpoints."
@@ -9401,7 +9402,7 @@ ER_FOREIGN_KEY_WITH_ATOMIC_CREATE_SELECT
   eng "Foreign key creation is not allowed with CREATE TABLE as SELECT and CREATE TABLE with START TRANSACTION statement."
 
 ER_NOT_ALLOWED_WITH_START_TRANSACTION
-  eng "START TRANSACTION clause cannot be used %.128s".
+  eng "START TRANSACTION clause cannot be used %.128s"
 
 ER_INVALID_JSON_ATTRIBUTE
   eng "Invalid json attribute, error: \"%s\" at pos %u: '%s'"
@@ -9518,7 +9519,7 @@ ER_SQL_REPLICA_SKIP_COUNTER_USED_WITH_GTID_MODE_ON
 ER_USING_ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_AS_LOCAL_OR_UUID
   eng "Using ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS creates limitations on the replication topology - you cannot fail over between downstream and upstream servers. Only use this option if it is not possible to enable GTIDs on the source, for instance, because of lack of permissions. If possible, use the procedure for enabling GTID transactions online instead, as described in the documentation."
 
-ER_CANT_SET_ANONYMOUS_TO_GTID_AND_WAIT_UNTIL_SQL_THD_AFTER_GTIDS
+OBSOLETE_ER_SET_GTID_TO_ANON_AND_WAIT_UNTIL_SQL_THD_AFTER_GTIDS
   eng "WAIT_UNTIL_SQL_THREAD_AFTER_GTIDS cannot be used on a channel configured with ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS = LOCAL|<UUID>"
 
 ER_CANT_SET_SQL_AFTER_OR_BEFORE_GTIDS_WITH_ANONYMOUS_TO_GTID
@@ -9621,7 +9622,7 @@ ER_WARN_AUDIT_LOG_FORMAT_UNIX_TIMESTAMP_ONLY_WHEN_JSON
   eng "audit_log_format_unix_timestamp is applicable only when audit_log_format = JSON."
 
 ER_INVALID_MFA_PLUGIN_SPECIFIED
-  eng "Invalid plugin \"%s\" specified as %d factor during \"%s\"."D
+  eng "Invalid plugin \"%s\" specified as %d factor during \"%s\"."
 
 ER_IDENTIFIED_BY_UNSUPPORTED
   eng "IDENTIFIED BY clause during \"%s\" not supported for plugin \"%s\"."
@@ -9630,7 +9631,7 @@ ER_INVALID_PLUGIN_FOR_REGISTRATION
   eng "This operation is not supported for plugin \"%s\"."
 
 ER_PLUGIN_REQUIRES_REGISTRATION
-  eng "Authentication plugin requires registration. Please refer ALTER USER syntax or set --fido-register-factor command line option to do registration."
+  eng "Authentication plugin requires registration. Please refer ALTER USER syntax or set --register-factor command line option to do registration."
 
 ER_MFA_METHOD_EXISTS
   eng "%d factor authentication method exists. Please do ALTER USER... DROP %d factor before doing this operation OR do ALTER USER... MODIFY %d factor... to modify existing %d factor authentication method."
@@ -9803,7 +9804,7 @@ ER_DROP_PK_COLUMN_TO_DROP_GIPK
 ER_CREATE_SELECT_WITH_GIPK_DISALLOWED_IN_SBR
   eng "Generating an invisible primary key for a table created using CREATE TABLE ... SELECT ... is disallowed when binlog_format=STATEMENT. It cannot be guaranteed that the SELECT retrieves rows in the same order on source and replica. Therefore, it cannot be guaranteed that the value generated for the generated implicit primary key column will be the same on source and replica for all rows. Use binlog_format=ROW or MIXED to execute this statement."
 
-ER_DA_EXPIRE_LOGS_DAYS_IGNORED
+OBSOLETE_ER_DA_EXPIRE_LOGS_DAYS_IGNORED
   eng "The option expire_logs_days cannot be used together with option binlog_expire_logs_seconds. To set one, first unset the other by setting it to 0."
 
 ER_CTE_RECURSIVE_NOT_UNION
@@ -9813,7 +9814,7 @@ ER_COMMAND_BACKEND_FAILED_TO_FETCH_SECURITY_CTX
   eng "Error when trying to fetch information from security context object, when trying to connect the server."
 
 ER_COMMAND_SERVICE_BACKEND_FAILED
-  eng "Error in command service backend interface, because of : "%s""
+  eng "Error in command service backend interface, because of : \"%s\""
 
 ER_CLIENT_FILE_PRIVILEGE_FOR_REPLICATION_CHECKS
   eng "The PRIVILEGE_CHECKS_USER for channel '%.192s' would need FILE privilege to execute a LOAD DATA INFILE statement replicated in statement format. Consider using binlog_format=ROW on source. If the replicated events are trusted, recover from the failure by temporarily granting FILE to the PRIVILEGE_CHECKS_USER."
@@ -9864,7 +9865,7 @@ ER_INDEX_OTHER_THAN_PK
   eng "Table '%-.192s' has indexes other than primary key."
 
 ER_LOAD_BULK_DATA_UNSORTED
-  eng "[IN PRIMARY KEY ORDER] specified but data not sorted: LOAD BULK DATA into table '%-.192s' failed: %s"
+  eng "[IN PRIMARY KEY ORDER] specified but data not sorted: '%-.64s'"
 
 ER_BULK_EXECUTOR_ERROR
   eng "Bulk executor error: %s"
@@ -9878,11 +9879,13 @@ ER_BULK_READER_LIBCURL_ERROR
 ER_BULK_READER_SERVER_ERROR
   eng "Bulk reader got error response from server: %ld"
 
+
+
 ER_BULK_READER_COMMUNICATION_ERROR
   eng "Bulk reader got error in communication with source server, check the error log for additional details."
 
 ER_BULK_LOAD_DATA_FAILED
-  eng "Bulk loader failed, mysql_load->load returned an error, check the error log for additional details."
+  eng "Bulk loader failed in Innodb storage engine, check the error log for additional details."
 
 ER_BULK_LOADER_COLUMN_TOO_BIG_FOR_LEFTOVER_BUFFER
   eng "CSV column too big for leftover buffer."
@@ -9912,7 +9915,7 @@ ER_BULK_PARSER_UNEXPECTED_CHAR_AFTER_ENDING_ENCLOSED_BY
   eng "Unexpected characters after ending ENCLOSED BY character found at row %ld in file '%s'."
 
 ER_BULK_PARSER_UNEXPECTED_CHAR_AFTER_NULL_ESCAPE
-  eng "Unexpected characters after NULL escape (\N) found at row %ld in file '%s'."
+  eng "Unexpected characters after NULL escape (\\N) found at row %ld in file '%s'."
 
 ER_BULK_PARSER_UNEXPECTED_CHAR_AFTER_COLUMN_TERMINATOR
   eng "Unexpected characters after column terminator found at row %ld in file '%s'."
@@ -9967,17 +9970,469 @@ ER_WARN_DEPRECATED_WITH_NOTE
 
 #
 #  End of 8.0 error messages (server-to-client).
-#  Do NOT add messages intended for the error log above!
 #
+#  Please put messages for 8.1+ in the section beginning with
+#  start-error-number 6000
+#
+
+
+################################################################################
+# Error numbers 4500 to 4999 are reserved for Router. Please do not use
+# them for other error messages.
+################################################################################
+
+reserved-error-section 4500 4999
+
 
 ################################################################################
 # Error numbers 5000 to 5999 are reserved for X Plugin. Please do not use
 # them for other error messages.
 ################################################################################
 
-
 reserved-error-section 5000 5999
 
+
+################################################################################
+# Error numbers starting at 6000: server-to-client messages 8.1+
+################################################################################
+
+# Do NOT add messages intended for the error log here;
+# they have their own section below.
+#
+# Do NOT add messages to clients for mysqld 8.0.x here;
+# they have their own section above.
+#
+# See the FAQ at the end of the file for more information.
+
+start-error-number 6000
+
+ER_LANGUAGE_COMPONENT
+  eng "%s"
+
+ER_LANGUAGE_COMPONENT_NOT_AVAILABLE
+  eng "Language component: Not available."
+
+ER_LANGUAGE_COMPONENT_UNSUPPORTED_LANGUAGE
+  eng "Language component: Unsupported language '%s'"
+
+ER_LANGUAGE_COMPONENT_CANNOT_UNINSTALL
+  eng "Language component: Cannot uninstall due to connected sessions. Please disconnect all sessions and try again."
+
+ER_SP_NO_ALTER_LANGUAGE
+  eng "Altering the language of an existing routine is not possible."
+
+ER_EXPLAIN_INTO_ANALYZE_NOT_SUPPORTED 0A000
+  eng "EXPLAIN ANALYZE does not support the INTO clause."
+
+ER_EXPLAIN_INTO_IMPLICIT_FORMAT_NOT_SUPPORTED 0A000
+  eng "EXPLAIN INTO does not support implicit FORMAT."
+
+ER_EXPLAIN_INTO_FORMAT_NOT_SUPPORTED 0A000
+  eng "EXPLAIN INTO does not support FORMAT=%s."
+
+ER_NULL_CANT_BE_PERSISTED_FOR_READONLY
+  eng "Trying to persist a NULL into a variable '%-.192s' that's settable only on command line is not supported"
+
+ER_EXPLAIN_INTO_FOR_CONNECTION_NOT_SUPPORTED 0A000
+  eng "EXPLAIN FOR CONNECTION does not support the INTO clause."
+
+ER_INNODB_IMPORT_WRONG_DROPPED_ENUM_LENGTH
+  eng "Enum element name length %lu, is invalid for column %s"
+
+ER_INNODB_IMPORT_WRONG_NUMBER_OF_INDEXES_ZERO
+  eng "Number of indexes in meta-data file is 0"
+
+ER_INNODB_IMPORT_WRONG_NUMBER_OF_INDEXES_TOO_HIGH
+  eng "Number of indexes in meta-data file is too high: %llu"
+
+ER_INNODB_IMPORT_DROP_COL_METADATA_MISMATCH
+  eng "DD metadata for INSTANT DROP column %s in target table doesn't match with CFG."
+
+ER_INNODB_IMPORT_ENUM_NULL_TERMINATOR_MISSING
+  eng "Enum/Set element name missing null terminator for column '%s'"
+
+ER_SIMULATED_INJECTION_ERROR
+  eng "%s %s %zu."
+
+ER_WARN_DEPRECATED_DYNAMIC_PRIV_IN_GRANT
+  eng "The privilege '%s' is deprecated."
+
+ER_BULK_MULTI_READER_OPEN_FILE_FAILED
+  eng "Bulk Multi Reader: Failed to open file"
+
+ER_BULK_MULTI_READER_READ_FILE_FAILED
+  eng "Bulk Multi Reader: Failed to read file"
+
+ER_BULK_MERGE_INVALID_CHUNK
+  eng "Bulk Merge Loader: Invalid Chunk"
+
+ER_BULK_MERGE_NOT_ALL_CHUNKS_CONSUMED
+  eng "Bulk Merge Loader: Not all chunks consumed"
+
+ER_BULK_WRITER_LIBCURL_INIT_FAILED
+  eng "Bulk writer failed to initialize libcurl"
+
+ER_BULK_WRITER_LIBCURL_ERROR
+  eng "Bulk writer got libcurl error: %s"
+
+ER_BULK_SORTING_LOADER_WRITE
+  eng "Bulk Sorting Loader: Failed to write data to temporary file"
+
+ER_BULK_SORTING_LOADER_WAIT
+  eng "Bulk Sorting Loader: Interrupted while waiting"
+
+ER_BULK_READER_OPEN_FILE_FAILED
+  eng "Bulk Reader: Failed to access file %s"
+
+ER_BULK_LOAD_TABLE_HAS_INSTANT_COLS
+  eng "Bulk Loader: Table '%-.192s' has instantly added/dropped columns. Please TRUNCATE TABLE and retry."
+
+ER_BULK_LOAD_RESOURCE
+  eng "Bulk Loader: Not enough memory available. Memory needed for loading %s data: %s for %u threads, %s with minimal configuration. Total configured memory is %s, Available memory is %s."
+
+ER_BULK_LOAD_SECONDARY_ENGINE
+  eng "LOAD DATA with BULK Algorithm is not supported on a table with secondary engine."
+
+ER_BULK_READER_ERROR
+  eng "Bulk reader error: %s"
+
+ER_BULK_READER_FILE_DOESNT_EXIST
+  eng "File not found, check whether it exists: %s"
+
+ER_BULK_READER_COULDNT_RESOLVE_HOST
+  eng "Couldn't resolve host: %s"
+
+ER_START_REPLICA_CHANNEL_INVALID_CONFIGURATION
+  eng "Cannot start replication channel '%s' because %s."
+
+ER_CANNOT_EXECUTE_IN_PRIMARY
+   eng "'%s' is not supported"
+
+ER_TOO_MANY_GROUP_BY_MODIFIER_BRANCHES
+   eng "'%s' is supported with maximum %d elements in the GROUP BY list"
+
+# When using this error message, use the ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT error code.
+ER_WARN_DEPRECATED_ENGINE_SYNTAX_NO_REPLACEMENT
+  eng "'%s' for '%s' storage engine is deprecated and will be removed in a future release."
+
+ER_QUALIFY_WITHOUT_WINDOW_FUNCTION
+  eng "QUALIFY clause cannot be used without a window function."
+
+ER_SUPPORTED_ONLY_WITH_HYPERGRAPH
+  eng "'%s' can be used only if the hypergraph optimizer is enabled."
+
+ER_SPECIFIC_ACCESS_DENIED
+  eng "Access denied; you need %-.256s privilege(s) for this operation"
+
+ER_CANT_SET_GTID_NEXT_TO_AUTOMATIC_TAGGED_WHEN_GTID_MODE_IS_OFF
+  eng "@@SESSION.GTID_NEXT cannot be set to AUTOMATIC:<TAG> when @@GLOBAL.GTID_MODE = OFF or OFF_PERMISSIVE"
+
+ER_GTID_NEXT_TAG_GTID_MODE_OFF
+  eng "@@SESSION.GTID_NEXT cannot be set to UUID:TAG:NUMBER when @@GLOBAL.GTID_MODE = OFF."
+
+ER_LH_COL_NOT_NULLABLE
+  eng "Column %d of %s : Column contains null but it is not nullable."
+
+ER_LH_WARN_COL_MISSING_NOT_NULLABLE
+  eng "Column %d of %s : Column is missing, but it is not nullable and no explicit default value is provided."
+
+ER_LH_COL_IS_EMPTY
+  eng "Column %d of %s : Column is empty."
+
+ER_LH_COL_IS_EMPTY_WARN
+  eng "Column %d of %s : Column is empty, setting default value."
+
+ER_LH_BAD_VALUE
+  eng "Column %d of %s : Invalid %s value."
+
+ER_LH_DECIMAL_UNKNOWN_ERR
+  eng "Column %d of %s : Unknown error while parsing decimal."
+
+ER_LH_DECIMAL_OOM_ERR
+  eng "Column %d of %s : Out of memory loading decimal."
+
+ER_LH_WARN_DECIMAL_ROUNDING
+  eng "Column %d of %s : Fraction exceeds schema, rounding value."
+
+ER_LH_DECIMAL_PRECISION_EXCEEDS_SCHEMA
+  eng "Column %d of %s : decimal precision exceeds schema."
+
+ER_LH_EXCEEDS_MIN
+  eng "Column %d of %s : %s exceeds min."
+
+ER_LH_EXCEEDS_MAX
+  eng "Column %d of %s : %s exceeds max."
+
+ER_LH_WARN_EXCEEDS_MIN_TRUNCATING
+  eng "Column %d of %s : %s exceeds min, setting to min value possible."
+
+ER_LH_WARN_EXCEEDS_MAX_TRUNCATING
+  eng "Column %d of %s : %s exceeds max, setting to max value possible."
+
+ER_LH_REAL_IS_NAN
+  eng "Column %d of %s : Real value is NaN."
+
+ER_LH_OUT_OF_RANGE
+  eng "Column %d of %s : %s value is out of range."
+
+ER_LH_DATETIME_FORMAT
+  eng "Column %d of %s : Error while applying %s format."
+
+ER_LH_WARN_TRUNCATED
+  eng "Column %d of %s : %s value was truncated."
+
+ER_LH_CANNOT_CONVERT_STRING
+  eng "Column %d of %s : Cannot convert string %s."
+
+ER_LH_RESOURCE_PRINCIPAL_ERR
+  eng "Resource principal error."
+
+ER_LH_AWS_AUTH_ERR
+  eng "AWS authentication error."
+
+ER_LH_CSV_PARSING_ERR
+  eng "%s:%lu: Parsing error found. %s."
+
+ER_LH_COLUMN_MISMATCH_ERR
+  eng "%s: Mismatch in the number of columns. Expected %u, found %u."
+
+ER_LH_COLUMN_MAX_ERR
+  eng "%s: More than %u column(s) found."
+
+ER_LH_CHARSET_UNSUPPORTED
+  eng "Column %d in %s: Charset is not supported."
+
+ER_LH_PARQUET_DECIMAL_CONVERSION_ERR
+  eng "Column %d in %s: Decimal conversion error."
+
+ER_LH_STRING_TOO_LONG
+  eng "Column %d in %s: String is too long."
+
+ER_LH_RESOURCE_PRINCIPAL_BUCKET_ERR
+  eng "Resource Principal endpoint is not configured. Cannot access following buckets: %s."
+
+ER_LH_NO_FILES_FOUND
+  eng "No files found corresponding to the following data locations: %s."
+
+ER_LH_EMPTY_FILE
+  eng "File %s is empty."
+
+ER_LH_DUPLICATE_FILE
+  eng "File %s was not processed (duplicate)."
+
+ER_LH_AVRO_SCHEMA_DEPTH_EXCEEDS_MAX
+  eng "File %s: Avro schema depth exceeds max allowed depth."
+
+ER_LH_AVRO_HEADER_MISMATCH
+  eng "File %s: Header does not match other files."
+
+ER_LH_AVRO_ENUM_CANNOT_CONVERT_CHARSET
+  eng "File %s: Enum symbol can't convert to column charset."
+
+ER_LH_AVRO_ENUM_MISMATCH
+  eng "File %s: Enum symbols are not the same, or are not in the same order."
+
+ER_LH_AVRO_TYPE_CANNOT_CONVERT
+  eng "Column %d in %s: Avro value of physical type %.*s logical type %.*s cannot be converted to mysql type %s."
+
+ER_LH_AVRO_FILE_ENDS_UNEXPECTEDLY
+  eng "File %.*s: Ends unexpectedly."
+
+ER_LH_AVRO_FILE_DATA_CORRUPT
+  eng "File %.*s: File data might be corrupt."
+
+ER_LH_AVRO_INVALID_UNION
+  eng "Column %d in %s: Invalid union encountered. Unions are only supported to represent nullable columns. One of the two types of the union must be null."
+
+ER_LH_AVRO_INVALID_BLOCK_SIZE
+  eng "File %.*s: Invalid avro block size."
+
+ER_LH_AVRO_INVALID_BLOCK_RECORD_COUNT
+  eng "File %.*s: Invalid Avro block record count."
+
+ER_LH_FORMAT_HEADER_NO_MAGIC_BYTES
+  eng "File %.*s: Cannot locate %s specific metadata. Either the file is corrupted or this is not an %s file."
+
+ER_LH_AVRO_HEADER_METADATA_ERR
+  eng "File %.*s: Could not process Avro header metadata. The metadata is corrupted or invalid."
+
+ER_LH_AVRO_HEADER_NO_SCHEMA
+  eng "File %.*s: No schema in Avro header metadata."
+
+ER_LH_AVRO_NO_CODEC_IN_HEADER
+  eng "File %.*s: No codec in Avro header metadata."
+
+ER_LH_AVRO_INVALID_NAME_IN_SCHEMA
+  eng "File %.*s: Invalid name in Avro schema."
+
+ER_LH_AVRO_DECODING_ERR
+  eng "File %.*s: Error decoding Avro %.*s. %s"
+
+ER_LH_PARQUET_NON_UTF8_FILE_ENC
+  eng "Column %d in %s: String with non-utf8 file encoding."
+
+ER_LH_PARQUET_SCHEMA_MISMATCH
+  eng "Difference in schema among Parquet files."
+
+ER_LH_PARQUET_ROW_GROUP_SIZE_EXCEEDS_MAX
+  eng "File %s: Size of row group %ld is larger than maximum allowed size (%d)."
+
+ER_LH_PARQUET_CANNOT_LOCATE_OFFSET
+  eng "File %s: Cannot locate offset of row group %ld in metadata."
+
+ER_LH_PARQUET_TYPE_CANNOT_CONVERT
+  eng "Column %d in parquet table cannot be converted to mysql format."
+
+ER_LH_PARQUET_CANNOT_LOCATE_SCHEMA
+  eng "Cannot locate schema in %s."
+
+ER_LH_INFER_SCHEMA_MISMATCH
+  eng "Found files with mismatched schemas."
+
+ER_LH_OOM
+  eng "Insufficient memory."
+
+ER_LH_WARN_INFER_SKIPPED_LINES
+  eng "Skipped %lu line(s) due to mismatched num of cols."
+
+ER_LH_WARN_INFER_SKIPPED_FILES
+  eng "Skipped %lu file(s) due to mismatched num of cols."
+
+ER_LH_INFER_FILE_HAS_NO_DATA
+  eng "File %s is skipped because it has no valid data. File is either empty or all rows are skipped."
+
+ER_LH_INFER_NO_DATA
+  eng "No valid data found for processing."
+
+ER_LH_INFER_NO_FILES
+  eng "No valid files found for processing."
+
+ER_LH_WARN_INFER_USE_DEFAULT_COL_NAMES
+  eng "Used default column names for column index(s) %s as they are %s."
+
+ER_LH_PARQUET_CANNOT_READ_HEADER
+  eng "File %s: Unable to read Parquet header."
+
+ER_LH_INFER_WARN_GOT_EXCEPTION
+  eng "Got an exception while trying to process file task."
+
+ER_LH_AVRO_CANNOT_PARSE_HEADER
+  eng "File %.*s: Could not parse avro header. Probably corrupted avro file."
+
+ER_LH_PARQUET_CANT_OPEN_FILE
+  eng "Parquet reader cannot open %s. %s"
+
+ER_LH_TOO_LARGE_VALUE_ERR
+   eng "File %.*s: %s"
+
+ER_LH_TOO_LARGE_ROW_ERR
+   eng "File %.*s: %s"
+
+ER_TABLESAMPLE_PERCENTAGE 2202H
+  eng "Tablesample percentage should range between 0 and 100."
+
+ER_TABLESAMPLE_ONLY_ON_BASE_TABLES
+  eng "Tablesample can be applied only on base tables."
+
+OBSOLETE_ER_PARAMETER_INDEX_OUT_OF_RANGE
+  eng "Parameter index %llu is out of range"
+
+ER_RESULT_SIZE_LIMIT_EXCEEDED
+  eng "Result size limit exceeded."
+
+ER_LANGUAGE_COMPONENT_INTERNAL
+  eng "Language component: Internal error."
+
+ER_LANGUAGE_COMPONENT_CONCURRENCY_LIMIT
+  eng "Language component: Concurrency limit (%s) has been reached."
+
+ER_LANGUAGE_COMPONENT_RUNTIME
+  eng "%s> %s"
+
+ER_LANGUAGE_COMPONENT_TIMEZONE
+  eng "%s> Time zone %s is not supported."
+
+ER_LANGUAGE_COMPONENT_KEYWORD
+  eng "%s> The identifier '%s' is a reserved word."
+
+ER_LANGUAGE_COMPONENT_SET_SYSTEM_VARIABLE
+  eng "Language component: System variable '%s' cannot be configured when component is active."
+
+ER_LANGUAGE_COMPONENT_UNSUPPORTED_TYPE
+  eng "%s> %s"
+
+ER_LANGUAGE_COMPONENT_CONVERSION
+  eng "%s> %s"
+
+ER_WARN_SP_STATEMENT_PARTIALLY_EXECUTED
+  eng "Stored program statement is partially completed. Result set might not contain all the rows."
+
+ER_STMT_EXECUTION_NOT_ALLOWED_WITHIN_SP_OR_TRG_OR_UDF
+  eng "Executing SQL statement using %s Statement Handle Interface is not allowed within stored function, trigger or loadable function (UDF)."
+
+ER_LH_JSON_PARSING
+  eng "Column %d of %s : %s"
+
+ER_ENGINE_CANNOT_BE_DEFAULT
+  eng "Engine %s cannot be set as default_storage_engine."
+
+ER_PARTITION_PREFIX_KEY_NOT_SUPPORTED
+  eng "Column '%.64s.%.64s.%.64s' having prefix key part '%.64s(%u)' in the PARTITION BY KEY() clause is not supported."
+
+ER_WARN_DEPRECATED_NON_STANDARD_KEY
+  eng "Foreign key '%.64s' refers to non-unique key or partial key. This is deprecated and will be removed in a future release."
+
+ER_FK_NO_UNIQUE_INDEX_PARENT
+  eng "Failed to add the foreign key constraint. Missing unique key for constraint '%s' in the referenced table '%s'"
+
+ER_ACCESS_DENIED_NO_PROXY_GRANT
+  eng "Access denied for user '%-.48s'@'%-.64s', missing proxy privilege."
+
+ER_ACCESS_DENIED_NO_PROXY
+  eng "Access denied for user '%-.48s'@'%-.64s', proxied user doesn't exist."
+
+ER_LH_USER_DATA_ACCESS_FAILED
+  eng "Unable to access the following data locations: %s"
+
+ER_BULK_READER_ZSTD_ERROR
+  eng "ZSTD decompression failed: %s"
+
+ER_BULK_PARSER_ERROR
+  eng "%s"
+
+ER_LH_INVALID_JSON_FILE_FORMAT_SCHEMA
+  eng "Invalid json file format schema: %s"
+
+ER_LH_INFER_JSON_INVALID_SCHEMA
+  eng "Inferred invalid schema. A single column with JSON type is the only valid schema for JSON file format."
+
+ER_LH_JSON_FILE_FORMAT_WARN_INFER_SCHEMA
+  eng "Altered the inferred schema to a single JSON column."
+
+ER_NON_SCALAR_USED_AS_KEY
+  eng "Non-scalar (e.g., vector) column '%.64s' cannot be used as key."
+
+ER_INCOMPATIBLE_TYPE_AGG
+  eng "Columns aggregated with incompatible types: '%.64s', '%.64s'."
+
+ER_DATA_INCOMPATIBLE_WITH_VECTOR
+  eng "Value of type '%.16s, size: %zu' cannot be converted to 'vector' type."
+
+ER_EXCEEDS_VECTOR_MAX_DIMENSIONS
+  eng "Data size (%zu Bytes, %u dimensions) exceeds VECTOR max (%zu Bytes, %u dimensions) for column: '%.64s'"
+
+ER_TO_VECTOR_CONVERSION
+  eng "Data cannot be converted to a valid vector: '%.*s'"
+
+ER_EXTERNAL_UNSUPPORTED_INDEX_ALGORITHM
+  eng "This storage engine ignores the %s index algorithm."
+
+ER_TP_CANNOT_DISABLE_MTL_WITH_DL
+  eng "The variable thread_pool_max_transactions_limit cannot be set to 0 when thread_pool_dedicated_listernes is ON."
+
+#
+#  End of 8.1+ error messages (server-to-client).
+#  Do NOT add messages intended for the error log above!
 
 ################################################################################
 # DO NOT add messages for the error-log to this file;

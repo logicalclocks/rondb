@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,21 +30,20 @@
 
 #define JAM_FILE_ID 17
 
-
 /**
- * 
+ *
  */
 class MasterGCPConf {
   /**
    * Sender(s) / Reciver(s)
    */
   friend class Dbdih;
-    
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 10 + 2;
 
   enum State {
-    GCP_READY            = 0,
+    GCP_READY = 0,
     /**
      * GCP_PREPARE received (and replied)
      */
@@ -52,7 +52,7 @@ public:
     /**
      * GCP_COMMIT received (not replied)
      */
-    GCP_COMMIT_RECEIVED  = 2, // GCP_COMMIT received (and is running)
+    GCP_COMMIT_RECEIVED = 2,  // GCP_COMMIT received (and is running)
 
     /**
      * Replied GCP_NODEFINISH
@@ -62,16 +62,16 @@ public:
   };
 
   enum SaveState {
-    GCP_SAVE_IDLE     = 0,
+    GCP_SAVE_IDLE = 0,
     /**
      * GCP_SAVE_REQ received (running in LQH)
      */
-    GCP_SAVE_REQ      = 1,
+    GCP_SAVE_REQ = 1,
 
     /**
      * GCP_SAVE_CONF (or REF)
      */
-    GCP_SAVE_CONF     = 2,
+    GCP_SAVE_CONF = 2,
 
     /**
      * COPY_GCI_REQ (GCP) has been received and is running
@@ -84,14 +84,14 @@ public:
      * States uses before micro GCP
      */
     enum State {
-      GCP_READY            = 0,
+      GCP_READY = 0,
       GCP_PREPARE_RECEIVED = 1,
-      GCP_COMMIT_RECEIVED  = 2,
-      GCP_TC_FINISHED      = 3
+      GCP_COMMIT_RECEIVED = 2,
+      GCP_TC_FINISHED = 3
     };
   };
 
-private:  
+ private:
   /**
    * Data replied
    */
@@ -109,33 +109,35 @@ private:
 };
 
 /**
- * 
+ *
  */
 class MasterGCPReq {
   /**
    * Sender(s) / Reciver(s)
    */
   friend class Dbdih;
-    
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 2;
-private:
+
+ private:
   Uint32 masterRef;
   Uint32 failedNodeId;
 };
 
 /**
- * 
+ *
  */
 class MasterGCPRef {
   /**
    * Sender(s) / Reciver(s)
    */
   friend class Dbdih;
-    
-public:
+
+ public:
   static constexpr Uint32 SignalLength = 2;
-private:
+
+ private:
   Uint32 senderNodeId;
   Uint32 failedNodeId;
 };

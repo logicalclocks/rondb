@@ -1,15 +1,16 @@
-/* Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -189,7 +190,7 @@ class Logger {
 
 Logger::Logger(MYSQL *conn) : end(buffer) {
   connection_id = mysql_thread_id(conn);
-};
+}
 
 size_t Logger::header() {
   size_t len = 0;
@@ -206,7 +207,7 @@ size_t Logger::header() {
 }
 
 void Logger::log(const char *format, ...) {
-  size_t len = header();
+  const size_t len = header();
   va_list args;
 
   va_start(args, format);
@@ -217,7 +218,7 @@ void Logger::log(const char *format, ...) {
 }
 
 void Logger::dump(const char *key, const void *data, size_t data_len) {
-  size_t len = header();
+  const size_t len = header();
   const unsigned char *ptr = static_cast<const unsigned char *>(data);
 
   end += snprintf(end, sizeof(buffer) - len, "%s: %lu bytes", key, data_len);
@@ -442,7 +443,7 @@ int trace_event(struct st_mysql_client_plugin_TRACE *, void *data_ptr,
 
   switch (ev) {
     case TRACE_EVENT_ERROR: {
-      int errnum = conn->net.last_errno;
+      const int errnum = conn->net.last_errno;
       const char *error = conn->net.last_error;
       LOG(("error %d: %s", errnum, error));
       if (data) data->errnum = errnum;
@@ -522,7 +523,7 @@ int trace_event(struct st_mysql_client_plugin_TRACE *, void *data_ptr,
     case TRACE_EVENT_PACKET_RECEIVED:
       if (ERR_PACKET(args.pkt)) {
         const byte *pkt = args.pkt;
-        unsigned int err_code = uint2korr(pkt + 1);
+        const unsigned int err_code = uint2korr(pkt + 1);
         pkt += 3;
 
         if ('#' == *pkt) {
@@ -818,20 +819,6 @@ int check_event_READY_FOR_COMMAND(MYSQL *conn, struct st_trace_data *data,
           return 1;
 
         /*
-          After COM_PROCESS_INFO server sends a regular result set.
-        */
-        case COM_PROCESS_INFO:
-          NEXT_STAGE(WAIT_FOR_RESULT);
-          break;
-
-        /*
-          After COM_FIELD_LIST server directly sends field descriptions.
-        */
-        case COM_FIELD_LIST:
-          NEXT_STAGE(WAIT_FOR_FIELD_DEF);
-          break;
-
-        /*
           Server replies to COM_STATISTICS with a single packet
           containing a string with statistics information.
         */
@@ -1017,13 +1004,13 @@ int check_event_WAIT_FOR_FIELD_DEF(MYSQL *conn, struct st_trace_data *data,
         instead the reply is a list of column definitions followed by OK or EOF.
         Hence in this case check for OK or EOF packet at the end.
       */
-      bool new_client = (conn->server_capabilities & CLIENT_DEPRECATE_EOF);
-      bool metadata_eof = (data->last_cmd != COM_FIELD_LIST &&
-                           data->col_count == 1 && new_client);
+      const bool new_client =
+          (conn->server_capabilities & CLIENT_DEPRECATE_EOF);
+      const bool metadata_eof = (data->col_count == 1 && new_client);
       bool eof_packet =
           (EOF_PACKET(args.pkt) && args.pkt_len < MAX_PACKET_LENGTH);
       if (!eof_packet && !metadata_eof) {
-        if (data->last_cmd != COM_FIELD_LIST) data->col_count--;
+        data->col_count--;
         LOG(("Received next field definition"));
         return 0;
       }
@@ -1038,7 +1025,6 @@ int check_event_WAIT_FOR_FIELD_DEF(MYSQL *conn, struct st_trace_data *data,
       */
       switch (data->last_cmd) {
         case COM_STMT_PREPARE:
-        case COM_FIELD_LIST:
           NEXT_STAGE(READY_FOR_COMMAND);
           break;
         default:
@@ -1228,8 +1214,9 @@ int check_event_WAIT_FOR_PARAM_DEF(MYSQL *conn, struct st_trace_data *data,
         check for param_count in this case.
       */
 
-      bool new_client = (conn->server_capabilities & CLIENT_DEPRECATE_EOF);
-      bool param_eof = (data->param_count == 1 && new_client);
+      const bool new_client =
+          (conn->server_capabilities & CLIENT_DEPRECATE_EOF);
+      const bool param_eof = (data->param_count == 1 && new_client);
       bool eof_packet =
           (EOF_PACKET(args.pkt) && args.pkt_len < 6 && !new_client);
 

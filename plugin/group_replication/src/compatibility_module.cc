@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -118,7 +119,7 @@ Compatibility_type Compatibility_module::check_incompatibility(
     We can only check LTS compatibility rules after checking if the
     joining member was not explicitly made incompatible.
   */
-  if (are_all_versions_8_0_lts(all_members_versions)) {
+  if (do_all_versions_belong_to_the_same_lts(all_members_versions)) {
     return COMPATIBLE;
   }
 
@@ -133,30 +134,34 @@ Compatibility_type Compatibility_module::check_incompatibility(
   return COMPATIBLE;
 }
 
-bool Compatibility_module::are_all_versions_8_0_lts(
+bool Compatibility_module::do_all_versions_belong_to_the_same_lts(
     const std::set<Member_version> &all_members_versions) {
   if (all_members_versions.empty()) {
     return false;
   }
 
+  // 8.4 LTS
+  bool is_8_4_lts = true;
   for (const Member_version &version : all_members_versions) {
-    if (!is_version_8_0_lts(version)) {
-      return false;
+    is_8_4_lts &= is_version_8_4_lts(version);
+    if (!is_8_4_lts) {
+      break;
     }
   }
+  if (is_8_4_lts) {
+    return true;
+  }
 
-  return true;
+  return false;
 }
 
-bool Compatibility_module::is_version_8_0_lts(const Member_version &version) {
-  const Member_version member_8_0_lts_version(MEMBER_8_0_LTS_VERSION);
+bool Compatibility_module::is_version_8_4_lts(const Member_version &version) {
+  const Member_version member_8_4_lts_version(MEMBER_8_4_LTS_VERSION);
 
   if (version.get_major_version() ==
-          member_8_0_lts_version.get_major_version() &&
+          member_8_4_lts_version.get_major_version() &&
       version.get_minor_version() ==
-          member_8_0_lts_version.get_minor_version() &&
-      version.get_patch_version() >=
-          member_8_0_lts_version.get_patch_version()) {
+          member_8_4_lts_version.get_minor_version()) {
     return true;
   }
 

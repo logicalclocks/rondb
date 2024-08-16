@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,7 +26,7 @@
 #ifndef KEYRING_INFO_INCLUDED
 #define KEYRING_INFO_INCLUDED
 
-#include "mysqlrouter/router_export.h"
+#include "mysqlrouter/router_utils_export.h"
 
 #include <chrono>
 #include <stdexcept>
@@ -72,7 +73,7 @@ class SetRouterIdEnvVariableError : public std::runtime_error {
  * @brief KeyringInfo class encapsulates loading and storing master key
  * using master-key-reader and master-key-writer.
  */
-class ROUTER_LIB_EXPORT KeyringInfo {
+class ROUTER_UTILS_EXPORT KeyringInfo {
  private:
   /** @brief The path to keyring file */
   std::string keyring_file_;

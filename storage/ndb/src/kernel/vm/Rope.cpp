@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,8 +26,8 @@
 
 #include <record_types.hpp>
 #include <ndbd_malloc.hpp>
-#include "util/require.h"
 #include "Rope.hpp"
+#include "util/require.h"
 
 #define JAM_FILE_ID 330
 
@@ -227,11 +228,11 @@ LcConstRope::equal(const LcConstRope& r2) const
 }
 
 /* Unit test
-*/
+ */
 
 #ifdef TEST_ROPE
 
-int main(int argc, char ** argv) {
+int main(int argc, char **argv) {
   ndb_init();
 
   init_lc_ndbd_memory_pool(12,
@@ -273,7 +274,7 @@ int main(int argc, char ** argv) {
   }
 
   /* Assign & copy a string that is exactly the size as a rope segment */
-  const char * str28 = "____V____X____V____X____VII";
+  const char *str28 = "____V____X____V____X____VII";
   char buf28[28];
   {
     LcLocalRope lr5(h5);
@@ -285,8 +286,8 @@ int main(int argc, char ** argv) {
   cr5.copy(buf28, sizeof(buf28));
 
   /* Test buffered-style reading from ConstRope
-  */
-  assert(! cr1.compare(a_string));
+   */
+  assert(!cr1.compare(a_string));
   Uint32 offset = 0;
   int nread = 0;
   printf(" --> START readBuffered TEST <--\n");

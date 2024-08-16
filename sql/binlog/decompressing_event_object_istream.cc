@@ -1,15 +1,16 @@
-/* Copyright (c) 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,21 +26,24 @@
 #include "sql/mysqld.h"     // PSI_stage_info
 #include "sql/sql_class.h"  // current_thd, THD
 
-#include "libbinlogevents/include/compression/payload_event_buffer_istream.h"
+#include "mysql/binlog/event/compression/payload_event_buffer_istream.h"
 
 namespace binlog {
 
 Decompressing_event_object_istream::Decompressing_event_object_istream(
-    IBasic_binlog_file_reader &reader)
+    IBasic_binlog_file_reader &reader, const Memory_resource_t &memory_resource)
     : m_binlog_reader(&reader),
+      m_memory_resource(memory_resource),
       m_get_format_description_event([&]() -> Fde_ref_t {
         return m_binlog_reader->format_description_event();
       }) {}
 
 Decompressing_event_object_istream::Decompressing_event_object_istream(
     const Tple_ptr_t &transaction_payload_log_event,
-    Fde_ref_t format_description_event)
+    Fde_ref_t format_description_event,
+    const Memory_resource_t &memory_resource)
     : m_binlog_reader(nullptr),
+      m_memory_resource(memory_resource),
       m_get_format_description_event(
           [&]() -> Fde_ref_t { return format_description_event; }) {
   begin_payload_event(transaction_payload_log_event);
@@ -47,8 +51,10 @@ Decompressing_event_object_istream::Decompressing_event_object_istream(
 
 Decompressing_event_object_istream::Decompressing_event_object_istream(
     const Transaction_payload_log_event &transaction_payload_log_event,
-    Fde_ref_t format_description_event)
+    Fde_ref_t format_description_event,
+    const Memory_resource_t &memory_resource)
     : m_binlog_reader(nullptr),
+      m_memory_resource(memory_resource),
       m_get_format_description_event(
           [&]() -> Fde_ref_t { return format_description_event; }) {
   begin_payload_event(transaction_payload_log_event);
@@ -116,6 +122,7 @@ static Decompressing_event_object_istream::Status_t binlog_read_error_to_status(
     case Binlog_read_error::CANNOT_GET_FILE_PASSWORD:
     case Binlog_read_error::READ_ENCRYPTED_LOG_FILE_IS_NOT_SUPPORTED:
     case Binlog_read_error::ERROR_DECRYPTING_FILE:
+    case Binlog_read_error::EVENT_UNSUPPORTED_NEW_VERSION:
       return Decompressing_event_object_istream::Status_t::corrupted;
     case Binlog_read_error::TRUNC_EVENT:
     case Binlog_read_error::TRUNC_FD_EVENT:
@@ -162,7 +169,7 @@ bool Decompressing_event_object_istream::decode_from_buffer(
   // disable checksums while decoding such an inner event.  The API to
   // control if we verify checksums is to set this member variable in
   // the footer of the format_description_log_event.
-  fde.footer()->checksum_alg = binary_log::BINLOG_CHECKSUM_ALG_OFF;
+  fde.footer()->checksum_alg = mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF;
   Log_event *ev{nullptr};
   auto error = binlog_event_deserialize(buffer_view.data(), buffer_view.size(),
                                         &fde, m_verify_checksum, &ev);
@@ -245,7 +252,7 @@ bool Decompressing_event_object_istream::read_from_binlog_stream(
   // If we got a TPLE, prepare to unfold it on next invocation. Return
   // the TPLE itself this time. Share pointer ownership between the
   // Payload_event_buffer_istream and the API client.
-  if (ev->get_type_code() == binary_log::TRANSACTION_PAYLOAD_EVENT)
+  if (ev->get_type_code() == mysql::binlog::event::TRANSACTION_PAYLOAD_EVENT)
     begin_payload_event(
         std::const_pointer_cast<const Transaction_payload_log_event>(
             std::dynamic_pointer_cast<Transaction_payload_log_event>(out)));

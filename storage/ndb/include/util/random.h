@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
     Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,48 +28,46 @@
 #define RANDOM_H
 
 /***************************************************************
-* I N C L U D E D   F I L E S                                  *
-***************************************************************/
+ * I N C L U D E D   F I L E S                                  *
+ ***************************************************************/
 
 /***************************************************************
-* M A C R O S                                                  *
-***************************************************************/
+ * M A C R O S                                                  *
+ ***************************************************************/
 
 /***************************************************************/
 /* C O N S T A N T S                                           */
 /***************************************************************/
 
-
 /***************************************************************
-* D A T A   S T R U C T U R E S                                *
-***************************************************************/
+ * D A T A   S T R U C T U R E S                                *
+ ***************************************************************/
 
 typedef struct {
-   unsigned int  length;
-   unsigned int *values;
-   unsigned int  currentIndex;
-}RandomSequence;
+  unsigned int length;
+  unsigned int *values;
+  unsigned int currentIndex;
+} RandomSequence;
 
 typedef struct {
-   unsigned int length;
-   unsigned int value;
-}SequenceValues;
+  unsigned int length;
+  unsigned int value;
+} SequenceValues;
 
 /***************************************************************
-* P U B L I C    F U N C T I O N S                             *
-***************************************************************/
+ * P U B L I C    F U N C T I O N S                             *
+ ***************************************************************/
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 
 extern double getTps(unsigned int count, double timeValue);
 
 /*----------------------------*/
 /* Random Sequences Functions */
 /*----------------------------*/
-extern int  initSequence(RandomSequence *seq, SequenceValues *inputValues);
+extern int initSequence(RandomSequence *seq, SequenceValues *inputValues);
 extern unsigned int getNextRandom(RandomSequence *seq);
 extern void printSequence(RandomSequence *seq, unsigned int numPerRow);
 
@@ -84,10 +83,7 @@ extern long int myRandom48(unsigned int maxValue);
 #endif
 
 /***************************************************************
-* E X T E R N A L   D A T A                                    *
-***************************************************************/
-
-
+ * E X T E R N A L   D A T A                                    *
+ ***************************************************************/
 
 #endif /* RANDOM_H */
-

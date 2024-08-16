@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,8 +38,8 @@ class Common_table_expr;
 class Query_expression;
 
 struct MaterializePathParameters {
-  // Corresponds to MaterializeIterator::QueryBlock; see it for documentation.
-  struct QueryBlock {
+  // Corresponds to MaterializeIterator::Operand; see it for documentation.
+  struct Operand {
     AccessPath *subquery_path;
     int select_number;
     JOIN *join;
@@ -54,7 +55,7 @@ struct MaterializePathParameters {
     /// The number of materialized blocks, i.e. set operands
     uint m_total_operands{0};
   };
-  Mem_root_array<QueryBlock> query_blocks;
+  Mem_root_array<Operand> m_operands;
   Mem_root_array<const AccessPath *> *invalidators;
 
   /// Handle to table to materialize into.

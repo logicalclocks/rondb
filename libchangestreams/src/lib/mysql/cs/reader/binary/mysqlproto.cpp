@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,9 +24,9 @@
 #include <array>
 #include <cstring>
 
-#include "libbinlogevents/include/gtids/gtid.h"
 #include "libchangestreams/include/mysql/cs/reader/binary/mysqlproto.h"
 #include "my_byteorder.h"
+#include "mysql/gtid/gtid.h"
 
 namespace cs::reader::binary {
 
@@ -69,35 +70,55 @@ bool Mysql_protocol::setup() {
   return false;
 }
 
+uint64_t calculate_encoded_num_tsids_value(
+    const mysql::gtid::Gtid_set &gtid_set,
+    const mysql::gtid::Gtid_format &format) {
+  uint64_t num_tsids = gtid_set.get_num_tsids();
+  uint64_t format_encoded =
+      static_cast<uint64_t>(mysql::utils::to_underlying(format));
+  uint64_t value_encoded = num_tsids | (format_encoded << 56);
+  if (format == mysql::gtid::Gtid_format::tagged) {
+    value_encoded = (format_encoded << 56) | (num_tsids << 8) | format_encoded;
+  }
+  return value_encoded;
+}
+
 bool Mysql_protocol::encode_gtid_set_to_mysql_protocol(
-    const binary_log::gtids::Gtid_set &gtid_set, std::string &buffer) const {
+    const mysql::gtid::Gtid_set &gtid_set, std::string &buffer) const {
   char tmp[8];
+  char tsid_tmp[mysql::gtid::Tsid::get_max_encoded_length()];
   const auto &contents = gtid_set.get_gtid_set();
+
+  auto format = gtid_set.get_gtid_set_format();
 
   if (contents.size() == 0) {
     return false;
   }
 
-  // serialize number of uuids
-  int8store(tmp, static_cast<ulonglong>(contents.size()));
+  // serialize number of tsids
+  int8store(tmp, calculate_encoded_num_tsids_value(gtid_set, format));
   buffer.append(tmp, 8);
 
   // for every uuid, serialize it and its intervals
-  for (auto const &[uuid, intervals] : contents) {
-    buffer.append(reinterpret_cast<const char *>(uuid.bytes),
-                  binary_log::gtids::Uuid::BYTE_LENGTH);
+  for (auto const &[uuid, tag_map] : contents) {
+    for (auto const &[tag, intervals] : tag_map) {
+      mysql::gtid::Tsid tsid(uuid, tag);
+      auto tsid_bytes =
+          tsid.encode_tsid(reinterpret_cast<unsigned char *>(tsid_tmp), format);
+      buffer.append(tsid_tmp, tsid_bytes);
 
-    // serialize the number of intervals and append the intervals data
-    int8store(tmp, intervals.size());
-    buffer.append(tmp, 8);
-
-    // for every interval serialize start, end
-    for (auto const &intv : intervals) {
-      int8store(tmp, intv.get_start());
+      // serialize the number of intervals and append the intervals data
+      int8store(tmp, intervals.size());
       buffer.append(tmp, 8);
 
-      int8store(tmp, intv.get_end() + 1);
-      buffer.append(tmp, 8);
+      // for every interval serialize start, end
+      for (auto const &intv : intervals) {
+        int8store(tmp, intv.get_start());
+        buffer.append(tmp, 8);
+
+        int8store(tmp, intv.get_end() + 1);
+        buffer.append(tmp, 8);
+      }
     }
   }
   return false;

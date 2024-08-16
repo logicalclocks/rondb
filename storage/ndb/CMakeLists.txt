@@ -1,16 +1,17 @@
-# Copyright (c) 2008, 2023, Oracle and/or its affiliates.
-# Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,12 +34,14 @@ MSVC_CPPCHECK_DISABLE()
 DISABLE_MISSING_PROFILE_WARNING()
 
 IF(NOT WITHOUT_SERVER)
-  IF(NOT WITH_NDB AND NOT DEFINED WITH_NDBCLUSTER_STORAGE_ENGINE)
-    IF(CMAKE_SIZEOF_VOID_P EQUAL 4)
-      # Do not build ndbcluster plugin by default for 32-bit MySQL Server
-      SET(WITH_NDBCLUSTER_STORAGE_ENGINE 0)
-    ENDIF()
+  IF(WIN32)
+    SET(DEFAULT_TLS_SEARCH_PATH "$HOMEPATH/ndb-tls")
+  ELSE()
+    SET(DEFAULT_TLS_SEARCH_PATH "$HOME/ndb-tls")
   ENDIF()
+  SET(WITH_NDB_TLS_SEARCH_PATH ${DEFAULT_TLS_SEARCH_PATH}
+      CACHE STRING "Search path for TLS keys and certificates")
+
   #
   # Add the ndbcluster plugin
   #
@@ -113,6 +116,9 @@ IF(NOT WITHOUT_SERVER)
     plugin/ndb_index_stat_sample_table.cc
     plugin/ndb_applier.cc
     plugin/ndb_replica.cc
+    plugin/ndb_binlog_index_rows.cc
+    plugin/ndb_rpl_filter.cc
+    plugin/ndb_binlog_purger.cc
   )
 
   # Include directories used when building ha_ndbcluster
@@ -123,6 +129,10 @@ IF(NOT WITHOUT_SERVER)
   MYSQL_ADD_PLUGIN(ndbcluster ${NDBCLUSTER_SOURCES} STORAGE_ENGINE
     DEFAULT STATIC_ONLY
     LINK_LIBRARIES ndbclient_static extra::rapidjson)
+
+  SET_PROPERTY(SOURCE plugin/ha_ndbcluster.cc
+               PROPERTY COMPILE_DEFINITIONS
+               NDB_TLS_SEARCH_PATH="${WITH_NDB_TLS_SEARCH_PATH}")
 
   # Sanity check that MYSQL_ADD_PLUGIN didn't decide to skip build
   IF (NOT WITH_NDBCLUSTER_STORAGE_ENGINE)
@@ -138,6 +148,7 @@ IF(NOT WITHOUT_SERVER)
 
   NDB_ADD_TEST("ndb_bitmap-t" "plugin/ndb_bitmap.cc" LIBS ndbgeneral)
   NDB_ADD_TEST("ndb_blobs_buffer-t" "plugin/ndb_blobs_buffer.cc" LIBS ndbgeneral)
+  NDB_ADD_TEST("ndb_binlog_index_rows-t" "plugin/ndb_binlog_index_rows.cc" LIBS ndbgeneral)
 ELSEIF(NOT WITH_NDB)
   IF(WITH_NDBCLUSTER_STORAGE_ENGINE)
     MESSAGE(WARNING "Skips building ndbcluster plugin, WITHOUT_SERVER=ON "
@@ -162,10 +173,6 @@ FOREACH(warning
     STRING_APPEND(CMAKE_C_FLAGS " ${HAS_WARN_FLAG}")
   ENDIF()
 ENDFOREACH()
-
-IF(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-  MESSAGE(WARNING "Only 64-bit build of NDB is supported")
-ENDIF()
 
 INCLUDE(${CMAKE_CURRENT_SOURCE_DIR}/ndb_configure.cmake)
 
@@ -341,9 +348,10 @@ IF(WITH_NDBAPI_EXAMPLES)
   ADD_SUBDIRECTORY(ndbapi-examples)
 ENDIF()
 
+## WiX support disabled for now
+# ADD_SUBDIRECTORY(wix)
+
 IF(WITH_RDRS)
   ADD_SUBDIRECTORY(rest-server)
   ADD_SUBDIRECTORY(rest-server2)
 ENDIF()
-## WiX support disabled for now
-# ADD_SUBDIRECTORY(wix)

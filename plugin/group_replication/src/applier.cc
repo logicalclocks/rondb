@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,11 +37,14 @@
 #include "plugin/group_replication/include/applier.h"
 #include "plugin/group_replication/include/leave_group_on_failure.h"
 #include "plugin/group_replication/include/plugin.h"
+#include "plugin/group_replication/include/plugin_handlers/metrics_handler.h"
+#include "plugin/group_replication/include/plugin_handlers/recovery_metadata.h"
 #include "plugin/group_replication/include/plugin_messages/single_primary_message.h"
 #include "plugin/group_replication/include/plugin_server_include.h"
 #include "plugin/group_replication/include/services/notification/notification.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_member_identifier.h"
 #include "sql/protocol_classic.h"
+#include "string_with_len.h"
 
 char applier_module_channel_name[] = "group_replication_applier";
 bool applier_thread_is_exiting = false;
@@ -267,59 +271,75 @@ int Applier_module::apply_view_change_packet(
     Format_description_log_event *fde_evt, Continuation *cont) {
   int error = 0;
 
-  Gtid_set *group_executed_set = nullptr;
-  Sid_map *sid_map = nullptr;
+  Tsid_map sid_map(nullptr);
+  Gtid_set group_executed_set(&sid_map, nullptr);
   if (!view_change_packet->group_executed_set.empty()) {
-    sid_map = new Sid_map(nullptr);
-    group_executed_set = new Gtid_set(sid_map, nullptr);
     if (intersect_group_executed_sets(view_change_packet->group_executed_set,
-                                      group_executed_set)) {
+                                      &group_executed_set)) {
       LogPluginErr(
           WARNING_LEVEL,
           ER_GRP_RPL_ERROR_GTID_EXECUTION_INFO); /* purecov: inspected */
-      delete sid_map;                            /* purecov: inspected */
-      delete group_executed_set;                 /* purecov: inspected */
-      group_executed_set = nullptr;              /* purecov: inspected */
     }
   }
-
-  if (group_executed_set != nullptr) {
-    if (get_certification_handler()
-            ->get_certifier()
-            ->set_group_stable_transactions_set(group_executed_set)) {
-      LogPluginErr(WARNING_LEVEL,
-                   ER_GRP_RPL_CERTIFICATE_SIZE_ERROR); /* purecov: inspected */
-    }
-    delete sid_map;
-    delete group_executed_set;
-  }
-
-  View_change_log_event *view_change_event =
-      new View_change_log_event(view_change_packet->view_id.c_str());
-
-  Pipeline_event *pevent = new Pipeline_event(view_change_event, fde_evt);
-  pevent->mark_event(SINGLE_VIEW_EVENT);
 
   /*
-    If there are prepared consistent transactions waiting for the
-    prepare acknowledge, the View_change_log_event must be delayed
-    to after those transactions are committed, since they belong to
-    the previous view.
+    We call `garbage_collect()` always to update the metrics.
   */
-  if (transaction_consistency_manager->has_local_prepared_transactions()) {
-    DBUG_PRINT("info", ("Delaying the log of the view '%s' to after local "
-                        "prepared transactions",
-                        view_change_packet->view_id.c_str()));
-    transaction_consistency_manager->schedule_view_change_event(pevent);
-    pevent->set_delayed_view_change_waiting_for_consistent_transactions();
+  get_certification_handler()->get_certifier()->garbage_collect(
+      &group_executed_set, true);
+
+  /*
+    If all the group members are compatible to transfer the recovery metadata
+    without using VCLE. Do not send the VCLE.
+  */
+  if (!view_change_packet->m_need_vcle) {
+    Pipeline_event *pevent =
+        new Pipeline_event(new View_change_packet(view_change_packet));
+
+    error = inject_event_into_pipeline(pevent, cont);
+    delete pevent;
+  } else {
+    View_change_log_event *view_change_event =
+        new View_change_log_event(view_change_packet->view_id.c_str());
+
+    Pipeline_event *pevent = new Pipeline_event(view_change_event, fde_evt);
+    pevent->mark_event(SINGLE_VIEW_EVENT);
+
+    /*
+      If there are prepared consistent transactions waiting for the
+      prepare acknowledge, the View_change_log_event must be delayed
+      to after those transactions are committed, since they belong to
+      the previous view.
+    */
+    if (transaction_consistency_manager->has_local_prepared_transactions()) {
+      DBUG_PRINT("info", ("Delaying the log of the view '%s' to after local "
+                          "prepared transactions",
+                          view_change_packet->view_id.c_str()));
+      transaction_consistency_manager->schedule_view_change_event(pevent);
+      pevent->set_delayed_view_change_waiting_for_consistent_transactions();
+    }
+
+    error = inject_event_into_pipeline(pevent, cont);
+    if (!cont->is_transaction_discarded() &&
+        !pevent->is_delayed_view_change_waiting_for_consistent_transactions())
+      delete pevent;
   }
 
-  error = inject_event_into_pipeline(pevent, cont);
-  if (!cont->is_transaction_discarded() &&
-      !pevent->is_delayed_view_change_waiting_for_consistent_transactions())
-    delete pevent;
-
   return error;
+}
+
+int Applier_module::apply_metadata_processing_packet(
+    Recovery_metadata_processing_packets *metadata_processing_packet) {
+  if (metadata_processing_packet->m_current_member_leaving_the_group) {
+    recovery_metadata_module->delete_all_recovery_view_metadata();
+  } else {
+    recovery_metadata_module
+        ->delete_members_from_all_recovery_view_metadata_send_metadata_if_sender_left(
+            metadata_processing_packet->m_member_left_the_group,
+            metadata_processing_packet->m_view_id_to_be_deleted);
+  }
+
+  return 0;
 }
 
 int Applier_module::apply_data_packet(Data_packet *data_packet,
@@ -370,7 +390,8 @@ int Applier_module::apply_data_packet(Data_packet *data_packet,
     delete pevent;
 
     DBUG_EXECUTE_IF("stop_applier_channel_after_reading_write_rows_log_event", {
-      if (payload[EVENT_TYPE_OFFSET] == binary_log::WRITE_ROWS_EVENT) {
+      if (payload[EVENT_TYPE_OFFSET] ==
+          mysql::binlog::event::WRITE_ROWS_EVENT) {
         error = 1;
       }
     });
@@ -402,7 +423,8 @@ int Applier_module::apply_transaction_prepared_action_packet(
     Transaction_prepared_action_packet *packet) {
   DBUG_TRACE;
   return transaction_consistency_manager->handle_remote_prepare(
-      packet->get_sid(), packet->m_gno, packet->m_gcs_member_id);
+      packet->get_tsid(), packet->is_tsid_specified(), packet->m_gno,
+      packet->m_gcs_member_id);
 }
 
 int Applier_module::apply_sync_before_execution_action_packet(
@@ -469,7 +491,8 @@ int Applier_module::applier_thread_handle() {
     replication channel connected to a master that does not add checksum to its
     binary log files.
   */
-  fde_evt->common_footer->checksum_alg = binary_log::BINLOG_CHECKSUM_ALG_OFF;
+  fde_evt->common_footer->checksum_alg =
+      mysql::binlog::event::BINLOG_CHECKSUM_ALG_OFF;
   cont = new Continuation();
 
   // Give the handlers access to the applier THD
@@ -550,6 +573,18 @@ int Applier_module::applier_thread_handle() {
               while (!is_applier_thread_aborted()) my_sleep(1 * 1000 * 1000);
             };);
 
+        break;
+      case RECOVERY_METADATA_PROCESSING_PACKET_TYPE:
+        packet_application_error = apply_metadata_processing_packet(
+            static_cast<Recovery_metadata_processing_packets *>(packet));
+        this->incoming->pop();
+        break;
+      case ERROR_PACKET_TYPE:
+        packet_application_error = 1;
+        LogPluginErr(
+            ERROR_LEVEL, ER_GRP_RPL_APPLIER_ERROR_PACKET_RECEIVED,
+            static_cast<Error_action_packet *>(packet)->get_error_message());
+        this->incoming->pop();
         break;
       default:
         assert(0); /* purecov: inspected */
@@ -959,13 +994,13 @@ Certification_handler *Applier_module::get_certification_handler() {
 
 int Applier_module::intersect_group_executed_sets(
     std::vector<std::string> &gtid_sets, Gtid_set *output_set) {
-  Sid_map *sid_map = output_set->get_sid_map();
+  Tsid_map *tsid_map = output_set->get_tsid_map();
 
   std::vector<std::string>::iterator set_iterator;
   for (set_iterator = gtid_sets.begin(); set_iterator != gtid_sets.end();
        set_iterator++) {
-    Gtid_set member_set(sid_map, nullptr);
-    Gtid_set intersection_result(sid_map, nullptr);
+    Gtid_set member_set(tsid_map, nullptr);
+    Gtid_set intersection_result(tsid_map, nullptr);
 
     std::string exec_set_str = (*set_iterator);
 

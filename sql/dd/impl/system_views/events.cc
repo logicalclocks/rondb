@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -58,7 +59,10 @@ Events::Events() {
                          "CONVERT_TZ(evt.starts,'+00:00', evt.time_zone)");
   m_target_def.add_field(FIELD_ENDS, "ENDS",
                          "CONVERT_TZ(evt.ends,'+00:00', evt.time_zone)");
-  m_target_def.add_field(FIELD_STATUS, "STATUS", "evt.status");
+  m_target_def.add_field(
+      FIELD_STATUS, "STATUS",
+      "IF(evt.status = 'REPLICA_SIDE_DISABLED' AND "
+      "INTERNAL_USE_TERMINOLOGY_PREVIOUS(), 'SLAVESIDE_DISABLED', evt.status)");
   m_target_def.add_field(
       FIELD_ON_COMPLETION, "ON_COMPLETION",
       "IF (evt.on_completion='DROP', 'NOT PRESERVE', 'PRESERVE')");

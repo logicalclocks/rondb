@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,31 +23,28 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
+#include <NdbTick.h>
+#include <ndb_global.h>
+#include <EventLogger.hpp>
 #include "ndb_config.h"
 #include "util/require.h"
-#include <ndb_global.h>
-#include <NdbTick.h>
-#include <EventLogger.hpp>
 
-#define NANOSEC_PER_SEC  1000000000
+#define NANOSEC_PER_SEC 1000000000
 #define MICROSEC_PER_SEC 1000000
 #define MILLISEC_PER_SEC 1000
 #define MICROSEC_PER_MILLISEC 1000
-#define NANOSEC_PER_MILLISEC  1000000
-#define NANOSEC_PER_MICROSEC  1000
+#define NANOSEC_PER_MILLISEC 1000000
+#define NANOSEC_PER_MICROSEC 1000
 
 Uint64 NdbDuration::tick_frequency = 0;
 static bool isMonotonic = true;
 static bool isInited = false;
 
-
 #ifdef HAVE_CLOCK_GETTIME
 static clockid_t NdbTick_clk_id;
 #endif
 
-void NdbTick_Init()
-{
+void NdbTick_Init() {
   isInited = true;
 
 #ifdef HAVE_CLOCK_GETTIME
@@ -64,16 +62,13 @@ void NdbTick_Init()
    */
 #if defined(CLOCK_MONOTONIC) && !defined(__APPLE__)
   NdbTick_clk_id = CLOCK_MONOTONIC;
-  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0)
-    return;
+  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0) return;
 #elif defined(CLOCK_UPTIME_RAW) && defined(__APPLE__)
   NdbTick_clk_id = CLOCK_UPTIME_RAW;
-  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0)
-    return;
+  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0) return;
 #elif defined(CLOCK_HIGHRES)
   NdbTick_clk_id = CLOCK_HIGHRES;
-  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0)
-    return;
+  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0) return;
 #endif
 
   /**
@@ -81,8 +76,7 @@ void NdbTick_Init()
    */
   isMonotonic = false;
   NdbTick_clk_id = CLOCK_REALTIME;
-  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0)
-    return;
+  if (clock_gettime(NdbTick_clk_id, &tick_time) == 0) return;
 
   g_eventLogger->info(
       "Failed to use CLOCK_REALTIME for clock_gettime, errno=%u.  Aborting",
@@ -97,8 +91,7 @@ void NdbTick_Init()
    */
   LARGE_INTEGER perf_frequency;
   BOOL res = QueryPerformanceFrequency(&perf_frequency);
-  if (!res)
-  {
+  if (!res) {
     g_eventLogger->info(
         "BEWARE: A suitable monotonic timer was not available"
         " on this platform. ('QueryPerformanceFrequency()' failed). "
@@ -107,8 +100,7 @@ void NdbTick_Init()
   }
   LARGE_INTEGER unused;
   res = QueryPerformanceCounter(&unused);
-  if (!res)
-  {
+  if (!res) {
     g_eventLogger->info(
         "BEWARE: A suitable monotonic timer was not available on "
         "this platform. ('QueryPerformanceCounter()' failed). "
@@ -130,8 +122,7 @@ void NdbTick_Init()
 #endif
 }
 
-bool NdbTick_IsMonotonic()
-{
+bool NdbTick_IsMonotonic() {
   assert(isInited);
   return isMonotonic;
 }
@@ -140,13 +131,10 @@ bool NdbTick_IsMonotonic()
 #ifndef HAVE_CLOCK_GETTIME
 #error clock_gettime is expected to be supported on non Windows
 #endif
-int
-NdbTick_GetMonotonicClockId(clockid_t* clk)
-{
+int NdbTick_GetMonotonicClockId(clockid_t *clk) {
   require(clk != nullptr);
   require(isInited);
-  if (!isMonotonic)
-  {
+  if (!isMonotonic) {
     return -1;
   }
   *clk = NdbTick_clk_id;
@@ -154,8 +142,7 @@ NdbTick_GetMonotonicClockId(clockid_t* clk)
 }
 #endif
 
-const NDB_TICKS NdbTick_getCurrentTicks(void)
-{
+const NDB_TICKS NdbTick_getCurrentTicks(void) {
   assert(isInited);
 
 #if defined(HAVE_CLOCK_GETTIME)
@@ -169,18 +156,17 @@ const NDB_TICKS NdbTick_getCurrentTicks(void)
    * and is in control of the tp-arg ourself, it should be
    * safe to assume that errors will never be returned.
    */
-  assert(res==0);
+  assert(res == 0);
   (void)res;
 
 #ifndef NDBUG
-  if (unlikely(res != 0))
-  {
+  if (unlikely(res != 0)) {
     g_eventLogger->info("clock_gettime(%u, tp) failed, errno=%d",
                         NdbTick_clk_id, errno);
 #ifdef CLOCK_MONOTONIC
     g_eventLogger->info("CLOCK_MONOTONIC=%u", CLOCK_MONOTONIC);
 #endif
-#ifdef  CLOCK_HIGHRES
+#ifdef CLOCK_HIGHRES
     g_eventLogger->info("CLOCK_HIGHRES=%u", CLOCK_HIGHRES);
 #endif
 #ifdef CLOCK_UPTIME_RAW
@@ -193,9 +179,8 @@ const NDB_TICKS NdbTick_getCurrentTicks(void)
   }
 #endif
 
-  const Uint64 val =
-    ((Uint64)tick_time.tv_sec)  * ((Uint64)NANOSEC_PER_SEC) +
-    ((Uint64)tick_time.tv_nsec);
+  const Uint64 val = ((Uint64)tick_time.tv_sec) * ((Uint64)NANOSEC_PER_SEC) +
+                     ((Uint64)tick_time.tv_nsec);
 
 #elif defined(_WIN32)
   LARGE_INTEGER t_cnt;
@@ -204,7 +189,7 @@ const NDB_TICKS NdbTick_getCurrentTicks(void)
    * We tested support of QPC in NdbTick_Init().
    * Thus, it should not fail later.
    */
-  assert(res!=0);
+  assert(res != 0);
   const Uint64 val = (Uint64)(t_cnt.QuadPart);
   assert(val != 0);
 
@@ -217,12 +202,11 @@ const NDB_TICKS NdbTick_getCurrentTicks(void)
    * arguments. As we are in control of these ourself,
    * it is safe to assume that errors are never returned.
    */
-  require(res==0);
+  require(res == 0);
   (void)res;
 
-  const Uint64 val =
-    ((Uint64)tick_time.tv_sec) * ((Uint64)MICROSEC_PER_SEC) +
-    ((Uint64)tick_time.tv_usec);
+  const Uint64 val = ((Uint64)tick_time.tv_sec) * ((Uint64)MICROSEC_PER_SEC) +
+                     ((Uint64)tick_time.tv_usec);
 #endif
 
   {
@@ -231,12 +215,10 @@ const NDB_TICKS NdbTick_getCurrentTicks(void)
   }
 }
 
-
-const NDB_TICKS NdbTick_AddMilliseconds(NDB_TICKS ticks, Uint64 ms)
-{
+const NDB_TICKS NdbTick_AddMilliseconds(NDB_TICKS ticks, Uint64 ms) {
   assert(isInited);
   assert(NdbTick_IsValid(ticks));
   assert(NdbDuration::tick_frequency >= MILLISEC_PER_SEC);
-  ticks.t += (ms * (NdbDuration::tick_frequency/MILLISEC_PER_SEC));
+  ticks.t += (ms * (NdbDuration::tick_frequency / MILLISEC_PER_SEC));
   return ticks;
 }

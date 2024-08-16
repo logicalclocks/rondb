@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    Without limiting anything contained in the foregoing, this file,
    which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -91,6 +92,7 @@ lock at the same time as multiple read locks.
 #include <unistd.h>
 #endif
 
+#include "m_string.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -414,7 +416,7 @@ static enum enum_thr_lock_result wait_for_lock(struct st_lock_list *wait,
 
   set_timespec(&wait_timeout, lock_wait_timeout);
   while (!is_killed_hook(nullptr) || in_wait_list) {
-    int rc =
+    const int rc =
         mysql_cond_timedwait(data->cond, &data->lock->mutex, &wait_timeout);
     /*
       We must break the wait if one of the following occurs:
@@ -731,7 +733,7 @@ static inline void free_all_read_locks(THR_LOCK *lock,
 
 void thr_unlock(THR_LOCK_DATA *data) {
   THR_LOCK *lock = data->lock;
-  enum thr_lock_type lock_type = data->type;
+  const enum thr_lock_type lock_type = data->type;
   DBUG_TRACE;
   DBUG_PRINT("lock", ("data: %p  thread: 0x%x  lock: %p", data,
                       data->owner->thread_id, lock));
@@ -902,7 +904,7 @@ enum enum_thr_lock_result thr_multi_lock(THR_LOCK_DATA **data, uint count,
   if (count > 1) sort_locks(data, count);
   /* lock everything */
   for (pos = data, end = data + count; pos < end; pos++) {
-    enum enum_thr_lock_result result =
+    const enum enum_thr_lock_result result =
         thr_lock(*pos, owner, (*pos)->type, lock_wait_timeout);
     if (result != THR_LOCK_SUCCESS) { /* Aborted */
       thr_multi_unlock(data, (uint)(pos - data));

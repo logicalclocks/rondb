@@ -1,15 +1,16 @@
-// Copyright (c) 2022, 2023, Oracle and/or its affiliates.
+// Copyright (c) 2022, 2024, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0,
 // as published by the Free Software Foundation.
 //
-// This program is also distributed with certain software (including
+// This program is designed to work with certain software (including
 // but not limited to OpenSSL) that is licensed under separate terms,
 // as designated in a particular file or component or in included license
 // documentation.  The authors of MySQL hereby grant you an additional
 // permission to link the program and your derivative works with the
-// separately licensed software that they have included with MySQL.
+// separately licensed software that they have either included with
+// the program or referenced in the documentation.
 //
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,7 +41,7 @@
 
 namespace gis_transform_unittest {
 
-// geo SRS
+// geo SRS based on EPSG Dataset 9.3
 
 dd::String_type wgs84 =
     "GEOGCS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",SPHEROID[\"WGS "
@@ -64,7 +65,7 @@ dd::String_type modairy =
     "\"EPSG\",\"9122\"]],AXIS[\"Lon\",EAST],AXIS[\"Lat\",NORTH],AUTHORITY["
     "\"EPSG\",\"4120\"]]";
 
-// projections SRS
+// projections SRS based on EPSG Dataset 9.3ß
 // 1024
 dd::String_type webmerc3857 =
     "PROJCS[\"WGS 84 / Pseudo-Mercator\",GEOGCS[\"WGS 84\",DATUM[\"World "

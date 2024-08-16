@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,6 +30,7 @@
 #include <vector>
 
 #include "lex_string.h"
+#include "m_string.h"
 #include "map_helpers.h"
 #include "my_alloc.h"
 #include "my_dbug.h"
@@ -36,7 +38,9 @@
 #include "my_psi_config.h"
 #include "my_sqlcommand.h"
 #include "my_sys.h"
+#include "mysql/components/my_service.h"
 #include "mysql/components/services/bits/psi_statement_bits.h"
+#include "mysql/components/services/language_service.h"
 #include "mysqld_error.h"
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/create_field.h"
@@ -442,6 +446,9 @@ class sp_head {
   /// Stored program characteristics.
   st_sp_chistics *m_chistics;
 
+  /// Code if language is not SQL
+  LEX_CSTRING code;
+
   /**
     The value of sql_mode system variable at the CREATE-time.
 
@@ -460,7 +467,6 @@ class sp_head {
   LEX_STRING m_params;
   LEX_CSTRING m_body;
   LEX_CSTRING m_body_utf8;
-  LEX_STRING m_defstr;
   LEX_STRING m_definer_user;
   LEX_STRING m_definer_host;
 
@@ -546,6 +552,15 @@ class sp_head {
 
   /// Is this routine being executed?
   bool is_invoked() const { return m_flags & IS_INVOKED; }
+
+  /**
+    @returns true if this is an SQL routine, and
+             false if it is an external routine
+  */
+  bool is_sql() const {
+    assert(m_chistics->language.length > 0);
+    return native_strcasecmp(m_chistics->language.str, "SQL") == 0;
+  }
 
   /**
     Get the value of the SP cache version, as remembered
@@ -763,7 +778,7 @@ class sp_head {
     function call is NULL.
   */
   sp_instr *get_instr(uint i) {
-    return (i < (uint)m_instructions.size()) ? m_instructions.at(i) : NULL;
+    return (i < (uint)m_instructions.size()) ? m_instructions.at(i) : nullptr;
   }
 
   /**
@@ -942,6 +957,45 @@ class sp_head {
   uint32 unsafe_flags;
 
  private:
+  /**
+    language component related state of this sp.
+   */
+  external_program_handle m_language_stored_program;
+
+ public:
+  /**
+   * @brief Get the external program handle object
+   *
+   * @return external_program_handle
+   */
+  external_program_handle get_external_program_handle();
+
+  /**
+   * @brief Set the external program handle object
+   *
+   * @param sp The new external program handle object.
+   *           Use nullptr to unset the current one.
+   *
+   * @return true on errors
+   * @return false on success
+   */
+  bool set_external_program_handle(external_program_handle sp);
+
+  /**
+     Initialize and parse an external routine
+
+     If @ref m_language_stored_program is already set,
+     nothing will be done.
+
+     @param service The_program_execution service that will
+                    be used to execute this function
+
+     @returns false on success; true on failure
+  */
+  bool init_external_routine(
+      my_service<SERVICE_TYPE(external_program_execution)> &service);
+
+ private:
   /// Copy sp name from parser.
   void init_sp_name(THD *thd, sp_name *spname);
 
@@ -961,6 +1015,24 @@ class sp_head {
     @return Error status.
   */
   bool execute(THD *thd, bool merge_da_on_success);
+
+  /**
+    Execute external routine.
+
+    @param thd                  Thread context.
+
+    @return Error status.
+  */
+  bool execute_external_routine(THD *thd);
+
+  /**
+    Core function for executing the external routine.
+
+    @param thd                  Thread context.
+
+    @return Error status.
+  */
+  bool execute_external_routine_core(THD *thd);
 
   /**
     Perform a forward flow analysis in the generated code.

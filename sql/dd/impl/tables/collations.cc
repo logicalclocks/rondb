@@ -1,15 +1,16 @@
-/* Copyright (c) 2014, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,9 +29,8 @@
 #include <set>
 #include <vector>
 
-#include "m_ctype.h"
-
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/dd/cache/dictionary_client.h"     // dd::cache::Dictionary_...
 #include "sql/dd/dd.h"                          // dd::create_object
 #include "sql/dd/impl/cache/storage_adapter.h"  // Storage_adapter
@@ -124,14 +124,14 @@ bool Collations::populate(THD *thd) const {
   for (int internal_charset_id = 0;
        internal_charset_id < MY_ALL_CHARSETS_SIZE && !error;
        internal_charset_id++) {
-    CHARSET_INFO *cs = all_charsets[internal_charset_id];
+    const CHARSET_INFO *cs = all_charsets[internal_charset_id];
     if (cs && (cs->state & MY_CS_PRIMARY) && (cs->state & MY_CS_AVAILABLE) &&
         !(cs->state & MY_CS_HIDDEN)) {
       // We have identified a primary collation
       for (int internal_collation_id = 0;
            internal_collation_id < MY_ALL_CHARSETS_SIZE && !error;
            internal_collation_id++) {
-        CHARSET_INFO *cl = all_charsets[internal_collation_id];
+        const CHARSET_INFO *cl = all_charsets[internal_collation_id];
         if (cl && (cl->state & MY_CS_AVAILABLE) && my_charset_same(cs, cl)) {
           // Remove the id from the set of non-updated old ids.
           prev_coll_ids.erase(cl->number);

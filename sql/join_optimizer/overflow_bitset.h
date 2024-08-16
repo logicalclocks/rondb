@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -66,6 +67,7 @@
 #include <string.h>
 
 #include <array>
+#include <bit>
 #include <tuple>
 
 #include "my_alloc.h"
@@ -351,6 +353,12 @@ class OverflowBitsetBitsIn {
     int m_base;
 
    public:
+    using iterator_category = std::forward_iterator_tag;
+    using difference_type = size_t;
+    using value_type = size_t;
+    using pointer = value_type *;
+    using reference = value_type &;
+
     // For inline bitsets.
     iterator(uint64_t state, const Combine *combine)
         : m_combine(combine), m_state(state), m_end(nullptr), m_base(0) {
@@ -559,7 +567,7 @@ inline bool IsEmpty(const MutableOverflowBitset &x) {
 
 inline int PopulationCount(OverflowBitset x) {
   if (x.is_inline()) {
-    return PopulationCount(x.m_bits) - 1;
+    return std::popcount(x.m_bits) - 1;
   } else {
     return PopulationCountOverflow(x);
   }

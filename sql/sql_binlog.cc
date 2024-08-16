@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,12 +30,11 @@
 
 #include "base64.h"  // base64_needed_decoded_length
 #include "lex_string.h"
-#include "libbinlogevents/include/binlog_event.h"
-#include "m_string.h"
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
+#include "mysql/binlog/event/binlog_event.h"
 #include "mysql/service_mysql_alloc.h"
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
@@ -48,6 +48,9 @@
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
 #include "sql/system_variables.h"
+#include "string_with_len.h"
+
+using mysql::binlog::event::Log_event_type;
 
 /**
   Check if the event type is allowed in a BINLOG statement.
@@ -59,7 +62,7 @@ static int check_event_type(int type, Relay_log_info *rli) {
   Format_description_log_event *fd_event = rli->get_rli_description_event();
 
   switch (type) {
-    case binary_log::FORMAT_DESCRIPTION_EVENT:
+    case mysql::binlog::event::FORMAT_DESCRIPTION_EVENT:
       /*
         We need a preliminary FD event in order to parse the FD event,
         if we don't already have one.
@@ -75,15 +78,12 @@ static int check_event_type(int type, Relay_log_info *rli) {
       /* It is always allowed to execute FD events. */
       return 0;
 
-    case binary_log::ROWS_QUERY_LOG_EVENT:
-    case binary_log::TABLE_MAP_EVENT:
-    case binary_log::WRITE_ROWS_EVENT:
-    case binary_log::UPDATE_ROWS_EVENT:
-    case binary_log::DELETE_ROWS_EVENT:
-    case binary_log::WRITE_ROWS_EVENT_V1:
-    case binary_log::UPDATE_ROWS_EVENT_V1:
-    case binary_log::DELETE_ROWS_EVENT_V1:
-    case binary_log::PARTIAL_UPDATE_ROWS_EVENT:
+    case mysql::binlog::event::ROWS_QUERY_LOG_EVENT:
+    case mysql::binlog::event::TABLE_MAP_EVENT:
+    case mysql::binlog::event::WRITE_ROWS_EVENT:
+    case mysql::binlog::event::UPDATE_ROWS_EVENT:
+    case mysql::binlog::event::DELETE_ROWS_EVENT:
+    case mysql::binlog::event::PARTIAL_UPDATE_ROWS_EVENT:
       /*
         Row events are only allowed if a Format_description_event has
         already been seen.
@@ -147,14 +147,14 @@ void mysql_client_binlog_statement(THD *thd) {
     my_error(ER_SYNTAX_ERROR, MYF(0));
     return;
   }
-  size_t decoded_len = base64_needed_decoded_length(coded_len);
+  const size_t decoded_len = base64_needed_decoded_length(coded_len);
 
   /*
     option_bits will be changed when applying the event. But we don't expect
     it be changed permanently after BINLOG statement, so backup it first.
     It will be restored at the end of this function.
   */
-  ulonglong thd_options = thd->variables.option_bits;
+  const ulonglong thd_options = thd->variables.option_bits;
 
   /*
     Allocation
@@ -171,7 +171,7 @@ void mysql_client_binlog_statement(THD *thd) {
 
     /* when trying to create an rli from a client, there is no channel*/
     if ((rli = Rpl_info_factory::create_rli(INFO_REPOSITORY_DUMMY, false,
-                                            (const char *)"", true))) {
+                                            (const char *)""))) {
       thd->rli_fake = rli;
       rli->info_thd = thd;
     }
@@ -285,8 +285,9 @@ void mysql_client_binlog_statement(THD *thd) {
         ROWS_QUERY_LOG_EVENT if present in rli is deleted at the end
         of the event.
       */
-      if (ev->get_type_code() != binary_log::FORMAT_DESCRIPTION_EVENT &&
-          ev->get_type_code() != binary_log::ROWS_QUERY_LOG_EVENT) {
+      if (ev->get_type_code() !=
+              mysql::binlog::event::FORMAT_DESCRIPTION_EVENT &&
+          ev->get_type_code() != mysql::binlog::event::ROWS_QUERY_LOG_EVENT) {
         delete ev;
         ev = nullptr;
       }

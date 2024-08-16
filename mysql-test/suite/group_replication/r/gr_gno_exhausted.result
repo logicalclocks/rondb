@@ -10,6 +10,7 @@ call mtr.add_suppression("Impossible to generate Global Transaction Identifier: 
 call mtr.add_suppression("Error at event handling! Got error: 1");
 call mtr.add_suppression("Fatal error during execution on the Applier process of Group Replication. The server will now leave the group.");
 call mtr.add_suppression("The server was automatically set into read only mode after an error was detected.");
+call mtr.add_suppression("The server was automatically set into offline mode after an error was detected.");
 call mtr.add_suppression("The member is leaving a group without being on one.");
 call mtr.add_suppression("The member is already leaving or joining a group.");
 call mtr.add_suppression("Unable to ensure the execution of group transactions received during recovery.");
@@ -25,6 +26,7 @@ call mtr.add_suppression("Impossible to generate Global Transaction Identifier: 
 call mtr.add_suppression("Error at event handling! Got error: 1");
 call mtr.add_suppression("Fatal error during execution on the Applier process of Group Replication. The server will now leave the group.");
 call mtr.add_suppression("The server was automatically set into read only mode after an error was detected.");
+call mtr.add_suppression("The server was automatically set into offline mode after an error was detected.");
 call mtr.add_suppression("All donors left. Aborting group replication incremental recovery.");
 call mtr.add_suppression("Fatal error during the incremental recovery process of Group Replication. The server will leave the group.");
 call mtr.add_suppression("The member is leaving a group without being on one.");
@@ -41,11 +43,13 @@ SET SESSION sql_log_bin= 1;
 [connection server1]
 SET GLOBAL GTID_PURGED= "c234f752-1ee4-11e6-adee-00212844d44e:1-9223372036854775804";
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775804]
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 include/start_and_bootstrap_group_replication.inc
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775805]
 [connection server2]
 SET GLOBAL GTID_PURGED= "c234f752-1ee4-11e6-adee-00212844d44e:1-9223372036854775804";
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775804]
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 include/start_group_replication.inc
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775806]
 [connection server1]
@@ -60,7 +64,7 @@ include/stop_group_replication.inc
 ############################################################
 # 2. Validate that member start moves to ERROR state when
 #    group GNOs are exhausted.
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 SET GLOBAL GTID_PURGED= "c234f752-1ee4-11e6-adee-00212844d44e:1-9223372036854775806";
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775806]
 include/start_group_replication.inc
@@ -69,13 +73,13 @@ include/stop_group_replication.inc
 # 3. Validate that member moves to ERROR state when group
 #    GNOs are exhausted on view change log.
 [connection server1]
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 SET GLOBAL GTID_PURGED= "c234f752-1ee4-11e6-adee-00212844d44e:1-9223372036854775805";
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775805]
 include/start_and_bootstrap_group_replication.inc
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775806]
 [connection server2]
-RESET MASTER;
+RESET BINARY LOGS AND GTIDS;
 SET GLOBAL GTID_PURGED= "c234f752-1ee4-11e6-adee-00212844d44e:1-9223372036854775805";
 include/assert.inc [GTID_EXECUTED must be UUID:1-9223372036854775805]
 include/start_group_replication.inc
@@ -87,10 +91,12 @@ include/stop_group_replication.inc
 ############################################################
 # 4. Clean up.
 [connection server2]
-RESET MASTER;
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
+RESET BINARY LOGS AND GTIDS;
 include/start_and_bootstrap_group_replication.inc
 [connection server1]
-RESET MASTER;
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
+RESET BINARY LOGS AND GTIDS;
 include/start_group_replication.inc
 [connection server1]
 SET SESSION sql_log_bin= 0;

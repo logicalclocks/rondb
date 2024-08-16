@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,6 +30,7 @@
 #include "mysql/harness/logging/registry.h"
 #include "mysql/harness/logging/supported_logger_options.h"
 #include "mysql/harness/plugin.h"
+#include "scope_guard.h"
 
 #include <Windows.h>
 #include <cstdarg>
@@ -71,7 +73,7 @@ static WORD logger_to_eventlog_severity(LogLevel level) {
 
 static void create_eventlog_registry_entry(
     const std::string &event_source_name) {
-  HKEY hRegKey = NULL;
+  HKEY hRegKey = nullptr;
   TCHAR szPath[MAX_PATH];
   DWORD dwTypes;
 
@@ -107,8 +109,7 @@ static void create_eventlog_registry_entry(
 
   // make sure to close the registry key no matter what error we enconter from
   // here
-  std::shared_ptr<void> exit_guard(nullptr,
-                                   [&](void *) { RegCloseKey(hRegKey); });
+  Scope_guard exit_guard([&]() { RegCloseKey(hRegKey); });
 
   /* Name of the PE module that contains the message resource */
   GetModuleFileName(nullptr, szPath, MAX_PATH);
@@ -149,7 +150,7 @@ EventlogHandler::EventlogHandler(
   if (create_registry_entries)
     create_eventlog_registry_entry(event_source_name_);
 
-  event_src_ = RegisterEventSourceA(NULL, event_source_name_.c_str());
+  event_src_ = RegisterEventSourceA(nullptr, event_source_name_.c_str());
   if (!event_src_) {
     throw std::runtime_error("Cannot create event log source, error: " +
                              std::to_string(GetLastError()));
@@ -166,7 +167,7 @@ void EventlogHandler::do_log(
   const auto severity = logger_to_eventlog_severity(record.level);
 
   ReportEvent(event_src_, severity, /*category*/ 0,
-              /*eventid*/ MSG_EVENTLOG, NULL, 3, 0, strings, NULL);
+              /*eventid*/ MSG_EVENTLOG, nullptr, 3, 0, strings, nullptr);
 }
 
 extern "C" {
@@ -186,5 +187,6 @@ mysql_harness::Plugin harness_plugin_eventlog = {
     false,    // declares_readiness
     logger_sink_supported_options.size(),
     logger_sink_supported_options.data(),
+    nullptr,  // expose_configuration
 };
 }

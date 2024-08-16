@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,6 +31,8 @@
 #include "m_string.h"
 #include "my_inttypes.h"
 #include "my_stacktrace.h"
+#include "mysql/strings/int2str.h"
+#include "template_utils.h"
 #include "unittest/gunit/test_utils.h"
 #include "unittest/gunit/thread_utils.h"
 
@@ -140,36 +143,6 @@ TEST_F(FatalSignalDeathTest, CrashOnParallelAbort) {
         ContainsRangeOfOccurrencesCached(2, 10, expected_backtrace_string));
   }
   EXPECT_TRUE(contains_cached_result);
-}
-
-TEST_F(FatalSignalDeathTest, Segfault) {
-#if defined(_WIN32)
-  int *pint = NULL;
-  /*
-   After upgrading from gtest 1.5 to 1.6 this segfault is no longer
-   caught by handle_fatal_signal(). We get an empty error message from the
-   gtest library instead.
-  */
-  EXPECT_DEATH_IF_SUPPORTED(*pint = 42, "");
-#elif defined(HAVE_ASAN)
-/* gcc 4.8.1 with '-fsanitize=address -O1' */
-/* Newer versions of ASAN give other error message, disable it */
-// EXPECT_DEATH_IF_SUPPORTED(*pint= 42, ".*ASAN:SIGSEGV.*");
-#elif defined(__APPLE__) && defined(__aarch64__) && defined(NDEBUG)
-  // Disable also in non-debug mode on MacOS 11 arm, with -O1 or above, we get
-  // Result: died but not with expected error.
-  // Expected: contains regular expression ".* UTC - mysqld got signal .*"
-  // Actual msg:
-  // We do get: "Trace/BPT trap: 5" but not as part of the matcher input in
-  // EXPECT_DEATH(statement, matcher);
-#elif defined(HANDLE_FATAL_SIGNALS)
-  int *pint = nullptr;
-  /*
-   On most platforms we get SIGSEGV == 11, but SIGBUS == 10 is also possible.
-   And on Mac OsX we can get SIGILL == 4 (but only in optimized mode).
-  */
-  EXPECT_DEATH_IF_SUPPORTED(*pint = 42, ".* UTC - mysqld got signal .*");
-#endif
 }
 
 // Verifies that my_safe_utoa behaves like sprintf(_, "%llu", _)

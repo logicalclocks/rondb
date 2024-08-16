@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -44,7 +45,7 @@ typedef unsigned int PSI_memory_key;
 extern PSI_memory_key key_memory_Filesort_buffer_sort_keys;
 extern PSI_memory_key key_memory_Gtid_set_Interval_chunk;
 extern PSI_memory_key key_memory_Gtid_set_to_string;
-extern PSI_memory_key key_memory_Sid_map_Node;
+extern PSI_memory_key key_memory_tsid_map_Node;
 extern PSI_memory_key key_memory_String_value;
 extern PSI_memory_key key_memory_log_error_loaded_services;
 extern PSI_memory_key key_memory_log_error_stack;
@@ -97,6 +98,11 @@ extern PSI_memory_key key_memory_xa_recovered_transactions;
 extern PSI_memory_key key_memory_Row_data_memory_memory;
 extern PSI_memory_key key_memory_Rpl_info_file_buffer;
 extern PSI_memory_key key_memory_Rpl_info_table;
+extern PSI_memory_key key_memory_rpl_thd_context;
+extern PSI_memory_key key_memory_applier;
+extern PSI_memory_key key_memory_recovery;
+extern PSI_memory_key key_memory_show_binlog_events;
+extern PSI_memory_key key_memory_relaylog_recovery;
 extern PSI_memory_key key_memory_REPLICA_INFO;
 extern PSI_memory_key key_memory_ST_SCHEMA_TABLE;
 extern PSI_memory_key key_memory_Slave_applier_json_diff_vector;
@@ -120,7 +126,6 @@ extern PSI_memory_key key_memory_acl_memex;
 extern PSI_memory_key key_memory_acl_cache;
 extern PSI_memory_key key_memory_acl_map_cache;
 extern PSI_memory_key key_memory_binlog_cache_mngr;
-extern PSI_memory_key key_memory_binlog_pos;
 extern PSI_memory_key key_memory_binlog_recover_exec;
 extern PSI_memory_key key_memory_binlog_statement_buffer;
 extern PSI_memory_key key_memory_bison_stack;
@@ -132,7 +137,7 @@ extern PSI_memory_key key_memory_global_system_variables;
 extern PSI_memory_key key_memory_errmsgs_handler;
 extern PSI_memory_key key_memory_handlerton_objects;
 extern PSI_memory_key key_memory_hash_index_key_buffer;
-extern PSI_memory_key key_memory_hash_join;
+extern PSI_memory_key key_memory_hash_op;
 extern PSI_memory_key key_memory_help;
 extern PSI_memory_key key_memory_histograms;
 extern PSI_memory_key key_memory_host_cache_hostname;

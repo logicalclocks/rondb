@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2023, Oracle and/or its affiliates.
+Copyright (c) 1994, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -36,15 +37,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "mtr0mtr.h"
 #include "page0zip.h"
 #endif /* !UNIV_HOTBACKUP */
-
-/** NOTE - Changing this from the original number of 50 to 45 as
-insert_debug.test was failing in ASAN build because of a stack overflow issue.
-It was found that rtr_info_t was taking up a lot of stack space in the function
-btr_insert_on_non_leaf_level_func which is part of the recursive stack
-trace. */
-/** Maximum B-tree page level (not really a hard limit). Used in debug
- assertions in btr_page_set_level and btr_page_get_level */
-constexpr uint32_t BTR_MAX_NODE_LEVEL = 45;
 
 #ifndef UNIV_HOTBACKUP
 static inline buf_block_t *btr_block_get_func(
@@ -114,7 +106,6 @@ static inline void btr_page_set_level(
     mtr_t *mtr)               /*!< in: mini-transaction handle */
 {
   ut_ad(page != nullptr);
-  ut_ad(mtr != nullptr);
   ut_ad(level <= BTR_MAX_NODE_LEVEL);
 
   if (page_zip) {
@@ -143,7 +134,6 @@ static inline void btr_page_set_next(
     mtr_t *mtr)               /*!< in: mini-transaction handle */
 {
   ut_ad(page != nullptr);
-  ut_ad(mtr != nullptr);
 
   if (page_zip) {
     mach_write_to_4(page + FIL_PAGE_NEXT, next);
@@ -173,7 +163,6 @@ static inline void btr_page_set_prev(
     mtr_t *mtr)               /*!< in: mini-transaction handle */
 {
   ut_ad(page != nullptr);
-  ut_ad(mtr != nullptr);
 
   if (page_zip) {
     mach_write_to_4(page + FIL_PAGE_PREV, prev);

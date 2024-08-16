@@ -1,15 +1,16 @@
-# Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2019, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -44,9 +45,8 @@ IF(NOT FASTCOV_EXECUTABLE)
   RETURN()
 ENDIF()
 
-IF(NOT CMAKE_COMPILER_IS_GNUCXX OR
-    CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-  MESSAGE(WARNING "You should upgrade to gcc version >= 9")
+IF(NOT CMAKE_COMPILER_IS_GNUCXX)
+  MESSAGE(WARNING "You should upgrade to gcc version >= 10")
   RETURN()
 ENDIF()
 
@@ -88,9 +88,9 @@ IF(CMAKE_MATCH_1)
   SET(GCOV_VERSION "${CMAKE_MATCH_1}")
 ENDIF()
 
-IF(GCOV_VERSION AND GCOV_VERSION VERSION_LESS 9)
+IF(GCOV_VERSION AND GCOV_VERSION VERSION_LESS 10)
   MESSAGE(FATAL_ERROR "${GCOV_EXECUTABLE} has version ${GCOV_VERSION}\n"
-    "At least version 9 is required")
+    "At least version 10 is required")
 ENDIF()
 
 IF(WITH_ROUTER)

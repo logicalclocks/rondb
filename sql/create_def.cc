@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-  Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -72,7 +73,7 @@
 /** Prints an error message supplied and attaches GetLastError with formatted
  * message. */
 void error(std::string message) {
-  DWORD last_error = GetLastError();
+  const DWORD last_error = GetLastError();
   std::cerr << "Error during generating .def file: " << message << "\n"
             << "Last OS error code: " << last_error
             << ", msg: " << std::system_category().message((int)last_error)
@@ -178,7 +179,7 @@ void Process<TCallback>::create_pipe(DWORD pipe_size) {
   // The write side of the pipe needs to be inheritable.
   sec_attributes.nLength = sizeof(SECURITY_ATTRIBUTES);
   sec_attributes.bInheritHandle = TRUE;
-  sec_attributes.lpSecurityDescriptor = NULL;
+  sec_attributes.lpSecurityDescriptor = nullptr;
 
   // We create buffer big enough to not make child process stall while we are
   // processing its older output.
@@ -211,8 +212,9 @@ void Process<TCallback>::create_process(std::string cmd_line) {
   // However, only the UNICODE CreateProcessW variant actually modifies the
   // memory supplied. Since this program assumes it is compiled with ANSI
   // support only (no use of TCHAR) we can just cast the const away.
-  if (!CreateProcess(NULL, const_cast<char *>(cmd_line.c_str()), NULL, NULL,
-                     TRUE, 0, NULL, NULL, &start_info, &proc_info)) {
+  if (!CreateProcess(nullptr, const_cast<char *>(cmd_line.c_str()), nullptr,
+                     nullptr, TRUE, 0, nullptr, nullptr, &start_info,
+                     &proc_info)) {
     error("CreateProcess failed");
   } else {
     m_process_handle = proc_info.hProcess;
@@ -234,8 +236,8 @@ void Process<TCallback>::read_output(TCallback &&input_handler) {
 
   for (;;) {
     // Check if there is any data to be read.
-    if (!PeekNamedPipe(m_stdout_read_pipe, NULL, 0, NULL, &bytes_available,
-                       NULL)) {
+    if (!PeekNamedPipe(m_stdout_read_pipe, nullptr, 0, nullptr,
+                       &bytes_available, nullptr)) {
       // This error is reported when the pipe is closed.
       if (GetLastError() != 109) {
         error("PeekNamedPipe failed");
@@ -245,7 +247,8 @@ void Process<TCallback>::read_output(TCallback &&input_handler) {
     if (bytes_available) {
       // Read actual data from pipe, but no more than our small buffer.
       if (!ReadFile(m_stdout_read_pipe, raw_buffer,
-                    std::min(bytes_available, buf_size), &bytes_read, NULL)) {
+                    std::min(bytes_available, buf_size), &bytes_read,
+                    nullptr)) {
         error("ReadFile on child process output pipe failed");
       }
       input_handler(raw_buffer, bytes_read);
@@ -327,6 +330,7 @@ void Unique_symbol_map::insert(const std::string &symbol_line) {
       "_VInfreq_?",  // special label (exception handler?) for Intel compiler
       "?_E",         // vector deleting destructor
       "<lambda_",    // anything that is lambda-related
+      "__isa_available_default",  // strange symbol that breaks PGO
   };
   if (symbol_line.find("External") == std::string::npos) {
     return;
@@ -414,7 +418,7 @@ class Resp_file {
     std::ofstream rspFile(get_name().c_str());
     rspFile << "/symbols \n";
     for (int i = 0; i < arguments_count; ++i) {
-      std::string input(arguments[i]);
+      const std::string input(arguments[i]);
       if (input.size() > 4 && (input.substr(input.size() - 4) == ".lib" ||
                                input.substr(input.size() - 4) == ".obj")) {
         rspFile << "\"" << input << "\"\n";

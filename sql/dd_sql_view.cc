@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,12 +29,12 @@
 #include <vector>
 
 #include "lex_string.h"
-#include "m_ctype.h"  // my_casedn_str
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sqlcommand.h"
 #include "my_sys.h"
 #include "mysql/components/services/log_builtins.h"
+#include "mysql/strings/m_ctype.h"  // my_casedn_str
 #include "mysqld_error.h"
 #include "sql/auth/auth_common.h"
 #include "sql/dd/cache/dictionary_client.h"  // dd::cache::Dictionary_client
@@ -585,7 +586,7 @@ static bool open_views_and_update_metadata(
         view->algorithm != VIEW_ALGORITHM_TEMPTABLE) {
       for (ORDER *order = thd->lex->query_block->order_list.first; order;
            order = order->next)
-        order->used_alias = false;  /// @see Item::print_for_order()
+        order->used_alias = nullptr;  /// @see Item::print_for_order()
     }
     Sql_mode_parse_guard parse_guard(thd);
     thd->lex->unit->print(
@@ -786,7 +787,7 @@ bool update_referencing_views_metadata(
   DBUG_TRACE;
   assert(table != nullptr);
 
-  bool error = update_referencing_views_metadata(
+  const bool error = update_referencing_views_metadata(
       thd, table->get_db_name(), table->get_table_name(), new_db,
       new_table_name, commit_dd_changes, uncommitted_tables);
   return error;
@@ -805,7 +806,7 @@ bool update_referencing_views_metadata(
   DBUG_TRACE;
   assert(db_name && table_name);
 
-  bool error = update_referencing_views_metadata(
+  const bool error = update_referencing_views_metadata(
       thd, db_name, table_name, nullptr, nullptr, commit_dd_changes,
       uncommitted_tables);
   return error;

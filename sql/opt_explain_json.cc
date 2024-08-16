@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,11 +30,10 @@
 #include <cstddef>  // size_t
 #include <cstdio>
 
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_alloc.h"  // operator new
 #include "my_compiler.h"
 
+#include "mysql/strings/m_ctype.h"
 #include "sql-common/json_dom.h"
 #include "sql/current_thd.h"  // current_thd
 #include "sql/enum_query_type.h"
@@ -52,6 +52,7 @@
 #include "sql/temp_table_param.h"
 #include "sql/window.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 
 class Query_expression;
 
@@ -399,8 +400,8 @@ class context : public Explain_context {
 /**
   Node class to wrap a subquery node tree
 
-  Implements CTX_WHERE, CTX_HAVING, CTX_ORDER_BY_SQ, CTX_GROUP_BY_SQ and
-  CTX_OPTIMIZED_AWAY_SUBQUERY context nodes.
+  Implements CTX_WHERE, CTX_HAVING,  CTX_QUALIFY, CTX_ORDER_BY_SQ,
+  CTX_GROUP_BY_SQ and CTX_OPTIMIZED_AWAY_SUBQUERY context nodes.
   This class hosts underlying join_ctx or uion_ctx.
 
   Is used for a subquery, a derived table.
@@ -499,7 +500,7 @@ class subquery_ctx : virtual public context, public qep_row {
   bool format_query_block(Opt_trace_context *json) {
     if (subquery->is_query_block()) return subquery->format(json);
 
-    Opt_trace_object query_block(json, K_QUERY_BLOCK);
+    const Opt_trace_object query_block(json, K_QUERY_BLOCK);
     return subquery->format(json);
   }
 
@@ -528,7 +529,7 @@ class subquery_ctx : virtual public context, public qep_row {
 static bool format_list(Opt_trace_context *json, List<subquery_ctx> &subqueries,
                         const char *name) {
   if (!subqueries.is_empty()) {
-    Opt_trace_array subs(json, name);
+    const Opt_trace_array subs(json, name);
 
     List_iterator<subquery_ctx> it(subqueries);
     subquery_ctx *t;
@@ -778,12 +779,12 @@ class table_with_where_and_derived : public table_base_ctx {
   bool format_derived(Opt_trace_context *json) override {
     if (derived_from.elements == 0) return false;
     if (derived_from.elements == 1) return derived_from.head()->format(json);
-    Opt_trace_array loops(json, K_NESTED_LOOP);
+    const Opt_trace_array loops(json, K_NESTED_LOOP);
 
     List_iterator<context> it(derived_from);
     context *c;
     while ((c = it++)) {
-      Opt_trace_object anonymous_wrapper(json);
+      const Opt_trace_object anonymous_wrapper(json);
       if (c->format(json)) return true;
     }
     return false;
@@ -1302,7 +1303,7 @@ bool join_ctx::format_body(Opt_trace_context *json, Opt_trace_object *obj) {
                              join_tabs.head()->get_mod_type() == MT_REPLACE)) {
     join_tabs.head()->format(json);
     if (sort || join_tabs.elements > 1) {
-      Opt_trace_object insert_from(json, "insert_from");
+      const Opt_trace_object insert_from(json, "insert_from");
       if (format_body_inner(json, obj)) return true; /* purecov: inspected */
     }
   } else if (format_body_inner(json, obj))
@@ -1346,11 +1347,11 @@ bool join_ctx::format_nested_loop(Opt_trace_context *json) {
   */
   if (join_tab_num == 1) return (it++)->format(json);
 
-  Opt_trace_array loops(json, K_NESTED_LOOP);
+  const Opt_trace_array loops(json, K_NESTED_LOOP);
 
   joinable_ctx *t;
   while ((t = it++)) {
-    Opt_trace_object anonymous_wrapper(json);
+    const Opt_trace_object anonymous_wrapper(json);
     if (t->format(json)) return true;
   }
   return false;
@@ -1368,7 +1369,7 @@ bool setop_result_ctx::format_body(Opt_trace_context *json,
     obj->add_alnum(K_MESSAGE, msg->entry()->col_message.str);
   }
 
-  Opt_trace_array specs(json, K_QUERY_SPECIFICATIONS);
+  const Opt_trace_array specs(json, K_QUERY_SPECIFICATIONS);
 
   List_iterator<context> it(*query_specs);
   context *ctx;
@@ -1425,7 +1426,7 @@ int join_ctx::add_where_subquery(subquery_ctx *ctx,
   joinable_ctx *j;
   bool found = false;
   while ((j = it++)) {
-    int ret = j->add_where_subquery(ctx, subquery);
+    const int ret = j->add_where_subquery(ctx, subquery);
     if (ret > 0) return true;
     found |= (ret == 0);
   }
@@ -1516,9 +1517,9 @@ class materialize_ctx : public joinable_ctx,
       obj->add_utf8(K_ATTACHED_CONDITION, col_attached_condition.str);
     if (format_where(json)) return true;
 
-    Opt_trace_object m(json, K_MATERIALIZED_FROM_SUBQUERY);
+    const Opt_trace_object m(json, K_MATERIALIZED_FROM_SUBQUERY);
     obj->add(K_USING_TMP_TABLE, true);
-    Opt_trace_object q(json, K_QUERY_BLOCK);
+    const Opt_trace_object q(json, K_QUERY_BLOCK);
     return format_nested_loop(json);
   }
 };
@@ -1598,7 +1599,7 @@ class setop_ctx : public unit_ctx {
       */
       Opt_trace_object union_res(json, K_UNION_RESULT);
       union_res.add(K_USING_TMP_TABLE, false);
-      Opt_trace_array specs(json, K_QUERY_SPECIFICATIONS);
+      const Opt_trace_array specs(json, K_QUERY_SPECIFICATIONS);
       List_iterator<context> it(query_specs);
       context *ctx;
       while ((ctx = it++)) {
@@ -1669,6 +1670,7 @@ bool Explain_format_JSON::begin_context(enum_parsing_context ctx_arg,
              current_context->type == CTX_OPTIMIZED_AWAY_SUBQUERY ||
              current_context->type == CTX_WHERE ||
              current_context->type == CTX_HAVING ||
+             current_context->type == CTX_QUALIFY ||
              current_context->type == CTX_ORDER_BY_SQ ||
              current_context->type == CTX_GROUP_BY_SQ ||
              current_context->type == CTX_QUERY_SPEC);
@@ -1916,6 +1918,7 @@ bool Explain_format_JSON::begin_context(enum_parsing_context ctx_arg,
              current_context->type == CTX_OPTIMIZED_AWAY_SUBQUERY ||
              current_context->type == CTX_WHERE ||
              current_context->type == CTX_HAVING ||
+             current_context->type == CTX_QUALIFY ||
              current_context->type == CTX_ORDER_BY_SQ ||
              current_context->type == CTX_GROUP_BY_SQ ||
              current_context->type == CTX_QUERY_SPEC);
@@ -2048,13 +2051,13 @@ bool Explain_format_JSON::end_context(enum_parsing_context ctx) {
       return true;
 
     {
-      Opt_trace_object braces(&json);
+      const Opt_trace_object braces(&json);
 
       if (current_context->format(&json)) return true;
     }
     json.end();
 
-    Opt_trace_iterator it(&json);
+    const Opt_trace_iterator it(&json);
     if (!it.at_end()) {
       Opt_trace_info info;
       it.get_value(&info);
@@ -2107,7 +2110,7 @@ std::string Explain_format_JSON::ExplainJsonToString(Json_object *json) {
   Json_wrapper wrapper(json, /*alias=*/true);
   StringBuffer<STRING_BUFFER_USUAL_SIZE> explain;
   if (wrapper.to_pretty_string(&explain, "ExplainJsonToString()",
-                               JsonDocumentDefaultDepthHandler)) {
+                               JsonDepthErrorHandler)) {
     return "";
   }
   return {explain.ptr(), explain.length()};

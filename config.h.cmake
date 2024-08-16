@@ -1,16 +1,17 @@
-/* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
  
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
  as published by the Free Software Foundation.
 
- This program is also distributed with certain software (including
+ This program is designed to work with certain software (including
  but not limited to OpenSSL) that is licensed under separate terms,
  as designated in a particular file or component or in included license
  documentation.  The authors of MySQL hereby grant you an additional
  permission to link the program and your derivative works with the
- separately licensed software that they have included with MySQL.
+ separately licensed software that they have either included with
+ the program or referenced in the documentation.
 
  This program is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -209,9 +210,6 @@
  */
 #cmakedefine CHECK_ERRMSG_FORMAT
 #cmakedefine MAX_INDEXES @MAX_INDEXES@
-#cmakedefine WITH_INNODB_MEMCACHED 1
-#cmakedefine ENABLE_MEMCACHED_SASL 1
-#cmakedefine ENABLE_MEMCACHED_SASL_PWDB 1
 #cmakedefine ENABLED_PROFILING 1
 #cmakedefine HAVE_ASAN
 #cmakedefine HAVE_LSAN
@@ -222,6 +220,7 @@
 #cmakedefine SCRAM_LIB_CONFIGURED
 #cmakedefine WITH_HYPERGRAPH_OPTIMIZER
 #cmakedefine KERBEROS_LIB_SSPI
+#cmakedefine WITH_SHOW_PARSE_TREE
 
 /* Lock Order */
 #cmakedefine WITH_LOCK_ORDER 1
@@ -294,6 +293,7 @@
 #cmakedefine DISABLE_PSI_MEMORY 1
 #cmakedefine DISABLE_PSI_TRANSACTION 1
 #cmakedefine DISABLE_PSI_SERVER_TELEMETRY_TRACES 1
+#cmakedefine DISABLE_PSI_METRICS 1
 
 /*
  * MySQL version
@@ -327,7 +327,7 @@
 #cmakedefine HANDLE_FATAL_SIGNALS 1
 
 /*
- * Hardcoded values needed by libevent/NDB/memcached
+ * Hardcoded values needed by libevent/NDB
  */
 #define HAVE_FCNTL_H 1
 #define HAVE_GETADDRINFO 1
@@ -364,5 +364,8 @@
 
 /* sasl_client_done support */
 #cmakedefine SASL_CLIENT_DONE_SUPPORTED @SASL_CLIENT_DONE_SUPPORTED@
+
+/* mysql native password support */
+#cmakedefine WITHOUT_MYSQL_NATIVE_PASSWORD @WITHOUT_MYSQL_NATIVE_PASSWORD@
 
 #endif

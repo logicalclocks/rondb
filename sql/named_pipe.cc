@@ -1,15 +1,16 @@
-/* Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,11 +30,14 @@
 #include <mysql/components/services/log_builtins.h>
 #include "my_config.h"
 #include "my_sys.h"
+#include "mysql/strings/int2str.h"
 #include "mysqld_error.h"
+#include "nulls.h"
 #include "sql/current_thd.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"
 #include "sql/sql_error.h"
+#include "strxnmov.h"
 
 bool is_existing_windows_group_name(const char *group_name) {
   // First, let's get a SID for the given group name...
@@ -80,18 +84,18 @@ static bool check_windows_group_for_everyone(const char *group_name,
     DWORD size_referencedDomainName = MAX_PATH;
     SID_NAME_USE sid_name_use;
 
-    if (!LookupAccountName(NULL, group_name, soughtSID, &size_sought_sid,
+    if (!LookupAccountName(nullptr, group_name, soughtSID, &size_sought_sid,
                            referencedDomainName, &size_referencedDomainName,
                            &sid_name_use)) {
       return false;
     }
 
-    if (!CreateWellKnownSid(WinWorldSid, NULL, worldSID, &size_world_sid)) {
-      DWORD last_error_num = GetLastError();
+    if (!CreateWellKnownSid(WinWorldSid, nullptr, worldSID, &size_world_sid)) {
+      const DWORD last_error_num = GetLastError();
       FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                    NULL, last_error_num,
+                    nullptr, last_error_num,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                    sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                    sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
       my_printf_error(
           ER_UNKNOWN_ERROR,
           "check_windows_group_for_everyone, CreateWellKnownSid failed: %s",
@@ -152,12 +156,12 @@ bool my_security_attr_add_rights_to_group(SECURITY_ATTRIBUTES *psa,
   // Treat the NAMED_PIPE_FULL_ACCESS_GROUP_EVERYONE value
   // as a special case: we  convert it to the "world" SID
   if (strcmp(group_name, NAMED_PIPE_FULL_ACCESS_GROUP_EVERYONE) == 0) {
-    if (!CreateWellKnownSid(WinWorldSid, NULL, soughtSID, &size_sid)) {
-      DWORD last_error_num = GetLastError();
+    if (!CreateWellKnownSid(WinWorldSid, nullptr, soughtSID, &size_sid)) {
+      const DWORD last_error_num = GetLastError();
       FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                    NULL, last_error_num,
+                    nullptr, last_error_num,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                    sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                    sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
       log_message(
           LOG_TYPE_ERROR, LOG_ITEM_LOG_PRIO, (longlong)ERROR_LEVEL,
           LOG_ITEM_LOG_LOOKUP, ER_NPIPE_CANT_CREATE,
@@ -166,14 +170,14 @@ bool my_security_attr_add_rights_to_group(SECURITY_ATTRIBUTES *psa,
       return true;
     }
   } else {
-    if (!LookupAccountName(NULL, group_name, soughtSID, &size_sid,
+    if (!LookupAccountName(nullptr, group_name, soughtSID, &size_sid,
                            referencedDomainName, &size_referencedDomainName,
                            &sid_name_use)) {
-      DWORD last_error_num = GetLastError();
+      const DWORD last_error_num = GetLastError();
       FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                    NULL, last_error_num,
+                    nullptr, last_error_num,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                    sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                    sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
       log_message(LOG_TYPE_ERROR, LOG_ITEM_LOG_PRIO, (longlong)ERROR_LEVEL,
                   LOG_ITEM_LOG_LOOKUP, ER_NPIPE_CANT_CREATE,
                   "LookupAccountName failed", last_error_msg);
@@ -189,19 +193,19 @@ bool my_security_attr_add_rights_to_group(SECURITY_ATTRIBUTES *psa,
     }
   }
 
-  PACL pNewDACL = NULL;
-  PACL pOldDACL = NULL;
+  PACL pNewDACL = nullptr;
+  PACL pOldDACL = nullptr;
   BOOL dacl_present_in_descriptor = FALSE;
   BOOL dacl_defaulted = FALSE;
   if (!GetSecurityDescriptorDacl(psa->lpSecurityDescriptor,
                                  &dacl_present_in_descriptor, &pOldDACL,
                                  &dacl_defaulted) ||
       !dacl_present_in_descriptor) {
-    DWORD last_error_num = GetLastError();
+    const DWORD last_error_num = GetLastError();
     FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                  NULL, last_error_num,
+                  nullptr, last_error_num,
                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                  sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                  sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
     log_message(LOG_TYPE_ERROR, LOG_ITEM_LOG_PRIO, (longlong)ERROR_LEVEL,
                 LOG_ITEM_LOG_LOOKUP, ER_NPIPE_CANT_CREATE,
                 "GetSecurityDescriptorDacl failed", last_error_msg);
@@ -231,7 +235,7 @@ bool my_security_attr_add_rights_to_group(SECURITY_ATTRIBUTES *psa,
 
   // Create a new ACL that merges the new ACE
   // into the existing DACL.
-  DWORD dwRes = SetEntriesInAcl(1, &ea, pOldDACL, &pNewDACL);
+  const DWORD dwRes = SetEntriesInAcl(1, &ea, pOldDACL, &pNewDACL);
   if (ERROR_SUCCESS != dwRes) {
     char num_buff[20];
     longlong10_to_str(dwRes, num_buff, 10);
@@ -244,11 +248,11 @@ bool my_security_attr_add_rights_to_group(SECURITY_ATTRIBUTES *psa,
   // Apply the new DACL to the existing security descriptor...
   if (!SetSecurityDescriptorDacl(psa->lpSecurityDescriptor, TRUE, pNewDACL,
                                  FALSE)) {
-    DWORD last_error_num = GetLastError();
+    const DWORD last_error_num = GetLastError();
     FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                  NULL, last_error_num,
+                  nullptr, last_error_num,
                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                  sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                  sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
     log_message(LOG_TYPE_ERROR, LOG_ITEM_LOG_PRIO, (longlong)ERROR_LEVEL,
                 LOG_ITEM_LOG_LOOKUP, ER_NPIPE_CANT_CREATE,
                 "SetSecurityDescriptorDacl failed", last_error_msg);
@@ -312,7 +316,7 @@ HANDLE create_server_named_pipe(SECURITY_ATTRIBUTES **ppsec_attr,
       buffer_size, buffer_size, NMPWAIT_USE_DEFAULT_WAIT, *ppsec_attr);
 
   if (ret_handle == INVALID_HANDLE_VALUE) {
-    DWORD last_error_num = GetLastError();
+    const DWORD last_error_num = GetLastError();
 
     if (last_error_num == ERROR_ACCESS_DENIED) {
       /*
@@ -327,9 +331,9 @@ HANDLE create_server_named_pipe(SECURITY_ATTRIBUTES **ppsec_attr,
     } else {
       FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS |
                         FORMAT_MESSAGE_MAX_WIDTH_MASK,
-                    NULL, last_error_num,
+                    nullptr, last_error_num,
                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), last_error_msg,
-                    sizeof(last_error_msg) / sizeof(TCHAR), NULL);
+                    sizeof(last_error_msg) / sizeof(TCHAR), nullptr);
       char num_buff[20];
       longlong10_to_str(last_error_num, num_buff, 10);
 

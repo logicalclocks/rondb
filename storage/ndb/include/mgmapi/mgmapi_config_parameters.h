@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -41,6 +42,7 @@
 #define CFG_NODE_DEDICATED            11
 #define CFG_NODE_PIDFILE_DIR          12
 #define CFG_NODE_ACTIVE               13
+#define CFG_NODE_REQUIRE_CERT         14
 
 /**
  * DB config parameters
@@ -268,7 +270,8 @@
 #define CFG_DB_AUTO_THREAD_CONFIG     677
 #define CFG_DB_TRP_KEEP_ALIVE_SEND_INTERVAL 678
 #define CFG_DB_TRANS_ERROR_LOGLEVEL 679
-#define CFG_DB_ENCRYPTED_FILE_SYSTEM  680
+#define CFG_DB_ENCRYPTED_FILE_SYSTEM 680
+#define CFG_DB_REQUIRE_TLS 681
 
 /* Start RonDB only configuration parameters */
 #define CFG_DB_MAX_NUM_SCHEMA_OBJECTS 688
@@ -315,7 +318,8 @@
 #define CFG_LOGLEVEL_SCHEMA       262
 #define CFG_MAX_LOGLEVEL          262
 
-#define CFG_MGM_PORT                  300
+#define CFG_MGM_PORT 300
+#define CFG_MGM_REQUIRE_TLS 301
 
 #define CFG_DB_MAX_BUFFERED_EPOCH_BYTES 350
 
@@ -344,6 +348,7 @@
 #define CFG_TCP_MAXSEG_SIZE           459
 #define CFG_TCP_BIND_INADDR_ANY       460
 #define CFG_TCP_SPINTIME              461
+#define CFG_TCP_REQUIRE_TLS           462
 
 #define CFG_TCP_ONLY_IPV4             499
 
@@ -351,7 +356,7 @@
 #define CFG_SHM_CHECKSUM              501
 #define CFG_SHM_KEY                   502
 #define CFG_SHM_BUFFER_MEM            503
-#define CFG_SHM_SIGNUM                504 //Deprecated
+#define CFG_SHM_SIGNUM 504  // Deprecated
 #define CFG_SHM_SPINTIME              505
 #define CFG_SHM_SEND_BUFFER_SIZE      506
 
@@ -409,5 +414,9 @@
 
 #define OPERATION_REDO_PROBLEM_ACTION_ABORT 0
 #define OPERATION_REDO_PROBLEM_ACTION_QUEUE 1
+
+#define CLIENT_TLS_RELAXED 0
+#define CLIENT_TLS_STRICT 1
+#define CLIENT_TLS_DEFERRED 2
 
 #endif

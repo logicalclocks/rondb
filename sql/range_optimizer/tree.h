@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -975,10 +976,6 @@ class SEL_TREE {
   /* The members below are filled/used only after get_mm_tree is done */
   Key_map ror_scans_map; /* bitmask of ROR scan-able elements in keys */
   uint n_ror_scans;      /* number of set bits in ror_scans_map */
-
-  ROR_SCAN_INFO **ror_scans;     /* list of ROR key scans */
-  ROR_SCAN_INFO **ror_scans_end; /* last ROR scan */
-  /* Note that #records for each key scan is stored in table->quick_rows */
 
   /**
     Convenience function for removing an element in keys[]. The typical

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,18 +28,25 @@
 
 #include "mysqlrouter/routing_export.h"
 
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <string>
 
 #include "mysql/harness/tls_client_context.h"
-#include "ssl_mode.h"  // SslVerify
+#include "mysqlrouter/ssl_mode.h"  // SslVerify
 
 /**
  * TlsClientContext per destination.
  */
 class ROUTING_EXPORT DestinationTlsContext {
  public:
+  DestinationTlsContext(bool session_cache_mode, size_t ssl_session_cache_size,
+                        unsigned int ssl_session_cache_timeout)
+      : session_cache_mode_(session_cache_mode),
+        ssl_session_cache_size_(ssl_session_cache_size),
+        ssl_session_cache_timeout_(ssl_session_cache_timeout) {}
+
   /**
    * set SslVerify.
    */
@@ -75,6 +83,11 @@ class ROUTING_EXPORT DestinationTlsContext {
   void ciphers(const std::string &ciphers);
 
   /**
+   * set client-key and its cert.
+   */
+  void client_key_and_cert_file(std::string key, std::string cert);
+
+  /**
    * get a TlsClientContent for a destination.
    *
    * If no TlsClientContext exists for the destination, creates a
@@ -109,9 +122,16 @@ class ROUTING_EXPORT DestinationTlsContext {
   std::string curves_;
   std::string ciphers_;
 
+  std::string cert_file_;
+  std::string key_file_;
+
   std::map<std::string, std::unique_ptr<TlsClientContext>> tls_contexts_;
 
   std::mutex mtx_;
+
+  bool session_cache_mode_{true};
+  size_t ssl_session_cache_size_{};
+  std::chrono::seconds ssl_session_cache_timeout_{std::chrono::seconds(0)};
 };
 
 #endif

@@ -1,15 +1,16 @@
-/* Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -48,15 +49,12 @@ extern "C" u_long xdr_sizeof(xdrproc_t, void *);
  */
 #define def_free_xdr_array(name) \
   static inline void free_##name##_array(name##_array *x)
-#define free_xdr_array(name)   \
-  def_free_xdr_array(name) {   \
-    free(x->name##_array_val); \
-    x->name##_array_val = 0;   \
-    x->name##_array_len = 0;   \
+#define free_xdr_array(name)       \
+  def_free_xdr_array(name) {       \
+    free(x->name##_array_val);     \
+    x->name##_array_val = nullptr; \
+    x->name##_array_len = 0;       \
   }
-
-#define in_range(x, name, n) \
-  (((int)n) >= 0 && ((int)n) < ((int)(x).name##_array_len))
 
 /**
     Resize an array

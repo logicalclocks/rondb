@@ -969,6 +969,10 @@ select * from t1 where i between 2 and 4 and v in ('def','3r4f','lmn');
 i	v
 4	3r4f
 drop table t1;
+create table t1 (t varchar(3073));
+alter table t1 add primary key (t(3073));
+ERROR 42000: Specified key was too long; max key length is 3072 bytes
+drop table t1;
 create table t1 (t varchar(255) default null, key t (t(80)))
 engine=myisam default charset=latin1;
 alter table t1 change t t text;
@@ -1049,9 +1053,9 @@ v	b
 abc	5
 DROP TABLE t1;
 create table t1 (a tinytext character set latin1);
-alter table t1 convert to character set utf8;
+alter table t1 convert to character set utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -1059,9 +1063,9 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3
 drop table t1;
 create table t1 (a mediumtext character set latin1);
-alter table t1 convert to character set utf8;
+alter table t1 convert to character set utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -1277,9 +1281,9 @@ ALTER TABLE t1 CHANGE d c varchar(10);
 affected rows: 0
 info: Records: 0  Duplicates: 0  Warnings: 0
 DROP TABLE t1;
-CREATE TABLE t1 (id int, c int) character set utf8;
+CREATE TABLE t1 (id int, c int) character set utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 INSERT INTO t1 VALUES (1,1);
 ALTER TABLE t1 CHANGE c d int;
 affected rows: 0
@@ -1389,10 +1393,10 @@ affected rows: 2
 info: Records: 2  Duplicates: 0  Warnings: 0
 DROP TABLE t1;
 CREATE TABLE t1 (f1 TIMESTAMP NULL DEFAULT NULL,
-f2 INT(11) DEFAULT NULL) ENGINE=MYISAM DEFAULT CHARSET=utf8;
+f2 INT(11) DEFAULT NULL) ENGINE=MYISAM DEFAULT CHARSET=utf8mb3;
 Warnings:
 Warning	1681	Integer display width is deprecated and will be removed in a future release.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 INSERT INTO t1 VALUES (NULL, NULL), ("2009-10-09 11:46:19", 2);
 this should affect no rows as there is no real change
 ALTER TABLE t1 CHANGE COLUMN f1 f1_no_real_change TIMESTAMP NULL DEFAULT NULL;
@@ -1474,9 +1478,9 @@ DROP TABLE t1;
 #
 # Bug#11754461 CANNOT ALTER TABLE WHEN KEY PREFIX TOO LONG
 #
-CREATE DATABASE db1 CHARACTER SET utf8;
+CREATE DATABASE db1 CHARACTER SET utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE db1.t1 (bar TINYTEXT, KEY (bar(100)));
 ERROR 42000: Specified key was too long; max key length is 255 bytes
 CREATE TABLE db1.t1 (bar TINYTEXT, KEY (bar(85)));
@@ -1900,16 +1904,16 @@ info: Records: 2  Duplicates: 0  Warnings: 0
 ALTER TABLE tm1 CONVERT TO CHARACTER SET utf16;
 affected rows: 2
 info: Records: 2  Duplicates: 0  Warnings: 0
-ALTER TABLE ti1 DEFAULT CHARACTER SET utf8;
+ALTER TABLE ti1 DEFAULT CHARACTER SET utf8mb3;
 affected rows: 0
 info: Records: 0  Duplicates: 0  Warnings: 1
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-ALTER TABLE tm1 DEFAULT CHARACTER SET utf8;
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+ALTER TABLE tm1 DEFAULT CHARACTER SET utf8mb3;
 affected rows: 2
 info: Records: 2  Duplicates: 0  Warnings: 1
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 ALTER TABLE ti1 FORCE;
 affected rows: 0
 info: Records: 0  Duplicates: 0  Warnings: 0
@@ -2840,61 +2844,59 @@ ERROR HY000: Partition management on a not partitioned table is not possible
 ALTER TABLE t TABLESPACE s;
 # Drop table and tablespace.
 DROP TABLE t;
-DROP TABLESPACE s ENGINE InnoDB;
-Warnings:
-Warning	1681	'ENGINE tablespace option' is deprecated and will be removed in a future release.
+DROP TABLESPACE s;
 #
-# Bug#20279241 - ALTER TABLE ... CHARACTER SET UTF8, CONVERT TO
+# Bug#20279241 - ALTER TABLE ... CHARACTER SET utf8mb3, CONVERT TO
 #                CHARACTER SET LATIN1 SHOULD FAIL
 #
 CREATE TABLE t1 (f1 INT);
 # Case 1: Alter table with CHARACTER SET X, CHARACTER SET X
 #         ALTER table operation should pass.
-ALTER TABLE t1 CHARACTER SET utf8, CHARACTER SET utf8;
+ALTER TABLE t1 CHARACTER SET utf8mb3, CHARACTER SET utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 # Case 2: Alter table with CHARACTER SET X, CONVERT TO CHARACTER SET X
 #         ALTER table operation should pass.
-ALTER TABLE t1 CHARACTER SET utf8, CONVERT TO CHARACTER SET utf8;
+ALTER TABLE t1 CHARACTER SET utf8mb3, CONVERT TO CHARACTER SET utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 # Case 3: Alter table with CONVERT TO CHARACTER SET X, CHARACTER SET X
 #         ALTER table operation should pass.
-ALTER TABLE t1 CONVERT TO CHARACTER SET utf8, CHARACTER SET utf8;
+ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb3, CHARACTER SET utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 # Case 4: Alter table with CONVERT TO CHARACTER SET X, CONVERT TO CHARACTER SET X
 #         ALTER table operation should pass.
-ALTER TABLE t1 CONVERT TO CHARACTER SET utf8, CONVERT TO CHARACTER SET utf8;
+ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb3, CONVERT TO CHARACTER SET utf8mb3;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 # Case 5: Alter table with CHARACTER SET X, CONVERT TO CHARACTER SET Y
 #         Alter table operations should fail with an error "ER_CONFLICTING_DECLARATIONS".
-ALTER TABLE t1 CHARACTER SET utf8, CONVERT TO CHARACTER SET latin1;
+ALTER TABLE t1 CHARACTER SET utf8mb3, CONVERT TO CHARACTER SET latin1;
 ERROR HY000: Conflicting declarations: 'CHARACTER SET utf8mb3' and 'CHARACTER SET latin1'
 # Case 6: Alter table with CONVERT TO CHARACTER SET X, CHARACTER SET Y
 #         Alter table operations should fail with an error "ER_CONFLICTING_DECLARATIONS".
-ALTER TABLE t1 CONVERT TO CHARACTER SET utf8, CHARACTER SET latin1;
+ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb3, CHARACTER SET latin1;
 ERROR HY000: Conflicting declarations: 'CHARACTER SET utf8mb3' and 'CHARACTER SET latin1'
 # Case 7: Alter table with CONVERT TO CHARACTER SET X, CONVERT TO CHARACTER SET Y
 #         Alter table operations should fail with an error "ER_CONFLICTING_DECLARATIONS".
-ALTER TABLE t1 CONVERT TO CHARACTER SET utf8, CONVERT TO CHARACTER SET latin1;
+ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb3, CONVERT TO CHARACTER SET latin1;
 ERROR HY000: Conflicting declarations: 'CHARACTER SET utf8mb3' and 'CHARACTER SET latin1'
 # Case 8: Alter table with CHARACTER SET X COLLATE INCORRECT_COLLATION_NAME
 #         Alter table operation should fail with an error "ER_COLLATION_CHARSET_MISMATCH"
-ALTER TABLE t1 CHARACTER SET utf8 COLLATE latin1_danish_ci;
+ALTER TABLE t1 CHARACTER SET utf8mb3 COLLATE latin1_danish_ci;
 ERROR 42000: COLLATION 'latin1_danish_ci' is not valid for CHARACTER SET 'utf8mb3'
 # Case 9: Alter table with CONVERT TO CHARACTER SET X COLLATE INCORRECT_COLLATION_NAME
 #         Alter table operation should fail with an error "ER_COLLATION_CHARSET_MISMATCH"
-ALTER TABLE t1 CONVERT TO CHARACTER SET utf8 COLLATE latin1_danish_ci;
+ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb3 COLLATE latin1_danish_ci;
 ERROR 42000: COLLATION 'latin1_danish_ci' is not valid for CHARACTER SET 'utf8mb3'
 # Case 10: Alter table with CHARACTER SET X, CONVERT TO CHARACTER SET Y COLLATE INCORRECT_COLLATION_NAME
 #          Alter table operation should fail with an error "ER_COLLATION_CHARSET_MISMATCH"
-ALTER TABLE t1 CHARACTER SET latin1, CONVERT TO CHARACTER SET utf8 COLLATE latin1_danish_ci;
+ALTER TABLE t1 CHARACTER SET latin1, CONVERT TO CHARACTER SET utf8mb3 COLLATE latin1_danish_ci;
 ERROR 42000: COLLATION 'latin1_danish_ci' is not valid for CHARACTER SET 'utf8mb3'
 DROP TABLE t1;
 #
@@ -3012,9 +3014,9 @@ DROP TABLE t;
 # Bug#21345391: ALTER TABLE ... CONVERT TO CHARACTER SET NOT EFFECT
 #               AND REMAIN A TEMP TABLE
 CREATE TABLE t1 (fld1 INT PRIMARY KEY) ENGINE = INNODB CHARACTER SET gbk;
-ALTER TABLE t1 CONVERT TO CHARACTER SET UTF8, ALGORITHM = INPLACE;
+ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb3, ALGORITHM = INPLACE;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 # Without fix, the CHARSET SET for table remains gbk.
 SHOW CREATE TABLE t1;
 Table	Create Table
@@ -3028,15 +3030,15 @@ DROP TABLE t1;
 # Reports an error for tables containing datatypes supporting
 # characters.
 CREATE TABLE t1 (fld1 CHAR(10) PRIMARY KEY) ENGINE = INNODB CHARACTER SET gbk;
-ALTER TABLE t1 CONVERT TO CHARACTER SET UTF8, ALGORITHM = INPLACE;
+ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb3, ALGORITHM = INPLACE;
 ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Cannot change column type INPLACE. Try ALGORITHM=COPY.
 DROP TABLE t1;
 # ALTER TABLE, CHARACTER SET operation.
 CREATE TABLE t1 (fld1 INT PRIMARY KEY, fld2 CHAR(10)) ENGINE = INNODB
 CHARACTER SET gbk;
-ALTER TABLE t1 CHARACTER SET UTF8, ALGORITHM = INPLACE;
+ALTER TABLE t1 CHARACTER SET utf8mb3, ALGORITHM = INPLACE;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	1287	'utf8mb3' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 SHOW CREATE TABLE t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -3292,6 +3294,9 @@ DROP TABLE t1, t2;
 #
 # WL#10761 : ALTER TABLE RENAME COLUMN
 #
+SET restrict_fk_on_non_standard_key=OFF;
+Warnings:
+Warning	4166	'restrict_fk_on_non_standard_key' is deprecated and will be removed in a future release. Foreign key referring to non-unique or partial keys is unsafe and may break replication.
 CREATE TABLE t1(a INT, b VARCHAR(30), c FLOAT);
 SHOW CREATE TABLE t1;
 Table	Create Table
@@ -3429,6 +3434,8 @@ d	bb
 abcd	5
 CREATE TABLE t3(a int, b int, KEY(b)) ENGINE=InnoDB;
 ALTER TABLE t3 ADD CONSTRAINT FOREIGN KEY(b) REFERENCES t1(bb);
+Warnings:
+Warning	6124	Foreign key 't3_ibfk_1' refers to non-unique key or partial key. This is deprecated and will be removed in a future release.
 SHOW CREATE TABLE t3;
 Table	Create Table
 t3	CREATE TABLE `t3` (
@@ -3438,6 +3445,9 @@ t3	CREATE TABLE `t3` (
   CONSTRAINT `t3_ibfk_1` FOREIGN KEY (`b`) REFERENCES `t1` (`bb`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ALTER TABLE t1 RENAME COLUMN bb TO b;
+Warnings:
+Warning	6124	Foreign key 't3_ibfk_1' refers to non-unique key or partial key. This is deprecated and will be removed in a future release.
+Warning	6124	Foreign key 't3_ibfk_1' refers to non-unique key or partial key. This is deprecated and will be removed in a future release.
 SHOW CREATE TABLE t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -3527,7 +3537,7 @@ SELECT schema_name, table_name, column_name,
 JSON_REMOVE(histogram, '$."last-updated"')
 FROM information_schema.COLUMN_STATISTICS;
 SCHEMA_NAME	TABLE_NAME	COLUMN_NAME	JSON_REMOVE(histogram, '$."last-updated"')
-test	foo	col1	{"buckets": [[1, 0.5], [2, 1.0]], "data-type": "int", "null-values": 0.0, "collation-id": 8, "sampling-rate": 1.0, "histogram-type": "singleton", "number-of-buckets-specified": 10}
+test	foo	col1	{"buckets": [[1, 0.5], [2, 1.0]], "data-type": "int", "auto-update": false, "null-values": 0.0, "collation-id": 8, "sampling-rate": 1.0, "histogram-type": "singleton", "number-of-buckets-specified": 10}
 ALTER TABLE foo RENAME COLUMN col1 TO col2;
 SELECT schema_name, table_name, column_name,
 JSON_REMOVE(histogram, '$."last-updated"')
@@ -3575,6 +3585,9 @@ t1	CREATE TABLE `t1` (
 SELECT * FROM t1;
 d	b
 abcd	5
+SET restrict_fk_on_non_standard_key=ON;
+Warnings:
+Warning	1681	'restrict_fk_on_non_standard_key' is deprecated and will be removed in a future release.
 DROP VIEW v1;
 DROP TABLE t3,t1,t2;
 SET SESSION information_schema_stats_expiry=default;

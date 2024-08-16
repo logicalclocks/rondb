@@ -1063,7 +1063,7 @@ SELECT MBROVERLAPS(ST_INTERSECTION(
 
 
 --echo # Invalid geometry in input
-SELECT ST_ASTEXT(ST_INTERSECTION(
+DO ST_ASTEXT(ST_INTERSECTION(
                      ST_GEOMFROMTEXT('POLYGON((6 8, 4 1, 6 8, -0.2 2,6 6.3, 3 7, 4 7.1, 6 8))'),
                      ST_GEOMFROMTEXT('MULTIPOLYGON(((6 4,3 3,-8.4 6,-.0 4,6 4)))')));
 
@@ -1796,7 +1796,9 @@ DO ST_ASTEXT(ST_SYMDIFFERENCE(
                         'LINESTRING(5 -8,-7 -6,-3 6,-3 1,-5 4,-1 0,8 5,5 1,-2 3,1 10,8 5,6 2,7 4),'
                         'MULTIPOINT(0 1,-7 -7,-3 -2,6 -1,-9 -9,2 6,-9 -6,-4 0,0 10))')));
 
---error ER_BOOST_GEOMETRY_INCONSISTENT_TURNS_EXCEPTION
+# BOOST upgrade (from 1.77 to 1.84)
+# that case was throwing an error ER_BOOST_GEOMETRY_INCONSISTENT_TURNS_EXCEPTION with boost 1.77
+# with boost 1.84 it returns a result without error but the result is not correct
 SELECT ST_ASTEXT(ST_DIFFERENCE(
     ST_GEOMFROMTEXT('LINESTRING(5 -8,-7 -6,-3 6,-3 1,-5 4,-1 0,8 5,5 1,-2 3, 1 10,8 5,6 2,7 4)'),
     ST_GEOMFROMTEXT('MULTILINESTRING((1.9375 1.875,1.7441860465116283 1.9302325581395348,-0.7692307692307692 2.6483516483516487,'
@@ -2000,15 +2002,14 @@ DO ST_ASTEXT(ST_SYMDIFFERENCE(
 --echo ######################################################################################################
 
 --replace_numeric_round 10
-SELECT ST_ASTEXT(ST_INTERSECTION(
+SELECT ST_ISVALID(
     ST_GEOMFROMWKB(ST_ASWKB(GEOMETRYCOLLECTION(
                        MULTIPOINT(POINT(8,-6.0), POINT(9,2), POINT(9,1), POINT(-0,6), POINT(8,6), POINT(4,3), POINT(.7,6)),
                        MULTIPOINT(POINT(8,-0.7654), POINT(2,7), POINT(8,-0.7654), POINT(-.0,7), POINT(.0,6), POINT(.9,+.4), POINT(6,2.232432)),
                        POLYGON(
                            LINESTRING(POINT(8,6), POINT(-.4,3), POINT(-9.8,2.232432), POINT(-1032.34324,8), POINT(2.232432,.8), POINT(8,6))),
                        POLYGON(
-                           LINESTRING(POINT(0,9), POINT(3,1), POINT(3,0), POINT(3,2), POINT(0,9)))))),
-    ST_GEOMFROMTEXT('MULTILINESTRING((-0.7654 2.232432, 7 2, -6 -1032.34324, 9 7, 2.8 4))')));
+                           LINESTRING(POINT(0,9), POINT(3,1), POINT(3,0), POINT(3,2), POINT(0,9)))))));
 
 --echo ######################################################################################################
 --echo # BUG#20408240 : ST_DIFFERENCE : ASSERTION `T1->RESULT_RANGE' FAILED
@@ -6189,13 +6190,13 @@ select st_intersects(st_geomfromtext(@geom2), st_buffer(st_geomfromtext(@geom1),
 DROP TABLE IF EXISTS `t`;
 CREATE TABLE `t` (
   `geo` geometry DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;
 insert into t values (st_geomfromtext(@geom1));
 
 DROP TABLE IF EXISTS `t1`;
 CREATE TABLE `t1` (
   `geo` geometry DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3;
 insert into t1 values (st_geomfromtext(@geom2));
 
 select t1.geo from t,t1 where st_intersects(t1.geo, st_buffer(t.geo,50));

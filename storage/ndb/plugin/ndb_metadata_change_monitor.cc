@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,7 +35,7 @@
 #include "my_dbug.h"
 #include "mysql/psi/mysql_cond.h"   // mysql_cond_t
 #include "mysql/psi/mysql_mutex.h"  // mysql_mutex_t
-#include "sql/sql_class.h"          // THD
+#include "nulls.h"                  // NullS
 #include "sql/table.h"              // is_infoschema_db() / is_perfschema_db()
 #include "storage/ndb/include/ndbapi/NdbError.hpp"    // NdbError
 #include "storage/ndb/plugin/ha_ndbcluster_binlog.h"  // ndb_binlog_is_read_only
@@ -42,8 +43,8 @@
 #include "storage/ndb/plugin/ndb_dd_client.h"             // Ndb_dd_client
 #include "storage/ndb/plugin/ndb_ndbapi_util.h"           // ndb_get_*_names
 #include "storage/ndb/plugin/ndb_sleep.h"                 // ndb_milli_sleep
-#include "storage/ndb/plugin/ndb_thd.h"                   // thd_set_thd_ndb
-#include "storage/ndb/plugin/ndb_thd_ndb.h"               // Thd_ndb
+#include "storage/ndb/plugin/ndb_thd.h"
+#include "storage/ndb/plugin/ndb_thd_ndb.h"
 
 Ndb_metadata_change_monitor::Ndb_metadata_change_monitor()
     : Ndb_component("Metadata", "ndb_metadata"), m_mark_sync_complete{false} {}
@@ -290,6 +291,13 @@ bool Ndb_metadata_change_monitor::detect_table_changes_in_schema(
     return false;
   }
 
+  // Remove NDB utility table mysql.ndb_apply_status, it's managed
+  // by the binlog thread but not marked as hidden in DD. It's masked in similar
+  // way from the list of tables in NDB.
+  if (schema_name == "mysql") {
+    ndb_tables_in_DD.erase("ndb_apply_status");
+  }
+
   // Special case when all NDB tables belonging to a schema still exist in DD
   // but not in NDB
   if (ndb_tables_in_NDB.empty() && !ndb_tables_in_DD.empty()) {
@@ -388,48 +396,6 @@ bool Ndb_metadata_change_monitor::detect_schema_and_table_changes(
   return true;
 }
 
-// RAII style class for THD
-class Thread_handle_guard {
-  THD *const m_thd;
-  Thread_handle_guard(const Thread_handle_guard &) = delete;
-
- public:
-  Thread_handle_guard() : m_thd(new THD()) {
-    m_thd->system_thread = SYSTEM_THREAD_BACKGROUND;
-    m_thd->thread_stack = reinterpret_cast<const char *>(&m_thd);
-    m_thd->store_globals();
-  }
-
-  ~Thread_handle_guard() {
-    if (m_thd) {
-      m_thd->release_resources();
-      delete m_thd;
-    }
-  }
-
-  THD *get_thd() const { return m_thd; }
-};
-
-// RAII style class for Thd_ndb
-class Thd_ndb_guard {
-  THD *const m_thd;
-  Thd_ndb *const m_thd_ndb;
-  Thd_ndb_guard() = delete;
-  Thd_ndb_guard(const Thd_ndb_guard &) = delete;
-
- public:
-  Thd_ndb_guard(THD *thd) : m_thd(thd), m_thd_ndb(Thd_ndb::seize(m_thd)) {
-    thd_set_thd_ndb(m_thd, m_thd_ndb);
-  }
-
-  ~Thd_ndb_guard() {
-    Thd_ndb::release(m_thd_ndb);
-    thd_set_thd_ndb(m_thd, nullptr);
-  }
-
-  const Thd_ndb *get_thd_ndb() const { return m_thd_ndb; }
-};
-
 extern bool opt_ndb_metadata_check;
 extern unsigned long opt_ndb_metadata_check_interval;
 extern bool opt_ndb_metadata_sync;
@@ -482,7 +448,7 @@ void Ndb_metadata_change_monitor::do_run() {
     return;
   }
 
-  Thread_handle_guard thd_guard;
+  Ndb_thd_guard thd_guard;
   THD *thd = thd_guard.get_thd();
   if (thd == nullptr) {
     assert(false);
@@ -490,7 +456,7 @@ void Ndb_metadata_change_monitor::do_run() {
     return;
   }
 
-  Thd_ndb_guard thd_ndb_guard(thd);
+  Thd_ndb_guard thd_ndb_guard(thd, psi_name());
   const Thd_ndb *thd_ndb = thd_ndb_guard.get_thd_ndb();
   if (thd_ndb == nullptr) {
     assert(false);
@@ -508,6 +474,8 @@ void Ndb_metadata_change_monitor::do_run() {
         return;
       }
     }
+
+    log_info("Started");
 
     for (;;) {
       Ndb_thd_memory_guard metadata_change_loop_guard(thd);
@@ -589,14 +557,14 @@ void Ndb_metadata_change_monitor::do_run() {
         break;
       }
 
-      log_verbose(10, "Metadata check started");
+      log_verbose(50, "Metadata check started");
 
       ndbcluster_binlog_validate_sync_excluded_objects(thd);
 
       if (!detect_logfile_group_changes(thd, thd_ndb)) {
         log_info("Failed to detect logfile group metadata changes");
       }
-      log_verbose(10, "Logfile group metadata check completed");
+      log_verbose(99, "Logfile group metadata check completed");
 
       if (is_stop_requested()) {
         return;
@@ -605,7 +573,7 @@ void Ndb_metadata_change_monitor::do_run() {
       if (!detect_tablespace_changes(thd, thd_ndb)) {
         log_info("Failed to detect tablespace metadata changes");
       }
-      log_verbose(10, "Tablespace metadata check completed");
+      log_verbose(99, "Tablespace metadata check completed");
 
       if (is_stop_requested()) {
         return;
@@ -614,8 +582,8 @@ void Ndb_metadata_change_monitor::do_run() {
       if (!detect_schema_and_table_changes(thd, thd_ndb)) {
         log_info("Failed to detect table metadata changes");
       }
-      log_verbose(10, "Table metadata check completed");
-      log_verbose(10, "Metadata check completed");
+      log_verbose(99, "Table metadata check completed");
+      log_verbose(50, "Metadata check completed");
 
       if (controller.get_metadata_sync()) {
         if (controller.all_changes_detected()) {

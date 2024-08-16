@@ -1,15 +1,16 @@
-/* Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -48,7 +49,9 @@
 #include "mysql/service_mysql_alloc.h"
 #include "mysql/service_security_context.h"
 #include "mysqld_error.h"
+#include "nulls.h"
 #include "sql/sql_error.h"
+#include "template_utils.h"
 #include "typelib.h"
 
 class THD;
@@ -226,7 +229,7 @@ static int validate_dictionary_check(mysql_string_handle password) {
   mysql_string_free(lower_string_handle);
   int substr_pos = 0;
   int substr_length = length;
-  string_type password_str = string_type((const char *)buffer, length);
+  const string_type password_str = string_type((const char *)buffer, length);
   string_type password_substr;
   set_type::iterator itr;
   /*

@@ -1,17 +1,18 @@
 /*
-   Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2008, 2024, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,31 +25,17 @@
 */
 
 #include <assert.h>
-#include <cstring>
 #include <ndb_types.h>
+#include <cstring>
 #include "mt.hpp"
 
-void
-mt_init_thr_map()
-{
-  assert(false);
-}
+void mt_init_thr_map() { assert(false); }
 
-void
-mt_add_thr_map(Uint32, Uint32)
-{
-  assert(false);
-}
+void mt_add_thr_map(Uint32, Uint32) { assert(false); }
 
-void
-mt_finalize_thr_map()
-{
-  assert(false);
-}
+void mt_finalize_thr_map() { assert(false); }
 
-Uint32
-mt_get_instance_count(Uint32 block)
-{
+Uint32 mt_get_instance_count(Uint32 block) {
   assert(false);
   return 0;
 }
@@ -59,41 +46,27 @@ compute_jb_pages(struct EmulatorData*)
   return 0;
 }
 
-
-bool
-NdbIsMultiThreaded()
-{
-  return false;
-}
+bool NdbIsMultiThreaded() { return false; }
 
 #include <BlockNumbers.h>
 
 #define JAM_FILE_ID 222
 
-
-Uint32
-mt_get_blocklist(class SimulatedBlock * block, Uint32 arr[], Uint32 len)
-{
+Uint32 mt_get_blocklist(class SimulatedBlock *block, Uint32 arr[], Uint32 len) {
   (void)block;
-  for (Uint32 i = 0; i<NO_OF_BLOCKS; i++)
-  {
+  for (Uint32 i = 0; i < NO_OF_BLOCKS; i++) {
     arr[i] = numberToBlock(MIN_BLOCK_NO + i, 0);
   }
   return NO_OF_BLOCKS;
 }
 
-void
-mt_get_thr_stat(class SimulatedBlock *, ndb_thr_stat* dst)
-{
-  std::memset(dst, 0, sizeof(* dst));
+void mt_get_thr_stat(class SimulatedBlock *, ndb_thr_stat *dst) {
+  std::memset(dst, 0, sizeof(*dst));
   dst->name = "main";
 }
 
-void mt_get_spin_stat(class SimulatedBlock *, ndb_spin_stat *dst)
-{
-  memset(dst, 0, sizeof(* dst));
+void mt_get_spin_stat(class SimulatedBlock *, ndb_spin_stat *dst) {
+  memset(dst, 0, sizeof(*dst));
 }
 
-void mt_set_spin_stat(class SimulatedBlock *, ndb_spin_stat *dst)
-{
-}
+void mt_set_spin_stat(class SimulatedBlock *, ndb_spin_stat *dst) {}

@@ -1,15 +1,16 @@
-/* Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -183,10 +184,7 @@
    - @subpage page_protocol_com_quit
    - @subpage page_protocol_com_init_db
    - @subpage page_protocol_com_field_list
-   - @subpage page_protocol_com_refresh
    - @subpage page_protocol_com_statistics
-   - @subpage page_protocol_com_process_info
-   - @subpage page_protocol_com_process_kill
    - @subpage page_protocol_com_debug
    - @subpage page_protocol_com_ping
    - @subpage page_protocol_com_change_user
@@ -435,24 +433,25 @@
 
 #include "decimal.h"
 #include "lex_string.h"
-#include "m_ctype.h"
 #include "m_string.h"
 #include "my_byteorder.h"
-#include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_loglevel.h"
 #include "my_sys.h"
 #include "my_time.h"
 #include "mysql/com_data.h"
+#include "mysql/my_loglevel.h"
 #include "mysql/psi/mysql_socket.h"
+#include "mysql/strings/dtoa.h"
+#include "mysql/strings/int2str.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysqld_error.h"
 #include "mysys_err.h"
+#include "sql-common/my_decimal.h"
 #include "sql/field.h"
 #include "sql/item.h"
 #include "sql/item_func.h"  // Item_func_set_user_var
-#include "sql/my_decimal.h"
-#include "sql/mysqld.h"  // global_system_variables
+#include "sql/mysqld.h"     // global_system_variables
 #include "sql/session_tracker.h"
 #include "sql/sql_class.h"  // THD
 #include "sql/sql_error.h"
@@ -461,6 +460,8 @@
 #include "sql/sql_prepare.h"  // Prepared_statement
 #include "sql/system_variables.h"
 #include "sql_string.h"
+#include "string_with_len.h"
+#include "strmake.h"
 #include "template_utils.h"
 
 using std::max;
@@ -483,7 +484,7 @@ static ulong get_ps_param_len(enum enum_field_types, uchar *, ulong, ulong *,
   @return true if memory could not be allocated, false on success
 */
 static bool ensure_packet_capacity(size_t length, String *packet) {
-  size_t packet_length = packet->length();
+  const size_t packet_length = packet->length();
   /*
      The +9 comes from that strings of length longer than 16M require
      9 bytes to be stored (see net_store_length).
@@ -503,7 +504,7 @@ static bool ensure_packet_capacity(size_t length, String *packet) {
 static inline bool net_store_data(const uchar *from, size_t length,
                                   String *packet) {
   if (ensure_packet_capacity(length, packet)) return true;
-  size_t packet_length = packet->length();
+  const size_t packet_length = packet->length();
   uchar *to = net_store_length((uchar *)packet->ptr() + packet_length, length);
   if (length > 0) memcpy(to, from, length);
   packet->length((uint)(to + length - (uchar *)packet->ptr()));
@@ -551,7 +552,7 @@ bool Protocol_classic::net_store_data_with_conversion(
     const CHARSET_INFO *to_cs) {
   uint dummy_errors;
   /* Calculate maximum possible result length */
-  size_t conv_length = to_cs->mbmaxlen * length / from_cs->mbminlen;
+  const size_t conv_length = to_cs->mbmaxlen * length / from_cs->mbminlen;
   if (conv_length > 250) {
     /*
       For strings with conv_length greater than 250 bytes
@@ -570,8 +571,8 @@ bool Protocol_classic::net_store_data_with_conversion(
                            convert.length(), packet));
   }
 
-  size_t packet_length = packet->length();
-  size_t new_length = packet_length + conv_length + 1;
+  const size_t packet_length = packet->length();
+  const size_t new_length = packet_length + conv_length + 1;
 
   if (new_length > packet->alloced_length() && packet->mem_realloc(new_length))
     return true;
@@ -655,7 +656,7 @@ bool net_send_error(NET *net, uint sql_errno, const char *err) {
 
   DBUG_PRINT("enter", ("sql_errno: %d  err: %s", sql_errno, err));
 
-  bool error = net_send_error_packet(
+  const bool error = net_send_error_packet(
       net, sql_errno, err, mysql_errno_to_sqlstate(sql_errno), false, 0,
       global_system_variables.character_set_results);
 
@@ -914,7 +915,7 @@ static bool net_send_ok(THD *thd, uint server_status, uint statement_warn_count,
     pos += 2;
 
     /* warning count: we can only return up to 65535 warnings in two bytes. */
-    uint tmp = min(statement_warn_count, 65535U);
+    const uint tmp = min(statement_warn_count, 65535U);
     int2store(pos, tmp);
     pos += 2;
   } else if (net->return_status)  // For 4.0 protocol
@@ -1090,7 +1091,7 @@ static bool write_eof_packet(THD *thd, NET *net, uint server_status,
       Don't send warn count during SP execution, as the warn_list
       is cleared between substatements, and mysqltest gets confused
     */
-    uint tmp = min(statement_warn_count, 65535U);
+    const uint tmp = min(statement_warn_count, 65535U);
     buff[0] = 254;
     int2store(buff + 1, tmp);
     /*
@@ -1758,11 +1759,9 @@ int Protocol_classic::read_packet() {
 
 /**
   @page page_protocol_com_field_list COM_FIELD_LIST
-
   @note As of MySQL 5.7.11, COM_FIELD_LIST is deprecated and will be removed in
   a future version of MySQL. Instead, use COM_QUERY to execute a SHOW COLUMNS
   statement.
-
   <table>
   <caption>Payload</caption>
   <tr><th>Type</th><th>Name</th><th>Description</th></tr>
@@ -1777,19 +1776,14 @@ int Protocol_classic::read_packet() {
       <td>wildcard</td>
       <td>field wildcard</td></tr>
   </table>
-
   @return @ref sect_protocol_com_field_list_response
-
   @sa mysql_list_fields, mysqld_list_fields
-
   @section sect_protocol_com_field_list_response COM_FIELD_LIST Response
-
   The response to @ref page_protocol_com_field_list can be one of:
    - @ref page_protocol_basic_err_packet
    - zero or more
      @ref page_protocol_com_query_response_text_resultset_column_definition
    - a closing @ref page_protocol_basic_eof_packet
-
   @warning if ::CLIENT_OPTIONAL_RESULTSET_METADATA is on and the server side
   variable ::Sys_resultset_metadata is not set to ::RESULTSET_METADATA_FULL
   no rows will be sent, just an empty resultset.
@@ -1803,39 +1797,7 @@ int Protocol_classic::read_packet() {
 
   @sa mysql_list_fields, mysqld_list_fields, THD::send_result_metadata,
   dispatch_command, cli_list_fields
-
 */
-
-/**
-  @page page_protocol_com_refresh COM_REFRESH
-
-  @warning As of MySQL 5.7.11, COM_REFRESH is deprecated and will be removed
-  in a future version of MySQL. Instead, use COM_QUERY to execute a
-  FLUSH statement.
-
-  A low-level version of several FLUSH ... and RESET ... statements.
-
-  Calls REFRESH or FLUSH statements.
-
-  <table>
-  <caption>Payload</caption>
-  <tr><th>Type</th><th>Name</th><th>Description</th></tr>
-  <tr><td>@ref a_protocol_type_int1 "int&lt;1&gt;"</td>
-      <td>command</td>
-      <td>0x07: COM_REFRESH</td></tr>
-  <tr><td>@ref a_protocol_type_int1 "int&lt;1&gt;"</td>
-      <td>sub_command</td>
-      <td>A bitmask of sub-systems to refresh.
-      A combination of the first 8 bits of
-      @ref group_cs_com_refresh_flags</td></tr>
-  </table>
-
-  @return @ref page_protocol_basic_err_packet or
-    @ref page_protocol_basic_ok_packet
-
-  @sa dispatch_command, handle_reload_request, mysql_refresh
-*/
-
 
 /**
   @page page_protocol_com_statistics COM_STATISTICS
@@ -1857,58 +1819,6 @@ int Protocol_classic::read_packet() {
   </table>
 
   @sa cli_read_statistics, mysql_stat, dispatch_command, calc_sum_of_all_status
-*/
-
-
-/**
-  @page page_protocol_com_process_info COM_PROCESS_INFO
-
-  @warning As of 5.7.11 ::COM_PROCESS_INFO is deprecated in favor of ::COM_QUERY
-    with SHOW PROCESSLIST
-
-  Get a list of active threads
-
-  @return @ref page_protocol_com_query_response_text_resultset or a
-  @ref page_protocol_basic_err_packet
-
-  <table>
-  <caption>Payload</caption>
-  <tr><th>Type</th><th>Name</th><th>Description</th></tr>
-  <tr><td>@ref a_protocol_type_int1 "int&lt;1&gt;"</td>
-      <td>command</td>
-      <td>0x0A: COM_PROCESS_INFO</td></tr>
-  </table>
-
-  @sa mysql_list_processes, dispatch_command, mysqld_list_processes
-*/
-
-
-/**
-  @page page_protocol_com_process_kill COM_PROCESS_KILL
-
-  Ask the server to terminate a connection
-
-  @warning As of MySQL 5.7.11, COM_PROCESS_KILL is deprecated and will be
-  removed in a future version of MySQL. Instead, use ::COM_QUERY and
-  a KILL command.
-
-  Same as the SQL command `KILL <id>`.
-
-  <table>
-  <caption>Payload</caption>
-  <tr><th>Type</th><th>Name</th><th>Description</th></tr>
-  <tr><td>@ref a_protocol_type_int1 "int&lt;1&gt;"</td>
-      <td>command</td>
-      <td>0x0C: COM_PROCESS_KILL</td></tr>
-  <tr><td>@ref a_protocol_type_int4 "int&lt;4&gt;"</td>
-      <td>connection_id</td>
-      <td>The connection to kill</td></tr>
-  </table>
-
-  @return @ref page_protocol_basic_err_packet or
-    @ref page_protocol_basic_ok_packet
-
-  @sa dispatch_command, mysql_kill, sql_kill
 */
 
 /**
@@ -2716,7 +2626,7 @@ static bool parse_query_bind_params(
 
     /* Then comes the types byte. If set, new types are provided */
     if (!packet_left) return true;
-    bool has_new_types = static_cast<bool>(*read_pos++);
+    const bool has_new_types = static_cast<bool>(*read_pos++);
     if (!has_new_types && !stmt_data) return true;
 
     --packet_left;
@@ -2726,7 +2636,7 @@ static bool parse_query_bind_params(
       for (uint i = 0; i < param_count; ++i) {
         if (packet_left < 2) return true;
 
-        ushort type_code = sint2korr(read_pos);
+        const ushort type_code = sint2korr(read_pos);
         read_pos += 2;
         packet_left -= 2;
 
@@ -2777,9 +2687,10 @@ static bool parse_query_bind_params(
       /* check if the packet contains more parameters than expected */
       if (!has_new_types && i >= stmt_data->m_param_count) return true;
 
-      enum enum_field_types type =
-          has_new_types ? params[i].type
-                        : stmt_data->m_param_array[i]->data_type_source();
+      const enum enum_field_types type =
+          (has_new_types || i >= stmt_data->m_param_count)
+              ? params[i].type
+              : stmt_data->m_param_array[i]->data_type_source();
       if (type == MYSQL_TYPE_BOOL)
         return true;  // unsupported in this version of the Server
       if (stmt_data && i < stmt_data->m_param_count &&
@@ -2836,16 +2747,6 @@ bool Protocol_classic::parse_packet(union COM_DATA *data,
       data->com_init_db.db_name =
           reinterpret_cast<const char *>(input_raw_packet);
       data->com_init_db.length = input_packet_length;
-      break;
-    }
-    case COM_REFRESH: {
-      if (input_packet_length < 1) goto malformed;
-      data->com_refresh.options = input_raw_packet[0];
-      break;
-    }
-    case COM_PROCESS_KILL: {
-      if (input_packet_length < 4) goto malformed;
-      data->com_kill.id = (ulong)uint4korr(input_raw_packet);
       break;
     }
     case COM_SET_OPTION: {
@@ -2953,13 +2854,11 @@ bool Protocol_classic::parse_packet(union COM_DATA *data,
       /*
         We have name + wildcard in packet, separated by endzero
       */
-      ulong len = strend((char *)input_raw_packet) - (char *)input_raw_packet;
-
+      const ulong len =
+          strend((char *)input_raw_packet) - (char *)input_raw_packet;
       if (len >= input_packet_length || len > NAME_LEN) goto malformed;
-
       data->com_field_list.table_name = input_raw_packet;
       data->com_field_list.table_name_length = len;
-
       data->com_field_list.query = input_raw_packet + len + 1;
       data->com_field_list.query_length = input_packet_length - len;
       break;
@@ -2988,7 +2887,7 @@ bool Protocol_classic::create_command(COM_DATA *com_data,
 int Protocol_classic::get_command(COM_DATA *com_data,
                                   enum_server_command *cmd) {
   // read packet from the network
-  if (int rc = read_packet()) return rc;
+  if (const int rc = read_packet()) return rc;
 
   /*
     'input_packet_length' contains length of data, as it was stored in packet
@@ -3523,7 +3422,7 @@ bool Protocol_text::store_decimal(const my_decimal *d, uint prec, uint dec) {
   if (pos == nullptr) return true;
 
   int string_length = DECIMAL_MAX_STR_LENGTH + 1;
-  int error [[maybe_unused]] =
+  const int error [[maybe_unused]] =
       decimal2string(d, pos + 1, &string_length, prec, dec);
 
   // decimal2string() can only fail with E_DEC_TRUNCATED or E_DEC_OVERFLOW.
@@ -3789,7 +3688,8 @@ void Protocol_binary::start_row() {
 
 bool Protocol_binary::store_null() {
   if (send_metadata) return Protocol_text::store_null();
-  uint offset = (field_pos + 2) / 8 + 1, bit = (1 << ((field_pos + 2) & 7));
+  const uint offset = (field_pos + 2) / 8 + 1,
+             bit = (1 << ((field_pos + 2) & 7));
   /* Room for this as it's allocated in prepare_for_send */
   char *to = packet->ptr() + offset;
   *to = (char)((uchar)*to | (uchar)bit);
@@ -4086,7 +3986,7 @@ static ulong get_ps_param_len(enum enum_field_types type, uchar *packet,
     case MYSQL_TYPE_TIME:
     case MYSQL_TYPE_DATETIME:
     case MYSQL_TYPE_TIMESTAMP: {
-      ulong param_length =
+      const ulong param_length =
           get_param_length(packet, packet_left_len, header_len);
       /* in case of error ret is 0 and header size is 0 */
       *err = ((param_length == 0 && *header_len == 0) ||

@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1997, 2023, Oracle and/or its affiliates.
+Copyright (c) 1997, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -46,8 +47,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0new.h"
 
 #include <list>
-#include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 class MetadataRecover;
 class PersistentTableMetadata;
@@ -242,7 +243,7 @@ pages.
                                 no new log records can be generated during
                                 the application; the caller must in this case
                                 own the log mutex */
-dberr_t recv_apply_hashed_log_recs(log_t &log, bool allow_ibuf);
+void recv_apply_hashed_log_recs(log_t &log, bool allow_ibuf);
 
 #if defined(UNIV_DEBUG) || defined(UNIV_HOTBACKUP)
 /** Return string name of the redo log record type.
@@ -353,7 +354,8 @@ class MetadataRecover {
   @param[in]    end     end of redo log
   @retval ptr to next redo log record, nullptr if this log record
   was truncated */
-  byte *parseMetadataLog(table_id_t id, uint64_t version, byte *ptr, byte *end);
+  const byte *parseMetadataLog(table_id_t id, uint64_t version, const byte *ptr,
+                               const byte *end);
 
   /** Store the collected persistent dynamic metadata to
   mysql.innodb_dynamic_metadata */
@@ -397,7 +399,7 @@ struct recv_sys_t {
     Pages m_pages;
   };
 
-  using Missing_Ids = std::set<space_id_t>;
+  using Missing_Ids = std::unordered_set<space_id_t>;
 
   using Spaces = std::unordered_map<space_id_t, Space, std::hash<space_id_t>,
                                     std::equal_to<space_id_t>>;
@@ -495,7 +497,7 @@ struct recv_sys_t {
   @param[out]   len             length of the log record
   @return true iff saved record data is found. */
   bool get_saved_rec(size_t rec_num, space_id_t &space_id, page_no_t &page_no,
-                     mlog_id_t &type, byte *&body, size_t &len) {
+                     mlog_id_t &type, const byte *&body, size_t &len) {
     if (rec_num >= MAX_SAVED_MLOG_RECS) {
       return false;
     }
@@ -672,11 +674,7 @@ constexpr uint32_t RECV_PARSING_BUF_SIZE = 2 * 1024 * 1024;
 roll-forward */
 #define RECV_SCAN_SIZE (4 * UNIV_PAGE_SIZE)
 
-/** This many frames must be left free in the buffer pool when we scan
-the log and store the scanned log records in the buffer pool: we will
-use these free frames to read in pages when we start applying the
-log records to the database. */
-extern ulint recv_n_pool_free_frames;
+extern size_t recv_n_frames_for_pages_per_pool_instance;
 
 /** A list of tablespaces for which (un)encryption process was not
 completed before crash. */

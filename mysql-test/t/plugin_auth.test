@@ -1,6 +1,7 @@
 --source include/not_valgrind.inc
 --source include/have_plugin_auth.inc
 --source include/mysql_upgrade_preparation.inc
+--source include/suppress_tls_off.inc
 
 CALL mtr.add_suppression("Plugin test_plugin_server reported: 'Wrong password supplied for plug_dest'");
 
@@ -24,7 +25,7 @@ SELECT plugin,authentication_string FROM mysql.user WHERE User='plug';
 --echo ## test plugin auth
 --disable_query_log
 # This should fail, no grant
---error ER_ACCESS_DENIED_ERROR
+--error ER_ACCESS_DENIED_NO_PROXY_GRANT
 connect(plug_con,localhost,plug,plug_dest);
 --enable_query_log
 
@@ -122,7 +123,7 @@ GRANT ALL PRIVILEGES ON *.* TO grant_plug;
 REVOKE SYSTEM_USER ON *.* FROM grant_plug;
 --disable_query_log
 # This should fail, no grant
---error ER_ACCESS_DENIED_ERROR
+--error ER_ACCESS_DENIED_NO_PROXY_GRANT
 connect(grant_plug_con,localhost,grant_plug,grant_plug_dest);
 --enable_query_log
 
@@ -209,9 +210,10 @@ connection default;
 --echo in default connection
 disconnect proxy_admin_con;
 
-SHOW GRANTS FOR grant_plug;
+--let $user = grant_plug
+--source include/show_grants.inc
 REVOKE PROXY ON future_user FROM grant_plug;
-SHOW GRANTS FOR grant_plug;
+--source include/show_grants.inc
 
 --echo ## testing drop user
 CREATE USER test_drop@localhost;
@@ -604,7 +606,7 @@ SELECT plugin,authentication_string FROM mysql.user WHERE User='plug';
 --echo ## test plugin auth
 --disable_query_log
 # This should fail, no grant
---error ER_ACCESS_DENIED_ERROR
+--error ER_ACCESS_DENIED_NO_PROXY_GRANT
 connect(plug_user22,localhost,user_name_len_22_01234,user_name_len_22_0dest);
 --enable_query_log
 
@@ -621,8 +623,8 @@ connection plug_user22;
 SELECT USER(),CURRENT_USER();
 connection default;
 
---character_set utf8
-SET NAMES utf8;
+--character_set utf8mb3
+SET NAMES utf8mb3;
 
 # 32 characters user name
 CREATE USER очень_очень_очень_длинный_юзер__ IDENTIFIED WITH 'test_plugin_server' AS 'очень_очень_очень_длинный_дест__';
@@ -631,7 +633,7 @@ SELECT plugin,authentication_string FROM mysql.user WHERE User='plug';
 --echo ## test plugin auth
 --disable_query_log
 # This should fail, no grant
---error ER_ACCESS_DENIED_ERROR
+--error ER_ACCESS_DENIED_NO_PROXY_GRANT
 connect(plug_user32,localhost,очень_очень_очень_длинный_юзер__,очень_очень_очень_длинный_дест__);
 --enable_query_log
 
@@ -714,8 +716,8 @@ DROP USER user_name_len_32_012345678901234@localhost;
 
 --echo # Testing 32 utf users with different authentication plugins
 
---character_set utf8
-SET NAMES utf8;
+--character_set utf8mb3
+SET NAMES utf8mb3;
 
 # 32 characters user name
 CREATE USER очень_очень_очень_длинный_юзер__@localhost IDENTIFIED WITH 'sha256_password' BY 'auth_string';

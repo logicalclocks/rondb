@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,7 +31,8 @@
 #include "sql/rpl_replica.h"
 #include "sql/rpl_rli.h"
 #include "sql/rpl_rli_pdb.h"
-#include "sql/sql_backup_lock.h"  // is_instance_backup_locked et al.
+#include "sql/sql_backup_lock.h"
+#include "string_with_len.h"
 
 /**
    It manages a stage and the related mutex and makes the process of
@@ -184,9 +186,9 @@ Log_event *Rpl_applier_reader::read_next_event() {
         the checkpoint routine must be periodically invoked.
 
         mta_checkpoint_routine has to be called before enter_stage().
-        Otherwise, it will cause a deadlock with STOP SLAVE or other
+        Otherwise, it will cause a deadlock with STOP REPLICA or other
         thread has the same lock pattern.
-        STOP SLAVE Thread                   Coordinator Thread
+        STOP REPLICA Thread                   Coordinator Thread
         =================                   ==================
         lock LOCK_thd_data                  lock LOCK_binlog_end_pos
                                             enter_stage(LOCK_binlog_end_pos)
@@ -199,14 +201,16 @@ Log_event *Rpl_applier_reader::read_next_event() {
                                                 close_thread_table()
       */
       mysql_mutex_unlock(&m_rli->data_lock);
-      if ((m_rli->is_time_for_mta_checkpoint() ||
-           DBUG_EVALUATE_IF("check_replica_debug_group", 1, 0)) &&
-          mta_checkpoint_routine(m_rli, false)) {
-        m_errmsg = "Failed to compute mta checkpoint";
-        mysql_mutex_lock(&m_rli->data_lock);
-        return nullptr;
+      {
+        auto data_lock_guard =
+            create_scope_guard([this] { mysql_mutex_lock(&m_rli->data_lock); });
+        if ((m_rli->is_time_for_mta_checkpoint() ||
+             DBUG_EVALUATE_IF("check_replica_debug_group", 1, 0)) &&
+            mta_checkpoint_routine(m_rli, false)) {
+          m_errmsg = "Failed to synchronize worker threads";
+          return nullptr;
+        }
       }
-      mysql_mutex_lock(&m_rli->data_lock);
 
       /* Lock LOCK_binlog_end_pos before wait */
       Stage_controller stage_controller(
@@ -216,6 +220,12 @@ Log_event *Rpl_applier_reader::read_next_event() {
 
       /* Check it again to avoid missing update signals from receiver thread */
       if (read_active_log_end_pos()) break;
+
+      if (m_rli->is_until_satisfied_all_transactions_read_from_relay_log()) {
+        // Make it stop on the next execution
+        m_rli->abort_slave = true;
+        return nullptr;
+      }
 
       reset_seconds_behind_master();
       /* It should be protected by relay_log.LOCK_binlog_end_pos */
@@ -238,7 +248,22 @@ Log_event *Rpl_applier_reader::read_next_event() {
 
   if (m_relaylog_file_reader.get_error_type() == Binlog_read_error::READ_EOF &&
       !m_reading_active_log) {
-    if (!move_to_next_log()) return read_next_event();
+    bool force_purging = false;
+    if (m_rli->is_receiver_waiting_for_rl_space.load() &&
+        !m_rli->is_in_group()) {
+      force_purging = true;
+      if (m_rli->is_parallel_exec()) {
+        mysql_mutex_unlock(&m_rli->data_lock);
+        auto data_lock_guard =
+            create_scope_guard([this] { mysql_mutex_lock(&m_rli->data_lock); });
+        if (m_rli->current_mts_submode->wait_for_workers_to_finish(m_rli) ==
+            -1) {
+          m_errmsg = "Failed to compute mta checkpoint";
+          return nullptr;
+        }
+      }
+    }
+    if (!move_to_next_log(force_purging)) return read_next_event();
   }
 
   // if we fail to move to a new log when the thread is killed, ignore it
@@ -283,11 +308,9 @@ bool Rpl_applier_reader::wait_for_new_event() {
   mysql_mutex_assert_owner(&m_rli->data_lock);
   /*
     We can, and should release data_lock while we are waiting for
-    update. If we do not, show slave status will block
+    update. If we do not, show replica status will block
   */
   mysql_mutex_unlock(&m_rli->data_lock);
-
-  disable_relay_log_space_limit_if_needed();
 
   int ret = 0;
   if (m_rli->is_parallel_exec() &&
@@ -348,16 +371,17 @@ bool Rpl_applier_reader::reopen_log_reader_if_needed() {
   return false;
 }
 
-bool Rpl_applier_reader::move_to_next_log() {
-  /*
-    Current relay file can be purged if group_relay_log_pos has reached the end
-    of it. It is rarely true because Rotate_log_event(generated by slave)
-    doesn't advance group relay pos.
-  */
+bool Rpl_applier_reader::move_to_next_log(bool force) {
+  // Current relay file can be purged if:
+  // - group_relay_log_pos has reached the end of it, which is rarely true
+  //   because Rotate_log_event(generated by the replica) doesn't advance
+  //   the group relay log position
+  // - 'force' parameter is equal to true
   bool should_purge_current_relay_log =
-      m_rli->get_group_relay_log_pos() == m_rli->get_event_relay_log_pos() &&
-      strcmp(m_rli->get_group_relay_log_name(),
-             m_rli->get_event_relay_log_name()) == 0;
+      (m_rli->get_group_relay_log_pos() == m_rli->get_event_relay_log_pos() &&
+       strcmp(m_rli->get_group_relay_log_name(),
+              m_rli->get_event_relay_log_name()) == 0) ||
+      force;
 
   m_relaylog_file_reader.close();
 
@@ -443,15 +467,16 @@ bool Rpl_applier_reader::purge_applied_logs() {
   DBUG_EXECUTE_IF("crash_before_purge_logs", DBUG_SUICIDE(););
 
   mysql_mutex_lock(&m_rli->log_space_lock);
-
+  // we can copy to a non-atomic variable and back under the log_space_lock
+  auto current_log_space = m_rli->log_space_total.load();
   if (m_rli->relay_log.purge_logs(
           m_rli->get_group_relay_log_name(), false /* include */,
           false /*need_lock_index*/, false /*need_update_threads*/,
-          &m_rli->log_space_total, true) != 0)
+          &current_log_space, true) != 0)
     m_errmsg = "Error purging processed logs";
-
-  // Tell the I/O thread to take the relay_log_space_limit into account
-  m_rli->ignore_log_space_limit = false;
+  m_rli->log_space_total.store(current_log_space);
+  // modify variable before signaling the receiver and under the log_space_lock
+  m_rli->coordinator_log_after_purge = m_rli->get_group_relay_log_name();
   mysql_cond_broadcast(&m_rli->log_space_cond);
   mysql_mutex_unlock(&m_rli->log_space_lock);
 
@@ -466,62 +491,12 @@ bool Rpl_applier_reader::purge_applied_logs() {
   return m_errmsg != nullptr;
 }
 
-/**
-   Temporarily disables the receiver thread's check for log space, allowing it
-   to queue more than log_space_limit events or rotate relay log. This is needed
-   to avoid a deadlock in the following situation :
-    - the I/O thread has reached log_space_limit
-    - the SQL thread has read all relay logs, but cannot purge for some reasons:
-      * it has already purged all logs except the current one
-      * there are other logs than the current one but they're involved in
-        a transaction that is not finished.
-
-    Solution :
-    Wake up the possibly waiting I/O thread, and set a boolean asking the I/O
-    thread to temporarily ignore the log_space_limit constraint. Then the
-    I/O thread stops waiting and reads one more event and starts honoring
-    log_space_limit again.
-
-    If the SQL thread needs more events to be able to rotate the log (it might
-    need to finish the current group first), then it can ask for one more at a
-    time. Thus we don't outgrow the relay log indefinitely, but rather in a
-    controlled manner, until the next rotate.
-*/
-void Rpl_applier_reader::disable_relay_log_space_limit_if_needed() {
-  // Skip the test if the flag is already true to avoid deadlocks
-  if (m_rli->sql_force_rotate_relay && m_rli->ignore_log_space_limit) return;
-
-  mysql_mutex_lock(&m_rli->log_space_lock);
-
-  /*
-    If we have reached the limit of the relay space:
-    1. If outside a group, SQL thread asks the IO thread to force a rotation.
-       Thus the SQL thread can purge the finished log next time it processes
-       an event to free space.
-    2. If in a group, SQL thread asks the IO thread to ignore the limit and
-       queues yet one more event. Thus the SQL thread finishes the group and
-       goes to logic 1.
-   */
-  if (m_rli->log_space_limit &&
-      m_rli->log_space_limit < m_rli->log_space_total) {
-    if (!m_rli->is_parallel_exec()) {
-      m_rli->sql_force_rotate_relay = !m_rli->is_in_group();
-    } else {
-      m_rli->sql_force_rotate_relay =
-          (m_rli->mts_group_status != Relay_log_info::MTS_IN_GROUP);
-    }
-    m_rli->ignore_log_space_limit = true;
-    mysql_cond_broadcast(&m_rli->log_space_cond);
-  }
-  mysql_mutex_unlock(&m_rli->log_space_lock);
-}
-
 #ifndef NDEBUG
 void Rpl_applier_reader::debug_print_next_event_positions() {
   DBUG_PRINT(
       "info",
       ("assertion skip %u file pos %llu event relay log pos %llu file %s\n",
-       m_rli->slave_skip_counter, m_relaylog_file_reader.position(),
+       m_rli->slave_skip_counter.load(), m_relaylog_file_reader.position(),
        m_rli->get_event_relay_log_pos(), m_rli->get_event_relay_log_name()));
 
   /* This is an assertion which sometimes fails, let's try to track it */
@@ -557,7 +532,7 @@ void Rpl_applier_reader::debug_print_next_event_positions() {
 
 void Rpl_applier_reader::reset_seconds_behind_master() {
   /*
-    We say in Seconds_Behind_Master that we have "caught up". Note that for
+    We say in Seconds_Behind_Source that we have "caught up". Note that for
     example if network link is broken but I/O slave thread hasn't noticed it
     (replica_net_timeout not elapsed), then we'll say "caught up" whereas we're
     not really caught up. Fixing that would require internally cutting timeout
@@ -568,13 +543,13 @@ void Rpl_applier_reader::reset_seconds_behind_master() {
 
     Transient phases like this can be fixed with implementing Heartbeat event
     which provides the slave the status of the master at time the master does
-    not have any new update to send. Seconds_Behind_Master would be zero only
+    not have any new update to send. Seconds_Behind_Source would be zero only
     when master has no more updates in binlog for slave. The heartbeat can be
     sent in a (small) fraction of replica_net_timeout. Until it's done
     m_rli->last_master_timestamp is temporarily (for time of waiting for the
     following event) reset whenever EOF is reached.
 
-    Note, in MTS case Seconds_Behind_Master resetting follows
+    Note, in MTS case Seconds_Behind_Source resetting follows
     slightly different schema where reaching EOF is not enough.  The status
     parameter is updated per some number of processed group of events. The
     number can't be greater than @@global.replica_checkpoint_group and anyway

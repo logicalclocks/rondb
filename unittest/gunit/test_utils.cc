@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -30,11 +31,13 @@
 #include <string>
 
 #include "gtest/gtest-message.h"
-#include "m_ctype.h"
 #include "m_string.h"
 // assert
 #include "my_inttypes.h"
+#include "my_rnd.h"
+#include "mysql/strings/m_ctype.h"
 #include "mysql_com.h"
+#include "sql-common/my_decimal.h"
 #include "sql/binlog.h"
 #include "sql/client_settings.h"
 #include "sql/conn_handler/connection_handler_manager.h"
@@ -46,8 +49,7 @@
 #include "sql/derror.h"
 #include "sql/item_func.h"
 #include "sql/keycaches.h"
-#include "sql/log.h"  // query_logger
-#include "sql/my_decimal.h"
+#include "sql/log.h"     // query_logger
 #include "sql/mysqld.h"  // set_remaining_args
 #include "sql/mysqld_thd_manager.h"
 #include "sql/opt_costconstantcache.h"  // optimizer cost constant cache

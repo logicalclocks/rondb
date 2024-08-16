@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -161,7 +162,7 @@ class Blob {
   size_t m_len;  ///< Length of the memory region.
 
  public:
-  Blob() : m_ptr(NULL), m_len(0) {}
+  Blob() : m_ptr(nullptr), m_len(0) {}
 
   Blob(const byte *ptr, const size_t len)
       : m_ptr(const_cast<byte *>(ptr)), m_len(len) {}
@@ -180,7 +181,7 @@ class Blob {
     return pos < len() ? m_ptr[pos] : out_of_range;
   }
 
-  bool is_null() const { return m_ptr == NULL; }
+  bool is_null() const { return m_ptr == nullptr; }
 
   void trim(size_t l) { m_len = l; }
 };
@@ -233,7 +234,7 @@ class Sid {
 
   bool is_user(void) const { return m_type == SidTypeUser; }
 
-  bool operator==(const Sid &);
+  bool operator==(const Sid &) const;
 
   operator PSID() const { return (PSID)m_data->User.Sid; }
 

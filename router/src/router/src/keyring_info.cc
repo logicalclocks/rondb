@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -38,6 +39,7 @@
 #include "mysql/harness/filesystem.h"
 #include "mysql/harness/loader_config.h"
 #include "mysql/harness/logging/logging.h"
+#include "mysqlrouter/supported_router_options.h"
 #include "process_launcher.h"
 #include "random_generator.h"
 
@@ -52,8 +54,8 @@ std::string KeyringInfo::get_keyring_file(
     const mysql_harness::Config &config) const {
   std::string keyring_file;
 
-  if (config.has_default("keyring_path")) {
-    keyring_file = config.get_default("keyring_path");
+  if (config.has_default(router::options::kKeyringPath)) {
+    keyring_file = config.get_default(router::options::kKeyringPath);
   }
 
   if (keyring_file.empty()) {
@@ -68,14 +70,17 @@ std::string KeyringInfo::get_keyring_file(
 void KeyringInfo::init(mysql_harness::Config &config) {
   keyring_file_ = get_keyring_file(config);
 
-  if (config.has_default("master_key_path"))
-    master_key_file_ = config.get_default("master_key_path");
+  if (config.has_default(router::options::kMasterKeyPath)) {
+    master_key_file_ = config.get_default(router::options::kMasterKeyPath);
+  }
 
-  if (config.has_default("master_key_reader"))
-    master_key_reader_ = config.get_default("master_key_reader");
+  if (config.has_default(router::options::kMasterKeyReader)) {
+    master_key_reader_ = config.get_default(router::options::kMasterKeyReader);
+  }
 
-  if (config.has_default("master_key_writer"))
-    master_key_writer_ = config.get_default("master_key_writer");
+  if (config.has_default(router::options::kMasterKeyWriter)) {
+    master_key_writer_ = config.get_default(router::options::kMasterKeyWriter);
+  }
 }
 
 bool KeyringInfo::read_master_key() noexcept {

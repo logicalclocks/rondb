@@ -1,15 +1,16 @@
-/* Copyright (c) 2017, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -116,7 +117,7 @@ static SHOW_VAR show_var_filter_rules_decompile[] = {
 /*
   STRING_WITH_LEN
 */
-#include <m_string.h>
+#include <string_with_len.h>
 
 static bool inited = false;
 static int opened = 0;
@@ -352,10 +353,11 @@ static int log_filter_xlate_by_opcode(uint opcode, uint flags) {
   @param str      NTBS to append to that buffer
 */
 static void log_filter_append(char *out_buf, size_t out_siz, const char *str) {
-  size_t out_used = log_bs->length(out_buf);
-  size_t out_left = out_siz - out_used;
+  const size_t out_used = log_bs->length(out_buf);
+  const size_t out_left = out_siz - out_used;
   char *out_writepos = out_buf + out_used;
-  size_t out_needed = log_bs->substitute(out_writepos, out_left, "%s", str);
+  const size_t out_needed =
+      log_bs->substitute(out_writepos, out_left, "%s", str);
 
   if (out_needed >= out_left)    /* buffer exhausted. '\0' terminate */
     out_buf[out_siz - 1] = '\0'; /* purecov: inspected */
@@ -372,7 +374,7 @@ static void log_filter_append(char *out_buf, size_t out_siz, const char *str) {
 static void log_filter_append_item_value(char *out_buf, size_t out_siz,
                                          log_item *li) {
   size_t len = log_bs->length(out_buf);  // used bytes
-  size_t out_left = out_siz - len;
+  const size_t out_left = out_siz - len;
   char *out_writepos = out_buf + len;
 
   if (li->item_class == LOG_FLOAT)
@@ -446,7 +448,7 @@ static void log_filter_append_item_value(char *out_buf, size_t out_siz,
 static log_filter_result log_filter_rule_dump(log_filter_rule *rule,
                                               log_filter_result state,
                                               char *out_buf, size_t out_size) {
-  log_filter_result ret = LOG_FILTER_LANGUAGE_OK;
+  const log_filter_result ret = LOG_FILTER_LANGUAGE_OK;
   int cond;
   int verb;
   const log_filter_xlate_key *token;
@@ -717,7 +719,7 @@ static int log_filter_get_token(const char **inp_readpos, const char **token,
 */
 static int log_filter_make_field(const char **name, const size_t *len,
                                  log_item *li) {
-  int wellknown = log_bi->wellknown_by_name(*name, *len);
+  const int wellknown = log_bi->wellknown_by_name(*name, *len);
   log_item_type item_type;
   char *key = nullptr;
 
@@ -1321,7 +1323,7 @@ static int log_filter_dragnet_set(log_filter_ruleset *ruleset,
       }
 
       {
-        int auxval_success =
+        const int auxval_success =
             log_filter_set_arg(&token, &len, &rule->aux, state);
 
         if ((rule->verb == LOG_FILTER_THROTTLE) &&
@@ -1388,7 +1390,7 @@ static int log_filter_dragnet_set(log_filter_ruleset *ruleset,
       flow_new = LOG_FILTER_WORD_NONE;
 
       {  // add relative jumps to the end of all blocks in THEN/ELSEIF
-        int flow_last = tmp_filter_rules->count;
+        const int flow_last = tmp_filter_rules->count;
         for (c = flow_first; c <= flow_last; c++) {
           if (tmp_filter_rules->rule[c].jump != 0)
             tmp_filter_rules->rule[c].jump = flow_last - c + 1;

@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -43,6 +44,8 @@
 #include "template_utils.h"
 
 static constexpr int STRING_BUFFER = 256 * 2;
+
+struct CHARSET_INFO;
 
 static File outfile;
 
@@ -222,8 +225,8 @@ static ulong sql_get_client_capabilities(void *) {
 static int sql_get_null(void *ctx) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
   memcpy(pctx->sql_str_value[row][col], "[NULL]", sizeof("[NULL]"));
@@ -235,12 +238,13 @@ static int sql_get_null(void *ctx) {
 static int sql_get_integer(void *ctx, longlong value) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]), "%lld", value);
+  const size_t len =
+      snprintf(pctx->sql_str_value[row][col],
+               sizeof(pctx->sql_str_value[row][col]), "%lld", value);
   pctx->sql_str_len[row][col] = len;
 
   return false;
@@ -249,13 +253,13 @@ static int sql_get_integer(void *ctx, longlong value) {
 static int sql_get_longlong(void *ctx, longlong value, uint is_unsigned) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]),
-                        is_unsigned ? "%llu" : "%lld", value);
+  const size_t len = snprintf(pctx->sql_str_value[row][col],
+                              sizeof(pctx->sql_str_value[row][col]),
+                              is_unsigned ? "%llu" : "%lld", value);
 
   pctx->sql_str_len[row][col] = len;
 
@@ -265,14 +269,14 @@ static int sql_get_longlong(void *ctx, longlong value, uint is_unsigned) {
 static int sql_get_decimal(void *ctx, const decimal_t *value) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]),
-                        "%s%d.%d(%d)[%s]", value->sign ? "+" : "-", value->intg,
-                        value->frac, value->len, (char *)value->buf);
+  const size_t len = snprintf(
+      pctx->sql_str_value[row][col], sizeof(pctx->sql_str_value[row][col]),
+      "%s%d.%d(%d)[%s]", value->sign ? "+" : "-", value->intg, value->frac,
+      value->len, (char *)value->buf);
   pctx->sql_str_len[row][col] = len;
 
   return false;
@@ -281,12 +285,13 @@ static int sql_get_decimal(void *ctx, const decimal_t *value) {
 static int sql_get_double(void *ctx, double value, uint32 /*decimals*/) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(pctx->sql_str_value[row][col],
-                        sizeof(pctx->sql_str_value[row][col]), "%3.7g", value);
+  const size_t len =
+      snprintf(pctx->sql_str_value[row][col],
+               sizeof(pctx->sql_str_value[row][col]), "%3.7g", value);
 
   pctx->sql_str_len[row][col] = len;
 
@@ -296,11 +301,11 @@ static int sql_get_double(void *ctx, double value, uint32 /*decimals*/) {
 static int sql_get_date(void *ctx, const MYSQL_TIME *value) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len =
+  const size_t len =
       snprintf(pctx->sql_str_value[row][col],
                sizeof(pctx->sql_str_value[row][col]), "%s%4d-%02d-%02d",
                value->neg ? "-" : "", value->year, value->month, value->day);
@@ -312,11 +317,11 @@ static int sql_get_date(void *ctx, const MYSQL_TIME *value) {
 static int sql_get_time(void *ctx, const MYSQL_TIME *value, uint /*decimals*/) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(
+  const size_t len = snprintf(
       pctx->sql_str_value[row][col], sizeof(pctx->sql_str_value[row][col]),
       "%s%02d:%02d:%02d", value->neg ? "-" : "",
       value->day ? (value->day * 24 + value->hour) : value->hour, value->minute,
@@ -331,11 +336,11 @@ static int sql_get_datetime(void *ctx, const MYSQL_TIME *value,
                             uint /*decimals*/) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
-  size_t len = snprintf(
+  const size_t len = snprintf(
       pctx->sql_str_value[row][col], sizeof(pctx->sql_str_value[row][col]),
       "%s%4d-%02d-%02d %02d:%02d:%02d", value->neg ? "-" : "", value->year,
       value->month, value->day, value->hour, value->minute, value->second);
@@ -349,8 +354,8 @@ static int sql_get_string(void *ctx, const char *const value, size_t length,
                           const CHARSET_INFO *const) {
   struct st_plugin_ctx *pctx = (struct st_plugin_ctx *)ctx;
   DBUG_TRACE;
-  uint row = pctx->num_rows;
-  uint col = pctx->current_col;
+  const uint row = pctx->num_rows;
+  const uint col = pctx->current_col;
   pctx->current_col++;
 
   strncpy(pctx->sql_str_value[row][col], value, length);
@@ -584,7 +589,7 @@ static void test_com_reset_connection(void *p) {
   MYSQL_SESSION st_session;
   ENSURE_API_NOT_NULL(st_session = srv_session_open(session_error_cb, p));
 
-  my_thread_id session_id = srv_session_info_get_session_id(st_session);
+  const my_thread_id session_id = srv_session_info_get_session_id(st_session);
 
   std::unique_ptr<st_plugin_ctx> ctx(new st_plugin_ctx());
   query_execute(st_session, ctx.get(), "set @secret = 123");
@@ -604,9 +609,9 @@ static void test_com_reset_connection_from_another_session(void *p) {
   WRITE_STR("COM_RESET_CONNECTION from another session\n");
 
   MYSQL_SESSION st_session;
-  ENSURE_API_NOT_NULL(st_session = srv_session_open(NULL, p));
+  ENSURE_API_NOT_NULL(st_session = srv_session_open(nullptr, p));
 
-  my_thread_id session_id = srv_session_info_get_session_id(st_session);
+  const my_thread_id session_id = srv_session_info_get_session_id(st_session);
 
   std::unique_ptr<st_plugin_ctx> ctx(new st_plugin_ctx());
   query_execute(st_session, ctx.get(), "set @another_secret = 456");

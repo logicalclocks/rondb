@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -400,7 +401,7 @@ class String_error_handler : public IError_handler {
       MY_ATTRIBUTE((format(printf, 2, 3))) {
     va_list va;
     va_start(va, message);
-    int copied = vsnprintf(m_buffer, m_size - 1, message, va);
+    const int copied = vsnprintf(m_buffer, m_size - 1, message, va);
     va_end(va);
     m_buffer[copied] = '\0';
 
@@ -476,9 +477,9 @@ static char *emit(UDF_INIT *initid [[maybe_unused]], UDF_ARGS *args,
                        arg_lengths, false)) < 0)
       return result;
 
-    std::string key(*arguments, *arg_lengths);
+    const std::string key(*arguments, *arg_lengths);
 
-    std::map<std::string, mysql_event_message_key_value_t>::const_iterator
+    const std::map<std::string, mysql_event_message_key_value_t>::const_iterator
         iter = key_values.find(key);
     if (iter != key_values.end()) {
       handler.error("Duplicated key [%d].", args->arg_count - arg_count);
@@ -518,7 +519,7 @@ static char *emit(UDF_INIT *initid [[maybe_unused]], UDF_ARGS *args,
   /**
     Allocate array that is used by the audit api service.
   */
-  std::unique_ptr<mysql_event_message_key_value_t[]> key_value_map(
+  const std::unique_ptr<mysql_event_message_key_value_t[]> key_value_map(
       key_values.size() > 0
           ? new mysql_event_message_key_value_t[key_values.size()]
           : nullptr);

@@ -1,15 +1,16 @@
-/* Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,43 +26,41 @@
 #include <mysql/components/services/log_builtins.h>
 #include "plugin/group_replication/include/consistency_manager.h"
 #include "plugin/group_replication/include/plugin.h"
+#include "plugin/group_replication/include/plugin_handlers/metrics_handler.h"
 #include "plugin/group_replication/include/plugin_messages/sync_before_execution_message.h"
 #include "plugin/group_replication/include/plugin_messages/transaction_prepared_message.h"
 #include "plugin/group_replication/include/plugin_psi.h"
+#include "string_with_len.h"
 
 Transaction_consistency_info::Transaction_consistency_info(
-    my_thread_id thread_id, bool local_transaction, const rpl_sid *sid,
-    rpl_sidno sidno, rpl_gno gno,
+    my_thread_id thread_id, bool local_transaction, const gr::Gtid_tsid &tsid,
+    bool is_tsid_specified, rpl_sidno sidno, rpl_gno gno,
     enum_group_replication_consistency_level consistency_level,
     Members_list *members_that_must_prepare_the_transaction)
     : m_thread_id(thread_id),
       m_local_transaction(local_transaction),
-      m_sid_specified(sid != nullptr ? true : false),
+      m_tsid_specified(is_tsid_specified),
+      m_tsid(tsid),
       m_sidno(sidno),
       m_gno(gno),
       m_consistency_level(consistency_level),
       m_members_that_must_prepare_the_transaction(
           members_that_must_prepare_the_transaction),
       m_transaction_prepared_locally(local_transaction),
-      m_transaction_prepared_remotely(false) {
+      m_transaction_prepared_remotely(false),
+      m_begin_timestamp(Metrics_handler::get_current_time()) {
   DBUG_TRACE;
   assert(m_consistency_level >= GROUP_REPLICATION_CONSISTENCY_AFTER);
   assert(nullptr != m_members_that_must_prepare_the_transaction);
   DBUG_PRINT(
       "info",
       ("thread_id: %u; local_transaction: %d; gtid: %d:%" PRId64
-       "; sid_specified: "
+       "; tsid_specified: "
        "%d; consistency_level: %d; "
        "transaction_prepared_locally: %d; transaction_prepared_remotely: %d",
-       m_thread_id, m_local_transaction, m_sidno, m_gno, m_sid_specified,
+       m_thread_id, m_local_transaction, m_sidno, m_gno, m_tsid_specified,
        m_consistency_level, m_transaction_prepared_locally,
        m_transaction_prepared_remotely));
-
-  if (nullptr != sid) {
-    m_sid.copy_from(*sid);
-  } else {
-    m_sid.clear();
-  }
 
   m_members_that_must_prepare_the_transaction_lock = std::make_unique<
       Checkable_rwlock>(
@@ -128,7 +127,7 @@ int Transaction_consistency_info::after_applier_prepare(
        "%d; consistency_level: %d; "
        "transaction_prepared_locally: %d; transaction_prepared_remotely: %d; "
        "member_status: %d",
-       m_thread_id, m_local_transaction, m_sidno, m_gno, m_sid_specified,
+       m_thread_id, m_local_transaction, m_sidno, m_gno, m_tsid_specified,
        m_consistency_level, m_transaction_prepared_locally,
        m_transaction_prepared_remotely, member_status));
 
@@ -164,12 +163,12 @@ int Transaction_consistency_info::after_applier_prepare(
         return 0;
       };);
 
-  Transaction_prepared_message message((m_sid_specified ? &m_sid : nullptr),
-                                       m_gno);
+  Transaction_prepared_message message(m_tsid, m_tsid_specified, m_gno);
   if (gcs_module->send_message(message)) {
     /* purecov: begin inspected */
+    const std::string tsid_str = m_tsid.to_string();
     LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_SEND_TRX_PREPARED_MESSAGE_FAILED,
-                 m_sidno, m_gno, m_thread_id);
+                 tsid_str.c_str(), m_gno, m_thread_id);
     return 1;
     /* purecov: end */
   }
@@ -186,7 +185,7 @@ int Transaction_consistency_info::handle_remote_prepare(
        "; sid_specified: "
        "%d; consistency_level: %d; "
        "transaction_prepared_locally: %d; transaction_prepared_remotely: %d",
-       m_thread_id, m_local_transaction, m_sidno, m_gno, m_sid_specified,
+       m_thread_id, m_local_transaction, m_sidno, m_gno, m_tsid_specified,
        m_consistency_level, m_transaction_prepared_locally,
        m_transaction_prepared_remotely));
 
@@ -202,11 +201,18 @@ int Transaction_consistency_info::handle_remote_prepare(
     if (m_transaction_prepared_locally) {
       if (transactions_latch->releaseTicket(m_thread_id)) {
         /* purecov: begin inspected */
+        const std::string tsid_str = m_tsid.to_string();
         LogPluginErr(ERROR_LEVEL,
                      ER_GRP_RPL_RELEASE_COMMIT_AFTER_GROUP_PREPARE_FAILED,
-                     m_sidno, m_gno, m_thread_id);
+                     tsid_str.c_str(), m_gno, m_thread_id);
         return CONSISTENCY_INFO_OUTCOME_ERROR;
         /* purecov: end */
+      }
+
+      if (m_local_transaction) {
+        const auto end_timestamp = Metrics_handler::get_current_time();
+        metrics_handler->add_transaction_consistency_after_termination(
+            m_begin_timestamp, end_timestamp);
       }
 
       return CONSISTENCY_INFO_OUTCOME_COMMIT;
@@ -231,15 +237,24 @@ int Transaction_consistency_info::handle_member_leave(
   DBUG_PRINT(
       "info",
       ("thread_id: %u; local_transaction: %d; gtid: %d:%" PRId64
-       "; sid_specified: "
+       "; tsid_specified: "
        "%d; consistency_level: %d; "
        "transaction_prepared_locally: %d; transaction_prepared_remotely: %d; "
        "error: %d",
-       m_thread_id, m_local_transaction, m_sidno, m_gno, m_sid_specified,
+       m_thread_id, m_local_transaction, m_sidno, m_gno, m_tsid_specified,
        m_consistency_level, m_transaction_prepared_locally,
        m_transaction_prepared_remotely, error));
 
   return error;
+}
+
+uint64_t Transaction_consistency_info::get_begin_timestamp() const {
+  return m_begin_timestamp;
+}
+
+std::string Transaction_consistency_info::get_tsid_string() const {
+  assert(!m_tsid.to_string().empty());
+  return m_tsid.to_string();
 }
 
 Transaction_consistency_manager::Transaction_consistency_manager()
@@ -282,11 +297,6 @@ Transaction_consistency_manager::~Transaction_consistency_manager() {
 void Transaction_consistency_manager::clear() {
   DBUG_TRACE;
   m_map_lock->wrlock();
-  for (typename Transaction_consistency_manager_map::iterator it =
-           m_map.begin();
-       it != m_map.end(); ++it) {
-    delete it->second; /* purecov: inspected */
-  }
   m_map.clear();
   m_map_lock->unlock();
 
@@ -304,7 +314,7 @@ void Transaction_consistency_manager::clear() {
 }
 
 int Transaction_consistency_manager::after_certification(
-    Transaction_consistency_info *transaction_info) {
+    std::unique_ptr<Transaction_consistency_info> transaction_info) {
   DBUG_TRACE;
   assert(transaction_info->get_consistency_level() >=
          GROUP_REPLICATION_CONSISTENCY_AFTER);
@@ -317,10 +327,11 @@ int Transaction_consistency_manager::after_certification(
   typename Transaction_consistency_manager_map::iterator it = m_map.find(key);
   if (it != m_map.end()) {
     /* purecov: begin inspected */
-    m_map_lock->unlock();
+    const std::string tsid_str = transaction_info->get_tsid_string();
     LogPluginErr(ERROR_LEVEL,
                  ER_GRP_RPL_TRX_ALREADY_EXISTS_ON_TCM_ON_AFTER_CERTIFICATION,
-                 transaction_info->get_sidno(), transaction_info->get_gno());
+                 tsid_str.c_str(), transaction_info->get_gno());
+    m_map_lock->unlock();
     return 1;
     /* purecov: end */
   }
@@ -329,19 +340,32 @@ int Transaction_consistency_manager::after_certification(
   if (transaction_info->is_local_transaction() &&
       transaction_info->is_a_single_member_group()) {
     transactions_latch->releaseTicket(transaction_info->get_thread_id());
-    delete transaction_info;
+    const auto end_timestamp = Metrics_handler::get_current_time();
+    metrics_handler->add_transaction_consistency_after_termination(
+        transaction_info->get_begin_timestamp(), end_timestamp);
+
     m_map_lock->unlock();
     return 0;
   }
 
-  std::pair<typename Transaction_consistency_manager_map::iterator, bool> ret =
-      m_map.insert(Transaction_consistency_manager_pair(key, transaction_info));
+  DBUG_PRINT("info",
+             ("gtid: %d:%" PRId64 "; consistency_level: %d; ",
+              transaction_info->get_sidno(), transaction_info->get_gno(),
+              transaction_info->get_consistency_level()));
+
   if (transaction_info->is_local_transaction()) m_last_local_transaction = key;
+
+  const std::string tsid_string = transaction_info->get_tsid_string();
+  const rpl_gno gno = transaction_info->get_gno();
+  std::pair<typename Transaction_consistency_manager_map::iterator, bool> ret =
+      m_map.insert(Transaction_consistency_manager_pair(
+          key, std::move(transaction_info)));
+
   if (ret.second == false) {
     /* purecov: begin inspected */
     LogPluginErr(ERROR_LEVEL,
                  ER_GRP_RPL_FAILED_TO_INSERT_TRX_ON_TCM_ON_AFTER_CERTIFICATION,
-                 transaction_info->get_sidno(), transaction_info->get_gno());
+                 tsid_string.c_str(), gno);
     error = 1;
     /* purecov: end */
   }
@@ -356,11 +380,6 @@ int Transaction_consistency_manager::after_certification(
         "continue";
     assert(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
   };);
-
-  DBUG_PRINT("info",
-             ("gtid: %d:%" PRId64 "; consistency_level: %d; ",
-              transaction_info->get_sidno(), transaction_info->get_gno(),
-              transaction_info->get_consistency_level()));
 
   m_map_lock->unlock();
   return error;
@@ -381,7 +400,8 @@ int Transaction_consistency_manager::after_applier_prepare(
     return 0;
   }
 
-  Transaction_consistency_info *transaction_info = it->second;
+  auto &transaction_info = it->second;
+  const std::string tsid_string = transaction_info->get_tsid_string();
   const bool transaction_prepared_remotely =
       transaction_info->is_the_transaction_prepared_remotely();
 
@@ -390,7 +410,7 @@ int Transaction_consistency_manager::after_applier_prepare(
     /* purecov: begin inspected */
     LogPluginErr(ERROR_LEVEL,
                  ER_GRP_RPL_REGISTER_TRX_TO_WAIT_FOR_GROUP_PREPARE_FAILED,
-                 sidno, gno, thread_id);
+                 tsid_string.c_str(), gno, thread_id);
     m_map_lock->unlock();
     return 1;
     /* purecov: end */
@@ -425,12 +445,10 @@ int Transaction_consistency_manager::after_applier_prepare(
 
   if (!transaction_prepared_remotely &&
       transactions_latch->waitTicket(thread_id)) {
-    /* purecov: begin inspected */
     LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_TRX_WAIT_FOR_GROUP_PREPARE_FAILED,
-                 sidno, gno, thread_id);
+                 tsid_string.c_str(), gno, thread_id);
     error = 1;
     goto end;
-    /* purecov: end */
   }
 
   // Remove transaction from map
@@ -438,7 +456,6 @@ int Transaction_consistency_manager::after_applier_prepare(
     m_map_lock->wrlock();
     typename Transaction_consistency_manager_map::iterator it = m_map.find(key);
     if (it != m_map.end()) {
-      delete it->second;
       m_map.erase(it);
     }
     m_map_lock->unlock();
@@ -457,18 +474,18 @@ end:
 }
 
 int Transaction_consistency_manager::handle_remote_prepare(
-    const rpl_sid *sid, rpl_gno gno,
+    const gr::Gtid_tsid &tsid, bool is_tsid_specified, rpl_gno gno,
     const Gcs_member_identifier &gcs_member_id) {
   DBUG_TRACE;
   rpl_sidno sidno = 0;
 
-  if (sid != nullptr) {
+  if (is_tsid_specified) {
     /*
      This transaction has a UUID different from the group name,
      thence we need to fetch the corresponding sidno from the
-     global sid_map.
+     global tsid_map.
     */
-    sidno = get_sidno_from_global_sid_map(*sid);
+    sidno = get_sidno_from_global_tsid_map(tsid);
     if (sidno <= 0) {
       /* purecov: begin inspected */
       LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_FAILED_TO_GENERATE_SIDNO_FOR_GRP);
@@ -478,7 +495,7 @@ int Transaction_consistency_manager::handle_remote_prepare(
   } else {
     /*
       This transaction has the group name as UUID, so we can skip
-      a lock on global sid_map and use the cached group sidno.
+      a lock on global tsid_map and use the cached group sidno.
     */
     sidno = get_group_sidno();
   }
@@ -502,15 +519,17 @@ int Transaction_consistency_manager::handle_remote_prepare(
     }
 
     /* purecov: begin inspected */
+    const gr::Gtid_tsid tsid = get_tsid_from_global_tsid_map(sidno);
+    assert(!tsid.to_string().empty());
     LogPluginErr(ERROR_LEVEL,
                  ER_GRP_RPL_TRX_DOES_NOT_EXIST_ON_TCM_ON_HANDLE_REMOTE_PREPARE,
-                 sidno, gno);
+                 tsid.to_string().c_str(), gno);
     m_map_lock->unlock();
     return 1;
     /* purecov: end */
   }
 
-  Transaction_consistency_info *transaction_info = it->second;
+  auto &transaction_info = it->second;
 
   DBUG_PRINT("info",
              ("gtid: %d:%" PRId64 "; consistency_level: %d; ",
@@ -562,7 +581,6 @@ int Transaction_consistency_manager::handle_remote_prepare(
     m_map_lock->wrlock();
     typename Transaction_consistency_manager_map::iterator it = m_map.find(key);
     if (it != m_map.end()) {
-      delete it->second;
       m_map.erase(it);
     }
     m_map_lock->unlock();
@@ -583,10 +601,9 @@ int Transaction_consistency_manager::handle_member_leave(
 
   typename Transaction_consistency_manager_map::iterator it = m_map.begin();
   while (it != m_map.end()) {
-    Transaction_consistency_info *transaction_info = it->second;
+    auto &transaction_info = it->second;
     int result = transaction_info->handle_member_leave(leaving_members);
     if (CONSISTENCY_INFO_OUTCOME_COMMIT == result) {
-      delete it->second;
       m_map.erase(it++);
     } else {
       ++it;
@@ -618,7 +635,7 @@ int Transaction_consistency_manager::after_commit(my_thread_id, rpl_sidno sidno,
 
 int Transaction_consistency_manager::before_transaction_begin(
     my_thread_id thread_id, ulong gr_consistency_level, ulong timeout,
-    enum_rpl_channel_type rpl_channel_type) {
+    enum_rpl_channel_type rpl_channel_type, const THD *thd) {
   DBUG_TRACE;
   int error = 0;
 
@@ -643,12 +660,10 @@ int Transaction_consistency_manager::before_transaction_begin(
 
   if (GROUP_REPLICATION_CONSISTENCY_BEFORE == consistency_level ||
       GROUP_REPLICATION_CONSISTENCY_BEFORE_AND_AFTER == consistency_level) {
-    error = transaction_begin_sync_before_execution(thread_id,
-                                                    consistency_level, timeout);
+    error = transaction_begin_sync_before_execution(
+        thread_id, consistency_level, timeout, thd);
     if (error) {
-      /* purecov: begin inspected */
       return error;
-      /* purecov: end */
     }
   }
 
@@ -673,8 +688,9 @@ int Transaction_consistency_manager::before_transaction_begin(
 int Transaction_consistency_manager::transaction_begin_sync_before_execution(
     my_thread_id thread_id,
     enum_group_replication_consistency_level consistency_level [[maybe_unused]],
-    ulong timeout) const {
+    ulong timeout, const THD *thd) const {
   DBUG_TRACE;
+  int error{0};
   assert(GROUP_REPLICATION_CONSISTENCY_BEFORE == consistency_level ||
          GROUP_REPLICATION_CONSISTENCY_BEFORE_AND_AFTER == consistency_level);
   DBUG_PRINT("info", ("thread_id: %d; consistency_level: %d", thread_id,
@@ -683,6 +699,8 @@ int Transaction_consistency_manager::transaction_begin_sync_before_execution(
   if (m_plugin_stopping) {
     return ER_GRP_TRX_CONSISTENCY_BEGIN_NOT_ALLOWED;
   }
+
+  const auto begin_timestamp = Metrics_handler::get_current_time();
 
   if (transactions_latch->registerTicket(thread_id)) {
     /* purecov: begin inspected */
@@ -696,12 +714,14 @@ int Transaction_consistency_manager::transaction_begin_sync_before_execution(
 
   // send message
   Sync_before_execution_message message(thread_id);
-  if (gcs_module->send_message(message)) {
-    /* purecov: begin inspected */
+  if (gcs_module->send_message(message, false, thd)) {
+    // sent message failed so ticket aren't needed, it won't receive
+    // notifications
+    transactions_latch->releaseTicket(thread_id);
+    transactions_latch->waitTicket(thread_id);
     LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_SEND_TRX_SYNC_BEFORE_EXECUTION_FAILED,
                  thread_id);
     return ER_GRP_TRX_CONSISTENCY_BEFORE;
-    /* purecov: end */
   }
 
   DBUG_PRINT("info", ("waiting for Sync_before_execution_message"));
@@ -734,11 +754,15 @@ int Transaction_consistency_manager::transaction_begin_sync_before_execution(
     /* purecov: begin inspected */
     LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_TRX_WAIT_FOR_GROUP_GTID_EXECUTED,
                  thread_id);
-    return ER_GRP_TRX_CONSISTENCY_BEFORE;
+    error = ER_GRP_TRX_CONSISTENCY_BEFORE;
     /* purecov: end */
   }
 
-  return 0;
+  const auto end_timestamp = Metrics_handler::get_current_time();
+  metrics_handler->add_transaction_consistency_before_begin(begin_timestamp,
+                                                            end_timestamp);
+
+  return error;
 }
 
 int Transaction_consistency_manager::handle_sync_before_execution_message(
@@ -763,6 +787,7 @@ int Transaction_consistency_manager::
     transaction_begin_sync_prepared_transactions(my_thread_id thread_id,
                                                  ulong timeout) {
   DBUG_TRACE;
+  int error{0};
   Transaction_consistency_manager_key key(0, 0);
 
   // Take a read lock to check queue size.
@@ -788,6 +813,8 @@ int Transaction_consistency_manager::
 
   DBUG_PRINT("info", ("thread_id: %d", thread_id));
 
+  const auto begin_timestamp = Metrics_handler::get_current_time();
+
   if (transactions_latch->registerTicket(thread_id)) {
     /* purecov: begin inspected */
     LogPluginErr(ERROR_LEVEL,
@@ -812,11 +839,15 @@ int Transaction_consistency_manager::
     remove_prepared_transaction(key);
     LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_WAIT_FOR_DEPENDENCIES_FAILED,
                  thread_id);
-    return ER_GRP_TRX_CONSISTENCY_AFTER_ON_TRX_BEGIN;
+    error = ER_GRP_TRX_CONSISTENCY_AFTER_ON_TRX_BEGIN;
     /* purecov: end */
   }
 
-  return 0;
+  const uint64_t end_timestamp = Metrics_handler::get_current_time();
+  metrics_handler->add_transaction_consistency_after_sync(begin_timestamp,
+                                                          end_timestamp);
+
+  return error;
 }
 
 bool Transaction_consistency_manager::has_local_prepared_transactions() {
@@ -827,7 +858,7 @@ bool Transaction_consistency_manager::has_local_prepared_transactions() {
   for (typename Transaction_consistency_manager_map::iterator it =
            m_map.begin();
        it != m_map.end(); it++) {
-    Transaction_consistency_info *transaction_info = it->second;
+    auto &transaction_info = it->second;
 
     if (transaction_info->is_local_transaction() &&
         transaction_info->is_transaction_prepared_locally()) {
@@ -881,10 +912,12 @@ int Transaction_consistency_manager::remove_prepared_transaction(
 
       if (transactions_latch->releaseTicket(waiting_thread_id)) {
         /* purecov: begin inspected */
+        const gr::Gtid_tsid tsid = get_tsid_from_global_tsid_map(key.first);
+        assert(!tsid.to_string().empty());
         LogPluginErr(
             ERROR_LEVEL,
             ER_GRP_RPL_RELEASE_BEGIN_TRX_AFTER_DEPENDENCIES_COMMIT_FAILED,
-            key.first, key.second, waiting_thread_id);
+            tsid.to_string().c_str(), key.second, waiting_thread_id);
         error = 1;
         /* purecov: end */
       }

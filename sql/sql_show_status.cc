@@ -1,15 +1,16 @@
-/* Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,7 +24,6 @@
 #include "sql/sql_show_status.h"
 
 #include "lex_string.h"
-#include "m_string.h"  // STRING_WITH_LEN
 #include "my_alloc.h"  // operator new
 #include "my_sqlcommand.h"
 #include "sql/item_cmpfunc.h"  // Item_func_like
@@ -36,6 +36,7 @@
 #include "sql/sql_lex.h"               // Query_options
 #include "sql/strfunc.h"
 #include "sql_string.h"
+#include "string_with_len.h"
 
 /**
   Build a replacement query for SHOW STATUS.
@@ -129,7 +130,7 @@ static Query_block *build_query(const POS &pos, THD *thd,
 
   /* ... VARIABLE_NAME as Variable_name, VARIABLE_VALUE as Value ... */
   PT_select_item_list *item_list;
-  item_list = new (thd->mem_root) PT_select_item_list();
+  item_list = new (thd->mem_root) PT_select_item_list(pos);
   if (item_list == nullptr) return nullptr;
   item_list->push_back(expr_name);
   item_list->push_back(expr_value);
@@ -157,8 +158,8 @@ static Query_block *build_query(const POS &pos, THD *thd,
 
   /* ... FROM performance_schema.<table_name> ... */
   PT_table_factor_table_ident *table_factor;
-  table_factor = new (thd->mem_root)
-      PT_table_factor_table_ident(table_ident, nullptr, NULL_CSTR, nullptr);
+  table_factor = new (thd->mem_root) PT_table_factor_table_ident(
+      pos, table_ident, nullptr, NULL_CSTR, nullptr, nullptr);
   if (table_factor == nullptr) return nullptr;
 
   Mem_root_array_YY<PT_table_reference *> table_reference_list;
@@ -170,14 +171,14 @@ static Query_block *build_query(const POS &pos, THD *thd,
    * performance_schema.<table_name> */
   PT_query_primary *query_specification;
   query_specification =
-      new (thd->mem_root) PT_query_specification(options, item_list,
+      new (thd->mem_root) PT_query_specification(pos, options, item_list,
                                                  table_reference_list,  // from
                                                  nullptr);              // where
   if (query_specification == nullptr) return nullptr;
 
   PT_query_expression *query_expression;
   query_expression =
-      new (thd->mem_root) PT_query_expression(query_specification);
+      new (thd->mem_root) PT_query_expression(pos, query_specification);
   if (query_expression == nullptr) return nullptr;
 
   PT_subquery *sub_query;
@@ -188,7 +189,7 @@ static Query_block *build_query(const POS &pos, THD *thd,
   column_names.init(thd->mem_root);
   PT_derived_table *derived_table;
   derived_table = new (thd->mem_root)
-      PT_derived_table(false, sub_query, table_name, &column_names);
+      PT_derived_table(pos, false, sub_query, table_name, &column_names);
   if (derived_table == nullptr) return nullptr;
 
   Mem_root_array_YY<PT_table_reference *> table_reference_list1;
@@ -201,7 +202,7 @@ static Query_block *build_query(const POS &pos, THD *thd,
   if (ident_star == nullptr) return nullptr;
 
   PT_select_item_list *item_list1;
-  item_list1 = new (thd->mem_root) PT_select_item_list();
+  item_list1 = new (thd->mem_root) PT_select_item_list(pos);
   if (item_list1 == nullptr) return nullptr;
   item_list1->push_back(ident_star);
 
@@ -244,14 +245,14 @@ static Query_block *build_query(const POS &pos, THD *thd,
   /* SELECT * FROM (SELECT ...) derived_table [ WHERE <cond> ] */
   PT_query_specification *query_specification2;
   query_specification2 =
-      new (thd->mem_root) PT_query_specification(options, item_list1,
+      new (thd->mem_root) PT_query_specification(pos, options, item_list1,
                                                  table_reference_list1,  // from
                                                  where_clause);  // where
   if (query_specification2 == nullptr) return nullptr;
 
   PT_query_expression *query_expression2;
   query_expression2 =
-      new (thd->mem_root) PT_query_expression(query_specification2);
+      new (thd->mem_root) PT_query_expression(pos, query_specification2);
   if (query_expression2 == nullptr) return nullptr;
 
   LEX *lex = thd->lex;

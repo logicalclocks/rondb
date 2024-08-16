@@ -1,15 +1,16 @@
-/* Copyright (c) 2020, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2020, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
 as published by the Free Software Foundation.
 
-This program is also distributed with certain software (including
+This program is designed to work with certain software (including
 but not limited to OpenSSL) that is licensed under separate terms,
 as designated in a particular file or component or in included license
 documentation.  The authors of MySQL hereby grant you an additional
 permission to link the program and your derivative works with the
-separately licensed software that they have included with MySQL.
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -190,39 +191,6 @@ DECLARE_BOOL_METHOD(destroy, (reference_caching_channel channel));
   @retval true failure
 */
 DECLARE_BOOL_METHOD(invalidate, (reference_caching_channel channel));
-
-/**
-  Validate a channel
-
-  This is thread safe to call without synchronization
-  and relatively fast.
-
-  This function is used to validate the channel. Which helps in
-  getting the cached service references on that channel when they're
-  next accessed.
-
-  @param channel the handle to destroy
-  @retval false success
-  @retval true failure
-*/
-DECLARE_BOOL_METHOD(validate, (reference_caching_channel channel));
-
-/**
-  Fetches a reference caching channel by name.
-
-  Usually consumers wishing to force reference cache flush would
-  fetch the channel handle so they can then call invalidate on it.
-
-  This is a relatively expensive operation as it might involve some
-  synchronization.
-
-  @param service_name a service name that this channel will operate on.
-  @param[out] out_channel placeholder or NULL if not found.
-  @retval false success
-  @retval true failure
-*/
-DECLARE_BOOL_METHOD(fetch, (const char *service_name,
-                            reference_caching_channel *out_channel));
 
 END_SERVICE_DEFINITION(reference_caching_channel)
 

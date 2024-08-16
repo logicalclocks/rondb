@@ -1,15 +1,16 @@
-/* Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -70,6 +71,8 @@ class THD;
 #include "storage/perfschema/pfs_server.h"
 #include "storage/perfschema/pfs_stat.h"
 #include "violite.h" /* enum_vio_type */
+
+#include <mysql/components/services/mysql_server_telemetry_traces_service.h>
 
 extern PFS_single_stat *thread_instr_class_waits_array_start;
 extern PFS_single_stat *thread_instr_class_waits_array_end;
@@ -727,6 +730,10 @@ struct PFS_ALIGNED PFS_thread : PFS_connection_slice {
   /** Copy of g_telemetry. */
   telemetry_t *m_telemetry;
   telemetry_session_t *m_telemetry_session;
+
+#ifndef NDEBUG
+  bool m_debug_session_notified;
+#endif
 };
 
 void carry_global_memory_stat_alloc_delta(PFS_memory_stat_alloc_delta *delta,

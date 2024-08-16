@@ -1,15 +1,16 @@
-/* Copyright (c) 2002, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,6 +34,7 @@
 #include "m_string.h"  // my_stpcpy
 #include "my_inttypes.h"
 #include "my_sys.h"
+#include "mysql/strings/m_ctype.h"
 #include "sql/psi_memory_key.h"
 
 static inline bool is_numeric_beginning(const char *pc, const size_t len) {
@@ -106,7 +108,7 @@ bool Gis_read_stream::check_next_symbol(char symbol) {
 */
 
 void Gis_read_stream::set_error_msg(const char *msg) {
-  size_t len = strlen(msg);  // ok in this context
+  const size_t len = strlen(msg);  // ok in this context
   m_err_msg = (char *)my_realloc(key_memory_Gis_read_stream_err_msg, m_err_msg,
                                  (uint)len + 1, MYF(MY_ALLOW_ZERO_PTR));
   memcpy(m_err_msg, msg, len + 1);

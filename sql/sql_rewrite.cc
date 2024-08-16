@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -77,17 +78,18 @@
 #include <string>
 
 #include "lex_string.h"
-#include "m_ctype.h"
-#include "m_string.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
+#include "mysql/strings/m_ctype.h"
 #include "prealloced_array.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // GRANT_ACL
+#include "sql/auth/authentication_policy.h"
+#include "sql/auth/sql_authentication.h"
 #include "sql/handler.h"
 #include "sql/log_event.h"    // append_query_string
-#include "sql/rpl_replica.h"  // SLAVE_SQL, SLAVE_IO
+#include "sql/rpl_replica.h"  // REPLICA_SQL, REPLICA_IO
 #include "sql/set_var.h"
 #include "sql/sql_admin.h"  // Sql_cmd_clone
 #include "sql/sql_class.h"  // THD
@@ -99,6 +101,7 @@
 #include "sql/sql_show.h"  // append_identifier
 #include "sql/table.h"
 #include "sql_string.h"  // String
+#include "string_with_len.h"
 #include "violite.h"
 
 #ifndef NDEBUG
@@ -273,10 +276,10 @@ bool rewrite_query(THD *thd, Consumer_type type, const Rewrite_params *params,
     case SQLCOM_SHOW_CREATE_USER:
       rw.reset(new Rewriter_show_create_user(thd, type, params));
       break;
-    case SQLCOM_CHANGE_MASTER:
+    case SQLCOM_CHANGE_REPLICATION_SOURCE:
       rw.reset(new Rewriter_change_replication_source(thd, type));
       break;
-    case SQLCOM_SLAVE_START:
+    case SQLCOM_REPLICA_START:
       rw.reset(new Rewriter_replica_start(thd, type));
       break;
     case SQLCOM_CREATE_SERVER:
@@ -324,7 +327,7 @@ bool rewrite_query(THD *thd, Consumer_type type, const Rewrite_params *params,
 
   The query aimed to be rewritten in the usual log files
   (i.e. General, slow query and audit log) uses default value of
-  type which is Consumer_type::LOG
+  type which is Consumer_type::TEXTLOG
 
    Side-effects:
 
@@ -338,18 +341,18 @@ bool rewrite_query(THD *thd, Consumer_type type, const Rewrite_params *params,
 
   @param thd        The THD to rewrite for.
   @param type       Purpose of rewriting the query
-                     Consumer_type::LOG
+                     Consumer_type::TEXTLOG
                       To rewrite the query either for general, slow query
                       and audit log.
                      Consumer_type::BINLOG
                       To rewrite the query for binlogs.
-                     Consumer_type::CONSOLE
+                     Consumer_type::STDOUT
                       To rewrite the query for standard output.
   @param params     Wrapper object of parameters in case needed by a SQL
                       rewriter.
 */
-void mysql_rewrite_query(THD *thd, Consumer_type type /*= Consumer_type::LOG */,
-                         const Rewrite_params *params /*= nullptr*/) {
+void mysql_rewrite_query(THD *thd, Consumer_type type,
+                         const Rewrite_params *params) {
   String rlb;
 
   DBUG_TRACE;
@@ -372,12 +375,12 @@ void mysql_rewrite_query(THD *thd, Consumer_type type /*= Consumer_type::LOG */,
   @param rlb        Buffer to return rewritten query in (if any) if
                     do_ps_instrument is false.
   @param type       Purpose of rewriting the query
-                     Consumer_type::LOG
+                     Consumer_type::TEXTLOG
                       To rewrite the query either for general, slow query
                       and audit log.
                      Consumer_type::BINLOG
                       To rewrite the query for binlogs.
-                     Consumer_type::CONSOLE
+                     Consumer_type::STDOUT
                       To rewrite the query for standard output.
   @param params     Wrapper object of parameters in case needed by a SQL
                       rewriter.
@@ -391,8 +394,18 @@ void mysql_rewrite_acl_query(THD *thd, String &rlb, Consumer_type type,
   if (rewrite_query(thd, type, params, rlb) && (rlb.length() > 0) &&
       do_ps_instrument) {
     thd->swap_rewritten_query(rlb);
-    thd->set_query_for_display(thd->rewritten_query().ptr(),
-                               thd->rewritten_query().length());
+
+    /*
+      Queries rewritten for Consumer_type::BINLOG may contain
+      sensitive informations, encoded in the binlog event.
+      Do not print these.
+      A subsequent call, using Consumer_type::TEXTLOG,
+      will display a proper sanitized query.
+    */
+    if (type != Consumer_type::BINLOG) {
+      thd->set_query_for_display(thd->rewritten_query().ptr(),
+                                 thd->rewritten_query().length());
+    }
     /*
       rlb now contains the previous rewritten query.
       We clear it here both to save memory and to prevent possible confusion.
@@ -684,9 +697,10 @@ void Rewriter_user::append_plugin_name(const LEX_USER *user,
                        system_charset_info);
     append_query_string(m_thd, system_charset_info, &from_plugin, str);
   } else {
-    std::string def_plugin_name = get_default_autnetication_plugin_name();
-    String default_plugin(def_plugin_name.c_str(), def_plugin_name.length(),
-                          system_charset_info);
+    std::string default_plugin_name;
+    authentication_policy::get_first_factor_default_plugin(default_plugin_name);
+    String default_plugin(default_plugin_name.c_str(),
+                          default_plugin_name.length(), system_charset_info);
     append_query_string(m_thd, system_charset_info, &default_plugin, str);
   }
 }
@@ -838,18 +852,18 @@ void Rewriter_create_user::append_user_auth_info(LEX_USER *user, bool comma,
       In case of passwordless user, server fiddles with user specified syntax,
       thus we are expected to write the original syntax.
       ex:
-      CREATE USER foo IDENTIFIED WITH authentication_fido INITIAL AUTHENTICATION
-         IDENTIFIED BY 'abc';
-      above sql is converted by server as:
+      CREATE USER foo IDENTIFIED WITH authentication_webauthn INITIAL
+      AUTHENTICATION IDENTIFIED BY 'abc'; above sql is converted by server as:
       CREATE USER foo IDENTIFIED BY 'abc' AND IDENTIFIED WITH
-      authentication_fido;
+      authentication_webauthn;
 
       This block ensures that query is rewritten in logs as:
-      CREATE USER foo IDENTIFIED WITH authentication_fido INITIAL AUTHENTICATION
-         IDENTIFIED WITH <default auth plugin> AS <auth_hash_string>;
+      CREATE USER foo IDENTIFIED WITH authentication_webauthn INITIAL
+      AUTHENTICATION IDENTIFIED WITH <default auth plugin> AS
+      <auth_hash_string>;
     */
     assert(user->mfa_list.size());
-    /* point to 2nd factor which is authentication_fido */
+    /* point to 2nd factor which is authentication_webauthn */
     tmp_mfa = mfa_list++;
     str->append(STRING_WITH_LEN(" IDENTIFIED"));
     append_mfa_plugin_name(tmp_mfa, str);
@@ -1311,7 +1325,7 @@ bool Rewriter_grant::rewrite(String &rlb) const {
     rlb.append(STRING_WITH_LEN("ALL PRIVILEGES"));
   else {
     bool comma = false;
-    ulong priv;
+    Access_bitmask priv;
 
     for (c = 0, priv = SELECT_ACL; priv <= GLOBAL_ACLS; c++, priv <<= 1) {
       if (priv == GRANT_ACL && !lex->grant_privilege) continue;
@@ -1485,15 +1499,15 @@ bool Rewriter_change_replication_source::rewrite(String &rlb) const {
                      lex->mi.connect_retry, lex->mi.connect_retry > 0);
   comma = append_int(
       &rlb, comma, STRING_WITH_LEN("SOURCE_RETRY_COUNT ="), lex->mi.retry_count,
-      lex->mi.retry_count_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED);
+      lex->mi.retry_count_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED);
   // SOURCE_DELAY 0..SOURCE_DELAY_MAX; -1 == unspecified
   comma = append_int(&rlb, comma, STRING_WITH_LEN("SOURCE_DELAY ="),
                      lex->mi.sql_delay, lex->mi.sql_delay >= 0);
 
-  if (lex->mi.heartbeat_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED) {
+  if (lex->mi.heartbeat_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED) {
     comma_maybe(&rlb, &comma);
     rlb.append(STRING_WITH_LEN("SOURCE_HEARTBEAT_PERIOD = "));
-    if (lex->mi.heartbeat_opt == LEX_MASTER_INFO::LEX_MI_DISABLE)
+    if (lex->mi.heartbeat_opt == LEX_SOURCE_INFO::LEX_MI_DISABLE)
       rlb.append(STRING_WITH_LEN("0"));
     else {
       char buf[64];
@@ -1509,8 +1523,8 @@ bool Rewriter_change_replication_source::rewrite(String &rlb) const {
                      lex->mi.pos, lex->mi.pos != 0);
   comma = append_int(
       &rlb, comma, STRING_WITH_LEN("SOURCE_AUTO_POSITION ="),
-      (lex->mi.auto_position == LEX_MASTER_INFO::LEX_MI_ENABLE) ? 1 : 0,
-      lex->mi.auto_position != LEX_MASTER_INFO::LEX_MI_UNCHANGED);
+      (lex->mi.auto_position == LEX_SOURCE_INFO::LEX_MI_ENABLE) ? 1 : 0,
+      lex->mi.auto_position != LEX_SOURCE_INFO::LEX_MI_UNCHANGED);
 
   // log file (slave SQL thread)
   comma = append_str(&rlb, comma, "RELAY_LOG_FILE =", lex->mi.relay_log_name);
@@ -1520,8 +1534,8 @@ bool Rewriter_change_replication_source::rewrite(String &rlb) const {
 
   // SSL
   comma = append_int(&rlb, comma, STRING_WITH_LEN("SOURCE_SSL ="),
-                     lex->mi.ssl == LEX_MASTER_INFO::LEX_MI_ENABLE ? 1 : 0,
-                     lex->mi.ssl != LEX_MASTER_INFO::LEX_MI_UNCHANGED);
+                     lex->mi.ssl == LEX_SOURCE_INFO::LEX_MI_ENABLE ? 1 : 0,
+                     lex->mi.ssl != LEX_SOURCE_INFO::LEX_MI_UNCHANGED);
   comma = append_str(&rlb, comma, "SOURCE_SSL_CA =", lex->mi.ssl_ca);
   comma = append_str(&rlb, comma, "SOURCE_SSL_CAPATH =", lex->mi.ssl_capath);
   comma = append_str(&rlb, comma, "SOURCE_SSL_CERT =", lex->mi.ssl_cert);
@@ -1531,15 +1545,15 @@ bool Rewriter_change_replication_source::rewrite(String &rlb) const {
   comma = append_str(&rlb, comma, "SOURCE_SSL_CIPHER =", lex->mi.ssl_cipher);
   comma = append_int(
       &rlb, comma, STRING_WITH_LEN("SOURCE_SSL_VERIFY_SERVER_CERT ="),
-      (lex->mi.ssl_verify_server_cert == LEX_MASTER_INFO::LEX_MI_ENABLE) ? 1
+      (lex->mi.ssl_verify_server_cert == LEX_SOURCE_INFO::LEX_MI_ENABLE) ? 1
                                                                          : 0,
-      lex->mi.ssl_verify_server_cert != LEX_MASTER_INFO::LEX_MI_UNCHANGED);
+      lex->mi.ssl_verify_server_cert != LEX_SOURCE_INFO::LEX_MI_UNCHANGED);
 
   comma = append_str(&rlb, comma, "SOURCE_TLS_VERSION =", lex->mi.tls_version);
-  if (LEX_MASTER_INFO::SPECIFIED_NULL == lex->mi.tls_ciphersuites) {
+  if (LEX_SOURCE_INFO::SPECIFIED_NULL == lex->mi.tls_ciphersuites) {
     comma_maybe(&rlb, &comma);
     rlb.append(STRING_WITH_LEN("SOURCE_TLS_CIPHERSUITES = NULL"));
-  } else if (LEX_MASTER_INFO::SPECIFIED_STRING == lex->mi.tls_ciphersuites) {
+  } else if (LEX_SOURCE_INFO::SPECIFIED_STRING == lex->mi.tls_ciphersuites) {
     comma = append_str(&rlb, comma, "SOURCE_TLS_CIPHERSUITES =",
                        lex->mi.tls_ciphersuites_string);
   }
@@ -1549,11 +1563,11 @@ bool Rewriter_change_replication_source::rewrite(String &rlb) const {
                      "SOURCE_PUBLIC_KEY_PATH =", lex->mi.public_key_path);
   comma = append_int(
       &rlb, comma, STRING_WITH_LEN("GET_SOURCE_PUBLIC_KEY ="),
-      (lex->mi.get_public_key == LEX_MASTER_INFO::LEX_MI_ENABLE) ? 1 : 0,
-      lex->mi.get_public_key != LEX_MASTER_INFO::LEX_MI_UNCHANGED);
+      (lex->mi.get_public_key == LEX_SOURCE_INFO::LEX_MI_ENABLE) ? 1 : 0,
+      lex->mi.get_public_key != LEX_SOURCE_INFO::LEX_MI_UNCHANGED);
 
   // IGNORE_SERVER_IDS
-  if (lex->mi.repl_ignore_server_ids_opt != LEX_MASTER_INFO::LEX_MI_UNCHANGED) {
+  if (lex->mi.repl_ignore_server_ids_opt != LEX_SOURCE_INFO::LEX_MI_UNCHANGED) {
     bool comma_list = false;
 
     comma_maybe(&rlb, &comma);
@@ -1577,11 +1591,11 @@ bool Rewriter_change_replication_source::rewrite(String &rlb) const {
   comma = append_int(&rlb, comma,
                      STRING_WITH_LEN("SOURCE_CONNECTION_AUTO_FAILOVER ="),
                      (lex->mi.m_source_connection_auto_failover ==
-                      LEX_MASTER_INFO::LEX_MI_ENABLE)
+                      LEX_SOURCE_INFO::LEX_MI_ENABLE)
                          ? 1
                          : 0,
                      lex->mi.m_source_connection_auto_failover !=
-                         LEX_MASTER_INFO::LEX_MI_UNCHANGED);
+                         LEX_SOURCE_INFO::LEX_MI_UNCHANGED);
 
   /* channel options -- no preceding comma here! */
   if (lex->mi.for_channel)
@@ -1606,12 +1620,13 @@ bool Rewriter_replica_start::rewrite(String &rlb) const {
 
   /* thread_types */
 
-  if (lex->slave_thd_opt & SLAVE_IO) rlb.append(STRING_WITH_LEN(" IO_THREAD"));
+  if (lex->replica_thd_opt & REPLICA_IO)
+    rlb.append(STRING_WITH_LEN(" IO_THREAD"));
 
-  if (lex->slave_thd_opt & SLAVE_IO && lex->slave_thd_opt & SLAVE_SQL)
+  if (lex->replica_thd_opt & REPLICA_IO && lex->replica_thd_opt & REPLICA_SQL)
     rlb.append(STRING_WITH_LEN(","));
 
-  if (lex->slave_thd_opt & SLAVE_SQL)
+  if (lex->replica_thd_opt & REPLICA_SQL)
     rlb.append(STRING_WITH_LEN(" SQL_THREAD"));
 
   /* UNTIL options */
@@ -1619,7 +1634,7 @@ bool Rewriter_replica_start::rewrite(String &rlb) const {
   // GTID
   if (lex->mi.gtid) {
     rlb.append((lex->mi.gtid_until_condition ==
-                LEX_MASTER_INFO::UNTIL_SQL_BEFORE_GTIDS)
+                LEX_SOURCE_INFO::UNTIL_SQL_BEFORE_GTIDS)
                    ? " UNTIL SQL_BEFORE_GTIDS"
                    : " UNTIL SQL_AFTER_GTIDS");
     append_str(&rlb, false, " =", lex->mi.gtid);
@@ -1645,13 +1660,14 @@ bool Rewriter_replica_start::rewrite(String &rlb) const {
   }
 
   /* connection options */
-  append_str(&rlb, false, " USER =", lex->slave_connection.user);
+  append_str(&rlb, false, " USER =", lex->replica_connection.user);
 
-  if (lex->slave_connection.password)
+  if (lex->replica_connection.password)
     rlb.append(STRING_WITH_LEN(" PASSWORD = <secret>"));
 
-  append_str(&rlb, false, " DEFAULT_AUTH =", lex->slave_connection.plugin_auth);
-  append_str(&rlb, false, " PLUGIN_DIR =", lex->slave_connection.plugin_dir);
+  append_str(&rlb, false,
+             " DEFAULT_AUTH =", lex->replica_connection.plugin_auth);
+  append_str(&rlb, false, " PLUGIN_DIR =", lex->replica_connection.plugin_dir);
 
   /* channel options */
   if (lex->mi.for_channel)
@@ -1788,17 +1804,17 @@ bool Rewriter_start_group_replication::rewrite(String &rlb) const {
 
   rlb.append(STRING_WITH_LEN("START GROUP_REPLICATION"));
 
-  if (lex->slave_connection.user) {
-    comma = append_str(&rlb, comma, " USER =", lex->slave_connection.user);
+  if (lex->replica_connection.user) {
+    comma = append_str(&rlb, comma, " USER =", lex->replica_connection.user);
   }
 
-  if (lex->slave_connection.password) {
+  if (lex->replica_connection.password) {
     comma = append_str(&rlb, comma, " PASSWORD =", "<secret>");
   }
 
-  if (lex->slave_connection.plugin_auth) {
+  if (lex->replica_connection.plugin_auth) {
     comma = append_str(&rlb, comma,
-                       " DEFAULT_AUTH =", lex->slave_connection.plugin_auth);
+                       " DEFAULT_AUTH =", lex->replica_connection.plugin_auth);
   }
 
   return true;

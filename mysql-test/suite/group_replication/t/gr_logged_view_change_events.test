@@ -21,6 +21,7 @@
 ################################################################################
 
 --source include/big_test.inc
+--source include/have_debug.inc
 --source include/have_group_replication_plugin.inc
 --let $rpl_skip_group_replication_start= 1
 --let $rpl_server_count= 3
@@ -36,17 +37,19 @@
 
 --connection server1
 --echo server1
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 --source include/start_and_bootstrap_group_replication.inc
 
 CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 
 --connection server2
 --echo server2
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 --source include/start_group_replication.inc
 
 # View change (received from s1) # Create table # View change (written by s2)
 --let $event_sequence= $vcle_seq # !Gtid_transaction # $vcle_seq
---source include/assert_binlog_events.inc
+--source include/rpl/assert_binlog_events.inc
 
 --echo #
 --echo # Make server 2 leave and enter generating one more view change event
@@ -59,14 +62,14 @@ CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 
 # No event should be written in the binlog
 --let $event_sequence= $event_sequence
---source include/assert_binlog_events.inc
+--source include/rpl/assert_binlog_events.inc
 
 --source include/start_group_replication.inc
 
 # One more event after joining:
 # Previous events # View change (s2 joined)
 --let $event_sequence= $event_sequence # $vcle_seq
---source include/assert_binlog_events.inc
+--source include/rpl/assert_binlog_events.inc
 
 --echo #
 --echo # Make server 3 join and leave while server 2 was away
@@ -80,6 +83,7 @@ CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 
 --connection server3
 --echo server3
+SET @@GLOBAL.DEBUG= '+d,group_replication_version_with_vcle';
 --source include/start_group_replication.inc
 --source include/stop_group_replication.inc
 
@@ -89,7 +93,7 @@ CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 
 # Previous events # View change (3 joined) # View change (2 joined)
 --let $event_sequence= $event_sequence # $vcle_seq # $vcle_seq
---source include/assert_binlog_events.inc
+--source include/rpl/assert_binlog_events.inc
 
 --echo #
 --echo # Cleaning up
@@ -98,7 +102,15 @@ CREATE TABLE t1 (c1 INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
 --connection server3
 --echo server3
 --source include/start_group_replication.inc
-
 DROP TABLE t1;
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
+
+--connection server2
+--echo server2
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
+
+--connection server1
+--echo server1
+SET @@GLOBAL.DEBUG= '-d,group_replication_version_with_vcle';
 
 --source include/group_replication_end.inc

@@ -1,15 +1,16 @@
-/* Copyright (c) 2011, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   Without limiting anything contained in the foregoing, this file,
   which is part of C Driver for MySQL (Connector/C), is also subject to the
@@ -44,6 +45,7 @@
 #define HAVE_PSI_TRANSACTION_INTERFACE
 #define HAVE_PSI_SOCKET_INTERFACE
 #define HAVE_PSI_MEMORY_INTERFACE
+#define HAVE_PSI_METRICS_INTERFACE
 #define HAVE_PSI_ERROR_INTERFACE
 #define HAVE_PSI_IDLE_INTERFACE
 #define HAVE_PSI_METADATA_INTERFACE
@@ -72,6 +74,7 @@
 #include "mysql/psi/psi_idle.h"
 #include "mysql/psi/psi_mdl.h"
 #include "mysql/psi/psi_memory.h"
+#include "mysql/psi/psi_metric.h"
 #include "mysql/psi/psi_mutex.h"
 #include "mysql/psi/psi_rwlock.h"
 #include "mysql/psi/psi_socket.h"
@@ -1005,6 +1008,32 @@ PSI_tls_channel_service_t *psi_tls_channel_service = &psi_tls_channel_noop;
 
 void set_psi_tls_channel_service(void *psi) {
   psi_tls_channel_service = (PSI_tls_channel_service_t *)psi;
+}
+
+// ===========================================================================
+
+static void register_meters_noop(PSI_meter_info_v1 *, size_t) {}
+
+static void unregister_meters_noop(PSI_meter_info_v1 *, size_t) {}
+
+static void register_change_notification_noop(meter_registration_changes_v1_t) {
+}
+
+static void unregister_change_notification_noop(
+    meter_registration_changes_v1_t) {}
+
+static void send_change_notification_noop(const char *, MeterNotifyType) {}
+
+static PSI_metric_service_t psi_metric_noop = {
+    register_meters_noop, unregister_meters_noop,
+    register_change_notification_noop, unregister_change_notification_noop,
+    send_change_notification_noop};
+
+struct PSI_metric_bootstrap *psi_metric_hook = nullptr;
+PSI_metric_service_t *psi_metric_service = &psi_metric_noop;
+
+void set_psi_metric_service(void *psi) {
+  psi_metric_service = (PSI_metric_service_t *)psi;
 }
 
 // ===========================================================================

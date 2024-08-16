@@ -1,15 +1,16 @@
-# Copyright (c) 2008, 2023, Oracle and/or its affiliates.
+# Copyright (c) 2008, 2024, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 #
-# This program is also distributed with certain software (including
+# This program is designed to work with certain software (including
 # but not limited to OpenSSL) that is licensed under separate terms,
 # as designated in a particular file or component or in included license
 # documentation.  The authors of MySQL hereby grant you an additional
 # permission to link the program and your derivative works with the
-# separately licensed software that they have included with MySQL.
+# separately licensed software that they have either included with
+# the program or referenced in the documentation.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -65,6 +66,9 @@ ELSE()
   LIST(APPEND LIBS_TO_LINK ext::zlib)
 ENDIF()
 
+IF(WITH_EXT_BACKTRACE)
+  LIST(APPEND LIBS_TO_MERGE backtrace)
+ENDIF()
 
 MESSAGE(STATUS "LIBS_TO_MERGE ${LIBS_TO_MERGE}")
 
@@ -75,7 +79,7 @@ ENDIF()
 MERGE_CONVENIENCE_LIBRARIES(ndbclient_static ${LIBS_TO_MERGE}
   ${SKIP_INSTALL_NDBCLIENT_STATIC}
   COMPONENT Development
-  LINK_LIBRARIES ${SSL_LIBRARIES} ${LIBS_TO_LINK}
+  LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto ${LIBS_TO_LINK}
   )
 
 IF(NOT WITH_NDB)
@@ -188,8 +192,10 @@ IF(NOT WIN32)
     "${CMAKE_SHARED_LIBRARY_C_FLAGS} ${ndbclient_so_link_flags}")
   IF(LINK_FLAG_NO_UNDEFINED)
     STRING_APPEND(ndbclient_so_link_flags " ${LINK_FLAG_NO_UNDEFINED}")
-    STRING_APPEND(ndbclient_so_link_flags
-      " -Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/libndbclient.ver")
+    IF(LINUX)
+      STRING_APPEND(ndbclient_so_link_flags
+        " -Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/libndbclient.ver")
+    ENDIF()
   ENDIF()
   IF(SOLARIS)
     STRING_APPEND(ndbclient_so_link_flags " ${CMAKE_CXX_LINK_FLAGS}")

@@ -1,18 +1,19 @@
 #ifndef SQL_COMMON_INCLUDED
 #define SQL_COMMON_INCLUDED
 
-/* Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2003, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,6 +41,8 @@
 #ifdef MYSQL_SERVER
 #include "mysql_com_server.h"
 #endif
+
+struct CHARSET_INFO;
 struct MEM_ROOT;
 
 #ifdef __cplusplus
@@ -186,8 +189,12 @@ struct st_mysql_options_extention {
   bool connection_compressed;
   char *load_data_dir;
   struct client_authentication_info client_auth_info[MAX_AUTHENTICATION_FACTOR];
-  void *ssl_session_data; /** the session serialization to use */
+  void *ssl_session_data;   /** the session serialization to use */
+  char *tls_sni_servername; /* TLS sni server name */
 };
+
+#define MYSQL_OPTIONS_EXTENSION_PTR(H, what) \
+  ((H)->options.extension ? (H)->options.extension->what : nullptr)
 
 struct MYSQL_METHODS {
   MYSQL *(*connect_method)(mysql_async_connect *connect_args);
@@ -232,21 +239,21 @@ struct MYSQL_METHODS {
                                                                ulong *res);
 };
 
-#define simple_command(mysql, command, arg, length, skip_check)              \
-  ((mysql)->methods                                                          \
-       ? (*(mysql)->methods->advanced_command)(mysql, command, 0, 0, arg,    \
-                                               length, skip_check, NULL)     \
-       : (set_mysql_error(mysql, CR_COMMANDS_OUT_OF_SYNC, unknown_sqlstate), \
+#define simple_command(mysql, command, arg, length, skip_check)               \
+  ((mysql)->methods                                                           \
+       ? (*(mysql)->methods->advanced_command)(mysql, command, nullptr, 0,    \
+                                               arg, length, skip_check, NULL) \
+       : (set_mysql_error(mysql, CR_COMMANDS_OUT_OF_SYNC, unknown_sqlstate),  \
           1))
 #define simple_command_nonblocking(mysql, command, arg, length, skip_check, \
                                    error)                                   \
   (*(mysql)->methods->advanced_command_nonblocking)(                        \
-      mysql, command, 0, 0, arg, length, skip_check, NULL, error)
+      mysql, command, nullptr, 0, arg, length, skip_check, nullptr, error)
 
 #define stmt_command(mysql, command, arg, length, stmt)                      \
   ((mysql)->methods                                                          \
-       ? (*(mysql)->methods->advanced_command)(mysql, command, 0, 0, arg,    \
-                                               length, 1, stmt)              \
+       ? (*(mysql)->methods->advanced_command)(mysql, command, nullptr, 0,   \
+                                               arg, length, 1, stmt)         \
        : (set_mysql_error(mysql, CR_COMMANDS_OUT_OF_SYNC, unknown_sqlstate), \
           1))
 

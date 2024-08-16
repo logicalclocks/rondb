@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -352,7 +353,7 @@ void MySQLSession::connect(const std::string &host, unsigned int port,
   set_option(ConnectTimeout(connect_timeout));
   set_option(ReadTimeout(read_timeout));
 
-  if (unix_socket.length() > 0) {
+  if (!unix_socket.empty()) {
 #ifdef _WIN32
     protocol = MYSQL_PROTOCOL_PIPE;
 #else
@@ -364,9 +365,8 @@ void MySQLSession::connect(const std::string &host, unsigned int port,
   const unsigned long client_flags =
       (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 |
        CLIENT_MULTI_RESULTS);
-  std::string endpoint_str = unix_socket.length() > 0
-                                 ? unix_socket
-                                 : host + ":" + std::to_string(port);
+  std::string endpoint_str =
+      !unix_socket.empty() ? unix_socket : host + ":" + std::to_string(port);
 
   const bool ssl_disabled = ssl_mode() == SSL_MODE_DISABLED;
   auto &ssl_sessions_cache = SSLSessionsCache::instance();
@@ -375,9 +375,10 @@ void MySQLSession::connect(const std::string &host, unsigned int port,
     ssl_sessions_cache.try_reuse_session(connection_, endpoint_str);
   }
 
-  if (!mysql_real_connect(connection_, host.c_str(), username.c_str(),
-                          password.c_str(), default_schema.c_str(), port,
-                          unix_socket.c_str(), client_flags)) {
+  if (!mysql_real_connect(
+          connection_, !unix_socket.empty() ? nullptr : host.c_str(),
+          username.c_str(), password.c_str(), default_schema.c_str(), port,
+          unix_socket.c_str(), client_flags)) {
     std::stringstream ss;
     ss << "Error connecting to MySQL server at " << endpoint_str;
     ss << ": " << mysql_error(connection_) << " (" << mysql_errno(connection_)
@@ -451,14 +452,13 @@ static MysqlError make_mysql_error_code(MYSQL *m) {
 stdx::expected<MySQLSession::mysql_result_type, MysqlError>
 MySQLSession::real_query(const std::string &q) {
   if (!connected_) {
-    return stdx::make_unexpected(
-        make_mysql_error_code(CR_COMMANDS_OUT_OF_SYNC));
+    return stdx::unexpected(make_mysql_error_code(CR_COMMANDS_OUT_OF_SYNC));
   }
 
   auto query_res = mysql_real_query(connection_, q.data(), q.size());
 
   if (query_res != 0) {
-    return stdx::make_unexpected(make_mysql_error_code(connection_));
+    return stdx::unexpected(make_mysql_error_code(connection_));
   }
 
   mysql_result_type res{mysql_store_result(connection_)};
@@ -466,7 +466,7 @@ MySQLSession::real_query(const std::string &q) {
     // no error, but also no resultset
     if (mysql_errno(connection_) == 0) return {};
 
-    return stdx::make_unexpected(make_mysql_error_code(connection_));
+    return stdx::unexpected(make_mysql_error_code(connection_));
   }
 
   return res;
@@ -642,6 +642,14 @@ unsigned int MySQLSession::last_errno() {
 
 const char *MySQLSession::ssl_cipher() {
   return connection_ ? mysql_get_ssl_cipher(connection_) : nullptr;
+}
+
+bool MySQLSession::is_ssl_session_reused() {
+  return connection_ ? mysql_get_ssl_session_reused(connection_) : false;
+}
+
+unsigned long MySQLSession::server_version() {
+  return connection_ ? mysql_get_server_version(connection_) : 0;
 }
 
 void MySQLSession::LoggingStrategyDebugLogger::log(const std::string &msg) {

@@ -1,16 +1,17 @@
 /*
-  Copyright (c) 2018, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2024, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
   as published by the Free Software Foundation.
 
-  This program is also distributed with certain software (including
+  This program is designed to work with certain software (including
   but not limited to OpenSSL) that is licensed under separate terms,
   as designated in a particular file or component or in included license
   documentation.  The authors of MySQL hereby grant you an additional
   permission to link the program and your derivative works with the
-  separately licensed software that they have included with MySQL.
+  separately licensed software that they have either included with
+  the program or referenced in the documentation.
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -119,7 +120,7 @@ bool Converter::convert_data(char const *data, size_t data_size, Arch src,
     // load file length values, convert them and append
     for (size_t i = 0; i < LENGTHS_COUNT; i++) {
       // convert value to different architecture
-      size_t converted_width = convert(data + loc, number, src, dst);
+      const size_t converted_width = convert(data + loc, number, src, dst);
       if (i > 0) key_content.append(number, converted_width);
 
       // determine length integer value
@@ -133,7 +134,7 @@ bool Converter::convert_data(char const *data, size_t data_size, Arch src,
     }
 
     // real size without padding has to be smaller that total size
-    size_t real_size = lengths[1] + lengths[2] + lengths[3] + lengths[4];
+    const size_t real_size = lengths[1] + lengths[2] + lengths[3] + lengths[4];
     if (lengths[0] < real_size) return true;
 
     // we also have to have at least remaining key data
@@ -145,7 +146,7 @@ bool Converter::convert_data(char const *data, size_t data_size, Arch src,
 
     // append required padding to destination
     auto total = LENGTHS_COUNT * dst_width + real_size;
-    size_t padding = (dst_width - total % dst_width) % dst_width;
+    const size_t padding = (dst_width - total % dst_width) % dst_width;
     key_content.append(padding, '\0');
 
     // new key package size is waranted
@@ -265,7 +266,7 @@ Converter::Arch Converter::detect_native_arch() {
 
   // determine endianness
   size_t number = 1;
-  bool isLittleEndian = *(char *)(&number);
+  const bool isLittleEndian = *(char *)(&number);
 
   // assign architecture type based on findings
   switch (bit_width) {

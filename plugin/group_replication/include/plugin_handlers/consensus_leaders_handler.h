@@ -1,15 +1,16 @@
-/* Copyright (c) 2021, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2021, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -39,8 +40,6 @@ class Consensus_leaders_handler : public Group_event_observer {
  public:
   /**
    * Register as a group event observer in @c group_events_manager.
-   *
-   * @param group_events_manager
    */
   Consensus_leaders_handler(
       Group_events_observation_manager &group_events_manager);
@@ -88,12 +87,6 @@ class Consensus_leaders_handler : public Group_event_observer {
    *        @c my_gcs_id, as the single preferred "consensus leader"
    *    b2) @c primary_mode is SINGLE and @c my_role is SECONDARY: do nothing
    *    b3) @c primary_mode is MULTI: set everyone as "consensus leader"
-   *
-   * @param communication_protocol
-   * @param is_single_primary_mode
-   * @param role
-   * @param my_gcs_id
-   * @param allow_single_leader_getter
    */
   void set_consensus_leaders(Member_version const &communication_protocol,
                              bool is_single_primary_mode,
@@ -114,11 +107,6 @@ class Consensus_leaders_handler : public Group_event_observer {
    *
    * It inserts a default implementation of allow_single_leader_getter that
    * verifies the current value of group_replication_paxos_single_leader var
-   *
-   * @param communication_protocol
-   * @param is_single_primary_mode
-   * @param role
-   * @param my_gcs_id
    */
   void set_consensus_leaders(Member_version const &communication_protocol,
                              bool is_single_primary_mode,

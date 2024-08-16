@@ -1,15 +1,16 @@
-/* Copyright (c) 2016, 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,6 +27,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "xcom/network/include/network_provider.h"
+#include "xcom/statistics/include/statistics_storage_interface.h"
 #include "xdr_gen/xcom_vp.h"
 
 typedef struct cfg_app_xcom {
@@ -50,6 +52,12 @@ typedef struct cfg_app_xcom {
    operations
    */
   Network_namespace_manager *network_ns_manager;
+
+  /**
+   This is the implementation of XCom_Statistics_Storage_Interface in order to
+   store statistics
+   */
+  Xcom_statistics_storage_interface *statistics_storage{nullptr};
 } cfg_app_xcom_st;
 
 /*
@@ -64,6 +72,8 @@ void deinit_cfg_app_xcom();
 node_address *cfg_app_xcom_get_identity();
 
 Network_namespace_manager *cfg_app_get_network_namespace_manager();
+
+Xcom_statistics_storage_interface *cfg_app_get_storage_statistics();
 
 /*
  Takes ownership of @c identity.

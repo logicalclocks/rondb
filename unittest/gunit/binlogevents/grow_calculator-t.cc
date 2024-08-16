@@ -1,15 +1,16 @@
-/* Copyright (c) 2023, Oracle and/or its affiliates.
+/* Copyright (c) 2023, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -21,16 +22,20 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include "libbinlogevents/include/buffer/grow_calculator.h"
+#include "mysql/binlog/event/compression/buffer/grow_calculator.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-namespace mysqlns::buffer::grow_calculator::unittest {
+namespace mysql::binlog::event::compression::buffer {
+namespace grow_calculator::unittest {
 
-using Grow_calculator_t = mysqlns::buffer::Grow_calculator;
-using Size_t = mysqlns::buffer::Grow_calculator::Size_t;
-using Result_t = mysqlns::buffer::Grow_calculator::Result_t;
+using Grow_calculator_t =
+    mysql::binlog::event::compression::buffer::Grow_calculator;
+using Size_t =
+    mysql::binlog::event::compression::buffer::Grow_calculator::Size_t;
+using Result_t =
+    mysql::binlog::event::compression::buffer::Grow_calculator::Result_t;
 
 TEST(GrowPolicyTest, BasicGrowPolicyTest) {
   Grow_calculator_t grow_calculator;
@@ -58,4 +63,5 @@ TEST(GrowPolicyTest, BasicGrowPolicyTest) {
   EXPECT_EQ(error, grow_calculator.compute_new_size(0, 1001));
 }
 
-}  // namespace mysqlns::buffer::grow_calculator::unittest
+}  // namespace grow_calculator::unittest
+}  // namespace mysql::binlog::event::compression::buffer

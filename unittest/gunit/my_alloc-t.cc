@@ -1,16 +1,17 @@
 /*
-   Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2015, 2024, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
 
-   This program is also distributed with certain software (including
+   This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
    documentation.  The authors of MySQL hereby grant you an additional
    permission to link the program and your derivative works with the
-   separately licensed software that they have included with MySQL.
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
 
    This program is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -134,14 +135,16 @@ TEST_P(MyAllocTest, WithMemoryLimit) {
 }
 
 TEST_F(MyAllocTest, CheckErrorReporting) {
-  const void *null_pointer = nullptr;
-  EXPECT_TRUE(m_root.Alloc(1000));
+  EXPECT_NE(nullptr, m_root.Alloc(1000));
   m_root.set_max_capacity(100);
-  EXPECT_EQ(null_pointer, m_root.Alloc(1000));
+  EXPECT_EQ(nullptr, m_root.Alloc(1000));
   m_root.set_error_for_capacity_exceeded(true);
   Mock_global_error_handler error_handler(EE_CAPACITY_EXCEEDED);
-  EXPECT_TRUE(m_root.Alloc(1000));
+  EXPECT_NE(nullptr, m_root.Alloc(1000));
   EXPECT_EQ(1, error_handler.handle_called());
+
+  EXPECT_FALSE(m_root.ForceNewBlock(2048));
+  EXPECT_EQ(2, error_handler.handle_called());
 }
 
 TEST_F(MyAllocTest, MoveConstructorDoesNotLeak) {
@@ -202,6 +205,11 @@ TEST_F(MyAllocTest, RawInterface) {
 
   // The value should still be there.
   EXPECT_STREQ("12345", store_ptr);
+
+  // Get a new block to satisfy more than the current block size (512 * 1.5^2).
+  EXPECT_FALSE(alloc.ForceNewBlock(2048));
+  block = alloc.Peek();
+  EXPECT_EQ(2048, block.second - block.first);
 }
 
 TEST_F(MyAllocTest, ArrayAllocInitialization) {
@@ -230,7 +238,7 @@ TEST_F(MyAllocTest, ArrayAllocInitialization) {
   for (int i = 0; i < 10; ++i) {
     EXPECT_EQ("abcdefghijklmnopqrstuvwxyz", string_array1[i]);
   }
-  destroy_array(string_array1, 10);
+  std::destroy_n(string_array1, 10);
 
   // Should be allowed to create an array of a class which is not
   // copy-constructible.

@@ -1,17 +1,18 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2023, Oracle and/or its affiliates.
+Copyright (c) 1994, 2024, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
 Free Software Foundation.
 
-This program is also distributed with certain software (including but not
-limited to OpenSSL) that is licensed under separate terms, as designated in a
-particular file or component or in included license documentation. The authors
-of MySQL hereby grant you an additional permission to link the program and
-your derivative works with the separately licensed software that they have
-included with MySQL.
+This program is designed to work with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have either included with
+the program or referenced in the documentation.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
@@ -38,6 +39,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "ha_prototypes.h"
 #include "handler0alter.h"
+#include "mysql/strings/m_ctype.h"
 #include "rem0cmp.h"
 #include "srv0srv.h"
 namespace dd {
@@ -990,8 +992,8 @@ int cmp_rec_rec_with_match(const rec_t *rec1, const rec_t *rec2,
   ut_ad(rec1 != nullptr);
   ut_ad(rec2 != nullptr);
   ut_ad(index != nullptr);
-  ut_ad(rec_offs_validate(rec1, index, offsets1));
-  ut_ad(rec_offs_validate(rec2, index, offsets2));
+  ut_ad(rec_offs_validate(rec1, index, offsets1, cmp_btree_recs));
+  ut_ad(rec_offs_validate(rec2, index, offsets2, cmp_btree_recs));
   ut_ad(rec_offs_comp(offsets1) == rec_offs_comp(offsets2));
 
   const auto comp = rec_offs_comp(offsets1);
