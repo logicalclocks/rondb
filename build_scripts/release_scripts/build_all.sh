@@ -12,11 +12,6 @@ if [[ -z "${OPENSSL_ROOT}" ]]; then
   exit 1
 fi
 
-if [[ -z "${BOOST_ROOT}" ]]; then
-  echo "BOOST_ROOT environment variable is not defined. To use boost installed on the system use export BOOST_ROOT=system"
-  exit 1
-fi
-
 help() {
   cat <<EOF
 build-all.sh {-s path} {-b path} {-o path} {-j build_threads} {-r} {-d} {-f} {-p}
