@@ -19,7 +19,6 @@
 project (rdrclient)
 
 if(WITH_RDRS) 
-  SET(BOOST "$ENV{BOOST_ROOT}") 
   INCLUDE_DIRECTORIES(
     ${PROJECT_SOURCE_DIR}
     ${BASE64_INCLUDE_DIR}
@@ -29,7 +28,6 @@ if(WITH_RDRS)
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
     ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
     ${CMAKE_SOURCE_DIR}/include)
-  INCLUDE_DIRECTORIES(SYSTEM)
   
   file(GLOB_RECURSE RDRS_LIB_SOURCE ${PROJECT_SOURCE_DIR}/src/*)
   
