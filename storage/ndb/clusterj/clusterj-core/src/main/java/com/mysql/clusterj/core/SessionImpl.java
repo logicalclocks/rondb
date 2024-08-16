@@ -737,7 +737,6 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                     }
                     cacheCount = 0;
                     fetch = true;
-                    done = (count == limit);
                     break;
                 default:
                     throw new ClusterJException(
