@@ -30,11 +30,10 @@
 #include "src/rdrs_const.h"
 #include "src/logger.hpp"
 
-#include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/beast/core/detail/base64.hpp>
 #include <decimal_utils.hpp>
 #include <NdbError.hpp>
 #include <my_time.h>
+#include <ctime>
 #include <sql_string.h>
 #include <ndb_limits.h>
 #include <libbase64.h>
@@ -657,19 +656,16 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     time_t epoch = 0;
     errno        = 0;
-    try {
-      char btsStr[MAX_DATE_STRING_REP_LENGTH];
-      snprintf(btsStr, MAX_DATE_STRING_REP_LENGTH, "%d-%d-%d %d:%d:%d", lTime.year, lTime.month,
-               lTime.day, lTime.hour, lTime.minute, lTime.second);
-      boost::posix_time::ptime bt(boost::posix_time::time_from_string(std::string(btsStr)));
-      boost::posix_time::ptime start(boost::gregorian::date(1970, 1, 1));
-      boost::posix_time::time_duration dur = bt - start;
-      epoch                                = dur.total_seconds();
-    } catch (...) {
-      error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                              std::string(col->getName()));
-      break;
-    }
+
+    struct tm time_info;
+    time_info.tm_year = lTime.year - 1900;  // tm_year is years since 1900
+    time_info.tm_mon = lTime.month - 1;     // tm_mon is 0-based
+    time_info.tm_mday = lTime.day;
+    time_info.tm_hour = lTime.hour;
+    time_info.tm_min = lTime.minute;
+    time_info.tm_sec = lTime.second;
+    time_info.tm_isdst = -1; // Daylight saving t
+    epoch = timegm(&time_info);
 
     // 1970-01-01 00:00:01' UTC to '2038-01-19 03:14:07' UTC.
     if (unlikely(epoch <= 0 || epoch > 2147483647)) {
@@ -1006,9 +1002,6 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
                                        " Expected to read: " + std::to_string(length) +
                                        " bytes. Read: " + std::to_string(total_read));
     }
-    
-    return response->Append_char(colRec->ndbRec->getColumn()->getName(), static_cast<char*>(response->GetWritePointer()), length,
-                                   colRec->ndbRec->getColumn()->getCharset());
 
   }
   case NdbDictionary::Column::Bit: {
@@ -1096,16 +1089,16 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
     my_timestamp_from_binary(&myTV, (const unsigned char *)colRec->ndbRec->aRef(), precision);
 
     Int64 epochIn = myTV.m_tv_sec;
-    std::time_t stdtime(epochIn);
-    boost::posix_time::ptime ts = boost::posix_time::from_time_t(stdtime);
+    time_t stdtime(epochIn);
 
+    struct tm *time_info = gmtime(&stdtime);
     MYSQL_TIME lTime  = {};
-    lTime.year        = ts.date().year();
-    lTime.month       = ts.date().month();
-    lTime.day         = ts.date().day();
-    lTime.hour        = ts.time_of_day().hours();
-    lTime.minute      = ts.time_of_day().minutes();
-    lTime.second      = ts.time_of_day().seconds();
+    lTime.year        = time_info->tm_year + 1900;
+    lTime.month       = time_info->tm_mon +1;
+    lTime.day         = time_info->tm_mday;
+    lTime.hour        = time_info->tm_hour; 
+    lTime.minute      = time_info->tm_min; 
+    lTime.second      = time_info->tm_sec; 
     lTime.second_part = myTV.m_tv_usec;
     lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
 

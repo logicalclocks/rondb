@@ -28,7 +28,6 @@ if(WITH_RDRS)
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
     ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
     ${CMAKE_SOURCE_DIR}/include)
-  INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
   
   file(GLOB_RECURSE RDRS_LIB_SOURCE ${PROJECT_SOURCE_DIR}/src/*)
   
