@@ -916,10 +916,10 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
                       ERROR_CODE_INVALID_BODY,
                       std::string(ERROR_064) + " " + std::string(FEATURE_STORE_NAME))
         .status;
-  } 
+  }
   if (featureStoreNameVal.error() != simdjson::SUCCESS) {
     return handle_simdjson_error(featureStoreNameVal.error(), doc[threadId], currentLocation);
-  }      
+  }
   if (featureStoreNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_BODY,
@@ -930,7 +930,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   if (error != simdjson::SUCCESS) {
     return handle_simdjson_error(error, doc[threadId], currentLocation);
   }
- 
+
   reqStruct.featureStoreName = featureStoreName;
 
   std::string_view featureViewName;
@@ -940,10 +940,10 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
                       ERROR_CODE_INVALID_BODY,
                       std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_NAME))
         .status;
-  } 
+  }
   if (featureViewNameVal.error() != simdjson::SUCCESS) {
     return handle_simdjson_error(featureViewNameVal.error(), doc[threadId], currentLocation);
-  }      
+  }
   if (featureViewNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_BODY,
@@ -954,7 +954,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   if (error != simdjson::SUCCESS) {
     return handle_simdjson_error(error, doc[threadId], currentLocation);
   }
- 
+
   reqStruct.featureViewName = featureViewName;
 
   uint64_t featureViewVersion = 0;
@@ -1057,9 +1057,10 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
                           ERROR_CODE_INVALID_BODY,
                           std::string(ERROR_064) + " " + std::string(servingKey))
             .status;
-      } if (valueVal.error() != simdjson::SUCCESS) {
+      }
+      if (valueVal.error() != simdjson::SUCCESS) {
         return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
-      } 
+      }
       if (valueVal.is_null()) {
         return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                           ERROR_CODE_INVALID_BODY,
@@ -1141,7 +1142,9 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   return CRS_Status().status;
 }
 
-RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padded_string_view reqBody, feature_store_data_structs::BatchFeatureStoreRequest& reqStruct) {
+RS_Status JSONParser::batch_feature_store_parse(
+    size_t threadId, simdjson::padded_string_view reqBody,
+    feature_store_data_structs::BatchFeatureStoreRequest &reqStruct) {
   const char *currentLocation = nullptr;
 
   simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
@@ -1162,10 +1165,10 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
                       ERROR_CODE_INVALID_BODY,
                       std::string(ERROR_064) + " " + std::string(FEATURE_STORE_NAME))
         .status;
-  } 
+  }
   if (featureStoreNameVal.error() != simdjson::SUCCESS) {
     return handle_simdjson_error(featureStoreNameVal.error(), doc[threadId], currentLocation);
-  }      
+  }
   if (featureStoreNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_BODY,
@@ -1176,7 +1179,7 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
   if (error != simdjson::SUCCESS) {
     return handle_simdjson_error(error, doc[threadId], currentLocation);
   }
- 
+
   reqStruct.featureStoreName = featureStoreName;
 
   std::string_view featureViewName;
@@ -1186,10 +1189,10 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
                       ERROR_CODE_INVALID_BODY,
                       std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_NAME))
         .status;
-  } 
+  }
   if (featureViewNameVal.error() != simdjson::SUCCESS) {
     return handle_simdjson_error(featureViewNameVal.error(), doc[threadId], currentLocation);
-  }      
+  }
   if (featureViewNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_BODY,
@@ -1200,7 +1203,7 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
   if (error != simdjson::SUCCESS) {
     return handle_simdjson_error(error, doc[threadId], currentLocation);
   }
- 
+
   reqStruct.featureViewName = featureViewName;
 
   uint64_t featureViewVersion = 0;
@@ -1238,17 +1241,21 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
       if (error != simdjson::SUCCESS) {
         return handle_simdjson_error(error, doc[threadId], currentLocation);
       }
-      // Each item is a map of feature name as key and feature value as value. 
-      // This overwrites feature values in the response. 
-      // If provided, its size and order has to be equal to the size of entries. 
+      // Each item is a map of feature name as key and feature value as value.
+      // This overwrites feature values in the response.
+      // If provided, its size and order has to be equal to the size of entries.
       // Item can be null.
       for (auto feature : passedFeatures) {
+        if (feature.is_null()) {
+          reqStruct.passedFeatures.push_back(std::unordered_map<std::string, std::vector<char>>());
+          continue;
+        }
         simdjson::ondemand::object featureObj;
         error = feature.get(featureObj);
         if (error != simdjson::SUCCESS) {
           return handle_simdjson_error(error, doc[threadId], currentLocation);
         }
-        
+
         std::unordered_map<std::string, std::vector<char>> featureMap;
         for (auto featureItem : featureObj) {
           std::string_view featureName = featureItem.unescaped_key();
@@ -1260,16 +1267,17 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
                               ERROR_CODE_INVALID_BODY,
                               std::string(ERROR_064) + " " + std::string(featureName))
                 .status;
-          } if (valueVal.error() != simdjson::SUCCESS) {
+          }
+          if (valueVal.error() != simdjson::SUCCESS) {
             return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
-          } 
+          }
 
           if (valueVal.is_null()) {
             return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                               ERROR_CODE_INVALID_BODY,
                               std::string(ERROR_064) + " " + std::string(featureName))
                 .status;
-          }              
+          }
           error = valueVal.get(value);
           if (error != simdjson::SUCCESS) {
             return handle_simdjson_error(error, doc[threadId], currentLocation);
@@ -1281,10 +1289,10 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
           featureMap[std::string(featureName)] = bytes;
         }
         reqStruct.passedFeatures.push_back(featureMap);
-      }      
+      }
     }
   }
-  
+
   simdjson::ondemand::array entries;
   // Each item is a map of serving key of feature view as key and value of serving key as value.
   // Serving key of feature view.
@@ -1310,7 +1318,7 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
       if (error != simdjson::SUCCESS) {
         return handle_simdjson_error(error, doc[threadId], currentLocation);
       }
-      
+
       std::unordered_map<std::string, std::vector<char>> entryMap;
       for (auto entryItem : entryObj) {
         std::string_view servingKey = entryItem.unescaped_key();
@@ -1322,9 +1330,10 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
                             ERROR_CODE_INVALID_BODY,
                             std::string(ERROR_064) + " " + std::string(servingKey))
               .status;
-        } if (valueVal.error() != simdjson::SUCCESS) {
+        }
+        if (valueVal.error() != simdjson::SUCCESS) {
           return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
-        } 
+        }
         if (valueVal.is_null()) {
           return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                             ERROR_CODE_INVALID_BODY,
@@ -1345,7 +1354,7 @@ RS_Status JSONParser::batch_feature_store_parse(size_t threadId, simdjson::padde
       reqStruct.entries.push_back(entryMap);
     }
   }
-  
+
   simdjson::ondemand::object metaDataOptions;  // Optional.
   // Map of metadataoption as key and boolean as value.
   // Default metadata option is false. Metadata is returned on request.

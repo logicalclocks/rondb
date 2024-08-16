@@ -37,6 +37,32 @@ type PKReadParams struct {
 	OperationID *string       `json:"operationId" binding:"omitempty"`
 }
 
+func (p PKReadParams) String() string {
+	var stringify strings.Builder
+	if p.DB != nil {
+		stringify.WriteString(fmt.Sprintf("DB: %s\n", *p.DB))
+	}
+	if p.Table != nil {
+		stringify.WriteString(fmt.Sprintf("Table: %s\n", *p.Table))
+	}
+	if p.OperationID != nil {
+		stringify.WriteString(fmt.Sprintf("OperationID: %s\n", *p.OperationID))
+	}
+	if p.Filters != nil {
+		stringify.WriteString("Filters:\n")
+		for _, f := range *p.Filters {
+			stringify.WriteString(f.String())
+		}
+	}
+	if p.ReadColumns != nil {
+		stringify.WriteString("ReadColumns:\n")
+		for _, rc := range *p.ReadColumns {
+			stringify.WriteString(fmt.Sprintf("Column: %s\n", *rc.Column))
+		}
+	}
+	return stringify.String()
+}
+
 // Path parameters
 type PKReadPP struct {
 	DB    *string `json:"db" uri:"db"  binding:"required,min=1,max=64"`

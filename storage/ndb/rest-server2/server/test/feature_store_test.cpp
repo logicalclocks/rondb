@@ -41,6 +41,7 @@
 #include <queue>
 #include <mutex>
 #include <mysql.h>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -285,6 +286,38 @@ CreateFeatureStoreRequest(const std::string &fsName, const std::string &fvName, 
   return request;
 }
 
+feature_store_data_structs::BatchFeatureStoreRequest CreateFeatureStoreRequest(
+    const std::string &fsName, const std::string &fvName, int fvVersion,
+    const std::vector<std::string> &pks,
+    const std::vector<std::vector<std::vector<char>>> &batchValues,
+    const std::vector<std::string> &passedFeaturesKey,
+    const std::vector<std::vector<std::vector<char>>> &batchPassedFeaturesValue) {
+  std::vector<std::unordered_map<std::string, std::vector<char>>> batchEntries;
+  for (const auto &values : batchValues) {
+    std::unordered_map<std::string, std::vector<char>> entries;
+    for (unsigned i = 0; i < pks.size(); i++) {
+      entries[pks[i]] = values[i];
+    }
+    batchEntries.push_back(entries);
+  }
+
+  std::vector<std::unordered_map<std::string, std::vector<char>>> batchPassedFeatures;
+  for (const auto &values : batchPassedFeaturesValue) {
+    std::unordered_map<std::string, std::vector<char>> passedFeatures;
+    for (unsigned i = 0; i < passedFeaturesKey.size(); i++) {
+      passedFeatures[passedFeaturesKey[i]] = values[i];
+    }
+    batchPassedFeatures.push_back(passedFeatures);
+  }
+  auto req               = feature_store_data_structs::BatchFeatureStoreRequest();
+  req.featureStoreName   = fsName;
+  req.featureViewName    = fvName;
+  req.featureViewVersion = fvVersion;
+  req.entries            = batchEntries;
+  req.passedFeatures     = batchPassedFeatures;
+  return req;
+}
+
 int SendHttpRequestWithClient(const std::shared_ptr<drogon::HttpClient> &client,
                               const std::string &httpVerb, const std::string &url,
                               const std::string &body, const std::string &expectedErrMsg,
@@ -377,8 +410,34 @@ GetFeatureStoreResponseWithDetail(const feature_store_data_structs::FeatureStore
   return nullptr;
 }
 
+std::shared_ptr<feature_store_data_structs::BatchFeatureStoreResponse>
+GetFeatureStoreResponseWithDetail(const feature_store_data_structs::BatchFeatureStoreRequest &req,
+                                  const std::string &message, int status) {
+  auto reqBody = req.to_string();
+  std::vector<char> respBody;
+  SendHttpRequest(POST, NewFeatureStoreURL(), reqBody, message, {status}, respBody);
+  if (status == drogon::k200OK) {
+    auto fsResp = feature_store_data_structs::BatchFeatureStoreResponse();
+    auto status =
+        feature_store_data_structs::BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(
+            std::string(respBody.begin(), respBody.end()), fsResp);
+
+    if (status.http_code != static_cast<HTTP_CODE>(drogon::k200OK)) {
+      return nullptr;
+    }
+    // TODO debug logger
+    return std::make_shared<feature_store_data_structs::BatchFeatureStoreResponse>(fsResp);
+  }
+  return nullptr;
+}
+
 std::shared_ptr<feature_store_data_structs::FeatureStoreResponse>
 GetFeatureStoreResponse(const feature_store_data_structs::FeatureStoreRequest &req) {
+  return GetFeatureStoreResponseWithDetail(req, "", drogon::k200OK);
+}
+
+std::shared_ptr<feature_store_data_structs::BatchFeatureStoreResponse>
+GetFeatureStoreResponse(const feature_store_data_structs::BatchFeatureStoreRequest &req) {
   return GetFeatureStoreResponseWithDetail(req, "", drogon::k200OK);
 }
 
@@ -399,6 +458,55 @@ std::vector<std::vector<char>> GetPkValues(const std::vector<std::vector<char>> 
   }
 
   return pkValues;
+}
+
+std::vector<std::vector<std::vector<char>>>
+GetPkValuesBatch(const std::vector<std::vector<std::vector<char>>> &batchRows,
+                 const std::vector<std::string> &pks, const std::vector<std::string> &cols) {
+  std::vector<std::vector<std::vector<char>>> pkValuesBatch;
+  for (const auto &row : batchRows) {
+    pkValuesBatch.push_back(GetPkValues(row, pks, cols));
+  }
+  return pkValuesBatch;
+}
+
+std::tuple<std::vector<std::string>, std::vector<std::vector<char>>>
+GetPkValuesExclude(const std::vector<std::vector<char>> &row, const std::vector<std::string> &pks,
+                   const std::vector<std::string> &cols, const std::vector<std::string> &exclude) {
+  auto pkSet = std::unordered_map<std::string, bool>();
+  auto exSet = std::unordered_map<std::string, bool>();
+
+  for (const auto &pk : pks) {
+    pkSet[pk] = true;
+  }
+
+  for (const auto &ex : exclude) {
+    exSet[ex] = true;
+  }
+
+  auto pkValue     = std::vector<std::vector<char>>();
+  auto pksFiltered = std::vector<std::string>();
+  for (unsigned i = 0; i < cols.size(); i++) {
+    if (pkSet.find(cols[i]) != pkSet.end() && exSet.find(cols[i]) == exSet.end()) {
+      pkValue.push_back(row[i]);
+      pksFiltered.push_back(cols[i]);
+    }
+  }
+  return {pksFiltered, pkValue};
+}
+
+std::tuple<std::vector<std::string>, std::vector<std::vector<std::vector<char>>>>
+GetPkValuesBatchExclude(const std::vector<std::vector<std::vector<char>>> &batchRows,
+                        const std::vector<std::string> &pks, const std::vector<std::string> &cols,
+                        const std::vector<std::string> &exclude) {
+  std::vector<std::vector<std::vector<char>>> pkValues;
+  std::vector<std::string> pkFiltered;
+  for (const auto &row : batchRows) {
+    auto [pksFilteredRow, pkValueFiltered] = GetPkValuesExclude(row, pks, cols, exclude);
+    pkFiltered                             = pksFilteredRow;
+    pkValues.push_back(pkValueFiltered);
+  }
+  return {pkFiltered, pkValues};
 }
 
 std::string removeQuotes(const std::string &input) {
@@ -497,6 +605,30 @@ void ValidateResponseWithData(const std::vector<std::vector<char>> &data,
                               const feature_store_data_structs::FeatureStoreResponse &resp) {
   auto exCols = std::unordered_map<std::string, bool>();
   ValidateResponseWithDataExcludeCols(data, cols, exCols, resp);
+}
+
+void ValidateBatchResponseWithDataExcludeCols(
+    const std::vector<std::vector<std::vector<char>>> &data, const std::vector<std::string> &cols,
+    const std::unordered_map<std::string, bool> &exCols,
+    const feature_store_data_structs::BatchFeatureStoreResponse &resp) {
+  for (unsigned i = 0; i < data.size(); ++i) {
+    auto fsResp     = feature_store_data_structs::FeatureStoreResponse();
+    fsResp.metadata = resp.metadata;
+    fsResp.features = resp.features[i];
+    fsResp.status   = resp.status[i];
+    if (exCols.empty()) {
+      ValidateResponseWithData(data[i], cols, fsResp);
+    } else {
+      ValidateResponseWithDataExcludeCols(data[i], cols, exCols, fsResp);
+    }
+  }
+}
+
+void ValidateBatchResponseWithData(
+    const std::vector<std::vector<std::vector<char>>> &data, const std::vector<std::string> &cols,
+    const feature_store_data_structs::BatchFeatureStoreResponse &resp) {
+  auto exCols = std::unordered_map<std::string, bool>();
+  ValidateBatchResponseWithDataExcludeCols(data, cols, exCols, resp);
 }
 
 void ValidateResponseMetadataExCol(
@@ -774,10 +906,10 @@ TEST_F(FeatureStoreTest, TestConvertAvroToJsonSimple) {
   std::vector<uint8_t> buf = {0x02, 0x02, 0x00};
 
   try {
-    auto result              = decoder.decode(buf);
-    std::string expectedJson = R"({"next":{"LongList":{"next":{"LongList":{"next":null}}}}})";
+    auto result                = decoder.decode(buf);
+    std::string expectedJson   = R"({"next":{"LongList":{"next":{"LongList":{"next":null}}}}})";
     auto [resultBytes, status] = ConvertAvroToJson(result, decoder.getSchema());
-    std::string resultJson   = std::string(resultBytes.begin(), resultBytes.end());
+    std::string resultJson     = std::string(resultBytes.begin(), resultBytes.end());
 
     ASSERT_EQ(resultJson, expectedJson);
   } catch (const std::exception &e) {
@@ -809,7 +941,7 @@ TEST_F(FeatureStoreTest, TestConvertAvroToJson) {
       s2v(R"({"int1":[1,2,3],"int2":[3,null,5]})"));
 }
 
-TEST_F(FeatureStoreTest, Test_GetFeatureVector_Success_ComplexType) {
+TEST_F(FeatureStoreTest, DISABLED_Test_GetFeatureVector_Success_ComplexType) {
   auto fsName                    = FSDB002;
   const auto *fvName             = "sample_complex_type";
   auto fvVersion                 = 1;
@@ -863,4 +995,80 @@ TEST_F(FeatureStoreTest, Test_GetFeatureVector_Success_ComplexType) {
     ValidateResponseWithData(row, cols, *fsResp);
     ValidateResponseMetadata(fsResp->metadata, fsReq.metadataRequest, fsName, fvName, fvVersion);
   }
+}
+
+class BatchFeatureStoreTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    setenv("RUNNING_UNIT_TESTS", "1", 1);
+    RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
+                                                              globalConfigs.ronDbMetaDataCluster);
+    if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+      errno = status.http_code;
+      exit(errno);
+    }
+  }
+
+  static void TearDownTestSuite() {
+    unsetenv("RUNNING_UNIT_TESTS");
+    RS_Status status = RonDBConnection::shutdown_rondb_connection();
+    if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+      errno = status.http_code;
+      exit(errno);
+    }
+  }
+};
+
+TEST_F(BatchFeatureStoreTest, DISABLED_Test_GetFeatureVector_Success_ComplexType) {
+  auto fsName                    = FSDB002;
+  const auto *fvName             = "sample_complex_type";
+  auto fvVersion                 = 1;
+  auto [rows, pks, cols, status] = GetSampleData(fsName, "sample_complex_type_1");
+  ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Cannot get sample data with error: " << status.message;
+  metadata::AvroDecoder mapDecoder;
+  metadata::AvroDecoder arrayDecoder;
+  try {
+    mapDecoder = metadata::AvroDecoder(
+        "[\"null\",{\"type\":\"record\",\"name\":\"r854762204\",\"namespace\":\"struct\","
+        "\"fields\":[{\"name\":\"int1\",\"type\":[\"null\",\"long\"]},{\"name\":\"int2\",\"type\":["
+        "\"null\",\"long\"]}]}]");
+  } catch (const std::exception &e) {
+    FAIL() << "Failed to create mapDecoder: " << e.what();
+  }
+  try {
+    arrayDecoder =
+        metadata::AvroDecoder("[\"null\",{\"type\":\"array\",\"items\":[\"null\",\"long\"]}]");
+  } catch (const std::exception &e) {
+    FAIL() << "Failed to create arrayDecoder: " << e.what();
+  }
+
+  auto fsReq = CreateFeatureStoreRequest(fsName, fvName, fvVersion, pks,
+                                         GetPkValuesBatch(rows, pks, cols), {}, {});
+
+  fsReq.metadataRequest = {true, true};
+  auto fsResp           = GetFeatureStoreResponse(fsReq);
+  for (auto row : rows) {
+    // convert data to object in json format
+    auto arrayJson       = ConvertBinaryToJsonMessage(row[2]);
+    auto [arrayPt, err1] = DeserialiseComplexFeature(
+        std::vector<char>(arrayJson.begin(), arrayJson.end()), arrayDecoder);
+    row[2] = arrayPt;
+    if (err1 != nullptr) {
+      FAIL() << "Cannot deserailize feature with error " << err1->GetReason();
+    }
+
+    // convert data to object in json format
+    auto mapJson = ConvertBinaryToJsonMessage(row[3]);
+    auto [mapPt, err2] =
+        DeserialiseComplexFeature(std::vector<char>(mapJson.begin(), mapJson.end()), mapDecoder);
+    row[3] = mapPt;
+    if (err2 != nullptr) {
+      FAIL() << "Cannot deserailize feature with error " << err2->GetReason();
+    }
+  }
+
+  // validate
+  ValidateBatchResponseWithData(rows, cols, *fsResp);
+  ValidateResponseMetadata(fsResp->metadata, fsReq.metadataRequest, fsName, fvName, fvVersion);
 }

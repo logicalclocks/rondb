@@ -18,14 +18,10 @@
 package feature_store
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime/debug"
-	"strings"
 	"testing"
-	"time"
 
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests"
@@ -66,69 +62,13 @@ func TestMain(m *testing.M) {
 	}
 	defer cleanup()
 
-	executable := testutils.GetExecutablePath()
-	args := []string{
-		"--root-ca-cert", config.GetAll().Security.TLS.RootCACertFile,
-		"--cert-file", config.GetAll().Security.TLS.CertificateFile,
-		"--key-file", config.GetAll().Security.TLS.PrivateKeyFile,
-	}
-
-	cmd := exec.Command(executable, args...)
-
-	stdoutPipe, err := cmd.StdoutPipe()
+	serverCleanup, err := testutils.StartServer()
 	if err != nil {
-		log.Fatalf("Failed to capture stdout: %v", err)
+		retcode = 1
+		log.Fatalf("Failed to start server: %v", err)
+		return
 	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		log.Fatalf("Failed to capture stderr: %v", err)
-	}
-
-	err = cmd.Start()
-	if err != nil {
-		log.Fatalf("Failed to start rdrs2 server: %v", err)
-		os.Exit(1)
-	}
-
-	log.Infof("rdrs2 server started with PID %d", cmd.Process.Pid)
-
-	stdoutScanner := bufio.NewScanner(stdoutPipe)
-	stderrScanner := bufio.NewScanner(stderrPipe)
-
-	serverReady := make(chan bool)
-
-	go func() {
-		for stdoutScanner.Scan() {
-			line := stdoutScanner.Text()
-			log.Info(line)
-			if strings.Contains(line, "Server running") {
-				serverReady <- true
-			}
-		}
-	}()
-
-	go func() {
-		for stderrScanner.Scan() {
-			line := stderrScanner.Text()
-			log.Error(line)
-		}
-	}()
-
-	select {
-	case <-serverReady:
-		log.Info("Server is ready to accept connections")
-	case <-time.After(30 * time.Second):
-		log.Fatal("Server did not start within 30 seconds")
-		os.Exit(1)
-	}
-
-	defer func() {
-		if err := cmd.Process.Kill(); err != nil {
-			log.Errorf("Failed to kill rdrs2 server process: %v", err)
-		} else {
-			log.Infof("rdrs2 server process killed successfully")
-		}
-	}()
+	defer serverCleanup()
 
 	retcode = m.Run()
 }

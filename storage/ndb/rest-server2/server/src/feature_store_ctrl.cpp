@@ -320,10 +320,10 @@ GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
     param.operationId = opId;
     batchReadParams.push_back(param);
   }
-  std::cout << "Batch read params: " << std::endl;
-  for (auto &param : batchReadParams) {
-    std::cout << param.to_string() << std::endl;
-  }
+  // std::cout << "Batch read params: " << std::endl;
+  // for (auto &param : batchReadParams) {
+  //   std::cout << param.to_string() << std::endl;
+  // }
 
   return batchReadParams;
 }

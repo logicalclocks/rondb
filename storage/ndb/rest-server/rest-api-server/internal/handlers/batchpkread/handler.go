@@ -44,6 +44,7 @@ var pkReadHandler pkread.Handler
 
 func (h *Handler) Validate(request interface{}) error {
 	pkOperations := request.(*[]*api.PKReadParams)
+	// fmt.Printf("pkOperations: %v", pkOperations)
 	if pkOperations == nil {
 		return errors.New("operations is missing in payload")
 	} else if len(*pkOperations) == 0 {

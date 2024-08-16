@@ -185,6 +185,10 @@ class PKReadResponseWithCodeJSON {
     body = b;
   }
 
+  void setOperationId(std::string &opID) {
+    body.setOperationID(opID);
+  }
+
   std::string getMessage() const {
     return message;
   }

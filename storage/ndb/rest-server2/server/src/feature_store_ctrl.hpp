@@ -74,10 +74,10 @@ std::vector<PKReadParams>
 GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
                      const std::unordered_map<std::string, std::vector<char>> &entries);
 void FillPassedFeatures(
-std::vector<std::vector<char>> &features,
-const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
-const std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
-const std::unordered_map<std::string, int> &indexLookup);
+    std::vector<std::vector<char>> &features,
+    const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
+    const std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
+    const std::unordered_map<std::string, int> &indexLookup);
 RS_Status process_responses(std::vector<RS_Buffer> &respBuffs, BatchResponseJSON &response);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_CTRL_HPP_

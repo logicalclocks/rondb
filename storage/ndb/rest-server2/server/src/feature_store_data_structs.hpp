@@ -52,7 +52,7 @@ class BatchFeatureStoreRequest {
       passedFeatures;  // json:"passedFeatures"
   // Serving key of feature view
   std::vector<std::unordered_map<std::string, std::vector<char>>>
-      entries;                     // json:"entries" binding:"required"
+      entries;  // json:"entries" binding:"required"
   // Client requested metadata
   MetadataRequest metadataRequest;  // json:"metadataOptions"
   std::string to_string() const {
@@ -183,9 +183,11 @@ class FeatureStoreResponse {
 class BatchFeatureStoreResponse {
  public:
   std::vector<std::vector<std::vector<char>>> features;  // json:"features"
-  std::vector<FeatureMetadata> metadata;           // json:"metadata"
-  std::vector<FeatureStatus> status;               // json:"status"
+  std::vector<FeatureMetadata> metadata;                 // json:"metadata"
+  std::vector<FeatureStatus> status;                     // json:"status"
   std::string to_string() const;
+  static RS_Status parseBatchFeatureStoreResponse(const std::string &respBody,
+                                                  BatchFeatureStoreResponse &fsResp);
 };
 
 }  // namespace feature_store_data_structs

@@ -23,7 +23,11 @@ std::string FeatureStoreResponse::to_string() const {
   res += "\"metadata\": [";
   for (const auto &metadata : metadata) {
     res += "{";
-    res += "\"featureName\": \"" + metadata.name + "\",";
+    if (metadata.name.empty()) {
+      res += "\"featureName\": null,";
+    } else {
+      res += "\"featureName\": \"" + metadata.name + "\",";
+    }
     if (metadata.type.empty()) {
       res += "\"featureType\": null";
     } else {
@@ -51,7 +55,6 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(const std::string &res
         .status;
   }
 
-  simdjson::ondemand::value value;
   auto features_array = doc["features"];
   if (features_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -127,6 +130,103 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(const std::string &res
   return CRS_Status().status;
 }
 
+RS_Status
+BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(const std::string &respBody,
+                                                          BatchFeatureStoreResponse &fsResp) {
+  simdjson::dom::parser parser;
+  simdjson::dom::element doc;
+  auto error = parser.parse(respBody).get(doc);
+  if (error != 0U) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      error_message(error))
+        .status;
+  }
+
+  auto features_array = doc["features"];
+  if (features_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "Missing 'features' field in response")
+        .status;
+  }
+  if (features_array.error() != simdjson::SUCCESS) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      error_message(features_array.error()))
+        .status;
+  }
+  if (!features_array.is_null()) {
+    for (simdjson::dom::element feature : features_array) {
+      std::vector<std::vector<char>> feature_vector;
+      for (simdjson::dom::element feature_inner : feature) {
+        std::vector<char> feature_inner_vector;
+        std::ostringstream oss;
+        oss << feature_inner;
+        std::string valueJson = oss.str();
+        feature_inner_vector.assign(valueJson.begin(), valueJson.end());
+        feature_vector.push_back(feature_inner_vector);
+      }
+      fsResp.features.push_back(feature_vector);
+    }
+  }
+
+  auto metadata_array = doc["metadata"];
+  if (metadata_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "Missing 'metadata' field in response")
+        .status;
+  }
+  if (metadata_array.error() != simdjson::SUCCESS) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      error_message(metadata_array.error()))
+        .status;
+  }
+
+  if (!metadata_array.is_null()) {
+    for (auto metadata : metadata_array) {
+      FeatureMetadata fm;
+      std::string_view fmName;
+      std::string_view fmType;
+      error = metadata["featureName"].get(fmName);
+      if (error != 0U) {
+        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                          error_message(error))
+            .status;
+      }
+      fm.name = std::string(fmName);
+      error   = metadata["featureType"].get(fmType);
+      if (error != 0U) {
+        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                          error_message(error))
+            .status;
+      }
+      fm.type = std::string(fmType);
+
+      fsResp.metadata.push_back(fm);
+    }
+  }
+
+  auto status_array = doc["status"];
+  if (status_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      "Missing 'status' field in response")
+        .status;
+  }
+  if (status_array.error() != simdjson::SUCCESS) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      error_message(status_array.error()))
+        .status;
+  }
+
+  if (!status_array.is_null()) {
+    for (simdjson::dom::element status : status_array) {
+      std::string_view status_view;
+      error = status.get(status_view);
+      fsResp.status.push_back(fromString(std::string(status_view)));
+    }
+  }
+
+  return CRS_Status().status;
+}
+
 std::string toString(FeatureStatus status) {
   auto it = FeatureStatusToString.find(status);
   if (it != FeatureStatusToString.end()) {
@@ -167,7 +267,11 @@ std::string BatchFeatureStoreResponse::to_string() const {
   res += "\"metadata\": [";
   for (const auto &metadata : metadata) {
     res += "{";
-    res += "\"featureName\": \"" + metadata.name + "\",";
+    if (metadata.name.empty()) {
+      res += "\"featureName\": null,";
+    } else {
+      res += "\"featureName\": \"" + metadata.name + "\",";
+    }
     if (metadata.type.empty()) {
       res += "\"featureType\": null";
     } else {
