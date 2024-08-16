@@ -24,6 +24,7 @@ ndb.ndb_row_count         : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOE
 ndb.ndb_parallel_undo_log : BUG#28794807 FIX NDB.NDB_PARALLEL_UNDO_LOG TESTCASE FAILURE
 ndb.ndb_multi_mgmd        : WL#12345678 Can only run by itself
 ndb.ndb_read_balance      : WL#12345678 Unstable results
+ndb.test_mgmd             : WL#12345678 Requires fixing
 ndb.ndb_basic_3rpl_2ng    : WL#12345678 Only intended for start-and-exit
 ndb.ndb_restore_encrypted_backups :BUG#11761083 NDB : MYSQLD DEFAULT VALUES IN FRM EMBEDDED IN BACKUP NOT ENDIAN-CONVERTE
 ndb.ndb_suma_handover     : Bug#35539093 Error insert 13048 never hit in ndb.ndb_suma_handover 
