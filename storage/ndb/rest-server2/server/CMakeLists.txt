@@ -49,12 +49,10 @@ else()
   message(FATAL_ERROR "Requested OpenSSL TLS provider but OpenSSL was not found")
 endif()
 
-SET(BOOST "$ENV{BOOST_ROOT}")
 INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR})
 INCLUDE_DIRECTORIES(
   ${PROJECT_SOURCE_DIR}
   ${BASE64_INCLUDE_DIR}
-  ${BOOST}
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi

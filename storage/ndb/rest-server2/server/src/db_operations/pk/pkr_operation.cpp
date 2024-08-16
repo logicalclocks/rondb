@@ -37,8 +37,6 @@
 #include <utility>
 #include <my_base.h>
 #include <storage/ndb/include/ndbapi/NdbDictionary.hpp>
-#include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/beast/core/detail/base64.hpp>
 
 PKROperation::PKROperation(RS_Buffer *reqBuff, RS_Buffer *respBuff, Ndb *ndbObject) {
   SubOpTuple pkOpTuple      = SubOpTuple{};
