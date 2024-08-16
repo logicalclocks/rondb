@@ -88,7 +88,7 @@ public class FindByPrimaryKeyErrorHandlingTest
             } catch (ClusterJDatastoreException cjde) {
                 // Verify that the expected error has been caught
                 verifyException("Simulating temporary read error in session.find()",
-                        cjde, ".*Error code: 1,218.*");
+                        cjde, ".*Error code: 1.*218.*");
             } catch (Exception ex) {
                 // Any other exception caught is invalid
                 error("Caught exception : " + ex.getMessage());

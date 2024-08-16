@@ -369,8 +369,6 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
         context.setExplain(explain);
         int result = 0;
         int errorCode = 0;
-        if(limit < 1)
-            return result;
         Index storeIndex;
         if (skip == Long.MAX_VALUE || limit <= 0) {
             return result;
