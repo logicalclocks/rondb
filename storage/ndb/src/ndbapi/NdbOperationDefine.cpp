@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -377,8 +378,11 @@ void NdbOperation::setReadLockMode(LockMode lockMode) {
  *                            value.
  * Remark:        Define an attribute to retrieve in query.
  *****************************************************************************/
-NdbRecAttr *NdbOperation::getValue_impl(const NdbColumnImpl *tAttrInfo,
-                                        char *aValue) {
+NdbRecAttr*
+NdbOperation::getValue_impl(const NdbColumnImpl* tAttrInfo,
+                            char* aValue,
+                            Uint32 aStartPos,
+                            Uint32 aSize) {
   NdbRecAttr *tRecAttr;
   if ((tAttrInfo != nullptr) && (theStatus != Init)) {
     if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK) {
@@ -387,7 +391,10 @@ NdbRecAttr *NdbOperation::getValue_impl(const NdbColumnImpl *tAttrInfo,
     if (theStatus != GetValue) {
       if (theStatus == UseNdbRecord)
         /* This path for extra GetValues for NdbRecord */
-        return getValue_NdbRecord(tAttrInfo, aValue);
+        return getValue_NdbRecord(tAttrInfo,
+                                  aValue,
+                                  aStartPos,
+                                  aSize);
       if (theInterpretIndicator == 1) {
         if (theStatus == FinalGetValue) {
           ;  // Simply continue with getValue
@@ -409,9 +416,24 @@ NdbRecAttr *NdbOperation::getValue_impl(const NdbColumnImpl *tAttrInfo,
       }  // if
     }    // if
     AttributeHeader ah(tAttrInfo->m_attrId, 0);
-    if (insertATTRINFO(ah.m_value) != -1) {
-      // Insert Attribute Id into ATTRINFO part.
-
+    // Insert Attribute Id into ATTRINFO part. 
+    int ret_code = insertATTRINFO(ah.m_value);
+    if (unlikely(ret_code == 0 && (aStartPos != 0 || aSize != 0))) {
+      /**
+       * Add position and size for partial read
+       * Currently only supported for varbinary and long varbinary
+       * objects.
+       */
+      if (unlikely((tAttrInfo->getType() !=
+                    NdbDictionary::Column::Longvarbinary) &&
+                    tAttrInfo->getType() !=
+                    NdbDictionary::Column::Varbinary)) {
+	setErrorCodeAbort(4566);
+	return nullptr;
+      }
+      ret_code = insertATTRINFO(aStartPos + (aSize << 16));
+    }
+    if (likely(ret_code == 0)) {
       /************************************************************************
        * Get a Receive Attribute object and link it into the operation object.
        ***********************************************************************/
@@ -435,9 +457,22 @@ NdbRecAttr *NdbOperation::getValue_impl(const NdbColumnImpl *tAttrInfo,
   return nullptr;
 }
 
-NdbRecAttr *NdbOperation::getValue_NdbRecord(const NdbColumnImpl *tAttrInfo,
-                                             char *aValue) {
-  NdbRecAttr *tRecAttr;
+NdbRecAttr*
+NdbOperation::getValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                 char* aValue,
+                                 Uint32 aStartPos,
+                                 Uint32 aSize)
+{
+  NdbRecAttr* tRecAttr;
+  if (unlikely((aStartPos != 0) || (aSize != 0))) {
+    if (unlikely((tAttrInfo->getType() !=
+                    NdbDictionary::Column::Longvarbinary) &&
+                  tAttrInfo->getType() !=
+                    NdbDictionary::Column::Varbinary)) {
+      setErrorCodeAbort(4566);
+      return nullptr;
+    }
+  }
 
   if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK) {
     m_flags &= ~Uint8(OF_NO_DISK);
@@ -447,7 +482,48 @@ NdbRecAttr *NdbOperation::getValue_NdbRecord(const NdbColumnImpl *tAttrInfo,
     For getValue with NdbRecord operations, we just allocate the NdbRecAttr,
     the signal data will be constructed later.
   */
-  if ((tRecAttr = theReceiver.getValue(tAttrInfo, aValue)) != nullptr) {
+  if ((tRecAttr = theReceiver.getValue(tAttrInfo,
+                                       aValue,
+                                       aStartPos,
+                                       aSize)) != nullptr) {
+    theErrorLine++;
+    return tRecAttr;
+  } else {
+    setErrorCodeAbort(4000);
+    return nullptr;
+  }
+}
+
+NdbRecAttr*
+NdbOperation::getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                      char* aValue,
+                                      Uint32 aStartPos,
+                                      Uint32 aSize)
+{
+  NdbRecAttr* tRecAttr;
+
+  if (unlikely((aStartPos != 0) || (aSize != 0))) {
+    if (unlikely((tAttrInfo->getType() !=
+                    NdbDictionary::Column::Longvarbinary) &&
+                  tAttrInfo->getType() !=
+                    NdbDictionary::Column::Varbinary)) {
+      setErrorCodeAbort(4566);
+      return nullptr;
+    }
+  }
+
+  if (tAttrInfo->m_storageType == NDB_STORAGETYPE_DISK) {
+    m_flags &= ~Uint8(OF_NO_DISK);
+  }
+
+  /*
+    For getValue with NdbRecord operations, we just allocate the NdbRecAttr,
+    the signal data will be constructed later.
+  */
+  if ((tRecAttr = theReceiver.getFinalValue(tAttrInfo,
+                                            aValue,
+                                            aStartPos,
+                                            aSize)) != nullptr) {
     theErrorLine++;
     return tRecAttr;
   } else {
@@ -467,8 +543,11 @@ NdbRecAttr *NdbOperation::getValue_NdbRecord(const NdbColumnImpl *tAttrInfo,
  *		  len    : Length of the value
  * Remark:        Define a attribute to set in a query.
  ******************************************************************************/
-int NdbOperation::setValue(const NdbColumnImpl *tAttrInfo,
-                           const char *aValuePassed) {
+int
+NdbOperation::setValue(const NdbColumnImpl* tAttrInfo, 
+                       const char* aValuePassed,
+                       bool append_flag,
+                       Uint32 startPos) {
   DBUG_ENTER("NdbOperation::setValue");
   DBUG_PRINT("enter", ("col: %s  op:%d  val: %p",
                        tAttrInfo ? tAttrInfo->m_name.c_str() : "NULL",
@@ -613,8 +692,44 @@ int NdbOperation::setValue(const NdbColumnImpl *tAttrInfo,
 
   // Excluding bits in last word
   const Uint32 sizeInWords = sizeInBytes / 4;
-  AttributeHeader ah(tAttrId, sizeInBytes);
-  insertATTRINFO(ah.m_value);
+  if (unlikely(append_flag)) {
+    if (!ndbd_partial_update_supported(
+            theNdbCon->getNdb()->getMinDbNodeVersion())) {
+      setErrorCode(4571);
+      return -1;
+    }
+    if (unlikely((tAttrInfo->getType() !=
+                  NdbDictionary::Column::Longvarbinary) &&
+                  tAttrInfo->getType() !=
+                  NdbDictionary::Column::Varbinary)) {
+      setErrorCodeAbort(4567);
+      DBUG_RETURN(-1);
+    }
+    AttributeHeader ah(AttributeHeader::APPEND_COLUMN, sizeInBytes);
+    insertATTRINFO(ah.m_value);
+    Uint32 extended_header = tAttrId;
+    insertATTRINFO(extended_header);
+  } else if (startPos > 0) {
+    if (!ndbd_partial_update_supported(
+            theNdbCon->getNdb()->getMinDbNodeVersion())) {
+      setErrorCode(4571);
+      return -1;
+    }
+    if (unlikely((tAttrInfo->getType() !=
+                  NdbDictionary::Column::Longvarbinary) &&
+                  tAttrInfo->getType() !=
+                  NdbDictionary::Column::Varbinary)) {
+      setErrorCodeAbort(4567);
+      DBUG_RETURN(-1);
+    }
+    AttributeHeader ah(AttributeHeader::SET_PARTIAL_COLUMN, sizeInBytes);
+    insertATTRINFO(ah.m_value);
+    Uint32 extended_header = tAttrId + (startPos << 16);
+    insertATTRINFO(extended_header);
+  } else {
+    AttributeHeader ah(tAttrId, sizeInBytes);
+    insertATTRINFO(ah.m_value);
+  }
 
   /***********************************************************************
    * Check if the pointer of the value passed is aligned on a 4 byte boundary.
@@ -1158,9 +1273,11 @@ int NdbOperation::handleOperationOptions(const OperationType type,
         }
 
         NdbRecAttr *pra =
-            op->getValue_NdbRecord(&NdbColumnImpl::getImpl(*pvalSpec->column),
-                                   (char *)pvalSpec->appStorage);
-
+          op->getValue_NdbRecord(&NdbColumnImpl::getImpl(*pvalSpec->column),
+                                 (char *) pvalSpec->appStorage,
+                                 pvalSpec->m_startPos,
+                                 pvalSpec->m_size);
+        
         if (pra == nullptr) {
           return -1;
         }
@@ -1177,6 +1294,64 @@ int NdbOperation::handleOperationOptions(const OperationType type,
         default:
           return 4118;
           // Parameter error in API call
+      }
+    }
+  }
+
+  if ((opts->optionsPresent & OperationOptions::OO_GET_FINAL_VALUE) &&
+      (opts->numExtraGetFinalValues > 0)) {
+    if (opts->extraGetFinalValues == nullptr) {
+      // Incorrect combination of OperationOptions optionsPresent, 
+      // extraGet/SetValues ptr and numExtraGet/SetValues
+      return 4568;
+    }
+
+    // Only certain operation types allow extra GetFinalValues
+    // Only makes sense to use it in Updates and Writes
+    if (type == UpdateRequest ||
+        type == WriteRequest) {
+      // Could be readTuple(), or lockCurrentTuple().
+      // We perform old-school NdbRecAttr reads on
+      // these values.
+      for (unsigned int i=0; i < opts->numExtraGetFinalValues; i++) {
+        GetValueSpec *pvalSpec 
+          = &(opts->extraGetFinalValues[i]);
+
+        pvalSpec->recAttr=nullptr;
+
+        if (pvalSpec->column == nullptr) {
+          // Column is NULL in Get/SetValueSpec structure
+          return 4295;
+        }
+
+        NdbRecAttr *pra=
+          op->getFinalValue_NdbRecord(
+            &NdbColumnImpl::getImpl(*pvalSpec->column),
+            (char *) pvalSpec->appStorage,
+            pvalSpec->m_startPos,
+            pvalSpec->m_size);
+        
+        if (pra == nullptr) {
+          return -1;
+        }
+
+        pvalSpec->recAttr = pra;
+      }
+    } else {
+      // Bad operation type for GetValue
+      switch (type)
+      {
+      case InsertRequest :
+      case ReadRequest :
+      case DeleteRequest :
+      case ReadExclusive :
+      {
+        return 4569;
+        // GetFinalValue only allowed in Update/Write operation
+      }
+      default :
+        return 4118;
+        // Parameter error in API call
       }
     }
   }
@@ -1217,6 +1392,13 @@ int NdbOperation::handleOperationOptions(const OperationType type,
             (colType == NdbDictionary::Column::Text)) {
           // Invalid usage of blob attribute
           return 4264;
+        }
+        if (unlikely(opts->extraSetValues[i].m_append_flag)) {
+          if (unlikely(colType != NdbDictionary::Column::Longvarbinary) &&
+                      (colType == NdbDictionary::Column::Varbinary)) {
+            // Usage of append only on Varbinary and Longvarbinary columns
+            return 4567;
+          }
         }
       }
 

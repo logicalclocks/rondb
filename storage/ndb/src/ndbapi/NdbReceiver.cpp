@@ -319,6 +319,8 @@ NdbReceiver::NdbReceiver(Ndb *aNdb)
       m_read_key_info(false),
       m_firstRecAttr(nullptr),
       m_lastRecAttr(nullptr),
+      m_firstFinalRecAttr(nullptr),
+      m_lastFinalRecAttr(nullptr),
       m_rec_attr_data(nullptr),
       m_rec_attr_len(0),
       m_current_row(beforeFirstRow),
@@ -354,6 +356,8 @@ int NdbReceiver::init(ReceiverType type, void *owner) {
   m_read_key_info = false;
   m_firstRecAttr = nullptr;
   m_lastRecAttr = nullptr;
+  m_firstFinalRecAttr = nullptr;
+  m_lastFinalRecAttr = nullptr;
   m_rec_attr_data = nullptr;
   m_rec_attr_len = 0;
 
@@ -387,19 +391,35 @@ void NdbReceiver::release() {
     tRecAttr = tRecAttr->next();
     m_ndb->releaseRecAttr(tSaveRecAttr);
   }
+  tRecAttr = m_firstFinalRecAttr;
+  while (tRecAttr != nullptr)
+  {
+    NdbRecAttr* tSaveRecAttr = tRecAttr;
+    tRecAttr = tRecAttr->next();
+    m_ndb->releaseRecAttr(tSaveRecAttr);
+  }
   m_firstRecAttr = nullptr;
   m_lastRecAttr = nullptr;
+  m_firstFinalRecAttr = nullptr;
+  m_lastFinalRecAttr = nullptr;
   m_rec_attr_data = nullptr;
   m_rec_attr_len = 0;
   m_ndb_record = nullptr;
   m_row_buffer = nullptr;
   m_recv_buffer = nullptr;
 }
-
-NdbRecAttr *NdbReceiver::getValue(const NdbColumnImpl *tAttrInfo,
-                                  char *user_dst_ptr) {
-  NdbRecAttr *tRecAttr = m_ndb->getRecAttr();
-  if (tRecAttr && !tRecAttr->setup(tAttrInfo, user_dst_ptr)) {
+  
+NdbRecAttr *
+NdbReceiver::getValue(const NdbColumnImpl* tAttrInfo,
+                      char * user_dst_ptr,
+                      Uint32 aStartPos,
+                      Uint32 aSize)
+{
+  NdbRecAttr* tRecAttr = m_ndb->getRecAttr();
+  if (tRecAttr && !tRecAttr->setup(tAttrInfo,
+                                   user_dst_ptr,
+                                   aStartPos,
+                                   aSize)) {
     if (m_firstRecAttr == nullptr)
       m_firstRecAttr = tRecAttr;
     else
@@ -409,6 +429,31 @@ NdbRecAttr *NdbReceiver::getValue(const NdbColumnImpl *tAttrInfo,
     return tRecAttr;
   }
   if (tRecAttr) {
+    m_ndb->releaseRecAttr(tRecAttr);
+  }
+  return nullptr;
+}
+
+NdbRecAttr *
+NdbReceiver::getFinalValue(const NdbColumnImpl* tAttrInfo,
+                           char * user_dst_ptr,
+                           Uint32 aStartPos,
+                           Uint32 aSize)
+{
+  NdbRecAttr* tRecAttr = m_ndb->getRecAttr();
+  if(tRecAttr && !tRecAttr->setup(tAttrInfo,
+                                  user_dst_ptr,
+                                  aStartPos,
+                                  aSize)){
+    if (m_firstFinalRecAttr == nullptr)
+      m_firstFinalRecAttr = tRecAttr;
+    else
+      m_lastFinalRecAttr->next(tRecAttr);
+    m_lastFinalRecAttr = tRecAttr;
+    tRecAttr->next(nullptr);
+    return tRecAttr;
+  }
+  if(tRecAttr){
     m_ndb->releaseRecAttr(tRecAttr);
   }
   return nullptr;
@@ -1215,7 +1260,10 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
       return 0;
     } else {
       /* Put values into RecAttr now */
-      const int ret = handle_rec_attrs(m_firstRecAttr, aDataPtr, aLength);
+      const int ret = handle_rec_attrs(m_firstRecAttr,
+                                       m_firstFinalRecAttr,
+                                       aDataPtr,
+                                       aLength);
       if (unlikely(ret != 0)) return -1;
 
       aDataPtr += aLength;
@@ -1228,10 +1276,20 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
   return 0;
 }
 
-// static
-int NdbReceiver::handle_rec_attrs(NdbRecAttr *rec_attr_list,
-                                  const Uint32 *aDataPtr, Uint32 aLength) {
-  NdbRecAttr *currRecAttr = rec_attr_list;
+//static
+int
+NdbReceiver::handle_rec_attrs(NdbRecAttr* rec_attr_list,
+                              NdbRecAttr* rec_attr_list_final,
+                              const Uint32* aDataPtr,
+                              Uint32 aLength)
+{
+  bool first_list = true;
+  NdbRecAttr* currRecAttr = rec_attr_list;
+  if (currRecAttr == nullptr)
+  {
+    currRecAttr = rec_attr_list_final;
+    first_list = false;
+  }
 
   /* If we get here then there are some attribute values to be
    * read into the attached list of NdbRecAttrs.
@@ -1287,6 +1345,11 @@ int NdbReceiver::handle_rec_attrs(NdbRecAttr *rec_attr_list,
         aLength -= add;
         aDataPtr += add;
         currRecAttr = currRecAttr->next();
+        if (first_list && currRecAttr == nullptr)
+        {
+          currRecAttr = rec_attr_list_final;
+          first_list = false;
+        }
       } else {
         /*
           This should not happen: we got back an attribute for which we have no
@@ -1313,8 +1376,13 @@ int NdbReceiver::handle_rec_attrs(NdbRecAttr *rec_attr_list,
   return 0;
 }
 
-int NdbReceiver::get_AttrValues(NdbRecAttr *rec_attr_list) const {
-  return handle_rec_attrs(rec_attr_list, m_rec_attr_data, m_rec_attr_len);
+int
+NdbReceiver::get_AttrValues(NdbRecAttr* rec_attr_list) const
+{
+  return handle_rec_attrs(rec_attr_list,
+                          nullptr,
+                          m_rec_attr_data,
+                          m_rec_attr_len);
 }
 
 int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr, Uint32 aLength) {

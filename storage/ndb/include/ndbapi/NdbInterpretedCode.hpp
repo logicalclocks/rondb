@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2007, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -130,6 +131,63 @@ class NdbInterpretedCode {
    */
   void reset();
 
+  /**
+   * Interpreter Design
+   * ------------------
+   * This interpreter has as its major design purpose to avoid network
+   * communication. The very first step was a simple benchmark (TPC-B)
+   * that made use of a statement where a column was incremented.
+   * Obviously it is possible to solve this by first reading the column
+   * and later add it in the application and then storing the result.
+   * However using an interpreter meant that we could save one network
+   * interaction.
+   *
+   * Later the interpreter was used to implement all sorts of scan
+   * filters that avoided having to send all rows over the network
+   * and instead filter them at the data source.
+   *
+   * Modern applications very often store large objects in databases.
+   * This could be vectors of numbers, JSON objects and many other
+   * variants. Again it is useful to compute local calculations to
+   * avoid networking.
+   *
+   * The most reason development makes it possible to append to a
+   * column using the interpreter, write only parts of a column,
+   * convert strings to numbers, numbers to strings, use memory
+   * to spill registers and we expect to add many more application
+   * specific things such as sorting, binary searches, vector
+   * calculations and much more.
+   *
+   * Most of the application usage is expected to use a higher level
+   * language, as a first step to this we have developed RonSQL that
+   * converts SQL queries to interpreted programs that performs
+   * filtering and other actions. RonDB also contains a similar
+   * interpreter specialised for interpreting aggregation queries.
+   *
+   * Register engine
+   * ---------------
+   * The register engine has access to 8 registers, these registers all
+   * store signed 64 bit integer values. At start of interpreter all
+   * registers are initialised to contain NULL values (thus value is
+   * undefined).
+   *
+   * It also has access to 64 kBytes of memory. It has access to 16
+   * 8 byte variables that can be used to send calculated results
+   * back to the application. One can use subroutines and thus there
+   * is a stack as well.
+   *
+   * The interpreter also have a heap memory of size 64 KByte. There
+   * are instructions to read full or partial columns into this heap
+   * memory and there are instructions to read from memory into a
+   * register and to write from registers to memory as well.
+   *
+   * There are numerous branch instructions that can be used based
+   * on the contents in registers.
+   *
+   * There are numerous arithmetic and logical operations that can be
+   * performed on the registers and they all operate on Int64 values.
+   */
+
   /* Register constant loads
    * -----------------------
    * These instructions allow numeric constants (and null)
@@ -149,6 +207,28 @@ class NdbInterpretedCode {
   int load_const_u16(Uint32 RegDest, Uint32 Constant);
   int load_const_u32(Uint32 RegDest, Uint32 Constant);
   int load_const_u64(Uint32 RegDest, Uint64 Constant);
+  /* Load constant with variable size into memory
+   * This instruction is useful e.g. to use in appending
+   * to a variable sized column, it can also be used in
+   * any other way by the interpreted program.
+   *
+   * The memory needs to be aligned on 32-bit boundary.
+   * The size is the size in bytes however. The last bytes
+   * in the last word will be zero-filled if not a multiple
+   * of 4 bytes is sent.
+   *
+   * The RegMemoryOffset contains the memory offset where
+   * this memory will be saved in the interpreter.
+   * The RegDestSize is the register where the size of the
+   * const_memory will be stored as part of the instruction
+   * for use in later instructions.
+   *
+   * @return 0 if successful, -1 otherwise
+   */
+  int load_const_mem(Uint32 RegMemoryOffset,
+                     Uint32 RegDestSize,
+                     Uint16 SizeConstant,
+                     Uint32 *const_memory);
 
   /* Register to / from table attribute load and store
    * -------------------------------------------------
@@ -159,20 +239,187 @@ class NdbInterpretedCode {
    * on was specified with the NdbInterpretedCode object
    * was constructed.
    *
+   * There is also two instructions to read partial or a full
+   * column into the interpreters heap memory. The destination
+   * register contains the read length, if column was NULL,
+   * the register will be NULL. These instructions are only
+   * intended to be used on arrays of binary data. The
+   * read_attr and write_attr can be used on integer data,
+   * but read_partial and read_full is intended to be operated
+   * on e.g. VARBINARY columns. This means it isn't intended
+   * for use with columns using character sets.
+   *
+   * The memory offset in memory must be smaller than the
+   * largest column that can be read and still fit within
+   * the heap memory, thus around 35000 currently. The
+   * memory offset is in bytes and must be a multiple of
+   * 8.
+   *
+   * Important notice is that when one reads a VARBINARY(255)
+   * the first byte of the column is the length byte. For
+   * a VARBINARY(256) and larger VARBINARY columns the first
+   * two bytes of the column are the length bytes using
+   * little endian format. This is true for variable sized
+   * binary arrays and not so for fixed size binary arrays
+   * (e.g. BINARY(256)).
+   *
+   * If one reads from position 128 with size 128 and the
+   * column only has a length of 96, the result will be
+   * ok with a read length of 0. If the column was 168
+   * bytes the result will be a read length of 40.
+   *
+   * If the size to read is set to 0, the full column
+   * will be read no matter what position is set.
+   *
+   * Using append_from_mem
+   * ---------------------
+   * Using append_from_mem requires some level of understanding
+   * of how the interpreter internals work and how variable
+   * sized columns are handled.
+   * 
+   * Since RonDB is used with MySQL the actual storage format is
+   * directed by the MySQL storage engine interface. MySQL stores
+   * variable sized columns such as VARBINARY with 1 or 2 length
+   * bytes. A column of type VARBINARY(100) 1 length byte and
+   * VARBINARY(1000) has 2 length bytes. VARBINARY(x) with x <= 255
+   * has 1 length byte and otherwise it has 2 length bytes.
+   * The length bytes in MySQL are always stored in little endian
+   * format.
+   *
+   * Thus storing a string like 'New York' in an VARBINARY(500) will
+   * be stored as an array of bytes starting with 8,0 as the length
+   * bytes followed by 8 bytes of ASCII code for New York.
+   *
+   * When appending to a column we expect the memory to append to
+   * also to follow this format. Thus if we want to append to this
+   * column the string ', the Big Apple' we will set up memory
+   * starting with 15, 0 and followed by the 15 ASCII characters for
+   * string. The resulting string will be stored as 23, 0 and the
+   * string 'New York, the Big Apple'.
+   *
+   * append_from_mem expects this format starting 8 bytes from the
+   * offset provided in append_from_mem. Thus if we have stored
+   * 15, 0 and the next 15 characters starting from position 8 in
+   * the memory we need to use the offset register set to 0.
+   *
+   * Understanding the extra 8 bytes requires understanding of the
+   * RonDB internals. When we update a column we use a method called
+   * updateAttributes. This method can update one or more columns in
+   * a loop. Appending to a column uses a special format that requires
+   * 8 bytes of header information. The first 32 bytes have a pseudo
+   * column id for append column in the lower 16 bits and have the size
+   * in the upper 16 bits. In this case the size would be the full size,
+   * thus 15 + 2 = 17. The second 32 bits contains the attribute id of
+   * the column to be updated.
+   *
+   * write_partial_from_mem
+   * ----------------------
+   * Write partial columns is a bit different. It is similar in that
+   * it also requires an 8 byte header that contains a pseudo column
+   * id, a size, a column id to write to. In addition the second 32
+   * bits contains a starting position of the write. The starting
+   * position includes the length bytes, but the starting position
+   * cannot update the length bytes, the lenght bytes are calculated
+   * and set dependent on the previous value of the column.
+   *
+   * The first case is when one write to a column that was previously
+   * NULL. In this case we will start writing at startPos the data
+   * of size (here the data do not contain any length bytes). If
+   * the startPos is 3 and the length bytes is 1, this means that the
+   * second and the third byte are undefined, we will solve this by
+   * writing 0's in those bytes. The length bytes will then be
+   * updated to contain 3 + size in little endian format.
+   *
+   * When writing using append_to_mem it will be stored in the REDO
+   * log as a write_partial_from_mem since this is idempotent and
+   * can be executed multiple times with the same result which isn't
+   * true for append.
+   *
+   * write_from_mem
+   * --------------
+   * write_from_mem works very similarly to append_from_mem except for
+   * three things. First it writes a new column, thus the previous value
+   * has no significance. Second the header is only 4 bytes, it contains
+   * the column id in the lower 16 bits and the size to write in the upper
+   * 16 bits. The size to write is the size including the length bytes.
+   * Thirdly write_from_mem with 0 size means setting the value to be NULL.
+   *
+   * read_partial and read_full
+   * --------------------------
+   * This reads part of or the full of a column with a starting position and
+   * a size. It can also read the length bytes. Thus one can read the size of
+   * a variable sized column by using read_partial of only the length bytes.
+   *
+   * To convert this number to a length stored in one of the registers one
+   * can use the instruction read_uint8_to_reg_const or the
+   * read_uint8_to_reg_reg dependent on whether the memory offset is a constant
+   * or stored in a register. This works when the number of length bytes is 1.
+   * If the length bytes are 2 one can use the convert_size instruction to
+   * read the 2 bytes and calculate the length and store this in a register.
+   * In this case the memory offset must be in a register.
+   *
+   * Both read_partial and read_full stores the memory offset in a register
+   * where the result will be written. Important here is that the information
+   * retrieved is actually stored in memory_offset + 4, the first 4 bytes
+   * is the header containing the column id and the size of the data read
+   * including the length bytes.
+   *
    * Space required   Buffer    Request message
    *   read_attr      1 word    1 word
    *   write_attr     1 word    1 word
+   *   read_partial   1 word    1 word
+   *   read_full      1 word    1 word
+   *   write_from_mem 1 word    1 word
+   *   append_from_mem 1 word   1 word
+   *   write_partial_from_mem 1 word 1 word
    *
    * @param RegDest Register to load data into
    * @param attrId Table attribute to use
    * @param column Table column to use
    * @param RegSource Register to store data from
+   * @param RegStartPos Register to get start position from
    * @return 0 if successful, -1 otherwise
    */
   int read_attr(Uint32 RegDest, Uint32 attrId);
   int read_attr(Uint32 RegDest, const NdbDictionary::Column *column);
   int write_attr(Uint32 attrId, Uint32 RegSource);
   int write_attr(const NdbDictionary::Column *column, Uint32 RegSource);
+  int write_from_mem(Uint32 attrId,
+                     Uint32 RegMemoryOffset,
+                     Uint32 RegSize);
+  int write_from_mem(const NdbDictionary::Column *column,
+                     Uint32 RegMemoryOffset,
+                     Uint32 RegSize);
+  int append_from_mem(Uint32 attrId,
+                      Uint32 RegMemoryOffset,
+                      Uint32 RegSize);
+  int append_from_mem(const NdbDictionary::Column *column,
+                      Uint32 RegMemoryOffset,
+                      Uint32 RegSize);
+  int write_partial_from_mem(const NdbDictionary::Column *column,
+                             Uint32 RegMemoryOffset,
+                             Uint32 RegSize,
+                             Uint32 RegStartPos);
+  int write_partial_from_mem(Uint32 attrId,
+                             Uint32 RegMemoryOffset,
+                             Uint32 RegSize,
+                             Uint32 RegStartPos);
+  int read_partial(Uint32 attrId,
+                   Uint32 RegMemoryOffset,
+                   Uint32 RegPos,
+                   Uint32 RegSize,
+                   Uint32 RegDestSize);
+  int read_partial(const NdbDictionary::Column *column,
+                   Uint32 RegMemoryOffset,
+                   Uint32 RegPos,
+                   Uint32 RegSize,
+                   Uint32 RegDestSize);
+  int read_full(Uint32 attrId,
+                Uint32 RegMemoryOffset,
+                Uint32 RegDestSize);
+  int read_full(const NdbDictionary::Column *column,
+                Uint32 RegMemoryOffset,
+                Uint32 RegDestSize);
 
   /* Register arithmetic
    * -------------------
@@ -184,6 +431,18 @@ class NdbInterpretedCode {
    * Space required   Buffer    Request message
    *   add_reg        1 word    1 word
    *   sub_reg        1 word    1 word
+   *   lshift_reg     1 word    1 word
+   *   rshift_reg     1 word    1 word
+   *   mul_reg        1 word    1 word
+   *   div_reg        1 word    1 word
+   *   and_reg        1 word    1 word
+   *   or_reg         1 word    1 word
+   *   xor_reg        1 word    1 word
+   *   mod_reg        1 word    1 word
+   *
+   * *RegDest= <operator> *RegSouce1
+   *   not_reg        1 word    1 word
+   *   move_reg       1 word    1 word
    *
    * @param RegDest Register to store operation result in
    * @param RegSource1 Register to use as LHS of operator
@@ -192,6 +451,111 @@ class NdbInterpretedCode {
    */
   int add_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
   int sub_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int lshift_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int rshift_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int mul_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int div_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int and_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int or_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int xor_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int mod_reg(Uint32 RegDest, Uint32 RegSource1, Uint32 RegSource2);
+  int not_reg(Uint32 RegDest, Uint32 RegSource1);
+  int move_reg(Uint32 RegDest, Uint32 RegSource);
+
+  /* Register arithmetic
+   * -------------------
+   * These instructions provide arithmetic operations on the
+   * interpreter's registers. They have the same use as the
+   * one with two source registers except that they use a
+   * constant as the second part of the operation.
+   *
+   * *RegDest= *RegSouce1 <operator> *Constant
+   *
+   * Space required   Buffer    Request message
+   *   add_const_reg  1 word    1 word
+   *   sub_const_reg  1 word    1 word
+   *   lshift_const_reg 1 word  1 word
+   *   rshift_const_reg 1 word  1 word
+   *   mul_const_reg  1 word    1 word
+   *   div_const_reg  1 word    1 word
+   *   and_const_reg  1 word    1 word
+   *   or_const_reg   1 word    1 word
+   *   xor_const_reg  1 word    1 word
+   *   mod_const_reg  1 word    1 word
+   *
+   * @param RegDest Register to store operation result in
+   * @param RegSource1 Register to use as LHS of operator
+   * @param Constant to use as RHS of operator
+   * @return 0 if successful, -1 otherwise
+   */
+  int add_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int sub_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int lshift_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int rshift_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int mul_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int div_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int and_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int or_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int xor_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+  int mod_const_reg(Uint32 RegDest, Uint32 RegSource1, Uint16 Constant);
+
+  /* Move from heap memory to register
+   * ---------------------------------
+   * These instructions provide possibilities to read the memory
+   * inserted from reads of columns and load it into registers.
+   * One can read 1 byte treated as an Uint8, 2 bytes treated as
+   * Uint16, 4 bytes treated as Uint32 and 8 bytes treated as
+   * Int64.
+   *
+   * *RegDest= *RegSouce1 <operator> *Constant
+   *
+   * Space required   Buffer    Request message
+   *   read_u8_to_reg 1 word    1 word
+   *   read_u16_to_reg 1 word   1 word
+   *   read_u32_to_reg 1 word   1 word
+   *   read_int64_to_reg 1 word 1 word
+   *
+   * @param RegDest Register to store operation result in
+   * @param RegSource1 Register to use as LHS of operator
+   * @param Constant to use as RHS of operator
+   * @return 0 if successful, -1 otherwise
+   */
+  int write_interpreter_output(Uint32 RegValue, Uint32 outputIndex);
+  int convert_size(Uint32 RegSizeDest, Uint32 RegOffset);
+  int write_size_mem(Uint32 RegSize, Uint32 RegOffset);
+  int read_uint8_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
+  int read_uint16_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
+  int read_uint32_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
+  int read_int64_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
+
+  int read_uint8_to_reg_reg(Uint32 RegDest, Uint32 RegOffset);
+  int read_uint16_to_reg_reg(Uint32 RegDest, Uint32 RegOffset);
+  int read_uint32_to_reg_reg(Uint32 RegDest, Uint32 RegOffset);
+  int read_int64_to_reg_reg(Uint32 RegDest, Uint32 RegOffset);
+
+  /* Move from register to heap memory
+   * ---------------------------------
+   * This instruction provides the option to spill registers to memory
+   * when so required.
+   *
+   * Space required   Buffer    Request message
+   *   write_reg_to_mem 1 word  1 word
+   */
+  int write_uint8_reg_to_mem_const(Uint32 RegSource, Uint16 memory_offset);
+  int write_uint16_reg_to_mem_const(Uint32 RegSource, Uint16 memory_offset);
+  int write_uint32_reg_to_mem_const(Uint32 RegSource, Uint16 memory_offset);
+  int write_int64_reg_to_mem_const(Uint32 RegSource, Uint16 memory_offset);
+
+  int write_uint8_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
+  int write_uint16_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
+  int write_uint32_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
+  int write_int64_reg_to_mem_reg(Uint32 RegSource, Uint32 RegOffset);
+
+  /**
+   * Library functions
+   */
+  int str_to_int64(Uint32 RegDestValue, Uint32 RegOffset, Uint32 RegSize);
+  int int64_to_str(Uint32 RegDestSize, Uint32 RegOffset, Uint32 RegValue);
 
   /* Control flow
    * ------------
@@ -220,9 +584,12 @@ class NdbInterpretedCode {
   /* Register based conditional branch ops
    * -------------------------------------
    * These instructions are used to branch based on numeric
-   * register to register comparisons.
+   * register to register/constant comparisons.
    *
    * if (RegLvalue <cond> RegRvalue)
+   *   goto label;
+   *
+   * if (RegLvalue <cond> Constant)
    *   goto label;
    *
    * Space required   Buffer    Request message
@@ -230,6 +597,7 @@ class NdbInterpretedCode {
    *
    * @param RegLValue register to use as left hand side of condition
    * @param RegRValue register to use as right hand side of condition
+   * @param Constant A constant between 0 and 63
    * @param label Program label to jump to if condition is true
    * @return 0 if successful, -1 otherwise.
    */
@@ -241,6 +609,13 @@ class NdbInterpretedCode {
   int branch_ne(Uint32 RegLvalue, Uint32 RegRvalue, Uint32 label);
   int branch_ne_null(Uint32 RegLvalue, Uint32 label);
   int branch_eq_null(Uint32 RegLvalue, Uint32 label);
+
+  int branch_ge_const(Uint32 RegLvalue, Uint16 Constant, Uint32 label);
+  int branch_gt_const(Uint32 RegLvalue, Uint16 Constant, Uint32 label);
+  int branch_le_const(Uint32 RegLvalue, Uint16 Constant, Uint32 label);
+  int branch_lt_const(Uint32 RegLvalue, Uint16 Constant, Uint32 label);
+  int branch_eq_const(Uint32 RegLvalue, Uint16 Constant, Uint32 label);
+  int branch_ne_const(Uint32 RegLvalue, Uint16 Constant, Uint32 label);
 
   /* Table data based conditional branch ops
    * ---------------------------------------
@@ -430,6 +805,12 @@ class NdbInterpretedCode {
    * the next row.
    * In a non-scanning operation, the program will not be run again.
    *
+   * The last instruction executed in the program should be either
+   * interpret_exit_ok or interpret_nok or interpret_exit_last_row.
+   * Otherwise the program will continue executing and if the
+   * program counter reaches outside the program length an error
+   * will be returned indicating executing outside program.
+   * 
    */
 
   /* interpret_exit_ok
@@ -634,8 +1015,10 @@ class NdbInterpretedCode {
   friend class NdbQueryOptionsImpl;
 
   static const Uint32 MaxReg = 8;
+  static const Uint32 MaxOutputIndex = 16;
+  static const Uint32 MaxBranchConst = 64;
   static const Uint32 MaxLabels = 65535;
-  static const Uint32 MaxSubs = 65535;
+  static const Uint32 MaxSubs =65535;
   static const Uint32 MaxDynamicBufSize = NDB_MAX_SCANFILTER_SIZE_IN_WORDS;
 
   const NdbTableImpl *m_table_impl;
@@ -729,7 +1112,10 @@ class NdbInterpretedCode {
     BranchToBadLabel = 4221,
     BadLength = 4209,
     BadSubNumber = 4227,
-    BadState = 4231
+    BadState = 4231,
+    BadRegister = 4570,
+    BadOutputIndex = 4563,
+    BadConstant = 4564
   };
 
   int error(Uint32 code);
@@ -743,7 +1129,25 @@ class NdbInterpretedCode {
 
   int add_branch(Uint32 instruction, Uint32 label);
   int read_attr_impl(const NdbColumnImpl *c, Uint32 RegDest);
+  int read_full_impl(const NdbColumnImpl *c,
+                     Uint32 RegMemOffset,
+                     Uint32 RegDest);
+  int read_partial_impl(const NdbColumnImpl *c,
+                        Uint32 RegMemOffset,
+                        Uint32 RegPos,
+                        Uint32 RegSize,
+                        Uint32 RegDest);
   int write_attr_impl(const NdbColumnImpl *c, Uint32 RegSource);
+  int write_from_mem_impl(const NdbColumnImpl *c,
+                          Uint32 RegMemoryOffset,
+                          Uint32 RegSize);
+  int append_from_mem_impl(const NdbColumnImpl *c,
+                           Uint32 RegMemoryOffset,
+                           Uint32 RegSize);
+  int write_partial_from_mem_impl(const NdbColumnImpl *c,
+                                  Uint32 RegMemoryOffset,
+                                  Uint32 RegSize,
+                                  Uint32 RegStartPos);
   int branch_col_val(Uint32 branch_type, Uint32 attrId, const void *val,
                      Uint32 len, Uint32 label);
   int branch_col_col(Uint32 branch_type, Uint32 attrId1, Uint32 attrId2,

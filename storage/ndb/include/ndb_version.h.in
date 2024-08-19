@@ -991,4 +991,13 @@ ndbd_pushdown_aggregation_supported(Uint32 v)
   return v >= NDBD_PUSHDOWN_AGGREGATION;
 }
 
+#define NDBD_PARTIAL_UPDATE NDB_MAKE_VERSION(24, 10, 0)
+static
+inline
+bool
+ndbd_partial_update_supported(Uint32 v)
+{
+  return v >= NDBD_PARTIAL_UPDATE;
+}
+
 #endif
