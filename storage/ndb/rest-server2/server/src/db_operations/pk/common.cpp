@@ -1002,7 +1002,9 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
                                        " Expected to read: " + std::to_string(length) +
                                        " bytes. Read: " + std::to_string(total_read));
     }
-
+    return response->Append_char(colRec->ndbRec->getColumn()->getName(),
+                              static_cast<char *>(response->GetWritePointer()), length,
+                              colRec->ndbRec->getColumn()->getCharset());
   }
   case NdbDictionary::Column::Bit: {
     //< Bit, length specifies no of bits

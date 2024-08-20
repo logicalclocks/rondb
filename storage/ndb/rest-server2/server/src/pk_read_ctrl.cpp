@@ -34,7 +34,7 @@
 void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                         std::function<void(const drogon::HttpResponsePtr &)> &&callback,
                         const std::string &db, const std::string &table) {
-  auto resp = drogon::HttpResponse::newHttpResponse();
+  auto resp                 = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (currentThreadIndex >= globalConfigs.rest.numThreads) {
     resp->setBody("Too many threads");
@@ -53,7 +53,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     callback(resp);
     return;
   }
-  
+
   memcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str, length);
 
   PKReadParams reqStruct(db, table);

@@ -341,7 +341,7 @@ RS_Status AllConfigs::set_from_file(const std::string &configFile) {
         .status;
   }
   std::string configStr((std::istreambuf_iterator<char>(file)), {});
-  
+
   file.close();
 
   // Parse config file

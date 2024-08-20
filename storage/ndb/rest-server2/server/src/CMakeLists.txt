@@ -53,7 +53,6 @@ INCLUDE_DIRECTORIES(
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
   ${CMAKE_SOURCE_DIR}/include)
-INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
 INCLUDE_DIRECTORIES(${RDRS_DROGON_INCLUDE_DIR})
 #INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_DIR})
 INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
@@ -76,7 +75,6 @@ target_include_directories(rdrs2_lib PUBLIC
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
   ${CMAKE_SOURCE_DIR}/include)
-target_include_directories(rdrs2_lib SYSTEM PUBLIC ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
 #target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})

@@ -39,7 +39,7 @@ JSONParser::JSONParser() {
   }
 }
 
-std::unique_ptr<char[]> & JSONParser::get_buffer(size_t threadId) {
+std::unique_ptr<char[]> &JSONParser::get_buffer(size_t threadId) {
   return buffers[threadId];
 }
 
@@ -90,7 +90,7 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         auto columnVal = filterObj[COLUMN];
         if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           column = "";
-        } else if (columnVal.error() != simdjson::SUCCESS) {          
+        } else if (columnVal.error() != simdjson::SUCCESS) {
           return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
         } else {
           if (columnVal.is_null()) {
@@ -484,8 +484,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status JSONParser::config_parse(const std::string &configsBody,
-                                   AllConfigs &configsStruct) {
+RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &configsStruct) {
   simdjson::padded_string paddedJson(configsBody);
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document doc;
@@ -664,8 +663,7 @@ RS_Status JSONParser::config_parse(const std::string &configsBody,
             auto useHopsworksAPIKeysVal = apiKeyObj[USE_HOPSWORKS_API_KEYS];
             if (useHopsworksAPIKeysVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
             } else if (useHopsworksAPIKeysVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(useHopsworksAPIKeysVal.error(), doc,
-                                           currentLocation);
+              return handle_simdjson_error(useHopsworksAPIKeysVal.error(), doc, currentLocation);
             } else {
               if (!useHopsworksAPIKeysVal.is_null()) {
                 bool useHopsworksAPIKeys = false;

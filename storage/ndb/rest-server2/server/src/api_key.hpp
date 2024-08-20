@@ -33,31 +33,33 @@
 #include <pthread.h>
 
 class ReadLock {
-public:
-  explicit ReadLock(pthread_rwlock_t& lock) : rwlock(lock) {
+ public:
+  explicit ReadLock(pthread_rwlock_t &lock) : rwlock(lock) {
     pthread_rwlock_rdlock(&rwlock);
   }
   ~ReadLock() {
     pthread_rwlock_unlock(&rwlock);
   }
-  ReadLock(const ReadLock&) = delete;
-  ReadLock& operator=(const ReadLock&) = delete;
-private:
-  pthread_rwlock_t& rwlock;
+  ReadLock(const ReadLock &)            = delete;
+  ReadLock &operator=(const ReadLock &) = delete;
+
+ private:
+  pthread_rwlock_t &rwlock;
 };
 
 class WriteLock {
-public:
-  explicit WriteLock(pthread_rwlock_t& lock) : rwlock(lock) {
+ public:
+  explicit WriteLock(pthread_rwlock_t &lock) : rwlock(lock) {
     pthread_rwlock_wrlock(&rwlock);
   }
   ~WriteLock() {
     pthread_rwlock_unlock(&rwlock);
   }
-  WriteLock(const WriteLock&) = delete;
-  WriteLock& operator=(const WriteLock&) = delete;
-private:
-  pthread_rwlock_t& rwlock;
+  WriteLock(const WriteLock &)            = delete;
+  WriteLock &operator=(const WriteLock &) = delete;
+
+ private:
+  pthread_rwlock_t &rwlock;
 };
 
 RS_Status authenticate(const std::string &apiKey, PKReadParams &params);
@@ -71,7 +73,7 @@ class UserDBs {
   bool evicted = false;                               // is evicted or deleted
   std::chrono::milliseconds refreshInterval;          // Cache refresh interval
   std::atomic<int> refCount = 0;                      // Reference count
-  
+
   UserDBs() {
     pthread_rwlock_init(&rowLock, nullptr);
   }
@@ -89,7 +91,7 @@ class UserDBs {
     result += " LastUpdated: " + std::to_string(std::chrono::system_clock::to_time_t(lastUpdated));
     result += " Evicted: " + std::to_string(static_cast<int>(evicted));
     result += " RefreshInterval: " + std::to_string(refreshInterval.count());
-    return result;  
+    return result;
   }
 };
 
@@ -115,12 +117,13 @@ class Cache {
   /*
   Checking whether the API key can access the given databases
   */
-  RS_Status validate_api_key(const std::string &, const std::initializer_list<std::string>&);
+  RS_Status validate_api_key(const std::string &, const std::initializer_list<std::string> &);
 
   /*
   Checking whether the API key can access the given databases, without caching
   */
-  RS_Status validate_api_key_no_cache(const std::string &, const std::initializer_list<std::string>&);
+  RS_Status validate_api_key_no_cache(const std::string &,
+                                      const std::initializer_list<std::string> &);
 
   RS_Status cleanup();
 
@@ -136,9 +139,11 @@ class Cache {
 
   RS_Status cache_entry_updater(const std::string &, std::shared_ptr<std::atomic<bool>>);
 
-  RS_Status find_and_validate(const std::string &, bool &, bool &, const std::initializer_list<std::string>&);
+  RS_Status find_and_validate(const std::string &, bool &, bool &,
+                              const std::initializer_list<std::string> &);
 
-  RS_Status find_and_validate_again(const std::string &, bool &, bool &, const std::initializer_list<std::string>&);
+  RS_Status find_and_validate_again(const std::string &, bool &, bool &,
+                                    const std::initializer_list<std::string> &);
 
   RS_Status authenticate_user(const std::string &, HopsworksAPIKey &);
 
