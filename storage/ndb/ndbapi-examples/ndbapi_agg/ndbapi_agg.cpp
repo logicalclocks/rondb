@@ -524,6 +524,10 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
     aggregator.LoadColumn("CDECIMAL2", kReg2);
     aggregator.Add(kReg1, kReg2);
     aggregator.Max(3, kReg1);
+    aggregator.LoadColumn("CUINT", kReg1);
+    aggregator.LoadColumn("CINT", kReg2);
+    aggregator.Div(kReg1, kReg2);
+    aggregator.Max(4, kReg1);
 #else
     assert(aggregator.GroupBy("CCHAR"));
     assert(aggregator.GroupBy("CMEDIUMINT"));
@@ -545,6 +549,10 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
     assert(aggregator.LoadColumn("CDECIMAL2", kReg2));
     assert(aggregator.Add(kReg1, kReg2));
     assert(aggregator.Max(3, kReg1));
+    assert(aggregator.LoadColumn("CUINT", kReg1));
+    assert(aggregator.LoadColumn("CINT", kReg2));
+    assert(aggregator.Div(kReg1, kReg2));
+    assert(aggregator.Max(4, kReg1));
 #endif // NDEBUG
 
     /* Example of how to catch an error
@@ -600,10 +608,11 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
         double agg_2 = item[1].value.val_double;
         double agg_3 = item[2].value.val_double;
         double agg_4 = item[3].value.val_double;
+        double agg_5 = item[4].value.val_double;
         {
           MYSQL_RES *res = nullptr;
           MYSQL_ROW row;
-          std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CCHAR=") +
+          std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2), MAX(CUINT/CINT) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CCHAR=") +
             "'" +
             value_cchar +
             "'" +
@@ -615,7 +624,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
           } else {
             res = mysql_store_result(&mysql);
             assert(res != nullptr);
-            assert(mysql_num_fields(res) == 4);
+            assert(mysql_num_fields(res) == 5);
             assert(mysql_num_rows(res) == 1);
             while ((row = mysql_fetch_row(res))) {
               // unsigned long *lengths = mysql_fetch_lengths(res);
@@ -626,11 +635,13 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
                   (agg_3 - std::stod(row[2]) > 1.0 ||
                    agg_3 - std::stod(row[2]) < -1.0) ||
                   (agg_4 - std::stod(row[3]) > 1.0 ||
-                   agg_4 - std::stod(row[3]) < -1.0)) {
-                fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf : %lu, %lf, %lf, %lf\n",
+                   agg_4 - std::stod(row[3]) < -1.0) ||
+                  (agg_5 - std::stod(row[4]) > 1.0 ||
+                   agg_5 - std::stod(row[4]) < -1.0)) {
+                fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf, %lf : %lu, %lf, %lf, %lf, %lf\n",
                     value_cchar.c_str(), cmedium,
-                    agg_1, agg_2, agg_3, agg_4,
-                    std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]));
+                    agg_1, agg_2, agg_3, agg_4, agg_5,
+                    std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]), std::stod(row[4]));
                 valid = false;
               }
             }
@@ -792,6 +803,10 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
   aggregator.LoadColumn("CDECIMAL2", kReg2);
   aggregator.Add(kReg1, kReg2);
   aggregator.Max(3, kReg1);
+  aggregator.LoadColumn("CDOUBLE", kReg1);
+  aggregator.LoadColumn("CFLOAT", kReg2);
+  aggregator.DivInt(kReg1, kReg2);
+  aggregator.Sum(4, kReg1);
 #else
   assert(aggregator.GroupBy("CCHAR"));
   assert(aggregator.GroupBy("CMEDIUMINT"));
@@ -813,6 +828,10 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
   assert(aggregator.LoadColumn("CDECIMAL2", kReg2));
   assert(aggregator.Add(kReg1, kReg2));
   assert(aggregator.Max(3, kReg1));
+  assert(aggregator.LoadColumn("CDOUBLE", kReg1));
+  assert(aggregator.LoadColumn("CFLOAT", kReg2));
+  assert(aggregator.DivInt(kReg1, kReg2));
+  assert(aggregator.Sum(4, kReg1));
 #endif // NDEBUG
 
 #ifdef NDEBUG
@@ -854,10 +873,11 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
       double agg_2 = item[1].value.val_double;
       double agg_3 = item[2].value.val_double;
       double agg_4 = item[3].value.val_double;
+      int64_t agg_5 = item[4].value.val_int64;
       {
         MYSQL_RES *res = nullptr;
         MYSQL_ROW row;
-        std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CMEDIUMINT >= 6 AND CMEDIUMINT < 8 AND CCHAR=") +
+        std::string sql = std::string("SELECT SUM(CUBIGINT+CUTINYINT+6666),MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), MAX(CDECIMAL+CDECIMAL2), SUM(CDOUBLE DIV CFLOAT) FROM agg.api_scan_inno WHERE CTINYINT = 66 AND CMEDIUMINT >= 6 AND CMEDIUMINT < 8 AND CCHAR=") +
           "'" +
           value_cchar +
           "'" +
@@ -869,7 +889,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
         } else {
           res = mysql_store_result(&mysql);
           assert(res != nullptr);
-          assert(mysql_num_fields(res) == 4);
+          assert(mysql_num_fields(res) == 5);
           assert(mysql_num_rows(res) == 1);
           while ((row = mysql_fetch_row(res))) {
             // unsigned long *lengths = mysql_fetch_lengths(res);
@@ -880,11 +900,13 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
                 (agg_3 - std::stod(row[2]) > 1.0 ||
                  agg_3 - std::stod(row[2]) < -1.0) ||
                 (agg_4 - std::stod(row[3]) > 1.0 ||
-                 agg_4 - std::stod(row[3]) < -1.0)) {
-              fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf: %lu, %lf, %lf, %lf\n",
+                 agg_4 - std::stod(row[3]) < -1.0) ||
+                (std::stol(row[4]) != agg_5)) {
+              fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf, %ld: %lu, %lf, %lf, %lf, %ld\n",
                   value_cchar.c_str(), cmedium,
-                  agg_1, agg_2, agg_3, agg_4,
-                  std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]));
+                  agg_1, agg_2, agg_3, agg_4, agg_5,
+                  std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]),
+                  std::stol(row[4]));
               valid = false;
             }
           }
@@ -1039,7 +1061,8 @@ void ndb_run_scan(const char * connectstring, MYSQL& mysql,
   fprintf(stderr, "1. TABLE SCAN:\n");
   fprintf(stderr, "SELECT CCHAR, CMEDIUMINT, "
                   "SUM(CUBIGINT+CUTINYINT+6666), "
-                  "MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6) "
+                  "MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), "
+                  "MAX(CUINT/CINT) "
                   "FROM agg.api_scan "
                   "WHERE CTINYINT = 66 "                      // Filter
                   "GROUP BY CCHAR, CMEDIUMINT;\n");
@@ -1050,7 +1073,8 @@ void ndb_run_scan(const char * connectstring, MYSQL& mysql,
   fprintf(stderr, "2. INDEX SCAN:\n");
   fprintf(stderr, "SELECT CCHAR, CMEDIUMINT, "
                   "SUM(CUBIGINT+CUTINYINT+6666), "
-                  "MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6) "
+                  "MIN(CDOUBLE-(-8888)), MAX(CUMEDIUMINT*6.6), "
+                  "SUM(CDOUBLE DIV CFLOAT) "
                   "FROM agg.api_scan "
                   "WHERE CMEDIUMINT >= 6 AND CMEDIUMINT < 8 " // Index range scan
                   " AND CTINYINT = 66 "                       // Filter

@@ -255,6 +255,7 @@ class NdbAggregator {
   bool Minus(Uint32 reg_1, Uint32 reg_2);
   bool Mul(Uint32 reg_1, Uint32 reg_2);
   bool Div(Uint32 reg_1, Uint32 reg_2);
+  bool DivInt(Uint32 reg_1, Uint32 reg_2);
   bool Mod(Uint32 reg_1, Uint32 reg_2);
 
   bool Sum(Uint32 agg_id, Uint32 reg_id);
