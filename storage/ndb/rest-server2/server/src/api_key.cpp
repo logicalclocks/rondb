@@ -29,6 +29,8 @@
 #include <pthread.h>
 #include <thread>
 #include <unordered_map>
+#include <functional>
+#include <algorithm>
 
 std::shared_ptr<Cache> apiKeyCache;
 
@@ -50,7 +52,8 @@ RS_Status Cache::validate_api_key_format(const std::string &apiKey) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::validate_api_key(const std::string &apiKey, const std::initializer_list<std::string>& dbs) {
+RS_Status Cache::validate_api_key(const std::string &apiKey,
+                                  const std::initializer_list<std::string> &dbs) {
   RS_Status status = validate_api_key_format(apiKey);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
@@ -63,15 +66,16 @@ RS_Status Cache::validate_api_key(const std::string &apiKey, const std::initiali
   // Authenticates only using the the cache. No request sent to backend
   bool keyFoundInCache = false;
   bool allowedAccess   = false;
-  status = find_and_validate(apiKey, keyFoundInCache, allowedAccess, dbs);
-   
+  status               = find_and_validate(apiKey, keyFoundInCache, allowedAccess, dbs);
+
   if (keyFoundInCache) {
     if (!allowedAccess) {
-      return CRS_Status(
-          HTTP_CODE::CLIENT_ERROR,
-          ("unauthorized. Found in cache: " + std::string(keyFoundInCache ? "true" : "false") +
-           ", allowed access: " + std::string(allowedAccess ? "true" : "false"))
-              .c_str()).status;
+      return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+                        ("unauthorized. Found in cache: " +
+                         std::string(keyFoundInCache ? "true" : "false") +
+                         ", allowed access: " + std::string(allowedAccess ? "true" : "false"))
+                            .c_str())
+          .status;
     }
     return CRS_Status::SUCCESS.status;
   }
@@ -86,16 +90,18 @@ RS_Status Cache::validate_api_key(const std::string &apiKey, const std::initiali
   status = find_and_validate_again(apiKey, keyFoundInCache, allowedAccess, dbs);
   if (!keyFoundInCache || !allowedAccess) {
     return CRS_Status(HTTP_CODE::CLIENT_ERROR,
-                     ("api key is unauthorized; updated cache - found in cache: " +
-                      std::string(keyFoundInCache ? "true" : "false") +
-                      ", allowed access: " + std::string(allowedAccess ? "true" : "false"))
-                         .c_str()).status;
+                      ("api key is unauthorized; updated cache - found in cache: " +
+                       std::string(keyFoundInCache ? "true" : "false") +
+                       ", allowed access: " + std::string(allowedAccess ? "true" : "false"))
+                          .c_str())
+        .status;
   }
 
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey, const std::initializer_list<std::string>& dbs) {
+RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey,
+                                           const std::initializer_list<std::string> &dbs) {
   RS_Status status = validate_api_key_format(apiKey);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
@@ -118,10 +124,11 @@ RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey, const std:
   }
 
   // Check if the user has access to the database
-  for (const auto& db : dbs) {
+  for (const auto &db : dbs) {
     if (std::find(userDBs.begin(), userDBs.end(), db) == userDBs.end()) {
       return CRS_Status(HTTP_CODE::CLIENT_ERROR,
-                       ("api key is unauthorized to access " + db).c_str()).status;
+                        ("api key is unauthorized to access " + db).c_str())
+          .status;
     }
   }
 
@@ -168,8 +175,8 @@ RS_Status Cache::update_cache(const std::string &apiKey) {
     // Double-check pattern in case another thread has already updated the cache
     if (key2UserDBsCache.find(apiKey) ==
         key2UserDBsCache.end()) {  // the entry still does not exists. insert a new row
-      auto udbs                = std::shared_ptr<UserDBs>(new UserDBs()); // Copy constructor deleted
-      udbs->refreshInterval    = refresh_interval_with_jitter();
+      auto udbs             = std::shared_ptr<UserDBs>(new UserDBs());  // Copy constructor deleted
+      udbs->refreshInterval = refresh_interval_with_jitter();
       key2UserDBsCache[apiKey] = udbs;
       start_update_ticker(apiKey, key2UserDBsCache[apiKey]);
     }
@@ -180,8 +187,7 @@ RS_Status Cache::update_cache(const std::string &apiKey) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::update_record(std::vector<std::string> dbs,
-                               UserDBs *udbs) {
+RS_Status Cache::update_record(std::vector<std::string> dbs, UserDBs *udbs) {
   // caller holds the lock
   if (udbs->evicted) {
     return CRS_Status::SUCCESS.status;
@@ -235,11 +241,12 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
     return CRS_Status(HTTP_CODE::CLIENT_ERROR, "API key not found in cache").status;
   }
 
-  std::shared_ptr<UserDBs> shared_udbs = it->second; // keeps UserDBs alive
-  UserDBs* udbs = shared_udbs.get();
+  std::shared_ptr<UserDBs> shared_udbs = it->second;  // keeps UserDBs alive
+  UserDBs *udbs                        = shared_udbs.get();
   if (udbs == nullptr) {
     return CRS_Status(HTTP_CODE::SERVER_ERROR,
-                     ("Cache updater failed. Report programming error. API Key " + apiKey).c_str()).status;
+                      ("Cache updater failed. Report programming error. API Key " + apiKey).c_str())
+        .status;
   }
 
   RS_Status status;
@@ -264,7 +271,7 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
       if (status.http_code != HTTP_CODE::SUCCESS) {
         // TODO log
       }
-      
+
       status = update_record(dbs, udbs);
       if (status.http_code != HTTP_CODE::SUCCESS) {
         // TODO log
@@ -283,8 +290,9 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
     pthread_rwlock_rdlock(&udbs->rowLock);
     auto lastUsed = udbs->lastUsed;
     pthread_rwlock_unlock(&udbs->rowLock);
-    
-    if (std::chrono::system_clock::now() - lastUsed >= std::chrono::milliseconds(globalConfigs.security.apiKey.cacheUnusedEntriesEvictionMS)) {
+
+    if (std::chrono::system_clock::now() - lastUsed >=
+        std::chrono::milliseconds(globalConfigs.security.apiKey.cacheUnusedEntriesEvictionMS)) {
       WriteLock lock(key2UserDBsCacheLock);
       if (udbs->refCount <= 0) {
         udbs->evicted = true;
@@ -301,9 +309,10 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
 }
 
 RS_Status Cache::find_and_validate(const std::string &apiKey, bool &keyFoundInCache,
-                                   bool &allowedAccess, const std::initializer_list<std::string>& dbs) {
-  keyFoundInCache          = false;
-  allowedAccess            = false;
+                                   bool &allowedAccess,
+                                   const std::initializer_list<std::string> &dbs) {
+  keyFoundInCache = false;
+  allowedAccess   = false;
 
   pthread_rwlock_rdlock(&key2UserDBsCacheLock);
   auto it = key2UserDBsCache.find(apiKey);
@@ -324,11 +333,12 @@ RS_Status Cache::find_and_validate(const std::string &apiKey, bool &keyFoundInCa
   userDBs->lastUsed = std::chrono::system_clock::now();
 
   keyFoundInCache = true;
-  
-  for (const auto& db : dbs) {    
+
+  for (const auto &db : dbs) {
     if (userDBs->userDBs.find(db) == userDBs->userDBs.end()) {
       allowedAccess = false;
-      return CRS_Status(HTTP_CODE::CLIENT_ERROR, ("API key not authorized to access " + db).c_str()).status;
+      return CRS_Status(HTTP_CODE::CLIENT_ERROR, ("API key not authorized to access " + db).c_str())
+          .status;
     }
   }
   allowedAccess = true;
@@ -337,9 +347,10 @@ RS_Status Cache::find_and_validate(const std::string &apiKey, bool &keyFoundInCa
 }
 
 RS_Status Cache::find_and_validate_again(const std::string &apiKey, bool &keyFoundInCache,
-                                   bool &allowedAccess, const std::initializer_list<std::string>& dbs) {
-  keyFoundInCache          = false;
-  allowedAccess            = false;
+                                         bool &allowedAccess,
+                                         const std::initializer_list<std::string> &dbs) {
+  keyFoundInCache = false;
+  allowedAccess   = false;
 
   pthread_rwlock_rdlock(&key2UserDBsCacheLock);
   auto it = key2UserDBsCache.find(apiKey);
@@ -360,12 +371,13 @@ RS_Status Cache::find_and_validate_again(const std::string &apiKey, bool &keyFou
   userDBs->lastUsed = std::chrono::system_clock::now();
 
   keyFoundInCache = true;
-  
-  for (const auto& db : dbs) {
+
+  for (const auto &db : dbs) {
     if (userDBs->userDBs.find(db) == userDBs->userDBs.end()) {
       allowedAccess = false;
       userDBs->refCount--;
-      return CRS_Status(HTTP_CODE::CLIENT_ERROR, ("API key not authorized to access " + db).c_str()).status;
+      return CRS_Status(HTTP_CODE::CLIENT_ERROR, ("API key not authorized to access " + db).c_str())
+          .status;
     }
   }
 
@@ -447,10 +459,11 @@ std::vector<std::string> split(const std::string &str, char delim) {
 
 RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
   RS_Status status = CRS_Status(HTTP_CODE::CLIENT_ERROR, "Failed to compute hash").status;
-  std::unique_ptr<EVP_MD_CTX, std::function<void(EVP_MD_CTX *)>> mdCtx(
-      EVP_MD_CTX_new(), [](EVP_MD_CTX *g) { EVP_MD_CTX_free(g); });
 
-  if (mdCtx != nullptr) {
+  auto deleter = [](EVP_MD_CTX *ctx) { EVP_MD_CTX_free(ctx); };
+  std::unique_ptr<EVP_MD_CTX, decltype(deleter)> mdCtx(EVP_MD_CTX_new(), deleter);
+
+  if (mdCtx) {
     if (EVP_DigestInit_ex(mdCtx.get(), EVP_sha256(), nullptr) != 0) {
       if (EVP_DigestUpdate(mdCtx.get(), unhashed.c_str(), unhashed.length()) != 0) {
         unsigned char hash[EVP_MAX_MD_SIZE];

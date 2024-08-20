@@ -25,7 +25,7 @@
 #include <string>
 
 class LogConfig {
-// TODO implement me
+  // TODO implement me
  public:
   std::string level;
   std::string filePath;

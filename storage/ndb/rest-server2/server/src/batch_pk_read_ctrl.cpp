@@ -33,7 +33,7 @@
 
 void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
                                   std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
-  auto resp = drogon::HttpResponse::newHttpResponse();
+  auto resp                 = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (currentThreadIndex >= globalConfigs.rest.numThreads) {
     resp->setBody("Too many threads");
