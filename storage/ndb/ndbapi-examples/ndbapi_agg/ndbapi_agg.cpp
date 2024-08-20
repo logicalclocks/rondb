@@ -638,7 +638,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
                    agg_4 - std::stod(row[3]) < -1.0) ||
                   (agg_5 - std::stod(row[4]) > 1.0 ||
                    agg_5 - std::stod(row[4]) < -1.0)) {
-                fprintf(stderr, "Catch [%s, %d] -> %lu, %lf, %lf, %lf, %lf : %lu, %lf, %lf, %lf, %lf\n",
+                fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf, %lf : %lu, %lf, %lf, %lf, %lf\n",
                     value_cchar.c_str(), cmedium,
                     agg_1, agg_2, agg_3, agg_4, agg_5,
                     std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]), std::stod(row[4]));
@@ -902,7 +902,7 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
                 (agg_4 - std::stod(row[3]) > 1.0 ||
                  agg_4 - std::stod(row[3]) < -1.0) ||
                 (std::stol(row[4]) != agg_5)) {
-              fprintf(stderr, "Catch [%s, %d] -> %lu, %lf, %lf, %lf, %ld: %lu, %lf, %lf, %lf, %ld\n",
+              fprintf(stderr, "Catch [%s, %d] -> %llu, %lf, %lf, %lf, %ld: %lu, %lf, %lf, %lf, %ld\n",
                   value_cchar.c_str(), cmedium,
                   agg_1, agg_2, agg_3, agg_4, agg_5,
                   std::stoul(row[0]), std::stod(row[1]), std::stod(row[2]), std::stod(row[3]),
