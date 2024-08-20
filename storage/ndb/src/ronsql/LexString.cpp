@@ -35,6 +35,10 @@ LexString::LexString(const char* str, size_t len):
   str(str),
   len(len)
 {}
+LexCString::LexCString(const char* str, size_t len):
+  str(str),
+  len(len)
+{}
 LexString::LexString(const LexCString& other):
   str(other.str),
   len(other.len)

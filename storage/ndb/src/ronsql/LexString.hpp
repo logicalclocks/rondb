@@ -54,6 +54,7 @@ public:
   const char *str;
   size_t len;
   LexCString() = default;
+  LexCString(const char* str, size_t len);
   LexCString(const LexCString& other) = default;
   LexCString& operator= (const LexCString& other) = default;
   ~LexCString() = default;

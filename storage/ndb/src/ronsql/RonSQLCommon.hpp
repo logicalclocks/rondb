@@ -159,7 +159,7 @@ struct SelectStatement
 {
   bool do_explain = false;
   Outputs* outputs = NULL;
-  LexCString table = { NULL, 0};
+  LexCString table = LexCString{ NULL, 0};
   struct ConditionalExpression* where_expression = NULL;
   struct GroupbyColumns* groupby_columns = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
