@@ -83,3 +83,4 @@ EOF
 
 --echo Cleanup
 DROP TABLE lineitem;
+# todo add performance test version of this, perhaps add to rondb_big. There is already in our tarballs, db+query generator for dbt3, binaries are there. These are downloaded for release. In the test, check if the binaries are present. Actually, instead do something similar to have_ndb. (This todo from review 2024-08-22 with MR)

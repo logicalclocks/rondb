@@ -166,7 +166,7 @@ private:
 
   // Functions used in execution phase
 public:
-  void execute();
+  void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
   void apply_filter_top_level(NdbScanFilter* filter,
                               struct ConditionalExpression* ce);

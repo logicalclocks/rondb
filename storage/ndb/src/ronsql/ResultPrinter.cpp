@@ -260,33 +260,33 @@ ResultPrinter::compile()
       cmd.print_str.content = LexString{ ":", 1 };
       m_program.push(cmd);
     }
-    switch (o->type)
-    {
-    case Outputs::Type::COLUMN:
+    switch (o->type) {
+      case Outputs::Type::COLUMN:
       {
+        // todo indent case, move break inside braces. (This todo from review 2024-08-22 with MR)
         Cmd cmd;
         cmd.type = Cmd::Type::PRINT_GROUP_BY_COLUMN;
         cmd.print_group_by_column.reg_g = m_col_idx_groupby_map[o->column.col_idx];
         m_program.push(cmd);
+        break;
       }
-      break;
-    case Outputs::Type::AGGREGATE:
+      case Outputs::Type::AGGREGATE:
       {
         Cmd cmd;
         cmd.type = Cmd::Type::PRINT_AGGREGATE;
         cmd.print_aggregate.reg_a = o->aggregate.agg_index;
         m_program.push(cmd);
+        break;
       }
-      break;
-    case Outputs::Type::AVG:
+      case Outputs::Type::AVG:
       {
         Cmd cmd;
         cmd.type = Cmd::Type::PRINT_AVG;
         cmd.print_avg.reg_a_sum = o->avg.agg_index_sum;
         cmd.print_avg.reg_a_count = o->avg.agg_index_count;
         m_program.push(cmd);
+        break;
       }
-      break;
     default:
       abort();
     }
@@ -476,22 +476,19 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Char:          ///< Len. A fixed array of 1-byte chars
           {
             LexString content = LexString{ column.data(), column.byte_size() };
-            while (content.len > 0 && content.str[content.len - 1] == 0x20)
-            {
+            // todo it's nowadays ok to put brace on same line. (This todo from review 2024-08-22 with MR)
+            while (content.len > 0 && content.str[content.len - 1] == 0x20) {
               content.len--;
             }
-            if (m_json_output)
-            {
+            if (m_json_output) {
               print_json_string_from_utf8(out,
                                           content,
                                           m_utf8_output);
             }
-            else if (m_tsv_output)
-            {
+            else if (m_tsv_output) {
               out << content; // todo mysql-like escape
             }
-            else
-            {
+            else {
               abort();
             }
             break;
