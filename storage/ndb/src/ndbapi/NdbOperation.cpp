@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -297,22 +298,39 @@ void NdbOperation::postExecuteRelease() {
   }
 }
 
-NdbRecAttr *NdbOperation::getValue(const char *anAttrName, char *aValue) {
-  return getValue_impl(m_currentTable->getColumn(anAttrName), aValue);
+NdbRecAttr*
+NdbOperation::getValueExt(const char* anAttrName,
+                          char* aValue,
+                          Uint32 aStartPos,
+                          Uint32 aSize) {
+  return getValue_impl(m_currentTable->getColumn(anAttrName),
+                       aValue,
+                       aStartPos,
+                       aSize);
 }
 
-NdbRecAttr *NdbOperation::getValue(Uint32 anAttrId, char *aValue) {
-  if (anAttrId == AttributeHeader::AGG_RESULT) {
-    return getValue_impl(nullptr, aValue);
-  }
-  return getValue_impl(m_currentTable->getColumn(anAttrId), aValue);
+NdbRecAttr*
+NdbOperation::getValueExt(Uint32 anAttrId,
+                          char* aValue,
+                          Uint32 aStartPos,
+                          Uint32 aSize) {
+  return getValue_impl(m_currentTable->getColumn(anAttrId),
+                       aValue,
+                       aStartPos,
+                       aSize);
 }
 
-NdbRecAttr *NdbOperation::getValue(const NdbDictionary::Column *col,
-                                   char *aValue) {
+NdbRecAttr*
+NdbOperation::getValueExt(const NdbDictionary::Column* col,
+                          char* aValue,
+                          Uint32 aStartPos,
+                          Uint32 aSize) {
   if (theStatus != UseNdbRecord)
-    return getValue_impl(&NdbColumnImpl::getImpl(*col), aValue);
-
+    return getValue_impl(&NdbColumnImpl::getImpl(*col),
+                         aValue,
+                         aStartPos,
+                         aSize);
+  
   setErrorCodeAbort(4508);
   /* GetValue not allowed for NdbRecord defined operation */
   return nullptr;
@@ -338,23 +356,32 @@ int NdbOperation::equal(Uint32 anAttrId, const char *aValuePassed) {
   }
 }
 
-int NdbOperation::setValue(const char *anAttrName, const char *aValuePassed) {
-  const NdbColumnImpl *col = m_currentTable->getColumn(anAttrName);
+int
+NdbOperation::setValueExt(const char* anAttrName,
+                          const char* aValuePassed,
+                          bool append_flag,
+                          Uint32 startPos) {
+  const NdbColumnImpl* col = m_currentTable->getColumn(anAttrName);
   if (col == nullptr) {
     setErrorCode(4004);
     return -1;
   } else {
-    return setValue(col, aValuePassed);
+    return setValue(col, aValuePassed, append_flag, startPos);
   }
 }
 
-int NdbOperation::setValue(Uint32 anAttrId, const char *aValuePassed) {
-  const NdbColumnImpl *col = m_currentTable->getColumn(anAttrId);
+
+int
+NdbOperation::setValueExt(Uint32 anAttrId,
+                          const char* aValuePassed,
+                          bool append_flag,
+                          Uint32 startPos) {
+  const NdbColumnImpl* col = m_currentTable->getColumn(anAttrId);
   if (col == nullptr) {
     setErrorCode(4004);
     return -1;
   } else {
-    return setValue(col, aValuePassed);
+    return setValue(col, aValuePassed, append_flag, startPos);
   }
 }
 

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -991,11 +992,16 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
      * header + inline data
      * Disk flag set when getValues were processed.
      */
-    const NdbRecAttr *ra = theReceiver.m_firstRecAttr;
+    const NdbRecAttr *ra= theReceiver.m_firstRecAttr;
     while (ra) {
       res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
-      if (res) return res;
-      ra = ra->next();
+      Uint32 extraAI = ra->getPartialReadAI();
+      if (unlikely(res == 0 && extraAI != 0))
+      {
+        res = insertATTRINFOData_NdbRecord((const char*)&extraAI, 4);
+      }
+      if(res) return res;
+      ra= ra->next();
     }
   }
 
@@ -1020,6 +1026,11 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
       const NdbRecAttr *ra = theReceiver.m_firstRecAttr;
       while (ra) {
         res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
+        Uint32 extraAI = ra->getPartialReadAI();
+        if (unlikely(res == 0 && extraAI != 0))
+        {
+          res = insertATTRINFOData_NdbRecord((const char*)&extraAI, 4);
+        }
         if (res) return res;
         ra = ra->next();
       }
@@ -1211,8 +1222,13 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
         }
 
         // Add ATTRINFO
-        res = insertATTRINFOHdr_NdbRecord(extraCol->getAttrId(), length);
-        if (res) return res;
+        AttributeHeader ah = AttributeHeader(extraCol->getAttrId(), length);
+        if (unlikely(m_extraSetValues[i].m_append_flag)) {
+          ah.setPartialReadWriteFlag();
+        }
+        Uint32 ah_u32 = ah.m_value;
+        res = insertATTRINFOData_NdbRecord((const char*)&ah_u32, 4);
+        if(res) return res;
 
         if (length > 0) {
           res = insertATTRINFOData_NdbRecord((const char *)pvalue, length);
@@ -1237,8 +1253,6 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
     }
   }
 
-  /* Final read signal words */
-  // Not currently used in NdbRecord
 
   /* Subroutine section signal words */
   if (code) {
@@ -1249,6 +1263,29 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
                                                attrinfo_section_sizes_ptr[0] +
                                                attrinfo_section_sizes_ptr[1]);
     attrinfo_section_sizes_ptr[2] = updateWords;
+
+     /* Final read signal words */
+    if (theReceiver.m_firstFinalRecAttr != nullptr)
+    {
+      const NdbRecAttr *ra = theReceiver.m_firstFinalRecAttr;
+      while (ra) {
+        res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
+        Uint32 extraAI = ra->getPartialReadAI();
+        if (unlikely(res == 0 && extraAI != 0))
+        {
+          res = insertATTRINFOData_NdbRecord((const char*)&extraAI, 4);
+        }
+        if (res)
+          return res;
+        ra = ra->next();
+      }
+      Uint32 finalReadWords= theTotalCurrAI_Len -
+        (AttrInfo::SectionSizeInfoLength + 
+         attrinfo_section_sizes_ptr[0] +
+         attrinfo_section_sizes_ptr[1] +
+         attrinfo_section_sizes_ptr[2]);
+      attrinfo_section_sizes_ptr[3] = finalReadWords;
+    }
 
     /* Do we have any subroutines ? */
     if (code->m_number_of_subs > 0) {

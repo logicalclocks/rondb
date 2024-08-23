@@ -1143,7 +1143,7 @@ int RestoreDataIterator::readTupleData_packed(Uint32 *buf_ptr,
   Uint32 bmlen32 = bmlen / 4;
 
   /**
-   * Twiddle READ_BACKED header
+   * Twiddle READ_PACKED header
    */
   if (!m_hostByteOrder) {
     for (Uint32 i = 0; i < 1 + bmlen32; i++) {

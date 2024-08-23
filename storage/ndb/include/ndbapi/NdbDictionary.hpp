@@ -710,6 +710,22 @@ class NdbDictionary {
     static const Column *OPTIMIZE;
     static const Column *FRAGMENT_EXTENT_SPACE;
     static const Column *FRAGMENT_FREE_EXTENT_SPACE;
+    static const Column *READ_INTERPRETER_OUTPUT_0;
+    static const Column *READ_INTERPRETER_OUTPUT_1;
+    static const Column *READ_INTERPRETER_OUTPUT_2;
+    static const Column *READ_INTERPRETER_OUTPUT_3;
+    static const Column *READ_INTERPRETER_OUTPUT_4;
+    static const Column *READ_INTERPRETER_OUTPUT_5;
+    static const Column *READ_INTERPRETER_OUTPUT_6;
+    static const Column *READ_INTERPRETER_OUTPUT_7;
+    static const Column *READ_INTERPRETER_OUTPUT_8;
+    static const Column *READ_INTERPRETER_OUTPUT_9;
+    static const Column *READ_INTERPRETER_OUTPUT_10;
+    static const Column *READ_INTERPRETER_OUTPUT_11;
+    static const Column *READ_INTERPRETER_OUTPUT_12;
+    static const Column *READ_INTERPRETER_OUTPUT_13;
+    static const Column *READ_INTERPRETER_OUTPUT_14;
+    static const Column *READ_INTERPRETER_OUTPUT_15;
 
     int getSizeInBytes() const;
 

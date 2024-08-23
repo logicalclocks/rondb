@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +26,7 @@
 
 package com.mysql.clusterj.core.metadata;
 
+import com.mysql.clusterj.ClusterJFatalInternalException;
 import com.mysql.clusterj.core.spi.ValueHandler;
 import com.mysql.clusterj.core.spi.DomainTypeHandler;
 import com.mysql.clusterj.ClusterJUserException;
@@ -488,9 +490,21 @@ public class InvocationHandlerImpl<T> implements InvocationHandler,
         return properties[columnNumber];
     }
 
+    public Object get_partial(int columnNumber, int startPos, int size) {
+        throw new ClusterJFatalInternalException(
+                local.message("ERR_Operation_Not_Supported",
+                "get_partial(int, int, int)", "InvocationHandlerImpl"));
+    }
+
     public void set(int columnNumber, Object value) {
         modifiedFields.set(columnNumber);
         properties[columnNumber] = value;
+    }
+
+    public void append(int columnNumber, Object value) {
+        throw new ClusterJFatalInternalException(
+                local.message("ERR_Operation_Not_Supported",
+                "append(int, Object)", "InvocationHandlerImpl"));
     }
 
     public ColumnMetadata[] columnMetadata() {

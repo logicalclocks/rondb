@@ -173,7 +173,7 @@ static const NDBT_Attribute T6Attribs[] = {
     NDBT_Attribute("ATTR15", NdbDictionary::Column::Unsigned),
     NDBT_Attribute("ATTR16", NdbDictionary::Column::Unsigned),
     NDBT_Attribute("ATTR17", NdbDictionary::Column::Unsigned),
-    NDBT_Attribute("ATTR18", NdbDictionary::Column::Binary, 257),
+    NDBT_Attribute("ATTR18", NdbDictionary::Column::Longvarbinary, 258),
     NDBT_Attribute("ATTR19", NdbDictionary::Column::Unsigned),
     NDBT_Attribute("ATTR20", NdbDictionary::Column::Unsigned),
     NDBT_Attribute("ATTR21", NdbDictionary::Column::Binary, 4, false, true, 0,

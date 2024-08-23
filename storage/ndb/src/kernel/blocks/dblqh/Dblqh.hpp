@@ -2906,7 +2906,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_committed_log_space;
     enum op_flags {
       OP_ISLONGREQ = 0x1,
-      OP_SAVEATTRINFO = 0x2,
+      OP_CODE_NOT_USED = 0x2, //No longer used
       OP_SCANKEYINFOPOSSAVED = 0x4,
       OP_DEFERRED_CONSTRAINTS = 0x8,
       OP_NORMAL_PROTOCOL = 0x10,

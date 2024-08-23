@@ -44,6 +44,7 @@ target_link_libraries(
 	simdjson::simdjson
 	Jsoncpp_lib
 	pthread
+        ndbgeneral
 )
 
 set(RESOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources")

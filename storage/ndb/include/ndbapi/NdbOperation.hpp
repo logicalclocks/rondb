@@ -377,8 +377,8 @@ class NdbOperation {
    *       (i.e. NdbRecAttr::attrSize times NdbRecAttr::arraySize is
    *       a multiple of 4).
    *
-   * @note There are two versions of NdbOperation::getValue with
-   *       slightly different parameters.
+   * @note There are three versions of NdbOperation::getValue with
+   *       slightly different parameters to find the column
    *
    * @note This method does not fetch the attribute value from
    *       the database!  The NdbRecAttr object returned by this method
@@ -390,13 +390,47 @@ class NdbOperation {
    *                    will be returned in this parameter.<br>
    *                    If NULL, then the attribute value will only
    *                    be stored in the returned NdbRecAttr object.
+   *
    * @return            An NdbRecAttr object to hold the value of
    *                    the attribute, or a NULL pointer
    *                    (indicating error).
    */
-  NdbRecAttr *getValue(const char *anAttrName, char *aValue = nullptr);
-  NdbRecAttr *getValue(Uint32 anAttrId, char *aValue = nullptr);
-  NdbRecAttr *getValue(const NdbDictionary::Column *, char *val = nullptr);
+  NdbRecAttr* getValue(const char* anAttrName, char* aValue = nullptr);
+  NdbRecAttr* getValue(Uint32 anAttrId, char* aValue = nullptr);
+  NdbRecAttr* getValue(const NdbDictionary::Column*, char* val = nullptr);
+
+  /**
+   * Extension of the above methods to retrieve parts of a column
+   *
+   * @note There are three versions of NdbOperation::getValueExt with
+   *       slightly different parameters to find the column
+   *
+   * @param anAttrName  Attribute name
+   * @param aValue      If this is non-NULL, then the attribute value
+   *                    will be returned in this parameter.<br>
+   *                    If NULL, then the attribute value will only
+   *                    be stored in the returned NdbRecAttr object.
+   * @param aStartPos   When reading parts of a variable sized column
+   *                    one can specify the start position
+   * @param aSize       Read part and this specifies size to read
+   *
+   * @return            An NdbRecAttr object to hold the value of
+   *                    the attribute, or a NULL pointer
+   *                    (indicating error).
+   */
+
+  NdbRecAttr* getValueExt(const char* anAttrName,
+                          char* aValue = nullptr,
+                          Uint32 aStartPos = 0,
+                          Uint32 aSize = 0);
+  NdbRecAttr* getValueExt(Uint32 anAttrId,
+                          char* aValue = nullptr,
+                          Uint32 aStartPos = 0,
+                          Uint32 aSize = 0);
+  NdbRecAttr* getValueExt(const NdbDictionary::Column*,
+                          char* val = nullptr,
+                          Uint32 aStartPos = 0,
+                          Uint32 aSize = 0);
 
   /**
    * Define an attribute to set or update in query.
@@ -436,9 +470,13 @@ class NdbOperation {
    * @return               -1 if unsuccessful.
    */
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
-  int setValue(const char *anAttrName, const char *aValue, Uint32 len);
+  int setValue(const char* anAttrName, const char* aValue, Uint32 len);
 #endif
-  int setValue(const char *anAttrName, const char *aValue);
+  int setValue(const char* anAttrName, const char* aValue);
+  int appendValue(const char *anAttrName, const char *aValue);
+  int setPartialValue(const char *anAttrName,
+                      const char *aValue,
+                      Uint32 startPos);
   int setValue(const char *anAttrName, Int32 aValue);
   int setValue(const char *anAttrName, Uint32 aValue);
   int setValue(const char *anAttrName, Int64 aValue);
@@ -451,9 +489,11 @@ class NdbOperation {
 #endif
 
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
-  int setValue(Uint32 anAttrId, const char *aValue, Uint32 len);
+  int  setValue(Uint32 anAttrId, const char* aValue, Uint32 len);
 #endif
-  int setValue(Uint32 anAttrId, const char *aValue);
+  int setValue(Uint32 anAttrId, const char* aValue);
+  int appendValue(Uint32 anAttrId, const char* aValue);
+  int setPartialValue(Uint32 anAttrId, const char* aValue, Uint32 startPos);
   int setValue(Uint32 anAttrId, Int32 aValue);
   int setValue(Uint32 anAttrId, Uint32 aValue);
   int setValue(Uint32 anAttrId, Int64 aValue);
@@ -1006,9 +1046,15 @@ class NdbOperation {
    * using GetValueSpec.
    */
   struct GetValueSpec {
+    GetValueSpec() {
+      m_startPos = 0;
+      m_size = 0;
+    }
     const NdbDictionary::Column *column;
     void *appStorage;
     NdbRecAttr *recAttr;
+    Uint32 m_startPos;
+    Uint32 m_size;
   };
 
   /* Specification of an extra value to set
@@ -1024,8 +1070,12 @@ class NdbOperation {
    * SetValueSpec.
    */
   struct SetValueSpec {
+    SetValueSpec() {
+      m_append_flag = false;
+    }
     const NdbDictionary::Column *column;
-    const void *value;
+    const void * value;
+    bool m_append_flag;
   };
 
   /*
@@ -1072,7 +1122,8 @@ class NdbOperation {
       OO_NOT_QUEUABLE = 0x200,
       OO_DEFERRED_CONSTAINTS = 0x400,
       OO_DISABLE_FK = 0x800,
-      OO_NOWAIT = 0x1000
+      OO_NOWAIT = 0x1000,
+      OO_GET_FINAL_VALUE = 0x2000
     };
 
     /* An operation-specific abort option.
@@ -1084,6 +1135,10 @@ class NdbOperation {
     /* Extra column values to be read */
     GetValueSpec *extraGetValues;
     Uint32 numExtraGetValues;
+
+    /* Extra column values to be read */
+    GetValueSpec *extraGetFinalValues;
+    Uint32        numExtraGetFinalValues;
 
     /* Extra column values to be set  */
     const SetValueSpec *extraSetValues;
@@ -1315,10 +1370,30 @@ class NdbOperation {
    ******************************************************************************/
 
   virtual int equal_impl(const NdbColumnImpl *, const char *aValue);
-  virtual NdbRecAttr *getValue_impl(const NdbColumnImpl *,
-                                    char *aValue = nullptr);
-  NdbRecAttr *getValue_NdbRecord(const NdbColumnImpl *tAttrInfo, char *aValue);
-  int setValue(const NdbColumnImpl *anAttrObject, const char *aValue);
+  virtual NdbRecAttr* getValue_impl(const NdbColumnImpl*,
+                                    char* aValue = 0,
+                                    Uint32 aStartPos = 0,
+                                    Uint32 aSize = 0);
+  NdbRecAttr* getValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                 char* aValue,
+                                 Uint32 aStartPos = 0,
+                                 Uint32 aSize = 0);
+  NdbRecAttr* getFinalValue_NdbRecord(const NdbColumnImpl* tAttrInfo,
+                                      char* aValue,
+                                      Uint32 aStartPos = 0,
+                                      Uint32 aSize = 0);
+  int setValueExt(const char *anAttrName,
+                  const char *aValue,
+                  bool append_flag = false,
+                  Uint32 startPos = 0);
+  int setValueExt(Uint32 anAttrId,
+                  const char *aValue,
+                  bool append_flag = false,
+                  Uint32 startPos = 0);
+  int setValue(const NdbColumnImpl* anAttrObject,
+               const char* aValue,
+               bool append_flag = false,
+               Uint32 startPos = 0);
   NdbBlob *getBlobHandle(NdbTransaction *aCon,
                          const NdbColumnImpl *anAttrObject);
   NdbBlob *getBlobHandle(NdbTransaction *aCon,
@@ -1660,6 +1735,20 @@ inline void NdbOperation::NdbCon(NdbTransaction *aNdbCon) {
   theNdbCon = aNdbCon;
 }
 
+inline
+NdbRecAttr* NdbOperation::getValue(const char *anAttrName, char* aValue) {
+  return getValueExt(anAttrName, aValue, 0, 0);
+}
+
+inline NdbRecAttr* NdbOperation::getValue(Uint32 anAttrId, char *aValue) {
+  return getValueExt(anAttrId, aValue, 0, 0);
+}
+
+inline NdbRecAttr*
+NdbOperation::getValue(const NdbDictionary::Column *col, char *aValue) {
+  return getValueExt(col, aValue, 0, 0);
+}
+
 inline int NdbOperation::equal(const char *anAttrName, const char *aValue,
                                Uint32 len) {
   (void)len;  // unused
@@ -1704,64 +1793,101 @@ inline int NdbOperation::equal(Uint32 anAttrId, Uint64 aPar) {
   return equal(anAttrId, (const char *)&aPar, (Uint32)8);
 }
 
-inline int NdbOperation::setValue(const char *anAttrName, const char *aValue,
-                                  Uint32 len) {
-  (void)len;  // unused
-  return setValue(anAttrName, aValue);
+inline int
+NdbOperation::setValue(const char *anAttrName,
+                       const char *aValue,
+                       Uint32 len) {
+  (void)len;   // unused
+  return setValueExt(anAttrName, aValue);
+}
+
+inline int
+NdbOperation::appendValue(const char *anAttrName, const char *aValue) {
+  return setValueExt(anAttrName, aValue, true, 0);
+}
+
+inline int
+NdbOperation::setPartialValue(const char *anAttrName,
+                              const char *aValue,
+                              Uint32 startPos) {
+  return setValueExt(anAttrName, aValue, false, startPos);
+}
+
+inline int NdbOperation::setValue(const char *anAttrName, const char *aValue) {
+  return setValueExt(anAttrName, aValue);
 }
 
 inline int NdbOperation::setValue(const char *anAttrName, Int32 aPar) {
-  return setValue(anAttrName, (const char *)&aPar, (Uint32)4);
+  return setValueExt(anAttrName, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(const char *anAttrName, Uint32 aPar) {
-  return setValue(anAttrName, (const char *)&aPar, (Uint32)4);
+  return setValueExt(anAttrName, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(const char *anAttrName, Int64 aPar) {
-  return setValue(anAttrName, (const char *)&aPar, (Uint32)8);
+  return setValueExt(anAttrName, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(const char *anAttrName, Uint64 aPar) {
-  return setValue(anAttrName, (const char *)&aPar, (Uint32)8);
+  return setValueExt(anAttrName, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(const char *anAttrName, float aPar) {
-  return setValue(anAttrName, (const char *)&aPar, (Uint32)4);
+  return setValueExt(anAttrName, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(const char *anAttrName, double aPar) {
-  return setValue(anAttrName, (const char *)&aPar, (Uint32)8);
+  return setValueExt(anAttrName, (const char *)&aPar);
 }
 
-inline int NdbOperation::setValue(Uint32 anAttrId, const char *aValue,
-                                  Uint32 len) {
-  (void)len;  // unused
-  return setValue(anAttrId, aValue);
+inline
+int
+NdbOperation::setValue(Uint32 anAttrId,
+                       const char *aValue,
+                       Uint32 len) {
+  (void)len;   // unused
+  return setValueExt(anAttrId, aValue);
+}
+
+inline int NdbOperation::setValue(Uint32 anAttrId, const char* aValue) {
+  return setValueExt(anAttrId, aValue);
+}
+
+inline int
+NdbOperation::appendValue(Uint32 anAttrId, const char *aValue) {
+  return setValueExt(anAttrId, aValue, true, 0);
+}
+
+inline int
+NdbOperation::setPartialValue(Uint32 anAttrId,
+                              const char *aValue,
+                              Uint32 startPos) {
+  return setValueExt(anAttrId, aValue, false, startPos);
 }
 
 inline int NdbOperation::setValue(Uint32 anAttrId, Int32 aPar) {
-  return setValue(anAttrId, (const char *)&aPar, (Uint32)4);
+  return setValueExt(anAttrId, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(Uint32 anAttrId, Uint32 aPar) {
-  return setValue(anAttrId, (const char *)&aPar, (Uint32)4);
+  return setValueExt(anAttrId, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(Uint32 anAttrId, Int64 aPar) {
-  return setValue(anAttrId, (const char *)&aPar, (Uint32)8);
+  return setValueExt(anAttrId, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(Uint32 anAttrId, Uint64 aPar) {
-  return setValue(anAttrId, (const char *)&aPar, (Uint32)8);
+  return setValueExt(anAttrId, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(Uint32 anAttrId, float aPar) {
-  return setValue(anAttrId, (char *)&aPar, (Uint32)4);
+  return setValueExt(anAttrId, (const char *)&aPar);
 }
 
 inline int NdbOperation::setValue(Uint32 anAttrId, double aPar) {
-  return setValue(anAttrId, (const char *)&aPar, (Uint32)8);
+  return setValueExt(anAttrId, (const char *)&aPar);
 }
 
 inline void NdbOperation::setReadCommittedBase() {

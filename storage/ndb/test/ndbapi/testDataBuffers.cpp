@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,7 +29,7 @@
  *
  * Test getValue() of byte arrays:
  * - using application buffers of different alignments and sizes
- * - using NdbApi allocated small (<32) and big (>=32) buffers
+ * - using NdbApi allocated small (<16) and big (>=16) buffers
  *
  * Verifies fixes to tickets 189 and 206.
  *
@@ -288,7 +289,7 @@ static int testcase(Ndb_cluster_connection &cc, int flag) {
         memset(c.buf, 'A', c.bufsiz);
         for (int j = 0; j < c.aArraySize; j++)
           c.buf[j + off] = byteVal(key, i, j);
-        if (op->setValue(c.aAttrName, c.buf + off, c.aArraySize) < 0)
+        if (op->setValue(c.aAttrName, c.buf + off) < 0)
           return ndberror("setValue key=%d col=%d", key, i);
       }
     }
