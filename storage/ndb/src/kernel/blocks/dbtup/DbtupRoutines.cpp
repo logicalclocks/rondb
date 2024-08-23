@@ -2052,6 +2052,8 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
                c_started == false) {
       thrjam(req_struct->jamBuffer);
       update_lcp(req_struct, inBuffer + inBufIndex + 1, sz);
+      inBufIndex += 1 + sz;
+      req_struct->in_buf_index = inBufIndex;
       /**
        * Only allowed in updates as part of Restore and this
        * only happens in restarts and requires no REDO logging
@@ -2528,12 +2530,6 @@ Dbtup::varsize_updater(Uint32* in_buffer,
         dataLen = 2 + src[0] + 256 * Uint32(src[1]);
         length_bytes = 2;
       }
-      else
-      {
-        thrjam(req_struct->jamBuffer);
-        req_struct->errorCode = ZAI_INCONSISTENCY_ERROR;
-        return false;
-      }
       thrjamDataDebug(req_struct->jamBuffer, dataLen);
 #ifdef TRACE_INTERPRETER
       g_eventLogger->info("(%u) dataLen: %u, %s column",
@@ -2544,6 +2540,11 @@ Dbtup::varsize_updater(Uint32* in_buffer,
                           "other array type");
 #endif
       if (unlikely(req_struct->partial_size != 0)) {
+        if (unlikely(length_bytes == 0)) {
+          thrjam(req_struct->jamBuffer);
+          req_struct->errorCode = ZAI_INCONSISTENCY_ERROR;
+          return false;
+        }
         thrjamDebug(req_struct->jamBuffer);
         Uint8 *col_ptr = (Uint8*)(var_data_start + var_attr_pos);
         require(var_attr_pos+size_in_bytes <= check_offset);
