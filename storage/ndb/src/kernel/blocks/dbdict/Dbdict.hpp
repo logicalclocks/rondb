@@ -43,6 +43,10 @@
 #include <KeyTable2.hpp>
 #include <LockQueue.hpp>
 #include <Mutex.hpp>
+#include <signaldata/DropDb.hpp>
+#include <signaldata/CreateDatabase.hpp>
+#include <signaldata/DropDatabase.hpp>
+#include <signaldata/AlterDatabase.hpp>
 #include <RequestTracker.hpp>
 #include <Rope.hpp>
 #include <SafeCounter.hpp>
@@ -124,6 +128,9 @@
 #define ZNEXT_GET_TAB_REQ 9
 #define ZDICT_SHRINK_TRANSIENT_POOLS 10
 #define ZDICT_TRANSIENT_POOL_STAT 11
+#define ZDICT_CONNECT_LOOP 12
+#define ZDICT_DISCONNECT_LOOP 13
+
 
 /*--------------------------------------------------------------*/
 // Other constants in alphabetical order
@@ -307,6 +314,9 @@ class Dbdict : public SimulatedBlock {
 
     /* Is table or index online (this flag is not used in DICT) */
     bool online;
+
+    /* Does table contain disk columns */
+    bool m_disk_based;
 
     /* Primary table of index otherwise RNIL */
     Uint32 primaryTableId;
@@ -664,6 +674,54 @@ class Dbdict : public SimulatedBlock {
    * A page for create index table signal.
    */
   PageRecord c_indexPage;
+
+  struct Database {
+    Database()
+    {
+      m_alter_db_ref = RNIL;
+    }
+
+    static bool isCompatible(Uint32 type) { return DictTabInfo::isDatabase(type); }
+    Uint32 key;
+    Uint32 m_obj_ptr_i;
+    Uint32 m_magic;
+
+    Uint32 m_type;
+    Uint32 m_version;
+    Uint32 m_alter_db_ref;
+
+    union {
+      Uint32 nextPool;
+      Uint32 nextList;
+    };
+
+    LcRopeHandle m_name;
+
+    Uint32 m_table_id_check;
+
+    Uint64 m_in_memory_size;
+    Uint64 m_disk_space_size;
+    Uint32 m_rate_per_sec;
+    Uint32 m_max_transaction_size;
+    Uint32 m_max_parallel_transactions;
+    Uint32 m_max_parallel_complex_queries;
+  };
+  typedef Ptr<Database> DatabasePtr;
+  typedef RecordPool<RWPool<Database> > Database_pool;
+  Database_pool c_database_pool;
+  Database_pool& get_pool(DatabasePtr) { return c_database_pool; }
+
+  Uint32 m_current_allocated_rate;
+  Uint32 m_allocated_create_rate_limit;
+  Uint32 m_allocated_alter_rate_limit;
+
+  Uint32 m_current_allocated_memory_quota_mb;
+  Uint32 m_allocated_memory_quota_limit;
+
+  Uint32 m_current_allocated_disk_quota_gb;
+  Uint32 m_allocated_disk_quota_limit_gb;
+  Uint64 m_allocated_disk_quota_limit;
+
 
   struct File {
     File() {}
@@ -2705,6 +2763,180 @@ class Dbdict : public SimulatedBlock {
    */
   bool findCallback(Callback &callback, Uint32 any_key);
 
+  // MODULE: CreateDatabase
+
+  struct CreateDatabaseRec;
+  typedef RecordPool<ArenaPool<CreateDatabaseRec> > CreateDatabaseRec_pool;
+
+  struct CreateDatabaseRec : public OpRec {
+    bool m_parsed;
+    bool m_prepared;
+
+    static const OpInfo g_opInfo;
+
+    static CreateDatabaseRec_pool&
+    getPool(Dbdict* dict) {
+      return dict->c_createDatabaseRecPool;
+    }
+
+    CreateDatabaseReq m_request;
+
+    // who is using local create tab
+    Callback m_callback;
+
+    // flag if this op has been aborted in RT_PREPARE phase
+    bool m_abortPrepareDone;
+
+    // Table has been modified by subOps
+    bool m_modified_by_subOps;
+
+    CreateDatabaseRec() :
+      OpRec(g_opInfo, (Uint32*)&m_request) {
+      std::memset(&m_request, 0, sizeof(m_request));
+      m_parsed = false;
+      m_prepared = false;
+      m_modified_by_subOps = false;
+    }
+
+#if defined(VM_TRACE)
+    void print(NdbOut&) const;
+#endif
+  };
+
+  typedef Ptr<CreateDatabaseRec> CreateDatabaseRecPtr;
+  CreateDatabaseRec_pool c_createDatabaseRecPool;
+
+  // OpInfo
+  bool createDatabase_seize(SchemaOpPtr);
+  void createDatabase_release(SchemaOpPtr);
+  //
+  void createDatabase_parse(Signal*, bool master,
+                         SchemaOpPtr, SectionHandle&, ErrorInfo&);
+  bool createDatabase_subOps(Signal*, SchemaOpPtr);
+  void createDatabase_reply(Signal*, SchemaOpPtr, ErrorInfo);
+  //
+  void createDatabase_prepare(Signal*, SchemaOpPtr);
+  void createDatabase_commit(Signal*, SchemaOpPtr);
+  void createDatabase_complete(Signal*, SchemaOpPtr);
+  //
+  void createDatabase_abortParse(Signal*, SchemaOpPtr);
+  void createDatabase_abortPrepare(Signal*, SchemaOpPtr);
+
+  // MODULE: DropTable
+
+  struct DropDatabaseRec;
+  typedef RecordPool<ArenaPool<DropDatabaseRec> > DropDatabaseRec_pool;
+
+  struct DropDatabaseRec : public OpRec {
+    static const OpInfo g_opInfo;
+
+    static DropDatabaseRec_pool&
+    getPool(Dbdict* dict) {
+      return dict->c_dropDatabaseRecPool;
+    }
+
+    DropDatabaseReq m_request;
+
+    Callback m_callback;
+
+    bool m_prepared;
+    bool m_abortPrepareDone;
+
+    DropDatabaseRec() :
+      OpRec(g_opInfo, (Uint32*)&m_request) {
+      std::memset(&m_request, 0, sizeof(m_request));
+      m_prepared = false;
+      m_abortPrepareDone = false;
+    }
+
+#if defined(VM_TRACE)
+    void print(NdbOut&) const;
+#endif
+  };
+
+  typedef Ptr<DropDatabaseRec> DropDatabaseRecPtr;
+  DropDatabaseRec_pool c_dropDatabaseRecPool;
+
+  void execDROP_DATABASE_REQ(Signal *signal);
+  void execDISCONNECT_TABLE_DB_CONF(Signal *signal);
+  void execDISCONNECT_TABLE_DB_REF(Signal *signal);
+  void execDROP_DB_CONF(Signal*);
+  void execDROP_DB_REF(Signal*);
+
+  // OpInfo
+  bool dropDatabase_seize(SchemaOpPtr);
+  void dropDatabase_release(SchemaOpPtr);
+  //
+  void dropDatabase_parse(Signal*, bool master,
+                       SchemaOpPtr, SectionHandle&, ErrorInfo&);
+  bool dropDatabase_subOps(Signal*, SchemaOpPtr);
+  void dropDatabase_reply(Signal*, SchemaOpPtr, ErrorInfo);
+  //
+  void dropDatabase_prepare(Signal*, SchemaOpPtr);
+  void dropDatabase_commit(Signal*, SchemaOpPtr);
+
+  void dropDb_disconnectBlock(Signal*, Uint32);
+  void dropDb_local(Signal*, SchemaOpPtr);
+  void dropDb_completeBlock(Signal*, Uint32);
+  void dropDb_alterComplete(Signal* signal,
+                            Uint32 op_key,
+                            Uint32 ret);
+
+  void dropDatabase_complete(Signal*, SchemaOpPtr);
+  //
+  void dropDatabase_abortParse(Signal*, SchemaOpPtr);
+  void dropDatabase_abortPrepare(Signal*, SchemaOpPtr);
+
+  // MODULE: AlterDatabase
+
+  struct AlterDatabaseRec;
+  typedef RecordPool<ArenaPool<AlterDatabaseRec> > AlterDatabaseRec_pool;
+
+  struct AlterDatabaseRec : public OpRec {
+    static const OpInfo g_opInfo;
+
+    static AlterDatabaseRec_pool&
+    getPool(Dbdict* dict) {
+      return dict->c_alterDatabaseRecPool;
+    }
+
+    bool m_prepared;
+    bool m_abortPrepareDone;
+
+    AlterDatabaseReq m_request;
+
+    Callback m_callback;
+
+    AlterDatabaseRec() :
+      OpRec(g_opInfo, (Uint32*)&m_request) {
+      std::memset(&m_request, 0, sizeof(m_request));
+      m_prepared = false;
+      m_abortPrepareDone = false;
+    }
+#if defined(VM_TRACE)
+    void print(NdbOut&) const;
+#endif
+  };
+
+  typedef Ptr<AlterDatabaseRec> AlterDatabaseRecPtr;
+  AlterDatabaseRec_pool c_alterDatabaseRecPool;
+
+  // OpInfo
+  bool alterDatabase_seize(SchemaOpPtr);
+  void alterDatabase_release(SchemaOpPtr);
+  //
+  void alterDatabase_parse(Signal*, bool master,
+                        SchemaOpPtr, SectionHandle&, ErrorInfo&);
+  bool alterDatabase_subOps(Signal*, SchemaOpPtr);
+  void alterDatabase_reply(Signal*, SchemaOpPtr, ErrorInfo);
+  //
+  void alterDatabase_prepare(Signal*, SchemaOpPtr);
+  void alterDatabase_commit(Signal*, SchemaOpPtr);
+  void alterDatabase_complete(Signal*, SchemaOpPtr);
+  //
+  void alterDatabase_abortParse(Signal*, SchemaOpPtr);
+  void alterDatabase_abortPrepare(Signal*, SchemaOpPtr);
+
   // MODULE: CreateTable
 
   struct CreateTableRec;
@@ -2791,11 +3023,17 @@ class Dbdict : public SimulatedBlock {
 
   // commit
   void createTab_activate(Signal *, SchemaOpPtr, Callback *);
+  void createTab_activate_next(Signal*, SchemaOpPtr);
   void createTab_alterComplete(Signal *, Uint32 op_key, Uint32 ret);
 
   // abort prepare
   void createTable_abortLocalConf(Signal *, Uint32 aux_op_key, Uint32 ret);
 
+  void get_table_name(char *table_name, DictObject *obj);
+  void get_database_name(char *table_name, char **db_str, char **table_str);
+  bool get_database_object_from_table_name(char *db_name,
+                                           Uint32 tableId,
+                                           DictObject **db_obj);
   // MODULE: DropTable
 
   struct DropTableRec;
@@ -2957,6 +3195,9 @@ class Dbdict : public SimulatedBlock {
   void alterTable_prepare(Signal *, SchemaOpPtr);
   void alterTable_commit(Signal *, SchemaOpPtr);
   void alterTable_complete(Signal *, SchemaOpPtr);
+  void alterTable_contComplete(Signal*, SchemaOpPtr);
+  void alterTable_handleDatabaseChange(Signal*, SchemaOpPtr);
+  void alterTable_tableDisconnectedDatabase(Signal*, Uint32);
   //
   void alterTable_abortParse(Signal *, SchemaOpPtr);
   void alterTable_abortPrepare(Signal *, SchemaOpPtr);
@@ -4483,6 +4724,61 @@ class Dbdict : public SimulatedBlock {
                           LinearSectionPtr headerPtr, LinearSectionPtr dataPtr);
 
   void parseReadEventSys(Signal *signal, sysTab_NDBEVENTS_0 &m_eventRec);
+
+  void packDatabaseIntoPages(SimpleProperties::Writer & w,
+                             DatabasePtr db_ptr);
+
+  void createDb_writeTableConf(Signal* signal,
+                               Uint32 op_key,
+                               Uint32 ret);
+  void createDb_local(Signal* signal,
+                      SchemaOpPtr op_ptr,
+                      Callback * c);
+  void send_connect_table_database(Signal *signal,
+                                   SchemaOpPtr op_ptr,
+                                   DatabasePtr db_ptr,
+                                   Uint32 next_table_id,
+                                   bool first);
+  void send_disconnect_table_database(Signal *signal,
+                                      SchemaOpPtr op_ptr,
+                                      DatabasePtr db_ptr,
+                                      Uint32 next_table_id);
+  void execCREATE_DATABASE_REQ(Signal *signal);
+  void execCREATE_DB_CONF(Signal *signal);
+  void execCREATE_DB_REF(Signal *signal);
+  void execCONNECT_TABLE_DB_CONF(Signal *signal);
+  void execCONNECT_TABLE_DB_REF(Signal *signal);
+  void execCOMMIT_DB_CONF(Signal *signal);
+  void execCOMMIT_DB_REF(Signal *signal);
+
+  bool is_table_connected_to_db(DatabasePtr db_ptr,
+                                Uint32 table_id);
+
+  void createDb_localComplete(Signal* signal,
+                              Uint32 op_key,
+                              Uint32 ret);
+  void createDb_alterComplete(Signal* signal,
+                              Uint32 op_key,
+                              Uint32 ret);
+  void createDb_activate(Signal* signal,
+                         DatabasePtr db_ptr,
+                         SchemaOpPtr op_ptr,
+                         Callback * c);
+
+
+  void execALTER_DATABASE_REQ(Signal *signal);
+  void execALTER_DB_CONF(Signal *signal);
+  void execALTER_DB_REF(Signal *signal);
+  void alterDb_writeTableConf(Signal* signal,
+                              Uint32 op_key,
+                              Uint32 ret);
+  void alterDb_alterComplete(Signal* signal,
+                             Uint32 op_key,
+                             Uint32 ret);
+
+
+  void execGET_DATABASE_REQ(Signal*);
+  void execLIST_DATABASE_REQ(Signal*);
 
   // support
   void getTableKeyList(TableRecordPtr,

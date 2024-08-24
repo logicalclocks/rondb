@@ -273,6 +273,7 @@
 #define CFG_DB_ENCRYPTED_FILE_SYSTEM 680
 #define CFG_DB_REQUIRE_TLS 681
 
+#define CFG_DB_ACTIVATE_RATE_LIMITS   687
 /* Start RonDB only configuration parameters */
 #define CFG_DB_MAX_NUM_SCHEMA_OBJECTS 688
 

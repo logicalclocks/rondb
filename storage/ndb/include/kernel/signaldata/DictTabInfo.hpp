@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -242,7 +242,7 @@ class DictTabInfo {
      * Trigger that propagates DML to all fragments
      */
     FullyReplicatedTrigger = 28,
-
+    Database = 29,
     SchemaTransaction = 30
   };
 
@@ -287,6 +287,11 @@ class DictTabInfo {
 
   static inline bool isForeignKey(int tableType) {
     return tableType == ForeignKey;
+  }
+
+  static inline bool
+  isDatabase(int tableType) {
+    return tableType == Database;
   }
 
   // Object state for translating from/to API
@@ -682,6 +687,58 @@ class DictTabInfo {
 
 #define DFGIBREAK(x) \
   { DictFilegroupInfo::x, 0, SimpleProperties::InvalidValue, 0, 0 }
+
+struct DictDatabaseInfo {
+  enum KeyValues {
+    DatabaseName      = 1,
+    DatabaseType      = 2, // ObjType
+    DatabaseId        = 3,
+    DatabaseVersion   = 4,
+
+    /* Parameters */
+    InMemorySize      = 100,
+    DiskSpaceSize     = 101,
+    RatePerSec        = 102,
+    MaxTransactionSize= 103,
+    MaxParallelTransactions = 104,
+    MaxParallelComplexQueries = 105,
+    ParameterEnd = 199,
+  };
+  struct Database {
+    char DatabaseName[MAX_DB_NAME_SIZE];
+    Uint32 DatabaseType;
+    Uint32 DatabaseId;
+    Uint32 DatabaseVersion;
+
+    Uint64 InMemorySize;
+    Uint64 DiskSpaceSize;
+    Uint64 RatePerSec;
+    Uint64 MaxTransactionSize;
+    Uint64 MaxParallelTransactions;
+    Uint64 MaxParallelComplexQueries;
+    Database() {}
+    void init();
+  };
+  static const Uint32 MappingSize;
+  static const SimpleProperties::SP2StructMapping Mapping[];
+};
+
+#define DDBI_MAP_INT(x, y, z) \
+  { DictDatabaseInfo::y, (unsigned) my_offsetof(x, z), SimpleProperties::Uint32Value, 0, 0 }
+
+#define DDBI_MAP_INT64(x, y, z) \
+  { DictDatabaseInfo::y, (unsigned) my_offsetof(x, z), SimpleProperties::Uint64Value, 0, 0 }
+
+#define DDBI_MAP_STR(x, y, z, len) \
+  { DictDatabaseInfo::y, (unsigned) my_offsetof(x, z), SimpleProperties::StringValue, len, 0 }
+
+#define DDBI_MAP_BIN(x, y, z, len, off) \
+  { DictDatabaseInfo::y, (unsigned) my_offsetof(x, z), SimpleProperties::BinaryValue, \
+      len, (unsigned) my_offsetof(x, off) }
+
+#define DDBIBREAK(x) \
+  { DictDatabaseInfo::x, 0, SimpleProperties::InvalidValue, 0, 0 }
+
 
 struct DictFilegroupInfo {
   enum KeyValues {

@@ -293,6 +293,7 @@ void Dbacc::execCONTINUEB(Signal *signal) {
     }
 #endif
     default:
+      jamData(tcase);
       ndbabort();
   }  // switch
   return;
@@ -757,9 +758,12 @@ void Dbacc::releaseFragResources(Signal* signal, Uint32 tableId, Uint32 fragId)
   } else {
     jam();
     {
-      ndbassert(static_cast<Uint32>(regFragPtr.p->m_noOfAllocatedPages) ==
-                regFragPtr.p->sparsepages.getCount() +
-                    regFragPtr.p->fullpages.getCount());
+      m_ldm_instance_used->c_lqh->update_memory_usage(
+        regFragPtr.p->myTableId,
+        Int32(-regFragPtr.p->m_noOfAllocatedPages),
+        __LINE__,
+       RNIL);
+
       regFragPtr.p->m_noOfAllocatedPages = 0;
 
       LocalPage8List freelist(c_page8_pool, cfreepages);
@@ -800,6 +804,7 @@ void Dbacc::verifyFragCorrect(FragmentrecPtr regFragPtr)const
 void Dbacc::releaseDirResources(Signal* signal)
 {
   jam();
+  Uint32 tcase = signal->theData[0];
   Uint32 fragId = signal->theData[1];
   Uint32 tableId = signal->theData[2];
 
@@ -850,6 +855,9 @@ void Dbacc::releaseDirResources(Signal* signal)
   }
   if (ret != 0 || !cfreepages.isEmpty()) {
     jam();
+    signal->theData[0] = tcase;
+    signal->theData[1] = fragId;
+    signal->theData[2] = tableId;
     memcpy(&signal->theData[3], &iter, sizeof(iter));
     sendSignal(reference(), GSN_CONTINUEB, signal, 3 + sizeof(iter) / 4, JBB);
   }
@@ -3628,10 +3636,14 @@ void Dbacc::execACC_LOCKREQ(Signal *signal) {
 /*               TIDR_FORWARD   (CONTAINER DIRECTION OF INSERTED ELEMENT)   */
 /*               NONE                                                       */
 /* -------------------------------------------------------------------------*/
-void Dbacc::insertElement(const Element elem, OperationrecPtr oprecptr,
-                          Page8Ptr &pageptr, Uint32 &conidx, bool &isforward,
-                          Uint32 &conptr, Uint16 conScanMask,
-                          const bool newBucket) {
+void Dbacc::insertElement(const Element   elem,
+                          OperationrecPtr oprecptr,
+                          Page8Ptr&       pageptr,
+                          Uint32&         conidx,
+                          bool&           isforward,
+                          Uint32&         conptr,
+                          Uint16          conScanMask,
+                          const bool      newBucket) {
   Page8Ptr inrNewPageptr;
   Uint32 tidrResult;
   Uint16 scanmask;
@@ -4601,8 +4613,13 @@ void Dbacc::commitdelete(Signal *signal) {
     tlastContainerptr = getContainerPtr(tlastPageindex, lastIsforward);
   }
 
-  getLastAndRemove(lastPrevpageptr, tlastPrevconptr, lastPageptr,
-                   tlastPageindex, tlastContainerptr, lastIsforward,
+  getLastAndRemove(signal,
+                   lastPrevpageptr,
+                   tlastPrevconptr,
+                   lastPageptr,
+                   tlastPageindex,
+                   tlastContainerptr,
+                   lastIsforward,
                    tlastElementptr);
 
   const Uint32 delElemptr = operationRecPtr.p->elementPointer;
@@ -4818,10 +4835,15 @@ deleteElement_index_error1:
  * @param[out]     tlastElementptr    On return the pointer within page to last
  *                                    element.
  * ------------------------------------------------------------------------ */
-void Dbacc::getLastAndRemove(Page8Ptr lastPrevpageptr, Uint32 tlastPrevconptr,
-                             Page8Ptr &lastPageptr, Uint32 &tlastPageindex,
-                             Uint32 &tlastContainerptr, bool &lastIsforward,
-                             Uint32 &tlastElementptr) {
+void Dbacc::getLastAndRemove(Signal *signal,
+                             Page8Ptr lastPrevpageptr,
+                             Uint32 tlastPrevconptr,
+                             Page8Ptr& lastPageptr,
+                             Uint32& tlastPageindex,
+                             Uint32& tlastContainerptr,
+                             bool& lastIsforward,
+                             Uint32& tlastElementptr)
+{
   /**
    * Should find the last container with same scanbits as the first.
    */
@@ -4902,12 +4924,12 @@ void Dbacc::getLastAndRemove(Page8Ptr lastPrevpageptr, Uint32 tlastPrevconptr,
         jam();
         Uint32 relconptr =
             tlastContainerptr + (ZBUF_SIZE - Container::HEADER_SIZE);
-        releaseRightlist(lastPageptr, tlastPageindex, relconptr);
+        releaseRightlist(signal, lastPageptr, tlastPageindex, relconptr);
       } else {
         jam();
         Uint32 relconptr =
             tlastContainerptr - (ZBUF_SIZE - Container::HEADER_SIZE);
-        releaseLeftlist(lastPageptr, tlastPageindex, relconptr);
+        releaseLeftlist(signal, lastPageptr, tlastPageindex, relconptr);
       }  // if
     }    // if
   }      // if
@@ -4971,10 +4993,16 @@ void Dbacc::getLastAndRemove(Page8Ptr lastPrevpageptr, Uint32 tlastPrevconptr,
       if (lastIsforward)
       {
         jam();
-        releaseLeftlist(lastPageptr, tlastPageindex, tlastContainerptr);
+        releaseLeftlist(signal,
+                        lastPageptr,
+                        tlastPageindex,
+                        tlastContainerptr);
       } else {
         jam();
-        releaseRightlist(lastPageptr, tlastPageindex, tlastContainerptr);
+        releaseRightlist(signal,
+                         lastPageptr,
+                         tlastPageindex,
+                         tlastContainerptr);
       }  // if
       return;
     }  // if
@@ -4999,7 +5027,10 @@ void Dbacc::getLastAndRemove(Page8Ptr lastPrevpageptr, Uint32 tlastPrevconptr,
 /*          THE FREE LIST OF LEFT FREE BUFFER IN THE PAGE WILL BE UPDATE     */
 /*     TULL_INDEX IS INDEX TO THE FIRST WORD IN THE LEFT SIDE OF THE BUFFER  */
 /* --------------------------------------------------------------------------*/
-void Dbacc::releaseLeftlist(Page8Ptr pageptr, Uint32 conidx, Uint32 conptr) {
+void Dbacc::releaseLeftlist(Signal *signal,
+                            Page8Ptr pageptr,
+                            Uint32 conidx,
+                            Uint32 conptr) {
   Uint32 tullTmp;
   Uint32 tullTmp1;
 
@@ -5025,7 +5056,7 @@ void Dbacc::releaseLeftlist(Page8Ptr pageptr, Uint32 conidx, Uint32 conptr) {
   if (((pageptr.p->word32[Page8::EMPTY_LIST] >> ZPOS_PAGE_TYPE_BIT) & 3) == 1) {
     jam();
     c_page8_pool.getPtrForce(pageptr);
-    checkoverfreelist(pageptr);
+    checkoverfreelist(signal, pageptr);
   }  // if
 }  // Dbacc::releaseLeftlist()
 
@@ -5045,7 +5076,10 @@ void Dbacc::releaseLeftlist(Page8Ptr pageptr, Uint32 conidx, Uint32 conptr) {
 /*         TURL_INDEX IS INDEX TO THE FIRST WORD IN THE RIGHT SIDE OF        */
 /*         THE BUFFER, WHICH IS THE LAST WORD IN THE BUFFER.                 */
 /* --------------------------------------------------------------------------*/
-void Dbacc::releaseRightlist(Page8Ptr pageptr, Uint32 conidx, Uint32 conptr) {
+void Dbacc::releaseRightlist(Signal *signal,
+                             Page8Ptr pageptr,
+                             Uint32 conidx,
+                             Uint32 conptr) {
   Uint32 turlTmp1;
   Uint32 turlTmp;
 
@@ -5069,7 +5103,7 @@ void Dbacc::releaseRightlist(Page8Ptr pageptr, Uint32 conidx, Uint32 conptr) {
   ndbrequire(pageptr.p->word32[Page8::ALLOC_CONTAINERS] <= ZNIL);
   if (((pageptr.p->word32[Page8::EMPTY_LIST] >> ZPOS_PAGE_TYPE_BIT) & 3) == 1) {
     jam();
-    checkoverfreelist(pageptr);
+    checkoverfreelist(signal, pageptr);
   }  // if
 }  // Dbacc::releaseRightlist()
 
@@ -5080,7 +5114,7 @@ void Dbacc::releaseRightlist(Page8Ptr pageptr, Uint32 conidx, Uint32 conptr) {
 /*                     FLOW PAGES. WHEN IT HAVE TO, AN OVERFLOW REC PTR WILL */
 /*                     BE ALLOCATED TO KEEP NFORMATION  ABOUT THE PAGE.      */
 /* --------------------------------------------------------------------------*/
-void Dbacc::checkoverfreelist(Page8Ptr colPageptr) {
+void Dbacc::checkoverfreelist(Signal *signal, Page8Ptr colPageptr) {
   Uint32 tcolTmp;
 
   // always an overflow page
@@ -5088,7 +5122,7 @@ void Dbacc::checkoverfreelist(Page8Ptr colPageptr) {
   if (tcolTmp == 0)  // Just got empty
   {
     jam();
-    releaseOverpage(colPageptr);
+    releaseOverpage(signal, colPageptr);
   } else if (tcolTmp == ZFREE_LIMIT)  // Just got sparse
   {
     jam();
@@ -6341,7 +6375,8 @@ bool Dbacc::get_lock_information(Dbacc **acc_block, Dblqh **lqh_block) {
   return lock_flag;
 }
 
-Uint32 Dbacc::seizePage_lock(Page8Ptr &spPageptr, int sub_page_id) {
+Uint32 Dbacc::seizePage_lock(Page8Ptr& spPageptr,
+                             int sub_page_id) {
   Dblqh *lqh_block;
   Dbacc *acc_block;
   TabrecPtr tabPtr;
@@ -6587,7 +6622,8 @@ void Dbacc::execEXPANDCHECK2(Signal *signal) {
   }
   if (expPageptr.i == RNIL) {
     jam();
-    Uint32 result = seizePage_lock(expPageptr, Page32Lists::ANY_SUB_PAGE);
+    Uint32 result = seizePage_lock(expPageptr,
+                                   Page32Lists::ANY_SUB_PAGE);
     if (result > ZLIMIT_OF_ERROR) {
       jam();
       release_frag_mutex_bucket(fragrecptr.p, splitBucket);
@@ -6633,7 +6669,7 @@ void Dbacc::execEXPANDCHECK2(Signal *signal) {
   }  // if
   fragrecptr.p->expReceiveIsforward = true;
   c_page8_pool.getPtr(pageptr);
-  expandcontainer(pageptr, conidx);
+  expandcontainer(signal, pageptr, conidx);
   endofexpLab(signal);
   release_frag_mutex_bucket(fragrecptr.p, splitBucket);
   return;
@@ -6747,7 +6783,9 @@ LHBits32 Dbacc::getElementHash(Uint32 const* elemptr, OperationrecPtr& oprec)
 /*                     BE CHECKED. SOME OF THIS ELEMENTS HAVE TO MOVE TO THE */
 /*                     NEW CONTAINER                                         */
 /* --------------------------------------------------------------------------*/
-void Dbacc::expandcontainer(Page8Ptr pageptr, Uint32 conidx) {
+void Dbacc::expandcontainer(Signal *signal,
+                            Page8Ptr pageptr,
+                            Uint32 conidx) {
   ContainerHeader containerhead;
   LHBits32 texcHashvalue;
   Uint32 tidrContainerptr;
@@ -6868,9 +6906,14 @@ NEXT_ELEMENT_LOOP:
     idrPageptr.i = fragrecptr.p->expReceivePageptr;
     c_page8_pool.getPtr(idrPageptr);
     bool tidrIsforward = fragrecptr.p->expReceiveIsforward;
-    insertElement(Element(tidrElemhead, localkey), oprecptr, idrPageptr,
-                  tidrPageindex, tidrIsforward, tidrContainerptr,
-                  containerhead.getScanBits(), newBucket);
+    insertElement(Element(tidrElemhead, localkey),
+                  oprecptr,
+                  idrPageptr,
+                  tidrPageindex,
+                  tidrIsforward,
+                  tidrContainerptr,
+                  containerhead.getScanBits(),
+                  newBucket);
     fragrecptr.p->expReceiveIndex = tidrPageindex;
     fragrecptr.p->expReceivePageptr = idrPageptr.i;
     fragrecptr.p->expReceiveIsforward = tidrIsforward;
@@ -6887,8 +6930,13 @@ REMOVE_LAST_LOOP:
   arrGuard(tlastContainerptr, 2048);
   lastIsforward = isforward;
   tlastPageindex = conidx;
-  getLastAndRemove(lastPrevpageptr, tlastPrevconptr, lastPageptr,
-                   tlastPageindex, tlastContainerptr, lastIsforward,
+  getLastAndRemove(signal,
+                   lastPrevpageptr,
+                   tlastPrevconptr,
+                   lastPageptr,
+                   tlastPageindex,
+                   tlastContainerptr,
+                   lastIsforward,
                    tlastElementptr);
   if (pageptr.i == lastPageptr.i) {
     if (elemptr == tlastElementptr) {
@@ -6963,9 +7011,14 @@ REMOVE_LAST_LOOP:
       idrPageptr.i = fragrecptr.p->expReceivePageptr;
       c_page8_pool.getPtr(idrPageptr);
       bool tidrIsforward = fragrecptr.p->expReceiveIsforward;
-      insertElement(Element(tidrElemhead, localkey), oprecptr, idrPageptr,
-                    tidrPageindex, tidrIsforward, tidrContainerptr,
-                    containerhead.getScanBits(), newBucket);
+      insertElement(Element(tidrElemhead, localkey),
+                    oprecptr,
+                    idrPageptr,
+                    tidrPageindex,
+                    tidrIsforward,
+                    tidrContainerptr,
+                    containerhead.getScanBits(),
+                    newBucket);
       fragrecptr.p->expReceiveIndex = tidrPageindex;
       fragrecptr.p->expReceivePageptr = idrPageptr.i;
       fragrecptr.p->expReceiveIsforward = tidrIsforward;
@@ -7312,7 +7365,7 @@ void Dbacc::execSHRINKCHECK2(Signal *signal) {
     ndbrequire(conlen == Container::HEADER_SIZE);
   } else {
     jam();
-    shrinkcontainer(pageptr, conptr, isforward, conlen);
+    shrinkcontainer(signal, pageptr, conptr, isforward, conlen);
   }  // if
   /*--------------------------------------------------------------------------*/
   /*       THIS CONTAINER IS NOT YET EMPTY AND WE REMOVE ALL THE ELEMENTS.    */
@@ -7320,7 +7373,7 @@ void Dbacc::execSHRINKCHECK2(Signal *signal) {
   if (containerhead.isUsingBothEnds()) {
     jam();
     Uint32 relconptr = conptr + (ZBUF_SIZE - Container::HEADER_SIZE);
-    releaseRightlist(pageptr, cexcPageindex, relconptr);
+    releaseRightlist(signal, pageptr, cexcPageindex, relconptr);
   }  // if
   ContainerHeader conthead;
   conthead.initInUse();
@@ -7342,7 +7395,7 @@ void Dbacc::execSHRINKCHECK2(Signal *signal) {
     /*-----------------------------------------------------------------------*/
     /*       THIS CONTAINER IS NOT YET EMPTY AND WE REMOVE ALL THE ELEMENTS. */
     /*-----------------------------------------------------------------------*/
-    shrinkcontainer(pageptr, conptr, isforward, conlen);
+    shrinkcontainer(signal, pageptr, conptr, isforward, conlen);
     const Uint32 prevPageptr = pageptr.i;
     const Uint32 cexcPrevpageindex = cexcPageindex;
     const Uint32 cexcPrevisforward = isforward;
@@ -7365,19 +7418,19 @@ void Dbacc::execSHRINKCHECK2(Signal *signal) {
       if (containerhead.isUsingBothEnds()) {
         jam();
         Uint32 relconptr = conptr + (ZBUF_SIZE - Container::HEADER_SIZE);
-        releaseRightlist(rlPageptr, cexcPrevpageindex, relconptr);
+        releaseRightlist(signal, rlPageptr, cexcPrevpageindex, relconptr);
       }  // if
       ndbrequire(ContainerHeader(rlPageptr.p->word32[conptr]).isInUse());
-      releaseLeftlist(rlPageptr, cexcPrevpageindex, conptr);
+      releaseLeftlist(signal, rlPageptr, cexcPrevpageindex, conptr);
     } else {
       jam();
       if (containerhead.isUsingBothEnds()) {
         jam();
         Uint32 relconptr = conptr - (ZBUF_SIZE - Container::HEADER_SIZE);
-        releaseLeftlist(rlPageptr, cexcPrevpageindex, relconptr);
+        releaseLeftlist(signal, rlPageptr, cexcPrevpageindex, relconptr);
       }  // if
       ndbrequire(ContainerHeader(rlPageptr.p->word32[conptr]).isInUse());
-      releaseRightlist(rlPageptr, cexcPrevpageindex, conptr);
+      releaseRightlist(signal, rlPageptr, cexcPrevpageindex, conptr);
     }  // if
   } while (containerhead.getNextEnd() != 0);
   endofshrinkbucketLab(signal);
@@ -7587,7 +7640,10 @@ void Dbacc::shrink_adjust_reduced_hash_value(Uint32 bucket_number) {
   return;
 }  // Dbacc::shrink_adjust_reduced_hash_value()
 
-void Dbacc::shrinkcontainer(Page8Ptr pageptr, Uint32 conptr, bool isforward,
+void Dbacc::shrinkcontainer(Signal *signal,
+                            Page8Ptr pageptr,
+                            Uint32 conptr,
+                            bool isforward,
                             Uint32 conlen) {
   Uint32 tshrElementptr;
   Uint32 tshrRemLen;
@@ -7642,8 +7698,12 @@ SHR_LOOP:
     idrPageptr.i = fragrecptr.p->expReceivePageptr;
     c_page8_pool.getPtr(idrPageptr);
     bool tidrIsforward = fragrecptr.p->expReceiveIsforward;
-    insertElement(Element(tidrElemhead, localkey), oprecptr, idrPageptr,
-                  tidrPageindex, tidrIsforward, tidrContainerptr,
+    insertElement(Element(tidrElemhead, localkey),
+                  oprecptr,
+                  idrPageptr,
+                  tidrPageindex,
+                  tidrIsforward,
+                  tidrContainerptr,
                   ContainerHeader(pageptr.p->word32[conptr]).getScanBits(),
                   false);
     /* --------------------------------------------------------------- */
@@ -9361,7 +9421,7 @@ void Dbacc::releaseFreeOpRec() {
 /* --------------------------------------------------------------------------*/
 /* RELEASE_OVERPAGE                                                          */
 /* --------------------------------------------------------------------------*/
-void Dbacc::releaseOverpage(Page8Ptr ropPageptr) {
+void Dbacc::releaseOverpage(Signal *signal, Page8Ptr ropPageptr) {
   jam();
   {
     LocalContainerPageList sparselist(c_page8_pool, fragrecptr.p->sparsepages);
@@ -9387,7 +9447,8 @@ void Dbacc::releasePage_lock(Page8Ptr rpPageptr) {
   }
 }
 
-void Dbacc::releasePage(Page8Ptr rpPageptr, FragmentrecPtr fragPtr,
+void Dbacc::releasePage(Page8Ptr rpPageptr,
+                        FragmentrecPtr fragPtr,
                         EmulatedJamBuffer *jamBuf) {
   thrjam(jamBuf);
   ndbrequire(!m_is_in_query_thread);
@@ -9404,6 +9465,10 @@ void Dbacc::releasePage(Page8Ptr rpPageptr, FragmentrecPtr fragPtr,
     m_ctx.m_mm.release_page(RT_DBACC_PAGE, page32ptr.i);
   }
 
+  m_ldm_instance_used->c_lqh->update_memory_usage(fragPtr.p->myTableId,
+                                                  Int32(-1),
+                                                  __LINE__,
+                                                  rpPageptr.i);
   ndbassert(pages.getCount() == cfreepages.getCount() + cnoOfAllocatedPages);
   ndbassert(pages.getCount() <= cpageCount);
 }  // Dbacc::releasePage()
@@ -9511,6 +9576,10 @@ Uint32 Dbacc::seizePage(Page8Ptr& spPageptr,
   ndbassert(pages.getCount() == cfreepages.getCount() + cnoOfAllocatedPages);
   ndbassert(pages.getCount() <= cpageCount);
   fragPtr.p->m_noOfAllocatedPages++;
+  m_ldm_instance_used->c_lqh->update_memory_usage(fragPtr.p->myTableId,
+                                                  1,
+                                                  __LINE__,
+                                                  spPageptr.i);
 
   if (cnoOfAllocatedPages > cnoOfAllocatedPagesMax) {
     cnoOfAllocatedPagesMax = cnoOfAllocatedPages;

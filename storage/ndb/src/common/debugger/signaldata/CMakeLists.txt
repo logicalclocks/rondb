@@ -1,5 +1,5 @@
 # Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-# Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,8 @@
 ADD_CONVENIENCE_LIBRARY(ndbsignaldata
   AccLock.cpp
   AllocNodeId.cpp
+  AlterDatabase.cpp
+  AlterDb.cpp
   AlterIndx.cpp
   AlterIndxImpl.cpp
   AlterTab.cpp
@@ -41,6 +43,8 @@ ADD_CONVENIENCE_LIBRARY(ndbsignaldata
   CopyActive.cpp
   CopyFrag.cpp
   CopyGCI.cpp
+  CreateDatabase.cpp
+  CreateDb.cpp
   CreateEvnt.cpp
   CreateFK.cpp
   CreateFragmentation.cpp
@@ -55,6 +59,8 @@ ADD_CONVENIENCE_LIBRARY(ndbsignaldata
   DihContinueB.cpp
 # DihSwitchReplicaReq.cpp
   DisconnectRep.cpp
+  DropDatabase.cpp
+  DropDb.cpp
   DropFK.cpp
   DropIndx.cpp
   DropIndxImpl.cpp
@@ -91,6 +97,7 @@ ADD_CONVENIENCE_LIBRARY(ndbsignaldata
   PrepDropTab.cpp
   PrepFailReqRef.cpp
   ProcessInfoRep.cpp
+  QueryDatabase.cpp
   ReadNodesConf.cpp
   RestoreImpl.cpp
   ScanFrag.cpp

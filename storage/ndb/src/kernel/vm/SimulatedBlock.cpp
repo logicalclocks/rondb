@@ -568,6 +568,28 @@ static void releaseSections(SPC_ARG Uint32 secCount,
 }
 
 Uint32
+SimulatedBlock::get_short_time_queue_depth()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_get_short_time_queue_depth(m_threadId);
+#else
+  ndbabort();
+  return 0;
+#endif
+}
+
+Uint32
+SimulatedBlock::get_long_time_queue_depth()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_get_long_time_queue_depth(m_threadId);
+#else
+  ndbabort();
+  return 0;
+#endif
+}
+
+Uint32
 SimulatedBlock::map_api_node_to_recv_instance(NodeId node)
 {
 #ifdef NDBD_MULTITHREADED
@@ -1893,6 +1915,8 @@ void SimulatedBlock::sendSignalWithDelay(
     Uint32 delayInMilliSeconds, Uint32 length, SectionHandle *sections) const {
   Uint32 noOfSections = sections->m_cnt;
   BlockNumber bnr = refToBlock(ref);
+
+  assert(delayInMilliSeconds < 100000 || delayInMilliSeconds == BOUNDED_DELAY);
 
   BlockReference sendBRef = reference();
 
@@ -5587,12 +5611,9 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
   Uint32 load_counter = rr_info->m_load_indicator_counter;
   ndbassert(ldm_instance_no > 0);
   load_counter++;
-  if (likely(load_counter < m_rr_load_refresh_count))
-  {
+  if (likely(load_counter < m_rr_load_refresh_count)) {
     rr_info->m_load_indicator_counter = load_counter;
-  }
-  else
-  {
+  } else {
     get_load_indicators(handle, rr_group);
   }
 #ifdef VM_TRACE
@@ -5600,19 +5621,15 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
   ndbassert(num_ldm_instances >= ldm_instance_no);
 #endif
   {
-    if (handle->m_low_load)
-    {
+    if (handle->m_low_load) {
       struct QueryThreadState *q_state =
         &handle->m_query_state[ldm_instance_no - 1];
       Uint32 load_indicator = q_state->m_load_indicator;
-      if (unlikely(load_indicator > 1))
-      {
+      if (unlikely(load_indicator > 1)) {
         jam();
         distribute_new_weights(handle, rr_info, true);
         handle->m_low_load = 0;
-      }
-      else
-      {
+      } else {
         Uint32 ref = numberToRef(DBLQH,
                                  ldm_instance_no,
                                  getOwnNodeId());
@@ -5628,25 +5645,24 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
     Uint32 query_instance_no = ldm_instance_no;
     Uint32 block_instance_no = ldm_instance_no;
     Uint32 num_lqhs = 2;
-    if ((query_counter & 1) == 1)
-    {
+    if ((query_counter & 1) == 1) {
       /**
        * The first loop will always pick a LDM thread, either the
        * owner LDM thread or the shared instance. This is good for
        * efficiency, since these LDM threads are likely the most
        * efficient to serve the request.
        *
-       * To spread out the use of the DBLQH block a bit we only send
-       * 50% of the requests to DBLQH, the rest will go immediately
-       * to the round robin distribution.
-       *
+       * The second loop tries to use the query thread on the same CPU
+       * core, but different CPU thread. However 50% of the time we
+       * want to simply go off to the round robin distribution to make
+       * proper use of all query workers. The reason is that some of
+       * the query don't reside on the same CPU core as any other
+       * LDM thread.
        */
-      num_lqhs = 0;
-      block_num = DBQLQH;
+      num_lqhs = 1;
     }
     rr_info->m_query_counter = query_counter + 1;
-    for (Uint32 i = 0; i < num_lqhs; i++)
-    {
+    for (Uint32 i = 0; i < num_lqhs; i++) {
       struct QueryThreadState *q_state =
         &handle->m_query_state[query_instance_no - 1];
       Uint32 weight = q_state->m_weight;
@@ -5656,8 +5672,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
       jamDataDebug(query_instance_no);
       jamDataDebug(current_stolen);
       jamDataDebug(weight);
-      if (current_stolen < weight)
-      {
+      if (current_stolen < weight) {
         /**
          * There was sufficient room to steal a slot for sending to the
          * query thread of the same instance as the LDM thread. So send
@@ -5678,8 +5693,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
         jamDataDebug(rr_info->m_used_weight);
         jamDataDebug(rr_info->m_total_weight);
         if (unlikely(rr_info->m_used_weight >=
-                     rr_info->m_total_weight))
-        {
+                     rr_info->m_total_weight)) {
           jamDebug();
           distribute_new_weights(handle, rr_info);
         }
@@ -5692,11 +5706,9 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
 #endif
         return ref;
       }
-      if (block_num == DBLQH)
-      {
+      if (block_num == DBLQH) {
         query_instance_no = get_shared_ldm_instance(query_instance_no);
-        if (query_instance_no == 0)
-        {
+        if (query_instance_no == 0) {
           break;
         }
       }
@@ -5704,16 +5716,14 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
       block_num = DBQLQH;
     }
   }
-  if (rr_info->m_total_weight == 0)
-  {
+  if (rr_info->m_total_weight == 0) {
     jam();
     distribute_new_weights(handle, rr_info);
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
   Uint32 loop = 0;
-  do
-  {
+  do {
     Uint32 count = rr_info->m_lqhkeyreq_to_same_thread;
     Uint32 inx = rr_info->m_lqhkeyreq_distr_signal_index;
     if (count >= m_num_lqhkeyreq_counts) {
@@ -5726,8 +5736,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
       }
       rr_info->m_lqhkeyreq_distr_signal_index = inx;
     }
-    if (unlikely(loop == rr_info->m_distribution_signal_size))
-    {
+    if (unlikely(loop == rr_info->m_distribution_signal_size)) {
       jam();
       assert(false);
       distribute_new_weights(handle, rr_info);
@@ -5746,8 +5755,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
     jamDataDebug(inx);
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
-    if (current_stolen < weight)
-    {
+    if (current_stolen < weight) {
       jamDebug();
       jamDataDebug(load_indicator);
       /**
@@ -5768,8 +5776,7 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler *const handle,
       jamDataDebug(rr_info->m_used_weight);
       jamDataDebug(rr_info->m_total_weight);
       if (unlikely(rr_info->m_used_weight >=
-                   rr_info->m_total_weight))
-      {
+                   rr_info->m_total_weight)) {
         jamDebug();
         distribute_new_weights(handle, rr_info);
       }
@@ -5797,12 +5804,9 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
   ndbassert(ldm_instance_no > 0);
   Uint32 load_counter = rr_info->m_load_indicator_counter;
   load_counter += LOAD_SCAN_FRAGREQ;
-  if (likely(load_counter < m_rr_load_refresh_count))
-  {
+  if (likely(load_counter < m_rr_load_refresh_count)) {
     rr_info->m_load_indicator_counter = load_counter;
-  }
-  else
-  {
+  } else {
     get_load_indicators(handle, rr_group);
   }
 #ifdef VM_TRACE
@@ -5810,19 +5814,15 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
   ndbassert(num_ldm_instances >= ldm_instance_no);
 #endif
   {
-    if (handle->m_low_load)
-    {
+    if (handle->m_low_load) {
       struct QueryThreadState *q_state =
         &handle->m_query_state[ldm_instance_no - 1];
       Uint32 load_indicator = q_state->m_load_indicator;
-      if (unlikely(load_indicator > 1))
-      {
+      if (unlikely(load_indicator > 1)) {
         jam();
         distribute_new_weights(handle, rr_info, true);
         handle->m_low_load = 0;
-      }
-      else
-      {
+      } else {
         Uint32 ref = numberToRef(DBLQH,
                                  ldm_instance_no,
                                  getOwnNodeId());
@@ -5838,21 +5838,12 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
     Uint32 block_instance_no = ldm_instance_no;
     Uint32 query_counter = rr_info->m_query_counter;
     Uint32 num_lqhs = 2;
-    if ((query_counter & 7) == 1)
-    {
-      /**
-       * See comment in get_lqhkeyreq_ref
-       * We prefer to use DBLQH more for scans since it is a more
-       * complex operation and should gain more by using DBLQH.
-       * So here only 12.5% of the requests are passed to the
-       * next level.
-       */
-      num_lqhs = 0;
-      block_num = DBQLQH;
+    if ((query_counter & 1) == 1) {
+      /* See comment in get_lqhkeyreq_ref */
+      num_lqhs = 1;
     }
     rr_info->m_query_counter = query_counter + 1;
-    for (Uint32 i = 0; i < num_lqhs; i++)
-    {
+    for (Uint32 i = 0; i < num_lqhs; i++) {
       struct QueryThreadState *q_state =
         &handle->m_query_state[query_instance_no - 1];
       Uint32 weight = q_state->m_weight;
@@ -5862,8 +5853,7 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
       jamDataDebug(query_instance_no);
       jamDataDebug(current_stolen);
       jamDataDebug(weight);
-      if (current_stolen < weight)
-      {
+      if (current_stolen < weight) {
         jamDebug();
         jamDataDebug(load_indicator);
         assert(load_indicator > 0);
@@ -5879,8 +5869,7 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
         jamDataDebug(rr_info->m_used_weight);
         jamDataDebug(rr_info->m_total_weight);
         if (unlikely(rr_info->m_used_weight >=
-                     rr_info->m_total_weight))
-        {
+                     rr_info->m_total_weight)) {
           jamDebug();
           distribute_new_weights(handle, rr_info);
         }
@@ -5893,11 +5882,9 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
 #endif
         return ref;
       }
-      if (block_num == DBLQH)
-      {
+      if (block_num == DBLQH) {
         query_instance_no = get_shared_ldm_instance(query_instance_no);
-        if (query_instance_no == 0)
-        {
+        if (query_instance_no == 0) {
           break;
         }
       }
@@ -5907,16 +5894,14 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
       block_num = DBQLQH;
     }
   }
-  if (rr_info->m_total_weight == 0)
-  {
+  if (rr_info->m_total_weight == 0) {
     jam();
     distribute_new_weights(handle, rr_info);
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
   Uint32 loop = 0;
-  do
-  {
+  do {
     Uint32 count = rr_info->m_scan_fragreq_to_same_thread;
     Uint32 inx = rr_info->m_scan_distr_signal_index;
     if (count >= m_num_scan_fragreq_counts) {
@@ -5929,8 +5914,7 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
       }
       rr_info->m_scan_distr_signal_index = inx;
     }
-    if (unlikely(loop == rr_info->m_distribution_signal_size))
-    {
+    if (unlikely(loop == rr_info->m_distribution_signal_size)) {
       jam();
       jamDataDebug(rr_info->m_distribution_signal_size);
       jamDataDebug(rr_info->m_used_weight);
@@ -5956,8 +5940,7 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
     jamDataDebug(inx);
     jamDataDebug(current_stolen);
     jamDataDebug(weight);
-    if (current_stolen < weight)
-    {
+    if (current_stolen < weight) {
       jamDebug();
       jamDataDebug(load_indicator);
       assert(load_indicator > 0);
@@ -5970,8 +5953,7 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler *const handle,
       jamDataDebug(rr_info->m_used_weight);
       jamDataDebug(rr_info->m_total_weight);
       if (unlikely(rr_info->m_used_weight >=
-                   rr_info->m_total_weight))
-      {
+                   rr_info->m_total_weight)) {
         jamDebug();
         distribute_new_weights(handle, rr_info);
       }

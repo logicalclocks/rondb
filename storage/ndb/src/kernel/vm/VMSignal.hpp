@@ -102,7 +102,8 @@ class Signal {
 
  public:
   Signal();
-  
+
+  Uint32 gsn() const;
   Uint32 getLength() const;
   Uint32 getTrace() const;
   Uint32 getSendersBlockRef() const;
@@ -163,6 +164,8 @@ class SaveSignal {
     clear();
   }
 };
+
+inline Uint32 Signal::gsn() const { return header.theVerId_signalNumber; }
 
 inline Uint32 Signal::getLength() const { return header.theLength; }
 

@@ -35,6 +35,7 @@
 #include <IntrusiveList.hpp>
 #include <RWPool64.hpp>
 #include <SimulatedBlock.hpp>
+#include <ndb_prefetch.h>
 
 // big brother
 #include <dbacc/Dbacc.hpp>

@@ -4936,6 +4936,11 @@ int ha_ndbcluster::ndb_write_row(uchar *record, bool primary_key_update,
         NdbOperation::OperationOptions::OO_DEFERRED_CONSTAINTS;
   }
 
+  if (thd_ndb->get_applier()) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_REPLICA_APPLIER;
+  }
+
   if (thd_test_options(thd, OPTION_NO_FOREIGN_KEY_CHECKS)) {
     DBUG_PRINT("info", ("Disabling foreign keys"));
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
@@ -5652,6 +5657,11 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
         NdbOperation::OperationOptions::OO_DEFERRED_CONSTAINTS;
   }
 
+  if (thd_ndb->get_applier()) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_REPLICA_APPLIER;
+  }
+
   if (thd_test_options(thd, OPTION_NO_FOREIGN_KEY_CHECKS)) {
     DBUG_PRINT("info", ("Disabling foreign keys"));
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
@@ -5919,6 +5929,11 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
   if (thd_ndb->get_applier() || THDVAR(thd, deferred_constraints)) {
     options.optionsPresent |=
         NdbOperation::OperationOptions::OO_DEFERRED_CONSTAINTS;
+  }
+
+  if (thd_ndb->get_applier()) {
+    options.optionsPresent |=
+        NdbOperation::OperationOptions::OO_REPLICA_APPLIER;
   }
 
   if (thd_test_options(thd, OPTION_NO_FOREIGN_KEY_CHECKS)) {

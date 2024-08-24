@@ -1,0 +1,16 @@
+# Run benchmark oltp_read_write
+#
+# - simple ranges, "SELECT c WHERE id BETWEEN "
+# - sum ranges, "SELECT SUM(k) WHERE id BETWEEN "
+# - order ranges, "SELECT c WHERE id BETWEEN ... ORDER BY c"
+# - distint ranges, "SELECT DISTINCT c WHERE id BETWEEN .. ORDER BY c"
+# - index updates, "UPDATE k WHERE id=?"
+# - non index updates, "UPDATE c WHERE id = ?"
+# - delete+insert, "DELETE .. WHERE id = ?" + "INSERT" again, no actual change.
+--source sb_init.inc
+--exec $NDB_MGM -e "DATABASE QUOTA SET sbtest --rate-per-sec = 1000000"
+let $bench_name = oltp_read_write;
+--source sb_run.inc
+--exec $NDB_MGM -e "DATABASE QUOTA DROP sbtest"
+
+--source sb_cleanup.inc

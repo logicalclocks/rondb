@@ -1,5 +1,7 @@
 /* Copyright (c) 2007, 2024, Oracle and/or its affiliates.
     Use is subject to license terms.
+  Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -162,8 +164,9 @@ bool printSCHEMA_TRANS_IMPL_REQ(FILE *output, const Uint32 *theData, Uint32 len,
 bool printSCHEMA_TRANS_IMPL_CONF(FILE *output, const Uint32 *theData,
                                  Uint32 len, Uint16 /*rbn*/) {
   if (len < SchemaTransImplConf::SignalLength) {
-    assert(false);
-    return false;
+    fprintf(output, "Wrong length, should be %u, but is %u\n",
+            SchemaTransImplConf::SignalLength,
+            len);
   }
 
   const SchemaTransImplConf *sig = (const SchemaTransImplConf *)theData;
@@ -176,8 +179,9 @@ bool printSCHEMA_TRANS_IMPL_CONF(FILE *output, const Uint32 *theData,
 bool printSCHEMA_TRANS_IMPL_REF(FILE *output, const Uint32 *theData, Uint32 len,
                                 Uint16 /*rbn*/) {
   if (len < SchemaTransImplRef::SignalLength) {
-    assert(false);
-    return false;
+    fprintf(output, "Wrong length, should be %u, but is %u\n",
+            SchemaTransImplRef::SignalLength,
+            len);
   }
 
   const SchemaTransImplRef *sig = (const SchemaTransImplRef *)theData;

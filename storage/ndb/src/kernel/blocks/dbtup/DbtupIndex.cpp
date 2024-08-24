@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -75,9 +75,12 @@ Dbtup::tuxGetTupAddr(Uint32 pageId,
 /**
  * Can be called from MT-build of ordered indexes.
  */
-int Dbtup::tuxAllocNode(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP_input,
-                        Uint32 *tablePtrP_input, Uint32 &pageId,
-                        Uint32 &pageOffset, Uint32 *&node) {
+int Dbtup::tuxAllocNode(EmulatedJamBuffer * jamBuf,
+                        Uint32 *fragPtrP_input,
+                        Uint32 *tablePtrP_input,
+                        Uint32& pageId,
+                        Uint32& pageOffset,
+                        Uint32*& node) {
   thrjamEntry(jamBuf);
   Tablerec *tablePtrP = (Tablerec *)tablePtrP_input;
   Fragrecord *fragPtrP = (Fragrecord *)fragPtrP_input;
@@ -103,8 +106,11 @@ int Dbtup::tuxAllocNode(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP_input,
   return 0;
 }
 
-void Dbtup::tuxFreeNode(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
-                        Uint32 pageId, Uint32 pageOffset, Uint32 *node) {
+void Dbtup::tuxFreeNode(Uint32* fragPtrP_input,
+                        Uint32* tablePtrP_input,
+                        Uint32 pageId,
+                        Uint32 pageOffset,
+                        Uint32* node) {
   jamEntry();
   Tablerec *tablePtrP = (Tablerec *)tablePtrP_input;
   Fragrecord *fragPtrP = (Fragrecord *)fragPtrP_input;
@@ -119,7 +125,7 @@ void Dbtup::tuxFreeNode(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
   Uint32 attrDataOffset= AttributeOffset::getOffset(attrDes2);
   ndbrequire(node == (Uint32*)ptr + attrDataOffset);
 
-  free_fix_rec(fragPtrP, tablePtrP, &key, (Fix_page *)pagePtr.p);
+  free_fix_rec(fragPtrP, tablePtrP, &key, (Fix_page*)pagePtr.p);
 }
 
 int Dbtup::tuxReadAttrsCurr(EmulatedJamBuffer *jamBuf, const Uint32 *attrIds,
@@ -155,18 +161,19 @@ int Dbtup::tuxReadAttrsOpt(EmulatedJamBuffer *jamBuf, Uint32 *fragPtrP,
   thrjamEntryDebug(jamBuf);
   // search for tuple version if not original
 
-  Operationrec tmpOp;
   KeyReqStruct req_struct(jamBuf);
-  req_struct.m_lqh = c_lqh;
-  req_struct.tablePtrP = (Tablerec*)tablePtrP;
-  req_struct.fragPtrP = (Fragrecord*)fragPtrP;
-
+  Operationrec tmpOp;
   tmpOp.m_tuple_location.m_page_no= pageId;
   tmpOp.m_tuple_location.m_page_idx= pageIndex;
   tmpOp.op_type = ZREAD; // valgrind
   setup_fixed_tuple_ref(&req_struct,
                         &tmpOp,
                         (Tablerec*)tablePtrP);
+
+  req_struct.m_lqh = c_lqh;
+  req_struct.tablePtrP = (Tablerec*)tablePtrP;
+  req_struct.fragPtrP = (Fragrecord*)fragPtrP;
+
   setup_fixed_part(&req_struct,
                    &tmpOp,
                    (Tablerec*)tablePtrP);
@@ -451,14 +458,16 @@ Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
 
   Operationrec tmpOp;
   KeyReqStruct req_struct(jamBuf);
-  req_struct.m_lqh = c_lqh;
-  req_struct.tablePtrP = tablePtr.p;
-  req_struct.fragPtrP = fragPtr.p;
 
   tmpOp.m_tuple_location.m_page_no = pageId;
   tmpOp.m_tuple_location.m_page_idx = pageIndex;
   tmpOp.op_type = ZREAD;  // valgrind
   setup_fixed_tuple_ref(&req_struct, &tmpOp, tablePtr.p);
+
+  req_struct.m_lqh = c_lqh;
+  req_struct.tablePtrP = tablePtr.p;
+  req_struct.fragPtrP = fragPtr.p;
+
   setup_fixed_part(&req_struct, &tmpOp, tablePtr.p);
   return tuxReadAttrsCommon(req_struct, attrIds, numAttrs, dataOut, tupVersion);
 }

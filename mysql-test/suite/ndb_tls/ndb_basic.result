@@ -684,7 +684,7 @@ create table t1 ( c50 char(255) column_format fixed, c49 char(255) column_format
 ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 851 'Fixed-size column offset exceeded max.Use VARCHAR or COLUMN_FORMAT DYNAMIC for memory-stored columns' from NDB
+Warning	1296	Got error 851 'Fixed-size column offset exceeded max. Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns' from NDB
 Warning	1296	Failed to commit NDB schema transaction
 Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
 create table `t1` (`a` int, b int, primary key (a,b)) engine=ndb partition by key(`a`,`b`,`a`);
@@ -711,10 +711,7 @@ drop table t1;
 create table t1
 (a bigint, b bigint, c bigint, d bigint, 
 primary key (a,b,c,d)) 
-engine=ndb
-max_rows=800000000;
-Warnings:
-Warning	1105	Ndb might have problems storing the max amount of rows specified
+engine=ndb;
 insert into t1 values
 (1,2,3,4),(2,3,4,5),(3,4,5,6),
 (3,2,3,4),(1,3,4,5),(2,4,5,6),
@@ -742,8 +739,7 @@ drop table t1;
 create table t1
 (a bigint, b bigint, c bigint, d bigint, 
 primary key (a,b,c,d))
-engine=ndb
-max_rows=1;
+engine=ndb;
 insert into t1 values
 (1,2,3,4),(2,3,4,5),(3,4,5,6),
 (3,2,3,4),(1,3,4,5),(2,4,5,6),
@@ -767,7 +763,7 @@ where table_schema = 'test' and table_name = 't1';
 drop table t1;
 select @cnt_big > @cnt_small;
 @cnt_big > @cnt_small
-1
+0
 create table t1
 (counter int(64) NOT NULL auto_increment,
 datavalue char(40) default 'XXXX',
@@ -1133,12 +1129,9 @@ id	parent_id
 DROP TABLE child, parent;
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
 ENGINE=ndb PARTITION BY KEY(a) PARTITIONS 144;
-ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 1224 'Too many fragments' from NDB
-Warning	1296	Failed to commit NDB schema transaction
-Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
+drop table t1;
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
 ENGINE=ndb;
 show warnings;

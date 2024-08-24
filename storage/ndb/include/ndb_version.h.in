@@ -930,6 +930,11 @@ ndbd_handle_new_hash_function(Uint32 x)
   return false;
 }
 
+#define NDBD_RATE_LIMIT_VERSION NDB_MAKE_VERSION(24, 10, 0)
+static inline bool ndbd_rate_limit_supported(Uint32 v) {
+  return v >= NDBD_RATE_LIMIT_VERSION;
+}
+
 /*
  * Data nodes reply to MGMD START BACKUP NOWAIT REQ from
  * MGMD with BACKUP_REF/CONF.

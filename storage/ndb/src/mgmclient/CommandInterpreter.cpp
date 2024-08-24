@@ -34,6 +34,7 @@
 #include "mgmcommon/NdbMgm.hpp"
 
 #include <NdbTCP.h>
+#include <util/string_converter.hpp>
 #include <kernel/BlockNumbers.h>
 #include <kernel/signaldata/DumpStateOrd.hpp>
 #include <util/BaseString.hpp>
@@ -41,6 +42,9 @@
 #include "portlib/NdbMem.h"
 #include <../../src/mgmapi/mgmapi_configuration.hpp>
 
+#include <fstream> 
+#include <iostream>
+#include <string>
 enum StopState
 {
   StopIdle = 0,
@@ -183,6 +187,14 @@ class CommandInterpreter {
   int executeDropNodeGroup(char *parameters);
   int executeStartTls();
   void executeShowTlsInfo(const char *parameters);
+  int executeDatabaseQuotaSet(char* parameters);
+  int executeDatabaseQuotaAlter(char* parameters);
+  int executeDatabaseQuotaDrop(char* parameters);
+  int executeDatabaseQuotaGet(char* parameters);
+  int executeDatabaseQuotaList(char* parameters);
+  int executeDatabaseQuotaBackup(char* parameters);
+  int executeDatabaseQuotaRestore(char* parameters);
+  int executeDatabaseQuota(char* parameters, int);
   const char *get_current_prompt() const {
     // return the current prompt
     return m_prompt;
@@ -327,6 +339,12 @@ static const char* helpText =
 "PURGE STALE SESSIONS                   Reset reserved nodeid's in the mgmt server\n"
 "CONNECT [<connectstring>]              Connect to management server (reconnect if already connected)\n"
 "<id> REPORT <report-type>              Display report for <report-type>\n"
+"DATABASE QUOTA SET db {<property>=<value>}+ Set database quotas\n"
+"DATABASE QUOTA ALTER db {<property>=<value>}+ Alter database quotas\n"
+"DATABASE QUOTA DROP db                 Drop database quotas\n"
+"DATABASE QUOTA GET db                  Get database quotas for specific database\n"
+"DATABASE QUOTA LIST                    Get database quotas for all databases\n"
+"DATABASE QUOTA BACKUP                  Backup database quotas for all databases\n"
 "QUIT                                   Quit management client\n"
 ;
 
@@ -727,7 +745,57 @@ static const char* helpTextPrompt =
 "                               No string resets the prompt to default\n\n"
 ;
 
-
+static const char* helpDatabaseQuota =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for DATABASE QUOTA command\n"
+"---------------------------------------------------------------------------\n"
+"DATABASE QUOTA SET Set quotas and rate limits on a database in RonDB\n\n"
+"DATABASE QUOTA ALTER Alter quotas and rate limits on a database in RonDB\n\n"
+"DATABASE QUOTA DROP Drop quotas and rate limits on a database in RonDB\n\n"
+"DATABASE QUOTA GET Retrieve quota information for specific database\n\n"
+"DATABASE QUOTA LIST Retrieve quota information for all databases\n\n"
+"DATABASE QUOTA BACKUP Backup quota information for all databases\n\n"
+"  The following properties can be set (altered):\n"
+"    --in-memory-size = VALUE\n"
+"      The maximum size of a database for the in-memory columns\n\n"
+"    --on-disk-size = VALUE\n"
+"      The maximum size of a database for the on-disk columns\n\n"
+"    --rate-per-sec = VALUE\n"
+"      The maximum rate per second a database is allowed to perform\n\n"
+"    --max-transaction-size = VALUE\n"
+"      Max number of rows changed in transactions involving this database\n\n"
+"    --max-parallel-transactions = VALUE\n"
+"      Max number of concurrent transactions involving this database\n\n"
+"    --max-parallel-complex-queries = VALUE\n"
+"      Max number of complex queries concurrently running in this database\n\n\n"
+" in-memory-size is based on the pages allocated to table fragments. If the\n"
+" database is full one can issue the command OPTIMIZE TABLE to defragment the\n"
+" table to get more available space in the database.\n\n"
+" on-disk-size is based on the number of extents allocated to table fragments.\n"
+" To free resources for on disk columns it is required to drop the table using\n"
+" the extents.\n\n"
+" The default of on-disk-size is 10 times the in-memory-size\n\n"
+" rate-per-sec is based on a fixed cost per read/write lookup and scans\n"
+" with additional cost per kByte of data transferred to/from RonDB. Using\n"
+" on-disk columns in a lookup will increase the cost of the lookups. Scans\n"
+" will have a fixed cost per table fragment they touch (thus scans using the\n"
+" partition key in the condition will be a lot cheaper than scans using all\n"
+" table fragments. Scans will have a fixed cost for every row they scan\n"
+" and a cost per kByte they transfer back to the requester\n\n"
+" Limiting the concurrent changes a database can be involved in at any point\n"
+" in time ensures that a single database cannot seriously affect latency and\n"
+" throughput of other databases in the RonDB cluster.\n\n"
+" Complex queries are any queries involving scans that are not targeting a\n"
+" specific table fragment. This means single-table scans as well as complex\n"
+" queries joining multiple tables. RonDB will allow such queries to go over\n"
+" the rates. However after such a query the rate allowed will be cut to 50%\n"
+"of the rate set here. It will continue to have a lower rate until the\n"
+" overflow rate have been returned through a temporary lower rate. Queries\n"
+" running over the rates can be handled by slowing down the execution and in\n"
+" case the RonDB cluster is overloaded such queries can also be aborted.\n\n"
+" The full documentation of database quotas is documented in a section on\n"
+" docs.rondb.com\n\n"
+;
 #ifdef VM_TRACE // DEBUG ONLY
 static const char* helpTextDebug =
 "---------------------------------------------------------------------------\n"
@@ -787,6 +855,7 @@ struct st_cmd_help {
                   {"REPORT", helpTextReport, helpTextReportFn},
                   {"QUIT", helpTextQuit, NULL},
                   {"PROMPT", helpTextPrompt, NULL},
+                  {"DATABASE QUOTA", helpDatabaseQuota, NULL},
 #ifdef VM_TRACE  // DEBUG ONLY
                   {"DEBUG", helpTextDebug, NULL},
 #endif  // VM_TRACE
@@ -1312,6 +1381,20 @@ static void split_args(const char *line, Vector<BaseString> &args) {
     if (args[i].length() == 0) args.erase(i--);
 }
 
+static void split_args_with_equal(const char* line, Vector<BaseString>& args) {
+  // Split the command line on space
+  BaseString tmp(line);
+  tmp.split_with_equal(args);
+
+  // Remove any empty args which come from double
+  // spaces in the command line
+  // ie. "hello<space><space>world" becomes ("hello, "", "world")
+  //
+  for (unsigned i= 0; i < args.size(); i++)
+    if (args[i].length() == 0)
+      args.erase(i--);
+}
+
 static void split_args_with_quotes(const char *line, Vector<BaseString> &args) {
   // Split the command line on space
   BaseString tmp(line);
@@ -1458,6 +1541,48 @@ bool CommandInterpreter::execute_impl(const char *_line, bool interactive) {
     DBUG_RETURN(true);
   } else if (native_strcasecmp(firstToken, "PROMPT") == 0) {
     m_error = executePrompt(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "DATABASE") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "QUOTA SET",
+                      sizeof("QUOTA SET") - 1) == 0) {
+    m_error = executeDatabaseQuotaSet(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "DATABASE") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "QUOTA ALTER",
+                      sizeof("QUOTA ALTER") - 1) == 0) {
+    m_error = executeDatabaseQuotaAlter(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "DATABASE") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "QUOTA DROP",
+                      sizeof("QUOTA DROP") - 1) == 0) {
+    m_error = executeDatabaseQuotaDrop(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "DATABASE") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "QUOTA GET",
+                      sizeof("QUOTA GET") - 1) == 0) {
+    m_error = executeDatabaseQuotaGet(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "DATABASE") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "QUOTA LIST",
+                      sizeof("QUOTA LIST") - 1) == 0) {
+    m_error = executeDatabaseQuotaList(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "DATABASE") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "QUOTA BACKUP",
+                      sizeof("QUOTA BACKUP") - 1) == 0) {
+    m_error = executeDatabaseQuotaBackup(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "DATABASE") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "QUOTA RESTORE",
+                      sizeof("QUOTA RESTORE") - 1) == 0) {
+    m_error = executeDatabaseQuotaRestore(allAfterFirstToken);
     DBUG_RETURN(true);
   } else if (native_strcasecmp(firstToken, "ALL") == 0) {
     m_error = analyseAfterFirstToken(-1, allAfterFirstToken);
@@ -4046,5 +4171,418 @@ int CommandInterpreter::setDefaultBackupPassword(const char backup_password[]) {
 
 int CommandInterpreter::setAlwaysEncryptBackup(bool on) {
   m_always_encrypt_backup = on;
+  return 0;
+}
+
+#define SET_DATABASE 0
+#define ALTER_DATABASE 1
+#define DROP_DATABASE 2
+
+int CommandInterpreter::executeDatabaseQuotaGet(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected a database name as parameter" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 2) {
+    ndbout << "Expected a database name as parameter, nothing more" << endl;
+    return -1;
+  }
+  const char *database_name = command_list[1].c_str();
+  int result = 0;
+  char *result_buf = nullptr;
+  result = ndb_mgm_get_quotas(m_mgmsrv, database_name, &result_buf);
+  if (result == 0) {
+    fprintf(stdout, "%s", result_buf);
+    free(result_buf);
+  } else {
+    ndbout << "DATABASE QUOTA GET"
+           << " command failed: Error:" << endl;
+    printError();
+  }
+  return result;
+}
+
+static const char *backup_magic_str = "##DATABASE QUOTA BACKUP%%";
+
+int CommandInterpreter::executeDatabaseQuotaRestore(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected DATABASE QUOTA RESTORE file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 2) {
+    ndbout << "Expected only a file parameter in this command" << endl;
+    return -1;
+  }
+  const char *restore_file_name = command_list[1].c_str();
+  std::ifstream input(restore_file_name);
+  std::string str;
+  if (input.fail()) {
+    int error_code = errno;
+    std::perror("Error: ");
+    ndbout << "Failed to open file: " << restore_file_name;
+    ndbout << " with errno: " << error_code << endl;
+    return -1;
+  }
+  while (std::getline(input, str, '\n')) {
+    if (input.fail()) {
+      ndbout << "Malformed restore file" << endl;
+      return -1;
+    }
+    const char *c_str = str.c_str();
+    char *line = strdup(c_str);
+    if (memcmp(line, backup_magic_str, 25) == 0) {
+      ; // Skip magic string
+    } else {
+      ndbout << "Execute " << c_str << endl;
+      char* firstToken = strtok(line, " ");
+      char* allAfterFirstToken = strtok(NULL, "");
+      if (native_strcasecmp(firstToken, "DATABASE") == 0 &&
+          allAfterFirstToken != NULL &&
+          native_strncasecmp(allAfterFirstToken, "QUOTA SET",
+                   sizeof("QUOTA SET") - 1) == 0) {
+        int error_code = executeDatabaseQuotaSet(allAfterFirstToken);
+        if (error_code != 0) {
+          ndbout << "DATABASE QUOTA SET command failed" << endl;
+          ndbout << "Will continue with next command" << endl;
+        } else {
+          ndbout << "DATABASE QUOTA SET command succeeded for RESTORE" << endl;
+        }
+      } else {
+        ndbout << "Command not supported, will quit" << endl;
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
+
+int CommandInterpreter::executeDatabaseQuotaBackup(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected DATABASE QUOTA BACKUP file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 2) {
+    ndbout << "Expected only a file parameter in this command" << endl;
+    return -1;
+  }
+  const char *backup_file_name = command_list[1].c_str();
+  FILE *fd = fopen(backup_file_name, "w");
+  if (fd == NULL) {
+    int error_code = errno;
+    ndbout << "Failed to open file: " << backup_file_name;
+    ndbout << " with errno: " << error_code << endl;
+    return -1;
+  }
+  {
+    /* Write an indication of what file it is */
+    int res = fprintf(fd, "%s\n", backup_magic_str);
+    if (res == -1) {
+      int error_code = errno;
+      ndbout << "Failed to write backup file with errno: " << error_code;
+      ndbout << endl;
+      return -1;
+    }
+  }
+  Uint32 nextDatabaseId = 0;
+  int result = 0;
+  do {
+    char *result_buf = nullptr;
+    result = ndb_mgm_backup_quotas(m_mgmsrv, &nextDatabaseId, &result_buf);
+    if (result == 0) {
+      if (nextDatabaseId == RNIL) {
+        free(result_buf);
+        fprintf(stdout, "Database Quota Backup command completed\n");
+        break;
+      }
+      int res = fprintf(fd, "%s", result_buf);
+      if (res == -1) {
+        int error_code = errno;
+        ndbout << "Failed to write backup file with errno: " << error_code;
+        ndbout << endl;
+        return -1;
+      }
+      free(result_buf);
+    } else {
+      ndbout << "DATABASE QUOTA BACKUP"
+             << " command failed: Error:" << endl;
+      printError();
+      break;
+    }
+  } while (true);
+  fclose(fd);
+  return result;
+}
+
+int CommandInterpreter::executeDatabaseQuotaList(char* parameters) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected LIST in this command, should never happen" << endl;
+    return -1;
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_list_size = command_list.size();
+  if (command_list_size > 1) {
+    ndbout << "Expected no parameters in this command" << endl;
+    return -1;
+  }
+  Uint32 nextDatabaseId = 0;
+  int result = 0;
+  do {
+    char *result_buf = nullptr;
+    result = ndb_mgm_list_quotas(m_mgmsrv, &nextDatabaseId, &result_buf);
+    if (result == 0) {
+      if (nextDatabaseId == RNIL) {
+        free(result_buf);
+        fprintf(stdout, "Database Quota List command completed\n");
+        break;
+      }
+      fprintf(stdout, "%s", result_buf);
+      free(result_buf);
+    } else {
+      ndbout << "DATABASE QUOTA LIST"
+             << " command failed: Error:" << endl;
+      printError();
+      break;
+    }
+  } while (true);
+  return result;
+}
+
+int CommandInterpreter::executeDatabaseQuotaSet(char* parameters) {
+  return executeDatabaseQuota(parameters, SET_DATABASE);
+}
+
+int CommandInterpreter::executeDatabaseQuotaAlter(char* parameters) {
+  return executeDatabaseQuota(parameters, ALTER_DATABASE);
+}
+
+int CommandInterpreter::executeDatabaseQuotaDrop(char* parameters) {
+  return executeDatabaseQuota(parameters, DROP_DATABASE);
+}
+
+int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
+  char *id = strchr(parameters, ' ');
+  if (emptyString(id)) {
+    ndbout << "Expected at least a database name as parameter" << endl;
+    return -1;
+  }
+
+  const char *type_str = nullptr;
+  if (type == SET_DATABASE) {
+    type_str = "SET";
+  } else if (type == ALTER_DATABASE) {
+    type_str = "ALTER";
+  } else {
+    require(type == DROP_DATABASE);
+    type_str = "DROP";
+  }
+  Vector<BaseString> command_list;
+  split_args_with_equal(id, command_list);
+
+  Uint32 command_pos = 0;
+  Uint32 command_list_size = command_list.size();
+  Uint32 remaining_commands = command_list_size;
+  const char *read_type_str = command_list[command_pos++].c_str();
+  if (native_strncasecmp(type_str, read_type_str, strlen(type_str)) != 0) {
+    ndbout << "Command inconsistency for DATABASE QUOTA "
+           << type_str
+           << " command"
+           << endl;
+    return -1;
+  }
+  remaining_commands--;
+  if (remaining_commands == 0) {
+    ndbout << "DATABASE QUOTA "
+           << type_str
+           << " should have a database name as parameter at a minimum"
+           << endl;
+    return -1;
+  }
+  const char *database_name = command_list[command_pos++].c_str();
+  remaining_commands--;
+
+  Uint32 in_memory_size = 0; //MBytes
+  Uint32 on_disk_size = 0; // MBytes
+  Uint32 rate_per_sec = 0;
+  Uint32 max_transaction_size = 0;
+  Uint32 max_parallel_transactions = 0;
+  Uint32 max_parallel_complex_queries = 0;
+  bool on_disk_size_set = false;
+
+  for (Uint32 i = 0; database_name[i] != 0; i++) {
+    if (database_name[i] == '/') {
+      ndbout << "DATABASE QUOTA " << type_str << " " << database_name
+             << " have a / in the database name, not allowed"
+             << endl;
+      return -1;
+    }
+  }
+  if (type == DROP_DATABASE && (remaining_commands > 0)) {
+    ndbout <<
+      "DATABASE QUOTA DROP should only have a database name as parameter"
+      << endl;
+    return -1;
+  }
+  bool found_change = false;
+  while (remaining_commands >= 3) {
+    remaining_commands -= 3; /* key = value */
+    const char *key = command_list[command_pos++].c_str();
+    const char *equal_str = command_list[command_pos++].c_str();
+    const char *val_str = command_list[command_pos++].c_str();
+
+    if (native_strncasecmp(equal_str, "=", 1) != 0) {
+      ndbout << "DATABASE QUOTA "
+             << type_str
+             << " db with key = value, was missing a = here"
+             << endl;
+      return -1;
+    }
+    if (val_str == nullptr) {
+      ndbout << "DATABASE QUOTA "
+             << type_str
+             << " command missing a value for a key parameter" << endl;
+      return -1;
+    }
+    Uint64 val = 0;
+    if (!convert_string_to_uint64(val_str, val, false)) {
+      ndbout << "Value in DATABASE QUOTA "
+             << type_str
+             << " must be a number, can be using"
+             << " k, M, G and T, e.g. 1k meaning 1 * 1024" << endl;
+      return -1;
+    }
+    if (native_strncasecmp(key, "--", 2) != 0) {
+      ndbout << "Parameters should always start with --" << endl;
+      return -1;
+    }
+    key+= 2; //Move past the --
+    if (native_strncasecmp(key,
+                        "RATE-PER-SEC",
+                        sizeof("RATE-PER-SEC") - 1) == 0) {
+      rate_per_sec = val;
+      if (val != 0) found_change = true;
+    } else if (native_strncasecmp(key,
+                        "MAX-TRANSACTION-SIZE",
+                        sizeof("MAX-TRANSACTION-SIZE") - 1) == 0) {
+      max_transaction_size = val;
+      if (val != 0) found_change = true;
+    } else if (native_strncasecmp(key, "MAX-PARALLEL-TRANSACTIONS",
+                        sizeof("MAX-PARALLEL-TRANSACTIONS") - 1) == 0) {
+      max_parallel_transactions = val;
+      if (val != 0) found_change = true;
+    } else if (native_strncasecmp(key,
+                        "MAX-PARALLEL-COMPLEX-QUERIES",
+                        sizeof("MAX-PARALLEL-COMPLEX-QUERIES") - 1) == 0) {
+      max_parallel_complex_queries = val;
+    } else if (native_strncasecmp(key,
+                        "IN-MEMORY-SIZE",
+                        sizeof("IN-MEMORY-SIZE") - 1) == 0) {
+      in_memory_size = val;
+      if (val != 0) found_change = true;
+    } else if (native_strncasecmp(key,
+                        "ON-DISK-SIZE",
+                        sizeof("ON-DISK-SIZE") - 1) == 0) {
+      on_disk_size = val;
+      on_disk_size_set = true;
+      if (val != 0) found_change = true;
+    } else {
+      ndbout << "Wrong key: " << key << ", choose one of:" << endl
+             << "rate-per-sec, in-memory-size, on-disk-size" << endl
+             << "max-transaction-size, max-parallel-transactions" << endl
+             << "max-parallel-complex-queries" << endl;
+      return -1;
+    }
+  }
+  if (remaining_commands > 0) {
+    ndbout << "Wrong number of parameters to DATABASE QUOTA "
+           << type_str
+           << " command" << endl;
+    return -1;
+  }
+  if (on_disk_size_set == false) {
+    on_disk_size = 10 * in_memory_size;
+  }
+  if (!found_change && type == SET_DATABASE) {
+    ndbout << "At least one parameter needs to have non-zero value" << endl;
+    return -1;
+  }
+#if 0
+  ndbout << "Successful execution of DATABASE QUOTA "
+         << type_str
+         << " "
+         << database_name
+         << " rate-per-sec = "
+         << rate_per_second
+         << endl
+         << " in-memory-size = "
+         << in_memory_size
+         << endl
+         << " on-disk-size = "
+         << on_disk_size
+         << endl
+         << " max-transaction-size = "
+         << max_transaction_size
+         << endl
+         << " max-parallel-transactions = "
+         << max_parallel_transactions
+         << endl
+         << " max-parallel-complex-queries = "
+         << max_parallel_complex_queries
+         << endl;
+#endif
+  int result = 0;
+  if (type == SET_DATABASE) {
+    result = ndb_mgm_set_quotas(m_mgmsrv,
+                                database_name,
+                                in_memory_size,
+                                on_disk_size,
+                                rate_per_sec,
+                                max_transaction_size,
+                                max_parallel_transactions,
+                                max_parallel_complex_queries);
+  } else if (type == ALTER_DATABASE) {
+    result = ndb_mgm_alter_quotas(m_mgmsrv,
+                                  database_name,
+                                  in_memory_size,
+                                  on_disk_size,
+                                  rate_per_sec,
+                                  max_transaction_size,
+                                  max_parallel_transactions,
+                                  max_parallel_complex_queries);
+  } else {
+    require(type == DROP_DATABASE);
+    result = ndb_mgm_drop_quotas(m_mgmsrv,
+                                database_name);
+  }
+  if (result == -1) {
+    ndbout << "DATABASE QUOTA "
+           << type_str
+           << " command failed: Error:" << endl;
+    printError();
+    return -1;
+  }
+  ndbout << "DATABASE QUOTA "
+         << type_str
+         << " successfully executed"
+         << endl;
   return 0;
 }

@@ -144,6 +144,8 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
                                       (m_flags & OF_QUEUEABLE) != 0);
   TcKeyReq::setDeferredConstraints(requestInfo,
                                    (m_flags & OF_DEFERRED_CONSTRAINTS) != 0);
+  TcKeyReq::setReplicaApplierFlag(requestInfo,
+                                  (m_flags & OF_REPLICA_APPLIER) != 0);
   TcKeyReq::setDisableFkConstraints(requestInfo,
                                     (m_flags & OF_DISABLE_FK) != 0);
   TcKeyReq::setDistributionKeyFlag(requestInfo, theDistrKeyIndicator_);
@@ -171,6 +173,8 @@ int NdbOperation::doSendKeyReq(int aNodeId, GenericSectionPtr *secs,
   Uint32 tcNodeVersion = impl->getNodeNdbVersion(aNodeId);
 
   setRequestInfoTCKEYREQ(lastFlag, sendLong);
+
+  DBUG_PRINT("info", ("Send TCKEYREQ: NdbOperation"));
 
   Uint32 keyInfoLen = secs[0].sz;
   Uint32 attrInfoLen = (numSecs == 2) ? secs[1].sz : 0;

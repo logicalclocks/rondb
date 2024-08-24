@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,6 +38,9 @@
 #include "InitConfigFileParser.hpp"
 #include "m_string.h"
 #include "my_alloc.h"
+#include <cstdlib>
+#include <util/string_converter.hpp>
+
 
 const int MAX_LINE_LENGTH = 1024;  // Max length of line of text in config file
 static void trim(char *);
@@ -474,64 +477,9 @@ bool InitConfigFileParser::isEmptyLine(const char *line) const {
 //****************************************************************************
 //  Convert String to Int
 //****************************************************************************
-bool InitConfigFileParser::convertStringToUint64(const char *s, Uint64 &val) {
-  if (s == nullptr) return false;
-
-  while (*s != '\0' && isspace(*s)) s++;
-  const bool negative = (*s == '-');
-
-  union {
-    signed long long vs;
-    unsigned long long vu;
-  };
-  char *p;
-  constexpr int log10base = 0;
-  errno = 0;
-  if (negative) {
-    vs = std::strtoll(s, &p, log10base);
-    if ((vs == LLONG_MIN || vs == LLONG_MAX) && errno == ERANGE) {
-      return false;
-    }
-  } else {
-    vu = std::strtoull(s, &p, log10base);
-    if (vu == ULLONG_MAX && errno == ERANGE) {
-      return false;
-    }
-  }
-  if (p == s) return false;
-
-  int mul = 0;
-
-  switch (*p) {
-    case '\0':
-      break;
-    case 'k':
-    case 'K':
-      mul = 10;
-      p++;
-      break;
-    case 'M':
-      mul = 20;
-      p++;
-      break;
-    case 'G':
-      mul = 30;
-      p++;
-      break;
-    default:
-      return false;
-  }
-  if (*p != '\0') return false;
-  if (negative) {
-    Int64 v = (vs << mul);
-    if ((v >> mul) != vs) return false;
-    val = v;
-  } else {
-    Uint64 v = (vu << mul);
-    if ((v >> mul) != vu) return false;
-    val = v;
-  }
-  return true;
+bool InitConfigFileParser::convertStringToUint64(const char* s, 
+                                                 Uint64& val) {
+  return convert_string_to_uint64(s, val);
 }
 
 bool InitConfigFileParser::convertStringToBool(const char *s, bool &val) {

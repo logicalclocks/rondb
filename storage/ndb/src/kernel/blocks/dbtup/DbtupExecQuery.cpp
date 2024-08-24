@@ -1923,13 +1923,13 @@ void Dbtup::setup_fixed_part(KeyReqStruct *req_struct, Operationrec *regOperPtr,
             (!(req_struct->m_tuple_ptr->m_header_bits & Tuple_header::FREE)));
 
   Uint32* tab_descr = regTabPtr->tabDescriptor;
+  NDB_PREFETCH_READ((char *)tab_descr);
   Uint32 mm_check_offset = regTabPtr->get_check_offset(MM);
   Uint32 dd_check_offset = regTabPtr->get_check_offset(DD);
 
   req_struct->check_offset[MM] = mm_check_offset;
   req_struct->check_offset[DD] = dd_check_offset;
   req_struct->attr_descr = tab_descr;
-  NDB_PREFETCH_READ((char *)tab_descr);
 }
 
 void Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct *req_struct,
@@ -2221,8 +2221,11 @@ int Dbtup::handleUpdateReq(Signal* signal,
        */
       if (base->m_header_bits & Tuple_header::VAR_PART) {
         jam();
-        optimize_var_part(req_struct, base, operPtrP,
-            regFragPtr, regTabPtr);
+        optimize_var_part(req_struct,
+                          base,
+                          operPtrP,
+                          regFragPtr,
+                          regTabPtr);
       }
       break;
     case AttributeHeader::OPTIMIZE_MOVE_FIXPART:
@@ -2888,7 +2891,8 @@ int Dbtup::handleInsertReq(Signal* signal,
       if (!varalloc)
       {
         jam();
-        ptr= alloc_fix_rec(jamBuffer(),
+        ptr= alloc_fix_rec(
+            jamBuffer(),
             &terrorCode,
             regFragPtr,
             regTabPtr,
@@ -2899,7 +2903,9 @@ int Dbtup::handleInsertReq(Signal* signal,
       {
         jam();
         regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
-        ptr= alloc_var_row(&terrorCode,
+        ptr= alloc_var_row(
+            signal,
+            &terrorCode,
             regFragPtr, regTabPtr,
             sizes[2+MM],
             &regOperPtr.p->m_tuple_location,
@@ -2932,7 +2938,9 @@ int Dbtup::handleInsertReq(Signal* signal,
       {
         jam();
         regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
-        ptr= alloc_var_row(&terrorCode,
+        ptr= alloc_var_row(
+            signal,
+            &terrorCode,
             regFragPtr, regTabPtr,
             sizes[2+MM],
             &regOperPtr.p->m_tuple_location,
@@ -7567,8 +7575,13 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                       alloc,
                       needed));
       c_lqh->upgrade_to_exclusive_frag_access();
-      Uint32 *new_var_part = realloc_var_part(
-          &terrorCode, regFragPtr, regTabPtr, pagePtr, refptr, alloc, needed);
+      Uint32 *new_var_part = realloc_var_part(&terrorCode,
+                                              regFragPtr,
+                                              regTabPtr,
+                                              pagePtr,
+                                              refptr,
+                                              alloc,
+                                              needed);
       if (unlikely(new_var_part == NULL)) {
         jam();
         c_lqh->reset_old_fragment_lock_status();
@@ -7627,9 +7640,11 @@ Dbtup::handle_size_change_after_update(Signal *signal,
   return 0;
 }
 
-int Dbtup::optimize_var_part(KeyReqStruct *req_struct, Tuple_header *org,
-                             Operationrec *regOperPtr, Fragrecord *regFragPtr,
-                             Tablerec *regTabPtr) {
+int Dbtup::optimize_var_part(KeyReqStruct* req_struct,
+                             Tuple_header* org,
+                             Operationrec* regOperPtr,
+                             Fragrecord* regFragPtr,
+                             Tablerec* regTabPtr) {
   jam();
   Var_part_ref *refptr = org->get_var_part_ref_ptr(regTabPtr);
 
@@ -7653,7 +7668,12 @@ int Dbtup::optimize_var_part(KeyReqStruct *req_struct, Tuple_header *org,
      * optimize var part of tuple by moving varpart,
      * then we possibly reclaim free pages
      */
-    move_var_part(regFragPtr, regTabPtr, pagePtr, refptr, var_part_size, org);
+    move_var_part(regFragPtr,
+                  regTabPtr,
+                  pagePtr,
+                  refptr,
+                  var_part_size,
+                  org);
   }
 
   return 0;
@@ -7936,7 +7956,7 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     free_var_rec(fragPtr.p, tablePtr.p, &tmp, pagePtr);
   } else {
     jam();
-    free_fix_rec(fragPtr.p, tablePtr.p, &tmp, (Fix_page *)pagePtr.p);
+    free_fix_rec(fragPtr.p, tablePtr.p, &tmp, (Fix_page*)pagePtr.p);
   }
 
   if (tablePtr.p->m_no_of_disk_attributes) {

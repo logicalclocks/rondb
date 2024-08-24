@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -232,6 +232,43 @@ void DictTabInfo::Attribute::init() {
       0;  // Default byte sizes of binary default value is 0
   std::memset(AttributeDefaultValue, 0, sizeof(AttributeDefaultValue));
 }
+
+const
+SimpleProperties::SP2StructMapping
+DictDatabaseInfo::Mapping[] = {
+  DDBI_MAP_STR(Database, DatabaseName, DatabaseName, MAX_DB_NAME_SIZE),
+  DDBI_MAP_INT(Database, DatabaseType, DatabaseType),
+  DDBI_MAP_INT(Database, DatabaseId, DatabaseId),
+  DDBI_MAP_INT(Database, DatabaseVersion, DatabaseVersion),
+  DDBI_MAP_INT64(Database, InMemorySize, InMemorySize),
+  DDBI_MAP_INT64(Database, DiskSpaceSize, DiskSpaceSize),
+  DDBI_MAP_INT64(Database, RatePerSec, RatePerSec),
+  DDBI_MAP_INT64(Database, MaxTransactionSize, MaxTransactionSize),
+  DDBI_MAP_INT64(Database, MaxParallelTransactions, MaxParallelTransactions),
+  DDBI_MAP_INT64(Database, MaxParallelComplexQueries, MaxParallelComplexQueries),
+
+  DDBIBREAK(ParameterEnd)
+};
+
+void
+DictDatabaseInfo::Database::init(){
+  std::memset(DatabaseName, 0, sizeof(DatabaseName));
+  DatabaseType = ~0;
+  DatabaseId = ~0;
+
+  DatabaseVersion = 0;
+
+  InMemorySize = 0;
+  DiskSpaceSize = 0;
+  RatePerSec = 0;
+  MaxTransactionSize = 0;
+  MaxParallelTransactions = 0;
+  MaxParallelComplexQueries = 0;
+}
+
+//static 
+const Uint32 DictDatabaseInfo::MappingSize = 
+sizeof(DictDatabaseInfo::Mapping) / sizeof(SimpleProperties::SP2StructMapping);
 
 // static
 const SimpleProperties::SP2StructMapping DictFilegroupInfo::Mapping[] = {

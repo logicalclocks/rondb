@@ -594,7 +594,8 @@ error : {
   /* Release segmented section used to receive Attr default value */
   releaseSection(regTabPtr.p->m_createTable.defValSectionI);
   regTabPtr.p->m_createTable.defValSectionI = RNIL;
-  free_var_part(DefaultValuesFragment.p, regTabPtr.p,
+  free_var_part(DefaultValuesFragment.p,
+                regTabPtr.p,
                 &regTabPtr.p->m_default_value_location);
   regTabPtr.p->m_default_value_location.setNull();
 
@@ -952,7 +953,7 @@ sendref:
   Each Table_record has a Local_key pointing to start of its default values
   in TUP's default values fragment.
 */
-int Dbtup::store_default_record(const TablerecPtr &regTabPtr) {
+int Dbtup::store_default_record(const TablerecPtr& regTabPtr) {
   Uint32 RdefValSectionI = regTabPtr.p->m_createTable.defValSectionI;
   jam();
 
@@ -2531,6 +2532,11 @@ Dbtup::drop_fragment_free_extent_log_buffer_continue(Signal* signal,
 
       tsman.free_extent(&ext_ptr.p->m_key, lsn);
       jamEntry();
+      m_ldm_instance_used->c_lqh->update_disk_space_usage(
+                                          fragPtr.p->fragTableId,
+                                          int(-ext_ptr.p->m_num_pages),
+                                          __LINE__,
+                                          ext_ptr.p->m_key.m_page_no);
       c_extent_hash.remove(ext_ptr);
       list.release(ext_ptr);
 
@@ -2559,6 +2565,10 @@ Dbtup::drop_fragment_free_var_pages(Signal* signal,
       Local_Page_list list(c_page_pool, fragPtr.p->free_var_page_array[i]);
       ndbrequire(list.first(pagePtr));
       list.remove(pagePtr);
+      m_ldm_instance_used->c_lqh->update_memory_usage(fragPtr.p->fragTableId,
+                                                      Int32(-4),
+                                                      __LINE__,
+                                                      pagePtr.i);
       returnCommonArea(pagePtr.i, 1);
 
       signal->theData[0] = ZFREE_VAR_PAGES;
@@ -2605,6 +2615,8 @@ Dbtup::drop_fragment_free_pages(Signal* signal,
            * LCP.
            */
           realpid &= PAGE_BIT_MASK;
+          m_ldm_instance_used->c_lqh->update_memory_usage(
+            fragPtr.p->fragTableId, Int32(-4), __LINE__, realpid);
           returnCommonArea(realpid, 1);
         }
         jam();

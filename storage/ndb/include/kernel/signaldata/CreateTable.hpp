@@ -97,7 +97,14 @@ struct CreateTableRef {
     WrongPartitionBalanceFullyReplicated = 797,
     NoLoggingDiskTable = 798,
     NonDefaultPartitioningWithNoPartitions = 799,
-    TooManyFragments = 1224
+    TooManyFragments = 1224,
+    CreateDbNoAvailableRates = 1235,
+    AlterDbNoAvailableRates = 1236,
+    CreateDbNoAvailableMemoryQuota = 1238,
+    AlterDbNoAvailableMemoryQuota = 1239,
+    CreateDbNoAvailableDiskQuota = 1240,
+    AlterDbNoAvailableDiskQuota = 1241,
+    NotAllowedToDropFileWithQuotas = 1242
   };
 
   Uint32 senderRef;

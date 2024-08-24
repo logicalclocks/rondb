@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -40,9 +40,18 @@
 #include <SignalCounter.hpp>
 #include <SimulatedBlock.hpp>
 #include <pc.hpp>
+#include <RWPool64.hpp>
+#include <Intrusive64List.hpp>
+#include <DL64HashTable.hpp>
 #include <signaldata/AttrInfo.hpp>
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/EventReport.hpp>
+#include <signaldata/AlterDb.hpp>
+#include <signaldata/CreateDatabase.hpp>
+#include <signaldata/CreateDb.hpp>
+#include <signaldata/CreateTable.hpp>
+#include <signaldata/DropDb.hpp>
+#include <signaldata/DropTable.hpp>
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/LqhTransConf.hpp>
 #include <signaldata/TcIndx.hpp>
@@ -190,7 +199,12 @@
 #define ZHIT_TC_CONNECTION_LIMIT 234
 #define ZABORTINPROGRESS 237
 #define ZPREPAREINPROGRESS 238
-#define ZWRONG_SCHEMA_VERSION_ERROR 241  // Also Scan
+#define ZMEMORY_QUOTA_OVERFLOW_ERROR 239
+#define ZWRONG_SCHEMA_VERSION_ERROR 241 // Also Scan
+#define ZRATE_OVERFLOW_ERROR 243
+#define ZTOO_MANY_OPERATIONS_IN_TRANSACTION_ERROR 247
+#define ZTOO_MANY_CONCURRENT_TRANSACTIONS_ERRROR 248
+#define ZDISK_QUOTA_OVERFLOW_ERROR 239
 #define ZSCAN_NODE_ERROR 250
 #define ZNO_FRAG_LOCATION_RECORD_ERROR 251
 #define ZTRANS_STATUS_ERROR 253
@@ -998,6 +1012,21 @@ class Dbtc : public SimulatedBlock {
   static constexpr Uint32 DBTC_CONNECT_RECORD_TRANSIENT_POOL_INDEX = 4;
   typedef LocalDLCFifoList<TcConnectRecord_pool> LocalTcConnectRecord_fifo;
 
+  struct QueueRecord
+  {
+    struct QueueRecord *m_next_queued_req_tc;
+    struct QueueRecord *m_next_queued_req_db;
+    struct QueueRecord *m_prev_queued_req_db;
+    NDB_TICKS m_queued_ticks;
+    Uint32 apiPtrI;
+    Uint32 m_signal_length;
+    Uint32 m_gsn;
+    Uint32 m_num_sections;
+    Uint32 m_key_length;
+    Uint32 m_ai_length;
+    Uint32 m_receiver_id_length;
+  };
+
   /************************** API CONNECT RECORD ***********************
    * The API connect record contains the connection record to which the
    * application connects.
@@ -1081,14 +1110,51 @@ class Dbtc : public SimulatedBlock {
 
     Uint32 m_magic;
     //---------------------------------------------------
-    // First 16 byte cache line. Hot variables.
+    // First cache line. Hot variables.
     //---------------------------------------------------
+    enum TransactionFlags
+    {
+      TF_INDEX_OP_RETURN = 1,
+      TF_TRIGGER_PENDING = 2, // Used to mark waiting for a CONTINUEB
+      TF_EXEC_FLAG       = 4,
+      TF_COMMIT_ACK_MARKER_RECEIVED = 8,
+      TF_DEFERRED_CONSTRAINTS = 16, // check constraints in deferred fashion
+      TF_DEFERRED_UK_TRIGGERS = 32, // trans has deferred UK triggers
+      TF_DEFERRED_FK_TRIGGERS = 64, // trans has deferred FK triggers
+      TF_DISABLE_FK_CONSTRAINTS = 128,
+      TF_LATE_COMMIT = 256 // Wait sending apiCommit until complete phase done
+      ,TF_SINGLE_EXEC_FLAG = 512
+      ,TF_REPLICA_APPLIER = 1024
+
+      ,TF_END = 0
+    };
+    Uint32 m_flags;
+
     Uint32 m_apiConTimer;
     Uint32 m_apiConTimer_line;  // Last line updating timer
     ConnectionState apiConnectstate;
     ConnectionKind apiConnectkind;
     UintR transid[2];
     LocalTcConnectRecord_fifo::Head tcConnect;
+
+    Uint8 tckeyrec; // Changed from R
+    Uint8 tcindxrec;
+    enum ApiFailStates
+    {
+      AFS_API_OK = 0,
+      AFS_API_FAILED = 1,
+      AFS_API_DISCONNECTED = 2
+    };
+    Uint8 apiFailState;
+    Uint8 singleUserMode;
+    Uint8 m_pre_commit_pass;
+    Uint8 m_count_parallel_transactions;
+
+    // number of on-going cascading scans (FK child scans) at a transaction.
+    Uint8 cascading_scans_count;
+
+    // Trigger execution loop active
+    bool m_inExecuteTriggers;
 
     //---------------------------------------------------
     // Second 16 byte cache line. Hot variables.
@@ -1153,49 +1219,13 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_exec_count;
     Uint32 m_exec_write_count;
     Uint32 m_simple_read_count;
+    Uint32 m_concurrent_overtakeable_operations;
     Uint32 m_tc_hbrep_timer;
     ReturnSignal returnsignal;
     AbortState abortState;
 
-    enum TransactionFlags {
-      TF_INDEX_OP_RETURN = 1,
-      TF_TRIGGER_PENDING = 2,  // Used to mark waiting for a CONTINUEB
-      TF_EXEC_FLAG = 4,
-      TF_COMMIT_ACK_MARKER_RECEIVED = 8,
-      TF_DEFERRED_CONSTRAINTS = 16,  // check constraints in deferred fashion
-      TF_DEFERRED_UK_TRIGGERS = 32,  // trans has deferred UK triggers
-      TF_DEFERRED_FK_TRIGGERS = 64,  // trans has deferred FK triggers
-      TF_DISABLE_FK_CONSTRAINTS = 128,
-      TF_LATE_COMMIT = 256 // Wait sending apiCommit until complete phase done
-      ,TF_SINGLE_EXEC_FLAG = 512
-
-      ,TF_END = 0
-    };
-    Uint32 m_flags;
-
     Uint32 timeOutCounter;
     Uint32 takeOverRec;
-
-    Uint8 tckeyrec;  // Changed from R
-
-    Uint8 tcindxrec;
-
-    enum ApiFailStates {
-      AFS_API_OK = 0,
-      AFS_API_FAILED = 1,
-      AFS_API_DISCONNECTED = 2
-    };
-    Uint8 apiFailState;
-
-    Uint8 singleUserMode;
-
-    Uint8 m_pre_commit_pass;
-
-    // number of on-going cascading scans (FK child scans) at a transaction.
-    Uint8 cascading_scans_count;
-
-    // Trigger execution loop active
-    bool m_inExecuteTriggers;
 
     Uint16 m_special_op_flags;  // Used to mark on-going TcKeyReq as indx table
 
@@ -1273,6 +1303,18 @@ class Dbtc : public SimulatedBlock {
     // Limit them in order to avoid the transaction
     // overloading node resources (signal/job buffers).
     Uint32 m_executing_trigger_ops;
+
+    /**
+     * Start of TCKEYREQ signals belonging to this
+     * transaction/API connection. It should only be one
+     * transaction since an API connection can only handle
+     * one transaction at a time.
+     */
+    Uint32 m_num_queued;
+    Uint64 m_queuedDatabasePtrI;
+    Uint64 m_parallel_transactions_db;
+    QueueRecord *m_first_queued_req;
+    QueueRecord *m_last_queued_req;
 
     /**
      * ExecTriggersGuard
@@ -1593,7 +1635,11 @@ class Dbtc : public SimulatedBlock {
   /* ALL TABLES IN THE SYSTEM.                            */
   /********************************************************/
   struct TableRecord {
-    TableRecord() {}
+    TableRecord()
+    {
+      databaseRecord = RNIL64;
+    }
+    Uint64 databaseRecord;
     Uint32 currentSchemaVersion;
     Uint16 m_flags;
     Uint8 tableType;
@@ -1641,6 +1687,7 @@ class Dbtc : public SimulatedBlock {
     Uint8 hasCharAttr;
     Uint8 noOfDistrKeys;
     Uint8 hasVarKeys;
+    Uint8 m_disk_based;
 
     bool checkTable(Uint32 schemaVersion) const {
       return !get_dropping() &&
@@ -2076,6 +2123,17 @@ class Dbtc : public SimulatedBlock {
   void execDROP_FK_IMPL_REQ(Signal *signal);
   void execUPD_QUERY_DIST_ORD(Signal *);
 
+  void execCREATE_DB_REQ(Signal*);
+  void execALTER_DB_REQ(Signal*);
+  void execCONNECT_TABLE_DB_REQ(Signal*);
+  void execDISCONNECT_TABLE_DB_REQ(Signal*);
+  void execCOMMIT_DB_REQ(Signal*);
+  void execDROP_DB_REQ(Signal*);
+  void execDATABASE_QUOTA_REP(Signal*);
+  void execDATABASE_RATE_ORD(Signal*);
+  void execRATE_OVERLOAD_REP(Signal*);
+  void execQUOTA_OVERLOAD_REP(Signal*);
+
   // Index table lookup
   void execTCKEYCONF(Signal *signal);
   void execTCKEYREF(Signal *signal);
@@ -2091,6 +2149,9 @@ class Dbtc : public SimulatedBlock {
   void set_appl_timeout_value(Uint32 timeOut);
   void set_no_parallel_takeover(Uint32);
   void updateBuddyTimer(ApiConnectRecordPtr);
+
+  struct DatabaseRecord;
+  DatabaseRecord* getDatabaseRecord(Uint32 databaseId);
 
   // Statement blocks
   void updatePackedList(Signal* signal, HostRecord* ahostptr, 
@@ -2273,7 +2334,10 @@ class Dbtc : public SimulatedBlock {
   void releaseKeys(CacheRecord* regCachePtr);
   void releaseDirtyRead(Signal*, ApiConnectRecordPtr, TcConnectRecord*);
   void releaseDirtyWrite(Signal* signal, ApiConnectRecordPtr apiConnectptr);
-  bool releaseTcCon(Signal *signal, Uint32 & loop_count, bool detach);
+  bool releaseTcCon(Signal *signal,
+                    Uint32 & loop_count,
+                    bool detach,
+                    ApiConnectRecord* regApiPtr);
   void releaseTcConnectFail(TcConnectRecordPtr);
   void releaseTransResources(Signal* signal, ApiConnectRecordPtr apiConnectptr);
   void checkPoolShrinkNeed(Uint32 pool_index, const TransientFastSlotPool& pool);
@@ -2825,21 +2889,332 @@ class Dbtc : public SimulatedBlock {
                         Uint32 removed_by_fail_api);
   void removeMarkerForFailedAPI(Signal *signal, NodeId nodeId, Uint32 bucket);
 
-  bool getAllowStartTransaction(NodeId nodeId,
-                                Uint32 table_single_user_mode) const {
-    if (unlikely(getNodeState().getSingleUserMode())) {
-      if (getNodeInfo(nodeId).m_type != NodeInfo::DB) {
-        // Cluster is in single user mode and an API Node is attempting to start
-        // a transaction. The transaction is allowed only if this is the
-        // designated API node that has been granted access.
-        return (table_single_user_mode ||
-                getNodeState().getSingleUserApi() == nodeId);
-      }
-    }
-    return getNodeState().startLevel < NodeState::SL_STOPPING_2;
-  }
+#define DATABASE_READ_COST 1
+#define DATABASE_WRITE_COST 5
+  struct DatabaseRecord {
+    DatabaseRecord()
+    : globalDatabaseInstance(nullptr),
+      theDatabaseConcurrentTransactionMutex(nullptr),
+      m_is_memory_quota_exceeded(false),
+      m_is_disk_quota_exceeded(false),
+      m_current_in_memory_size8k(0),
+      m_current_disk_space_size32k(0),
+      m_current_used_rate_us(0),
+      m_last_reported_rate_us(0),
+      m_first_queued_req(nullptr),
+      m_last_queued_req(nullptr),
+      m_num_queued(0),
+      m_outstanding_queries(0),
+      m_queueing_time_us(0),
+      m_current_parallel_transactions(0),
+      m_current_parallel_complex_queries(0),
+      m_is_queueing_start(false),
+      m_is_queueing_all(false),
+      m_is_queueing_abort(false),
+      m_is_queueing_abort_read(false),
+      m_is_delayed_signal_sent(false),
+      m_is_memory_quota_exceeded_reported(false),
+      m_is_disk_quota_exceeded_reported(false),
+      m_continue_delay_reported(0)
+    {}
+    DatabaseRecord(Dbtc &dbtc, Uint32);
 
-  void checkAbortAllTimeout(Signal *signal, Uint32 sleepTime);
+    Uint32 m_magic;
+    Uint32 m_database_id;
+    Uint32 m_database_version;
+
+    Uint64 prevHash;
+    union {
+      Uint64 nextPool;
+      Uint64 nextHash;
+    };
+
+    DatabaseRecord *globalDatabaseInstance;
+    NdbMutex *theDatabaseConcurrentTransactionMutex;
+
+    bool m_is_memory_quota_exceeded;
+    bool m_is_disk_quota_exceeded;
+
+    NDB_TICKS m_last_rate_decrement;
+
+    /**
+     * Limits for memory sizes, rate limitations and
+     * allowed parallel activities.
+     *
+     * They are maintained a bit differently.
+     * The in_memory_size_limit is only maintained by DBTC instance 1.
+     * Every 10 milliseconds in timer_handling this instance copies its
+     * value to all other DBTC instances. Thus this value is completely
+     * maintained by DBTC instance 1, thus no mutex protection is required.
+     * Whether the other instance reads the absolutely correct value is
+     * not important since the value is always off for the last 10 millis.
+     *
+     * The same goes for on_disk_size_limit.
+     *
+     * Rate usage comes both from the local DBTC instance as well as from
+     * the LDM instances. This means that all DBTC instances need to acquire
+     * a mutex to update the values of rate usage in DBTC instance 1. Thus
+     * both all DBTC instances and all DBLQH instances need to update this
+     * data every 10 milliseconds. However this update is only required if
+     * something actually happened.
+     *
+     * Once every 100 ms DBTC instance 1 will decrease the rate usage by
+     * 10% of the allowed rate usage per second. If the current usage is
+     * smaller than the decreased rate usage it will set the value to 0,
+     * otherwise it will simply decrease it by this amount.
+     *
+     * max_transaction_size is local to each DBTC instance and requires
+     * no coordination between threads.
+     *
+     * max_parallel_transactions is maintained by data on instance 1 of
+     * the DBTC instances (0 is the proxy instance, so instance 1 always
+     * exists). It is always accessed through a mutex, thus this variable
+     * is only used on the first DBTC instance.
+     *
+     * The same is the case for max_parallel_complex_queries and it also
+     * uses the same mutex.
+     *
+     * The design is targeting a case where there are fairly many databases
+     * that share the RonDB cluster. RonDB clusters that are not multi-
+     * tenant will not use database rate limits and quotas, all databases
+     * are owned by the customer. However one could imagine that some
+     * customers might use the rate limits and quotas to ensure that differnt
+     * departments are not overusing the cluster.
+     */
+
+    Uint64 m_in_memory_size_limit8k;
+    Uint64 m_disk_space_size_limit32k;
+    Uint32 m_rate_per_sec;
+    Uint32 m_max_transaction_size;
+    Uint32 m_max_parallel_transactions;
+    Uint32 m_max_parallel_complex_queries;
+
+    /**
+     * Current use of quotas
+     * ---------------------
+     */
+
+    /* Maintained by DBTC instance 1, but updated in all DBTC instances */
+    Uint64 m_current_in_memory_size8k;
+
+    /* Maintained by DBTC instance 1, but updated in all DBTC instances */
+    Uint64 m_current_disk_space_size32k;
+
+    /**
+     * Maintained as described above with a complex cooperation of
+     * all DBTC and DBLQH instances. The sum is what we use to check the
+     * whether we are currently using too much of the rates.
+     * The rate is measured in microseconds of CPU time per second.
+     * So a rate of 10.000 means that we are using 1% of one CPU.
+     */
+    Uint64 m_current_used_rate_us;
+
+    /**
+     * m_last_time_used_rate_us is the rate recorded up until the last
+     * time we checked the queueing environment through a timed signal
+     * handling the background rate limit process.
+     *
+     * We use this to measure if the m_current_used_rate_us has stabilised
+     * yet. If it hasn't we will either add more delay or decrease the delay.
+     */
+    Uint64 m_last_time_used_rate_us;
+
+    /**
+     * When a node has used all its rate we will tell all
+     * the nodes to start delaying the operations to slow
+     * things down, as rate goes we might increase the delay.
+     * We record the rate used when we acted upon this.
+     * When rate becomes ok again we send 
+     *
+     * Each DBTC has a limit on the size of the queue for operations
+     * on a database. When this queue limit has been reached it will
+     * start aborting requests instead of only delaying it.
+     */
+    Uint64 m_last_reported_rate_us;
+
+    QueueRecord *m_first_queued_req;
+    QueueRecord *m_last_queued_req;
+    Uint32 m_num_queued;
+    Uint32 m_outstanding_queries;
+
+    /**
+     * m_derivative_delay_us is a variable that tracks the change rate
+     * and can increase the delay based on that we're increasing or
+     * decreasing the rate compared to our allowed rate. We only focus
+     * on increasing the delay, we can decrease the derivative, but
+     * we cannot have a negative derivative. If the user has used up
+     * too much rate, it is vital that this is returned quickly and
+     * we also want to come to a stable state quicker through this derivative
+     * delay.
+     */
+    Uint32 m_derivative_delay_us;
+
+    /**
+     * The current queueing time (0 when no queueing has started)
+     * in microseconds.
+     */
+    Uint32 m_queueing_time_us;
+
+    /* Used by DBTC instance 1 */
+    Uint32 m_current_parallel_transactions;
+
+    /* Used by DBTC instance 1 */
+    Uint32 m_current_parallel_complex_queries;
+
+    /* Is database committed for quota checks yet */
+    bool m_is_quota_committed;
+
+    /**
+     * Is the database in queued state?
+     * We have two states here, we first activate m_is_queueing_start.
+     * When this is set we will queue all new transactions for this
+     * database.
+     * Next if the next rate limit is reached we will also set
+     * m_is_queueing_all, this will queue a transaction even if it has
+     * started. We want to avoid as much as possible to queue operations
+     * after they got started since a transaction often holds locks
+     * after it has started.
+     *
+     * m_is_queueing_abort is activated when the rate used is much higher
+     * than the rate allowed. In this case we stop queueing and instead
+     * simply abort.
+     */
+    bool m_is_queueing_start;
+    bool m_is_queueing_all;
+    bool m_is_queueing_abort;
+    bool m_is_queueing_abort_read;
+
+    /* Is there a delayed signal sent to handle queued requests */
+    bool m_is_delayed_signal_sent;
+
+    bool m_is_memory_quota_exceeded_reported;
+    bool m_is_disk_quota_exceeded_reported;
+    /**
+     * Database is dropping, queueing is disabled, but queued queries
+     * have to be restarted before the database can be dropped.
+     */
+    bool m_is_db_dropping;
+
+    Uint32 m_continue_delay_reported;
+    Uint32 m_sender_data;
+    Uint32 m_sender_ref;
+    /**
+     * Total current use in all DBTC instances.
+     * Every 10ms in timer_handling each DBTC instance goes
+     * through all current values 
+     */
+    bool isReadAllowed()
+    {
+      return true;
+    }
+    Uint32 startNewOperation(ApiConnectRecord *regApiPtr,
+                             bool is_disk_based,
+                             Uint32 op_type);
+
+    void closeAllowedTransaction() {
+      NdbMutex_Lock(theDatabaseConcurrentTransactionMutex);
+      bool ok = m_current_parallel_transactions > 0;
+      m_current_parallel_transactions--;
+      NdbMutex_Unlock(theDatabaseConcurrentTransactionMutex);
+      require(ok);
+    }
+
+    bool startNewTransactionAllowed(Uint32 &transactions, bool &count)
+    {
+      /* Runs on global database instance */
+      if (m_max_parallel_transactions == 0)
+      {
+        return true; // 0 == No limit
+      }
+      NdbMutex_Lock(theDatabaseConcurrentTransactionMutex);
+      transactions = m_current_parallel_transactions;
+      if (m_current_parallel_transactions < m_max_parallel_transactions)
+      {
+        m_current_parallel_transactions++;
+        NdbMutex_Unlock(theDatabaseConcurrentTransactionMutex);
+        count = true;
+        return true;
+      }
+      NdbMutex_Unlock(theDatabaseConcurrentTransactionMutex);
+      return false;
+    }
+
+    bool startNewComplexQueryAllowed()
+    {
+      require(false); // Not supported yet
+      NdbMutex_Lock(theDatabaseConcurrentTransactionMutex);
+      if (m_current_parallel_complex_queries <
+          m_max_parallel_complex_queries)
+      {
+        incParallelComplexQueries();
+        NdbMutex_Unlock(theDatabaseConcurrentTransactionMutex);
+        return true;
+      }
+      NdbMutex_Unlock(theDatabaseConcurrentTransactionMutex);
+      return false;
+    }
+    void incParallelComplexQueries()
+    {
+      m_current_parallel_complex_queries++;
+    }
+    void decParallelComplexQueries()
+    {
+      NdbMutex_Lock(theDatabaseConcurrentTransactionMutex);
+      require(m_current_parallel_complex_queries > 0);
+      m_current_parallel_complex_queries--;
+      NdbMutex_Unlock(theDatabaseConcurrentTransactionMutex);
+    }
+    inline bool equal(const DatabaseRecord & p) const
+    {
+      return (p.m_database_id == m_database_id);
+    }
+    Uint32 hashValue() const;
+  };
+  typedef Ptr64<DatabaseRecord> DatabaseRecordPtr;
+  typedef RecordPool64<RWPool64<DatabaseRecord> > DatabaseRecord_pool;
+  typedef DL64HashTable<DatabaseRecord_pool, DatabaseRecord> DatabaseRecord_hash;
+  typedef DatabaseRecord_hash::Iterator DatabaseRecordIterator;
+  DatabaseRecord_pool m_databaseRecordPool;
+  DatabaseRecord_hash m_databaseRecordHash;
+  RSS_AP_SNAPSHOT(m_databaseRecordPool);
+  NDB_TICKS m_last_database_check_time;
+  Uint32 m_max_database_id;
+  bool m_rate_limit_supported;
+  void set_rate_limit_supported();
+  void send_queued_query(Signal*, QueueRecord*);
+  void handleBackgroundRateQueues(Signal*, Uint32 databaseId);
+  void handleBackgroundRateLimits(Signal*, Uint32 nextDatabaseId);
+  void sendDATABASE_RATE_ORD(Signal *signal,
+                             Uint32 databaseId,
+                             Uint32 delay_ms);
+  void sendRATE_OVERLOAD_REP(Signal *signal,
+                             DatabaseRecord*);
+  bool check_quota_exceeded(Signal*, DatabaseRecord*);
+  void set_queueing_environment(Signal*, DatabaseRecord*, bool&);
+  void sendQUOTA_OVERLOAD_REP(Signal*, DatabaseRecord*, bool);
+  void db_abort_handling(Signal*,
+                         ApiConnectRecordPtr,
+                         Uint32,
+                         Uint32,
+                         int);
+  void release_count_parallel_transactions(ApiConnectRecord*);
+  bool getAllowStartTransaction(NodeId nodeId,
+                                Uint32 table_single_user_mode,
+                                bool is_committed_read,
+                                ApiConnectRecord*,
+                                DatabaseRecordPtr) const;
+  void release_database_record(Signal*, DatabaseRecordPtr);
+  void send_drop_db_conf(Signal*, DatabaseRecordPtr, Uint32);
+
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  Uint64 m_tot_queued_tckeyreq;
+  Uint64 m_tot_send_queued_tckeyreq;
+  Uint64 m_tot_queued_scan_tabreq;
+  Uint64 m_tot_send_queued_scan_tabreq;
+  Uint64 m_tot_queued_scan_nextreq;
+  Uint64 m_tot_send_queued_scan_nextreq;
+#endif
+  void checkAbortAllTimeout(Signal* signal, Uint32 sleepTime);
   struct AbortAllRecord {
     AbortAllRecord() : clientRef(0), oldTimeOutValue(0) {}
     Uint32 clientData;
@@ -3013,6 +3388,44 @@ class Dbtc : public SimulatedBlock {
 
   void dump_trans(ApiConnectRecordPtr transPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);
+  bool is_transaction_to_start(ApiConnectRecord*, Uint32);
+  bool check_tckey_queueing(Signal *signal,
+                            DatabaseRecordPtr &databaserRecordPtr,
+                            SectionHandle &handle,
+                            Uint32 Treqinfo,
+                            ApiConnectRecordPtr apiConnecptr);
+  void handle_queue_tckeyreq(Signal *signal,
+                             SectionHandle &handle,
+                             ApiConnectRecordPtr apiConnectptr,
+                             DatabaseRecordPtr databaseRecordPtr,
+                             Uint32 Treqinfo);
+  void debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
+                         ApiConnectRecord *regApiPtr,
+                         Uint32 Treqinfo,
+                         Uint32 tableId,
+                         TcConnectRecordPtr);
+  bool queue_tckeyreq(Signal*,
+                      SectionHandle*,
+                      DatabaseRecordPtr,
+                      ApiConnectRecordPtr);
+  bool queue_scan_tabreq(Signal*,
+                         SectionHandle*,
+                         DatabaseRecordPtr,
+                         ApiConnectRecordPtr);
+  bool queue_scan_nextreq(Signal*,
+                         SectionHandle*,
+                         DatabaseRecordPtr,
+                         ApiConnectRecordPtr);
+  void insert_queue_record_tc(ApiConnectRecord*, QueueRecord*);
+  void insert_queue_record_db(DatabaseRecord*, QueueRecord*);
+  void release_queue_record_tc(ApiConnectRecord*, Uint32 & loop_count);
+  bool get_next_queue_record(DatabaseRecordPtr,
+                             QueueRecord**,
+                             NDB_TICKS);
+  void remove_first_queue_record_from_tc(ApiConnectRecord*,
+                                         QueueRecord*);
+  void remove_queue_record_from_db(DatabaseRecord*, QueueRecord*);
+  void release_queue_record(QueueRecord*);
 
 //#define DEBUG_QUERY_THREAD_USAGE
 #ifdef DEBUG_QUERY_THREAD_USAGE

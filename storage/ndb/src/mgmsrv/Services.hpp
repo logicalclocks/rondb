@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -84,6 +84,13 @@ class MgmApiSession : public SocketServer::Session {
   int checkAuth(struct CmdAuth *) const;
   void reportAuthFailure(int code);
   int on_verify(int, struct x509_store_ctx_st *);
+
+  void setQuotas(Parser_t::Context &ctx, const class Properties &args);
+  void alterQuotas(Parser_t::Context &ctx, const class Properties &args);
+  void dropQuotas(Parser_t::Context &ctx, const class Properties &args);
+  void getQuotas(Parser_t::Context &ctx, const class Properties &args);
+  void listQuotas(Parser_t::Context &ctx, const class Properties &args);
+  void backupQuotas(Parser_t::Context &ctx, const class Properties &args);
 
   void getConfig(Parser_t::Context &ctx, const class Properties &args, bool v2);
   void getConfig_v1(Parser_t::Context &ctx, const class Properties &args);

@@ -1123,7 +1123,8 @@ class NdbOperation {
       OO_DEFERRED_CONSTAINTS = 0x400,
       OO_DISABLE_FK = 0x800,
       OO_NOWAIT = 0x1000,
-      OO_GET_FINAL_VALUE = 0x2000
+      OO_GET_FINAL_VALUE = 0x2000,
+      OO_REPLICA_APPLIER = 0x4000,
     };
 
     /* An operation-specific abort option.
@@ -1560,7 +1561,8 @@ class NdbOperation {
     OF_DEFERRED_CONSTRAINTS = 0x8,
     OF_DISABLE_FK = 0x10,
     OF_NOWAIT = 0x20,
-    OF_BLOB_PART_READ = 0x40
+    OF_BLOB_PART_READ = 0x40,
+    OF_REPLICA_APPLIER = 0x80
   };
   Uint8 m_flags;
 

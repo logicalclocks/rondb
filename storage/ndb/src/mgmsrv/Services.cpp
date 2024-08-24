@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -106,6 +106,54 @@ static struct CmdAuth Boot { MgmAuth::cmdIsBootstrap };
 static struct CmdAuth Basic { 0 };
 
 const ParserRow<MgmApiSession> commands[] = {
+    MGM_CMD("set quotas", &MgmApiSession::setQuotas, "", &Basic),
+    MGM_ARG("database", String, Mandatory, "Database name"),
+    MGM_ARG("in_memory_size", Int, Mandatory, "Max in-memory size"),
+    MGM_ARG("on_disk_size", Int, Mandatory, "Max on-disk size"),
+    MGM_ARG("rate_per_sec",
+            Int,
+            Mandatory,
+            "Max read/write rate per second"),
+    MGM_ARG("max_transaction_size", Int64, Mandatory, "Max transaction size"),
+    MGM_ARG("max_parallel_transactions",
+            Int,
+            Mandatory,
+            "Max parallel transactions"),
+    MGM_ARG("max_parallel_complex_queries",
+            Int,
+            Mandatory,
+            "Max parallel complex queries"),
+
+    MGM_CMD("alter quotas", &MgmApiSession::alterQuotas, "", &Basic),
+    MGM_ARG("database", String, Mandatory, "Database name"),
+    MGM_ARG("in_memory_size", Int, Mandatory, "Max in-memory size"),
+    MGM_ARG("on_disk_size", Int, Mandatory, "Max on-disk size"),
+    MGM_ARG("rate_per_sec",
+            Int,
+            Mandatory,
+            "Max read/write rate per second"),
+    MGM_ARG("max_transaction_size", Int64, Mandatory, "Max transaction size"),
+    MGM_ARG("max_parallel_transactions",
+            Int,
+            Mandatory,
+            "Max parallel transactions"),
+    MGM_ARG("max_parallel_complex_queries",
+            Int,
+            Mandatory,
+            "Max parallel complex queries"),
+
+    MGM_CMD("drop quotas", &MgmApiSession::dropQuotas, "", &Basic),
+    MGM_ARG("database", String, Mandatory, "Database name"),
+
+    MGM_CMD("get quotas", &MgmApiSession::getQuotas, "", &Basic),
+    MGM_ARG("database", String, Mandatory, "Database name"),
+
+    MGM_CMD("list quotas", &MgmApiSession::listQuotas, "", &Basic),
+    MGM_ARG("nextDatabaseId", Int, Mandatory, "next Database Id"),
+
+    MGM_CMD("backup quotas", &MgmApiSession::backupQuotas, "", &Basic),
+    MGM_ARG("nextDatabaseId", Int, Mandatory, "next Database Id"),
+
     MGM_CMD("get config", &MgmApiSession::getConfig_v1, "", &Basic),
     MGM_ARG("version", Int, Mandatory, "Configuration version number"),
     MGM_ARG("node", Int, Optional, "Node ID"),
@@ -656,6 +704,150 @@ void MgmApiSession::get_nodeid(Parser_t::Context &,
   if (name) g_eventLogger->info("Node %d: %s", tmp, name);
 
   return;
+}
+
+void
+MgmApiSession::setQuotas(Parser_t::Context &,
+                         const class Properties &args) {
+  const char *database_name = nullptr;
+  Uint32 in_memory_size = 0;
+  Uint32 on_disk_size = 0;
+  Uint32 rate_per_sec = 0;
+  Uint32 max_transaction_size = 0;
+  Uint32 max_parallel_transactions = 0;
+  Uint32 max_parallel_complex_queries = 0;
+
+  // Ignoring mandatory parameter "version"
+  args.get("database", &database_name);
+  args.get("in_memory_size", &in_memory_size);
+  args.get("on_disk_size", &on_disk_size);
+  args.get("rate_per_sec", &rate_per_sec);
+  args.get("max_transaction_size", &max_transaction_size);
+  args.get("max_parallel_transactions", &max_parallel_transactions);
+  args.get("max_parallel_complex_queries", &max_parallel_complex_queries);
+
+  g_eventLogger->info("MgmApiSession::setQuotas");
+  int error_code;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.set_quotas(database_name,
+                                         in_memory_size,
+                                         on_disk_size,
+                                         rate_per_sec,
+                                         max_transaction_size,
+                                         max_parallel_transactions,
+                                         max_parallel_complex_queries,
+                                         socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("set quotas reply");
+    m_output->println("result: %s", "Create Database failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+  
+  m_output->println("set quotas reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::alterQuotas(Parser_t::Context &,
+                           const class Properties &args) {
+  const char *database_name = nullptr;
+  Uint32 in_memory_size = 0;
+  Uint32 on_disk_size = 0;
+  Uint32 rate_per_sec = 0;
+  Uint32 max_transaction_size = 0;
+  Uint32 max_parallel_transactions = 0;
+  Uint32 max_parallel_complex_queries = 0;
+
+  // Ignoring mandatory parameter "version"
+  args.get("database", &database_name);
+  args.get("in_memory_size", &in_memory_size);
+  args.get("on_disk_size", &on_disk_size);
+  args.get("rate_per_sec", &rate_per_sec);
+  args.get("max_transaction_size", &max_transaction_size);
+  args.get("max_parallel_transactions", &max_parallel_transactions);
+  args.get("max_parallel_complex_queries", &max_parallel_complex_queries);
+
+  g_eventLogger->info("MgmApiSession::alterQuotas");
+  int error_code;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.alter_quotas(database_name,
+                                           in_memory_size,
+                                           on_disk_size,
+                                           rate_per_sec,
+                                           max_transaction_size,
+                                           max_parallel_transactions,
+                                           max_parallel_complex_queries,
+                                           socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("alter quotas reply");
+    m_output->println("result: %s", "Alter Database failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+  
+  m_output->println("alter quotas reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::dropQuotas(Parser_t::Context &,
+                          const class Properties &args) {
+  const char *database_name = nullptr;
+
+  // Ignoring mandatory parameter "version"
+  args.get("database", &database_name);
+
+  g_eventLogger->info("MgmApiSession::dropQuotas");
+  int error_code;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.drop_quotas(database_name, socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("drop quotas reply");
+    m_output->println("result: %s", "Drop Database failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+  
+  m_output->println("drop quotas reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::getQuotas(Parser_t::Context &,
+                         const class Properties &args) {
+  const char *database_name = nullptr;
+  args.get("database", &database_name);
+
+  m_output->println("get quotas reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.get_quotas(database_name, socket_out);
+}
+
+void
+MgmApiSession::listQuotas(Parser_t::Context &,
+                          const class Properties &args) {
+  Uint32 nextDatabaseId = 0;
+  args.get("nextDatabaseId", &nextDatabaseId);
+  m_output->println("list quotas reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.list_quotas(nextDatabaseId, socket_out);
+}
+
+void
+MgmApiSession::backupQuotas(Parser_t::Context &,
+                          const class Properties &args) {
+  Uint32 nextDatabaseId = 0;
+  args.get("nextDatabaseId", &nextDatabaseId);
+  m_output->println("backup quotas reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.backup_quotas(nextDatabaseId, socket_out);
 }
 
 void MgmApiSession::getConfig_v1(Parser_t::Context &ctx,

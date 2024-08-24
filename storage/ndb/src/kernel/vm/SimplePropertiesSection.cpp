@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -90,6 +91,16 @@ bool SimplePropertiesSectionReader::peekWord(Uint32 *dst) const {
   if (m_pos < m_len) {
     Uint32 ind = m_pos % SectionSegment::DataLength;
     *dst = m_currentSegment->theData[ind];
+    return true;
+  }
+  return false;
+}
+
+bool
+SimplePropertiesSectionReader::peekWordNext(Uint32 * dst) const {
+  if((m_pos + 1) < m_len) {
+    Uint32 ind = (m_pos + 1) % SectionSegment::DataLength; 
+    * dst = m_currentSegment->theData[ind];
     return true;
   }
   return false;

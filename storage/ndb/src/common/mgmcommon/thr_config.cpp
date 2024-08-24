@@ -326,7 +326,7 @@ THRConfig::compute_automatic_thread_config(
   } table[] = {
     { 0, 0, 0, 0, 0, 0, 1 }, // 1 CPU
     { 1, 0, 0, 0, 0, 0, 2 }, // 2-3 CPUs
-    { 2, 0, 0, 0, 0, 1, 3 }, // 4-5 CPUs
+    { 2, 0, 0, 0, 0, 0, 4 }, // 4-5 CPUs
     { 3, 0, 0, 0, 0, 1, 5 }, // 6-7 CPUs
     { 4, 0, 0, 4, 2, 1, 1 }, // 8-9 CPUs
     { 5, 1, 0, 4, 3, 1, 1 }, // 10-11 CPUs
@@ -453,7 +453,7 @@ THRConfig::compute_automatic_thread_config(
     recv_threads = table[used_map_id].recv_threads;
     if (cpu_cnt % 2 != 0)
     {
-      tc_threads++;
+      recv_threads++;
     }
   }
 }

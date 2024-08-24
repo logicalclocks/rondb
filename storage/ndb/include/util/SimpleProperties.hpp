@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -53,7 +53,8 @@ class SimpleProperties {
     Uint32Value = 0,
     StringValue = 1,
     BinaryValue = 2,
-    InvalidValue = 3
+    InvalidValue = 3,
+    Uint64Value  = 4
   };
 
   /**
@@ -170,6 +171,7 @@ class SimpleProperties {
      *  Note only valid is valid() == true
      */
     Uint32 getUint32() const;
+    Uint64 getUint64() const;
     char *getString(char *dst) const;
 
     /**
@@ -201,6 +203,7 @@ class SimpleProperties {
     Uint16 m_key;
     Uint32 m_itemLen;
     union {
+      Uint64 m_ui64_value;
       Uint32 m_ui32_value;
       Uint32 m_strLen;  // Including 0-byte in words
     };
@@ -213,6 +216,7 @@ class SimpleProperties {
     virtual bool step(Uint32 len) = 0;
     virtual bool getWord(Uint32 *dst) = 0;
     virtual bool peekWord(Uint32 *dst) const = 0;
+    virtual bool peekWordNext(Uint32 *dst) const = 0;
     virtual bool peekWords(Uint32 *dst, Uint32 len) const = 0;
   };
 
@@ -228,6 +232,7 @@ class SimpleProperties {
 
     bool first();
     bool add(Uint16 key, Uint32 value);
+    bool add64(Uint16 key, Uint64 value);
     bool add(Uint16 key, const char *value) {
       return add(StringValue, key, value, strlen(value) + 1);
     }
@@ -285,6 +290,7 @@ class SimplePropertiesLinearReader : public SimpleProperties::Reader {
   bool step(Uint32 len) override;
   bool getWord(Uint32 *dst) override;
   bool peekWord(Uint32 *dst) const override;
+  bool peekWordNext(Uint32 *dst) const override ;
   bool peekWords(Uint32 *dst, Uint32 len) const override;
 
  private:
@@ -345,6 +351,7 @@ class SimplePropertiesSectionReader : public SimpleProperties::Reader {
   bool step(Uint32 len) override;
   bool getWord(Uint32 *dst) override;
   bool peekWord(Uint32 *dst) const override;
+  bool peekWordNext(Uint32 *dst) const override ;
   bool peekWords(Uint32 *dst, Uint32 len) const override;
   Uint32 getSize() const;
   bool getWords(Uint32 *dst, Uint32 len);

@@ -355,6 +355,12 @@ ErrorBundle ErrorCodes[] = {
   /**
    * OverloadError
    */
+  { 239,  DMEC, OL, "Memory quota reached for database, delete data before write again" },
+  { 243,  DMEC, OL, "Rate limit reached and queues are overloaded for database" },
+  { 247,  DMEC, OL, "Too many operations in a transaction in database" },
+  { 248,  DMEC, OL, "Too many concurrent transactions in database" },
+  { 249,  DMEC, OL, "Disk quota reached for database, delete data before write again" },
+  { 243,  DMEC, OL, "Rate limit reached and queues are overloaded for database" },
   { 701,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "System busy with other schema operation" },
   { 711,  HA_ERR_LOCK_WAIT_TIMEOUT, NR, "System busy with node restart, schema operations not allowed" },
   { 410,  DMEC, OL, "REDO log files overloaded (decrease TimeBetweenLocalCheckpoints or increase NoOfFragmentLogFiles)" },
@@ -479,6 +485,13 @@ ErrorBundle ErrorCodes[] = {
                     " please report)" },
   { 892,  DMEC, AE, "Unsupported type in scan filter" },
   { 1233, DMEC, AE, "Table read-only" },
+  { 1235, DMEC, AE, "Create Database failed, no rate limits available" },
+  { 1236, DMEC, AE, "Alter Database failed, no rate limits available" },
+  { 1238, DMEC, AE, "Create Database failed, no memory quota available" },
+  { 1239, DMEC, AE, "Alter Database failed, no memory quota available" },
+  { 1240, DMEC, AE, "Create Database failed, no disk quota available" },
+  { 1241, DMEC, AE, "Alter Database failed, no disk quota available" },
+  { 1242, DMEC, AE, "Drop File failed, Not allowed with Disk quotas" },
   { 4256, DMEC, AE, "Must call Ndb::init() before this function" },
   { 4257, DMEC, AE, "Tried to read too much - too many getValue calls" },
   { 320,  DMEC, AE, "Invalid no of nodes specified for new nodegroup" },
@@ -878,6 +891,9 @@ ErrorBundle ErrorCodes[] = {
   { 4568, DMEC, AE, "Incorrect combination of OperationOptions optionsPresent, extraGetFinalValue ptr and numExtraGetFinalValues" },
   { 4569, DMEC, AE, "OO_GET_FINAL_VALUE only allowed in Update/Write operation" },
   { 4570, DMEC, AE, "Bad register, only register 0-7 exists" },
+  { 4571, DMEC, AE, "Append/Partial write can only work with version >= 24.10.0" },
+  { 4572, DMEC, AE, "Rate Limits and Quotas can only work with version >= 24.10.0" },
+
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },

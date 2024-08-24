@@ -48,6 +48,13 @@
 #include <logger/FileLogHandler.hpp>
 #include <logger/SysLogHandler.hpp>
 #include <portlib/NdbDir.hpp>
+
+#include <signaldata/DictTabInfo.hpp>
+#include <signaldata/AlterDatabase.hpp>
+#include <signaldata/CreateDatabase.hpp>
+#include <signaldata/DropDatabase.hpp>
+#include <signaldata/DropTable.hpp>
+#include <signaldata/QueryDatabase.hpp>
 #include <signaldata/AllocNodeId.hpp>
 #include <signaldata/ApiVersion.hpp>
 #include <signaldata/BackupSignalData.hpp>
@@ -5381,6 +5388,811 @@ void MgmtSrvr::tls_stat_increment(unsigned int idx) {
 
 void MgmtSrvr::tls_stat_decrement(unsigned int idx) {
   if (idx < sizeof(m_tls_stats)) m_tls_stats[idx]--;
+}
+
+int MgmtSrvr::check_quota_version() {
+  Uint32 min_version = theFacade->getMinDbNodeVersion();
+  if (ndbd_rate_limit_supported(min_version))
+    return 0;
+  return -1;
+}
+
+int
+MgmtSrvr::set_quotas(const char *database_name,
+                     Uint32 in_memory_size,
+                     Uint32 on_disk_size,
+                     Uint32 rate_per_sec,
+                     Uint32 max_transaction_size,
+                     Uint32 max_parallel_transactions,
+                     Uint32 max_parallel_complex_queries,
+                     NdbOut& out) {
+  int res;
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  Uint32 transId = rand();
+  Uint32 transKey;
+  NodeId nodeId;
+
+  if ((res = check_quota_version())) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+        << endl;
+    out << "error_code: " << 4572 << endl;
+    out << endl;
+    return res;
+  }
+  if ((res = startSchemaTrans(ss, nodeId, transId, transKey))) {
+    return res;
+  }
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 1;
+
+  CreateDatabaseReq* req =
+    CAST_PTR(CreateDatabaseReq, ssig.getDataPtrSend());
+
+  req->transId = transId;
+  req->transKey = transKey;
+  req->requestInfo = 0;
+  req->requestType = DictTabInfo::Database;
+  req->databaseId = 0;
+  req->databaseVersion = 0;
+  req->senderData = 78;
+  req->senderRef = ss.getOwnRef();
+
+  DictDatabaseInfo::Database db_obj;
+  db_obj.init();
+
+  Uint32 db_name_len = strlen(database_name);
+  memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
+  db_obj.DatabaseType = DictTabInfo::Database;
+  db_obj.DatabaseId = 0;      //Ignored
+  db_obj.DatabaseVersion = 0; //Ignored
+  db_obj.InMemorySize = in_memory_size;
+  db_obj.DiskSpaceSize = on_disk_size;
+  db_obj.RatePerSec = rate_per_sec;
+  db_obj.MaxTransactionSize = max_transaction_size;
+  db_obj.MaxParallelTransactions = max_parallel_transactions;
+  db_obj.MaxParallelComplexQueries = max_parallel_complex_queries;
+
+  UtilBuffer util_buffer;
+  UtilBufferWriter w(util_buffer);
+  SimpleProperties::UnpackStatus s;
+  s = SimpleProperties::pack(w,
+                             &db_obj,
+			     DictDatabaseInfo::Mapping,
+			     DictDatabaseInfo::MappingSize);
+  require(s == SimpleProperties::Eof);
+
+  ssig.ptr[0].p = (const Uint32*)util_buffer.get_data();
+  ssig.ptr[0].sz = util_buffer.length() / 4;
+
+  if (ss.sendFragmentedSignal(nodeId,
+                              ssig,
+                              DBDICT,
+                              GSN_CREATE_DATABASE_REQ,
+                              CreateDatabaseReq::SignalLength) != SEND_OK) {
+    return SEND_OR_RECEIVE_FAILED;
+  }
+
+  bool wait = true;
+  while (wait) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_CREATE_DATABASE_CONF:
+      {
+        wait = false;
+        break;
+      }
+      case GSN_CREATE_DATABASE_REF:
+      {
+        const CreateDatabaseRef * ref =
+          CAST_CONSTPTR(CreateDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        endSchemaTrans(ss, nodeId, transId, transKey,
+                       SchemaTransEndReq::SchemaTransAbort);
+        return err;
+      }
+      case GSN_NF_COMPLETEREP:
+        // ignore
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        const NodeFailRep * const rep =
+          CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
+        Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+        assert(len == NodeBitmask::Size || // only full length in ndbapi
+               len == 0);
+
+        if (signal->header.m_noOfSections >= 1) {
+          if (BitmaskImpl::safe_get(
+            NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
+            signal->ptr[0].p, nodeId)) {
+            return SchemaTransBeginRef::Nodefailure;
+          }
+        } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
+          return SchemaTransBeginRef::Nodefailure;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        return SEND_OR_RECEIVE_FAILED;
+    }
+  }
+  return endSchemaTrans(ss, nodeId, transId, transKey, 0);
+}
+
+int
+MgmtSrvr::alter_quotas(const char *database_name,
+                       Uint32 in_memory_size,
+                       Uint32 on_disk_size,
+                       Uint32 rate_per_sec,
+                       Uint32 max_transaction_size,
+                       Uint32 max_parallel_transactions,
+                       Uint32 max_parallel_complex_queries,
+                       NdbOut& out) {
+  int res;
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  Uint32 transId = rand();
+  Uint32 transKey;
+  NodeId nodeId;
+
+  if ((res = check_quota_version())) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+        << endl;
+    out << "error_code: " << 4572 << endl;
+    out << endl;
+    return res;
+  }
+  if ((res = startSchemaTrans(ss, nodeId, transId, transKey))) {
+    return res;
+  }
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 1;
+
+  AlterDatabaseReq* req =
+    CAST_PTR(AlterDatabaseReq, ssig.getDataPtrSend());
+
+  req->transId = transId;
+  req->transKey = transKey;
+  req->requestInfo = 0;
+  req->requestType = DictTabInfo::Database;
+  req->databaseId = 0;
+  req->databaseVersion = 0;
+  req->senderData = 79;
+  req->senderRef = ss.getOwnRef();
+
+  DictDatabaseInfo::Database db_obj;
+  db_obj.init();
+
+  Uint32 db_name_len = strlen(database_name);
+  memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
+  db_obj.DatabaseType = DictTabInfo::Database;
+  db_obj.DatabaseId = 0;      //Ignored
+  db_obj.DatabaseVersion = 0; //Ignored
+  db_obj.InMemorySize = in_memory_size;
+  db_obj.DiskSpaceSize = on_disk_size;
+  db_obj.RatePerSec = rate_per_sec;
+  db_obj.MaxTransactionSize = max_transaction_size;
+  db_obj.MaxParallelTransactions = max_parallel_transactions;
+  db_obj.MaxParallelComplexQueries = max_parallel_complex_queries;
+
+  UtilBuffer util_buffer;
+  UtilBufferWriter w(util_buffer);
+  SimpleProperties::UnpackStatus s;
+  s = SimpleProperties::pack(w,
+                             &db_obj,
+			     DictDatabaseInfo::Mapping,
+			     DictDatabaseInfo::MappingSize);
+  require(s == SimpleProperties::Eof);
+
+  ssig.ptr[0].p = (const Uint32*)util_buffer.get_data();
+  ssig.ptr[0].sz = util_buffer.length() / 4;
+
+  if (ss.sendFragmentedSignal(nodeId,
+                              ssig,
+                              DBDICT,
+                              GSN_ALTER_DATABASE_REQ,
+                              AlterDatabaseReq::SignalLength) != SEND_OK) {
+    return SEND_OR_RECEIVE_FAILED;
+  }
+
+  bool wait = true;
+  while (wait) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_ALTER_DATABASE_CONF:
+      {
+        wait = false;
+        break;
+      }
+      case GSN_ALTER_DATABASE_REF:
+      {
+        const AlterDatabaseRef * ref =
+          CAST_CONSTPTR(AlterDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        endSchemaTrans(ss, nodeId, transId, transKey,
+                       SchemaTransEndReq::SchemaTransAbort);
+        return err;
+      }
+      case GSN_NF_COMPLETEREP:
+        // ignore
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        const NodeFailRep * const rep =
+          CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
+        Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+        assert(len == NodeBitmask::Size || // only full length in ndbapi
+               len == 0);
+
+        if (signal->header.m_noOfSections >= 1) {
+          if (BitmaskImpl::safe_get(
+                NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
+                signal->ptr[0].p, nodeId)) {
+            return SchemaTransBeginRef::Nodefailure;
+          }
+        }
+        else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
+          return SchemaTransBeginRef::Nodefailure;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        return SEND_OR_RECEIVE_FAILED;
+    }
+  }
+  return endSchemaTrans(ss, nodeId, transId, transKey, 0);
+}
+
+int MgmtSrvr::drop_quotas(const char *database_name, NdbOut& out) {
+  int res;
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  Uint32 transId = rand();
+  Uint32 transKey;
+  NodeId nodeId;
+
+  if ((res = check_quota_version())) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+        << endl;
+    out << "error_code: " << 4572 << endl;
+    out << endl;
+    return res;
+  }
+  if ((res = startSchemaTrans(ss, nodeId, transId, transKey))) {
+    return res;
+  }
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 1;
+
+  DropDatabaseReq* req =
+    CAST_PTR(DropDatabaseReq, ssig.getDataPtrSend());
+
+  req->transId = transId;
+  req->transKey = transKey;
+  req->requestInfo = 0;
+  req->requestType = DictTabInfo::Database;
+  req->databaseId = 0;
+  req->databaseVersion = 0;
+  req->senderData = 80;
+  req->senderRef = ss.getOwnRef();
+
+  DictDatabaseInfo::Database db_obj;
+  db_obj.init();
+
+  Uint32 db_name_len = strlen(database_name);
+  memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
+  db_obj.DatabaseType = DictTabInfo::Database;
+  db_obj.DatabaseId = 0;      //Ignored
+  db_obj.DatabaseVersion = 0; //Ignored
+  db_obj.InMemorySize = 0;
+  db_obj.DiskSpaceSize = 0;
+  db_obj.RatePerSec = 0;
+  db_obj.MaxTransactionSize = 0;
+  db_obj.MaxParallelTransactions = 0;
+  db_obj.MaxParallelComplexQueries = 0;
+
+  UtilBuffer util_buffer;
+  UtilBufferWriter w(util_buffer);
+  SimpleProperties::UnpackStatus s;
+  s = SimpleProperties::pack(w,
+                             &db_obj,
+			     DictDatabaseInfo::Mapping,
+			     DictDatabaseInfo::MappingSize);
+  require(s == SimpleProperties::Eof);
+
+  ssig.ptr[0].p = (const Uint32*)util_buffer.get_data();
+  ssig.ptr[0].sz = util_buffer.length() / 4;
+
+  if (ss.sendFragmentedSignal(nodeId,
+                              ssig,
+                              DBDICT,
+                              GSN_DROP_DATABASE_REQ,
+                              DropDatabaseReq::SignalLength) != SEND_OK) {
+    return SEND_OR_RECEIVE_FAILED;
+  }
+
+  bool wait = true;
+  while (wait) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_DROP_DATABASE_CONF:
+      {
+        wait = false;
+        break;
+      }
+      case GSN_DROP_DATABASE_REF:
+      {
+        const DropDatabaseRef * ref =
+          CAST_CONSTPTR(DropDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        endSchemaTrans(ss, nodeId, transId, transKey,
+                       SchemaTransEndReq::SchemaTransAbort);
+        return err;
+      }
+      case GSN_NF_COMPLETEREP:
+        // ignore
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        const NodeFailRep * const rep =
+          CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
+        Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+        assert(len == NodeBitmask::Size || // only full length in ndbapi
+               len == 0);
+
+        if (signal->header.m_noOfSections >= 1) {
+          if (BitmaskImpl::safe_get(
+                NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
+                signal->ptr[0].p, nodeId)) {
+            return SchemaTransBeginRef::Nodefailure;
+          }
+        } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
+          return SchemaTransBeginRef::Nodefailure;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        return SEND_OR_RECEIVE_FAILED;
+    }
+  }
+  return endSchemaTrans(ss, nodeId, transId, transKey, 0);
+}
+
+void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  int res;
+  if ((res = check_quota_version())) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+        << endl;
+    out << "error_code: " << 4572 << endl;
+    out << endl;
+    return;
+  }
+  NodeId nodeId = ss.get_an_alive_node();
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 1;
+
+  GetDatabaseReq* req =
+    CAST_PTR(GetDatabaseReq, ssig.getDataPtrSend());
+
+  req->requestInfo = 0;
+  req->senderData = 81;
+  req->senderRef = ss.getOwnRef();
+
+  Uint32 databaseName[MAX_DB_NAME_SIZE/4 + 1];
+  Uint32 db_name_len = strnlen(database_name, sizeof(databaseName) - 1);
+  memcpy((char*)&databaseName[0], database_name, db_name_len);
+  databaseName[db_name_len] = 0;
+
+  ssig.ptr[0].p = (const Uint32*)&databaseName[0];
+  ssig.ptr[0].sz = db_name_len + 1;
+
+  if (ss.sendFragmentedSignal(nodeId,
+                              ssig,
+                              DBDICT,
+                              GSN_GET_DATABASE_REQ,
+                              GetDatabaseReq::SignalLength) != SEND_OK) {
+    out << "result: Send or Receive failed" << endl;
+    out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+    out << endl;
+    return;
+  }
+
+  bool wait = true;
+  while (wait) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_GET_DATABASE_CONF:
+      {
+        const GetDatabaseConf * conf =
+          CAST_CONSTPTR(GetDatabaseConf, signal->getDataPtr());
+
+        /* First send the protocol part */
+        out << "result: Ok" << endl;
+        out << "num_rows: 9" << endl;
+        out << endl;
+
+        /* Next send the result data with 9 rows */
+        out << "Database Quotas for " << (const char*)&databaseName[0] << endl;
+        out << "databaseId = " << conf->databaseId << endl;
+        out << "databaseVersion = " << conf->databaseId << endl;
+        out << "InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
+        out << "DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte" << endl;
+        out << "RatePerSec = " << conf->RatePerSec << endl;
+        out << "MaxTransactionSize = " << conf->MaxTransactionSize << endl;
+        out << "MaxParallelTransactions = ";
+        out << conf->MaxParallelTransactions << endl;
+        out << "MaxParallelComplexQueries = ";
+        out << conf->MaxParallelComplexQueries << endl;
+        return;
+      }
+      case GSN_GET_DATABASE_REF:
+      {
+        const GetDatabaseRef * ref =
+          CAST_CONSTPTR(GetDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        if (err == DropTableRef::NoSuchTable) {
+          out << "result: No such database exists" << endl;
+          out << "error_code: " << err << endl;
+          out << endl;
+        } else {
+          out << "result: Get database quotas failed with error" << endl;
+          out << "error_code: " << err << endl;
+          out << endl;
+        }
+        return;
+      }
+      case GSN_NF_COMPLETEREP:
+        // ignore
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        const NodeFailRep * const rep =
+          CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
+        Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+        assert(len == NodeBitmask::Size || // only full length in ndbapi
+               len == 0);
+
+        if (signal->header.m_noOfSections >= 1) {
+          if (BitmaskImpl::safe_get(
+                NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
+                signal->ptr[0].p, nodeId)) {
+            out << "result: Get Database quota failed due to node failure";
+            out << endl;
+            out << "error_code: 1" << endl;
+            out << endl;
+            return;
+          }
+        } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
+          out << "result: Get Database quota failed due to node failure"
+              << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        out << "result: Send or Receive failed" << endl;
+        out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+        out << endl;
+        return;
+    }
+  }
+}
+
+void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  int res;
+  if ((res = check_quota_version())) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+        << endl;
+    out << "error_code: " << 4572 << endl;
+    out << endl;
+    return;
+  }
+  NodeId nodeId = ss.get_an_alive_node();
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 0;
+
+  ListDatabaseReq* req =
+    CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
+
+  req->requestInfo = 0;
+  req->senderData = 82;
+  req->senderRef = ss.getOwnRef();
+  req->nextDatabaseId = nextDatabaseId;
+
+  if (ss.sendSignal(nodeId,
+                    ssig,
+                    DBDICT,
+                    GSN_LIST_DATABASE_REQ,
+                    ListDatabaseReq::SignalLength) != SEND_OK) {
+    out << "result: Send or Receive failed" << endl;
+    out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+    out << endl;
+    return;
+  }
+
+  while (true) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_LIST_DATABASE_CONF:
+      {
+        const ListDatabaseConf * conf =
+          CAST_CONSTPTR(ListDatabaseConf, signal->getDataPtr());
+
+        if (conf->databaseId == RNIL) {
+          if (signal->header.m_noOfSections != 0) {
+            out << "result: Not expecting sections in final signal in"
+                << " list databases";
+            out << "error_code: 1" << endl;
+            out << endl;
+            return;
+          }
+          out << "result: Ok" << endl;
+          out << "num_rows: 0" << endl;
+          out << endl;
+          return;
+        }
+        if (signal->header.m_noOfSections != 1) {
+          out << "result: Wrong number of sections returned from data node";
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        /* First send the protocol part */
+        nextDatabaseId = conf->databaseId + 1;
+        out << "result: Ok" << endl;
+        out << "num_rows: 10" << endl;
+        out << "nextDatabaseId: " << nextDatabaseId << endl;
+        out << endl;
+
+        /* Next send the result data with 9 rows */
+        const char *databaseName = (const char*)signal->ptr[0].p;
+        out << "Database Quotas for " << databaseName << endl;
+        out << "  databaseId = " << conf->databaseId << endl;
+        out << "  databaseVersion = " << conf->databaseId << endl;
+        out << "  InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
+        out << "  DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte"
+            << endl;
+        out << "  RatePerSec = " << conf->RatePerSec << endl;
+        out << "  MaxTransactionSize = " << conf->MaxTransactionSize << endl;
+        out << "  MaxParallelTransactions = ";
+        out << conf->MaxParallelTransactions << endl;
+        out << "  MaxParallelComplexQueries = ";
+        out << conf->MaxParallelComplexQueries << endl;
+        out << endl;
+        return;
+      }
+      case GSN_LIST_DATABASE_REF:
+      {
+        const ListDatabaseRef * ref =
+          CAST_CONSTPTR(ListDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        out << "result: List database quotas failed with error ";
+        out << "error_code: " << err << endl;
+        out << endl;
+        return;
+      }
+      case GSN_NF_COMPLETEREP:
+        // ignore
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        const NodeFailRep * const rep =
+          CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
+        Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+        assert(len == NodeBitmask::Size || // only full length in ndbapi
+               len == 0);
+
+        if (signal->header.m_noOfSections >= 1) {
+          if (BitmaskImpl::safe_get(
+            NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
+            signal->ptr[0].p, nodeId)) {
+            out << "result: List Database quota failed due to node failure";
+            out << endl;
+            out << "error_code: 1" << endl;
+            out << endl;
+            return;
+          }
+        } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
+          out << "result: List Database quota failed due to node failure";
+          out << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        out << "result: Send or Receive failed" << endl;
+        out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+        out << endl;
+        return;
+    }
+  }
+}
+
+void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  int res;
+  if ((res = check_quota_version())) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+        << endl;
+    out << "error_code: " << 4572 << endl;
+    out << endl;
+    return;
+  }
+  NodeId nodeId = ss.get_an_alive_node();
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 0;
+
+  ListDatabaseReq* req =
+    CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
+
+  req->requestInfo = 0;
+  req->senderData = 83;
+  req->senderRef = ss.getOwnRef();
+  req->nextDatabaseId = nextDatabaseId;
+
+  if (ss.sendSignal(nodeId,
+                    ssig,
+                    DBDICT,
+                    GSN_LIST_DATABASE_REQ,
+                    ListDatabaseReq::SignalLength) != SEND_OK) {
+    out << "result: Send or Receive failed" << endl;
+    out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+    out << endl;
+    return;
+  }
+
+  while (true) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_LIST_DATABASE_CONF:
+      {
+        const ListDatabaseConf * conf =
+          CAST_CONSTPTR(ListDatabaseConf, signal->getDataPtr());
+
+        if (conf->databaseId == RNIL) {
+          if (signal->header.m_noOfSections != 0) {
+            out << "result: Not expecting sections in final signal in list databases";
+            out << "error_code: 1" << endl;
+            out << endl;
+            return;
+          }
+          out << "result: Ok" << endl;
+          out << "num_rows: 0" << endl;
+          out << endl;
+          return;
+        }
+        if (signal->header.m_noOfSections != 1) {
+          out << "result: Wrong number of sections returned from data node";
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        /* First send the protocol part */
+        nextDatabaseId = conf->databaseId + 1;
+        out << "result: Ok" << endl;
+        out << "num_rows: 1" << endl;
+        out << "nextDatabaseId: " << nextDatabaseId << endl;
+        out << endl;
+
+        /* Next send the result data with 9 rows */
+        const char *databaseName = (const char*)signal->ptr[0].p;
+        out << "DATABASE QUOTA SET " << databaseName;
+        out << " --in-memory-size = " << conf->InMemorySizeMB << "M";
+        out << " --on-disk-size = " << conf->DiskSpaceSizeGB << "G";
+        out << " --rate-per-sec = " << conf->RatePerSec;
+        out << " --max-transaction-size = " << conf->MaxTransactionSize;
+        out << " --max-parallel-transactions = ";
+        out << conf->MaxParallelTransactions;
+        out << " --max-parallel-complex-queries = ";
+        out << conf->MaxParallelComplexQueries;
+        out << conf->MaxParallelComplexQueries << endl;
+        return;
+      }
+      case GSN_LIST_DATABASE_REF:
+      {
+        const ListDatabaseRef * ref =
+          CAST_CONSTPTR(ListDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        out << "result: List database quotas failed with error ";
+        out << "error_code: " << err << endl;
+        out << endl;
+        return;
+      }
+      case GSN_NF_COMPLETEREP:
+        // ignore
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        const NodeFailRep * const rep =
+          CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
+        Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+        assert(len == NodeBitmask::Size || // only full length in ndbapi
+               len == 0);
+
+        if (signal->header.m_noOfSections >= 1) {
+          if (BitmaskImpl::safe_get(
+            NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
+            signal->ptr[0].p, nodeId)) {
+            out << "result: List Database quota failed due to node failure";
+            out << endl;
+            out << "error_code: 1" << endl;
+            out << endl;
+            return;
+          }
+        } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
+          out << "result: List Database quota failed due to node failure";
+          out << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        out << "result: Send or Receive failed" << endl;
+        out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+        out << endl;
+        return;
+    }
+  }
 }
 
 template class MutexVector<NodeId>;

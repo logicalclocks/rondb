@@ -55,6 +55,18 @@ bool SimpleProperties::Writer::add(Uint16 key, Uint32 value) {
   return (putWord(htonl(head)) && putWord(htonl(value)));
 }
 
+bool
+SimpleProperties::Writer::add64(Uint16 key, Uint64 value){
+  Uint32 head = Uint64Value;
+  head <<= 16;
+  head += key;
+  Uint32 value_low = value & 0xFFFFFFFF;
+  Uint32 value_high = value >> 32;
+  return ( putWord(htonl(head)) &&
+           putWord(htonl(value_low)) &&
+           putWord(htonl(value_high)) );
+}
+
 bool SimpleProperties::Writer::add(const char *value, int len) {
   const Uint32 valLen = (len + 3) / 4;
 
@@ -121,6 +133,8 @@ Uint32 SimpleProperties::Reader::getValueLen() const {
   switch (m_type) {
     case Uint32Value:
       return 4;
+    case Uint64Value:
+      return 8;
     case StringValue:
     case BinaryValue:
       return m_strLen;
@@ -139,6 +153,11 @@ SimpleProperties::ValueType SimpleProperties::Reader::getValueType() const {
 }
 
 Uint32 SimpleProperties::Reader::getUint32() const { return m_ui32_value; }
+
+Uint64
+SimpleProperties::Reader::getUint64() const {
+  return m_ui64_value;
+}
 
 char *SimpleProperties::Reader::getString(char *dst) const {
   if (peekWords((Uint32 *)dst, m_itemLen)) return dst;
@@ -190,6 +209,23 @@ bool SimpleProperties::Reader::readValue() {
       if (!peekWord(&m_ui32_value)) return false;
       m_ui32_value = ntohl(m_ui32_value);
       return true;
+    case Uint64Value:
+    {
+      m_itemLen = 2;
+      Uint32 value_low;
+      Uint32 value_high;
+      if (!peekWord(&value_low))
+        return false;
+      value_low = ntohl(value_low);
+      if (!peekWordNext(&value_high))
+        return false;
+      value_high = ntohl(value_high);
+      Uint64 value = Uint64(value_low);
+      Uint64 value_high64 = Uint64(value_high) << 32;
+      value += value_high64;
+      m_ui64_value = value;
+      return true;
+    }
     case StringValue:
     case BinaryValue:
       if (!getWord(&tmp)) return false;
@@ -236,6 +272,9 @@ SimpleProperties::UnpackStatus SimpleProperties::unpack(
           case Uint32Value:
             *((Uint32 *)_dst) = it.getUint32();
             break;
+          case Uint64Value:
+            * ((Uint64 *)_dst) = it.getUint64();
+            break;
           case BinaryValue:
           case StringValue:
             if (_map[i].maxLength && it.getValueLen() > _map[i].maxLength)
@@ -275,6 +314,16 @@ SimpleProperties::UnpackStatus SimpleProperties::pack(
           Uint32 val = *((const Uint32 *)src);
           ok = it.add(key, val);
         } break;
+        case SimpleProperties::Uint64Value: {
+          const Uint32 *src_uint32 = (const Uint32*)src;
+          Uint32 val_low = *src_uint32;
+          src_uint32++;
+          Uint32 val_high = *src_uint32;
+          Uint64 val = Uint64(val_high) << 32;
+          val += Uint64(val_low);
+          ok = it.add64(key, val);
+          break;
+        }
         case SimpleProperties::BinaryValue: {
           const char *src_len = _src + _map[i].Length_Offset;
           Uint32 len = *((const Uint32 *)src_len);
@@ -382,6 +431,15 @@ bool SimplePropertiesLinearReader::peekWord(Uint32 *dst) const {
     *dst = m_src[m_pos];
     return true;
   }
+  return false;
+}
+
+bool 
+SimplePropertiesLinearReader::peekWordNext(Uint32 * dst) const {
+  if((m_pos + 1) <m_len) {
+    * dst = m_src[m_pos + 1];
+    return true;
+  } 
   return false;
 }
 

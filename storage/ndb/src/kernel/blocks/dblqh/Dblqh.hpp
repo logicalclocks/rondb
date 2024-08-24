@@ -27,6 +27,10 @@
 #ifndef DBLQH_H
 #define DBLQH_H
 
+#include <Intrusive64List.hpp>
+#include <RWPool64.hpp>
+#include "ArrayPool.hpp"
+#include <DL64HashTable.hpp>
 #include <NdbCondition.h>
 #include <ndb_limits.h>
 #include <DLHashTable.hpp>
@@ -38,6 +42,9 @@
 #include "ArrayPool.hpp"
 
 #include <NodeBitmask.hpp>
+#include <signaldata/AlterDb.hpp>
+#include <signaldata/CreateDb.hpp>
+#include <signaldata/DropDb.hpp>
 #include <signaldata/CopyActive.hpp>
 #include <signaldata/CopyFrag.hpp>
 #include <signaldata/CreateTab.hpp>
@@ -400,6 +407,12 @@ class FsReadWriteReq;
  * "Rowid already allocated" (cf. ndberror.c).
  */
 #define ZUSER_SEARCH_CONDITION_FALSE_CODE 899
+
+/* ------------------------------------------------------------------------- */
+/*       ERROR CODES FROM DBTC                                               */
+/* ------------------------------------------------------------------------- */
+#define ZMEMORY_QUOTA_OVERFLOW_ERROR 239
+#define ZDISK_QUOTA_OVERFLOW_ERROR 249
 #endif
 
 /**
@@ -501,6 +514,7 @@ class Dblqh : public SimulatedBlock {
    */
   Dblqh *m_ldm_instance_used;
 
+  Uint32 m_rate_limits_active;
   bool m_is_query_block;
   bool m_is_recover_block;
   bool m_is_in_query_thread;
@@ -2558,6 +2572,12 @@ class Dblqh : public SimulatedBlock {
 
     Uint32 num_fragments;
     Uint32 num_fragments_in_array;
+
+    /* Current use of memory and disk */
+    std::atomic<unsigned int> m_in_memory_page8k;
+    std::atomic<unsigned int> m_disk_space_page32k;
+
+    Uint64 databaseRecord;
     Uint64 *old_fragrec;
     Uint64 *fragrec;
     Uint16 *fragid;
@@ -2912,7 +2932,8 @@ class Dblqh : public SimulatedBlock {
       OP_NORMAL_PROTOCOL = 0x10,
       OP_DISABLE_FK = 0x20,
       OP_NO_TRIGGERS = 0x40,
-      OP_NOWAIT = 0x80
+      OP_NOWAIT = 0x80,
+      OP_REPLICA_APPLIER = 0x100
     };
     Uint32 m_flags;
     LogPartRecord *m_log_part_ptr_p;
@@ -3134,6 +3155,13 @@ private:
   void execDROP_FRAG_REQ(Signal*);
   void execDROP_FRAG_REF(Signal*);
   void execDROP_FRAG_CONF(Signal*);
+
+  void execCREATE_DB_REQ(Signal*);
+  void execALTER_DB_REQ(Signal*);
+  void execCONNECT_TABLE_DB_REQ(Signal*);
+  void execDISCONNECT_TABLE_DB_REQ(Signal*);
+  void execDROP_DB_REQ(Signal*);
+  void execQUOTA_OVERLOAD_REP(Signal*);
 
   void insert_new_fragments_into_lcp(Signal*);
   void execWAIT_LCP_IDLE_CONF(Signal*);
@@ -3755,11 +3783,20 @@ private:
   void lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr);
   void restartOperationsAfterStopLab(Signal *signal);
   void startphase1Lab(Signal *signal, Uint32 config, Uint32 nodeId);
-  void tupkeyConfLab(Signal *signal, TcConnectionrecPtr);
+  void tupkeyConfLab(Signal* signal,
+                     TcConnectionrecPtr,
+                     Uint32 readLen,
+                     Uint32 writeLen);
   void copyTupkeyRefLab(Signal *signal, TcConnectionrecPtr);
   void copyTupkeyConfLab(Signal *signal, TcConnectionrecPtr);
-  void scanTupkeyConfLab(Signal *signal, TcConnectionrec *);
-  void scanTupkeyRefLab(Signal *signal, TcConnectionrecPtr);
+  void scanTupkeyConfLab(Signal* signal,
+                         TcConnectionrec*,
+                         Uint32 readLen,
+                         Uint32 lastRow,
+                         Uint32 numExecInstructions);
+  void scanTupkeyRefLab(Signal* signal,
+                        TcConnectionrecPtr,
+                        Uint32 noExecInstructions);
   void accScanConfScanLab(Signal *signal, TcConnectionrecPtr);
   void accScanConfCopyLab(Signal *signal);
   void scanLockReleasedLab(Signal *signal, TcConnectionrec *);
@@ -3992,7 +4029,7 @@ public:
   /* -------------------------------------------------------------------------
    */
 
-#define ZADDFRAGREC_FILE_SIZE 1
+#define ZADDFRAGREC_FILE_SIZE 2
   AddFragRecord *addFragRecord;
   AddFragRecordPtr addfragptr;
   UintR cfirstfreeAddfragrec;
@@ -4399,6 +4436,112 @@ public:
 
   void ndbdFailBlockCleanupCallback(Signal *signal, Uint32 failedNodeID,
                                     Uint32 ignoredRc);
+
+/**
+ * These are the costs in nanoseconds that we attach to certain events
+ * in the LDM threads and Query threads.
+ *
+ * SCAN_CONF_RATE is the cost of scanning one row and applying some filter.
+ * SCAN_REF_RATE is the cost of scanning one row and the filter returns
+ * that row isn't read, so the read cost is removed.
+ * SCAN_READ_RATE is the extra cost per word of data we send in the scan.
+ * READ/WRITE_KEY_CONF_RATE is the cost of a small read/write operation.
+ * READ/WRITE_KEY_REF_RATE is the same for a failed r/w operation.
+ * KEY_READ/WRITE_RATE is the extra cost per word read/written.
+ * INTERPRETER_RATE is the extra cost per interpreter instruction executed.
+ */
+#define SCAN_CONF_RATE 750
+#define SCAN_REF_RATE 400
+#define SCAN_READ_RATE 6
+#define READ_KEY_CONF_RATE 1250
+#define READ_KEY_REF_RATE 768
+#define WRITE_KEY_CONF_RATE 4000
+#define WRITE_KEY_REF_RATE 2000
+#define KEY_READ_RATE 6
+#define KEY_WRITE_RATE 12
+#define INTERPRETER_RATE 12
+
+#define RATE_REPORT_LIMIT_NS (256 * 1024) // Send when 256us been detected
+#define MAX_RATE_REPORT_LIMIT_US (10 * 1000 * 1000)
+#define DISK_SPACE_REPORT_LIMIT (64)
+#define MEMORY_REPORT_LIMIT (16)
+
+  struct DatabaseRecord {
+    DatabaseRecord()
+    {
+      m_in_memory_page8k = 0;
+      m_disk_space_page32k = 0;
+      m_last_rep_in_memory_page8k = 0;
+      m_last_rep_disk_space_page32k = 0;
+      m_is_memory_quota_exceeded = false;
+      m_is_disk_quota_exceeded = false;
+      m_continue_delay = 0;
+      m_memory_report_limit = 0;
+      m_disk_space_report_limit = 0;
+      m_rate_report_limit_ns = 0;
+    }
+    DatabaseRecord(Dblqh &dblqh, Uint32);
+    Uint32 m_magic;
+    Uint32 m_database_id;
+    Uint32 m_database_version;
+
+    Uint64 prevHash;
+    union {
+      Uint64 nextPool;
+      Uint64 nextHash;
+    };
+
+    std::atomic<unsigned int> m_in_memory_page8k;
+    std::atomic<unsigned int> m_disk_space_page32k;
+    std::atomic<Uint64> m_rate_usage;
+
+    /* Last reported use of memory and disk */
+    Uint32 m_last_rep_in_memory_page8k;
+    Uint32 m_last_rep_disk_space_page32k;
+
+    bool m_is_memory_quota_exceeded;
+    bool m_is_disk_quota_exceeded;
+
+    Uint32 m_memory_report_limit;
+    Uint32 m_disk_space_report_limit;
+    Uint32 m_rate_report_limit_ns;
+    NDB_TICKS m_last_quota_report_time;
+
+    Uint32 m_continue_delay;
+
+    inline bool equal(const DatabaseRecord & p) const
+    {
+      return (p.m_database_id == m_database_id);
+    }
+    Uint32 hashValue() const;
+  };
+  typedef Ptr64<DatabaseRecord> DatabaseRecordPtr;
+  typedef RecordPool64<RWPool64<DatabaseRecord> > DatabaseRecord_pool;
+  DatabaseRecord_pool m_databaseRecordPool;
+  DL64HashTable<DatabaseRecord_pool, DatabaseRecord> m_databaseRecordHash;
+  NdbMutex m_database_hash_mutex;
+  void lock_database_hash()
+  {
+    NdbMutex_Lock(&m_database_hash_mutex);
+  }
+  void unlock_database_hash()
+  {
+    NdbMutex_Unlock(&m_database_hash_mutex);
+  }
+
+  struct SendDatabaseQuotaRep {
+    Uint32 m_database_id;
+    Uint32 m_requestInfo;
+    Uint32 m_diff_memory_usage;
+    Uint32 m_diff_disk_space_usage;
+    Uint32 m_rate_usage;
+    Uint32 nextPool;
+  };
+#define ZSEND_DATABASE_QUOTA_REP_FILE_SIZE 200
+  typedef Ptr<SendDatabaseQuotaRep> SendDatabaseQuotaRepPtr;
+  SendDatabaseQuotaRep *c_send_database_quota_rec;
+  Uint32 c_send_database_quota_rep_file_size;
+  Uint32 m_num_send_database_quota_rep;
 
   struct MonotonicCounters {
     MonotonicCounters() : operations(0) {}
@@ -5056,6 +5199,22 @@ public:
                   Uint32 & tcRef);
 
   bool is_ok_to_send_next_record(const TcConnectionrec *tcConPtrP);
+
+  void update_memory_usage(Uint32 tabI,
+                           Int32 num_8k_pages,
+                           Uint32 line,
+                           Uint32 pageId);
+  void update_disk_space_usage(Uint32 tabI,
+                               Int32 num_32k_pages,
+                               Uint32 line,
+                               Uint32 pageId);
+  void update_rate_usage(Uint32 tableId, Uint32 added_rate);
+  void send_database_quota_rep(DatabaseRecordPtr dbPtr, NDB_TICKS);
+  Uint32 get_delay(Uint32 tableId);
+  void change_report_limits(DatabaseRecord *dbPtrP,
+                            Uint32 rate_per_sec,
+                            Uint32 in_memory_size_mbyte,
+                            Uint32 disk_space_size_gbyte);
 
 #ifdef DEBUG_USAGE_COUNT
   void insert_usage_count(Tablerec *tabPtrP,

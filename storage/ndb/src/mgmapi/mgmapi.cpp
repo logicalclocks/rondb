@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4088,6 +4088,521 @@ static int set_dynamic_ports_batched(NdbMgmHandle handle, int nodeid,
   reply->get("result", &result);
   if (strcmp(result, "Ok") != 0) {
     SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_get_quotas(NdbMgmHandle handle,
+                       const char *database_name,
+                       char **result_buf) {
+  DBUG_ENTER("ndb_mgm_get_quotas");
+  DBUG_PRINT("enter", ("database: %s", database_name));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_get_quotas");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("database", database_name);
+
+  const ParserRow<ParserDummy> get_quotas_reply[] = {
+    MGM_CMD("get quotas reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_ARG("num_rows", Int, Optional, "Number of rows in result"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         get_quotas_reply,
+                                         "get quotas",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to get quota, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  } else {
+    Uint32 len = 4096;
+    char* buf64 = new char[len];
+    do {
+      Uint32 total_num_rows = 0;
+      if (!reply->get("num_rows", &total_num_rows)) {
+        const char * buf = "expected num_rows";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      if (buf64 == nullptr) {
+        SET_ERROR(handle, errno, "Error malloc Get database quota");
+        break;
+      }
+      int read = 0;
+      size_t start = 0;
+      Uint32 num_rows = 0;
+      bool new_row_started = true;
+      do {
+        if ((read = handle->socket.read(handle->timeout,
+                                   &buf64[start], (int)(len - start))) < 1) {
+          delete [] buf64;
+          buf64 = nullptr;
+          if (read == 0) {
+            SET_ERROR(handle,
+                      ETIMEDOUT,
+                      "Timeout reading Get database quotas");
+          } else {
+            SET_ERROR(handle, errno, "Error reading Get database quota");
+          }
+          break;
+        }
+        for (Uint32 i = start; i < (start + read); i++) {
+          if (buf64[i] == '\n') {
+            new_row_started = false;
+            num_rows++;
+          } else {
+            new_row_started = true;
+          }
+        }
+        if (num_rows > total_num_rows ||
+            (num_rows == total_num_rows &&
+             new_row_started)) {
+          SET_ERROR(handle, 1, "Protocol error in Get database quota");
+          break;
+        } else if (num_rows == total_num_rows) {
+          delete reply;
+          *result_buf = buf64;
+          buf64[start + read] = 0;
+          DBUG_RETURN(0);
+        }
+        start += read;
+      } while (start < len);
+    } while (false);
+    delete reply;
+    free(buf64);
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+}
+
+int ndb_mgm_list_quotas(NdbMgmHandle handle,
+                        Uint32 *nextDatabaseId,
+                        char **result_buf) {
+  DBUG_ENTER("ndb_mgm_list_quotas");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_list_quotas");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("nextDatabaseId", *nextDatabaseId);
+
+  const ParserRow<ParserDummy> list_quotas_reply[] = {
+    MGM_CMD("list quotas reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
+    MGM_ARG("nextDatabaseId", Int, Optional, "next Database Id"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         list_quotas_reply,
+                                         "list quotas",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to list quota, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  } else {
+    Uint32 len = 4096;
+    char* buf64 = new char[len];
+    do {
+      Uint32 total_num_rows = 0;
+      if (!reply->get("num_rows", &total_num_rows)) {
+        const char * buf = "expected num_rows";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      if (buf64 == nullptr) {
+        SET_ERROR(handle, errno, "Error malloc List database quota");
+        break;
+      }
+      if (total_num_rows == 0) {
+        /* List command completed */
+        *nextDatabaseId = RNIL;
+        delete reply;
+        DBUG_RETURN(0);
+      }
+      if (!reply->get("nextDatabaseId", nextDatabaseId)) {
+        const char * buf = "expected nextDatabaseId";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      int read = 0;
+      size_t start = 0;
+      Uint32 num_rows = 0;
+      bool new_row_started = true;
+      do {
+        if ((read = handle->socket.read(handle->timeout,
+                                &buf64[start], (int)(len - start))) < 1) {
+          delete [] buf64;
+          buf64 = nullptr;
+          if (read == 0) {
+            SET_ERROR(handle,
+                      ETIMEDOUT,
+                      "Timeout reading List database quotas");
+          } else {
+            SET_ERROR(handle, errno, "Error reading List database quota");
+          }
+          break;
+        }
+        for (Uint32 i = start; i < (start + read); i++) {
+          if (buf64[i] == '\n') {
+            new_row_started = false;
+            num_rows++;
+          } else {
+            new_row_started = true;
+          }
+        }
+        if (num_rows > total_num_rows ||
+            (num_rows == total_num_rows &&
+             new_row_started)) {
+          SET_ERROR(handle, 1, "Protocol error in List database quota");
+          break;
+        } else if (num_rows == total_num_rows) {
+          delete reply;
+          *result_buf = buf64;
+          buf64[start + read] = 0;
+          DBUG_RETURN(0);
+        }
+        start += read;
+      } while (start < len);
+    } while (false);
+    delete reply;
+    free(buf64);
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(0);
+  }
+}
+
+int ndb_mgm_backup_quotas(NdbMgmHandle handle,
+                          Uint32 *nextDatabaseId,
+                          char **result_buf) {
+  DBUG_ENTER("ndb_mgm_backup_quotas");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_backup_quotas");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("nextDatabaseId", *nextDatabaseId);
+
+  const ParserRow<ParserDummy> backup_quotas_reply[] = {
+    MGM_CMD("backup quotas reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
+    MGM_ARG("nextDatabaseId", Int, Optional, "next Database Id"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         backup_quotas_reply,
+                                         "backup quotas",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to backup quota, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  } else {
+    Uint32 len = 4096;
+    char* buf64 = new char[len];
+    do {
+      Uint32 total_num_rows = 0;
+      if (!reply->get("num_rows", &total_num_rows)) {
+        const char * buf = "expected num_rows";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      if (buf64 == nullptr) {
+        SET_ERROR(handle, errno, "Error malloc Backup database quota");
+        break;
+      }
+      if (total_num_rows == 0) {
+        /* Backup command completed */
+        *nextDatabaseId = RNIL;
+        delete reply;
+        DBUG_RETURN(0);
+      }
+      if (!reply->get("nextDatabaseId", nextDatabaseId)) {
+        const char * buf = "expected nextDatabaseId";
+        fprintf(handle->errstream, "Invalid response%s\n\n", buf);
+        break;
+      }
+      int read = 0;
+      size_t start = 0;
+      Uint32 num_rows = 0;
+      bool new_row_started = true;
+      do {
+        if ((read = handle->socket.read(handle->timeout,
+                                &buf64[start], (int)(len - start))) < 1) {
+          delete [] buf64;
+          buf64 = nullptr;
+          if (read == 0) {
+            SET_ERROR(handle,
+                      ETIMEDOUT,
+                      "Timeout reading Backup database quotas");
+          } else {
+            SET_ERROR(handle, errno, "Error reading Backup database quota");
+          }
+          break;
+        }
+        for (Uint32 i = start; i < (start + read); i++) {
+          if (buf64[i] == '\n') {
+            new_row_started = false;
+            num_rows++;
+          } else {
+            new_row_started = true;
+          }
+        }
+        if (num_rows > total_num_rows ||
+            (num_rows == total_num_rows &&
+             new_row_started)) {
+          SET_ERROR(handle, 1, "Protocol error in Backup database quota");
+          break;
+        } else if (num_rows == total_num_rows) {
+          delete reply;
+          *result_buf = buf64;
+          buf64[start + read] = 0;
+          DBUG_RETURN(0);
+        }
+        start += read;
+      } while (start < len);
+    } while (false);
+    delete reply;
+    free(buf64);
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(0);
+  }
+}
+
+int ndb_mgm_set_quotas(NdbMgmHandle handle,
+                       const char *database_name,
+                       Uint32 in_memory_size,
+                       Uint32 on_disk_size,
+                       Uint32 rate_per_sec,
+                       Uint32 max_transaction_size,
+                       Uint32 max_parallel_transactions,
+                       Uint32 max_parallel_complex_queries) {
+  DBUG_ENTER("ndb_mgm_set_quotas");
+  DBUG_PRINT("enter", ("database: %s, in_memory_size: %uMB"
+             ", on_disk_size: %uMB, rate_per_sec: %u"
+             ", max_transaction_size: %u"
+             ", max_parallel_transactions: %u"
+             ", max_parallel_complex_queries: %u",
+             database_name,
+             in_memory_size,
+             on_disk_size,
+             rate_per_sec,
+             max_transaction_size,
+             max_parallel_transactions,
+             max_parallel_complex_queries));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_set_quotas");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("database", database_name);
+  args.put("in_memory_size", in_memory_size);
+  args.put("on_disk_size", on_disk_size);
+  args.put("rate_per_sec", rate_per_sec);
+  args.put("max_transaction_size", max_transaction_size);
+  args.put("max_parallel_transactions", max_parallel_transactions);
+  args.put("max_parallel_complex_queries", max_parallel_complex_queries);
+
+  const ParserRow<ParserDummy> set_quotas_reply[] = {
+    MGM_CMD("set quotas reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         set_quotas_reply,
+                                         "set quotas",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to set quota, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_alter_quotas(NdbMgmHandle handle,
+                         const char *database_name,
+                         Uint32 in_memory_size,
+                         Uint32 on_disk_size,
+                         Uint32 rate_per_sec,
+                         Uint32 max_transaction_size,
+                         Uint32 max_parallel_transactions,
+                         Uint32 max_parallel_complex_queries) {
+  DBUG_ENTER("ndb_mgm_alter_quotas");
+  DBUG_PRINT("enter", ("database: %s, in_memory_size: %uMB"
+             ", on_disk_size: %uMB, rate_per_sec: %u"
+             ", max_transaction_size: %u"
+             ", max_parallel_transactions: %u"
+             ", max_parallel_complex_queries: %u",
+             database_name,
+             in_memory_size,
+             on_disk_size,
+             rate_per_sec,
+             max_transaction_size,
+             max_parallel_transactions,
+             max_parallel_complex_queries));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_alter_quotas");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("database", database_name);
+  args.put("in_memory_size", in_memory_size);
+  args.put("on_disk_size", on_disk_size);
+  args.put("rate_per_sec", rate_per_sec);
+  args.put("max_transaction_size", max_transaction_size);
+  args.put("max_parallel_transactions", max_parallel_transactions);
+  args.put("max_parallel_complex_queries", max_parallel_complex_queries);
+
+  const ParserRow<ParserDummy> alter_quotas_reply[] = {
+    MGM_CMD("alter quotas reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         alter_quotas_reply,
+                                         "alter quotas",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to alter quota, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_drop_quotas(NdbMgmHandle handle,
+                        const char *database_name) {
+  DBUG_ENTER("ndb_mgm_drop_quotas");
+  DBUG_PRINT("enter", ("database: %s", database_name));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_drop_quotas");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("database", database_name);
+
+  const ParserRow<ParserDummy> drop_quotas_reply[] = {
+    MGM_CMD("drop quotas reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         drop_quotas_reply,
+                                         "drop quotas",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to drop quota, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
     delete reply;
     DBUG_RETURN(-1);
   }

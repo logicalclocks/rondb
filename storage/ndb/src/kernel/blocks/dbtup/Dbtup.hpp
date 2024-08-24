@@ -638,6 +638,7 @@ struct Fragoperrec {
     Uint32 m_first_page_no;
     Uint32 m_empty_page_no;
     Uint32 m_extent_no;
+    Uint32 m_num_pages;
     Local_key m_key;
     Uint32 m_free_space;
     Uint32 m_free_matrix_pos;
@@ -1358,7 +1359,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       fixed-size attribute is at index <num fixed> + <num varsize> + 1.
     */
     Uint16* m_real_order_descriptor;
-    
+
     enum Bits
     {
       TR_Checksum = 0x1, // Need to be 1
@@ -2178,10 +2179,17 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
    * TUX index in TUP has single Uint32 array attribute which stores an
    * index node.  TUX reads and writes the node directly via pointer.
    */
-  int tuxAllocNode(EmulatedJamBuffer *, Uint32 *fragPtrP, Uint32 *tablePtrP,
-                   Uint32 &pageId, Uint32 &pageOffset, Uint32 *&node);
-  void tuxFreeNode(Uint32 *fragPtrP, Uint32 *tablePtrP, Uint32 pageId,
-                   Uint32 pageOffset, Uint32 *node);
+  int tuxAllocNode(EmulatedJamBuffer*,
+                   Uint32* fragPtrP,
+                   Uint32* tablePtrP,
+                   Uint32& pageId,
+                   Uint32& pageOffset,
+                   Uint32*& node);
+  void tuxFreeNode(Uint32* fragPtrP,
+                   Uint32* tablePtrP,
+                   Uint32 pageId,
+                   Uint32 pageOffset,
+                   Uint32* node);
   void tuxGetNode(Uint32 attrDataOffset, Uint32 tuxFixHeaderSize, Uint32 pageId,
                   Uint32 pageOffset, Uint32 *&node);
 
@@ -3229,7 +3237,7 @@ public:
   //------------------------------------------------------------------
   //------------------------------------------------------------------
 
-  int store_default_record(const TablerecPtr &regTabPtr);
+  int  store_default_record(const TablerecPtr& regTabPtr);
   bool receive_defvalue(Signal *signal, const TablerecPtr &regTabPtr);
   //------------------------------------------------------------------
   //------------------------------------------------------------------
@@ -3670,7 +3678,10 @@ private:
                        Uint32 * err, 
                        Fragrecord* regFragPtr,
                        Tablerec *regTabPtr);
-  Uint32 allocFragPage(Uint32 * err, Tablerec*, Fragrecord*, Uint32 page_no);
+  Uint32 allocFragPage(Uint32 * err,
+                       Tablerec*,
+                       Fragrecord*,
+                       Uint32 page_no);
   void releaseFragPage(Fragrecord* regFragPtr,
                        Uint32 logicalPageId,
                        PagePtr);
@@ -3689,8 +3700,11 @@ private:
                                Uint32 pagePtrI, Uint32 *ptr);
   void handle_lcp_skip_bit(EmulatedJamBuffer *jamBuf, Fragrecord *fragPtrP,
                            PagePtr pagePtr, Uint32 page_no);
-  void handle_new_page(EmulatedJamBuffer *jamBuf, Fragrecord *fragPtrP,
-                       Tablerec *tabPtrP, PagePtr pagePtr, Uint32 page_no);
+  void handle_new_page(EmulatedJamBuffer *jamBuf,
+                       Fragrecord *fragPtrP,
+                       Tablerec *tabPtrP,
+                       PagePtr pagePtr,
+                       Uint32 page_no);
 
   void record_delete_by_pageid(Signal *signal, Uint32 tableId,
                                Uint32 fragmentId, ScanOp &scan, Uint32 page_no,
@@ -3732,7 +3746,8 @@ private:
 //---------------------------------------------------------------
 //
 // Public methods
-  Uint32* alloc_var_row(Uint32 * err,
+  Uint32* alloc_var_row(Signal*,
+                        Uint32 * err,
                         Fragrecord* const,
                         Tablerec* const,
                         Uint32,
@@ -3740,7 +3755,6 @@ private:
                         Uint32*,
                         bool);
   void free_var_rec(Fragrecord*, Tablerec*, Local_key*, Ptr<Page>);
-  void free_var_part(Fragrecord*, Tablerec*, Local_key*);
   Uint32* alloc_var_part(Uint32*err,
                          Fragrecord*,
                          Tablerec*,
@@ -3751,10 +3765,19 @@ private:
   Uint32 *realloc_var_part(Uint32 * err, Fragrecord*, Tablerec*,
                            PagePtr, Var_part_ref*, Uint32, Uint32);
   
-  void move_var_part(Fragrecord* fragPtr, Tablerec* tabPtr, PagePtr pagePtr,
-                     Var_part_ref* refptr, Uint32 size, Tuple_header *org);
- 
-  void free_var_part(Fragrecord* fragPtr, PagePtr pagePtr, Uint32 page_idx);
+  void move_var_part(Fragrecord* fragPtr,
+                     Tablerec* tabPtr,
+                     PagePtr pagePtr,
+                     Var_part_ref* refptr,
+                     Uint32 size,
+                     Tuple_header *org);
+
+   void free_var_part(Fragrecord* fragPtr,
+                      Tablerec* tabPtr,
+                      Local_key* key);
+  void free_var_part(Fragrecord* fragPtr,
+                     PagePtr pagePtr,
+                     Uint32 page_idx);
 
   void validate_page(TablerecPtr, Var_page* page);
   
@@ -3764,7 +3787,10 @@ private:
                         Tablerec* const,
                         Local_key*,
                         Uint32*);
-  void free_fix_rec(Fragrecord*, Tablerec*, Local_key*, Fix_page*);
+  void free_fix_rec(Fragrecord*,
+                    Tablerec*,
+                    Local_key*,
+                    Fix_page*);
   
   Uint32* alloc_fix_rowid(Uint32 * err,
                           Fragrecord* const,
@@ -4308,7 +4334,10 @@ public:
   void remove_top_from_lcp_keep_list(Fragrecord *, Uint32 *, Local_key);
   void insert_lcp_keep_list(Fragrecord *, Local_key, Uint32 *,
                             const Local_key *);
-  void handle_lcp_drop_change_page(Fragrecord *, Uint32, PagePtr, bool);
+  void handle_lcp_drop_change_page(Fragrecord*,
+                                   Uint32,
+                                   PagePtr,
+                                   bool);
   void handle_lcp_keep(Signal *, FragrecordPtr, ScanOp *);
   void handle_lcp_keep_commit(const Local_key *, KeyReqStruct *, Operationrec *,
                               Fragrecord *, Tablerec *);
@@ -4478,6 +4507,7 @@ inline void Dbtup::setup_fixed_tuple_ref(KeyReqStruct *req_struct,
                                          Tablerec *regTabPtr) {
   PagePtr page_ptr;
   Uint32 *ptr = get_ptr(&page_ptr, &regOperPtr->m_tuple_location, regTabPtr);
+  NDB_PREFETCH_READ(ptr);
   req_struct->m_page_ptr = page_ptr;
   req_struct->m_tuple_ptr = (Tuple_header *)ptr;
 }
@@ -4698,7 +4728,8 @@ class Dbtup_client {
 
   // TSMAN
 
-  int disk_restart_alloc_extent(Uint32 tableId, Uint32 fragId,
+  int disk_restart_alloc_extent(Uint32 tableId,
+                                Uint32 fragId,
                                 Uint32 create_table_version,
 				const Local_key* key,
                                 Uint32 extent_no,

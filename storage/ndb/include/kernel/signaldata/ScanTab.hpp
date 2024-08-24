@@ -105,6 +105,7 @@ class ScanTabReq {
    * Get:ers for requestInfo
    */
   static Uint8 getParallelism(const UintR &requestInfo);
+  static Uint8 getPassQueueingFlag(const UintR &requestInfo);
   static Uint8 getAggregation(const UintR & requestInfo);
   static Uint8 getLockMode(const UintR &requestInfo);
   static Uint8 getHoldLockFlag(const UintR &requestInfo);
@@ -127,7 +128,8 @@ class ScanTabReq {
    */
   static void clearRequestInfo(UintR &requestInfo);
   static void setParallelism(UintR &requestInfo, Uint32 flag);
-  static void setAggregation(UintR & requestInfo, Uint32 flag);
+  static void setAggregation(UintR &requestInfo, Uint32 flag);
+  static void setPassQueueingFlag(UintR &requestInfo, Uint32 flag);
   static void setLockMode(UintR &requestInfo, Uint32 flag);
   static void setHoldLockFlag(UintR &requestInfo, Uint32 flag);
   static void setReadCommittedFlag(UintR &requestInfo, Uint32 flag);
@@ -152,20 +154,8 @@ class ScanTabReq {
                                         Note: these bits are ignored since
                                         7.0.34, 7.1.23, 7.2.7 and should be
                                         zero-filled until future reuse.
- g = Aggregation           - 1(of 8) Bit 7   reuse the highest bit of Parallelism
-                                             since it is ignored in current implementation
-                                             So we use 1000 0000 (other bits must are 0)
-                                             to represent aggregation.
-                                             Keep it, it would be safer to test with this
-                                             restriction for a while.
-                                             **********************NOTICE**********************
-                                             if someone would like to use the remaining 7 bits
-                                             in the future, release this restriction by removing
-                                             the assert in both ScanTabReq::setAggregation() and
-                                             ScanTabReq::getAggregation()
-
-                                             UPDATE: already uncommented those asserts
-                                             **************************************************
+ g = Aggregation           - 1  Bit 7   reuse the highest bit of Parallelism
+ P = Pass queue flag       - 1  Bit 6   Signal sent from DBTC, queued request
  l = Lock mode             - 1  Bit 8
  h = Hold lock mode        - 1  Bit 10
  c = Read Committed        - 1  Bit 11
@@ -196,6 +186,9 @@ class ScanTabReq {
 
 #define SCAN_AGGREGATION_SHIFT (7)
 #define SCAN_AGGREGATION_MASK  (1)
+
+#define PASS_QUEUE_SHIFT     (6)
+#define PASS_QUEUE_MASK      (1)
 
 #define LOCK_MODE_SHIFT (8)
 #define LOCK_MODE_MASK (1)
@@ -242,9 +235,12 @@ inline Uint8 ScanTabReq::getParallelism(const UintR &requestInfo) {
 }
 
 inline Uint8 ScanTabReq::getAggregation(const UintR & requestInfo) {
-  // assert((requestInfo & 0x7F) == 0);
   return ((Uint8)((requestInfo >> SCAN_AGGREGATION_SHIFT) &
                   SCAN_AGGREGATION_MASK));
+}
+
+inline Uint8 ScanTabReq::getPassQueueingFlag(const UintR & requestInfo) {
+  return (Uint8)((requestInfo >> PASS_QUEUE_SHIFT) & PASS_QUEUE_MASK);
 }
 
 inline Uint8 ScanTabReq::getLockMode(const UintR &requestInfo) {
@@ -293,14 +289,21 @@ inline void ScanTabReq::setParallelism(UintR &requestInfo, Uint32 type) {
 }
 
 inline void ScanTabReq::setAggregation(UintR & requestInfo, Uint32 flag) {
-  // assert((requestInfo & 0x7F) == 0);
   requestInfo |= (flag << SCAN_AGGREGATION_SHIFT);
 }
 
-inline void ScanTabReq::setLockMode(UintR &requestInfo, Uint32 mode) {
-  ASSERT_MAX(mode, LOCK_MODE_MASK, "ScanTabReq::setLockMode");
-  requestInfo = (requestInfo & ~(LOCK_MODE_MASK << LOCK_MODE_SHIFT)) |
-                ((mode & LOCK_MODE_MASK) << LOCK_MODE_SHIFT);
+inline void ScanTabReq::setPassQueueingFlag(UintR & requestInfo, Uint32 mode) {
+  ASSERT_MAX(mode, PASS_QUEUE_MASK,  "ScanTabReq::setPassQueueingFlag");
+  requestInfo= (requestInfo & ~(PASS_QUEUE_MASK << PASS_QUEUE_SHIFT)) |
+               ((mode & PASS_QUEUE_MASK) << PASS_QUEUE_SHIFT);
+}
+
+inline
+void 
+ScanTabReq::setLockMode(UintR & requestInfo, Uint32 mode){
+  ASSERT_MAX(mode, LOCK_MODE_MASK,  "ScanTabReq::setLockMode");
+  requestInfo= (requestInfo & ~(LOCK_MODE_MASK << LOCK_MODE_SHIFT)) |
+               ((mode & LOCK_MODE_MASK) << LOCK_MODE_SHIFT);
 }
 
 inline void ScanTabReq::setHoldLockFlag(UintR &requestInfo, Uint32 flag) {

@@ -150,8 +150,10 @@ Dbtup::alloc_var_part(Uint32 * err,
   It is not assumed that there is a corresponding fixed-length part.
   // TODO : Any need for tabPtr?
 */
-void Dbtup::free_var_part(Fragrecord *fragPtr, Tablerec *tabPtr,
-                          Local_key *key) {
+void Dbtup::free_var_part(Fragrecord* fragPtr,
+                          Tablerec* tabPtr,
+                          Local_key* key)
+{
   Ptr<Page> pagePtr;
   if (key->m_page_no != RNIL) {
     ndbrequire(c_page_pool.getPtr(pagePtr, key->m_page_no));
@@ -174,6 +176,10 @@ void Dbtup::free_var_part(Fragrecord *fragPtr, Tablerec *tabPtr,
       Uint32 idx = pagePtr.p->list_index;
       Local_Page_list list(c_page_pool, fragPtr->free_var_page_array[idx]);
       list.remove(pagePtr);
+      m_ldm_instance_used->c_lqh->update_memory_usage(fragPtr->fragTableId,
+                                                      Int32(-4),
+                                                      __LINE__,
+                                                      pagePtr.i);
       returnCommonArea(pagePtr.i, 1);
       fragPtr->noOfVarPages--;
     } else {
@@ -202,8 +208,11 @@ void Dbtup::free_var_part(Fragrecord *fragPtr, Tablerec *tabPtr,
   RETURN VALUES
     Returns true if deallocation was successful otherwise false
 */
-void Dbtup::free_var_rec(Fragrecord *fragPtr, Tablerec *tabPtr, Local_key *key,
-                         Ptr<Page> pagePtr) {
+void Dbtup::free_var_rec(Fragrecord* fragPtr,
+			 Tablerec* tabPtr,
+			 Local_key* key,
+			 Ptr<Page> pagePtr)
+{
   /**
    * TODO free fix + var part
    */
@@ -214,7 +223,7 @@ void Dbtup::free_var_rec(Fragrecord *fragPtr, Tablerec *tabPtr, Local_key *key,
   Var_part_ref *varref = tuple->get_var_part_ref_ptr(tabPtr);
   varref->copyout(&ref);
 
-  free_fix_rec(fragPtr, tabPtr, key, (Fix_page *)pagePtr.p);
+  free_fix_rec(fragPtr, tabPtr, key, (Fix_page*)pagePtr.p);
 
   if (ref.m_page_no != RNIL) {
     jam();
@@ -224,7 +233,8 @@ void Dbtup::free_var_rec(Fragrecord *fragPtr, Tablerec *tabPtr, Local_key *key,
   return;
 }
 
-void Dbtup::free_var_part(Fragrecord *fragPtr, PagePtr pagePtr,
+void Dbtup::free_var_part(Fragrecord* fragPtr,
+                          PagePtr pagePtr,
                           Uint32 page_idx) {
   ndbassert(fragPtr->m_varWordsFree >= ((Var_page *)pagePtr.p)->free_space);
   fragPtr->m_varWordsFree -= ((Var_page *)pagePtr.p)->free_space;
@@ -245,6 +255,10 @@ void Dbtup::free_var_part(Fragrecord *fragPtr, PagePtr pagePtr,
     Uint32 idx = pagePtr.p->list_index;
     Local_Page_list list(c_page_pool, fragPtr->free_var_page_array[idx]);
     list.remove(pagePtr);
+    m_ldm_instance_used->c_lqh->update_memory_usage(fragPtr->fragTableId,
+                                                    Int32(-4),
+                                                    __LINE__,
+                                                    pagePtr.i);
     returnCommonArea(pagePtr.i, 1);
     fragPtr->noOfVarPages--;
   } else {
@@ -255,9 +269,12 @@ void Dbtup::free_var_part(Fragrecord *fragPtr, PagePtr pagePtr,
   ndbassert(fragPtr->verifyVarSpace());
 }
 
-Uint32 *Dbtup::realloc_var_part(Uint32 *err, Fragrecord *fragPtr,
-                                Tablerec *tabPtr, PagePtr pagePtr,
-                                Var_part_ref *refptr, Uint32 oldsz,
+Uint32 *Dbtup::realloc_var_part(Uint32 *err,
+                                Fragrecord *fragPtr,
+                                Tablerec *tabPtr,
+                                PagePtr pagePtr,
+                                Var_part_ref *refptr,
+                                Uint32 oldsz,
                                 Uint32 newsz) {
   Uint32 add = newsz - oldsz;
   Uint32 *new_var_ptr;
@@ -316,7 +333,7 @@ Uint32 *Dbtup::realloc_var_part(Uint32 *err, Fragrecord *fragPtr,
       Uint32 *src = pageP->get_ptr(oldref.m_page_idx);
       ndbassert(oldref.m_page_no != newref.m_page_no);
       ndbassert(pageP->get_entry_len(oldref.m_page_idx) == oldsz);
-      memcpy(new_var_ptr, src, 4 * oldsz);
+      memcpy(new_var_ptr, src, 4*oldsz);
       free_var_part(fragPtr, pagePtr, oldref.m_page_idx);
     }
 
@@ -326,8 +343,11 @@ Uint32 *Dbtup::realloc_var_part(Uint32 *err, Fragrecord *fragPtr,
   return new_var_ptr;
 }
 
-void Dbtup::move_var_part(Fragrecord *fragPtr, Tablerec *tabPtr,
-                          PagePtr pagePtr, Var_part_ref *refptr, Uint32 size,
+void Dbtup::move_var_part(Fragrecord* fragPtr,
+                          Tablerec* tabPtr,
+                          PagePtr pagePtr,
+                          Var_part_ref* refptr,
+                          Uint32 size,
                           Tuple_header *org) {
   jam();
 
@@ -478,6 +498,10 @@ Dbtup::get_empty_var_page(Fragrecord* fragPtr,
     return RNIL;
   }
 
+  m_ldm_instance_used->c_lqh->update_memory_usage(fragPtr->fragTableId,
+                                                  4,
+                                                  __LINE__,
+                                                  ptr.i);
   c_page_pool.getPtr(ptr);
   ptr.p->physical_page_id = ptr.i;
   ptr.p->page_state = ~0;
@@ -603,7 +627,8 @@ Uint64 Dbtup::calculate_used_var_words(Fragrecord *fragPtr) {
     Return 0 if unsuccessful, otherwise pointer to fixed part.
 */
 Uint32* 
-Dbtup::alloc_var_row(Uint32 * err,
+Dbtup::alloc_var_row(Signal *signal,
+                     Uint32 * err,
                      Fragrecord* const fragPtr,
 		     Tablerec* const tabPtr,
 		     Uint32 alloc_size,
@@ -628,12 +653,20 @@ Dbtup::alloc_var_row(Uint32 * err,
   Uint32 *ptr;
   if (!use_rowid)
   {
-    ptr = alloc_fix_rec(jamBuffer(), err, fragPtr, tabPtr, key,
-                         out_frag_page_id);
+    ptr = alloc_fix_rec(jamBuffer(),
+                        err,
+                        fragPtr,
+                        tabPtr,
+                        key,
+                        out_frag_page_id);
   }
   else
   {
-    ptr = alloc_fix_rowid(err, fragPtr, tabPtr, key, out_frag_page_id);
+    ptr = alloc_fix_rowid(err,
+                          fragPtr,
+                          tabPtr,
+                          key,
+                          out_frag_page_id);
   }
   if (unlikely(ptr == 0))
   {
