@@ -83,12 +83,18 @@ func StartServer() (cleanup func(), err error) {
 				serverReady <- true
 			}
 		}
+		if err := stdoutScanner.Err(); err != nil {
+			log.Errorf("error reading stdout: %v", err)
+		}
 	}()
 
 	go func() {
 		for stderrScanner.Scan() {
 			line := stderrScanner.Text()
 			log.Error(line)
+		}
+		if err := stderrScanner.Err(); err != nil {
+			log.Errorf("error reading stderr: %v", err)
 		}
 	}()
 

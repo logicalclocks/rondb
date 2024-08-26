@@ -97,7 +97,6 @@ GetTrainingDatasetFeature(int featureViewID) {
                   tdfs[i].td_join_id,
                   tdfs[i].idx,
                   tdfs[i].label,
-                  tdfs[i].transformation_function_id,
                   tdfs[i].feature_view_id};
   }
 

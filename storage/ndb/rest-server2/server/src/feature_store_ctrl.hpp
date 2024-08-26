@@ -51,10 +51,10 @@ extern metadata::FeatureViewMetaDataCache fvMetaCache;
 
 std::shared_ptr<RestErrorCode>
 ValidatePrimaryKey(const std::unordered_map<std::string, std::vector<char>> &entries,
-                   const std::unordered_map<std::string, std::string> &features);
-std::shared_ptr<RestErrorCode>
-ValidatePassedFeatures(const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
-                       const std::unordered_map<std::string, metadata::FeatureMetadata> &features);
+                   const std::unordered_map<std::string, bool> &validPrimaryKeys);
+std::shared_ptr<RestErrorCode> ValidatePassedFeatures(
+    const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
+    const std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>> &features);
 std::shared_ptr<RestErrorCode> ValidateFeatureType(const std::vector<char> &feature,
                                                    const std::string &featureType);
 std::string mapFeatureTypeToJsonType(const std::string &featureType);
@@ -66,18 +66,21 @@ GetFeatureMetadata(const std::shared_ptr<metadata::FeatureViewMetadata> &metadat
                    const feature_store_data_structs::MetadataRequest &metaRequest);
 std::shared_ptr<RestErrorCode> TranslateRonDbError(int code, const std::string &err);
 std::tuple<std::vector<std::vector<char>>, feature_store_data_structs::FeatureStatus,
-           std::shared_ptr<RestErrorCode>>
+           std::vector<feature_store_data_structs::DetailedStatus>, std::shared_ptr<RestErrorCode>>
 GetFeatureValues(const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
                  const std::unordered_map<std::string, std::vector<char>> &entries,
-                 const metadata::FeatureViewMetadata &featureView);
+                 const metadata::FeatureViewMetadata &featureView, bool includeDetailedStatus);
 std::vector<PKReadParams>
 GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
                      const std::unordered_map<std::string, std::vector<char>> &entries);
 void FillPassedFeatures(
     std::vector<std::vector<char>> &features,
     const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
-    const std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
+    std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>> featureMetadataMap,
     const std::unordered_map<std::string, int> &indexLookup);
 RS_Status process_responses(std::vector<RS_Buffer> &respBuffs, BatchResponseJSON &response);
+void FillPrimaryKey(const metadata::FeatureViewMetadata &featureView,
+                    std::vector<std::vector<char>> featureValues,
+                    const std::vector<std::string> &joinKeys, const std::vector<char> &value);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_CTRL_HPP_

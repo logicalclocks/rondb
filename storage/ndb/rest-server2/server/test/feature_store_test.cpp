@@ -1019,6 +1019,9 @@ class BatchFeatureStoreTest : public ::testing::Test {
   }
 };
 
+// TODO RS_Status RunQueriesOnDataCluster(std::string sqlQueries)
+// TODO TEST_F(FeatureStoreTest, Test_GetFeatureVector_Success_ComplexType_With_Schema_Change)
+
 TEST_F(BatchFeatureStoreTest, DISABLED_Test_GetFeatureVector_Success_ComplexType) {
   auto fsName                    = FSDB002;
   const auto *fvName             = "sample_complex_type";

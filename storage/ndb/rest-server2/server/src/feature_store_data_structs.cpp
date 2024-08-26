@@ -8,6 +8,8 @@
 namespace feature_store_data_structs {
 std::string FeatureStoreResponse::to_string() const {
   std::string res = "{";
+
+  // Features
   res += "\"features\": [";
   for (const auto &feature : features) {
     if (feature.empty())
@@ -20,6 +22,8 @@ std::string FeatureStoreResponse::to_string() const {
     res.pop_back();
   }
   res += "],";
+
+  // Metadata
   res += "\"metadata\": [";
   for (const auto &metadata : metadata) {
     res += "{";
@@ -39,7 +43,27 @@ std::string FeatureStoreResponse::to_string() const {
     res.pop_back();
   }
   res += "],";
-  res += "\"status\": \"" + toString(status) + "\"";
+
+  // Status
+  res += "\"status\": \"" + toString(status) + "\",";
+
+  // DetailedStatus
+  res += "\"detailedStatus\": [";
+  if (detailedStatus.empty()) {
+    res.pop_back();
+    res += "null";
+  }
+  for (const auto &detailed : detailedStatus) {
+    res += "{";
+    res += "\"featureGroupId\": " + std::to_string(detailed.featureGroupId) + ",";
+    res += "\"httpStatus\": " + std::to_string(detailed.httpStatus);
+    res += "},";
+  }
+  if (!detailedStatus.empty()) {
+    res.pop_back();
+    res += "]";
+  }
+
   res += "}";
   return res;
 }
@@ -55,6 +79,7 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(const std::string &res
         .status;
   }
 
+  // Parse features
   auto features_array = doc["features"];
   if (features_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -75,6 +100,7 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(const std::string &res
     }
   }
 
+  // Parse metadata
   auto metadata_array = doc["metadata"];
   if (metadata_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -111,6 +137,7 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(const std::string &res
     }
   }
 
+  // Parse status
   std::string_view status_view;
   auto status_ = doc["status"];
   if (status_.error() == simdjson::error_code::NO_SUCH_FIELD) {
@@ -127,6 +154,34 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(const std::string &res
   error         = status_.get(status_view);
   fsResp.status = fromString(std::string(status_view));
 
+  // Parse detailedStatus
+  uint64_t featureGroupId    = 0;
+  uint64_t httpStatus        = 0;
+  auto detailed_status_array = doc["detailedStatus"];
+  if (detailed_status_array.error() == simdjson::error_code::NO_SUCH_FIELD ||
+      detailed_status_array.is_null()) {
+    fsResp.detailedStatus.clear();
+  } else {
+    for (simdjson::dom::element detailed : detailed_status_array) {
+      DetailedStatus ds{};
+      error = detailed["featureGroupId"].get(featureGroupId);
+      if (error != 0U) {
+        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                          error_message(error))
+            .status;
+      }
+      ds.featureGroupId = featureGroupId;
+      error             = detailed["httpStatus"].get(httpStatus);
+      if (error != 0U) {
+        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                          error_message(error))
+            .status;
+      }
+      ds.httpStatus = httpStatus;
+      fsResp.detailedStatus.push_back(ds);
+    }
+  }
+
   return CRS_Status().status;
 }
 
@@ -142,6 +197,7 @@ BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(const std::string &res
         .status;
   }
 
+  // Parse features
   auto features_array = doc["features"];
   if (features_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -168,6 +224,7 @@ BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(const std::string &res
     }
   }
 
+  // Parse metadata
   auto metadata_array = doc["metadata"];
   if (metadata_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -204,6 +261,7 @@ BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(const std::string &res
     }
   }
 
+  // Parse status
   auto status_array = doc["status"];
   if (status_array.error() == simdjson::error_code::NO_SUCH_FIELD) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -224,6 +282,39 @@ BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(const std::string &res
     }
   }
 
+  // Parse detailedStatus
+  uint64_t featureGroupId    = 0;
+  uint64_t httpStatus        = 0;
+  auto detailed_status_array = doc["detailedStatus"];
+  if (detailed_status_array.error() == simdjson::error_code::NO_SUCH_FIELD ||
+      detailed_status_array.is_null()) {
+    // No detailedStatus field or it is null, leave fsResp.detailedStatus empty
+    fsResp.detailedStatus.clear();
+  } else {
+    for (simdjson::dom::element detailed_group : detailed_status_array) {
+      std::vector<DetailedStatus> detailed_status_vector;
+      for (simdjson::dom::element detailed : detailed_group) {
+        DetailedStatus ds{};
+        error = detailed["featureGroupId"].get(featureGroupId);
+        if (error != 0U) {
+          return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                            error_message(error))
+              .status;
+        }
+        ds.featureGroupId = featureGroupId;
+        error             = detailed["httpStatus"].get(httpStatus);
+        if (error != 0U) {
+          return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                            error_message(error))
+              .status;
+        }
+        ds.httpStatus = httpStatus;
+        detailed_status_vector.push_back(ds);
+      }
+      fsResp.detailedStatus.push_back(detailed_status_vector);
+    }
+  }
+
   return CRS_Status().status;
 }
 
@@ -232,7 +323,7 @@ std::string toString(FeatureStatus status) {
   if (it != FeatureStatusToString.end()) {
     return it->second;
   }
-  // TODO
+  return "UNKNOWN";
 }
 
 FeatureStatus fromString(const std::string &status) {
@@ -240,11 +331,13 @@ FeatureStatus fromString(const std::string &status) {
   if (it != StringToFeatureStatus.end()) {
     return it->second;
   }
-  // TODO
+  return FeatureStatus::Error;
 }
 
 std::string BatchFeatureStoreResponse::to_string() const {
   std::string res = "{";
+
+  // Serialize features
   res += "\"features\": [";
   for (const auto &feature : features) {
     res += "[";
@@ -264,6 +357,8 @@ std::string BatchFeatureStoreResponse::to_string() const {
     res.pop_back();
   }
   res += "],";
+
+  // Serialize metadata
   res += "\"metadata\": [";
   for (const auto &metadata : metadata) {
     res += "{";
@@ -283,6 +378,8 @@ std::string BatchFeatureStoreResponse::to_string() const {
     res.pop_back();
   }
   res += "],";
+
+  // Serialize status
   res += "\"status\": [";
   for (const auto &status : status) {
     res += "\"" + toString(status) + "\",";
@@ -290,9 +387,58 @@ std::string BatchFeatureStoreResponse::to_string() const {
   if (!status.empty()) {
     res.pop_back();
   }
+  res += "],";
+
+  // Serialize detailedStatus
+  res += "\"detailedStatus\": [";
+  for (const auto &detailed_status_group : detailedStatus) {
+    res += "[";
+    if (detailed_status_group.empty()) {
+      res.pop_back();
+      res += "null";
+    }
+    
+    for (const auto &detailed : detailed_status_group) {
+      res += "{";
+      res += "\"featureGroupId\": " + std::to_string(detailed.featureGroupId) + ",";
+      res += "\"httpStatus\": " + std::to_string(detailed.httpStatus);
+      res += "},";
+    }
+    if (!detailed_status_group.empty()) {
+      res.pop_back();
+      res += "],";
+    } else {
+      res += ",";
+    }
+  }
+  if (!detailedStatus.empty()) {
+    res.pop_back();
+  }
   res += "]";
+
   res += "}";
   return res;
+}
+
+Options GetDefaultOptions() {
+  auto defaultOptions                   = Options();
+  defaultOptions.validatePassedFeatures = true;
+  defaultOptions.includeDetailedStatus  = false;
+  return defaultOptions;
+}
+
+Options FeatureStoreRequest::GetOptions() const {
+  auto defaultOptions                   = GetDefaultOptions();
+  defaultOptions.validatePassedFeatures = optionsRequest.validatePassedFeatures;
+  defaultOptions.includeDetailedStatus  = optionsRequest.includeDetailedStatus;
+  return defaultOptions;
+}
+
+Options BatchFeatureStoreRequest::GetOptions() const {
+  auto defaultOptions                   = GetDefaultOptions();
+  defaultOptions.validatePassedFeatures = optionsRequest.validatePassedFeatures;
+  defaultOptions.includeDetailedStatus  = optionsRequest.includeDetailedStatus;
+  return defaultOptions;
 }
 
 }  // namespace feature_store_data_structs

@@ -45,7 +45,6 @@ struct TrainingDatasetFeature {
   int tdJoinID;
   int idx;
   int label;
-  int transformationFunctionID;
   int featureViewID;
 };
 

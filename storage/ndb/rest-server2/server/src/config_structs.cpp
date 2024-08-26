@@ -88,12 +88,6 @@ std::string GRPC::string() {
   return ss.str();
 }
 
-std::string GRPC::string() {
-  std::stringstream ss;
-  ss << "enable: " << enable << ", serverIP: " << serverIP << ", serverPort: " << serverPort;
-  return ss.str();
-}
-
 std::string REST::string() {
   std::stringstream ss;
   ss << "enable: " << enable << ", serverIP: " << serverIP << ", serverPort: " << serverPort;
@@ -267,7 +261,7 @@ RS_Status Security::validate() {
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
-  
+
   return CRS_Status::SUCCESS.status;
 }
 

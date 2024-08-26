@@ -89,13 +89,12 @@ class APIKeyCache {
   /*
   Checking whether the API key can access the given databases
   */
-  RS_Status validate_api_key(const std::string &, const std::initializer_list<std::string> &);
+  RS_Status validate_api_key(const std::string &, const std::vector<std::string> &);
 
   /*
   Checking whether the API key can access the given databases, without caching
   */
-  RS_Status validate_api_key_no_cache(const std::string &,
-                                      const std::initializer_list<std::string> &);
+  RS_Status validate_api_key_no_cache(const std::string &, const std::vector<std::string> &);
 
   RS_Status cleanup();
 
@@ -112,10 +111,10 @@ class APIKeyCache {
   RS_Status cache_entry_updater(const std::string &, std::shared_ptr<std::atomic<bool>>);
 
   RS_Status find_and_validate(const std::string &, bool &, bool &,
-                              const std::initializer_list<std::string> &);
+                              const std::vector<std::string> &);
 
   RS_Status find_and_validate_again(const std::string &, bool &, bool &,
-                                    const std::initializer_list<std::string> &);
+                                    const std::vector<std::string> &);
 
   RS_Status authenticate_user(const std::string &, HopsworksAPIKey &);
 

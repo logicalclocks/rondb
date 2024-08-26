@@ -38,13 +38,21 @@ const std::string BenchmarkAddRow = sqlFiles.at("dynamic/benchmark_add_row.sql")
 const std::string BenchAddRow_TABLE_NAME = "TABLE_NAME";
 const std::string BenchAddRow_COLUMN_VALUES_TO_INSERT = "COLUMN_VALUES_TO_INSERT";
 
-//go:embed fixed/hopsworks_34.sql
-const std::string HopsworksScheme = sqlFiles.at("fixed/hopsworks_34.sql");
+//go:embed fixed/hopsworks_40_data.sql
+const std::string HopsworksData = sqlFiles.at("fixed/hopsworks_40_data.sql");
+
+//go:embed fixed/hopsworks_40_schema.sql
+const std::string HopsworksSchema = sqlFiles.at("fixed/hopsworks_40_schema.sql");
+
+const std::string HopsworksScheme = HopsworksSchema + HopsworksData;
 
 const std::string HOPSWORKS_DB_NAME = "hopsworks";
 
 //go:embed dynamic/hopsworks_34_add_project.sql
 const std::string HopsworksAddProject = sqlFiles.at("dynamic/hopsworks_34_add_project.sql");
+
+//go:embed fixed/hopsworks_fs_update.sql
+const std::string HopsworksUpdateScheme = sqlFiles.at("fixed/hopsworks_fs_update.sql");
 
 const std::string hopsworksAddProject_PROJECT_NAME = "PROJECT_NAME";
 const std::string hopsworksAddProject_PROJECT_NUMBER = "PROJECT_NUMBER";

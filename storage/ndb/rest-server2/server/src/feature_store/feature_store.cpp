@@ -19,6 +19,7 @@
 
 #include "src/feature_store/feature_store.h"
 
+#include <tuple>
 #include <unistd.h>
 
 #include <cstring>
@@ -48,7 +49,7 @@ RS_Status find_project_id_int(Ndb *ndb_object, const char *feature_store_name, I
   NdbTransaction *tx;
   NdbScanOperation *scan_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "project", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, PROJECT, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -156,6 +157,7 @@ RS_Status find_project_id(const char *feature_store_name, Int32 *project_id) {
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_project_id_int(ndb_object, feature_store_name, project_id);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, PROJECT)});
   )
   /* clang-format on */
 
@@ -173,7 +175,7 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
   NdbTransaction *tx;
   NdbScanOperation *scan_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "feature_store", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, FEATURE_STORE, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -283,6 +285,7 @@ RS_Status find_feature_store_id(const char *feature_store_name, int *feature_sto
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_feature_store_id_int(ndb_object, feature_store_name, feature_store_id);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, FEATURE_STORE)});
   )
   /* clang-format on */
 
@@ -301,7 +304,7 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
   NdbTransaction *tx;
   NdbScanOperation *scan_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "feature_view", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, FEATURE_VIEW, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -439,6 +442,7 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
   METADATA_OP_RETRY_HANDLER(
     status = find_feature_view_id_int(ndb_object, feature_store_id,
       feature_view_name, feature_view_version, feature_view_id);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, FEATURE_VIEW)});
   )
   /* clang-format on */
 
@@ -456,7 +460,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   NdbTransaction *tx;
   NdbScanOperation *scan_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "training_dataset_join", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, TRAINING_DATASET_JOIN, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -585,6 +589,7 @@ RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_
   METADATA_OP_RETRY_HANDLER(
     status = find_training_dataset_join_data_int(ndb_object,
       feature_view_id, tdjs, tdjs_size);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, TRAINING_DATASET_JOIN)});
   )
   /* clang-format on */
 
@@ -601,7 +606,7 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   NdbTransaction *tx;
   NdbOperation *ndb_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "feature_group", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, FEATURE_GROUP, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -611,7 +616,7 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
     return status;
   }
 
-  status = get_op(ndb_object, tx, "feature_group", &ndb_op);
+  status = get_op(ndb_object, tx, FEATURE_GROUP, &ndb_op);
   if (status.http_code != SUCCESS) {
     ndb_object->closeTransaction(tx);
     return status;
@@ -712,6 +717,7 @@ RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg) {
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_feature_group_data_int(ndb_object, feature_group_id, fg);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, FEATURE_GROUP)});
   )
   /* clang-format on */
 
@@ -729,7 +735,7 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
   NdbTransaction *tx;
   NdbScanOperation *scan_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "training_dataset_feature", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, TRAINING_DATASET_FEATURE, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -777,14 +783,12 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
   NdbRecAttr *td_join_id_attr       = scan_op->getValue("td_join", nullptr);
   NdbRecAttr *idx_attr              = scan_op->getValue("idx", nullptr);
   NdbRecAttr *label_attr            = scan_op->getValue("label", nullptr);
-  NdbRecAttr *transformation_function_id_attr =
-      scan_op->getValue("transformation_function", nullptr);
   NdbRecAttr *feature_view_id_attr = scan_op->getValue("feature_view_id", nullptr);
 
   if (feature_id_attr == nullptr || training_dataset_attr == nullptr ||
       feature_group_id_attr == nullptr || name_attr == nullptr || type_attr == nullptr ||
       td_join_id_attr == nullptr || idx_attr == nullptr || label_attr == nullptr ||
-      transformation_function_id_attr == nullptr || feature_view_id_attr == nullptr) {
+      feature_view_id_attr == nullptr) {
     ndb_error = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
@@ -890,6 +894,7 @@ RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Featu
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_training_dataset_data_int(ndb_object, feature_view_id, tdf, tdf_size); 
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, TRAINING_DATASET_FEATURE)});
   )
   /* clang-format on */
 
@@ -906,7 +911,7 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object, int feature_store_id, cha
   NdbTransaction *tx;
   NdbOperation *ndb_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "feature_store", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, FEATURE_STORE, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -916,7 +921,7 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object, int feature_store_id, cha
     return status;
   }
 
-  status = get_op(ndb_object, tx, "feature_store", &ndb_op);
+  status = get_op(ndb_object, tx, FEATURE_STORE, &ndb_op);
   if (status.http_code != SUCCESS) {
     ndb_object->closeTransaction(tx);
     return status;
@@ -984,6 +989,7 @@ RS_Status find_feature_store_data(int feature_store_id, char *name) {
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_feature_store_data_int(ndb_object, feature_store_id, name);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, FEATURE_STORE)});
   )
   /* clang-format on */
 
@@ -1001,7 +1007,7 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
   NdbTransaction *tx;
   NdbScanOperation *scan_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "serving_key", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, SERVING_KEY, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -1167,7 +1173,8 @@ RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
 
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
-    status = find_serving_key_data_int(ndb_object, feature_view_id, serving_keys, sk_size); 
+    status = find_serving_key_data_int(ndb_object, feature_view_id, serving_keys, sk_size);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, SERVING_KEY)});
   )
   /* clang-format on */
 
@@ -1184,7 +1191,7 @@ RS_Status find_feature_group_schema_id_int(Ndb *ndb_object, const char *subject_
   NdbTransaction *tx;
   NdbScanOperation *scan_op;
 
-  RS_Status status = select_table(ndb_object, "hopsworks", "subjects", &table_dict);
+  RS_Status status = select_table(ndb_object, HOPSWORKS, SUBJECTS, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -1311,7 +1318,7 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object, const char *subject_nam
   NdbTransaction *tx;
   NdbOperation *ndb_op;
 
-  status = select_table(ndb_object, "hopsworks", "schemas", &table_dict);
+  status = select_table(ndb_object, HOPSWORKS, SCHEMAS, &table_dict);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -1321,7 +1328,7 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object, const char *subject_nam
     return status;
   }
 
-  status = get_op(ndb_object, tx, "schemas", &ndb_op);
+  status = get_op(ndb_object, tx, SCHEMAS, &ndb_op);
   if (status.http_code != SUCCESS) {
     ndb_object->closeTransaction(tx);
     return status;
@@ -1391,6 +1398,7 @@ RS_Status find_feature_group_schema(const char *subject_name, int project_id, ch
     /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_feature_group_schema_int(ndb_object, subject_name, project_id, schema);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, SCHEMAS)});
   )
   /* clang-format on */
 

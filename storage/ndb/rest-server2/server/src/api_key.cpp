@@ -52,14 +52,15 @@ RS_Status APIKeyCache::validate_api_key_format(const std::string &apiKey) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status APIKeyCache::validate_api_key(const std::string &apiKey, const std::initializer_list<std::string>& dbs) {
+RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
+                                        const std::vector<std::string> &dbs) {
   RS_Status status = validate_api_key_format(apiKey);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
 
-  if (dbs.size() == 0) {
-    return CRS_Statu::SUCCESS.status;
+  if (dbs.empty()) {
+    return CRS_Status::SUCCESS.status;
   }
 
   // Authenticates only using the the cache. No request sent to backend
@@ -99,13 +100,14 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey, const std::in
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status APIKeyCache::validate_api_key_no_cache(const std::string &apiKey, const std::initializer_list<std::string>& dbs) {
+RS_Status APIKeyCache::validate_api_key_no_cache(const std::string &apiKey,
+                                                 const std::vector<std::string> &dbs) {
   RS_Status status = validate_api_key_format(apiKey);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
 
-  if (dbs.size() == 0) {
+  if (dbs.empty()) {
     return CRS_Status::SUCCESS.status;
   }
 
@@ -185,8 +187,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status APIKeyCache::update_record(std::vector<std::string> dbs,
-                               UserDBs *udbs) {
+RS_Status APIKeyCache::update_record(std::vector<std::string> dbs, UserDBs *udbs) {
   // caller holds the lock
   if (udbs->evicted) {
     return CRS_Status::SUCCESS.status;
@@ -308,9 +309,9 @@ RS_Status APIKeyCache::cache_entry_updater(const std::string &apiKey,
 }
 
 RS_Status APIKeyCache::find_and_validate(const std::string &apiKey, bool &keyFoundInCache,
-                                   bool &allowedAccess, const std::initializer_list<std::string>& dbs) {
-  keyFoundInCache          = false;
-  allowedAccess            = false;
+                                         bool &allowedAccess, const std::vector<std::string> &dbs) {
+  keyFoundInCache = false;
+  allowedAccess   = false;
 
   pthread_rwlock_rdlock(&key2UserDBsCacheLock);
   auto it = key2UserDBsCache.find(apiKey);
@@ -345,9 +346,10 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey, bool &keyFou
 }
 
 RS_Status APIKeyCache::find_and_validate_again(const std::string &apiKey, bool &keyFoundInCache,
-                                   bool &allowedAccess, const std::initializer_list<std::string>& dbs) {
-  keyFoundInCache          = false;
-  allowedAccess            = false;
+                                               bool &allowedAccess,
+                                               const std::vector<std::string> &dbs) {
+  keyFoundInCache = false;
+  allowedAccess   = false;
 
   pthread_rwlock_rdlock(&key2UserDBsCacheLock);
   auto it = key2UserDBsCache.find(apiKey);

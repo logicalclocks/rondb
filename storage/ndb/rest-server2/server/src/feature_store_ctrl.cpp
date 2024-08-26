@@ -18,6 +18,7 @@
  */
 
 #include "feature_store_ctrl.hpp"
+#include "feature_store_data_structs.hpp"
 #include "feature_store_error_code.hpp"
 #include "feature_util.hpp"
 #include "json_parser.hpp"
@@ -37,6 +38,7 @@
 #include <memory>
 #include <regex>
 #include <simdjson.h>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -44,7 +46,7 @@ metadata::FeatureViewMetaDataCache fvMetaCache;
 
 std::shared_ptr<RestErrorCode>
 ValidatePrimaryKey(const std::unordered_map<std::string, std::vector<char>> &entries,
-                   const std::unordered_map<std::string, std::string> &features) {
+                   const std::unordered_map<std::string, bool> &validPrimaryKeys) {
   // Data type check of primary key will be delegated to rondb.
   if (entries.empty()) {
     return std::make_shared<RestErrorCode>(*INCORRECT_PRIMARY_KEY->NewMessage("No entries found"));
@@ -52,7 +54,7 @@ ValidatePrimaryKey(const std::unordered_map<std::string, std::vector<char>> &ent
 
   for (const auto &entry : entries) {
     const std::string &featureName = entry.first;
-    if (features.find(featureName) == features.end()) {
+    if (validPrimaryKeys.find(featureName) == validPrimaryKeys.end()) {
       return std::make_shared<RestErrorCode>(
           *INCORRECT_PRIMARY_KEY->NewMessage("Provided primary key `" + featureName +
                                              "` does not belong to the set of primary keys."));
@@ -61,22 +63,24 @@ ValidatePrimaryKey(const std::unordered_map<std::string, std::vector<char>> &ent
   return nullptr;
 }
 
-std::shared_ptr<RestErrorCode>
-ValidatePassedFeatures(const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
-                       const std::unordered_map<std::string, metadata::FeatureMetadata> &features) {
+std::shared_ptr<RestErrorCode> ValidatePassedFeatures(
+    const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
+    const std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>> &features) {
   for (const auto &passedFeature : passedFeatures) {
     const std::string &featureName = passedFeature.first;
     const std::vector<char> &value = passedFeature.second;
-    auto featureIt                 = features.find(featureName);
-    if (featureIt == features.end()) {
+    auto featuresIt                = features.find(featureName);
+    if (featuresIt == features.end()) {
       return std::make_shared<RestErrorCode>(
           *FEATURE_NOT_EXIST->NewMessage("Feature `" + featureName +
                                          "` does not exist in the feature view or it is a label "
                                          "which cannot be a passed feature."));
     }
-    auto err = ValidateFeatureType(value, featureIt->second.type);
-    if (err) {
-      return std::make_shared<RestErrorCode>(err);
+    for (const auto &feature : featuresIt->second) {
+      auto err = ValidateFeatureType(value, feature.type);
+      if (err) {
+        return std::make_shared<RestErrorCode>(err);
+      }
     }
   }
   return nullptr;
@@ -107,10 +111,11 @@ std::string mapFeatureTypeToJsonType(const std::string &featureType) {
   }
   if (featureType == "tinyint" || featureType == "int" || featureType == "smallint" ||
       featureType == "bigint" || featureType == "float" || featureType == "double" ||
-      featureType == "decimal" || featureType == "timestamp") {
+      featureType == "decimal") {
     return JSON_NUMBER;
   }
-  if (featureType == "date" || featureType == "string" || featureType == "binary") {
+  if (featureType == "date" || featureType == "string" || featureType == "binary" ||
+      featureType == "timestamp") {
     return JSON_STRING;
   }
   return JSON_OTHER;
@@ -157,17 +162,19 @@ GetFeatureMetadata(const std::shared_ptr<metadata::FeatureViewMetadata> &metadat
                    const feature_store_data_structs::MetadataRequest &metaRequest) {
   auto featureMetadataArray =
       std::vector<feature_store_data_structs::FeatureMetadata>(metadata->numOfFeatures);
-  for (const auto &[featureKey, featureMetadata] : metadata->prefixFeaturesLookup) {
-    if (auto it = metadata->featureIndexLookup.find(GetFeatureIndexKeyByFeature(featureMetadata));
-        it != metadata->featureIndexLookup.end()) {
-      auto featureMetadataResp = feature_store_data_structs::FeatureMetadata();
-      if (metaRequest.featureName) {
-        featureMetadataResp.name = featureKey;
+  for (const auto &[featureKey, prefixFeaturesLookup] : metadata->prefixFeaturesLookup) {
+    for (const auto &featureMetadata : prefixFeaturesLookup) {
+      if (auto it = metadata->featureIndexLookup.find(GetFeatureIndexKeyByFeature(featureMetadata));
+          it != metadata->featureIndexLookup.end()) {
+        auto featureMetadataResp = feature_store_data_structs::FeatureMetadata();
+        if (metaRequest.featureName) {
+          featureMetadataResp.name = featureKey;
+        }
+        if (metaRequest.featureType) {
+          featureMetadataResp.type = featureMetadata.type;
+        }
+        (featureMetadataArray)[it->second] = featureMetadataResp;
       }
-      if (metaRequest.featureType) {
-        featureMetadataResp.type = featureMetadata.type;
-      }
-      (featureMetadataArray)[it->second] = featureMetadataResp;
     }
   }
   return featureMetadataArray;
@@ -186,10 +193,12 @@ std::shared_ptr<RestErrorCode> TranslateRonDbError(int code, const std::string &
     } else {
       fsError = WRONG_DATA_TYPE;
     }
-  } else if (err.find(ERROR_013) != std::string::npos ||  // "Wrong number of primary-key columns."
-             err.find(ERROR_014) != std::string::npos ||  // "Wrong primay-key column."
+  } else if (err.find(ERROR_014) != std::string::npos ||  // "Wrong primay-key column."
              err.find(ERROR_012) != std::string::npos) {  // "Column does not exist."
     fsError = INCORRECT_PRIMARY_KEY->NewMessage(err);
+  } else if (err.find(ERROR_013) != std::string::npos) {  // "Wrong number of primary-key columns.")
+    fsError = nullptr;  // Missing entry can happen and users can fill up missing features by passed
+                        // featues
   } else {
     if (code == drogon::k400BadRequest) {
       fsError = READ_FROM_DB_FAIL_BAD_INPUT->NewMessage(err);
@@ -201,18 +210,47 @@ std::shared_ptr<RestErrorCode> TranslateRonDbError(int code, const std::string &
 }
 
 std::tuple<std::vector<std::vector<char>>, feature_store_data_structs::FeatureStatus,
-           std::shared_ptr<RestErrorCode>>
+           std::vector<feature_store_data_structs::DetailedStatus>, std::shared_ptr<RestErrorCode>>
 GetFeatureValues(const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
                  const std::unordered_map<std::string, std::vector<char>> &entries,
-                 const metadata::FeatureViewMetadata &featureView) {
+                 const metadata::FeatureViewMetadata &featureView, bool includeDetailedStatus) {
   auto featureValues = std::vector<std::vector<char>>(featureView.numOfFeatures);
   feature_store_data_structs::FeatureStatus status =
       feature_store_data_structs::FeatureStatus::Complete;
+  auto arrDetailedStatus = std::vector<feature_store_data_structs::DetailedStatus>();
+  arrDetailedStatus.reserve(ronDbResult.size());
   std::shared_ptr<RestErrorCode> err;
 
   for (const auto &response : ronDbResult) {
+    if (includeDetailedStatus) {
+      auto fgInt                  = 0;
+      auto operationId            = response.getBody().getOperationID();
+      auto separatorPos           = operationId.find('|');
+      auto splitOperationIdFirst  = operationId.substr(0, separatorPos);
+      auto splitOperationIdSecond = operationId.substr(separatorPos + 1);
+      try {
+        fgInt = std::stoi(splitOperationIdSecond);
+      } catch (...) {
+        // TODO err logger
+        fgInt = -1;
+      }
+      feature_store_data_structs::DetailedStatus tmp{};
+      tmp.featureGroupId = fgInt;
+      tmp.httpStatus     = response.getBody().getStatusCode();
+      arrDetailedStatus.push_back(tmp);
+    }
     if (response.getBody().getStatusCode() == drogon::k404NotFound) {
       status = feature_store_data_structs::FeatureStatus::Missing;
+    } else if (response.getBody().getStatusCode() == drogon::k400BadRequest) {
+      if (response.getMessage().find(ERROR_013) !=
+          std::string::npos)  // "Wrong number of primary-key columns."
+        status =
+            feature_store_data_structs::FeatureStatus::Missing;  // Missing entry can happen and
+                                                                 // users can fill up missing
+                                                                 // features by passed featues
+      else {
+        status = feature_store_data_structs::FeatureStatus::Error;
+      }
     } else if (response.getBody().getStatusCode() != drogon::k200OK) {
       status = feature_store_data_structs::FeatureStatus::Error;
     }
@@ -239,28 +277,73 @@ GetFeatureValues(const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
     }
   }
 
+  // Fill in primary key value from request into the vector
+  // If multiple matched entries are found, the priority of the entry follows the order in
+  // `GetBatchPkReadParams` i.e required entry > entry with prefix > entry without prefix Reason why
+  // it has to loop all entries for each `*JoinKeyMap` is to make sure the value are filled in
+  // according to the priority. Otherwise the lower priority one can overwrite the previous assigned
+  // entry if the later entry exists only in the lower priority map. Check
+  // `Test_GetFeatureVector_TestCorrectPkValue*` for more detail.
   for (const auto &entry : entries) {
     std::string featureName = entry.first;
     auto value              = entry.second;
-    std::string indexKey;
-    auto joinKeysIt = featureView.joinKeyMap.find(featureName);
-    if (joinKeysIt != featureView.joinKeyMap.end()) {
-      for (const auto &joinKey : joinKeysIt->second) {
-        if (featureView.prefixFeaturesLookup.find(joinKey) !=
-            featureView.prefixFeaturesLookup.end()) {
-          auto it = featureView.prefixFeaturesLookup.find(joinKey);
-          if (it != featureView.prefixFeaturesLookup.end()) {
-            indexKey = metadata::GetFeatureIndexKeyByFeature(it->second);
-          }
-        }
+    // Get all join key linked to the provided feature name without prefix
+    if (auto joinKeysWithoutPrefixIt = featureView.joinKeyMap.find(featureName);
+        joinKeysWithoutPrefixIt != featureView.joinKeyMap.end()) {
+      // TODO debug logger
+      FillPrimaryKey(featureView, featureValues, joinKeysWithoutPrefixIt->second, value);
+    }
+  }
+
+  for (const auto &entry : entries) {
+    std::string featureName = entry.first;
+    auto value              = entry.second;
+    // Get all join key linked to the provided feature name with prefix.
+    // Entry with prefix is prioritised and the value overwrites the previous assignment if
+    // available.
+    if (auto joinKeysWithPrefixIt = featureView.prefixJoinKeyMap.find(featureName);
+        joinKeysWithPrefixIt != featureView.prefixJoinKeyMap.end()) {
+      // TODO debug logger
+      FillPrimaryKey(featureView, featureValues, joinKeysWithPrefixIt->second, value);
+    }
+  }
+
+  for (const auto &entry : entries) {
+    std::string featureName = entry.first;
+    auto value              = entry.second;
+    // Get all join key linked to the provided feature name with prefix.
+    // Entry in RequiredJoinKeyMap is prioritised and the value overwrites the previous assignment
+    // if available.
+    if (auto joinKeysRequiredIt = featureView.requiredJoinKeyMap.find(featureName);
+        joinKeysRequiredIt != featureView.requiredJoinKeyMap.end()) {
+      // TODO debug logger
+      FillPrimaryKey(featureView, featureValues, joinKeysRequiredIt->second, value);
+    }
+  }
+  return {featureValues, status, arrDetailedStatus, err};
+}
+
+void FillPrimaryKey(const metadata::FeatureViewMetadata &featureView,
+                    std::vector<std::vector<char>> featureValues,
+                    const std::vector<std::string> &joinKeys, const std::vector<char> &value) {
+  std::string indexKey;
+  // Get all join key linked to the provided feature name
+  // TODO debug logger
+  for (const auto &joinKey : joinKeys) {
+    // Check if the join key are valid feature
+    if (auto prefixFeaturesLookupsIt = featureView.prefixFeaturesLookup.find(joinKey);
+        prefixFeaturesLookupsIt != featureView.prefixFeaturesLookup.end()) {
+      for (const auto &prefixFeaturesLookup : prefixFeaturesLookupsIt->second) {
+        indexKey = metadata::GetFeatureIndexKeyByFeature(prefixFeaturesLookup);
+        // Get the index of the feature
         auto it = featureView.featureIndexLookup.find(indexKey);
         if (it != featureView.featureIndexLookup.end()) {
           (featureValues)[it->second] = value;
+          // TODO debug logger
         }
       }
     }
   }
-  return {featureValues, status, err};
 }
 
 std::vector<PKReadParams>
@@ -307,6 +390,22 @@ GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
         filter.column = pkCol;
         filter.value  = entries.at(servingKey.requiredEntry);
         filters.push_back(filter);
+        // TODO debug logger
+      } else if (entries.find(servingKey.prefix + servingKey.featureName) != entries.end()) {
+        // Also Fallback and use feature name with prefix.
+        PKReadFilter filter;
+        filter.column = pkCol;
+        filter.value  = entries.at(servingKey.prefix + servingKey.featureName);
+        filters.push_back(filter);
+        // TODO debug logger
+      } else if (entries.find(servingKey.featureName) != entries.end()) {
+        // Fallback and use the raw feature name so as to be consistent with python client.
+        // Also add feature name with prefix.
+        PKReadFilter filter;
+        filter.column = pkCol;
+        filter.value  = entries.at(servingKey.featureName);
+        filters.push_back(filter);
+        // TODO debug logger
       }
     }
 
@@ -337,14 +436,16 @@ BatchResponseJSON getPkReadResponseJSON(const metadata::FeatureViewMetadata &met
 void FillPassedFeatures(
     std::vector<std::vector<char>> &features,
     const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
-    const std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
+    std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>> featureMetadataMap,
     const std::unordered_map<std::string, int> &indexLookup) {
   if (!passedFeatures.empty()) {
     for (const auto &[featureName, passFeature] : passedFeatures) {
-      const auto &feature   = featureMetadata.at(featureName);
-      std::string lookupKey = GetFeatureIndexKeyByFeature(feature);
-      if (auto it = indexLookup.find(lookupKey); it != indexLookup.end()) {
-        features[it->second] = passFeature;
+      auto featureMetadatas = featureMetadataMap[featureName];
+      for (const auto &featureMetadata : featureMetadatas) {
+        std::string lookupKey = GetFeatureIndexKeyByFeature(featureMetadata);
+        if (auto it = indexLookup.find(lookupKey); it != indexLookup.end()) {
+          features[it->second] = passFeature;
+        }
       }
     }
   }
@@ -425,7 +526,7 @@ void FeatureStoreCtrl::featureStore(
 
   // TODO logger
 
-  auto err1 = ValidatePrimaryKey(reqStruct.entries, metadata->prefixPrimaryKeyMap);
+  auto err1 = ValidatePrimaryKey(reqStruct.entries, metadata->validPrimayKeys);
   if (err1 != nullptr) {
     resp->setBody(err1->Error());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -548,8 +649,9 @@ void FeatureStoreCtrl::featureStore(
       return;
     }
 
-    auto [features, status, fsErr] =
-        GetFeatureValues(rondbResp->getResult(), reqStruct.entries, *metadata);
+    auto [features, status, detailedStatus, fsErr] =
+        GetFeatureValues(rondbResp->getResult(), reqStruct.entries, *metadata,
+                         reqStruct.GetOptions().includeDetailedStatus);
     if (fsErr != nullptr) {
       resp->setBody(fsErr->Error());
       resp->setStatusCode(static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
@@ -563,6 +665,9 @@ void FeatureStoreCtrl::featureStore(
     fsResp.features = features;
     if (reqStruct.metadataRequest.featureName || reqStruct.metadataRequest.featureType) {
       fsResp.metadata = GetFeatureMetadata(metadata, reqStruct.metadataRequest);
+    }
+    if (reqStruct.GetOptions().includeDetailedStatus) {
+      fsResp.detailedStatus = detailedStatus;
     }
     std::cout << fsResp.to_string() << std::endl;
 

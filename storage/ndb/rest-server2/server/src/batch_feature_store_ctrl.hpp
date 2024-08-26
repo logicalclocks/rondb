@@ -53,7 +53,9 @@ getFeatureValuesMultipleEntries(
     BatchResponseJSON &batchResponse,
     const std::vector<std::unordered_map<std::string, std::vector<char>>> &entries,
     const metadata::FeatureViewMetadata &featureView,
-    std::vector<feature_store_data_structs::FeatureStatus> &batchStatus);
+    std::vector<feature_store_data_structs::FeatureStatus> &batchStatus,
+    std::vector<std::vector<feature_store_data_structs::DetailedStatus>> &detailedStatus,
+    bool includeDetailedStatus);
 std::vector<PKReadParams> getBatchPkReadParamsMultipleEntries(
     const metadata::FeatureViewMetadata &metadata,
     const std::vector<std::unordered_map<std::string, std::vector<char>>> &entries,
@@ -63,7 +65,7 @@ BatchResponseJSON getPkReadResponseJson(int numEntries,
 void fillPassedFeaturesMultipleEntries(
     std::vector<std::vector<std::vector<char>>> &features,
     const std::vector<std::unordered_map<std::string, std::vector<char>>> &passedFeatures,
-    std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
+    std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>> &featureMetadata,
     std::unordered_map<std::string, int> &indexLookup,
     const std::vector<feature_store_data_structs::FeatureStatus> &status);
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_BATCH_FEATURE_STORE_CTRL_HPP_

@@ -132,6 +132,11 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   // Execute
   auto featureStatus =
       std::vector<feature_store_data_structs::FeatureStatus>(reqStruct.entries.size());
+  auto detailedStatus = std::vector<std::vector<feature_store_data_structs::DetailedStatus>>();
+  if (reqStruct.GetOptions().includeDetailedStatus) {
+    detailedStatus = std::vector<std::vector<feature_store_data_structs::DetailedStatus>>(
+        reqStruct.entries.size());
+  }
   auto numPassed = checkFeatureStatus(reqStruct, *metadata, featureStatus);
   auto readParams =
       getBatchPkReadParamsMultipleEntries(*metadata, reqStruct.entries, featureStatus);
@@ -204,8 +209,9 @@ void BatchFeatureStoreCtrl::batch_featureStore(
       rsBufferArrayManager.return_req_buffer(reqBuffs[i]);
     }
 
-    std::tie(features, err) = getFeatureValuesMultipleEntries(dbResponseIntf, reqStruct.entries,
-                                                              *metadata, featureStatus);
+    std::tie(features, err) = getFeatureValuesMultipleEntries(
+        dbResponseIntf, reqStruct.entries, *metadata, featureStatus, detailedStatus,
+        reqStruct.GetOptions().includeDetailedStatus);
     if (err != nullptr) {
       resp->setBody(err->Error());
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -237,13 +243,13 @@ unsigned checkFeatureStatus(const feature_store_data_structs::BatchFeatureStoreR
                             std::vector<feature_store_data_structs::FeatureStatus> &status) {
   auto cnt = std::unordered_map<unsigned, bool>();
   for (unsigned i = 0; i < fsReq.entries.size(); ++i) {
-    if (ValidatePrimaryKey(fsReq.entries[i], metadata.prefixPrimaryKeyMap) != nullptr) {
+    if (ValidatePrimaryKey(fsReq.entries[i], metadata.validPrimayKeys) != nullptr) {
       status[i] = feature_store_data_structs::FeatureStatus::Error;
       cnt[i]    = true;
     }
   }
 
-  if (!fsReq.passedFeatures.empty()) {
+  if (!fsReq.passedFeatures.empty() && fsReq.GetOptions().validatePassedFeatures) {
     for (unsigned i = 0; i < fsReq.passedFeatures.size(); ++i) {
       if (ValidatePassedFeatures(fsReq.passedFeatures[i], metadata.prefixFeaturesLookup) !=
           nullptr) {
@@ -260,7 +266,9 @@ getFeatureValuesMultipleEntries(
     BatchResponseJSON &batchResponse,
     const std::vector<std::unordered_map<std::string, std::vector<char>>> &entries,
     const metadata::FeatureViewMetadata &featureView,
-    std::vector<feature_store_data_structs::FeatureStatus> &batchStatus) {
+    std::vector<feature_store_data_structs::FeatureStatus> &batchStatus,
+    std::vector<std::vector<feature_store_data_structs::DetailedStatus>> &detailedStatus,
+    bool includeDetailedStatus) {
   auto rondbBatchResult = std::vector<std::vector<PKReadResponseWithCodeJSON>>(batchStatus.size());
   auto batchResult      = std::vector<std::vector<std::vector<char>>>(batchStatus.size());
 
@@ -284,9 +292,13 @@ getFeatureValuesMultipleEntries(
 
   for (unsigned i = 0; i < rondbBatchResult.size(); ++i) {
     if (!rondbBatchResult[i].empty()) {
-      auto result    = GetFeatureValues(rondbBatchResult[i], entries[i], featureView);
+      auto result =
+          GetFeatureValues(rondbBatchResult[i], entries[i], featureView, includeDetailedStatus);
       batchResult[i] = std::get<0>(result);
       batchStatus[i] = std::get<1>(result);
+      if (includeDetailedStatus) {
+        detailedStatus[i] = std::get<2>(result);
+      }
     }
   }
   return {batchResult, nullptr};
@@ -320,7 +332,7 @@ BatchResponseJSON getPkReadResponseJson(int numEntries,
 void fillPassedFeaturesMultipleEntries(
     std::vector<std::vector<std::vector<char>>> &features,
     const std::vector<std::unordered_map<std::string, std::vector<char>>> &passedFeatures,
-    std::unordered_map<std::string, metadata::FeatureMetadata> &featureMetadata,
+    std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>> &featureMetadata,
     std::unordered_map<std::string, int> &indexLookup,
     const std::vector<feature_store_data_structs::FeatureStatus> &status) {
   if (!passedFeatures.empty() && !passedFeatures.empty()) {

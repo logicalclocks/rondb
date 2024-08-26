@@ -731,7 +731,7 @@ RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &c
           }
         }
 
-        auto apiKeyVal = securityObj[API_KEY];
+        auto apiKeyVal = securityObj[API_KEY_STR];
         if (apiKeyVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
         } else if (apiKeyVal.error() != simdjson::SUCCESS) {
           return handle_simdjson_error(apiKeyVal.error(), doc, currentLocation);
@@ -964,20 +964,21 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
                       ERROR_CODE_INVALID_BODY,
                       std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION))
         .status;
-  } else if (featureViewVersionVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewVersionVal.error(), doc[threadId], currentLocation);
-  } else {
-    if (featureViewVersionVal.is_null()) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_INVALID_BODY,
-                        std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION))
-          .status;
-    }
-    error = featureViewVersionVal.get(featureViewVersion);
-    if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
-    }
   }
+  if (featureViewVersionVal.error() != simdjson::SUCCESS) {
+    return handle_simdjson_error(featureViewVersionVal.error(), doc[threadId], currentLocation);
+  }
+  if (featureViewVersionVal.is_null()) {
+    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                      ERROR_CODE_INVALID_BODY,
+                      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION))
+        .status;
+  }
+  error = featureViewVersionVal.get(featureViewVersion);
+  if (error != simdjson::SUCCESS) {
+    return handle_simdjson_error(error, doc[threadId], currentLocation);
+  }
+
   reqStruct.featureViewVersion = featureViewVersion;
 
   simdjson::ondemand::object passedFeatures;  // Optional
@@ -1003,24 +1004,25 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
                             ERROR_CODE_INVALID_BODY,
                             std::string(ERROR_064) + " " + std::string(featureName))
               .status;
-        } else if (valueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
-        } else {
-          if (valueVal.is_null()) {
-            return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                              ERROR_CODE_INVALID_BODY,
-                              std::string(ERROR_064) + " " + std::string(featureName))
-                .status;
-          }
-          error = valueVal.get(value);
-          if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
-          }
-          std::ostringstream oss;
-          oss << value;
-          std::string valueJson = oss.str();
-          bytes                 = std::vector<char>(valueJson.begin(), valueJson.end());
         }
+        if (valueVal.error() != simdjson::SUCCESS) {
+          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+        }
+        if (valueVal.is_null()) {
+          return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                            ERROR_CODE_INVALID_BODY,
+                            std::string(ERROR_064) + " " + std::string(featureName))
+              .status;
+        }
+        error = valueVal.get(value);
+        if (error != simdjson::SUCCESS) {
+          return handle_simdjson_error(error, doc[threadId], currentLocation);
+        }
+        std::ostringstream oss;
+        oss << value;
+        std::string valueJson = oss.str();
+        bytes                 = std::vector<char>(valueJson.begin(), valueJson.end());
+
         reqStruct.passedFeatures[std::string(featureName)] = bytes;
       }
     }
@@ -1104,16 +1106,17 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
                               ERROR_CODE_INVALID_BODY,
                               std::string(ERROR_064) + " " + std::string(FEATURE_NAME))
                 .status;
-          } else if (optionValueVal.error() != simdjson::SUCCESS) {
+          }
+          if (optionValueVal.error() != simdjson::SUCCESS) {
             return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
-          } else {
-            if (!optionValueVal.is_null()) {
-              error = optionValueVal.get(optionValue);
-              if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
-              }
+          }
+          if (!optionValueVal.is_null()) {
+            error = optionValueVal.get(optionValue);
+            if (error != simdjson::SUCCESS) {
+              return handle_simdjson_error(error, doc[threadId], currentLocation);
             }
           }
+
           reqStruct.metadataRequest.featureName = optionValue;
         } else if (optionKey == FEATURE_TYPE) {
           bool optionValue    = false;
@@ -1123,22 +1126,84 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
                               ERROR_CODE_INVALID_BODY,
                               std::string(ERROR_064) + " " + std::string(FEATURE_TYPE))
                 .status;
-          } else if (optionValueVal.error() != simdjson::SUCCESS) {
+          }
+          if (optionValueVal.error() != simdjson::SUCCESS) {
             return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
-          } else {
-            if (!optionValueVal.is_null()) {
-              error = optionValueVal.get(optionValue);
-              if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
-              }
+          }
+          if (!optionValueVal.is_null()) {
+            error = optionValueVal.get(optionValue);
+            if (error != simdjson::SUCCESS) {
+              return handle_simdjson_error(error, doc[threadId], currentLocation);
             }
           }
+
           reqStruct.metadataRequest.featureType = optionValue;
         }
       }
     }
   }
 
+  simdjson::ondemand::object options;
+  // Optional. Map of option as key and boolean as value.
+  // Default option is false.
+  // Options available: 1. validatePassedFeatures 2. includeDetailedStatus
+  auto optionsVal = reqObject[OPTIONS];
+  if (optionsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+  } else if (optionsVal.error() != simdjson::SUCCESS) {
+    return handle_simdjson_error(optionsVal.error(), doc[threadId], currentLocation);
+  } else {
+    if (!optionsVal.is_null()) {
+      error = optionsVal.get(options);
+      if (error != simdjson::SUCCESS) {
+        return handle_simdjson_error(error, doc[threadId], currentLocation);
+      }
+      for (auto option : options) {
+        std::string_view optionKey = option.unescaped_key();
+        if (optionKey == VALIDATE_PASSED_FEATURES) {
+          bool optionValue    = false;
+          auto optionValueVal = option.value();
+          if (optionValueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+            return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                              ERROR_CODE_INVALID_BODY,
+                              std::string(ERROR_064) + " " + std::string(VALIDATE_PASSED_FEATURES))
+                .status;
+          }
+          if (optionValueVal.error() != simdjson::SUCCESS) {
+            return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          }
+          if (!optionValueVal.is_null()) {
+            error = optionValueVal.get(optionValue);
+            if (error != simdjson::SUCCESS) {
+              return handle_simdjson_error(error, doc[threadId], currentLocation);
+            }
+          }
+
+          reqStruct.optionsRequest.validatePassedFeatures = optionValue;
+        } else if (optionKey == INCLUDE_DETAILED_STATUS) {
+          bool optionValue    = false;
+          auto optionValueVal = option.value();
+          if (optionValueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+            return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                              ERROR_CODE_INVALID_BODY,
+                              std::string(ERROR_064) + " " + std::string(INCLUDE_DETAILED_STATUS))
+                .status;
+          }
+          if (optionValueVal.error() != simdjson::SUCCESS) {
+            return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          }
+          if (!optionValueVal.is_null()) {
+            error = optionValueVal.get(optionValue);
+            if (error != simdjson::SUCCESS) {
+              return handle_simdjson_error(error, doc[threadId], currentLocation);
+            }
+          }
+
+          reqStruct.optionsRequest.includeDetailedStatus = optionValue;
+        }
+      }
+    }
+  }
+  
   return CRS_Status().status;
 }
 
@@ -1410,6 +1475,67 @@ RS_Status JSONParser::batch_feature_store_parse(
             }
           }
           reqStruct.metadataRequest.featureType = optionValue;
+        }
+      }
+    }
+  }
+
+  simdjson::ondemand::object options;
+  // Optional. Map of option as key and boolean as value.
+  // Default option is false.
+  // Options available: 1. validatePassedFeatures 2. includeDetailedStatus
+  auto optionsVal = reqObject[OPTIONS];
+  if (optionsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+  } else if (optionsVal.error() != simdjson::SUCCESS) {
+    return handle_simdjson_error(optionsVal.error(), doc[threadId], currentLocation);
+  } else {
+    if (!optionsVal.is_null()) {
+      error = optionsVal.get(options);
+      if (error != simdjson::SUCCESS) {
+        return handle_simdjson_error(error, doc[threadId], currentLocation);
+      }
+      for (auto option : options) {
+        std::string_view optionKey = option.unescaped_key();
+        if (optionKey == VALIDATE_PASSED_FEATURES) {
+          bool optionValue    = false;
+          auto optionValueVal = option.value();
+          if (optionValueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+            return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                              ERROR_CODE_INVALID_BODY,
+                              std::string(ERROR_064) + " " + std::string(VALIDATE_PASSED_FEATURES))
+                .status;
+          }
+          if (optionValueVal.error() != simdjson::SUCCESS) {
+            return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          }
+          if (!optionValueVal.is_null()) {
+            error = optionValueVal.get(optionValue);
+            if (error != simdjson::SUCCESS) {
+              return handle_simdjson_error(error, doc[threadId], currentLocation);
+            }
+          }
+
+          reqStruct.optionsRequest.validatePassedFeatures = optionValue;
+        } else if (optionKey == INCLUDE_DETAILED_STATUS) {
+          bool optionValue    = false;
+          auto optionValueVal = option.value();
+          if (optionValueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+            return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                              ERROR_CODE_INVALID_BODY,
+                              std::string(ERROR_064) + " " + std::string(INCLUDE_DETAILED_STATUS))
+                .status;
+          }
+          if (optionValueVal.error() != simdjson::SUCCESS) {
+            return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          }
+          if (!optionValueVal.is_null()) {
+            error = optionValueVal.get(optionValue);
+            if (error != simdjson::SUCCESS) {
+              return handle_simdjson_error(error, doc[threadId], currentLocation);
+            }
+          }
+
+          reqStruct.optionsRequest.includeDetailedStatus = optionValue;
         }
       }
     }

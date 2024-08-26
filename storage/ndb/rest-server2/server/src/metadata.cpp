@@ -125,21 +125,32 @@ newFeatureViewMetadata(const std::string &featureStoreName, int featureStoreId,
                        const std::string &featureViewName, int featureViewId,
                        int featureViewVersion, const std::vector<FeatureMetadata> &features,
                        const std::vector<ServingKey> &servingKeys) {
-  std::unordered_map<std::string, std::string> prefixPrimaryKeyMap;
+  std::unordered_map<std::string, bool> validPrimaryKeysMap;
   std::unordered_map<std::string, ServingKey> primaryKeyMap;
   std::unordered_map<std::string, std::vector<ServingKey>> fgPrimaryKeyMap;
+  std::unordered_map<std::string, std::vector<std::string>> prefixJoinKeyMap;
   std::unordered_map<std::string, std::vector<std::string>> joinKeyMap;
+  std::unordered_map<std::string, std::vector<std::string>> requiredJoinKeyMap;
+  std::unordered_map<std::string, ServingKey> servingKeyMap;  // key: serving key prefix + fname
+
+  for (const auto &key : servingKeys) {
+    servingKeyMap[key.prefix + key.featureName] = key;
+  }
 
   for (const auto &key : servingKeys) {
     // std::cout << key.to_string() << std::endl;
     std::string prefixFeatureName          = key.prefix + key.featureName;
-    prefixPrimaryKeyMap[prefixFeatureName] = key.featureName;
+    validPrimaryKeysMap[prefixFeatureName] = true;
+    validPrimaryKeysMap[key.featureName]   = true;
+
+    prefixJoinKeyMap[prefixFeatureName].emplace_back(prefixFeatureName);
+    joinKeyMap[key.featureName].emplace_back(prefixFeatureName);
 
     if (key.required) {
-      joinKeyMap[prefixFeatureName].push_back(prefixFeatureName);
+      requiredJoinKeyMap[prefixFeatureName].push_back(prefixFeatureName);
     } else {
       if (!key.requiredEntry.empty()) {
-        joinKeyMap[key.joinOn].push_back(prefixFeatureName);
+        requiredJoinKeyMap[key.joinOn].push_back(prefixFeatureName);
       }
     }
     primaryKeyMap[GetServingKey(key.joinIndex, key.featureName)] = key;
@@ -147,14 +158,14 @@ newFeatureViewMetadata(const std::string &featureStoreName, int featureStoreId,
     fgPrimaryKeyMap[fgKey].push_back(key);
   }
 
-  std::unordered_map<std::string, FeatureMetadata> prefixColumns;
+  std::unordered_map<std::string, std::vector<FeatureMetadata>> prefixColumns;
   std::unordered_map<std::string, std::vector<FeatureMetadata>> fgFeatures;
   for (const auto &feature : features) {
     if (feature.label)
       continue;
 
-    auto prefixFeatureName           = feature.prefix + feature.name;
-    prefixColumns[prefixFeatureName] = feature;
+    auto prefixFeatureName = feature.prefix + feature.name;
+    prefixColumns[prefixFeatureName].emplace_back(feature);
     std::string featureKey = getFeatureGroupIndexKey(feature.joinIndex, feature.featureGroupId);
     fgFeatures[featureKey].push_back(feature);
   }
@@ -286,8 +297,9 @@ newFeatureViewMetadata(const std::string &featureStoreName, int featureStoreId,
   metadata.featureIndexLookup   = featureIndex;
   metadata.featureStoreNames    = fsNames;
   metadata.primaryKeyMap        = primaryKeyMap;
-  metadata.prefixPrimaryKeyMap  = prefixPrimaryKeyMap;
-  metadata.joinKeyMap           = joinKeyMap;
+  metadata.validPrimayKeys      = validPrimaryKeysMap;
+  metadata.prefixJoinKeyMap     = prefixJoinKeyMap;
+  metadata.requiredJoinKeyMap   = requiredJoinKeyMap;
   metadata.complexFeatures      = complexFeatures;
 
   return {metadata, CRS_Status().status};
@@ -391,18 +403,17 @@ GetFeatureViewMetadata(const std::string &featureStoreName, const std::string &f
       }
     }
 
-    feature.featureGroupName         = featureGroup.name;
-    feature.featureGroupVersion      = featureGroup.version;
-    feature.featureGroupId           = tdf.featureGroupID;
-    feature.id                       = tdf.featureID;
-    feature.name                     = tdf.name;
-    feature.type                     = tdf.type;
-    feature.index                    = tdf.idx;
-    feature.label                    = tdf.label == 1;
-    feature.prefix                   = joinIdToJoin[tdf.tdJoinID].prefix;
-    feature.joinIndex                = joinIdToJoin[tdf.tdJoinID].index;
-    feature.transformationFunctionId = tdf.transformationFunctionID;
-    features[i]                      = feature;
+    feature.featureGroupName    = featureGroup.name;
+    feature.featureGroupVersion = featureGroup.version;
+    feature.featureGroupId      = tdf.featureGroupID;
+    feature.id                  = tdf.featureID;
+    feature.name                = tdf.name;
+    feature.type                = tdf.type;
+    feature.index               = tdf.idx;
+    feature.label               = tdf.label == 1;
+    feature.prefix              = joinIdToJoin[tdf.tdJoinID].prefix;
+    feature.joinIndex           = joinIdToJoin[tdf.tdJoinID].index;
+    features[i]                 = feature;
   }
 
   std::vector<ServingKey> servingKeys;

@@ -36,6 +36,8 @@
 #include <sstream>
 
 int main(int argc, char *argv[]) {
+  std::cout << "Starting server" << std::endl;
+
   jsonParser = JSONParser();
   apiKeyCache = std::make_shared<APIKeyCache>();
   

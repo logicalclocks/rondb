@@ -168,7 +168,10 @@ TEST_F(APIKeyTest, TestAPIKeyCache1) {
   conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
   conf.security.apiKey.cacheUnusedEntriesEvictionMS =
       conf.security.apiKey.cacheRefreshIntervalMS * 2;
-  AllConfigs::set_all(conf);
+  auto status = AllConfigs::set_all(conf);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << status.message;
+  }
 
   std::vector<std::shared_ptr<APIKeyCache>> caches;
   std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
@@ -209,7 +212,10 @@ TEST_F(APIKeyTest, TestAPIKeyCache2) {
   conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
   conf.security.apiKey.cacheUnusedEntriesEvictionMS =
       conf.security.apiKey.cacheRefreshIntervalMS * 2;
-  AllConfigs::set_all(conf);
+  auto status = AllConfigs::set_all(conf);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << status.message;
+  }
 
   std::vector<std::shared_ptr<APIKeyCache>> caches;
   std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
@@ -273,7 +279,6 @@ void test_load(const std::shared_ptr<APIKeyCache> &cache, const AllConfigs &conf
                                 conf.security.apiKey.cacheUnusedEntriesEvictionMS +
                                 conf.security.apiKey.cacheRefreshIntervalJitterMS));
 
-  // The content of the cache as a string
   std::string cacheContent = cache->to_string();
   EXPECT_EQ(cache->size(), 0) << "Cache was not cleared. Expected 0. Got " << cache->size()
                               << " entries in the cache: " << cacheContent << std::endl;
@@ -287,11 +292,14 @@ TEST_F(APIKeyTest, TestAPIKeyCache3) {
   }
 
   // To speed up the tests
-  conf.security.apiKey.cacheRefreshIntervalMS       = 100;
+  conf.security.apiKey.cacheRefreshIntervalMS       = 1000;
   conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
   conf.security.apiKey.cacheUnusedEntriesEvictionMS =
       conf.security.apiKey.cacheRefreshIntervalMS * 2;
-  AllConfigs::set_all(conf);
+  auto status = AllConfigs::set_all(conf);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << status.message;
+  }
 
   std::vector<std::shared_ptr<APIKeyCache>> caches;
   std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
@@ -413,8 +421,9 @@ void test_load_with_bad_keys(const std::shared_ptr<APIKeyCache> &cache, const Al
                                 conf.security.apiKey.cacheUnusedEntriesEvictionMS +
                                 conf.security.apiKey.cacheRefreshIntervalJitterMS));
 
+  std::string cacheContent = cache->to_string();
   EXPECT_EQ(cache->size(), 0) << "Cache was not cleared. Expected 0. Got " << cache->size()
-                              << " entries in the cache" << std::endl;
+                              << " entries in the cache: " << cacheContent << std::endl;
 }
 
 // Test load. Generate lots of bad request for API Keys
@@ -428,8 +437,11 @@ TEST_F(APIKeyTest, TestAPIKeyCache4) {
   conf.security.apiKey.cacheRefreshIntervalMS       = 1000;
   conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
   conf.security.apiKey.cacheUnusedEntriesEvictionMS =
-      conf.security.apiKey.cacheRefreshIntervalJitterMS * 2;
-  AllConfigs::set_all(conf);
+      conf.security.apiKey.cacheRefreshIntervalMS * 2;
+  auto status = AllConfigs::set_all(conf);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << status.message;
+  }
 
   std::vector<std::shared_ptr<APIKeyCache>> caches;
   std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();

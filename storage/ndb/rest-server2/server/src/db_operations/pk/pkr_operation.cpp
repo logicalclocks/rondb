@@ -34,6 +34,7 @@
 #include <memory>
 #include <mysql_time.h>
 #include <algorithm>
+#include <tuple>
 #include <utility>
 #include <my_base.h>
 #include <storage/ndb/include/ndbapi/NdbDictionary.hpp>
@@ -483,17 +484,25 @@ RS_Status PKROperation::Abort() {
 }
 
 RS_Status PKROperation::HandleNDBError(RS_Status status) {
+  // schema errors
   if (UnloadSchema(status)) {
     // no idea which sub-operation threw the error
     // unload all tables used in this operation
+    std::list<std::tuple<std::string, std::string>> tables;
+    std::unordered_map<std::string, bool> tablesMap;
+
     for (size_t i = 0; i < noOps; i++) {
-      PKRRequest *req = subOpTuples[i].pkRequest;
-      ndbObject->setCatalogName(req->DB());
-      NdbDictionary::Dictionary *dict = ndbObject->getDictionary();
-      dict->invalidateTable(req->Table());
-      dict->removeCachedTable(req->Table());
-      RDRSLogger::LOG_INFO("Unloading schema " + std::string(req->DB()) + "/" + std::string(req->Table()));
+      PKRRequest *req   = subOpTuples[i].pkRequest;
+      const char *db    = req->DB();
+      const char *table = req->Table();
+
+      std::string key(std::string(db) + "|" + std::string(table));
+      if (tablesMap.count(key) == 0) {
+        tables.push_back(std::make_tuple(std::string(db), std::string(table)));
+        tablesMap[key] = true;
+      }
     }
+    HandleSchemaErrors(ndbObject, status, tables);
   }
 
   this->Abort();

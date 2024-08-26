@@ -54,7 +54,6 @@ struct FeatureMetadata {
   int index;
   bool label;
   std::string prefix;
-  int transformationFunctionId;
   int joinIndex;
 
   bool isComplex() const;
@@ -66,7 +65,6 @@ struct FeatureMetadata {
         << "\n  featureGroupVersion: " << featureGroupVersion
         << "\n  featureGroupId: " << featureGroupId << "\n  id: " << id << "\n  name: " << name
         << "\n  type: " << type << "\n  index: " << index << "\n  label: " << label
-        << "\n  prefix: " << prefix << "\n  transformationFunctionId: " << transformationFunctionId
         << "\n  joinIndex: " << joinIndex << "\n  isComplex: " << isComplex() << "\n}";
     return oss.str();
   }
@@ -136,7 +134,9 @@ struct FeatureViewMetadata {
   std::string featureViewName;
   int featureViewId;
   int featureViewVersion;
-  std::unordered_map<std::string, FeatureMetadata>
+  // Feature view can be created with multiple features of the same name without prefix.
+  // Each prefix column can map to multiple features
+  std::unordered_map<std::string, std::vector<FeatureMetadata>>
       prefixFeaturesLookup;  // key: prefix + fName, label are excluded
   std::vector<FeatureGroupFeatures> featureGroupFeatures;  // label are excluded
   std::vector<std::string> featureStoreNames;  // List of all feature store used by feature view
@@ -149,12 +149,17 @@ struct FeatureViewMetadata {
   // https://hopsworks.atlassian.net/wiki/spaces/FST/pages/173342721/How+to+resolve+the+set+of+serving+key+in+get+feature+vector
   std::unordered_map<std::string, ServingKey>
       primaryKeyMap;  // key: join index + feature name. Used for constructing rondb request.
-  std::unordered_map<std::string, std::string>
-      prefixPrimaryKeyMap;  // key: serving-key-prefix + fName, value: feature name in feature
-                            // group. Used for pk validation.
+  std::unordered_map<std::string, bool>
+      validPrimayKeys;  // key: serving-key-prefix + fName, fName. Used for pk validation.
   std::unordered_map<std::string, std::vector<std::string>>
-      joinKeyMap;  // key: serving-key-prefix + fName, value: list of feature which join on the key.
-                   // Used for filling in pk value.
+      prefixJoinKeyMap;  // key: serving-key-prefix + fName, value: list of feature which join on
+                         // the key. Used for filling in pk value.
+  std::unordered_map<std::string, std::vector<std::string>>
+      joinKeyMap;  // key: fName, value: list of feature which join on the key. Used for filling in
+                   // pk value.
+  std::unordered_map<std::string, std::vector<std::string>>
+      requiredJoinKeyMap;  // key: serving-key-prefix + fName, value: list of feature which join on
+                           // the key. Used for filling in pk value.
   std::unordered_map<std::string, AvroDecoder>
       complexFeatures;  // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed
                         // because of self-join
@@ -166,7 +171,11 @@ struct FeatureViewMetadata {
         << "\n  featureViewVersion: " << featureViewVersion << "\n  prefixFeaturesLookup: {";
 
     for (const auto &[key, value] : prefixFeaturesLookup) {
-      oss << "\n    " << key << ": " << value.to_string();
+      oss << "\n    " << key << ": ";
+      oss << "\n    ";
+      for (const auto &feature : value) {
+        oss << feature.to_string();
+      }
     }
 
     oss << "\n  }"
@@ -199,10 +208,6 @@ struct FeatureViewMetadata {
 
     oss << "\n  }"
         << "\n  prefixPrimaryKeyMap: {";
-
-    for (const auto &[key, value] : prefixPrimaryKeyMap) {
-      oss << "\n    " << key << ": " << value;
-    }
 
     oss << "\n  }"
         << "\n  joinKeyMap: {";

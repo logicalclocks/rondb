@@ -22,6 +22,7 @@
 
 #include <sstream>
 #include <string>
+#include <sys/_types/_int32_t.h>
 #include <vector>
 #include <unordered_map>
 #include "rdrs_dal.h"
@@ -41,6 +42,25 @@ class MetadataRequest {
   }
 };
 
+class OptionsRequest {
+ public:
+  bool validatePassedFeatures;  // json:"validatePassedFeatures"
+  bool includeDetailedStatus;   // json:"includeDetailedStatus"
+  std::string to_string() const {
+    std::ostringstream oss;
+    oss << "OptionsRequest {"
+        << "\n  validatePassedFeatures: " << (validatePassedFeatures ? "true" : "false")
+        << "\n  includeDetailedStatus: " << (includeDetailedStatus ? "true" : "false") << "\n}";
+    return oss.str();
+  }
+};
+
+class Options {
+ public:
+  bool validatePassedFeatures;  // json:"validatePassedFeatures"
+  bool includeDetailedStatus;   // json:"includeDetailedStatus"
+};
+
 // Request of multiple feature vectors and optional metadata
 class BatchFeatureStoreRequest {
  public:
@@ -55,6 +75,7 @@ class BatchFeatureStoreRequest {
       entries;  // json:"entries" binding:"required"
   // Client requested metadata
   MetadataRequest metadataRequest;  // json:"metadataOptions"
+  OptionsRequest optionsRequest;    // json:"options"
   std::string to_string() const {
     std::ostringstream oss;
     oss << "BatchFeatureStoreRequest {"
@@ -86,9 +107,12 @@ class BatchFeatureStoreRequest {
       oss << "\n    }";
     }
     oss << "\n  }"
-        << "\n  metadataRequest: " << metadataRequest.to_string() << "\n}";
+        << "\n  metadataRequest: " << metadataRequest.to_string();
+    oss << "\n  }";
+    oss << "\n  optionsRequest: " << optionsRequest.to_string() << "\n}";
     return oss.str();
   }
+  Options GetOptions() const;
 };
 
 // Request of a signle feature vector and optional metadata
@@ -100,7 +124,7 @@ class FeatureStoreRequest {
   std::unordered_map<std::string, std::vector<char>> passedFeatures;  // json:"passedFeatures"
   std::unordered_map<std::string, std::vector<char>> entries;  // json:"entries" binding:"required"
   MetadataRequest metadataRequest;                             // json:"metadataOptions"
-  RS_Status validate();
+  OptionsRequest optionsRequest;                               // json:"options"
   static RS_Status
   validate_primary_key(const std::unordered_map<std::string, std::vector<char>> &entries,
                        const std::unordered_map<std::string, std::vector<char>> &features);
@@ -127,9 +151,12 @@ class FeatureStoreRequest {
       oss << "]";
     }
     oss << "\n  }"
-        << "\n  metadataRequest: " << metadataRequest.to_string() << "\n}";
+        << "\n  metadataRequest: " << metadataRequest.to_string();
+    oss << "\n  }";
+    oss << "\n  optionsRequest: " << optionsRequest.to_string() << "\n}";
     return oss.str();
   }
+  Options GetOptions() const;
 };
 
 class FeatureMetadata {
@@ -170,11 +197,26 @@ std::string toString(FeatureStatus status);
 
 FeatureStatus fromString(const std::string &status);
 
+class DetailedStatus {
+ public:
+  int32_t httpStatus;  // json:"httpStatus"
+  int featureGroupId;  // json:"featureGroupId"
+
+  std::string to_string() const {
+    std::ostringstream oss;
+    oss << "{"
+        << "\"httpStatus\": " << httpStatus << ", "
+        << "\"featureGroupId\": " << featureGroupId << "}";
+    return oss.str();
+  }
+};
+
 class FeatureStoreResponse {
  public:
-  std::vector<std::vector<char>> features;  // json:"features"
-  std::vector<FeatureMetadata> metadata;    // json:"metadata"
-  FeatureStatus status;                     // json:"status"
+  std::vector<std::vector<char>> features;     // json:"features"
+  std::vector<FeatureMetadata> metadata;       // json:"metadata"
+  FeatureStatus status;                        // json:"status"
+  std::vector<DetailedStatus> detailedStatus;  // json:"detailedStatus"
   std::string to_string() const;
   static RS_Status parseFeatureStoreResponse(const std::string &respBody,
                                              FeatureStoreResponse &fsResp);
@@ -182,9 +224,10 @@ class FeatureStoreResponse {
 
 class BatchFeatureStoreResponse {
  public:
-  std::vector<std::vector<std::vector<char>>> features;  // json:"features"
-  std::vector<FeatureMetadata> metadata;                 // json:"metadata"
-  std::vector<FeatureStatus> status;                     // json:"status"
+  std::vector<std::vector<std::vector<char>>> features;     // json:"features"
+  std::vector<FeatureMetadata> metadata;                    // json:"metadata"
+  std::vector<FeatureStatus> status;                        // json:"status"
+  std::vector<std::vector<DetailedStatus>> detailedStatus;  // json:"detailedStatus"
   std::string to_string() const;
   static RS_Status parseBatchFeatureStoreResponse(const std::string &respBody,
                                                   BatchFeatureStoreResponse &fsResp);

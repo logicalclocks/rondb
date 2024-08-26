@@ -311,6 +311,9 @@ VALUES
     ),
     (
 	    31, 'sample_complex_type', 1091, Timestamp('2023-09-26 10:02:58'), 10000, 1, 2, NULL, NULL, 18, 'ts', 1
+    ),
+    (
+        3090, 'sample_4', 67, Timestamp('2023-05-08 15:20:51'), 10000, 1, 2, NULL, NULL, 2065, 'ts', 1
     );
 
 INSERT INTO
@@ -324,6 +327,9 @@ VALUES
     ),
     (
         2061, 'sample_1n2', 67, Timestamp('2023-04-21 09:52:53'), 10000, 1, ''
+    ),
+    (
+        4119, 'sample_1n2_no_prefix', 67, Timestamp('2023-04-21 09:52:53'), 10000, 1, ''
     ),
     (
         2064, 'sample_2', 1091, Timestamp('2023-04-21 10:03:49'), 10000, 1, ''
@@ -434,6 +440,30 @@ VALUES
     */
     (
 	    19, 'sample_complex_type', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`bigint` = `fg1`.`id1`
+    */
+    (
+        4117, 'sample_1n3_pk', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`bigint` = `fg1`.`id1`
+    */
+    (
+        4118, 'sample_1n3_no_prefix_pk', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `right_id1`, `fg1`.`id2` `right_id2`, `fg1`.`bigint` `right_bigint`
+    FROM `test_ken_featurestore`.`sample_4_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`id1` = `fg1`.`id2`
+    */
+    (
+        4120, 'sample_4n3_on_id', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
     );
 
 INSERT INTO 
@@ -533,7 +563,31 @@ VALUES
         5132, NULL, 2069, NULL, 0, 0, NULL, 4116
     ),
     (
-	    25, NULL, 31, NULL, 0, 0, NULL, 19
+        25, NULL, 31, NULL, 0, 0, NULL, 19
+    ),
+    (
+        5133, NULL, 2069, NULL, 0, 0, NULL, 4117
+    ),
+    (
+        5134, NULL, 2076, NULL, 0, 1, 'right_', 4117
+    ),
+    (
+        5135, NULL, 2069, NULL, 0, 0, NULL, 4118
+    ),
+    (
+        5136, NULL, 2076, NULL, 0, 1, NULL, 4118
+    ),
+    (
+        5138, NULL, 2071, NULL, 0, 1, NULL, 4119
+    ),
+    (
+        5137, NULL, 2069, NULL, 0, 0, NULL, 4119
+    ),
+    (
+        5139, NULL, 2069, NULL, 0, 0, NULL, 4120
+    ),
+    (
+        5140, NULL, 2076, NULL, 0, 1, 'right_', 4120
     );
 
 INSERT INTO
@@ -874,6 +928,93 @@ VALUES
     ),
     (
         56, NULL, 31, 'id1', 'bigint', 25, 0, 0, NULL, 19
+    ),
+    (
+        5148, NULL, 2069, 'data1', 'bigint', 5133, 2, 0, NULL, 4117
+    ),
+    (
+        5149, NULL, 2069, 'data2', 'bigint', 5133, 3, 0, NULL, 4117
+    ),
+    (
+        5150, NULL, 2076, 'bigint', 'bigint', 5134, 6, 0, NULL, 4117
+    ),
+    (
+        5151, NULL, 2069, 'id1', 'bigint', 5133, 0, 0, NULL, 4117
+    ),
+    (
+        5152, NULL, 2069, 'ts', 'timestamp', 5133, 1, 0, NULL, 4117
+    ),
+    (
+        5153, NULL, 2076, 'id1', 'bigint', 5134, 4, 0, NULL, 4117
+    ),
+    (
+        5154, NULL, 2076, 'id2', 'varchar(100)', 5134, 5, 0, NULL, 4117
+    ),
+    (
+        5155, NULL, 2069, 'data1', 'bigint', 5135, 2, 0, NULL, 4118
+    ),
+    (
+        5156, NULL, 2069, 'data2', 'bigint', 5135, 3, 0, NULL, 4118
+    ),
+    (
+        5157, NULL, 2076, 'bigint', 'bigint', 5136, 6, 0, NULL, 4118
+    ),
+    (
+        5158, NULL, 2069, 'id1', 'bigint', 5135, 0, 0, NULL, 4118
+    ),
+    (
+        5159, NULL, 2069, 'ts', 'timestamp', 5135, 1, 0, NULL, 4118
+    ),
+    (
+        5160, NULL, 2076, 'id1', 'bigint', 5136, 4, 0, NULL, 4118
+    ),
+    (
+        5161, NULL, 2076, 'id2', 'bigint', 5136, 5, 0, NULL, 4118
+    ),
+    (
+        5162, NULL, 2069, 'ts', 'timestamp', 5137, 1, 0, NULL, 4119
+    ),
+    (
+        5163, NULL, 2071, 'id1', 'bigint', 5138, 4, 0, NULL, 4119
+    ),
+    (
+        5164, NULL, 2071, 'data1', 'string', 5138, 6, 0, NULL, 4119
+    ),
+    (
+        5165, NULL, 2069, 'data1', 'bigint', 5137, 2, 0, NULL, 4119
+    ),
+    (
+        5166, NULL, 2069, 'data2', 'bigint', 5137, 3, 0, NULL, 4119
+    ),
+    (
+        5167, NULL, 2071, 'ts', 'date', 5138, 5, 0, NULL, 4119
+    ),
+    (
+        5168, NULL, 2071, 'data2', 'string', 5138, 7, 0, NULL, 4119
+    ),
+    (
+        5169, NULL, 2069, 'id1', 'bigint', 5137, 0, 0, NULL, 4119
+    ),
+    (
+        5170, NULL, 3090, 'data1', 'bigint', 5139, 2, 0, NULL, 4120
+    ),
+    (
+        5171, NULL, 3090, 'data2', 'bigint', 5139, 3, 0, NULL, 4120
+    ),
+    (
+        5172, NULL, 2076, 'bigint', 'bigint', 5140, 6, 0, NULL, 4120
+    ),
+    (
+        5173, NULL, 3090, 'id1', 'bigint', 5139, 0, 0, NULL, 4120
+    ),
+    (
+        5174, NULL, 3090, 'ts', 'timestamp', 5139, 1, 0, NULL, 4120
+    ),
+    (
+        5175, NULL, 2076, 'id1', 'bigint', 5140, 4, 0, NULL, 4120
+    ),
+    (
+        5176, NULL, 2076, 'id2', 'varchar(100)', 5140, 5, 0, NULL, 4120
     );
 
 CREATE TABLE `serving_key` (
@@ -1005,6 +1146,39 @@ VALUES
     ),
     (
         1508, NULL, 'id1', NULL, 0, 31, 1, 19
+    ),
+    (
+        1509, 'right_', 'id2', NULL, 1, 2076, 1, 4117
+    ),
+    (
+        1510, 'right_', 'id1', 'data1', 1, 2076, 1, 4117
+    ),
+    (
+        1511, NULL, 'id1', NULL, 0, 2069, 1, 4117
+    ),
+    (
+        1512, NULL, 'id2', NULL, 1, 2076, 1, 4118
+    ),
+    (
+        1513, '0_', 'id1', 'data1', 1, 2076, 1, 4118
+    ),
+    (
+        1514, NULL, 'id1', NULL, 0, 2069, 1, 4118
+    ),
+    (
+        1515, '0_', 'id1', 'id1', 1, 2071, 0, 4119
+    ),
+    (
+        1516, NULL, 'id1', NULL, 0, 2069, 1, 4119
+    ),
+    (
+        1517, 'right_', 'id1', NULL, 1, 2076, 1, 4120
+    ),
+    (
+        1518, 'right_', 'id2', 'id1', 1, 2076, 0, 4120
+    ),
+    (
+        1519, NULL, 'id1', NULL, 0, 3090, 1, 4120
     );
 
 CREATE TABLE `schemas` (
