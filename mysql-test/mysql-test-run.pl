@@ -383,10 +383,10 @@ sub using_extern { return (keys %opts_extern > 0); }
 # Return list of specific servers
 sub _like { return $config ? $config->like($_[0]) : (); }
 
-sub mysqlds     { return _like('mysqld.'); }
-sub ndbds       { return _like('cluster_config.ndbd.'); }
-sub ndb_mgmds   { return _like('cluster_config.ndb_mgmd.'); }
-sub clusters    { return _like('mysql_cluster.'); }
+sub mysqlds     { return _like('mysqld\.'); }
+sub ndbds       { return _like('cluster_config\.ndbd\.'); }
+sub ndb_mgmds   { return _like('cluster_config\.ndb_mgmd\.'); }
+sub clusters    { return _like('mysql_cluster\.'); }
 sub all_servers { return (mysqlds(), ndb_mgmds(), ndbds()); }
 
 # Return an object which refers to the group named '[mysqld]'
@@ -2591,7 +2591,7 @@ sub set_build_thread_ports($) {
       # ports_per_thread value should be 50.
       # - First set of 20 ports are reserved for mysqld servers (10 each for
       #   standard and admin connections)
-      # - Second set of 10 ports are reserver for Group replication
+      # - Second set of 10 ports are reserved for Group replication
       # - Third set of 10 ports are reserved for secondary engine plugin
       # - Fourth and last set of 10 ports are reserved for X plugin
       $::secondary_engine_port = $baseport + 30;
