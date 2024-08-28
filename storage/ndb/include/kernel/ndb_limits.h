@@ -113,6 +113,15 @@
 #define MAX_KEY_SIZE_IN_WORDS 1023
 #define MAX_NULL_BITS 4096
 
+#define MAX_LONG_LONG_STRING 32
+
+/**
+ * There is no real reason for a limit to the log records, but
+ * normally one should not need more than the max record size
+ * plus a 4-byte header for each column.
+ */
+#define MAX_LOG_RECORD_SIZE_WORDS (MAX_TUPLE_SIZE_IN_WORDS + \
+                                   MAX_ATTRIBUTES_IN_TABLE)
 /*
  * Suma block sorts data changes of tables in buckets.
  * Sumas in a node group shares a number of buckets, which is the

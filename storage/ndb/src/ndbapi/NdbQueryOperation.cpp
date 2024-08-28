@@ -1788,22 +1788,44 @@ NdbQuery &NdbQueryOperation::getQuery() const {
   return m_impl.getQuery().getInterface();
 }
 
-NdbRecAttr *NdbQueryOperation::getValue(const char *anAttrName,
-                                        char *resultBuffer) {
-  return m_impl.getValue(anAttrName, resultBuffer);
+NdbRecAttr*
+NdbQueryOperation::getValue(const char* anAttrName,
+			    char* resultBuffer,
+                            Uint32 aStartPos,
+                            Uint32 aSize)
+{
+  return m_impl.getValue(anAttrName,
+                         resultBuffer,
+                         aStartPos,
+                         aSize);
 }
 
-NdbRecAttr *NdbQueryOperation::getValue(Uint32 anAttrId, char *resultBuffer) {
-  return m_impl.getValue(anAttrId, resultBuffer);
+NdbRecAttr*
+NdbQueryOperation::getValue(Uint32 anAttrId, 
+			    char* resultBuffer,
+                            Uint32 aStartPos,
+                            Uint32 aSize)
+{
+  return m_impl.getValue(anAttrId,
+                         resultBuffer,
+                         aStartPos,
+                         aSize);
 }
 
-NdbRecAttr *NdbQueryOperation::getValue(const NdbDictionary::Column *column,
-                                        char *resultBuffer) {
-  if (unlikely(column == nullptr)) {
+NdbRecAttr*
+NdbQueryOperation::getValue(const NdbDictionary::Column* column, 
+			    char* resultBuffer,
+                            Uint32 aStartPos,
+                            Uint32 aSize)
+{
+  if (unlikely(column==nullptr)) {
     m_impl.getQuery().setErrorCode(QRY_REQ_ARG_IS_NULL);
     return nullptr;
   }
-  return m_impl.getValue(NdbColumnImpl::getImpl(*column), resultBuffer);
+  return m_impl.getValue(NdbColumnImpl::getImpl(*column),
+                         resultBuffer,
+                         aStartPos,
+                         aSize);
 }
 
 int NdbQueryOperation::setResultRowBuf(const NdbRecord *rec, char *resBuffer,
@@ -4068,8 +4090,12 @@ Uint32 NdbQueryOperationImpl::getNoOfLeafOperations() const {
   }
 }
 
-NdbRecAttr *NdbQueryOperationImpl::getValue(const char *anAttrName,
-                                            char *resultBuffer) {
+NdbRecAttr*
+NdbQueryOperationImpl::getValue(
+                            const char* anAttrName,
+                            char* resultBuffer,
+                            Uint32 aStartPos,
+                            Uint32 aSize) {
   if (unlikely(anAttrName == nullptr)) {
     getQuery().setErrorCode(QRY_REQ_ARG_IS_NULL);
     return nullptr;
@@ -4080,24 +4106,38 @@ NdbRecAttr *NdbQueryOperationImpl::getValue(const char *anAttrName,
     getQuery().setErrorCode(Err_UnknownColumn);
     return nullptr;
   } else {
-    return getValue(*column, resultBuffer);
+    return getValue(*column,
+                    resultBuffer,
+                    aStartPos,
+                    aSize);
   }
 }
 
-NdbRecAttr *NdbQueryOperationImpl::getValue(Uint32 anAttrId,
-                                            char *resultBuffer) {
+NdbRecAttr*
+NdbQueryOperationImpl::getValue(
+                            Uint32 anAttrId, 
+                            char* resultBuffer,
+                            Uint32 aStartPos,
+                            Uint32 aSize) {
   const NdbColumnImpl *const column =
       m_operationDef.getTable().getColumn(anAttrId);
   if (unlikely(column == nullptr)) {
     getQuery().setErrorCode(Err_UnknownColumn);
     return nullptr;
   } else {
-    return getValue(*column, resultBuffer);
+    return getValue(*column,
+                    resultBuffer,
+                    aStartPos,
+                    aSize);
   }
 }
 
-NdbRecAttr *NdbQueryOperationImpl::getValue(const NdbColumnImpl &column,
-                                            char *resultBuffer) {
+NdbRecAttr*
+NdbQueryOperationImpl::getValue(
+                            const NdbColumnImpl& column, 
+                            char* resultBuffer,
+                            Uint32 aStartPos,
+                            Uint32 aSize) {
   if (unlikely(getQuery().m_state != NdbQueryImpl::Defined)) {
     int state = getQuery().m_state;
     assert(state >= NdbQueryImpl::Initial && state < NdbQueryImpl::Destructed);
@@ -4115,7 +4155,19 @@ NdbRecAttr *NdbQueryOperationImpl::getValue(const NdbColumnImpl &column,
     getQuery().setErrorCode(Err_MemoryAlloc);
     return nullptr;
   }
-  if (unlikely(recAttr->setup(&column, resultBuffer))) {
+  if (unlikely(aStartPos != 0 || aSize != 0)) {
+    if (unlikely((column.getType() !=
+                  NdbDictionary::Column::Longvarbinary) &&
+                  column.getType() !=
+                  NdbDictionary::Column::Varbinary)) {
+      getQuery().setErrorCode(4566);
+      return nullptr;
+    }
+  }
+  if (unlikely(recAttr->setup(&column,
+                              resultBuffer,
+                              aStartPos,
+                              aSize))) {
     ndb->releaseRecAttr(recAttr);
     getQuery().setErrorCode(Err_MemoryAlloc);
     return nullptr;
@@ -4361,6 +4413,10 @@ int NdbQueryOperationImpl::serializeProject(Uint32Buffer &attrInfo) {
     Uint32 ah;
     AttributeHeader::init(&ah, recAttr->attrId(), 0);
     attrInfo.append(ah);
+    Uint32 extraAI = recAttr->getPartialReadAI();
+    if (unlikely(extraAI != 0)) {
+      attrInfo.append(extraAI);
+    }
     if (recAttr->getColumn()->getStorageType() == NDB_STORAGETYPE_DISK) {
       m_diskInUserProjection = true;
     }

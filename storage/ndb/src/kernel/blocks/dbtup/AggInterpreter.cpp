@@ -585,10 +585,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       memcpy(agg_rec, reinterpret_cast<char*>(buf_), len_in_char);
       GBHashEntry new_entry{agg_rec, len_in_char};
 
-      gb_map_->insert(std::make_pair<GBHashEntry, GBHashEntry>(
-                      std::move(new_entry), std::move(
+      gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
+                      new_entry,
             GBHashEntry{agg_rec + len_in_char,
-            static_cast<Uint32>(n_agg_results_ * sizeof(AggResItem))})));
+            static_cast<Uint32>(n_agg_results_ * sizeof(AggResItem))}));
       n_groups_ = gb_map_->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 

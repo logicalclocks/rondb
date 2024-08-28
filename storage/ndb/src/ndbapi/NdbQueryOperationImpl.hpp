@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -628,9 +629,18 @@ class NdbQueryOperationImpl {
   // Get the entire query object which this operation is part of
   NdbQueryImpl &getQuery() const { return m_queryImpl; }
 
-  NdbRecAttr *getValue(const char *anAttrName, char *resultBuffer);
-  NdbRecAttr *getValue(Uint32 anAttrId, char *resultBuffer);
-  NdbRecAttr *getValue(const NdbColumnImpl &, char *resultBuffer);
+  NdbRecAttr* getValue(const char* anAttrName,
+                       char* resultBuffer,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
+  NdbRecAttr* getValue(Uint32 anAttrId,
+                       char* resultBuffer,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
+  NdbRecAttr* getValue(const NdbColumnImpl&,
+                       char* resultBuffer,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
 
   int setResultRowBuf(const NdbRecord *rec, char *resBuffer,
                       const unsigned char *result_mask);

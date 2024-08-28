@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2010, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2020, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -46,8 +46,16 @@ public abstract class DynamicObject {
         return delegate.get(columnNumber);
     }
 
+    public final Object get_partial(int columnNumber, int startPos, int size) {
+        return delegate.get_partial(columnNumber, startPos, size);
+    }
+
     public final void set(int columnNumber, Object value) {
         delegate.set(columnNumber, value);
+    }
+
+    public final void append(int columnNumber, Object value) {
+        delegate.append(columnNumber, value);
     }
 
     public final ColumnMetadata[] columnMetadata() {

@@ -77,7 +77,18 @@ INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
 INCLUDE_DIRECTORIES(${AVROCPP_INCLUDE_DIR})
 
-target_link_libraries(${PROJECT_NAME} base64 ${AVROCPP_LIBRARIES} Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string)
+target_link_libraries(${PROJECT_NAME}
+                      base64
+                      ${AVROCPP_LIBRARIES}
+                      Jsoncpp_lib
+                      Drogon::Drogon
+                      Trantor::Trantor
+                      simdjson::simdjson
+                      ${RDRS_OPENSSL_LIBRARY}
+                      ${RDRS_CRYPTO_LIBRARY}
+                      ndbclient_so
+                      ndbgeneral
+                      rdrs_string)
 
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME} 
    DESTINATION ${INSTALL_BINDIR} COMPONENT Development
@@ -99,4 +110,17 @@ target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_AVRO_INCLUDE_DIR})
 target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
-target_link_libraries(rdrs2_lib base64 ${AVROCPP_LIBRARIES} Jsoncpp_lib Drogon::Drogon Trantor::Trantor simdjson::simdjson ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY} ndbclient_so rdrs_string mysqlclient)
+
+target_link_libraries(rdrs2_lib
+                      base64
+                      ${AVROCPP_LIBRARIES}
+                      Jsoncpp_lib
+                      Drogon::Drogon
+                      Trantor::Trantor
+                      simdjson::simdjson
+                      ${RDRS_OPENSSL_LIBRARY}
+                      ${RDRS_CRYPTO_LIBRARY}
+                      ndbclient_so
+                      ndbgeneral
+                      rdrs_string
+                      mysqlclient)

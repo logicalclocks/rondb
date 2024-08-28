@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -283,14 +284,24 @@ class NdbQueryOperation {
    *                     will be returned in this parameter.<br>
    *                     If NULL, then the attribute value will only
    *                     be stored in the returned NdbRecAttr object.
+   * @param aStartPos    Starting position when reading parts of a column
+   * @param aSize        Size to read when reading parts of a column
    * @return             An NdbRecAttr object to hold the value of
    *                     the attribute, or a NULL pointer
    *                     (indicating error).
    */
-  NdbRecAttr *getValue(const char *anAttrName, char *resultBuffer = nullptr);
-  NdbRecAttr *getValue(Uint32 anAttrId, char *resultBuffer = nullptr);
-  NdbRecAttr *getValue(const NdbDictionary::Column *column,
-                       char *resultBuffer = nullptr);
+  NdbRecAttr* getValue(const char* anAttrName,
+                       char* resultBuffer = nullptr,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
+  NdbRecAttr* getValue(Uint32 anAttrId,
+                       char* resultBuffer = nullptr,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
+  NdbRecAttr* getValue(const NdbDictionary::Column* column, 
+		       char* resultBuffer = nullptr,
+                       Uint32 aStartPos = 0,
+                       Uint32 aSize = 0);
 
   /**
    * Retrieval of entire or partial rows may also be specified. For partial

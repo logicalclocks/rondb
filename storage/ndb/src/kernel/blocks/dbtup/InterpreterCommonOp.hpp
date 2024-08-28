@@ -473,14 +473,14 @@ int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
 
   if (!is_div_int) {
     if (a.type == NDB_TYPE_BIGINT) {
-      int64_t val0 = a.value.val_int64;
+      Int64 val0 = a.value.val_int64;
       bool val0_negtive = !a.is_unsigned && val0 < 0;
-      uint64_t uval0 = static_cast<uint64_t>(val0_negtive &&
+      Uint64 uval0 = static_cast<Uint64>(val0_negtive &&
                        val0 != LLONG_MIN ? -val0 : val0);
-      if (!val0_negtive && uval0 > static_cast<int64_t>(pow(2, 53) - 1)) {
+      if (!val0_negtive && uval0 > static_cast<Uint64>(pow(2, 53) - 1)) {
         // overflow
         return -1;
-      } else if (val0_negtive && val0 < -static_cast<int64_t>(pow(2, 53))) {
+      } else if (val0_negtive && val0 < -static_cast<Int64>(pow(2, 53))) {
         // overflow
         return -1;
       }
@@ -490,14 +490,14 @@ int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
       a.is_unsigned = false;
     }
     if (b.type == NDB_TYPE_BIGINT) {
-      int64_t val0 = b.value.val_int64;
+      Int64 val0 = b.value.val_int64;
       bool val0_negtive = !b.is_unsigned && val0 < 0;
-      uint64_t uval0 = static_cast<uint64_t>(val0_negtive &&
+      Uint64 uval0 = static_cast<Uint64>(val0_negtive &&
                        val0 != LLONG_MIN ? -val0 : val0);
-      if (!val0_negtive && uval0 > static_cast<int64_t>(pow(2, 53) - 1)) {
+      if (!val0_negtive && uval0 > static_cast<Uint64>(pow(2, 53) - 1)) {
         // overflow
         return -1;
-      } else if (val0_negtive && val0 < -static_cast<int64_t>(pow(2, 53))) {
+      } else if (val0_negtive && val0 < -static_cast<Int64>(pow(2, 53))) {
         // overflow
         return -1;
       }
