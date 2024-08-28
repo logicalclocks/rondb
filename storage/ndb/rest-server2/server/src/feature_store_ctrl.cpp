@@ -167,10 +167,10 @@ GetFeatureMetadata(const std::shared_ptr<metadata::FeatureViewMetadata> &metadat
       if (auto it = metadata->featureIndexLookup.find(GetFeatureIndexKeyByFeature(featureMetadata));
           it != metadata->featureIndexLookup.end()) {
         auto featureMetadataResp = feature_store_data_structs::FeatureMetadata();
-        if (metaRequest.featureName) {
+        if (metaRequest.featureName.has_value() && metaRequest.featureName.value()) {
           featureMetadataResp.name = featureKey;
         }
-        if (metaRequest.featureType) {
+        if (metaRequest.featureType.has_value() && metaRequest.featureType.value()) {
           featureMetadataResp.type = featureMetadata.type;
         }
         (featureMetadataArray)[it->second] = featureMetadataResp;
@@ -324,7 +324,7 @@ GetFeatureValues(const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
 }
 
 void FillPrimaryKey(const metadata::FeatureViewMetadata &featureView,
-                    std::vector<std::vector<char>> featureValues,
+                    std::vector<std::vector<char>> &featureValues,
                     const std::vector<std::string> &joinKeys, const std::vector<char> &value) {
   std::string indexKey;
   // Get all join key linked to the provided feature name
@@ -350,13 +350,8 @@ std::vector<PKReadParams>
 GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
                      const std::unordered_map<std::string, std::vector<char>> &entries) {
   auto batchReadParams = std::vector<PKReadParams>();
-  // std::cout << "Feature group features size is: " << metadata.featureGroupFeatures.size()
-  //           << std::endl;
 
   for (const auto &fgFeature : metadata.featureGroupFeatures) {
-    // std::cout << "Feature group feature name is: " << fgFeature.featureGroupName << std::endl;
-    // std::cout << "Feature group feature primary key map size is: "
-    //           << fgFeature.primaryKeyMap.size() << std::endl;
     std::string testDb = fgFeature.featureStoreName;
     std::string testTable =
         fgFeature.featureGroupName + "_" + std::to_string(fgFeature.featureGroupVersion);
@@ -374,16 +369,9 @@ GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
     }
 
     for (const auto &servingKey : fgFeature.primaryKeyMap) {
-      // std::cout << "Serving key featureName is: " << servingKey.featureName << std::endl;
-      // std::cout << "Serving key requiredEntry is: " << servingKey.requiredEntry << std::endl;
 
       // Fill in value of required entry as original entry may not be required.
       std::string pkCol = servingKey.featureName;
-      // for (const auto &[key, value] : entries) {
-      //   std::cout << key << " ";
-      //   std::cout << std::string(value.begin(), value.end()) << " ";
-      // }
-      // std::cout << std::endl;
 
       if (entries.find(servingKey.requiredEntry) != entries.end()) {
         PKReadFilter filter;
@@ -419,11 +407,6 @@ GetBatchPkReadParams(const metadata::FeatureViewMetadata &metadata,
     param.operationId = opId;
     batchReadParams.push_back(param);
   }
-  // std::cout << "Batch read params: " << std::endl;
-  // for (auto &param : batchReadParams) {
-  //   std::cout << param.to_string() << std::endl;
-  // }
-
   return batchReadParams;
 }
 
@@ -458,7 +441,7 @@ RS_Status process_responses(std::vector<RS_Buffer> &respBuffs, BatchResponseJSON
 
     auto subRespStatus = process_pkread_response(respBuffs[i].buffer, pkReadResponse);
     if (!(subRespStatus.err_file_name[0] == '\0')) {
-      std::cout << "Error: " << subRespStatus.err_file_name << std::endl;
+      std::cerr << "Error: " << subRespStatus.err_file_name << std::endl;
       return subRespStatus;
     }
 
@@ -509,20 +492,16 @@ void FeatureStoreCtrl::featureStore(
     return;
   }
 
-  // std::cout << reqStruct.to_string() << std::endl;
-
   // Validate
   auto [metadata, err] = fvMetaCache.Get(reqStruct.featureStoreName, reqStruct.featureViewName,
                                          reqStruct.featureViewVersion);
 
   if (err != nullptr) {
-    // std::cout << "metadata: " << metadata->to_string() << std::endl;
     resp->setBody(err->Error());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
-  // std::cout << "metadata: " << metadata->to_string() << std::endl;
 
   // TODO logger
 
@@ -534,12 +513,14 @@ void FeatureStoreCtrl::featureStore(
     return;
   }
 
-  auto err2 = ValidatePassedFeatures(reqStruct.passedFeatures, metadata->prefixFeaturesLookup);
-  if (err2 != nullptr) {
-    resp->setBody(err2->Error());
-    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
-    callback(resp);
-    return;
+  if (reqStruct.GetOptions().validatePassedFeatures) {
+    auto err2 = ValidatePassedFeatures(reqStruct.passedFeatures, metadata->prefixFeaturesLookup);
+    if (err2 != nullptr) {
+      resp->setBody(err2->Error());
+      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      callback(resp);
+      return;
+    }
   }
 
   // Authenticate
@@ -669,7 +650,6 @@ void FeatureStoreCtrl::featureStore(
     if (reqStruct.GetOptions().includeDetailedStatus) {
       fsResp.detailedStatus = detailedStatus;
     }
-    std::cout << fsResp.to_string() << std::endl;
 
     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     resp->setBody(fsResp.to_string());

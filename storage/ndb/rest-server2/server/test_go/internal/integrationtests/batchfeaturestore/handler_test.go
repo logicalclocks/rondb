@@ -2348,7 +2348,7 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKey(t *testing.T) {
 			t.Fatalf("Detailed status should have two entries")
 		}
 		for _, ds := range list_ds {
-			if (ds.FeatureGroupId ==2076 && ds.HttpStatus != http.StatusOK) || (ds.FeatureGroupId ==2069 && ds.HttpStatus != http.StatusBadRequest) {
+			if (ds.FeatureGroupId == 2076 && ds.HttpStatus != http.StatusOK) || (ds.FeatureGroupId == 2069 && ds.HttpStatus != http.StatusBadRequest) {
 				t.Fatalf("HttpStatus should be 200 or 400")
 			}
 			if ds.FeatureGroupId == -1 {
@@ -2380,7 +2380,7 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 			t.Fatalf("Detailed status should have two entries")
 		}
 		for _, ds := range list_ds {
-			if (ds.FeatureGroupId ==2069 && ds.HttpStatus != http.StatusNotFound) || (ds.FeatureGroupId ==2076 && ds.HttpStatus != http.StatusBadRequest) {
+			if (ds.FeatureGroupId == 2069 && ds.HttpStatus != http.StatusNotFound) || (ds.FeatureGroupId == 2076 && ds.HttpStatus != http.StatusBadRequest) {
 				t.Fatalf("HttpStatus should be 404 or 400")
 			}
 			if ds.FeatureGroupId == -1 {

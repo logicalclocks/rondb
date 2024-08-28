@@ -78,7 +78,6 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   }
 
   // TODO debug logger
-  // std::cout << reqStruct.to_string() << std::endl;
 
   // Validate
   // Complete validation is delegated to Execute()
@@ -228,8 +227,6 @@ void BatchFeatureStoreCtrl::batch_featureStore(
                                     featureStatus);
   fsResp.features = features;
   fsResp.metadata = GetFeatureMetadata(metadata, reqStruct.metadataRequest);
-
-  // std::cout << fsResp.to_string() << std::endl;
 
   resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
   auto fsRespStr = fsResp.to_string();

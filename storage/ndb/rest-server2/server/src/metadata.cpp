@@ -300,6 +300,7 @@ newFeatureViewMetadata(const std::string &featureStoreName, int featureStoreId,
   metadata.validPrimayKeys      = validPrimaryKeysMap;
   metadata.prefixJoinKeyMap     = prefixJoinKeyMap;
   metadata.requiredJoinKeyMap   = requiredJoinKeyMap;
+  metadata.joinKeyMap           = joinKeyMap;
   metadata.complexFeatures      = complexFeatures;
 
   return {metadata, CRS_Status().status};

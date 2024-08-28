@@ -80,7 +80,7 @@ void FillPassedFeatures(
     const std::unordered_map<std::string, int> &indexLookup);
 RS_Status process_responses(std::vector<RS_Buffer> &respBuffs, BatchResponseJSON &response);
 void FillPrimaryKey(const metadata::FeatureViewMetadata &featureView,
-                    std::vector<std::vector<char>> featureValues,
+                    std::vector<std::vector<char>> &featureValues,
                     const std::vector<std::string> &joinKeys, const std::vector<char> &value);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_CTRL_HPP_

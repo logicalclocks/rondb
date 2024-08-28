@@ -26,7 +26,7 @@ import (
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests"
 	"hopsworks.ai/rdrs2/internal/log"
-	"hopsworks.ai/rdrs2/internal/testutils"
+	// "hopsworks.ai/rdrs2/internal/testutils"
 )
 
 /*
@@ -62,13 +62,13 @@ func TestMain(m *testing.M) {
 	}
 	defer cleanup()
 
-	serverCleanup, err := testutils.StartServer()
-	if err != nil {
-		retcode = 1
-		log.Fatalf("Failed to start server: %v", err)
-		return
-	}
-	defer serverCleanup()
+	// serverCleanup, err := testutils.StartServer()
+	// if err != nil {
+	// 	retcode = 1
+	// 	log.Fatalf("Failed to start server: %v", err)
+	// 	return
+	// }
+	// defer serverCleanup()
 
 	retcode = m.Run()
 }

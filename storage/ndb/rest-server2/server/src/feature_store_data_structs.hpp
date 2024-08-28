@@ -25,32 +25,41 @@
 #include <sys/_types/_int32_t.h>
 #include <vector>
 #include <unordered_map>
+#include <optional>
 #include "rdrs_dal.h"
 
 namespace feature_store_data_structs {
 
 class MetadataRequest {
  public:
-  bool featureName;  // json:"featureName" binding:"required"
-  bool featureType;  // json:"featureType" binding:"required"
+  std::optional<bool> featureName;  // json:"featureName" binding:"required"
+  std::optional<bool> featureType;  // json:"featureType" binding:"required"
   std::string to_string() const {
     std::ostringstream oss;
     oss << "MetadataRequest {"
-        << "\n  featureName: " << (featureName ? "true" : "false")
-        << "\n  featureType: " << (featureType ? "true" : "false") << "\n}";
+        << "\n  featureName: "
+        << (featureName.has_value() ? (featureName.value() ? "true" : "false") : "null")
+        << "\n  featureType: "
+        << (featureType.has_value() ? (featureType.value() ? "true" : "false") : "null") << "\n}";
     return oss.str();
   }
 };
 
 class OptionsRequest {
  public:
-  bool validatePassedFeatures;  // json:"validatePassedFeatures"
-  bool includeDetailedStatus;   // json:"includeDetailedStatus"
+  std::optional<bool> validatePassedFeatures;  // json:"validatePassedFeatures"
+  std::optional<bool> includeDetailedStatus;   // json:"includeDetailedStatus"
+
   std::string to_string() const {
     std::ostringstream oss;
     oss << "OptionsRequest {"
-        << "\n  validatePassedFeatures: " << (validatePassedFeatures ? "true" : "false")
-        << "\n  includeDetailedStatus: " << (includeDetailedStatus ? "true" : "false") << "\n}";
+        << "\n  validatePassedFeatures: "
+        << (validatePassedFeatures.has_value() ? (validatePassedFeatures.value() ? "true" : "false")
+                                               : "null")
+        << "\n  includeDetailedStatus: "
+        << (includeDetailedStatus.has_value() ? (includeDetailedStatus.value() ? "true" : "false")
+                                              : "null")
+        << "\n}";
     return oss.str();
   }
 };

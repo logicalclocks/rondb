@@ -397,7 +397,7 @@ std::string BatchFeatureStoreResponse::to_string() const {
       res.pop_back();
       res += "null";
     }
-    
+
     for (const auto &detailed : detailed_status_group) {
       res += "{";
       res += "\"featureGroupId\": " + std::to_string(detailed.featureGroupId) + ",";
@@ -428,16 +428,30 @@ Options GetDefaultOptions() {
 }
 
 Options FeatureStoreRequest::GetOptions() const {
-  auto defaultOptions                   = GetDefaultOptions();
-  defaultOptions.validatePassedFeatures = optionsRequest.validatePassedFeatures;
-  defaultOptions.includeDetailedStatus  = optionsRequest.includeDetailedStatus;
+  auto defaultOptions = GetDefaultOptions();
+
+  if (optionsRequest.validatePassedFeatures.has_value()) {
+    defaultOptions.validatePassedFeatures = optionsRequest.validatePassedFeatures.value();
+  }
+
+  if (optionsRequest.includeDetailedStatus.has_value()) {
+    defaultOptions.includeDetailedStatus = optionsRequest.includeDetailedStatus.value();
+  }
+
   return defaultOptions;
 }
 
 Options BatchFeatureStoreRequest::GetOptions() const {
-  auto defaultOptions                   = GetDefaultOptions();
-  defaultOptions.validatePassedFeatures = optionsRequest.validatePassedFeatures;
-  defaultOptions.includeDetailedStatus  = optionsRequest.includeDetailedStatus;
+  auto defaultOptions = GetDefaultOptions();
+
+  if (optionsRequest.validatePassedFeatures.has_value()) {
+    defaultOptions.validatePassedFeatures = optionsRequest.validatePassedFeatures.value();
+  }
+
+  if (optionsRequest.includeDetailedStatus.has_value()) {
+    defaultOptions.includeDetailedStatus = optionsRequest.includeDetailedStatus.value();
+  }
+
   return defaultOptions;
 }
 
