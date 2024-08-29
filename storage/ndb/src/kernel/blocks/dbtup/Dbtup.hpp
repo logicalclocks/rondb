@@ -153,6 +153,9 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZNOFREE_FRAGOP_ERROR 830       // Add fragment
 #define ZTOO_LARGE_TUPLE_ERROR 851     // Add fragment
 #define ZNO_FREE_TAB_ENTRY_ERROR 852   // Add fragment
+#define ZINVALID_LONG_LONG_STRING 853
+#define ZCALC_OVERFLOW_ERROR 854
+#define ZCONVERT_LONG_LONG_TO_STRING_ERROR 855
 #define ZNO_PAGES_ALLOCATED_ERROR 881  // Add fragment
 
 #define ZGET_REALPID_ERROR 809
@@ -164,20 +167,33 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZAI_INCONSISTENCY_ERROR 829
 #define ZNO_ILLEGAL_NULL_ATTR 839
 #define ZNOT_NULL_ATTR 840
+#define ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR 841
+#define ZWRITE_SIZE_TOO_BIG_ERROR 842
+#define ZAPPEND_NULL_ERROR 843
+#define ZLOAD_MEM_TOO_BIG_ERROR 844
+#define ZVALUE_OVERFLOW_OUTPUT_REGISTER 845
+#define ZOUTPUT_INDEX_ERROR 846
+#define ZANY_VALUE_OPERATION_ERROR 847
+#define ZLOG_BUFFER_OVERFLOW_ERROR 848
+#define ZLONG_LONG_STRING_TOO_LONG 849
 #define ZBAD_DEFAULT_VALUE_LEN 850
 #define ZNO_INSTRUCTION_ERROR 871
+#define ZREAD_LENGTH_ERROR 872
+#define ZPARTIAL_READ_ERROR 875
 #define ZOUTSIDE_OF_PROGRAM_ERROR 876
-#define ZSTORED_PROC_ID_ERROR 877
+#define ZMEMORY_OFFSET_ERROR 877
 #define ZREGISTER_INIT_ERROR 878
 #define ZATTRIBUTE_ID_ERROR 879
 #define ZTRY_TO_READ_TOO_MUCH_ERROR 880
 #define ZTOTAL_LEN_ERROR 882
-#define ZATTR_INTERPRETER_ERROR 883
+#define ZAPPEND_COLUMN_ERROR 883
 #define ZSTACK_OVERFLOW_ERROR 884
 #define ZSTACK_UNDERFLOW_ERROR 885
 #define ZTOO_MANY_INSTRUCTIONS_ERROR 886
+#define ZDIV_BY_ZERO_ERROR 887
 #define ZTRY_TO_UPDATE_ERROR 888
 #define ZCALL_ERROR 890
+#define ZSHIFT_OPERAND_ERROR 891
 #define ZUNSUPPORTED_BRANCH 892
 
 #define ZSTORED_TOO_MUCH_ATTRINFO_ERROR 874
@@ -1949,6 +1965,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_when = KRS_PREPARE;
       m_deferred_constraints = true;
       m_disable_fk_checks = false;
+      m_dbtup_ptr = tup;
     }
 
     KeyReqStruct(Dbtup *tup, When when) : changeMask() {
@@ -1960,6 +1977,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_deferred_constraints = true;
       m_disable_fk_checks = false;
       m_tuple_ptr = NULL;
+      m_dbtup_ptr = tup;
     }
 
     /**
@@ -1987,6 +2005,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Operationrec *operPtrP;
     EmulatedJamBuffer *jamBuffer;
     Tuple_header *m_tuple_ptr;
+    Dbtup *m_dbtup_ptr;
 
     /**
      * Variables often used in read of columns
@@ -1995,6 +2014,11 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 check_offset[2];
     Uint32 max_read;
     Uint32 out_buf_index;
+
+    Uint32 partial_size;
+    Uint32 start_partial_pos;
+    /* Are we currently executing inside the interpreter? */
+    bool m_write_log_memory_in_update;
 
     Uint32 out_buf_bits;
     Uint32 in_buf_index;
@@ -2010,6 +2034,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool is_expanded;
     bool m_is_lcp;
     enum When m_when;
+
 
 #ifdef ERROR_INSERT
     Uint32 instance_num;
@@ -2721,7 +2746,7 @@ private:
 //------------------------------------------------------------------
   Uint32 brancher(Uint32, Uint32);
   int interpreterNextLab(Signal *signal, KeyReqStruct *req_struct,
-                         Uint32 *logMemory, Uint32 *mainProgram,
+                         Uint32 *mainProgram,
                          Uint32 TmainProgLen, Uint32 *subroutineProg,
                          Uint32 TsubroutineLen, Uint32 *tmpArea,
                          Uint32 tmpAreaSz);
@@ -2736,6 +2761,10 @@ private:
   //------------------------------------------------------------------
   void sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
                         Uint32 TnoOfData);
+  bool writeLogMemory(KeyReqStruct *req_struct,
+                      const char *input_ptr,
+                      Uint32 byte_size);
+                      
 
   void SendAggregationResult(Signal* signal, Uint32 res_len,
                              BlockReference api_blockref);
@@ -2744,7 +2773,6 @@ private:
 //------------------------------------------------------------------
   int sendLogAttrinfo(Signal* signal,
                       KeyReqStruct *req_struct,
-                      Uint32 TlogSize,
                       Operationrec * regOperPtr);
 
   //------------------------------------------------------------------
@@ -2865,11 +2893,11 @@ private:
   //------------------------------------------------------------------
   static bool varsize_reader(Uint8 *out_buffer, KeyReqStruct *req_struct,
                              AttributeHeader *ah_out, Uint64 attr_des,
-                             const void *src_ptr, Uint32 vsize_in_bytes);
+                             void *src_ptr, Uint32 vsize_in_bytes);
 
   static bool xfrm_reader(Uint8 *out_buffer, KeyReqStruct *req_struct,
                           AttributeHeader *ah_out, Uint64 attr_des,
-                          const void *src_ptr, Uint32 srcBytes);
+                          void *src_ptr, Uint32 srcBytes);
 
   static bool bits_reader(Uint8 *out_buffer, KeyReqStruct *req_struct,
                           AttributeHeader *ah_out, const Uint32 *bm_ptr,
@@ -2959,6 +2987,32 @@ private:
                                                   KeyReqStruct *req_struct,
                                                   AttributeHeader *ahOut,
                                                   Uint64 attrDes);
+//------------------------------------------------------------------
+//------------------------------------------------------------------
+  static void handle_partial_read(KeyReqStruct*,
+                                  Uint32 *srcBytes,
+                                  Uint8 **srcPtr,
+                                  Uint32 max_read);
+
+  static bool handle_partial_write(KeyReqStruct *req_struct,
+                                   Uint32 attrId,
+                                   Uint64 attrDes,
+                                   Uint32 arrayType,
+                                   Uint32 max_var_size,
+                                   Uint8 *col_ptr,
+                                   const Uint8 *src,
+                                   Uint32 *size_in_bytes,
+                                   Uint32 length_bytes);
+
+  static bool handle_append_write(KeyReqStruct *req_struct,
+                                  Uint32 attrId,
+                                  Uint64 attrDes,
+                                  Uint32 arrayType,
+                                  Uint32 dataLen,
+                                  Uint32 max_var_size,
+                                  Uint8 *col_ptr,
+                                  const Uint8 *src,
+                                  Uint32 *size_in_bytes);
 
   //------------------------------------------------------------------
   //------------------------------------------------------------------
@@ -3113,7 +3167,6 @@ private:
   static bool disk_nullFlagCheck(KeyReqStruct *req_struct, Uint64 attrDes);
   int read_pseudo(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *);
   Uint32 read_packed(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *);
-  Uint32 update_packed(KeyReqStruct *, const Uint32 *src);
 
   Uint32 read_lcp(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *);
   void update_lcp(KeyReqStruct *req_struct, const Uint32 *src, Uint32 len);
@@ -3821,6 +3874,8 @@ public:
   Uint32 clogMemBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
+  Uint32 cheapMemory[ZATTR_BUFFER_SIZE + 16];
+  Uint32 c_interpreter_output[AttributeHeader::MaxInterpreterOutputIndex];
 
   /*
    * In executeTrigger()

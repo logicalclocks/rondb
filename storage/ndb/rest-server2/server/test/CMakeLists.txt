@@ -67,6 +67,7 @@ target_link_libraries(
 	simdjson::simdjson
 	Jsoncpp_lib
 	pthread
+        ndbgeneral
 )
 
 target_link_libraries(

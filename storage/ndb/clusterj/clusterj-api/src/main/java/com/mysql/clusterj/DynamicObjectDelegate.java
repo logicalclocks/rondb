@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,7 +30,11 @@ public interface DynamicObjectDelegate {
 
     public Object get(int columnNumber);
 
+    public Object get_partial(int columnNumber, int startPos, int size);
+
     public void set(int columnNumber, Object value);
+
+    public void append(int columnNumber, Object value);
 
     public ColumnMetadata[] columnMetadata();
 

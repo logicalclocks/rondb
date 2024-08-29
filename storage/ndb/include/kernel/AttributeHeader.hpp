@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -108,6 +109,13 @@ class AttributeHeader {
   // Aggregation result "columns"
   static constexpr Uint32 AGG_RESULT = 0xFF00;
 
+  static constexpr Uint32 READ_INTERPRETER_OUTPUT_FIRST = 0xFFB0;
+  static constexpr Uint32 READ_INTERPRETER_OUTPUT_LAST = 0xFFBF;
+  static constexpr Uint32 MaxInterpreterOutputIndex = 16;
+
+  static constexpr Uint32 APPEND_COLUMN = 0xFC00;
+  static constexpr Uint32 SET_PARTIAL_COLUMN = 0xFC01;
+
   // NOTE: in 5.1 ctors and init take size in bytes
 
   /** Initialize AttributeHeader at location aHeaderPtr */
@@ -130,6 +138,8 @@ class AttributeHeader {
   /** Getters and Setters */
   Uint32 getAttributeId() const;
   void setAttributeId(Uint32);
+  Uint32 getPartialReadWriteFlag() const;
+  void setPartialReadWriteFlag();
   Uint32 getByteSize() const;
   void setByteSize(Uint32);
   Uint32 getDataSize() const;  // In 32-bit words, rounded up
@@ -155,10 +165,11 @@ class AttributeHeader {
 /**
  *           1111111111222222222233
  * 01234567890123456789012345678901
- * ssssssssssssssssiiiiiiiiiiiiiiii
+ * ssssssssssssssspiiiiiiiiiiiiiiii
  *
  * i = Attribute Id
- * s = Size of current "chunk" in bytes - 16 bits.
+ * p = Partial Read/Write flag
+ * s = Size of current "chunk" in bytes - 15 bits.
  *     To allow round up to word, max value is 0xFFFC (not checked).
  * e - [ obsolete future ]
  *     Element data/Blob, read element of array
@@ -201,21 +212,29 @@ inline void AttributeHeader::setAttributeId(Uint32 anAttributeId) {
   m_value |= (anAttributeId << 16);
 }
 
+inline Uint32 AttributeHeader::getPartialReadWriteFlag() const {
+  return ((m_value >> 15) & 1);
+}
+
+inline void AttributeHeader::setPartialReadWriteFlag() {
+  m_value |=  (1 << 15);
+}
+
 inline Uint32 AttributeHeader::getByteSize() const {
-  return (m_value & 0xFFFF);
+  return (m_value & 0x7FFF);
 }
 
 inline void AttributeHeader::setByteSize(Uint32 aByteSize) {
-  m_value &= (~0xFFFF);
+  m_value &= (~0x7FFF);
   m_value |= aByteSize;
 }
 
 inline Uint32 AttributeHeader::getDataSize() const {
-  return (((m_value & 0xFFFF) + 3) >> 2);
+  return (((m_value & 0x7FFF) + 3) >> 2);
 }
 
 inline void AttributeHeader::setDataSize(Uint32 aDataSize) {
-  m_value &= (~0xFFFF);
+  m_value &= (~0x7FFF);
   m_value |= (aDataSize << 2);
 }
 
@@ -252,11 +271,11 @@ AttributeHeader::print(FILE *output) {
 }
 
 inline Uint32 AttributeHeader::getByteSize(Uint32 m_value) {
-  return (m_value & 0xFFFF);
+  return (m_value & 0x7FFF);
 }
 
 inline Uint32 AttributeHeader::getDataSize(Uint32 m_value) {
-  return (((m_value & 0xFFFF) + 3) >> 2);
+  return (((m_value & 0x7FFF) + 3) >> 2);
 }
 
 inline Uint32 AttributeHeader::getAttributeId(Uint32 m_value) {
