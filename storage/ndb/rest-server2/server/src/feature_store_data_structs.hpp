@@ -22,7 +22,7 @@
 
 #include <sstream>
 #include <string>
-#include <sys/_types/_int32_t.h>
+#include <cstdint>
 #include <vector>
 #include <unordered_map>
 #include <optional>

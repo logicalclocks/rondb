@@ -42,5 +42,5 @@ RS_Status GenerateTLSConfig(bool requireClientCert, const std::string &rootCACer
   if (!rootCACertFile.empty()) {
     httpApp.setSSLConfigCommands({{"ClientCAFile", rootCACertFile}});
   }
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }

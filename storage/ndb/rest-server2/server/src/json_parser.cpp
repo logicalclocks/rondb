@@ -25,7 +25,6 @@
 #include "config_structs.hpp"
 #include "rdrs_dal.hpp"
 
-#include <_types/_uint64_t.h>
 #include <cstdint>
 #include <cstddef>
 #include <functional>
@@ -890,7 +889,7 @@ RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &c
       }
     }
   }
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status
@@ -1189,7 +1188,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
     }
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status JSONParser::batch_feature_store_parse(
@@ -1512,7 +1511,7 @@ RS_Status JSONParser::batch_feature_store_parse(
     }
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status extract_db_and_table(const std::string &relativeUrl, std::string &db,

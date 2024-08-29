@@ -450,7 +450,7 @@ RS_Status process_responses(std::vector<RS_Buffer> &respBuffs, BatchResponseJSON
 
     response.AddSubResponse(i, pkReadResponseWithCode);
   }
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 void FeatureStoreCtrl::featureStore(

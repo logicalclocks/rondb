@@ -182,7 +182,7 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(const std::string &res
     }
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 RS_Status
@@ -315,7 +315,7 @@ BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(const std::string &res
     }
   }
 
-  return CRS_Status().status;
+  return CRS_Status::SUCCESS.status;
 }
 
 std::string toString(FeatureStatus status) {

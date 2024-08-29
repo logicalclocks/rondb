@@ -8,9 +8,6 @@ FROM oraclelinux:9 as rondb-build-dependencies
 
 ARG CMAKE_VERSION=3.23.2
 ARG OPENSSL_ROOT=system
-ARG BOOST_VERSION_MAJOR=1
-ARG BOOST_VERSION_MINOR=77
-ARG BOOST_VERSION_PATCH=0
 ARG GO_VERSION=1.20.3
 ARG JSONCPP_VERSION=1.9.5
 
@@ -59,18 +56,6 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
 RUN mkdir $DOWNLOADS_CACHE_DIR
-
-# Installing Boost
-ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
-ENV BOOST_V_UNDERSCORE=${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VERSION_PATCH}
-ENV BOOST_LABEL="boost_${BOOST_V_UNDERSCORE}"
-ENV BOOST_TARBALL="${BOOST_LABEL}.tar.gz"
-RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
-        https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL} \
-    && tar xzf $DOWNLOADS_CACHE_DIR/${BOOST_TARBALL} -C .
-# Important env variable for RonDB compilation
-ENV BOOST_ROOT="/${BOOST_LABEL}"
 
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR

@@ -118,7 +118,7 @@ template <typename T> class Cache {
 
     key2Cache = std::unordered_map<std::string, std::shared_ptr<CacheEntry<T>>>();
 
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   std::shared_ptr<CacheEntry<T>> get_entry(const std::string &key) {
@@ -176,19 +176,19 @@ template <typename T> class Cache {
       key2Cache[key]->refCount++;
     }
 
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   RS_Status update_record(const T &data, CacheEntry<T> *entry) {
     // caller holds the lock
     if (entry->evicted) {
-      return CRS_Status().status;
+      return CRS_Status::SUCCESS.status;
     }
 
     entry->data        = data;
     entry->lastUpdated = std::chrono::system_clock::now();
 
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   std::chrono::system_clock::time_point last_used(const std::string &key) {
@@ -218,7 +218,7 @@ template <typename T> class Cache {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   RS_Status cache_entry_updater(const std::string &key, std::shared_ptr<std::atomic<bool>> started,
@@ -250,7 +250,7 @@ template <typename T> class Cache {
       std::this_thread::sleep_for(entry->refreshInterval);
 
       if (entry->evicted) {
-        return CRS_Status().status;
+        return CRS_Status::SUCCESS.status;
       }
 
       pthread_rwlock_rdlock(&entry->rowLock);
@@ -270,7 +270,7 @@ template <typename T> class Cache {
       }
     }
 
-    return CRS_Status().status;
+    return CRS_Status::SUCCESS.status;
   }
 
   std::chrono::milliseconds refresh_interval_with_jitter() {

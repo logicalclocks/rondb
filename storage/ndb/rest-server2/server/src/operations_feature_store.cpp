@@ -13,7 +13,7 @@ std::tuple<int, RS_Status> GetProjectID(const std::string &featureStoreName) {
     return {projectID, ret};
   }
 
-  return {projectID, CRS_Status().status};
+  return {projectID, CRS_Status::SUCCESS.status};
 }
 
 std::tuple<int, RS_Status> GetFeatureStoreID(const std::string &featureStoreName) {
@@ -25,7 +25,7 @@ std::tuple<int, RS_Status> GetFeatureStoreID(const std::string &featureStoreName
     return {projectID, ret};
   }
 
-  return {projectID, CRS_Status().status};
+  return {projectID, CRS_Status::SUCCESS.status};
 }
 
 std::tuple<int, RS_Status> GetFeatureViewID(int featureStoreID, const std::string &featureViewName,
@@ -39,7 +39,7 @@ std::tuple<int, RS_Status> GetFeatureViewID(int featureStoreID, const std::strin
     return {fsViewID, ret};
   }
 
-  return {fsViewID, CRS_Status().status};
+  return {fsViewID, CRS_Status::SUCCESS.status};
 }
 
 std::tuple<std::vector<TrainingDatasetJoin>, RS_Status>
@@ -50,7 +50,7 @@ GetTrainingDatasetJoinData(int featureViewID) {
   auto ret = find_training_dataset_join_data(featureViewID, &tdjs, &tdjsSize);
 
   if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    return {{}, ret};
+    return std::make_tuple(std::vector<TrainingDatasetJoin>{}, ret);
   }
 
   std::vector<TrainingDatasetJoin> retTdjs(tdjsSize);
@@ -61,7 +61,7 @@ GetTrainingDatasetJoinData(int featureViewID) {
   }
 
   free(tdjs);
-  return {retTdjs, CRS_Status().status};
+  return {retTdjs, CRS_Status::SUCCESS.status};
 }
 
 std::tuple<FeatureGroup, RS_Status> GetFeatureGroupData(int featureGroupID) {
@@ -70,10 +70,13 @@ std::tuple<FeatureGroup, RS_Status> GetFeatureGroupData(int featureGroupID) {
   auto ret = find_feature_group_data(featureGroupID, &fg);
 
   if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    return {{}, ret};
+    return std::make_tuple(FeatureGroup{}, ret);
   }
 
-  return {{fg.name, fg.feature_store_id, fg.version, fg.online_enabled != 0}, CRS_Status().status};
+  return std::make_tuple(
+      FeatureGroup{fg.name, fg.feature_store_id, fg.version, fg.online_enabled != 0},
+      CRS_Status::SUCCESS.status
+  );
 }
 
 std::tuple<std::vector<TrainingDatasetFeature>, RS_Status>
@@ -84,7 +87,7 @@ GetTrainingDatasetFeature(int featureViewID) {
   auto ret = find_training_dataset_data(featureViewID, &tdfs, &tdfsSize);
 
   if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    return {{}, ret};
+    return std::make_tuple(std::vector<TrainingDatasetFeature>{}, ret);
   }
 
   std::vector<TrainingDatasetFeature> retTdfs(tdfsSize);
@@ -107,7 +110,7 @@ GetTrainingDatasetFeature(int featureViewID) {
               return a.idx < b.idx;
             });
 
-  return {retTdfs, CRS_Status().status};
+  return std::make_tuple(retTdfs, CRS_Status::SUCCESS.status);
 }
 
 std::tuple<std::string, RS_Status> GetFeatureStoreName(int fsId) {
@@ -119,7 +122,7 @@ std::tuple<std::string, RS_Status> GetFeatureStoreName(int fsId) {
     // TODO
   }
 
-  return {std::string(nameBuff), CRS_Status().status};
+  return {std::string(nameBuff), CRS_Status::SUCCESS.status};
 }
 
 std::tuple<std::vector<ServingKey>, RS_Status> GetServingKeys(int featureViewId) {
@@ -129,7 +132,7 @@ std::tuple<std::vector<ServingKey>, RS_Status> GetServingKeys(int featureViewId)
   auto ret = find_serving_key_data(featureViewId, &servingKeys, &servingKeySize);
 
   if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    return {{}, ret};
+    return std::make_tuple(std::vector<ServingKey>{}, ret);
   }
 
   std::vector<ServingKey> retServingKeys(servingKeySize);
@@ -148,7 +151,7 @@ std::tuple<std::vector<ServingKey>, RS_Status> GetServingKeys(int featureViewId)
   }
 
   free(servingKeys);
-  return {retServingKeys, CRS_Status().status};
+  return std::make_tuple(retServingKeys, CRS_Status::SUCCESS.status);
 }
 
 std::tuple<FeatureGroupAvroSchema, RS_Status>
@@ -162,7 +165,7 @@ GetFeatureGroupAvroSchema(const std::string &fgName, int fgVersion, int projectI
 
   if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     free(schemaBuff);
-    return {{}, ret};
+    return std::make_tuple(FeatureGroupAvroSchema{}, ret);
   }
 
   std::string schemaStr(schemaBuff);
@@ -172,11 +175,11 @@ GetFeatureGroupAvroSchema(const std::string &fgName, int fgVersion, int projectI
   auto result = parser.parse(schemaStr);
 
   if (result.error()) {
-    return {{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to parse schema").status};
+    return std::make_tuple(FeatureGroupAvroSchema{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to parse schema").status);
   }
 
   FeatureGroupAvroSchema avroSchema;
   avroSchema.from_json(result.value());
 
-  return {avroSchema, CRS_Status().status};
+  return std::make_tuple(avroSchema, CRS_Status::SUCCESS.status);
 }

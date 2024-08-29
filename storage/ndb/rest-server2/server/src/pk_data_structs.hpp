@@ -235,7 +235,7 @@ class BatchResponseJSON {
   }
 
   void AddSubResponse(unsigned long index, const PKReadResponseWithCodeJSON &subResp) {
-    if (index >= 0 && index < result.size()) {
+    if (index < result.size()) {
       result[index] = subResp;
     }
   }

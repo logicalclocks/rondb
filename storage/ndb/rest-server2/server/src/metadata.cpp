@@ -71,7 +71,7 @@ AvroDecoder::NativeFromBinary(const std::vector<uint8_t> &buf) {
 
     std::vector<uint8_t> remainingBytes(buf.begin() + bytesRead, buf.end());
 
-    return {datum, remainingBytes, CRS_Status().status};
+    return {datum, remainingBytes, CRS_Status::SUCCESS.status};
   } catch (const std::exception &e) {
     return {avro::GenericDatum(), buf,
             CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest), e.what())
@@ -303,7 +303,7 @@ newFeatureViewMetadata(const std::string &featureStoreName, int featureStoreId,
   metadata.joinKeyMap           = joinKeyMap;
   metadata.complexFeatures      = complexFeatures;
 
-  return {metadata, CRS_Status().status};
+  return {metadata, CRS_Status::SUCCESS.status};
 }
 std::string getFeatureViewCacheKey(const std::string &featureStoreName,
                                    const std::string &featureViewName, int featureViewVersion) {

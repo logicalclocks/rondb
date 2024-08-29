@@ -475,7 +475,7 @@ RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
           }
 
           hashed = ss.str();
-          status = CRS_Status().status;
+          status = CRS_Status::SUCCESS.status;
         }
       }
     }

@@ -110,7 +110,7 @@ struct FeatureGroupAvroSchema {
   std::tuple<std::string, RS_Status> getSchemaByFeatureName(const std::string &featureName) const {
     for (const auto &field : fields) {
       if (field.name == featureName) {
-        return {field.type, CRS_Status().status};
+        return {field.type, CRS_Status::SUCCESS.status};
       }
     }
     return {"", CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -119,14 +119,30 @@ struct FeatureGroupAvroSchema {
   }
 
   // Parse from a simdjson document
-  void from_json(const simdjson::dom::element &elem) {
+  RS_Status from_json(const simdjson::dom::element &elem) {
     std::string_view type_view;
     std::string_view name_view;
     std::string_view namespace_view;
     // Parse each field from the JSON object
-    elem["type"].get(type_view);
-    elem["name"].get(name_view);
-    elem["namespace"].get(namespace_view);
+    auto error = elem["type"].get(type_view);
+    if (error != simdjson::SUCCESS) {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                        "Failed to parse type from JSON")
+          .status;
+    }
+    error = elem["name"].get(name_view);
+    if (error != simdjson::SUCCESS) {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                        "Failed to parse name from JSON")
+          .status;
+    }
+    error = elem["namespace"].get(namespace_view);
+    if (error != simdjson::SUCCESS) {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                        "Failed to parse namespace from JSON")
+          .status;
+    }
+
     type       = std::string(type_view);
     name       = std::string(name_view);
     namespace_ = std::string(namespace_view);
@@ -136,10 +152,21 @@ struct FeatureGroupAvroSchema {
     for (auto field : fields_array) {
       std::string_view field_name_view;
       std::string_view field_type_json_view;
-      field["name"].get(field_name_view);
-      field["type"].get(field_type_json_view);
+      error = field["name"].get(field_name_view);
+      if (error != simdjson::SUCCESS) {
+        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                          "Failed to parse field name from JSON")
+            .status;
+      }
+      error = field["type"].get(field_type_json_view);
+      if (error != simdjson::SUCCESS) {
+        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                          "Failed to parse field type from JSON")
+            .status;
+      }
       fields.push_back({std::string(field_name_view), std::string(field_type_json_view)});
     }
+    return CRS_Status::SUCCESS.status;
   }
 };
 

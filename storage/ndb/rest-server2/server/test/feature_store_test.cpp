@@ -87,10 +87,10 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
 getColumnInfo(const std::string &dbName, const std::string &tableName) {
   auto *dbConn = CreateMySQLConnectionDataCluster();
   if (dbConn == nullptr) {
-    return {{},
-            {},
-            {},
-            CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to connect to data database").status};
+    return std::make_tuple(std::vector<std::string>(), std::vector<std::string>(),
+                           std::vector<std::string>(), CRS_Status(HTTP_CODE::SERVER_ERROR,
+                                                                   "Failed to connect to data database")
+                                                              .status);
   }
 
   std::vector<std::string> colTypes;
@@ -104,14 +104,20 @@ getColumnInfo(const std::string &dbName, const std::string &tableName) {
   if (mysql_query(dbConn, query.c_str()) != 0) {
     std::cerr << "Failed to execute query: " << mysql_error(dbConn) << std::endl;
     mysql_close(dbConn);
-    return {{}, {}, {}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to execute query").status};
+    return std::make_tuple(std::vector<std::string>(), std::vector<std::string>(),
+                           std::vector<std::string>(), CRS_Status(HTTP_CODE::SERVER_ERROR,
+                                                                   "Failed to execute query")
+                                                              .status);
   }
 
   MYSQL_RES *result = mysql_store_result(dbConn);
   if (result == nullptr) {
     std::cerr << "Failed to store result: " << mysql_error(dbConn) << std::endl;
     mysql_close(dbConn);
-    return {{}, {}, {}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to store result").status};
+    return std::make_tuple(std::vector<std::string>(), std::vector<std::string>(),
+                           std::vector<std::string>(), CRS_Status(HTTP_CODE::SERVER_ERROR,
+                                                                   "Failed to store result")
+                                                              .status);
   }
 
   MYSQL_ROW row   = nullptr;
@@ -120,7 +126,10 @@ getColumnInfo(const std::string &dbName, const std::string &tableName) {
     std::cerr << "Unexpected number of fields: " << num_fields << std::endl;
     mysql_free_result(result);
     mysql_close(dbConn);
-    return {{}, {}, {}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Unexpected number of fields").status};
+    return std::make_tuple(std::vector<std::string>(), std::vector<std::string>(),
+                           std::vector<std::string>(), CRS_Status(HTTP_CODE::SERVER_ERROR,
+                                                                   "Unexpected number of fields")
+                                                              .status);
   }
 
   while ((row = mysql_fetch_row(result)) != nullptr) {
@@ -138,12 +147,15 @@ getColumnInfo(const std::string &dbName, const std::string &tableName) {
     std::cerr << "Failed to fetch row: " << mysql_error(dbConn) << std::endl;
     mysql_free_result(result);
     mysql_close(dbConn);
-    return {{}, {}, {}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to fetch row").status};
+    return std::make_tuple(std::vector<std::string>(), std::vector<std::string>(),
+                           std::vector<std::string>(), CRS_Status(HTTP_CODE::SERVER_ERROR,
+                                                                   "Failed to fetch row")
+                                                              .status);
   }
 
   mysql_free_result(result);
   mysql_close(dbConn);
-  return {colTypes, columns, pks, CRS_Status().status};
+  return std::make_tuple(colTypes, columns, pks, CRS_Status::SUCCESS.status);
 }
 
 bool isColNumerical(const std::string &colType) {
@@ -158,14 +170,16 @@ std::tuple<std::vector<std::vector<std::vector<char>>>, RS_Status>
 fetchRowsInt(const std::string &query, const std::vector<std::string> &colTypes, MYSQL *dbConn) {
   if (mysql_query(dbConn, query.c_str()) != 0) {
     std::cerr << "Query execution failed: " << mysql_error(dbConn) << std::endl;
-    return {{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to execute query").status};
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(),
+                           CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to execute query").status);
   }
 
   MYSQL_RES *result = mysql_store_result(dbConn);
   if (result == nullptr) {
     std::cerr << "Failed to store result: " << mysql_error(dbConn) << std::endl;
-    return {{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to store result").status};
-  }
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(),
+                           CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to store result").status);
+  } 
 
   std::vector<std::vector<std::vector<char>>> valueBatch;
   MYSQL_ROW row           = nullptr;
@@ -197,41 +211,44 @@ fetchRowsInt(const std::string &query, const std::vector<std::string> &colTypes,
   if (mysql_errno(dbConn) != 0) {
     std::cerr << "Error while fetching rows: " << mysql_error(dbConn) << std::endl;
     mysql_free_result(result);
-    return {{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Error while fetching rows").status};
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(),
+                           CRS_Status(HTTP_CODE::SERVER_ERROR, "Error while fetching rows").status);
   }
 
   if (valueBatch.empty()) {
     mysql_free_result(result);
-    return {{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "No sample data is fetched").status};
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(),
+                           CRS_Status(HTTP_CODE::SERVER_ERROR, "No sample data is fetched").status);
   }
 
   mysql_free_result(result);
-  return {valueBatch, CRS_Status().status};
+  return std::make_tuple(valueBatch, CRS_Status::SUCCESS.status);
 }
 
 std::tuple<std::vector<std::vector<std::vector<char>>>, RS_Status>
 fetchDataRows(const std::string &query, std::vector<std::string> colTypes) {
   auto *dbConn = CreateMySQLConnectionDataCluster();
   if (dbConn == nullptr) {
-    return {{}, CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to connect to data database").status};
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(),
+                           CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to connect to data database").status);
   }
 
   auto [valueBatch, status] = fetchRowsInt(query, colTypes, dbConn);
   mysql_close(dbConn);
-  return {valueBatch, status};
+  return std::make_tuple(valueBatch, status);
 }
 
 std::tuple<std::vector<std::vector<std::vector<char>>>, RS_Status>
 fetchMetadataRows(const std::string &query, std::vector<std::string> colTypes) {
   auto *dbConn = CreateMySQLConnectionMetadataCluster();
   if (dbConn == nullptr) {
-    return {{},
-            CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to connect to metadata database").status};
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(),
+                           CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to connect to metadata database").status); 
   }
 
   auto [valueBatch, status] = fetchRowsInt(query, colTypes, dbConn);
   mysql_close(dbConn);
-  return {valueBatch, status};
+  return std::make_tuple(valueBatch, status);
 }
 
 std::tuple<std::vector<std::vector<std::vector<char>>>, std::vector<std::string>,
@@ -243,16 +260,18 @@ GetNSampleData(const std::string &database, const std::string &table, int n) {
   RS_Status status;
   tie(colTypes, columnNames, pks, status) = getColumnInfo(database, table);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    return {{}, {}, {}, status};
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(), std::vector<std::string>(),
+                           std::vector<std::string>(), status);
   }
 
   std::string query = "SELECT * FROM " + database + "." + table + " LIMIT " + std::to_string(n);
   auto [valueBatch, fetchStatus] = fetchDataRows(query, colTypes);
   if (fetchStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    return {{}, {}, {}, fetchStatus};
+    return std::make_tuple(std::vector<std::vector<std::vector<char>>>(), std::vector<std::string>(),
+                           std::vector<std::string>(), fetchStatus);
   }
 
-  return {valueBatch, columnNames, pks, CRS_Status().status};
+  return std::make_tuple(valueBatch, columnNames, pks, CRS_Status::SUCCESS.status);
 }
 
 std::tuple<std::vector<std::vector<std::vector<char>>>, std::vector<std::string>,
@@ -492,7 +511,7 @@ GetPkValuesExclude(const std::vector<std::vector<char>> &row, const std::vector<
       pksFiltered.push_back(cols[i]);
     }
   }
-  return {pksFiltered, pkValue};
+  return std::make_tuple(pksFiltered, pkValue);
 }
 
 std::tuple<std::vector<std::string>, std::vector<std::vector<std::vector<char>>>>
@@ -506,7 +525,7 @@ GetPkValuesBatchExclude(const std::vector<std::vector<std::vector<char>>> &batch
     pkFiltered                             = pksFilteredRow;
     pkValues.push_back(pkValueFiltered);
   }
-  return {pkFiltered, pkValues};
+  return std::make_tuple(pkFiltered, pkValues);
 }
 
 std::string removeQuotes(const std::string &input) {

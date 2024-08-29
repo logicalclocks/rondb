@@ -32,6 +32,7 @@
 #include <memory>
 #include <simdjson.h>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -279,9 +280,10 @@ getFeatureValuesMultipleEntries(
     try {
       seqNum = std::stoi(splitOperationIdFirst);
     } catch (...) {
-      return {{},
-              std::make_shared<RestErrorCode>("Failed to parse sequence number.",
-                                              static_cast<int>(drogon::k500InternalServerError))};
+      return std::make_tuple(std::vector<std::vector<std::vector<char>>>(),
+                             std::make_shared<RestErrorCode>(
+                                 "Failed to parse sequence number.",
+                                 static_cast<int>(drogon::k500InternalServerError)));
     }
     response.setOperationId(splitOperationIdSecond);
     rondbBatchResult[seqNum].push_back(response);
