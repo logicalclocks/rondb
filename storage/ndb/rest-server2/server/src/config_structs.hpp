@@ -54,6 +54,7 @@ class GRPC {
   RS_Status validate();
   GRPC();
   GRPC(bool, std::string, uint16_t);
+  std::string string();
 };
 
 class REST {
@@ -72,7 +73,7 @@ class MySQLServer {
  public:
   std::string IP;
   uint16_t port;
-  RS_Status validate();
+  RS_Status validate() const;
   MySQLServer();
   MySQLServer(std::string, uint16_t);
   std::string string();
@@ -207,5 +208,7 @@ class AllConfigs {
   static RS_Status set_from_file(const std::string &);
   static RS_Status init();
 };
+
+bool isUniteTest();
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_CONFIG_STRUCTS_HPP_

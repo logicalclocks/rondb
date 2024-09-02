@@ -32,7 +32,9 @@
 #define PING_PATH  MAKE_PATH(API_VERSION, PING)
 #define BATCH_PATH MAKE_PATH(API_VERSION, BATCH)
 
-#define PKREAD_PATH "/" API_VERSION "/{db}/{table}/" PKREAD
+#define PKREAD_PATH              "/" API_VERSION "/{db}/{table}/" PKREAD
+#define FEATURE_STORE_PATH       "/" API_VERSION "/feature_store"
+#define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/batch_feature_store"
 
 constexpr const char *CONFIG_FILE_PATH               = "RDRS_CONFIG_FILE";
 constexpr const char *LOCALHOST                      = "localhost";
@@ -52,6 +54,7 @@ constexpr const char *DATA_RETURN_TYPE               = "dataReturnType";
 constexpr const char *OPERATION_ID                   = "operationId";
 constexpr const char *GRPC_STR                       = "GRPC";
 constexpr const char *REST_STR                       = "REST";
+constexpr const char *ENABLE                         = "enable";
 constexpr const char *SERVER_PORT                    = "ServerPort";
 constexpr const char *RONDB                          = "RonDB";
 constexpr const char *MGMDS                          = "Mgmds";
@@ -61,19 +64,34 @@ constexpr const char *SECURITY                       = "Security";
 constexpr const char *TLS_STR                        = "TLS";
 constexpr const char *ENABLE_TLS                     = "EnableTLS";
 constexpr const char *REQUIRE_AND_VERIFY_CLIENT_CERT = "RequireAndVerifyClientCert";
-constexpr const char *API_KEY                        = "APIKey";
+constexpr const char *API_KEY_STR                    = "APIKey";
 constexpr const char *USE_HOPSWORKS_API_KEYS         = "UseHopsworksAPIKeys";
 constexpr const char *LOG                            = "Log";
 constexpr const char *LEVEL                          = "Level";
 constexpr const char *INFO                           = "INFO";
 constexpr const char *TESTING                        = "Testing";
-constexpr const char *MYSQL                          = "MySQL";
+constexpr const char *MYSQL_STR                      = "MySQL";
 constexpr const char *SERVERS                        = "Servers";
 constexpr const char *USER                           = "User";
 constexpr const char *ROOT_STR                       = "root";
 constexpr const char *PASSWORD                       = "Password";
 constexpr const char *API_KEY_NAME_LOWER_CASE =
     "x-api-key";  // Drogon always receives the header as lowercase
+constexpr const char *FEATURE_STORE_NAME       = "featureStoreName";
+constexpr const char *FEATURE_VIEW_NAME        = "featureViewName";
+constexpr const char *FEATURE_VIEW_VERSION     = "featureViewVersion";
+constexpr const char *PASSED_FEATURES          = "passedFeatures";
+constexpr const char *ENTRIES                  = "entries";
+constexpr const char *METADATA_OPTIONS         = "metadataOptions";
+constexpr const char *FEATURE_NAME             = "featureName";
+constexpr const char *FEATURE_TYPE             = "featureType";
+constexpr const char *OPTIONS                  = "options";
+constexpr const char *VALIDATE_PASSED_FEATURES = "validatePassedFeatures";
+constexpr const char *INCLUDE_DETAILED_STATUS  = "includeDetailedStatus";
+constexpr const char *FEATURE_STORE_OPERATION  = "feature_store";
+constexpr const char *SEQUENCE_SEPARATOR       = "#";
+
+constexpr const char *ERROR_NOT_FOUND = "Not Found";
 
 const int RESP_BUFFER_SIZE                 = 5 * 1024 * 1024;
 const int REQ_BUFFER_SIZE                  = 1024 * 1024;

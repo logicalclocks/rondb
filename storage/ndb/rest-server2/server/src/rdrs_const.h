@@ -80,6 +80,21 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define PK_RESP_HEADER_END     36  // NOTE: Update this when you add / remove fields from  header
 
 // Hopsworks
+
+#define HOPSWORKS                "hopsworks"
+#define TRAINING_DATASET_FEATURE "training_dataset_feature"
+#define FEATURE_STORE            "feature_store"
+#define SERVING_KEY              "serving_key"
+#define SUBJECTS                 "subjects"
+#define SCHEMAS                  "schemas"
+#define PROJECT                  "project"
+#define FEATURE_VIEW             "feature_view"
+#define TRAINING_DATASET_JOIN    "training_dataset_join"
+#define API_KEY                  "api_key"
+#define USERS                    "users"
+#define PROJECT_TEAM             "project_team"
+#define FEATURE_GROUP            "feature_group"
+
 // Update the following constants if there are changes in the hopsworks schema
 #define API_KEY_PREFIX_SIZE                45 + 1    /* +1 for ndb len or '\0'*/
 #define API_KEY_NAME_SIZE                  45 + 1    /* +1 for ndb len or '\0'*/

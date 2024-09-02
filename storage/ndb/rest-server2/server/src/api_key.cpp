@@ -32,7 +32,7 @@
 #include <functional>
 #include <algorithm>
 
-std::shared_ptr<Cache> apiKeyCache;
+std::shared_ptr<APIKeyCache> apiKeyCache;
 
 std::vector<std::string> split(const std::string &, char);
 RS_Status computeHash(const std::string &unhashed, std::string &hashed);
@@ -41,7 +41,7 @@ RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
   return apiKeyCache->validate_api_key(apiKey, {params.path.db});
 }
 
-RS_Status Cache::validate_api_key_format(const std::string &apiKey) {
+RS_Status APIKeyCache::validate_api_key_format(const std::string &apiKey) {
   if (apiKey.empty()) {
     return CRS_Status(HTTP_CODE::CLIENT_ERROR, "the apikey is nil").status;
   }
@@ -52,14 +52,14 @@ RS_Status Cache::validate_api_key_format(const std::string &apiKey) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::validate_api_key(const std::string &apiKey,
-                                  const std::initializer_list<std::string> &dbs) {
+RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
+                                        const std::vector<std::string> &dbs) {
   RS_Status status = validate_api_key_format(apiKey);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
 
-  if (dbs.size() == 0) {
+  if (dbs.empty()) {
     return CRS_Status::SUCCESS.status;
   }
 
@@ -100,14 +100,14 @@ RS_Status Cache::validate_api_key(const std::string &apiKey,
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey,
-                                           const std::initializer_list<std::string> &dbs) {
+RS_Status APIKeyCache::validate_api_key_no_cache(const std::string &apiKey,
+                                                 const std::vector<std::string> &dbs) {
   RS_Status status = validate_api_key_format(apiKey);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
 
-  if (dbs.size() == 0) {
+  if (dbs.empty()) {
     return CRS_Status::SUCCESS.status;
   }
 
@@ -135,7 +135,7 @@ RS_Status Cache::validate_api_key_no_cache(const std::string &apiKey,
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::cleanup() {
+RS_Status APIKeyCache::cleanup() {
   WriteLock lock(key2UserDBsCacheLock);
 
   // TODO Logger
@@ -150,7 +150,7 @@ RS_Status Cache::cleanup() {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::update_cache(const std::string &apiKey) {
+RS_Status APIKeyCache::update_cache(const std::string &apiKey) {
   // if the entry does not already exist in the
   // cache then multiple clients will try to read and
   // update the API key from the backend simultaneously.
@@ -187,7 +187,7 @@ RS_Status Cache::update_cache(const std::string &apiKey) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::update_record(std::vector<std::string> dbs, UserDBs *udbs) {
+RS_Status APIKeyCache::update_record(std::vector<std::string> dbs, UserDBs *udbs) {
   // caller holds the lock
   if (udbs->evicted) {
     return CRS_Status::SUCCESS.status;
@@ -204,7 +204,7 @@ RS_Status Cache::update_record(std::vector<std::string> dbs, UserDBs *udbs) {
   return CRS_Status::SUCCESS.status;
 }
 
-std::chrono::system_clock::time_point Cache::last_used(const std::string &apiKey) {
+std::chrono::system_clock::time_point APIKeyCache::last_used(const std::string &apiKey) {
   ReadLock readLock(key2UserDBsCacheLock);
   auto it = key2UserDBsCache.find(apiKey);
   if (it == key2UserDBsCache.end()) {
@@ -213,7 +213,7 @@ std::chrono::system_clock::time_point Cache::last_used(const std::string &apiKey
   return it->second->lastUsed;
 }
 
-std::chrono::system_clock::time_point Cache::last_updated(const std::string &apiKey) {
+std::chrono::system_clock::time_point APIKeyCache::last_updated(const std::string &apiKey) {
   ReadLock readLock(key2UserDBsCacheLock);
   auto it = key2UserDBsCache.find(apiKey);
   if (it == key2UserDBsCache.end()) {
@@ -222,8 +222,8 @@ std::chrono::system_clock::time_point Cache::last_updated(const std::string &api
   return it->second->lastUpdated;
 }
 
-RS_Status Cache::start_update_ticker(const std::string &apiKey,
-                                     std::shared_ptr<UserDBs> & /*udbs*/) {
+RS_Status APIKeyCache::start_update_ticker(const std::string &apiKey,
+                                           std::shared_ptr<UserDBs> & /*udbs*/) {
   auto started = std::make_shared<std::atomic<bool>>(false);
   std::thread([this, apiKey, started]() { cache_entry_updater(apiKey, started); }).detach();
 
@@ -234,8 +234,8 @@ RS_Status Cache::start_update_ticker(const std::string &apiKey,
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::cache_entry_updater(const std::string &apiKey,
-                                     std::shared_ptr<std::atomic<bool>> started) {
+RS_Status APIKeyCache::cache_entry_updater(const std::string &apiKey,
+                                           std::shared_ptr<std::atomic<bool>> started) {
   auto it = key2UserDBsCache.find(apiKey);
   if (it == key2UserDBsCache.end()) {
     return CRS_Status(HTTP_CODE::CLIENT_ERROR, "API key not found in cache").status;
@@ -308,9 +308,8 @@ RS_Status Cache::cache_entry_updater(const std::string &apiKey,
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::find_and_validate(const std::string &apiKey, bool &keyFoundInCache,
-                                   bool &allowedAccess,
-                                   const std::initializer_list<std::string> &dbs) {
+RS_Status APIKeyCache::find_and_validate(const std::string &apiKey, bool &keyFoundInCache,
+                                         bool &allowedAccess, const std::vector<std::string> &dbs) {
   keyFoundInCache = false;
   allowedAccess   = false;
 
@@ -346,9 +345,9 @@ RS_Status Cache::find_and_validate(const std::string &apiKey, bool &keyFoundInCa
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::find_and_validate_again(const std::string &apiKey, bool &keyFoundInCache,
-                                         bool &allowedAccess,
-                                         const std::initializer_list<std::string> &dbs) {
+RS_Status APIKeyCache::find_and_validate_again(const std::string &apiKey, bool &keyFoundInCache,
+                                               bool &allowedAccess,
+                                               const std::vector<std::string> &dbs) {
   keyFoundInCache = false;
   allowedAccess   = false;
 
@@ -389,7 +388,7 @@ RS_Status Cache::find_and_validate_again(const std::string &apiKey, bool &keyFou
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::authenticate_user(const std::string &apiKey, HopsworksAPIKey &key) {
+RS_Status APIKeyCache::authenticate_user(const std::string &apiKey, HopsworksAPIKey &key) {
   auto splits       = split(apiKey, '.');
   auto prefix       = splits[0];
   auto clientSecret = splits[1];
@@ -413,7 +412,7 @@ RS_Status Cache::authenticate_user(const std::string &apiKey, HopsworksAPIKey &k
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::get_user_databases(HopsworksAPIKey &key, std::vector<std::string> &dbs) {
+RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key, std::vector<std::string> &dbs) {
   RS_Status status = get_user_projects(key.user_id, dbs);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
@@ -421,7 +420,7 @@ RS_Status Cache::get_user_databases(HopsworksAPIKey &key, std::vector<std::strin
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::get_user_projects(int uid, std::vector<std::string> &dbs) {
+RS_Status APIKeyCache::get_user_projects(int uid, std::vector<std::string> &dbs) {
   int count        = 0;
   char **projects  = nullptr;
   RS_Status status = find_all_projects(uid, &projects, &count);
@@ -439,7 +438,7 @@ RS_Status Cache::get_user_projects(int uid, std::vector<std::string> &dbs) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status Cache::get_api_key(const std::string &userKey, HopsworksAPIKey &key) {
+RS_Status APIKeyCache::get_api_key(const std::string &userKey, HopsworksAPIKey &key) {
   RS_Status status = find_api_key(userKey.c_str(), &key);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
@@ -476,7 +475,7 @@ RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
           }
 
           hashed = ss.str();
-          status = CRS_Status().status;
+          status = CRS_Status::SUCCESS.status;
         }
       }
     }
@@ -485,12 +484,12 @@ RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
   return status;
 }
 
-unsigned Cache::size() {
+unsigned APIKeyCache::size() {
   ReadLock readLock(key2UserDBsCacheLock);
   return key2UserDBsCache.size();
 }
 
-std::chrono::milliseconds Cache::refresh_interval_with_jitter() {
+std::chrono::milliseconds APIKeyCache::refresh_interval_with_jitter() {
   uint32_t cacheRefreshIntervalMS = globalConfigs.security.apiKey.cacheRefreshIntervalMS;
   int jitterMS = static_cast<int>(globalConfigs.security.apiKey.cacheRefreshIntervalJitterMS);
   std::uniform_int_distribution<int32_t> dist(0, jitterMS);
@@ -501,7 +500,7 @@ std::chrono::milliseconds Cache::refresh_interval_with_jitter() {
   return std::chrono::milliseconds(static_cast<int32_t>(cacheRefreshIntervalMS) + jitter);
 }
 
-std::string Cache::to_string() {
+std::string APIKeyCache::to_string() {
   ReadLock readLock(key2UserDBsCacheLock);
   std::stringstream ss;
   for (const auto &entry : key2UserDBsCache) {

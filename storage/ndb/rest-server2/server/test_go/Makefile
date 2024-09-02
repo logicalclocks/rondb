@@ -49,8 +49,13 @@ COVERAGE_OUTPUT_FILE?=./coverage.out
 COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
-#CGO_LDFLAGS
-MY_CGO_LDFLAGS?="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib -Wl,-rpath,${RDRS_LIB_DIR}"
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S), Linux)
+	ALLOW_MULTIPLE_DEFINITION := ,--allow-multiple-definition
+endif
+
+#CGO_LDFLAG
+MY_CGO_LDFLAGS:="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib${ALLOW_MULTIPLE_DEFINITION} -Wl,-rpath,${RDRS_LIB_DIR}"
 
 all: rdrs2
 
@@ -88,13 +93,16 @@ test:
 	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	export RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) && \
 	export CGO_LDFLAGS=${MY_CGO_LDFLAGS} && \
-	go test -v -p 1 -run $(TEST) -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg  $(TEST_PACKAGE) `go list $(TEST_PACKAGE) | grep -v cmd`
+	export RUNNING_UNIT_TESTS=1 && \
+	go test -v -p 1 -run $(TEST) -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg  $(TEST_PACKAGE) `go list $(TEST_PACKAGE) | grep -v cmd`; \
+	unset RUNNING_UNIT_TESTS
 
 bench:
 	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	export RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) && \
 	export CGO_LDFLAGS=${MY_CGO_LDFLAGS} && \
+	export RUNNING_UNIT_TESTS=1 && \
 	go test -v \
 		-test.bench $(BENCHMARK) \
 		-test.run=thisexpressionwontmatchanytest \
@@ -102,7 +110,9 @@ bench:
 		-benchtime=$(BENCHMARK_DURATION)s \
 		-cpuprofile cpu.out \
 		-memprofile mem.out \
-		$(BENCHMARK_PACKAGE)
+		$(BENCHMARK_PACKAGE); \
+		unset RUNNING_UNIT_TESTS
+
 
 # Otherwise use e.g. `go tool pprof cpu.out` for an interactive CLI
 create-profiling-pdfs:

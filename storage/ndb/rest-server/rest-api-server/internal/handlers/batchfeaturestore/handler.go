@@ -105,6 +105,15 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	return nil
 }
 
+func FeaturesToJson(features *[][]interface{}) string {
+	strBytes, err := json.MarshalIndent(features, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Failed to marshal Features. Error: %v", err)
+	} else {
+		return string(strBytes)
+	}
+}
+
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
 	fsReq := request.(*api.BatchFeatureStoreRequest)
 	metadata, err := h.fvMetaCache.Get(
@@ -143,6 +152,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		if err != nil {
 			return err.GetStatus(), err.GetError()
 		}
+		fmt.Println("111Features: ", FeaturesToJson(features))
 	} else {
 		var emptyFeatures = make([][]interface{}, len(*fsReq.Entries))
 		for i := range emptyFeatures {
@@ -152,6 +162,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	}
 	fsResp.Status = featureStatus
 	fillPassedFeaturesMultipleEntries(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
+	fmt.Println("222Features: ", FeaturesToJson(features))
 	fsResp.Features = *features
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *fshandler.GetFeatureMetadata(metadata, fsReq.MetadataRequest)

@@ -1281,3 +1281,26 @@ CREATE TABLE `sample_cache_1` (
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 INSERT INTO `sample_cache_1` (`id1`, `data`) SELECT `id1`, `bigint` FROM `sample_3_1`;
+
+CREATE TABLE `sample_4_1` (
+  `id1` varchar(100) COLLATE utf8_unicode_ci NOT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `data1` bigint DEFAULT NULL,
+  `data2` bigint DEFAULT NULL,
+  PRIMARY KEY (`id1`)
+) ENGINE=ndbcluster;
+
+INSERT INTO
+    sample_4_1
+VALUES
+('id73', Timestamp('2022-01-16 00:00:00'), 17, 28),
+('id56', Timestamp('2022-01-13 00:00:00'), 12, 67),
+('id12', Timestamp('2022-01-23 00:00:00'), 61, 12),
+('id51', Timestamp('2022-01-22 00:00:00'), 70, 35),
+('id9', Timestamp('2022-01-01 00:00:00'), 2, 62),
+('id87', Timestamp('2022-01-04 00:00:00'), 16, 50),
+('id47', Timestamp('2022-01-20 00:00:00'), 51, 73),
+('id41', Timestamp('2022-01-16 00:00:00'), 26, 30),
+('id23', Timestamp('2022-01-18 00:00:00'), 14, 93),
+('id80', Timestamp('2022-01-11 00:00:00'), 20, 52)
+;

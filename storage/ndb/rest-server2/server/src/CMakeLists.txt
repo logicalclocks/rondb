@@ -18,6 +18,24 @@ find_package(Drogon CONFIG REQUIRED)
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR_64})
 find_package(simdjson REQUIRED)
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR})
+set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR_64})
+
+find_path(AVROCPP_INCLUDE_DIR avro/ValidSchema.hh
+  PATHS /usr/local/include /usr/include
+)
+
+find_library(AVROCPP_LIBRARIES NAMES avrocpp
+  PATHS /usr/local/lib /usr/lib
+)
+
+if(AVROCPP_INCLUDE_DIR AND AVROCPP_LIBRARIES)
+    message(STATUS "Found avrocpp: ${AVROCPP_LIBRARIES}")
+else()
+  message(STATUS "avrocpp NOT FOUND")
+  message("Please refer to the latest Avro C++ Installing instructions: https://avro.apache.org/docs/1.12.0/api/cpp/html/")
+  message(FATAL_ERROR "Failed to configure rdrs2. avrocpp NOT FOUND")
+endif()
 
 find_package(Jsoncpp REQUIRED)
 find_package(Threads REQUIRED)
@@ -57,9 +75,11 @@ INCLUDE_DIRECTORIES(${RDRS_DROGON_INCLUDE_DIR})
 #INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_DIR})
 INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
+INCLUDE_DIRECTORIES(${AVROCPP_INCLUDE_DIR})
 
 target_link_libraries(${PROJECT_NAME}
                       base64
+                      ${AVROCPP_LIBRARIES}
                       Jsoncpp_lib
                       Drogon::Drogon
                       Trantor::Trantor
@@ -88,10 +108,12 @@ target_include_directories(rdrs2_lib PUBLIC
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
 #target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
+target_include_directories(rdrs2_lib PUBLIC ${RDRS_AVRO_INCLUDE_DIR})
 target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
 
 target_link_libraries(rdrs2_lib
                       base64
+                      ${AVROCPP_LIBRARIES}
                       Jsoncpp_lib
                       Drogon::Drogon
                       Trantor::Trantor
@@ -100,4 +122,5 @@ target_link_libraries(rdrs2_lib
                       ${RDRS_CRYPTO_LIBRARY}
                       ndbclient_so
                       ndbgeneral
-                      rdrs_string)
+                      rdrs_string
+                      mysqlclient)

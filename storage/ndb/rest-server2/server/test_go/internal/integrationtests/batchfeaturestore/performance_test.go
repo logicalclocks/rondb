@@ -19,21 +19,17 @@ package batchfeaturestore
 
 import (
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"net/http"
 	"testing"
 
 	"hopsworks.ai/rdrs2/internal/config"
-	"hopsworks.ai/rdrs2/internal/feature_store"
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/pkg/api"
 	"hopsworks.ai/rdrs2/resources/testdbs"
 
 	"hopsworks.ai/rdrs2/internal/integrationtests"
-	fshelper "hopsworks.ai/rdrs2/internal/integrationtests/feature_store"
-	"hopsworks.ai/rdrs2/internal/log"
 )
 
 /*
@@ -55,66 +51,66 @@ import (
 
 const totalNumRequest = 100000
 
-func Benchmark(b *testing.B) {
-	for _, n := range []int{10, 50, 100} {
-		run(b, testdbs.FSDB001, "sample_1", 1, n)
-	}
-}
+// func Benchmark(b *testing.B) {
+// 	for _, n := range []int{10, 50, 100} {
+// 		run(b, testdbs.FSDB001, "sample_1", 1, n)
+// 	}
+// }
 
-func Benchmark_join(b *testing.B) {
-	for _, n := range []int{5, 25, 50} {
-		run(b, testdbs.FSDB001, "sample_1n2", 1, n)
-	}
-}
+// func Benchmark_join(b *testing.B) {
+// 	for _, n := range []int{5, 25, 50} {
+// 		run(b, testdbs.FSDB001, "sample_1n2", 1, n)
+// 	}
+// }
 
-func getSampleData(n int, fsName string, fvName string, fvVersion int) ([][]interface{}, []string, []string, error) {
-	switch fmt.Sprintf("%s|%s|%d", fsName, fvName, fvVersion) {
-	case "fsdb001|sample_1|1":
-		return fshelper.GetNSampleData(testdbs.FSDB001, "sample_1_1", n)
-	case "fsdb001|sample_3|1":
-		return fshelper.GetNSampleData(testdbs.FSDB001, "sample_3_1", n)
-	case "fsdb001|sample_1n2|1":
-		return fshelper.GetNSampleDataWithJoin(n, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
-	default:
-		panic("No sample data for given feature view")
-	}
-}
+// func getSampleData(n int, fsName string, fvName string, fvVersion int) ([][]interface{}, []string, []string, error) {
+// 	switch fmt.Sprintf("%s|%s|%d", fsName, fvName, fvVersion) {
+// 	case "fsdb001|sample_1|1":
+// 		return fshelper.GetNSampleData(testdbs.FSDB001, "sample_1_1", n)
+// 	case "fsdb001|sample_3|1":
+// 		return fshelper.GetNSampleData(testdbs.FSDB001, "sample_3_1", n)
+// 	case "fsdb001|sample_1n2|1":
+// 		return fshelper.GetNSampleDataWithJoin(n, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
+// 	default:
+// 		panic("No sample data for given feature view")
+// 	}
+// }
 
-func run(b *testing.B, fsName string, fvName string, fvVersion int, batchSize int) {
-	const nReq = 100
+// func run(b *testing.B, fsName string, fvName string, fvVersion int, batchSize int) {
+// 	const nReq = 100
 
-	log.Infof("Test config: fs: %s fv: %s version: %d batch_size: %d", fsName, fvName, fvVersion, batchSize)
-	var metadata, err = feature_store.GetFeatureViewMetadata(fsName, fvName, fvVersion)
-	if err != nil {
-		panic("Cannot get metadata.")
-	}
-	log.Infof(`
-	Number of tables: %d 
-	Batch size in robdb request: %d 
-	Number of columns: %d`,
-		len(metadata.FeatureGroupFeatures), len(metadata.FeatureGroupFeatures)*batchSize, metadata.NumOfFeatures)
+// 	log.Infof("Test config: fs: %s fv: %s version: %d batch_size: %d", fsName, fvName, fvVersion, batchSize)
+// 	var metadata, err = feature_store.GetFeatureViewMetadata(fsName, fvName, fvVersion)
+// 	if err != nil {
+// 		panic("Cannot get metadata.")
+// 	}
+// 	log.Infof(`
+// 	Number of tables: %d
+// 	Batch size in robdb request: %d
+// 	Number of columns: %d`,
+// 		len(metadata.FeatureGroupFeatures), len(metadata.FeatureGroupFeatures)*batchSize, metadata.NumOfFeatures)
 
-	var fsReqs = make([]string, 0, nReq)
-	for i := 0; i < nReq; i++ {
-		rows, pks, cols, err := getSampleData(batchSize, fsName, fvName, fvVersion)
-		if err != nil {
-			panic("Failed to get sample data: " + err.Error())
-		}
-		var fsReq = CreateFeatureStoreRequest(
-			fsName,
-			fvName,
-			fvVersion,
-			pks,
-			*GetPkValues(&rows, &pks, &cols),
-			nil,
-			nil,
-		)
-		reqBody := fsReq.String()
-		fsReqs = append(fsReqs, reqBody)
+// 	var fsReqs = make([]string, 0, nReq)
+// 	for i := 0; i < nReq; i++ {
+// 		rows, pks, cols, err := getSampleData(batchSize, fsName, fvName, fvVersion)
+// 		if err != nil {
+// 			panic("Failed to get sample data: " + err.Error())
+// 		}
+// 		var fsReq = CreateFeatureStoreRequest(
+// 			fsName,
+// 			fvName,
+// 			fvVersion,
+// 			pks,
+// 			*GetPkValues(&rows, &pks, &cols),
+// 			nil,
+// 			nil,
+// 		)
+// 		reqBody := fsReq.String()
+// 		fsReqs = append(fsReqs, reqBody)
 
-	}
-	integrationtests.RunRestTemplate(b, config.FEATURE_STORE_HTTP_VERB, testutils.NewBatchFeatureStoreURL(), &fsReqs, totalNumRequest)
-}
+// 	}
+// 	integrationtests.RunRestTemplate(b, config.FEATURE_STORE_HTTP_VERB, testutils.NewBatchFeatureStoreURL(), &fsReqs, totalNumRequest)
+// }
 
 // Include this benchmark for comparison
 func BenchmarkBatchPkRead(b *testing.B) {

@@ -51,12 +51,12 @@ type FeatureViewMetadata struct {
 	NumOfFeatures        int
 	FeatureIndexLookup   map[string]int // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 	// serving key doc: https://hopsworks.atlassian.net/wiki/spaces/FST/pages/173342721/How+to+resolve+the+set+of+serving+key+in+get+feature+vector
-	PrimaryKeyMap    map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
-	ValidPrimaryKeys map[string]bool            // key: serving-key-prefix + fName, fName. Used for pk validation.
-	PrefixJoinKeyMap map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
-	JoinKeyMap       map[string][]string        // key: fName, value: list of feature which join on the key. Used for filling in pk value.
-	RequiredJoinKeyMap map[string][]string      // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
-	ComplexFeatures  map[string]*AvroDecoder    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	PrimaryKeyMap      map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
+	ValidPrimaryKeys   map[string]bool            // key: serving-key-prefix + fName, fName. Used for pk validation.
+	PrefixJoinKeyMap   map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
+	JoinKeyMap         map[string][]string        // key: fName, value: list of feature which join on the key. Used for filling in pk value.
+	RequiredJoinKeyMap map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
+	ComplexFeatures    map[string]*AvroDecoder    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 }
 
 type FeatureGroupFeatures struct {
@@ -70,18 +70,27 @@ type FeatureGroupFeatures struct {
 	PrimaryKeyMap       []*dal.ServingKey
 }
 
+func (fgf *FeatureGroupFeatures) String() string {
+	string1 := fmt.Sprintf("FeatureStoreName: %s, FeatureStoreId: %d, FeatureGroupName: %s, FeatureGroupVersion: %d, FeatureGroupId: %d",
+		fgf.FeatureStoreName, fgf.FeatureStoreId, fgf.FeatureGroupName, fgf.FeatureGroupVersion, fgf.FeatureGroupId)
+	string2 := fmt.Sprintf("JoinIndex: %d", fgf.JoinIndex)
+	string3 := fmt.Sprintf("Features: %v", fgf.Features)
+	string4 := fmt.Sprintf("PrimaryKeyMap: %v", fgf.PrimaryKeyMap)
+	return fmt.Sprintf("%s\n%s\n%s\n%s", string1, string2, string3, string4)
+}
+
 type FeatureMetadata struct {
-	FeatureStoreName         string
-	FeatureGroupName         string
-	FeatureGroupVersion      int
-	FeatureGroupId           int
-	Id                       int
-	Name                     string
-	Type                     string
-	Index                    int
-	Label                    bool
-	Prefix                   string
-	JoinIndex                int
+	FeatureStoreName    string
+	FeatureGroupName    string
+	FeatureGroupVersion int
+	FeatureGroupId      int
+	Id                  int
+	Name                string
+	Type                string
+	Index               int
+	Label               bool
+	Prefix              string
+	JoinIndex           int
 }
 
 type AvroDecoder struct {
