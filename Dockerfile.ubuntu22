@@ -12,11 +12,9 @@ ARG TARGETARCH
 
 ARG CMAKE_VERSION=3.25.1
 ARG OPEN_SSL_VERSION=3.0.11
-ARG BOOST_VERSION_MAJOR=1
-ARG BOOST_VERSION_MINOR=77
-ARG BOOST_VERSION_PATCH=0
 ARG GO_VERSION=1.20.3
 ARG JSONCPP_VERSION=1.9.5
+ARG AVRO_VERSION=1.12.0
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
 ARG BUILD_THREADS
@@ -27,7 +25,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     apt-get update && apt-get -y install wget pkg-config patchelf \
     libncurses5-dev default-jdk libudev-dev bison autoconf pigz \
     openssh-client maven libsasl2-dev libldap-dev libaio-dev \
-    git vim nano protobuf-compiler graphviz
+    git vim nano protobuf-compiler graphviz libboost-all-dev
 
 # RonDB 22.10 requires gcc/g++ 10
 # Ubuntu 22.04 comes with gcc/g++ 11.3 by default
@@ -43,18 +41,6 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
 RUN mkdir $DOWNLOADS_CACHE_DIR
-
-# Installing Boost
-ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
-ENV BOOST_V_UNDERSCORE=${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VERSION_PATCH}
-ENV BOOST_LABEL="boost_${BOOST_V_UNDERSCORE}"
-ENV BOOST_TARBALL="${BOOST_LABEL}.tar.gz"
-RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
-        https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL} \
-    && tar xzf $DOWNLOADS_CACHE_DIR/${BOOST_TARBALL} -C .
-# Important env variable for RonDB compilation
-ENV BOOST_ROOT="/${BOOST_LABEL}"
 
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
@@ -122,6 +108,24 @@ COPY <<-"EOF" /root/.m2/settings.xml
     </servers>
 </settings>
 EOF
+
+# 
+# RDRS2
+#
+
+# Install avro
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    cd $DOWNLOADS_CACHE_DIR && \
+    rm -rf release-* avro-* && \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR https://github.com/apache/avro/archive/refs/tags/release-$AVRO_VERSION.tar.gz && \
+    tar xf release-$AVRO_VERSION.tar.gz && \
+    cd avro-release-$AVRO_VERSION/lang/c++ && \
+    mkdir build && \
+    cd build && \
+    cmake -G "Unix Makefiles" .. && \
+    make -j$THREADS_ARG && \
+    make install && \ 
+    rm -rf release-* avro-* 
 
 # Install updated jsoncpp
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
