@@ -22,11 +22,11 @@ set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_AVRO_CMAKE_MODULES_DIR_64})
 
 find_path(AVROCPP_INCLUDE_DIR avro/ValidSchema.hh
-  PATHS /usr/local/include /usr/include
+  PATHS /usr/local/include /usr/include /opt/homebrew/include
 )
 
 find_library(AVROCPP_LIBRARIES NAMES avrocpp
-  PATHS /usr/local/lib /usr/lib
+  PATHS /usr/local/lib /usr/lib /opt/homebrew/lib
 )
 
 if(AVROCPP_INCLUDE_DIR AND AVROCPP_LIBRARIES)
@@ -34,6 +34,10 @@ if(AVROCPP_INCLUDE_DIR AND AVROCPP_LIBRARIES)
 else()
   message(STATUS "avrocpp NOT FOUND")
   message("Please refer to the latest Avro C++ Installing instructions: https://avro.apache.org/docs/1.12.0/api/cpp/html/")
+  if(APPLE)
+      message("or  brew install avro-cpp")
+  endif()
+
   message(FATAL_ERROR "Failed to configure rdrs2. avrocpp NOT FOUND")
 endif()
 

@@ -10,6 +10,10 @@ ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=3.0.11
 ARG GO_VERSION=1.20.3
 ARG JSONCPP_VERSION=1.9.5
+ARG BOOST_VERSION_MAJOR=1
+ARG BOOST_VERSION_MINOR=86
+ARG BOOST_VERSION_PATCH=0
+ARG AVRO_VERSION=1.12.0
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
 ARG BUILD_THREADS
@@ -61,6 +65,7 @@ RUN mkdir $DOWNLOADS_CACHE_DIR
 # but just install the specified version.
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
+ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
         https://www.openssl.org/source/openssl-${OPEN_SSL_VERSION}.tar.gz \
@@ -74,12 +79,9 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && ldconfig -v \
     && cd .. \
     && rm -rf openssl-${OPEN_SSL_VERSION}
-    # Could also run `make test`
-    # `make install` places shared libraries into $OPENSSL_ROOT
 
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR
-ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     source scl_source enable gcc-toolset-12 \
     && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
@@ -120,6 +122,42 @@ COPY <<-"EOF" /root/.m2/settings.xml
     </servers>
 </settings>
 EOF
+
+# 
+# RDRS2
+#
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle8-yum \
+    yum install bzip2 bzip2-libs
+
+# Install latest boost
+ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
+ENV BOOST_V_UNDERSCORE=${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VERSION_PATCH}
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    cd $DOWNLOADS_CACHE_DIR && \
+    rm -rf boost_* && \
+    wget https://archives.boost.io/release/$BOOST_VERSION/source/boost_$BOOST_V_UNDERSCORE.tar.bz2 && \
+    tar --bzip2 -xf boost_$BOOST_V_UNDERSCORE.tar.bz2 && \
+    source scl_source enable gcc-toolset-12 && \
+    cd boost_$BOOST_V_UNDERSCORE && \
+    ./bootstrap.sh  &&\
+    ./b2 -j$THREADS_ARG && \
+    ./b2 install && \
+    rm -rf boost_* 
+
+# Install avro
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    cd $DOWNLOADS_CACHE_DIR && \
+    rm -rf release-* avro-* && \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR https://github.com/apache/avro/archive/refs/tags/release-$AVRO_VERSION.tar.gz && \
+    tar xf release-$AVRO_VERSION.tar.gz && \
+    cd avro-release-$AVRO_VERSION/lang/c++ && \
+    mkdir build && \
+    cd build && \
+    source scl_source enable gcc-toolset-12 && \
+    cmake -G "Unix Makefiles" .. && \
+    make -j$THREADS_ARG && \
+    make install && \ 
+    rm -rf release-* avro-* 
 
 # Install updated jsoncpp
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
