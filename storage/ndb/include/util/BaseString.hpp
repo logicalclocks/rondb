@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -143,6 +143,14 @@ class BaseString {
   int split(Vector<BaseString> &vector,
             const BaseString &separator = BaseString(" "),
             int maximum = -1) const;
+
+  /**
+   * This function will create a vector of strings separated by
+   * either space or equal signs. Equal signs are added as strings
+   * with a single character. This is useful to handle strings with
+   * a mix of key = value and parametrised names.
+   */
+  int split_with_equal(Vector<BaseString> &vector) const;
 
   /**
    * Split a string into key and value, with "=" as the separator.

@@ -107,6 +107,7 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
      * If EndOfData is set, close the scan.
      */
     if (conf->requestInfo == ScanTabConf::EndOfData) {
+      DBUG_PRINT("info", ("receive SCAN_TABCONF, close"));
       if (theScanningOp) {
         theScanningOp->execCLOSE_SCAN_REP();
       } else {
@@ -117,6 +118,7 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
     }
 
     int retVal = -1;
+    DBUG_PRINT("info", ("receive SCAN_TABCONF, len: %u", len));
     const Uint32 *const opsEnd = ops + len;
     while (ops < opsEnd) {
       const Uint32 ptrI = *ops++;

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -353,6 +353,42 @@ SignalDataPrintFunctions[] = {
   ,{ GSN_COPY_FRAGREQ, printCOPY_FRAGREQ }
   ,{ GSN_COPY_FRAGCONF, printCOPY_FRAGCONF }
   ,{ GSN_COPY_FRAGREF, printCOPY_FRAGREF }
+
+  ,{ GSN_CREATE_DATABASE_REQ, printCREATE_DATABASE_REQ }
+  ,{ GSN_CREATE_DATABASE_CONF, printCREATE_DATABASE_CONF }
+  ,{ GSN_CREATE_DATABASE_REF, printCREATE_DATABASE_REF }
+
+  ,{ GSN_ALTER_DATABASE_REQ, printALTER_DATABASE_REQ }
+  ,{ GSN_ALTER_DATABASE_CONF, printALTER_DATABASE_CONF }
+  ,{ GSN_ALTER_DATABASE_REF, printALTER_DATABASE_REF }
+
+  ,{ GSN_DROP_DATABASE_REQ, printDROP_DATABASE_REQ }
+  ,{ GSN_DROP_DATABASE_CONF, printDROP_DATABASE_CONF }
+  ,{ GSN_DROP_DATABASE_REF, printDROP_DATABASE_REF }
+
+  ,{ GSN_CREATE_DB_REQ, printCREATE_DB_REQ }
+  ,{ GSN_CREATE_DB_CONF, printCREATE_DB_CONF }
+  ,{ GSN_CREATE_DB_REF, printCREATE_DB_REF }
+
+  ,{ GSN_ALTER_DB_REQ, printALTER_DB_REQ }
+  ,{ GSN_ALTER_DB_CONF, printALTER_DB_CONF }
+  ,{ GSN_ALTER_DB_REF, printALTER_DB_REF }
+
+  ,{ GSN_DROP_DB_REQ, printDROP_DB_REQ }
+  ,{ GSN_DROP_DB_CONF, printDROP_DB_CONF }
+  ,{ GSN_DROP_DB_REF, printDROP_DB_REF }
+
+  ,{ GSN_COMMIT_DB_REQ, printCOMMIT_DB_REQ }
+  ,{ GSN_COMMIT_DB_CONF, printCOMMIT_DB_CONF }
+  ,{ GSN_COMMIT_DB_REF, printCOMMIT_DB_REF }
+
+  ,{ GSN_CONNECT_TABLE_DB_REQ, printCONNECT_TABLE_DB_REQ }
+  ,{ GSN_CONNECT_TABLE_DB_CONF, printCONNECT_TABLE_DB_CONF }
+  ,{ GSN_CONNECT_TABLE_DB_REF, printCONNECT_TABLE_DB_REF }
+
+  ,{ GSN_DISCONNECT_TABLE_DB_REQ, printDISCONNECT_TABLE_DB_REQ }
+  ,{ GSN_DISCONNECT_TABLE_DB_CONF, printDISCONNECT_TABLE_DB_CONF }
+  ,{ GSN_DISCONNECT_TABLE_DB_REF, printDISCONNECT_TABLE_DB_REF }
 
   ,{ 0, nullptr }
 };

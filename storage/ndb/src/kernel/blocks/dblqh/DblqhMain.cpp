@@ -38,6 +38,7 @@
 #include <signaldata/AccScan.hpp>
 #include <signaldata/CopyActive.hpp>
 #include <signaldata/CopyFrag.hpp>
+#include <signaldata/CreateDatabase.hpp>
 #include <signaldata/CreateTrigImpl.hpp>
 #include <signaldata/DropTrigImpl.hpp>
 #include <signaldata/DumpStateOrd.hpp>
@@ -152,6 +153,34 @@
 //#define DEBUG_HASH 1
 //#define DEBUG_NEW_FRAG 1
 //#define DEBUG_MUTEX_STATS 1
+//#define DEBUG_RATE 1
+//#define DEBUG_RATE_SEND 1
+//#define DEBUG_RATE_DETAIL 1
+//#define DEBUG_QUOTAS 1
+#endif
+
+#ifdef DEBUG_RATE_DETAIL
+#define DEB_RATE_DETAIL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_RATE_DETAIL(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_RATE_SEND
+#define DEB_RATE_SEND(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_RATE_SEND(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_RATE
+#define DEB_RATE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_RATE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_QUOTAS
+#define DEB_QUOTAS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_QUOTAS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_NEW_FRAG
@@ -2259,6 +2288,10 @@ void Dblqh::execREAD_CONFIG_REQ(Signal *signal) {
       !ndb_mgm_get_int_parameter(p, CFG_DB_NO_REDOLOG_FILES, &cnoLogFiles));
   ndbrequire(cnoLogFiles > 0);
 
+  m_rate_limits_active = 0;
+  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_ACTIVATE_RATE_LIMITS, 
+					&m_rate_limits_active));
+
   Uint64 log_page_size = globalData.theRedoBuffer;
 
   c_max_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT;
@@ -2482,6 +2515,11 @@ void Dblqh::execREAD_CONFIG_REQ(Signal *signal) {
       execDUMP_STATE_ORD(signal);
     }
   }
+
+  Pool_context pc;
+  pc.m_block = this;
+  m_databaseRecordPool.init(RT_DBLQH_DATABASE_RECORD, pc);
+  m_databaseRecordHash.setSize(16384);
 }
 
 void Dblqh::init_restart_synch() {
@@ -2624,6 +2662,10 @@ void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
                               req->primaryTableId);
 
   tabptr.p->schemaVersion = req->tableVersion;
+  tabptr.p->databaseRecord = RNIL64;
+  tabptr.p->m_in_memory_page8k = 0;
+  tabptr.p->m_disk_space_page32k = 0;
+
   DEB_SCHEMA_VERSION(("(%u)tab(%u): %u tableStatus = ADD_TABLE_ONGOING",
                       instance(),
                       tabptr.p->schemaVersion,
@@ -5375,6 +5417,14 @@ void Dblqh::LQHKEY_abort(Signal *signal, int errortype,
     jam();
     terrorCode = ZNO_SUCH_FRAGMENT_ID;
     break;
+  case 7:
+    jam();
+    terrorCode = ZMEMORY_QUOTA_OVERFLOW_ERROR;
+    break;
+  case 8:
+    jam();
+    terrorCode = ZDISK_QUOTA_OVERFLOW_ERROR;
+    break;
   default:
     ndbabort();
   }//switch
@@ -5696,18 +5746,15 @@ void Dblqh::execREMOVE_MARKER_ORD(Signal *signal) {
 void Dblqh::execSEND_PACKED(Signal *signal) {
   HostRecordPtr Thostptr;
   UintR TpackedListIndex = cpackedListIndex;
-  jamEntry();
   for (Uint32 i = 0; i < TpackedListIndex; i++) {
     Thostptr.i = cpackedList[i];
     ptrAss(Thostptr, hostRecord);
-    jam();
     ndbrequire(Thostptr.i - 1 < MAX_NDB_NODES - 1);
 
     // LQH pack and send
     for (Uint32 j = Thostptr.p->lqh_pack_mask.find_first();
          j != BitmaskImpl::NotFound;
          j = Thostptr.p->lqh_pack_mask.find_next(j + 1)) {
-      jamDebug();
       struct PackedWordsContainer *container = &Thostptr.p->lqh_pack[j];
       ndbassert(container->noOfPackedWords > 0);
       sendPackedSignal(signal, container);
@@ -5716,7 +5763,6 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
     for (Uint32 j = Thostptr.p->tc_pack_mask.find_first();
          j != BitmaskImpl::NotFound;
          j = Thostptr.p->tc_pack_mask.find_next(j + 1)) {
-      jamDebug();
       struct PackedWordsContainer *container = &Thostptr.p->tc_pack[j];
       ndbassert(container->noOfPackedWords > 0);
       sendPackedSignal(signal, container);
@@ -5727,6 +5773,31 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
     Thostptr.p->inPackedList = false;
   }  // for
   cpackedListIndex = 0;
+
+  /* Send buffered DATABASE_QUOTA_REP signals */
+  Uint32 num_tc_threads = globalData.ndbMtTcWorkers;
+  Uint32 num_send_database_quota_rep = m_num_send_database_quota_rep;
+  DEB_RATE_SEND(("(%u) Send %u DATABASE_QUOTA_REP signals",
+    instance(), num_send_database_quota_rep));
+  for (Uint32 i = 0; i < num_send_database_quota_rep; i++) {
+    jam();
+    DatabaseQuotaRep *rep = (DatabaseQuotaRep*)signal->getDataPtrSend();
+    SendDatabaseQuotaRepPtr sendPtr;
+    sendPtr.i = i;
+    ptrCheckGuard(sendPtr,
+                  c_send_database_quota_rep_file_size,
+                  c_send_database_quota_rec);
+    Uint32 tcInstanceUsed = (sendPtr.p->m_database_id % num_tc_threads) + 1;
+    rep->databaseId = sendPtr.p->m_database_id;
+    rep->requestInfo = sendPtr.p->m_requestInfo;
+    rep->diff_memory_usage = sendPtr.p->m_diff_memory_usage;
+    rep->diff_disk_space_usage = sendPtr.p->m_diff_disk_space_usage;
+    rep->rate_usage = sendPtr.p->m_rate_usage;
+    BlockReference ref = numberToRef(DBTC, tcInstanceUsed, getOwnNodeId());
+    sendSignal(ref, GSN_DATABASE_QUOTA_REP, signal,
+               DatabaseQuotaRep::SignalLength, JBB);
+  }
+  m_num_send_database_quota_rep = 0;
   return;
 }  // Dblqh::execSEND_PACKED()
 
@@ -5734,7 +5805,6 @@ void Dblqh::updatePackedList(Signal *signal, HostRecord *ahostptr,
                              Uint16 hostId) {
   Uint32 TpackedListIndex = cpackedListIndex;
   if (ahostptr->inPackedList == false) {
-    jamDebug();
     ahostptr->inPackedList = true;
     ahostptr->lqh_pack_mask.clear();
     ahostptr->tc_pack_mask.clear();
@@ -5808,32 +5878,85 @@ void Dblqh::execREAD_PSEUDO_REQ(Uint32 opPtrI, Uint32 attrId, Uint32 *out,
 void Dblqh::execTUPKEYCONF(Signal *signal) {
   TcConnectionrecPtr regTcPtr = m_tc_connect_ptr;
   switch (regTcPtr.p->transactionState) {
-    case TcConnectionrec::SCAN_TUPKEY: {
+    case TcConnectionrec::SCAN_TUPKEY:
+    {
+      const TupKeyConf * const tupKeyConf = (TupKeyConf *)signal->getDataPtr();
       jamDebug();
-      scanTupkeyConfLab(signal, regTcPtr.p);
-      return;
-    }
-    case TcConnectionrec::WAIT_TUP: {
-      FragrecordPtr regFragptr = fragptr;
-      const TupKeyConf *const tupKeyConf = (TupKeyConf *)signal->getDataPtr();
-      jamDebug();
-      if (regTcPtr.p->seqNoReplica == 0)  // Primary replica
-        regTcPtr.p->numFiredTriggers = tupKeyConf->numFiredTriggers;
-
-      if (!m_is_in_query_thread) {
-        Fragrecord::UsageStat &useStat = regFragptr.p->m_useStat;
-        useStat.m_keyReqWordsReturned += tupKeyConf->readLength;
-        useStat.m_keyInstructionCount += tupKeyConf->noExecInstructions;
+      ScanRecord * const scanPtr = scanptr.p;
+      Uint32 readLen = tupKeyConf->readLength;
+      Uint32 last_row = tupKeyConf->lastRow;
+      Uint32 numExecInstructions = tupKeyConf->noExecInstructions;
+      if (scanPtr->m_aggregation) {
+        if (tupKeyConf->agg_batch_size_bytes) {
+          /*
+           * Moz
+           * conf->agg_batch_size_bytes > 0 only happens
+           * in group by mode and reaches the aggregation
+           * batch limitation. so here conf->agg_n_res_recs
+           * would be 1
+           */
+          ndbrequire(tupKeyConf->agg_batch_size_rows == 1);
+          ndbrequire(tupKeyConf->agg_n_res_recs == 1);
+          ndbrequire(scanPtr->m_agg_curr_batch_size_bytes == 0);
+          ndbrequire(scanPtr->m_agg_curr_batch_size_rows == 0);
+        }
+        scanPtr->m_agg_curr_batch_size_bytes = tupKeyConf->agg_batch_size_bytes;
+        scanPtr->m_agg_curr_batch_size_rows = tupKeyConf->agg_batch_size_rows;
+        scanPtr->m_agg_n_res_recs = tupKeyConf->agg_n_res_recs;
       }
-      tupkeyConfLab(signal, regTcPtr);
+      if (unlikely(m_rate_limits_active)) {
+        FragrecordPtr regFragptr = fragptr;
+        if (!is_prioritised_scan(scanPtr->scanApiBlockref)) {
+          jamDebug();
+          Uint32 rate = SCAN_CONF_RATE +
+                        SCAN_READ_RATE * readLen +
+                        INTERPRETER_RATE * numExecInstructions;
+          m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                                 rate);
+        }
+      }
+      scanTupkeyConfLab(signal,
+                        regTcPtr.p,
+                        readLen,
+                        last_row,
+                        numExecInstructions);
       return;
     }
-    case TcConnectionrec::COPY_TUPKEY: {
+    case TcConnectionrec::WAIT_TUP:
+    {
+      const TupKeyConf * const tupKeyConf = (TupKeyConf *)signal->getDataPtr();
+      jamDebug();
+      Uint32 readLen = tupKeyConf->readLength;
+      Uint32 writeLen = tupKeyConf->writeLength;
+      Uint32 numExecInstructions = tupKeyConf->noExecInstructions;
+      FragrecordPtr regFragptr = fragptr;
+      if (!m_is_in_query_thread) {
+        Fragrecord::UsageStat& useStat = regFragptr.p->m_useStat;
+        useStat.m_keyReqWordsReturned += readLen;
+        useStat.m_keyInstructionCount += numExecInstructions;
+      }
+      if (regTcPtr.p->seqNoReplica == 0) // Primary replica
+        regTcPtr.p->numFiredTriggers = tupKeyConf->numFiredTriggers;
+      if (unlikely(m_rate_limits_active)) {
+        Uint32 rate = (regTcPtr.p->operation == ZREAD ?
+                      READ_KEY_CONF_RATE : WRITE_KEY_CONF_RATE) +
+                        KEY_READ_RATE * readLen +
+                        KEY_WRITE_RATE * writeLen +
+                        INTERPRETER_RATE * numExecInstructions;
+        m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                               rate);
+      }
+      tupkeyConfLab(signal, regTcPtr, readLen, writeLen);
+      return;
+    }
+    case TcConnectionrec::COPY_TUPKEY:
+    {
       jam();
       copyTupkeyConfLab(signal, regTcPtr);
       return;
     }
-    case TcConnectionrec::WAIT_TUP_TO_ABORT: {
+    case TcConnectionrec::WAIT_TUP_TO_ABORT:
+    {
       Uint32 activeCreat = regTcPtr.p->activeCreat;
       jam();
       /* -------------------------------------------------------------------------
@@ -5869,7 +5992,8 @@ void Dblqh::execTUPKEYCONF(Signal *signal) {
       abortCommonLab(signal, regTcPtr);
       return;
     }
-    case TcConnectionrec::WAIT_ACC_ABORT: {
+    case TcConnectionrec::WAIT_ACC_ABORT:
+    {
       jam();
       /* -------------------------------------------------------------------------
        */
@@ -5903,32 +6027,57 @@ void Dblqh::execTUPKEYREF(Signal *signal) {
   }
 #endif
   switch (tcConnectptr.p->transactionState) {
-    case TcConnectionrec::SCAN_TUPKEY: {
+    case TcConnectionrec::SCAN_TUPKEY:
+    {
       jamDebug();
-      scanTupkeyRefLab(signal, tcConnectptr);
+      Uint32 noExecInstructions = tupKeyRef->noExecInstructions;
+      if (unlikely(m_rate_limits_active)) {
+        ScanRecord * const scanPtr = scanptr.p;
+        FragrecordPtr regFragptr = fragptr;
+        if (!is_prioritised_scan(scanPtr->scanApiBlockref)) {
+          Uint32 rate = SCAN_REF_RATE +
+                          INTERPRETER_RATE * tupKeyRef->noExecInstructions;
+          m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                                 rate);
+        }
+      }
+      scanTupkeyRefLab(signal,
+                       tcConnectptr,
+                       noExecInstructions);
       return;
     }
-    case TcConnectionrec::WAIT_TUP: {
-      const TupKeyRef *const tupKeyRef = (TupKeyRef *)signal->getDataPtr();
+    case TcConnectionrec::WAIT_TUP:
+    {
+      const TupKeyRef * const tupKeyRef = (TupKeyRef *)signal->getDataPtr();
       jamDebug();
+      FragrecordPtr regFragptr = fragptr;
+      if (unlikely(m_rate_limits_active)) {
+        Uint32 rate = (tcConnectptr.p->operation == ZREAD ?
+                      READ_KEY_REF_RATE : WRITE_KEY_REF_RATE) +
+                        INTERPRETER_RATE * tupKeyRef->noExecInstructions;
+        m_ldm_instance_used->update_rate_usage(regFragptr.p->tabRef,
+                                               rate);
+      }
       if (unlikely(tcConnectptr.p->activeCreat == Fragrecord::AC_NR_COPY)) {
         jam();
         ndbrequire(tcConnectptr.p->m_nr_delete.m_cnt);
         tcConnectptr.p->m_nr_delete.m_cnt--;
       }
       if (!m_is_in_query_thread) {
-        Fragrecord::UsageStat &useStat = fragptr.p->m_useStat;
+        Fragrecord::UsageStat& useStat = regFragptr.p->m_useStat;
         useStat.m_keyRefCount++;
         useStat.m_keyInstructionCount += tupKeyRef->noExecInstructions;
       }
       abortErrorLab(signal, tcConnectptr);
       return;
     }
-    case TcConnectionrec::COPY_TUPKEY: {
+    case TcConnectionrec::COPY_TUPKEY:
+    {
       copyTupkeyRefLab(signal, tcConnectptr);
       return;
     }
-    case TcConnectionrec::WAIT_TUP_TO_ABORT: {
+    case TcConnectionrec::WAIT_TUP_TO_ABORT:
+    {
       jam();
       if (unlikely(tcConnectptr.p->activeCreat == Fragrecord::AC_NR_COPY)) {
         jam();
@@ -8828,6 +8977,12 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                               :  // lockType not relevant for unlock req
                               (Operation_t)op;
   }
+  if (LqhKeyReq::getReplicaApplierFlag(Treqinfo)) {
+    /* Check sender version before processing - older versions sent junk */
+    if (likely(senderVersion >= NDBD_RATE_LIMIT_VERSION)) {
+      regTcPtr->m_flags |= TcConnectionrec::OP_REPLICA_APPLIER;
+    }
+  }
   if (LqhKeyReq::getNoWaitFlag(Treqinfo)) {
     /* Check sender version before processing - older versions sent junk */
     if (likely(senderVersion >= NDBD_NOWAIT_KEYREQ)) {
@@ -8928,6 +9083,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       totalAttrInfoLen = attrInfoSection.sz;
     }
 
+    jamDataDebug(totalAttrInfoLen);
     regTcPtr->reclenAiLqhkey = 0;
     regTcPtr->currReclenAi = totalAttrInfoLen;
     regTcPtr->totReclenAi = totalAttrInfoLen;
@@ -9433,6 +9589,51 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   ndbassert(regTcPtr->totReclenAi == regTcPtr->currReclenAi);
   if (refToMain(regTcPtr->clientBlockref) != getRESTORE())
   {
+    if (unlikely(tabptr.p->databaseRecord != RNIL64 &&
+                ((regTcPtr->m_flags | TcConnectionrec::OP_REPLICA_APPLIER) !=
+                 TcConnectionrec::OP_REPLICA_APPLIER) &&
+                ((op == ZWRITE) || (op == ZINSERT) || (op == ZUPDATE)) &&
+                (refToNode(senderRef != getOwnNodeId() ||
+                 refToMain(senderRef == DBTC)))))
+    {
+      jam();
+      /**
+       * Check quota exceeded, it won't be an exact check, but it will
+       * ensure that we at most exceed the quota by a few percent. DBTC
+       * have a better view, but only for its own data usage. DBLQH
+       * will get information about quota exceeded from the global
+       * DBTC instance when quota is exceeded by some percentage.
+       * It will also be informed when quota is on its way to be
+       * better again.
+       *
+       * We will only get here for WRITE, INSERT and UPDATE which
+       * currently guarantees we are in DBLQH and thus we can
+       * use the m_databaseRecordPool and no need to protect its usage
+       * with the mutex.
+       *
+       * We will not check quotas for replica appliers, these simply
+       * update based on what is in the primary cluster, we cannot
+       * have the replication pipeline being broken by bad quotas.
+       * One should not have quotas that are smaller in replica
+       * clusters compared to the primary cluster.
+       */
+      DatabaseRecordPtr dbPtr;
+      dbPtr.i = tabptr.p->databaseRecord;
+      ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
+      if (unlikely(dbPtr.p->m_is_memory_quota_exceeded))
+      {
+        LQHKEY_abort(signal, 7, tcConnectptr);
+        return;
+      }
+      if (tabptr.p->m_disk_table)
+      {
+        if (unlikely(dbPtr.p->m_is_disk_quota_exceeded))
+        {
+          LQHKEY_abort(signal, 8, tcConnectptr);
+          return;
+        }
+      }
+    }
     acquire_frag_prepare_key_access(fragptr.p, regTcPtr);
   }
   /* ---------------------------------------------------------------------- */
@@ -11219,17 +11420,15 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
  *
  *  TAKE CARE OF RESPONSES FROM TUPLE MANAGER.
  * -------------------------------------------------------------------------- */
-void Dblqh::tupkeyConfLab(Signal *signal,
-                          const TcConnectionrecPtr tcConnectptr) {
-  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+void Dblqh::tupkeyConfLab(Signal* signal,
+                          const TcConnectionrecPtr tcConnectptr,
+                          Uint32 readLen,
+                          Uint32 writeLen) {
+  TcConnectionrec * const regTcPtr = tcConnectptr.p;
 
-  /* ---- GET OPERATION TYPE AND CHECK WHAT KIND OF OPERATION IS REQUESTED ---
-   */
-  const TupKeyConf *const tupKeyConf = (TupKeyConf *)&signal->theData[0];
+/* ---- GET OPERATION TYPE AND CHECK WHAT KIND OF OPERATION IS REQUESTED --- */
   Uint32 activeCreat = regTcPtr->activeCreat;
-  Uint32 readLen = tupKeyConf->readLength;
-  Uint32 writeLen = tupKeyConf->writeLength;
-
+  
   TRACE_OP(regTcPtr, "TUPKEYCONF");
 
   c_acc->execACCKEY_ORD(signal, regTcPtr->accConnectrec,
@@ -11260,6 +11459,8 @@ void Dblqh::tupkeyConfLab(Signal *signal,
     return;
   }  // if
 
+  jamDataDebug(writeLen);
+  jamDataDebug(regTcPtr->currTupAiLen);
   regTcPtr->totSendlenAi = writeLen;
   regTcPtr->currTupAiLen = writeLen;
   /* We will propagate / log writeLen words
@@ -14212,6 +14413,13 @@ void Dblqh::continueACCKEYREF(Signal *signal,
      * Normal failed operation, most likely no such row, error code
      * indicates the error. We will proceed aborting the operation.
      */
+    if (unlikely(m_rate_limits_active))
+    {
+      Uint32 rate = (tcPtr->operation == ZREAD ?
+                      READ_KEY_REF_RATE : WRITE_KEY_REF_RATE);
+      m_ldm_instance_used->update_rate_usage(fragptr.p->tabRef,
+                                             rate);
+    }
     if (!m_is_in_query_thread)
     {
       fragptr.p->m_useStat.m_keyRefCount++;
@@ -17941,11 +18149,15 @@ void Dblqh::execCHECK_LCP_STOP(Signal *signal) {
         /* Tracking */
         scan.p->scan_lastSeen = __LINE__;
         scan.p->scan_check_lcp_stop++;
+        signal->theData[0] = ZCHECK_LCP_STOP_BLOCKED;
+        signal->theData[1] = scanPtrI;
+        Uint32 delay = m_ldm_instance_used->get_delay(tc.p->tableref);
+        if (likely(delay == 0))
+          sendSignal(cownref, GSN_CONTINUEB, signal, 2, JBB);
+        else
+          sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, delay, 2);
       }
 
-      signal->theData[0] = ZCHECK_LCP_STOP_BLOCKED;
-      signal->theData[1] = scanPtrI;
-      sendSignal(cownref, GSN_CONTINUEB, signal, 2, JBB);
 
       /* Tell caller to take a break */
       signal->theData[0] = CheckLcpStop::ZTAKE_A_BREAK;
@@ -18311,12 +18523,14 @@ Uint32 Dblqh::readPrimaryKeys(ScanRecord *scanP, TcConnectionrec *tcConP,
  * -------------------------------------------------------------------------
  *       PRECONDITION:   TRANSACTION_STATE = SCAN_TUPKEY
  * ------------------------------------------------------------------------- */
-void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
-  ScanRecord *const scanPtr = scanptr.p;
+void Dblqh::scanTupkeyConfLab(Signal* signal,
+                              TcConnectionrec* regTcPtr,
+                              Uint32 read_len,
+                              Uint32 last_row,
+                              Uint32 numExecInstructions) {
+  ScanRecord * const scanPtr = scanptr.p;
   Uint32 scan_direct_count = m_scan_direct_count;
-  const TupKeyConf *conf = (TupKeyConf *)signal->getDataPtr();
-  Uint32 read_len = conf->readLength;
-  Uint32 last_row = conf->lastRow | scanPtr->m_first_match_flag;
+  last_row |= scanPtr->m_first_match_flag;
   m_scan_direct_count = scan_direct_count + 1;
 
   if (!scanPtr->lcpScan &&
@@ -18351,7 +18565,7 @@ void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
 #endif
 
     useStat.m_scanRowsExamined++;
-    useStat.m_scanInstructionCount += conf->noExecInstructions;
+    useStat.m_scanInstructionCount += numExecInstructions;
   }
 
   regTcPtr->transactionState = TcConnectionrec::SCAN_STATE_USED;
@@ -18398,23 +18612,6 @@ void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
      * could be bigger than MAX_PARALLEL_OP_PER_SCAN
      */
     ndbrequire(scanPtr->m_curr_batch_size_rows < MAX_PARALLEL_OP_PER_SCAN);
-  } else {
-    if (conf->agg_batch_size_bytes) {
-      ndbrequire(conf->agg_batch_size_rows == 1);
-      /*
-       * Moz
-       * conf->agg_batch_size_bytes > 0 only happens
-       * in groupby mode and reaches the aggregation
-       * batch limitation. so here conf->agg_n_res_recs
-       * would be 1
-       */
-      ndbrequire(conf->agg_n_res_recs == 1);
-      ndbrequire(scanPtr->m_agg_curr_batch_size_bytes == 0);
-      ndbrequire(scanPtr->m_agg_curr_batch_size_rows == 0);
-    }
-    scanPtr->m_agg_curr_batch_size_bytes = conf->agg_batch_size_bytes;
-    scanPtr->m_agg_curr_batch_size_rows = conf->agg_batch_size_rows;
-    scanPtr->m_agg_n_res_recs = conf->agg_n_res_recs;
   }
   scanPtr->m_exec_direct_batch_size_words += read_len;
   scanPtr->m_curr_batch_size_bytes += read_len * sizeof(Uint32);
@@ -18492,10 +18689,11 @@ void Dblqh::scanTupkeyConfLab(Signal *signal, TcConnectionrec *regTcPtr) {
  * -------------------------------------------------------------------------
  *       PRECONDITION:   TRANSACTION_STATE = SCAN_TUPKEY
  * ------------------------------------------------------------------------- */
-void Dblqh::scanTupkeyRefLab(Signal *signal,
-                             const TcConnectionrecPtr tcConnectptr) {
-  TcConnectionrec *const regTcPtr = tcConnectptr.p;
-  ScanRecord *const scanPtr = scanptr.p;
+void Dblqh::scanTupkeyRefLab(Signal* signal,
+                             const TcConnectionrecPtr tcConnectptr,
+                             Uint32 noExecInstructions) {
+  TcConnectionrec * const regTcPtr = tcConnectptr.p;
+  ScanRecord * const scanPtr = scanptr.p;
   regTcPtr->transactionState = TcConnectionrec::SCAN_STATE_USED;
 
   if (!scanPtr->lcpScan &&
@@ -18511,9 +18709,7 @@ void Dblqh::scanTupkeyRefLab(Signal *signal,
 #endif
     useStat.m_scanRowsExamined++;
 
-    const TupKeyRef *const ref =
-        reinterpret_cast<const TupKeyRef *>(signal->getDataPtr());
-    useStat.m_scanInstructionCount += ref->noExecInstructions;
+    useStat.m_scanInstructionCount += noExecInstructions;
   }
 
   Uint32 rows = scanPtr->m_curr_batch_size_rows;
@@ -19692,8 +19888,17 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
           /* Normal user scans */
           jamDebug();
           scanPtr->scan_lastSeen = __LINE__;
-          sendSignal(reference(), GSN_ACC_CHECK_SCAN, signal, 4, JBB);
-          return;
+          Uint32 delay =
+            m_ldm_instance_used->get_delay(prim_tab_fragptr.p->tabRef);
+          if (likely(delay == 0))
+          {
+            sendSignal(reference(), GSN_ACC_CHECK_SCAN, signal, 4, JBB);
+            return;
+          } else {
+            sendSignalWithDelay(
+              reference(), GSN_ACC_CHECK_SCAN, signal, delay, 4);
+            return;
+          }
         }
         if (prioAFlag) {
           /* Prioritised scan at high load situation */
@@ -32488,6 +32693,8 @@ void Dblqh::initialiseScanrec(Signal *signal) {
 void
 Dblqh::initTable(Tablerec *tabPtrP)
 {
+  ndbrequire(tabPtrP->m_in_memory_page8k == 0);
+  ndbrequire(tabPtrP->m_disk_space_page32k == 0);
   tabPtrP->tableStatus = Tablerec::NOT_DEFINED;
   tabPtrP->usageCountR = 0;
   tabPtrP->usageCountW = 0;
@@ -37717,4 +37924,569 @@ Dblqh::set_up_qt_our_rr_group()
       m_num_qt_our_rr_group++;
     }
   }
+}
+
+void Dblqh::change_report_limits(DatabaseRecord *dbPtrP,
+                                 Uint32 rate_per_sec,
+                                 Uint32 in_memory_size_mbyte,
+                                 Uint32 disk_space_size_gbyte) {
+  /* Report changes when 0.5% of rate limit have occurred */
+  Uint32 rate_report_limit_ns = rate_per_sec;
+  rate_report_limit_ns = MIN(rate_report_limit_ns, MAX_RATE_REPORT_LIMIT_US);
+  rate_report_limit_ns *= 5; // Convert us to ns and divide by 200
+  if (rate_report_limit_ns != 0) {
+    rate_report_limit_ns = MAX(rate_report_limit_ns, RATE_REPORT_LIMIT_NS);
+  }
+  dbPtrP->m_rate_report_limit_ns = rate_report_limit_ns;
+
+  Uint64 memory_report_limit = in_memory_size_mbyte;
+  memory_report_limit *= 128; // in 8kB pages
+  memory_report_limit /= 200;
+  if (memory_report_limit != 0)
+    memory_report_limit = MAX(memory_report_limit, MEMORY_REPORT_LIMIT);
+  dbPtrP->m_memory_report_limit = Uint32(memory_report_limit);
+
+  Uint64 disk_space_report_limit = disk_space_size_gbyte;
+  disk_space_report_limit *= 32768; // in 32kB pages
+  disk_space_report_limit /= 200;
+  if (disk_space_report_limit != 0) {
+    disk_space_report_limit =
+      MAX(disk_space_report_limit, DISK_SPACE_REPORT_LIMIT);
+  }
+  dbPtrP->m_disk_space_report_limit = Uint32(disk_space_report_limit);
+
+  DEB_QUOTAS(("(%u) memory_report_limit: %u, disk_space_report_limit: %u"
+              ", rate_report_limit: %u",
+              instance(),
+              dbPtrP->m_memory_report_limit,
+              dbPtrP->m_disk_space_report_limit,
+              dbPtrP->m_rate_report_limit_ns));
+}
+
+void
+Dblqh::execCREATE_DB_REQ(Signal *signal) {
+  jamEntry();
+  CreateDbReq req = *(CreateDbReq*)signal->getDataPtr();
+  DatabaseRecord key(*this, req.databaseId);
+  DatabaseRecordPtr dbPtr;
+  DEB_QUOTAS(("(%u) DBLQH Create Database id: %u",
+              instance(),
+              req.databaseId));
+
+  if (m_databaseRecordHash.find(dbPtr, key)) {
+    jam();
+    DEB_QUOTAS(("(%u) DBLQH Database already exists", instance()));
+    CreateDbRef* ref = (CreateDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = req.senderData;
+    ref->databaseId = req.databaseId;
+    ref->errorCode = CreateTableRef::TableAlreadyExist;
+    ref->errorLine = __LINE__;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(req.senderRef, GSN_CREATE_DB_REF, signal,
+               CreateDbRef::SignalLength, JBB);
+    return;
+  }
+  lock_database_hash();
+  m_databaseRecordPool.seize(dbPtr);
+  if (dbPtr.i == RNIL64) {
+    jam();
+    unlock_database_hash();
+    DEB_QUOTAS(("(%u) DBLQH Seize Database record failed", instance()));
+    CreateDbRef* ref = (CreateDbRef*)signal->getDataPtrSend();
+    ref->senderRef = req.senderRef;
+    ref->senderData = req.senderData;
+    ref->databaseId = req.databaseId;
+    ref->errorCode = CreateTableRef::NoMoreTableRecords;
+    ref->errorLine = __LINE__;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(req.senderRef, GSN_CREATE_DB_REF, signal,
+               CreateDbRef::SignalLength, JBB);
+    return;
+  }
+  new (dbPtr.p) DatabaseRecord(*this, req.databaseId);
+  m_databaseRecordHash.add(dbPtr);
+  dbPtr.p->m_database_version = req.databaseVersion;
+  dbPtr.p->m_in_memory_page8k = 0;
+  dbPtr.p->m_disk_space_page32k = 0;
+  dbPtr.p->m_rate_usage = 0;
+  dbPtr.p->m_last_rep_in_memory_page8k = 0;
+  dbPtr.p->m_last_rep_disk_space_page32k = 0;
+  dbPtr.p->m_is_memory_quota_exceeded = false;
+  dbPtr.p->m_is_disk_quota_exceeded = false;
+  dbPtr.p->m_continue_delay = 0;
+  change_report_limits(dbPtr.p,
+                       req.ratePerSec,
+                       req.inMemorySizeMB,
+                       req.diskSpaceSizeGB);
+  dbPtr.p->m_last_quota_report_time = getHighResTimer();
+
+  unlock_database_hash();
+  CreateDbConf* conf = (CreateDbConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  conf->databaseId = req.databaseId;
+  sendSignal(req.senderRef, GSN_CREATE_DB_CONF, signal,
+             CreateDbConf::SignalLength, JBB);
+}
+
+void
+Dblqh::execALTER_DB_REQ(Signal *signal) {
+  jamEntry();
+  AlterDbReq req = *(AlterDbReq*)signal->getDataPtr();
+  DatabaseRecord key(*this, req.databaseId);
+  DatabaseRecordPtr dbPtr;
+  DEB_QUOTAS(("(%u) DBLQH Alter Database id: %u",
+              instance(),
+              req.databaseId));
+
+  if (!m_databaseRecordHash.find(dbPtr, key)) {
+    jam();
+    DEB_QUOTAS(("(%u) DBLQH Database doesn't exist", instance()));
+    AlterDbRef* ref = (AlterDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = req.senderData;
+    ref->databaseId = req.databaseId;
+    ref->errorCode = DropTableRef::NoSuchTable;
+    ref->errorLine = __LINE__;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(req.senderRef, GSN_ALTER_DB_REF, signal,
+               AlterDbRef::SignalLength, JBB);
+    return;
+  }
+  lock_database_hash();
+  change_report_limits(dbPtr.p,
+                       req.ratePerSec,
+                       req.inMemorySizeMB,
+                       req.diskSpaceSizeGB);
+
+  unlock_database_hash();
+  AlterDbConf* conf = (AlterDbConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  conf->databaseId = req.databaseId;
+  sendSignal(req.senderRef, GSN_ALTER_DB_CONF, signal,
+             AlterDbConf::SignalLength, JBB);
+}
+
+void
+Dblqh::execCONNECT_TABLE_DB_REQ(Signal *signal) {
+  jamEntry();
+  ConnectTableDbReq req = *(ConnectTableDbReq*)signal->getDataPtr();
+  DatabaseRecord key(*this, req.databaseId);
+  DatabaseRecordPtr dbPtr;
+  DEB_QUOTAS(("(%u) DBLQH Connect table %u from Database id: %u",
+              instance(),
+              req.tableId,
+              req.databaseId));
+
+  if (!m_databaseRecordHash.find(dbPtr, key)) {
+    jam();
+    DEB_QUOTAS(("(%u) DBLQH Database didn't exist", instance()));
+    ConnectTableDbRef* ref = (ConnectTableDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = req.senderData;
+    ref->requestType = req.requestType;
+    ref->databaseId = req.databaseId;
+    ref->tableId = req.tableId;
+    ref->errorCode = DropTableRef::NoSuchTable;
+    ref->errorLine = __LINE__;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(req.senderRef, GSN_CONNECT_TABLE_DB_REF, signal,
+               ConnectTableDbRef::SignalLength, JBB);
+    return;
+  }
+  TablerecPtr tabPtr;
+  tabPtr.i = req.tableId;
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+  lock_database_hash();
+  tabPtr.p->databaseRecord = dbPtr.i;
+
+  /* Transfer statistics from table to database record */
+  dbPtr.p->m_in_memory_page8k += tabPtr.p->m_in_memory_page8k;
+  dbPtr.p->m_disk_space_page32k += tabPtr.p->m_disk_space_page32k;
+  unlock_database_hash();
+  NDB_TICKS now = getHighResTimer();
+  send_database_quota_rep(dbPtr, now);
+
+  ConnectTableDbConf* conf = (ConnectTableDbConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  conf->requestType = req.requestType;
+  conf->databaseId = req.databaseId;
+  conf->tableId = req.tableId;
+  sendSignal(req.senderRef, GSN_CONNECT_TABLE_DB_CONF, signal,
+             ConnectTableDbConf::SignalLength, JBB);
+}
+
+void
+Dblqh::execDISCONNECT_TABLE_DB_REQ(Signal *signal) {
+  jamEntry();
+  DisconnectTableDbReq req = *(DisconnectTableDbReq*)signal->getDataPtr();
+  DatabaseRecord key(*this, req.databaseId);
+  DatabaseRecordPtr dbPtr;
+  DEB_QUOTAS(("(%u) DBLQH Disconnect table %u from Database id: %u",
+              instance(),
+              req.tableId,
+              req.databaseId));
+
+  TablerecPtr tabPtr;
+  tabPtr.i = req.tableId;
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+
+  if (!m_databaseRecordHash.find(dbPtr, key)) {
+    jam();
+    DEB_QUOTAS(("(%u) DBLQH Database didn't exist", instance()));
+    /**
+     * Ensure databaseRecord is already cleared in table if database
+     * no longer exists
+     */
+    ndbrequire(tabPtr.p->databaseRecord == RNIL64);
+    DisconnectTableDbRef* ref =
+      (DisconnectTableDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = req.senderData;
+    ref->requestType = req.requestType;
+    ref->databaseId = req.databaseId;
+    ref->tableId = req.tableId;
+    ref->errorCode = DropTableRef::NoSuchTable;
+    ref->errorLine = __LINE__;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(req.senderRef, GSN_DISCONNECT_TABLE_DB_REF, signal,
+               DisconnectTableDbRef::SignalLength, JBB);
+    return;
+  }
+  lock_database_hash();
+  tabPtr.p->databaseRecord = RNIL64;
+  unlock_database_hash();
+
+  DisconnectTableDbConf* conf =
+    (DisconnectTableDbConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  conf->requestType = req.requestType;
+  conf->databaseId = req.databaseId;
+  conf->tableId = req.tableId;
+  sendSignal(req.senderRef, GSN_DISCONNECT_TABLE_DB_CONF, signal,
+             DisconnectTableDbConf::SignalLength, JBB);
+}
+
+void
+Dblqh::execDROP_DB_REQ(Signal *signal) {
+  jamEntry();
+  DropDbReq req = *(DropDbReq*)signal->getDataPtr();
+  DatabaseRecord key(*this, req.databaseId);
+  DatabaseRecordPtr dbPtr;
+  DEB_QUOTAS(("(%u) DBLQH Drop Database id: %u",
+              instance(),
+              req.databaseId));
+
+  if (!m_databaseRecordHash.find(dbPtr, key)) {
+    jam();
+    DEB_QUOTAS(("(%u) Database didn't exist", instance()));
+    DropDbRef* ref = (DropDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = req.senderData;
+    ref->databaseId = req.databaseId;
+    ref->errorCode = DropTableRef::NoSuchTable;
+    ref->errorLine = __LINE__;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(req.senderRef, GSN_DROP_DB_REF, signal,
+               DropDbRef::SignalLength, JBB);
+    return;
+  }
+  lock_database_hash();
+  m_databaseRecordHash.remove(dbPtr);
+  m_databaseRecordPool.release(dbPtr);
+  unlock_database_hash();
+
+  DropDbConf* conf = (DropDbConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  conf->databaseId = req.databaseId;
+  sendSignal(req.senderRef, GSN_DROP_DB_CONF, signal,
+             DropDbConf::SignalLength, JBB);
+}
+
+void
+Dblqh::update_memory_usage(Uint32 tableId,
+                           Int32 change_num_page8k,
+                           Uint32 line,
+                           Uint32 pageId) {
+  (void)line;
+  (void)pageId;
+  if (tableId == RNIL) {
+    // Ignore allocation related to default values
+    return;
+  }
+  TablerecPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+
+  /**
+   * Keep updating the table statistics, this means we can handle the
+   * situation where a database is created, dropped and created again.
+   */
+  if (unlikely(m_is_query_block)) {
+    lock_database_hash();
+  }
+  Uint32 tab_in_memory_page8k =
+    tabPtr.p->m_in_memory_page8k += change_num_page8k;
+  ndbrequire(tab_in_memory_page8k < 0x7FFFFFFF);
+  DEB_RATE_DETAIL(("(%u,%u) update_memory_usage from line %u, tab: %u,"
+                   " change: %d,"
+                   " tot_after: %u, pageId: %u, tabPtr.p: %p",
+                   instance(),
+                   m_is_query_block,
+                   line,
+                   tableId,
+                   change_num_page8k,
+                   tab_in_memory_page8k,
+                   pageId,
+                   tabPtr.p));
+
+  if (tabPtr.p->databaseRecord != RNIL64) {
+    DatabaseRecordPtr dbPtr;
+    dbPtr.i = tabPtr.p->databaseRecord;
+    ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
+
+    Uint32 db_in_memory_page8k =
+      dbPtr.p->m_in_memory_page8k += change_num_page8k;
+    ndbrequire(db_in_memory_page8k < 0x7FFFFFFF);
+
+    Uint32 before_memory_value_sent = dbPtr.p->m_last_rep_in_memory_page8k;
+    Uint32 after_memory_value = db_in_memory_page8k;
+    Int32 diff_memory_space = after_memory_value - before_memory_value_sent;
+    Int32 abs_diff_memory_space = diff_memory_space < 0 ?  -diff_memory_space :
+                                                            diff_memory_space;
+    Uint32 diff_memory_space_u32 = Uint32(abs_diff_memory_space);
+    NDB_TICKS now = getHighResTimer();
+    Uint64 milli_secs =
+      NdbTick_Elapsed(dbPtr.p->m_last_quota_report_time, now).milliSec();
+    if ((dbPtr.p->m_memory_report_limit > 0) &&
+          ((diff_memory_space_u32 >= dbPtr.p->m_memory_report_limit) ||
+          (milli_secs >= 50) ||
+          (after_memory_value == 0))) {
+      /* Send report about changes to DBTC */
+      jam();
+      send_database_quota_rep(dbPtr, now);
+    }
+  }
+  if (unlikely(m_is_query_block)) {
+    unlock_database_hash();
+  }
+}
+
+void
+Dblqh::update_disk_space_usage(Uint32 tableId,
+                               Int32 change_num_page32k,
+                               Uint32 line,
+                               Uint32 pageId) {
+  (void)line;
+  (void)pageId;
+  TablerecPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+
+  /**
+   * Keep updating the table statistics, this means we can handle the
+   * situation where a database is created, dropped and created again.
+   */
+  if (unlikely(m_is_query_block)) {
+    lock_database_hash();
+  }
+  Uint32 tab_disk_space_page32k =
+    tabPtr.p->m_disk_space_page32k += change_num_page32k;
+  DEB_RATE_DETAIL(("(%u) update_disk_space_usage from line %u, tab: %u,"
+                   " change: %d, tot_after: %u, pageId: %u",
+                   instance(),
+                   line,
+                   tableId,
+                   change_num_page32k,
+                   tab_disk_space_page32k,
+                   pageId));
+
+  ndbrequire(tab_disk_space_page32k < 0x7FFFFFFF); // Check not negative
+
+  if (tabPtr.p->databaseRecord != RNIL64) {
+    DatabaseRecordPtr dbPtr;
+    dbPtr.i = tabPtr.p->databaseRecord;
+    ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
+
+    Uint32 db_disk_space_page32k =
+      dbPtr.p->m_disk_space_page32k += change_num_page32k;
+    ndbrequire(db_disk_space_page32k < 0x7FFFFFFF); // Check not negative
+
+    Uint32 before_disk_value_sent = dbPtr.p->m_last_rep_disk_space_page32k;
+    Uint32 after_disk_value = db_disk_space_page32k;
+
+    Int32 diff_disk_value = after_disk_value - before_disk_value_sent;
+    Int32 abs_diff_disk_value = diff_disk_value < 0 ?  -diff_disk_value :
+                                                       diff_disk_value;
+    Uint32 diff_disk_value_u32 = Uint32(abs_diff_disk_value);
+    NDB_TICKS now = getHighResTimer();
+    Uint64 milli_secs =
+      NdbTick_Elapsed(dbPtr.p->m_last_quota_report_time, now).milliSec();
+    if ((dbPtr.p->m_disk_space_report_limit > 0) &&
+          ((diff_disk_value_u32 >= dbPtr.p->m_disk_space_report_limit) ||
+          (milli_secs >= 50) ||
+          (after_disk_value == 0))) {
+      /* Send report about changes to DBTC */
+      jam();
+      send_database_quota_rep(dbPtr, now);
+    }
+  }
+  if (unlikely(m_is_query_block)) {
+    unlock_database_hash();
+  }
+}
+
+void
+Dblqh::update_rate_usage(Uint32 tableId,
+                         Uint32 added_rate_ns) {
+  TablerecPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+  if (unlikely(m_is_query_block)) {
+    lock_database_hash();
+  }
+  if (tabPtr.p->databaseRecord != RNIL64) {
+    DatabaseRecordPtr dbPtr;
+    dbPtr.i = tabPtr.p->databaseRecord;
+    ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
+    Uint64 rate_usage = dbPtr.p->m_rate_usage += added_rate_ns;
+#ifdef DEBUG_RATE_DETAIL
+    {
+      DEB_RATE_DETAIL(("(%u)(%u) db: %u, rate, added %u ns, tot: %llu ns",
+                       m_is_query_block,
+                       instance(),
+                       dbPtr.p->m_database_id,
+                       added_rate_ns,
+                       rate_usage));
+    }
+#endif
+
+    NDB_TICKS now = getHighResTimer();
+    Uint64 milli_secs =
+      NdbTick_Elapsed(dbPtr.p->m_last_quota_report_time, now).milliSec();
+    if ((dbPtr.p->m_rate_report_limit_ns > 0) &&
+          ((rate_usage >= Uint64(dbPtr.p->m_rate_report_limit_ns)) ||
+          (milli_secs >= 50))) {
+      /* Send report about changes to DBTC */
+      jam();
+      send_database_quota_rep(dbPtr, now);
+    }
+  }
+  if (unlikely(m_is_query_block)) {
+    unlock_database_hash();
+  }
+}
+
+Uint32 Dblqh::get_delay(Uint32 tableId) {
+  TablerecPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+  if (likely(tabPtr.p->databaseRecord == RNIL64)) {
+    return 0;
+  }
+  DatabaseRecordPtr dbPtr;
+  dbPtr.i = tabPtr.p->databaseRecord;
+  ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
+  if (unlikely(dbPtr.p->m_continue_delay > 0 &&
+               get_short_time_queue_depth() < 80)) {
+    return dbPtr.p->m_continue_delay;
+  }
+  return 0;
+}
+
+void
+Dblqh::send_database_quota_rep(DatabaseRecordPtr dbPtr,
+                               NDB_TICKS now) {
+  Uint32 requestInfo = 0;
+  Uint32 before_memory_value_sent = dbPtr.p->m_last_rep_in_memory_page8k;
+  Uint32 after_memory_value = dbPtr.p->m_in_memory_page8k;
+  Uint32 abs_diff_memory_space = 0;
+  dbPtr.p->m_last_quota_report_time = now;
+  if (after_memory_value > before_memory_value_sent) {
+    requestInfo += 1; // Set flag in bit 0
+    abs_diff_memory_space = after_memory_value - before_memory_value_sent;
+  } else {
+    abs_diff_memory_space = before_memory_value_sent - after_memory_value;
+  }
+  Uint32 before_disk_value_sent = dbPtr.p->m_last_rep_disk_space_page32k;
+  Uint32 after_disk_value = dbPtr.p->m_disk_space_page32k;
+  Uint32 abs_diff_disk_space = 0;
+  if (after_disk_value > before_disk_value_sent) {
+    requestInfo += 2; // Set flag in bit 1
+    abs_diff_disk_space = after_disk_value - before_disk_value_sent;
+  } else {
+    abs_diff_disk_space = before_disk_value_sent - after_disk_value;
+  }
+
+  Uint64 rate_usage = dbPtr.p->m_rate_usage;
+  rate_usage /= 1000; // Convert ns to us
+  Uint32 rate_usage_u32 = Uint32(rate_usage);
+  dbPtr.p->m_last_rep_disk_space_page32k =
+    dbPtr.p->m_disk_space_page32k;
+  dbPtr.p->m_last_rep_in_memory_page8k =
+    dbPtr.p->m_in_memory_page8k;
+  dbPtr.p->m_rate_usage = 0;
+
+  {
+    DEB_RATE(("(%u)(%u) db: %u, Added rate_usage: %u us",
+              m_is_query_block,
+              instance(),
+              dbPtr.p->m_database_id,
+              rate_usage));
+    /**
+     * Sending from here leads to all sorts of problems, thus we put the signal
+     * in a list that will be sent by execSEND_PACKED instead. Problem is that
+     * update of memory, disk space and rate usage happens at a point where it
+     * is sometimes not safe to use the signal object.
+     */
+    SendDatabaseQuotaRepPtr sendPtr;
+    sendPtr.i = m_num_send_database_quota_rep;
+    ptrCheckGuard(sendPtr,
+                  c_send_database_quota_rep_file_size,
+                  c_send_database_quota_rec);
+    m_num_send_database_quota_rep++;
+    sendPtr.p->m_database_id = dbPtr.p->m_database_id;
+    sendPtr.p->m_requestInfo = requestInfo;
+    sendPtr.p->m_diff_memory_usage = abs_diff_memory_space;
+    sendPtr.p->m_diff_disk_space_usage = abs_diff_disk_space;
+    sendPtr.p->m_rate_usage = rate_usage_u32;
+  }
+}
+
+void
+Dblqh::execQUOTA_OVERLOAD_REP(Signal *signal) {
+  QuotaOverloadRep rep = *(QuotaOverloadRep*)signal->getDataPtr();
+  DatabaseRecord key(*this, rep.databaseId);
+  DatabaseRecordPtr dbPtr;
+  if (!m_databaseRecordHash.find(dbPtr, key)) {
+    jam();
+    return;
+  }
+  dbPtr.p->m_is_memory_quota_exceeded = rep.is_memory_quota_exceeded;
+  dbPtr.p->m_is_disk_quota_exceeded = rep.is_disk_quota_exceeded;
+  dbPtr.p->m_continue_delay = rep.continue_delay;
+}
+
+Uint32
+Dblqh::DatabaseRecord::hashValue() const {
+  return rondb_calc_hash_val((const char*)&m_database_id,
+                             Uint32(1),
+                             true);
+}
+
+Dblqh::DatabaseRecord::DatabaseRecord(Dblqh &dblqh,
+                                      Uint32 databaseId) :
+  m_database_id(databaseId)
+{
 }

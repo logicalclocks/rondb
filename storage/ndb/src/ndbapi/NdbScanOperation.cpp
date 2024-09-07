@@ -1843,6 +1843,8 @@ int NdbScanOperation::send_next_scan(Uint32 cnt, bool stopScanFlag) {
     theData[2] = (Uint32)transId;
     theData[3] = (Uint32)(transId >> 32);
 
+    DBUG_PRINT("info", ("Send SCAN_NEXTREQ: NdbScanOperation"));
+
     /**
      * Prepare ops
      */
@@ -2323,6 +2325,7 @@ int NdbScanOperation::doSendScan(int aProcessorId) {
   bool forceShort = impl->forceShortRequests;
   bool sendLong = !forceShort;
 
+  DBUG_PRINT("info", ("Send SCAN_TABREQ: NdbScanOperation"));
   if (sendLong) {
     /* Send Fragmented as SCAN_TABREQ can be large */
     if (impl->sendFragmentedSignal(theSCAN_TABREQ, aProcessorId, &secs[0],

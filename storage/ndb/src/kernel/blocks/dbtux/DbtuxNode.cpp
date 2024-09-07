@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -74,8 +74,8 @@ void Dbtux::freeNode(NodeHandle &node) {
   Uint32 pageId = node.m_loc.getPageId();
   Uint32 pageOffset = node.m_loc.getPageOffset();
   Uint32 *node32 = reinterpret_cast<Uint32 *>(node.m_node);
-  c_tup->tuxFreeNode(c_ctx.tupIndexFragPtr, c_ctx.tupIndexTablePtr, pageId,
-                     pageOffset, node32);
+  c_tup->tuxFreeNode(c_ctx.tupIndexFragPtr, c_ctx.tupIndexTablePtr,
+                     pageId, pageOffset, node32);
   jamEntry();
   // invalidate the handle
   node.m_loc = NullTupLoc;

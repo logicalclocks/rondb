@@ -192,6 +192,12 @@ class LqhKeyReq {
   static void setDeferredConstraints(UintR &requestInfo, UintR val);
 
   /**
+   * Is Replica Applier or not
+   */
+  static UintR getReplicaApplierFlag(const UintR &requestInfo);
+  static void setReplicaApplierFlag(UintR &requestInfo, UintR val);
+
+  /**
    * Include disable foreign keys
    */
   static UintR getDisableFkConstraints(const UintR &requestInfo);
@@ -222,9 +228,9 @@ class LqhKeyReq {
     RI_NO_TRIGGERS = 1,
     RI_UTIL_SHIFT = 2,
     RI_NOWAIT_SHIFT = 3,
+    RI_REPLICA_APPLIER_SHIFT = 5,
 
     /* Currently unused */
-    RI_CLEAR_SHIFT5 = 5,
     RI_CLEAR_SHIFT6 = 6,
     RI_CLEAR_SHIFT7 = 7,
     RI_CLEAR_SHIFT8 = 8,
@@ -302,6 +308,7 @@ class LqhKeyReq {
  * U = Operation came from UTIL - 1 Bit (2)
  * w = NoWait flag            = 1 Bit (3)
  * Q = Query Thread Flag      = 1 Bit (4)
+ * A = Replica Applier        = 1 Bit (5)
 
  * Short LQHKEYREQ :
  *             1111111111222222222233
@@ -312,7 +319,7 @@ class LqhKeyReq {
  * Long LQHKEYREQ :
  *             1111111111222222222233
  *   01234567890123456789012345678901
- *   FTUwQ     llgnqpdisooorrAPDcumxz
+ *   FTUwQA    llgnqpdisooorrAPDcumxz
  *
  */
 
@@ -610,7 +617,7 @@ inline UintR LqhKeyReq::getDisableFkConstraints(const UintR &requestInfo) {
 }
 
 inline UintR LqhKeyReq::getLongClearBits(const UintR &requestInfo) {
-  const Uint32 mask = (1 << RI_CLEAR_SHIFT5) | (1 << RI_CLEAR_SHIFT6) |
+  const Uint32 mask = (1 << RI_CLEAR_SHIFT6) |
                       (1 << RI_CLEAR_SHIFT7) | (1 << RI_CLEAR_SHIFT8) |
                       (1 << RI_CLEAR_SHIFT9);
 
@@ -642,6 +649,15 @@ inline void LqhKeyReq::setNoWaitFlag(UintR &requestInfo, UintR val) {
 
 inline UintR LqhKeyReq::getNoWaitFlag(const UintR &requestInfo) {
   return (requestInfo >> RI_NOWAIT_SHIFT) & 1;
+}
+
+inline void LqhKeyReq::setReplicaApplierFlag(UintR &requestInfo, UintR val) {
+  ASSERT_BOOL(val, "LqhKeyReq::setReplicaApplierFlag");
+  requestInfo |= (val << RI_REPLICA_APPLIER_SHIFT);
+}
+
+inline UintR LqhKeyReq::getReplicaApplierFlag(const UintR &requestInfo) {
+  return (requestInfo >> RI_REPLICA_APPLIER_SHIFT) & 1;
 }
 
 inline Uint32 table_version_major_lqhkeyreq(Uint32 x) {

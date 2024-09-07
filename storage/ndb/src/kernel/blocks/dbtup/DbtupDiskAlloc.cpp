@@ -926,7 +926,13 @@ Dbtup::disk_page_prealloc(Signal* signal,
       }
 
       int pages = err;
-
+      ext.p->m_num_pages = pages;
+      /* The table has a new extent with a set of new pages, update quota */
+      m_ldm_instance_used->c_lqh->update_disk_space_usage(
+                                                   fragPtrP->fragTableId,
+                                                   pages,
+                                                   __LINE__,
+                                                   ext.p->m_key.m_page_no);
 #ifdef VM_TRACE
       ndbout << "allocated " << pages << " pages: " << ext.p->m_key
              << " table: " << fragPtr.p->fragTableId
@@ -3749,7 +3755,13 @@ Dbtup::disk_restart_alloc_extent(EmulatedJamBuffer* jamBuf,
       ndbout << "allocated " << pages << " pages: " << *key
              << " table: " << tabPtr.i << " fragment: " << fragId << endl;
 #endif
+      m_ldm_instance_used->c_lqh->update_disk_space_usage(
+                                                   fragPtr.p->fragTableId,
+                                                   (int)pages,
+                                                   __LINE__,
+                                                   ext.p->m_key.m_page_no);
       ext.p->m_key = *key;
+      ext.p->m_num_pages = pages;
       ext.p->m_extent_no = extent_no;
       ext.p->m_first_page_no = ext.p->m_key.m_page_no;
       ext.p->m_free_space= 0;

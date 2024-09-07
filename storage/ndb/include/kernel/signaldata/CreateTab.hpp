@@ -108,8 +108,9 @@ struct TcSchVerReq {
   Uint32 readBackup;
   Uint32 fullyReplicated;
   Uint32 hashFunctionFlag;
+  Uint32 diskBased;
 
-  static constexpr Uint32 SignalLength = 12;
+  static constexpr Uint32 SignalLength = 13;
 };
 
 struct TcSchVerConf {

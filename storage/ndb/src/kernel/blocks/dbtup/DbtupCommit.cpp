@@ -225,7 +225,10 @@ void Dbtup::execTUP_DEALLOCREQ(Signal *signal) {
       jam();
       free_var_rec(regFragPtr.p, regTabPtr.p, &tmp, pagePtr);
     } else {
-      free_fix_rec(regFragPtr.p, regTabPtr.p, &tmp, (Fix_page *)pagePtr.p);
+      free_fix_rec(regFragPtr.p,
+                   regTabPtr.p,
+                   &tmp,
+                   (Fix_page*)pagePtr.p);
     }
     c_lqh->downgrade_from_exclusive_frag_access(fragPtrP);
   } else {

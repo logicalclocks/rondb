@@ -213,6 +213,12 @@ void mt_assert_own_thread(class SimulatedBlock *);
  */
 Uint32 mt_get_blocklist(class SimulatedBlock *, Uint32 dst[], Uint32 len);
 
+/**
+ * return number of entries currently in short and long time queue
+ */
+Uint32 mt_get_short_time_queue_depth(Uint32 thr_no);
+Uint32 mt_get_long_time_queue_depth(Uint32 thr_no);
+
 struct ndb_thr_stat {
   Uint32 thr_no;
   Uint64 os_tid;

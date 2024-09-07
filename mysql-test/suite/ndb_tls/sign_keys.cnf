@@ -18,6 +18,7 @@ RedoBuffer=                    4M
 BackupLogBufferSize=           2M
 HeartbeatIntervalDbDb=         30000
 HeartbeatIntervalDbApi=        30000
+SchemaMemory= 200M
 
 [mysqld]
 ndbcluster

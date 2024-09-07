@@ -1091,6 +1091,7 @@ void Dbtux::execACC_ABORTCONF(Signal *signal) {
  * Find start position for single range scan.
  */
 void Dbtux::scanFirst(ScanOpPtr scanPtr, Frag &frag, const Index &index) {
+  NDB_PREFETCH_WRITE(&c_ctx.searchKeyDataArray);
   ScanOp &scan = *scanPtr.p;
   // scan direction 0, 1
   const unsigned idir = c_ctx.descending;

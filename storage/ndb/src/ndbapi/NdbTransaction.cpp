@@ -2391,6 +2391,7 @@ int NdbTransaction::receiveTC_COMMITCONF(const TcCommitConf *commitConf,
     theCompletionStatus = CompletedSuccess;
     Uint32 tGCI_hi = commitConf->gci_hi;
     Uint32 tGCI_lo = commitConf->gci_lo;
+    DBUG_PRINT("info", ("receive TC_COMMITCONF"));
     if (unlikely(len < TcCommitConf::SignalLength)) {
       tGCI_lo = 0;
     }
@@ -2445,6 +2446,7 @@ int NdbTransaction::receiveTCROLLBACKCONF(const NdbApiSignal *aSignal) {
   if (checkState_TransId(aSignal->getDataPtr() + 1)) {
     theCommitStatus = Aborted;
     theCompletionStatus = CompletedSuccess;
+    DBUG_PRINT("info", ("receive TCROLLBACKCONF"));
     return 0;
   } else {
 #ifdef NDB_NO_DROPPED_SIGNAL
@@ -2544,6 +2546,9 @@ from other transactions.
   if (checkState_TransId(&keyConf->transId1)) {
     const Uint32 tNoOfOperations = TcKeyConf::getNoOfOperations(tTemp);
     const Uint32 tCommitFlag = TcKeyConf::getCommitFlag(tTemp);
+
+    DBUG_PRINT("info", ("Receive TCKEYCONF: noOp: %u, commitFlag: %u",
+                       tNoOfOperations, tCommitFlag));
 
     const Uint32 *tPtr = (const Uint32 *)&keyConf->operations[0];
     Uint32 tNoComp = theNoOfOpCompleted;

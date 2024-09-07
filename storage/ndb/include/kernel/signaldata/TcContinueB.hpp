@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -78,6 +78,8 @@ class TcContinueB {
     ,ZRELEASE_TAKE_OVER_TRANS              = 39
     ,ZQUERY_THREAD_USAGE                   = 40
     ,ZCHECK_GCP_FINISHED                   = 41
+    ,ZBACKGROUND_RATE_LIMITS               = 42
+    ,ZBACKGROUND_RATE_QUEUE_HANDLER        = 43
   };
 };
 

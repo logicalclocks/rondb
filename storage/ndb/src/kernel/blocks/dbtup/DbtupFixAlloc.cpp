@@ -94,10 +94,12 @@
 // is made part of the set of free pages with fixed size tuples in the
 // fragment.
 //
-Uint32 *Dbtup::alloc_fix_rec(EmulatedJamBuffer *jamBuf, Uint32 *err,
-                             Fragrecord *const regFragPtr,
-                             Tablerec *const regTabPtr, Local_key *key,
-                             Uint32 *out_frag_page_id) {
+Uint32* Dbtup::alloc_fix_rec(EmulatedJamBuffer* jamBuf,
+                             Uint32 * err,
+                             Fragrecord* const regFragPtr,
+		             Tablerec* const regTabPtr,
+		             Local_key* key,
+		             Uint32 * out_frag_page_id) {
   /* ---------------------------------------------------------------- */
   /*       EITHER NORMAL PAGE REQUESTED OR ALLOCATION FROM COPY PAGE  */
   /*       FAILED. TRY ALLOCATING FROM NORMAL PAGE.                   */
@@ -226,8 +228,10 @@ Uint32 Dbtup::alloc_tuple_from_page(Fragrecord *const regFragPtr,
   return idx;
 }  // Dbtup::getThAtPage()
 
-void Dbtup::free_fix_rec(Fragrecord *regFragPtr, Tablerec *regTabPtr,
-                         Local_key *key, Fix_page *regPagePtr) {
+void Dbtup::free_fix_rec(Fragrecord* regFragPtr,
+			 Tablerec* regTabPtr,
+			 Local_key* key,
+			 Fix_page* regPagePtr) {
   Uint32 free = regPagePtr->free_record(key->m_page_idx);
   PagePtr pagePtr((Page *)regPagePtr, key->m_page_no);
   ndbassert(regFragPtr->m_fixedElemCount > 0);
@@ -268,7 +272,10 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
   Uint32 idx = key->m_page_idx;
 
   PagePtr pagePtr;
-  if ((pagePtr.i = allocFragPage(err, regTabPtr, regFragPtr, page_no)) == RNIL)
+  if ((pagePtr.i = allocFragPage(err,
+                                 regTabPtr,
+                                 regFragPtr,
+                                 page_no)) == RNIL)
   {
     jam();
     return 0;

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -295,6 +295,57 @@ int BaseString::split(Vector<BaseString> &v, const BaseString &separator,
     free(str);
 
     return num;
+}
+
+int
+BaseString::split_with_equal(Vector<BaseString> &v) const
+{
+  char *str = strdup(m_chr);
+  int start = 0;
+  int num = 0;
+  int len = (int)strlen(str);
+  bool skip_space = true;
+  for (int i = 0; i < len; i++)
+  {
+    if (str[i] == ' ')
+    {
+      if (!skip_space)
+      {
+        str[i] = '\0';
+        v.push_back(BaseString(str+start));
+        num++;
+        skip_space = true;
+      }
+    }
+    else if (str[i] == '=')
+    {
+      if (!skip_space)
+      {
+        str[i] = '\0';
+        v.push_back(BaseString(str+start));
+        num++;
+      }
+      char equal_str[2];
+      equal_str[0] = '=';
+      equal_str[1] = '\0';
+      v.push_back(BaseString(equal_str));
+      skip_space = true;
+      num++;
+    }
+    else if (skip_space)
+    {
+      skip_space = false;
+      start = i;
+    }
+  }
+  if (!skip_space)
+  {
+    /* Rely on strdup to insert \0 in str[len] */
+    v.push_back(BaseString(str+start));
+    num++;
+  }
+  free(str);
+  return num;
 }
 
 bool BaseString::splitKeyValue(BaseString &key, BaseString &value) const {

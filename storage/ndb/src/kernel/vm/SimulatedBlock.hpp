@@ -725,6 +725,8 @@ class alignas(NDB_CL) SimulatedBlock
    *
    * Finally also the ability to query for send thread information.
    */
+  Uint32 get_short_time_queue_depth();
+  Uint32 get_long_time_queue_depth();
   Uint32 map_api_node_to_recv_instance(NodeId);
   void getSendBufferLevel(NodeId node,
                           BlockNumber bno,

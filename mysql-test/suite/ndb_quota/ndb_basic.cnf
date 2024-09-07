@@ -1,0 +1,8 @@
+!include suite/ndb/my_2rpl.cnf
+[cluster_config.ndbd.1.1]
+# 897 = 0x701
+__TransactionErrorLogLevel=897
+ActivateRateLimits=1
+[cluster_config.ndbd.2.1]
+ActivateRateLimits=1
+__TransactionErrorLogLevel=897

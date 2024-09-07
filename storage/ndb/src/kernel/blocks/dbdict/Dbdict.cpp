@@ -50,6 +50,7 @@
 #include <signaldata/DictTabInfo.hpp>
 #include <signaldata/DropTabFile.hpp>
 #include <signaldata/NodeRecoveryStatusRep.hpp>
+#include <signaldata/DropDb.hpp>
 
 #include <signaldata/EventReport.hpp>
 #include <signaldata/FsCloseReq.hpp>
@@ -92,6 +93,15 @@
 
 #include <NdbSleep.h>
 #include <IntrusiveList.hpp>
+#include <signaldata/QueryDatabase.hpp>
+#include <signaldata/CreateDatabase.hpp>
+#include <signaldata/DropDatabase.hpp>
+#include <signaldata/AlterDatabase.hpp>
+
+#include <signaldata/CreateDb.hpp>
+#include <signaldata/DropDb.hpp>
+#include <signaldata/AlterDb.hpp>
+
 #include <signaldata/AlterTab.hpp>
 #include <signaldata/AlterTable.hpp>
 #include <signaldata/ApiBroadcast.hpp>
@@ -128,6 +138,20 @@
 //#define DEBUG_STRING_MEMORY 1
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_HASH 1
+//#define DEBUG_QUOTAS_EXTRA 1
+//#define DEBUG_QUOTAS 1
+#endif
+
+#ifdef DEBUG_QUOTAS_EXTRA
+#define DEB_QUOTAS_EXTRA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_QUOTAS_EXTRA(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_QUOTAS
+#define DEB_QUOTAS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_QUOTAS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -662,6 +686,46 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal) {
 void Dbdict::execCONTINUEB(Signal *signal) {
   jamEntry();
   switch (signal->theData[0]) {
+  case ZDICT_CONNECT_LOOP:
+  {
+    SchemaOpPtr op_ptr;
+    CreateDatabaseRecPtr createDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, signal->theData[1]));
+
+    CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, impl_req->databaseId);
+    ndbrequire(ok);
+
+    Uint32 next_table_id = signal->theData[2];
+
+    send_connect_table_database(signal,
+                                op_ptr,
+                                db_ptr,
+                                next_table_id,
+                                false);
+    return;
+  }
+  case ZDICT_DISCONNECT_LOOP:
+  {
+    SchemaOpPtr op_ptr;
+    DropDatabaseRecPtr dropDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, dropDbPtr, signal->theData[1]));
+
+    DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, impl_req->databaseId);
+    ndbrequire(ok);
+
+    Uint32 next_table_id = signal->theData[2];
+
+    send_disconnect_table_database(signal,
+                                   op_ptr,
+                                   db_ptr,
+                                   next_table_id);
+
+    return;
+  }
   case ZDICT_SHRINK_TRANSIENT_POOLS:
   {
     jam();
@@ -892,6 +956,12 @@ void Dbdict::packTableIntoPages(Signal *signal) {
       Ptr<ForeignKeyRec> fk_ptr;
       ndbrequire(find_object(fk_ptr, tableId));
       packFKIntoPages(w, fk_ptr);
+      break;
+    }
+    case DictTabInfo::Database: {
+      DatabasePtr db_ptr;
+      ndbrequire(find_object(db_ptr, tableId));
+      packDatabaseIntoPages(w, db_ptr);
       break;
     }
     case DictTabInfo::UndefTableType:
@@ -2323,6 +2393,32 @@ Dbdict::Dbdict(Block_context &ctx)
   addRecSignal(GSN_DROP_FK_IMPL_REF, &Dbdict::execDROP_FK_IMPL_REF);
   addRecSignal(GSN_DROP_FK_IMPL_CONF, &Dbdict::execDROP_FK_IMPL_CONF);
 
+  addRecSignal(GSN_CREATE_DATABASE_REQ, &Dbdict::execCREATE_DATABASE_REQ);
+  addRecSignal(GSN_CREATE_DB_REF, &Dbdict::execCREATE_DB_REF);
+  addRecSignal(GSN_CREATE_DB_CONF, &Dbdict::execCREATE_DB_CONF);
+
+  addRecSignal(GSN_ALTER_DATABASE_REQ, &Dbdict::execALTER_DATABASE_REQ);
+  addRecSignal(GSN_ALTER_DB_REF, &Dbdict::execALTER_DB_REF);
+  addRecSignal(GSN_ALTER_DB_CONF, &Dbdict::execALTER_DB_CONF);
+
+  addRecSignal(GSN_DROP_DATABASE_REQ, &Dbdict::execDROP_DATABASE_REQ);
+  addRecSignal(GSN_DROP_DB_REF, &Dbdict::execDROP_DB_REF);
+  addRecSignal(GSN_DROP_DB_CONF, &Dbdict::execDROP_DB_CONF);
+
+  addRecSignal(GSN_CONNECT_TABLE_DB_CONF, &Dbdict::execCONNECT_TABLE_DB_CONF);
+  addRecSignal(GSN_CONNECT_TABLE_DB_REF, &Dbdict::execCONNECT_TABLE_DB_REF);
+
+  addRecSignal(GSN_DISCONNECT_TABLE_DB_CONF,
+               &Dbdict::execDISCONNECT_TABLE_DB_CONF);
+  addRecSignal(GSN_DISCONNECT_TABLE_DB_REF,
+               &Dbdict::execDISCONNECT_TABLE_DB_REF);
+
+  addRecSignal(GSN_COMMIT_DB_CONF, &Dbdict::execCOMMIT_DB_CONF);
+  addRecSignal(GSN_COMMIT_DB_REF, &Dbdict::execCOMMIT_DB_REF);
+
+  addRecSignal(GSN_GET_DATABASE_REQ, &Dbdict::execGET_DATABASE_REQ);
+  addRecSignal(GSN_LIST_DATABASE_REQ, &Dbdict::execLIST_DATABASE_REQ);
+
   c_transient_pools[DBDICT_OBJECT_RECORD_TRANSIENT_POOL_INDEX] =
     &c_obj_pool;
   c_transient_pools[DBDICT_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
@@ -2373,6 +2469,22 @@ void Dbdict::initCommonData() {
   c_initialNodeRestart = false;
   c_nodeRestart = false;
   c_takeOverInProgress = false;
+
+  m_current_allocated_rate = 0;
+  m_current_allocated_memory_quota_mb = 0;
+  m_current_allocated_disk_quota_gb = 0;
+
+  Uint32 num_threads = getNumThreads() + getNumSendThreads();
+  Uint32 tot_rates = num_threads * 1000000;
+  m_allocated_create_rate_limit = (tot_rates / 10) * 5;
+  m_allocated_alter_rate_limit = (tot_rates / 10) * 7;
+
+  Uint64 tot_dm_mb = globalData.theDataMemory / (1024 * 1024);
+  Uint32 max_dm_mb = (Uint32(tot_dm_mb) / 10) * 8;
+  m_allocated_memory_quota_limit = max_dm_mb;
+
+  m_allocated_disk_quota_limit_gb = 0;
+  m_allocated_disk_quota_limit = 0;
 
   c_outstanding_sub_startstop = 0;
   c_sub_startstop_lock.clear();
@@ -2518,6 +2630,7 @@ void Dbdict::initialiseTableRecord(TableRecordPtr tablePtr, Uint32 tableId) {
   tablePtr.p->maxLoadFactor = 80;
   tablePtr.p->minLoadFactor = 70;
   tablePtr.p->noOfPrimkey = 1;
+  tablePtr.p->m_disk_based = false;
   tablePtr.p->tupKeyLength = 1;
   tablePtr.p->maxRowsLow = 0;
   tablePtr.p->maxRowsHigh = 0;
@@ -2929,6 +3042,7 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
   c_filegroup_pool.init(RT_DBDICT_FILEGROUP, pc);
 
   c_fk_pool.init(RT_DBDICT_FILE, pc);  // TODO
+  c_database_pool.init(RT_DBDICT_FILE, pc);
 
   // new OpRec pools
   /**
@@ -2987,7 +3101,17 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
   c_buildFKRecPool.arena_pool_init(&c_arenaAllocator, RT_DBDICT_BUILD_FK, pc);
   c_dropFKRecPool.arena_pool_init(&c_arenaAllocator, RT_DBDICT_DROP_FK, pc);
 
-  c_opRecordPool.setSize(256);  // XXX need config params
+  c_createDatabaseRecPool.arena_pool_init(&c_arenaAllocator,
+                                          RT_DBDICT_CREATE_DATABASE,
+                                          pc);
+  c_alterDatabaseRecPool.arena_pool_init(&c_arenaAllocator,
+                                         RT_DBDICT_ALTER_DATABASE,
+                                         pc);
+  c_dropDatabaseRecPool.arena_pool_init(&c_arenaAllocator,
+                                        RT_DBDICT_DROP_DATABASE,
+                                        pc);
+
+  c_opRecordPool.setSize(256);   // XXX need config params
   c_opCreateEvent.setSize(2);
   c_opSubEvent.setSize(2);
   c_opDropEvent.setSize(2);
@@ -6005,6 +6129,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
 
   Uint32 counts[] = {0, 0, 0, 0, 0};
 
+  bool disk_based = false;
   for (Uint32 i = 0; i < attrCount; i++) {
     /**
      * Attribute Name
@@ -6200,6 +6325,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     c_attributeRecordHash.add(attrPtr);
 
     int a = AttributeDescriptor::getDiskBased(desc);
+    if (a) disk_based = true;
     int b = AttributeDescriptor::getArrayType(desc);
     Uint32 pos = 2 * (a ? 1 : 0) + (b == NDB_ARRAYTYPE_FIXED ? 0 : 1);
     counts[pos + 1]++;
@@ -6217,6 +6343,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     if (it.getKey() != DictTabInfo::AttributeName) break;
   }  // while
 
+  tablePtr.p->m_disk_based = disk_based;
   tablePtr.p->noOfPrimkey = keyCount;
   tablePtr.p->noOfNullAttr = nullCount;
   tablePtr.p->noOfCharsets = noOfCharsets;
@@ -6332,8 +6459,8 @@ const Dbdict::OpInfo Dbdict::CreateTableRec::g_opInfo = {
     &Dbdict::createTable_abortPrepare};
 
 bool Dbdict::createTable_seize(SchemaOpPtr op_ptr) {
-  return seizeOpRec<CreateTableRec>(op_ptr);
   D("createTable_seize");
+  return seizeOpRec<CreateTableRec>(op_ptr);
 }
 
 void Dbdict::createTable_release(SchemaOpPtr op_ptr) {
@@ -7616,6 +7743,7 @@ void Dbdict::execTAB_COMMITCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("3: dict_tab(%u) HashFunctionFlag: %u",
               tabPtr.p->tableId,
@@ -7740,12 +7868,111 @@ void Dbdict::createTable_commit(Signal *signal, SchemaOpPtr op_ptr) {
   }
 }
 
-void Dbdict::createTab_activate(Signal *signal, SchemaOpPtr op_ptr,
-                                Callback *c) {
+void Dbdict::get_table_name(char *table_name, DictObject* obj) {
+  if (obj->m_type == DictTabInfo::UserTable ||
+      obj->m_type == DictTabInfo::SystemTable) {
+    LcConstRope name(obj->m_name);
+    name.copy(table_name, PATH_MAX);
+    DEB_QUOTAS(("Table %u found, UserTable, name: %s",
+                obj->m_id,
+                table_name));
+  } else {
+    DictObjectPtr tab_obj_ptr;
+    TableRecordPtr tabPtr;
+    {
+      bool ok = find_object(tabPtr, obj->m_id);
+      ndbrequire(ok);
+    }
+    Uint32 primaryTableId = tabPtr.p->primaryTableId;
+    {
+      bool ok = find_object(tab_obj_ptr, primaryTableId);
+      ndbrequire(ok);
+    }
+    LcConstRope name(tab_obj_ptr.p->m_name);
+    name.copy(table_name, PATH_MAX);
+    DEB_QUOTAS(("Table %u found, IndexTable, name: %s",
+                obj->m_id,
+                table_name));
+  }
+}
+
+bool
+Dbdict::get_database_object_from_table_name(char *db_name,
+                                            Uint32 tableId,
+                                            DictObject **db_obj) {
+  DictObjectPtr tab_obj_ptr;
+  {
+    bool ok = find_object(tab_obj_ptr, tableId);
+    ndbrequire(ok);
+  }
+  get_table_name(db_name, tab_obj_ptr.p);
+  Uint32 tableNameLen = strlen(db_name);
+  ndbassert(tableNameLen <= PATH_MAX);
+  Uint32 index = 0;
+  bool found = false;
+  while (index < tableNameLen) {
+    char c = db_name[index];
+    if (c == '/') {
+      db_name[index] = 0;
+      found = true;
+      break;
+    }
+    index++;
+  }
+  DEB_QUOTAS(("Table %u found, dbname: %s, len: %u",
+              tableId,
+              db_name,
+              index + 1));
+  ndbassert(found);
+  ndbassert(index > 0);
+  Uint32 db_name_len = index + 1;
+  Uint32 hash = LcLocalRope::hash(db_name, db_name_len);
+  (*db_obj) = get_object(db_name, db_name_len, hash);
+  return ((*db_obj) != nullptr);
+}
+
+void
+Dbdict::createTab_activate(Signal* signal, SchemaOpPtr op_ptr,
+			   Callback * c) {
   CreateTableRecPtr createTabPtr;
   getOpRec(op_ptr, createTabPtr);
   createTabPtr.p->m_callback = *c;
 
+  TableRecordPtr tabPtr;
+  bool ok = find_object(tabPtr, createTabPtr.p->m_request.tableId);
+  ndbrequire(ok);
+  char dbNameBuf[PATH_MAX];
+  DictObject *db_obj = nullptr;
+  bool found = get_database_object_from_table_name(&dbNameBuf[0],
+                                                   createTabPtr.p->m_request.tableId,
+                                                   &db_obj);
+  if (found)
+  {
+    /**
+     * The table will belong to a database that already exists, we need to
+     * connect the table to the database in DBLQH and DBTC before committing
+     * it.
+     */
+    DatabasePtr db_ptr;
+    ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->requestType = ConnectTableDbReq::CREATE_TABLE;
+    req->databaseId = db_obj->m_id;
+    req->tableId = createTabPtr.p->m_request.tableId;
+    sendSignal(DBLQH_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+               ConnectTableDbReq::SignalLength, JBB);
+    return;
+ 
+  }
+  createTab_activate_next(signal, op_ptr);
+}
+
+void
+Dbdict::createTab_activate_next(Signal* signal, SchemaOpPtr op_ptr)
+{
+  CreateTableRecPtr createTabPtr;
+  getOpRec(op_ptr, createTabPtr);
   D("Commit (TAB_COMMITREQ) in DIH");
   signal->theData[0] = op_ptr.p->op_key;
   signal->theData[1] = reference();
@@ -7781,6 +8008,7 @@ void Dbdict::execTC_SCHVERCONF(Signal *signal) {
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+    req->diskBased = tabPtr.p->m_disk_based;
 
     DEB_HASH(("4: dict_tab(%u) HashFunctionFlag: %u",
               tabPtr.p->tableId,
@@ -10936,6 +11164,26 @@ void Dbdict::alterTable_complete(Signal *signal, SchemaOpPtr op_ptr) {
   getOpRec(op_ptr, alterTabPtr);
   const AlterTabReq *impl_req = &alterTabPtr.p->m_request;
 
+  if (AlterTableReq::getNameFlag(impl_req->changeMask))
+  {
+    /**
+     * Renaming the table could involve changing the database,
+     * in this case we must disconnect from the old database and
+     * connect the table to the new database.
+     */
+    alterTable_handleDatabaseChange(signal, op_ptr);
+    return;
+  }
+  alterTable_contComplete(signal, op_ptr);
+}
+
+void Dbdict::alterTable_contComplete(Signal *signal, SchemaOpPtr op_ptr) {
+  jam();
+
+  AlterTableRecPtr alterTabPtr;
+  getOpRec(op_ptr, alterTabPtr);
+  const AlterTabReq* impl_req = &alterTabPtr.p->m_request;
+
   alterTabPtr.p->m_blockIndex = 0;
   alterTabPtr.p->m_blockNo[0] = RNIL;
   alterTabPtr.p->m_blockNo[1] = RNIL;
@@ -10977,6 +11225,164 @@ void Dbdict::alterTable_complete(Signal *signal, SchemaOpPtr op_ptr) {
   }
   D("alterTable_complete no flag set");
   sendTransConf(signal, op_ptr);
+}
+
+void
+Dbdict::alterTable_handleDatabaseChange(Signal *signal, SchemaOpPtr op_ptr) {
+  jam();
+
+  AlterTableRecPtr alterTabPtr;
+  getOpRec(op_ptr, alterTabPtr);
+  const AlterTabReq* impl_req = &alterTabPtr.p->m_request;
+
+  /* Get table record of renamed table */
+  TableRecordPtr tablePtr;
+  bool ok = find_object(tablePtr, impl_req->tableId);
+  ndbrequire(ok);
+
+  /* Get Dict object of renamed table */
+  DictObjectPtr obj_ptr;
+  obj_ptr.i = tablePtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
+
+  char new_name_buf[MAX_TAB_NAME_SIZE+1];
+  char old_name_buf[MAX_TAB_NAME_SIZE+1];
+  char *new_name_ptr = &new_name_buf[0];
+  char *old_name_ptr = &old_name_buf[0];
+
+  LcConstRope new_name_rope(obj_ptr.p->m_name);
+  LcConstRope old_name_rope(alterTabPtr.p->m_oldTableName);
+
+  new_name_rope.copy(new_name_buf, sizeof(new_name_buf));
+  old_name_rope.copy(old_name_buf, sizeof(old_name_buf));
+
+  char *new_table_db_str = nullptr;
+  char *new_table_str = nullptr;
+  get_database_name(new_name_ptr, &new_table_db_str, &new_table_str);
+  ndbrequire(new_table_db_str != nullptr);
+  ndbrequire(new_table_str != nullptr);
+
+  Uint32 new_db_id = RNIL;
+  Uint32 old_db_id = RNIL;
+  {
+    Uint32 db_name_len = Uint32(strnlen(new_table_db_str,
+                                        sizeof(new_name_buf)) + 1);
+    Uint32 db_name_hash = LcLocalRope::hash(new_table_db_str, db_name_len);
+    DictObject *db_obj_ptr = get_object(new_table_db_str,
+                                        db_name_len,
+                                        db_name_hash);
+    if (db_obj_ptr != nullptr) {
+      new_db_id = db_obj_ptr->m_id;
+    }
+  }
+
+  char *old_table_db_str = nullptr;
+  char *old_table_str = nullptr;
+  get_database_name(old_name_ptr, &old_table_db_str, &old_table_str);
+  ndbrequire(old_table_db_str != nullptr);
+  ndbrequire(old_table_str != nullptr);
+  {
+    Uint32 db_name_len = Uint32(strnlen(old_table_db_str,
+                                        sizeof(old_name_buf)) + 1);
+    Uint32 db_name_hash = LcLocalRope::hash(old_table_db_str, db_name_len);
+    DictObject *db_obj_ptr = get_object(old_table_db_str,
+                                        db_name_len,
+                                        db_name_hash);
+    if (db_obj_ptr != nullptr) {
+      old_db_id = db_obj_ptr->m_id;
+    }
+  }
+
+  if (new_db_id == old_db_id) {
+    /**
+     * No change of database performed, could even be that none of the
+     * databases have been created, databases are only created for quotas
+     * and rate limits.
+     */
+    jam();
+    alterTable_contComplete(signal, op_ptr);
+    return;
+  }
+  if (old_db_id != RNIL) {
+    jam();
+    DisconnectTableDbReq* req = (DisconnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->requestType = DisconnectTableDbReq::RENAME_TABLE;
+    req->databaseId = old_db_id;
+    req->tableId = impl_req->tableId;
+    sendSignal(DBLQH_REF, GSN_DISCONNECT_TABLE_DB_REQ, signal,
+               DisconnectTableDbReq::SignalLength, JBB);
+    return;
+  } else {
+    jam();
+    ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->requestType = ConnectTableDbReq::RENAME_TABLE;
+    req->databaseId = new_db_id;
+    req->tableId = impl_req->tableId;
+    sendSignal(DBLQH_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+               ConnectTableDbReq::SignalLength, JBB);
+  }
+}
+
+void
+Dbdict::alterTable_tableDisconnectedDatabase(Signal *signal, Uint32 senderData)
+{
+  SchemaOpPtr op_ptr;
+  AlterTableRecPtr alterTabPtr;
+  ndbrequire(findSchemaOp(op_ptr, alterTabPtr, senderData));
+  const AlterTabReq* impl_req = &alterTabPtr.p->m_request;
+
+  /* Get table record of renamed table */
+  TableRecordPtr tablePtr;
+  bool ok = find_object(tablePtr, impl_req->tableId);
+  ndbrequire(ok);
+
+  /* Get Dict object of renamed table */
+  DictObjectPtr obj_ptr;
+  obj_ptr.i = tablePtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
+
+  char new_name_buf[MAX_TAB_NAME_SIZE+1];
+  char *new_name_ptr = &new_name_buf[0];
+
+  LcConstRope new_name_rope(obj_ptr.p->m_name);
+  new_name_rope.copy(new_name_buf, sizeof(new_name_buf));
+
+  char *new_table_db_str = nullptr;
+  char *new_table_str = nullptr;
+  get_database_name(new_name_ptr, &new_table_db_str, &new_table_str);
+  ndbrequire(new_table_db_str != nullptr);
+  ndbrequire(new_table_str != nullptr);
+
+  Uint32 new_db_id = RNIL;
+  {
+    Uint32 db_name_len = Uint32(strnlen(new_table_db_str,
+                                        sizeof(new_name_buf)) + 1);
+    Uint32 db_name_hash = LcLocalRope::hash(new_table_db_str, db_name_len);
+    DictObject *db_obj_ptr = get_object(new_table_db_str,
+                                        db_name_len,
+                                        db_name_hash);
+    if (db_obj_ptr != nullptr) {
+      new_db_id = db_obj_ptr->m_id;
+    }
+  }
+  if (new_db_id == RNIL) {
+    jam();
+    alterTable_contComplete(signal, op_ptr);
+  } else {
+   jam();
+    ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->requestType = ConnectTableDbReq::RENAME_TABLE;
+    req->databaseId = new_db_id;
+    req->tableId = impl_req->tableId;
+    sendSignal(DBLQH_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+               ConnectTableDbReq::SignalLength, JBB);
+  }
 }
 
 // AlterTable: ABORT
@@ -11292,6 +11698,7 @@ void Dbdict::doGET_TABINFOREQ(Signal *signal) {
     ndbrequire(ssPtr.sz <= NDB_ARRAY_SIZE(tableName));
     copy(tableName, ssPtr);
 
+    tableName[len] = 0;
     DictObject *old_ptr_p = get_object((char *)tableName, len);
     if (old_ptr_p) obj_id = old_ptr_p->m_id;
   } else {
@@ -11686,6 +12093,48 @@ bool Dbdict::buildListTablesData(const DictObject &dictObject,
     parentObjectType = fg_ptr.p->m_type;
     parentObjectId = fg_ptr.p->key;
   }
+  if (DictTabInfo::isDatabase(type)) {
+    jam();
+
+    if (parentTableId != RNIL)
+      return false;
+
+    ltd.requestData = 0;
+    ltd.setTableId(dictObject.m_id);
+    ltd.setTableType(type); // type
+    {
+      DatabasePtr db_ptr;
+      ndbrequire(find_object(db_ptr, dictObject.m_id));
+      objectVersion = db_ptr.p->m_version;
+    }
+    const SchemaFile::TableEntry* const te
+      = getTableEntry(xsf, dictObject.m_id);
+    switch(te->m_tableState)
+    {
+      case SchemaFile::SF_CREATE:
+        jam();
+        ltd.setTableState(DictTabInfo::StateBuilding);
+        break;
+      case SchemaFile::SF_ALTER:
+        jam();
+        ltd.setTableState(DictTabInfo::StateOnline);
+        break;
+      case SchemaFile::SF_DROP:
+        jam();
+        ltd.setTableState(DictTabInfo::StateDropping);
+        break;
+      case SchemaFile::SF_IN_USE:
+      {
+        jam();
+        ltd.setTableState(DictTabInfo::StateOnline);
+        break;
+      }
+      default:
+        jam();
+        ltd.setTableState(DictTabInfo::StateBroken);
+        break;
+    }
+  }
   if (DictTabInfo::isHashMap(type)) {
     jam();
 
@@ -11785,8 +12234,9 @@ void Dbdict::sendLIST_TABLES_CONF(Signal *signal, ListTablesReq *req) {
         jam();
         goto flush;
       }
-      // A table should not depend on anything.
+      // A table/db should not depend on anything.
       ndbassert(!DictTabInfo::isTable(type));
+      ndbassert(!DictTabInfo::isDatabase(type));
     } else {
       const bool found =
           buildListTablesData(*iter.curr.p, RNIL, ltd, objectVersion,
@@ -15918,7 +16368,11 @@ void Dbdict::copyData_prepare(Signal *signal, SchemaOpPtr op_ptr) {
     }
   }
 
-  req->requestInfo |= CopyDataReq::TupOrder;
+  /* Request Tup-ordered copy when we have disk columns for efficiency */
+  if (tabHasDiskCols) {
+    jam();
+    req->requestInfo |= CopyDataReq::TupOrder;
+  }
   /**
    * Fully replicated uses COPY_DATA to copy data to copy fragment, never
    * copy to same fragment.
@@ -16003,7 +16457,12 @@ void Dbdict::copyData_complete(Signal *signal, SchemaOpPtr op_ptr) {
       }
     }
   }
-  req->requestInfo |= CopyDataReq::TupOrder;
+
+  /* Request Tup-ordered copy when we have disk columns for efficiency */
+  if (tabHasDiskCols) {
+    jam();
+    req->requestInfo |= CopyDataReq::TupOrder;
+  }     
 
   LinearSectionPtr ls_ptr[3];
   ls_ptr[0].sz = cnt;
@@ -22199,7 +22658,19 @@ void Dbdict::createFile_fromLocal(Signal *signal, Uint32 op_key, Uint32 ret) {
   ndbrequire(findSchemaOp(op_ptr, createFilePtr, op_key));
 
   if (ret == 0) {
+    FilePtr f_ptr;
     jam();
+
+    /* Track amount of tablespace area we have access to */
+    CreateFileImplReq *impl_req = &createFilePtr.p->m_request;
+    ndbrequire(find_object(f_ptr, impl_req->file_id));
+    m_allocated_disk_quota_limit += f_ptr.p->m_file_size;
+    Uint64 allocated_disk_quota_gb =
+      m_allocated_disk_quota_limit / (1024 * 1024 * 1024);
+    allocated_disk_quota_gb *= 8;
+    allocated_disk_quota_gb /= 10;
+    m_allocated_disk_quota_limit_gb = Uint32(allocated_disk_quota_gb);
+
     sendTransConf(signal, op_ptr);
   } else {
     jam();
@@ -22857,6 +23328,11 @@ void Dbdict::dropFile_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
   getOpRec(op_ptr, dropFileRecPtr);
   DropFileImplReq *impl_req = &dropFileRecPtr.p->m_request;
 
+  if (m_current_allocated_disk_quota_gb > 0) {
+    jam();
+    setError(error, CreateTableRef::NotAllowedToDropFileWithQuotas, __LINE__);
+    return;
+  }
   FilePtr f_ptr;
   if (!find_object(f_ptr, impl_req->file_id)) {
     jam();
@@ -26396,7 +26872,10 @@ const Dbdict::OpInfo *Dbdict::g_opInfoList[] = {
     &Dbdict::CreateHashMapRec::g_opInfo,   &Dbdict::CopyDataRec::g_opInfo,
     &Dbdict::CreateNodegroupRec::g_opInfo, &Dbdict::DropNodegroupRec::g_opInfo,
     &Dbdict::CreateFKRec::g_opInfo,        &Dbdict::DropFKRec::g_opInfo,
-    &Dbdict::BuildFKRec::g_opInfo,         0};
+    &Dbdict::BuildFKRec::g_opInfo,         &Dbdict::CreateDatabaseRec::g_opInfo,
+    &Dbdict::AlterDatabaseRec::g_opInfo,   &Dbdict::DropDatabaseRec::g_opInfo,
+    0
+};
 
 const Dbdict::OpInfo *Dbdict::findOpInfo(Uint32 gsn) {
   Uint32 i = 0;
@@ -31624,3 +32103,2215 @@ Dbdict::shrinkTransientPools(Uint32 pool_index)
     c_transient_pools_shrinking.clear(pool_index);
   }
 }
+
+// MODULE: Create Database
+
+const Dbdict::OpInfo
+Dbdict::CreateDatabaseRec::g_opInfo = {
+  { 'C', 'D', 'a', 0 },
+  ~RT_DBDICT_CREATE_DATABASE,
+  GSN_CREATE_DATABASE_REQ,
+  CreateDatabaseReq::SignalLength,
+  //
+  &Dbdict::createDatabase_seize,
+  &Dbdict::createDatabase_release,
+  //
+  &Dbdict::createDatabase_parse,
+  &Dbdict::createDatabase_subOps,
+  &Dbdict::createDatabase_reply,
+  //
+  &Dbdict::createDatabase_prepare,
+  &Dbdict::createDatabase_commit,
+  &Dbdict::createDatabase_complete,
+  //
+  &Dbdict::createDatabase_abortParse,
+  &Dbdict::createDatabase_abortPrepare
+};
+
+bool Dbdict::createDatabase_seize(SchemaOpPtr op_ptr) {
+  jam();
+  D("createDatabase_seize");
+  return seizeOpRec<CreateDatabaseRec>(op_ptr);
+}
+
+void Dbdict::createDatabase_release(SchemaOpPtr op_ptr) {
+  jam();
+  D("createDatabase_release");
+  CreateDatabaseRecPtr createDatabasePtr;
+  getOpRec(op_ptr, createDatabasePtr);
+  releaseOpRec<CreateDatabaseRec>(op_ptr);
+}
+
+void Dbdict::execCREATE_DATABASE_REQ(Signal* signal) {
+  jamEntry();
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
+  SectionHandle handle(this, signal);
+  if(ERROR_INSERTED(9999))
+  {
+    g_eventLogger->info("Delaying GSN_CREATE_DATABASE_REQ");
+    sendSignalWithDelay(reference(), GSN_CREATE_DATABASE_REQ, signal, 1000,
+                       signal->length(),
+                       &handle);
+    return;
+  }
+
+  D("execCREATE_DATABASE_REQ");
+
+  const CreateDatabaseReq req_copy =
+    *(const CreateDatabaseReq*)signal->getDataPtr();
+  const CreateDatabaseReq* req = &req_copy;
+
+  ErrorInfo error;
+  do {
+    SchemaOpPtr op_ptr;
+    CreateDatabaseRecPtr createDbPtr;
+    CreateDatabaseReq* impl_req = nullptr;
+
+    startClientReq(op_ptr, createDbPtr, req, impl_req, error);
+    if (hasError(error)) {
+      jam();
+      break;
+    }
+
+    impl_req->databaseId = RNIL;
+    impl_req->databaseVersion = 0;
+
+    handleClientReq(signal, op_ptr, handle);
+    return;
+  } while (0);
+
+  releaseSections(handle);
+
+  CreateDatabaseRef* ref = (CreateDatabaseRef*)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->transId = req->transId;
+  ref->senderData = req->senderData;
+  getError(error, ref);
+  ref->errorStatus = error.errorStatus;
+  ref->errorKey = error.errorKey;
+
+  sendSignal(req->senderRef, GSN_CREATE_DATABASE_REF, signal,
+	     CreateDatabaseRef::SignalLength, JBB);
+}
+
+void
+Dbdict::packDatabaseIntoPages(SimpleProperties::Writer & w,
+                              DatabasePtr db_ptr) {
+  DictDatabaseInfo::Database db;
+  db.init();
+  {
+    LcConstRope r(db_ptr.p->m_name);
+    r.copy(db.DatabaseName, sizeof(db.DatabaseName));
+  }
+
+  db.DatabaseId = db_ptr.p->key;
+  db.DatabaseType = db_ptr.p->m_type;
+  db.DatabaseVersion = db_ptr.p->m_version;
+
+  db.InMemorySize = db_ptr.p->m_in_memory_size;
+  db.DiskSpaceSize = db_ptr.p->m_disk_space_size;
+  db.RatePerSec = db_ptr.p->m_rate_per_sec;
+  db.MaxTransactionSize = db_ptr.p->m_max_transaction_size;
+  db.MaxParallelTransactions = db_ptr.p->m_max_parallel_transactions;
+  db.MaxParallelComplexQueries = db_ptr.p->m_max_parallel_complex_queries;
+
+  SimpleProperties::UnpackStatus s;
+  s = SimpleProperties::pack(w,
+                             &db,
+			     DictDatabaseInfo::Mapping,
+			     DictDatabaseInfo::MappingSize);
+  ndbrequire(s == SimpleProperties::Eof);
+}
+
+void
+Dbdict::createDatabase_parse(Signal* signal, bool master,
+                             SchemaOpPtr op_ptr,
+                             SectionHandle& handle, ErrorInfo& error) {
+  jam();
+  D("createDatabase_parse");
+  SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+
+  SegmentedSectionPtr objInfoPtr;
+  {
+    bool ok = handle.getSection(objInfoPtr, 0);
+    if (!ok) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return;
+    }
+  }
+  SimplePropertiesSectionReader it(objInfoPtr, getSectionSegmentPool());
+
+  DictObjectPtr obj_ptr;
+  obj_ptr.setNull();
+  DatabasePtr db_ptr;
+  db_ptr.setNull();
+
+  DictDatabaseInfo::Database db;
+  db.init();
+  SimpleProperties::UnpackStatus status =
+    SimpleProperties::unpack(it, &db,
+                             DictDatabaseInfo::Mapping,
+                             DictDatabaseInfo::MappingSize);
+
+  if (status != SimpleProperties::Eof) {
+    jam();
+    setError(error, CreateTableRef::InvalidFormat, __LINE__);
+    return;
+  }
+
+  Uint32 available_rate_limit =
+    m_allocated_create_rate_limit - m_current_allocated_rate;
+  if (db.RatePerSec > available_rate_limit ||
+      m_allocated_create_rate_limit < m_current_allocated_rate) {
+    jam();
+    if (op_ptr.p->m_restart) {
+      g_eventLogger->info("Database Rate limits oversubscribed, "
+                          "will not fail since it is a restart");
+    } else {
+      setError(error, CreateTableRef::CreateDbNoAvailableRates, __LINE__);
+      return;
+    }
+  }
+  Uint32 available_mem_quota_limit =
+    m_allocated_create_rate_limit - m_current_allocated_memory_quota_mb;
+  if (db.InMemorySize > available_mem_quota_limit ||
+      m_allocated_memory_quota_limit < m_current_allocated_memory_quota_mb) {
+    jam();
+    if (op_ptr.p->m_restart) {
+      g_eventLogger->info("Database Memory Quota oversubscribed, "
+                          "will not fail since it is a restart");
+    } else {
+      setError(error, CreateTableRef::CreateDbNoAvailableMemoryQuota, __LINE__);
+      return;
+    }
+  }
+  Uint32 available_disk_quota_limit =
+    m_allocated_disk_quota_limit_gb - m_current_allocated_disk_quota_gb;
+  if (db.DiskSpaceSize > available_disk_quota_limit ||
+      m_allocated_disk_quota_limit_gb < m_current_allocated_disk_quota_gb) {
+    jam();
+    if (op_ptr.p->m_restart) {
+      g_eventLogger->info("Database Disk Quota oversubscribed, "
+                          "will not fail since it is a restart");
+    } else {
+      setError(error, CreateTableRef::CreateDbNoAvailableDiskQuota, __LINE__);
+      return;
+    }
+  }
+  DEB_QUOTAS(("Create Database %s with quotas", db.DatabaseName));
+
+  Uint32 len = Uint32(strlen(db.DatabaseName) + 1);
+  Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
+  if (get_object(db.DatabaseName, len, hash) != 0) {
+    jam();
+    DEB_QUOTAS(("Create Database, already exists"));
+    setError(error, CreateTableRef::TableAlreadyExist, __LINE__);
+    return;
+  }
+
+  if(!c_obj_pool.seize(obj_ptr)) {
+    jam();
+    setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
+    return;
+  }
+  new (obj_ptr.p) DictObject;
+
+  if(!c_database_pool.seize(db_ptr)) {
+    jam();
+    setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
+    goto error;
+  }
+  new (db_ptr.p) Database();
+
+  {
+    LcLocalRope name(obj_ptr.p->m_name);
+    if(!name.assign(db.DatabaseName, len, hash)) {
+      jam();
+      setError(error, CreateTableRef::OutOfStringBuffer, __LINE__);
+      goto error;
+    }
+  }
+  db_ptr.p->m_in_memory_size = db.InMemorySize;
+  db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
+  db_ptr.p->m_rate_per_sec = db.RatePerSec;
+  db_ptr.p->m_max_transaction_size = db.MaxTransactionSize;
+  db_ptr.p->m_max_parallel_transactions = db.MaxParallelTransactions;
+  db_ptr.p->m_max_parallel_complex_queries = db.MaxParallelComplexQueries;
+
+  DEB_QUOTAS(("Create Quotas: in_mem: %llu, disk_space: %llu, rate: %u, "
+              "max_trans: %u, max_par_trans: %u, max_par_complex: %u",
+              db_ptr.p->m_in_memory_size,
+              db_ptr.p->m_disk_space_size,
+              db_ptr.p->m_rate_per_sec,
+              db_ptr.p->m_max_transaction_size,
+              db_ptr.p->m_max_parallel_transactions,
+              db_ptr.p->m_max_parallel_complex_queries));
+
+  if (master) {
+    jam();
+    Uint32 objId = getFreeObjId();
+    if (objId == RNIL) {
+      jam();
+      setError(error, CreateFilegroupRef::NoMoreObjectRecords, __LINE__);
+      goto error;
+    }
+    Uint32 version = getTableEntry(objId)->m_tableVersion;
+    impl_req->databaseId = objId;
+    impl_req->databaseVersion = create_obj_inc_schema_version(version);
+  } else if (op_ptr.p->m_restart) {
+    jam();
+    impl_req->databaseId = c_restartRecord.activeTable;
+    impl_req->databaseVersion = c_restartRecord.m_entry.m_tableVersion;
+  }
+  ndbassert(db.DatabaseType == DictTabInfo::Database);
+  db_ptr.p->key = impl_req->databaseId;
+  db_ptr.p->m_type = db.DatabaseType;
+  db_ptr.p->m_version = impl_req->databaseVersion;
+  db_ptr.p->m_name = obj_ptr.p->m_name;
+
+  obj_ptr.p->m_id = impl_req->databaseId;
+  obj_ptr.p->m_type = db.DatabaseType;
+  obj_ptr.p->m_ref_count = 0;
+
+  ndbrequire(link_object(obj_ptr, db_ptr));
+
+  if (master) {
+    jam();
+    releaseSections(handle);
+    SimplePropertiesSectionWriter w(*this);
+    packDatabaseIntoPages(w, db_ptr);
+    w.getPtr(objInfoPtr);
+    handle.m_ptr[0] = objInfoPtr;
+    handle.m_cnt = 1;
+  }
+  {
+    SchemaFile::TableEntry te;
+    te.init();
+    te.m_tableState = SchemaFile::SF_CREATE;
+    te.m_tableVersion = db_ptr.p->m_version;
+    te.m_tableType = db_ptr.p->m_type;
+    te.m_info_words = objInfoPtr.sz;
+    te.m_gcp = 0;
+    te.m_transId = trans_ptr.p->m_transId;
+
+    Uint32 err = trans_log_schema_op(op_ptr, impl_req->databaseId, &te);
+    if (err) {
+      jam();
+      setError(error, err, __LINE__);
+      goto error;
+    }
+  }
+  c_obj_name_hash.add(obj_ptr);
+  c_obj_id_hash.add(obj_ptr);
+
+  // save sections to DICT memory
+  saveOpSection(op_ptr, handle, 0);
+
+  createDbPtr.p->m_parsed = true;
+
+#if defined VM_TRACE || defined ERROR_INSERT
+  g_eventLogger->info("Dbdict: %u: create database name=%s,id=%u,obj_ptr_i=%d",
+                      __LINE__,
+                      db.DatabaseName,
+                      impl_req->databaseId,
+                      db_ptr.p->m_obj_ptr_i);
+#endif
+  return;
+
+error:
+  jam();
+  if (!db_ptr.isNull()) {
+    jam();
+    c_database_pool.release(db_ptr);
+  }
+  if (!obj_ptr.isNull()) {
+    jam();
+    release_object(obj_ptr.i, obj_ptr.p);
+  }
+}
+
+bool
+Dbdict::createDatabase_subOps(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  D("createDatabase_subOps" << V(op_ptr.i) << *op_ptr.p);
+
+  Uint32 databaseId = createDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+  return false;
+}
+
+void
+Dbdict::createDatabase_reply(Signal* signal,
+                             SchemaOpPtr op_ptr,
+                             ErrorInfo error) {
+  SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  D("createDatabase_reply" << V(op_ptr.i) << *op_ptr.p);
+
+  if (!hasError(error)) {
+    jam();
+    CreateDatabaseConf* conf = (CreateDatabaseConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = op_ptr.p->m_clientData;
+    conf->transId = trans_ptr.p->m_transId;
+    conf->databaseId = createDbPtr.p->m_request.databaseId;
+    conf->databaseVersion = createDbPtr.p->m_request.databaseVersion;
+
+    D(V(conf->databaseId) << V(conf->databaseVersion));
+    DEB_QUOTAS(("Send CREATE_DATABASE_CONF"));
+
+    Uint32 clientRef = op_ptr.p->m_clientRef;
+    sendSignal(clientRef, GSN_CREATE_DATABASE_CONF, signal,
+               CreateDatabaseConf::SignalLength, JBB);
+  } else {
+    jam();
+    CreateDatabaseRef* ref = (CreateDatabaseRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = op_ptr.p->m_clientData;
+    ref->transId = trans_ptr.p->m_transId;
+    getError(error, ref);
+    ref->errorStatus = error.errorStatus;
+    ref->errorKey = error.errorKey;
+    DEB_QUOTAS(("Send CREATE_DATABASE_REF, error: %u", error.errorKey));
+
+    Uint32 clientRef = op_ptr.p->m_clientRef;
+    sendSignal(clientRef, GSN_CREATE_DATABASE_REF, signal,
+               CreateDatabaseRef::SignalLength, JBB);
+  }
+}
+
+void
+Dbdict::createDatabase_prepare(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+
+  Uint32 databaseId = createDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+
+  Callback cb;
+  cb.m_callbackData = op_ptr.p->op_key;
+  cb.m_callbackFunction = safe_cast(&Dbdict::createDb_writeTableConf);
+
+  if (ZRESTART_NO_WRITE_AFTER_READ && op_ptr.p->m_restart == 1) {
+    jam();
+    /**
+     * We read obj from disk, no need to rewrite it
+     */
+    execute(signal, cb, 0);
+    return;
+  }
+  jam();
+  ndbrequire(ok);
+  DEB_QUOTAS(("createDatabase_prepare, writeTableFile"));
+  const OpSection& tabInfoSec =
+    getOpSection(op_ptr, CreateDatabaseReq::DICT_TAB_INFO);
+  writeTableFile(signal, op_ptr, createDbPtr.p->m_request.databaseId,
+                 tabInfoSec, &cb);
+}
+
+void
+Dbdict::createDb_writeTableConf(Signal* signal,
+                                Uint32 op_key,
+                                Uint32 ret) {
+  jam();
+
+  SchemaOpPtr op_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, createDbPtr, op_key));
+
+  Callback callback;
+  callback.m_callbackData = op_ptr.p->op_key;
+  callback.m_callbackFunction =
+    safe_cast(&Dbdict::createDb_localComplete);
+
+  DEB_QUOTAS(("createDatabase_writeTableConf, key: %u",
+              op_ptr.p->op_key));
+  createDb_local(signal, op_ptr, &callback);
+}
+
+void
+Dbdict::createDb_local(Signal* signal,
+                       SchemaOpPtr op_ptr,
+                       Callback * c) {
+  jam();
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+
+  DEB_QUOTAS(("createDb_local, createDbPtr.i = %u", createDbPtr.i));
+  createDbPtr.p->m_callback = * c;
+
+  CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+
+  /**
+   * Start by preparing creation database in LQH
+   */
+  CreateDbReq* req = (CreateDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->databaseId = db_ptr.p->key;
+  req->databaseVersion = db_ptr.p->m_version;
+  req->requestType = 0;
+  req->inMemorySizeMB = (Uint32)
+    (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
+  req->diskSpaceSizeGB = (Uint32)
+    (db_ptr.p->m_disk_space_size /
+    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  req->ratePerSec = db_ptr.p->m_rate_per_sec;
+  sendSignal(DBLQH_REF, GSN_CREATE_DB_REQ, signal,
+             CreateDbReq::SignalLengthLQH, JBB);
+}
+
+void
+Dbdict::execCREATE_DB_CONF(Signal *signal) {
+  jamEntry();
+
+  D("execCREATE_DB_CONF");
+  CreateDbConf conf = *(CreateDbConf*)signal->getDataPtr();
+
+  SchemaOpPtr op_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, createDbPtr, conf.senderData));
+
+  CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+
+  if (refToBlock(signal->getSendersBlockRef()) == DBLQH) {
+    jam();
+    DEB_QUOTAS(("CREATE_DB_CONF from DBLQH"));
+    /**
+     * Next step is preparing creation database in DBTC
+     */
+    CreateDbReq* req = (CreateDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->databaseId = db_ptr.p->key;
+    req->databaseVersion = db_ptr.p->m_version;
+    req->requestType = 0;
+    req->inMemorySizeMB = (Uint32)
+      (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
+    req->diskSpaceSizeGB = (Uint32)
+      (db_ptr.p->m_disk_space_size /
+      (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+    req->ratePerSec = db_ptr.p->m_rate_per_sec;
+    req->maxTransactionSize = db_ptr.p->m_max_transaction_size;
+    req->maxParallelTransactions =
+      db_ptr.p->m_max_parallel_transactions;
+    req->maxParallelComplexQueries =
+      db_ptr.p->m_max_parallel_complex_queries;
+    sendSignal(DBTC_REF, GSN_CREATE_DB_REQ, signal,
+               CreateDbReq::SignalLengthTC, JBB);
+    return;
+  } else {
+    DEB_QUOTAS(("CREATE_DB_CONF from DBTC"));
+    ndbrequire(refToBlock(signal->getSendersBlockRef()) == DBTC);
+    jam();
+  }
+  send_connect_table_database(signal,
+                              op_ptr,
+                              db_ptr,
+                              0,
+                              true);
+}
+
+void Dbdict::execCREATE_DB_REF(Signal *signal) {
+  jamEntry();
+  D("execCREATE_DB_REF");
+  DEB_QUOTAS(("CREATE_DB_REF"));
+  CreateDbRef const ref = *(CreateDbRef*)signal->getDataPtr();
+
+  SchemaOpPtr op_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, createDbPtr, ref.senderData));
+
+  setError(op_ptr, ref.errorCode, __LINE__);
+  execute(signal, createDbPtr.p->m_callback, 0);
+}
+
+void
+Dbdict::get_database_name(char *input_str,
+                          char **table_db_str,
+                          char **table_str) {
+  char *loop_str = input_str;
+  Uint32 tableNameLen = strnlen(input_str, MAX_TAB_NAME_SIZE);
+  Uint32 found_slashes = 0;
+  Uint32 index = 0;
+  while (index < tableNameLen) {
+    char c = loop_str[index];
+    if (c == '/') {
+      found_slashes++;
+      if (found_slashes == 1) {
+        *table_db_str = &loop_str[0];
+        loop_str[index] = 0;
+      } else if (found_slashes == 2) {
+        *table_str = &loop_str[index+1];
+      }
+    }
+    index++;
+  }
+}
+
+bool
+Dbdict::is_table_connected_to_db(DatabasePtr db_ptr,
+                                 Uint32 tableId) {
+  DictObjectPtr obj_ptr;
+  {
+    bool ok = find_object(obj_ptr, tableId);
+    if (!ok) {
+      DEB_QUOTAS_EXTRA(("No table %u found", tableId));
+      return false;
+    }
+  }
+  if (!(obj_ptr.p->m_type == DictTabInfo::UserTable ||
+        obj_ptr.p->m_type == DictTabInfo::UniqueHashIndex ||
+        obj_ptr.p->m_type == DictTabInfo::OrderedIndex)) {
+    DEB_QUOTAS(("Table %u found, but of wrong type", tableId));
+    return false;
+  }
+  /**
+   * Get database name as part of table name
+   * Table names of user tables are /schema/database/table_name
+   * schema is always std and database is the database name the
+   * table belongs to.
+   */
+  char tableNameBuf[MAX_TAB_NAME_SIZE+1];
+  get_table_name(&tableNameBuf[0], obj_ptr.p);
+
+  char *table_db_str = nullptr;
+  char *table_str = nullptr;
+
+  get_database_name(&tableNameBuf[0],
+                    &table_db_str,
+                    &table_str);
+
+  ndbrequire(table_db_str != nullptr);
+  ndbrequire(table_str != nullptr);
+  /* Get the database name from the database record */
+  char dbNameBuf[MAX_TAB_NAME_SIZE+1];
+  char *db_str = &dbNameBuf[0];
+  {
+    DictObjectPtr db_obj_ptr;
+    bool ok = find_object(db_obj_ptr, db_ptr.p->key);
+    ndbrequire(ok);
+    LcConstRope name(db_obj_ptr.p->m_name);
+    name.copy(dbNameBuf, sizeof(dbNameBuf));
+    ndbassert(strlen(dbNameBuf) <= MAX_TAB_NAME_SIZE);
+  }
+  if (strncmp(table_db_str, db_str, PATH_MAX) == 0) {
+    /* Found a table belonging to this database */
+    DEB_QUOTAS(("Table %u with name: %s belongs to database %s",
+                tableId,
+                table_str,
+                table_db_str));
+    return true;
+  }
+  DEB_QUOTAS(("Table %u with name: %s belongs to database %s"
+              " and not to created database %s",
+              tableId,
+              table_str,
+              table_db_str,
+              db_str));
+  return false;
+}
+
+void
+Dbdict::send_connect_table_database(Signal *signal,
+                                    SchemaOpPtr op_ptr,
+                                    DatabasePtr db_ptr,
+                                    Uint32 next_table_id,
+                                    bool first) {
+  Uint32 start_table_id = next_table_id;
+  if (first) {
+    /**
+     * DBTC instances need to connect to global TC instance for each
+     * database, cannot be done in CREATE_DB_REQ since the global
+     * database instance isn't necessarily the first to be created.
+     */
+    ndbrequire(next_table_id == 0);
+    ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->requestType = ConnectTableDbReq::CONNECT_GLOBAL_INSTANCE;
+    req->databaseId = db_ptr.p->key;
+    req->tableId = next_table_id;
+    DEB_QUOTAS(("Send CONNECT_TABLE_DB_REQ for table %u, C_G_I", next_table_id));
+    sendSignal(DBTC_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+               ConnectTableDbReq::SignalLength, JBB);
+    return;
+  }
+  while (next_table_id < m_max_schema_objects) {
+    if (is_table_connected_to_db(db_ptr, next_table_id)) {
+      db_ptr.p->m_table_id_check = next_table_id;
+      ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = op_ptr.p->op_key;
+      req->requestType = ConnectTableDbReq::CREATE_DB;
+      req->databaseId = db_ptr.p->key;
+      req->tableId = next_table_id;
+      DEB_QUOTAS(("Send CONNECT_TABLE_DB_REQ for table %u, C_DB",
+                  next_table_id));
+      sendSignal(DBLQH_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+                 ConnectTableDbReq::SignalLength, JBB);
+      return;
+    } else {
+      if ((next_table_id - start_table_id) > 300) {
+        DEB_QUOTAS_EXTRA(("DICT_CONNECT_LOOP, tableId: %u", next_table_id));
+        signal->theData[0] = ZDICT_CONNECT_LOOP;
+        signal->theData[1] = op_ptr.p->op_key;
+        signal->theData[2] = next_table_id + 1;
+        sendSignal(reference(), GSN_CONTINUEB, signal,
+                   3, JBB);
+        return;
+      }
+    }
+    next_table_id++;
+  }
+  /* Finished connecting tables to a database */
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  DEB_QUOTAS(("createDbPtr.i = %u, finished connect tables to DB",
+              createDbPtr.i));
+  execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
+}
+
+void Dbdict::execCONNECT_TABLE_DB_CONF(Signal *signal) {
+  jamEntry();
+
+  D("execCONNECT_TABLE_DB_CONF");
+  ConnectTableDbConf conf = *(ConnectTableDbConf*)signal->getDataPtr();
+
+  if (refToBlock(signal->getSendersBlockRef()) == DBLQH) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBLQH"));
+    ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = conf.senderData;
+    req->requestType = conf.requestType;
+    req->databaseId = conf.databaseId;
+    req->tableId = conf.tableId;
+    sendSignal(DBTC_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+               ConnectTableDbReq::SignalLength, JBB);
+    return;
+  }
+  ndbrequire(refToBlock(signal->getSendersBlockRef()) == DBTC);
+  SchemaOpPtr op_ptr;
+  if (conf.requestType == ConnectTableDbReq::CONNECT_GLOBAL_INSTANCE) {
+    CreateDatabaseRecPtr createDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, conf.senderData));
+
+    CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, impl_req->databaseId);
+    ndbrequire(ok);
+
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC. CONNECT_GLOBAL_INSTANCE"));
+    send_connect_table_database(signal,
+                                op_ptr,
+                                db_ptr,
+                                0,
+                                false);
+  } else if (conf.requestType == ConnectTableDbReq::CREATE_DB) {
+    CreateDatabaseRecPtr createDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, conf.senderData));
+
+    CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, impl_req->databaseId);
+    ndbrequire(ok);
+
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC. CreateDB"));
+    send_connect_table_database(signal,
+                                op_ptr,
+                                db_ptr,
+                                db_ptr.p->m_table_id_check + 1,
+                                false);
+  } else if (conf.requestType == ConnectTableDbReq::CREATE_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, CreateTable"));
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, conf.senderData));
+    createTab_activate_next(signal, op_ptr);
+  } else if (conf.requestType == ConnectTableDbReq::RENAME_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, RenameTable"));
+    AlterTableRecPtr alterTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterTabPtr, conf.senderData));
+    alterTable_contComplete(signal, op_ptr);
+  } else {
+    ndbabort();
+  }
+}
+
+void Dbdict::execCONNECT_TABLE_DB_REF(Signal *signal) {
+  jamEntry();
+  D("execCONNECT_TABLE_DB_REF");
+  ConnectTableDbRef const ref = *(ConnectTableDbRef*)signal->getDataPtr();
+
+  SchemaOpPtr op_ptr;
+  if (ref.requestType == ConnectTableDbReq::CREATE_DB) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, CreateDB"));
+    CreateDatabaseRecPtr createDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, ref.senderData));
+
+    setError(op_ptr, ref.errorCode, __LINE__);
+    execute(signal, createDbPtr.p->m_callback, 0);
+  } else if (ref.requestType == ConnectTableDbReq::CREATE_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, CreateTable"));
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, ref.senderData));
+
+    setError(op_ptr, ref.errorCode, __LINE__);
+    execute(signal, createTabPtr.p->m_callback, 0);
+  } else if (ref.requestType == ConnectTableDbReq::RENAME_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, RenameTable"));
+    ndbabort();
+  }
+  else
+  {
+    ndbabort();
+  }
+}
+
+void
+Dbdict::createDb_localComplete(Signal* signal,
+                               Uint32 op_key,
+                               Uint32 ret) {
+  jam();
+
+  SchemaOpPtr op_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, createDbPtr, op_key));
+
+  if (ERROR_INSERTED(9999)) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    setError(op_ptr.p->m_error, 9131, __LINE__);
+  }
+
+  if (!hasError(op_ptr.p->m_error)) {
+    jam();
+    // prepare done
+    sendTransConf(signal, op_ptr);
+  } else {
+    jam();
+    sendTransRef(signal, op_ptr);
+  }
+}
+
+
+void Dbdict::createDatabase_commit(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  D("createDatabase_commit" << *op_ptr.p);
+
+  Uint32 databaseId = createDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+
+  Callback c;
+  c.m_callbackData = op_ptr.p->op_key;
+  c.m_callbackFunction = safe_cast(&Dbdict::createDb_alterComplete);
+  createDb_activate(signal, db_ptr, op_ptr, &c);
+}
+
+void
+Dbdict::createDb_activate(Signal* signal,
+                          DatabasePtr db_ptr,
+                          SchemaOpPtr op_ptr,
+			  Callback * c) {
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  createDbPtr.p->m_callback = * c;
+  D("createDb_activate");
+  DEB_QUOTAS(("Send COMMIT_DB_REQ to DBTC"));
+
+  CommitDbReq* req = (CommitDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->databaseId = db_ptr.p->key;
+  sendSignal(DBTC_REF, GSN_COMMIT_DB_REQ, signal,
+             CommitDbReq::SignalLength, JBB);
+}
+
+void Dbdict::execCOMMIT_DB_CONF(Signal *signal) {
+  jamEntry();
+
+  D("execCOMMIT_DB_CONF");
+  DEB_QUOTAS(("execCOMMIT_DB_CONF"));
+  CommitDbConf conf = *(CommitDbConf*)signal->getDataPtr();
+
+  SchemaOpPtr op_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, createDbPtr, conf.senderData));
+
+  CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+
+  m_current_allocated_rate += db_ptr.p->m_rate_per_sec;
+  ndbrequire(m_current_allocated_rate <= m_allocated_alter_rate_limit ||
+             op_ptr.p->m_restart);
+
+  m_current_allocated_memory_quota_mb += db_ptr.p->m_in_memory_size;
+  ndbrequire((m_current_allocated_memory_quota_mb <=
+               m_allocated_memory_quota_limit) ||
+             op_ptr.p->m_restart);
+
+  m_current_allocated_disk_quota_gb += db_ptr.p->m_disk_space_size;
+  ndbrequire((m_current_allocated_disk_quota_gb <=
+               m_allocated_disk_quota_limit_gb) ||
+             op_ptr.p->m_restart);
+
+  /* Finished commit phase of create database */
+  execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
+}
+
+void Dbdict::execCOMMIT_DB_REF(Signal *signal) {
+  jamEntry();
+  DEB_QUOTAS(("execCOMMIT_DB_REF"));
+  ndbabort(); //Should not happen
+}
+
+void
+Dbdict::createDb_alterComplete(Signal* signal,
+                               Uint32 op_key,
+                               Uint32 ret) {
+  jam();
+  SchemaOpPtr op_ptr;
+  CreateDatabaseRecPtr createDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, createDbPtr, op_key));
+  D("createDb_alterComplete");
+  DEB_QUOTAS(("createDb_alterComplete"));
+  sendTransConf(signal, op_ptr);
+}
+
+void
+Dbdict::createDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  D("createDatabase_complete");
+  DEB_QUOTAS(("createDb_complete"));
+  sendTransConf(signal, op_ptr);
+}
+
+void
+Dbdict::createDatabase_abortParse(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  const CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+  const Uint32 databaseId = impl_req->databaseId;
+  D("createDatabase_abortParse" << V(databaseId) << *op_ptr.p);
+  DEB_QUOTAS(("createDb_abortParse"));
+
+  do {
+    if (createDbPtr.p->m_abortPrepareDone) {
+      jam();
+      D("done by abort prepare");
+      break;
+    }
+
+    if (databaseId == RNIL) {
+      jam();
+      D("no table allocated");
+      break;
+    }
+
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, databaseId);
+
+    // any link was to a new object
+    if (hasDictObject(op_ptr)) {
+      jam();
+      unlinkDictObject(op_ptr);
+      if (ok) {
+        jam();
+      }
+    }
+  } while (0);
+  sendTransConf(signal, op_ptr);
+}
+
+void
+Dbdict::createDatabase_abortPrepare(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  //TODO, more work is needed on abort handling of Create Database
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  const CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+  D("createDatabase_abortPrepare" << *op_ptr.p);
+  DEB_QUOTAS(("createDb_abortPrepare"));
+
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+}
+
+// MODULE: Drop Database
+
+const Dbdict::OpInfo
+Dbdict::DropDatabaseRec::g_opInfo = {
+  { 'D', 'D', 'a', 0 },
+  ~RT_DBDICT_DROP_DATABASE,
+  GSN_DROP_DATABASE_REQ,
+  DropDatabaseReq::SignalLength,
+  //
+  &Dbdict::dropDatabase_seize,
+  &Dbdict::dropDatabase_release,
+  //
+  &Dbdict::dropDatabase_parse,
+  &Dbdict::dropDatabase_subOps,
+  &Dbdict::dropDatabase_reply,
+  //
+  &Dbdict::dropDatabase_prepare,
+  &Dbdict::dropDatabase_commit,
+  &Dbdict::dropDatabase_complete,
+  //
+  &Dbdict::dropDatabase_abortParse,
+  &Dbdict::dropDatabase_abortPrepare
+};
+
+bool Dbdict::dropDatabase_seize(SchemaOpPtr op_ptr) {
+  jam();
+  D("dropDatabase_seize");
+  return seizeOpRec<DropDatabaseRec>(op_ptr);
+}
+
+void Dbdict::dropDatabase_release(SchemaOpPtr op_ptr) {
+  jam();
+  DropDatabaseRecPtr dropDatabasePtr;
+  D("dropDatabase_release");
+  getOpRec(op_ptr, dropDatabasePtr);
+  releaseOpRec<DropDatabaseRec>(op_ptr);
+}
+
+void Dbdict::execDROP_DATABASE_REQ(Signal* signal) {
+  jamEntry();
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
+  SectionHandle handle(this, signal);
+  if(ERROR_INSERTED(9999)) {
+    g_eventLogger->info("Delaying GSN_DROP_DATABASE_REQ");
+    sendSignalWithDelay(reference(), GSN_DROP_DATABASE_REQ, signal, 1000,
+                       signal->length(),
+                       &handle);
+    return;
+  }
+
+  D("execDROP_DATABASE_REQ");
+
+  const DropDatabaseReq req_copy =
+    *(const DropDatabaseReq*)signal->getDataPtr();
+  const DropDatabaseReq* req = &req_copy;
+
+  ErrorInfo error;
+  do {
+    SchemaOpPtr op_ptr;
+    DropDatabaseRecPtr dropDbPtr;
+    DropDatabaseReq* impl_req = nullptr;
+
+    startClientReq(op_ptr, dropDbPtr, req, impl_req, error);
+    if (hasError(error)) {
+      jam();
+      break;
+    }
+
+    impl_req->databaseId = RNIL;
+    impl_req->databaseVersion = 0;
+
+    handleClientReq(signal, op_ptr, handle);
+    return;
+  } while (0);
+
+  releaseSections(handle);
+
+  DropDatabaseRef* ref = (DropDatabaseRef*)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->transId = req->transId;
+  ref->clientData = req->clientData;
+  getError(error, ref);
+  ref->errorStatus = error.errorStatus;
+  ref->errorKey = error.errorKey;
+
+  sendSignal(req->clientRef, GSN_DROP_DATABASE_REF, signal,
+	     DropDatabaseRef::SignalLength, JBB);
+}
+
+void
+Dbdict::dropDatabase_parse(Signal* signal, bool master,
+                           SchemaOpPtr op_ptr,
+                           SectionHandle& handle, ErrorInfo& error) {
+  jam();
+  (void)handle;
+  D("dropDatabase_parse");
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+  DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+
+  SegmentedSectionPtr objInfoPtr;
+  {
+    bool ok = handle.getSection(objInfoPtr, 0);
+    if (!ok) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return;
+    }
+  }
+  SimplePropertiesSectionReader it(objInfoPtr, getSectionSegmentPool());
+  DictDatabaseInfo::Database db;
+  db.init();
+  SimpleProperties::UnpackStatus status =
+    SimpleProperties::unpack(it,
+                             &db,
+                             DictDatabaseInfo::Mapping,
+                             DictDatabaseInfo::MappingSize);
+  if (status != SimpleProperties::Eof) {
+    jam();
+    setError(error, CreateTableRef::InvalidFormat, __LINE__);
+    return;
+  }
+  Uint32 len = Uint32(strlen(db.DatabaseName) + 1);
+  Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
+  DictObject *obj_ptr = get_object(db.DatabaseName, len, hash);
+  if (obj_ptr == nullptr) {
+    jam();
+    setError(error, DropTableRef::NoSuchTable, __LINE__);
+    return;
+  }
+  Uint32 databaseId = obj_ptr->m_id;
+  impl_req->databaseId = databaseId;
+  getOpRec(op_ptr, dropDbPtr);
+  ndbrequire(databaseId < c_noOfMetaTables);
+
+  SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
+  Uint32 err = check_read_obj(impl_req->databaseId, trans_ptr.p->m_transId);
+  if (err) {
+    jam();
+    setError(error, err, __LINE__);
+    return;
+  }
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  if (!ok) {
+    jam();
+    setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
+  impl_req->databaseVersion = db_ptr.p->m_version;
+  if (check_write_obj(impl_req->databaseId,
+                      trans_ptr.p->m_transId,
+                      SchemaFile::SF_DROP, error)) {
+    jam();
+    return;
+  }
+
+  {
+    DictObjectPtr check_obj_ptr;
+    Uint32 obj_ptr_i = db_ptr.p->m_obj_ptr_i;
+    bool ok = findDictObject(op_ptr, check_obj_ptr, obj_ptr_i);
+    ndbrequire(ok);
+  }
+  SchemaFile::TableEntry te; te.init();
+  te.m_tableState = SchemaFile::SF_DROP;
+  te.m_transId = trans_ptr.p->m_transId;
+  err = trans_log_schema_op(op_ptr, databaseId, &te);
+  if (err) {
+    jam();
+    setError(error, err, __LINE__);
+    return;
+  }
+}
+
+bool
+Dbdict::dropDatabase_subOps(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+  D("dropDatabase_subOps" << V(op_ptr.i) << *op_ptr.p);
+
+  Uint32 databaseId = dropDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+  return false;
+}
+
+void
+Dbdict::dropDatabase_reply(Signal* signal,
+                           SchemaOpPtr op_ptr,
+                           ErrorInfo error) {
+  SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+  D("dropDatabase_reply" << V(op_ptr.i) << *op_ptr.p);
+
+  if (!hasError(error)) {
+    jam();
+    DropDatabaseConf* conf = (DropDatabaseConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->clientData = op_ptr.p->m_clientData;
+    conf->transId = trans_ptr.p->m_transId;
+    conf->databaseId = dropDbPtr.p->m_request.databaseId;
+    conf->databaseVersion = dropDbPtr.p->m_request.databaseVersion;
+
+    D(V(conf->databaseId) << V(conf->databaseVersion));
+
+    Uint32 clientRef = op_ptr.p->m_clientRef;
+    sendSignal(clientRef, GSN_DROP_DATABASE_CONF, signal,
+               DropDatabaseConf::SignalLength, JBB);
+  } else {
+    jam();
+    DropDatabaseRef* ref = (DropDatabaseRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->clientData = op_ptr.p->m_clientData;
+    ref->transId = trans_ptr.p->m_transId;
+    getError(error, ref);
+    ref->errorStatus = error.errorStatus;
+    ref->errorKey = error.errorKey;
+
+    Uint32 clientRef = op_ptr.p->m_clientRef;
+    sendSignal(clientRef, GSN_DROP_DATABASE_REF, signal,
+               DropDatabaseRef::SignalLength, JBB);
+  }
+}
+
+void Dbdict::dropDatabase_prepare(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+  D("dropDatabase_prepare" << *op_ptr.p);
+
+  Uint32 databaseId = dropDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+
+  sendTransConf(signal, op_ptr);
+}
+
+void Dbdict::dropDatabase_commit(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+  D("dropDatabase_commit" << *op_ptr.p);
+
+  Uint32 databaseId = dropDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+
+  Callback c;
+  c.m_callbackData = op_ptr.p->op_key;
+  c.m_callbackFunction = safe_cast(&Dbdict::dropDb_alterComplete);
+  dropDbPtr.p->m_callback = c;
+  /**
+   * Prepare Drop database in DBTC
+   */
+  DropDbReq* req = (DropDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->databaseId = db_ptr.p->key;
+  req->databaseVersion = db_ptr.p->m_version;
+  req->requestType = DropDbReq::PREPARE_DROP;
+  sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
+             DropDbReq::SignalLength, JBB);
+}
+
+void
+Dbdict::send_disconnect_table_database(Signal *signal,
+                                       SchemaOpPtr op_ptr,
+                                       DatabasePtr db_ptr,
+                                       Uint32 next_table_id) {
+  Uint32 start_table_id = next_table_id;
+  while (next_table_id < m_max_schema_objects) {
+    if (is_table_connected_to_db(db_ptr, next_table_id)) {
+      db_ptr.p->m_table_id_check = next_table_id;
+      DisconnectTableDbReq* req = (DisconnectTableDbReq*)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = op_ptr.p->op_key;
+      req->requestType = DisconnectTableDbReq::DROP_DB;
+      req->databaseId = db_ptr.p->key;
+      req->tableId = next_table_id;
+      sendSignal(DBLQH_REF, GSN_DISCONNECT_TABLE_DB_REQ, signal,
+                 DisconnectTableDbReq::SignalLength, JBB);
+      return;
+    } else {
+      if ((next_table_id - start_table_id) > 300) {
+        signal->theData[0] = ZDICT_DISCONNECT_LOOP;
+        signal->theData[1] = op_ptr.p->op_key;
+        signal->theData[2] = next_table_id + 1;
+        sendSignal(reference(), GSN_CONTINUEB, signal,
+                   3, JBB);
+        return;
+      }
+    }
+    next_table_id++;
+  }
+  /* Finished disconnecting tables from a database */
+  dropDb_local(signal, op_ptr);
+}
+
+void Dbdict::execDISCONNECT_TABLE_DB_CONF(Signal *signal) {
+  D("execDISCONNECT_TABLE_DB_CONF");
+  DisconnectTableDbConf conf = *(DisconnectTableDbConf*)signal->getDataPtr();
+  if (refToBlock(signal->getSendersBlockRef()) == DBLQH) {
+    DisconnectTableDbReq* req = (DisconnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = conf.senderData;
+    req->requestType = conf.requestType;
+    req->databaseId = conf.databaseId;
+    req->tableId = conf.tableId;
+    sendSignal(DBTC_REF, GSN_DISCONNECT_TABLE_DB_REQ, signal,
+               DisconnectTableDbReq::SignalLength, JBB);
+    return;
+  }
+  if (conf.requestType == DisconnectTableDbReq::DROP_DB) {
+    jam();
+    dropDb_disconnectBlock(signal, conf.senderData);
+  } else if (conf.requestType == DisconnectTableDbReq::RENAME_TABLE) {
+    jam();
+    alterTable_tableDisconnectedDatabase(signal, conf.senderData);
+  } else {
+    ndbabort();
+  }
+}
+
+void Dbdict::execDISCONNECT_TABLE_DB_REF(Signal *signal) {
+  DisconnectTableDbRef ref = *(DisconnectTableDbRef*)signal->getDataPtr();
+  D("execDISCONNECT_TABLE_DB_REF");
+  /* Database already dropped, ignore error */
+  ndbrequire(ref.errorCode == DropTableRef::NoSuchTable);
+  ndbrequire(ref.requestType == DisconnectTableDbReq::DROP_DB);
+
+  if (refToBlock(signal->getSendersBlockRef()) == DBLQH) {
+    DisconnectTableDbReq* req = (DisconnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = ref.senderData;
+    req->requestType = ref.requestType;
+    req->databaseId = ref.databaseId;
+    req->tableId = ref.tableId;
+    sendSignal(DBTC_REF, GSN_DISCONNECT_TABLE_DB_REQ, signal,
+               DisconnectTableDbReq::SignalLength, JBB);
+    return;
+  }
+  ndbrequire(refToBlock(signal->getSendersBlockRef()) == DBTC);
+  if (ref.requestType == DisconnectTableDbReq::DROP_DB) {
+    jam();
+    dropDb_disconnectBlock(signal, ref.senderData);
+  } else if (ref.requestType == DisconnectTableDbReq::RENAME_TABLE) {
+    jam();
+    ndbabort();
+  } else {
+    ndbabort();
+  }
+}
+
+void Dbdict::dropDb_disconnectBlock(Signal *signal, Uint32 senderData) {
+  SchemaOpPtr op_ptr;
+  DropDatabaseRecPtr dropDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, dropDbPtr, senderData));
+
+  DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+
+  send_disconnect_table_database(signal,
+                                 op_ptr,
+                                 db_ptr,
+                                 db_ptr.p->m_table_id_check + 1);
+}
+
+void Dbdict::dropDb_local(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+
+  DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+
+  /**
+   * Drop database in LQH
+   */
+  DropDbReq* req = (DropDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->databaseId = db_ptr.p->key;
+  req->databaseVersion = db_ptr.p->m_version;
+  req->requestType = DropDbReq::COMMIT_DROP;
+  sendSignal(DBLQH_REF, GSN_DROP_DB_REQ, signal,
+             DropDbReq::SignalLength, JBB);
+}
+
+void Dbdict::execDROP_DB_CONF(Signal *signal) {
+  jamEntry();
+
+  D("execDROP_DB_CONF");
+  DropDbConf* conf = (DropDbConf*)signal->getDataPtr();
+
+  if (conf->requestType == DropDbReq::PREPARE_DROP) {
+    jam();
+
+    SchemaOpPtr op_ptr;
+    DropDatabaseRecPtr dropDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, dropDbPtr, conf->senderData));
+
+    DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, impl_req->databaseId);
+    ndbrequire(ok);
+    send_disconnect_table_database(signal, op_ptr, db_ptr, 0);
+  } else {
+    dropDb_completeBlock(signal, conf->senderData);
+  }
+}
+
+void Dbdict::execDROP_DB_REF(Signal *signal) {
+  jamEntry();
+  DropDbRef* ref = (DropDbRef*)signal->getDataPtr();
+  D("execDROP_DB_REF");
+  /* Database already dropped, ignore error */
+  ndbrequire(ref->errorCode == DropTableRef::NoSuchTable);
+  dropDb_completeBlock(signal, ref->senderData);
+}
+
+void Dbdict::dropDb_completeBlock(Signal *signal, Uint32 senderData) {
+  SchemaOpPtr op_ptr;
+  DropDatabaseRecPtr dropDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, dropDbPtr, senderData));
+
+  DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+
+  if (refToBlock(signal->getSendersBlockRef()) == DBLQH) {
+    jam();
+    /**
+     * Next step is dropping database in DBTC
+     */
+    DropDbReq* req = (DropDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->databaseId = db_ptr.p->key;
+    req->databaseVersion = db_ptr.p->m_version;
+    sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
+               DropDbReq::SignalLength, JBB);
+    return;
+  }
+  /* Finished dropping database */
+  execute(signal, dropDbPtr.p->m_callback, db_ptr.p->key);
+}
+
+void
+Dbdict::dropDb_alterComplete(Signal* signal,
+                             Uint32 op_key,
+                             Uint32 ret) {
+  jam();
+  DropDatabaseRecPtr dropDbPtr;
+  SchemaOpPtr op_ptr;
+  ndbrequire(findSchemaOp(op_ptr, dropDbPtr, op_key));
+  D("dropDb_alterComplete");
+  sendTransConf(signal, op_ptr);
+}
+
+void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  D("dropDatabase_complete");
+  DropDatabaseRecPtr dropDbPtr;
+  DatabasePtr db_ptr;
+  getOpRec(op_ptr, dropDbPtr);
+  DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+  unlinkDictObject(op_ptr);
+  ndbrequire(find_object(db_ptr, impl_req->databaseId));
+  release_object(db_ptr.p->m_obj_ptr_i);
+  db_ptr.p->m_obj_ptr_i = RNIL;
+
+  ndbrequire(m_current_allocated_rate >= db_ptr.p->m_rate_per_sec);
+  m_current_allocated_rate -= db_ptr.p->m_rate_per_sec;
+
+  ndbrequire(m_current_allocated_memory_quota_mb >= db_ptr.p->m_in_memory_size);
+  m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
+
+  ndbrequire(m_current_allocated_disk_quota_gb >= db_ptr.p->m_disk_space_size);
+  m_current_allocated_disk_quota_gb -= db_ptr.p->m_disk_space_size;
+
+  c_database_pool.release(db_ptr);
+  sendTransConf(signal, op_ptr);
+}
+
+void Dbdict::dropDatabase_abortParse(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+  const DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+  const Uint32 databaseId = impl_req->databaseId;
+  D("dropDatabase_abortParse" << V(databaseId) << *op_ptr.p);
+
+  do {
+    if (dropDbPtr.p->m_abortPrepareDone) {
+      jam();
+      D("done by abort prepare");
+      break;
+    }
+
+    if (databaseId == RNIL) {
+      jam();
+      D("no database allocated");
+      break;
+    }
+
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, databaseId);
+
+    // any link was to a new object
+    if (hasDictObject(op_ptr)) {
+      jam();
+      unlinkDictObject(op_ptr);
+      if (ok) {
+        jam();
+      }
+    }
+  } while (0);
+  sendTransConf(signal, op_ptr);
+}
+
+void Dbdict::dropDatabase_abortPrepare(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  DropDatabaseRecPtr dropDbPtr;
+  getOpRec(op_ptr, dropDbPtr);
+  const DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+  D("dropDatabase_abortPrepare" << *op_ptr.p);
+
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+}
+
+// MODULE: Alter Database
+
+const Dbdict::OpInfo
+Dbdict::AlterDatabaseRec::g_opInfo = {
+  { 'A', 'D', 'a', 0 },
+  ~RT_DBDICT_ALTER_DATABASE,
+  GSN_ALTER_DATABASE_REQ,
+  AlterDatabaseReq::SignalLength,
+  //
+  &Dbdict::alterDatabase_seize,
+  &Dbdict::alterDatabase_release,
+  //
+  &Dbdict::alterDatabase_parse,
+  &Dbdict::alterDatabase_subOps,
+  &Dbdict::alterDatabase_reply,
+  //
+  &Dbdict::alterDatabase_prepare,
+  &Dbdict::alterDatabase_commit,
+  &Dbdict::alterDatabase_complete,
+  //
+  &Dbdict::alterDatabase_abortParse,
+  &Dbdict::alterDatabase_abortPrepare
+};
+
+bool Dbdict::alterDatabase_seize(SchemaOpPtr op_ptr) {
+  jam();
+  D("alterDatabase_seize");
+  return seizeOpRec<AlterDatabaseRec>(op_ptr);
+}
+
+void Dbdict::alterDatabase_release(SchemaOpPtr op_ptr) {
+  jam();
+  D("alterDatabase_release");
+  AlterDatabaseRecPtr alterDatabasePtr;
+  getOpRec(op_ptr, alterDatabasePtr);
+  releaseOpRec<AlterDatabaseRec>(op_ptr);
+}
+
+void Dbdict::execALTER_DATABASE_REQ(Signal* signal) {
+  jamEntry();
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
+  SectionHandle handle(this, signal);
+  if(ERROR_INSERTED(9999)) {
+    g_eventLogger->info("Delaying GSN_ALTER_DATABASE_REQ");
+    sendSignalWithDelay(reference(), GSN_ALTER_DATABASE_REQ, signal, 1000,
+                       signal->length(),
+                       &handle);
+    return;
+  }
+
+  D("execALTER_DATABASE_REQ");
+
+  const AlterDatabaseReq req_copy =
+    *(const AlterDatabaseReq*)signal->getDataPtr();
+  const AlterDatabaseReq* req = &req_copy;
+
+  ErrorInfo error;
+  do {
+    SchemaOpPtr op_ptr;
+    AlterDatabaseRecPtr dropDbPtr;
+    AlterDatabaseReq* impl_req = nullptr;
+
+    startClientReq(op_ptr, dropDbPtr, req, impl_req, error);
+    if (hasError(error)) {
+      jam();
+      break;
+    }
+
+    impl_req->databaseId = RNIL;
+    impl_req->databaseVersion = 0;
+
+    handleClientReq(signal, op_ptr, handle);
+    return;
+  } while (0);
+
+  releaseSections(handle);
+
+  AlterDatabaseRef* ref = (AlterDatabaseRef*)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->transId = req->transId;
+  ref->clientData = req->clientData;
+  getError(error, ref);
+  ref->errorStatus = error.errorStatus;
+  ref->errorKey = error.errorKey;
+
+  sendSignal(req->clientRef, GSN_ALTER_DATABASE_REF, signal,
+	     AlterDatabaseRef::SignalLength, JBB);
+}
+
+void
+Dbdict::alterDatabase_parse(Signal* signal, bool master,
+                            SchemaOpPtr op_ptr,
+                            SectionHandle& handle, ErrorInfo& error) {
+  jam();
+  D("alterDatabase_parse");
+  (void)handle;
+
+  AlterDatabaseRecPtr alterDbPtr;
+  getOpRec(op_ptr, alterDbPtr);
+  AlterDatabaseReq* impl_req = &alterDbPtr.p->m_request;
+
+  SegmentedSectionPtr objInfoPtr;
+  {
+    bool ok = handle.getSection(objInfoPtr, 0);
+    if (!ok) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return;
+    }
+  }
+  SimplePropertiesSectionReader it(objInfoPtr, getSectionSegmentPool());
+  DictDatabaseInfo::Database db;
+  db.init();
+  SimpleProperties::UnpackStatus status =
+    SimpleProperties::unpack(it, &db,
+                             DictDatabaseInfo::Mapping,
+                             DictDatabaseInfo::MappingSize);
+  if (status != SimpleProperties::Eof) {
+    jam();
+    setError(error, CreateTableRef::InvalidFormat, __LINE__);
+    return;
+  }
+
+  Uint32 len = Uint32(strlen(db.DatabaseName) + 1);
+  Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
+  DictObject *obj_ptr = get_object(db.DatabaseName, len, hash);
+  if (obj_ptr == nullptr) {
+    jam();
+    setError(error, DropTableRef::NoSuchTable, __LINE__);
+    return;
+  }
+  Uint32 databaseId = obj_ptr->m_id;
+  impl_req->databaseId = databaseId;
+  getOpRec(op_ptr, alterDbPtr);
+  ndbrequire(databaseId < c_noOfMetaTables);
+
+  SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
+  Uint32 err = check_read_obj(impl_req->databaseId, trans_ptr.p->m_transId);
+  if (err) {
+    jam();
+    setError(error, err, __LINE__);
+    return;
+  }
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  if (!ok) {
+    jam();
+    setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
+  impl_req->databaseVersion = db_ptr.p->m_version;
+  if (check_write_obj(impl_req->databaseId,
+                      trans_ptr.p->m_transId,
+                      SchemaFile::SF_ALTER, error)) {
+    jam();
+    return;
+  }
+  {
+    DictObjectPtr check_obj_ptr;
+    Uint32 obj_ptr_i = db_ptr.p->m_obj_ptr_i;
+    bool ok = findDictObject(op_ptr, check_obj_ptr, obj_ptr_i);
+    ndbrequire(ok);
+  }
+  {
+    if (db_ptr.p->m_rate_per_sec < db.RatePerSec) {
+      Uint32 increase_rate =
+        db.RatePerSec - db_ptr.p->m_rate_per_sec;
+      Uint32 available_rate_limit =
+        m_allocated_alter_rate_limit - m_current_allocated_rate;
+      if (increase_rate > available_rate_limit ||
+          m_current_allocated_rate > m_allocated_alter_rate_limit) {
+        jam();
+        setError(error, CreateTableRef::AlterDbNoAvailableRates, __LINE__);
+        return;
+      }
+    }
+    if (db_ptr.p->m_in_memory_size < db.InMemorySize) {
+      Uint32 increase_memory_quota_mb =
+        db.InMemorySize - db_ptr.p->m_in_memory_size;
+      Uint32 available_memory_quota_limit =
+        m_allocated_memory_quota_limit - m_current_allocated_memory_quota_mb;
+      if (increase_memory_quota_mb > available_memory_quota_limit ||
+            (m_current_allocated_memory_quota_mb >
+              m_allocated_memory_quota_limit)) {
+        jam();
+        setError(error,
+                 CreateTableRef::AlterDbNoAvailableMemoryQuota,
+                 __LINE__);
+        return;
+      }
+    }
+    if (db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
+      Uint32 increase_disk_quota_gb =
+        db.DiskSpaceSize - db_ptr.p->m_disk_space_size;
+      Uint32 available_disk_quota_limit_gb =
+        m_allocated_disk_quota_limit_gb - m_current_allocated_disk_quota_gb;
+      if (increase_disk_quota_gb > available_disk_quota_limit_gb ||
+            (m_current_allocated_disk_quota_gb >
+              m_allocated_disk_quota_limit_gb)) {
+        jam();
+        setError(error,
+                 CreateTableRef::AlterDbNoAvailableDiskQuota,
+                 __LINE__);
+        return;
+      }
+    }
+    DatabasePtr alter_db_ptr;
+    alter_db_ptr.setNull();
+    if (!c_database_pool.seize(alter_db_ptr)) {
+      jam();
+      setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
+      return;
+    }
+    ndbrequire(db_ptr.p->m_alter_db_ref == RNIL);
+    db_ptr.p->m_alter_db_ref = alter_db_ptr.i;
+    alter_db_ptr.p->m_in_memory_size = db.InMemorySize;
+    alter_db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
+    alter_db_ptr.p->m_rate_per_sec = db.RatePerSec;
+    alter_db_ptr.p->m_max_transaction_size = db.MaxTransactionSize;
+    alter_db_ptr.p->m_max_parallel_transactions = db.MaxParallelTransactions;
+    alter_db_ptr.p->m_max_parallel_complex_queries =
+      db.MaxParallelComplexQueries;
+
+
+    SchemaFile::TableEntry te; te.init();
+    te.m_tableState = SchemaFile::SF_ALTER;
+    te.m_transId = trans_ptr.p->m_transId;
+    err = trans_log_schema_op(op_ptr, databaseId, &te);
+    if (err) {
+      jam();
+      c_database_pool.release(alter_db_ptr);
+      setError(error, err, __LINE__);
+      return;
+    }
+  }
+  // save sections to DICT memory
+  saveOpSection(op_ptr, handle, AlterDatabaseReq::DICT_TAB_INFO);
+}
+
+bool Dbdict::alterDatabase_subOps(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  AlterDatabaseRecPtr alterDbPtr;
+  getOpRec(op_ptr, alterDbPtr);
+  D("alterDatabase_subOps" << V(op_ptr.i) << *op_ptr.p);
+
+  Uint32 databaseId = alterDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+  return false;
+}
+
+void
+Dbdict::alterDatabase_reply(Signal* signal,
+                            SchemaOpPtr op_ptr,
+                            ErrorInfo error)
+{
+  SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
+  AlterDatabaseRecPtr alterDbPtr;
+  getOpRec(op_ptr, alterDbPtr);
+  D("alterDatabase_reply" << V(op_ptr.i) << *op_ptr.p);
+
+  if (!hasError(error)) {
+    jam();
+    AlterDatabaseConf* conf = (AlterDatabaseConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->clientData = op_ptr.p->m_clientData;
+    conf->transId = trans_ptr.p->m_transId;
+    conf->databaseId = alterDbPtr.p->m_request.databaseId;
+    conf->databaseVersion = alterDbPtr.p->m_request.databaseVersion;
+
+    D(V(conf->databaseId) << V(conf->databaseVersion));
+
+    Uint32 clientRef = op_ptr.p->m_clientRef;
+    sendSignal(clientRef, GSN_ALTER_DATABASE_CONF, signal,
+               AlterDatabaseConf::SignalLength, JBB);
+  } else {
+    jam();
+    AlterDatabaseRef* ref = (AlterDatabaseRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->clientData = op_ptr.p->m_clientData;
+    ref->transId = trans_ptr.p->m_transId;
+    getError(error, ref);
+    ref->errorStatus = error.errorStatus;
+    ref->errorKey = error.errorKey;
+
+    Uint32 clientRef = op_ptr.p->m_clientRef;
+    sendSignal(clientRef, GSN_ALTER_DATABASE_REF, signal,
+               AlterDatabaseRef::SignalLength, JBB);
+  }
+}
+
+void Dbdict::alterDatabase_prepare(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  AlterDatabaseRecPtr alterDbPtr;
+  getOpRec(op_ptr, alterDbPtr);
+  D("alterDatabase_prepare" << V(op_ptr.i) << *op_ptr.p);
+
+  Uint32 databaseId = alterDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+
+  Callback cb;
+  cb.m_callbackData = op_ptr.p->op_key;
+  cb.m_callbackFunction = safe_cast(&Dbdict::alterDb_writeTableConf);
+
+  jam();
+  const OpSection& tabInfoSec =
+    getOpSection(op_ptr, AlterDatabaseReq::DICT_TAB_INFO);
+  writeTableFile(signal, op_ptr, alterDbPtr.p->m_request.databaseId,
+                 tabInfoSec, &cb);
+}
+
+void
+Dbdict::alterDb_writeTableConf(Signal* signal,
+                               Uint32 op_key,
+                               Uint32 ret)
+{
+  jam();
+  SchemaOpPtr op_ptr;
+  AlterDatabaseRecPtr alterDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, alterDbPtr, op_key));
+  D("alterDb_writeTableConf");
+  sendTransConf(signal, op_ptr);
+}
+
+void
+Dbdict::alterDatabase_commit(Signal* signal, SchemaOpPtr op_ptr)
+{
+  jam();
+  AlterDatabaseRecPtr alterDbPtr;
+  getOpRec(op_ptr, alterDbPtr);
+  D("alterDatabase_commit" << *op_ptr.p);
+
+  Uint32 databaseId = alterDbPtr.p->m_request.databaseId;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, databaseId);
+  ndbrequire(ok);
+  DatabasePtr alter_db_ptr;
+  alter_db_ptr.i = db_ptr.p->m_alter_db_ref;
+  ndbrequire(alter_db_ptr.i != RNIL);
+  c_database_pool.getPtr(alter_db_ptr);
+
+  Callback c;
+  c.m_callbackData = op_ptr.p->op_key;
+  c.m_callbackFunction = safe_cast(&Dbdict::alterDb_alterComplete);
+  alterDbPtr.p->m_callback = c;
+
+  AlterDbReq* req = (AlterDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->databaseId = alter_db_ptr.p->key;
+  req->databaseVersion = alter_db_ptr.p->m_version;
+  req->requestType = 0;
+  req->inMemorySizeMB = (Uint32)
+    (alter_db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
+  req->diskSpaceSizeGB = (Uint32)
+    (alter_db_ptr.p->m_disk_space_size /
+    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
+  req->maxTransactionSize = alter_db_ptr.p->m_max_transaction_size;
+  req->maxParallelTransactions =
+    alter_db_ptr.p->m_max_parallel_transactions;
+  req->maxParallelComplexQueries =
+    alter_db_ptr.p->m_max_parallel_complex_queries;
+  sendSignal(DBTC_REF, GSN_ALTER_DB_REQ, signal,
+             AlterDbReq::SignalLength, JBB);
+}
+
+void
+Dbdict::execALTER_DB_CONF(Signal *signal)
+{
+  jamEntry();
+
+  D("execALTER_DB_CONF");
+  AlterDbConf conf = *(AlterDbConf*)signal->getDataPtr();
+
+  SchemaOpPtr op_ptr;
+  AlterDatabaseRecPtr alterDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, alterDbPtr, conf.senderData));
+
+  AlterDatabaseReq* impl_req = &alterDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+  ndbrequire(db_ptr.p->m_alter_db_ref != RNIL);
+  DatabasePtr alter_db_ptr;
+  alter_db_ptr.i = db_ptr.p->m_alter_db_ref;
+  c_database_pool.getPtr(alter_db_ptr);
+
+  if (refToBlock(signal->getSendersBlockRef()) == DBTC) {
+    jam();
+    AlterDbReq* req = (AlterDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->databaseId = alter_db_ptr.p->key;
+    req->databaseVersion = alter_db_ptr.p->m_version;
+    req->requestType = 0;
+    req->inMemorySizeMB = (Uint32)
+      (alter_db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
+    req->diskSpaceSizeGB = (Uint32)
+      (alter_db_ptr.p->m_disk_space_size /
+      (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+    req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
+    sendSignal(DBTC_REF, GSN_ALTER_DB_REQ, signal,
+               AlterDbReq::SignalLengthLQH, JBB);
+    return;
+  }
+
+  ndbrequire(m_current_allocated_rate >= db_ptr.p->m_rate_per_sec);
+  m_current_allocated_rate -= db_ptr.p->m_rate_per_sec;
+  m_current_allocated_rate += alter_db_ptr.p->m_rate_per_sec;
+  ndbrequire(m_current_allocated_rate <= m_allocated_alter_rate_limit);
+
+  ndbrequire(m_current_allocated_memory_quota_mb >=
+             db_ptr.p->m_in_memory_size);
+  m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
+  m_current_allocated_memory_quota_mb += alter_db_ptr.p->m_in_memory_size;
+  ndbrequire(m_current_allocated_memory_quota_mb <=
+             m_allocated_memory_quota_limit);
+
+  ndbrequire(m_current_allocated_disk_quota_gb >=
+             db_ptr.p->m_disk_space_size);
+  m_current_allocated_disk_quota_gb -= db_ptr.p->m_disk_space_size;
+  m_current_allocated_disk_quota_gb += alter_db_ptr.p->m_disk_space_size;
+  ndbrequire(m_current_allocated_disk_quota_gb <=
+             m_allocated_disk_quota_limit_gb);
+
+  db_ptr.p->m_in_memory_size = alter_db_ptr.p->m_in_memory_size;
+  db_ptr.p->m_disk_space_size = alter_db_ptr.p->m_disk_space_size;
+  db_ptr.p->m_rate_per_sec = alter_db_ptr.p->m_rate_per_sec;
+  db_ptr.p->m_max_transaction_size = alter_db_ptr.p->m_max_transaction_size;
+  db_ptr.p->m_max_parallel_transactions =
+    alter_db_ptr.p->m_max_parallel_transactions;
+  db_ptr.p->m_max_parallel_complex_queries =
+    alter_db_ptr.p->m_max_parallel_complex_queries;
+
+  c_database_pool.release(alter_db_ptr);
+  db_ptr.p->m_alter_db_ref = RNIL;
+  execute(signal, alterDbPtr.p->m_callback, db_ptr.p->key);
+}
+
+void
+Dbdict::execALTER_DB_REF(Signal *signal)
+{
+  jamEntry();
+  ndbabort();
+}
+
+void
+Dbdict::alterDb_alterComplete(Signal* signal,
+                              Uint32 op_key,
+                              Uint32 ret)
+{
+  jam();
+  SchemaOpPtr op_ptr;
+  AlterDatabaseRecPtr alterDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, alterDbPtr, op_key));
+  D("alterDb_alterComplete");
+  sendTransConf(signal, op_ptr);
+}
+
+void
+Dbdict::alterDatabase_complete(Signal* signal, SchemaOpPtr op_ptr)
+{
+  jam();
+  D("alterDatabase_complete");
+  sendTransConf(signal, op_ptr);
+}
+
+void
+Dbdict::alterDatabase_abortParse(Signal* signal, SchemaOpPtr op_ptr)
+{
+  jam();
+  AlterDatabaseRecPtr alterDbPtr;
+  getOpRec(op_ptr, alterDbPtr);
+  const AlterDatabaseReq* impl_req = &alterDbPtr.p->m_request;
+  const Uint32 databaseId = impl_req->databaseId;
+  D("alterDatabase_abortParse" << V(databaseId) << *op_ptr.p);
+
+
+  do {
+    if (alterDbPtr.p->m_abortPrepareDone) {
+      jam();
+      D("done by abort prepare");
+      break;
+    }
+
+    if (databaseId == RNIL) {
+      jam();
+      D("no database allocated");
+      break;
+    }
+
+    DatabasePtr db_ptr;
+    bool ok = find_object(db_ptr, databaseId);
+
+    // any link was to a new object
+    if (hasDictObject(op_ptr)) {
+      jam();
+      unlinkDictObject(op_ptr);
+      if (ok) {
+        jam();
+      }
+    }
+    if (db_ptr.p->m_alter_db_ref != RNIL) {
+      DatabasePtr alter_db_ptr;
+      alter_db_ptr.i = db_ptr.p->m_alter_db_ref;
+      c_database_pool.getPtr(alter_db_ptr);
+      c_database_pool.release(alter_db_ptr);
+      db_ptr.p->m_alter_db_ref = RNIL;
+    }
+  } while (0);
+  sendTransConf(signal, op_ptr);
+}
+
+void Dbdict::alterDatabase_abortPrepare(Signal* signal, SchemaOpPtr op_ptr) {
+  jam();
+  AlterDatabaseRecPtr alterDbPtr;
+  getOpRec(op_ptr, alterDbPtr);
+  const AlterDatabaseReq* impl_req = &alterDbPtr.p->m_request;
+  D("alterDatabase_abortPrepare" << *op_ptr.p);
+
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+
+  if (db_ptr.p->m_alter_db_ref != RNIL) {
+    DatabasePtr alter_db_ptr;
+    alter_db_ptr.i = db_ptr.p->m_alter_db_ref;
+    c_database_pool.getPtr(alter_db_ptr);
+    db_ptr.p->m_alter_db_ref = RNIL;
+  }
+}
+
+// MODULE: Get Database Quotas
+
+void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
+  jamEntry();
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
+  SectionHandle handle(this, signal);
+  if(ERROR_INSERTED(9999)) {
+    g_eventLogger->info("Delaying GSN_GET_DATABASE_REQ");
+    sendSignalWithDelay(reference(), GSN_GET_DATABASE_REQ, signal, 1000,
+                        signal->length(),
+                        &handle);
+    return;
+  }
+
+  D("execGET_DATABASE_REQ");
+
+  const GetDatabaseReq req_copy =
+    *(const GetDatabaseReq*)signal->getDataPtr();
+  const GetDatabaseReq* req = &req_copy;
+
+  Uint32 error = 0;
+  Uint32 errorLine = 0;
+  DatabasePtr db_ptr;
+  do {
+    SegmentedSectionPtr objInfoPtr;
+    Uint32 dbName[MAX_DB_NAME_SIZE / 4 + 1];
+    const char *dbNamePtr = (const char *)&dbName[0];
+    {
+      bool ok = handle.getSection(objInfoPtr, 0);
+      if (!ok) {
+        jam();
+        error = CreateTableRef::InvalidFormat;
+        errorLine = __LINE__;
+        break;
+      }
+    }
+    releaseSections(handle);
+    Uint32 name_len = objInfoPtr.sz;
+    if (name_len > (MAX_DB_NAME_SIZE + 1) ||
+        name_len < 2) {
+      jam();
+      error = CreateTableRef::InvalidFormat;
+      errorLine = __LINE__;
+      break;
+    }
+    copy(&dbName[0], objInfoPtr);
+    if (dbNamePtr[name_len - 1] != 0) {
+      jam();
+      error = CreateTableRef::InvalidFormat;
+      errorLine = __LINE__;
+      break;
+    }
+    Uint32 hash = LcLocalRope::hash(dbNamePtr, name_len);
+    DictObject *obj_ptr = get_object(dbNamePtr, name_len, hash);
+    if (obj_ptr == nullptr) {
+      error = DropTableRef::NoSuchTable;
+      errorLine = __LINE__;
+      break;
+    }
+    bool ok = find_object(db_ptr, obj_ptr->m_id);
+    if (!ok) {
+      jam();
+      error = GetTabInfoRef::TableNotDefined;
+      errorLine = __LINE__;
+      break;
+    }
+  } while (false);
+  if (error != 0) {
+    GetDatabaseRef* ref = (GetDatabaseRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->clientData = req->senderData;
+    ref->errorCode = error;
+    ref->errorLine = errorLine;
+    ref->errorNodeId = getOwnNodeId();
+    sendSignal(req->senderRef, GSN_GET_DATABASE_REF, signal,
+               GetDatabaseRef::SignalLength, JBB);
+    return;
+  }
+  GetDatabaseConf* conf = (GetDatabaseConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->clientData = req->senderData;
+  conf->databaseId = db_ptr.p->key;
+  conf->databaseVersion = db_ptr.p->m_version;
+  conf->InMemorySizeMB = (Uint32)
+    (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
+  conf->DiskSpaceSizeGB = (Uint32)
+    (db_ptr.p->m_disk_space_size /
+    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  conf->RatePerSec = db_ptr.p->m_rate_per_sec;
+  conf->MaxTransactionSize =
+    db_ptr.p->m_max_transaction_size;
+  conf->MaxParallelTransactions =
+    db_ptr.p->m_max_parallel_transactions;
+  conf->MaxParallelComplexQueries =
+    db_ptr.p->m_max_parallel_complex_queries;
+  sendSignal(req->senderRef, GSN_GET_DATABASE_CONF, signal,
+             GetDatabaseConf::SignalLength, JBB);
+}
+
+// MODULE: List Database Quotas
+
+void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
+  const ListDatabaseReq req_copy =
+    *(const ListDatabaseReq*)signal->getDataPtr();
+  const ListDatabaseReq* req = &req_copy;
+
+  DatabasePtr db_ptr;
+  bool found = false;
+  Uint32 dbId = req->nextDatabaseId;
+  Uint32 loop_count = 0;
+  for (; dbId < c_noOfMetaTables; dbId++) {
+    bool ok = find_object(db_ptr, dbId);
+    if (ok) {
+      found = true;
+      break;
+    }
+    if (loop_count >= 300) {
+      ListDatabaseReq* send_req = (ListDatabaseReq*)signal->getDataPtrSend();
+      memcpy(&signal->theData[0], req, sizeof(ListDatabaseReq));
+      send_req->nextDatabaseId = dbId + 1;
+      sendSignal(reference(), GSN_LIST_DATABASE_REQ, signal,
+                 ListDatabaseReq::SignalLength, JBB);
+      return;
+    }
+  }
+
+  if (!found) {
+    ListDatabaseConf* conf = (ListDatabaseConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->clientData = req->senderData;
+    conf->databaseId = RNIL;
+    sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
+               ListDatabaseConf::SignalLength, JBB);
+    return;
+  }
+  LcLocalRope name(db_ptr.p->m_name);
+  Uint32 dbName[MAX_DB_NAME_SIZE/4 + 1];
+  char *dbNamePtr = (char*)&dbName[0];
+  name.copy(dbNamePtr, sizeof(dbName));
+  Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
+  LinearSectionPtr lsPtr[3];
+  lsPtr[0].p = &dbName[0];
+  lsPtr[0].sz = db_name_len + 1;
+  ListDatabaseConf* conf = (ListDatabaseConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->clientData = req->senderData;
+  conf->databaseId = db_ptr.p->key;
+  conf->databaseVersion = db_ptr.p->m_version;
+  conf->InMemorySizeMB = (Uint32)
+    (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
+  conf->DiskSpaceSizeGB = (Uint32)
+    (db_ptr.p->m_disk_space_size /
+    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  conf->RatePerSec = db_ptr.p->m_rate_per_sec;
+  conf->MaxTransactionSize =
+    db_ptr.p->m_max_transaction_size;
+  conf->MaxParallelTransactions =
+    db_ptr.p->m_max_parallel_transactions;
+  conf->MaxParallelComplexQueries =
+    db_ptr.p->m_max_parallel_complex_queries;
+  sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
+             ListDatabaseConf::SignalLength, JBB, lsPtr, 1);
+}
+

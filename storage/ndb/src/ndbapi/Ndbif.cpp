@@ -756,6 +756,7 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       }
       tCon = receiver->getTransaction(receiver->getType());
       if (tCon != nullptr) {
+        DBUG_PRINT("info", ("receive TCKEYREF"));
         if (tCon->theSendStatus == NdbTransaction::sendTC_OP) {
           if (receiver->getType() == NdbReceiver::NDB_QUERY_OPERATION) {
             NdbQueryOperationImpl *tmp =

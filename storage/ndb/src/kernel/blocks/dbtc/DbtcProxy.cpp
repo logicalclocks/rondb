@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -84,6 +84,46 @@ DbtcProxy::DbtcProxy(Block_context &ctx) : DbgdmProxy(DBTC, ctx) {
   addRecSignal(GSN_DROP_FK_IMPL_REQ, &DbtcProxy::execDROP_FK_IMPL_REQ);
   addRecSignal(GSN_DROP_FK_IMPL_CONF, &DbtcProxy::execDROP_FK_IMPL_CONF);
   addRecSignal(GSN_DROP_FK_IMPL_REF, &DbtcProxy::execDROP_FK_IMPL_REF);
+
+  // GSN_CREATE_DB_REQ
+  addRecSignal(GSN_CREATE_DB_REQ, &DbtcProxy::execCREATE_DB_REQ);
+  addRecSignal(GSN_CREATE_DB_CONF, &DbtcProxy::execCREATE_DB_CONF);
+  addRecSignal(GSN_CREATE_DB_REF, &DbtcProxy::execCREATE_DB_REF);
+
+  // GSN_ALTER_DB_REQ
+  addRecSignal(GSN_ALTER_DB_REQ, &DbtcProxy::execALTER_DB_REQ);
+  addRecSignal(GSN_ALTER_DB_CONF, &DbtcProxy::execALTER_DB_CONF);
+  addRecSignal(GSN_ALTER_DB_REF, &DbtcProxy::execALTER_DB_REF);
+
+  // GSN_DROP_DB_REQ
+  addRecSignal(GSN_DROP_DB_REQ, &DbtcProxy::execDROP_DB_REQ);
+  addRecSignal(GSN_DROP_DB_CONF, &DbtcProxy::execDROP_DB_CONF);
+  addRecSignal(GSN_DROP_DB_REF, &DbtcProxy::execDROP_DB_REF);
+
+  // GSN_COMMIT_DB_REQ
+  addRecSignal(GSN_COMMIT_DB_REQ, &DbtcProxy::execCOMMIT_DB_REQ);
+  addRecSignal(GSN_COMMIT_DB_CONF, &DbtcProxy::execCOMMIT_DB_CONF);
+  addRecSignal(GSN_COMMIT_DB_REF, &DbtcProxy::execCOMMIT_DB_REF);
+
+  // GSN_CONNECT_TABLE_DB_REQ
+  addRecSignal(GSN_CONNECT_TABLE_DB_REQ,
+               &DbtcProxy::execCONNECT_TABLE_DB_REQ);
+  addRecSignal(GSN_CONNECT_TABLE_DB_CONF,
+               &DbtcProxy::execCONNECT_TABLE_DB_CONF);
+  addRecSignal(GSN_CONNECT_TABLE_DB_REF,
+               &DbtcProxy::execCONNECT_TABLE_DB_REF);
+
+  // GSN_DISCONNECT_TABLE_DB_REQ
+  addRecSignal(GSN_DISCONNECT_TABLE_DB_REQ,
+               &DbtcProxy::execDISCONNECT_TABLE_DB_REQ);
+  addRecSignal(GSN_DISCONNECT_TABLE_DB_CONF,
+               &DbtcProxy::execDISCONNECT_TABLE_DB_CONF);
+  addRecSignal(GSN_DISCONNECT_TABLE_DB_REF,
+               &DbtcProxy::execDISCONNECT_TABLE_DB_REF);
+
+  addRecSignal(GSN_DATABASE_RATE_ORD, &DbtcProxy::execDATABASE_RATE_ORD);
+  addRecSignal(GSN_RATE_OVERLOAD_REP, &DbtcProxy::execRATE_OVERLOAD_REP);
+  addRecSignal(GSN_QUOTA_OVERLOAD_REP, &DbtcProxy::execQUOTA_OVERLOAD_REP);
 
   m_tc_seize_req_instance = 0;
 }
@@ -766,6 +806,586 @@ void DbtcProxy::sendDROP_FK_IMPL_CONF(Signal *signal, Uint32 ssId) {
   }
 
   ssRelease<Ss_DROP_FK_IMPL_REQ>(ssId);
+}
+
+// GSN_CREATE_DB_REQ
+
+void
+DbtcProxy::execCREATE_DB_REQ(Signal* signal)
+{
+  jam();
+  const CreateDbReq* req = (const CreateDbReq*)signal->getDataPtr();
+  Ss_CREATE_DB_REQ& ss = ssSeize<Ss_CREATE_DB_REQ>();
+  ss.m_req = *req;
+  ndbrequire(signal->getLength() == CreateDbReq::SignalLengthTC);
+  sendREQ(signal, ss);
+}
+
+void
+DbtcProxy::sendCREATE_DB_REQ(Signal* signal,
+                             Uint32 ssId,
+                             SectionHandle* handle)
+{
+  jam();
+  Ss_CREATE_DB_REQ& ss = ssFind<Ss_CREATE_DB_REQ>(ssId);
+
+  CreateDbReq* req = (CreateDbReq*)signal->getDataPtrSend();
+  *req = ss.m_req;
+  req->senderRef = reference();
+  req->senderData = ssId;
+  sendSignalNoRelease(workerRef(ss.m_worker), GSN_CREATE_DB_REQ,
+                      signal, CreateDbReq::SignalLengthTC, JBB, handle);
+}
+
+void
+DbtcProxy::execCREATE_DB_CONF(Signal* signal)
+{
+  jam();
+  const CreateDbConf* conf = (const CreateDbConf*)signal->getDataPtr();
+  Uint32 ssId = conf->senderData;
+  Ss_CREATE_DB_REQ& ss = ssFind<Ss_CREATE_DB_REQ>(ssId);
+  recvCONF(signal, ss);
+}
+
+void
+DbtcProxy::execCREATE_DB_REF(Signal* signal)
+{
+  jam();
+  const CreateDbRef* ref = (const CreateDbRef*)signal->getDataPtr();
+  Uint32 ssId = ref->senderData;
+  Ss_CREATE_DB_REQ& ss = ssFind<Ss_CREATE_DB_REQ>(ssId);
+  recvREF(signal, ss, ref->errorCode);
+}
+
+void
+DbtcProxy::sendCREATE_DB_CONF(Signal* signal, Uint32 ssId)
+{
+  jam();
+  Ss_CREATE_DB_REQ& ss = ssFind<Ss_CREATE_DB_REQ>(ssId);
+  BlockReference dictRef = ss.m_req.senderRef;
+
+  if (!lastReply(ss))
+  {
+    jam();
+    return;
+  }
+
+  if (ss.m_error == 0) {
+    jam();
+    CreateDbConf* conf = (CreateDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = ss.m_req.senderData;
+    conf->databaseId = ss.m_req.databaseId;
+    sendSignal(dictRef, GSN_CREATE_DB_CONF,
+               signal, CreateDbConf::SignalLength, JBB);
+  } else {
+    jam();
+    CreateDbRef* ref = (CreateDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = ss.m_req.senderData;
+    ref->databaseId = ss.m_req.databaseId;
+    ref->errorCode = ss.m_error;
+    ref->errorLine = 0;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(dictRef, GSN_CREATE_DB_REF,
+               signal, CreateDbConf::SignalLength, JBB);
+  }
+
+  ssRelease<Ss_CREATE_DB_REQ>(ssId);
+}
+
+// GSN_CONNECT_TABLE_DB_REQ
+
+void
+DbtcProxy::execCONNECT_TABLE_DB_REQ(Signal* signal)
+{
+  jam();
+  const ConnectTableDbReq* req =
+    (const ConnectTableDbReq*)signal->getDataPtr();
+  Ss_CONNECT_TABLE_DB_REQ& ss = ssSeize<Ss_CONNECT_TABLE_DB_REQ>();
+  ss.m_req = *req;
+  ndbrequire(signal->getLength() == ConnectTableDbReq::SignalLength);
+  sendREQ(signal, ss);
+}
+
+void
+DbtcProxy::sendCONNECT_TABLE_DB_REQ(Signal* signal,
+                                    Uint32 ssId,
+                                    SectionHandle* handle)
+{
+  jam();
+  Ss_CONNECT_TABLE_DB_REQ& ss = ssFind<Ss_CONNECT_TABLE_DB_REQ>(ssId);
+
+  ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+  *req = ss.m_req;
+  req->senderRef = reference();
+  req->senderData = ssId;
+  sendSignalNoRelease(workerRef(ss.m_worker), GSN_CONNECT_TABLE_DB_REQ,
+                      signal, ConnectTableDbReq::SignalLength, JBB, handle);
+}
+
+void
+DbtcProxy::execCONNECT_TABLE_DB_CONF(Signal* signal)
+{
+  jam();
+  const ConnectTableDbConf* conf =
+    (const ConnectTableDbConf*)signal->getDataPtr();
+  Uint32 ssId = conf->senderData;
+  Ss_CONNECT_TABLE_DB_REQ& ss = ssFind<Ss_CONNECT_TABLE_DB_REQ>(ssId);
+  recvCONF(signal, ss);
+}
+
+void
+DbtcProxy::execCONNECT_TABLE_DB_REF(Signal* signal)
+{
+  jam();
+  const ConnectTableDbRef* ref =
+    (const ConnectTableDbRef*)signal->getDataPtr();
+  Uint32 ssId = ref->senderData;
+  Ss_CONNECT_TABLE_DB_REQ& ss = ssFind<Ss_CONNECT_TABLE_DB_REQ>(ssId);
+  recvREF(signal, ss, ref->errorCode);
+}
+
+void
+DbtcProxy::sendCONNECT_TABLE_DB_CONF(Signal* signal, Uint32 ssId)
+{
+  jam();
+  Ss_CONNECT_TABLE_DB_REQ& ss = ssFind<Ss_CONNECT_TABLE_DB_REQ>(ssId);
+  BlockReference dictRef = ss.m_req.senderRef;
+
+  if (!lastReply(ss))
+  {
+    jam();
+    return;
+  }
+
+  if (ss.m_error == 0) {
+    jam();
+    ConnectTableDbConf* conf = (ConnectTableDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = ss.m_req.senderData;
+    conf->requestType = ss.m_req.requestType;
+    conf->databaseId = ss.m_req.databaseId;
+    conf->tableId = ss.m_req.tableId;
+    sendSignal(dictRef, GSN_CONNECT_TABLE_DB_CONF,
+               signal, ConnectTableDbConf::SignalLength, JBB);
+  } else {
+    jam();
+    ConnectTableDbRef* ref = (ConnectTableDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = ss.m_req.senderData;
+    ref->requestType = ss.m_req.requestType;
+    ref->databaseId = ss.m_req.databaseId;
+    ref->tableId = ss.m_req.tableId;
+    ref->errorCode = ss.m_error;
+    ref->errorLine = 0;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(dictRef, GSN_CONNECT_TABLE_DB_REF,
+               signal, ConnectTableDbConf::SignalLength, JBB);
+  }
+  ssRelease<Ss_CONNECT_TABLE_DB_REQ>(ssId);
+}
+
+// GSN_DISCONNECT_TABLE_DB_REQ
+
+void
+DbtcProxy::execDISCONNECT_TABLE_DB_REQ(Signal* signal)
+{
+  jam();
+  const DisconnectTableDbReq* req =
+    (const DisconnectTableDbReq*)signal->getDataPtr();
+  Ss_DISCONNECT_TABLE_DB_REQ& ss = ssSeize<Ss_DISCONNECT_TABLE_DB_REQ>();
+  ss.m_req = *req;
+  ndbrequire(signal->getLength() == DisconnectTableDbReq::SignalLength);
+  sendREQ(signal, ss);
+}
+
+void
+DbtcProxy::sendDISCONNECT_TABLE_DB_REQ(Signal* signal,
+                                       Uint32 ssId,
+                                       SectionHandle* handle)
+{
+  jam();
+  Ss_DISCONNECT_TABLE_DB_REQ& ss = ssFind<Ss_DISCONNECT_TABLE_DB_REQ>(ssId);
+
+  DisconnectTableDbReq* req = (DisconnectTableDbReq*)signal->getDataPtrSend();
+  *req = ss.m_req;
+  req->senderRef = reference();
+  req->senderData = ssId;
+  sendSignalNoRelease(workerRef(ss.m_worker), GSN_DISCONNECT_TABLE_DB_REQ,
+                      signal, DisconnectTableDbReq::SignalLength, JBB, handle);
+}
+
+void
+DbtcProxy::execDISCONNECT_TABLE_DB_CONF(Signal* signal)
+{
+  jam();
+  const DisconnectTableDbConf* conf =
+    (const DisconnectTableDbConf*)signal->getDataPtr();
+  Uint32 ssId = conf->senderData;
+  Ss_DISCONNECT_TABLE_DB_REQ& ss = ssFind<Ss_DISCONNECT_TABLE_DB_REQ>(ssId);
+  recvCONF(signal, ss);
+}
+
+void
+DbtcProxy::execDISCONNECT_TABLE_DB_REF(Signal* signal)
+{
+  jam();
+  const DisconnectTableDbRef* ref =
+    (const DisconnectTableDbRef*)signal->getDataPtr();
+  Uint32 ssId = ref->senderData;
+  Ss_DISCONNECT_TABLE_DB_REQ& ss = ssFind<Ss_DISCONNECT_TABLE_DB_REQ>(ssId);
+  recvREF(signal, ss, ref->errorCode);
+}
+
+void
+DbtcProxy::sendDISCONNECT_TABLE_DB_CONF(Signal* signal, Uint32 ssId)
+{
+  jam();
+  Ss_DISCONNECT_TABLE_DB_REQ& ss = ssFind<Ss_DISCONNECT_TABLE_DB_REQ>(ssId);
+  BlockReference dictRef = ss.m_req.senderRef;
+
+  if (!lastReply(ss))
+  {
+    jam();
+    return;
+  }
+
+  if (ss.m_error == 0) {
+    jam();
+    DisconnectTableDbConf* conf = (DisconnectTableDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = ss.m_req.senderData;
+    conf->requestType = ss.m_req.requestType;
+    conf->databaseId = ss.m_req.databaseId;
+    conf->tableId = ss.m_req.tableId;
+    sendSignal(dictRef, GSN_DISCONNECT_TABLE_DB_CONF,
+               signal, DisconnectTableDbConf::SignalLength, JBB);
+  } else {
+    jam();
+    DisconnectTableDbRef* ref = (DisconnectTableDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = ss.m_req.senderData;
+    ref->requestType = ss.m_req.requestType;
+    ref->databaseId = ss.m_req.databaseId;
+    ref->tableId = ss.m_req.tableId;
+    ref->errorCode = ss.m_error;
+    ref->errorLine = 0;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(dictRef, GSN_DISCONNECT_TABLE_DB_REF,
+               signal, DisconnectTableDbConf::SignalLength, JBB);
+  }
+  ssRelease<Ss_DISCONNECT_TABLE_DB_REQ>(ssId);
+}
+
+// GSN_COMMIT_DB_REQ
+
+void
+DbtcProxy::execCOMMIT_DB_REQ(Signal* signal)
+{
+  jam();
+  const CommitDbReq* req =
+    (const CommitDbReq*)signal->getDataPtr();
+  Ss_COMMIT_DB_REQ& ss = ssSeize<Ss_COMMIT_DB_REQ>();
+  ss.m_req = *req;
+  ndbrequire(signal->getLength() == CommitDbReq::SignalLength);
+  sendREQ(signal, ss);
+}
+
+void
+DbtcProxy::sendCOMMIT_DB_REQ(Signal* signal,
+                             Uint32 ssId,
+                             SectionHandle* handle)
+{
+  jam();
+  Ss_COMMIT_DB_REQ& ss = ssFind<Ss_COMMIT_DB_REQ>(ssId);
+
+  CommitDbReq* req = (CommitDbReq*)signal->getDataPtrSend();
+  *req = ss.m_req;
+  req->senderRef = reference();
+  req->senderData = ssId;
+  sendSignalNoRelease(workerRef(ss.m_worker), GSN_COMMIT_DB_REQ,
+                      signal, CommitDbReq::SignalLength, JBB, handle);
+}
+
+void
+DbtcProxy::execCOMMIT_DB_CONF(Signal* signal)
+{
+  jam();
+  const CommitDbConf* conf =
+    (const CommitDbConf*)signal->getDataPtr();
+  Uint32 ssId = conf->senderData;
+  Ss_COMMIT_DB_REQ& ss = ssFind<Ss_COMMIT_DB_REQ>(ssId);
+  recvCONF(signal, ss);
+}
+
+void
+DbtcProxy::execCOMMIT_DB_REF(Signal* signal)
+{
+  jam();
+  const CommitDbRef* ref =
+    (const CommitDbRef*)signal->getDataPtr();
+  Uint32 ssId = ref->senderData;
+  Ss_COMMIT_DB_REQ& ss = ssFind<Ss_COMMIT_DB_REQ>(ssId);
+  recvREF(signal, ss, ref->errorCode);
+}
+
+void
+DbtcProxy::sendCOMMIT_DB_CONF(Signal* signal, Uint32 ssId)
+{
+  jam();
+  Ss_COMMIT_DB_REQ& ss = ssFind<Ss_COMMIT_DB_REQ>(ssId);
+  BlockReference dictRef = ss.m_req.senderRef;
+
+  if (!lastReply(ss))
+  {
+    jam();
+    return;
+  }
+
+  if (ss.m_error == 0) {
+    jam();
+    CommitDbConf* conf = (CommitDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = ss.m_req.senderData;
+    conf->databaseId = ss.m_req.databaseId;
+    sendSignal(dictRef, GSN_COMMIT_DB_CONF,
+               signal, CommitDbConf::SignalLength, JBB);
+  } else {
+    jam();
+    CommitDbRef* ref = (CommitDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = ss.m_req.senderData;
+    ref->databaseId = ss.m_req.databaseId;
+    ref->errorCode = ss.m_error;
+    ref->errorLine = 0;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(dictRef, GSN_COMMIT_DB_REF,
+               signal, CommitDbConf::SignalLength, JBB);
+  }
+  ssRelease<Ss_COMMIT_DB_REQ>(ssId);
+}
+
+// GSN_DROP_DB_REQ
+
+void
+DbtcProxy::execDROP_DB_REQ(Signal* signal)
+{
+  jam();
+  const DropDbReq* req =
+    (const DropDbReq*)signal->getDataPtr();
+  Ss_DROP_DB_REQ& ss = ssSeize<Ss_DROP_DB_REQ>();
+  ss.m_req = *req;
+  ndbrequire(signal->getLength() == DropDbReq::SignalLength);
+  sendREQ(signal, ss);
+}
+
+void
+DbtcProxy::sendDROP_DB_REQ(Signal* signal,
+                           Uint32 ssId,
+                           SectionHandle* handle)
+{
+  jam();
+  Ss_DROP_DB_REQ& ss = ssFind<Ss_DROP_DB_REQ>(ssId);
+
+  DropDbReq* req = (DropDbReq*)signal->getDataPtrSend();
+  *req = ss.m_req;
+  req->senderRef = reference();
+  req->senderData = ssId;
+  sendSignalNoRelease(workerRef(ss.m_worker), GSN_DROP_DB_REQ,
+                      signal, DropDbReq::SignalLength, JBB, handle);
+}
+
+void
+DbtcProxy::execDROP_DB_CONF(Signal* signal)
+{
+  jam();
+  const DropDbConf* conf =
+    (const DropDbConf*)signal->getDataPtr();
+  Uint32 ssId = conf->senderData;
+  Ss_DROP_DB_REQ& ss = ssFind<Ss_DROP_DB_REQ>(ssId);
+  recvCONF(signal, ss);
+}
+
+void
+DbtcProxy::execDROP_DB_REF(Signal* signal)
+{
+  jam();
+  const DropDbRef* ref =
+    (const DropDbRef*)signal->getDataPtr();
+  Uint32 ssId = ref->senderData;
+  Ss_DROP_DB_REQ& ss = ssFind<Ss_DROP_DB_REQ>(ssId);
+  recvREF(signal, ss, ref->errorCode);
+}
+
+void
+DbtcProxy::sendDROP_DB_CONF(Signal* signal, Uint32 ssId)
+{
+  jam();
+  Ss_DROP_DB_REQ& ss = ssFind<Ss_DROP_DB_REQ>(ssId);
+  BlockReference dictRef = ss.m_req.senderRef;
+
+  if (!lastReply(ss))
+  {
+    jam();
+    return;
+  }
+
+  if (ss.m_error == 0) {
+    jam();
+    DropDbConf* conf = (DropDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = ss.m_req.senderData;
+    conf->databaseId = ss.m_req.databaseId;
+    sendSignal(dictRef, GSN_DROP_DB_CONF,
+               signal, DropDbConf::SignalLength, JBB);
+  } else {
+    jam();
+    DropDbRef* ref = (DropDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = ss.m_req.senderData;
+    ref->databaseId = ss.m_req.databaseId;
+    ref->errorCode = ss.m_error;
+    ref->errorLine = 0;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(dictRef, GSN_DROP_DB_REF,
+               signal, DropDbConf::SignalLength, JBB);
+  }
+  ssRelease<Ss_DROP_DB_REQ>(ssId);
+}
+
+// GSN_ALTER_DB_REQ
+
+void
+DbtcProxy::execALTER_DB_REQ(Signal* signal)
+{
+  jam();
+  const AlterDbReq* req =
+    (const AlterDbReq*)signal->getDataPtr();
+  Ss_ALTER_DB_REQ& ss = ssSeize<Ss_ALTER_DB_REQ>();
+  ss.m_req = *req;
+  ndbrequire(signal->getLength() == AlterDbReq::SignalLength);
+  sendREQ(signal, ss);
+}
+
+void
+DbtcProxy::sendALTER_DB_REQ(Signal* signal,
+                            Uint32 ssId,
+                            SectionHandle* handle)
+{
+  jam();
+  Ss_ALTER_DB_REQ& ss = ssFind<Ss_ALTER_DB_REQ>(ssId);
+
+  AlterDbReq* req = (AlterDbReq*)signal->getDataPtrSend();
+  *req = ss.m_req;
+  req->senderRef = reference();
+  req->senderData = ssId;
+  sendSignalNoRelease(workerRef(ss.m_worker), GSN_ALTER_DB_REQ,
+                      signal, AlterDbReq::SignalLength, JBB, handle);
+}
+
+void
+DbtcProxy::execALTER_DB_CONF(Signal* signal)
+{
+  jam();
+  const AlterDbConf* conf =
+    (const AlterDbConf*)signal->getDataPtr();
+  Uint32 ssId = conf->senderData;
+  Ss_ALTER_DB_REQ& ss = ssFind<Ss_ALTER_DB_REQ>(ssId);
+  recvCONF(signal, ss);
+}
+
+void
+DbtcProxy::execALTER_DB_REF(Signal* signal)
+{
+  jam();
+  const AlterDbRef* ref =
+    (const AlterDbRef*)signal->getDataPtr();
+  Uint32 ssId = ref->senderData;
+  Ss_ALTER_DB_REQ& ss = ssFind<Ss_ALTER_DB_REQ>(ssId);
+  recvREF(signal, ss, ref->errorCode);
+}
+
+void
+DbtcProxy::sendALTER_DB_CONF(Signal* signal, Uint32 ssId)
+{
+  jam();
+  Ss_ALTER_DB_REQ& ss = ssFind<Ss_ALTER_DB_REQ>(ssId);
+  BlockReference dictRef = ss.m_req.senderRef;
+
+  if (!lastReply(ss))
+  {
+    jam();
+    return;
+  }
+
+  if (ss.m_error == 0) {
+    jam();
+    AlterDbConf* conf = (AlterDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = ss.m_req.senderData;
+    conf->databaseId = ss.m_req.databaseId;
+    sendSignal(dictRef, GSN_ALTER_DB_CONF,
+               signal, AlterDbConf::SignalLength, JBB);
+  } else {
+    jam();
+    AlterDbRef* ref = (AlterDbRef*)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = ss.m_req.senderData;
+    ref->databaseId = ss.m_req.databaseId;
+    ref->errorCode = ss.m_error;
+    ref->errorLine = 0;
+    ref->errorKey = 0;
+    ref->errorStatus = 0;
+    sendSignal(dictRef, GSN_ALTER_DB_REF,
+               signal, AlterDbConf::SignalLength, JBB);
+  }
+  ssRelease<Ss_ALTER_DB_REQ>(ssId);
+}
+
+void
+DbtcProxy::execDATABASE_RATE_ORD(Signal* signal)
+{
+  /* Distribute signal to all DBTC instances */
+  for (Uint32 i = 0; i < globalData.ndbMtTcWorkers; i++)
+  {
+    BlockReference ref = numberToRef(DBTC, i + 1, getOwnNodeId());
+    sendSignal(ref, GSN_DATABASE_RATE_ORD, signal,
+               DatabaseRateOrd::SignalLength, JBB);
+  }
+}
+
+void
+DbtcProxy::execRATE_OVERLOAD_REP(Signal* signal)
+{
+  RateOverloadRep* const rep = (RateOverloadRep*)signal->getDataPtr();
+  Uint32 databaseId = rep->databaseId;
+  Uint32 num_tc_threads = globalData.ndbMtTcWorkers;
+  ndbrequire(num_tc_threads > 0);
+  Uint32 instance_tc = (databaseId % num_tc_threads) + 1;
+  /* Distribute signal only to global DBTC instance */
+  BlockReference ref = numberToRef(DBTC,
+                                   instance_tc,
+                                   getOwnNodeId());
+  sendSignal(ref, GSN_RATE_OVERLOAD_REP, signal,
+             RateOverloadRep::SignalLength, JBB);
+}
+
+void
+DbtcProxy::execQUOTA_OVERLOAD_REP(Signal* signal)
+{
+  /* Distribute signal to all DBTC instances */
+  for (Uint32 i = 0; i < globalData.ndbMtTcWorkers; i++)
+  {
+    BlockReference ref = numberToRef(DBTC, i + 1, getOwnNodeId());
+    sendSignal(ref, GSN_QUOTA_OVERLOAD_REP, signal,
+               QuotaOverloadRep::SignalLength, JBB);
+  }
 }
 
 BLOCK_FUNCTIONS(DbtcProxy)

@@ -571,6 +571,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
   /* RonDB additions */
 
   {
+    CFG_DB_ACTIVATE_RATE_LIMITS,
+    "ActivateRateLimits",
+    DB_TOKEN,
+    "Activate Rate Limits on Databases",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true" },
+
+  {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
     "MaxNoOfSchemaObjects",
     DB_TOKEN,

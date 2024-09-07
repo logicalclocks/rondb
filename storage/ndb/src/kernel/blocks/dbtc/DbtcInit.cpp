@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -139,6 +139,14 @@ Uint64 Dbtc::getTransactionMemoryNeed(
 
 void Dbtc::initData() 
 {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  m_tot_queued_tckeyreq = 0;
+  m_tot_send_queued_tckeyreq = 0;
+  m_tot_queued_scan_tabreq = 0;
+  m_tot_send_queued_scan_tabreq = 0;
+  m_tot_queued_scan_nextreq = 0;
+  m_tot_send_queued_scan_nextreq = 0;
+#endif
 #ifdef DEBUG_QUERY_THREAD_USAGE
   c_qt_used_dirty_flag = 0;
   c_qt_used_locked_read = 0;
@@ -162,6 +170,8 @@ void Dbtc::initData()
   c_last_no_qt_exec_write_count = 0;
   c_last_no_qt_wrong_version = 0;
 #endif
+  m_max_database_id = 0;
+  m_rate_limit_supported = true;
   m_gcp_finished = 0;
   m_gcp_finished_prev = 0;
   chostFilesize = MAX_NODES;
@@ -481,10 +491,12 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   c_maxNumberOfIndexes(0),
   c_fk_hash(c_fk_pool),
   c_currentApiConTimers(NULL),
-  m_commitAckMarkerHash(m_commitAckMarkerPool)
+  m_commitAckMarkerHash(m_commitAckMarkerPool),
+  m_databaseRecordHash(m_databaseRecordPool)
 {
   BLOCK_CONSTRUCTOR(Dbtc);
 
+  m_rate_limit_supported = true;  
   cfreeTcConnectFail.init();
 
   const ndb_mgm_configuration_iterator *p = ctx.m_config.getOwnConfigIterator();
@@ -509,6 +521,17 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   addRecSignal(GSN_LQHKEYREF, &Dbtc::execLQHKEYREF);
 
   // Received signals
+
+  addRecSignal(GSN_CREATE_DB_REQ, &Dbtc::execCREATE_DB_REQ);
+  addRecSignal(GSN_ALTER_DB_REQ, &Dbtc::execALTER_DB_REQ);
+  addRecSignal(GSN_DROP_DB_REQ, &Dbtc::execDROP_DB_REQ);
+  addRecSignal(GSN_CONNECT_TABLE_DB_REQ, &Dbtc::execCONNECT_TABLE_DB_REQ);
+  addRecSignal(GSN_DISCONNECT_TABLE_DB_REQ, &Dbtc::execDISCONNECT_TABLE_DB_REQ);
+  addRecSignal(GSN_COMMIT_DB_REQ, &Dbtc::execCOMMIT_DB_REQ);
+  addRecSignal(GSN_DATABASE_QUOTA_REP, &Dbtc::execDATABASE_QUOTA_REP);
+  addRecSignal(GSN_DATABASE_RATE_ORD, &Dbtc::execDATABASE_RATE_ORD);
+  addRecSignal(GSN_RATE_OVERLOAD_REP, &Dbtc::execRATE_OVERLOAD_REP);
+  addRecSignal(GSN_QUOTA_OVERLOAD_REP, &Dbtc::execQUOTA_OVERLOAD_REP);
 
   addRecSignal(GSN_DUMP_STATE_ORD, &Dbtc::execDUMP_STATE_ORD);
   addRecSignal(GSN_DBINFO_SCANREQ, &Dbtc::execDBINFO_SCANREQ);

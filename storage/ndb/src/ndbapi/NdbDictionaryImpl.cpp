@@ -5053,8 +5053,11 @@ int NdbDictionaryImpl::dropTableGlobal(NdbTableImpl &impl, int flags) {
   /**
    * And then drop the indexes
    */
+  DBUG_PRINT("info", ("list.count = %u", list.count));
   for (unsigned i = 0; i < list.count; i++) {
     const List::Element &element = list.elements[i];
+    DBUG_PRINT("info", ("[%u]element.name = %s, type: %u",
+               i, element.name, element.type));
     if (DictTabInfo::isIndex(element.type)) {
       // note can also return -2 in error case(INCOMPATIBLE_VERSION),
       // hence compare with != 0

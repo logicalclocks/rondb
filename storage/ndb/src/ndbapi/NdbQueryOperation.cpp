@@ -3344,7 +3344,7 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
       secs[2].sz = m_keyInfo.getSize();
       numSections = 3;
     }
-
+    DBUG_PRINT("info", ("Send SCAN_TABREQ: NdbQueryOperation"));
     /* Send Fragmented as SCAN_TABREQ can be large */
     const int res =
         impl->sendFragmentedSignal(&tSignal, nodeId, secs, numSections);
@@ -3356,6 +3356,7 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
 
   } else {  // Lookup query
 
+    DBUG_PRINT("info", ("Send TCKEYREQ: NdbQueryOperation"));
     NdbApiSignal tSignal(&ndb);
     tSignal.setSignal(GSN_TCKEYREQ, refToBlock(m_transaction.m_tcRef));
 
@@ -3496,6 +3497,8 @@ int NdbQueryImpl::sendFetchMore(NdbWorker *workers[], Uint32 cnt,
 
   assert(m_scanTransaction);
   const Uint64 transId = m_scanTransaction->getTransactionId();
+
+  DBUG_PRINT("info", ("Send SCAN_NEXTREQ: NdbQueryOperation"));
 
   scanNextReq->apiConnectPtr = m_scanTransaction->theTCConPtr;
   scanNextReq->stopScan = 0;

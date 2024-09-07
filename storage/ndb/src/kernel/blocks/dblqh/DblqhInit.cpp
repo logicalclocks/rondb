@@ -146,6 +146,7 @@ void Dblqh::initData()
   clogFileFileSize = 0;
 
   ctabrecFileSize = 0;
+  c_send_database_quota_rep_file_size = ZSEND_DATABASE_QUOTA_REP_FILE_SIZE;
   ctcNodeFailrecFileSize = MAX_NDB_NODES;
   cTransactionDeadlockDetectionTimeout = 100;
 
@@ -158,6 +159,8 @@ void Dblqh::initData()
   logFileOperationRecord = 0;
   pageRefRecord = 0;
   tablerec = 0;
+  c_send_database_quota_rec = 0;
+  m_num_send_database_quota_rep = 0;
   tcNodeFailRecord = 0;
 
   // Records with constant sizes
@@ -195,6 +198,7 @@ void Dblqh::initData()
     NdbMutex_Init(&transaction_hash_mutex[i]);
   }
   NdbMutex_Init(&alloc_operation_mutex);
+  NdbMutex_Init(&m_database_hash_mutex);
   c_last_force_lcp_time = 0;
   c_free_mb_force_lcp_limit = 16;
   c_free_mb_tail_problem_limit = 4;
@@ -270,6 +274,10 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg,
   hostRecord = (HostRecord*)allocRecord("HostRecord",
                                         sizeof(HostRecord), 
                                         chostFileSize);
+  c_send_database_quota_rec =
+    (SendDatabaseQuotaRep*)allocRecord("SendDatabaseQuotaRepRecord",
+                                      sizeof(SendDatabaseQuotaRep),
+                                      c_send_database_quota_rep_file_size);
   if (!m_is_query_block)
   {
     addFragRecord = (AddFragRecord*)allocRecord("AddFragRecord",
@@ -576,10 +584,17 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
       c_queued_lcp_frag_ord(c_fragment_pool),
       c_copy_fragment_queue(c_copy_fragment_pool),
       c_copy_active_queue(c_copy_active_pool),
-      m_commitAckMarkerHash(m_commitAckMarkerPool) {
+      m_commitAckMarkerHash(m_commitAckMarkerPool),
+      m_databaseRecordHash(m_databaseRecordPool) {
   BLOCK_CONSTRUCTOR(Dblqh);
 
   if (blockNo == DBLQH) {
+    addRecSignal(GSN_QUOTA_OVERLOAD_REP, &Dblqh::execQUOTA_OVERLOAD_REP);
+    addRecSignal(GSN_CREATE_DB_REQ, &Dblqh::execCREATE_DB_REQ);
+    addRecSignal(GSN_ALTER_DB_REQ, &Dblqh::execALTER_DB_REQ);
+    addRecSignal(GSN_DROP_DB_REQ, &Dblqh::execDROP_DB_REQ);
+    addRecSignal(GSN_CONNECT_TABLE_DB_REQ, &Dblqh::execCONNECT_TABLE_DB_REQ);
+    addRecSignal(GSN_DISCONNECT_TABLE_DB_REQ, &Dblqh::execDISCONNECT_TABLE_DB_REQ);
     addRecSignal(GSN_LOCAL_LATEST_LCP_ID_REP,
                  &Dblqh::execLOCAL_LATEST_LCP_ID_REP);
     addRecSignal(GSN_PACKED_SIGNAL, &Dblqh::execPACKED_SIGNAL);
@@ -848,6 +863,7 @@ Dblqh::~Dblqh()
     NdbMutex_Deinit(&transaction_hash_mutex[i]);
   }
   NdbMutex_Deinit(&alloc_operation_mutex);
+  NdbMutex_Deinit(&m_database_hash_mutex);
   NdbMutex_Deinit(&c_scanTakeOverMutex);
   NdbMutex_Deinit(&m_read_redo_log_data_mutex);
   deinit_restart_synch();
@@ -898,6 +914,10 @@ Dblqh::~Dblqh()
     deallocRecord((void **)&tablerec, "Tablerec", sizeof(Tablerec),
                   ctabrecFileSize);
   }
+  deallocRecord((void **)&c_send_database_quota_rec,
+                "SendDatabaseQuotaRepRecord",
+                sizeof(SendDatabaseQuotaRep),
+                c_send_database_quota_rep_file_size);
 
   deallocRecord((void **)&hostRecord, "HostRecord", sizeof(HostRecord),
                 chostFileSize);

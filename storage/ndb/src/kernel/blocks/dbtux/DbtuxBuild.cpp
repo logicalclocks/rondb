@@ -80,6 +80,8 @@ Uint32 Dbtux::mt_buildIndexFragment_wrapper(void *obj) {
 
 Uint32  // error code
 Dbtux::mt_buildIndexFragment(mt_BuildIndxCtx *req) {
+  TuxCtx & ctx = * (TuxCtx*)req->tux_ctx_ptr;
+  NDB_PREFETCH_WRITE(&ctx.searchKeyDataArray);
   IndexPtr indexPtr;
   ndbrequire(c_indexPool.getPtr(indexPtr, req->indexId));
   ndbrequire(indexPtr.p->m_tableId == req->tableId);
@@ -87,7 +89,6 @@ Dbtux::mt_buildIndexFragment(mt_BuildIndxCtx *req) {
   const Uint32 fragId = req->fragId;
   // get the fragment
   FragPtr fragPtr;
-  TuxCtx & ctx = * (TuxCtx*)req->tux_ctx_ptr;
   findFrag(ctx.jamBuffer, indexPtr.i, fragId, fragPtr);
   ndbrequire(fragPtr.i != RNIL64);
   Frag& frag = *fragPtr.p;

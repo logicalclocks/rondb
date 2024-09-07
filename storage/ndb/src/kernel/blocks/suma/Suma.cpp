@@ -3188,9 +3188,14 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
    * ALTER TABLE reorg.
    */
 
+  /**
+   * TODO:
+   * Should set scan in disk order when this works
+   * Tup order is the only order available, so no need to set it here.
   if (m_requestInfo & SubSyncReq::TupOrder) {
     ScanFragReq::setTupScanFlag(req->requestInfo, 1);
   }
+  */
 
   if (m_requestInfo & SubSyncReq::LM_CommittedRead) {
     ScanFragReq::setReadCommittedFlag(req->requestInfo, 1);

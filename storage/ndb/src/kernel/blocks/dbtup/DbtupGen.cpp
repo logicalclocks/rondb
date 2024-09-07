@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -867,6 +867,9 @@ void Dbtup::initializeDefaultValuesFrag() {
    * values for the table fragments held by this TUP instance
    */
   ndbrequire(seizeFragrecord(DefaultValuesFragment));
+  DefaultValuesFragment.p->fragTableId = RNIL;
+  DefaultValuesFragment.p->fragmentId = RNIL;
+  DefaultValuesFragment.p->partitionId = RNIL;
   DefaultValuesFragment.p->fragStatus = Fragrecord::FS_ONLINE;
   DefaultValuesFragment.p->m_undo_complete = 0;
   DefaultValuesFragment.p->m_lcp_scan_op = RNIL;

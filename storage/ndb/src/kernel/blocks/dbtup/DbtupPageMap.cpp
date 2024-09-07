@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -493,7 +493,7 @@ Uint32 Dbtup::insert_new_page_into_page_map(EmulatedJamBuffer *jamBuf,
     if (prev_ptr != 0) {
       jam();
       *prev_ptr = FREE_PAGE_BIT | LAST_LCP_FREE_BIT;
-    }
+    } 
     returnCommonArea(pagePtr.i, noOfPagesAllocated);
     return RNIL;
   }
@@ -698,11 +698,22 @@ void Dbtup::handle_lcp_skip_bit(EmulatedJamBuffer *jamBuf, Fragrecord *fragPtrP,
   }
 }
 
-void Dbtup::handle_new_page(EmulatedJamBuffer *jamBuf, Fragrecord *fragPtrP,
-                            Tablerec *tabPtrP, PagePtr pagePtr,
+void Dbtup::handle_new_page(EmulatedJamBuffer *jamBuf,
+                            Fragrecord *fragPtrP,
+                            Tablerec* tabPtrP,
+                            PagePtr pagePtr,
                             Uint32 page_no) {
-  DEB_LCP_ALLOC(("(%u)allocFragPage: tab(%u,%u) page(%u)", instance(),
-                 fragPtrP->fragTableId, fragPtrP->fragmentId, page_no));
+  DEB_LCP_ALLOC(("(%u)allocFragPage: tab(%u,%u) page(%u)",
+                 instance(),
+                 fragPtrP->fragTableId,
+                 fragPtrP->fragmentId,
+                 page_no));
+  /* Increment number of pages used in database */
+  m_ldm_instance_used->c_lqh->update_memory_usage(fragPtrP->fragTableId,
+                                                  4,
+                                                  __LINE__,
+                                                  pagePtr.i);
+
   c_page_pool.getPtr(pagePtr);
   init_page(fragPtrP, pagePtr, page_no);
   handle_lcp_skip_bit(jamBuf, fragPtrP, pagePtr, page_no);
@@ -721,8 +732,10 @@ void Dbtup::handle_new_page(EmulatedJamBuffer *jamBuf, Fragrecord *fragPtrP,
   do_check_page_map(fragPtrP);
 }
 
-Uint32 Dbtup::allocFragPage(EmulatedJamBuffer *jamBuf, Uint32 *err,
-                            Fragrecord *regFragPtr, Tablerec *regTabPtr) {
+Uint32 Dbtup::allocFragPage(EmulatedJamBuffer* jamBuf,
+                            Uint32 * err, 
+                            Fragrecord* regFragPtr,
+                            Tablerec *regTabPtr) {
   PagePtr pagePtr;
   Uint32 noOfPagesAllocated = 0;
   Uint32 list = regFragPtr->m_free_page_id_list;
@@ -787,8 +800,10 @@ Uint32 Dbtup::allocFragPage(EmulatedJamBuffer *jamBuf, Uint32 *err,
   return pagePtr.i;
 }  // Dbtup::allocFragPage()
 
-Uint32 Dbtup::allocFragPage(Uint32 *err, Tablerec *tabPtrP,
-                            Fragrecord *fragPtrP, Uint32 page_no) {
+Uint32 Dbtup::allocFragPage(Uint32 * err,
+                            Tablerec* tabPtrP,
+                            Fragrecord* fragPtrP,
+                            Uint32 page_no) {
   PagePtr pagePtr;
   ndbrequire(page_no < MAX_PAGES_IN_DYN_ARRAY);
   DynArr256 map(c_page_map_pool_ptr, fragPtrP->m_page_map);
@@ -890,7 +905,8 @@ Uint32 Dbtup::allocFragPage(Uint32 *err, Tablerec *tabPtrP,
   return pagePtr.i;
 }
 
-void Dbtup::releaseFragPage(Fragrecord *fragPtrP, Uint32 logicalPageId,
+void Dbtup::releaseFragPage(Fragrecord* fragPtrP,
+                            Uint32 logicalPageId,
                             PagePtr pagePtr) {
   /**
    * This call is done under exclusive fragment access
@@ -1023,7 +1039,9 @@ void Dbtup::releaseFragPage(Fragrecord *fragPtrP, Uint32 logicalPageId,
           bool delete_by_pageid = page_to_skip_lcp;
           page_freed = true;
           ndbrequire(c_backup->is_partial_lcp_enabled());
-          handle_lcp_drop_change_page(fragPtrP, logicalPageId, pagePtr,
+          handle_lcp_drop_change_page(fragPtrP,
+                                      logicalPageId,
+                                      pagePtr,
                                       delete_by_pageid);
         } else {
           /* Coverage tested */
@@ -1049,6 +1067,11 @@ void Dbtup::releaseFragPage(Fragrecord *fragPtrP, Uint32 logicalPageId,
 
   if (!page_freed) {
     jam();
+    /* Decrement number of pages used in database */
+    m_ldm_instance_used->c_lqh->update_memory_usage(fragPtrP->fragTableId,
+                                                    Int32(-4),
+                                                    __LINE__,
+                                                    pagePtr.i);
     returnCommonArea(pagePtr.i, 1);
   }
 

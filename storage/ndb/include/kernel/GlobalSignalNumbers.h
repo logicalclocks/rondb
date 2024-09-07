@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -33,7 +33,7 @@
  *
  * When adding a new signal, remember to update MAX_GSN and SignalNames.cpp
  */
-const GlobalSignalNumber MAX_GSN = 912;
+const GlobalSignalNumber MAX_GSN = 943;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -878,9 +878,10 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_BUILD_FK_IMPL_REF           643
 #define GSN_BUILD_FK_IMPL_CONF          644
 
-#define GSN_645
-#define GSN_646
-#define GSN_647
+#define GSN_CREATE_DATABASE_REQ         645
+#define GSN_CREATE_DATABASE_REF         646
+#define GSN_CREATE_DATABASE_CONF        647
+
 #define GSN_648
 #define GSN_649
 
@@ -942,9 +943,10 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_API_VERSION_REQ             697
 #define GSN_API_VERSION_CONF            698
 
-/* not used                             686 */
-/* not used                             687 */
-/* not used                             689 */
+#define GSN_DROP_DATABASE_REQ           686
+#define GSN_DROP_DATABASE_REF           687
+#define GSN_DROP_DATABASE_CONF          689
+
 /* not used                             690 */
 
 /**
@@ -1230,4 +1232,44 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_SEND_PUSH_ABORTCONF         911
 #define GSN_PUSH_ABORT_TRAIN_ORD        912
 
+#define GSN_CREATE_DB_REQ               913
+#define GSN_CREATE_DB_REF               914
+#define GSN_CREATE_DB_CONF              915
+
+#define GSN_CONNECT_TABLE_DB_REQ        916
+#define GSN_CONNECT_TABLE_DB_CONF       917
+#define GSN_CONNECT_TABLE_DB_REF        918
+
+#define GSN_COMMIT_DB_REQ               919
+#define GSN_COMMIT_DB_CONF              920
+#define GSN_COMMIT_DB_REF               921
+
+#define GSN_ALTER_DATABASE_REQ          922
+#define GSN_ALTER_DATABASE_CONF         923
+#define GSN_ALTER_DATABASE_REF          924
+
+#define GSN_DROP_DB_REQ                 925
+#define GSN_DROP_DB_CONF                926
+#define GSN_DROP_DB_REF                 927
+
+#define GSN_ALTER_DB_REQ                928
+#define GSN_ALTER_DB_CONF               929
+#define GSN_ALTER_DB_REF                930
+
+#define GSN_DISCONNECT_TABLE_DB_REQ     931
+#define GSN_DISCONNECT_TABLE_DB_CONF    932
+#define GSN_DISCONNECT_TABLE_DB_REF     933
+
+#define GSN_GET_DATABASE_REQ            934
+#define GSN_GET_DATABASE_CONF           935
+#define GSN_GET_DATABASE_REF            936
+
+#define GSN_LIST_DATABASE_REQ           937
+#define GSN_LIST_DATABASE_CONF          938
+#define GSN_LIST_DATABASE_REF           939
+
+#define GSN_DATABASE_QUOTA_REP          940
+#define GSN_DATABASE_RATE_ORD           941
+#define GSN_RATE_OVERLOAD_REP           942
+#define GSN_QUOTA_OVERLOAD_REP          943
 #endif

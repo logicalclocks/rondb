@@ -1754,6 +1754,92 @@ struct ndb_mgm_tls_stats {
 int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
                           struct ndb_mgm_tls_stats *result);
 
+  /**
+   * Get quotas and rate limits on database level.
+   *
+   * @param   handle        Management handle.
+   * @param   database_name Database name
+   * @param   result_buf    The result of the Get Database Quota
+   */
+  int ndb_mgm_get_quotas(NdbMgmHandle handle,
+                         const char *database_name,
+                         char **result_buf);
+
+  /**
+   * List quotas and rate limits on database level.
+   *
+   * @param   handle        Management handle.
+   * @param   nextDatabaseId Next database id to start searching from
+   *                         Both input parameter and output
+   * @param   result_buf    The result of the List Database Quota
+   */
+  int ndb_mgm_list_quotas(NdbMgmHandle handle,
+                          Uint32 *nextDatabaseId,
+                          char **result_buf);
+
+  /**
+   * Backup quotas and rate limits on database level.
+   *
+   * @param   handle        Management handle.
+   * @param   nextDatabaseId Next database id to start searching from
+   *                         Both input parameter and output
+   * @param   result_buf    The result of the List Database Quota
+   */
+  int ndb_mgm_backup_quotas(NdbMgmHandle handle,
+                            Uint32 *nextDatabaseId,
+                            char **result_buf);
+
+  /**
+   * Set quotas and rate limits on database level.
+   *
+   * @param   handle        Management handle.
+   * @param   database_name Database name
+   * @param   in_memory_size In memory size limit
+   * @param   on_disk_size  On disk size limit
+   * @param   rate_per_sec  Rate limit on reads/writes
+   * @param   max_transaction_size Max size of a transaction
+   * @param   max_parallel_transactions Max number of parallel transactions
+   * @param   max_parallel_complex_queries Max number of parallel queries
+   */
+  int ndb_mgm_set_quotas(NdbMgmHandle handle,
+                         const char *database_name,
+                         Uint32 in_memory_size,
+                         Uint32 on_disk_size,
+                         Uint32 rate_per_sec,
+                         Uint32 max_transaction_size,
+                         Uint32 max_parallel_transactions,
+                         Uint32 max_parallel_complex_queries);
+
+  /**
+   * Alter quotas and rate limits on database level.
+   *
+   * @param   handle        Management handle.
+   * @param   database_name Database name
+   * @param   in_memory_size In memory size limit
+   * @param   on_disk_size  On disk size limit
+   * @param   rate_per_sec  Rate limit on reads/writes
+   * @param   max_transaction_size Max size of a transaction
+   * @param   max_parallel_transactions Max number of parallel transactions
+   * @param   max_parallel_complex_queries Max number of parallel queries
+   */
+  int ndb_mgm_alter_quotas(NdbMgmHandle handle,
+                           const char *database_name,
+                           Uint32 in_memory_size,
+                           Uint32 on_disk_size,
+                           Uint32 rate_per_sec,
+                           Uint32 max_transaction_size,
+                           Uint32 max_parallel_transactions,
+                           Uint32 max_parallel_complex_queries);
+
+  /**
+   * Drop quotas and rate limits on database level.
+   *
+   * @param   handle        Management handle.
+   * @param   database_name Database name
+   */
+  int ndb_mgm_drop_quotas(NdbMgmHandle handle,
+                          const char *database_name);
+
 #ifdef __cplusplus
 }
 #endif

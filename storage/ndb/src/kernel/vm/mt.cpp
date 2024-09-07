@@ -1229,7 +1229,7 @@ struct thr_jb_read_state {
 struct thr_tq
 {
   static const unsigned ZQ_SIZE = 512;
-  static const unsigned SQ_SIZE = 1024;
+  static const unsigned SQ_SIZE = 2048;
   static const unsigned LQ_SIZE = 1024;
   static const unsigned PAGES = (MAX_SIGNAL_SIZE *
                                 (ZQ_SIZE + SQ_SIZE + LQ_SIZE)) / 8192;
@@ -4293,6 +4293,28 @@ static void release_buffer(struct thr_repository *rep, int thr_no,
   }
 }
 
+Uint32
+mt_get_short_time_queue_depth(Uint32 thr_no)
+{
+  struct thr_repository* rep = g_thr_repository;
+  require(thr_no < glob_num_threads);
+  struct thr_data* thr_ptr = &rep->m_thread[thr_no];
+  Uint32 cnt = thr_ptr->m_tq.m_cnt[0];
+  Uint32 cnt_percent = cnt * 100;
+  return cnt_percent / thr_tq::SQ_SIZE;
+}
+
+Uint32
+mt_get_long_time_queue_depth(Uint32 thr_no)
+{
+  struct thr_repository* rep = g_thr_repository;
+  require(thr_no < glob_num_threads);
+  struct thr_data* thr_ptr = &rep->m_thread[thr_no];
+  Uint32 cnt = thr_ptr->m_tq.m_cnt[1];
+  Uint32 cnt_percent = cnt * 100;
+  return cnt_percent / thr_tq::LQ_SIZE;
+}
+
 static inline Uint32 scan_queue(struct thr_data *selfptr, Uint32 cnt,
                                 Uint32 end, Uint32 *ptr) {
   Uint32 thr_no = selfptr->m_thr_no;
@@ -6526,7 +6548,7 @@ static inline bool read_all_jbb_state(thr_data *selfptr,
         selfptr->m_jbb_estimated_queue_size_in_words = new_queue_size;
 #ifdef DEBUG_SCHED_STATS
         Uint32 inx = selfptr->m_jbb_estimated_queue_size_in_words /
-                     AVERAGE_SIGNAL_SIZE;
+                     (2 * AVERAGE_SIGNAL_SIZE);
         if (inx >= 16)
         {
           inx = 15;

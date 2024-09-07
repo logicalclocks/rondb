@@ -2611,7 +2611,11 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
   signal->theData[1] = scanPtr.i;
   if (!c_lqh->rt_break_is_scan_prioritised(scan.m_userPtr)) {
     jam();
-    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    Uint32 delay = m_ldm_instance_used->c_lqh->get_delay(scanPtr.p->m_tableId);
+    if (likely(delay == 0))
+      sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    else
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, delay, 2);
   } else {
     /**
      * Sending with bounded delay means that we allow all signals in job buffer
@@ -2835,7 +2839,8 @@ void Dbtup::remove_top_from_lcp_keep_list(Fragrecord *fragPtrP,
 }
 
 void Dbtup::handle_lcp_drop_change_page(Fragrecord *fragPtrP,
-                                        Uint32 logicalPageId, PagePtr pagePtr,
+                                        Uint32 logicalPageId,
+                                        PagePtr pagePtr,
                                         bool delete_by_pageid) {
   /**
    * We are performing an LCP scan currently. This page is part of the
@@ -2956,6 +2961,10 @@ void Dbtup::handle_lcp_drop_change_page(Fragrecord *fragPtrP,
   if (found_idx_count == 0) {
     /* Nothing to store, all rows were already handled. */
     jam();
+    m_ldm_instance_used->c_lqh->update_memory_usage(fragPtrP->fragTableId,
+                                                    Int32(-4),
+                                                    __LINE__,
+                                                    pagePtr.i);
     returnCommonArea(pagePtr.i, 1);
     return;
   }

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -101,6 +101,9 @@ bool printTCKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
     if (sig->getNoWaitFlag(sig->requestInfo))
       fprintf(output, " nowait");
 
+    if (sig->getPassQueueingFlag(sig->requestInfo))
+      fprintf(output, " passQueue");
+
     fprintf(output, "\n");
   }
 
@@ -122,5 +125,5 @@ bool printTCKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
   } else {
     fprintf(output, "*** invalid len %u ***\n", len);
   }
-  return true;
+  return false;
 }

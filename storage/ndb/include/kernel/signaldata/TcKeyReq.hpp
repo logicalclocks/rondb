@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -222,6 +222,11 @@ class TcKeyReq {
   static UintR getBatchSafeFlag(const Uint32 & requestInfo);
   static void setBatchUnsafeFlag(Uint32 & requestInfo, Uint32 val);
   static UintR getBatchUnsafeFlag(const Uint32 & requestInfo);
+
+  static void setPassQueueingFlag(Uint32 & requestInfo, Uint32 val);
+  static UintR getPassQueueingFlag(const Uint32 & requestInfo);
+  static void setReplicaApplierFlag(Uint32 & requestInfo, Uint32 val);
+  static UintR getReplicaApplierFlag(const Uint32 & requestInfo);
   /**
    * Check constraints deferred
    */
@@ -357,10 +362,27 @@ class TcKeyReq {
  * ----------------------------------------------------------------------
  U = BatchUnsafe           - 1  Bit 23
 
+ * ----------------------------------------------------------------------
+ * When a database has used all its allowed rate, the operations towards
+ * this database will be queued. The queueing will continue until all
+ * queued entries have been sent again. This means that when a queued
+ * signal is sent again, this flag will indicate that it should not be
+ * queued since it is sent from the local TC to itself. This can be
+ * checked by looking at the senders block reference.
+ * ----------------------------------------------------------------------
+ Q = PassQueueing           - 1 Bit 24
+ 
+ * ----------------------------------------------------------------------
+ * Signal is sent from replica applier =>
+ * - Replica applier should not stop due to out of memory in database
+ * - Replica applier should not stop due to out of rate limits in database
+ * ----------------------------------------------------------------------
+ A = Replica applier       - 1  Bit 25
+
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRwBU          (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBUQA        (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -398,6 +420,9 @@ class TcKeyReq {
 
 #define TC_BATCH_SAFE_SHIFT (22)
 #define TC_BATCH_UNSAFE_SHIFT (23)
+
+#define TC_PASS_QUEUEING_SHIFT (24)
+#define TC_REPLICA_APPLIER_SHIFT (25)
 
 /**
  * Scan Info
@@ -680,6 +705,34 @@ void
 TcKeyReq::setBatchUnsafeFlag(Uint32 & requestInfo, Uint32 flag){
   ASSERT_BOOL(flag, "TcKeyReq::setBatchUnsafeFlag");
   requestInfo |= (flag << TC_BATCH_UNSAFE_SHIFT);
+}
+
+inline
+Uint32
+TcKeyReq::getPassQueueingFlag(const Uint32 & requestInfo)
+{
+  return (requestInfo >> TC_PASS_QUEUEING_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setPassQueueingFlag(Uint32 & requestInfo, Uint32 flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setPassQueueingFlag");
+  requestInfo |= (flag << TC_PASS_QUEUEING_SHIFT);
+}
+
+inline
+Uint32
+TcKeyReq::getReplicaApplierFlag(const Uint32 & requestInfo)
+{
+  return (requestInfo >> TC_REPLICA_APPLIER_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setReplicaApplierFlag(Uint32 & requestInfo, Uint32 flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setReplicaApplier");
+  requestInfo |= (flag << TC_REPLICA_APPLIER_SHIFT);
 }
 
 inline

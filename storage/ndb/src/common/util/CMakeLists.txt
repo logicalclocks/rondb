@@ -1,5 +1,5 @@
 # Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-# Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -79,6 +79,7 @@ ADD_CONVENIENCE_LIBRARY(ndbgeneral
   require.cpp
   socket_io.cpp
   version.cpp
+  string_converter.cpp
   LINK_LIBRARIES ndbtrace ndbportlib ext::zlib mysys
 )
 

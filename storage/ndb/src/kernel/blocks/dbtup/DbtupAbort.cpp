@@ -396,7 +396,7 @@ void Dbtup::do_tup_abortreq(Signal *signal, Uint32 flags) {
       free_var_rec(regFragPtr.p, regTabPtr.p, &tmp, page);
     } else {
       jam();
-      free_fix_rec(regFragPtr.p, regTabPtr.p, &tmp, (Fix_page *)page.p);
+      free_fix_rec(regFragPtr.p, regTabPtr.p, &tmp, (Fix_page*)page.p);
     }
     regOperPtr.p->m_tuple_location.setNull();
   }

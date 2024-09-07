@@ -1013,9 +1013,12 @@ private:
                                    OperationrecPtr op,
                                    Uint32 hash);
   void mark_pending_abort(OperationrecPtr abortingOp, Uint32 nextParallelOp);
-
-  void expandcontainer(Page8Ptr pageptr, Uint32 conidx);
-  void shrinkcontainer(Page8Ptr pageptr, Uint32 conptr, bool isforward,
+  
+  void expandcontainer(Signal*, Page8Ptr pageptr, Uint32 conidx);
+  void shrinkcontainer(Signal*,
+                       Page8Ptr pageptr,
+                       Uint32 conptr,
+                       bool isforward,
                        Uint32 conlen);
   void releaseAndCommitActiveOps(Signal *signal);
   void releaseAndCommitQueuedOps(Signal *signal);
@@ -1047,9 +1050,14 @@ private:
   void takeOutActiveScanOp() const;
   void takeOutScanLockQueue(Uint32 scanRecIndex) const;
   void takeOutReadyScanQueue() const;
-  void insertElement(Element elem, OperationrecPtr oprecptr, Page8Ptr &pageptr,
-                     Uint32 &conidx, bool &isforward, Uint32 &conptr,
-                     Uint16 conScanMask, bool newBucket);
+  void insertElement(Element elem,
+                     OperationrecPtr oprecptr,
+                     Page8Ptr& pageptr,
+                     Uint32& conidx,
+                     bool& isforward,
+                     Uint32& conptr,
+                     Uint16 conScanMask,
+                     bool newBucket);
   void insertContainer(Element elem, OperationrecPtr oprecptr, Page8Ptr pageptr,
                        Uint32 conidx, bool isforward, Uint32 &conptr,
                        ContainerHeader &containerhead, Uint16 conScanMask,
@@ -1078,13 +1086,23 @@ private:
   void commitdelete(Signal *signal);
   void deleteElement(Page8Ptr delPageptr, Uint32 delConptr, Uint32 delElemptr,
                      Page8Ptr lastPageptr, Uint32 lastElemptr) const;
-  void getLastAndRemove(Page8Ptr tlastPrevpageptr, Uint32 tlastPrevconptr,
-                        Page8Ptr &lastPageptr, Uint32 &tlastPageindex,
-                        Uint32 &tlastContainerptr, bool &tlastIsforward,
-                        Uint32 &tlastElementptr);
-  void releaseLeftlist(Page8Ptr rlPageptr, Uint32 conidx, Uint32 conptr);
-  void releaseRightlist(Page8Ptr rlPageptr, Uint32 conidx, Uint32 conptr);
-  void checkoverfreelist(Page8Ptr colPageptr);
+  void getLastAndRemove(Signal*,
+                        Page8Ptr tlastPrevpageptr,
+                        Uint32 tlastPrevconptr,
+                        Page8Ptr& lastPageptr,
+                        Uint32& tlastPageindex,
+                        Uint32& tlastContainerptr,
+                        bool& tlastIsforward,
+                        Uint32& tlastElementptr);
+  void releaseLeftlist(Signal*,
+                       Page8Ptr rlPageptr,
+                       Uint32 conidx,
+                       Uint32 conptr);
+  void releaseRightlist(Signal*,
+                        Page8Ptr rlPageptr,
+                        Uint32 conidx,
+                        Uint32 conptr);
+  void checkoverfreelist(Signal *signal, Page8Ptr colPageptr);
   void abortOperation(Signal* signal, Uint32 hash);
   void commitOperation(Signal* signal);
   void copyOpInfo(OperationrecPtr dst, OperationrecPtr src) const;
@@ -1103,8 +1121,8 @@ private:
   void check_lock_upgrade(Signal* signal,
                           OperationrecPtr release_op,
                           bool lo) const;
-  void check_lock_upgrade(Signal *signal, OperationrecPtr lock_owner,
-                          OperationrecPtr release_op) const;
+  void check_lock_upgrade(Signal* signal, OperationrecPtr lock_owner,
+			  OperationrecPtr release_op) const;
   Uint32 allocOverflowPage();
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   void insertLockOwnersList(OperationrecPtr&);
@@ -1120,8 +1138,9 @@ private:
   void releaseFsOpRec(Signal *signal) const;
   void releaseOpRec();
   void releaseFreeOpRec();
-  void releaseOverpage(Page8Ptr ropPageptr);
-  void releasePage(Page8Ptr rpPageptr, FragmentrecPtr fragPtr,
+  void releaseOverpage(Signal *signal, Page8Ptr ropPageptr);
+  void releasePage(Page8Ptr rpPageptr,
+                   FragmentrecPtr fragPtr,
                    EmulatedJamBuffer *jamBuf);
   void releasePage_lock(Page8Ptr rpPageptr);
   void seizeDirectory(Signal* signal) const;
@@ -1134,9 +1153,9 @@ private:
                    bool use_spare,
                    FragmentrecPtr fragPtr,
                    EmulatedJamBuffer *jamBuf);
-  Uint32 seizePage_lock(Page8Ptr &spPageptr, int sub_page_id);
-  bool get_lock_information(Dbacc **acc_block, Dblqh **lqh_block);
-  void seizeRootfragrec(Signal *signal) const;
+  Uint32 seizePage_lock(Page8Ptr& spPageptr, int sub_page_id);
+  bool get_lock_information(Dbacc **acc_block, Dblqh** lqh_block);
+  void seizeRootfragrec(Signal* signal) const;
   void seizeScanRec();
   void sendSystemerror(int line) const;
 

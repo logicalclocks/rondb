@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,6 +26,10 @@
 #define NDB_DBLQH_PROXY_HPP
 
 #include <LocalProxy.hpp>
+#include <signaldata/CreateDatabase.hpp>
+#include <signaldata/AlterDb.hpp>
+#include <signaldata/CreateDb.hpp>
+#include <signaldata/DropDb.hpp>
 #include <signaldata/AlterTab.hpp>
 #include <signaldata/CreateTab.hpp>
 #include <signaldata/DropTab.hpp>
@@ -439,6 +443,102 @@ class DblqhProxy : public LocalProxy {
   void execDROP_FRAG_REF(Signal *);
   void sendDROP_FRAG_CONF(Signal *, Uint32 ssId);
 
+  // GSN_CREATE_DB_REQ
+  struct Ss_CREATE_DB_REQ : SsSequential {
+    CreateDbReq m_req;
+    Ss_CREATE_DB_REQ() {
+      m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendCREATE_DB_REQ;
+      m_sendCONF = (SsFUNCREP)&DblqhProxy::sendCREATE_DB_CONF;
+    }
+    enum { poolSize = 1 };
+    static SsPool<Ss_CREATE_DB_REQ>& pool(LocalProxy* proxy) {
+      return ((DblqhProxy*)proxy)->c_ss_CREATE_DB_REQ;
+    }
+  };
+  SsPool<Ss_CREATE_DB_REQ> c_ss_CREATE_DB_REQ;
+  void execCREATE_DB_REQ(Signal*);
+  void sendCREATE_DB_REQ(Signal*, Uint32 ssId, SectionHandle*);
+  void execCREATE_DB_CONF(Signal*);
+  void execCREATE_DB_REF(Signal*);
+  void sendCREATE_DB_CONF(Signal*, Uint32 ssId);
+
+  // GSN_ALTER_DB_REQ
+  struct Ss_ALTER_DB_REQ : SsSequential {
+    AlterDbReq m_req;
+    Ss_ALTER_DB_REQ() {
+      m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendALTER_DB_REQ;
+      m_sendCONF = (SsFUNCREP)&DblqhProxy::sendALTER_DB_CONF;
+    }
+    enum { poolSize = 1 };
+    static SsPool<Ss_ALTER_DB_REQ>& pool(LocalProxy* proxy) {
+      return ((DblqhProxy*)proxy)->c_ss_ALTER_DB_REQ;
+    }
+  };
+  SsPool<Ss_ALTER_DB_REQ> c_ss_ALTER_DB_REQ;
+  void execALTER_DB_REQ(Signal*);
+  void sendALTER_DB_REQ(Signal*, Uint32 ssId, SectionHandle*);
+  void execALTER_DB_CONF(Signal*);
+  void execALTER_DB_REF(Signal*);
+  void sendALTER_DB_CONF(Signal*, Uint32 ssId);
+
+
+  // GSN_CONNECT_TABLE_DB_REQ
+  struct Ss_CONNECT_TABLE_DB_REQ : SsSequential {
+    ConnectTableDbReq m_req;
+    Ss_CONNECT_TABLE_DB_REQ() {
+      m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendCONNECT_TABLE_DB_REQ;
+      m_sendCONF = (SsFUNCREP)&DblqhProxy::sendCONNECT_TABLE_DB_CONF;
+    }
+    enum { poolSize = 1 };
+    static SsPool<Ss_CONNECT_TABLE_DB_REQ>& pool(LocalProxy* proxy) {
+      return ((DblqhProxy*)proxy)->c_ss_CONNECT_TABLE_DB_REQ;
+    }
+  };
+  SsPool<Ss_CONNECT_TABLE_DB_REQ> c_ss_CONNECT_TABLE_DB_REQ;
+  void execCONNECT_TABLE_DB_REQ(Signal*);
+  void sendCONNECT_TABLE_DB_REQ(Signal*, Uint32 ssId, SectionHandle*);
+  void execCONNECT_TABLE_DB_CONF(Signal*);
+  void execCONNECT_TABLE_DB_REF(Signal*);
+  void sendCONNECT_TABLE_DB_CONF(Signal*, Uint32 ssId);
+
+  // GSN_DISCONNECT_TABLE_DB_REQ
+  struct Ss_DISCONNECT_TABLE_DB_REQ : SsSequential {
+    DisconnectTableDbReq m_req;
+    Ss_DISCONNECT_TABLE_DB_REQ() {
+      m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendDISCONNECT_TABLE_DB_REQ;
+      m_sendCONF = (SsFUNCREP)&DblqhProxy::sendDISCONNECT_TABLE_DB_CONF;
+    }
+    enum { poolSize = 1 };
+    static SsPool<Ss_DISCONNECT_TABLE_DB_REQ>& pool(LocalProxy* proxy) {
+      return ((DblqhProxy*)proxy)->c_ss_DISCONNECT_TABLE_DB_REQ;
+    }
+  };
+  SsPool<Ss_DISCONNECT_TABLE_DB_REQ> c_ss_DISCONNECT_TABLE_DB_REQ;
+  void execDISCONNECT_TABLE_DB_REQ(Signal*);
+  void sendDISCONNECT_TABLE_DB_REQ(Signal*, Uint32 ssId, SectionHandle*);
+  void execDISCONNECT_TABLE_DB_CONF(Signal*);
+  void execDISCONNECT_TABLE_DB_REF(Signal*);
+  void sendDISCONNECT_TABLE_DB_CONF(Signal*, Uint32 ssId);
+
+  // GSN_DROP_DB_REQ
+  struct Ss_DROP_DB_REQ : SsSequential {
+    DropDbReq m_req;
+    Ss_DROP_DB_REQ() {
+      m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendDROP_DB_REQ;
+      m_sendCONF = (SsFUNCREP)&DblqhProxy::sendDROP_DB_CONF;
+    }
+    enum { poolSize = 1 };
+    static SsPool<Ss_DROP_DB_REQ>& pool(LocalProxy* proxy) {
+      return ((DblqhProxy*)proxy)->c_ss_DROP_DB_REQ;
+    }
+  };
+  SsPool<Ss_DROP_DB_REQ> c_ss_DROP_DB_REQ;
+  void execDROP_DB_REQ(Signal*);
+  void sendDROP_DB_REQ(Signal*, Uint32 ssId, SectionHandle*);
+  void execDROP_DB_CONF(Signal*);
+  void execDROP_DB_REF(Signal*);
+  void sendDROP_DB_CONF(Signal*, Uint32 ssId);
+
   // LCP handling
   void execLCP_FRAG_ORD(Signal *);
   void execLCP_FRAG_REP(Signal *);
@@ -483,6 +583,7 @@ class DblqhProxy : public LocalProxy {
   Uint32 getNoOfOutstanding(const LcpRecord &) const;
   void completeLCP(Signal *signal);
   void sendLCP_COMPLETE_REP(Signal *);
+  void execQUOTA_OVERLOAD_REP(Signal*);
 };
 
 #undef JAM_FILE_ID

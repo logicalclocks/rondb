@@ -682,6 +682,20 @@ static constexpr const char* const jamFileNames[] =
   "TrpKeepAlive.cpp",                   // 547
   "CommitReq.hpp",                      // 548
   "CommitReq.cpp",                      // 549
+  "CreateDatabase.hpp",                 // 550
+  "DropDatabase.hpp",                   // 551
+  "AlterDatabase.hpp",                  // 552
+  "CreateDb.hpp",                       // 553
+  "DropDb.hpp",                         // 554
+  "AlterDb.hpp",                        // 555
+  "CreateDatabase.cpp",                 // 556
+  "AlterDatabase.cpp",                  // 557
+  "DropDatabase.cpp",                   // 558
+  "CreateDb.cpp",                       // 559
+  "AlterDb.cpp",                        // 560
+  "DropDb.cpp",                         // 561
+  "QueryDatabase.hpp",                  // 562
+  "QueryDatabase.cpp",                  // 563
   // END jamFileNames (This marker is used by ./test_jamFileNames.sh)
 };
 

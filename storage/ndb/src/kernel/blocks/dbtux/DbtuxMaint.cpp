@@ -34,6 +34,7 @@
  */
 
 void Dbtux::execTUX_MAINT_REQ(Signal *signal) {
+  NDB_PREFETCH_WRITE(&c_ctx.searchKeyDataArray);
   jamEntryDebug();
   TuxMaintReq *const sig = (TuxMaintReq *)signal->getDataPtrSend();
   // ignore requests from redo log
