@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+--exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500"
+--source suite/ndb/t/ndb_restart.test
+# ndb_restart.test ends with an initial cluster start, so database is gone after test
