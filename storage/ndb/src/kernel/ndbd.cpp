@@ -236,7 +236,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
   }
 
   Uint64 shared_mem = globalData.theSharedGlobalMemory;
-  Uint32 shared_pages = Uint32(shared_mem /=Uint64(GLOBAL_PAGE_SIZE));
+  Uint32 shared_pages = Uint32(shared_mem /= Uint64(GLOBAL_PAGE_SIZE));
 
   Uint64 BackupSchemaMemory = globalData.theBackupSchemaMemory;
   Uint32 backup_schema_memory =
@@ -285,7 +285,8 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     g_eventLogger->alert("No data memory, exiting.");
     return -1;
   }
-  g_eventLogger->info("DataMemory set to %u MB", tupmem / 32);
+  g_eventLogger->info("Reserved and fixed DataMemory set to %u MB",
+                      tupmem / 32);
 
   Uint32 logParts = NDB_DEFAULT_LOG_PARTS;
   ndb_mgm_get_int_parameter(p, CFG_DB_NO_REDOLOG_PARTS, &logParts);
@@ -319,7 +320,8 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
   rl.m_resource_id = RG_FILE_BUFFERS;
   rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
   ed.m_mem_manager->set_resource_limit(rl);
-  g_eventLogger->info("RedoLogBuffer uses %u MB", filepages / 32);
+  g_eventLogger->info("Reserved and fixed RedoLogBuffer uses %u MB",
+                      filepages / 32);
 
   Uint32 reserved_jb_pages = jbpages / 4;
   if (jbpages)
@@ -404,7 +406,8 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     ed.m_mem_manager->set_resource_limit(rl);
   }
   Uint32 pgman_mbytes = pgman_pages / 32;
-  g_eventLogger->info("DiskPageBuffer uses %u MB", pgman_mbytes);
+  g_eventLogger->info("Reserved and fixed DiskPageBuffer uses %u MB",
+                      pgman_mbytes);
 
   Uint32 stpages = 128;
   {
@@ -425,7 +428,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
 
   Uint64 TransactionMemory = globalData.theTransactionMemory;
   Uint32 transmem = Uint32(TransactionMemory / Uint64(GLOBAL_PAGE_SIZE));
-  g_eventLogger->info("TransactionMemory set to %u MB", transmem/32);
+  g_eventLogger->info("Reserved TransactionMemory set to %u MB", transmem/32);
 
   if (globalData.theUndoBuffer != 0)
   {
@@ -450,10 +453,9 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
       g_eventLogger->info("No Undo log buffer used, will be allocated from"
                           " TransactionMemory if later defined by command");
     }
-    g_eventLogger->info("Total TransactionMemory size is %u MBytes",
-                        transmem/32);
     g_eventLogger->info("TransactionMemory can expand and use"
-                        " SharedGlobalMemory if required");
+                        " SharedGlobalMemory if required"
+                        " until 92%% used");
   }
   {
     Resource_limit rl;
@@ -475,7 +477,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
   }
   g_eventLogger->info(
       "QueryMemory can use memory from SharedGlobalMemory"
-      " until 90%% used");
+      " until 88%% used");
 
   /**
    * Replication Memory will use the configured amount of memory as reserved
@@ -501,7 +503,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("MaxBufferedEpochBytes can use memory from"
-                      " SharedGlobalMemory until 90%% used");
+                      " SharedGlobalMemory until 96%% used");
 
   Uint32 reserved_schema_memory = schema_memory / 4;
   {
@@ -519,10 +521,11 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
-  g_eventLogger->info("Adding %u MByte for schema memory",
+  g_eventLogger->info("Reserved %u MByte for SchemaMemory",
                       reserved_schema_memory/32);
   g_eventLogger->info("SchemaMemory can expand and use"
-                      " SharedGlobalMemory if required");
+                      " SharedGlobalMemory if required"
+                      " until 94%% used");
 
   Uint32 reserved_backup_schema_memory = backup_schema_memory / 4;
   {
@@ -535,10 +538,11 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     rl.m_prio_memory = Resource_limit::VERY_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
-  g_eventLogger->info("Adding %u MByte for backup schema memory",
+  g_eventLogger->info("Adding %u MByte for BackupSchemaMemory",
                       reserved_backup_schema_memory/32);
   g_eventLogger->info("BackupSchemaMemory can expand and use"
-                      " SharedGlobalMemory if required");
+                      " SharedGlobalMemory if required"
+                      " until 96%% used");
   {
     Resource_limit rl;
     rl.m_min = 0;
