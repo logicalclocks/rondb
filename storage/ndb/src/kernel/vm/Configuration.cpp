@@ -811,8 +811,7 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
   {
     schema_memory = schema_mem_block - table_mem;
     schema_memory += map_size;
-    globalData.theSchemaMemory = schema_memory / 4;
-    globalData.theExtraSchemaMemory = schema_memory / 4;
+    globalData.theSchemaMemory = schema_memory;
   }
 }
 
@@ -1020,7 +1019,7 @@ Configuration::compute_os_overhead(
    * use the TotalMemoryConfig variable since this number here is based on
    * running ndbmtd in a VM in the cloud.
    *
-   * We remove 1% of the total memory, 100 MBytes per thread, in addition
+   * We remove 1.5% of the total memory, 100 MBytes per thread, in addition
    * we remove 1.4 GByte to handle smaller VM sizes.
    */
   Uint64 os_static_overhead = 0;
@@ -1035,7 +1034,7 @@ Configuration::compute_os_overhead(
   {
     os_cpu_overhead = Uint64(100) * MBYTE64;
   }
-  Uint64 reserved_part = total_memory / Uint64(100);
+  Uint64 reserved_part = total_memory / Uint64(67);
   Uint32 num_threads = get_num_threads();
   os_cpu_overhead *= Uint64(num_threads);
   return os_static_overhead + os_cpu_overhead + reserved_part;
@@ -1344,12 +1343,12 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   Uint64 shared_global_memory = get_and_set_shared_global_memory(p);
   Uint64 extra_shared_global_memory = 0;
   extra_shared_global_memory += (compute_backup_schema_memory / 4);
-  extra_shared_global_memory += globalData.theExtraSchemaMemory;
+  extra_shared_global_memory += (schema_memory / 4);
   extra_shared_global_memory += (compute_job_buffer / 4);
   extra_shared_global_memory += (compute_send_buffer / 2);
   shared_global_memory += extra_shared_global_memory;
   Uint64 used_memory =
-    schema_memory +
+    (schema_memory / 4) +
     backup_schema_memory +
     replication_memory +
     transaction_memory +
@@ -1366,33 +1365,42 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
     fs_memory +
     shared_global_memory +
     table_memory;
-  g_eventLogger->info("SchemaMemory is %llu MBytes", schema_memory / MBYTE64);
-  g_eventLogger->info("BackupSchemaMemory is %llu MBytes",
+  g_eventLogger->info("Reserved SchemaMemory is %llu MBytes",
+                      (schema_memory / 4) / MBYTE64);
+  g_eventLogger->info("Reserved BackupSchemaMemory is %llu MBytes",
                       backup_schema_memory / MBYTE64);
-  g_eventLogger->info("ReplicationMemory is %llu MBytes",
+  g_eventLogger->info("Reserved ReplicationMemory is %llu MBytes",
                       replication_memory / MBYTE64);
-  g_eventLogger->info("TransactionMemory is %llu MBytes",
+  g_eventLogger->info("Reserved TransactionMemory is %llu MBytes",
                       transaction_memory / MBYTE64);
-  g_eventLogger->info("Redo log buffer size total are %llu MBytes",
+  g_eventLogger->info("Reserved and fixed Redo log buffer size total"
+                      " are %llu MBytes",
                       redo_buffer / MBYTE64);
-  g_eventLogger->info("Undo log buffer is %llu MBytes", undo_buffer / MBYTE64);
-  g_eventLogger->info("LongMessageBuffer is %llu MBytes, (not in Global Memory)",
+  g_eventLogger->info("Reserved and fixed Undo log buffer is %llu MBytes",
+                      undo_buffer / MBYTE64);
+  g_eventLogger->info("Reserved and fixed LongMessageBuffer is %llu MBytes,"
+                      " (not in Global Memory)",
                       long_message_buffer / MBYTE64);
-  g_eventLogger->info("Send buffer sizes are %llu MBytes",
+  g_eventLogger->info("Reserved Send buffer size is %llu MBytes",
                       send_buffer / MBYTE64);
-  g_eventLogger->info("Job buffer sizes are %llu MBytes",
+  g_eventLogger->info("Reserved Job buffer size is %llu MBytes",
                       job_buffer / MBYTE64);
-  g_eventLogger->info("Static overhead is %llu MBytes, (not in Global Memory)",
+  g_eventLogger->info("Computed Static overhead is %llu MBytes,"
+                      " (not in Global Memory)",
                       static_overhead / MBYTE64);
-  g_eventLogger->info("OS overhead is %llu MBytes", os_overhead / MBYTE64);
-  g_eventLogger->info("Backup Page memory is %llu MBytes, (not in Global Memory)",
+  g_eventLogger->info("Computed OS overhead is %llu MBytes",
+                      os_overhead / MBYTE64);
+  g_eventLogger->info("Computed Backup Page memory is %llu MBytes,"
+                      " (not in Global Memory)",
                       backup_page_memory / MBYTE64);
-  g_eventLogger->info("Restore memory is %llu MBytes",
+  g_eventLogger->info("Computed Restore memory is %llu MBytes",
                       restore_memory / MBYTE64);
-  g_eventLogger->info("Packed signal memory is %llu MBytes",
+  g_eventLogger->info("Computed Packed signal memory is %llu MBytes",
                       pack_memory / MBYTE64);
-  g_eventLogger->info("NDBFS memory is %llu MBytes", fs_memory / MBYTE64);
-  g_eventLogger->info("Table memory is %llu MBytes, (not in Global Memory)",
+  g_eventLogger->info("Computed NDBFS memory is %llu MBytes",
+                      fs_memory / MBYTE64);
+  g_eventLogger->info("Computed Table memory is %llu MBytes,"
+                      " (not in Global Memory)",
                       table_memory / MBYTE64);
   g_eventLogger->info("SharedGlobalMemory is %llu MBytes",
                       shared_global_memory / MBYTE64);
