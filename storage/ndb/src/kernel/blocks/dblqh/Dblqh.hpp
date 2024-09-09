@@ -4542,6 +4542,7 @@ public:
   SendDatabaseQuotaRep *c_send_database_quota_rec;
   Uint32 c_send_database_quota_rep_file_size;
   Uint32 m_num_send_database_quota_rep;
+  bool m_restart_completed;
 
   struct MonotonicCounters {
     MonotonicCounters() : operations(0) {}

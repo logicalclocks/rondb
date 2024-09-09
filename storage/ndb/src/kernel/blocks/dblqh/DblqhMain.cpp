@@ -1687,6 +1687,7 @@ void Dblqh::execSTTOR(Signal *signal) {
 #ifdef CONNECT_DEBUG
       send_connect_debug(signal);
 #endif
+      m_restart_completed = true;
       return;
     default:
       jam();
@@ -38353,6 +38354,7 @@ Dblqh::update_rate_usage(Uint32 tableId,
   TablerecPtr tabPtr;
   tabPtr.i = tableId;
   ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+  if (!m_restart_completed) return;
   if (unlikely(m_is_query_block)) {
     lock_database_hash();
   }
@@ -38408,6 +38410,7 @@ Uint32 Dblqh::get_delay(Uint32 tableId) {
 void
 Dblqh::send_database_quota_rep(DatabaseRecordPtr dbPtr,
                                NDB_TICKS now) {
+  if (!m_restart_completed) return;
   Uint32 requestInfo = 0;
   Uint32 before_memory_value_sent = dbPtr.p->m_last_rep_in_memory_page8k;
   Uint32 after_memory_value = dbPtr.p->m_in_memory_page8k;

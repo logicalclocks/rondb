@@ -257,6 +257,7 @@ void Dblqh::initData()
   c_max_keep_gci_in_lcp = 0;
   c_first_set_min_keep_gci = false;
   m_restart_local_latest_lcp_id = 0;
+  m_restart_completed = false;
 }  // Dblqh::initData()
 
 void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg,

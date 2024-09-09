@@ -139,7 +139,7 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_HASH 1
 //#define DEBUG_QUOTAS_EXTRA 1
-//#define DEBUG_QUOTAS 1
+#define DEBUG_QUOTAS 1
 #endif
 
 #ifdef DEBUG_QUOTAS_EXTRA
@@ -4212,33 +4212,35 @@ static bool checkSchemaStatus(Uint32 tableType, Uint32 pass) {
     case DictTabInfo::IndexTrigger:
       return false;
     case DictTabInfo::LogfileGroup:
-      return pass == 0 || pass == 13 || pass == 14;
+      return pass == 0 || pass == 14 || pass == 16;
     case DictTabInfo::Tablespace:
-      return pass == 1 || pass == 12 || pass == 15;
+      return pass == 1 || pass == 13 || pass == 17;
     case DictTabInfo::Datafile:
     case DictTabInfo::Undofile:
-      return pass == 2 || pass == 11 || pass == 16;
+      return pass == 2 || pass == 12 || pass == 18;
     case DictTabInfo::HashMap:
-      return pass == 3 || pass == 10 || pass == 17;
+      return pass == 3 || pass == 11 || pass == 19;
     case DictTabInfo::SystemTable:
     case DictTabInfo::UserTable:
-      return /* pass == 4 || pass == 9 || */ pass == 18;
+      return /* pass == 4 || pass == 10 || */ pass == 20;
     case DictTabInfo::UniqueHashIndex:
     case DictTabInfo::HashIndex:
     case DictTabInfo::UniqueOrderedIndex:
     case DictTabInfo::OrderedIndex:
-      return /* pass == 5 || pass == 8 || */ pass == 19;
+      return /* pass == 5 || pass == 9 || */ pass == 21;
     case DictTabInfo::ForeignKey:
-      return pass == 6 || pass == 7 || pass == 20;
+      return pass == 6 || pass == 8 || pass == 22;
+    case DictTabInfo::Database:
+      return pass == 7 || pass == 15 || pass == 23;
   }
 
   return false;
 }
 
-static const Uint32 CREATE_OLD_PASS = 6;
-static const Uint32 DROP_OLD_PASS = 13;
-static const Uint32 CREATE_NEW_PASS = 20;
-static const Uint32 LAST_PASS = 20;
+static const Uint32 CREATE_OLD_PASS = 7;
+static const Uint32 DROP_OLD_PASS = 15;
+static const Uint32 CREATE_NEW_PASS = 23;
+static const Uint32 LAST_PASS = 23;
 
 NdbOut &operator<<(NdbOut &out, const SchemaFile::TableEntry entry) {
   out << "[";
@@ -4280,22 +4282,25 @@ void Dbdict::initRestartRecord(Uint32 startpass, Uint32 lastpass,
  * Pass 4 Create old Table           // NOT DONE DUE TO DIH
  * Pass 5 Create old Index           // NOT DONE DUE TO DIH
  * Pass 6 Create old ForeignKey
+ * Pass 7 Create old Database Quota
 
- * Pass 7 Drop old ForeignKey
- * Pass 8 Drop old Index             // NOT DONE DUE TO DIH
- * Pass 9 Drop old Table             // NOT DONE DUE TO DIH
- * Pass 10 Drop old HashMap
- * Pass 11 Drop old Datafile/Undofile
- * Pass 12 Drop old Tablespace
- * Pass 13 Drop old Logfilegroup
+ * Pass 8 Drop old ForeignKey
+ * Pass 9 Drop old Index             // NOT DONE DUE TO DIH
+ * Pass 10 Drop old Table             // NOT DONE DUE TO DIH
+ * Pass 11 Drop old HashMap
+ * Pass 12 Drop old Datafile/Undofile
+ * Pass 13 Drop old Tablespace
+ * Pass 14 Drop old Logfilegroup
+ * Pass 15 Drop old Database Quota
 
- * Pass 14 Create new LogfileGroup
- * Pass 15 Create new Tablespace
- * Pass 16 Create new Datafile/Undofile
- * Pass 17 Create new HashMap
- * Pass 18 Create new Table
- * Pass 19 Create new Index
- * Pass 20 Create new ForeignKey
+ * Pass 16 Create new LogfileGroup
+ * Pass 17 Create new Tablespace
+ * Pass 18 Create new Datafile/Undofile
+ * Pass 19 Create new HashMap
+ * Pass 20 Create new Table
+ * Pass 21 Create new Index
+ * Pass 22 Create new ForeignKey
+ * Pass 23 Create new Database Quota
  */
 
 void Dbdict::checkSchemaStatus(Signal *signal) {
@@ -4957,6 +4962,11 @@ void Dbdict::restartCreateObj_parse(Signal *signal, SegmentedSectionPtr ptr,
       ndbrequire(seizeSchemaOp(trans_ptr, op_ptr, opRecPtr));
       break;
     }
+    case DictTabInfo::Database: {
+      CreateDatabaseRecPtr opRecPtr;
+      ndbrequire(seizeSchemaOp(trans_ptr, op_ptr, opRecPtr));
+      break;
+    }
   }
 
   op_ptr.p->m_restart = file ? 1 : 2;
@@ -5040,6 +5050,13 @@ void Dbdict::restartDropObj(Signal *signal, Uint32 tableId,
       ndbrequire(seizeSchemaOp(trans_ptr, op_ptr, opRecPtr));
       opRecPtr.p->m_request.fkId = tableId;
       opRecPtr.p->m_request.fkVersion = entry->m_tableVersion;
+      break;
+    }
+    case DictTabInfo::Database: {
+      DropDatabaseRecPtr opRecPtr;
+      ndbrequire(seizeSchemaOp(trans_ptr, op_ptr, opRecPtr));
+      opRecPtr.p->m_request.databaseId = tableId;
+      opRecPtr.p->m_request.databaseVersion = entry->m_tableVersion;
       break;
     }
   }
