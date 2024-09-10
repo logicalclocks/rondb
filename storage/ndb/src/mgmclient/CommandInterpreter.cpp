@@ -4429,6 +4429,14 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
   Uint32 max_parallel_complex_queries = 0;
   bool on_disk_size_set = false;
 
+  if (type == ALTER_DATABASE) {
+    in_memory_size = RNIL;
+    on_disk_size = RNIL;
+    rate_per_sec = RNIL;
+    max_transaction_size = RNIL;
+    max_parallel_transactions = RNIL;
+    max_parallel_complex_queries = RNIL;
+  }
   for (Uint32 i = 0; database_name[i] != 0; i++) {
     if (database_name[i] == '/') {
       ndbout << "DATABASE QUOTA " << type_str << " " << database_name
@@ -4444,6 +4452,7 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
     return -1;
   }
   bool found_change = false;
+  bool any_parameter_set = false;
   while (remaining_commands >= 3) {
     remaining_commands -= 3; /* key = value */
     const char *key = command_list[command_pos++].c_str();
@@ -4505,6 +4514,7 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
       on_disk_size = val;
       on_disk_size_set = true;
       if (val != 0) found_change = true;
+      any_parameter_set = true;
     } else {
       ndbout << "Wrong key: " << key << ", choose one of:" << endl
              << "rate-per-sec, in-memory-size, on-disk-size" << endl
@@ -4524,6 +4534,11 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
   }
   if (!found_change && type == SET_DATABASE) {
     ndbout << "At least one parameter needs to have non-zero value" << endl;
+    return -1;
+  }
+  if (!any_parameter_set && type == ALTER_DATABASE) {
+    ndbout << "At least one parameter needs to change its value in ALTER"
+           << endl;
     return -1;
   }
 #if 0

@@ -33793,7 +33793,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     ndbrequire(ok);
   }
   {
-    if (db_ptr.p->m_rate_per_sec < db.RatePerSec) {
+    if (db.RatePerSec != RNIL &&
+        db_ptr.p->m_rate_per_sec < db.RatePerSec) {
       Uint32 increase_rate =
         db.RatePerSec - db_ptr.p->m_rate_per_sec;
       Uint32 available_rate_limit =
@@ -33805,7 +33806,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
         return;
       }
     }
-    if (db_ptr.p->m_in_memory_size < db.InMemorySize) {
+    if (db.InMemorySize != RNIL &&
+        db_ptr.p->m_in_memory_size < db.InMemorySize) {
       Uint32 increase_memory_quota_mb =
         db.InMemorySize - db_ptr.p->m_in_memory_size;
       Uint32 available_memory_quota_limit =
@@ -33820,7 +33822,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
         return;
       }
     }
-    if (db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
+    if (db.DiskSpaceSize != RNIL &&
+        db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
       Uint32 increase_disk_quota_gb =
         db.DiskSpaceSize - db_ptr.p->m_disk_space_size;
       Uint32 available_disk_quota_limit_gb =
@@ -33844,15 +33847,39 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     }
     ndbrequire(db_ptr.p->m_alter_db_ref == RNIL);
     db_ptr.p->m_alter_db_ref = alter_db_ptr.i;
-    alter_db_ptr.p->m_in_memory_size = db.InMemorySize;
-    alter_db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
-    alter_db_ptr.p->m_rate_per_sec = db.RatePerSec;
-    alter_db_ptr.p->m_max_transaction_size = db.MaxTransactionSize;
-    alter_db_ptr.p->m_max_parallel_transactions = db.MaxParallelTransactions;
-    alter_db_ptr.p->m_max_parallel_complex_queries =
-      db.MaxParallelComplexQueries;
-
-
+    if (db.InMemorySize != RNIL) {
+      alter_db_ptr.p->m_in_memory_size = db.InMemorySize;
+    } else {
+      alter_db_ptr.p->m_in_memory_size = db_ptr.p->m_in_memory_size;
+    }
+    if (db.DiskSpaceSize != RNIL) {
+      alter_db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
+    } else {
+      alter_db_ptr.p->m_disk_space_size = db_ptr.p->m_disk_space_size;
+    }
+    if (db.RatePerSec != RNIL) {
+      alter_db_ptr.p->m_rate_per_sec = db.RatePerSec;
+    } else {
+      alter_db_ptr.p->m_rate_per_sec = db_ptr.p->m_rate_per_sec;
+    }
+    if (db.MaxTransactionSize != RNIL) {
+      alter_db_ptr.p->m_max_transaction_size = db.MaxTransactionSize;
+    } else {
+      alter_db_ptr.p->m_max_transaction_size = db_ptr.p->m_max_transaction_size;
+    }
+    if (db.MaxParallelTransactions != RNIL) {
+      alter_db_ptr.p->m_max_parallel_transactions = db.MaxParallelTransactions;
+    } else {
+      alter_db_ptr.p->m_max_parallel_transactions =
+        db_ptr.p->m_max_parallel_transactions;
+    }
+    if (db.MaxParallelComplexQueries != RNIL) {
+      alter_db_ptr.p->m_max_parallel_complex_queries =
+        db.MaxParallelComplexQueries;
+    } else {
+      alter_db_ptr.p->m_max_parallel_complex_queries =
+        db_ptr.p->m_max_parallel_complex_queries;
+    }
     SchemaFile::TableEntry te; te.init();
     te.m_tableState = SchemaFile::SF_ALTER;
     te.m_transId = trans_ptr.p->m_transId;
