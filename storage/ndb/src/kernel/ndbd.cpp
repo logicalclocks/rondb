@@ -446,7 +446,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
     rl.m_max_high_prio = transmem + shared_pages_part;
     rl.m_resource_id = RG_TRANSACTION_MEMORY;
-    rl.m_prio_memory = Resource_limit::MEDIUM_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
     if (globalData.theUndoBuffer == 0)
     {
@@ -467,9 +467,10 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
      * For example TRANSACTION_MEMORY will have access to those last
      * percent of global shared global page memory.
      */
+    Uint32 shared_pages_part = (shared_pages / 10) * 3;
     rl.m_min = 0;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
-    rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
+    rl.m_max_high_prio = shared_pages_part;
     rl.m_resource_id = RG_QUERY_MEMORY;
     // Cannot use last piece of memory
     rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
@@ -518,7 +519,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     rl.m_max_high_prio = schema_memory_max;
     rl.m_resource_id = RG_SCHEMA_MEMORY;
     // Cannot use last piece of memory
-    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
+    rl.m_prio_memory = Resource_limit::MEDIUM_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("Reserved %u MByte for SchemaMemory",

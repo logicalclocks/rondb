@@ -339,6 +339,7 @@ static const char* helpText =
 "PURGE STALE SESSIONS                   Reset reserved nodeid's in the mgmt server\n"
 "CONNECT [<connectstring>]              Connect to management server (reconnect if already connected)\n"
 "<id> REPORT <report-type>              Display report for <report-type>\n"
+"DATABASE QUOTA ...                     Commands used to manage database quotas\n"
 "DATABASE QUOTA SET db {<property>=<value>}+ Set database quotas\n"
 "DATABASE QUOTA ALTER db {<property>=<value>}+ Alter database quotas\n"
 "DATABASE QUOTA DROP db                 Drop database quotas\n"
