@@ -1,0 +1,34 @@
+--source include/have_ndb.inc
+--exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500 --max-transaction-size=4 --max-parallel-transactions=4"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 50000000 --in-memory-size=100 --on-disk-size=0"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 500 --in-memory-size=100 --on-disk-size=0"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 500 --in-memory-size=10 --on-disk-size=10"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 500 --in-memory-size=10"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test2"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test2 --rate-per-sec = 15000000 --in-memory-size=100 --on-disk-size=10"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test2 --rate-per-sec = 1500 --in-memory-size=100 --on-disk-size=10"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test2 --rate-per-sec = 1500 --in-memory-size=11 --on-disk-size=10"
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test2 --rate-per-sec = 1500 --in-memory-size=11"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test2"
+--exec $NDB_MGM -e "DATABASE QUOTA LIST"
+--disable_query_log
+if (!$NDB_BACKUP_DIR)
+{
+  --die Need NDB_BACKUP_DIR variable
+}
+--let BACKUP_FILE=$NDB_BACKUP_DIR/backup.txt
+--disable_query_log
+--exec $NDB_MGM -e "DATABASE QUOTA BACKUP $BACKUP_FILE"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test2"
+--exec $NDB_MGM -e "DATABASE QUOTA RESTORE $BACKUP_FILE"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test2"
+--remove_file $BACKUP_FILE

@@ -1,0 +1,80 @@
+DATABASE QUOTA SET successfully executed
+DATABASE QUOTA SET command failed: Error:
+*  1235: Error
+*        Create Database failed
+DATABASE QUOTA SET command failed: Error:
+*  1238: Error
+*        Create Database failed
+DATABASE QUOTA SET command failed: Error:
+*  1240: Error
+*        Create Database failed
+DATABASE QUOTA SET successfully executed
+Database Quotas for test
+databaseId = 13
+databaseVersion = 13
+InMemorySize = 0 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 500
+MaxTransactionSize = 4
+MaxParallelTransactions = 4
+MaxParallelComplexQueries = 0
+Database Quotas for test2
+databaseId = 14
+databaseVersion = 14
+InMemorySize = 0 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 500
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+MaxParallelComplexQueries = 0
+DATABASE QUOTA ALTER command failed: Error:
+*  1236: Error
+*        Alter Database failed
+DATABASE QUOTA ALTER command failed: Error:
+*  1239: Error
+*        Alter Database failed
+DATABASE QUOTA ALTER command failed: Error:
+*  1241: Error
+*        Alter Database failed
+DATABASE QUOTA ALTER successfully executed
+Database Quotas for test2
+databaseId = 14
+databaseVersion = 14
+InMemorySize = 0 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 1500
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+MaxParallelComplexQueries = 0
+Database Quotas for test
+  databaseId = 13
+  databaseVersion = 13
+  InMemorySize = 0 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 500
+  MaxTransactionSize = 4
+  MaxParallelTransactions = 4
+  MaxParallelComplexQueries = 0
+
+Database Quotas for test2
+  databaseId = 14
+  databaseVersion = 14
+  InMemorySize = 0 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 1500
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+Database Quota List command completed
+Database Quota Backup command completed
+DATABASE QUOTA DROP successfully executed
+DATABASE QUOTA DROP successfully executed
+Execute DATABASE QUOTA SET test --in-memory-size = 0M --on-disk-size = 0G --rate-per-sec = 500 --max-transaction-size = 4 --max-parallel-transactions = 4 --max-parallel-complex-queries = 0
+DATABASE QUOTA SET successfully executed
+DATABASE QUOTA SET command succeeded for RESTORE
+Execute DATABASE QUOTA SET test2 --in-memory-size = 0M --on-disk-size = 0G --rate-per-sec = 1500 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0
+DATABASE QUOTA SET successfully executed
+DATABASE QUOTA SET command succeeded for RESTORE
+DATABASE QUOTA DROP successfully executed
+DATABASE QUOTA DROP successfully executed
