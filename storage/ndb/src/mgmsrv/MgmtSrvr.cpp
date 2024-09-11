@@ -5808,9 +5808,10 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
   req->senderRef = ss.getOwnRef();
 
   Uint32 databaseName[MAX_DB_NAME_SIZE/4 + 1];
+  char *databaseNamePtr = (char*)&databaseName[0];
   Uint32 db_name_len = strnlen(database_name, sizeof(databaseName) - 1);
   memcpy((char*)&databaseName[0], database_name, db_name_len);
-  databaseName[db_name_len] = 0;
+  databaseNamePtr[db_name_len] = 0;
 
   ssig.ptr[0].p = (const Uint32*)&databaseName[0];
   ssig.ptr[0].sz = db_name_len + 1;
