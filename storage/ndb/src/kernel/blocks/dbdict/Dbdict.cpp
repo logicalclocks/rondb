@@ -32285,39 +32285,45 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
 
   Uint32 available_rate_limit =
     m_allocated_create_rate_limit - m_current_allocated_rate;
-  if (db.RatePerSec > available_rate_limit ||
-      m_allocated_create_rate_limit < m_current_allocated_rate) {
-    jam();
+  if (db.RatePerSec > 0 &&
+      (m_allocated_create_rate_limit < m_current_allocated_rate ||
+      db.RatePerSec > available_rate_limit)) {
     if (op_ptr.p->m_restart) {
+      jam();
       g_eventLogger->info("Database Rate limits oversubscribed, "
                           "will not fail since it is a restart");
     } else {
+      jam();
       setError(error, CreateTableRef::CreateDbNoAvailableRates, __LINE__);
       return;
     }
   }
   Uint32 available_mem_quota_limit =
-    m_allocated_create_rate_limit - m_current_allocated_memory_quota_mb;
-  if (db.InMemorySize > available_mem_quota_limit ||
-      m_allocated_memory_quota_limit < m_current_allocated_memory_quota_mb) {
-    jam();
+    m_allocated_memory_quota_limit - m_current_allocated_memory_quota_mb;
+  if (db.InMemorySize > 0 &&
+      (m_allocated_memory_quota_limit < m_current_allocated_memory_quota_mb ||
+       db.InMemorySize > available_mem_quota_limit)) {
     if (op_ptr.p->m_restart) {
+      jam();
       g_eventLogger->info("Database Memory Quota oversubscribed, "
                           "will not fail since it is a restart");
     } else {
+      jam();
       setError(error, CreateTableRef::CreateDbNoAvailableMemoryQuota, __LINE__);
       return;
     }
   }
   Uint32 available_disk_quota_limit =
     m_allocated_disk_quota_limit_gb - m_current_allocated_disk_quota_gb;
-  if (db.DiskSpaceSize > available_disk_quota_limit ||
-      m_allocated_disk_quota_limit_gb < m_current_allocated_disk_quota_gb) {
-    jam();
+  if (db.DiskSpaceSize > 0 &&
+      (m_allocated_disk_quota_limit_gb < m_current_allocated_disk_quota_gb ||
+       db.DiskSpaceSize > available_disk_quota_limit)) {
     if (op_ptr.p->m_restart) {
+      jam();
       g_eventLogger->info("Database Disk Quota oversubscribed, "
                           "will not fail since it is a restart");
     } else {
+      jam();
       setError(error, CreateTableRef::CreateDbNoAvailableDiskQuota, __LINE__);
       return;
     }
