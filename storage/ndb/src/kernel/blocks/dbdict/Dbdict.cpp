@@ -32285,39 +32285,45 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
 
   Uint32 available_rate_limit =
     m_allocated_create_rate_limit - m_current_allocated_rate;
-  if (db.RatePerSec > available_rate_limit ||
-      m_allocated_create_rate_limit < m_current_allocated_rate) {
-    jam();
+  if (db.RatePerSec > 0 &&
+      (m_allocated_create_rate_limit < m_current_allocated_rate ||
+      db.RatePerSec > available_rate_limit)) {
     if (op_ptr.p->m_restart) {
+      jam();
       g_eventLogger->info("Database Rate limits oversubscribed, "
                           "will not fail since it is a restart");
     } else {
+      jam();
       setError(error, CreateTableRef::CreateDbNoAvailableRates, __LINE__);
       return;
     }
   }
   Uint32 available_mem_quota_limit =
-    m_allocated_create_rate_limit - m_current_allocated_memory_quota_mb;
-  if (db.InMemorySize > available_mem_quota_limit ||
-      m_allocated_memory_quota_limit < m_current_allocated_memory_quota_mb) {
-    jam();
+    m_allocated_memory_quota_limit - m_current_allocated_memory_quota_mb;
+  if (db.InMemorySize > 0 &&
+      (m_allocated_memory_quota_limit < m_current_allocated_memory_quota_mb ||
+       db.InMemorySize > available_mem_quota_limit)) {
     if (op_ptr.p->m_restart) {
+      jam();
       g_eventLogger->info("Database Memory Quota oversubscribed, "
                           "will not fail since it is a restart");
     } else {
+      jam();
       setError(error, CreateTableRef::CreateDbNoAvailableMemoryQuota, __LINE__);
       return;
     }
   }
   Uint32 available_disk_quota_limit =
     m_allocated_disk_quota_limit_gb - m_current_allocated_disk_quota_gb;
-  if (db.DiskSpaceSize > available_disk_quota_limit ||
-      m_allocated_disk_quota_limit_gb < m_current_allocated_disk_quota_gb) {
-    jam();
+  if (db.DiskSpaceSize > 0 &&
+      (m_allocated_disk_quota_limit_gb < m_current_allocated_disk_quota_gb ||
+       db.DiskSpaceSize > available_disk_quota_limit)) {
     if (op_ptr.p->m_restart) {
+      jam();
       g_eventLogger->info("Database Disk Quota oversubscribed, "
                           "will not fail since it is a restart");
     } else {
+      jam();
       setError(error, CreateTableRef::CreateDbNoAvailableDiskQuota, __LINE__);
       return;
     }
@@ -33793,7 +33799,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     ndbrequire(ok);
   }
   {
-    if (db_ptr.p->m_rate_per_sec < db.RatePerSec) {
+    if (db.RatePerSec != RNIL &&
+        db_ptr.p->m_rate_per_sec < db.RatePerSec) {
       Uint32 increase_rate =
         db.RatePerSec - db_ptr.p->m_rate_per_sec;
       Uint32 available_rate_limit =
@@ -33805,7 +33812,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
         return;
       }
     }
-    if (db_ptr.p->m_in_memory_size < db.InMemorySize) {
+    if (db.InMemorySize != RNIL &&
+        db_ptr.p->m_in_memory_size < db.InMemorySize) {
       Uint32 increase_memory_quota_mb =
         db.InMemorySize - db_ptr.p->m_in_memory_size;
       Uint32 available_memory_quota_limit =
@@ -33820,7 +33828,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
         return;
       }
     }
-    if (db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
+    if (db.DiskSpaceSize != RNIL &&
+        db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
       Uint32 increase_disk_quota_gb =
         db.DiskSpaceSize - db_ptr.p->m_disk_space_size;
       Uint32 available_disk_quota_limit_gb =
@@ -33844,14 +33853,41 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     }
     ndbrequire(db_ptr.p->m_alter_db_ref == RNIL);
     db_ptr.p->m_alter_db_ref = alter_db_ptr.i;
-    alter_db_ptr.p->m_in_memory_size = db.InMemorySize;
-    alter_db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
-    alter_db_ptr.p->m_rate_per_sec = db.RatePerSec;
-    alter_db_ptr.p->m_max_transaction_size = db.MaxTransactionSize;
-    alter_db_ptr.p->m_max_parallel_transactions = db.MaxParallelTransactions;
-    alter_db_ptr.p->m_max_parallel_complex_queries =
-      db.MaxParallelComplexQueries;
-
+    if (db.InMemorySize != RNIL) {
+      alter_db_ptr.p->m_in_memory_size = db.InMemorySize;
+    } else {
+      alter_db_ptr.p->m_in_memory_size = db_ptr.p->m_in_memory_size;
+    }
+    if (db.DiskSpaceSize != RNIL) {
+      alter_db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
+    } else {
+      alter_db_ptr.p->m_disk_space_size = db_ptr.p->m_disk_space_size;
+    }
+    if (db.RatePerSec != RNIL) {
+      alter_db_ptr.p->m_rate_per_sec = db.RatePerSec;
+    } else {
+      alter_db_ptr.p->m_rate_per_sec = db_ptr.p->m_rate_per_sec;
+    }
+    if (db.MaxTransactionSize != RNIL) {
+      alter_db_ptr.p->m_max_transaction_size = db.MaxTransactionSize;
+    } else {
+      alter_db_ptr.p->m_max_transaction_size = db_ptr.p->m_max_transaction_size;
+    }
+    if (db.MaxParallelTransactions != RNIL) {
+      alter_db_ptr.p->m_max_parallel_transactions = db.MaxParallelTransactions;
+    } else {
+      alter_db_ptr.p->m_max_parallel_transactions =
+        db_ptr.p->m_max_parallel_transactions;
+    }
+    if (db.MaxParallelComplexQueries != RNIL) {
+      alter_db_ptr.p->m_max_parallel_complex_queries =
+        db.MaxParallelComplexQueries;
+    } else {
+      alter_db_ptr.p->m_max_parallel_complex_queries =
+        db_ptr.p->m_max_parallel_complex_queries;
+    }
+    alter_db_ptr.p->key = db_ptr.p->key;
+    alter_db_ptr.p->m_version = db_ptr.p->m_version;
 
     SchemaFile::TableEntry te; te.init();
     te.m_tableState = SchemaFile::SF_ALTER;
@@ -34034,7 +34070,7 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
       (alter_db_ptr.p->m_disk_space_size /
       (Uint64(1024) * Uint64(1024) * Uint64(1024)));
     req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
-    sendSignal(DBTC_REF, GSN_ALTER_DB_REQ, signal,
+    sendSignal(DBLQH_REF, GSN_ALTER_DB_REQ, signal,
                AlterDbReq::SignalLengthLQH, JBB);
     return;
   }

@@ -339,6 +339,7 @@ static const char* helpText =
 "PURGE STALE SESSIONS                   Reset reserved nodeid's in the mgmt server\n"
 "CONNECT [<connectstring>]              Connect to management server (reconnect if already connected)\n"
 "<id> REPORT <report-type>              Display report for <report-type>\n"
+"DATABASE QUOTA ...                     Commands used to manage database quotas\n"
 "DATABASE QUOTA SET db {<property>=<value>}+ Set database quotas\n"
 "DATABASE QUOTA ALTER db {<property>=<value>}+ Alter database quotas\n"
 "DATABASE QUOTA DROP db                 Drop database quotas\n"
@@ -4428,6 +4429,14 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
   Uint32 max_parallel_complex_queries = 0;
   bool on_disk_size_set = false;
 
+  if (type == ALTER_DATABASE) {
+    in_memory_size = RNIL;
+    on_disk_size = RNIL;
+    rate_per_sec = RNIL;
+    max_transaction_size = RNIL;
+    max_parallel_transactions = RNIL;
+    max_parallel_complex_queries = RNIL;
+  }
   for (Uint32 i = 0; database_name[i] != 0; i++) {
     if (database_name[i] == '/') {
       ndbout << "DATABASE QUOTA " << type_str << " " << database_name
@@ -4443,6 +4452,7 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
     return -1;
   }
   bool found_change = false;
+  bool any_parameter_set = false;
   while (remaining_commands >= 3) {
     remaining_commands -= 3; /* key = value */
     const char *key = command_list[command_pos++].c_str();
@@ -4511,6 +4521,7 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
              << "max-parallel-complex-queries" << endl;
       return -1;
     }
+    any_parameter_set = true;
   }
   if (remaining_commands > 0) {
     ndbout << "Wrong number of parameters to DATABASE QUOTA "
@@ -4518,11 +4529,13 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
            << " command" << endl;
     return -1;
   }
-  if (on_disk_size_set == false) {
-    on_disk_size = 10 * in_memory_size;
-  }
   if (!found_change && type == SET_DATABASE) {
     ndbout << "At least one parameter needs to have non-zero value" << endl;
+    return -1;
+  }
+  if (!any_parameter_set && type == ALTER_DATABASE) {
+    ndbout << "At least one parameter needs to change its value in ALTER"
+           << endl;
     return -1;
   }
 #if 0
