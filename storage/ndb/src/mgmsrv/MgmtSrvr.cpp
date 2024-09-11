@@ -6138,7 +6138,6 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         out << " --max-parallel-transactions = ";
         out << conf->MaxParallelTransactions;
         out << " --max-parallel-complex-queries = ";
-        out << conf->MaxParallelComplexQueries;
         out << conf->MaxParallelComplexQueries << endl;
         return;
       }
