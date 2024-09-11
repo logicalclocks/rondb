@@ -33880,6 +33880,9 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
       alter_db_ptr.p->m_max_parallel_complex_queries =
         db_ptr.p->m_max_parallel_complex_queries;
     }
+    alter_db_ptr.p->key = db_ptr.p->key;
+    alter_db_ptr.p->m_version = db_ptr.p->m_version;
+
     SchemaFile::TableEntry te; te.init();
     te.m_tableState = SchemaFile::SF_ALTER;
     te.m_transId = trans_ptr.p->m_transId;
@@ -34061,7 +34064,7 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
       (alter_db_ptr.p->m_disk_space_size /
       (Uint64(1024) * Uint64(1024) * Uint64(1024)));
     req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
-    sendSignal(DBTC_REF, GSN_ALTER_DB_REQ, signal,
+    sendSignal(DBLQH_REF, GSN_ALTER_DB_REQ, signal,
                AlterDbReq::SignalLengthLQH, JBB);
     return;
   }

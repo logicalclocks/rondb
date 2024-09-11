@@ -4514,7 +4514,6 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
       on_disk_size = val;
       on_disk_size_set = true;
       if (val != 0) found_change = true;
-      any_parameter_set = true;
     } else {
       ndbout << "Wrong key: " << key << ", choose one of:" << endl
              << "rate-per-sec, in-memory-size, on-disk-size" << endl
@@ -4522,15 +4521,13 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
              << "max-parallel-complex-queries" << endl;
       return -1;
     }
+    any_parameter_set = true;
   }
   if (remaining_commands > 0) {
     ndbout << "Wrong number of parameters to DATABASE QUOTA "
            << type_str
            << " command" << endl;
     return -1;
-  }
-  if (on_disk_size_set == false) {
-    on_disk_size = 10 * in_memory_size;
   }
   if (!found_change && type == SET_DATABASE) {
     ndbout << "At least one parameter needs to have non-zero value" << endl;
