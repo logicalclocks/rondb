@@ -1,0 +1,34 @@
+name: Alpine Linux
+
+on: [push, pull_request]
+
+jobs:
+  ubuntu-build:
+    if: >-
+      ! contains(toJSON(github.event.commits.*.message), '[skip ci]') &&
+      ! contains(toJSON(github.event.commits.*.message), '[skip github]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: dependencies/.cache
+          key: ${{ hashFiles('dependencies/CMakeLists.txt') }}
+      - name: start docker
+        run: |
+          docker run -w /src -dit --name alpine -v $PWD:/src alpine:latest
+          echo 'docker exec alpine "$@";' > ./alpine.sh
+          chmod +x ./alpine.sh
+      - name: install packages
+        run: |
+          ./alpine.sh apk update
+          ./alpine.sh apk add build-base cmake g++ linux-headers git bash
+      - name: cmake
+        run: |
+          ./alpine.sh cmake -DSIMDJSON_DEVELOPER_MODE=ON -B build_for_alpine
+      - name: build
+        run: |
+          ./alpine.sh cmake --build build_for_alpine
+      - name: test
+        run: |
+          ./alpine.sh bash -c "cd build_for_alpine && ctest  -LE explicitonly --output-on-failure"

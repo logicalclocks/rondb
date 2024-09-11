@@ -1,0 +1,62 @@
+name: Build windows-msvc
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: '${{matrix.link}}-${{matrix.build-type}}-${{matrix.tls-provider}}'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        link: [ 'STATIC', 'SHARED' ]
+        # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+        build-type: ['Debug', 'Release']
+        # TODO: conan botan is v2, v2 support is removed
+        # tls-provider: ['', 'openssl', 'botan']
+        tls-provider: ['', 'openssl']
+
+    steps:
+      - name: Checkout Trantor source code
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Create build directory
+        working-directory: ${{env.GITHUB_WORKSPACE}}
+        run: |
+          mkdir build
+
+      - name: Install conan packages
+        shell: bash
+        working-directory: ./build
+        run: |
+          pip install conan
+          conan profile detect --force
+          conan install .. --output-folder=. --build=missing --settings=build_type=${{matrix.build-type}} --settings=compiler="msvc"
+
+      - name: Create Build Environment & Configure Cmake
+        shell: bash
+        working-directory: ./build
+        # -DBUILD_TESTING=ON Removed, 
+        # Due to unittest by GTest in windows runner will comes out 'error MSB3073'
+        run: |
+          [[ ${{ matrix.link }} == "SHARED" ]] && shared="ON" || shared="OFF"
+          cmake .. -G "Visual Studio 17 2022" -T host=x64 -A x64 \
+          -DTRANTOR_USE_TLS=${{matrix.tls-provider}} \
+          -DCMAKE_BUILD_TYPE=${{matrix.build-type}} \
+          -DBUILD_SHARED_LIBS=$shared \
+          -DCMAKE_INSTALL_PREFIX=../install \
+          -DUSE_SPDLOG=ON \
+          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+
+      - name: Build
+        working-directory: ./build
+        shell: bash
+        # multi config build using --config to switch Release|Debug
+        run: |
+          cmake --build . --config ${{matrix.build-type}} --parallel
