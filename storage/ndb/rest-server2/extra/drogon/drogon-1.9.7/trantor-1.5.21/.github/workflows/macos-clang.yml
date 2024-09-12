@@ -1,0 +1,73 @@
+name: Build macos-clang
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: '${{matrix.link}}-${{matrix.build-type}}-${{matrix.tls-provider}}'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        link: [ 'STATIC', 'SHARED' ]
+        # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+        build-type: ['Debug', 'Release']
+        # Botan needs std::ranges but clang on macOS doesn't support it yet
+        #tls-provider: ['', 'openssl', 'botan']
+        tls-provider: ['', 'openssl']
+
+    steps:
+    - name: Install dependencies
+      # botan v3
+      run: |
+        brew install botan spdlog
+
+    - name: Install gtest
+      run: |
+        wget https://github.com/google/googletest/archive/refs/tags/v1.13.0.tar.gz
+        tar xf v1.13.0.tar.gz
+        cd googletest-1.13.0
+        cmake .
+        make && sudo make install
+
+    - name: Checkout Trantor source code
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+        fetch-depth: 0
+
+    - name: Create build directory
+      run: |
+        mkdir build
+
+    - name: Create Build Environment & Configure Cmake
+      shell: bash
+      working-directory: ./build
+      run: |
+        [[ ${{ matrix.link }} == "SHARED" ]] && shared="ON" || shared="OFF"
+        cmake .. \
+        -DTRANTOR_USE_TLS=${{matrix.tls-provider}} \
+        -DCMAKE_BUILD_TYPE=${{matrix.build-type}} \
+        -DBUILD_SHARED_LIBS=$shared \
+        -DCMAKE_INSTALL_PREFIX=../install \
+        -DUSE_SPDLOG=ON \
+        -DBUILD_TESTING=ON \
+
+    - name: Build
+      shell: bash
+      working-directory: ./build
+      # Execute the build.  You can specify a specific target with "--target <NAME>"
+      run: |
+        sudo make && sudo make install
+
+    - name: Test
+      working-directory: ./build
+      shell: bash
+      # Execute tests defined by the CMake configuration.  
+      # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
+      run: |
+        make test

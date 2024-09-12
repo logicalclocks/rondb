@@ -1,0 +1,167 @@
+name: Fuzz and run valgrind
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  schedule:
+    - cron: 23 */8 * * *
+
+jobs:
+  build:
+    if: >-
+      ! contains(toJSON(github.event.commits.*.message), '[skip ci]') &&
+      ! contains(toJSON(github.event.commits.*.message), '[skip github]')
+    runs-on: ubuntu-latest
+    env:
+      # fuzzers that change behaviour with SIMDJSON_FORCE_IMPLEMENTATION
+      defaultimplfuzzers: atpointer dump dump_raw_tape element minify parser print_json
+      # fuzzers that loop over the implementations themselves, or don't need to switch.
+      implfuzzers: implementations minifyimpl ndjson ondemand padded utf8
+      implementations: haswell westmere fallback
+      UBSAN_OPTIONS: halt_on_error=1
+      MAXLEN: -max_len=4000
+      CLANGVERSION: 15
+      # which optimization level to use for the sanitizer build (see build_fuzzer.variants.sh)
+      OPTLEVEL: -O3
+
+    steps:
+    - name: Install packages necessary for building
+      run: |
+        sudo apt update
+        sudo apt-get install --quiet ninja-build valgrind zip unzip lsb-release wget software-properties-common gnupg
+        wget https://apt.llvm.org/llvm.sh
+        sudo apt-get purge --auto-remove llvm python3-lldb-15 llvm-15
+        chmod +x llvm.sh
+        sudo ./llvm.sh $CLANGVERSION
+
+    - uses: actions/checkout@v4
+
+    - uses: actions/cache@v4
+      with:
+        path: dependencies/.cache
+        key: ${{ hashFiles('dependencies/CMakeLists.txt') }}
+
+    - uses: actions/cache@v4
+      id: cache-corpus
+      with:
+        path: out/
+        key: corpus-${{ github.run_id }}
+        restore-keys: corpus-
+
+    - name: show statistics for the cached corpus
+      run: |
+        echo number of files in github action corpus cache:
+        find out -type f |wc -l
+
+    - name: Create and prepare the initial seed corpus
+      run: |
+        fuzz/build_corpus.sh
+        mv corpus.zip seed_corpus.zip
+        mkdir seedcorpus
+        unzip -q -d seedcorpus seed_corpus.zip
+
+    - name: List clang versions
+      run: |
+        ls /usr/bin/clang*
+        which clang++
+        clang++ --version
+
+    - name: Build all the variants
+      run: CLANGSUFFIX=-$CLANGVERSION fuzz/build_fuzzer_variants.sh
+
+    - name: Explore fast (release build, default implementation)
+      run: |
+        set -eux
+        for fuzzer in $defaultimplfuzzers $implfuzzers; do
+          mkdir -p out/$fuzzer # in case this is a new fuzzer, or the github action cached corpus is broken
+          # get input from everyone else (corpus cross pollination)
+          others=$(find out -type d -not -name $fuzzer -not -name out -not -name cmin)
+          build-fast/fuzz/fuzz_$fuzzer out/$fuzzer $others seedcorpus -max_total_time=30 $MAXLEN
+        done
+
+    - name: Fuzz default impl. fuzzers with sanitizer+asserts (good at detecting errors)
+      run: |
+        set -eux
+        for fuzzer in $defaultimplfuzzers; do
+          # get input from everyone else (corpus cross pollination)
+          others=$(find out -type d -not -name $fuzzer -not -name out -not -name cmin)
+          for implementation in $implementations; do
+            export SIMDJSON_FORCE_IMPLEMENTATION=$implementation
+            build-sanitizers$OPTLEVEL/fuzz/fuzz_$fuzzer out/$fuzzer $others seedcorpus -max_total_time=20 $MAXLEN
+          done
+          echo now have $(ls out/$fuzzer |wc -l) files in corpus
+        done
+
+    - name: Fuzz differential impl. fuzzers with sanitizer+asserts (good at detecting errors)
+      run: |
+        set -eux
+        for fuzzer in $implfuzzers; do
+          # get input from everyone else (corpus cross pollination)
+          others=$(find out -type d -not -name $fuzzer -not -name out -not -name cmin)
+          build-sanitizers$OPTLEVEL/fuzz/fuzz_$fuzzer out/$fuzzer $others seedcorpus -max_total_time=20 $MAXLEN
+          echo now have $(ls out/$fuzzer |wc -l) files in corpus
+        done
+
+    - name: Minimize the corpus with the fast fuzzer on the default implementation
+      run: |
+        set -eux
+        for fuzzer in $defaultimplfuzzers $implfuzzers; do
+          mkdir -p out/cmin/$fuzzer
+          # get input from everyone else (corpus cross pollination)
+          others=$(find out -type d -not -name $fuzzer -not -name out -not -name cmin)
+          build-fast/fuzz/fuzz_$fuzzer -merge=1 $MAXLEN out/cmin/$fuzzer out/$fuzzer $others seedcorpus
+          rm -rf out/$fuzzer
+          mv out/cmin/$fuzzer out/$fuzzer
+        done
+
+    - name: Package the corpus into an artifact
+      run: |
+        for fuzzer in $defaultimplfuzzers $implfuzzers; do
+          tar rf corpus.tar out/$fuzzer
+        done
+
+    - name: Save the corpus as a github artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: corpus
+        path: corpus.tar
+
+    - name: Store the corpus externally
+      run: |
+        gzip --keep corpus.tar
+        curl -F"filedata=@corpus.tar.gz" https://simdjson:${{ secrets.fuzzdatapassword }}@www.pauldreik.se/fuzzdata/index.php
+
+    # This takes a subset of the minimized corpus and run it through valgrind. It is slow,
+    # therefore take a "random" subset. The random selection is accomplished by sorting on filenames,
+    # which are hashes of the content.
+    - name: Run some of the minimized corpus through valgrind (replay build, default implementation)
+      run: |
+        for fuzzer in $defaultimplfuzzers $implfuzzers; do
+          find out/$fuzzer -type f |sort|head -n200|xargs -n40 valgrind build-replay/fuzz/fuzz_$fuzzer 2>&1|tee valgrind-$fuzzer.txt
+        done
+
+    - name: Compress the valgrind output
+      run: tar cf valgrind.tar valgrind-*.txt
+
+    - name: Save valgrind output as a github artifact
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: valgrindresults
+        path: valgrind.tar
+        if-no-files-found: ignore
+
+    - name: Archive any crashes as an artifact
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: crashes
+        path: |
+          crash-*
+          leak-*
+          timeout-*
+        if-no-files-found: ignore
