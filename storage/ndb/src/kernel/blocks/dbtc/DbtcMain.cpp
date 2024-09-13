@@ -17078,6 +17078,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   if (!scanRecordPool.getValidPtr(scanptr) || scanptr.i == RNIL) {
     // How can this happen?
     // Assert to catch if path is tested, remove if hit and analyzed.
+    jam();
     ndbassert(false);
     releaseSections(handle);
     ScanTabRef *ref = (ScanTabRef *)&signal->theData[0];
@@ -17095,6 +17096,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   if (senderRef != reference() &&
       !stopScan &&
       apiConnectptr.p->m_queuedDatabasePtrI != RNIL64) {
+    jam();
     /**
      * Don't queue when stopping a scan and when sent from queue
      * no need to queue it again. Signals from queue are sent from
@@ -17115,6 +17117,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     DatabaseRecordPtr databaseRecordPtr;
     databaseRecordPtr.i = apiConnectptr.p->m_queuedDatabasePtrI;
     if (likely(m_databaseRecordPool.getPtr(databaseRecordPtr))) {
+      jam();
       if (databaseRecordPtr.p->m_is_queueing_all) {
         jam();
         bool succ = queue_scan_nextreq(signal,
@@ -17131,6 +17134,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
       apiConnectptr.p->m_queuedDatabasePtrI = RNIL64;
     }
   } else if (senderRef == reference()) {
+    jam();
     DatabaseRecordPtr databaseRecordPtr;
     databaseRecordPtr.i = apiConnectptr.p->m_queuedDatabasePtrI;
     ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
@@ -25414,6 +25418,7 @@ Dbtc::handleBackgroundRateQueues(Signal *signal, Uint32 databaseId) {
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
       return;
     }
+    jam();
     DEB_RATE_QUEUE(("(%u):%u Prepare drop database record completed after wait",
                     instance(), dbPtr.p->m_database_id));
     send_drop_db_conf(signal, dbPtr, DropDbReq::PREPARE_DROP);
@@ -25426,6 +25431,7 @@ Dbtc::release_database_record(Signal *signal, DatabaseRecordPtr dbPtr) {
     jam();
     lc_ndbd_pool_free(dbPtr.p->theDatabaseConcurrentTransactionMutex);
   }
+  jam();
   m_databaseRecordHash.remove(dbPtr);
   m_databaseRecordPool.release(dbPtr);
   send_drop_db_conf(signal, dbPtr, DropDbReq::COMMIT_DROP);
@@ -25435,6 +25441,7 @@ void
 Dbtc::send_drop_db_conf(Signal *signal,
                         DatabaseRecordPtr dbPtr,
                         Uint32 requestType) {
+  jam();
   Uint32 senderData = dbPtr.p->m_sender_data;
   Uint32 senderRef = dbPtr.p->m_sender_ref;
   Uint32 databaseId = dbPtr.p->m_database_id;
@@ -26156,6 +26163,7 @@ void Dbtc::execDROP_DB_REQ(Signal *signal) {
         signal->theData[1] = dbPtr.p->m_database_id;
         sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
       }
+      jam();
       DEB_RATE_QUEUE(("(%u):%u Prepare drop database record wait started",
                       instance(), dbPtr.p->m_database_id));
       dbPtr.p->m_is_db_dropping = true;
@@ -26204,26 +26212,26 @@ bool Dbtc::getAllowStartTransaction(
   ApiConnectRecord *regApiPtr,
   Dbtc::DatabaseRecordPtr databaseRecordPtr) const {
   if (unlikely(getNodeState().getSingleUserMode())) {
-    jamDebug();
+    jam();
     if (getNodeInfo(nodeId).m_type != NodeInfo::DB) {
       if (regApiPtr) regApiPtr->m_count_parallel_transactions = 0;
        // Cluster is in single user mode and an API Node is attempting to start
        // a transaction. The transaction is allowed only if this is the
        // designated API node that has been granted access.
-      jamDebug();
+      jam();
       return (table_single_user_mode ||
               getNodeState().getSingleUserApi() == nodeId);
     }
   }
   if (unlikely(getNodeState().startLevel >= NodeState::SL_STOPPING_2)) {
-    jamDebug();
+    jam();
     if (regApiPtr) regApiPtr->m_count_parallel_transactions = 0;
     return false;
   }
   if (unlikely(databaseRecordPtr.p != nullptr)) {
     /* implies regApiPtr != nullptr */
-    jamDebug();
     if (!is_committed_read) {
+      jam();
       bool count = false;
       Uint32 transactions = 0;
       DatabaseRecord *ptr = databaseRecordPtr.p->globalDatabaseInstance;
@@ -26232,6 +26240,7 @@ bool Dbtc::getAllowStartTransaction(
       if (count) regApiPtr->m_parallel_transactions_db = databaseRecordPtr.i;
       return ret;
     }
+    jam();
     regApiPtr->m_count_parallel_transactions = 0;
   }
   if (regApiPtr) regApiPtr->m_count_parallel_transactions = 0;
@@ -26838,6 +26847,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
       return false;
     }
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort_read)) {
+      jam();
       Uint32 op_type = TcKeyReq::getOperationType(Treqinfo);
       if (op_type != ZWRITE &&
           op_type != ZINSERT &&
