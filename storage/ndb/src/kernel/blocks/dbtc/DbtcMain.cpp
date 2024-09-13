@@ -25353,9 +25353,6 @@ Dbtc::handleBackgroundRateQueues(Signal *signal, Uint32 databaseId) {
   }
   NDB_TICKS now = NdbTick_getCurrentTicks();
   QueueRecord *queue_record;
-  ndbrequire(dbPtr.p->m_is_queueing_start ||
-             dbPtr.p->m_first_queued_req != nullptr ||
-             dbPtr.p->m_outstanding_queries > 0);
   bool cont = get_next_queue_record(dbPtr,
                                     &queue_record,
                                     now);
