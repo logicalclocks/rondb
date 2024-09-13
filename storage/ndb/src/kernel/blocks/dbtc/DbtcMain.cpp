@@ -140,8 +140,8 @@
 //#define DEBUG_QUOTAS_REP 1
 //#define DEBUG_RATE_QUEUE_SET 1
 //#define DEBUG_QUOTAS 1
-#define DEBUG_RATE_QUEUE_DROP 1
 #endif
+#define DEBUG_RATE_QUEUE_DROP 1
 
 #define MAX_QUEUE_TIME_MS 60
 #define MAX_READ_QUEUE_TIME_MS 30
@@ -5761,7 +5761,7 @@ void Dbtc::releaseDirtyRead(Signal *signal,
       jam();
       release_count_parallel_transactions(apiConnectptr.p);
     }
-    release_api_ref(signal, apiConnectptr);
+    release_api_ref(signal, apiConnectptr, __LINE__);
     return;
   }
 
@@ -6926,7 +6926,7 @@ void Dbtc::diverify010Lab(Signal *signal,
     sendtckeyconf(signal, 1, apiConnectptr);
     regApiPtr->apiConnectstate = CS_CONNECTED;
     regApiPtr->m_transaction_nodes.clear();
-    release_api_ref(signal, apiConnectptr);
+    release_api_ref(signal, apiConnectptr, __LINE__);
     setApiConTimer(apiConnectptr, 0, __LINE__);
     if (apiConnectptr.p->m_count_parallel_transactions) {
       jam();
@@ -7722,7 +7722,7 @@ void Dbtc::copyApi(Signal *signal,
   regApiPtr.p->num_commit_ack_markers = 0;
   regApiPtr.p->m_count_parallel_transactions = 0;
   regApiPtr.p->m_parallel_transactions_db = RNIL64;
-  release_api_ref(signal, regApiPtr);
+  release_api_ref(signal, regApiPtr, __LINE__);
   regApiPtr.p->m_concurrent_overtakeable_operations = 0;
   Uint32 loop_count = 0;
   releaseAllSeizedIndexOperations(signal,
@@ -8627,7 +8627,7 @@ void Dbtc::releaseTransResources(Signal* signal,
     jam();
     release_count_parallel_transactions(apiConnectptr.p);
   }
-  release_api_ref(signal, apiConnectptr);
+  release_api_ref(signal, apiConnectptr, __LINE__);
   ndbrequire(apiConnectptr.p->m_num_queued == 0);
   handleGcp(signal, apiConnectptr);
   releaseApiConCopy(signal, apiConnectptr);
@@ -8786,7 +8786,7 @@ void Dbtc::releaseDirtyWrite(Signal *signal,
       regApiPtr->apiConnectstate = CS_CONNECTED;
       setApiConTimer(apiConnectptr, 0, __LINE__);
       sendtckeyconf(signal, 1, apiConnectptr);
-      release_api_ref(signal, apiConnectptr);
+      release_api_ref(signal, apiConnectptr, __LINE__);
       if (apiConnectptr.p->m_count_parallel_transactions) {
         jam();
         release_count_parallel_transactions(apiConnectptr.p);
@@ -16338,7 +16338,7 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
     jam();
     release_count_parallel_transactions(apiConnectptr.p);
   }
-  release_api_ref(signal, apiConnectptr);
+  release_api_ref(signal, apiConnectptr, __LINE__);
   apiConnectptr.p->apiScanRec = RNIL;
   apiConnectptr.p->apiConnectstate = CS_CONNECTED;
   setApiConTimer(apiConnectptr, 0, __LINE__);
@@ -18545,7 +18545,7 @@ void Dbtc::releaseAbortResources(Signal* signal,
     jam();
     release_count_parallel_transactions(apiConnectptr.p);
   }
-  release_api_ref(signal, apiConnectptr);
+  release_api_ref(signal, apiConnectptr, __LINE__);
   if (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK) {
     jam();
     handleApiFailState(signal, apiConnectptr.i);
@@ -18571,7 +18571,7 @@ void Dbtc::releaseApiCon(Signal *signal, UintR TapiConnectPtr) {
     // Should never happen
     release_count_parallel_transactions(TlocalApiConnectptr.p);
   }
-  release_api_ref(signal, TlocalApiConnectptr);
+  release_api_ref(signal, TlocalApiConnectptr, __LINE__);
   ndbassert(TlocalApiConnectptr.p->nextApiConnect == RNIL);
   ndbrequire(TlocalApiConnectptr.p->apiConnectkind ==
              ApiConnectRecord::CK_USER);
@@ -26492,7 +26492,7 @@ void Dbtc::release_queue_record_tc(Signal *signal,
   QueueRecord *queue_record = transPtr.p->m_first_queued_req;
   if (queue_record == nullptr) {
     loop_count++;
-    release_api_ref(signal, transPtr);
+    release_api_ref(signal, transPtr, __LINE__);
     ndbrequire(transPtr.p->m_num_queued == 0);
     return;
   }
@@ -26517,7 +26517,7 @@ void Dbtc::release_queue_record_tc(Signal *signal,
   ndbrequire(transPtr.p->m_num_queued == 0);
   transPtr.p->m_first_queued_req = nullptr;
   transPtr.p->m_last_queued_req = nullptr;
-  release_api_ref(signal, transPtr, apiDbPtr);
+  release_api_ref(signal, transPtr, apiDbPtr, __LINE__);
 }
               
 void Dbtc::insert_queue_record_tc(ApiConnectRecord *transPtrP,
@@ -26998,7 +26998,10 @@ void Dbtc::check_drop_db_conf(Signal *signal, DatabaseRecordPtr dbPtr) {
   }
 }
 
-void Dbtc::release_api_ref(Signal *signal, ApiConnectRecordPtr apiPtr) {
+void Dbtc::release_api_ref(Signal *signal,
+                           ApiConnectRecordPtr apiPtr,
+                           Uint32 line) {
+  (void)line;
   Uint64 dbPtrI = apiPtr.p->m_queuedDatabasePtrI;
   if (likely(dbPtrI == RNIL64)) {
     return;
@@ -27015,7 +27018,7 @@ void Dbtc::release_api_ref(Signal *signal, ApiConnectRecordPtr apiPtr) {
                        instance(),
                        dbPtr.p->m_database_id,
                        dbPtr.p->m_api_ref_count,
-                       __LINE__,
+                       line,
                        apiPtr.i));
   if (api_ref_count == 0) {
     check_drop_db_conf(signal, dbPtr);
@@ -27024,7 +27027,9 @@ void Dbtc::release_api_ref(Signal *signal, ApiConnectRecordPtr apiPtr) {
 
 void Dbtc::release_api_ref(Signal *signal,
                            ApiConnectRecordPtr apiPtr,
-                           DatabaseRecordPtr dbPtr) {
+                           DatabaseRecordPtr dbPtr,
+                           Uint32 line) {
+  (void)line;
   Uint32 api_ref_count = dbPtr.p->m_api_ref_count;
   ndbrequire(api_ref_count > 0);
   api_ref_count--;
@@ -27034,7 +27039,7 @@ void Dbtc::release_api_ref(Signal *signal,
                        instance(),
                        dbPtr.p->m_database_id,
                        dbPtr.p->m_api_ref_count,
-                       __LINE__,
+                       line,
                        apiPtr.i));
   if (api_ref_count == 0) {
     check_drop_db_conf(signal, dbPtr);
