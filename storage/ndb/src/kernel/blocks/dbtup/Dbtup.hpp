@@ -219,6 +219,8 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 
 #define ZTOO_MANY_BITS_ERROR 791
 
+#define ZDISK_QUOTA_OVERFLOW_ERROR 928
+
 /*
  * Moz
  * Aggregation interpreter errors start from 1860

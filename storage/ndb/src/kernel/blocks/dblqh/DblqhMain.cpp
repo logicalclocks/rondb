@@ -5391,6 +5391,24 @@ int Dblqh::check_tabstate(Signal *signal, const Tablerec *tablePtrP, Uint32 op,
   return 1;
 }
 
+bool Dblqh::is_disk_quota_exceeded(Uint32 tableId, EmulatedJamBuffer *jamBuf) {
+  TablerecPtr tabPtr;
+  tabPtr.i = tableId;
+  thrjam(jamBuf);
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+  if (unlikely(tabPtr.p->databaseRecord != RNIL64)) {
+    thrjam(jamBuf);
+    DatabaseRecordPtr dbPtr;
+    dbPtr.i = tabPtr.p->databaseRecord;
+    ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
+    if (unlikely(dbPtr.p->m_is_disk_quota_exceeded)) {
+      thrjam(jamBuf);
+      return true;
+    }
+  }
+  return false;
+}
+
 void Dblqh::LQHKEY_abort(Signal *signal, int errortype,
                          const TcConnectionrecPtr tcConnectptr) {
   switch (errortype) {
@@ -5421,10 +5439,6 @@ void Dblqh::LQHKEY_abort(Signal *signal, int errortype,
   case 7:
     jam();
     terrorCode = ZMEMORY_QUOTA_OVERFLOW_ERROR;
-    break;
-  case 8:
-    jam();
-    terrorCode = ZDISK_QUOTA_OVERFLOW_ERROR;
     break;
   default:
     ndbabort();
@@ -9626,14 +9640,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         LQHKEY_abort(signal, 7, tcConnectptr);
         return;
       }
-      if (tabptr.p->m_disk_table)
-      {
-        if (unlikely(dbPtr.p->m_is_disk_quota_exceeded))
-        {
-          LQHKEY_abort(signal, 8, tcConnectptr);
-          return;
-        }
-      }
+      /* Disk quota checked before allocating new extent */
     }
     acquire_frag_prepare_key_access(fragptr.p, regTcPtr);
   }

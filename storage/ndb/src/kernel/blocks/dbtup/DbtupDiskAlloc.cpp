@@ -902,6 +902,13 @@ Dbtup::disk_page_prealloc(Signal* signal,
     else 
     {
       jam();
+      if (m_ldm_instance_used->c_lqh->is_disk_quota_exceeded(
+            fragPtrP->fragTableId, jamBuffer())) {
+        jam();
+        err = ZDISK_QUOTA_OVERFLOW_ERROR;
+        c_page_request_pool.release(req);
+        return -err;
+      }
       /**
        * We need to alloc an extent
        */
