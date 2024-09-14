@@ -33346,17 +33346,8 @@ void Dbdict::dropDatabase_commit(Signal* signal, SchemaOpPtr op_ptr) {
   c.m_callbackData = op_ptr.p->op_key;
   c.m_callbackFunction = safe_cast(&Dbdict::dropDb_alterComplete);
   dropDbPtr.p->m_callback = c;
-  /**
-   * Prepare Drop database in DBTC
-   */
-  DropDbReq* req = (DropDbReq*)signal->getDataPtrSend();
-  req->senderRef = reference();
-  req->senderData = op_ptr.p->op_key;
-  req->databaseId = db_ptr.p->key;
-  req->databaseVersion = db_ptr.p->m_version;
-  req->requestType = DropDbReq::PREPARE_DROP;
-  sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
-             DropDbReq::SignalLength, JBB);
+
+  send_disconnect_table_database(signal, op_ptr, db_ptr, 0);
 }
 
 void
@@ -33390,7 +33381,17 @@ Dbdict::send_disconnect_table_database(Signal *signal,
     next_table_id++;
   }
   /* Finished disconnecting tables from a database */
-  dropDb_local(signal, op_ptr);
+  /**
+   * Prepare Drop database in DBTC
+   */
+  DropDbReq* req = (DropDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->databaseId = db_ptr.p->key;
+  req->databaseVersion = db_ptr.p->m_version;
+  req->requestType = DropDbReq::PREPARE_DROP;
+  sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
+             DropDbReq::SignalLength, JBB);
 }
 
 void Dbdict::execDISCONNECT_TABLE_DB_CONF(Signal *signal) {
@@ -33499,12 +33500,7 @@ void Dbdict::execDROP_DB_CONF(Signal *signal) {
     SchemaOpPtr op_ptr;
     DropDatabaseRecPtr dropDbPtr;
     ndbrequire(findSchemaOp(op_ptr, dropDbPtr, conf->senderData));
-
-    DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
-    DatabasePtr db_ptr;
-    bool ok = find_object(db_ptr, impl_req->databaseId);
-    ndbrequire(ok);
-    send_disconnect_table_database(signal, op_ptr, db_ptr, 0);
+    dropDb_local(signal, op_ptr);
   } else {
     dropDb_completeBlock(signal, conf->senderData);
   }
@@ -33539,6 +33535,7 @@ void Dbdict::dropDb_completeBlock(Signal *signal, Uint32 senderData) {
     req->senderData = op_ptr.p->op_key;
     req->databaseId = db_ptr.p->key;
     req->databaseVersion = db_ptr.p->m_version;
+    req->requestType = DropDbReq::COMMIT_DROP;
     sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
                DropDbReq::SignalLength, JBB);
     return;
