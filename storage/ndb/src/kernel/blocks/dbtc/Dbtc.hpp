@@ -2915,7 +2915,8 @@ class Dbtc : public SimulatedBlock {
       m_is_delayed_signal_sent(false),
       m_is_memory_quota_exceeded_reported(false),
       m_is_disk_quota_exceeded_reported(false),
-      m_continue_delay_reported(0)
+      m_continue_delay_reported(0),
+      m_api_ref_count(0)
     {}
     DatabaseRecord(Dbtc &dbtc, Uint32);
 
@@ -3098,6 +3099,7 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_continue_delay_reported;
     Uint32 m_sender_data;
     Uint32 m_sender_ref;
+    Uint32 m_api_ref_count;
     /**
      * Total current use in all DBTC instances.
      * Every 10ms in timer_handling each DBTC instance goes
@@ -3203,6 +3205,9 @@ class Dbtc : public SimulatedBlock {
                                 bool is_committed_read,
                                 ApiConnectRecord*,
                                 DatabaseRecordPtr) const;
+  void release_api_ref(Signal*, ApiConnectRecordPtr, Uint32);
+  void release_api_ref(Signal*, ApiConnectRecordPtr, DatabaseRecordPtr, Uint32);
+  void check_drop_db_conf(Signal*, DatabaseRecordPtr);
   void release_database_record(Signal*, DatabaseRecordPtr);
   void send_drop_db_conf(Signal*, DatabaseRecordPtr, Uint32);
 
@@ -3418,7 +3423,9 @@ class Dbtc : public SimulatedBlock {
                          ApiConnectRecordPtr);
   void insert_queue_record_tc(ApiConnectRecord*, QueueRecord*);
   void insert_queue_record_db(DatabaseRecord*, QueueRecord*);
-  void release_queue_record_tc(ApiConnectRecord*, Uint32 & loop_count);
+  void release_queue_record_tc(Signal *signal,
+                               ApiConnectRecordPtr,
+                               Uint32 & loop_count);
   bool get_next_queue_record(DatabaseRecordPtr,
                              QueueRecord**,
                              NDB_TICKS);
