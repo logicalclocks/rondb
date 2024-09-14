@@ -316,6 +316,7 @@ ErrorBundle ErrorCodes[] = {
   {  783, DMEC, TR, "Too many schema operations" },
   {  785, DMEC, TR, "Schema object is busy with another schema transaction" },
   {  291, DMEC, TR, "Out of scanfrag records in TC (increase SharedGlobalMemory)" },
+  {  928, DMEC, TR, "Out of scanfrag records in TC (increase SharedGlobalMemory)" },
 
   /**
    * InsufficientSpace
@@ -359,7 +360,7 @@ ErrorBundle ErrorCodes[] = {
   { 243,  DMEC, OL, "Rate limit reached and queues are overloaded for database" },
   { 247,  DMEC, OL, "Too many operations in a transaction in database" },
   { 248,  DMEC, OL, "Too many concurrent transactions in database" },
-  { 249,  DMEC, OL, "Disk quota reached for database, delete data before write again" },
+  { 928,  DMEC, OL, "Disk quota reached for database, delete data before write again" },
   { 243,  DMEC, OL, "Rate limit reached and queues are overloaded for database" },
   { 701,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "System busy with other schema operation" },
   { 711,  HA_ERR_LOCK_WAIT_TIMEOUT, NR, "System busy with node restart, schema operations not allowed" },

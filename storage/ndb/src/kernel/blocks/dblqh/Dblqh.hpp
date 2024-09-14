@@ -412,7 +412,6 @@ class FsReadWriteReq;
 /*       ERROR CODES FROM DBTC                                               */
 /* ------------------------------------------------------------------------- */
 #define ZMEMORY_QUOTA_OVERFLOW_ERROR 239
-#define ZDISK_QUOTA_OVERFLOW_ERROR 249
 #endif
 
 /**
@@ -4528,6 +4527,7 @@ public:
   {
     NdbMutex_Unlock(&m_database_hash_mutex);
   }
+  bool is_disk_quota_exceeded(Uint32 tableId, EmulatedJamBuffer *jamBuf);
 
   struct SendDatabaseQuotaRep {
     Uint32 m_database_id;
