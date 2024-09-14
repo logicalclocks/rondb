@@ -25606,17 +25606,34 @@ void Dbtc::set_queueing_environment(Signal *signal,
   }
   if (overload == 1) {
     jam();
+#ifdef DEBUG_RATE_QUEUE_SET
+    bool old_queueing_start = dbPtrP->m_is_queueing_start;
+#endif
     dbPtrP->m_is_queueing_start = true;
     if (dbPtrP->m_first_queued_req == nullptr) {
       jam();
       dbPtrP->m_is_queueing_all = false;
-      DEB_RATE_QUEUE_SET(("(%u:%u), Overload=1, Queue start",
-                          instance(),
-                          dbPtrP->m_database_id));
+#ifdef DEBUG_RATE_QUEUE_SET
+      if (!old_queueing_start) {
+        NDB_TICKS now = getHighResTimer();
+        NDB_TICKS start = dbPtrP->m_last_rate_decrement;
+        Uint64 milliSec = NdbTick_Elapsed(start, now).milliSec();
+        g_eventLogger->info("(%u:%u), Overload=1, Queue start, millis: %llu",
+                            instance(),
+                            dbPtrP->m_database_id,
+                            milliSec);
+      }
+#endif
     } else {
-      DEB_RATE_QUEUE_SET(("(%u:%u), Overload=1, Queueing started",
+#ifdef DEBUG_RATE_QUEUE_SET
+      NDB_TICKS now = getHighResTimer();
+      NDB_TICKS start = dbPtr.p->m_last_rate_decrement;
+      Uint64 milliSec = NdbTick_Elapsed(start, now).milliSec();
+      g_eventLogger->info("(%u:%u), Overload=1, Queueing already, millis: %llu",
                           instance(),
-                          dbPtrP->m_database_id));
+                          dbPtrP->m_database_id,
+                          millliSec);
+#endif
     }
   }
   if (overload >= 2) {
@@ -25699,12 +25716,13 @@ Dbtc::handleBackgroundRateLimits(Signal *signal, Uint32 nextDatabaseId) {
     NDB_TICKS now = getHighResTimer();
     NDB_TICKS start = dbPtr.p->m_last_rate_decrement;
     Uint64 milliSec = NdbTick_Elapsed(start, now).milliSec();
-    if (milliSec >= Uint64(100)) {
+    if (milliSec >= Uint64(80)) {
       jam();
       dbPtr.p->m_last_rate_decrement = now;
       Uint32 rate_per_sec = dbPtr.p->m_rate_per_sec;
       Uint64 rate_change = Uint64(rate_per_sec) * milliSec;
       rate_change /= Uint64(1000);
+      if (unlikely(rate_change == 0)) rate_change = 1;
       Uint64 current_used_rate_us = dbPtr.p->m_current_used_rate_us;
       if (current_used_rate_us <= rate_change) {
         /* rate_per_sec == 0 ends up here */
@@ -25713,17 +25731,14 @@ Dbtc::handleBackgroundRateLimits(Signal *signal, Uint32 nextDatabaseId) {
         dbPtr.p->m_current_used_rate_us -= rate_change;
       }
       Uint32 old_derivative_delay_us = dbPtr.p->m_derivative_delay_us;
-      Uint64 rate_since_last_percent = 0;
-      Uint64 rate_since_last = 0;
-      if (current_used_rate_us <= (dbPtr.p->m_rate_per_sec * 2)) {
+      Uint64 last_time_used_rate_us = dbPtr.p->m_last_time_used_rate_us;
+      Uint64 rate_since_last = current_used_rate_us - last_time_used_rate_us;
+      Uint64 rate_since_last_percent = (rate_since_last * 100) / rate_change;
+      if (current_used_rate_us < dbPtr.p->m_rate_per_sec) {
         jam();
         dbPtr.p->m_derivative_delay_us = 0;
       } else {
         jam();
-        Uint64 last_time_used_rate_us = dbPtr.p->m_last_time_used_rate_us;
-        rate_since_last = current_used_rate_us - last_time_used_rate_us;
-        rate_since_last_percent =
-          (rate_since_last * 100) / rate_change;
         /**
          * Try to adapt to changes in the environment a bit faster than simply
          * calculating the total overload on the rate. The overload rate is
@@ -25736,30 +25751,50 @@ Dbtc::handleBackgroundRateLimits(Signal *signal, Uint32 nextDatabaseId) {
          * for a while will only affect users until they "paid back" their
          * debt.
          */
-        if (rate_since_last_percent > 500) {
+        jamData(rate_since_last_percent);
+        if (rate_since_last_percent >= 500) {
           dbPtr.p->m_derivative_delay_us = old_derivative_delay_us + 1500;
-        } else if (rate_since_last_percent > 350) {
+        } else if (rate_since_last_percent >= 350) {
           dbPtr.p->m_derivative_delay_us = old_derivative_delay_us + 1000;
-        } else if (rate_since_last_percent > 200) {
+        } else if (rate_since_last_percent >= 200) {
           dbPtr.p->m_derivative_delay_us = old_derivative_delay_us + 500;
-        } else if (rate_since_last_percent > 150) {
+        } else if (rate_since_last_percent >= 150) {
           dbPtr.p->m_derivative_delay_us = old_derivative_delay_us + 250;
-        } else if (rate_since_last_percent > 120) {
+        } else if (rate_since_last_percent >= 120) {
           dbPtr.p->m_derivative_delay_us = old_derivative_delay_us + 150;
-        } else if (rate_since_last_percent < 85) {
-          if (old_derivative_delay_us >= 100) {
+        } else if (rate_since_last_percent >= 110) {
+          dbPtr.p->m_derivative_delay_us = old_derivative_delay_us + 70;
+        } else if (rate_since_last_percent >= 105) {
+          dbPtr.p->m_derivative_delay_us = old_derivative_delay_us + 35;
+        } else if (rate_since_last_percent >= 96) {
+          ; //Do nothing
+        } else if (rate_since_last_percent >= 91) {
+          if (old_derivative_delay_us >= 35) {
+            dbPtr.p->m_derivative_delay_us = old_derivative_delay_us - 35;
+          } else {
+            dbPtr.p->m_derivative_delay_us = 0;
+          }
+        } else if (rate_since_last_percent >= 85) {
+          if (old_derivative_delay_us >= 70) {
+            dbPtr.p->m_derivative_delay_us = old_derivative_delay_us - 70;
+          } else {
+            dbPtr.p->m_derivative_delay_us = 0;
+          }
+        } else if (rate_since_last_percent >= 70) {
+          if (old_derivative_delay_us >= 150) {
             dbPtr.p->m_derivative_delay_us = old_derivative_delay_us - 150;
           } else {
             dbPtr.p->m_derivative_delay_us = 0;
           }
-        } else if (rate_since_last_percent < 70) {
-          if (old_derivative_delay_us >= 200) {
+        } else if (rate_since_last_percent >= 50) {
+          if (old_derivative_delay_us >= 250) {
             dbPtr.p->m_derivative_delay_us = old_derivative_delay_us - 250;
           } else {
             dbPtr.p->m_derivative_delay_us = 0;
           }
-        } else if (rate_since_last_percent < 50) {
-          if (old_derivative_delay_us >= 400) {
+        } else {
+          // rate_since_last_percent < 50
+          if (old_derivative_delay_us >= 500) {
             dbPtr.p->m_derivative_delay_us = old_derivative_delay_us - 500;
           } else {
             dbPtr.p->m_derivative_delay_us = 0;

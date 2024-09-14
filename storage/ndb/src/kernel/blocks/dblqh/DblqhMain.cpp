@@ -37938,10 +37938,10 @@ void Dblqh::change_report_limits(DatabaseRecord *dbPtrP,
                                  Uint32 rate_per_sec,
                                  Uint32 in_memory_size_mbyte,
                                  Uint32 disk_space_size_gbyte) {
-  /* Report changes when 0.5% of rate limit have occurred */
+  /* Report changes when 0.1% of rate limit have occurred */
   Uint32 rate_report_limit_ns = rate_per_sec;
   rate_report_limit_ns = MIN(rate_report_limit_ns, MAX_RATE_REPORT_LIMIT_US);
-  rate_report_limit_ns *= 5; // Convert us to ns and divide by 200
+  // Convert us to ns and divide by 1000 (noop)
   if (rate_report_limit_ns != 0) {
     rate_report_limit_ns = MAX(rate_report_limit_ns, RATE_REPORT_LIMIT_NS);
   }
