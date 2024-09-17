@@ -17177,7 +17177,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
         return;
       }
     }
-  } else if (senderRef == reference()) {
+  } else if (senderRef == reference() &&
+             signal->length() > ScanNextReq::SignalLength &&
+             (req->requestType & 1) == 0) {
     jam();
     DatabaseRecordPtr databaseRecordPtr;
     databaseRecordPtr.i = apiConnectptr.p->m_queuedDatabasePtrI;
@@ -25378,6 +25380,14 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
       signal_area + 4 * signal_length;
     ptr[0].p = (Uint32*)first_section_area;
     ptr[0].sz = queue_record->m_receiver_id_length;
+
+    ScanNextReq * const scanNextReq = (ScanNextReq *)signal->getDataPtr();
+    if (signal_length == ScanNextReq::SignalLength) {
+      scanNextReq->requestType = 1;
+      signal_length++;
+    } else if (signal_length > ScanNextReq::SignalLength) {
+      scanNextReq->requestType |= 1;
+    }
 
     if (num_sections == 0) {
       sendSignal(reference(), GSN_SCAN_NEXTREQ, signal,
