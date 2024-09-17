@@ -17058,7 +17058,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   const ScanNextReq *const req = (ScanNextReq *)&signal->theData[0];
   const UintR transid1 = req->transId1;
   const UintR transid2 = req->transId2;
-  const UintR stopScan = req->stopScan;
+  Uint32 stopScan = req->stopScan;
+  const Uint32 sent_from_queue = stopScan & 2;
+  stopScan &= 1;
 
   jamEntryDebug();
 
@@ -17177,10 +17179,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
         return;
       }
     }
-  } else if (senderRef == reference() &&
-             signal->length() > ScanNextReq::SignalLength &&
-             (req->requestType & 1) == 0) {
+  } else if (sent_from_queue) {
     jam();
+    ndbrequire(senderRef == reference());
     DatabaseRecordPtr databaseRecordPtr;
     databaseRecordPtr.i = apiConnectptr.p->m_queuedDatabasePtrI;
     ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
@@ -25382,13 +25383,9 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
     ptr[0].sz = queue_record->m_receiver_id_length;
 
     ScanNextReq * const scanNextReq = (ScanNextReq *)signal->getDataPtr();
-    if (signal_length == ScanNextReq::SignalLength) {
-      scanNextReq->requestType = 1;
-      signal_length++;
-    } else if (signal_length > ScanNextReq::SignalLength) {
-      scanNextReq->requestType |= 1;
-    }
-
+    Uint32 stopScan = scanNextReq->stopScan;
+    stopScan |= 2; // Indicate signal sent from queue
+    scanNextReq->stopScan = stopScan;
     if (num_sections == 0) {
       sendSignal(reference(), GSN_SCAN_NEXTREQ, signal,
                  signal_length, JBB);
