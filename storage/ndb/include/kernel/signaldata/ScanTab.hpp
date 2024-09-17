@@ -573,6 +573,7 @@ class ScanNextReq {
    * Length of signal
    */
   static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLengthFromQueue = 5;
 
   /**
    * Section carrying receiverIds if num receivers > 21
@@ -589,6 +590,7 @@ class ScanNextReq {
   UintR stopScan;       // DATA 1
   UintR transId1;       // DATA 2
   UintR transId2;       // DATA 3
+  Uint32 requestType;   // Not defined normally, bit 0 = 1 from queue
 
   // stopScan = 1, stop this scan
 
