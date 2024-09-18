@@ -927,6 +927,8 @@ void Dbtup::execTUPFRAGREQ(Signal *signal) {
 
   if (AlterTableReq::getReorgFragFlag(changeMask)) {
     jam();
+    D("fragStatus = FS_REORG_NEW fragId: " <<
+      fragId);
     regFragPtr.p->fragStatus = Fragrecord::FS_REORG_NEW;
   }
 
@@ -1105,6 +1107,7 @@ void Dbtup::execALTER_TAB_REQ(Signal *signal) {
   regTabPtr.i = req->tableId;
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
 
+  D("ALTER_TAB_REQ(DBTUP): requestType: " << req->requestType);
   switch ((AlterTabReq::RequestType)req->requestType) {
   case AlterTabReq::AlterTablePrepare: {
     jam();
@@ -1150,6 +1153,8 @@ void Dbtup::execALTER_TAB_REQ(Signal *signal) {
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_REORG_COMMIT_NEW:
           jam();
+          D("fragStatus = FS_REORG_COMPLETE_NEW fragId: " <<
+            regFragPtr.p->fragmentId);
           if (0)
             g_eventLogger->info(
                 "tab: %u frag: %u toggle fragstate from %s to %s",
@@ -1180,6 +1185,8 @@ void Dbtup::execALTER_TAB_REQ(Signal *signal) {
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_REORG_COMMIT:
           jam();
+          D("fragStatus = FS_REORG_COMPLETE fragId: " <<
+            regFragPtr.p->fragmentId);
           if (0)
             g_eventLogger->info(
                 "tab: %u frag: %u toggle fragstate from %s to %s (gci: %u)",
@@ -1536,6 +1543,8 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_ONLINE:
           jam();
+          D("fragStatus = FS_REORG_COMMIT fragId: " <<
+            regFragPtr.p->fragmentId);
           regFragPtr.p->fragStatus = Fragrecord::FS_REORG_COMMIT;
           if (0)
             g_eventLogger->info(
@@ -1545,6 +1554,8 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
           break;
         case Fragrecord::FS_REORG_NEW:
           jam();
+          D("fragStatus = FS_REORG_COMMIT_NEW fragId: " <<
+            regFragPtr.p->fragmentId);
           regFragPtr.p->fragStatus = Fragrecord::FS_REORG_COMMIT_NEW;
           if (0)
             g_eventLogger->info(
@@ -1581,6 +1592,8 @@ Dbtup::handleAlterTableComplete(Signal *signal,
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_REORG_COMPLETE:
           jam();
+          D("fragStatus = FS_REORG_ONLINE fragId: " <<
+            regFragPtr.p->fragmentId);
           if (0)
             g_eventLogger->info(
                 "tab: %u frag: %u toggle fragstate from %s to %s",
@@ -1590,6 +1603,8 @@ Dbtup::handleAlterTableComplete(Signal *signal,
           break;
         case Fragrecord::FS_REORG_COMPLETE_NEW:
           jam();
+          D("fragStatus = FS_REORG_ONLINE fragId: " <<
+            regFragPtr.p->fragmentId);
           if (0)
             g_eventLogger->info(
                 "tab: %u frag: %u toggle fragstate from %s to %s",

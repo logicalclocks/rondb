@@ -4427,7 +4427,6 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
   Uint32 max_transaction_size = 0;
   Uint32 max_parallel_transactions = 0;
   Uint32 max_parallel_complex_queries = 0;
-  bool on_disk_size_set = false;
 
   if (type == ALTER_DATABASE) {
     in_memory_size = RNIL;
@@ -4512,7 +4511,6 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
                         "ON-DISK-SIZE",
                         sizeof("ON-DISK-SIZE") - 1) == 0) {
       on_disk_size = val;
-      on_disk_size_set = true;
       if (val != 0) found_change = true;
     } else {
       ndbout << "Wrong key: " << key << ", choose one of:" << endl
