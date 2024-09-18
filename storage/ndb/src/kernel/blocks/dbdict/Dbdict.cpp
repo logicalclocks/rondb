@@ -11206,6 +11206,7 @@ void Dbdict::alterTable_contComplete(Signal *signal, SchemaOpPtr op_ptr) {
   alterTabPtr.p->m_blockNo[1] = RNIL;
   alterTabPtr.p->m_blockNo[2] = RNIL;
   alterTabPtr.p->m_blockNo[3] = RNIL;
+  D("alterTable_contComplete: changeMask = " << hex << impl_req->changeMask);
 
   if (AlterTableReq::getReorgCommitFlag(impl_req->changeMask)) {
     jam();
