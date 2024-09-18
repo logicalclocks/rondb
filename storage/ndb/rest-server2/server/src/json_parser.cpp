@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -30,6 +30,139 @@
 #include <functional>
 #include <memory>
 #include <simdjson.h>
+
+/*
+ * Parsing utilities
+ */
+
+class ConfigParseError : public std::runtime_error {
+public:
+  ConfigParseError(std::string message) : std::runtime_error("ConfigParseError"), m_error_message(message) {}
+  std::string m_error_message;
+};
+
+// Given datatypes for target and value and a function body, define parser
+// functions for both lvalue and rvalue references for value.
+//
+// It is necessary to define two different functions; even though
+// `const ValueDatatype&` can bind to both lvalue and rvalue, we cannot use a
+// const parameter since parsing can change the object (progressing the point in
+// the document).
+//
+// They are declared static (local to this compilation unit) in order to let the
+// compiler prune unused ones more easily.
+#define DEFINE_PARSER(TargetDatatype, ValueDatatype, ...) \
+  static inline bool parse(TargetDatatype& target, ValueDatatype& value) __VA_ARGS__ \
+  static inline bool parse(TargetDatatype& target, ValueDatatype&& value) __VA_ARGS__
+
+// Usually, the value will be a simdjson value.
+#define DEFINE_VALUE_PARSER(Datatype, ...) \
+  DEFINE_PARSER(Datatype, \
+                simdjson::ondemand::value, \
+                __VA_ARGS__)
+
+// Use simdjson built-in parsers. Return true on success. On failure due to null
+// value, return false. (All other failures will result in an exception.)
+#define USE_SIMDJSON_PARSER(Datatype) \
+  DEFINE_VALUE_PARSER(Datatype, { \
+    if (value.is_null()) \
+      return false; \
+    target = Datatype(value); \
+    return true; \
+  })
+
+// Define a parser for std::vector of the given element type. Return true on
+// success. On failure due to top-level null, return false. All other failures
+// will result in an exception - null is acceptable, but [ null ] is not.
+#define DEFINE_ARRAY_PARSER(ElementType) \
+  DEFINE_VALUE_PARSER(std::vector<ElementType>, { \
+    simdjson::ondemand::array array; \
+    if (parse(array, value)) { \
+      target.clear(); \
+      for (simdjson::ondemand::value elementJson : array) { \
+        ElementType element; \
+        if(!parse(element, elementJson)) \
+          throw ConfigParseError("Ill-formed array element"); \
+        target.push_back(element); \
+      } \
+      return true; \
+    } \
+    return false; \
+  })
+
+// Define a parser for a struct. All elements will be optional. Will only accept
+// keys that matches an element or begin with "#". Keys beginning with "#" are
+// intended to be used for comments. All other keys will cause an exception. The
+// body contains one or more ELEMENT(structMemberVariableName, JsonKey) without
+// terminating semicolon.
+#define DEFINE_STRUCT_PARSER(Datatype, ...) \
+  DEFINE_PARSER(Datatype, simdjson::ondemand::object, { \
+    for(simdjson::ondemand::field field : value) { \
+      std::string_view fkey = field.unescaped_key(false); \
+      simdjson::ondemand::value fval = field.value(); \
+      __VA_ARGS__ \
+      if (fkey[0] != '#') \
+        throw ConfigParseError("Unexpected key"); \
+    } \
+    return true; \
+  }) \
+  DEFINE_VALUE_PARSER(Datatype, { \
+    simdjson::ondemand::object obj; \
+    if (parse(obj, value)) { \
+      return parse(target, obj); \
+    } \
+    return false; \
+  })
+#define ELEMENT(TargetVar, SourceKey) \
+  if (fkey == #SourceKey) { \
+    parse(target.TargetVar, fval); \
+    continue; \
+  }
+
+void assert_end_of_doc(simdjson::ondemand::document& doc) {
+  switch(doc.current_location().error()) {
+  case simdjson::error_code::OUT_OF_BOUNDS:
+    // This is what we expect, after just having parsed one object from the
+    // buffer.
+    break;
+  case simdjson::error_code::SUCCESS:
+    throw ConfigParseError("Unexpected data after end of root-level object");
+  default:
+    // Should not happen
+    throw ConfigParseError("Unexpected location error");
+  }
+}
+
+RS_Status handle_parse_error(ConfigParseError& e,
+                             const simdjson::padded_string& paddedJson,
+                             const simdjson::ondemand::document& doc) {
+  std::string message = e.m_error_message;
+  const char *location = nullptr;
+  simdjson::error_code getLocationError = doc.current_location().get(location);
+  if (getLocationError == simdjson::SUCCESS) {
+    const char* bufferC = paddedJson.data();
+    const size_t bufferLength = paddedJson.length();
+    assert(&bufferC[0] <= location && location < &bufferC[bufferLength]);
+    int line = 1;
+    int column = 0;
+    for (const char* c = &bufferC[0]; c < location; c++) {
+      if (*c == '\n') {
+        line++;
+        column = 0;
+      } else {
+        column++;
+      }
+    }
+    message += " before/at line " + std::to_string(line) + ", column " + std::to_string(column);
+  }
+  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                    message)
+      .status;
+}
+
+/*
+ * End of parsing utilities
+ */
 
 JSONParser jsonParser;
 
@@ -485,409 +618,187 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &configsStruct) {
+/*
+ * Parsers for simple datatypes
+ */
+
+USE_SIMDJSON_PARSER(bool)
+USE_SIMDJSON_PARSER(simdjson::ondemand::array)
+USE_SIMDJSON_PARSER(simdjson::ondemand::object)
+USE_SIMDJSON_PARSER(std::string_view)
+USE_SIMDJSON_PARSER(uint64_t)
+USE_SIMDJSON_PARSER(int64_t)
+
+DEFINE_VALUE_PARSER(std::string, {
+  std::string_view temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  target = temp_target;
+  return true;
+})
+
+DEFINE_VALUE_PARSER(uint16_t, {
+  int64_t temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  if (temp_target < 0 || 65535 < temp_target) {
+    throw ConfigParseError("16-bit unsigned integer out of range");
+  }
+  target = temp_target;
+  return true;
+})
+
+DEFINE_VALUE_PARSER(uint32_t, {
+  int64_t temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  if (temp_target < 0 || UINT32_MAX < temp_target) {
+    throw ConfigParseError("32-bit unsigned integer out of range");
+  }
+  target = temp_target;
+  return true;
+})
+
+DEFINE_VALUE_PARSER(int, {
+  int64_t temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  if (temp_target < INT_MIN || INT_MAX < temp_target) {
+    throw ConfigParseError("32-bit signed integer out of range");
+  }
+  target = temp_target;
+  return true;
+})
+
+/*
+ * Parsers for the config structs. Make sure these correspond exactly to the
+ * DEFINE_STRUCT_PRINTER declarations in json_printer.cpp.
+ */
+
+DEFINE_STRUCT_PARSER(Internal,
+                     ELEMENT(reqBufferSize,       ReqBufferSize)
+                     ELEMENT(respBufferSize,      RespBufferSize)
+                     ELEMENT(preAllocatedBuffers, PreAllocatedBuffers)
+                     ELEMENT(batchMaxSize,        BatchMaxSize)
+                     ELEMENT(operationIdMaxSize,  OperationIDMaxSize)
+                     )
+
+DEFINE_STRUCT_PARSER(REST,
+                     ELEMENT(enable,     Enable)
+                     ELEMENT(serverIP,   ServerIP)
+                     ELEMENT(serverPort, ServerPort)
+                     )
+
+DEFINE_STRUCT_PARSER(GRPC,
+                     ELEMENT(enable,     Enable)
+                     ELEMENT(serverIP,   ServerIP)
+                     ELEMENT(serverPort, ServerPort)
+                     )
+
+DEFINE_STRUCT_PARSER(Mgmd,
+                     ELEMENT(IP,   IP)
+                     ELEMENT(port, Port)
+                     )
+
+DEFINE_ARRAY_PARSER(Mgmd)
+
+DEFINE_ARRAY_PARSER(uint32_t)
+
+DEFINE_STRUCT_PARSER(RonDB,
+                     ELEMENT(Mgmds,                         Mgmds)
+                     ELEMENT(connectionPoolSize,            ConnectionPoolSize)
+                     ELEMENT(nodeIDs,                       NodeIDs)
+                     ELEMENT(connectionRetries,             ConnectionRetries)
+                     ELEMENT(connectionRetryDelayInSec,     ConnectionRetryDelayInSec)
+                     ELEMENT(opRetryOnTransientErrorsCount, OpRetryOnTransientErrorsCount)
+                     ELEMENT(opRetryInitialDelayInMS,       OpRetryInitialDelayInMS)
+                     ELEMENT(opRetryJitterInMS,             OpRetryJitterInMS)
+                     )
+
+DEFINE_STRUCT_PARSER(TestParameters,
+                     ELEMENT(clientCertFile, ClientCertFile)
+                     ELEMENT(clientKeyFile,  ClientKeyFile)
+                     )
+
+DEFINE_STRUCT_PARSER(TLS,
+                     ELEMENT(enableTLS,                  EnableTLS)
+                     ELEMENT(requireAndVerifyClientCert, RequireAndVerifyClientCert)
+                     ELEMENT(certificateFile,            CertificateFile)
+                     ELEMENT(privateKeyFile,             PrivateKeyFile)
+                     ELEMENT(rootCACertFile,             RootCACertFile)
+                     ELEMENT(testParameters,             TestParameters)
+                     )
+
+DEFINE_STRUCT_PARSER(APIKey,
+                     ELEMENT(useHopsworksAPIKeys,          UseHopsworksAPIKeys)
+                     ELEMENT(cacheRefreshIntervalMS,       CacheRefreshIntervalMS)
+                     ELEMENT(cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS)
+                     ELEMENT(cacheRefreshIntervalJitterMS, CacheRefreshIntervalJitterMS)
+                     )
+
+DEFINE_STRUCT_PARSER(Security,
+                     ELEMENT(tls,    TLS)
+                     ELEMENT(apiKey, APIKey)
+                     )
+
+DEFINE_STRUCT_PARSER(LogConfig,
+                     ELEMENT(level,      Level)
+                     ELEMENT(filePath,   FilePath)
+                     ELEMENT(maxSizeMb,  MaxSizeMB)
+                     ELEMENT(maxBackups, MaxBackups)
+                     ELEMENT(maxAge,     MaxAge)
+                     )
+
+DEFINE_STRUCT_PARSER(MySQLServer,
+                     ELEMENT(IP,   IP)
+                     ELEMENT(port, Port)
+                     )
+
+DEFINE_ARRAY_PARSER(MySQLServer)
+
+DEFINE_STRUCT_PARSER(MySQL,
+                     ELEMENT(servers,  Servers)
+                     ELEMENT(user,     User)
+                     ELEMENT(password, Password)
+                     )
+
+DEFINE_STRUCT_PARSER(Testing,
+                     ELEMENT(mySQL,                MySQL)
+                     ELEMENT(mySQLMetadataCluster, MySQLMetadataCluster)
+                     )
+
+DEFINE_STRUCT_PARSER(AllConfigs,
+                     ELEMENT(internal,             Internal)
+                     ELEMENT(rest,                 REST)
+                     ELEMENT(grpc,                 GRPC)
+                     ELEMENT(pidfile,              PIDFile)
+                     ELEMENT(ronDB,                RonDB)
+                     ELEMENT(ronDbMetaDataCluster, RonDBMetadataCluster)
+                     ELEMENT(security,             Security)
+                     ELEMENT(log,                  Log)
+                     ELEMENT(testing,              Testing)
+                     )
+
+RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &configsStruct) noexcept {
   simdjson::padded_string paddedJson(configsBody);
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document doc;
-  const char *currentLocation = nullptr;
-
-  simdjson::error_code error = parser.iterate(paddedJson).get(doc);
-  if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc, currentLocation);
-  }
-
-  simdjson::ondemand::object configsObject;
-  error = doc.get_object().get(configsObject);
-  if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc, currentLocation);
-  }
-
-  for (auto field : configsObject) {
-    // parses and writes out the key, after unescaping it,
-    // to a string buffer. It causes a performance penalty.
-    std::string_view keyv = field.unescaped_key();
-    if (keyv == GRPC_STR) {
-      simdjson::ondemand::object grpcObj;
-      auto grpcVal = field.value();
-      if (!grpcVal.is_null()) {
-        error = grpcVal.get(grpcObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto enableVal = grpcObj[ENABLE];
-        if (enableVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (enableVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(enableVal.error(), doc, currentLocation);
-        } else {
-          if (!enableVal.is_null()) {
-            bool enable = false;
-            error       = enableVal.get(enable);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            if (enable) {
-              configsStruct.grpc.enable = true;
-
-              auto ipVal = grpcObj[IP];
-              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (ipVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-              } else {
-                if (!ipVal.is_null()) {
-                  std::string_view ip = LOCALHOST;
-                  error               = ipVal.get(ip);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.grpc.serverIP = ip;
-                }
-              }
-
-              auto portVal = grpcObj[PORT];
-              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (portVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(portVal.error(), doc, currentLocation);
-              } else {
-                if (!portVal.is_null()) {
-                  uint64_t port = DEFAULT_GRPC_PORT;
-                  error         = portVal.get(port);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.grpc.serverPort = port;
-                }
-              }
-            }
-          }
-        }
-      }
-    } else if (keyv == REST_STR) {
-      simdjson::ondemand::object restObj;
-      auto restVal = field.value();
-      if (!restVal.is_null()) {
-        error = restVal.get(restObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto enableVal = restObj[ENABLE];
-        if (enableVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (enableVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(enableVal.error(), doc, currentLocation);
-        } else {
-          if (!enableVal.is_null()) {
-            bool enable = false;
-            error       = enableVal.get(enable);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            if (enable) {
-              configsStruct.rest.enable = true;
-
-              auto ipVal = restObj[IP];
-              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (ipVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-              } else {
-                if (!ipVal.is_null()) {
-                  std::string_view ip = LOCALHOST;
-                  error               = ipVal.get(ip);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.rest.serverIP = ip;
-                }
-              }
-
-              auto portVal = restObj[PORT];
-              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (portVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(portVal.error(), doc, currentLocation);
-              } else {
-                if (!portVal.is_null()) {
-                  uint64_t port = DEFAULT_REST_PORT;
-                  error         = portVal.get(port);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.rest.serverPort = port;
-                }
-              }
-            }
-          }
-        }
-      }
-    } else if (keyv == RONDB) {
-      simdjson::ondemand::object rondbObj;
-      auto rondbVal = field.value();
-      if (!rondbVal.is_null()) {
-        error = rondbVal.get(rondbObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto mgmdsVal = rondbObj[MGMDS];
-        if (mgmdsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (mgmdsVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(mgmdsVal.error(), doc, currentLocation);
-        } else {
-          if (!mgmdsVal.is_null()) {
-            simdjson::ondemand::array mgmdsArr;
-            error = mgmdsVal.get(mgmdsArr);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            configsStruct.ronDB.Mgmds.clear();
-            for (auto mgmd : mgmdsArr) {
-              Mgmd mgmdStruct;
-              simdjson::ondemand::object mgmdObj;
-              error = mgmd.get(mgmdObj);
-              if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc, currentLocation);
-              }
-
-              std::string_view ip = LOCALHOST;
-              auto ipVal          = mgmdObj[IP];
-              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (ipVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-              } else {
-                if (!ipVal.is_null()) {
-                  error = ipVal.get(ip);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                }
-              }
-              mgmdStruct.IP = ip;
-
-              uint64_t port = MGMD_DEFAULT_PORT;
-              auto portVal  = mgmdObj[PORT];
-              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (portVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(portVal.error(), doc, currentLocation);
-              } else {
-                if (!portVal.is_null()) {
-                  error = portVal.get(port);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                }
-              }
-              mgmdStruct.port = port;
-
-              configsStruct.ronDB.Mgmds.push_back(mgmdStruct);
-            }
-          }
-        }
-      }
-    } else if (keyv == SECURITY) {
-      simdjson::ondemand::object securityObj;
-      auto securityVal = field.value();
-      if (!securityVal.is_null()) {
-        error = securityVal.get(securityObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto tlsVal = securityObj[TLS_STR];
-        if (tlsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (tlsVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(tlsVal.error(), doc, currentLocation);
-        } else {
-          if (!tlsVal.is_null()) {
-            simdjson::ondemand::object tlsObj;
-            error = tlsVal.get(tlsObj);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            auto enableTLSVal = tlsObj[ENABLE_TLS];
-            if (enableTLSVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (enableTLSVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(enableTLSVal.error(), doc, currentLocation);
-            } else {
-              if (!enableTLSVal.is_null()) {
-                bool enableTLS = false;
-                error          = enableTLSVal.get(enableTLS);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.security.tls.enableTLS = enableTLS;
-              }
-            }
-            auto requireAndVerifyClientCertVal = tlsObj[REQUIRE_AND_VERIFY_CLIENT_CERT];
-            if (requireAndVerifyClientCertVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (requireAndVerifyClientCertVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(requireAndVerifyClientCertVal.error(), doc,
-                                           currentLocation);
-            } else {
-              if (!requireAndVerifyClientCertVal.is_null()) {
-                bool requireAndVerifyClientCert = false;
-                error = requireAndVerifyClientCertVal.get(requireAndVerifyClientCert);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.security.tls.requireAndVerifyClientCert = requireAndVerifyClientCert;
-              }
-            }
-          }
-        }
-
-        auto apiKeyVal = securityObj[API_KEY_STR];
-        if (apiKeyVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (apiKeyVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(apiKeyVal.error(), doc, currentLocation);
-        } else {
-          if (!apiKeyVal.is_null()) {
-            simdjson::ondemand::object apiKeyObj;
-            error = apiKeyVal.get(apiKeyObj);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            auto useHopsworksAPIKeysVal = apiKeyObj[USE_HOPSWORKS_API_KEYS];
-            if (useHopsworksAPIKeysVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (useHopsworksAPIKeysVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(useHopsworksAPIKeysVal.error(), doc, currentLocation);
-            } else {
-              if (!useHopsworksAPIKeysVal.is_null()) {
-                bool useHopsworksAPIKeys = false;
-                error                    = useHopsworksAPIKeysVal.get(useHopsworksAPIKeys);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.security.apiKey.useHopsworksAPIKeys = useHopsworksAPIKeys;
-              }
-            }
-          }
-        }
-      }
-    } else if (keyv == LOG) {
-      simdjson::ondemand::object logObj;
-      auto logVal = field.value();
-      if (!logVal.is_null()) {
-        error = logVal.get(logObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto levelVal = logObj[LEVEL];
-        if (levelVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (levelVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(levelVal.error(), doc, currentLocation);
-        } else {
-          if (!levelVal.is_null()) {
-            std::string_view level = INFO;
-            error                  = levelVal.get(level);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            configsStruct.log.level = level;
-          }
-        }
-      }
-    } else if (keyv == TESTING) {
-      simdjson::ondemand::object testingObj;
-      auto testingVal = field.value();
-      if (!testingVal.is_null()) {
-        error = testingVal.get(testingObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto mySQLVal = testingObj[MYSQL_STR];
-        if (mySQLVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (mySQLVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(mySQLVal.error(), doc, currentLocation);
-        } else {
-          if (!mySQLVal.is_null()) {
-            simdjson::ondemand::object mySQLObj;
-            error = mySQLVal.get(mySQLObj);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            configsStruct.testing.mySQL.servers.clear();
-            auto serversVal = mySQLObj[SERVERS];
-            if (serversVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (serversVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(serversVal.error(), doc, currentLocation);
-            } else {
-              if (!serversVal.is_null()) {
-                simdjson::ondemand::array serversArr;
-                error = serversVal.get(serversArr);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                for (auto server : serversArr) {
-                  MySQLServer mySQLServer;
-                  simdjson::ondemand::object serverObj;
-                  error = server.get(serverObj);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-
-                  std::string_view ip = LOCALHOST;
-                  auto ipVal          = serverObj[IP];
-                  if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  } else if (ipVal.error() != simdjson::SUCCESS) {
-                    return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-                  } else {
-                    if (!ipVal.is_null()) {
-                      error = ipVal.get(ip);
-                      if (error != simdjson::SUCCESS) {
-                        return handle_simdjson_error(error, doc, currentLocation);
-                      }
-                    }
-                  }
-                  mySQLServer.IP = ip;
-
-                  uint64_t port = DEFAULT_MYSQL_PORT;
-                  auto portVal  = serverObj[PORT];
-                  if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  } else if (portVal.error() != simdjson::SUCCESS) {
-                    return handle_simdjson_error(portVal.error(), doc, currentLocation);
-                  } else {
-                    if (!portVal.is_null()) {
-                      error = portVal.get(port);
-                      if (error != simdjson::SUCCESS) {
-                        return handle_simdjson_error(error, doc, currentLocation);
-                      }
-                    }
-                  }
-                  mySQLServer.port = port;
-
-                  configsStruct.testing.mySQL.servers.push_back(mySQLServer);
-                }
-              }
-            }
-
-            auto userVal = mySQLObj[USER];
-            if (userVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (userVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(userVal.error(), doc, currentLocation);
-            } else {
-              if (!userVal.is_null()) {
-                std::string_view user = ROOT_STR;
-                error                 = userVal.get(user);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.testing.mySQL.user = user;
-              }
-            }
-
-            auto passwordVal = mySQLObj[PASSWORD];
-            if (passwordVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (passwordVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(passwordVal.error(), doc, currentLocation);
-            } else {
-              if (!passwordVal.is_null()) {
-                std::string_view password;
-                error = passwordVal.get(password);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.testing.mySQL.password = password;
-              }
-            }
-          }
-        }
-      }
+  try {
+    try {
+      doc = parser.iterate(paddedJson).value();
+      parse(configsStruct, doc.get_object());
+      assert_end_of_doc(doc);
     }
+    catch (simdjson::simdjson_error& e) {
+      throw ConfigParseError(simdjson::error_message(e.error()));
+    }
+  }
+  catch (ConfigParseError& e) {
+    return handle_parse_error(e, paddedJson, doc);
   }
   return CRS_Status::SUCCESS.status;
 }

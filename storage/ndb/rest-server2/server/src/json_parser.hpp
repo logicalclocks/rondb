@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -51,7 +51,7 @@ class JSONParser {
   std::unique_ptr<char[]> &get_buffer(size_t);
   RS_Status pk_parse(size_t, simdjson::padded_string_view, PKReadParams &);
   RS_Status batch_parse(size_t, simdjson::padded_string_view, std::vector<PKReadParams> &);
-  RS_Status config_parse(const std::string &, AllConfigs &);
+  RS_Status config_parse(const std::string &, AllConfigs &) noexcept;
   RS_Status feature_store_parse(size_t, simdjson::padded_string_view,
                                 feature_store_data_structs::FeatureStoreRequest &);
   RS_Status batch_feature_store_parse(size_t, simdjson::padded_string_view,

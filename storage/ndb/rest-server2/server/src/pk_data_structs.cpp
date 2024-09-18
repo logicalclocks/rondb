@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -75,7 +75,7 @@ RS_Status validate_db_identifier(const std::string &identifier) {
   for (size_t i = 0; i < identifier.length(); ++i) {
     uint32_t code = decode_utf8_to_unicode(identifier, i);
 
-    if ((code < 0x01 || code > 0x7F) && (code < 0x80 || code > 0xFFFF)) {
+    if (code < 0x01 || code > 0xFFFF) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_IDENTIFIER,
                         (std::string(ERROR_040) + ": " + std::to_string(code)).c_str())
@@ -219,7 +219,7 @@ RS_Status PKReadParams::validate() {
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_IDENTIFIER,
-                        ("db name: " + path.db + " contains invalid characters").c_str())
+                        "database name contains invalid characters")
           .status;
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_DB_NAME,
@@ -240,7 +240,7 @@ RS_Status PKReadParams::validate() {
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_IDENTIFIER,
-                        ("table name: " + path.table + " contains invalid characters").c_str())
+                        "table name contains invalid characters")
           .status;
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_TABLE_NAME,
@@ -299,8 +299,7 @@ RS_Status PKReadParams::validate() {
         return CRS_Status(
                    static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                    ERROR_CODE_INVALID_IDENTIFIER,
-                   ("read column name: " + readColumn.column + " contains invalid characters")
-                       .c_str())
+                   "read column name: contains invalid characters")
             .status;
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_READ_COLUMN_NAME,

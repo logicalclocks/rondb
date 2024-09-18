@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -54,7 +54,6 @@ class GRPC {
   RS_Status validate();
   GRPC();
   GRPC(bool, std::string, uint16_t);
-  std::string string();
 };
 
 class REST {
@@ -66,7 +65,6 @@ class REST {
   RS_Status validate();
   REST();
   REST(bool, std::string, uint16_t);
-  std::string string();
 };
 
 class MySQLServer {
@@ -76,7 +74,6 @@ class MySQLServer {
   RS_Status validate() const;
   MySQLServer();
   MySQLServer(std::string, uint16_t);
-  std::string string();
 };
 
 class MySQL {
@@ -87,7 +84,6 @@ class MySQL {
   RS_Status validate();
   MySQL();
   MySQL(std::vector<MySQLServer>, std::string, std::string);
-  std::string string();
 };
 
 class Testing {
@@ -99,7 +95,6 @@ class Testing {
   std::string generate_mysqld_connect_string_metadata_cluster();
   Testing();
   Testing(MySQL, MySQL);
-  std::string string();
 };
 
 class Mgmd {
@@ -109,7 +104,6 @@ class Mgmd {
   RS_Status validate() const;
   Mgmd();
   Mgmd(std::string, uint16_t);
-  std::string string();
 };
 
 class RonDB {
@@ -139,7 +133,6 @@ class RonDB {
   RonDB();
   RonDB(std::vector<Mgmd>, uint32_t, std::vector<uint32_t>, uint32_t, uint32_t, uint32_t, uint32_t,
         uint32_t, uint32_t);
-  std::string string();
 };
 
 class TestParameters {
@@ -160,7 +153,6 @@ class APIKey {
   RS_Status validate();
   APIKey();
   APIKey(bool, uint32_t, uint32_t, uint32_t);
-  std::string string();
 };
 
 class TLS {
@@ -174,7 +166,6 @@ class TLS {
   RS_Status validate();
   TLS();
   TLS(bool, bool, std::string, std::string, std::string, TestParameters);
-  std::string string();
 };
 
 class Security {
@@ -184,12 +175,12 @@ class Security {
   RS_Status validate();
   Security();
   Security(TLS, APIKey);
-  std::string string();
 };
 
 class AllConfigs {
  public:
   Internal internal;
+  std::string pidfile;
   REST rest;
   GRPC grpc;
   RonDB ronDB;
@@ -198,15 +189,12 @@ class AllConfigs {
   LogConfig log;
   Testing testing;
   RS_Status validate();
-  std::string string();
   AllConfigs();
   AllConfigs(Internal, REST, GRPC, RonDB, RonDB, Security, LogConfig, Testing);
   static AllConfigs get_all();
   static RS_Status set_all(AllConfigs);
-  static RS_Status set_to_defaults();
-  static RS_Status set_from_file_if_exists(const std::string &);
   static RS_Status set_from_file(const std::string &);
-  static RS_Status init();
+  static RS_Status init(std::string configFile);
 };
 
 bool isUniteTest();

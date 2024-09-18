@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -36,7 +36,6 @@
 #define FEATURE_STORE_PATH       "/" API_VERSION "/feature_store"
 #define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/batch_feature_store"
 
-constexpr const char *CONFIG_FILE_PATH               = "RDRS_CONFIG_FILE";
 constexpr const char *LOCALHOST                      = "localhost";
 constexpr const char *DEFAULT_ROUTE                  = "0.0.0.0";
 constexpr const char *ROOT                           = "root";
@@ -52,29 +51,8 @@ constexpr const char *VALUE                          = "value";
 constexpr const char *READCOLUMNS                    = "readColumns";
 constexpr const char *DATA_RETURN_TYPE               = "dataReturnType";
 constexpr const char *OPERATION_ID                   = "operationId";
-constexpr const char *GRPC_STR                       = "GRPC";
-constexpr const char *REST_STR                       = "REST";
-constexpr const char *ENABLE                         = "enable";
-constexpr const char *SERVER_PORT                    = "ServerPort";
-constexpr const char *RONDB                          = "RonDB";
-constexpr const char *MGMDS                          = "Mgmds";
-constexpr const char *IP                             = "IP";
-constexpr const char *PORT                           = "Port";
-constexpr const char *SECURITY                       = "Security";
-constexpr const char *TLS_STR                        = "TLS";
-constexpr const char *ENABLE_TLS                     = "EnableTLS";
-constexpr const char *REQUIRE_AND_VERIFY_CLIENT_CERT = "RequireAndVerifyClientCert";
-constexpr const char *API_KEY_STR                    = "APIKey";
-constexpr const char *USE_HOPSWORKS_API_KEYS         = "UseHopsworksAPIKeys";
-constexpr const char *LOG                            = "Log";
-constexpr const char *LEVEL                          = "Level";
 constexpr const char *INFO                           = "INFO";
-constexpr const char *TESTING                        = "Testing";
-constexpr const char *MYSQL_STR                      = "MySQL";
-constexpr const char *SERVERS                        = "Servers";
-constexpr const char *USER                           = "User";
 constexpr const char *ROOT_STR                       = "root";
-constexpr const char *PASSWORD                       = "Password";
 constexpr const char *API_KEY_NAME_LOWER_CASE =
     "x-api-key";  // Drogon always receives the header as lowercase
 constexpr const char *FEATURE_STORE_NAME       = "featureStoreName";

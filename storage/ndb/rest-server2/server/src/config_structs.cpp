@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -82,24 +82,6 @@ RS_Status REST::validate() {
   return CRS_Status::SUCCESS.status;
 }
 
-std::string GRPC::string() {
-  std::stringstream ss;
-  ss << "enable: " << enable << ", serverIP: " << serverIP << ", serverPort: " << serverPort;
-  return ss.str();
-}
-
-std::string REST::string() {
-  std::stringstream ss;
-  ss << "enable: " << enable << ", serverIP: " << serverIP << ", serverPort: " << serverPort;
-  return ss.str();
-}
-
-std::string Mgmd::string() {
-  std::stringstream ss;
-  ss << "IP: " << IP << ", port: " << port;
-  return ss.str();
-}
-
 RonDB::RonDB()
     : Mgmds({Mgmd()}), connectionPoolSize(1), nodeIDs({0}), connectionRetries(CONNECTION_RETRIES),
       connectionRetryDelayInSec(CONNECTION_RETRY_DELAY),
@@ -143,15 +125,6 @@ RS_Status RonDB::validate() {
     nodeIDs = {0};
   }
   return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)).status;
-}
-
-std::string RonDB::string() {
-  std::stringstream ss;
-  ss << "Mgmds: " << std::endl;
-  for (auto &server : Mgmds) {
-    ss << server.string() << std::endl;
-  }
-  return ss.str();
 }
 
 TestParameters::TestParameters() {
@@ -206,13 +179,6 @@ RS_Status TLS::validate() {
   return testParameters.validate();
 }
 
-std::string TLS::string() {
-  std::stringstream ss;
-  ss << "enableTLS: " << enableTLS
-     << ", requireAndVerifyClientCert: " << requireAndVerifyClientCert;
-  return ss.str();
-}
-
 APIKey::APIKey()
     : useHopsworksAPIKeys(true), cacheRefreshIntervalMS(CACHE_REFRESH_INTERVAL_MS),
       cacheUnusedEntriesEvictionMS(CACHE_UNUSED_ENTRIES_EVICTION_MS),
@@ -243,12 +209,6 @@ RS_Status APIKey::validate() {
   return CRS_Status::SUCCESS.status;
 }
 
-std::string APIKey::string() {
-  std::stringstream ss;
-  ss << "useHopsworksAPIKeys: " << useHopsworksAPIKeys;
-  return ss.str();
-}
-
 Security::Security() : tls(TLS()), apiKey(APIKey()) {
 }
 
@@ -263,13 +223,6 @@ RS_Status Security::validate() {
   }
 
   return CRS_Status::SUCCESS.status;
-}
-
-std::string Security::string() {
-  std::stringstream ss;
-  ss << "TLS: " << tls.string() << std::endl;
-  ss << "APIKey: " << apiKey.string() << std::endl;
-  return ss.str();
 }
 
 Testing::Testing() : mySQL(MySQL()), mySQLMetadataCluster(MySQL()) {
@@ -289,12 +242,6 @@ RS_Status Testing::validate() {
   }
 
   return CRS_Status::SUCCESS.status;
-}
-
-std::string Testing::string() {
-  std::stringstream ss;
-  ss << "MySQL: " << mySQL.string() << std::endl;
-  return ss.str();
 }
 
 std::string Testing::generate_mysqld_connect_string_data_cluster() {
@@ -341,24 +288,7 @@ RS_Status MySQL::validate() {
   return CRS_Status::SUCCESS.status;
 }
 
-std::string MySQL::string() {
-  std::stringstream ss;
-  ss << "servers: " << std::endl;
-  for (auto &server : servers) {
-    ss << server.string() << std::endl;
-  }
-  ss << "user: " << user << std::endl;
-  ss << "password: " << password << std::endl;
-  return ss.str();
-}
-
 MySQLServer::MySQLServer() : IP(LOCALHOST), port(DEFAULT_MYSQL_PORT) {
-}
-
-std::string MySQLServer::string() {
-  std::stringstream ss;
-  ss << "IP: " << IP << ", port: " << port;
-  return ss.str();
 }
 
 RS_Status MySQLServer::validate() const {
@@ -383,6 +313,7 @@ std::string RonDB::generate_Mgmd_connect_string() {
 AllConfigs::AllConfigs() {
   // Call default constructors
   internal             = Internal();
+  pidfile              = "";
   rest                 = REST();
   grpc                 = GRPC();
   ronDB                = RonDB();
@@ -444,18 +375,6 @@ RS_Status AllConfigs::set_all(AllConfigs newConfigs) {
   return status;
 }
 
-RS_Status AllConfigs::set_to_defaults() {
-  AllConfigs newConfigs = AllConfigs();
-  return set_all(newConfigs);
-}
-
-RS_Status AllConfigs::set_from_file_if_exists(const std::string &configFile) {
-  if (configFile.empty()) {
-    return set_to_defaults();
-  }
-  return set_from_file(configFile);
-}
-
 RS_Status AllConfigs::set_from_file(const std::string &configFile) {
   AllConfigs newConfigs;
   // Read config file
@@ -463,7 +382,7 @@ RS_Status AllConfigs::set_from_file(const std::string &configFile) {
   if (!file) {
     return CRS_Status(
                static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-               ("failed reading config file; error: " + std::string(strerror(errno))).c_str())
+               ("failed reading config file " + configFile +"; error: " + std::string(strerror(errno))).c_str())
         .status;
   }
   std::string configStr((std::istreambuf_iterator<char>(file)), {});
@@ -480,23 +399,11 @@ RS_Status AllConfigs::set_from_file(const std::string &configFile) {
   return set_all(newConfigs);
 }
 
-RS_Status AllConfigs::init() {
-  std::string configFile;
-  const char *env_val = std::getenv(CONFIG_FILE_PATH);
-  if (env_val != nullptr) {
-    configFile = env_val;
+RS_Status AllConfigs::init(std::string configFile) {
+  if (configFile.empty()) {
+    // Set to defaults
+    AllConfigs newConfigs = AllConfigs();
+    return set_all(newConfigs);
   }
-  return set_from_file_if_exists(configFile);
-}
-
-std::string AllConfigs::string() {
-  std::lock_guard<std::mutex> lock(globalConfigsMutex);
-  std::stringstream ss;
-  ss << "REST: " << rest.string() << std::endl;
-  ss << "GRPC: " << grpc.string() << std::endl;
-  ss << "RonDB: " << ronDB.string() << std::endl;
-  ss << "Security: " << security.string() << std::endl;
-  ss << "Log: " << log.string() << std::endl;
-  ss << "Testing: " << testing.string() << std::endl;
-  return ss.str();
+  return set_from_file(configFile);
 }

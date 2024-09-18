@@ -1,5 +1,6 @@
 # -*- cperl -*-
 # Copyright (c) 2007, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -353,6 +354,30 @@ my @mysqld_rules = (
   # By default, prevent the started mysqld to access files outside of vardir
   { 'secure-file-priv' => sub { return shift->{ARGS}->{vardir}; }
   },);
+
+sub fix_log_rdrs {
+  my ($self, $config, $group_name, $group) = @_;
+  my $dir = $self->{ARGS}->{vardir};
+    return "$dir/log/$group_name.log";
+}
+
+sub fix_log_error_rdrs {
+  my ($self, $config, $group_name, $group) = @_;
+  my $dir = $self->{ARGS}->{vardir};
+  return "$dir/log/$group_name.err";
+}
+
+my @rdrs_rules = (
+  { '#host'         => \&fix_host },
+  { '#log-output'   => \&fix_log_rdrs },
+  { '#log-error'    => \&fix_log_error_rdrs },
+  { 'port'          => \&fix_port },
+  { 'pid-file'      => \&fix_pidfile },
+  { 'bind-address'  => \&fix_bind_address },
+  #{ 'ssl-ca'        => \&fix_ssl_ca },
+  #{ 'ssl-cert'      => \&fix_ssl_server_cert },
+  #{ 'ssl-key'       => \&fix_ssl_server_key },
+);
 
 if (IS_WINDOWS) {
   # For simplicity, we use the same names for shared memory and
@@ -717,6 +742,15 @@ sub run_generate_sections_from_cluster_config {
       }
     }
   }
+  # The cluster_config section is for ndb_mgmd to read. From ndb_mgmd's
+  # perspective, rdrs is nothing else than a generic ndbapi node. Therefore, we
+  # cannot put rdrs configuration there. Instead, we put it under rdrs.N.X.
+  # These sections are only for mtr use.
+  my $vardir = $self->{ARGS}->{vardir};
+  foreach my $rdrsgroup ($config->like('rdrs\.\w*\.\w*$')) {
+    my $name = $rdrsgroup->name();
+    $config->insert("$name", 'config-file', "$vardir/${name}_config.json");
+  }
 }
 
 sub new_config {
@@ -774,6 +808,8 @@ sub new_config {
   $self->run_section_rules($config, 'cluster_config\.ndbd', @ndbd_rules);
 
   $self->run_section_rules($config, 'mysqld\.', @mysqld_rules);
+
+  $self->run_section_rules($config, 'rdrs\.', @rdrs_rules);
 
   # [mysqlbinlog] need additional settings
   $self->run_rules_for_group($config, $config->insert('mysqlbinlog'),
