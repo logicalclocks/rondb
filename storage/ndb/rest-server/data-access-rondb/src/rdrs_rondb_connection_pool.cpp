@@ -33,7 +33,6 @@ RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
   dataConnection     = nullptr;
   metadataConnection = nullptr;
   is_shutdown = true;
-  ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
 }
 
 RS_Status RDRSRonDBConnectionPool::Check() {
@@ -44,11 +43,6 @@ RS_Status RDRSRonDBConnectionPool::Check() {
 }
 
 RS_Status RDRSRonDBConnectionPool::Init() {
-  int retCode = 0;
-  retCode     = ndb_init();
-  if (retCode != 0) {
-    return RS_SERVER_ERROR(ERROR_001 + std::string(" RetCode: ") + std::to_string(retCode));
-  }
   return RS_OK;
 }
 

@@ -103,7 +103,7 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
     }
   }
 
-  status = ronsql_dal(database.c_str(), params);
+  status = ronsql_dal(database.c_str(), &params);
 
   if (json_output) {
     out_stream << "}\n";

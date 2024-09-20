@@ -86,7 +86,9 @@ void ndb_init_internal(Uint32 caller) {
   if (init_all) NdbMutex_SysInit();
   if (caller != THREAD_REGISTER_USER) {
     if (!g_ndb_connection_mutex) g_ndb_connection_mutex = NdbMutex_Create();
-    if (!g_eventLogger) g_eventLogger = create_event_logger();
+    if (!g_eventLogger) {
+      g_eventLogger = create_event_logger();
+    }
     if ((g_ndb_connection_mutex == nullptr) || (g_eventLogger == nullptr)) {
       {
         const char *err = "ndb_init() failed - exit\n";
