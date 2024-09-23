@@ -100,10 +100,10 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
             gb_cols_len + agg_res_len);
         GBHashEntry new_entry{agg_rec, gb_cols_len};
 
-        gb_map_->insert(std::make_pair<GBHashEntry, GBHashEntry>(
-              std::move(new_entry), std::move(
+        gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
+              new_entry,
                 GBHashEntry{agg_rec + gb_cols_len,
-                agg_res_len})));
+                agg_res_len}));
         agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + agg_res_len);
       }
 
