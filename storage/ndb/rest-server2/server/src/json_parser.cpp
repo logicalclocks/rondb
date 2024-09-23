@@ -168,7 +168,7 @@ JSONParser jsonParser;
 JSONParser::JSONParser() {
   // Allocate a buffer for each thread
   for (int i = 0; i < DEFAULT_NUM_THREADS; ++i) {
-    buffers[i] = std::make_unique<char[]>(REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING);
+    buffers[i] = std::make_unique<char[]>(globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING);
   }
 }
 

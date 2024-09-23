@@ -70,8 +70,6 @@ constexpr const char *SEQUENCE_SEPARATOR       = "#";
 
 constexpr const char *ERROR_NOT_FOUND = "Not Found";
 
-const int RESP_BUFFER_SIZE                 = 5 * 1024 * 1024;
-const int REQ_BUFFER_SIZE                  = 1024 * 1024;
 const int DEFAULT_NUM_THREADS              = 16;
 
 // Default configuration values are in config_structs.cpp

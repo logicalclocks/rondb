@@ -56,22 +56,14 @@
 CLASS
 (
  Internal,
- CM(uint32_t, reqBufferSize,       ReqBufferSize,       REQ_BUFFER_SIZE)
- CM(uint32_t, respBufferSize,      RespBufferSize,      RESP_BUFFER_SIZE)
+ CM(uint32_t, reqBufferSize,       ReqBufferSize,       1024 * 1024)
+ CM(uint32_t, respBufferSize,      RespBufferSize,      5 * 1024 * 1024)
  CM(uint32_t, preAllocatedBuffers, PreAllocatedBuffers, 32)
  CM(uint32_t, batchMaxSize,        BatchMaxSize,        256)
  CM(uint32_t, operationIdMaxSize,  OperationIDMaxSize,  256)
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
- PROBLEM(reqBufferSize != (REQ_BUFFER_SIZE),
-         std::string(".Internal.ReqBufferSize is hard-coded to ")
-         + std::to_string(REQ_BUFFER_SIZE)
-         + "; changing it via configuration is not yet supported.")
- PROBLEM(respBufferSize != (RESP_BUFFER_SIZE),
-         std::string(".Internal.RespBufferSize is hard-coded to ")
-         + std::to_string(RESP_BUFFER_SIZE)
-         + "; changing it via configuration is not yet supported.")
 )
 
 CLASS

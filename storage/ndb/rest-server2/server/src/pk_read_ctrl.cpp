@@ -46,7 +46,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
   size_t length        = req->getBody().length();
-  if (length > REQ_BUFFER_SIZE) {
+  if (length > globalConfigs.internal.reqBufferSize) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -61,7 +61,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   RS_Status status = jsonParser.pk_parse(
       currentThreadIndex,
       simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
-                                   REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING),
+                                   globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
