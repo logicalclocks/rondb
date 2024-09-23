@@ -92,9 +92,7 @@ public:
 
 // Define a parser for a struct. All elements will be optional. Will only accept
 // keys that matches an element or begin with "#". Keys beginning with "#" are
-// intended to be used for comments. All other keys will cause an exception. The
-// body contains one or more ELEMENT(structMemberVariableName, JsonKey) without
-// terminating semicolon.
+// intended to be used for comments. All other keys will cause an exception.
 #define DEFINE_STRUCT_PARSER(Datatype, ...) \
   DEFINE_PARSER(Datatype, simdjson::ondemand::object, { \
     for(simdjson::ondemand::field field : value) { \
@@ -104,6 +102,7 @@ public:
       if (fkey[0] != '#') \
         throw ConfigParseError("Unexpected key"); \
     } \
+    after_parsing(target); \
     return true; \
   }) \
   DEFINE_VALUE_PARSER(Datatype, { \
@@ -675,113 +674,27 @@ DEFINE_VALUE_PARSER(int, {
 })
 
 /*
- * Parsers for the config structs. Make sure these correspond exactly to the
- * DEFINE_STRUCT_PRINTER declarations in json_printer.cpp.
+ * Parsers for the config structs.
  */
 
-DEFINE_STRUCT_PARSER(Internal,
-                     ELEMENT(reqBufferSize,       ReqBufferSize)
-                     ELEMENT(respBufferSize,      RespBufferSize)
-                     ELEMENT(preAllocatedBuffers, PreAllocatedBuffers)
-                     ELEMENT(batchMaxSize,        BatchMaxSize)
-                     ELEMENT(operationIdMaxSize,  OperationIDMaxSize)
-                     )
+#define CLASS(NAME, ...) DEFINE_STRUCT_PARSER(NAME, __VA_ARGS__)
+#define CM(DATATYPE, VARIABLENAME, JSONKEYNAME, INITEXPR) ELEMENT(VARIABLENAME, JSONKEYNAME)
+#define PROBLEM(CONDITION, MESSAGE)
+#define CLASSDEFS(...)
+#define VECTOR(DATATYPE) DEFINE_ARRAY_PARSER(DATATYPE)
 
-DEFINE_STRUCT_PARSER(REST,
-                     ELEMENT(enable,     Enable)
-                     ELEMENT(serverIP,   ServerIP)
-                     ELEMENT(serverPort, ServerPort)
-                     )
+// Parsing hook to set RonDB::present_in_config_file and MySQL::present_in_config_file
+template<typename T> void after_parsing([[maybe_unused]] T& value) { }
+template<> void after_parsing(RonDB& value) { value.present_in_config_file = true; }
+template<> void after_parsing(MySQL& value) { value.present_in_config_file = true; }
 
-DEFINE_STRUCT_PARSER(GRPC,
-                     ELEMENT(enable,     Enable)
-                     ELEMENT(serverIP,   ServerIP)
-                     ELEMENT(serverPort, ServerPort)
-                     )
+#include "config_structs_def.hpp"
 
-DEFINE_STRUCT_PARSER(Mgmd,
-                     ELEMENT(IP,   IP)
-                     ELEMENT(port, Port)
-                     )
-
-DEFINE_ARRAY_PARSER(Mgmd)
-
-DEFINE_ARRAY_PARSER(uint32_t)
-
-DEFINE_STRUCT_PARSER(RonDB,
-                     ELEMENT(Mgmds,                         Mgmds)
-                     ELEMENT(connectionPoolSize,            ConnectionPoolSize)
-                     ELEMENT(nodeIDs,                       NodeIDs)
-                     ELEMENT(connectionRetries,             ConnectionRetries)
-                     ELEMENT(connectionRetryDelayInSec,     ConnectionRetryDelayInSec)
-                     ELEMENT(opRetryOnTransientErrorsCount, OpRetryOnTransientErrorsCount)
-                     ELEMENT(opRetryInitialDelayInMS,       OpRetryInitialDelayInMS)
-                     ELEMENT(opRetryJitterInMS,             OpRetryJitterInMS)
-                     )
-
-DEFINE_STRUCT_PARSER(TestParameters,
-                     ELEMENT(clientCertFile, ClientCertFile)
-                     ELEMENT(clientKeyFile,  ClientKeyFile)
-                     )
-
-DEFINE_STRUCT_PARSER(TLS,
-                     ELEMENT(enableTLS,                  EnableTLS)
-                     ELEMENT(requireAndVerifyClientCert, RequireAndVerifyClientCert)
-                     ELEMENT(certificateFile,            CertificateFile)
-                     ELEMENT(privateKeyFile,             PrivateKeyFile)
-                     ELEMENT(rootCACertFile,             RootCACertFile)
-                     ELEMENT(testParameters,             TestParameters)
-                     )
-
-DEFINE_STRUCT_PARSER(APIKey,
-                     ELEMENT(useHopsworksAPIKeys,          UseHopsworksAPIKeys)
-                     ELEMENT(cacheRefreshIntervalMS,       CacheRefreshIntervalMS)
-                     ELEMENT(cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS)
-                     ELEMENT(cacheRefreshIntervalJitterMS, CacheRefreshIntervalJitterMS)
-                     )
-
-DEFINE_STRUCT_PARSER(Security,
-                     ELEMENT(tls,    TLS)
-                     ELEMENT(apiKey, APIKey)
-                     )
-
-DEFINE_STRUCT_PARSER(LogConfig,
-                     ELEMENT(level,      Level)
-                     ELEMENT(filePath,   FilePath)
-                     ELEMENT(maxSizeMb,  MaxSizeMB)
-                     ELEMENT(maxBackups, MaxBackups)
-                     ELEMENT(maxAge,     MaxAge)
-                     )
-
-DEFINE_STRUCT_PARSER(MySQLServer,
-                     ELEMENT(IP,   IP)
-                     ELEMENT(port, Port)
-                     )
-
-DEFINE_ARRAY_PARSER(MySQLServer)
-
-DEFINE_STRUCT_PARSER(MySQL,
-                     ELEMENT(servers,  Servers)
-                     ELEMENT(user,     User)
-                     ELEMENT(password, Password)
-                     )
-
-DEFINE_STRUCT_PARSER(Testing,
-                     ELEMENT(mySQL,                MySQL)
-                     ELEMENT(mySQLMetadataCluster, MySQLMetadataCluster)
-                     )
-
-DEFINE_STRUCT_PARSER(AllConfigs,
-                     ELEMENT(internal,             Internal)
-                     ELEMENT(rest,                 REST)
-                     ELEMENT(grpc,                 GRPC)
-                     ELEMENT(pidfile,              PIDFile)
-                     ELEMENT(ronDB,                RonDB)
-                     ELEMENT(ronDbMetaDataCluster, RonDBMetadataCluster)
-                     ELEMENT(security,             Security)
-                     ELEMENT(log,                  Log)
-                     ELEMENT(testing,              Testing)
-                     )
+#undef CLASS
+#undef CM
+#undef PROBLEM
+#undef CLASSDEFS
+#undef VECTOR
 
 RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &configsStruct) noexcept {
   simdjson::padded_string paddedJson(configsBody);
@@ -792,6 +705,16 @@ RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &c
       doc = parser.iterate(paddedJson).value();
       parse(configsStruct, doc.get_object());
       assert_end_of_doc(doc);
+      // If .RonDBMetadataCluster is not present in config file, then set it to
+      // .RonDB.
+      if(!configsStruct.ronDBMetadataCluster.present_in_config_file) {
+        configsStruct.ronDBMetadataCluster = configsStruct.ronDB;
+      }
+      // If .Testing.MySQLMetadataCluster is not present in config file, then
+      // set it to .Testing.MySQL.
+      if(!configsStruct.testing.mySQLMetadataCluster.present_in_config_file) {
+        configsStruct.testing.mySQLMetadataCluster = configsStruct.testing.mySQL;
+      }
     }
     catch (simdjson::simdjson_error& e) {
       throw ConfigParseError(simdjson::error_message(e.error()));

@@ -34,35 +34,6 @@
 #define INDENT() std::string(indent, ' ')
 #define INDENT_INC() std::string(indent + INDENT_INCREASE, ' ')
 
-#define DEFINE_ARRAY_PRINTER(ElementType) \
-  DEFINE_PRINTER(std::vector<ElementType>, { \
-    uint32_t len = value.size(); \
-    out << "[\n"; \
-    for (uint32_t i = 0; i < len; i++) { \
-      out << INDENT_INC(); \
-      printJson(value[i], out, indent + INDENT_INCREASE); \
-      if (i < len - 1) { \
-        out << ","; \
-      } \
-      out << "\n"; \
-    } \
-    out << INDENT() << "]"; \
-  })
-
-#define DEFINE_STRUCT_PRINTER(Datatype, ...) \
-  DEFINE_PRINTER(Datatype, { \
-    bool is_first_field = true; \
-    out << "{"; \
-    __VA_ARGS__ \
-    out << '\n' << INDENT() << "}"; \
-  })
-#define ELEMENT(SourceVar, TargetKey) \
-  out << (is_first_field ? "\n" : ",\n") \
-      << INDENT_INC() << "\"" << #TargetKey << "\": "; \
-  printJson(value.SourceVar, out, indent + INDENT_INCREASE); \
-  is_first_field = false;
-
-
 /*
  * End of printing utilities
  */
@@ -103,110 +74,42 @@ DEFINE_PRINTER(std::string, {
 })
 
 /*
- * Printers for the config structs. Make sure these correspond exactly to the
- * DEFINE_STRUCT_PARSER declarations in json_parser.cpp.
+ * Printers for the config structs.
  */
 
-DEFINE_STRUCT_PRINTER(Internal,
-                      ELEMENT(reqBufferSize,       ReqBufferSize)
-                      ELEMENT(respBufferSize,      RespBufferSize)
-                      ELEMENT(preAllocatedBuffers, PreAllocatedBuffers)
-                      ELEMENT(batchMaxSize,        BatchMaxSize)
-                      ELEMENT(operationIdMaxSize,  OperationIDMaxSize)
-                     )
+#define CLASS(NAME, ...) \
+  DEFINE_PRINTER(NAME, { \
+    bool is_first_field = true; \
+    out << "{"; \
+    __VA_ARGS__ \
+    out << '\n' << INDENT() << "}"; \
+  })
+#define CM(DATATYPE, VARIABLENAME, JSONKEYNAME, INITEXPR) \
+  out << (is_first_field ? "\n" : ",\n") \
+      << INDENT_INC() << "\"" << #JSONKEYNAME << "\": "; \
+  printJson(value.VARIABLENAME, out, indent + INDENT_INCREASE); \
+  is_first_field = false;
+#define PROBLEM(CONDITION, MESSAGE)
+#define CLASSDEFS(...)
+#define VECTOR(DATATYPE) \
+  DEFINE_PRINTER(std::vector<DATATYPE>, { \
+    uint32_t len = value.size(); \
+    out << "[\n"; \
+    for (uint32_t i = 0; i < len; i++) { \
+      out << INDENT_INC(); \
+      printJson(value[i], out, indent + INDENT_INCREASE); \
+      if (i < len - 1) { \
+        out << ","; \
+      } \
+      out << "\n"; \
+    } \
+    out << INDENT() << "]"; \
+  })
 
-DEFINE_STRUCT_PRINTER(REST,
-                      ELEMENT(enable,     Enable)
-                      ELEMENT(serverIP,   ServerIP)
-                      ELEMENT(serverPort, ServerPort)
-                     )
+#include "config_structs_def.hpp"
 
-DEFINE_STRUCT_PRINTER(GRPC,
-                      ELEMENT(enable,     Enable)
-                      ELEMENT(serverIP,   ServerIP)
-                      ELEMENT(serverPort, ServerPort)
-                     )
-
-DEFINE_STRUCT_PRINTER(Mgmd,
-                      ELEMENT(IP,   IP)
-                      ELEMENT(port, Port)
-                     )
-
-DEFINE_ARRAY_PRINTER(Mgmd)
-
-DEFINE_ARRAY_PRINTER(uint32_t)
-
-DEFINE_STRUCT_PRINTER(RonDB,
-                      ELEMENT(Mgmds,                         Mgmds)
-                      ELEMENT(connectionPoolSize,            ConnectionPoolSize)
-                      ELEMENT(nodeIDs,                       NodeIDs)
-                      ELEMENT(connectionRetries,             ConnectionRetries)
-                      ELEMENT(connectionRetryDelayInSec,     ConnectionRetryDelayInSec)
-                      ELEMENT(opRetryOnTransientErrorsCount, OpRetryOnTransientErrorsCount)
-                      ELEMENT(opRetryInitialDelayInMS,       OpRetryInitialDelayInMS)
-                      ELEMENT(opRetryJitterInMS,             OpRetryJitterInMS)
-                     )
-
-DEFINE_STRUCT_PRINTER(TestParameters,
-                      ELEMENT(clientCertFile, ClientCertFile)
-                      ELEMENT(clientKeyFile,  ClientKeyFile)
-                     )
-
-DEFINE_STRUCT_PRINTER(TLS,
-                      ELEMENT(enableTLS,                  EnableTLS)
-                      ELEMENT(requireAndVerifyClientCert, RequireAndVerifyClientCert)
-                      ELEMENT(certificateFile,            CertificateFile)
-                      ELEMENT(privateKeyFile,             PrivateKeyFile)
-                      ELEMENT(rootCACertFile,             RootCACertFile)
-                      ELEMENT(testParameters,             TestParameters)
-                     )
-
-DEFINE_STRUCT_PRINTER(APIKey,
-                      ELEMENT(useHopsworksAPIKeys,          UseHopsworksAPIKeys)
-                      ELEMENT(cacheRefreshIntervalMS,       CacheRefreshIntervalMS)
-                      ELEMENT(cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS)
-                      ELEMENT(cacheRefreshIntervalJitterMS, CacheRefreshIntervalJitterMS)
-                     )
-
-DEFINE_STRUCT_PRINTER(Security,
-                      ELEMENT(tls,    TLS)
-                      ELEMENT(apiKey, APIKey)
-                     )
-
-DEFINE_STRUCT_PRINTER(LogConfig,
-                      ELEMENT(level,      Level)
-                      ELEMENT(filePath,   FilePath)
-                      ELEMENT(maxSizeMb,  MaxSizeMB)
-                      ELEMENT(maxBackups, MaxBackups)
-                      ELEMENT(maxAge,     MaxAge)
-                     )
-
-DEFINE_STRUCT_PRINTER(MySQLServer,
-                      ELEMENT(IP,   IP)
-                      ELEMENT(port, Port)
-                     )
-
-DEFINE_ARRAY_PRINTER(MySQLServer)
-
-DEFINE_STRUCT_PRINTER(MySQL,
-                      ELEMENT(servers,  Servers)
-                      ELEMENT(user,     User)
-                      ELEMENT(password, Password)
-                     )
-
-DEFINE_STRUCT_PRINTER(Testing,
-                      ELEMENT(mySQL,                MySQL)
-                      ELEMENT(mySQLMetadataCluster, MySQLMetadataCluster)
-                     )
-
-DEFINE_STRUCT_PRINTER(AllConfigs,
-                      ELEMENT(internal,             Internal)
-                      ELEMENT(rest,                 REST)
-                      ELEMENT(grpc,                 GRPC)
-                      ELEMENT(pidfile,              PIDFile)
-                      ELEMENT(ronDB,                RonDB)
-                      ELEMENT(ronDbMetaDataCluster, RonDBMetadataCluster)
-                      ELEMENT(security,             Security)
-                      ELEMENT(log,                  Log)
-                      ELEMENT(testing,              Testing)
-                     )
+#undef CLASS
+#undef CM
+#undef PROBLEM
+#undef CLASSDEFS
+#undef VECTOR

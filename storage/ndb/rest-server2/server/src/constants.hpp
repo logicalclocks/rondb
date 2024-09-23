@@ -38,9 +38,7 @@
 #define FEATURE_STORE_PATH       "/" API_VERSION "/feature_store"
 #define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/batch_feature_store"
 
-constexpr const char *LOCALHOST                      = "localhost";
-constexpr const char *DEFAULT_ROUTE                  = "0.0.0.0";
-constexpr const char *ROOT                           = "root";
+
 constexpr const char *POST                           = "POST";
 constexpr const char *GET                            = "GET";
 constexpr const char *OPERATIONS                     = "operations";
@@ -54,15 +52,8 @@ constexpr const char *READCOLUMNS                    = "readColumns";
 constexpr const char *DATA_RETURN_TYPE               = "dataReturnType";
 constexpr const char *OPERATION_ID                   = "operationId";
 constexpr const char *INFO                           = "INFO";
-constexpr const char *ROOT_STR                       = "root";
 constexpr const char *API_KEY_NAME_LOWER_CASE =
     "x-api-key";  // Drogon always receives the header as lowercase
-constexpr const char *QUERY                          = "query";
-constexpr const char *DATABASE                       = "database";
-constexpr const char *EXPLAIN_MODE                   = "explainMode";
-constexpr const char *DEFAULT_EXPLAIN_MODE           = "ALLOW";
-constexpr const char *OUTPUT_FORMAT                  = "outputFormat";
-constexpr const char *DEFAULT_OUTPUT_FORMAT          = "JSON";
 constexpr const char *FEATURE_STORE_NAME       = "featureStoreName";
 constexpr const char *FEATURE_VIEW_NAME        = "featureViewName";
 constexpr const char *FEATURE_VIEW_VERSION     = "featureViewVersion";
@@ -81,19 +72,8 @@ constexpr const char *ERROR_NOT_FOUND = "Not Found";
 
 const int RESP_BUFFER_SIZE                 = 5 * 1024 * 1024;
 const int REQ_BUFFER_SIZE                  = 1024 * 1024;
-const int MAX_SIZE                         = 256;
-const int DEFAULT_GRPC_PORT                = 4406;
-const int DEFAULT_REST_PORT                = 5406;
 const int DEFAULT_NUM_THREADS              = 16;
-const int CONNECTION_RETRIES               = 5;
-const int CONNECTION_RETRY_DELAY           = 5;
-const int OP_RETRY_TRANSIENT_ERRORS_COUNT  = 3;
-const int OP_RETRY_INITIAL_DELAY           = 500;
-const int OP_RETRY_JITTER                  = 100;
-const int MGMD_DEFAULT_PORT                = 13000;
-const int CACHE_REFRESH_INTERVAL_MS        = 10000;
-const int CACHE_UNUSED_ENTRIES_EVICTION_MS = 60000;
-const int CACHE_REFRESH_INTERVAL_JITTER_MS = 1000;
-const int DEFAULT_MYSQL_PORT               = 13001;
+
+// Default configuration values are in config_structs.cpp
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_CONSTANTS_HPP_
