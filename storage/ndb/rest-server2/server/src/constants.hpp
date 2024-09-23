@@ -70,8 +70,6 @@ constexpr const char *SEQUENCE_SEPARATOR       = "#";
 
 constexpr const char *ERROR_NOT_FOUND = "Not Found";
 
-const int DEFAULT_NUM_THREADS              = 16;
-
 // Default configuration values are in config_structs.cpp
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_CONSTANTS_HPP_

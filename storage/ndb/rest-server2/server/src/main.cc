@@ -196,6 +196,10 @@ void do_exit(int exit_code) {
     printf("Removing pidfile %s\n", pidfile);
     remove(pidfile);
   }
+  if (jsonParsers != nullptr) {
+    delete[] jsonParsers;
+    jsonParsers = nullptr;
+  }
   exit(exit_code);
 }
 
@@ -221,7 +225,6 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, handle_signal);
   signal(SIGINT, handle_signal);
 
-  jsonParser = JSONParser();
   apiKeyCache = std::make_shared<APIKeyCache>();
 
   /*
@@ -325,6 +328,9 @@ int main(int argc, char *argv[]) {
     fclose(pidFILE);
     printf("Wrote PID=%d to %s\n", pid, pidfile);
   }
+
+  // Initialize JSON parsers
+  jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
 
   // connect to rondb
   RonDBConnection rondbConnection(globalConfigs.ronDB,

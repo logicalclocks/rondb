@@ -29,6 +29,7 @@
 #define SIMDJSON_VERBOSE_LOGGING 0
 #include <simdjson.h>
 
+// One JSONParser will be allocated per thread.
 class JSONParser {
  private:
   /*
@@ -39,27 +40,30 @@ class JSONParser {
     If you need to have several documents active at once,
     you should have several parser instances.
   */
-  simdjson::ondemand::parser parser[DEFAULT_NUM_THREADS];
-  simdjson::ondemand::document doc[DEFAULT_NUM_THREADS];
+  simdjson::ondemand::parser parser;
+  simdjson::ondemand::document doc;
   /*
     We initialize and pre-allocate Internal.batchMaxSize number of char* string buffers
     for each thread, which we could reuse when passing to parser.iterate().
   */
-  std::unique_ptr<char[]> buffers[DEFAULT_NUM_THREADS];
+  std::unique_ptr<char[]> buffer;
 
  public:
   JSONParser();
-  std::unique_ptr<char[]> &get_buffer(size_t);
-  RS_Status pk_parse(size_t, simdjson::padded_string_view, PKReadParams &);
-  RS_Status batch_parse(size_t, simdjson::padded_string_view, std::vector<PKReadParams> &);
-  RS_Status config_parse(const std::string &, AllConfigs &) noexcept;
-  RS_Status ronsql_parse(size_t, simdjson::padded_string_view, RonSQLParams &);
-  RS_Status feature_store_parse(size_t, simdjson::padded_string_view,
+  std::unique_ptr<char[]> &get_buffer();
+  RS_Status pk_parse(simdjson::padded_string_view, PKReadParams &);
+  RS_Status batch_parse(simdjson::padded_string_view, std::vector<PKReadParams> &);
+  // The config file can specify the number of threads, which is necessary to
+  // initialize global jsonParsers variable. Therefore, we'd rather use a static
+  // function for parsing the config itself.
+  static RS_Status config_parse(const std::string &, AllConfigs &) noexcept;
+  RS_Status ronsql_parse(simdjson::padded_string_view, RonSQLParams &);
+  RS_Status feature_store_parse(simdjson::padded_string_view,
                                 feature_store_data_structs::FeatureStoreRequest &);
-  RS_Status batch_feature_store_parse(size_t, simdjson::padded_string_view,
+  RS_Status batch_feature_store_parse(simdjson::padded_string_view,
                                       feature_store_data_structs::BatchFeatureStoreRequest &);
 };
 
-extern JSONParser jsonParser;
+extern JSONParser* jsonParsers;
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_JSON_PARSER_HPP_

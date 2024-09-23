@@ -30,13 +30,13 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
                         std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   auto resp = drogon::HttpResponse::newHttpResponse();
-
   if (currentThreadIndex >= globalConfigs.rest.numThreads) {
     resp->setBody("Too many threads");
     resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
     callback(resp);
     return;
   }
+  JSONParser& jsonParser = jsonParsers[currentThreadIndex];
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
@@ -47,13 +47,12 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
     callback(resp);
     return;
   }
-  memcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str, length);
+  memcpy(jsonParser.get_buffer().get(), json_str, length);
 
   RonSQLParams reqStruct;
 
   RS_Status status = jsonParser.ronsql_parse(
-      currentThreadIndex,
-      simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
+      simdjson::padded_string_view(jsonParser.get_buffer().get(), length,
                                    globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 

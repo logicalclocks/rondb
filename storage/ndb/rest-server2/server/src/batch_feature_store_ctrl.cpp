@@ -50,6 +50,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     callback(resp);
     return;
   }
+  JSONParser& jsonParser = jsonParsers[currentThreadIndex];
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
@@ -62,12 +63,11 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     return;
   }
 
-  memcpy(jsonParser.get_buffer(currentThreadIndex).get(), json_str, length);
+  memcpy(jsonParser.get_buffer().get(), json_str, length);
 
   feature_store_data_structs::BatchFeatureStoreRequest reqStruct;
   auto status = jsonParser.batch_feature_store_parse(
-      currentThreadIndex,
-      simdjson::padded_string_view(jsonParser.get_buffer(currentThreadIndex).get(), length,
+      simdjson::padded_string_view(jsonParser.get_buffer().get(), length,
                                    globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 

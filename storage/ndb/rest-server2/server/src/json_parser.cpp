@@ -163,17 +163,14 @@ RS_Status handle_parse_error(ConfigParseError& e,
  * End of parsing utilities
  */
 
-JSONParser jsonParser;
+JSONParser* jsonParsers = nullptr;
 
 JSONParser::JSONParser() {
-  // Allocate a buffer for each thread
-  for (int i = 0; i < DEFAULT_NUM_THREADS; ++i) {
-    buffers[i] = std::make_unique<char[]>(globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING);
-  }
+  buffer = std::make_unique<char[]>(globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING);
 }
 
-std::unique_ptr<char[]> &JSONParser::get_buffer(size_t threadId) {
-  return buffers[threadId];
+std::unique_ptr<char[]> &JSONParser::get_buffer() {
+  return buffer;
 }
 
 RS_Status extract_db_and_table(const std::string &, std::string &, std::string &);
@@ -181,19 +178,19 @@ RS_Status handle_simdjson_error(const simdjson::error_code &, simdjson::ondemand
                                 const char *&);
 
 // Is used to perform a primary key read operation.
-RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view reqBody,
+RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
                                PKReadParams &reqStruct) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::array filters;
@@ -202,21 +199,21 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
   if (filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     filters = {};
   } else if (filtersVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(filtersVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
   } else {
     if (filtersVal.is_null()) {
       filters = {};
     } else {
       error = filtersVal.get(filters);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       for (auto filter : filters) {
         PKReadFilter pkReadFilter;
         simdjson::ondemand::object filterObj;
         error = filter.get(filterObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::string_view column;
@@ -224,14 +221,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           column = "";
         } else if (columnVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(columnVal.error(), doc, currentLocation);
         } else {
           if (columnVal.is_null()) {
             column = "";
           } else {
             error = columnVal.get(column);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -243,14 +240,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (valueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           bytes = {};
         } else if (valueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(valueVal.error(), doc, currentLocation);
         } else {
           if (valueVal.is_null()) {
             bytes = {};
           } else {
             error = valueVal.get(value);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
             std::ostringstream oss;
             oss << value;
@@ -271,14 +268,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
   if (readColumnsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     readColumns = {};
   } else if (readColumnsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(readColumnsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(readColumnsVal.error(), doc, currentLocation);
   } else {
     if (readColumnsVal.is_null()) {
       readColumns = {};
     } else {
       error = readColumnsVal.get(readColumns);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
 
       for (auto readColumn : readColumns) {
@@ -286,7 +283,7 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         simdjson::ondemand::object readColumnObj;
         error = readColumn.get(readColumnObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::string_view column;
@@ -294,14 +291,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           column = "";
         } else if (columnVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(columnVal.error(), doc, currentLocation);
         } else {
           if (columnVal.is_null()) {
             column = "";
           } else {
             error = columnVal.get(column);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -312,14 +309,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (dataReturnTypeVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           dataReturnType = "";
         } else if (dataReturnTypeVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(dataReturnTypeVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(dataReturnTypeVal.error(), doc, currentLocation);
         } else {
           if (dataReturnTypeVal.is_null()) {
             dataReturnType = "";
           } else {
             error = dataReturnTypeVal.get(dataReturnType);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -337,14 +334,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
   if (operationIdVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     operationId = "";
   } else if (operationIdVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(operationIdVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(operationIdVal.error(), doc, currentLocation);
   } else {
     if (operationIdVal.is_null()) {
       operationId = "";
     } else {
       error = operationIdVal.get(operationId);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
     }
   }
@@ -355,19 +352,19 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
 
 // This is used to perform batched primary key read operations.
 // The body here is a list of arbitrary pk-reads under the key operations:
-RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view reqBody,
+RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
                                   std::vector<PKReadParams> &reqStructs) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::array operations;
@@ -375,21 +372,21 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
   if (operationsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     operations = {};
   } else if (operationsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(operationsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(operationsVal.error(), doc, currentLocation);
   } else {
     if (operationsVal.is_null()) {
       operations = {};
     } else {
       error = operationsVal.get(operations);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       for (auto operation : operations) {
         PKReadParams reqStruct;
         simdjson::ondemand::object operationObj;
         error = operation.get(operationObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::string_view method;
@@ -397,14 +394,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
         if (methodVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           method = "";
         } else if (methodVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(methodVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(methodVal.error(), doc, currentLocation);
         } else {
           if (methodVal.is_null()) {
             method = "";
           } else {
             error = methodVal.get(method);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -415,14 +412,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
         if (relativeUrlVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           relativeUrl = "";
         } else if (relativeUrlVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(relativeUrlVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(relativeUrlVal.error(), doc, currentLocation);
         } else {
           if (relativeUrlVal.is_null()) {
             relativeUrl = "";
           } else {
             error = relativeUrlVal.get(relativeUrl);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -442,7 +439,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
               .status;
         }
         if (bodyVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(bodyVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(bodyVal.error(), doc, currentLocation);
         } else {
           if (bodyVal.is_null()) {
             return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -451,7 +448,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           }
           error = bodyVal.get(bodyObject);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
 
           simdjson::ondemand::array filters;
@@ -460,21 +457,21 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           if (filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
             filters = {};
           } else if (filtersVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(filtersVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
           } else {
             if (filtersVal.is_null()) {
               filters = {};
             } else {
               error = filtersVal.get(filters);
               if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
+                return handle_simdjson_error(error, doc, currentLocation);
               }
               for (auto filter : filters) {
                 PKReadFilter pkReadFilter;
                 simdjson::ondemand::object filterObj;
                 error = filter.get(filterObj);
                 if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc[threadId], currentLocation);
+                  return handle_simdjson_error(error, doc, currentLocation);
                 }
 
                 std::string_view column;
@@ -482,14 +479,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   column = "";
                 } else if (columnVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+                  return handle_simdjson_error(columnVal.error(), doc, currentLocation);
                 } else {
                   if (columnVal.is_null()) {
                     column = "";
                   } else {
                     error = columnVal.get(column);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                   }
                 }
@@ -501,14 +498,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (valueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   bytes = {};
                 } else if (valueVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+                  return handle_simdjson_error(valueVal.error(), doc, currentLocation);
                 } else {
                   if (valueVal.is_null()) {
                     bytes = {};
                   } else {
                     error = valueVal.get(value);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                     std::ostringstream oss;
                     oss << value;
@@ -529,14 +526,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           if (readColumnsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
             readColumns = {};
           } else if (readColumnsVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(readColumnsVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(readColumnsVal.error(), doc, currentLocation);
           } else {
             if (readColumnsVal.is_null()) {
               readColumns = {};
             } else {
               error = readColumnsVal.get(readColumns);
               if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
+                return handle_simdjson_error(error, doc, currentLocation);
               }
 
               for (auto readColumn : readColumns) {
@@ -544,7 +541,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 simdjson::ondemand::object readColumnObj;
                 error = readColumn.get(readColumnObj);
                 if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc[threadId], currentLocation);
+                  return handle_simdjson_error(error, doc, currentLocation);
                 }
 
                 std::string_view column;
@@ -552,14 +549,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   column = "";
                 } else if (columnVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+                  return handle_simdjson_error(columnVal.error(), doc, currentLocation);
                 } else {
                   if (columnVal.is_null()) {
                     column = "";
                   } else {
                     error = columnVal.get(column);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                   }
                 }
@@ -570,7 +567,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (dataReturnTypeVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   dataReturnType = "";
                 } else if (dataReturnTypeVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(dataReturnTypeVal.error(), doc[threadId],
+                  return handle_simdjson_error(dataReturnTypeVal.error(), doc,
                                                currentLocation);
                 } else {
                   if (dataReturnTypeVal.is_null()) {
@@ -578,7 +575,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                   } else {
                     error = dataReturnTypeVal.get(dataReturnType);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                   }
                 }
@@ -596,14 +593,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           if (operationIdVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
             operationId = "";
           } else if (operationIdVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(operationIdVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(operationIdVal.error(), doc, currentLocation);
           } else {
             if (operationIdVal.is_null()) {
               operationId = "";
             } else {
               error = operationIdVal.get(operationId);
               if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
+                return handle_simdjson_error(error, doc, currentLocation);
               }
             }
           }
@@ -735,38 +732,38 @@ DEFINE_STRUCT_PARSER(RonSQLParams,
                      ELEMENT(operationId,  operationId)
                      )
 
-RS_Status JSONParser::ronsql_parse(size_t threadId, simdjson::padded_string_view reqBody,
+RS_Status JSONParser::ronsql_parse(simdjson::padded_string_view reqBody,
                                    RonSQLParams &reqStruct) {
   try {
     try {
-      doc[threadId] = parser[threadId].iterate(reqBody).value();
-      parse(reqStruct, doc[threadId].get_object());
-      assert_end_of_doc(doc[threadId]);
+      doc = parser.iterate(reqBody).value();
+      parse(reqStruct, doc.get_object());
+      assert_end_of_doc(doc);
     }
     catch (simdjson::simdjson_error& e) {
       throw ConfigParseError(simdjson::error_message(e.error()));
     }
   }
   catch (ConfigParseError& e) {
-    return handle_parse_error(e, reqBody, doc[threadId]);
+    return handle_parse_error(e, reqBody, doc);
   }
   return CRS_Status::SUCCESS.status;
 }
 
 RS_Status
-JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view reqBody,
+JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
                                 feature_store_data_structs::FeatureStoreRequest &reqStruct) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   std::string_view featureStoreName;
@@ -778,7 +775,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         .status;
   }
   if (featureStoreNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureStoreNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureStoreNameVal.error(), doc, currentLocation);
   }
   if (featureStoreNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -788,7 +785,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   }
   error = featureStoreNameVal.get(featureStoreName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureStoreName = featureStoreName;
@@ -802,7 +799,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         .status;
   }
   if (featureViewNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewNameVal.error(), doc, currentLocation);
   }
   if (featureViewNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -812,7 +809,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   }
   error = featureViewNameVal.get(featureViewName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureViewName = featureViewName;
@@ -826,7 +823,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         .status;
   }
   if (featureViewVersionVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewVersionVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewVersionVal.error(), doc, currentLocation);
   }
   if (featureViewVersionVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -836,7 +833,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   }
   error = featureViewVersionVal.get(featureViewVersion);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureViewVersion = featureViewVersion;
@@ -845,12 +842,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   auto passedFeaturesVal = reqObject[PASSED_FEATURES];
   if (passedFeaturesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
   } else if (passedFeaturesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(passedFeaturesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(passedFeaturesVal.error(), doc, currentLocation);
   } else {
     if (!passedFeaturesVal.is_null()) {
       error = passedFeaturesVal.get(passedFeatures);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       // Map of feature name as key and feature value as value.
       // This overwrites feature values in the response.
@@ -866,7 +863,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
               .status;
         }
         if (valueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(valueVal.error(), doc, currentLocation);
         }
         if (valueVal.is_null()) {
           return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -876,7 +873,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         }
         error = valueVal.get(value);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
         std::ostringstream oss;
         oss << value;
@@ -897,7 +894,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   if (entriesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     // TODO: Handle missing field error
   } else if (entriesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(entriesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(entriesVal.error(), doc, currentLocation);
   } else {
     if (entriesVal.is_null()) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -907,7 +904,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
     }
     error = entriesVal.get(entries);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto entry : entries) {
       std::string_view servingKey = entry.unescaped_key();
@@ -921,7 +918,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
             .status;
       }
       if (valueVal.error() != simdjson::SUCCESS) {
-        return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+        return handle_simdjson_error(valueVal.error(), doc, currentLocation);
       }
       if (valueVal.is_null()) {
         return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -931,7 +928,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
       }
       error = valueVal.get(value);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       std::ostringstream oss;
       oss << value;
@@ -953,12 +950,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
     reqStruct.metadataRequest.featureName = std::nullopt;
     reqStruct.metadataRequest.featureType = std::nullopt;
   } else if (metaDataOptionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(metaDataOptionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(metaDataOptionsVal.error(), doc, currentLocation);
   } else {
     // If metadataOptions field is present and not null
     error = metaDataOptionsVal.get(metaDataOptions);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : metaDataOptions) {
       std::string_view optionKey = option.unescaped_key();
@@ -966,12 +963,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureName = optionValue;
         } else {
@@ -981,12 +978,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureType = optionValue;
         } else {
@@ -1006,12 +1003,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
     reqStruct.optionsRequest.validatePassedFeatures = std::nullopt;
     reqStruct.optionsRequest.includeDetailedStatus  = std::nullopt;
   } else if (optionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(optionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(optionsVal.error(), doc, currentLocation);
   } else {
     // If options field is present and not null
     error = optionsVal.get(options);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : options) {
       std::string_view optionKey = option.unescaped_key();
@@ -1019,12 +1016,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.validatePassedFeatures = optionValue;
         } else {
@@ -1034,12 +1031,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.includeDetailedStatus = optionValue;
         } else {
@@ -1053,19 +1050,19 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
 }
 
 RS_Status JSONParser::batch_feature_store_parse(
-    size_t threadId, simdjson::padded_string_view reqBody,
+    simdjson::padded_string_view reqBody,
     feature_store_data_structs::BatchFeatureStoreRequest &reqStruct) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   std::string_view featureStoreName;
@@ -1077,7 +1074,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         .status;
   }
   if (featureStoreNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureStoreNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureStoreNameVal.error(), doc, currentLocation);
   }
   if (featureStoreNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1087,7 +1084,7 @@ RS_Status JSONParser::batch_feature_store_parse(
   }
   error = featureStoreNameVal.get(featureStoreName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureStoreName = featureStoreName;
@@ -1101,7 +1098,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         .status;
   }
   if (featureViewNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewNameVal.error(), doc, currentLocation);
   }
   if (featureViewNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1111,7 +1108,7 @@ RS_Status JSONParser::batch_feature_store_parse(
   }
   error = featureViewNameVal.get(featureViewName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureViewName = featureViewName;
@@ -1124,7 +1121,7 @@ RS_Status JSONParser::batch_feature_store_parse(
                       std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION))
         .status;
   } else if (featureViewVersionVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewVersionVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewVersionVal.error(), doc, currentLocation);
   } else {
     if (featureViewVersionVal.is_null()) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1134,7 +1131,7 @@ RS_Status JSONParser::batch_feature_store_parse(
     }
     error = featureViewVersionVal.get(featureViewVersion);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
   }
   reqStruct.featureViewVersion = featureViewVersion;
@@ -1144,12 +1141,12 @@ RS_Status JSONParser::batch_feature_store_parse(
 
   if (passedFeaturesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
   } else if (passedFeaturesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(passedFeaturesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(passedFeaturesVal.error(), doc, currentLocation);
   } else {
     if (!passedFeaturesVal.is_null()) {
       error = passedFeaturesVal.get(passedFeatures);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       // Each item is a map of feature name as key and feature value as value.
       // This overwrites feature values in the response.
@@ -1163,7 +1160,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         simdjson::ondemand::object featureObj;
         error = feature.get(featureObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::unordered_map<std::string, std::vector<char>> featureMap;
@@ -1179,7 +1176,7 @@ RS_Status JSONParser::batch_feature_store_parse(
                 .status;
           }
           if (valueVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(valueVal.error(), doc, currentLocation);
           }
 
           if (valueVal.is_null()) {
@@ -1190,7 +1187,7 @@ RS_Status JSONParser::batch_feature_store_parse(
           }
           error = valueVal.get(value);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           std::ostringstream oss;
           oss << value;
@@ -1210,7 +1207,7 @@ RS_Status JSONParser::batch_feature_store_parse(
   if (entriesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     // TODO: Handle missing field error
   } else if (entriesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(entriesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(entriesVal.error(), doc, currentLocation);
   } else {
     if (entriesVal.is_null()) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1220,13 +1217,13 @@ RS_Status JSONParser::batch_feature_store_parse(
     }
     error = entriesVal.get(entries);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto entry : entries) {
       simdjson::ondemand::object entryObj;
       error = entry.get(entryObj);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
 
       std::unordered_map<std::string, std::vector<char>> entryMap;
@@ -1242,7 +1239,7 @@ RS_Status JSONParser::batch_feature_store_parse(
               .status;
         }
         if (valueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(valueVal.error(), doc, currentLocation);
         }
         if (valueVal.is_null()) {
           return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1252,7 +1249,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         }
         error = valueVal.get(value);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
         std::ostringstream oss;
         oss << value;
@@ -1276,12 +1273,12 @@ RS_Status JSONParser::batch_feature_store_parse(
     reqStruct.metadataRequest.featureName = std::nullopt;
     reqStruct.metadataRequest.featureType = std::nullopt;
   } else if (metaDataOptionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(metaDataOptionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(metaDataOptionsVal.error(), doc, currentLocation);
   } else {
     // If metadataOptions field is present and not null
     error = metaDataOptionsVal.get(metaDataOptions);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : metaDataOptions) {
       std::string_view optionKey = option.unescaped_key();
@@ -1289,12 +1286,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureName = optionValue;
         } else {
@@ -1304,12 +1301,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureType = optionValue;
         } else {
@@ -1329,12 +1326,12 @@ RS_Status JSONParser::batch_feature_store_parse(
     reqStruct.optionsRequest.validatePassedFeatures = std::nullopt;
     reqStruct.optionsRequest.includeDetailedStatus  = std::nullopt;
   } else if (optionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(optionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(optionsVal.error(), doc, currentLocation);
   } else {
     // If options field is present and not null
     error = optionsVal.get(options);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : options) {
       std::string_view optionKey = option.unescaped_key();
@@ -1342,12 +1339,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.validatePassedFeatures = optionValue;
         } else {
@@ -1357,12 +1354,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.includeDetailedStatus = optionValue;
         } else {

@@ -72,14 +72,10 @@ CLASS
  CM(bool,        enable,     Enable,     true)
  CM(std::string, serverIP,   ServerIP,   "0.0.0.0")
  CM(uint16_t,    serverPort, ServerPort, 5406)
- CM(unsigned,    numThreads, NumThreads, DEFAULT_NUM_THREADS)
+ CM(unsigned,    numThreads, NumThreads, 16)
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(enable && serverPort == 0, "REST server port cannot be zero")
- PROBLEM(numThreads != (DEFAULT_NUM_THREADS),
-         std::string(".REST.NumThreads is hard-coded to ")
-         + std::to_string(DEFAULT_NUM_THREADS)
-         + "; changing it via configuration is not yet supported.")
 )
 
 CLASS(GRPC,

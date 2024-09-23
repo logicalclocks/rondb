@@ -136,8 +136,8 @@ RS_Status AllConfigs::set_from_file(const std::string &configFile) {
 
   file.close();
 
-  // Parse config file
-  RS_Status status = jsonParser.config_parse(configStr, newConfigs);
+  // Parse config file.
+  RS_Status status = JSONParser::config_parse(configStr, newConfigs);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     return status;
