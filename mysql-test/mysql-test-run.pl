@@ -6726,7 +6726,7 @@ sub rdrs_start ($$) {
   }
 
   # Add config file argument
-  my $config_file = $rdrs->value('config-file');
+  my $config_file = $rdrs->value('#config-json');
   mtr_add_arg($args, "--config");
   mtr_add_arg($args, $config_file);
 
@@ -6800,63 +6800,37 @@ sub rdrs_start ($$) {
   return;
 }
 
-sub rdrs_save_config ($) {
-  # todo-asdf Support template file for rdrs2 config
+sub rdrs_save_config {
   my $rdrs = shift;
-  my $pid_file = $rdrs->value('pid-file');
-  my $rest_port = $rdrs->value('port');
-  my $mgmds_json = join(', ', map {
-      my $name = $_->name();
-      my $cluster_config_this_mgmd = $config->group($name);
-      my $mgmd_host = $cluster_config_this_mgmd->value('HostName');
-      my $mgmd_port = $cluster_config_this_mgmd->value('PortNumber');
-      my $ip_entry = $mgmd_host ne 'localhost' ? "\"IP\": \"$mgmd_host\", " : "";
-      "{$ip_entry\"Port\": $mgmd_port}"
-    } ndb_mgmds());
-  my @mysqlds_to_use = mysqlds();
-  # rdrs2 currently only supports one mysqld.
-  @mysqlds_to_use = @mysqlds_to_use[0..0];
-  my $mysqlds_json = join(', ', map {
-      my $mysqld_host = $_->value('#host');
-      my $mysqld_port = $_->value('port');
-      my $ip_entry = (defined $mysqld_host && $mysqld_host ne 'localhost')
-        ? "\"IP\": \"$mysqld_host\", " : "";
-      "{$ip_entry\"Port\": $mysqld_port}"
-  } @mysqlds_to_use);
-  my $jsonStr = <<"  END_TXT";
-    {
-      "PIDFile": "$pid_file",
-      "REST": {
-        "ServerPort": $rest_port
-      },
-      "RonDB": {
-        "Mgmds": [ $mgmds_json ]
-      },
-      "Security": {
-        "TLS": {
-          "EnableTLS": false,
-          "RequireAndVerifyClientCert": false
-        },
-        "APIKey": {
-          "UseHopsworksAPIKeys": true
-        }
-      },
-      "Log": {
-        "Level": "INFO"
-      },
-      "Testing": {
-        "MySQL": {
-          "Servers": [ $mysqlds_json ],
-          "User": "root",
-          "Password": ""
-        }
-      }
+  my $config_template_file = $rdrs->value('config-json-template');
+  # Read config template file
+  open(my $CONF_READ, '<', $config_template_file) or
+    die("Could not open $config_template_file for reading");
+  my $jsonStr = do { local $/; <$CONF_READ> };
+  close $CONF_READ;
+  # $lookup accepts a key "GROUP.OPTION" and returns the value of the specified
+  # option in the specified group or a key "OPTION" and returns the value of the
+  # group for the current rdrs object.
+  my $lookup = sub {
+    my @parts = split(/\./, $_[0]);
+    my $option_name = pop(@parts);
+    my $group_name = join('.', @parts);
+    if ($group_name eq "") {
+      $group_name = $rdrs->name();
     }
-  END_TXT
-  my $config_file = $rdrs->value('config-file');
-  open(my $CONF,"> $config_file") or die("Could not open $config_file for writing");
-  printf $CONF $jsonStr;
-  $CONF->close();
+    my $from_group = $config->group($group_name) or
+      die("There is no group named '$group_name' that ".
+          "can be used to resolve '$option_name'");
+    return $from_group->value($option_name);
+  };
+  # Resolve all at variable references in $jsonStr.
+  $jsonStr =~ s/\@([A-Za-z0-9#._-]+)/$lookup->($1)/ge;
+  # Write resolved config file
+  my $config_file = $rdrs->value('#config-json');
+  open(my $CONF_WRITE, '>', $config_file) or
+    die("Could not open $config_file for writing");
+  print $CONF_WRITE $jsonStr;
+  close $CONF_WRITE;
 }
 
 sub stop_all_servers () {

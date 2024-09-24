@@ -367,16 +367,25 @@ sub fix_log_error_rdrs {
   return "$dir/log/$group_name.err";
 }
 
+sub fix_bind_address_rdrs {
+  my ($self) = @_;
+  if ($self->{ARGS}->{bind_local}) {
+    # Listen only for incoming network connections from local machine
+    return "localhost";
+  }
+  return "0.0.0.0";
+}
+
 my @rdrs_rules = (
   { '#host'         => \&fix_host },
   { '#log-output'   => \&fix_log_rdrs },
   { '#log-error'    => \&fix_log_error_rdrs },
-  { 'port'          => \&fix_port },
   { 'pid-file'      => \&fix_pidfile },
-  { 'bind-address'  => \&fix_bind_address },
-  #{ 'ssl-ca'        => \&fix_ssl_ca },
-  #{ 'ssl-cert'      => \&fix_ssl_server_cert },
-  #{ 'ssl-key'       => \&fix_ssl_server_key },
+  { 'bind-address'  => \&fix_bind_address_rdrs },
+  { 'port'          => \&fix_port },
+  { 'ssl-ca'        => \&fix_ssl_ca },
+  { 'ssl-cert'      => \&fix_ssl_server_cert },
+  { 'ssl-key'       => \&fix_ssl_server_key },
 );
 
 if (IS_WINDOWS) {
@@ -749,7 +758,7 @@ sub run_generate_sections_from_cluster_config {
   my $vardir = $self->{ARGS}->{vardir};
   foreach my $rdrsgroup ($config->like('rdrs\.\w*\.\w*$')) {
     my $name = $rdrsgroup->name();
-    $config->insert("$name", 'config-file', "$vardir/${name}_config.json");
+    $config->insert("$name", '#config-json', "$vardir/${name}_config.json");
   }
 }
 
