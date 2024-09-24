@@ -1,4 +1,5 @@
 # Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -39,6 +40,7 @@ ENDFOREACH()
 ADD_SUBDIRECTORY(common)
 ADD_SUBDIRECTORY(mgmapi)
 ADD_SUBDIRECTORY(ndbapi)
+ADD_SUBDIRECTORY(ronsql)
 
 #
 # Build static ndbclient library

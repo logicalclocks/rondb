@@ -141,6 +141,16 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs);
 
 /**
+ * RonSQL query
+ */
+struct RonSQLExecParams; /*
+                             * struct RonSQLExecParams is defined in
+                             * "storage/ndb/src/ronsql/RonSQLCommon.hpp" but we
+                             * can't include a .hpp file here.
+                             */
+RS_Status ronsql_dal(const char* database, RonSQLExecParams& ep);
+
+/**
  * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);

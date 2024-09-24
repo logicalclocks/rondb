@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,26 +17,12 @@
  * USA.
  */
 
-#include "log.hpp"
-#include "rdrs_dal.hpp"
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_RONSQL_OPERATION_HPP_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_RONSQL_OPERATION_HPP_
 
-#include <sstream>
+#include "src/status.hpp"
+#include "storage/ndb/src/ronsql/RonSQLCommon.hpp"
 
-LogConfig::LogConfig() {
-  this->level      = "warn";
-  this->filePath   = "";
-  this->maxSizeMb  = 100;
-  this->maxBackups = 10;
-  this->maxAge     = 30;
-}
+RS_Status ronsql_op(RonSQLExecParams& params);
 
-RS_Status LogConfig::validate() {
-  // TODO Implement Me
-  return CRS_Status::SUCCESS.status;
-}
-
-std::string LogConfig::string() {
-  std::stringstream ss;
-  ss << "level: " << this->level;
-  return ss.str();
-}
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_RONSQL_OPERATION_HPP_

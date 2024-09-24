@@ -1,0 +1,134 @@
+===== Max Int64 integer constant =====
+Query parse tree:
+SELECT
+  Out_0:`sum(9223372036854775807)`
+   = A0:Sum(9223372036854775807)
+FROM tbl
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:9223372036854775807
+Sum    A00  r00 A00:SUM <- r00:9223372036854775807
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+Query parse tree:
+SELECT
+  Out_0:`sum(-9223372036854775807)`
+   = A0:Sum(-9223372036854775807)
+FROM tbl
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I02 r00 = I02:-9223372036854775807
+Sum    A00  r00 A00:SUM <- r00:-9223372036854775807
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+Query parse tree:
+SELECT
+  Out_0:`sum(-9223372036854775807-1)`
+   = A0:Sum(-9223372036854775808)
+FROM tbl
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I04 r00 = I04:-9223372036854775808
+Sum    A00  r00 A00:SUM <- r00:-9223372036854775808
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+===== Integer folding =====
+Query parse tree:
+SELECT
+  Out_0:`sum(((45 % 3) + (67 DIV 8) * 7 - -8) / 5)`
+   = A0:Sum((64 / 5))
+FROM tbl
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I10 r00 = I10:64
+LoadI  r01  I11 r01 = I11:5
+Div    r00  r01 r00:64 /= r01:5
+Sum    A00  r00 A00:SUM <- r00:(64 / 5)
+
+Execute as table scan.
+(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+===== Too big integer constant =====
+Syntax error in SQL statement: Literal integer too big.
+> select sum(9223372036854775808) from tbl;
+!            ^^^^^^^^^^^^^^^^^^^
+ronsql_cli caught exception: Syntax error.
+Syntax error in SQL statement: Literal integer too big.
+> select sum(-9223372036854775808) from tbl;
+!             ^^^^^^^^^^^^^^^^^^^
+ronsql_cli caught exception: Syntax error.
+===== Overflow in integer constant folding =====
+Overflow when attempting to fold constant expression (-9223372036854775807 - 2).
+ronsql_cli caught exception: Overflow in integer constant folding.
+Overflow when attempting to fold constant expression (922337203685477580 * 11).
+ronsql_cli caught exception: Overflow in integer constant folding.
+Overflow when attempting to fold constant expression (922337203685477580 * 11).
+ronsql_cli caught exception: Overflow in integer constant folding.
+===== Divide by zero in integer constant folding =====
+Divide by zero when attempting to fold constant expression (9223372036854775807 DIV 0).
+ronsql_cli caught exception: Divide by zero in integer constant folding.
+Divide by zero when attempting to fold constant expression (-9223372036854775808 DIV 0).
+ronsql_cli caught exception: Divide by zero in integer constant folding.
+Divide by zero when attempting to fold constant expression (9 DIV 0).
+ronsql_cli caught exception: Divide by zero in integer constant folding.
+Divide by zero when attempting to fold constant expression (1 DIV 0).
+ronsql_cli caught exception: Divide by zero in integer constant folding.
+Divide by zero when attempting to fold constant expression (1 % 0).
+ronsql_cli caught exception: Divide by zero in integer constant folding.
+CREATE TABLE tbl (sint8 TINYINT NULL) ENGINE=NDB;
+INSERT INTO tbl (sint8) VALUES (7);
+Integer constant folding:
+== Query ==
+SELECT sum( 9223372036854775807)
+, sum(-9223372036854775807-1)
+, sum(-9223372036854775807  +  123456)
+, sum( 9223372036854775807  -  123456)
+, sum(  922337203685477580  *  10)
+, sum( -922337203685477580  *  10)
+, sum( 9223372036854775807 DIV 10)
+, sum(-9223372036854775807 DIV 10)
+, sum( 9223372036854775807  %  10)
+, sum(-9223372036854775807  %  10)
+, sum( 123456)
+, sum(-123456-1)
+, sum(-123456  +  123456)
+, sum( 123456  -  123456)
+, sum( 123456  *  10)
+, sum(-123456  *  10)
+, sum( 123456 DIV 10)
+, sum(-123456 DIV 10)
+, sum( 123456  %  10)
+, sum(-123456  %  10)
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+Cleanup
+DROP TABLE tbl;

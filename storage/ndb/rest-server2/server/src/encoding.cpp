@@ -152,7 +152,7 @@ RS_Status create_native_request(PKReadParams &pkReadParams, void *reqBuff, void 
 
   // request buffer header
   buf[PK_REQ_OP_TYPE_IDX]   = (uint32_t)(RDRS_PK_REQ_ID);
-  buf[PK_REQ_CAPACITY_IDX]  = (uint32_t)(RESP_BUFFER_SIZE);
+  buf[PK_REQ_CAPACITY_IDX]  = (uint32_t)(globalConfigs.internal.respBufferSize);
   buf[PK_REQ_LENGTH_IDX]    = (uint32_t)(head);
   buf[PK_REQ_FLAGS_IDX]     = (uint32_t)(0);  // FIXME TODO fill in. is_grpc, is_http ...
   buf[PK_REQ_DB_IDX]        = (uint32_t)(dbOffset);

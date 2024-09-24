@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -31,17 +31,146 @@
 #include <memory>
 #include <simdjson.h>
 
-JSONParser jsonParser;
+/*
+ * Parsing utilities
+ */
 
-JSONParser::JSONParser() {
-  // Allocate a buffer for each thread
-  for (int i = 0; i < DEFAULT_NUM_THREADS; ++i) {
-    buffers[i] = std::make_unique<char[]>(REQ_BUFFER_SIZE + simdjson::SIMDJSON_PADDING);
+class ConfigParseError : public std::runtime_error {
+public:
+  ConfigParseError(std::string message) : std::runtime_error("ConfigParseError"), m_error_message(message) {}
+  std::string m_error_message;
+};
+
+// Given datatypes for target and value and a function body, define parser
+// functions for both lvalue and rvalue references for value.
+//
+// It is necessary to define two different functions; even though
+// `const ValueDatatype&` can bind to both lvalue and rvalue, we cannot use a
+// const parameter since parsing can change the object (progressing the point in
+// the document).
+//
+// They are declared static (local to this compilation unit) in order to let the
+// compiler prune unused ones more easily.
+#define DEFINE_PARSER(TargetDatatype, ValueDatatype, ...) \
+  static inline bool parse(TargetDatatype& target, ValueDatatype& value) __VA_ARGS__ \
+  static inline bool parse(TargetDatatype& target, ValueDatatype&& value) __VA_ARGS__
+
+// Usually, the value will be a simdjson value.
+#define DEFINE_VALUE_PARSER(Datatype, ...) \
+  DEFINE_PARSER(Datatype, \
+                simdjson::ondemand::value, \
+                __VA_ARGS__)
+
+// Use simdjson built-in parsers. Return true on success. On failure due to null
+// value, return false. (All other failures will result in an exception.)
+#define USE_SIMDJSON_PARSER(Datatype) \
+  DEFINE_VALUE_PARSER(Datatype, { \
+    if (value.is_null()) \
+      return false; \
+    target = Datatype(value); \
+    return true; \
+  })
+
+// Define a parser for std::vector of the given element type. Return true on
+// success. On failure due to top-level null, return false. All other failures
+// will result in an exception - null is acceptable, but [ null ] is not.
+#define DEFINE_ARRAY_PARSER(ElementType) \
+  DEFINE_VALUE_PARSER(std::vector<ElementType>, { \
+    simdjson::ondemand::array array; \
+    if (parse(array, value)) { \
+      target.clear(); \
+      for (simdjson::ondemand::value elementJson : array) { \
+        ElementType element; \
+        if(!parse(element, elementJson)) \
+          throw ConfigParseError("Ill-formed array element"); \
+        target.push_back(element); \
+      } \
+      return true; \
+    } \
+    return false; \
+  })
+
+// Define a parser for a struct. All elements will be optional. Will only accept
+// keys that matches an element or begin with "#". Keys beginning with "#" are
+// intended to be used for comments. All other keys will cause an exception.
+#define DEFINE_STRUCT_PARSER(Datatype, ...) \
+  DEFINE_PARSER(Datatype, simdjson::ondemand::object, { \
+    for(simdjson::ondemand::field field : value) { \
+      std::string_view fkey = field.unescaped_key(false); \
+      simdjson::ondemand::value fval = field.value(); \
+      __VA_ARGS__ \
+      if (fkey[0] != '#') \
+        throw ConfigParseError("Unexpected key"); \
+    } \
+    after_parsing(target); \
+    return true; \
+  }) \
+  DEFINE_VALUE_PARSER(Datatype, { \
+    simdjson::ondemand::object obj; \
+    if (parse(obj, value)) { \
+      return parse(target, obj); \
+    } \
+    return false; \
+  })
+#define ELEMENT(TargetVar, SourceKey) \
+  if (fkey == #SourceKey) { \
+    parse(target.TargetVar, fval); \
+    continue; \
+  }
+
+void assert_end_of_doc(simdjson::ondemand::document& doc) {
+  switch(doc.current_location().error()) {
+  case simdjson::error_code::OUT_OF_BOUNDS:
+    // This is what we expect, after just having parsed one object from the
+    // buffer.
+    break;
+  case simdjson::error_code::SUCCESS:
+    throw ConfigParseError("Unexpected data after end of root-level object");
+  default:
+    // Should not happen
+    throw ConfigParseError("Unexpected location error");
   }
 }
 
-std::unique_ptr<char[]> &JSONParser::get_buffer(size_t threadId) {
-  return buffers[threadId];
+RS_Status handle_parse_error(ConfigParseError& e,
+                             const simdjson::padded_string& paddedJson,
+                             const simdjson::ondemand::document& doc) {
+  std::string message = e.m_error_message;
+  const char *location = nullptr;
+  simdjson::error_code getLocationError = doc.current_location().get(location);
+  if (getLocationError == simdjson::SUCCESS) {
+    const char* bufferC = paddedJson.data();
+    const size_t bufferLength = paddedJson.length();
+    assert(&bufferC[0] <= location && location < &bufferC[bufferLength]);
+    int line = 1;
+    int column = 0;
+    for (const char* c = &bufferC[0]; c < location; c++) {
+      if (*c == '\n') {
+        line++;
+        column = 0;
+      } else {
+        column++;
+      }
+    }
+    message += " before/at line " + std::to_string(line) + ", column " + std::to_string(column);
+  }
+  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+                    message)
+      .status;
+}
+
+/*
+ * End of parsing utilities
+ */
+
+JSONParser* jsonParsers = nullptr;
+
+JSONParser::JSONParser() {
+  buffer = std::make_unique<char[]>(globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING);
+}
+
+std::unique_ptr<char[]> &JSONParser::get_buffer() {
+  return buffer;
 }
 
 RS_Status extract_db_and_table(const std::string &, std::string &, std::string &);
@@ -49,19 +178,19 @@ RS_Status handle_simdjson_error(const simdjson::error_code &, simdjson::ondemand
                                 const char *&);
 
 // Is used to perform a primary key read operation.
-RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view reqBody,
+RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
                                PKReadParams &reqStruct) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::array filters;
@@ -70,21 +199,21 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
   if (filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     filters = {};
   } else if (filtersVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(filtersVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
   } else {
     if (filtersVal.is_null()) {
       filters = {};
     } else {
       error = filtersVal.get(filters);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       for (auto filter : filters) {
         PKReadFilter pkReadFilter;
         simdjson::ondemand::object filterObj;
         error = filter.get(filterObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::string_view column;
@@ -92,14 +221,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           column = "";
         } else if (columnVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(columnVal.error(), doc, currentLocation);
         } else {
           if (columnVal.is_null()) {
             column = "";
           } else {
             error = columnVal.get(column);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -111,14 +240,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (valueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           bytes = {};
         } else if (valueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(valueVal.error(), doc, currentLocation);
         } else {
           if (valueVal.is_null()) {
             bytes = {};
           } else {
             error = valueVal.get(value);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
             std::ostringstream oss;
             oss << value;
@@ -139,14 +268,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
   if (readColumnsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     readColumns = {};
   } else if (readColumnsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(readColumnsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(readColumnsVal.error(), doc, currentLocation);
   } else {
     if (readColumnsVal.is_null()) {
       readColumns = {};
     } else {
       error = readColumnsVal.get(readColumns);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
 
       for (auto readColumn : readColumns) {
@@ -154,7 +283,7 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         simdjson::ondemand::object readColumnObj;
         error = readColumn.get(readColumnObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::string_view column;
@@ -162,14 +291,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           column = "";
         } else if (columnVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(columnVal.error(), doc, currentLocation);
         } else {
           if (columnVal.is_null()) {
             column = "";
           } else {
             error = columnVal.get(column);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -180,14 +309,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
         if (dataReturnTypeVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           dataReturnType = "";
         } else if (dataReturnTypeVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(dataReturnTypeVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(dataReturnTypeVal.error(), doc, currentLocation);
         } else {
           if (dataReturnTypeVal.is_null()) {
             dataReturnType = "";
           } else {
             error = dataReturnTypeVal.get(dataReturnType);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -205,14 +334,14 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
   if (operationIdVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     operationId = "";
   } else if (operationIdVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(operationIdVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(operationIdVal.error(), doc, currentLocation);
   } else {
     if (operationIdVal.is_null()) {
       operationId = "";
     } else {
       error = operationIdVal.get(operationId);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
     }
   }
@@ -223,19 +352,19 @@ RS_Status JSONParser::pk_parse(size_t threadId, simdjson::padded_string_view req
 
 // This is used to perform batched primary key read operations.
 // The body here is a list of arbitrary pk-reads under the key operations:
-RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view reqBody,
+RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
                                   std::vector<PKReadParams> &reqStructs) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::array operations;
@@ -243,21 +372,21 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
   if (operationsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     operations = {};
   } else if (operationsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(operationsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(operationsVal.error(), doc, currentLocation);
   } else {
     if (operationsVal.is_null()) {
       operations = {};
     } else {
       error = operationsVal.get(operations);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       for (auto operation : operations) {
         PKReadParams reqStruct;
         simdjson::ondemand::object operationObj;
         error = operation.get(operationObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::string_view method;
@@ -265,14 +394,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
         if (methodVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           method = "";
         } else if (methodVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(methodVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(methodVal.error(), doc, currentLocation);
         } else {
           if (methodVal.is_null()) {
             method = "";
           } else {
             error = methodVal.get(method);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -283,14 +412,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
         if (relativeUrlVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
           relativeUrl = "";
         } else if (relativeUrlVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(relativeUrlVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(relativeUrlVal.error(), doc, currentLocation);
         } else {
           if (relativeUrlVal.is_null()) {
             relativeUrl = "";
           } else {
             error = relativeUrlVal.get(relativeUrl);
             if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc[threadId], currentLocation);
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
         }
@@ -310,7 +439,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
               .status;
         }
         if (bodyVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(bodyVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(bodyVal.error(), doc, currentLocation);
         } else {
           if (bodyVal.is_null()) {
             return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -319,7 +448,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           }
           error = bodyVal.get(bodyObject);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
 
           simdjson::ondemand::array filters;
@@ -328,21 +457,21 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           if (filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
             filters = {};
           } else if (filtersVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(filtersVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
           } else {
             if (filtersVal.is_null()) {
               filters = {};
             } else {
               error = filtersVal.get(filters);
               if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
+                return handle_simdjson_error(error, doc, currentLocation);
               }
               for (auto filter : filters) {
                 PKReadFilter pkReadFilter;
                 simdjson::ondemand::object filterObj;
                 error = filter.get(filterObj);
                 if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc[threadId], currentLocation);
+                  return handle_simdjson_error(error, doc, currentLocation);
                 }
 
                 std::string_view column;
@@ -350,14 +479,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   column = "";
                 } else if (columnVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+                  return handle_simdjson_error(columnVal.error(), doc, currentLocation);
                 } else {
                   if (columnVal.is_null()) {
                     column = "";
                   } else {
                     error = columnVal.get(column);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                   }
                 }
@@ -369,14 +498,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (valueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   bytes = {};
                 } else if (valueVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+                  return handle_simdjson_error(valueVal.error(), doc, currentLocation);
                 } else {
                   if (valueVal.is_null()) {
                     bytes = {};
                   } else {
                     error = valueVal.get(value);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                     std::ostringstream oss;
                     oss << value;
@@ -397,14 +526,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           if (readColumnsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
             readColumns = {};
           } else if (readColumnsVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(readColumnsVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(readColumnsVal.error(), doc, currentLocation);
           } else {
             if (readColumnsVal.is_null()) {
               readColumns = {};
             } else {
               error = readColumnsVal.get(readColumns);
               if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
+                return handle_simdjson_error(error, doc, currentLocation);
               }
 
               for (auto readColumn : readColumns) {
@@ -412,7 +541,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 simdjson::ondemand::object readColumnObj;
                 error = readColumn.get(readColumnObj);
                 if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc[threadId], currentLocation);
+                  return handle_simdjson_error(error, doc, currentLocation);
                 }
 
                 std::string_view column;
@@ -420,14 +549,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   column = "";
                 } else if (columnVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(columnVal.error(), doc[threadId], currentLocation);
+                  return handle_simdjson_error(columnVal.error(), doc, currentLocation);
                 } else {
                   if (columnVal.is_null()) {
                     column = "";
                   } else {
                     error = columnVal.get(column);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                   }
                 }
@@ -438,7 +567,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                 if (dataReturnTypeVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
                   dataReturnType = "";
                 } else if (dataReturnTypeVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(dataReturnTypeVal.error(), doc[threadId],
+                  return handle_simdjson_error(dataReturnTypeVal.error(), doc,
                                                currentLocation);
                 } else {
                   if (dataReturnTypeVal.is_null()) {
@@ -446,7 +575,7 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
                   } else {
                     error = dataReturnTypeVal.get(dataReturnType);
                     if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc[threadId], currentLocation);
+                      return handle_simdjson_error(error, doc, currentLocation);
                     }
                   }
                 }
@@ -464,14 +593,14 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
           if (operationIdVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
             operationId = "";
           } else if (operationIdVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(operationIdVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(operationIdVal.error(), doc, currentLocation);
           } else {
             if (operationIdVal.is_null()) {
               operationId = "";
             } else {
               error = operationIdVal.get(operationId);
               if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc[threadId], currentLocation);
+                return handle_simdjson_error(error, doc, currentLocation);
               }
             }
           }
@@ -485,427 +614,156 @@ RS_Status JSONParser::batch_parse(size_t threadId, simdjson::padded_string_view 
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &configsStruct) {
+/*
+ * Parsers for simple datatypes
+ */
+
+USE_SIMDJSON_PARSER(bool)
+USE_SIMDJSON_PARSER(simdjson::ondemand::array)
+USE_SIMDJSON_PARSER(simdjson::ondemand::object)
+USE_SIMDJSON_PARSER(std::string_view)
+USE_SIMDJSON_PARSER(uint64_t)
+USE_SIMDJSON_PARSER(int64_t)
+
+DEFINE_VALUE_PARSER(std::string, {
+  std::string_view temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  target = temp_target;
+  return true;
+})
+
+DEFINE_VALUE_PARSER(uint16_t, {
+  int64_t temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  if (temp_target < 0 || 65535 < temp_target) {
+    throw ConfigParseError("16-bit unsigned integer out of range");
+  }
+  target = temp_target;
+  return true;
+})
+
+DEFINE_VALUE_PARSER(uint32_t, {
+  int64_t temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  if (temp_target < 0 || UINT32_MAX < temp_target) {
+    throw ConfigParseError("32-bit unsigned integer out of range");
+  }
+  target = temp_target;
+  return true;
+})
+
+DEFINE_VALUE_PARSER(int, {
+  int64_t temp_target;
+  if (!parse(temp_target, value)) {
+    return false;
+  }
+  if (temp_target < INT_MIN || INT_MAX < temp_target) {
+    throw ConfigParseError("32-bit signed integer out of range");
+  }
+  target = temp_target;
+  return true;
+})
+
+/*
+ * Parsers for the config structs.
+ */
+
+#define CLASS(NAME, ...) DEFINE_STRUCT_PARSER(NAME, __VA_ARGS__)
+#define CM(DATATYPE, VARIABLENAME, JSONKEYNAME, INITEXPR) ELEMENT(VARIABLENAME, JSONKEYNAME)
+#define PROBLEM(CONDITION, MESSAGE)
+#define CLASSDEFS(...)
+#define VECTOR(DATATYPE) DEFINE_ARRAY_PARSER(DATATYPE)
+
+// Parsing hook to set RonDB::present_in_config_file and MySQL::present_in_config_file
+template<typename T> void after_parsing([[maybe_unused]] T& value) { }
+template<> void after_parsing(RonDB& value) { value.present_in_config_file = true; }
+template<> void after_parsing(MySQL& value) { value.present_in_config_file = true; }
+
+#include "config_structs_def.hpp"
+
+#undef CLASS
+#undef CM
+#undef PROBLEM
+#undef CLASSDEFS
+#undef VECTOR
+
+RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &configsStruct) noexcept {
   simdjson::padded_string paddedJson(configsBody);
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document doc;
-  const char *currentLocation = nullptr;
-
-  simdjson::error_code error = parser.iterate(paddedJson).get(doc);
-  if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc, currentLocation);
-  }
-
-  simdjson::ondemand::object configsObject;
-  error = doc.get_object().get(configsObject);
-  if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc, currentLocation);
-  }
-
-  for (auto field : configsObject) {
-    // parses and writes out the key, after unescaping it,
-    // to a string buffer. It causes a performance penalty.
-    std::string_view keyv = field.unescaped_key();
-    if (keyv == GRPC_STR) {
-      simdjson::ondemand::object grpcObj;
-      auto grpcVal = field.value();
-      if (!grpcVal.is_null()) {
-        error = grpcVal.get(grpcObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto enableVal = grpcObj[ENABLE];
-        if (enableVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (enableVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(enableVal.error(), doc, currentLocation);
-        } else {
-          if (!enableVal.is_null()) {
-            bool enable = false;
-            error       = enableVal.get(enable);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            if (enable) {
-              configsStruct.grpc.enable = true;
-
-              auto ipVal = grpcObj[IP];
-              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (ipVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-              } else {
-                if (!ipVal.is_null()) {
-                  std::string_view ip = LOCALHOST;
-                  error               = ipVal.get(ip);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.grpc.serverIP = ip;
-                }
-              }
-
-              auto portVal = grpcObj[PORT];
-              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (portVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(portVal.error(), doc, currentLocation);
-              } else {
-                if (!portVal.is_null()) {
-                  uint64_t port = DEFAULT_GRPC_PORT;
-                  error         = portVal.get(port);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.grpc.serverPort = port;
-                }
-              }
-            }
-          }
-        }
+  try {
+    try {
+      doc = parser.iterate(paddedJson).value();
+      parse(configsStruct, doc.get_object());
+      assert_end_of_doc(doc);
+      // If .RonDBMetadataCluster is not present in config file, then set it to
+      // .RonDB.
+      if(!configsStruct.ronDBMetadataCluster.present_in_config_file) {
+        configsStruct.ronDBMetadataCluster = configsStruct.ronDB;
       }
-    } else if (keyv == REST_STR) {
-      simdjson::ondemand::object restObj;
-      auto restVal = field.value();
-      if (!restVal.is_null()) {
-        error = restVal.get(restObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto enableVal = restObj[ENABLE];
-        if (enableVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (enableVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(enableVal.error(), doc, currentLocation);
-        } else {
-          if (!enableVal.is_null()) {
-            bool enable = false;
-            error       = enableVal.get(enable);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            if (enable) {
-              configsStruct.rest.enable = true;
-
-              auto ipVal = restObj[IP];
-              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (ipVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-              } else {
-                if (!ipVal.is_null()) {
-                  std::string_view ip = LOCALHOST;
-                  error               = ipVal.get(ip);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.rest.serverIP = ip;
-                }
-              }
-
-              auto portVal = restObj[PORT];
-              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (portVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(portVal.error(), doc, currentLocation);
-              } else {
-                if (!portVal.is_null()) {
-                  uint64_t port = DEFAULT_REST_PORT;
-                  error         = portVal.get(port);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                  configsStruct.rest.serverPort = port;
-                }
-              }
-            }
-          }
-        }
-      }
-    } else if (keyv == RONDB) {
-      simdjson::ondemand::object rondbObj;
-      auto rondbVal = field.value();
-      if (!rondbVal.is_null()) {
-        error = rondbVal.get(rondbObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto mgmdsVal = rondbObj[MGMDS];
-        if (mgmdsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (mgmdsVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(mgmdsVal.error(), doc, currentLocation);
-        } else {
-          if (!mgmdsVal.is_null()) {
-            simdjson::ondemand::array mgmdsArr;
-            error = mgmdsVal.get(mgmdsArr);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            configsStruct.ronDB.Mgmds.clear();
-            for (auto mgmd : mgmdsArr) {
-              Mgmd mgmdStruct;
-              simdjson::ondemand::object mgmdObj;
-              error = mgmd.get(mgmdObj);
-              if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc, currentLocation);
-              }
-
-              std::string_view ip = LOCALHOST;
-              auto ipVal          = mgmdObj[IP];
-              if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (ipVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-              } else {
-                if (!ipVal.is_null()) {
-                  error = ipVal.get(ip);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                }
-              }
-              mgmdStruct.IP = ip;
-
-              uint64_t port = MGMD_DEFAULT_PORT;
-              auto portVal  = mgmdObj[PORT];
-              if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-              } else if (portVal.error() != simdjson::SUCCESS) {
-                return handle_simdjson_error(portVal.error(), doc, currentLocation);
-              } else {
-                if (!portVal.is_null()) {
-                  error = portVal.get(port);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-                }
-              }
-              mgmdStruct.port = port;
-
-              configsStruct.ronDB.Mgmds.push_back(mgmdStruct);
-            }
-          }
-        }
-      }
-    } else if (keyv == SECURITY) {
-      simdjson::ondemand::object securityObj;
-      auto securityVal = field.value();
-      if (!securityVal.is_null()) {
-        error = securityVal.get(securityObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto tlsVal = securityObj[TLS_STR];
-        if (tlsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (tlsVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(tlsVal.error(), doc, currentLocation);
-        } else {
-          if (!tlsVal.is_null()) {
-            simdjson::ondemand::object tlsObj;
-            error = tlsVal.get(tlsObj);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            auto enableTLSVal = tlsObj[ENABLE_TLS];
-            if (enableTLSVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (enableTLSVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(enableTLSVal.error(), doc, currentLocation);
-            } else {
-              if (!enableTLSVal.is_null()) {
-                bool enableTLS = false;
-                error          = enableTLSVal.get(enableTLS);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.security.tls.enableTLS = enableTLS;
-              }
-            }
-            auto requireAndVerifyClientCertVal = tlsObj[REQUIRE_AND_VERIFY_CLIENT_CERT];
-            if (requireAndVerifyClientCertVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (requireAndVerifyClientCertVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(requireAndVerifyClientCertVal.error(), doc,
-                                           currentLocation);
-            } else {
-              if (!requireAndVerifyClientCertVal.is_null()) {
-                bool requireAndVerifyClientCert = false;
-                error = requireAndVerifyClientCertVal.get(requireAndVerifyClientCert);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.security.tls.requireAndVerifyClientCert = requireAndVerifyClientCert;
-              }
-            }
-          }
-        }
-
-        auto apiKeyVal = securityObj[API_KEY_STR];
-        if (apiKeyVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (apiKeyVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(apiKeyVal.error(), doc, currentLocation);
-        } else {
-          if (!apiKeyVal.is_null()) {
-            simdjson::ondemand::object apiKeyObj;
-            error = apiKeyVal.get(apiKeyObj);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            auto useHopsworksAPIKeysVal = apiKeyObj[USE_HOPSWORKS_API_KEYS];
-            if (useHopsworksAPIKeysVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (useHopsworksAPIKeysVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(useHopsworksAPIKeysVal.error(), doc, currentLocation);
-            } else {
-              if (!useHopsworksAPIKeysVal.is_null()) {
-                bool useHopsworksAPIKeys = false;
-                error                    = useHopsworksAPIKeysVal.get(useHopsworksAPIKeys);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.security.apiKey.useHopsworksAPIKeys = useHopsworksAPIKeys;
-              }
-            }
-          }
-        }
-      }
-    } else if (keyv == LOG) {
-      simdjson::ondemand::object logObj;
-      auto logVal = field.value();
-      if (!logVal.is_null()) {
-        error = logVal.get(logObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto levelVal = logObj[LEVEL];
-        if (levelVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (levelVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(levelVal.error(), doc, currentLocation);
-        } else {
-          if (!levelVal.is_null()) {
-            std::string_view level = INFO;
-            error                  = levelVal.get(level);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            configsStruct.log.level = level;
-          }
-        }
-      }
-    } else if (keyv == TESTING) {
-      simdjson::ondemand::object testingObj;
-      auto testingVal = field.value();
-      if (!testingVal.is_null()) {
-        error = testingVal.get(testingObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        auto mySQLVal = testingObj[MYSQL_STR];
-        if (mySQLVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        } else if (mySQLVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(mySQLVal.error(), doc, currentLocation);
-        } else {
-          if (!mySQLVal.is_null()) {
-            simdjson::ondemand::object mySQLObj;
-            error = mySQLVal.get(mySQLObj);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-            configsStruct.testing.mySQL.servers.clear();
-            auto serversVal = mySQLObj[SERVERS];
-            if (serversVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (serversVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(serversVal.error(), doc, currentLocation);
-            } else {
-              if (!serversVal.is_null()) {
-                simdjson::ondemand::array serversArr;
-                error = serversVal.get(serversArr);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                for (auto server : serversArr) {
-                  MySQLServer mySQLServer;
-                  simdjson::ondemand::object serverObj;
-                  error = server.get(serverObj);
-                  if (error != simdjson::SUCCESS) {
-                    return handle_simdjson_error(error, doc, currentLocation);
-                  }
-
-                  std::string_view ip = LOCALHOST;
-                  auto ipVal          = serverObj[IP];
-                  if (ipVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  } else if (ipVal.error() != simdjson::SUCCESS) {
-                    return handle_simdjson_error(ipVal.error(), doc, currentLocation);
-                  } else {
-                    if (!ipVal.is_null()) {
-                      error = ipVal.get(ip);
-                      if (error != simdjson::SUCCESS) {
-                        return handle_simdjson_error(error, doc, currentLocation);
-                      }
-                    }
-                  }
-                  mySQLServer.IP = ip;
-
-                  uint64_t port = DEFAULT_MYSQL_PORT;
-                  auto portVal  = serverObj[PORT];
-                  if (portVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  } else if (portVal.error() != simdjson::SUCCESS) {
-                    return handle_simdjson_error(portVal.error(), doc, currentLocation);
-                  } else {
-                    if (!portVal.is_null()) {
-                      error = portVal.get(port);
-                      if (error != simdjson::SUCCESS) {
-                        return handle_simdjson_error(error, doc, currentLocation);
-                      }
-                    }
-                  }
-                  mySQLServer.port = port;
-
-                  configsStruct.testing.mySQL.servers.push_back(mySQLServer);
-                }
-              }
-            }
-
-            auto userVal = mySQLObj[USER];
-            if (userVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (userVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(userVal.error(), doc, currentLocation);
-            } else {
-              if (!userVal.is_null()) {
-                std::string_view user = ROOT_STR;
-                error                 = userVal.get(user);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.testing.mySQL.user = user;
-              }
-            }
-
-            auto passwordVal = mySQLObj[PASSWORD];
-            if (passwordVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            } else if (passwordVal.error() != simdjson::SUCCESS) {
-              return handle_simdjson_error(passwordVal.error(), doc, currentLocation);
-            } else {
-              if (!passwordVal.is_null()) {
-                std::string_view password;
-                error = passwordVal.get(password);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-                configsStruct.testing.mySQL.password = password;
-              }
-            }
-          }
-        }
+      // If .Testing.MySQLMetadataCluster is not present in config file, then
+      // set it to .Testing.MySQL.
+      if(!configsStruct.testing.mySQLMetadataCluster.present_in_config_file) {
+        configsStruct.testing.mySQLMetadataCluster = configsStruct.testing.mySQL;
       }
     }
+    catch (simdjson::simdjson_error& e) {
+      throw ConfigParseError(simdjson::error_message(e.error()));
+    }
+  }
+  catch (ConfigParseError& e) {
+    return handle_parse_error(e, paddedJson, doc);
+  }
+  return CRS_Status::SUCCESS.status;
+}
+
+// todo-ronsql Should we conform to the rest of RDRS by capitalizing these JSON keys?
+DEFINE_STRUCT_PARSER(RonSQLParams,
+                     ELEMENT(query,        query)
+                     ELEMENT(database,     database)
+                     ELEMENT(explainMode,  explainMode)
+                     ELEMENT(outputFormat, outputFormat)
+                     ELEMENT(operationId,  operationId)
+                     )
+
+RS_Status JSONParser::ronsql_parse(simdjson::padded_string_view reqBody,
+                                   RonSQLParams &reqStruct) {
+  try {
+    try {
+      doc = parser.iterate(reqBody).value();
+      parse(reqStruct, doc.get_object());
+      assert_end_of_doc(doc);
+    }
+    catch (simdjson::simdjson_error& e) {
+      throw ConfigParseError(simdjson::error_message(e.error()));
+    }
+  }
+  catch (ConfigParseError& e) {
+    return handle_parse_error(e, reqBody, doc);
   }
   return CRS_Status::SUCCESS.status;
 }
 
 RS_Status
-JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view reqBody,
+JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
                                 feature_store_data_structs::FeatureStoreRequest &reqStruct) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   std::string_view featureStoreName;
@@ -917,7 +775,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         .status;
   }
   if (featureStoreNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureStoreNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureStoreNameVal.error(), doc, currentLocation);
   }
   if (featureStoreNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -927,7 +785,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   }
   error = featureStoreNameVal.get(featureStoreName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureStoreName = featureStoreName;
@@ -941,7 +799,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         .status;
   }
   if (featureViewNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewNameVal.error(), doc, currentLocation);
   }
   if (featureViewNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -951,7 +809,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   }
   error = featureViewNameVal.get(featureViewName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureViewName = featureViewName;
@@ -965,7 +823,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         .status;
   }
   if (featureViewVersionVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewVersionVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewVersionVal.error(), doc, currentLocation);
   }
   if (featureViewVersionVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -975,7 +833,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   }
   error = featureViewVersionVal.get(featureViewVersion);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureViewVersion = featureViewVersion;
@@ -984,12 +842,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   auto passedFeaturesVal = reqObject[PASSED_FEATURES];
   if (passedFeaturesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
   } else if (passedFeaturesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(passedFeaturesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(passedFeaturesVal.error(), doc, currentLocation);
   } else {
     if (!passedFeaturesVal.is_null()) {
       error = passedFeaturesVal.get(passedFeatures);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       // Map of feature name as key and feature value as value.
       // This overwrites feature values in the response.
@@ -1005,7 +863,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
               .status;
         }
         if (valueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(valueVal.error(), doc, currentLocation);
         }
         if (valueVal.is_null()) {
           return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1015,7 +873,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         }
         error = valueVal.get(value);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
         std::ostringstream oss;
         oss << value;
@@ -1036,7 +894,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
   if (entriesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     // TODO: Handle missing field error
   } else if (entriesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(entriesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(entriesVal.error(), doc, currentLocation);
   } else {
     if (entriesVal.is_null()) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1046,7 +904,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
     }
     error = entriesVal.get(entries);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto entry : entries) {
       std::string_view servingKey = entry.unescaped_key();
@@ -1060,7 +918,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
             .status;
       }
       if (valueVal.error() != simdjson::SUCCESS) {
-        return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+        return handle_simdjson_error(valueVal.error(), doc, currentLocation);
       }
       if (valueVal.is_null()) {
         return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1070,7 +928,7 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
       }
       error = valueVal.get(value);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       std::ostringstream oss;
       oss << value;
@@ -1092,12 +950,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
     reqStruct.metadataRequest.featureName = std::nullopt;
     reqStruct.metadataRequest.featureType = std::nullopt;
   } else if (metaDataOptionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(metaDataOptionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(metaDataOptionsVal.error(), doc, currentLocation);
   } else {
     // If metadataOptions field is present and not null
     error = metaDataOptionsVal.get(metaDataOptions);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : metaDataOptions) {
       std::string_view optionKey = option.unescaped_key();
@@ -1105,12 +963,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureName = optionValue;
         } else {
@@ -1120,12 +978,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureType = optionValue;
         } else {
@@ -1145,12 +1003,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
     reqStruct.optionsRequest.validatePassedFeatures = std::nullopt;
     reqStruct.optionsRequest.includeDetailedStatus  = std::nullopt;
   } else if (optionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(optionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(optionsVal.error(), doc, currentLocation);
   } else {
     // If options field is present and not null
     error = optionsVal.get(options);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : options) {
       std::string_view optionKey = option.unescaped_key();
@@ -1158,12 +1016,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.validatePassedFeatures = optionValue;
         } else {
@@ -1173,12 +1031,12 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.includeDetailedStatus = optionValue;
         } else {
@@ -1192,19 +1050,19 @@ JSONParser::feature_store_parse(size_t threadId, simdjson::padded_string_view re
 }
 
 RS_Status JSONParser::batch_feature_store_parse(
-    size_t threadId, simdjson::padded_string_view reqBody,
+    simdjson::padded_string_view reqBody,
     feature_store_data_structs::BatchFeatureStoreRequest &reqStruct) {
   const char *currentLocation = nullptr;
 
-  simdjson::error_code error = parser[threadId].iterate(reqBody).get(doc[threadId]);
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
-  error = doc[threadId].get_object().get(reqObject);
+  error = doc.get_object().get(reqObject);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   std::string_view featureStoreName;
@@ -1216,7 +1074,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         .status;
   }
   if (featureStoreNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureStoreNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureStoreNameVal.error(), doc, currentLocation);
   }
   if (featureStoreNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1226,7 +1084,7 @@ RS_Status JSONParser::batch_feature_store_parse(
   }
   error = featureStoreNameVal.get(featureStoreName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureStoreName = featureStoreName;
@@ -1240,7 +1098,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         .status;
   }
   if (featureViewNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewNameVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewNameVal.error(), doc, currentLocation);
   }
   if (featureViewNameVal.is_null()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1250,7 +1108,7 @@ RS_Status JSONParser::batch_feature_store_parse(
   }
   error = featureViewNameVal.get(featureViewName);
   if (error != simdjson::SUCCESS) {
-    return handle_simdjson_error(error, doc[threadId], currentLocation);
+    return handle_simdjson_error(error, doc, currentLocation);
   }
 
   reqStruct.featureViewName = featureViewName;
@@ -1263,7 +1121,7 @@ RS_Status JSONParser::batch_feature_store_parse(
                       std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION))
         .status;
   } else if (featureViewVersionVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewVersionVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(featureViewVersionVal.error(), doc, currentLocation);
   } else {
     if (featureViewVersionVal.is_null()) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1273,7 +1131,7 @@ RS_Status JSONParser::batch_feature_store_parse(
     }
     error = featureViewVersionVal.get(featureViewVersion);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
   }
   reqStruct.featureViewVersion = featureViewVersion;
@@ -1283,12 +1141,12 @@ RS_Status JSONParser::batch_feature_store_parse(
 
   if (passedFeaturesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
   } else if (passedFeaturesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(passedFeaturesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(passedFeaturesVal.error(), doc, currentLocation);
   } else {
     if (!passedFeaturesVal.is_null()) {
       error = passedFeaturesVal.get(passedFeatures);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
       // Each item is a map of feature name as key and feature value as value.
       // This overwrites feature values in the response.
@@ -1302,7 +1160,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         simdjson::ondemand::object featureObj;
         error = feature.get(featureObj);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
 
         std::unordered_map<std::string, std::vector<char>> featureMap;
@@ -1318,7 +1176,7 @@ RS_Status JSONParser::batch_feature_store_parse(
                 .status;
           }
           if (valueVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+            return handle_simdjson_error(valueVal.error(), doc, currentLocation);
           }
 
           if (valueVal.is_null()) {
@@ -1329,7 +1187,7 @@ RS_Status JSONParser::batch_feature_store_parse(
           }
           error = valueVal.get(value);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           std::ostringstream oss;
           oss << value;
@@ -1349,7 +1207,7 @@ RS_Status JSONParser::batch_feature_store_parse(
   if (entriesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
     // TODO: Handle missing field error
   } else if (entriesVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(entriesVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(entriesVal.error(), doc, currentLocation);
   } else {
     if (entriesVal.is_null()) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1359,13 +1217,13 @@ RS_Status JSONParser::batch_feature_store_parse(
     }
     error = entriesVal.get(entries);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto entry : entries) {
       simdjson::ondemand::object entryObj;
       error = entry.get(entryObj);
       if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc[threadId], currentLocation);
+        return handle_simdjson_error(error, doc, currentLocation);
       }
 
       std::unordered_map<std::string, std::vector<char>> entryMap;
@@ -1381,7 +1239,7 @@ RS_Status JSONParser::batch_feature_store_parse(
               .status;
         }
         if (valueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(valueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(valueVal.error(), doc, currentLocation);
         }
         if (valueVal.is_null()) {
           return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -1391,7 +1249,7 @@ RS_Status JSONParser::batch_feature_store_parse(
         }
         error = valueVal.get(value);
         if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc[threadId], currentLocation);
+          return handle_simdjson_error(error, doc, currentLocation);
         }
         std::ostringstream oss;
         oss << value;
@@ -1415,12 +1273,12 @@ RS_Status JSONParser::batch_feature_store_parse(
     reqStruct.metadataRequest.featureName = std::nullopt;
     reqStruct.metadataRequest.featureType = std::nullopt;
   } else if (metaDataOptionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(metaDataOptionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(metaDataOptionsVal.error(), doc, currentLocation);
   } else {
     // If metadataOptions field is present and not null
     error = metaDataOptionsVal.get(metaDataOptions);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : metaDataOptions) {
       std::string_view optionKey = option.unescaped_key();
@@ -1428,12 +1286,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureName = optionValue;
         } else {
@@ -1443,12 +1301,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue    = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureType = optionValue;
         } else {
@@ -1468,12 +1326,12 @@ RS_Status JSONParser::batch_feature_store_parse(
     reqStruct.optionsRequest.validatePassedFeatures = std::nullopt;
     reqStruct.optionsRequest.includeDetailedStatus  = std::nullopt;
   } else if (optionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(optionsVal.error(), doc[threadId], currentLocation);
+    return handle_simdjson_error(optionsVal.error(), doc, currentLocation);
   } else {
     // If options field is present and not null
     error = optionsVal.get(options);
     if (error != simdjson::SUCCESS) {
-      return handle_simdjson_error(error, doc[threadId], currentLocation);
+      return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : options) {
       std::string_view optionKey = option.unescaped_key();
@@ -1481,12 +1339,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.validatePassedFeatures = optionValue;
         } else {
@@ -1496,12 +1354,12 @@ RS_Status JSONParser::batch_feature_store_parse(
         bool optionValue = false;
         auto optionValueVal = option.value();
         if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc[threadId], currentLocation);
+          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
         }
         if (!optionValueVal.is_null()) {
           error = optionValueVal.get(optionValue);
           if (error != simdjson::SUCCESS) {
-            return handle_simdjson_error(error, doc[threadId], currentLocation);
+            return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.includeDetailedStatus = optionValue;
         } else {

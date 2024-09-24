@@ -1,0 +1,96 @@
+--source include/have_ndb.inc
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+
+CREATE TABLE tbl (sint8 TINYINT NULL) ENGINE=NDB;
+INSERT INTO tbl (sint8) VALUES (7);
+
+--echo Overflow using multiplication:
+--write_file $QUERY_FILE
+SELECT sint8
+     , sum((sint8 / sint8)
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+           * 1024 * 1024 * 8
+           * 2
+     ) as mul_overflow
+FROM tbl
+GROUP BY sint8;
+EOF
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' 2>&1
+--remove_file $QUERY_FILE
+--echo
+--echo
+--echo
+
+--echo Zero through many divisions:
+--write_file $QUERY_FILE
+SELECT sint8
+     , sum((sint8 / sint8)
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024 / 1024
+           / 1024 / 1024 / 8
+           / 1024 / 1024 / 1024 / 1024 / 1024 / 4
+     ) as div_overflow
+FROM tbl
+GROUP BY sint8;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Zero through many integer divisions:
+--write_file $QUERY_FILE
+SELECT sint8
+     , sum(sint8
+           DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024 DIV 1024
+     ) as intdiv_overflow
+FROM tbl
+GROUP BY sint8;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Division by zero:
+--write_file $QUERY_FILE
+SELECT sint8
+     , sum(1 / (sint8 - sint8)) as div_zero
+FROM tbl
+GROUP BY sint8;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Integer division by zero:
+--write_file $QUERY_FILE
+SELECT sint8
+     , sum(1 DIV (sint8 - sint8)) as intdiv_zero
+FROM tbl
+GROUP BY sint8;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Modulo zero:
+--write_file $QUERY_FILE
+SELECT sint8
+     , sum(1 % (sint8 - sint8)) as mod_zero
+FROM tbl
+GROUP BY sint8;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Cleanup
+DROP TABLE tbl;

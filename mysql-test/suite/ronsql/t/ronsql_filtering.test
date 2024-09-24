@@ -1,0 +1,74 @@
+--source include/have_ndb.inc
+
+--disable_query_log
+CREATE TABLE tbl (
+  uint16 SMALLINT UNSIGNED NOT NULL,
+  int16 SMALLINT NOT NULL,
+  PRIMARY KEY USING HASH (uint16)) ENGINE=NDB;
+let $i=100;
+while ($i)
+{
+  --eval insert into tbl values ($i, $i-50);
+  dec $i;
+}
+--enable_query_log
+
+DELIMITER |;
+--echo
+--echo
+--echo
+
+
+--echo unsigned LT
+let QUERY=
+SELECT uint16, sum(uint16)
+FROM tbl
+WHERE uint16 < 5
+GROUP BY uint16;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo unsigned LE
+let QUERY=
+SELECT uint16, sum(uint16)
+FROM tbl
+WHERE uint16 <= 5
+GROUP BY uint16;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo unsigned GT
+let QUERY=
+SELECT uint16, sum(uint16)
+FROM tbl
+WHERE uint16 > 95
+GROUP BY uint16;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo unsigned GE
+let QUERY=
+SELECT uint16, sum(uint16)
+FROM tbl
+WHERE uint16 >= 95
+GROUP BY uint16;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo unsigned =
+let QUERY=
+SELECT uint16, sum(uint16)
+FROM tbl
+WHERE uint16 = 34
+GROUP BY uint16;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo unsigned !=
+let QUERY=
+SELECT uint16, sum(uint16)
+FROM tbl
+WHERE uint16 != 34
+GROUP BY uint16;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo Cleanup
+DELIMITER ;|
+DROP TABLE tbl;

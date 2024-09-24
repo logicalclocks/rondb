@@ -2,7 +2,7 @@
 # -*- cperl -*-
 
 # Copyright (c) 2004, 2024, Oracle and/or its affiliates.
-# Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -162,6 +162,7 @@ my $opt_suite_timeout      = $ENV{MTR_SUITE_TIMEOUT} || 300;           # minutes
 my $opt_testcase_timeout   = $ENV{MTR_TESTCASE_TIMEOUT} || 15;         # minutes
 my $opt_valgrind_clients   = 0;
 my $opt_valgrind_mysqld    = 0;
+my $opt_valgrind_rdrs      = 0;
 my $opt_valgrind_mysqltest = 0;
 my $opt_accept_fail        = 0;
 
@@ -383,11 +384,12 @@ sub using_extern { return (keys %opts_extern > 0); }
 # Return list of specific servers
 sub _like { return $config ? $config->like($_[0]) : (); }
 
-sub mysqlds     { return _like('mysqld.'); }
-sub ndbds       { return _like('cluster_config.ndbd.'); }
-sub ndb_mgmds   { return _like('cluster_config.ndb_mgmd.'); }
-sub clusters    { return _like('mysql_cluster.'); }
-sub all_servers { return (mysqlds(), ndb_mgmds(), ndbds()); }
+sub mysqlds     { return _like('mysqld\.'); }
+sub rdrss       { return _like('rdrs\.'); }
+sub ndbds       { return _like('cluster_config\.ndbd\.'); }
+sub ndb_mgmds   { return _like('cluster_config\.ndb_mgmd\.'); }
+sub clusters    { return _like('mysql_cluster\.'); }
+sub all_servers { return (mysqlds(), rdrss(), ndb_mgmds(), ndbds()); }
 
 # Return an object which refers to the group named '[mysqld]'
 # from the my.cnf file. Options specified in the section can
@@ -734,7 +736,7 @@ sub main {
 
   # When either --valgrind or --sanitize option is enabled, a dummy
   # test is created.
-  if ($opt_valgrind_mysqld or $opt_sanitize) {
+  if ($opt_valgrind_mysqld or $opt_valgrind_rdrs or $opt_sanitize) {
     $num_tests_for_report = $num_tests_for_report + 1;
   }
 
@@ -910,18 +912,20 @@ sub main {
   report_option('prev_report_length', 0);
   push @$completed, $tinfo;
 
-  if ($opt_valgrind_mysqld or $opt_sanitize) {
+  if ($opt_valgrind_mysqld or $opt_valgrind_rdrs or $opt_sanitize) {
     # Create minimalistic "test" for the reporting
     my $tinfo = My::Test->new(
-      name      => $opt_valgrind_mysqld ? 'valgrind_report' : 'sanitize_report',
-      shortname => $opt_valgrind_mysqld ? 'valgrind_report' : 'sanitize_report',
+      name      => ($opt_valgrind_mysqld or $opt_valgrind_rdrs)
+                    ? 'valgrind_report' : 'sanitize_report',
+      shortname => ($opt_valgrind_mysqld or $opt_valgrind_rdrs)
+                    ? 'valgrind_report' : 'sanitize_report',
     );
 
     # Set dummy worker id to align report with normal tests
     $tinfo->{worker} = 0 if $opt_parallel > 1;
     if ($valgrind_reports) {
       $tinfo->{result} = 'MTR_RES_FAILED';
-      if ($opt_valgrind_mysqld) {
+      if ($opt_valgrind_mysqld or $opt_valgrind_rdrs) {
         $tinfo->{comment} = "Valgrind reported failures at shutdown, see above";
       } else {
         $tinfo->{comment} =
@@ -1418,7 +1422,7 @@ sub run_worker ($) {
       mark_time_used('restart');
 
       my $valgrind_reports = 0;
-      if ($opt_valgrind_mysqld or $opt_sanitize) {
+      if ($opt_valgrind_mysqld or $opt_valgrind_rdrs or $opt_sanitize) {
         $valgrind_reports = valgrind_exit_reports() if not $shutdown_report;
         print $server "VALGREP\n" if $valgrind_reports;
       }
@@ -1767,6 +1771,7 @@ sub command_line_setup {
     'sanitize'                  => \$opt_sanitize,
     'valgrind-clients'          => \$opt_valgrind_clients,
     'valgrind-mysqld'           => \$opt_valgrind_mysqld,
+    'valgrind-rdrs'             => \$opt_valgrind_rdrs,
     'valgrind-mysqltest'        => \$opt_valgrind_mysqltest,
     'valgrind-option=s'         => \@valgrind_args,
     'valgrind-path=s'           => \$opt_valgrind_path,
@@ -2250,6 +2255,7 @@ sub command_line_setup {
     mtr_report("Turning on valgrind for all executables");
     $opt_valgrind        = 1;
     $opt_valgrind_mysqld = 1;
+    $opt_valgrind_rdrs   = 1;
     # Enable this when mysqlbinlog is fixed.
     # $opt_valgrind_clients = 1;
     $opt_valgrind_mysqltest        = 1;
@@ -2262,6 +2268,9 @@ sub command_line_setup {
     $opt_debug_sync_timeout *= 10;
   } elsif ($opt_valgrind_mysqld) {
     mtr_report("Turning on valgrind for mysqld(s) only");
+    $opt_valgrind = 1;
+  } elsif ($opt_valgrind_rdrs) {
+    mtr_report("Turning on valgrind for rdrs(s) only");
     $opt_valgrind = 1;
   } elsif ($opt_valgrind_clients) {
     mtr_report("Turning on valgrind for test clients");
@@ -2282,9 +2291,10 @@ sub command_line_setup {
   }
 
   if ($opt_callgrind) {
-    mtr_report("Turning on valgrind with callgrind for mysqld(s)");
+    mtr_report("Turning on valgrind with callgrind for mysqld(s) and rdrs(s)");
     $opt_valgrind        = 1;
     $opt_valgrind_mysqld = 1;
+    $opt_valgrind_rdrs   = 1;
 
     push(@valgrind_args, "--tool=callgrind", "--trace-children=yes");
 
@@ -2296,9 +2306,10 @@ sub command_line_setup {
   }
 
   if ($opt_helgrind) {
-    mtr_report("Turning on valgrind with helgrind for mysqld(s)");
+    mtr_report("Turning on valgrind with helgrind for mysqld(s) and rdrs(s)");
     $opt_valgrind        = 1;
     $opt_valgrind_mysqld = 1;
+    $opt_valgrind_rdrs   = 1;
 
     push(@valgrind_args, "--tool=helgrind");
 
@@ -2591,7 +2602,7 @@ sub set_build_thread_ports($) {
       # ports_per_thread value should be 50.
       # - First set of 20 ports are reserved for mysqld servers (10 each for
       #   standard and admin connections)
-      # - Second set of 10 ports are reserver for Group replication
+      # - Second set of 10 ports are reserved for Group replication
       # - Third set of 10 ports are reserved for secondary engine plugin
       # - Fourth and last set of 10 ports are reserved for X plugin
       $::secondary_engine_port = $baseport + 30;
@@ -3276,6 +3287,7 @@ sub environment_setup {
     @ndb_tools = qw(
       ndb_print_file
       ndb_print_sys_file
+      ronsql_cli
     );
 
     foreach my $tool ( @ndb_tools)
@@ -3453,9 +3465,14 @@ sub environment_setup {
   $ENV{'VALGRIND_TEST'} = $opt_valgrind;
 
   # Create an environment variable to make it possible
-  # to detect if valgrind is being used on the server
+  # to detect whether valgrind is being used on mysqld servers
   # for test cases
   $ENV{'VALGRIND_SERVER_TEST'} = $opt_valgrind_mysqld;
+
+  # Create an environment variable to make it possible
+  # to detect whether valgrind is being used on rdrs servers
+  # for test cases
+  $ENV{'VALGRIND_RDRS_TEST'} = $opt_valgrind_rdrs;
 
   # Ask UBSAN to print stack traces, and to be fail-fast.
   $ENV{'UBSAN_OPTIONS'} = "print_stacktrace=1,halt_on_error=1" if $opt_sanitize;
@@ -5074,6 +5091,11 @@ sub run_testcase ($) {
       # Write the new my.cnf
       $config->save($path_config_file);
 
+      # Write the new rdrs_config*.json
+      foreach my $rdrs (rdrss()) {
+        rdrs_save_config($rdrs);
+      }
+
       # Remember current config so a restart can occur when a test need
       # to use a different one
       $current_config_name = $tinfo->{template_path};
@@ -5127,6 +5149,10 @@ sub run_testcase ($) {
     foreach my $mysqld (mysqlds()) {
       mtr_print($mysqld->name() .
                "  " . $mysqld->value('port') . "  " . $mysqld->value('socket'));
+    }
+    foreach my $rdrs (rdrss()) {
+      mtr_print($rdrs->name() .
+               "  " . $rdrs->value('port'));
     }
 
     if ($opt_start_exit) {
@@ -5785,7 +5811,7 @@ sub extract_warning_lines ($$) {
   my $num_rep       = 0;
 
   foreach my $line (@lines) {
-    if ($opt_valgrind_mysqld) {
+    if ($opt_valgrind_mysqld or $opt_valgrind_rdrs) {
       # Skip valgrind summary from tests where server has been restarted
       # Should this contain memory leaks, the final report will find it
       # Use a generic pattern for summaries
@@ -6250,7 +6276,8 @@ sub after_failure ($) {
 sub report_failure_and_restart ($) {
   my $tinfo = shift;
 
-  if ($opt_valgrind_mysqld && ($tinfo->{'warnings'} || $tinfo->{'timeout'})) {
+  if (($opt_valgrind_mysqld or $opt_valgrind_rdrs)
+      && ($tinfo->{'warnings'} || $tinfo->{'timeout'})) {
     # In these cases we may want valgrind report from normal termination
     $tinfo->{'dont_kill_server'} = 1;
   }
@@ -6329,6 +6356,20 @@ sub mysqld_stop {
   My::SafeProcess->run(name  => "mysqladmin shutdown " . $mysqld->name(),
                        path  => $exe_mysqladmin,
                        args  => \$args);
+}
+
+sub rdrs_stop ($) {
+  my $rdrs = shift;
+  my $pid_file = $rdrs->value('pid-file');
+  # Read PID from pid_file
+  open(my $pid_fd,"< $pid_file") or die("Could not open $pid_file: $!");
+  my $pid = <$pid_fd>;
+  $pid_fd->close();
+  $pid+=0; # Convert to integer
+  if ($pid <= 0) {
+    die("Invalid PID in $pid_file: $pid");
+  }
+  kill('TERM', $pid) or die("Could not send TERM signal to $pid: $!");
 }
 
 # This subroutine is added to handle option file options which always
@@ -6652,6 +6693,172 @@ sub mysqld_start ($$$$) {
   return;
 }
 
+sub rdrs_start ($$) {
+  my $rdrs = shift;
+  my $tinfo = shift;
+
+  my $exe =
+    my_find_bin($bindir,
+                [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                "rdrs2");
+  my $wait_for_pid_file = 1;
+
+  my $name = $rdrs->name();
+  my $args;
+  mtr_init_args(\$args);
+
+  # Implementation for strace-server
+  if ($opt_strace_server) {
+    strace_server_arguments($args, \$exe, $name);
+  }
+
+  if ($opt_valgrind_rdrs) {
+    valgrind_arguments($args, \$exe, $name);
+  }
+
+  # Implementation for --perf[=<rdrs_name>]
+  if (@opt_perf_servers) {
+    my $name = $name;
+    if (grep($_ eq "" || $name =~ /^$_/, @opt_perf_servers)) {
+      mtr_print("Using perf for: ", $name);
+      perf_arguments($args, \$exe, $name);
+    }
+  }
+
+  # Add config file argument
+  my $config_file = $rdrs->value('config-file');
+  mtr_add_arg($args, "--config");
+  mtr_add_arg($args, $config_file);
+
+  if ($opt_debug) {
+    mtr_verbose("Ignoring --debug option for $name since rdrs2 does not support it.");
+  }
+
+  my $pid_file = $rdrs->value('pid-file');
+
+  if ($opt_gdb || $opt_manual_gdb) {
+    gdb_arguments(\$args, \$exe, $name);
+  } elsif ($opt_lldb || $opt_manual_lldb) {
+    lldb_arguments(\$args, \$exe, $name);
+  } elsif ($opt_ddd || $opt_manual_ddd) {
+    ddd_arguments(\$args, \$exe, $name);
+  } elsif ($opt_dbx || $opt_manual_dbx) {
+    dbx_arguments(\$args, \$exe, $name);
+  } elsif ($opt_debugger) {
+    debugger_arguments(\$args, \$exe, $name);
+  } elsif ($opt_manual_debug) {
+    print "\nStart " . $name . " in your debugger\n" .
+      "dir: $glob_mysql_test_dir\n" . "exe: $exe\n" . "args:  " .
+      join(" ", @$args) . "\n\n" . "Waiting ....\n";
+
+    # Indicate the exe should not be started
+    $exe = undef;
+  } elsif ($tinfo->{'secondary-engine'}) {
+    # Wait for the PID file to be created if secondary engine
+    # is enabled.
+  } else {
+    # Default to not wait until pid file has been created
+    $wait_for_pid_file = 0;
+  }
+
+  # Remove the old pidfile if any
+  unlink($pid_file) if -e $pid_file;
+
+  my $output = $rdrs->value('#log-output');
+  my $erroutput = $rdrs->value('#log-error');
+
+  # Remember these log files for valgrind/shutdown error report search.
+  $logs{$output} = 1;
+  $logs{$erroutput} = 1;
+
+  if (defined $exe) {
+    $rdrs->{'proc'} =
+      My::SafeProcess->new(name        => $name,
+                           path        => $exe,
+                           args        => \$args,
+                           output      => $output,
+                           error       => $erroutput,
+                           append      => 1,
+                           verbose     => $opt_verbose,
+                           nocore      => $opt_skip_core,
+                           host        => undef,
+                           shutdown    => sub { rdrs_stop($rdrs) },
+                           envs        => [ ],
+                           pid_file    => $pid_file,
+                           daemon_mode => 0);
+
+    mtr_verbose("Started $rdrs->{proc}");
+  }
+
+  if ($wait_for_pid_file &&
+      !sleep_until_pid_file_created($pid_file, $opt_start_timeout,
+                                    $rdrs->{'proc'})
+    ) {
+    mtr_error("Failed to start $name with command $exe");
+  }
+
+  return;
+}
+
+sub rdrs_save_config ($) {
+  # todo-asdf Support template file for rdrs2 config
+  my $rdrs = shift;
+  my $pid_file = $rdrs->value('pid-file');
+  my $rest_port = $rdrs->value('port');
+  my $mgmds_json = join(', ', map {
+      my $name = $_->name();
+      my $cluster_config_this_mgmd = $config->group($name);
+      my $mgmd_host = $cluster_config_this_mgmd->value('HostName');
+      my $mgmd_port = $cluster_config_this_mgmd->value('PortNumber');
+      my $ip_entry = $mgmd_host ne 'localhost' ? "\"IP\": \"$mgmd_host\", " : "";
+      "{$ip_entry\"Port\": $mgmd_port}"
+    } ndb_mgmds());
+  my @mysqlds_to_use = mysqlds();
+  # rdrs2 currently only supports one mysqld.
+  @mysqlds_to_use = @mysqlds_to_use[0..0];
+  my $mysqlds_json = join(', ', map {
+      my $mysqld_host = $_->value('#host');
+      my $mysqld_port = $_->value('port');
+      my $ip_entry = (defined $mysqld_host && $mysqld_host ne 'localhost')
+        ? "\"IP\": \"$mysqld_host\", " : "";
+      "{$ip_entry\"Port\": $mysqld_port}"
+  } @mysqlds_to_use);
+  my $jsonStr = <<"  END_TXT";
+    {
+      "PIDFile": "$pid_file",
+      "REST": {
+        "ServerPort": $rest_port
+      },
+      "RonDB": {
+        "Mgmds": [ $mgmds_json ]
+      },
+      "Security": {
+        "TLS": {
+          "EnableTLS": false,
+          "RequireAndVerifyClientCert": false
+        },
+        "APIKey": {
+          "UseHopsworksAPIKeys": true
+        }
+      },
+      "Log": {
+        "Level": "INFO"
+      },
+      "Testing": {
+        "MySQL": {
+          "Servers": [ $mysqlds_json ],
+          "User": "root",
+          "Password": ""
+        }
+      }
+    }
+  END_TXT
+  my $config_file = $rdrs->value('config-file');
+  open(my $CONF,"> $config_file") or die("Could not open $config_file for writing");
+  printf $CONF $jsonStr;
+  $CONF->close();
+}
+
 sub stop_all_servers () {
   my $shutdown_timeout = $_[0] or 0;
 
@@ -6825,6 +7032,17 @@ sub server_need_restart {
     }
   }
 
+  my $is_rdrs = grep ($server eq $_, rdrss());
+  if ($is_rdrs) {
+    # Restart if all datanodes go down, otherwise not.
+    foreach my $ndbd_server (ndbds()) {
+      if (!server_need_restart($tinfo, $ndbd_server, $master_restarted)) {
+        return 0;
+      }
+    }
+    return 1;
+  }
+
   # Default, no restart
   return 0;
 }
@@ -6863,7 +7081,7 @@ sub servers_need_restart($) {
   }
 
   # Check if any remaining servers need restart
-  foreach my $server (ndb_mgmds(), ndbds()) {
+  foreach my $server (ndb_mgmds(), ndbds(), rdrss()) {
     if (server_need_restart($tinfo, $server, $master_restarted)) {
       push(@restart_servers, $server);
     }
@@ -7119,6 +7337,11 @@ sub start_servers($) {
     $mysqld->{'started_tinfo'} = $tinfo;
   }
 
+  # Start rdrss
+  foreach my $rdrs (rdrss()) {
+    rdrs_start($rdrs, $tinfo);
+  }
+
   # Wait for clusters to start
   foreach my $cluster (clusters()) {
     if (ndbcluster_wait_started($cluster, "")) {
@@ -7135,16 +7358,16 @@ sub start_servers($) {
     }
   }
 
-  # Wait for mysqlds to start
-  foreach my $mysqld (mysqlds()) {
-    next if !started($mysqld);
+  # Wait for mysqlds and rdrss to start
+  foreach my $server (mysqlds(), rdrss()) {
+    next if !started($server);
 
-    if (!sleep_until_pid_file_created($mysqld->value('pid-file'),
+    if (!sleep_until_pid_file_created($server->value('pid-file'),
                                       $opt_start_timeout,
-                                      $mysqld->{'proc'})
+                                      $server->{'proc'})
       ) {
-      $tinfo->{comment} = "Failed to start " . $mysqld->name();
-      my $logfile = $mysqld->value('#log-error');
+      $tinfo->{comment} = "Failed to start " . $server->name();
+      my $logfile = $server->value('#log-error');
       if (defined $logfile and -f $logfile) {
         my @srv_lines = extract_server_log($logfile, $tinfo->{name});
         $tinfo->{logfile} = "Server log is:\n" . join("", @srv_lines);
@@ -8117,6 +8340,7 @@ Options for valgrind
   valgrind-all          Synonym for --valgrind.
   valgrind-clients      Run clients started by .test files with valgrind.
   valgrind-mysqld       Run the "mysqld" executable with valgrind.
+  valgrind-rdrs         Run the "rdrs2" executable with valgrind.
   valgrind-mysqltest    Run the "mysqltest" and "mysql_client_test" executable
                         with valgrind.
   valgrind-option=ARGS  Option to give valgrind, replaces default option(s), can

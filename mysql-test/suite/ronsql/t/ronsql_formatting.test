@@ -1,0 +1,81 @@
+--source include/have_ndb.inc
+
+--let RAND_SEED=42
+--let NUM_ROWS=10
+--source suite/ronsql/include/ronsql_create_table_api_scan.inc
+
+DELIMITER |;
+--echo
+--echo
+--echo
+
+
+
+--echo Formatting float
+let QUERY=
+SELECT cfloat
+     , count(cfloat)
+FROM api_scan
+WHERE sint24 = 0 and (sint8 = 0 or sint8 = 1)
+GROUP BY cfloat;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Formatting int16
+let QUERY=
+SELECT sint16
+     , count(sint16)
+FROM api_scan
+GROUP BY sint16;|
+--source suite/ronsql/include/ronsql_compare.inc
+#WHERE sint24 = 0 and (sint8 = 0 or sint8 = 1)
+
+--echo Avg signed int16
+let QUERY=
+SELECT cchar as char_gr
+     , sum(sint16)
+     , count(sint16)
+     , avg(sint16)
+FROM api_scan
+GROUP BY cchar;|
+#todo Remove this canonicalization when DECIMAL is fixed
+--let $canonicalization_script=s/.\0000\$//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Avg unsigned int16
+let QUERY=
+SELECT cchar as char_gr
+     , sum(uint16)
+     , count(uint16)
+     , avg(uint16)
+FROM api_scan
+GROUP BY cchar;|
+#todo Remove this canonicalization when DECIMAL is fixed
+--let $canonicalization_script=s/.\0000\$//;s/(\.3333\$)/.333333333336/;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Avg float
+let QUERY=
+SELECT cchar as char_gr
+     , sum(cfloat)
+     , count(cfloat)
+     , avg(cfloat)
+FROM api_scan
+GROUP BY cchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Avg double
+let QUERY=
+SELECT cchar as char_gr
+     , sum(cdouble)
+     , count(cdouble)
+     , avg(cdouble)
+FROM api_scan
+GROUP BY cchar;|
+--let $canonicalization_script=s/(16073876846895\.29)[79]/\1/g;s/(5357958948965)(\.1|\.099)/\1/g;s/(20787937496592\.4)02/\1/;s/(6929312498864\.13)[34]/\1/;
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo Cleanup
+DELIMITER ;|
+DROP TABLE api_scan;

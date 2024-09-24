@@ -47,7 +47,7 @@
 
 MYSQL *CreateMySQLConnectionDataCluster() {
   auto conf              = globalConfigs;
-  auto connection_string = globalConfigs.testing.generate_mysqld_connect_string_data_cluster();
+  auto connection_string = globalConfigs.testing.mySQL.generate_mysqld_connect_string();
   // TODO debug logger
   std::cout << "Connecting to data mysqld with connection string: " << connection_string
             << std::endl;
@@ -67,7 +67,7 @@ MYSQL *CreateMySQLConnectionDataCluster() {
 MYSQL *CreateMySQLConnectionMetadataCluster() {
   auto conf = globalConfigs.get_all();
   // auto connection_string =
-  // globalConfigs.testing.generate_mysqld_connect_string_metadata_cluster();
+  // globalConfigs.testing.mySQLMetadataCluster.generate_mysqld_connect_string();
   // TODO debug logger
   MYSQL *dbConnection = mysql_init(nullptr);
 
@@ -787,7 +787,7 @@ class FeatureStoreTest : public ::testing::Test {
   static void SetUpTestSuite() {
     setenv("RUNNING_UNIT_TESTS", "1", 1);
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
-                                                              globalConfigs.ronDbMetaDataCluster);
+                                                              globalConfigs.ronDBMetadataCluster);
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
       errno = status.http_code;
       exit(errno);
@@ -1021,7 +1021,7 @@ class BatchFeatureStoreTest : public ::testing::Test {
   static void SetUpTestSuite() {
     setenv("RUNNING_UNIT_TESTS", "1", 1);
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
-                                                              globalConfigs.ronDbMetaDataCluster);
+                                                              globalConfigs.ronDBMetadataCluster);
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
       errno = status.http_code;
       exit(errno);

@@ -1,5 +1,6 @@
 # -*- cperl -*-
 # Copyright (c) 2007, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -354,6 +355,30 @@ my @mysqld_rules = (
   { 'secure-file-priv' => sub { return shift->{ARGS}->{vardir}; }
   },);
 
+sub fix_log_rdrs {
+  my ($self, $config, $group_name, $group) = @_;
+  my $dir = $self->{ARGS}->{vardir};
+    return "$dir/log/$group_name.log";
+}
+
+sub fix_log_error_rdrs {
+  my ($self, $config, $group_name, $group) = @_;
+  my $dir = $self->{ARGS}->{vardir};
+  return "$dir/log/$group_name.err";
+}
+
+my @rdrs_rules = (
+  { '#host'         => \&fix_host },
+  { '#log-output'   => \&fix_log_rdrs },
+  { '#log-error'    => \&fix_log_error_rdrs },
+  { 'port'          => \&fix_port },
+  { 'pid-file'      => \&fix_pidfile },
+  { 'bind-address'  => \&fix_bind_address },
+  #{ 'ssl-ca'        => \&fix_ssl_ca },
+  #{ 'ssl-cert'      => \&fix_ssl_server_cert },
+  #{ 'ssl-key'       => \&fix_ssl_server_key },
+);
+
 if (IS_WINDOWS) {
   # For simplicity, we use the same names for shared memory and
   # named pipes.
@@ -486,7 +511,7 @@ sub post_check_client_group {
 sub post_check_client_groups {
   my ($self, $config) = @_;
 
-  my $first_mysqld = $config->first_like('mysqld.');
+  my $first_mysqld = $config->first_like('mysqld\.');
 
   return unless $first_mysqld;
 
@@ -495,7 +520,7 @@ sub post_check_client_groups {
   $self->post_check_client_group($config, 'client', $first_mysqld->name());
 
   # Then generate [client.<suffix>] for each [mysqld.<suffix>].
-  foreach my $mysqld ($config->like('mysqld.')) {
+  foreach my $mysqld ($config->like('mysqld\.')) {
     $self->post_check_client_group($config, 'client' . $mysqld->after('mysqld'),
                                    $mysqld->name());
   }
@@ -546,7 +571,7 @@ sub post_fix_mysql_cluster_section {
   foreach my $group ($config->like('cluster_config\.\w*$')) {
     my @urls;
     # Generate ndb_connectstring for this cluster
-    foreach my $ndb_mgmd ($config->like('cluster_config.ndb_mgmd.')) {
+    foreach my $ndb_mgmd ($config->like('cluster_config\.ndb_mgmd\.')) {
       if ($ndb_mgmd->suffix() eq $group->suffix()) {
         my $host = $ndb_mgmd->value('HostName');
         my $port = $ndb_mgmd->value('PortNumber');
@@ -563,7 +588,7 @@ sub post_fix_mysql_cluster_section {
 
     # Add ndb_connectstring to each ndbd connected to this
     # cluster.
-    foreach my $ndbd ($config->like('cluster_config.ndbd.')) {
+    foreach my $ndbd ($config->like('cluster_config\.ndbd\.')) {
       if ($ndbd->suffix() eq $group->suffix()) {
         my $after = $ndbd->after('cluster_config.ndbd');
         $config->insert("ndbd$after",
@@ -573,7 +598,7 @@ sub post_fix_mysql_cluster_section {
 
     # Add ndb_connectstring to each ndb_mgmd connected to this
     # cluster.
-    foreach my $ndb_mgmd ($config->like('cluster_config.ndb_mgmd.')) {
+    foreach my $ndb_mgmd ($config->like('cluster_config\.ndb_mgmd\.')) {
       if ($ndb_mgmd->suffix() eq $group->suffix()) {
         my $after = $ndb_mgmd->after('cluster_config.ndb_mgmd');
         $config->insert("ndb_mgmd$after",
@@ -583,7 +608,7 @@ sub post_fix_mysql_cluster_section {
 
     # Add ndb_connectstring to each mysqld connected to this
     # cluster.
-    foreach my $mysqld ($config->like('cluster_config.mysqld.')) {
+    foreach my $mysqld ($config->like('cluster_config\.mysqld\.')) {
       if ($mysqld->suffix() eq $group->suffix()) {
         my $after = $mysqld->after('cluster_config.mysqld');
         $config->insert("mysqld$after",
@@ -717,6 +742,15 @@ sub run_generate_sections_from_cluster_config {
       }
     }
   }
+  # The cluster_config section is for ndb_mgmd to read. From ndb_mgmd's
+  # perspective, rdrs is nothing else than a generic ndbapi node. Therefore, we
+  # cannot put rdrs configuration there. Instead, we put it under rdrs.N.X.
+  # These sections are only for mtr use.
+  my $vardir = $self->{ARGS}->{vardir};
+  foreach my $rdrsgroup ($config->like('rdrs\.\w*\.\w*$')) {
+    my $name = $rdrsgroup->name();
+    $config->insert("$name", 'config-file', "$vardir/${name}_config.json");
+  }
 }
 
 sub new_config {
@@ -763,17 +797,19 @@ sub new_config {
   $self->run_section_rules($config, 'cluster_config\.\w',
                            ({ 'CODE' => \&track_allocated_nodeid }));
 
-  $self->run_section_rules($config, 'cluster_config.ndb_mgmd.',
+  $self->run_section_rules($config, 'cluster_config\.ndb_mgmd\.',
                            @ndb_mgmd_rules);
 
-  $self->run_section_rules($config, 'ndb_mgmd.',
+  $self->run_section_rules($config, 'ndb_mgmd\.',
     ({ 'cluster-config-suffix' => \&fix_cluster_config_suffix },
      { 'bind-address' => \&fix_bind_address },
     ));
 
-  $self->run_section_rules($config, 'cluster_config.ndbd', @ndbd_rules);
+  $self->run_section_rules($config, 'cluster_config\.ndbd', @ndbd_rules);
 
-  $self->run_section_rules($config, 'mysqld.', @mysqld_rules);
+  $self->run_section_rules($config, 'mysqld\.', @mysqld_rules);
+
+  $self->run_section_rules($config, 'rdrs\.', @rdrs_rules);
 
   # [mysqlbinlog] need additional settings
   $self->run_rules_for_group($config, $config->insert('mysqlbinlog'),

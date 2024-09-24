@@ -36,7 +36,7 @@ FILE(WRITE "${RDRS_SIMDJSON_BINARY_DIR}/builder.sh"  "
     make install
     touch built
   else
-    echo Skipping Simdjson web framework as it is already built. Delete ${RDRS_SIMDJSON_INSTALL_DIR}/built to rebuilt it
+    echo Skipping Simdjson parsing library as it is already built. Delete ${RDRS_SIMDJSON_INSTALL_DIR}/built to rebuilt it
   fi"
 )
 

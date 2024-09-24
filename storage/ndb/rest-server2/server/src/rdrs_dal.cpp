@@ -20,6 +20,7 @@
 #include "rdrs_dal.h"
 #include "db_operations/pk/common.hpp"
 #include "db_operations/pk/pkr_operation.hpp"
+#include "db_operations/ronsql/ronsql_operation.hpp"
 #include "error_strings.h"
 #include "logger.hpp"
 #include "rdrs_dal.hpp"
@@ -39,6 +40,9 @@
 #include <iterator>
 #include <sstream>
 #include <memory>
+
+#include "storage/ndb/src/ronsql/RonSQLCommon.hpp"
+
 
 RDRSRonDBConnectionPool *rdrsRonDBConnectionPool = nullptr;
 
@@ -165,6 +169,28 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
       status = pkread.PerformOperation();
   )
   /* clang-format on */
+
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
+  return status;
+}
+
+//--------------------------------------------------------------------------------------------------
+
+RS_Status ronsql_dal(const char* database, RonSQLExecParams& ep) {
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  assert(ep.ndb == NULL);
+  assert(ndb_object != NULL);
+  ep.ndb = ndb_object;
+  const char* saved_database_name = ndb_object->getDatabaseName();
+  ndb_object->setDatabaseName(database);
+  status = ronsql_op(ep);
+  ndb_object->setDatabaseName(saved_database_name);
+  ep.ndb = NULL;
 
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
   return status;

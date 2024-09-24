@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,24 +17,28 @@
  * USA.
  */
 
-#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOG_HPP_
-#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOG_HPP_
+#include "ronsql_operation.hpp"
+#include "src/error_strings.h"
+#include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 
-#include "rdrs_dal.h"
-
-#include <string>
-
-class LogConfig {
-  // TODO implement me
- public:
-  std::string level;
-  std::string filePath;
-  int maxSizeMb;
-  int maxBackups;
-  int maxAge;
-  LogConfig();
-  RS_Status validate();
-  std::string string();
-};
-
-#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_LOG_HPP_
+RS_Status ronsql_op(RonSQLExecParams& params) {
+  std::basic_ostream<char>& err = *params.err_stream;
+  try
+  {
+    RonSQLPreparer executor(params);
+    executor.execute();
+    return RS_OK;
+  }
+  catch (RonSQLPreparer::TemporaryError& e)
+  {
+    err << "Caught temporary error: " << e.what() << std::endl;
+    return RS_SERVER_ERROR(ERROR_065);
+  }
+  catch (std::runtime_error& e)
+  {
+    err << "Caught exception: " << e.what() << std::endl;
+    return RS_SERVER_ERROR(ERROR_066);
+  }
+  // Should be unreachable
+  abort();
+}
