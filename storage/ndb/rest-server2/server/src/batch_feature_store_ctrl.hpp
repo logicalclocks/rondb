@@ -43,7 +43,6 @@ class BatchFeatureStoreCtrl : public drogon::HttpController<BatchFeatureStoreCtr
 };
 
 extern metadata::FeatureViewMetaDataCache batch_fvMetaCache;
-extern APIKeyCache batch_featureStore_apiKeyCache;
 
 unsigned checkFeatureStatus(const feature_store_data_structs::BatchFeatureStoreRequest &fsReq,
                             const metadata::FeatureViewMetadata &metadata,

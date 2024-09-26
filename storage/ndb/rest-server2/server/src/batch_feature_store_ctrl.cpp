@@ -37,7 +37,6 @@
 #include <vector>
 
 metadata::FeatureViewMetaDataCache batch_fvMetaCache;
-APIKeyCache batch_featureStore_apiKeyCache;
 
 void BatchFeatureStoreCtrl::batch_featureStore(
     const drogon::HttpRequestPtr &req,
