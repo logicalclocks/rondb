@@ -1,5 +1,6 @@
 # This include-file, or subroutine, executes a query with both mysql client and
 # ronsql_cli, then compares the results.
+--source include/have_util_sed.inc
 --echo == Query ==
 if ($QUERY!='')
 {
@@ -18,7 +19,8 @@ if ($QUERY=='')
 --let $QUERY_PARAMS = -D test $QUERY_PARAMS
 --exec $MYSQL $QUERY_PARAMS > $MYSQL_TMP_DIR/mysql.out
 if ($canonicalization_script) {
---exec sed -ri '$canonicalization_script' $MYSQL_TMP_DIR/mysql.out
+--exec sed -r '$canonicalization_script' $MYSQL_TMP_DIR/mysql.out > $MYSQL_TMP_DIR/mysql.out.canon
+--move_file $MYSQL_TMP_DIR/mysql.out.canon $MYSQL_TMP_DIR/mysql.out
 }
 --exec (head -n 1 $MYSQL_TMP_DIR/mysql.out && tail -n +2 $MYSQL_TMP_DIR/mysql.out | sort) > $MYSQL_TMP_DIR/mysql.out.sorted
 if ($show_all_results) {
@@ -28,7 +30,8 @@ if ($show_all_results) {
 }
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING $QUERY_PARAMS > $MYSQL_TMP_DIR/ronsql.out
 if ($canonicalization_script) {
---exec sed -ri '$canonicalization_script' $MYSQL_TMP_DIR/ronsql.out
+--exec sed -r '$canonicalization_script' $MYSQL_TMP_DIR/ronsql.out > $MYSQL_TMP_DIR/ronsql.out.canon
+--move_file $MYSQL_TMP_DIR/ronsql.out.canon $MYSQL_TMP_DIR/ronsql.out
 }
 --exec (head -n 1 $MYSQL_TMP_DIR/ronsql.out && tail -n +2 $MYSQL_TMP_DIR/ronsql.out | sort) > $MYSQL_TMP_DIR/ronsql.out.sorted
 if ($explain_ronsql) {
