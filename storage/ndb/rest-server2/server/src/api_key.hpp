@@ -39,6 +39,8 @@
 #include <NdbMutex.h>
 #include <NdbCondition.h>
 
+#define NUM_API_KEY_CACHES 1
+
 class APIKeyCache;
 APIKeyCache* start_api_key_cache();
 void stop_api_key_cache();
@@ -78,14 +80,16 @@ class APIKeyCache {
  public:
   APIKeyCache() : m_key_cache(), randomGenerator(std::random_device()()) {
     m_evicted = false;
-    m_rwLock = NdbMutex_Create();
+    for (int i = 0; i < NUM_API_KEY_CACHES; i++)
+      m_rwLock[i] = NdbMutex_Create();
     m_sleepLock = NdbMutex_Create();
     m_sleepCond = NdbCondition_Create();
   }
 
   ~APIKeyCache() {
     cleanup();
-    NdbMutex_Destroy(m_rwLock);
+    for (int i = 0; i < NUM_API_KEY_CACHES; i++)
+      NdbMutex_Destroy(m_rwLock[i]);
     NdbMutex_Destroy(m_sleepLock);
     NdbCondition_Destroy(m_sleepCond);
   }
@@ -104,23 +108,24 @@ class APIKeyCache {
 
  private:
   // API Key -> User Databases
-  std::unordered_map<std::string, UserDBs*> m_key_cache;
+  std::unordered_map<std::string, UserDBs*> m_key_cache[NUM_API_KEY_CACHES];
   std::mt19937 randomGenerator;
 
   bool m_evicted = false;
-  NdbMutex *m_rwLock;
+  NdbMutex *m_rwLock[NUM_API_KEY_CACHES];
   NdbMutex *m_sleepLock;
   NdbCondition *m_sleepCond;
 
   static RS_Status validate_api_key_format(const std::string &);
 
   void cleanup();
-  RS_Status update_cache(const std::string &);
+  RS_Status update_cache(const std::string &, Uint64 hash);
   RS_Status update_record(std::vector<std::string>, UserDBs *);
   RS_Status find_and_validate(const std::string &,
                               bool &,
                               bool &,
                               const std::vector<std::string> &,
+                              Uint64 hash,
                               bool);
 
   RS_Status authenticate_user(const std::string &, HopsworksAPIKey &);
