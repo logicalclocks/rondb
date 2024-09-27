@@ -31,8 +31,6 @@
 #include <ndb_global.h>
 #include <util/require.h>
 
-//--------------------------------------------------------------------------------------------------
-
 RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *node_ids,
                                          Uint32 node_ids_len, Uint32 connection_retries,
                                          Uint32 connection_retry_delay_in_sec) {
@@ -61,11 +59,9 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *
   this->connection_retries            = connection_retries;
   this->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
 
-  ndbConnection      = nullptr;
+  ndbConnection = nullptr;
   reconnectionThread = nullptr;
 }
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::Connect() {
 
@@ -84,7 +80,9 @@ RS_Status RDRSRonDBConnection::Connect() {
     require(ndbConnection == nullptr);
     int retCode   = 0;
     ndbConnection = new Ndb_cluster_connection(connection_string, node_ids[0]);
-    retCode       = ndbConnection->connect(connection_retries, connection_retry_delay_in_sec, 0);
+    retCode       = ndbConnection->connect(connection_retries,
+                                           connection_retry_delay_in_sec,
+                                           0);
     if (retCode != 0) {
       return RS_SERVER_ERROR(ERROR_002 + std::string(" RetCode: ") + std::to_string(retCode));
     }
@@ -94,7 +92,8 @@ RS_Status RDRSRonDBConnection::Connect() {
       return RS_SERVER_ERROR(
           ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode) +
           std::string(" Lastest Error: ") + std::to_string(ndbConnection->get_latest_error()) +
-          std::string(" Lastest Error Msg: ") + std::string(ndbConnection->get_latest_error_msg()));
+          std::string(" Lastest Error Msg: ") +
+          std::string(ndbConnection->get_latest_error_msg()));
     }
   }
 
@@ -107,12 +106,9 @@ RS_Status RDRSRonDBConnection::Connect() {
   return RS_OK;
 }
 
-//--------------------------------------------------------------------------------------------------
 RDRSRonDBConnection::~RDRSRonDBConnection() {
   Shutdown(true);
 }
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
 
@@ -141,7 +137,8 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
       }
 
       RDRSLogger::LOG_WARN(ERROR_033 + std::string(" Connection State: ") +
-                           std::to_string(connection_state) + std::string(" Reconnection State: ") +
+                           std::to_string(connection_state) +
+                           std::string(" Reconnection State: ") +
                            std::to_string(reconnection_in_progress));
       return RS_SERVER_ERROR(ERROR_033);
     }
@@ -170,8 +167,6 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
   }
 }
 
-//--------------------------------------------------------------------------------------------------
-
 void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *status) {
   {
     std::lock_guard<std::mutex> guard(connectionMutex);
@@ -191,8 +186,6 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *stat
   }
 }
 
-//--------------------------------------------------------------------------------------------------
-
 RonDB_Stats RDRSRonDBConnection::GetStats() {
   std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
 
@@ -200,13 +193,12 @@ RonDB_Stats RDRSRonDBConnection::GetStats() {
   return stats;
 }
 
-//--------------------------------------------------------------------------------------------------
-
 RS_Status RDRSRonDBConnection::Shutdown(bool end) {
 
   // wait for all NDB objects to return
   using namespace std::chrono;
-  Int64 startTime   = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  Int64 startTime   =
+    duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   Int64 timeElapsed = 0;
 
   if (end) {  // we are shutting down for good
@@ -226,8 +218,9 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     }
 
     if (expectedSize != sizeGot) {
-      RDRSLogger::LOG_WARN("Waiting to all NDB objects to return before shutdown. Expected Size: " +
-                           std::to_string(expectedSize) + " Have: " + std::to_string(sizeGot));
+      RDRSLogger::LOG_WARN(
+        "Waiting to all NDB objects to return before shutdown. Expected Size: " +
+        std::to_string(expectedSize) + " Have: " + std::to_string(sizeGot));
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
     } else {
       allNDBObjectsCountedFor = true;
@@ -265,9 +258,9 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
 
     // clean up stats
     stats.ndb_objects_available = 0;
-    stats.ndb_objects_count     = 0;
-    stats.ndb_objects_created   = 0;
-    stats.ndb_objects_deleted   = 0;
+    stats.ndb_objects_count = 0;
+    stats.ndb_objects_created = 0;
+    stats.ndb_objects_deleted = 0;
   }
 
   {
@@ -301,7 +294,6 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   }
 }
 
-//--------------------------------------------------------------------------------------------------
 RS_Status RDRSRonDBConnection::ReconnectHandler() {
 
   {
@@ -334,16 +326,12 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
   return RS_OK;
 }
 
-//--------------------------------------------------------------------------------------------------
-
 static void *reconnect_thread_wrapper(void *arg) {
   RDRSLogger::LOG_INFO("Reconnection thread has started running.");
   RDRSRonDBConnection *rdrsRonDBConnection = (RDRSRonDBConnection *)arg;
   rdrsRonDBConnection->ReconnectHandler();
   return NULL;
 }
-
-//--------------------------------------------------------------------------------------------------
 
 // Note it is only public for testing
 RS_Status RDRSRonDBConnection::Reconnect() {
@@ -374,5 +362,3 @@ RS_Status RDRSRonDBConnection::Reconnect() {
 
   return RS_OK;
 }
-
-//--------------------------------------------------------------------------------------------------
