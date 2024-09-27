@@ -66,7 +66,7 @@ GetFeatureMetadata(const std::shared_ptr<metadata::FeatureViewMetadata> &metadat
                    const feature_store_data_structs::MetadataRequest &metaRequest);
 std::shared_ptr<RestErrorCode> TranslateRonDbError(int code, const std::string &err);
 std::tuple<std::vector<std::vector<char>>, feature_store_data_structs::FeatureStatus,
-           std::vector<feature_store_data_structs::DetailedStatus>, std::shared_ptr<RestErrorCode>>
+  std::vector<feature_store_data_structs::DetailedStatus>, std::shared_ptr<RestErrorCode>>
 GetFeatureValues(const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
                  const std::unordered_map<std::string, std::vector<char>> &entries,
                  const metadata::FeatureViewMetadata &featureView, bool includeDetailedStatus);
