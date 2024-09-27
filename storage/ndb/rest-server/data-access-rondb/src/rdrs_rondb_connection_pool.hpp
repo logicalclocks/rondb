@@ -90,7 +90,8 @@ class RDRSRonDBConnectionPool {
    * @param node_ids An array of node IDs to associate with this connection.
    * @param node_ids_len The length of the 'node_ids' array.
    * @param connection_retries The maximum number of connection retries in case of failure.
-   * @param connection_retry_delay_in_sec The delay in seconds between connection retry attempts.
+   * @param connection_retry_delay_in_sec The delay in seconds between connection retry
+   * attempts.
    *
    * @return RS_Status A struct representing the status of the operation:
    *
