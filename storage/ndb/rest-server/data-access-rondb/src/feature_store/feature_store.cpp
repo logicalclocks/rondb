@@ -834,8 +834,6 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object,
     (*tdfs + i)->td_join_id  = tdfsv[i].td_join_id;
     (*tdfs + i)->idx = tdfsv[i].idx;
     (*tdfs + i)->label = tdfsv[i].label;
-    (*tdfs + i)->transformation_function_id =
-      tdfsv[i].transformation_function_id;
     (*tdfs + i)->feature_view_id = tdfsv[i].feature_view_id;
     memcpy((*tdfs + i)->name, tdfsv[i].name,
            strlen(tdfsv[i].name) + 1);  // +1 for '\0'
