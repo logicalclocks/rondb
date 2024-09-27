@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -56,7 +56,8 @@ EN_Status copy_ndb_str_to_buffer(std::vector<char> &src, void *dst, uint32_t off
 
     RS_Status status = Unquote(src);
     if (status.http_code != SUCCESS) {
-      std::string msg = "Failed to unquote string. Error message: " + std::string(status.message);
+      std::string msg =
+        "Failed to unquote string. Error message: " + std::string(status.message);
       return EN_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest), 0,
                        msg.c_str());
     }
@@ -374,9 +375,8 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
       } else {
         // Invalid UTF-8 or improper single character in single quotes
         return CRS_Status(
-                   static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                   "invalid syntax: invalid UTF-8 or improper single character in single quotes")
-            .status;
+          static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+          "invalid syntax: invalid UTF-8 or improper single character in single quotes").status;
       }
     } else {
       // Handle quoted strings with escape sequences
