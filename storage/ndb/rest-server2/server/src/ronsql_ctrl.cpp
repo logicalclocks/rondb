@@ -52,8 +52,10 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
   RonSQLParams reqStruct;
 
   RS_Status status = jsonParser.ronsql_parse(
-      simdjson::padded_string_view(jsonParser.get_buffer().get(), length,
-                                   globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
+      simdjson::padded_string_view(
+        jsonParser.get_buffer().get(),
+        length,
+        globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
@@ -140,7 +142,9 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
        * [2] https://www.iana.org/assignments/media-types/application/json
        * [3] ../../extra/drogon/drogon-1.8.7/lib/src/HttpUtils.cc:565
        */
-      resp->setContentTypeCodeAndCustomString(drogon::CT_APPLICATION_JSON, "content-type: application/json; charset=US-ASCII\r\n");
+      resp->setContentTypeCodeAndCustomString(
+        drogon::CT_APPLICATION_JSON,
+        "content-type: application/json; charset=US-ASCII\r\n");
       break;
     case RonSQLExecParams::OutputFormat::TEXT:
       [[fallthrough]];
@@ -184,7 +188,8 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
   }
   else {
     resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
-    resp->setContentTypeCodeAndCustomString(drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+    resp->setContentTypeCodeAndCustomString(
+      drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
     resp->setBody(err_str);
   }
   callback(resp);
@@ -196,23 +201,19 @@ RS_Status ronsql_validate_database_name(std::string& database) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_EMPTY_IDENTIFIER,
-                        ERROR_049)
-          .status;
+                        ERROR_049).status;
     }
     if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_MAX_DB, ERROR_050)
-          .status;
+                        ERROR_CODE_MAX_DB, ERROR_050).status;
     }
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_INVALID_IDENTIFIER, ERROR_051)
-          .status;
+                        ERROR_CODE_INVALID_IDENTIFIER, ERROR_051).status;
     }
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_DB_NAME,
-                      (std::string(ERROR_051) + "; error: " + status.message).c_str())
-        .status;
+                      (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
   }
   return RS_OK;
 }
@@ -282,8 +283,7 @@ RS_Status ronsql_validate_and_init_params(RonSQLParams& req,
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_OPERATION_ID,
-                      (std::string(ERROR_055) + "; error: " + status.message).c_str())
-        .status;
+                      (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
   if (!req.operationId.empty()) {
     ep.operation_id = req.operationId.c_str();
     if (ep.output_format == RonSQLExecParams::OutputFormat::TEXT)
