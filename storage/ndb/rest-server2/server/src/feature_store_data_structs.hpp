@@ -40,7 +40,8 @@ class MetadataRequest {
         << "\n  featureName: "
         << (featureName.has_value() ? (featureName.value() ? "true" : "false") : "null")
         << "\n  featureType: "
-        << (featureType.has_value() ? (featureType.value() ? "true" : "false") : "null") << "\n}";
+        << (featureType.has_value() ? (featureType.value() ? "true" : "false") : "null")
+        << "\n}";
     return oss.str();
   }
 };
@@ -54,11 +55,11 @@ class OptionsRequest {
     std::ostringstream oss;
     oss << "OptionsRequest {"
         << "\n  validatePassedFeatures: "
-        << (validatePassedFeatures.has_value() ? (validatePassedFeatures.value() ? "true" : "false")
-                                               : "null")
+        << (validatePassedFeatures.has_value() ? (validatePassedFeatures.value() ?
+          "true" : "false") : "null")
         << "\n  includeDetailedStatus: "
-        << (includeDetailedStatus.has_value() ? (includeDetailedStatus.value() ? "true" : "false")
-                                              : "null")
+        << (includeDetailedStatus.has_value() ?
+          (includeDetailedStatus.value() ? "true" : "false") : "null")
         << "\n}";
     return oss.str();
   }
@@ -131,7 +132,8 @@ class FeatureStoreRequest {
   std::string featureViewName;   // json:"featureViewName" binding:"required"
   int featureViewVersion;        // json:"featureViewVersion" binding:"required"
   std::unordered_map<std::string, std::vector<char>> passedFeatures;  // json:"passedFeatures"
-  std::unordered_map<std::string, std::vector<char>> entries;  // json:"entries" binding:"required"
+  // json:"entries" binding:"required"
+  std::unordered_map<std::string, std::vector<char>> entries;
   MetadataRequest metadataRequest;                             // json:"metadataOptions"
   OptionsRequest optionsRequest;                               // json:"options"
   static RS_Status
