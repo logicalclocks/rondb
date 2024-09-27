@@ -29,7 +29,9 @@
 #define INDENT_INCREASE 2
 
 #define DEFINE_PRINTER(ValueDatatype, ...) \
-  void printJson(ValueDatatype& value, std::ostream& out, [[maybe_unused]] uint32_t indent) __VA_ARGS__
+  void printJson(ValueDatatype& value, \
+                 std::ostream& out, \
+                 [[maybe_unused]] uint32_t indent) __VA_ARGS__
 
 #define INDENT() std::string(indent, ' ')
 #define INDENT_INC() std::string(indent + INDENT_INCREASE, ' ')
