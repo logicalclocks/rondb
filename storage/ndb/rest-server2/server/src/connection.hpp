@@ -50,7 +50,8 @@ class RonDBConnection {
   ~RonDBConnection() {
     RS_Status status = shutdown_rondb_connection();
     if (status.http_code != SUCCESS) {
-      RDRSLogger::LOG_ERROR("Failed to shutdown RonDB connection: " + std::string(status.message));
+      RDRSLogger::LOG_ERROR(
+        "Failed to shutdown RonDB connection: " + std::string(status.message));
     }
   }
 
