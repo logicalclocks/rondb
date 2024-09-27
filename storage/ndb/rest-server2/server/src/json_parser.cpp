@@ -37,7 +37,8 @@
 
 class ConfigParseError : public std::runtime_error {
 public:
-  ConfigParseError(std::string message) : std::runtime_error("ConfigParseError"), m_error_message(message) {}
+  ConfigParseError(std::string message) :
+    std::runtime_error("ConfigParseError"), m_error_message(message) {}
   std::string m_error_message;
 };
 
@@ -154,11 +155,11 @@ RS_Status handle_parse_error(ConfigParseError& e,
         column++;
       }
     }
-    message += " before/at line " + std::to_string(line) + ", column " + std::to_string(column);
+    message += " before/at line " + std::to_string(line) +
+      ", column " + std::to_string(column);
   }
   return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                    message)
-      .status;
+                    message).status;
 }
 
 /*
@@ -168,7 +169,8 @@ RS_Status handle_parse_error(ConfigParseError& e,
 JSONParser* jsonParsers = nullptr;
 
 JSONParser::JSONParser() {
-  buffer = std::make_unique<char[]>(globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING);
+  buffer = std::make_unique<char[]>(
+    globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING);
 }
 
 std::unique_ptr<char[]> &JSONParser::get_buffer() {
@@ -512,7 +514,7 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
                     std::ostringstream oss;
                     oss << value;
                     std::string valueJson = oss.str();
-                    bytes                 = std::vector<char>(valueJson.begin(), valueJson.end());
+                    bytes = std::vector<char>(valueJson.begin(), valueJson.end());
                   }
                 }
                 pkReadFilter.value = bytes;
@@ -695,7 +697,8 @@ template<> void after_parsing(MySQL& value) { value.present_in_config_file = tru
 #undef CLASSDEFS
 #undef VECTOR
 
-RS_Status JSONParser::config_parse(const std::string &configsBody, AllConfigs &configsStruct) noexcept {
+RS_Status JSONParser::config_parse(const std::string &configsBody,
+                                   AllConfigs &configsStruct) noexcept {
   simdjson::padded_string paddedJson(configsBody);
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document doc;
@@ -1407,10 +1410,8 @@ RS_Status handle_simdjson_error(const simdjson::error_code &error,
   simdjson::error_code getLocationError = doc.current_location().get(currentLocation);
   if (getLocationError != simdjson::SUCCESS) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      error_message(error), "")
-        .status;
+                      error_message(error), "").status;
   }
   return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                    error_message(error), currentLocation)
-      .status;
+                    error_message(error), currentLocation).status;
 }
