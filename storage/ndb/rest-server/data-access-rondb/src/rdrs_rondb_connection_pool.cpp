@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -48,36 +48,40 @@ RS_Status RDRSRonDBConnectionPool::Init() {
 
 RS_Status RDRSRonDBConnectionPool::AddConnections(const char *connection_string,
                                                   unsigned int connection_pool_size,
-                                                  unsigned int *node_ids, unsigned int node_ids_len,
+                                                  unsigned int *node_ids,
+                                                  unsigned int node_ids_len,
                                                   unsigned int connection_retries,
                                                   unsigned int connection_retry_delay_in_sec) {
   require(connection_pool_size == 1);
-
-  dataConnection   = new RDRSRonDBConnection(connection_string, node_ids, node_ids_len,
-                                             connection_retries, connection_retry_delay_in_sec);
+  dataConnection   = new RDRSRonDBConnection(connection_string,
+                                             node_ids,
+                                             node_ids_len,
+                                             connection_retries,
+                                             connection_retry_delay_in_sec);
   RS_Status status = dataConnection->Connect();
   if (status.http_code != SUCCESS) {
     return status;
   }
-
   return RS_OK;
 }
 
-RS_Status RDRSRonDBConnectionPool::AddMetaConnections(const char *connection_string,
-                                                      unsigned int connection_pool_size,
-                                                      unsigned int *node_ids,
-                                                      unsigned int node_ids_len,
-                                                      unsigned int connection_retries,
-                                                      unsigned int connection_retry_delay_in_sec) {
+RS_Status RDRSRonDBConnectionPool::AddMetaConnections(
+  const char *connection_string,
+  unsigned int connection_pool_size,
+  unsigned int *node_ids,
+  unsigned int node_ids_len,
+  unsigned int connection_retries,
+  unsigned int connection_retry_delay_in_sec) {
   require(connection_pool_size == 1);
-
-  metadataConnection = new RDRSRonDBConnection(connection_string, node_ids, node_ids_len,
-                                               connection_retries, connection_retry_delay_in_sec);
+  metadataConnection = new RDRSRonDBConnection(connection_string,
+                                               node_ids,
+                                               node_ids_len,
+                                               connection_retries,
+                                               connection_retry_delay_in_sec);
   RS_Status status   = metadataConnection->Connect();
   if (status.http_code != SUCCESS) {
     return status;
   }
-
   return RS_OK;
 }
 
@@ -135,9 +139,11 @@ RonDB_Stats RDRSRonDBConnectionPool::GetStats() {
       dataConnectionStats.connection_state > metadataConnectionStats.connection_state
           ? dataConnectionStats.connection_state
           : metadataConnectionStats.connection_state;
-  merged_stats.is_reconnection_in_progress = dataConnectionStats.is_reconnection_in_progress |
-                                             metadataConnectionStats.is_reconnection_in_progress;
-  merged_stats.is_shutdown = dataConnectionStats.is_shutdown | metadataConnectionStats.is_shutdown;
+  merged_stats.is_reconnection_in_progress =
+    dataConnectionStats.is_reconnection_in_progress |
+    metadataConnectionStats.is_reconnection_in_progress;
+  merged_stats.is_shutdown =
+    dataConnectionStats.is_shutdown | metadataConnectionStats.is_shutdown;
   merged_stats.ndb_objects_available =
       dataConnectionStats.ndb_objects_available + metadataConnectionStats.ndb_objects_available;
   merged_stats.ndb_objects_count =
