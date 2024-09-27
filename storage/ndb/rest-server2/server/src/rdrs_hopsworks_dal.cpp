@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -88,9 +88,9 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   }
 
   NdbRecAttr *user_id = scanOp->getValue("user_id");
-  NdbRecAttr *secret  = scanOp->getValue("secret");
-  NdbRecAttr *salt    = scanOp->getValue("salt");
-  NdbRecAttr *name    = scanOp->getValue("name");
+  NdbRecAttr *secret = scanOp->getValue("secret");
+  NdbRecAttr *salt = scanOp->getValue("salt");
+  NdbRecAttr *name = scanOp->getValue("name");
 
   assert(API_KEY_SECRET_SIZE == (Uint32)table_dict->getColumn("secret")->getSizeInBytes());
   assert(API_KEY_SALT_SIZE == (Uint32)table_dict->getColumn("salt")->getSizeInBytes());
@@ -160,22 +160,14 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
       api_key->user_id = user_id->int32_value();
     } while ((check = scanOp->nextResult(false)) == 0);
   }
-
-  // check for errors happened during the reading process
   NdbError error = scanOp->getNdbError();
-
-  // As we are at the end we will first close the transaction and then deal with the error
   ndb_object->closeTransaction(tx);
-
-  // storage/ndb/src/ndbapi/ndberror.cpp
   if (error.code != 4120 /*Scan already complete*/) {
     return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_api_key_int");
   }
-
   if (count == 0) {
     return RS_CLIENT_404_ERROR();
   }
-
   return RS_OK;
 }
 
@@ -186,13 +178,10 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
     return status;
   }
 
-  /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
      status = find_api_key_int(ndb_object, prefix, api_key);
      HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, API_KEY)});
   )
-  /* clang-format on */
-
   rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
   return status;
 }
