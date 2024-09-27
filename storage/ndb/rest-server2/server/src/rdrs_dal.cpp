@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -46,23 +46,18 @@
 
 RDRSRonDBConnectionPool *rdrsRonDBConnectionPool = nullptr;
 
-//--------------------------------------------------------------------------------------------------
-
 RS_Status init() {
   // disable buffered stdout
   setbuf(stdout, NULL);
 
   // Initialize NDB Connection and Object Pool
   rdrsRonDBConnectionPool = new RDRSRonDBConnectionPool();
-  RS_Status status        = rdrsRonDBConnectionPool->Init();
+  RS_Status status = rdrsRonDBConnectionPool->Init();
   if (status.http_code != SUCCESS) {
     return status;
   }
-
   return RS_OK;
 }
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status add_data_connection(const char *connection_string, unsigned int connection_pool_size,
                               unsigned int *node_ids, unsigned int node_ids_len,
@@ -80,8 +75,6 @@ RS_Status add_data_connection(const char *connection_string, unsigned int connec
   return RS_OK;
 }
 
-//--------------------------------------------------------------------------------------------------
-
 RS_Status add_metadata_connection(const char *connection_string, unsigned int connection_pool_size,
                                   unsigned int *node_ids, unsigned int node_ids_len,
                                   unsigned int connection_retries,
@@ -97,44 +90,34 @@ RS_Status add_metadata_connection(const char *connection_string, unsigned int co
   return RS_OK;
 }
 
-//--------------------------------------------------------------------------------------------------
-
 RS_Status set_data_cluster_op_retry_props(const unsigned int retry_cont,
                                           const unsigned int rety_initial_delay,
                                           const unsigned int jitter) {
-  DATA_CONN_OP_RETRY_COUNT               = retry_cont;
+  DATA_CONN_OP_RETRY_COUNT = retry_cont;
   DATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS = rety_initial_delay;
-  DATA_CONN_OP_RETRY_JITTER_IN_MS        = jitter;
+  DATA_CONN_OP_RETRY_JITTER_IN_MS = jitter;
 
   return RS_OK;
 }
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status set_metadata_cluster_op_retry_props(const unsigned int retry_cont,
                                               const unsigned int rety_initial_delay,
                                               const unsigned int jitter) {
-  METADATA_CONN_OP_RETRY_COUNT               = retry_cont;
+  METADATA_CONN_OP_RETRY_COUNT = retry_cont;
   METADATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS = rety_initial_delay;
-  METADATA_CONN_OP_RETRY_JITTER_IN_MS        = jitter;
+  METADATA_CONN_OP_RETRY_JITTER_IN_MS = jitter;
 
   return RS_OK;
 }
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status shutdown_connection() {
   delete rdrsRonDBConnectionPool;
   return RS_OK;
 }
 
-//--------------------------------------------------------------------------------------------------
-
 RS_Status reconnect() {
   return rdrsRonDBConnectionPool->Reconnect();
 }
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   Ndb *ndb_object  = nullptr;
@@ -154,8 +137,6 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   return status;
 }
 
-//--------------------------------------------------------------------------------------------------
-
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs) {
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
@@ -163,18 +144,14 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
     return status;
   }
 
-  /* clang-format off */
   DATA_OP_RETRY_HANDLER(
       PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
       status = pkread.PerformOperation();
   )
-  /* clang-format on */
 
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
   return status;
 }
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status ronsql_dal(const char* database, RonSQLExecParams* ep) {
   Ndb *ndb_object  = nullptr;
@@ -196,22 +173,18 @@ RS_Status ronsql_dal(const char* database, RonSQLExecParams* ep) {
   return status;
 }
 
-//--------------------------------------------------------------------------------------------------
-
 /**
  * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats) {
-  RonDB_Stats ret              = rdrsRonDBConnectionPool->GetStats();
-  stats->ndb_objects_created   = ret.ndb_objects_created;
-  stats->ndb_objects_deleted   = ret.ndb_objects_deleted;
-  stats->ndb_objects_count     = ret.ndb_objects_count;
+  RonDB_Stats ret = rdrsRonDBConnectionPool->GetStats();
+  stats->ndb_objects_created = ret.ndb_objects_created;
+  stats->ndb_objects_deleted = ret.ndb_objects_deleted;
+  stats->ndb_objects_count = ret.ndb_objects_count;
   stats->ndb_objects_available = ret.ndb_objects_available;
-  stats->connection_state      = ret.connection_state;
+  stats->connection_state = ret.connection_state;
   return RS_OK;
 }
-
-//--------------------------------------------------------------------------------------------------
 
 /**
  * Register callbacks
