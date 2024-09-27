@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -42,8 +42,10 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
     dataClusterNodeIDsMem[i] = static_cast<unsigned int>(rondbDataCluster.nodeIDs[i]);
   }
 
-  ret = add_data_connection(csd.c_str(), rondbDataCluster.connectionPoolSize,
-                            dataClusterNodeIDsMem.get(), rondbDataCluster.nodeIDs.size(),
+  ret = add_data_connection(csd.c_str(),
+                            rondbDataCluster.connectionPoolSize,
+                            dataClusterNodeIDsMem.get(),
+                            rondbDataCluster.nodeIDs.size(),
                             rondbDataCluster.connectionRetries,
                             rondbDataCluster.connectionRetryDelayInSec);
 
@@ -64,8 +66,10 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
   for (size_t i = 0; i < rondbMetaDataCluster.nodeIDs.size(); ++i)
     metaClusterNodeIDsMem[i] = static_cast<unsigned int>(rondbMetaDataCluster.nodeIDs[i]);
 
-  ret = add_metadata_connection(csmd.c_str(), rondbMetaDataCluster.connectionPoolSize,
-                                metaClusterNodeIDsMem.get(), rondbMetaDataCluster.nodeIDs.size(),
+  ret = add_metadata_connection(csmd.c_str(),
+                                rondbMetaDataCluster.connectionPoolSize,
+                                metaClusterNodeIDsMem.get(),
+                                rondbMetaDataCluster.nodeIDs.size(),
                                 rondbMetaDataCluster.connectionRetries,
                                 rondbMetaDataCluster.connectionRetryDelayInSec);
 
