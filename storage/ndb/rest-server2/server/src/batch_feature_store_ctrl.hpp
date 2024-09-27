@@ -35,11 +35,14 @@
 class BatchFeatureStoreCtrl : public drogon::HttpController<BatchFeatureStoreCtrl> {
  public:
   METHOD_LIST_BEGIN
-  ADD_METHOD_TO(BatchFeatureStoreCtrl::batch_featureStore, BATCH_FEATURE_STORE_PATH, drogon::Post);
+  ADD_METHOD_TO(BatchFeatureStoreCtrl::batch_featureStore,
+                BATCH_FEATURE_STORE_PATH,
+                drogon::Post);
   METHOD_LIST_END
 
-  static void batch_featureStore(const drogon::HttpRequestPtr &req,
-                                 std::function<void(const drogon::HttpResponsePtr &)> &&callback);
+  static void batch_featureStore(
+    const drogon::HttpRequestPtr &req,
+    std::function<void(const drogon::HttpResponsePtr &)> &&callback);
 };
 
 extern metadata::FeatureViewMetaDataCache batch_fvMetaCache;
