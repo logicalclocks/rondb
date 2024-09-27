@@ -90,8 +90,8 @@ RS_Status validate_operation_id(const std::string &opId) {
   if (static_cast<uint32_t>(opId.length()) > operationIdMaxSize) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_IDENTIFIER_LENGTH,
-                      (std::string(ERROR_041) + " " + std::to_string(operationIdMaxSize)).c_str())
-        .status;
+                      (std::string(ERROR_041) + " " +
+                      std::to_string(operationIdMaxSize)).c_str()).status;
   }
   return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)).status;
 }
@@ -151,7 +151,8 @@ RS_Status PKReadFilter::validate() {
 PKReadPath::PKReadPath() : db(), table() {
 }
 
-PKReadPath::PKReadPath(const std::string &db, const std::string &table) : db(db), table(table) {
+PKReadPath::PKReadPath(const std::string &db,
+                       const std::string &table) : db(db), table(table) {
 }
 
 PKReadParams::PKReadParams() : method(POST), path(), filters(), readColumns(), operationId() {
@@ -180,7 +181,8 @@ PKReadParams::PKReadParams(const std::string &method, const std::string &db,
 
 std::string PKReadParams::to_string() {
   std::stringstream ss;
-  ss << "PKReadParams: { path: { db: " << path.db << ", table: " << path.table << " }, filters: [";
+  ss << "PKReadParams: { path: { db: " << path.db << ", table: " << path.table
+     << " }, filters: [";
   for (auto &filter : filters) {
     ss << "{ column: " << filter.column;
     ss << ", value with each byte separately: ";
@@ -191,7 +193,8 @@ std::string PKReadParams::to_string() {
   }
   ss << "], readColumns: [";
   for (auto &readColumn : readColumns) {
-    ss << "{ column: " << readColumn.column << ", returnType: " << readColumn.returnType << " }, ";
+    ss << "{ column: " << readColumn.column << ", returnType: "
+       << readColumn.returnType << " }, ";
   }
   ss << "], operationId: " << operationId << " }";
   return ss.str();
@@ -202,58 +205,51 @@ RS_Status PKReadParams::validate() {
 
   if (method.empty()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_METHOD, ERROR_062)
-        .status;
+                      ERROR_CODE_INVALID_METHOD, ERROR_062).status;
   }
   RS_Status status = validate_db_identifier(path.db);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_EMPTY_IDENTIFIER,
-                        (std::string(ERROR_049) + ": " + path.db).c_str())
-          .status;
+                        (std::string(ERROR_049) + ": " + path.db).c_str()).status;
     if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_MAX_DB, (std::string(ERROR_050) + ": " + path.db).c_str())
-          .status;
+                        ERROR_CODE_MAX_DB, (std::string(ERROR_050) + ": " +
+                        path.db).c_str()).status;
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_IDENTIFIER,
-                        "database name contains invalid characters")
-          .status;
+                        "database name contains invalid characters").status;
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_DB_NAME,
-                      (std::string(ERROR_051) + "; error: " + status.message).c_str())
-        .status;
+                      (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
   }
 
   status = validate_db_identifier(path.table);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_MIN_TABLE, (std::string(ERROR_052) + ": " + path.table).c_str())
-          .status;
+                        ERROR_CODE_MIN_TABLE, (std::string(ERROR_052) + ": " +
+                        path.table).c_str()).status;
     if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_MAX_TABLE, (std::string(ERROR_053) + ": " + path.table).c_str())
-          .status;
+                        ERROR_CODE_MAX_TABLE, (std::string(ERROR_053) + ": " +
+                        path.table).c_str()).status;
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_IDENTIFIER,
-                        "table name contains invalid characters")
-          .status;
+                        "table name contains invalid characters").status;
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_TABLE_NAME,
-                      (std::string(ERROR_054) + "; error: " + status.message).c_str())
-        .status;
+                      (std::string(ERROR_054) + "; error: " + status.message).c_str()).status;
   }
 
   status = validate_operation_id(operationId);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_OPERATION_ID,
-                      (std::string(ERROR_055) + "; error: " + status.message).c_str())
-        .status;
+                      (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
 
   // make sure filters is not empty
   // if (filters.empty()) {
@@ -276,8 +272,7 @@ RS_Status PKReadParams::validate() {
     if (existingFilters.find(filter.column) != existingFilters.end())
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_UNIQUE_FILTER,
-                        (std::string(ERROR_057) + ": " + filter.column).c_str())
-          .status;
+                        (std::string(ERROR_057) + ": " + filter.column).c_str()).status;
     existingFilters[filter.column] = true;
   }
 
@@ -288,23 +283,19 @@ RS_Status PKReadParams::validate() {
       if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
         return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                           ERROR_CODE_EMPTY_IDENTIFIER,
-                          (std::string(ERROR_038) + ": " + readColumn.column).c_str())
-            .status;
+                          (std::string(ERROR_038) + ": " + readColumn.column).c_str()).status;
       if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
         return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                           ERROR_CODE_IDENTIFIER_TOO_LONG,
-                          (std::string(ERROR_039) + ": " + readColumn.column).c_str())
-            .status;
+                          (std::string(ERROR_039) + ": " + readColumn.column).c_str()).status;
       if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
         return CRS_Status(
                    static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                    ERROR_CODE_INVALID_IDENTIFIER,
-                   "read column name: contains invalid characters")
-            .status;
+                   "read column name: contains invalid characters").status;
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_READ_COLUMN_NAME,
-                        (std::string(ERROR_059) + "; error: " + status.message).c_str())
-          .status;
+                        (std::string(ERROR_059) + "; error: " + status.message).c_str()).status;
     }
   }
 
@@ -316,14 +307,11 @@ RS_Status PKReadParams::validate() {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_INVALID_READ_COLUMNS,
                         (std::string(ERROR_060) + ". '" + readColumn.column +
-                         "' already included in filter")
-                            .c_str())
-          .status;
+                         "' already included in filter").c_str()).status;
     if (existingCols.find(readColumn.column) != existingCols.end())
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         ERROR_CODE_UNIQUE_READ_COLUMN,
-                        (std::string(ERROR_061) + ": " + readColumn.column).c_str())
-          .status;
+                        (std::string(ERROR_061) + ": " + readColumn.column).c_str()).status;
     existingCols[readColumn.column] = true;
   }
 
@@ -399,7 +387,8 @@ std::string PKReadResponseJSON::to_string(int indent, bool batch) const {
   return ss.str();
 }
 
-std::string PKReadResponseJSON::batch_to_string(const std::vector<PKReadResponseJSON> &responses) {
+std::string PKReadResponseJSON::batch_to_string(
+  const std::vector<PKReadResponseJSON> &responses) {
   std::stringstream ss;
   ss << "{" << std::endl;
   ss << "  \"result\": [";

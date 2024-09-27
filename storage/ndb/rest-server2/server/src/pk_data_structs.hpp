@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -56,8 +56,8 @@ class PKReadPath {
  public:
   PKReadPath();
   PKReadPath(const std::string &, const std::string &);
-  std::string db;     // json:"db" uri:"db"  binding:"required,min=1,max=64"
-  std::string table;  // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
+  std::string db;   // json:"db" uri:"db"  binding:"required,min=1,max=64"
+  std::string table;// Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
 };
 
 class PKReadParams {
@@ -84,19 +84,18 @@ struct Column {
 
 class PKReadResponse {
  public:
-  PKReadResponse()                                                                = default;
-  virtual void init()                                                             = 0;
-  virtual void setOperationID(std::string &opID)                                  = 0;
+  PKReadResponse()= default;
+  virtual void init() = 0;
+  virtual void setOperationID(std::string &opID)= 0;
   virtual void setColumnData(std::string &column, const std::vector<char> &value) = 0;
-  virtual std::string to_string() const                                           = 0;
-
+  virtual std::string to_string() const = 0;
   virtual ~PKReadResponse() = default;
 };
 
 class PKReadResponseJSON : public PKReadResponse {
  private:
-  drogon::HttpStatusCode code;  // json:"code"    form:"code"    binding:"required"
-  std::string operationID;      // json:"operationId"    form:"operation-id"    binding:"omitempty"
+  drogon::HttpStatusCode code;// json:"code"    form:"code"    binding:"required"
+  std::string operationID;// json:"operationId"    form:"operation-id"    binding:"omitempty"
   std::map<std::string, std::vector<char>>
       data;  // json:"data"           form:"data"            binding:"omitempty"
 
