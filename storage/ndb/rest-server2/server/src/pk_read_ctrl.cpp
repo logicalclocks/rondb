@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -60,8 +60,10 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   PKReadParams reqStruct(db, table);
 
   RS_Status status = jsonParser.pk_parse(
-      simdjson::padded_string_view(jsonParser.get_buffer().get(), length,
-                                   globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
+      simdjson::padded_string_view(
+        jsonParser.get_buffer().get(),
+        length,
+        globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
@@ -84,7 +86,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     status       = authenticate(api_key, reqStruct);
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k401Unauthorized);
       callback(resp);
@@ -98,7 +101,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
 
     status = create_native_request(reqStruct, reqBuff.buffer, respBuff.buffer);
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
