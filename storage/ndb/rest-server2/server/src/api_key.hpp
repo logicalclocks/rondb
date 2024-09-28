@@ -22,7 +22,6 @@
 
 #include "rdrs_hopsworks_dal.h"
 #include "pk_data_structs.hpp"
-#include "cache.hpp"
 
 #include <atomic>
 #include <memory>

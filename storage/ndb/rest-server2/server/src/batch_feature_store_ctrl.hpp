@@ -45,8 +45,6 @@ class BatchFeatureStoreCtrl : public drogon::HttpController<BatchFeatureStoreCtr
     std::function<void(const drogon::HttpResponsePtr &)> &&callback);
 };
 
-extern metadata::FeatureViewMetaDataCache batch_fvMetaCache;
-
 unsigned checkFeatureStatus(const feature_store_data_structs::BatchFeatureStoreRequest &fsReq,
                             const metadata::FeatureViewMetadata &metadata,
                             std::vector<feature_store_data_structs::FeatureStatus> &status);

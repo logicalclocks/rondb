@@ -29,6 +29,7 @@
 #include "rdrs_dal.hpp"
 #include "src/constants.hpp"
 #include "metadata.hpp"
+#include "fs_cache.hpp"
 #include "error_strings.h"
 
 #include <cstddef>
@@ -41,8 +42,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-metadata::FeatureViewMetaDataCache fvMetaCache;
 
 std::shared_ptr<RestErrorCode>
   ValidatePrimaryKey(const std::unordered_map<std::string,
@@ -557,10 +556,10 @@ void FeatureStoreCtrl::featureStore(
     return;
   }
   // Validate
-  auto [metadata, err] = fvMetaCache.Get(reqStruct.featureStoreName,
-                                         reqStruct.featureViewName,
-                                         reqStruct.featureViewVersion);
-
+  auto [metadata, err] =
+    metadata::FeatureViewMetadataCache_Get(reqStruct.featureStoreName,
+                                           reqStruct.featureViewName,
+                                           reqStruct.featureViewVersion);
   if (unlikely(err != nullptr)) {
     resp->setBody(err->Error());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
