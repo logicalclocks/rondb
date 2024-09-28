@@ -26,6 +26,7 @@
 #include "feature_store_error_code.hpp"
 #include "json_parser.hpp"
 #include "metadata.hpp"
+#include "fs_cache.hpp"
 #include "pk_data_structs.hpp"
 
 #include <drogon/HttpTypes.h>
@@ -35,8 +36,6 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
-
-metadata::FeatureViewMetaDataCache batch_fvMetaCache;
 
 void BatchFeatureStoreCtrl::batch_featureStore(
     const drogon::HttpRequestPtr &req,
@@ -104,7 +103,8 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   // Validate
   // Complete validation is delegated to Execute()
   // check if requested fv and fs exist
-  auto [metadata, err] = batch_fvMetaCache.Get(
+  auto [metadata, err] =
+    metadata::FeatureViewMetadataCache_Get(
       reqStruct.featureStoreName,
       reqStruct.featureViewName,
       reqStruct.featureViewVersion);

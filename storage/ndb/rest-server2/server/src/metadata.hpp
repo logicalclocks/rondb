@@ -22,7 +22,6 @@
 
 #include "operations_feature_store.hpp"
 #include "constants.hpp"
-#include "cache.hpp"
 #include "feature_store_error_code.hpp"
 
 #include <avro/Compiler.hh>
@@ -256,19 +255,17 @@ newFeatureViewMetadata(const std::string &featureStoreName, int featureStoreId,
                        const std::vector<ServingKey> &servingKeys);
 
 std::string getFeatureViewCacheKey(const std::string &featureStoreName,
-                                   const std::string &featureViewName, int featureViewVersion);
+                                   const std::string &featureViewName,
+                                   int featureViewVersion);
 std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
-GetFeatureViewMetadata(const std::string &featureStoreName, const std::string &featureViewName,
+GetFeatureViewMetadata(const std::string &featureStoreName,
+                       const std::string &featureViewName,
                        int featureViewVersion);
 
-class FeatureViewMetaDataCache {
- public:
-  Cache<std::shared_ptr<FeatureViewMetadata>> metadataCache;
-  std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
-  Get(const std::string &featureStoreName, const std::string &featureViewName,
-      int featureViewVersion);
-};
-
+std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
+FeatureViewMetadataCache_Get(const std::string &featureStoreName,
+                        const std::string &featureViewName,
+                        int featureViewVersion);
 }  // namespace metadata
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_METADATA_HPP_

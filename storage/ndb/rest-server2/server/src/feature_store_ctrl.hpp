@@ -27,6 +27,7 @@
 #include "operations_feature_store.hpp"
 #include "feature_store_error_code.hpp"
 #include "base_ctrl.hpp"
+#include "pk_data_structs.hpp"
 
 #include <drogon/drogon.h>
 #include <drogon/HttpSimpleController.h>
@@ -49,8 +50,6 @@ class FeatureStoreCtrl : public drogon::HttpController<FeatureStoreCtrl> {
     const drogon::HttpRequestPtr &req,
     std::function<void(const drogon::HttpResponsePtr &)> &&callback);
 };
-
-extern metadata::FeatureViewMetaDataCache fvMetaCache;
 
 std::shared_ptr<RestErrorCode>
 ValidatePrimaryKey(

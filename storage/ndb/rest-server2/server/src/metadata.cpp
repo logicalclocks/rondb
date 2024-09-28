@@ -20,9 +20,11 @@
 #include "metadata.hpp"
 #include "operations_feature_store.hpp"
 #include "rdrs_dal.hpp"
+#include "fs_cache.hpp"
 
 #include <avro/Exception.hh>
 #include <tuple>
+#include <util/require.h>
 
 namespace metadata {
 
@@ -469,16 +471,20 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
 }
 
 std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
-  FeatureViewMetaDataCache::Get(const std::string &featureStoreName,
-                                const std::string &featureViewName,
-                                int featureViewVersion) {
+  FeatureViewMetadataCache_Get(const std::string &featureStoreName,
+                               const std::string &featureViewName,
+                               int featureViewVersion) {
   std::string fvCacheKey =
       getFeatureViewCacheKey(featureStoreName,
                              featureViewName,
                              featureViewVersion);
-  auto metadataInf = metadataCache.get_entry(fvCacheKey);
-
-  if (!metadataInf) {
+  FSCacheEntry *entry = nullptr;
+  auto cache_metadata = fs_metadata_cache_get(fvCacheKey, &entry);
+  if (entry == nullptr) {
+    require(cache_metadata == nullptr);
+    return {nullptr, FETCH_METADATA_FROM_CACHE_FAIL};
+  }
+  if (!cache_metadata) {
     std::shared_ptr<FeatureViewMetadata> metadata;
     std::shared_ptr<RestErrorCode> errorCode;
     std::tie(metadata, errorCode) =
@@ -486,15 +492,12 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
                                featureViewName,
                                featureViewVersion);
     if (errorCode) {
+      fs_metadata_update_cache(nullptr, entry);
       return {nullptr, errorCode};
     }
-    metadataCache.update_cache(fvCacheKey, metadata);
+    fs_metadata_update_cache(metadata, entry);
     return {metadata, nullptr};
   }
-  std::shared_ptr<FeatureViewMetadata> metadata = metadataInf->data;
-  if (!metadata) {
-    return {nullptr, FETCH_METADATA_FROM_CACHE_FAIL};
-  }
-  return {metadata, nullptr};
+  return {cache_metadata, nullptr};
 }
 } // namespace metadata
