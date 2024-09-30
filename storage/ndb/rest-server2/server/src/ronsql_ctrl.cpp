@@ -23,6 +23,7 @@
 #include "json_parser.hpp"
 #include <drogon/HttpTypes.h>
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
+#include "api_key.hpp"
 
 using std::endl;
 
@@ -75,6 +76,18 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
+  }
+
+  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
+    status = authenticate(api_key, database);
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode((drogon::HttpStatusCode)status.code);
+      callback(resp);
+      return;
+    }
   }
 
   std::ostringstream out_stream;

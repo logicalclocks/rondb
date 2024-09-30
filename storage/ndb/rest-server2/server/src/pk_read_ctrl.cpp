@@ -89,7 +89,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));
-      resp->setStatusCode(drogon::HttpStatusCode::k401Unauthorized);
+      resp->setStatusCode((drogon::HttpStatusCode)status.code);
       callback(resp);
       return;
     }

@@ -123,6 +123,10 @@ RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
   return apiKeyCache->validate_api_key(apiKey, {params.path.db});
 }
 
+RS_Status authenticate(const std::string &apiKey, const std::string & db) {
+  return apiKeyCache->validate_api_key(apiKey, {db});
+}
+
 RS_Status authenticate(const std::string &apiKey,
                        const std::vector<std::string> &dbs) {
   return apiKeyCache->validate_api_key(apiKey, dbs);
@@ -213,7 +217,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
     keyFoundInCache = true; // Make sure we return without inserting it
     DEB_AUTH(("API Key cache shutdown, Line: %u", __LINE__));
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+    return CRS_Status(HTTP_CODE::SERVER_ERROR,
       "API Key cache is shutting down").status;
   }
   auto it = m_key_cache[key_cache_id].find(apiKey);
@@ -221,7 +225,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
     require(!inc_refcount_done);
     DEB_AUTH(("API Key not found, Line: %u", __LINE__));
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key not found in cache").status;
   }
   auto userDBs = it->second;
@@ -231,7 +235,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
     require(!inc_refcount_done);
     DEB_AUTH(("API Key found UserDBs null, Line: %u", __LINE__));
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key found in cache but userDBs is null").status;
   }
   if (userDBs->m_state == UserDBs::IS_INVALID) {
@@ -242,7 +246,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
     DEB_AUTH(("API Key found invalid, Line: %u, refCount: %d",
               __LINE__, ref_count));
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key found in cache but is invalid").status;
   }
   NdbMutex_Lock(userDBs->m_waitLock);
@@ -262,7 +266,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
     NdbMutex_Unlock(userDBs->m_waitLock);
     DEB_AUTH(("API Key found invalid, Line: %u, refCount: %d",
               __LINE__, ref_count));
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+    return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key found in cache but invalid").status;
   }
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
@@ -276,7 +280,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
       allowedAccess = false;
       DEB_AUTH(("API Key found valid, not authorized, Line: %u, refCount: %d",
                 __LINE__, ref_count));
-      return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+      return CRS_Status(HTTP_CODE::AUTH_ERROR,
         ("API key not authorized to access " + db).c_str()).status;
     }
   }
@@ -311,7 +315,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint64 hash) {
     if (api_key_str == nullptr) {
       NdbMutex_Unlock(m_rwLock[key_cache_id]);
       DEB_AUTH(("API Key malloc failed, Line: %u", __LINE__));
-      return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+      return CRS_Status(HTTP_CODE::SERVER_ERROR,
         "Failed to allocate API Key record in cache").status;
     }
     auto newUserDBs = new UserDBs();
@@ -319,7 +323,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint64 hash) {
       NdbMutex_Unlock(m_rwLock[key_cache_id]);
       free(api_key_str);
       DEB_AUTH(("API Key create UserDBs failed, Line: %u", __LINE__));
-      return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+      return CRS_Status(HTTP_CODE::SERVER_ERROR,
         "Failed to allocate API Key record in cache").status;
     }
     strncpy(api_key_str, apiKey.c_str(), apiKey.size());
@@ -334,7 +338,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint64 hash) {
       free(api_key_str);
       NdbMutex_Unlock(m_rwLock[key_cache_id]);
       DEB_AUTH(("API Key thread create failed, Line: %u", __LINE__));
-      return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+      return CRS_Status(HTTP_CODE::SERVER_ERROR,
         "Failed to allocate API Key record in cache").status;
     }
     DEB_AUTH(("API Key %s inserted in cache with refCount: 1", apiKey.c_str()));

@@ -22,6 +22,7 @@
 
 #include "rdrs_hopsworks_dal.h"
 #include "pk_data_structs.hpp"
+#include "ronsql_data_structs.hpp"
 
 #include <atomic>
 #include <memory>
@@ -45,6 +46,7 @@ APIKeyCache* start_api_key_cache();
 void stop_api_key_cache();
 
 RS_Status authenticate(const std::string &apiKey, PKReadParams &params);
+RS_Status authenticate(const std::string &apiKey, const std::string & db);
 RS_Status authenticate(const std::string &apiKey,
                        const std::vector<std::string> &);
 

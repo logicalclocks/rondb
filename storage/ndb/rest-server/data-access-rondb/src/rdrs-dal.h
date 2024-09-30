@@ -27,6 +27,7 @@ extern "C" {
 typedef enum HTTP_CODE {
   SUCCESS      = 200,
   CLIENT_ERROR = 400,
+  AUTH_ERROR   = 401,
   NOT_FOUND    = 404,
   SERVER_ERROR = 500
 } HTTP_CODE;
