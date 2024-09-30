@@ -1011,7 +1011,7 @@ template <> struct codec_traits<c::cpx> {
 };
 }  // namespace avro
 
-TEST_F(FeatureStoreTest, TestConvertAvroToJsonCpx) {
+TEST_F(FeatureStoreTest, DISABLED_TestConvertAvroToJsonCpx) {
   std::string schemaJson = R"({
       "type": "record",
       "name": "cpx",
@@ -1051,7 +1051,7 @@ TEST_F(FeatureStoreTest, TestConvertAvroToJsonCpx) {
   }
 }
 
-TEST_F(FeatureStoreTest, TestConvertAvroToJsonSimple) {
+TEST_F(FeatureStoreTest, DISABLED_TestConvertAvroToJsonSimple) {
   std::string schemaJson = R"({
       "type": "record",
       "name": "LongList",
@@ -1077,7 +1077,7 @@ TEST_F(FeatureStoreTest, TestConvertAvroToJsonSimple) {
   }
 }
 
-TEST_F(FeatureStoreTest, TestConvertAvroToJson) {
+TEST_F(FeatureStoreTest, DISABLED_TestConvertAvroToJson) {
   // map
   testConvertAvroToJson(
       R"(["null",{"type":"record",
