@@ -25,7 +25,7 @@ SERVER_BIN="rdrs2"
 OUTPUT_DIR?=./bin/server/${SERVER_BIN}
 
 # RonDB build dir that contains libs needed for the API serer
-RDRS_LIB_DIR?=$(PWD)/../../../../../build/library_output_directory
+RDRS_LIB_DIR?=$(PWD)/../../../../../debug_build/library_output_directory
 
 # Configuration to use for testing
 # testing using mtr: $(PWD)/resources/config/config_mtr.json

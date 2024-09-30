@@ -29,10 +29,10 @@
 #include <gtest/gtest.h>
 #include <iostream>
 #include <memory>
-#include <chrono>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <NdbSleep.h>
 
 template <typename T> class SafeQueue {
  private:
@@ -56,6 +56,8 @@ template <typename T> class SafeQueue {
   }
 };
 
+APIKeyCache *apiKeyCachePtr = nullptr;
+
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 const std::string HOPSWORKS_TEST_API_KEY =
     "bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
@@ -63,6 +65,7 @@ const std::string HOPSWORKS_TEST_API_KEY =
 class APIKeyTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
+    printf("Set up TestSuite\n");
     setenv("RUNNING_UNIT_TESTS", "1", 1);
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
                                                               globalConfigs.ronDBMetadataCluster);
@@ -74,18 +77,35 @@ class APIKeyTest : public ::testing::Test {
 
   static void TearDownTestSuite() {
     unsetenv("RUNNING_UNIT_TESTS");
+    stop_api_key_cache();
     RS_Status status = RonDBConnection::shutdown_rondb_connection();
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
       errno = status.http_code;
       exit(errno);
     }
+    apiKeyCachePtr = nullptr;
   }
 };
 
-void test_key(const std::shared_ptr<APIKeyCache> &cache) {
-  const std::string existentDB  = DB001;
+class MyEnvironment : public ::testing::Environment {
+ public:
+  ~MyEnvironment() override {}
+
+  // Override this to define how to set up the environment.
+  void SetUp() override
+  {
+  }
+
+  // Override this to define how to tear down the environment.
+  void TearDown() override
+  {
+  }
+};
+
+void test_key(APIKeyCache *cache) {
+  const std::string existentDB = DB001;
   const std::string existentDB2 = DB002;
-  const std::string fakeDB      = "test3";
+  const std::string fakeDB = "test3";
 
   std::string apiKey =
       "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
@@ -120,24 +140,19 @@ void test_key(const std::shared_ptr<APIKeyCache> &cache) {
 }
 
 TEST_F(APIKeyTest, TestAPIKey1) {
+  apiKeyCachePtr = start_api_key_cache();
   AllConfigs conf = AllConfigs::get_all();
   if (!conf.security.apiKey.useHopsworksAPIKeys) {
     std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
   }
-
-  std::vector<std::shared_ptr<APIKeyCache>> caches;
-  std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
-  caches.push_back(std::move(cache));
-
-  for (auto &cache : caches) {
-    test_key(cache);
-  }
+  test_key(apiKeyCachePtr);
+  stop_api_key_cache();
 }
 
-void test_update_cache_every_n_seconds(const std::shared_ptr<APIKeyCache> &cache,
+void test_update_cache_every_n_seconds(APIKeyCache *cache,
                                        const AllConfigs &conf) {
   std::string apiKey = HOPSWORKS_TEST_API_KEY;
-  auto databases     = {DB001, DB002};
+  auto databases = {DB001, DB002};
 
   RS_Status status = cache->validate_api_key(apiKey, databases);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
@@ -145,9 +160,8 @@ void test_update_cache_every_n_seconds(const std::shared_ptr<APIKeyCache> &cache
 
   auto lastUpdated1 = cache->last_updated(apiKey);
   // waiting 2 * cacheRefreshIntervalMS to ensure the update trigger has run
-  std::this_thread::sleep_for(
-      std::chrono::milliseconds(2 * conf.security.apiKey.cacheRefreshIntervalMS +
-                                conf.security.apiKey.cacheRefreshIntervalJitterMS));
+  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
+                           conf.security.apiKey.cacheRefreshIntervalJitterMS));
   auto lastUpdated2 = cache->last_updated(apiKey);
   EXPECT_NE(lastUpdated1, lastUpdated2) << "Cache entry was not updated";
 
@@ -158,6 +172,7 @@ void test_update_cache_every_n_seconds(const std::shared_ptr<APIKeyCache> &cache
 
 // Check that cache is updated every N secs
 TEST_F(APIKeyTest, TestAPIKeyCache1) {
+  apiKeyCachePtr = start_api_key_cache();
   AllConfigs conf = AllConfigs::get_all();
   if (!conf.security.apiKey.useHopsworksAPIKeys) {
     std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
@@ -167,22 +182,16 @@ TEST_F(APIKeyTest, TestAPIKeyCache1) {
   conf.security.apiKey.cacheRefreshIntervalMS       = 1000;
   conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
   conf.security.apiKey.cacheUnusedEntriesEvictionMS =
-      conf.security.apiKey.cacheRefreshIntervalMS * 2;
+      conf.security.apiKey.cacheRefreshIntervalMS * 4;
   auto status = AllConfigs::set_all(conf);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
-
-  std::vector<std::shared_ptr<APIKeyCache>> caches;
-  std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
-  caches.push_back(std::move(cache));
-
-  for (auto &cache : caches) {
-    test_update_cache_every_n_seconds(cache, conf);
-  }
+  test_update_cache_every_n_seconds(apiKeyCachePtr, conf);
+  stop_api_key_cache();
 }
 
-void test_update_cache_every_n_seconds_unauthorized(const std::shared_ptr<APIKeyCache> &cache,
+void test_update_cache_every_n_seconds_unauthorized(APIKeyCache *cache,
                                                     const AllConfigs &conf) {
   std::string apiKey    = HOPSWORKS_TEST_API_KEY;
   const std::string db3 = "test3";
@@ -193,15 +202,16 @@ void test_update_cache_every_n_seconds_unauthorized(const std::shared_ptr<APIKey
 
   auto lastUpdated1 = cache->last_updated(apiKey);
   // waiting 2 * cacheRefreshIntervalMS to ensure the update trigger has run
-  std::this_thread::sleep_for(
-      std::chrono::milliseconds(2 * conf.security.apiKey.cacheRefreshIntervalMS +
-                                conf.security.apiKey.cacheRefreshIntervalJitterMS));
+  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
+                           conf.security.apiKey.cacheRefreshIntervalJitterMS +
+                           conf.security.apiKey.cacheUnusedEntriesEvictionMS));
   auto lastUpdated2 = cache->last_updated(apiKey);
   EXPECT_NE(lastUpdated1, lastUpdated2) << "Cache entry was not updated";
 }
 
 // check that cache is updated every N secs even if the user is not authorized to access a DB
 TEST_F(APIKeyTest, TestAPIKeyCache2) {
+  apiKeyCachePtr = start_api_key_cache();
   AllConfigs conf = AllConfigs::get_all();
   if (!conf.security.apiKey.useHopsworksAPIKeys) {
     std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
@@ -216,17 +226,11 @@ TEST_F(APIKeyTest, TestAPIKeyCache2) {
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
-
-  std::vector<std::shared_ptr<APIKeyCache>> caches;
-  std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
-  caches.push_back(std::move(cache));
-
-  for (auto &cache : caches) {
-    test_update_cache_every_n_seconds_unauthorized(cache, conf);
-  }
+  test_update_cache_every_n_seconds_unauthorized(apiKeyCachePtr, conf);
+  stop_api_key_cache();
 }
 
-void test_load(const std::shared_ptr<APIKeyCache> &cache, const AllConfigs &conf) {
+void test_load(APIKeyCache *cache, const AllConfigs &conf) {
   SafeQueue<bool> ch;
   int numOps = 150;
 
@@ -234,9 +238,11 @@ void test_load(const std::shared_ptr<APIKeyCache> &cache, const AllConfigs &conf
   producers.reserve(numOps);
   for (int i = 0; i < numOps; ++i) {
     producers.push_back(std::thread([&ch, &cache] {
-      unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-      std::mt19937 generator(seed);
-      std::uniform_int_distribution<int> distribution(0, HopsworksAPIKey_ADDITIONAL_KEYS - 1);
+      NDB_TICKS now = NdbTick_getCurrentTicks();
+      Uint32 now_uint32 = (Uint32)now.getUint64();
+      std::mt19937 generator(now_uint32);
+      std::uniform_int_distribution<int>
+        distribution(0, HopsworksAPIKey_ADDITIONAL_KEYS - 1);
       int apiKeyNum = distribution(generator);
       std::ostringstream oss;
       oss << std::setw(16) << std::setfill('0') << apiKeyNum << "." << HopsworksAPIKey_SECRET;
@@ -274,10 +280,9 @@ void test_load(const std::shared_ptr<APIKeyCache> &cache, const AllConfigs &conf
   }
 
   // wait for eviction time to pass
-  std::this_thread::sleep_for(
-      std::chrono::milliseconds(2 * conf.security.apiKey.cacheRefreshIntervalMS +
-                                conf.security.apiKey.cacheUnusedEntriesEvictionMS +
-                                conf.security.apiKey.cacheRefreshIntervalJitterMS));
+  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
+                          conf.security.apiKey.cacheUnusedEntriesEvictionMS +
+                          conf.security.apiKey.cacheRefreshIntervalJitterMS));
 
   std::string cacheContent = cache->to_string();
   EXPECT_EQ(cache->size(), 0) << "Cache was not cleared. Expected 0. Got " << cache->size()
@@ -286,6 +291,7 @@ void test_load(const std::shared_ptr<APIKeyCache> &cache, const AllConfigs &conf
 
 // Test load. Generate lots of api key requests
 TEST_F(APIKeyTest, TestAPIKeyCache3) {
+  apiKeyCachePtr = start_api_key_cache();
   AllConfigs conf = AllConfigs::get_all();
   if (!conf.security.apiKey.useHopsworksAPIKeys) {
     std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
@@ -300,17 +306,11 @@ TEST_F(APIKeyTest, TestAPIKeyCache3) {
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
-
-  std::vector<std::shared_ptr<APIKeyCache>> caches;
-  std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
-  caches.push_back(std::move(cache));
-
-  for (auto &cache : caches) {
-    test_load(cache, conf);
-  }
+  test_load(apiKeyCachePtr, conf);
+  stop_api_key_cache();
 }
 
-void test_load_with_bad_keys(const std::shared_ptr<APIKeyCache> &cache, const AllConfigs &conf) {
+void test_load_with_bad_keys(APIKeyCache *cache, const AllConfigs &conf) {
   std::vector<std::string> badKeys = {
       "fvoHJCjkpof4WezF.4eed386ceb310e9976932cb279de2dab70c24a1ceb396e99dd29df3a1348f42e",
       "vNizYZEsK7Ip1AEt.3eb997b041460f59b90094bd7d07b30e385c1c72961a440b74f9dccf5dd467b2",
@@ -381,8 +381,9 @@ void test_load_with_bad_keys(const std::shared_ptr<APIKeyCache> &cache, const Al
   producers.reserve(numOps);
   for (int i = 0; i < numOps; ++i) {
     producers.push_back(std::thread([&ch, &cache, &badKeys] {
-      unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-      std::mt19937 generator(seed);
+      NDB_TICKS now = NdbTick_getCurrentTicks();
+      Uint32 now_uint32 = (Uint32)now.getUint64();
+      std::mt19937 generator(now_uint32);
       std::string apiKey = badKeys[generator() % badKeys.size()];
 
       auto DB = DB001;
@@ -416,10 +417,9 @@ void test_load_with_bad_keys(const std::shared_ptr<APIKeyCache> &cache, const Al
   }
 
   // wait for eviction time to pass
-  std::this_thread::sleep_for(
-      std::chrono::milliseconds(2 * conf.security.apiKey.cacheRefreshIntervalMS +
-                                conf.security.apiKey.cacheUnusedEntriesEvictionMS +
-                                conf.security.apiKey.cacheRefreshIntervalJitterMS));
+  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
+                           conf.security.apiKey.cacheUnusedEntriesEvictionMS +
+                           conf.security.apiKey.cacheRefreshIntervalJitterMS));
 
   std::string cacheContent = cache->to_string();
   EXPECT_EQ(cache->size(), 0) << "Cache was not cleared. Expected 0. Got " << cache->size()
@@ -428,6 +428,7 @@ void test_load_with_bad_keys(const std::shared_ptr<APIKeyCache> &cache, const Al
 
 // Test load. Generate lots of bad request for API Keys
 TEST_F(APIKeyTest, TestAPIKeyCache4) {
+  apiKeyCachePtr = start_api_key_cache();
   AllConfigs conf = AllConfigs::get_all();
   if (!conf.security.apiKey.useHopsworksAPIKeys) {
     std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
@@ -442,12 +443,17 @@ TEST_F(APIKeyTest, TestAPIKeyCache4) {
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
+  test_load_with_bad_keys(apiKeyCachePtr, conf);
+  stop_api_key_cache();
+}
 
-  std::vector<std::shared_ptr<APIKeyCache>> caches;
-  std::shared_ptr<APIKeyCache> cache = std::make_shared<APIKeyCache>();
-  caches.push_back(std::move(cache));
-
-  for (auto &cache : caches) {
-    test_load_with_bad_keys(cache, conf);
-  }
+int main(int argc, char **argv) {
+  ndb_init();
+  testing::InitGoogleTest(&argc, argv);
+  testing::Environment* const my_env =
+    testing::AddGlobalTestEnvironment(new MyEnvironment);
+  (void)my_env;
+  int rc = RUN_ALL_TESTS();
+  ndb_end(0);
+  return rc;
 }

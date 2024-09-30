@@ -225,7 +225,8 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, handle_signal);
   signal(SIGINT, handle_signal);
 
-  apiKeyCache = std::make_shared<APIKeyCache>();
+  ndb_init();
+  (void)start_api_key_cache();
 
   /*
     Config is fetched from:
@@ -333,44 +334,52 @@ int main(int argc, char *argv[]) {
   jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
 
   // connect to rondb
-  RonDBConnection rondbConnection(globalConfigs.ronDB,
-                                  globalConfigs.ronDBMetadataCluster);
-  if (globalConfigs.security.tls.enableTLS) {
-    status = GenerateTLSConfig(globalConfigs.security.tls.requireAndVerifyClientCert,
-                               globalConfigs.security.tls.rootCACertFile,
-                               globalConfigs.security.tls.certificateFile,
-                               globalConfigs.security.tls.privateKeyFile);
-    if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-      std::cerr << "Error while generating TLS configuration.\n"
-                << "HTTP code " << status.http_code << '\n'
-                << status.message << '\n';
-      do_exit(1);
+  {
+    RonDBConnection rondbConnection(globalConfigs.ronDB,
+                                    globalConfigs.ronDBMetadataCluster);
+    if (globalConfigs.security.tls.enableTLS) {
+      status = GenerateTLSConfig(
+        globalConfigs.security.tls.requireAndVerifyClientCert,
+        globalConfigs.security.tls.rootCACertFile,
+        globalConfigs.security.tls.certificateFile,
+        globalConfigs.security.tls.privateKeyFile);
+      if (status.http_code !=
+          static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+        std::cerr << "Error while generating TLS configuration.\n"
+                  << "HTTP code " << status.http_code << '\n'
+                  << status.message << '\n';
+        do_exit(1);
+      }
     }
+
+    drogon::app().addListener(globalConfigs.rest.serverIP,
+                              globalConfigs.rest.serverPort,
+                              globalConfigs.security.tls.enableTLS,
+                              globalConfigs.security.tls.certificateFile,
+                              globalConfigs.security.tls.privateKeyFile);
+    drogon::app().setThreadNum(globalConfigs.rest.numThreads);
+    drogon::app().disableSession();
+    drogon::app().registerBeginningAdvice([]() {
+      auto addresses = drogon::app().getListeners();
+      for (auto &address : addresses) {
+        // todo-asdf print thread id
+        printf("Server running on %s\n",
+               address.toIpPort().c_str());
+      }
+    });
+    drogon::app().setIntSignalHandler([]() {
+      printf("Received SIGINT, will quit.\n");
+      // Calling quit() is exactly what the default handler does.
+      drogon::app().quit();
+    });
+    drogon::app().setTermSignalHandler([]() {
+      printf("Received SIGTERM, will quit.\n");
+      // Calling quit() is exactly what the default handler does.
+      drogon::app().quit();
+    });
+    drogon::app().run();
+    stop_api_key_cache();
   }
-
-  drogon::app().addListener(globalConfigs.rest.serverIP, globalConfigs.rest.serverPort, globalConfigs.security.tls.enableTLS, globalConfigs.security.tls.certificateFile, globalConfigs.security.tls.privateKeyFile);
-  drogon::app().setThreadNum(globalConfigs.rest.numThreads);
-  drogon::app().disableSession();
-  drogon::app().registerBeginningAdvice([]() {
-    auto addresses = drogon::app().getListeners();
-    for (auto &address : addresses)
-    {
-      // todo-asdf print thread id
-      printf("Server running on %s\n",
-             address.toIpPort().c_str());
-    }
-  });
-  drogon::app().setIntSignalHandler([]() {
-    printf("Received SIGINT, will quit.\n");
-    // Calling quit() is exactly what the default handler does.
-    drogon::app().quit();
-  });
-  drogon::app().setTermSignalHandler([]() {
-    printf("Received SIGTERM, will quit.\n");
-    // Calling quit() is exactly what the default handler does.
-    drogon::app().quit();
-  });
-  drogon::app().run();
-
+  ndb_end(0);
   do_exit(0);
 }

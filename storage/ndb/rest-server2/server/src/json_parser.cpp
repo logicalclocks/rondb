@@ -52,8 +52,10 @@ public:
 // They are declared static (local to this compilation unit) in order to let the
 // compiler prune unused ones more easily.
 #define DEFINE_PARSER(TargetDatatype, ValueDatatype, ...) \
-  static inline bool parse(TargetDatatype& target, ValueDatatype& value) __VA_ARGS__ \
-  static inline bool parse(TargetDatatype& target, ValueDatatype&& value) __VA_ARGS__
+  [[maybe_unused]] static inline bool parse(TargetDatatype& target, \
+                                            ValueDatatype& value) __VA_ARGS__ \
+  [[maybe_unused]] static inline bool parse(TargetDatatype& target, \
+                                            ValueDatatype&& value) __VA_ARGS__
 
 // Usually, the value will be a simdjson value.
 #define DEFINE_VALUE_PARSER(Datatype, ...) \

@@ -9,7 +9,7 @@ file(GLOB_RECURSE SRC
 	*.cpp
 	*.h
 )
-NDB_ADD_EXECUTABLE(${PROJECT_NAME} ${SRC})
+NDB_ADD_EXECUTABLE(${PROJECT_NAME} ${SRC} STATIC_NDBCLIENT)
 add_dependencies(${PROJECT_NAME} DROGON_IS_BUILD SIMDJSON_IS_BUILD)
 
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_DROGON_CMAKE_MODULES_DIR})
@@ -81,7 +81,7 @@ INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
 INCLUDE_DIRECTORIES(${AVROCPP_INCLUDE_DIR})
 
-target_link_libraries(${PROJECT_NAME}
+TARGET_LINK_LIBRARIES(${PROJECT_NAME}
                       base64
                       ${AVROCPP_LIBRARIES}
                       Jsoncpp_lib
@@ -90,9 +90,9 @@ target_link_libraries(${PROJECT_NAME}
                       simdjson::simdjson
                       ${RDRS_OPENSSL_LIBRARY}
                       ${RDRS_CRYPTO_LIBRARY}
-                      ndbclient_so
                       ndbgeneral
                       rdrs_string
+                      mysqlclient
                       ronsql)
 
 INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME} 
@@ -111,13 +111,12 @@ target_include_directories(rdrs2_lib PUBLIC
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
   ${CMAKE_SOURCE_DIR}/include)
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
-#target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
 target_include_directories(rdrs2_lib PUBLIC ${RDRS_AVRO_INCLUDE_DIR})
 target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
 
 # todo-ronsql is ronsql needed for rdrs2_lib? It's used in ../test/api_key_test
-target_link_libraries(rdrs2_lib
+TARGET_LINK_LIBRARIES(rdrs2_lib
                       base64
                       ${AVROCPP_LIBRARIES}
                       Jsoncpp_lib

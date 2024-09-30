@@ -51,37 +51,28 @@ INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
 INCLUDE_DIRECTORIES(${AVROCPP_INCLUDE_DIR})
 LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
 
-add_executable(
-	api_key_test
-	api_key_test.cpp
-)
+NDB_ADD_EXECUTABLE(api_key_test api_key_test.cpp
+                   STATIC_NDBCLIENT)
 
-add_executable(
+NDB_ADD_EXECUTABLE(
   feature_store_test
   feature_store_test.cpp
+  STATIC_NDBCLIENT
 )
 
-target_link_libraries(
+TARGET_LINK_LIBRARIES(
 	api_key_test
 	gtest_main
+        ndbgeneral
 	rdrs2_lib
 	${GTEST_LIBRARIES}
-	Drogon::Drogon
-	simdjson::simdjson
-	Jsoncpp_lib
-	pthread
-        ndbgeneral
 )
 
-target_link_libraries(
+TARGET_LINK_LIBRARIES(
   feature_store_test
   gtest_main
-  ${AVROCPP_LIBRARIES}
   rdrs2_lib
   ${GTEST_LIBRARIES}
-  Drogon::Drogon
-  simdjson::simdjson
-  Jsoncpp_lib
   pthread
 )
 

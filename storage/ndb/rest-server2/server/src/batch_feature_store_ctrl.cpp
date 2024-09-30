@@ -37,7 +37,6 @@
 #include <vector>
 
 metadata::FeatureViewMetaDataCache batch_fvMetaCache;
-APIKeyCache batch_featureStore_apiKeyCache;
 
 void BatchFeatureStoreCtrl::batch_featureStore(
     const drogon::HttpRequestPtr &req,
@@ -120,7 +119,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
       return;
     }
     // Validate access right to ALL feature stores including shared feature
-    auto status = apiKeyCache->validate_api_key(api_key, metadata->featureStoreNames);
+    auto status = authenticate(api_key, metadata->featureStoreNames);
     if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k401Unauthorized);

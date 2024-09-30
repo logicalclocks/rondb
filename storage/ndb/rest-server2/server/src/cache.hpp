@@ -38,6 +38,8 @@
 #include <iostream>
 #include <map>
 #include <pthread.h>
+#include <NdbTick.h>
+#include <NdbSleep.h>
 
 class ReadLock {
  public:
@@ -71,20 +73,20 @@ class WriteLock {
 
 template <typename T> class CacheEntry {
  public:
-  std::chrono::system_clock::time_point lastUsed;     // for removing unused entries
-  std::chrono::system_clock::time_point lastUpdated;  // last updated TS
-  pthread_rwlock_t rowLock{};                         // this is used to prevent concurrent updates
-  bool evicted = false;                               // is evicted or deleted
-  std::chrono::milliseconds refreshInterval;          // Cache refresh interval
-  std::atomic<int> refCount = 0;                      // Reference count
-  T data;                                             // Cached data
+  NDB_TICKS lastUsed;
+  NDB_TICKS lastUpdated;
+  pthread_rwlock_t rwLock{};
+  bool evicted = false;
+  Int32 refreshInterval;
+  std::atomic<int> refCount = 0;
+  T data;
 
   CacheEntry() {
-    pthread_rwlock_init(&rowLock, nullptr);
+    pthread_rwlock_init(&rwLock, nullptr);
   }
 
   ~CacheEntry() {
-    pthread_rwlock_destroy(&rowLock);
+    pthread_rwlock_destroy(&rwLock);
   }
 
   std::string to_string() const {
@@ -134,12 +136,11 @@ template <typename T> class Cache {
       pthread_rwlock_unlock(&key2CacheLock);
       return nullptr;
     }
+    ReadLock readLock(entry->rwLock);
     pthread_rwlock_unlock(&key2CacheLock);
-    ReadLock readLock(entry->rowLock);
 
     // update TS
-    entry->lastUsed = std::chrono::system_clock::now();
-
+    entry->lastUsed = NdbTick_getCurrentTicks();
     return entry;
   }
 
@@ -167,15 +168,14 @@ template <typename T> class Cache {
       // Double-check pattern in case another thread has already updated the cache
       if (key2Cache.find(key) ==
           key2Cache.end()) {  // the entry still does not exists. insert a new row
-        auto entry             = std::make_shared<CacheEntry<T>>();
+        auto entry = std::make_shared<CacheEntry<T>>();
         entry->refreshInterval = refresh_interval_with_jitter();
-        key2Cache[key]         = entry;
+        key2Cache[key] = entry;
         start_update_ticker(key, key2Cache[key], data);
       }
       // Increase reference count to the entry
       key2Cache[key]->refCount++;
     }
-
     return CRS_Status::SUCCESS.status;
   }
 
@@ -184,81 +184,87 @@ template <typename T> class Cache {
     if (entry->evicted) {
       return CRS_Status::SUCCESS.status;
     }
-
-    entry->data        = data;
-    entry->lastUpdated = std::chrono::system_clock::now();
+    entry->data = data;
+    entry->lastUpdated = NdbTick_getCurrentTicks();
 
     return CRS_Status::SUCCESS.status;
   }
 
-  std::chrono::system_clock::time_point last_used(const std::string &key) {
+  NDB_TICKS last_used(const std::string &key) {
     ReadLock readLock(key2CacheLock);
     auto it = key2Cache.find(key);
     if (it == key2Cache.end()) {
-      return std::chrono::system_clock::time_point();
+      NDB_TICKS now = NdbTick_getCurrentTicks();
+      return now;
     }
     return it->second->lastUsed;
   }
 
-  std::chrono::system_clock::time_point last_updated(const std::string &key) {
+  NDB_TICKS last_updated(const std::string &key) {
     ReadLock readLock(key2CacheLock);
     auto it = key2Cache.find(key);
     if (it == key2Cache.end()) {
-      return std::chrono::system_clock::time_point();
+      NDB_TICKS now = NdbTick_getCurrentTicks();
+      return now;
     }
     return it->second->lastUpdated;
   }
 
-  RS_Status start_update_ticker(const std::string &key, std::shared_ptr<CacheEntry<T>> /*entry*/,
+  RS_Status start_update_ticker(const std::string &key,
+                                 std::shared_ptr<CacheEntry<T>> /*entry*/,
                                 const T &data) {
     auto started = std::make_shared<std::atomic<bool>>(false);
-    std::thread([this, key, started, data]() { cache_entry_updater(key, started, data); }).detach();
+    std::thread([this, key, started, data]() {
+      cache_entry_updater(key, started, data); }).detach();
 
     while (!started->load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      NdbSleep_MilliSleep(50);
     }
-
     return CRS_Status::SUCCESS.status;
   }
 
-  RS_Status cache_entry_updater(const std::string &key, std::shared_ptr<std::atomic<bool>> started,
+  RS_Status cache_entry_updater(const std::string &key,
+                                std::shared_ptr<std::atomic<bool>> started,
                                 const T &data) {
     auto it = key2Cache.find(key);
     if (it == key2Cache.end()) {
-      return CRS_Status(HTTP_CODE::CLIENT_ERROR, "Key not found in cache").status;
+      return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+        "Key not found in cache").status;
     }
 
     std::shared_ptr<CacheEntry<T>> shared_entry = it->second;  // keeps the entry alive
-    CacheEntry<T> *entry                        = shared_entry.get();
+    CacheEntry<T> *entry = shared_entry.get();
     if (entry == nullptr) {
       return CRS_Status(HTTP_CODE::SERVER_ERROR,
-                        ("Cache updater failed. Report programming error. Key " + key).c_str())
-          .status;
+        ("Cache updater failed. Report programming error. Key " +
+         key).c_str()).status;
     }
     RS_Status status;
 
     while (true) {
-      pthread_rwlock_wrlock(&entry->rowLock);
+      pthread_rwlock_wrlock(&entry->rwLock);
       started->store(true);
 
       if (!entry->evicted) {
         status = update_record(data, entry);
       }
 
-      pthread_rwlock_unlock(&entry->rowLock);
+      pthread_rwlock_unlock(&entry->rwLock);
 
-      std::this_thread::sleep_for(entry->refreshInterval);
+      NdbSleep_MilliSleep(entry->refreshInterval);
 
       if (entry->evicted) {
         return CRS_Status::SUCCESS.status;
       }
 
-      pthread_rwlock_rdlock(&entry->rowLock);
+      pthread_rwlock_rdlock(&entry->rwLock);
       auto lastUsed = entry->lastUsed;
-      pthread_rwlock_unlock(&entry->rowLock);
+      pthread_rwlock_unlock(&entry->rwLock);
 
-      if (std::chrono::system_clock::now() - lastUsed >=
-          std::chrono::milliseconds(globalConfigs.security.apiKey.cacheUnusedEntriesEvictionMS)) {
+      NDB_TICKS now = NdbTick_getCurrentTicks();
+      Uint64 milliSeconds = NdbTick_Elapsed(lastUsed, now).milliSec();
+      if (milliSeconds >= 
+          Uint64(globalConfigs.security.apiKey.cacheUnusedEntriesEvictionMS)) {
         WriteLock lock(key2CacheLock);
         if (entry->refCount <= 0) {
           entry->evicted = true;
@@ -269,29 +275,30 @@ template <typename T> class Cache {
         break;
       }
     }
-
     return CRS_Status::SUCCESS.status;
   }
 
-  std::chrono::milliseconds refresh_interval_with_jitter() {
-    uint32_t cacheRefreshIntervalMS = globalConfigs.security.apiKey.cacheRefreshIntervalMS;
-    int jitterMS = static_cast<int>(globalConfigs.security.apiKey.cacheRefreshIntervalJitterMS);
-    std::uniform_int_distribution<int32_t> dist(0, jitterMS);
+  Int32 refresh_interval_with_jitter() {
+    Uint32 cacheRefreshIntervalMS =
+      globalConfigs.security.apiKey.cacheRefreshIntervalMS;
+    Int32 jitterMS = 
+      static_cast<Int32>(globalConfigs.security.apiKey.cacheRefreshIntervalJitterMS);
+    std::uniform_int_distribution<Int32> dist(0, jitterMS);
     int32_t jitter = dist(randomGenerator);
     if (jitter % 2 == 0) {
       jitter = -jitter;
     }
-    return std::chrono::milliseconds(static_cast<int32_t>(cacheRefreshIntervalMS) + jitter);
+    return Int32(cacheRefreshIntervalMS) + jitter;
   }
 
   std::string to_string() {
     ReadLock readLock(key2CacheLock);
     std::stringstream ss;
     for (const auto &entry : key2Cache) {
-      ss << "Key: " << entry.first << ", Data: " << entry.second->to_string() << std::endl;
+      ss << "Key: " << entry.first << ", Data: "
+         << entry.second->to_string() << std::endl;
     }
     return ss.str();
   }
 };
-
 #endif

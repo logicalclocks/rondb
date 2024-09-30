@@ -786,6 +786,20 @@ class FeatureStoreTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     setenv("RUNNING_UNIT_TESTS", "1", 1);
+  }
+
+  static void TearDownTestSuite() {
+    unsetenv("RUNNING_UNIT_TESTS");
+  }
+};
+
+class MyEnvironment : public ::testing::Environment {
+ public:
+  ~MyEnvironment() override {}
+
+  // Override this to define how to set up the environment.
+  void SetUp() override
+  {
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
                                                               globalConfigs.ronDBMetadataCluster);
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
@@ -794,8 +808,9 @@ class FeatureStoreTest : public ::testing::Test {
     }
   }
 
-  static void TearDownTestSuite() {
-    unsetenv("RUNNING_UNIT_TESTS");
+  // Override this to define how to tear down the environment.
+  void TearDown() override
+  {
     RS_Status status = RonDBConnection::shutdown_rondb_connection();
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
       errno = status.http_code;
@@ -1093,4 +1108,15 @@ TEST_F(BatchFeatureStoreTest, DISABLED_Test_GetFeatureVector_Success_ComplexType
   // validate
   ValidateBatchResponseWithData(rows, cols, *fsResp);
   ValidateResponseMetadata(fsResp->metadata, fsReq.metadataRequest, fsName, fvName, fvVersion);
+}
+
+int main(int argc, char **argv) {
+  ndb_init();
+  testing::InitGoogleTest(&argc, argv);
+  testing::Environment* const my_env =
+    testing::AddGlobalTestEnvironment(new MyEnvironment);
+  (void)my_env;
+  int rc = RUN_ALL_TESTS();
+  ndb_end(0);
+  return rc;
 }

@@ -148,7 +148,7 @@ struct RonSQLExecParams; /*
                              * "storage/ndb/src/ronsql/RonSQLCommon.hpp" but we
                              * can't include a .hpp file here.
                              */
-RS_Status ronsql_dal(const char* database, RonSQLExecParams& ep);
+RS_Status ronsql_dal(const char* database, struct RonSQLExecParams*);
 
 /**
  * Returns statistis about RonDB connection
