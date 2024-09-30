@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -159,12 +159,14 @@ struct EN_Status {
   char message[EN_STATUS_MSG_LEN]{};  // error message.
   EN_Status() : retValue(0), http_code(HTTP_CODE::SUCCESS), message("") {
   }
-  explicit EN_Status(HTTP_CODE http_code) : retValue(0), http_code(http_code), message("") {
+  explicit EN_Status(HTTP_CODE http_code) : retValue(0),
+                                            http_code(http_code), message("") {
   }
   explicit EN_Status(uint32_t retValue)
       : retValue(retValue), http_code(HTTP_CODE::SUCCESS), message("") {
   }
-  EN_Status(HTTP_CODE http_code, const char *message) : retValue(0), http_code(http_code) {
+  EN_Status(HTTP_CODE http_code, const char *message) : retValue(0),
+                                                        http_code(http_code) {
     strncpy(this->message, message, EN_STATUS_MSG_LEN - 1);
     this->message[EN_STATUS_MSG_LEN - 1] = '\0';
   }

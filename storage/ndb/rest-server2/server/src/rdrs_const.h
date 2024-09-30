@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -123,8 +123,10 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define CHAR_MAX_SIZE_IN_BYTES              255 * 4 /*MAX 255 chars. *4 for char set*/
 #define DECIMAL_MAX_PRECISION_SIZE_IN_BYTES 65
 #define DECIMAL_MAX_STR_LEN_IN_BYTES        DECIMAL_MAX_PRECISION_SIZE_IN_BYTES + 3
-#define BINARY_MAX_SIZE_IN_BYTES            255 /*encoding 255 bytes takes max 340 bytes (255*4/3) */
-#define KEY_MAX_SIZE_IN_BYTES               1023 * 4 /*encoding 4092 bytes takes max 5456 bytes (4092*4/3) */
+/*encoding 255 bytes takes max 340 bytes (255*4/3) */
+/*encoding 4092 bytes takes max 5456 bytes (4092*4/3) */
+#define BINARY_MAX_SIZE_IN_BYTES            255
+#define KEY_MAX_SIZE_IN_BYTES               1023 * 4
 #define DATE_MAX_SIZE_IN_BYTES              3
 #define TIME2_MAX_SIZE_IN_BYTES             6
 #define DATETIME_MAX_SIZE_IN_BYTES          8

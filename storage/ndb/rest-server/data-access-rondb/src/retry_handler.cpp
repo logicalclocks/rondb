@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -19,10 +19,10 @@
 
 #include "src/retry_handler.hpp"
 
-Uint32 DATA_CONN_OP_RETRY_COUNT               = 3;
+Uint32 DATA_CONN_OP_RETRY_COUNT = 3;
 Uint32 DATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS = 500;
-Uint32 DATA_CONN_OP_RETRY_JITTER_IN_MS        = 100;
+Uint32 DATA_CONN_OP_RETRY_JITTER_IN_MS = 100;
 
-Uint32 METADATA_CONN_OP_RETRY_COUNT               = 3;
+Uint32 METADATA_CONN_OP_RETRY_COUNT = 3;
 Uint32 METADATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS = 500;
-Uint32 METADATA_CONN_OP_RETRY_JITTER_IN_MS        = 100;
+Uint32 METADATA_CONN_OP_RETRY_JITTER_IN_MS = 100;

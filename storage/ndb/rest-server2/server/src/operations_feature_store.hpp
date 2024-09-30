@@ -58,7 +58,8 @@ std::tuple<int, RS_Status> GetProjectID(const std::string &featureStoreName);
 
 std::tuple<int, RS_Status> GetFeatureStoreID(const std::string &featureStoreName);
 
-std::tuple<int, RS_Status> GetFeatureViewID(int featureStoreID, const std::string &featureViewName,
+std::tuple<int, RS_Status> GetFeatureViewID(int featureStoreID,
+                                            const std::string &featureViewName,
                                             int featureViewVersion);
 
 std::tuple<std::vector<TrainingDatasetJoin>, RS_Status>
@@ -107,7 +108,8 @@ struct FeatureGroupAvroSchema {
   std::string namespace_;
   std::vector<AvroField> fields;
 
-  std::tuple<std::string, RS_Status> getSchemaByFeatureName(const std::string &featureName) const {
+  std::tuple<std::string, RS_Status>
+    getSchemaByFeatureName(const std::string &featureName) const {
     for (const auto &field : fields) {
       if (field.name == featureName) {
         return {field.type, CRS_Status::SUCCESS.status};
@@ -115,9 +117,8 @@ struct FeatureGroupAvroSchema {
     }
     return {"", CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                            std::string("Cannot find schema for feature ") + featureName)
-                    .status};
+                           .status};
   }
-
   // Parse from a simdjson document
   RS_Status from_json(const simdjson::dom::element &elem) {
     std::string_view type_view;
@@ -143,8 +144,8 @@ struct FeatureGroupAvroSchema {
           .status;
     }
 
-    type       = std::string(type_view);
-    name       = std::string(name_view);
+    type = std::string(type_view);
+    name = std::string(name_view);
     namespace_ = std::string(namespace_view);
 
     // Parse the array of fields

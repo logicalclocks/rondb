@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -31,7 +31,7 @@ RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *ta
   }
 
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
-  *table_dict                           = dict->getTable(table_str);
+  *table_dict = dict->getTable(table_str);
 
   if (*table_dict == nullptr) {
     return RS_CLIENT_ERROR(ERROR_011 + std::string(" Database: ") + std::string(database_str) +
