@@ -43,11 +43,11 @@ func TestPKReadOmitRequired(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 
-	url := testutils.NewPKReadURL("db", "table")
+	url := testutils.NewPKReadURL(testdbs.DB004, "int_table")
 
 	body, _ := json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Filters'", http.StatusBadRequest)
+		"Wrong number of primary-key columns. Expecting: 2 Got: 0", http.StatusBadRequest)
 
 	// Test. unset filter values should result in 400 error
 	col := "col"
@@ -206,29 +206,29 @@ func TestPKUniqueParams(t *testing.T) {
 }
 
 // DB/Table does not exist
-// func TestPKERROR_011(t *testing.T) {
-// 	if !config.GetAll().REST.Enable {
-// 		t.Skip("Skipping test as it requires REST and REST Interface is disabled")
-// 	}
-// 	pkCol := "id0"
-// 	pkVal := "1"
-// 	param := api.PKReadBody{
-// 		Filters:     testclient.NewFilter(&pkCol, pkVal),
-// 		ReadColumns: testclient.NewReadColumn("col0"),
-// 		OperationID: testclient.NewOperationID(64),
-// 	}
+func TestPKERROR_011(t *testing.T) {
+ 	if !config.GetAll().REST.Enable {
+ 		t.Skip("Skipping test as it requires REST and REST Interface is disabled")
+ 	}
+ 	pkCol := "id0"
+ 	pkVal := "1"
+ 	param := api.PKReadBody{
+ 		Filters:     testclient.NewFilter(&pkCol, pkVal),
+ 		ReadColumns: testclient.NewReadColumn("col0"),
+ 		OperationID: testclient.NewOperationID(64),
+ 	}
 
-// 	body, _ := json.MarshalIndent(param, "", "\t")
+ 	body, _ := json.MarshalIndent(param, "", "\t")
 
-// 	// Only works if API key is enabled
-// 	url := testutils.NewPKReadURL("DB001_XXX", "table_1")
-// 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-// 		"", http.StatusUnauthorized)
+ 	// Only works if API key is enabled
+ 	url := testutils.NewPKReadURL("DB001_XXX", "table_1")
+ 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+ 		"", http.StatusUnauthorized)
 
-// 	url = testutils.NewPKReadURL(testdbs.DB001, "table_1_XXX")
-// 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-// 		common.ERROR_011(), http.StatusNotFound)
-// }
+ 	url = testutils.NewPKReadURL(testdbs.DB001, "table_1_XXX")
+ 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+ 		common.ERROR_011(), http.StatusNotFound)
+}
 
 // column does not exist
 func TestPKERROR_012(t *testing.T) {

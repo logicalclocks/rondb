@@ -476,7 +476,7 @@ func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {
 func NewOperationTBD(t *testing.T) api.BatchSubOp {
 	pkOp := testclient.NewPKReadReqBodyTBD()
 	method := "POST"
-	relativeURL := testutils.NewPKReadURL("db", "table")
+	relativeURL := testutils.NewPKReadURL(testdbs.DB004, "int_table")
 
 	return api.BatchSubOp{
 		Method:      &method,
