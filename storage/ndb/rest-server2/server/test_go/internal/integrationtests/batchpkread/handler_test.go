@@ -432,6 +432,7 @@ func TestBatchMissingReqField(t *testing.T) {
 		t.Skip("Skipping test as REST interface is disabled")
 	}
 	url := testutils.NewBatchReadURL()
+
 	// Test missing method
 	operations := NewOperationsTBD(t, 3)
 	operations[1].Method = nil
@@ -476,7 +477,7 @@ func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {
 func NewOperationTBD(t *testing.T) api.BatchSubOp {
 	pkOp := testclient.NewPKReadReqBodyTBD()
 	method := "POST"
-	relativeURL := testutils.NewPKReadURL(testdbs.DB004, "int_table")
+	relativeURL := testutils.NewPKReadURL("db", "table")
 
 	return api.BatchSubOp{
 		Method:      &method,

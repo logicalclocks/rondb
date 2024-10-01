@@ -58,6 +58,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   memcpy(jsonParser.get_buffer().get(), json_str, length);
 
   PKReadParams reqStruct(db, table);
+  reqStruct.method = POST;
 
   RS_Status status = jsonParser.pk_parse(
       simdjson::padded_string_view(
@@ -85,11 +86,12 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   // Authenticate
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status       = authenticate(api_key, reqStruct);
+    status = authenticate(api_key, reqStruct);
     if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK) {
+      printf("status.message: %s, status.code: %d\n", status.message, status.code);
       resp->setBody(std::string(status.message));
-      resp->setStatusCode((drogon::HttpStatusCode)status.code);
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
       callback(resp);
       return;
     }

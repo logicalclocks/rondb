@@ -155,7 +155,7 @@ PKReadPath::PKReadPath(const std::string &db,
                        const std::string &table) : db(db), table(table) {
 }
 
-PKReadParams::PKReadParams() : method(POST), path(), filters(), readColumns(), operationId() {
+PKReadParams::PKReadParams() : method(), path(), filters(), readColumns(), operationId() {
 }
 
 PKReadParams::PKReadParams(const std::string &method)
@@ -163,7 +163,7 @@ PKReadParams::PKReadParams(const std::string &method)
 }
 
 PKReadParams::PKReadParams(PKReadPath &path)
-    : method(POST), path(path), filters(), readColumns(), operationId() {
+    : method(), path(path), filters(), readColumns(), operationId() {
 }
 
 PKReadParams::PKReadParams(const std::string &method, PKReadPath &path)
@@ -171,7 +171,7 @@ PKReadParams::PKReadParams(const std::string &method, PKReadPath &path)
 }
 
 PKReadParams::PKReadParams(const std::string &db, const std::string &table)
-    : method(POST), path(db, table), filters(), readColumns(), operationId() {
+    : method(), path(db, table), filters(), readColumns(), operationId() {
 }
 
 PKReadParams::PKReadParams(const std::string &method, const std::string &db,
@@ -196,7 +196,8 @@ std::string PKReadParams::to_string() {
     ss << "{ column: " << readColumn.column << ", returnType: "
        << readColumn.returnType << " }, ";
   }
-  ss << "], operationId: " << operationId << " }";
+  ss << "], operationId: " << operationId;
+  ss << "], method: " << method << " }";
   return ss.str();
 }
 
@@ -252,12 +253,13 @@ RS_Status PKReadParams::validate() {
                       (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
 
   // make sure filters is not empty
-  // if (filters.empty()) {
-  //   std::cout << "Filters is empty" << std::endl;
-  //   return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-  //                     ERROR_CODE_INVALID_FILTERS, ERROR_056)
-  //       .status;
-  // }
+  if (filters.empty()) {
+    std::cout << "Filters is empty" << std::endl;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_FILTERS,
+      ERROR_056).status;
+  }
 
   // make sure filter columns are valid
   for (auto &filter : filters) {

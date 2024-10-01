@@ -47,7 +47,7 @@ func TestPKReadOmitRequired(t *testing.T) {
 
 	body, _ := json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Wrong number of primary-key columns. Expecting: 2 Got: 0", http.StatusBadRequest)
+		"Field validation for 'Filters' failed", http.StatusBadRequest)
 
 	// Test. unset filter values should result in 400 error
 	col := "col"
