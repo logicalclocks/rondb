@@ -42,6 +42,20 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_FS_CTRL 1
+#endif
+
+#ifdef DEBUG_FS_CTRL
+#define DEB_FS_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_FS_CTRL(arglist) do { } while (0)
+#endif
+
 
 std::shared_ptr<RestErrorCode>
   ValidatePrimaryKey(const std::unordered_map<std::string,
@@ -539,6 +553,7 @@ void FeatureStoreCtrl::featureStore(
     callback(resp);
     return;
   }
+  DEB_FS_CTRL(("Parse Feature Store request"));
   memcpy(jsonParser.get_buffer().get(), json_str, length);
   feature_store_data_structs::FeatureStoreRequest reqStruct;
   RS_Status status = jsonParser.feature_store_parse(
@@ -555,7 +570,8 @@ void FeatureStoreCtrl::featureStore(
     callback(resp);
     return;
   }
-  // Validate
+  // Get metadata for Feature Store request
+  DEB_FS_CTRL(("Get metadata for Feature Store request"));
   auto [metadata, err] =
     metadata::FeatureViewMetadataCache_Get(reqStruct.featureStoreName,
                                            reqStruct.featureViewName,
@@ -566,6 +582,7 @@ void FeatureStoreCtrl::featureStore(
     callback(resp);
     return;
   }
+  DEB_FS_CTRL(("Validate PK for Feature Store request"));
   auto err1 = ValidatePrimaryKey(reqStruct.entries, metadata->validPrimayKeys);
   if (unlikely(err1 != nullptr)) {
     resp->setBody(err1->Error());
@@ -575,6 +592,7 @@ void FeatureStoreCtrl::featureStore(
   }
 
   if (reqStruct.GetOptions().validatePassedFeatures) {
+    DEB_FS_CTRL(("Validate Passed features for Feature Store request"));
     auto err2 = ValidatePassedFeatures(reqStruct.passedFeatures,
                                        metadata->prefixFeaturesLookup);
     if (unlikely(err2 != nullptr)) {
@@ -585,6 +603,7 @@ void FeatureStoreCtrl::featureStore(
     }
   }
   // Authenticate
+  DEB_FS_CTRL(("Authenticate Feature Store request"));
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     if (unlikely(err != nullptr)) {
@@ -606,6 +625,7 @@ void FeatureStoreCtrl::featureStore(
   // Execute
   if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
         drogon::HttpStatusCode::k200OK)) {
+    DEB_FS_CTRL(("Get Batch PK Read Params for Feature Store request"));
     auto readParams = GetBatchPkReadParams(*metadata, reqStruct.entries);
     // Perform batch pk read
     auto noOps = readParams.size();
@@ -618,10 +638,14 @@ void FeatureStoreCtrl::featureStore(
       return;
     }
     // Validate
+    DEB_FS_CTRL(("Validate Batch PK Read Params for Feature Store request"));
     for (auto readParam : readParams) {
+      readParam.method = POST;
       status = readParam.validate();
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
+        DEB_FS_CTRL(("Failed Validate Batch PK Read Params: %s, code: %d",
+                     status.message, status.code));
         auto fsError =
           TranslateRonDbError(drogon::k400BadRequest, status.message);
         resp->setBody(fsError->Error());
@@ -656,6 +680,7 @@ void FeatureStoreCtrl::featureStore(
       reqBuffs[i].size            = *length_ptr_casted;
     }
     // pk_batch_read
+    DEB_FS_CTRL(("Perform Batch PK Read for Feature Store request"));
     status = pk_batch_read(noOps, reqBuffs.data(), respBuffs.data());
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
@@ -666,6 +691,7 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
+    DEB_FS_CTRL(("Ptocess Batch PK Read response for Feature Store request"));
     status = process_responses(respBuffs, dbResponseIntf);
     if (unlikely(status.err_file_name[0] != '\0')) {
       auto fsError = TranslateRonDbError(status.http_code, status.message);
@@ -676,6 +702,7 @@ void FeatureStoreCtrl::featureStore(
       return;
     }
     // convert resp to json
+    DEB_FS_CTRL(("Response to JSON for  Feature Store request"));
     std::vector<PKReadResponseWithCodeJSON> responses =
       dbResponseIntf.getResult();
     for (unsigned long i = 0; i < noOps; i++) {
@@ -692,6 +719,7 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
+    DEB_FS_CTRL(("Get Feature values for  Feature Store request"));
     auto [features, status, detailedStatus, fsErr] =
         GetFeatureValues(rondbResp->getResult(),
                          reqStruct.entries, *metadata,
@@ -703,6 +731,7 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
+    DEB_FS_CTRL(("Fill Passed Feature values for  Feature Store request"));
     auto fsResp = feature_store_data_structs::FeatureStoreResponse();
     fsResp.status = status;
     FillPassedFeatures(features,
@@ -717,6 +746,7 @@ void FeatureStoreCtrl::featureStore(
     if (reqStruct.GetOptions().includeDetailedStatus) {
       fsResp.detailedStatus = detailedStatus;
     }
+    DEB_FS_CTRL(("Send response for  Feature Store request"));
     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     resp->setBody(fsResp.to_string());
     resp->setStatusCode(drogon::HttpStatusCode::k200OK);

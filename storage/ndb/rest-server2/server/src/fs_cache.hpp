@@ -23,6 +23,7 @@
 #include "rdrs_hopsworks_dal.h"
 #include "pk_data_structs.hpp"
 #include "metadata.hpp"
+#include "feature_store_error_code.hpp"
 
 #include <atomic>
 #include <memory>
@@ -46,7 +47,8 @@ void stop_fs_cache();
 
 class FSCacheEntry {
  public:
-  std::shared_ptr<metadata::FeatureViewMetadata> data;
+  std::shared_ptr<metadata::FeatureViewMetadata> m_data;
+  std::shared_ptr<RestErrorCode> m_errorCode;
   FSCacheEntry* m_next_cache_entry;
   FSCacheEntry* m_prev_cache_entry;
   NDB_TICKS m_lastUsed;
@@ -78,7 +80,8 @@ class FSCacheEntry {
 std::shared_ptr<metadata::FeatureViewMetadata>
   fs_metadata_cache_get(const std::string&, FSCacheEntry**);
 void fs_metadata_update_cache(std::shared_ptr<metadata::FeatureViewMetadata>,
-                              FSCacheEntry*);
+                              FSCacheEntry*,
+                              std::shared_ptr<RestErrorCode>);
 
 class FSMetadataCache {
  public:
@@ -99,9 +102,10 @@ class FSMetadataCache {
   std::shared_ptr<metadata::FeatureViewMetadata>
     get_fs_metadata(const std::string&, FSCacheEntry**);
   void update_cache(std::shared_ptr<metadata::FeatureViewMetadata>,
-                    FSCacheEntry*);
+                    FSCacheEntry*,
+                    std::shared_ptr<RestErrorCode>);
   void cache_entry_updater(Uint32);
-
+  void start_fs_cache_thread();
  private:
   std::unordered_map<std::string, FSCacheEntry*> m_fs_cache[NUM_FS_CACHES];
   bool m_evicted;
@@ -111,6 +115,7 @@ class FSMetadataCache {
   NdbCondition *m_sleepCond;
   FSCacheEntry* m_first_cache_entry[NUM_FS_CACHES];
   FSCacheEntry* m_last_cache_entry[NUM_FS_CACHES];
+  bool m_is_thread_running;
 
   void cleanup();
   FSCacheEntry* allocate_empty_cache_entry(const std::string &fs_key,

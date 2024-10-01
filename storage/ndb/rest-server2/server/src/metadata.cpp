@@ -25,6 +25,19 @@
 #include <avro/Exception.hh>
 #include <tuple>
 #include <util/require.h>
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_MD_CACHE 1
+#endif
+
+#ifdef DEBUG_MD_CACHE
+#define DEB_MD_CACHE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_MD_CACHE(arglist) do { } while (0)
+#endif
 
 namespace metadata {
 
@@ -482,7 +495,13 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
   auto cache_metadata = fs_metadata_cache_get(fvCacheKey, &entry);
   if (entry == nullptr) {
     require(cache_metadata == nullptr);
+    DEB_MD_CACHE(("Cached Key failed with FETCH_METADATA_FROM_CACHE_FAIL"));
     return {nullptr, FETCH_METADATA_FROM_CACHE_FAIL};
+  } else if (entry->m_errorCode != nullptr) {
+    DEB_MD_CACHE(("Cached Key %s failed with error: %s",
+                  entry->m_key.c_str(),
+                  entry->m_errorCode->ToString().c_str()));
+    return {nullptr, entry->m_errorCode};
   }
   if (!cache_metadata) {
     std::shared_ptr<FeatureViewMetadata> metadata;
@@ -492,10 +511,13 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
                                featureViewName,
                                featureViewVersion);
     if (errorCode) {
-      fs_metadata_update_cache(nullptr, entry);
+      DEB_MD_CACHE(("Key %s failed with error: %s",
+                    entry->m_key.c_str(),
+                    errorCode->ToString().c_str()));
+      fs_metadata_update_cache(nullptr, entry, errorCode);
       return {nullptr, errorCode};
     }
-    fs_metadata_update_cache(metadata, entry);
+    fs_metadata_update_cache(metadata, entry, nullptr);
     return {metadata, nullptr};
   }
   return {cache_metadata, nullptr};

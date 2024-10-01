@@ -202,7 +202,7 @@ std::string PKReadParams::to_string() {
 }
 
 RS_Status PKReadParams::validate() {
-  // std::cout << "Validating PKReadParams: " << to_string() << std::endl;
+  std::cout << "Validating PKReadParams: " << to_string() << std::endl;
 
   if (method.empty()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
