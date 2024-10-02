@@ -98,7 +98,6 @@ SET(MAN8
   )
 SET(MAN8_NDB
   ndb_mgmd.8
-  ndbd.8
   ndbmtd.8
 )
 

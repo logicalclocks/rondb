@@ -1,8 +1,7 @@
 # Building RonDB with Docker
 
-Building RonDB with Docker is possible with two different Dockerfiles: 
+Building RonDB with Docker is possible with three different Dockerfiles:
 
-* [Dockerfile.oraclelinux7](../Dockerfile.oraclelinux8)
 * [Dockerfile.oraclelinux8](../Dockerfile.oraclelinux8)
 * [Dockerfile.oraclelinux9](../Dockerfile.oraclelinux9)
 * [Dockerfile.ubuntu22](../Dockerfile.ubuntu22)
