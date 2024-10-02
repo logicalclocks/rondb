@@ -102,7 +102,6 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     status = authenticate(api_key, reqStruct);
     if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK) {
-      printf("status.message: %s, status.code: %d\n", status.message, status.code);
       resp->setBody(std::string(status.message));
       resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
       callback(resp);

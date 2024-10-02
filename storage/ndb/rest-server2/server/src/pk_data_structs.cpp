@@ -254,7 +254,7 @@ RS_Status PKReadParams::validate(bool check_method, bool check_filter) {
 
   // make sure filters is not empty
   if (check_filter && filters.empty()) {
-    std::cout << "Filters is empty" << std::endl;
+    // std::cout << "Filters is empty" << std::endl;
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
       ERROR_CODE_INVALID_FILTERS,
