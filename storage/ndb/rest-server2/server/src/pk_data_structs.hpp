@@ -21,6 +21,7 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
 
 #include "rdrs_dal.h"
+#include <ndb_types.h>
 
 #include <drogon/HttpTypes.h>
 #include <string>
@@ -33,7 +34,7 @@
 
 std::string to_string(DataReturnType);
 
-uint32_t decode_utf8_to_unicode(const std::string &, size_t &);
+Uint32 decode_utf8_to_unicode(const std::string &, size_t &);
 
 RS_Status validate_db_identifier(const std::string &);
 
@@ -56,8 +57,10 @@ class PKReadPath {
  public:
   PKReadPath();
   PKReadPath(const std::string &, const std::string &);
-  std::string db;   // json:"db" uri:"db"  binding:"required,min=1,max=64"
-  std::string table;// Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
+  // json:"db" uri:"db"  binding:"required,min=1,max=64"
+  std::string db;
+  // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
+  std::string table;
 };
 
 class PKReadParams {
@@ -87,17 +90,21 @@ class PKReadResponse {
   PKReadResponse()= default;
   virtual void init() = 0;
   virtual void setOperationID(std::string &opID)= 0;
-  virtual void setColumnData(std::string &column, const std::vector<char> &value) = 0;
+  virtual void setColumnData(std::string &column,
+                             const std::vector<char> &value) = 0;
   virtual std::string to_string() const = 0;
   virtual ~PKReadResponse() = default;
 };
 
 class PKReadResponseJSON : public PKReadResponse {
  private:
-  drogon::HttpStatusCode code;// json:"code"    form:"code"    binding:"required"
-  std::string operationID;// json:"operationId"    form:"operation-id"    binding:"omitempty"
+  // json:"code"    form:"code"    binding:"required"
+  drogon::HttpStatusCode code;
+  // json:"operationId" form:"operation-id" binding:"omitempty"
+  std::string operationID;
+  // json:"data" form:"data" binding:"omitempty"
   std::map<std::string, std::vector<char>>
-      data;  // json:"data"           form:"data"            binding:"omitempty"
+      data;
 
  public:
   PKReadResponseJSON() : PKReadResponse() {
@@ -130,7 +137,8 @@ class PKReadResponseJSON : public PKReadResponse {
     operationID = opID;
   }
 
-  void setColumnData(std::string &column, const std::vector<char> &value) override {
+  void setColumnData(std::string &column,
+                     const std::vector<char> &value) override {
     data[column] = value;
   }
 
@@ -155,8 +163,10 @@ class PKReadResponseJSON : public PKReadResponse {
 
 class PKReadResponseWithCodeJSON {
  private:
-  std::string message;      // json:"message"    form:"message"    binding:"required"
-  PKReadResponseJSON body;  // json:"body"    form:"body"    binding:"required"
+  // json:"message"    form:"message"    binding:"required"
+  std::string message;
+  // json:"body"    form:"body"    binding:"required"
+  PKReadResponseJSON body;
 
  public:
   PKReadResponseWithCodeJSON() = default;
@@ -166,7 +176,8 @@ class PKReadResponseWithCodeJSON {
     body    = other.body;
   }
 
-  PKReadResponseWithCodeJSON &operator=(const PKReadResponseWithCodeJSON &other) {
+  PKReadResponseWithCodeJSON &operator=(
+    const PKReadResponseWithCodeJSON &other) {
     message = other.message;
     body    = other.body;
     return *this;
@@ -201,7 +212,8 @@ class PKReadResponseWithCodeJSON {
 
 class BatchResponseJSON {
  private:
-  std::vector<PKReadResponseWithCodeJSON> result;  // json:"result" binding:"required"
+  // json:"result" binding:"required"
+  std::vector<PKReadResponseWithCodeJSON> result;
 
  public:
   BatchResponseJSON() = default;
@@ -233,7 +245,8 @@ class BatchResponseJSON {
     return subResponse;
   }
 
-  void AddSubResponse(unsigned long index, const PKReadResponseWithCodeJSON &subResp) {
+  void AddSubResponse(unsigned long index,
+                      const PKReadResponseWithCodeJSON &subResp) {
     if (index < result.size()) {
       result[index] = subResp;
     }
@@ -251,5 +264,4 @@ class BatchResponseJSON {
     return res;
   }
 };
-
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
