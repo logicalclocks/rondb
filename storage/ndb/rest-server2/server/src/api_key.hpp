@@ -41,6 +41,13 @@
 
 #define NUM_API_KEY_CACHES 1
 
+static_assert(0 < NUM_API_KEY_CACHES,
+              "NUM_API_KEY_CACHES must be greater than zero");
+static_assert(NUM_API_KEY_CACHES < INT32_MAX,
+              "NUM_API_KEY_CACHES must be less than INT32_MAX");
+static_assert((NUM_API_KEY_CACHES & (NUM_API_KEY_CACHES - 1)) == 0,
+              "NUM_API_KEY_CACHES must be a power of two");
+
 class APIKeyCache;
 APIKeyCache* start_api_key_cache();
 void stop_api_key_cache();
@@ -120,13 +127,13 @@ class APIKeyCache {
   static RS_Status validate_api_key_format(const std::string &);
 
   void cleanup();
-  RS_Status update_cache(const std::string &, Uint64 hash);
+  RS_Status update_cache(const std::string &, Uint32 hash);
   RS_Status update_record(std::vector<std::string>, UserDBs *);
   RS_Status find_and_validate(const std::string &,
                               bool &,
                               bool &,
                               const std::vector<std::string> &,
-                              Uint64 hash,
+                              Uint32 hash,
                               bool);
 
   RS_Status authenticate_user(const std::string &, HopsworksAPIKey &);

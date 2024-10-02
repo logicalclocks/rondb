@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <NdbThread.h>
 #include <util/require.h>
+#include <util/rondb_hash.hpp>
 #include <EventLogger.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
@@ -175,7 +176,7 @@ std::shared_ptr<metadata::FeatureViewMetadata>
 FSMetadataCache::get_fs_metadata(const std::string &fs_key,
                                  FSCacheEntry** entry) {
   *entry = nullptr;
-#if (defined NUM_FS_CACHES == 1)
+#if (NUM_FS_CACHES == 1)
   Uint32 hash = 0;
 #else
   Uint32 hash = rondb_xxhash_std(fs_key.c_str(), fs_key.size());
@@ -197,11 +198,11 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
   }
   auto cacheEntry = it->second;
   NdbMutex_Lock(cacheEntry->m_waitLock);
+  NdbMutex_Unlock(m_rwLock[key_cache_id]);
   if (cacheEntry->m_state == FSCacheEntry::IS_INVALID) {
 #ifdef DEBUG_FS
     int ref_count = cacheEntry->m_ref_count;
 #endif
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
     NdbMutex_Unlock(cacheEntry->m_waitLock);
     DEB_FS(("FS Key found invalid, Line: %u, refCount: %d",
               __LINE__, ref_count));
@@ -209,7 +210,6 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
     *entry = cacheEntry;
     return nullptr;
   }
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
   cacheEntry->m_ref_count++;
   while (cacheEntry->m_state == FSCacheEntry::IS_FILLING) {
     NdbCondition_Wait(cacheEntry->m_waitCond, cacheEntry->m_waitLock);

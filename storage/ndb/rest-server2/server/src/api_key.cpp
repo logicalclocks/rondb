@@ -33,6 +33,7 @@
 #include <NdbThread.h>
 #include <util/require.h>
 #include <EventLogger.hpp>
+#include <util/rondb_hash.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_AUTH 1
@@ -163,13 +164,14 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
   }
   if (dbs.empty()) {
     DEB_AUTH(("Empty database authenticated, Line: %u", __LINE__));
-    return CRS_Status::SUCCESS.status;
+    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+                      "Needs at least one database to validate API key for").status;
   }
 
   // Authenticates only using the the cache. No request sent to backend
   bool keyFoundInCache = false;
   bool allowedAccess = false;
-#if (defined NUM_API_KEY_CACHES == 1)
+#if (NUM_API_KEY_CACHES == 1)
   Uint32 hash = 0;
 #else
   Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());
@@ -211,7 +213,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
                                          bool &keyFoundInCache,
                                          bool &allowedAccess,
                                          const std::vector<std::string> &dbs,
-                                         Uint64 hash,
+                                         Uint32 hash,
                                          bool inc_refcount_done) {
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
   NdbMutex_Lock(m_rwLock[key_cache_id]);
@@ -240,19 +242,19 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
     return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key found in cache but userDBs is null").status;
   }
+  NdbMutex_Lock(userDBs->m_waitLock);
+  NdbMutex_Unlock(m_rwLock[key_cache_id]);
   if (userDBs->m_state == UserDBs::IS_INVALID) {
     if (inc_refcount_done) userDBs->m_ref_count--;
 #ifdef DEBUG_AUTH
     int ref_count = userDBs->m_ref_count;
 #endif
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
+    NdbMutex_Unlock(userDBs->m_waitLock);
     DEB_AUTH(("API Key found invalid, Line: %u, refCount: %d",
               __LINE__, ref_count));
     return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key found in cache but is invalid").status;
   }
-  NdbMutex_Lock(userDBs->m_waitLock);
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
   while (userDBs->m_state == UserDBs::IS_VALIDATING) {
     if (!inc_refcount_done) {
       inc_refcount_done = true;
@@ -271,6 +273,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
     return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key found in cache but invalid").status;
   }
+  require(userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
   for (const auto &db : dbs) {
     if (userDBs->userDBs.find(db) == userDBs->userDBs.end()) {
@@ -279,7 +282,6 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
       int ref_count = userDBs->m_ref_count;
 #endif
       NdbMutex_Unlock(userDBs->m_waitLock);
-      allowedAccess = false;
       DEB_AUTH(("API Key found valid, not authorized, Line: %u, refCount: %d",
                 __LINE__, ref_count));
       return CRS_Status(HTTP_CODE::AUTH_ERROR,
@@ -306,7 +308,7 @@ extern "C" void* api_key_thread_main(void *thr_arg) {
   return nullptr;
 }
 
-RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint64 hash) {
+RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint32 hash) {
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
   NdbMutex_Lock(m_rwLock[key_cache_id]);
   // Check if the key exists, might have been entered since we released lock
@@ -353,7 +355,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint64 hash) {
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
     return CRS_Status::SUCCESS.status;
   }
-  // Increase reference count to the usdbs to avoid it being released
+  // Increase reference count to the userDBs to avoid it being released
   userDBs->second->m_ref_count++;
   NdbMutex_Unlock(m_rwLock[key_cache_id]);
   return CRS_Status::SUCCESS.status;
@@ -376,9 +378,10 @@ RS_Status APIKeyCache::update_record(std::vector<std::string> dbs,
 }
 
 void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
-#if (defined NUM_API_KEY_CACHES == 1)
+#if (NUM_API_KEY_CACHES == 1)
   Uint32 key_cache_id = 0;
 #else
+  Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
 #endif
   NdbMutex_Lock(m_rwLock[key_cache_id]);
@@ -400,7 +403,6 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
   NdbMutex_Unlock(userDBs->m_waitLock);
   RS_Status status;
   bool first = true;
-  (void)first;
   while (true) {
     bool fail = false;
 
@@ -511,9 +513,8 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
       } else {
         NdbMutex_Unlock(m_rwLock[key_cache_id]);
         NdbMutex_Unlock(userDBs->m_waitLock);
-        continue;
       }
-      break;
+      continue;
     }
   }
   return;
@@ -624,52 +625,45 @@ RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
 Int32 APIKeyCache::refresh_interval_with_jitter() {
   Uint32 cacheRefreshIntervalMS =
     globalConfigs.security.apiKey.cacheRefreshIntervalMS;
-  Int32 jitterMS = static_cast<int>(
+  Int32 jitterMS = static_cast<Int32>(
     globalConfigs.security.apiKey.cacheRefreshIntervalJitterMS);
-  std::uniform_int_distribution<int32_t> dist(0, jitterMS);
+  std::uniform_int_distribution<Int32> dist(-jitterMS, jitterMS);
   Int32 jitter = dist(randomGenerator);
-  if (jitter % 2 == 0) {
-    jitter = -jitter;
-  }
   return Int32(cacheRefreshIntervalMS) + jitter;
 }
 
 /* Below methods only used by unit test program */
 unsigned APIKeyCache::size() {
-#if (defined NUM_API_KEY_CACHES == 1)
-  Uint32 hash = 0;
-#else
-  Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());
-#endif
-  Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
-  NdbMutex_Lock(m_rwLock[key_cache_id]);
-  unsigned size_cache = m_key_cache[key_cache_id].size();
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
+  for (int i = 0; i < NUM_API_KEY_CACHES; i++)
+    NdbMutex_Lock(m_rwLock[i]);
+  unsigned size_cache = 0;
+  for (int i = 0; i < NUM_API_KEY_CACHES; i++)
+    size_cache += m_key_cache[i].size();
+  for (int i = 0; i < NUM_API_KEY_CACHES; i++)
+    NdbMutex_Unlock(m_rwLock[i]);
   return size_cache;
 }
 
 std::string APIKeyCache::to_string() {
-#if (defined NUM_API_KEY_CACHES == 1)
-  Uint32 hash = 0;
-#else
-  Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());
-#endif
-  Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
-  NdbMutex_Lock(m_rwLock[key_cache_id]);
   std::stringstream ss;
-  for (const auto &entry : m_key_cache[key_cache_id]) {
-    ss << "API Key: " << entry.first << ", UserDBs: ";
-    for (const auto &db : entry.second->userDBs) {
-      ss << db.first << ", ";
+  for (int i = 0; i < NUM_API_KEY_CACHES; i++)
+    NdbMutex_Lock(m_rwLock[i]);
+  for (int i = 0; i < NUM_API_KEY_CACHES; i++) {
+    for (const auto &entry : m_key_cache[i]) {
+      ss << "API Key: " << entry.first << ", UserDBs: ";
+      for (const auto &db : entry.second->userDBs) {
+        ss << db.first << ", ";
+      }
+      ss << std::endl;
     }
-    ss << std::endl;
   }
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
+  for (int i = 0; i < NUM_API_KEY_CACHES; i++)
+    NdbMutex_Unlock(m_rwLock[i]);
   return ss.str();
 }
 
 Uint64 APIKeyCache::last_updated(const std::string &apiKey) {
-#if (defined NUM_API_KEY_CACHES == 1)
+#if (NUM_API_KEY_CACHES == 1)
   Uint32 hash = 0;
 #else
   Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());

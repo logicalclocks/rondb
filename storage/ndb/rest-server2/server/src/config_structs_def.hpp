@@ -148,12 +148,15 @@ CLASS
  CM(uint32_t, cacheRefreshIntervalMS,       CacheRefreshIntervalMS,       10000)
  CM(uint32_t, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 60000)
  CM(uint32_t, cacheRefreshIntervalJitterMS, CacheRefreshIntervalJitterMS, 1000)
- PROBLEM(cacheRefreshIntervalMS == 0, "cache refresh interval cannot be 0")
- PROBLEM(cacheUnusedEntriesEvictionMS == 0, "cache unused entries eviction cannot be 0")
+ PROBLEM(cacheRefreshIntervalMS <= 0,
+   "cache refresh interval must be greater than 0")
+ PROBLEM(cacheUnusedEntriesEvictionMS <= 0,
+   "cache unused entries eviction must be greater than 0")
  PROBLEM(cacheRefreshIntervalMS > cacheUnusedEntriesEvictionMS,
-         "cache refresh interval cannot be greater than cache unused entries eviction")
+   "cache refresh interval cannot be greater than cache unused"
+   " entries eviction")
  PROBLEM(cacheRefreshIntervalJitterMS >= cacheRefreshIntervalMS,
-         "cache refresh interval must be smaller than cache refresh interval jitter")
+   "cache refresh interval must be smaller than cache refresh interval jitter")
 )
 
 CLASS

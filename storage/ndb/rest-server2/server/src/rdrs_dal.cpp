@@ -154,6 +154,7 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
 }
 
 RS_Status ronsql_dal(const char* database, RonSQLExecParams* ep) {
+  assert(ep != nullptr);
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
