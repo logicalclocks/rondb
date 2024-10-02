@@ -189,44 +189,81 @@ constexpr const char* const configHelp =
 #include <unistd.h>
 #include <csignal>
 
-const char *pidfile = nullptr;
-
-void do_exit(int exit_code) {
-  if (pidfile != nullptr) {
-    printf("Removing pidfile %s\n", pidfile);
-    remove(pidfile);
+// Cleanup logic
+static bool g_did_ndb_init = false;
+static bool g_did_start_api_key_cache = false;
+static const char* g_pidfile = nullptr;
+static RonDBConnection* g_rondbConnection = nullptr;
+static bool g_drogon_running = false;
+static int g_deferred_exit_code = 0;
+static void do_exit(int exit_code) {
+  assert(!g_drogon_running);
+  if (g_rondbConnection != nullptr) {
+    delete g_rondbConnection;
+    g_rondbConnection = nullptr;
   }
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
     jsonParsers = nullptr;
   }
+  if (g_pidfile != nullptr) {
+    printf("Removing pidfile %s\n", g_pidfile);
+    if(remove(g_pidfile) != 0) {
+      printf("Failed to remove pidfile %s: %s\n", g_pidfile, strerror(errno));
+    }
+  }
+  if (g_did_start_api_key_cache)
+    stop_api_key_cache();
+  if (g_did_ndb_init)
+    ndb_end(0);
+  if (exit_code != 0) {
+    printf("rdrs2: Exit with code %d.\n", exit_code);
+  }
   exit(exit_code);
 }
-
-void handle_signal(int signal) {
-  switch (signal) {
-    case SIGINT:
-      printf("Main thread received SIGINT\n");
-      drogon::app().quit();
-      do_exit(128+signal);
-      break;
-    case SIGTERM:
-      printf("Main thread received SIGTERM\n");
-      drogon::app().quit();
-      do_exit(128+signal);
-      break;
-    default:
-      printf("Signal handler received unexpected signal %d\n", signal);
-      do_exit(70);
+static void before_drogon_run() {
+  g_drogon_running = true;
+}
+static void after_drogon_run() {
+  g_drogon_running = false;
+  if (g_deferred_exit_code != 0) {
+    do_exit(g_deferred_exit_code);
   }
 }
+static void handle_signal(int signal) {
+  switch (signal) {
+    case SIGINT:
+      printf("Received SIGINT.\n");
+      break;
+    case SIGTERM:
+      printf("Received SIGTERM.\n");
+      break;
+    default:
+      printf("Received unexpected signal %d\n", signal);
+      break;
+  }
+  int exit_code = 128 + signal; // Because it's tradition.
+  if (g_drogon_running) {
+    printf("Quitting Drogon...\n");
+    drogon::app().quit();
+    g_deferred_exit_code = exit_code;
+  }
+  else {
+    do_exit(exit_code);
+  }
+}
+
+
 
 int main(int argc, char *argv[]) {
   signal(SIGTERM, handle_signal);
   signal(SIGINT, handle_signal);
 
   ndb_init();
+  g_did_ndb_init = true;
   (void)start_api_key_cache();
+  g_did_start_api_key_cache = true;
+
 
   /*
     Config is fetched from:
@@ -316,70 +353,72 @@ int main(int argc, char *argv[]) {
   }
 
   if (!globalConfigs.pidfile.empty()) {
-    pidfile = globalConfigs.pidfile.c_str();
+    g_pidfile = globalConfigs.pidfile.c_str();
   }
-  if (pidfile != nullptr) {
-    FILE *pidFILE = fopen(pidfile, "w");
+  if(g_pidfile != nullptr) {
+    FILE *pidFILE = fopen(g_pidfile, "w");
     if (pidFILE == nullptr) {
-      printf("Failed to open pidfile %s\n", pidfile);
-      exit(errno);
+      printf("Failed to open pidfile %s: %s\n", g_pidfile, strerror(errno));
+      do_exit(1);
     }
     int pid = getpid();
     fprintf(pidFILE, "%d\n", pid);
     fclose(pidFILE);
-    printf("Wrote PID=%d to %s\n", pid, pidfile);
+    printf("Wrote PID=%d to %s\n", pid, g_pidfile);
   }
 
   // Initialize JSON parsers
+  assert(jsonParsers == nullptr);
   jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
+  if (jsonParsers == nullptr) {
+    std::cerr << "Failed to allocate memory for JSON parsers.\n";
+    do_exit(1);
+  }
 
   // connect to rondb
-  {
-    RonDBConnection rondbConnection(globalConfigs.ronDB,
-                                    globalConfigs.ronDBMetadataCluster);
-    if (globalConfigs.security.tls.enableTLS) {
-      status = GenerateTLSConfig(
-        globalConfigs.security.tls.requireAndVerifyClientCert,
-        globalConfigs.security.tls.rootCACertFile,
-        globalConfigs.security.tls.certificateFile,
-        globalConfigs.security.tls.privateKeyFile);
-      if (status.http_code !=
-          static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-        std::cerr << "Error while generating TLS configuration.\n"
-                  << "HTTP code " << status.http_code << '\n'
-                  << status.message << '\n';
-        do_exit(1);
-      }
-    }
-
-    drogon::app().addListener(globalConfigs.rest.serverIP,
-                              globalConfigs.rest.serverPort,
-                              globalConfigs.security.tls.enableTLS,
-                              globalConfigs.security.tls.certificateFile,
-                              globalConfigs.security.tls.privateKeyFile);
-    drogon::app().setThreadNum(globalConfigs.rest.numThreads);
-    drogon::app().disableSession();
-    drogon::app().registerBeginningAdvice([]() {
-      auto addresses = drogon::app().getListeners();
-      for (auto &address : addresses) {
-        // todo-asdf print thread id
-        printf("Server running on %s\n",
-               address.toIpPort().c_str());
-      }
-    });
-    drogon::app().setIntSignalHandler([]() {
-      printf("Received SIGINT, will quit.\n");
-      // Calling quit() is exactly what the default handler does.
-      drogon::app().quit();
-    });
-    drogon::app().setTermSignalHandler([]() {
-      printf("Received SIGTERM, will quit.\n");
-      // Calling quit() is exactly what the default handler does.
-      drogon::app().quit();
-    });
-    drogon::app().run();
-    stop_api_key_cache();
+  g_rondbConnection = new RonDBConnection(globalConfigs.ronDB,
+                                          globalConfigs.ronDBMetadataCluster);
+  if (g_rondbConnection == nullptr) {
+    std::cerr << "Failed to allocate memory for RonDB connection.\n";
+    do_exit(1);
   }
-  ndb_end(0);
+
+  if (globalConfigs.security.tls.enableTLS) {
+    status = GenerateTLSConfig(
+      globalConfigs.security.tls.requireAndVerifyClientCert,
+      globalConfigs.security.tls.rootCACertFile,
+      globalConfigs.security.tls.certificateFile,
+      globalConfigs.security.tls.privateKeyFile);
+    if (status.http_code !=
+        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+      std::cerr << "Error while generating TLS configuration.\n"
+                << "HTTP code " << status.http_code << '\n'
+                << status.message << '\n';
+      do_exit(1);
+    }
+  }
+
+  drogon::app().addListener(globalConfigs.rest.serverIP,
+                            globalConfigs.rest.serverPort,
+                            globalConfigs.security.tls.enableTLS,
+                            globalConfigs.security.tls.certificateFile,
+                            globalConfigs.security.tls.privateKeyFile);
+  drogon::app().setThreadNum(globalConfigs.rest.numThreads);
+  drogon::app().disableSession();
+  drogon::app().registerBeginningAdvice([]() {
+    auto addresses = drogon::app().getListeners();
+    for (auto &address : addresses) {
+      printf("Server running on %s\n", address.toIpPort().c_str());
+    }
+  });
+  drogon::app().setIntSignalHandler([]() {
+    handle_signal(SIGINT);
+  });
+  drogon::app().setTermSignalHandler([]() {
+    handle_signal(SIGTERM);
+  });
+  before_drogon_run();
+  drogon::app().run();
+  after_drogon_run();
   do_exit(0);
 }

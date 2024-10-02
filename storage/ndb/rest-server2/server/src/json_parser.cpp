@@ -137,26 +137,28 @@ void assert_end_of_doc(simdjson::ondemand::document& doc) {
 
 RS_Status handle_parse_error(ConfigParseError& e,
                              const simdjson::padded_string& paddedJson,
-                             const simdjson::ondemand::document& doc) {
+                             const simdjson::ondemand::document* doc) {
   std::string message = e.m_error_message;
   const char *location = nullptr;
-  simdjson::error_code getLocationError = doc.current_location().get(location);
-  if (getLocationError == simdjson::SUCCESS) {
-    const char* bufferC = paddedJson.data();
-    const size_t bufferLength = paddedJson.length();
-    assert(&bufferC[0] <= location && location < &bufferC[bufferLength]);
-    int line = 1;
-    int column = 0;
-    for (const char* c = &bufferC[0]; c < location; c++) {
-      if (*c == '\n') {
-        line++;
-        column = 0;
-      } else {
-        column++;
+  if (doc != nullptr) {
+    simdjson::error_code getLocationError = doc->current_location().get(location);
+    if (getLocationError == simdjson::SUCCESS) {
+      const char* bufferC = paddedJson.data();
+      const size_t bufferLength = paddedJson.length();
+      assert(&bufferC[0] <= location && location < &bufferC[bufferLength]);
+      int line = 1;
+      int column = 0;
+      for (const char* c = &bufferC[0]; c < location; c++) {
+        if (*c == '\n') {
+          line++;
+          column = 0;
+        } else {
+          column++;
+        }
       }
+      message += " before/at line " + std::to_string(line) +
+        ", column " + std::to_string(column);
     }
-    message += " before/at line " + std::to_string(line) +
-      ", column " + std::to_string(column);
   }
   return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                     message).status;
@@ -702,9 +704,11 @@ RS_Status JSONParser::config_parse(const std::string &configsBody,
   simdjson::padded_string paddedJson(configsBody);
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document doc;
+  bool doc_initialized = false;
   try {
     try {
       doc = parser.iterate(paddedJson).value();
+      doc_initialized = true;
       parse(configsStruct, doc.get_object());
       assert_end_of_doc(doc);
       // If .RonDBMetadataCluster is not present in config file, then set it to
@@ -723,7 +727,7 @@ RS_Status JSONParser::config_parse(const std::string &configsBody,
     }
   }
   catch (ConfigParseError& e) {
-    return handle_parse_error(e, paddedJson, doc);
+    return handle_parse_error(e, paddedJson, doc_initialized ? &doc : nullptr);
   }
   return CRS_Status::SUCCESS.status;
 }
@@ -739,9 +743,11 @@ DEFINE_STRUCT_PARSER(RonSQLParams,
 
 RS_Status JSONParser::ronsql_parse(simdjson::padded_string_view reqBody,
                                    RonSQLParams &reqStruct) {
+  bool doc_initialized = false;
   try {
     try {
       doc = parser.iterate(reqBody).value();
+      doc_initialized = true;
       parse(reqStruct, doc.get_object());
       assert_end_of_doc(doc);
     }
@@ -750,7 +756,7 @@ RS_Status JSONParser::ronsql_parse(simdjson::padded_string_view reqBody,
     }
   }
   catch (ConfigParseError& e) {
-    return handle_parse_error(e, reqBody, doc);
+    return handle_parse_error(e, reqBody, doc_initialized ? &doc : nullptr);
   }
   return CRS_Status::SUCCESS.status;
 }
