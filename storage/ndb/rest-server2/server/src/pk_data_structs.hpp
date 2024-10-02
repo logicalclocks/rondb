@@ -74,7 +74,7 @@ class PKReadParams {
   std::vector<PKReadReadColumn> readColumns;
   std::string operationId;
   std::string to_string();
-  RS_Status validate();
+  RS_Status validate(bool, bool);
 };
 
 struct Column {

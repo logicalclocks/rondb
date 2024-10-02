@@ -47,7 +47,7 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_FS_CTRL 1
+//#define DEBUG_FS_CTRL 1
 #endif
 
 #ifdef DEBUG_FS_CTRL
@@ -431,11 +431,18 @@ GetBatchPkReadParams(
     for (const auto &servingKey : fgFeature.primaryKeyMap) {
       // Fill in value of required entry as original entry may not be required.
       std::string pkCol = servingKey.featureName;
+      DEB_FS_CTRL(("servingKey.featureName: %s, servingKey.requiredEntry: %s"
+                   ", servingKey.prefix: %s",
+                   servingKey.featureName.c_str(),
+                   servingKey.requiredEntry.c_str(),
+                   servingKey.prefix.c_str()));
       if (entries.find(servingKey.requiredEntry) != entries.end()) {
         PKReadFilter filter;
         filter.column = pkCol;
         filter.value  = entries.at(servingKey.requiredEntry);
         filters.push_back(filter);
+        DEB_FS_CTRL(("Add filter on column %s, line: %u",
+                     filter.column.c_str(), __LINE__));
       } else if (entries.find(servingKey.prefix + servingKey.featureName) !=
                  entries.end()) {
         // Also Fallback and use feature name with prefix.
@@ -443,6 +450,8 @@ GetBatchPkReadParams(
         filter.column = pkCol;
         filter.value  = entries.at(servingKey.prefix + servingKey.featureName);
         filters.push_back(filter);
+        DEB_FS_CTRL(("Add filter on column %s, line: %u",
+                     filter.column.c_str(), __LINE__));
       } else if (entries.find(servingKey.featureName) != entries.end()) {
         // Fallback and use the raw feature name so as to be consistent
         // with python client. Also add feature name with prefix.
@@ -450,6 +459,10 @@ GetBatchPkReadParams(
         filter.column = pkCol;
         filter.value  = entries.at(servingKey.featureName);
         filters.push_back(filter);
+        DEB_FS_CTRL(("Add filter on column %s, line: %u",
+                     filter.column.c_str(), __LINE__));
+      } else {
+        DEB_FS_CTRL(("No filter added"));
       }
     }
     std::string opId = metadata::GetFeatureGroupKeyByTDFeature(fgFeature);
@@ -460,6 +473,7 @@ GetBatchPkReadParams(
     param.readColumns = columns;
     param.operationId = opId;
     batchReadParams.push_back(param);
+    DEB_FS_CTRL(("Add PKReadParams: %s", param.to_string().c_str()));
   }
   return batchReadParams;
 }
@@ -545,6 +559,7 @@ void FeatureStoreCtrl::featureStore(
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
+  DEB_FS_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
   size_t length        = req->getBody().length();
   if (unlikely(length > globalConfigs.internal.reqBufferSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
@@ -640,8 +655,7 @@ void FeatureStoreCtrl::featureStore(
     // Validate
     DEB_FS_CTRL(("Validate Batch PK Read Params for Feature Store request"));
     for (auto readParam : readParams) {
-      readParam.method = POST;
-      status = readParam.validate();
+      status = readParam.validate(false, false);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
         DEB_FS_CTRL(("Failed Validate Batch PK Read Params: %s, code: %d",

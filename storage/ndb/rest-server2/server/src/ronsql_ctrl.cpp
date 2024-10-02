@@ -24,6 +24,19 @@
 #include <drogon/HttpTypes.h>
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "api_key.hpp"
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_SQL_CTRL 1
+#endif
+
+#ifdef DEBUG_SQL_CTRL
+#define DEB_SQL_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SQL_CTRL(arglist) do { } while (0)
+#endif
 
 using std::endl;
 
@@ -41,6 +54,8 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
+  DEB_SQL_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
+
   size_t length        = req->getBody().length();
   if (length > globalConfigs.internal.reqBufferSize) {
     resp->setBody("Request too large");

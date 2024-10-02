@@ -32,9 +32,18 @@
 #include <util/require.h>
 #include <EventLogger.hpp>
 
-#define DEBUG_FS 1
-#define DEBUG_FS_THREAD 1
-#define DEBUG_FS_TIME 1
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_FS 1
+//#define DEBUG_FS_THREAD 1
+//#define DEBUG_FS_TIME 1
+//#define DEBUG_FS_METADATA 1
+#endif
+
+#ifdef DEBUG_FS_METADATA
+#define DEB_FS_METADATA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_FS_METADATA(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_FS
 #define DEB_FS(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -279,6 +288,11 @@ void FSMetadataCache::update_cache(
   entry->m_data = data;
   entry->m_errorCode = errorCode;
   if (data != nullptr) {
+#ifdef DEBUG_FS_METADATA
+    DEB_FS_METADATA(("Key %s have metadata: \n%s",
+                     entry->m_key.c_str(),
+                     entry->m_data->to_string().c_str()));
+#endif
     entry->m_state = FSCacheEntry::IS_VALID;
     DEB_FS(("FS Key create CacheEntry succeeded, valid, Line: %u", __LINE__));
   } else {

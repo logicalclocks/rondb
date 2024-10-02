@@ -30,6 +30,20 @@
 #include <iostream>
 #include <memory>
 #include <simdjson.h>
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_BPK_CTRL 1
+#endif
+
+#ifdef DEBUG_BPK_CTRL
+#define DEB_BPK_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_BPK_CTRL(arglist) do { } while (0)
+#endif
+
 
 void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
                                   std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
@@ -45,6 +59,7 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
+  DEB_BPK_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
   size_t length        = req->getBody().length();
   if (length > globalConfigs.internal.reqBufferSize) {
     auto resp = drogon::HttpResponse::newHttpResponse();
@@ -80,7 +95,7 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
 
   // Validate
   for (auto reqStruct : reqStructs) {
-    status = reqStruct.validate();
+    status = reqStruct.validate(true, true);
     if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);

@@ -36,6 +36,19 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_BFS_CTRL 1
+#endif
+
+#ifdef DEBUG_BFS_CTRL
+#define DEB_BFS_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_BFS_CTRL(arglist) do { } while (0)
+#endif
 
 void BatchFeatureStoreCtrl::batch_featureStore(
     const drogon::HttpRequestPtr &req,
@@ -75,6 +88,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
+  DEB_BFS_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
   size_t length = req->getBody().length();
   if (unlikely(length > globalConfigs.internal.reqBufferSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
@@ -177,7 +191,8 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   if (unlikely(noOps != 0)) {
     // Validate batch pkread
     for (auto readParam : readParams) {
-      status = readParam.validate();
+      // The request is always a POST, but not set in request parameters
+      status = readParam.validate(false, false);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
         resp->setBody(

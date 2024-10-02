@@ -201,10 +201,10 @@ std::string PKReadParams::to_string() {
   return ss.str();
 }
 
-RS_Status PKReadParams::validate() {
-  std::cout << "Validating PKReadParams: " << to_string() << std::endl;
+RS_Status PKReadParams::validate(bool check_method, bool check_filter) {
+  // std::cout << "Validating PKReadParams: " << to_string() << std::endl;
 
-  if (method.empty()) {
+  if (check_method && method.empty()) {
     return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                       ERROR_CODE_INVALID_METHOD, ERROR_062).status;
   }
@@ -253,7 +253,7 @@ RS_Status PKReadParams::validate() {
                       (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
 
   // make sure filters is not empty
-  if (filters.empty()) {
+  if (check_filter && filters.empty()) {
     std::cout << "Filters is empty" << std::endl;
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
