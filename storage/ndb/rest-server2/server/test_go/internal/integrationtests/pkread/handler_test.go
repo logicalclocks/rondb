@@ -47,7 +47,7 @@ func TestPKReadOmitRequired(t *testing.T) {
 
 	body, _ := json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Filters' failed", http.StatusBadRequest)
+		"the Field section is null", http.StatusBadRequest)
 
 	// Test. unset filter values should result in 400 error
 	col := "col"
@@ -55,14 +55,14 @@ func TestPKReadOmitRequired(t *testing.T) {
 	param.Filters = filter
 	body, _ = json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Value' failed on the 'required' tag", http.StatusBadRequest)
+		"a Column in the Field section is null", http.StatusBadRequest)
 
 	val := "val"
 	filter = testclient.NewFilter(nil, val)
 	param.Filters = filter
 	body, _ = json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Column' failed on the 'required' tag", http.StatusBadRequest)
+		"a Column name in the Field section is null", http.StatusBadRequest)
 }
 
 func TestPKReadLargeColumns(t *testing.T) {
