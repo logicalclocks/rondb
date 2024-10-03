@@ -63,6 +63,36 @@ func TestPKReadOmitRequired(t *testing.T) {
 	body, _ = json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"a Column name in the Field section is null", http.StatusBadRequest)
+
+        col = ""
+	filter = testclient.NewFilter(&col, val)
+	param.Filters = filter
+	body, _ = json.MarshalIndent(param, "", "\t")
+	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+		"a Column name in the Field section is empty", http.StatusBadRequest)
+
+        col = "col"
+        val = ""
+	filter = testclient.NewFilter(&col, val)
+	param.Filters = filter
+	body, _ = json.MarshalIndent(param, "", "\t")
+	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+		"Wrong number of primary-key columns. Expecting: 2 Got: 1",
+                http.StatusBadRequest)
+
+	// Test. Large filter column names.
+	col = "col"
+	val = "val"
+	param = api.PKReadBody{
+		Filters:     testclient.NewFilter(&col, val),
+		ReadColumns: testclient.NewReadColumn(""),
+		OperationID: testclient.NewOperationID(64),
+	}
+	body, _ = json.MarshalIndent(param, "", "\t")
+	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+		"a column to read is missing a name", http.StatusBadRequest)
+
+
 }
 
 func TestPKReadLargeColumns(t *testing.T) {

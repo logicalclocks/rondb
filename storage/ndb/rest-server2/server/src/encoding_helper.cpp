@@ -45,6 +45,27 @@ EN_Status copy_str_to_buffer(const std::string &src, void *dst, uint32_t offset)
   return EN_Status(offset + src_length + 1);
 }
 
+EN_Status copy_str_to_buffer(const std::string_view &src,
+                             void *dst,
+                             uint32_t offset) {
+  if (dst == nullptr) {
+    EN_Status status{};
+    status.http_code = static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest);
+    status.retValue  = 0;
+    strncpy(status.message, "Destination buffer pointer is null", EN_STATUS_MSG_LEN - 1);
+    status.message[EN_STATUS_MSG_LEN - 1] = '\0';
+    return status;
+  }
+
+  uint32_t src_length = static_cast<uint32_t>(src.size());
+
+  memcpy(static_cast<char *>(dst) + offset, src.data(), src_length);
+
+  static_cast<char *>(dst)[offset + src_length] = '\0';
+
+  return EN_Status(offset + src_length + 1);
+}
+
 EN_Status copy_ndb_str_to_buffer(std::vector<char> &src, void *dst, uint32_t offset) {
   if (dst == nullptr) {
     return EN_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest), 0,

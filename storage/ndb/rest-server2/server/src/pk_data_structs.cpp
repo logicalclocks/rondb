@@ -34,7 +34,7 @@ std::string to_string(DataReturnType drt) {
   }
 }
 
-Uint32 decode_utf8_to_unicode(const std::string &str, size_t &i) {
+Uint32 decode_utf8_to_unicode(const std::string_view &str, size_t &i) {
   Uint32 codepoint = 0;
   if ((str[i] & 0x80) == 0) {
     // 1-byte character
@@ -57,7 +57,7 @@ Uint32 decode_utf8_to_unicode(const std::string &str, size_t &i) {
   return codepoint;
 }
 
-RS_Status validate_db_identifier(const std::string &identifier) {
+RS_Status validate_db_identifier(const std::string_view &identifier) {
   if (identifier.empty()) {
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
@@ -67,7 +67,8 @@ RS_Status validate_db_identifier(const std::string &identifier) {
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
         ERROR_CODE_IDENTIFIER_TOO_LONG,
-        (std::string(ERROR_039) + ": " + identifier).c_str()).status;
+        (std::string(ERROR_039) + ": " +
+        std::string(identifier)).c_str()).status;
   }
 
   // https://dev.mysql.com/doc/refman/8.0/en/identifiers.html
@@ -121,12 +122,14 @@ RS_Status PKReadFilter::validate() {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_EMPTY_IDENTIFIER,
-          (std::string(ERROR_038) + ": " + column).c_str()).status;
+          (std::string(ERROR_038) + ": " +
+          std::string(column)).c_str()).status;
     if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_MAX_FILTER_COLUMN,
-          (std::string(ERROR_045) + ": " + column).c_str()).status;
+          (std::string(ERROR_045) + ": " +
+          std::string(column)).c_str()).status;
     }
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(
@@ -287,13 +290,14 @@ RS_Status PKReadParams::validate(bool check_method, bool check_filter) {
       return status;
   }
   // make sure that the columns are unique
-  std::unordered_map<std::string, bool> existingFilters;
+  std::unordered_map<std::string_view, bool> existingFilters;
   for (auto &filter : filters) {
     if (existingFilters.find(filter.column) != existingFilters.end())
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_UNIQUE_FILTER,
-          (std::string(ERROR_057) + ": " + filter.column).c_str()).status;
+          (std::string(ERROR_057) + ": " +
+          std::string(filter.column)).c_str()).status;
     existingFilters[filter.column] = true;
   }
   // make sure read columns are valid
@@ -305,12 +309,14 @@ RS_Status PKReadParams::validate(bool check_method, bool check_filter) {
         return CRS_Status(static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k400BadRequest),
             ERROR_CODE_EMPTY_IDENTIFIER,
-            (std::string(ERROR_038) + ": " + readColumn.column).c_str()).status;
+            (std::string(ERROR_038) + ": " +
+             std::string(readColumn.column)).c_str()).status;
       if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
         return CRS_Status(static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k400BadRequest),
             ERROR_CODE_IDENTIFIER_TOO_LONG,
-            (std::string(ERROR_039) + ": " + readColumn.column).c_str()).status;
+            (std::string(ERROR_039) + ": " +
+             std::string(readColumn.column)).c_str()).status;
       if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
         return CRS_Status(static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k400BadRequest),
@@ -325,19 +331,21 @@ RS_Status PKReadParams::validate(bool check_method, bool check_filter) {
   }
   // make sure that the filter columns and read columns do not overlap
   // and read cols are unique
-  std::unordered_map<std::string, bool> existingCols;
+  std::unordered_map<std::string_view, bool> existingCols;
   for (auto &readColumn : readColumns) {
     if (existingFilters.find(readColumn.column) != existingFilters.end())
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_INVALID_READ_COLUMNS,
-          (std::string(ERROR_060) + ". '" + readColumn.column +
+          (std::string(ERROR_060) + ". '" +
+           std::string(readColumn.column) +
            "' already included in filter").c_str()).status;
     if (existingCols.find(readColumn.column) != existingCols.end())
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_UNIQUE_READ_COLUMN,
-          (std::string(ERROR_061) + ": " + readColumn.column).c_str()).status;
+          (std::string(ERROR_061) + ": " +
+          std::string(readColumn.column)).c_str()).status;
     existingCols[readColumn.column] = true;
   }
   return CRS_Status(static_cast<HTTP_CODE>(

@@ -34,23 +34,23 @@
 
 std::string to_string(DataReturnType);
 
-Uint32 decode_utf8_to_unicode(const std::string &, size_t &);
+Uint32 decode_utf8_to_unicode(const std::string_view &, size_t &);
 
-RS_Status validate_db_identifier(const std::string &);
+RS_Status validate_db_identifier(const std::string_view &);
 
 RS_Status validate_operation_id(const std::string &);
 
 class PKReadFilter {
  public:
-  std::string column;
+  std::string_view column;
   std::vector<char> value;
   RS_Status validate();
 };
 
 class PKReadReadColumn {
  public:
-  std::string column;
-  std::string returnType;
+  std::string_view column;
+  std::string_view returnType;
 };
 
 class PKReadPath {
@@ -71,7 +71,7 @@ class PKReadParams {
   PKReadParams(const std::string &, PKReadPath &);
   PKReadParams(const std::string &, const std::string &, const std::string &);
   PKReadParams(const std::string &, const std::string &);
-  std::string method;
+  std::string_view method;
   PKReadPath path;
   std::vector<PKReadFilter> filters;
   std::vector<PKReadReadColumn> readColumns;

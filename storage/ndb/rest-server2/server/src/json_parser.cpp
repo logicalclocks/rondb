@@ -31,6 +31,9 @@
 #include <functional>
 #include <memory>
 #include <simdjson.h>
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
 
 /*
  * Parsing utilities
@@ -211,6 +214,10 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
     if (unlikely(error != simdjson::SUCCESS)) {
       return handle_simdjson_error(error, doc, currentLocation);
     }
+    if (unlikely(filters.is_empty())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the Field section is empty").status;
+    }
     for (auto filter : filters) {
       PKReadFilter pkReadFilter;
       simdjson::ondemand::object filterObj;
@@ -229,6 +236,11 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
         error = columnVal.get(column);
         if (unlikely(error != simdjson::SUCCESS)) {
           return handle_simdjson_error(error, doc, currentLocation);
+        }
+        if (unlikely(column.size() == 0)) {
+          return CRS_Status(
+            HTTP_CODE::CLIENT_ERROR,
+            "a Column name in the Field section is empty").status;
         }
         pkReadFilter.column = column;
 
@@ -286,18 +298,27 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
         auto columnVal = readColumnObj[COLUMN];
         if (unlikely(columnVal.error() ==
                      simdjson::error_code::NO_SUCH_FIELD)) {
-          column = "";
+          return CRS_Status(
+            HTTP_CODE::CLIENT_ERROR,
+            "a column to read is missing a name").status;
         } else if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
           return handle_simdjson_error(columnVal.error(), doc, currentLocation);
         } else {
           if (unlikely(columnVal.is_null())) {
-            column = "";
+            return CRS_Status(
+              HTTP_CODE::CLIENT_ERROR,
+              "a column to read is missing a name").status;
           } else {
             error = columnVal.get(column);
             if (unlikely(error != simdjson::SUCCESS)) {
               return handle_simdjson_error(error, doc, currentLocation);
             }
           }
+        }
+        if (unlikely(column.size() == 0)) {
+          return CRS_Status(
+            HTTP_CODE::CLIENT_ERROR,
+            "a column to read is missing a name").status;
         }
         pkReadReadColumn.column = column;
         std::string_view dataReturnType;
@@ -350,29 +371,36 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
   const char *currentLocation = nullptr;
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
-  if (error != simdjson::SUCCESS) {
+  if (unlikely(error != simdjson::SUCCESS)) {
     return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
   error = doc.get_object().get(reqObject);
-  if (error != simdjson::SUCCESS) {
+  if (unlikely(error != simdjson::SUCCESS)) {
     return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::array operations;
   auto operationsVal = reqObject[OPERATIONS];
-  if (operationsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+  if (unlikely(operationsVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
     operations = {};
-  } else if (operationsVal.error() != simdjson::SUCCESS) {
+  } else if (unlikely(operationsVal.error() != simdjson::SUCCESS)) {
     return handle_simdjson_error(operationsVal.error(), doc, currentLocation);
   } else {
-    if (operationsVal.is_null()) {
-      operations = {};
+    if (unlikely(operationsVal.is_null())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
     } else {
       error = operationsVal.get(operations);
-      if (error != simdjson::SUCCESS) {
+      if (unlikely(error != simdjson::SUCCESS)) {
         return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(operations.is_empty())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
       }
       for (auto operation : operations) {
         PKReadParams reqStruct;

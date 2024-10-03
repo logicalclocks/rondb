@@ -39,6 +39,7 @@ RS_Status unquote(std::vector<char> &, bool);
 RS_Status Unquote(std::vector<char> &);
 
 EN_Status copy_str_to_buffer(const std::string &, void *, uint32_t);
+EN_Status copy_str_to_buffer(const std::string_view &, void *, uint32_t);
 
 EN_Status copy_ndb_str_to_buffer(std::vector<char> &, void *, uint32_t);
 
