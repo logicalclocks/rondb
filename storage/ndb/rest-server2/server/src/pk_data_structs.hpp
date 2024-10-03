@@ -33,11 +33,8 @@
 #include <unordered_map>
 
 std::string to_string(DataReturnType);
-
 Uint32 decode_utf8_to_unicode(const std::string_view &, size_t &);
-
 RS_Status validate_db_identifier(const std::string_view &);
-
 RS_Status validate_operation_id(const std::string &);
 
 class PKReadFilter {
@@ -81,7 +78,7 @@ class PKReadParams {
 };
 
 struct Column {
-  std::string name;
+  std::string_view name;
   std::vector<char> value;  // Byte array for the value
 };
 
@@ -111,15 +108,15 @@ class PKReadResponseJSON : public PKReadResponse {
   }
 
   PKReadResponseJSON(const PKReadResponseJSON &other) : PKReadResponse() {
-    code        = other.code;
+    code = other.code;
     operationID = other.operationID;
-    data        = other.data;
+    data = other.data;
   }
 
   PKReadResponseJSON &operator=(const PKReadResponseJSON &other) {
-    code        = other.code;
+    code = other.code;
     operationID = other.operationID;
-    data        = other.data;
+    data = other.data;
     return *this;
   }
 
@@ -155,9 +152,7 @@ class PKReadResponseJSON : public PKReadResponse {
   }
 
   std::string to_string() const override;
-
   std::string to_string(int, bool) const;
-
   static std::string batch_to_string(const std::vector<PKReadResponseJSON> &);
 };
 
@@ -173,13 +168,13 @@ class PKReadResponseWithCodeJSON {
 
   PKReadResponseWithCodeJSON(const PKReadResponseWithCodeJSON &other) {
     message = other.message;
-    body    = other.body;
+    body = other.body;
   }
 
   PKReadResponseWithCodeJSON &operator=(
     const PKReadResponseWithCodeJSON &other) {
     message = other.message;
-    body    = other.body;
+    body = other.body;
     return *this;
   }
 
