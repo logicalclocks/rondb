@@ -205,88 +205,82 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
 
   simdjson::ondemand::array filters;
   auto filtersVal = reqObject[FILTERS];
-  if (likely(filtersVal.error() == simdjson::SUCCESS)) {
-    if (unlikely(filtersVal.is_null())) {
-      return CRS_Status(
-        HTTP_CODE::CLIENT_ERROR, "the Field section is null").status;
-    }
-    error = filtersVal.get(filters);
+  if (unlikely(filtersVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
+  }
+  if (unlikely(filtersVal.is_null())) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "the Field section is null").status;
+  }
+  error = filtersVal.get(filters);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+  if (unlikely(filters.is_empty())) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "the Field section is empty").status;
+  }
+  for (auto filter : filters) {
+    PKReadFilter pkReadFilter;
+    simdjson::ondemand::object filterObj;
+    error = filter.get(filterObj);
     if (unlikely(error != simdjson::SUCCESS)) {
       return handle_simdjson_error(error, doc, currentLocation);
     }
-    if (unlikely(filters.is_empty())) {
+    std::string_view column;
+    auto columnVal = filterObj[COLUMN];
+    if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    } else if (unlikely(columnVal.is_null())) {
       return CRS_Status(
-        HTTP_CODE::CLIENT_ERROR, "the Field section is empty").status;
+        HTTP_CODE::CLIENT_ERROR,
+        "a Column name in the Field section is null").status;
     }
-    for (auto filter : filters) {
-      PKReadFilter pkReadFilter;
-      simdjson::ondemand::object filterObj;
-      error = filter.get(filterObj);
-      if (unlikely(error != simdjson::SUCCESS)) {
-        return handle_simdjson_error(error, doc, currentLocation);
-      }
-      std::string_view column;
-      auto columnVal = filterObj[COLUMN];
-      if (likely(columnVal.error() == simdjson::SUCCESS)) {
-        if (unlikely(columnVal.is_null())) {
-          return CRS_Status(
-            HTTP_CODE::CLIENT_ERROR,
-            "a Column name in the Field section is null").status;
-        }
-        error = columnVal.get(column);
-        if (unlikely(error != simdjson::SUCCESS)) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
-        if (unlikely(column.size() == 0)) {
-          return CRS_Status(
-            HTTP_CODE::CLIENT_ERROR,
-            "a Column name in the Field section is empty").status;
-        }
-        pkReadFilter.column = column;
+    error = columnVal.get(column);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+    if (unlikely(column.size() == 0)) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR,
+        "a Column name in the Field section is empty").status;
+    }
+    pkReadFilter.column = column;
 
-        simdjson::ondemand::value value;
-        std::vector<char> bytes;
-        auto valueVal = filterObj[VALUE];
-        error = valueVal.get(value);
-        if (likely(error == simdjson::SUCCESS)) {
-          if (unlikely(valueVal.is_null())) {
-            return CRS_Status(
-              HTTP_CODE::CLIENT_ERROR,
-              "a Column in the Field section is null").status;
-          } else {
-            std::ostringstream oss;
-            oss << value;
-            std::string valueJson = oss.str();
-            bytes = std::vector<char>(valueJson.begin(), valueJson.end());
-          }
-        } else {
-          return handle_simdjson_error(columnVal.error(), doc, currentLocation);
-        }
-        pkReadFilter.value = bytes;
-        reqStruct.filters.emplace_back(pkReadFilter);
-      } else {
-        return handle_simdjson_error(columnVal.error(), doc, currentLocation);
-      }
+    simdjson::ondemand::value value;
+    std::vector<char> bytes;
+    auto valueVal = filterObj[VALUE];
+    error = valueVal.get(value);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    } else if (unlikely(valueVal.is_null())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR,
+        "a Column in the Field section is null").status;
     }
-  } else {
-    return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
+    std::ostringstream oss;
+    oss << value;
+    std::string valueJson = oss.str();
+    bytes = std::vector<char>(valueJson.begin(), valueJson.end());
+    pkReadFilter.value = bytes;
+    reqStruct.filters.emplace_back(pkReadFilter);
   }
 
   simdjson::ondemand::array readColumns;
   auto readColumnsVal = reqObject[READCOLUMNS];
-  if (unlikely(readColumnsVal.error() ==
-               simdjson::error_code::NO_SUCH_FIELD)) {
+  if (unlikely(readColumnsVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
     readColumns = {};
   } else if (unlikely(readColumnsVal.error() != simdjson::SUCCESS)) {
     return handle_simdjson_error(readColumnsVal.error(), doc, currentLocation);
+  } else if (unlikely(readColumnsVal.is_null())) {
+    readColumns = {};
   } else {
-    if (unlikely(readColumnsVal.is_null())) {
+    error = readColumnsVal.get(readColumns);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    } else if (unlikely(readColumns.is_empty())) {
       readColumns = {};
     } else {
-      error = readColumnsVal.get(readColumns);
-      if (unlikely(error != simdjson::SUCCESS)) {
-        return handle_simdjson_error(error, doc, currentLocation);
-      }
       for (auto readColumn : readColumns) {
         PKReadReadColumn pkReadReadColumn;
         simdjson::ondemand::object readColumnObj;
@@ -300,19 +294,17 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
                      simdjson::error_code::NO_SUCH_FIELD)) {
           return CRS_Status(
             HTTP_CODE::CLIENT_ERROR,
-            "a column to read is missing a name").status;
+             "a column to read is missing a name").status;
         } else if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
           return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+        } else if (unlikely(columnVal.is_null())) {
+          return CRS_Status(
+            HTTP_CODE::CLIENT_ERROR,
+            "a column to read is missing a name").status;
         } else {
-          if (unlikely(columnVal.is_null())) {
-            return CRS_Status(
-              HTTP_CODE::CLIENT_ERROR,
-              "a column to read is missing a name").status;
-          } else {
-            error = columnVal.get(column);
-            if (unlikely(error != simdjson::SUCCESS)) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
+          error = columnVal.get(column);
+          if (unlikely(error != simdjson::SUCCESS)) {
+            return handle_simdjson_error(error, doc, currentLocation);
           }
         }
         if (unlikely(column.size() == 0)) {
@@ -389,249 +381,241 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
     operations = {};
   } else if (unlikely(operationsVal.error() != simdjson::SUCCESS)) {
     return handle_simdjson_error(operationsVal.error(), doc, currentLocation);
-  } else {
-    if (unlikely(operationsVal.is_null())) {
+  }
+  if (unlikely(operationsVal.is_null())) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
+  }
+  error = operationsVal.get(operations);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+  if (unlikely(operations.is_empty())) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
+  }
+  for (auto operation : operations) {
+    PKReadParams reqStruct;
+    simdjson::ondemand::object operationObj;
+    error = operation.get(operationObj);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+    std::string_view method;
+    auto methodVal = operationObj[METHOD];
+    if (unlikely(methodVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
       return CRS_Status(
-        HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
+        HTTP_CODE::CLIENT_ERROR, "the Method section should be POST").status;
+    } else if (unlikely(methodVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(methodVal.error(), doc, currentLocation);
+    } else if (methodVal.is_null()) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the Method section should be POST").status;
     } else {
-      error = operationsVal.get(operations);
+      error = methodVal.get(method);
       if (unlikely(error != simdjson::SUCCESS)) {
         return handle_simdjson_error(error, doc, currentLocation);
       }
-      if (unlikely(operations.is_empty())) {
-        return CRS_Status(
-          HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
+    }
+    reqStruct.method = method;
+
+    std::string_view relativeUrl;
+    auto relativeUrlVal = operationObj[RELATIVE_URL];
+    if (relativeUrlVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the relativeUrl section is required").status;
+    } else if (relativeUrlVal.error() != simdjson::SUCCESS) {
+      return handle_simdjson_error(relativeUrlVal.error(), doc, currentLocation);
+    } else if (unlikely(relativeUrlVal.is_null())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the relativeUrl section is required").status;
+    } else {
+      error = relativeUrlVal.get(relativeUrl);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
       }
-      for (auto operation : operations) {
-        PKReadParams reqStruct;
-        simdjson::ondemand::object operationObj;
-        error = operation.get(operationObj);
-        if (error != simdjson::SUCCESS) {
-          return handle_simdjson_error(error, doc, currentLocation);
-        }
+    }
+    RS_Status status =
+      extract_db_and_table(std::string(relativeUrl),
+                           reqStruct.path.db,
+                           reqStruct.path.table);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+                             drogon::HttpStatusCode::k200OK)) {
+      return status;
+    }
 
-        std::string_view method;
-        auto methodVal = operationObj[METHOD];
-        if (methodVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-          method = "";
-        } else if (methodVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(methodVal.error(), doc, currentLocation);
-        } else {
-          if (methodVal.is_null()) {
-            method = "";
-          } else {
-            error = methodVal.get(method);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-          }
-        }
-        reqStruct.method = method;
+    simdjson::ondemand::object bodyObject;
+    auto bodyVal = operationObj[BODY];
+    if (unlikely(bodyVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_BODY, ERROR_064).status;
+    }
+    if (unlikely(bodyVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(bodyVal.error(), doc, currentLocation);
+    } else if (unlikely(bodyVal.is_null())) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_BODY, ERROR_064).status;
+    }
+    error = bodyVal.get(bodyObject);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
 
-        std::string_view relativeUrl;
-        auto relativeUrlVal = operationObj[RELATIVE_URL];
-        if (relativeUrlVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-          relativeUrl = "";
-        } else if (relativeUrlVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(relativeUrlVal.error(), doc, currentLocation);
-        } else {
-          if (relativeUrlVal.is_null()) {
-            relativeUrl = "";
-          } else {
-            error = relativeUrlVal.get(relativeUrl);
-            if (error != simdjson::SUCCESS) {
-              return handle_simdjson_error(error, doc, currentLocation);
-            }
-          }
-        }
+    simdjson::ondemand::array filters;
+    auto filtersVal = bodyObject[FILTERS];
+    if (unlikely(filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the Field section is empty").status;
+    } else if (unlikely(filtersVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
+    } else if (unlikely(filtersVal.is_null())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the Field section is null").status;
+    } else {
+      error = filtersVal.get(filters);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(filters.is_empty())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR, "the Field section is empty").status;
+      }
+    }
+    for (auto filter : filters) {
+      PKReadFilter pkReadFilter;
+      simdjson::ondemand::object filterObj;
+      error = filter.get(filterObj);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      std::string_view column;
+      auto columnVal = filterObj[COLUMN];
+      if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+        return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+      } else if (unlikely(columnVal.is_null())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a Column name in the Field section is null").status;
+      }
+      error = columnVal.get(column);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(column.size() == 0)) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a Column name in the Field section is empty").status;
+      }
+      pkReadFilter.column = column;
 
-        RS_Status status =
-            extract_db_and_table(std::string(relativeUrl), reqStruct.path.db, reqStruct.path.table);
-        if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-            drogon::HttpStatusCode::k200OK) {
-          return status;
-        }
+      simdjson::ondemand::value value;
+      std::vector<char> bytes;
+      auto valueVal = filterObj[VALUE];
+      error = valueVal.get(value);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+      } else if (unlikely(valueVal.is_null())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a Column in the Field section is null").status;
+      }
+      std::ostringstream oss;
+      oss << value;
+      std::string valueJson = oss.str();
+      bytes = std::vector<char>(valueJson.begin(), valueJson.end());
+      pkReadFilter.value = bytes;
+      reqStruct.filters.emplace_back(pkReadFilter);
+    }
 
-        simdjson::ondemand::object bodyObject;
-        auto bodyVal = operationObj[BODY];
-        if (bodyVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-          return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                            ERROR_CODE_INVALID_BODY, ERROR_064)
-              .status;
-        }
-        if (bodyVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(bodyVal.error(), doc, currentLocation);
-        } else {
-          if (bodyVal.is_null()) {
-            return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                              ERROR_CODE_INVALID_BODY, ERROR_064)
-                .status;
-          }
-          error = bodyVal.get(bodyObject);
-          if (error != simdjson::SUCCESS) {
+    simdjson::ondemand::array readColumns;
+    auto readColumnsVal = bodyObject[READCOLUMNS];
+    if (unlikely(readColumnsVal.error() ==
+                 simdjson::error_code::NO_SUCH_FIELD)) {
+      readColumns = {};
+    } else if (unlikely(readColumnsVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(readColumnsVal.error(), doc, currentLocation);
+    } else if (unlikely(readColumnsVal.is_null())) {
+      readColumns = {};
+    } else {
+      error = readColumnsVal.get(readColumns);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      } else if (unlikely(readColumns.is_empty())) {
+        readColumns = {};
+      } else {
+        for (auto readColumn : readColumns) {
+          PKReadReadColumn pkReadReadColumn;
+          simdjson::ondemand::object readColumnObj;
+          error = readColumn.get(readColumnObj);
+          if (unlikely(error != simdjson::SUCCESS)) {
             return handle_simdjson_error(error, doc, currentLocation);
           }
-
-          simdjson::ondemand::array filters;
-
-          auto filtersVal = bodyObject[FILTERS];
-          if (filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            filters = {};
-          } else if (filtersVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
+          std::string_view column;
+          auto columnVal = readColumnObj[COLUMN];
+          if (unlikely(columnVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+            return CRS_Status(
+            HTTP_CODE::CLIENT_ERROR,
+             "a column to read is missing a name").status;
+          } else if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+            return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+          } else if (unlikely(columnVal.is_null())) {
+            return CRS_Status(
+              HTTP_CODE::CLIENT_ERROR,
+               "a column to read is missing a name").status;
           } else {
-            if (filtersVal.is_null()) {
-              filters = {};
-            } else {
-              error = filtersVal.get(filters);
-              if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc, currentLocation);
-              }
-              for (auto filter : filters) {
-                PKReadFilter pkReadFilter;
-                simdjson::ondemand::object filterObj;
-                error = filter.get(filterObj);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-
-                std::string_view column;
-                auto columnVal = filterObj[COLUMN];
-                if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  column = "";
-                } else if (columnVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(columnVal.error(), doc, currentLocation);
-                } else {
-                  if (columnVal.is_null()) {
-                    column = "";
-                  } else {
-                    error = columnVal.get(column);
-                    if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc, currentLocation);
-                    }
-                  }
-                }
-                pkReadFilter.column = column;
-
-                simdjson::ondemand::value value;
-                std::vector<char> bytes;
-                auto valueVal = filterObj[VALUE];
-                if (valueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  bytes = {};
-                } else if (valueVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(valueVal.error(), doc, currentLocation);
-                } else {
-                  if (valueVal.is_null()) {
-                    bytes = {};
-                  } else {
-                    error = valueVal.get(value);
-                    if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc, currentLocation);
-                    }
-                    std::ostringstream oss;
-                    oss << value;
-                    std::string valueJson = oss.str();
-                    bytes = std::vector<char>(valueJson.begin(), valueJson.end());
-                  }
-                }
-                pkReadFilter.value = bytes;
-
-                reqStruct.filters.emplace_back(pkReadFilter);
-              }
+            error = columnVal.get(column);
+            if (unlikely(error != simdjson::SUCCESS)) {
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
-
-          simdjson::ondemand::array readColumns;
-
-          auto readColumnsVal = bodyObject[READCOLUMNS];
-          if (readColumnsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            readColumns = {};
-          } else if (readColumnsVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(readColumnsVal.error(), doc, currentLocation);
+          if (unlikely(column.size() == 0)) {
+            return CRS_Status(
+              HTTP_CODE::CLIENT_ERROR,
+              "a column to read is missing a name").status;
+          }
+          pkReadReadColumn.column = column;
+          std::string_view dataReturnType;
+          auto dataReturnTypeVal = readColumnObj[DATA_RETURN_TYPE];
+          if (unlikely(dataReturnTypeVal.error() ==
+                       simdjson::error_code::NO_SUCH_FIELD)) {
+            dataReturnType = "";
+          } else if (unlikely(dataReturnTypeVal.error() != simdjson::SUCCESS)) {
+            return handle_simdjson_error(dataReturnTypeVal.error(), doc,
+                                         currentLocation);
+          } else if (unlikely(dataReturnTypeVal.is_null())) {
+            dataReturnType = "";
           } else {
-            if (readColumnsVal.is_null()) {
-              readColumns = {};
-            } else {
-              error = readColumnsVal.get(readColumns);
-              if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc, currentLocation);
-              }
-
-              for (auto readColumn : readColumns) {
-                PKReadReadColumn pkReadReadColumn;
-                simdjson::ondemand::object readColumnObj;
-                error = readColumn.get(readColumnObj);
-                if (error != simdjson::SUCCESS) {
-                  return handle_simdjson_error(error, doc, currentLocation);
-                }
-
-                std::string_view column;
-                auto columnVal = readColumnObj[COLUMN];
-                if (columnVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  column = "";
-                } else if (columnVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(columnVal.error(), doc, currentLocation);
-                } else {
-                  if (columnVal.is_null()) {
-                    column = "";
-                  } else {
-                    error = columnVal.get(column);
-                    if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc, currentLocation);
-                    }
-                  }
-                }
-                pkReadReadColumn.column = column;
-
-                std::string_view dataReturnType;
-                auto dataReturnTypeVal = readColumnObj[DATA_RETURN_TYPE];
-                if (dataReturnTypeVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-                  dataReturnType = "";
-                } else if (dataReturnTypeVal.error() != simdjson::SUCCESS) {
-                  return handle_simdjson_error(dataReturnTypeVal.error(), doc,
-                                               currentLocation);
-                } else {
-                  if (dataReturnTypeVal.is_null()) {
-                    dataReturnType = "";
-                  } else {
-                    error = dataReturnTypeVal.get(dataReturnType);
-                    if (error != simdjson::SUCCESS) {
-                      return handle_simdjson_error(error, doc, currentLocation);
-                    }
-                  }
-                }
-
-                pkReadReadColumn.returnType = dataReturnType;
-
-                reqStruct.readColumns.emplace_back(pkReadReadColumn);
-              }
+            error = dataReturnTypeVal.get(dataReturnType);
+            if (unlikely(error != simdjson::SUCCESS)) {
+              return handle_simdjson_error(error, doc, currentLocation);
             }
           }
-
-          std::string_view operationId;
-
-          auto operationIdVal = bodyObject[OPERATION_ID];
-          if (operationIdVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-            operationId = "";
-          } else if (operationIdVal.error() != simdjson::SUCCESS) {
-            return handle_simdjson_error(operationIdVal.error(), doc, currentLocation);
-          } else {
-            if (operationIdVal.is_null()) {
-              operationId = "";
-            } else {
-              error = operationIdVal.get(operationId);
-              if (error != simdjson::SUCCESS) {
-                return handle_simdjson_error(error, doc, currentLocation);
-              }
-            }
-          }
-          reqStruct.operationId = operationId;
-          reqStructs.push_back(reqStruct);
+          pkReadReadColumn.returnType = dataReturnType;
+          reqStruct.readColumns.emplace_back(pkReadReadColumn);
         }
       }
     }
-  }
 
+    std::string_view operationId;
+    auto operationIdVal = bodyObject[OPERATION_ID];
+    if (unlikely(operationIdVal.error() ==
+                 simdjson::error_code::NO_SUCH_FIELD)) {
+      operationId = "";
+    } else if (unlikely(operationIdVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(operationIdVal.error(), doc, currentLocation);
+    } else if (unlikely(operationIdVal.is_null())) {
+      operationId = "";
+    } else {
+      error = operationIdVal.get(operationId);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+    }
+    reqStruct.operationId = operationId;
+    reqStructs.push_back(reqStruct);
+  }
   return CRS_Status::SUCCESS.status;
 }
 
