@@ -50,7 +50,7 @@ void BatchPKReadCtrl::batchPKRead(
   std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
   auto resp                 = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
-  if (currentThreadIndex >= globalConfigs.rest.numThreads) {
+  if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
     resp->setBody("Too many threads");
     resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
     callback(resp);
@@ -61,8 +61,8 @@ void BatchPKReadCtrl::batchPKRead(
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
   DEB_BPK_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
-  size_t length        = req->getBody().length();
-  if (length > globalConfigs.internal.reqBufferSize) {
+  size_t length = req->getBody().length();
+  if (unlikely(length > globalConfigs.internal.reqBufferSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -80,15 +80,15 @@ void BatchPKReadCtrl::batchPKRead(
                                    simdjson::SIMDJSON_PADDING),
       reqStructs);
 
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-      drogon::HttpStatusCode::k200OK) {
+  if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+      drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
 
-  if (reqStructs.size() > globalConfigs.internal.batchMaxSize) {
+  if (unlikely(reqStructs.size() > globalConfigs.internal.batchMaxSize)) {
     resp->setBody("Batch size exceeds maximum allowed size: " +
                   std::to_string(globalConfigs.internal.batchMaxSize));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -99,8 +99,8 @@ void BatchPKReadCtrl::batchPKRead(
   // Validate
   for (auto reqStruct : reqStructs) {
     status = reqStruct.validate(true);
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-        drogon::HttpStatusCode::k200OK) {
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
@@ -109,12 +109,12 @@ void BatchPKReadCtrl::batchPKRead(
   }
 
   // Authenticate
-  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+  if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     for (auto reqStruct : reqStructs) {
       status = authenticate(api_key, reqStruct);
-      if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-          drogon::HttpStatusCode::k200OK) {
+      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK)) {
         resp->setBody(std::string(status.message));
         resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
         callback(resp);
@@ -124,8 +124,7 @@ void BatchPKReadCtrl::batchPKRead(
   }
 
   // Execute
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-      drogon::HttpStatusCode::k200OK) {
+  {
     auto noOps = reqStructs.size();
     std::vector<RS_Buffer> reqBuffs(noOps);
     std::vector<RS_Buffer> respBuffs(noOps);
@@ -140,8 +139,8 @@ void BatchPKReadCtrl::batchPKRead(
       status = create_native_request(reqStructs[i],
                                      reqBuff.buffer,
                                      respBuff.buffer);
-      if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-          drogon::HttpStatusCode::k200OK) {
+      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK)) {
         resp->setBody(std::string(status.message));
         resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
         callback(resp);
@@ -158,8 +157,8 @@ void BatchPKReadCtrl::batchPKRead(
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
 
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-        drogon::HttpStatusCode::k200OK) {
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
     } else {
       resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);

@@ -21,6 +21,7 @@
 #include "constants.hpp"
 #include "rdrs_dal.hpp"
 #include "buffer_manager.hpp"
+#include <my_compiler.h>
 
 #include <cstring>
 #include <string>
@@ -29,26 +30,20 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
                                 void *reqBuff,
                                 void * /*respBuff*/) {
   Uint32 *buf = (Uint32 *)(reqBuff);
-
   Uint32 head = PK_REQ_HEADER_END;
-
   Uint32 dbOffset = head;
-
   EN_Status status = copy_str_to_buffer(pkReadParams.path.db, reqBuff, head);
-
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-      drogon::HttpStatusCode::k200OK) {
+  if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
+      drogon::HttpStatusCode::k200OK)) {
     head = status.retValue;
   } else {
     return CRS_Status(status.http_code, status.message).status;
   }
 
   Uint32 tableOffset = head;
-
   status = copy_str_to_buffer(pkReadParams.path.table, reqBuff, head);
-
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-      drogon::HttpStatusCode::k200OK) {
+  if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
+      drogon::HttpStatusCode::k200OK)) {
     head = status.retValue;
   } else {
     return CRS_Status(status.http_code, status.message).status;
@@ -59,36 +54,27 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
   Uint32 pkOffset = head;
   buf[head / ADDRESS_SIZE] = Uint32(pkReadParams.filters.size());
   head += ADDRESS_SIZE;
-
   Uint32 kvi = head / ADDRESS_SIZE;
   // index for storing offsets for each key/value pair
   // skip for N number of offsets one for each key/value pair
   head += Uint32(pkReadParams.filters.size()) * ADDRESS_SIZE;
-
   for (auto filter : pkReadParams.filters) {
     head = align_word(head);
-
     Uint32 tupleOffset = head;
-
     head += 8;
-
     Uint32 keyOffset = head;
-
     status = copy_str_to_buffer(filter.column, reqBuff, head);
-
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-          drogon::HttpStatusCode::k200OK) {
+    if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
+          drogon::HttpStatusCode::k200OK)) {
       head = status.retValue;
     } else {
       return CRS_Status(status.http_code, status.message).status;
     }
 
     Uint32 value_offset = head;
-
     status = copy_ndb_str_to_buffer(filter.value, reqBuff, head);
-
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-          drogon::HttpStatusCode::k200OK) {
+    if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
+          drogon::HttpStatusCode::k200OK)) {
       head = status.retValue;
     } else {
       return CRS_Status(status.http_code, status.message).status;
@@ -99,21 +85,17 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
     buf[tupleOffset / ADDRESS_SIZE]     = keyOffset;
     buf[tupleOffset / ADDRESS_SIZE + 1] = value_offset;
   }
-
   // Read Columns
-  head                    = align_word(head);
+  head = align_word(head);
   Uint32 readColsOffset = 0;
-  if (!pkReadParams.readColumns.empty()) {
+  if (likely(!pkReadParams.readColumns.empty())) {
     readColsOffset           = head;
     buf[head / ADDRESS_SIZE] = (Uint32)(pkReadParams.readColumns.size());
     head += ADDRESS_SIZE;
-
     Uint32 rci = head / ADDRESS_SIZE;
     head += Uint32(pkReadParams.readColumns.size()) * ADDRESS_SIZE;
-
     for (auto col : pkReadParams.readColumns) {
       head = align_word(head);
-
       buf[rci] = head;
       rci++;
 
@@ -132,8 +114,8 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
       // col name
       status = copy_str_to_buffer(col.column, reqBuff, head);
 
-      if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-            drogon::HttpStatusCode::k200OK) {
+      if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
+            drogon::HttpStatusCode::k200OK)) {
         head = status.retValue;
       } else {
         return CRS_Status(status.http_code, status.message).status;
@@ -142,11 +124,11 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
   }
   // Operation ID
   Uint32 op_id_offset = 0;
-  if (!pkReadParams.operationId.empty()) {
+  if (likely(!pkReadParams.operationId.empty())) {
     op_id_offset = head;
     status = copy_str_to_buffer(pkReadParams.operationId, reqBuff, head);
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-          drogon::HttpStatusCode::k200OK) {
+    if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
+          drogon::HttpStatusCode::k200OK)) {
       head = status.retValue;
     } else {
       return CRS_Status(status.http_code, status.message).status;

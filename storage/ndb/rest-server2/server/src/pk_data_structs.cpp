@@ -203,8 +203,8 @@ RS_Status PKReadParams::validate(bool check_filter) {
   // std::cout << "Validating PKReadParams: " << to_string() << std::endl;
 
   RS_Status status = validate_db_identifier(path.db);
-  if (status.http_code != static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k200OK)) {
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k200OK))) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
@@ -226,8 +226,8 @@ RS_Status PKReadParams::validate(bool check_filter) {
         (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
   }
   status = validate_db_identifier(path.table);
-  if (status.http_code != static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k200OK)) {
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k200OK))) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
@@ -249,15 +249,15 @@ RS_Status PKReadParams::validate(bool check_filter) {
         (std::string(ERROR_054) + "; error: " + status.message).c_str()).status;
   }
   status = validate_operation_id(operationId);
-  if (status.http_code != static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k200OK))
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k200OK)))
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
         ERROR_CODE_INVALID_OPERATION_ID,
         (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
 
   // make sure filters is not empty
-  if (check_filter && filters.empty()) {
+  if (unlikely(check_filter && filters.empty())) {
     // std::cout << "Filters is empty" << std::endl;
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
@@ -268,26 +268,28 @@ RS_Status PKReadParams::validate(bool check_filter) {
   // make sure filter columns are valid
   for (auto &filter : filters) {
     status = filter.validate();
-    if (status.http_code !=
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+    if (unlikely(status.http_code !=
+        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)))
       return status;
   }
   // make sure that the columns are unique
   std::unordered_map<std::string_view, bool> existingFilters;
   for (auto &filter : filters) {
-    if (existingFilters.find(filter.column) != existingFilters.end())
+    if (unlikely(existingFilters.find(filter.column) !=
+        existingFilters.end())) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_UNIQUE_FILTER,
           (std::string(ERROR_057) + ": " +
           std::string(filter.column)).c_str()).status;
+    }
     existingFilters[filter.column] = true;
   }
   // make sure read columns are valid
   for (auto &readColumn : readColumns) {
     status = validate_db_identifier(readColumn.column);
-    if (status.http_code != static_cast<HTTP_CODE>(
-          drogon::HttpStatusCode::k200OK)) {
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k200OK))) {
       if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
         return CRS_Status(static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k400BadRequest),
@@ -316,19 +318,22 @@ RS_Status PKReadParams::validate(bool check_filter) {
   // and read cols are unique
   std::unordered_map<std::string_view, bool> existingCols;
   for (auto &readColumn : readColumns) {
-    if (existingFilters.find(readColumn.column) != existingFilters.end())
+    if (unlikely(existingFilters.find(readColumn.column) !=
+        existingFilters.end())) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_INVALID_READ_COLUMNS,
           (std::string(ERROR_060) + ". '" +
            std::string(readColumn.column) +
            "' already included in filter").c_str()).status;
-    if (existingCols.find(readColumn.column) != existingCols.end())
+    }
+    if (unlikely(existingCols.find(readColumn.column) != existingCols.end())) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_UNIQUE_READ_COLUMN,
           (std::string(ERROR_061) + ": " +
           std::string(readColumn.column)).c_str()).status;
+    }
     existingCols[readColumn.column] = true;
   }
   return CRS_Status(static_cast<HTTP_CODE>(
