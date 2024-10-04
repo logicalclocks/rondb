@@ -56,7 +56,7 @@ AvroDecoder::AvroDecoder(const std::string &schemaJson) {
 }
 
 avro::GenericDatum
-  AvroDecoder::decode(const std::vector<uint8_t> &inData) const {
+  AvroDecoder::decode(const std::vector<Uint8> &inData) const {
   auto inStream = avro::memoryInputStream(inData.data(), inData.size());
   avro::DecoderPtr decoder = avro::binaryDecoder();
   decoder->init(*inStream);
@@ -69,8 +69,8 @@ avro::GenericDatum
   }
 }
 
-std::tuple<avro::GenericDatum, std::vector<uint8_t>, RS_Status>
-AvroDecoder::NativeFromBinary(const std::vector<uint8_t> &buf) {
+std::tuple<avro::GenericDatum, std::vector<Uint8>, RS_Status>
+AvroDecoder::NativeFromBinary(const std::vector<Uint8> &buf) {
   try {
     // std::cout << "Schema: " << schema.toJson() << std::endl;
     // std::cout << "Buffer size: " << buf.size() << std::endl;
@@ -82,7 +82,7 @@ AvroDecoder::NativeFromBinary(const std::vector<uint8_t> &buf) {
     // std::cout << "Starting decode..." << std::endl;
     avro::decode(*decoder, datum);
     auto bytesRead = inStream->byteCount();
-    std::vector<uint8_t> remainingBytes(buf.begin() + bytesRead, buf.end());
+    std::vector<Uint8> remainingBytes(buf.begin() + bytesRead, buf.end());
     return {datum, remainingBytes, CRS_Status::SUCCESS.status};
   } catch (const std::exception &e) {
     return {avro::GenericDatum(),

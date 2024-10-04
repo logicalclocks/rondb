@@ -68,16 +68,13 @@ class PKReadParams {
   PKReadParams();
   explicit PKReadParams(const std::string &);
   explicit PKReadParams(PKReadPath &);
-  PKReadParams(const std::string &, PKReadPath &);
-  PKReadParams(const std::string &, const std::string &, const std::string &);
   PKReadParams(const std::string &, const std::string &);
-  std::string_view method;
   PKReadPath path;
   std::vector<PKReadFilter> filters;
   std::vector<PKReadReadColumn> readColumns;
   std::string operationId;
   std::string to_string();
-  RS_Status validate(bool, bool);
+  RS_Status validate(bool);
 };
 
 struct Column {

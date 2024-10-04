@@ -285,7 +285,7 @@ const int surrogateMin = 0xD800;
 const int surrogateMax = 0xDFFF;
 
 // Utility constants for UTF-8 encoding
-const uint8_t t2 = 0xC0, t3 = 0xE0, t4 = 0xF0, tx = 0x80, maskx = 0x3F;
+const Uint8 t2 = 0xC0, t3 = 0xE0, t4 = 0xF0, tx = 0x80, maskx = 0x3F;
 
 int encode_rune(std::vector<char> &p, Uint32 r) {
   if (r <= rune1Max) {
@@ -316,9 +316,9 @@ int encode_rune(std::vector<char> &p, Uint32 r) {
 RS_Status unquote(std::vector<char> &str, bool unescape) {
   // if string to be unquoted is too short
   if (str.size() < 2) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "invalid syntax: too short string")
-        .status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      "invalid syntax: too short string").status;
   }
 
   char quote = str.front();
@@ -326,14 +326,16 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
 
   // if no matching quote
   if (end == str.end()) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "invalid syntax: no matching quote")
-        .status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      "invalid syntax: no matching quote").status;
   }
 
+  // position after terminating quote; may be wrong if escape sequences
+  // are present
   auto end_pos =
       std::distance(str.begin(), end) +
-      1;  // position after terminating quote; may be wrong if escape sequences are present
+      1;
 
   std::string_view substring(str.data(), end_pos);
 
@@ -360,40 +362,45 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
     // Handle quoted strings without any escape sequences.
     std::string in(str.begin(), str.end());
 
-    if (in.find('\\') == std::string::npos && in.find('\n') == std::string::npos) {
+    if (in.find('\\') == std::string::npos && in.find('\n') ==
+        std::string::npos) {
       bool valid = quote == '"' ? is_valid_utf8(in)
-                                : static_cast<std::vector<char>::size_type>(
-                                      std::get<1>(decode_rune_in_string(in))) == in.size();
+        : static_cast<std::vector<char>::size_type>(
+          std::get<1>(decode_rune_in_string(in))) == in.size();
 
       if (valid) {
         if (unescape) {
-          str.erase(str.begin());                               // Remove the first quote
-          str.erase(std::find(str.begin(), str.end(), quote));  // Remove the second quote
+          // Remove the first quote
+          str.erase(str.begin());
+          // Remove the second quote
+          str.erase(std::find(str.begin(), str.end(), quote));
         }
       } else {
         // Invalid UTF-8 or improper single character in single quotes
         return CRS_Status(
           static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-          "invalid syntax: invalid UTF-8 or improper single character in single quotes").status;
+          "invalid syntax: invalid UTF-8 or improper single character in"
+          " single quotes").status;
       }
     } else {
       // Handle quoted strings with escape sequences
       if (unescape) {
+        // Skip starting and ending quotes
         std::string unescaped =
-            unescape_string(in.substr(1, in.size() - 2));  // Skip starting and ending quotes
+            unescape_string(in.substr(1, in.size() - 2));
         str.assign(unescaped.begin(), unescaped.end());
       }
     }
     break;
   }
   default: {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "invalid syntax: unknown quote type")
-        .status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      "invalid syntax: unknown quote type").status;
   }
   }
-
-  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)).status;
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k200OK)).status;
 }
 
 RS_Status Unquote(std::vector<char> &str) {

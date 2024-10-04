@@ -30,7 +30,11 @@ std::string base64_decode(const std::string &encoded_string) {
 
   const char *end_ptr = nullptr;
   int flags           = 0;  // No special flags
-  int64_t decoded_len = base64_decode(src, src_len, decoded_data.data(), &end_ptr, flags);
+  int64_t decoded_len = base64_decode(src,
+                                      src_len,
+                                      decoded_data.data(),
+                                      &end_ptr,
+                                      flags);
 
   if (decoded_len < 0) {
     throw std::runtime_error("Failed to decode base64 string.");
@@ -40,7 +44,8 @@ std::string base64_decode(const std::string &encoded_string) {
 }
 
 std::tuple<std::vector<char>, std::shared_ptr<RestErrorCode>>
-DeserialiseComplexFeature(const std::vector<char> &value, const metadata::AvroDecoder &decoder) {
+DeserialiseComplexFeature(
+  const std::vector<char> &value, const metadata::AvroDecoder &decoder) {
   std::string valueString(value.begin(), value.end());
   simdjson::dom::parser parser;
   simdjson::dom::element element;
@@ -49,8 +54,9 @@ DeserialiseComplexFeature(const std::vector<char> &value, const metadata::AvroDe
   if (error != 0U) {
     return std::make_tuple(
         std::vector<char>{},
-        std::make_shared<RestErrorCode>("Failed to unmarshal JSON value.",
-                                        static_cast<int>(drogon::k500InternalServerError))
+        std::make_shared<RestErrorCode>(
+          "Failed to unmarshal JSON value.",
+          static_cast<int>(drogon::k500InternalServerError))
     );
   }
 
@@ -61,19 +67,22 @@ DeserialiseComplexFeature(const std::vector<char> &value, const metadata::AvroDe
   } catch (const std::runtime_error &e) {
     return std::make_tuple(
         std::vector<char>{},
-        std::make_shared<RestErrorCode>("Failed to decode base64 value.",
-                                        static_cast<int>(drogon::k400BadRequest))
+        std::make_shared<RestErrorCode>(
+          "Failed to decode base64 value.",
+          static_cast<int>(drogon::k400BadRequest))
     );
   }
 
-  std::vector<uint8_t> binaryData(jsonDecode.begin(), jsonDecode.end());
+  std::vector<Uint8> binaryData(jsonDecode.begin(), jsonDecode.end());
   avro::GenericDatum native;
   try {
     native = decoder.decode(binaryData);
   } catch (const std::runtime_error &e) {
     return std::make_tuple(
         std::vector<char>{},
-        std::make_shared<RestErrorCode>(e.what(), static_cast<int>(drogon::k400BadRequest))
+        std::make_shared<RestErrorCode>(
+          e.what(),
+          static_cast<int>(drogon::k400BadRequest))
     );
   }
 
@@ -81,15 +90,16 @@ DeserialiseComplexFeature(const std::vector<char> &value, const metadata::AvroDe
   if (std::get<1>(nativeJson).code != HTTP_CODE::SUCCESS) {
     return std::make_tuple(
         std::vector<char>{},
-        std::make_shared<RestErrorCode>("Failed to convert Avro to JSON.",
-                                        static_cast<int>(drogon::k500InternalServerError))
+        std::make_shared<RestErrorCode>(
+          "Failed to convert Avro to JSON.",
+          static_cast<int>(drogon::k500InternalServerError))
     );
   }
-
   return std::make_tuple(std::get<0>(nativeJson), nullptr);
 }
 
-template <typename T> void AppendToVector(std::vector<char> &vec, const T &value) {
+template <typename T> void AppendToVector(std::vector<char> &vec,
+                                          const T &value) {
   const char *data = reinterpret_cast<const char *>(&value);
   vec.insert(vec.end(), data, data + sizeof(T));
 }
@@ -98,17 +108,19 @@ void AppendStringToVector(std::vector<char> &vec, const std::string &str) {
   vec.insert(vec.end(), str.begin(), str.end());
 }
 
-void AppendBytesToVector(std::vector<char> &vec, const std::vector<uint8_t> &bytes) {
+void AppendBytesToVector(std::vector<char> &vec,
+                         const std::vector<Uint8> &bytes) {
   vec.insert(vec.end(), bytes.begin(), bytes.end());
 }
 
-std::tuple<std::vector<char>, RS_Status> ConvertAvroToJson(const avro::GenericDatum &datum,
-                                                           const avro::ValidSchema &schema) {
+std::tuple<std::vector<char>, RS_Status>
+ConvertAvroToJson(const avro::GenericDatum &datum,
+                  const avro::ValidSchema &schema) {
   std::vector<char> result;
 
   std::ostringstream oss;
   std::unique_ptr<avro::OutputStream> out = avro::ostreamOutputStream(oss);
-  avro::EncoderPtr jsonEncoder            = avro::jsonEncoder(schema);
+  avro::EncoderPtr jsonEncoder = avro::jsonEncoder(schema);
   jsonEncoder->init(*out);
   avro::encode(*jsonEncoder, datum);
   jsonEncoder->flush();

@@ -141,8 +141,10 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
 
   std::string out_str = out_stream.str();
   std::string err_str = err_stream.str();
+#ifdef VM_TRACE
   bool hasOut = !out_str.empty();
   bool hasErr = !err_str.empty();
+#endif
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     assert(!hasErr);
     assert(hasOut);

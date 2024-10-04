@@ -22,6 +22,6 @@
 
 #include "config_structs.hpp"
 
-void printJson(AllConfigs& config, std::ostream& out, uint32_t indent);
+void printJson(AllConfigs& config, std::ostream& out, Uint32 indent);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_JSON_PRINTER_HPP_

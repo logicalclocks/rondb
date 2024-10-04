@@ -841,7 +841,7 @@ void ValidateResponseMetadata(
 }
 
 void testConvertAvroToJson(const std::string &schema,
-                           const std::vector<uint8_t> &data,
+                           const std::vector<Uint8> &data,
                            std::vector<char> expectedJson) {
   metadata::AvroDecoder decoder;
   try {
@@ -1062,7 +1062,7 @@ TEST_F(FeatureStoreTest, DISABLED_TestConvertAvroToJsonSimple) {
 
   metadata::AvroDecoder decoder(schemaJson);
 
-  std::vector<uint8_t> buf = {0x02, 0x02, 0x00};
+  std::vector<Uint8> buf = {0x02, 0x02, 0x00};
 
   try {
     auto result = decoder.decode(buf);

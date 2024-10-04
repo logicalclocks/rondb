@@ -39,7 +39,6 @@ std::string to_string(DataReturnType drt) {
 
 Uint32 decode_utf8_to_unicode(const std::string_view &str, size_t &i) {
   Uint32 codepoint = 0;
-  Uint32 i_start = i;
   if ((str[i] & 0x80) == 0) {
     // 1-byte character
     codepoint = str[i];
@@ -165,32 +164,18 @@ PKReadPath::PKReadPath(const std::string &db,
                        const std::string &table) : db(db), table(table) {
 }
 
-PKReadParams::PKReadParams() : method(),
-                               path(),
+PKReadParams::PKReadParams() : path(),
                                filters(),
                                readColumns(),
                                operationId() {
 }
 
-PKReadParams::PKReadParams(const std::string &method)
-    : method(method), path(), filters(), readColumns(), operationId() {
-}
-
 PKReadParams::PKReadParams(PKReadPath &path)
-    : method(), path(path), filters(), readColumns(), operationId() {
-}
-
-PKReadParams::PKReadParams(const std::string &method, PKReadPath &path)
-    : method(method), path(path), filters(), readColumns(), operationId() {
+    : path(path), filters(), readColumns(), operationId() {
 }
 
 PKReadParams::PKReadParams(const std::string &db, const std::string &table)
-    : method(), path(db, table), filters(), readColumns(), operationId() {
-}
-
-PKReadParams::PKReadParams(const std::string &method, const std::string &db,
-                           const std::string &table)
-    : method(method), path(db, table), filters(), readColumns(), operationId() {
+    : path(db, table), filters(), readColumns(), operationId() {
 }
 
 std::string PKReadParams::to_string() {
@@ -210,19 +195,13 @@ std::string PKReadParams::to_string() {
     ss << "{ column: " << readColumn.column << ", returnType: "
        << readColumn.returnType << " }, ";
   }
-  ss << "], operationId: " << operationId;
-  ss << "], method: " << method << " }";
+  ss << "], operationId: " << operationId << " }";
   return ss.str();
 }
 
-RS_Status PKReadParams::validate(bool check_method, bool check_filter) {
+RS_Status PKReadParams::validate(bool check_filter) {
   // std::cout << "Validating PKReadParams: " << to_string() << std::endl;
 
-  if (check_method && method.empty()) {
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_INVALID_METHOD, ERROR_062).status;
-  }
   RS_Status status = validate_db_identifier(path.db);
   if (status.http_code != static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k200OK)) {

@@ -45,7 +45,8 @@ extern EventLogger *g_eventLogger;
 #endif
 
 void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
-                        std::function<void(const drogon::HttpResponsePtr &)> &&callback,
+                        std::function<void(
+                          const drogon::HttpResponsePtr &)> &&callback,
                         const std::string &db, const std::string &table) {
   auto resp                 = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
@@ -80,7 +81,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
         globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+      drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
@@ -88,8 +90,9 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   // Validate
-  status = reqStruct.validate(false, true);
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+  status = reqStruct.validate(true);
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+      drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
@@ -110,7 +113,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   // Execute
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
+      drogon::HttpStatusCode::k200OK) {
     RS_Buffer reqBuff  = rsBufferArrayManager.get_req_buffer();
     RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
 
@@ -122,16 +126,17 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       callback(resp);
       return;
     }
-    uintptr_t length_ptr = reinterpret_cast<uintptr_t>(reqBuff.buffer) +
-                           static_cast<uintptr_t>(PK_REQ_LENGTH_IDX * ADDRESS_SIZE);
-    uint32_t *length_ptr_casted = reinterpret_cast<uint32_t *>(length_ptr);
+    UintPtr length_ptr = reinterpret_cast<UintPtr>(reqBuff.buffer) +
+      static_cast<UintPtr>(PK_REQ_LENGTH_IDX * ADDRESS_SIZE);
+    Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
     reqBuff.size                = *length_ptr_casted;
 
     // pk_read
     status = pk_read(&reqBuff, &respBuff);
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK)
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)
       resp->setBody(std::string(status.message));
     else {
       resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);

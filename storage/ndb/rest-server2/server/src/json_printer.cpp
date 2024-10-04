@@ -31,7 +31,7 @@
 #define DEFINE_PRINTER(ValueDatatype, ...) \
   void printJson(ValueDatatype& value, \
                  std::ostream& out, \
-                 [[maybe_unused]] uint32_t indent) __VA_ARGS__
+                 [[maybe_unused]] Uint32 indent) __VA_ARGS__
 
 #define INDENT() std::string(indent, ' ')
 #define INDENT_INC() std::string(indent + INDENT_INCREASE, ' ')
@@ -45,11 +45,11 @@
  */
 
 DEFINE_PRINTER(bool, { out << (value ? "true" : "false"); })
-DEFINE_PRINTER(uint64_t, { out << value; })
-DEFINE_PRINTER(int64_t, { out << value; })
-DEFINE_PRINTER(uint16_t, { out << value; })
-DEFINE_PRINTER(uint32_t, { out << value; })
-DEFINE_PRINTER(int, { out << value; })
+DEFINE_PRINTER(Uint64, { out << value; })
+DEFINE_PRINTER(Int64, { out << value; })
+DEFINE_PRINTER(Uint16, { out << value; })
+DEFINE_PRINTER(Uint32, { out << value; })
+DEFINE_PRINTER(Int32, { out << value; })
 
 DEFINE_PRINTER(std::string, {
   out << '"';
@@ -95,9 +95,9 @@ DEFINE_PRINTER(std::string, {
 #define CLASSDEFS(...)
 #define VECTOR(DATATYPE) \
   DEFINE_PRINTER(std::vector<DATATYPE>, { \
-    uint32_t len = value.size(); \
+    Uint32 len = value.size(); \
     out << "[\n"; \
-    for (uint32_t i = 0; i < len; i++) { \
+    for (Uint32 i = 0; i < len; i++) { \
       out << INDENT_INC(); \
       printJson(value[i], out, indent + INDENT_INCREASE); \
       if (i < len - 1) { \

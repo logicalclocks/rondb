@@ -192,7 +192,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     // Validate batch pkread
     for (auto readParam : readParams) {
       // The request is always a POST, but not set in request parameters
-      status = readParam.validate(false, false);
+      status = readParam.validate(false);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
         resp->setBody(
@@ -224,10 +224,10 @@ void BatchFeatureStoreCtrl::batch_featureStore(
         callback(resp);
         return;
       }
-      uintptr_t length_ptr =
-        reinterpret_cast<uintptr_t>(reqBuff.buffer) +
-          static_cast<uintptr_t>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
-      uint32_t *length_ptr_casted = reinterpret_cast<uint32_t *>(length_ptr);
+      UintPtr length_ptr =
+        reinterpret_cast<UintPtr>(reqBuff.buffer) +
+          static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
+      Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
       reqBuffs[i].size = *length_ptr_casted;
     }
     // pk_batch_read

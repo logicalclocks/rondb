@@ -656,7 +656,7 @@ void FeatureStoreCtrl::featureStore(
     DEB_FS_CTRL(("Validate Batch PK Read Params for Feature Store request"));
     for (auto readParam : readParams) {
 
-      status = readParam.validate(false, false);
+      status = readParam.validate(false);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
         DEB_FS_CTRL(("Failed Validate Batch PK Read Params: %s, code: %d",
@@ -688,11 +688,11 @@ void FeatureStoreCtrl::featureStore(
         callback(resp);
         return;
       }
-      uintptr_t length_ptr =
-        reinterpret_cast<uintptr_t>(reqBuff.buffer) +
-        static_cast<uintptr_t>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
-      uint32_t *length_ptr_casted = reinterpret_cast<uint32_t *>(length_ptr);
-      reqBuffs[i].size            = *length_ptr_casted;
+      UintPtr length_ptr =
+        reinterpret_cast<UintPtr>(reqBuff.buffer) +
+        static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
+      Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
+      reqBuffs[i].size = *length_ptr_casted;
     }
     // pk_batch_read
     DEB_FS_CTRL(("Perform Batch PK Read for Feature Store request"));

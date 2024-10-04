@@ -23,6 +23,7 @@
 #include "operations_feature_store.hpp"
 #include "constants.hpp"
 #include "feature_store_error_code.hpp"
+#include <ndb_types.h>
 
 #include <avro/Compiler.hh>
 #include <avro/Decoder.hh>
@@ -62,9 +63,11 @@ struct FeatureMetadata {
         << "\n  featureStoreName: " << featureStoreName
         << "\n  featureGroupName: " << featureGroupName
         << "\n  featureGroupVersion: " << featureGroupVersion
-        << "\n  featureGroupId: " << featureGroupId << "\n  id: " << id << "\n  name: " << name
-        << "\n  type: " << type << "\n  index: " << index << "\n  label: " << label
-        << "\n  joinIndex: " << joinIndex << "\n  isComplex: " << isComplex() << "\n}";
+        << "\n  featureGroupId: " << featureGroupId
+        << "\n  id: " << id << "\n  name: " << name
+        << "\n  type: " << type << "\n  index: " << index
+        << "\n  label: " << label << "\n  joinIndex: "
+        << joinIndex << "\n  isComplex: " << isComplex() << "\n}";
     return oss.str();
   }
 };
@@ -81,12 +84,12 @@ struct FeatureGroupFeatures {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "FeatureGroupFeatures {"
-        << "\n  featureStoreName: " << featureStoreName << "\n  featureStoreId: "
-        << featureStoreId
+        << "\n  featureStoreName: " << featureStoreName
+        << "\n  featureStoreId: " << featureStoreId
         << "\n  featureGroupName: " << featureGroupName
         << "\n  featureGroupVersion: " << featureGroupVersion
-        << "\n  featureGroupId: " << featureGroupId << "\n  joinIndex: " << joinIndex
-        << "\n  features: [";
+        << "\n  featureGroupId: " << featureGroupId
+        << "\n  joinIndex: " << joinIndex << "\n  features: [";
     for (const auto &feature : features) {
       oss << "\n    " << feature.to_string();
     }
@@ -115,10 +118,10 @@ class AvroDecoder {
   }
 
   // Decode binary data into a GenericDatum
-  avro::GenericDatum decode(const std::vector<uint8_t> &inData) const;
+  avro::GenericDatum decode(const std::vector<Uint8> &inData) const;
 
-  std::tuple<avro::GenericDatum, std::vector<uint8_t>, RS_Status>
-  NativeFromBinary(const std::vector<uint8_t> &buf);
+  std::tuple<avro::GenericDatum, std::vector<Uint8>, RS_Status>
+  NativeFromBinary(const std::vector<Uint8> &buf);
 
   std::string to_string() const {
     std::ostringstream oss;
@@ -134,13 +137,17 @@ struct FeatureViewMetadata {
   std::string featureViewName;
   int featureViewId;
   int featureViewVersion;
-  // Feature view can be created with multiple features of the same name without prefix.
+  // Feature view can be created with multiple features of the same
+  // name without prefix.
   // Each prefix column can map to multiple features
   std::unordered_map<std::string, std::vector<FeatureMetadata>>
-      prefixFeaturesLookup;  // key: prefix + fName, label are excluded
-  std::vector<FeatureGroupFeatures> featureGroupFeatures;  // label are excluded
-  std::vector<std::string> featureStoreNames;// List of all feature store used by feature view
-                                               // including shared feature store
+      prefixFeaturesLookup;
+  // key: prefix + fName, label are excluded
+  std::vector<FeatureGroupFeatures> featureGroupFeatures;
+  // label are excluded
+  std::vector<std::string> featureStoreNames;
+  // List of all feature store used by feature view
+  // including shared feature store
   int numOfFeatures;
   std::unordered_map<std::string, int>
       featureIndexLookup;
@@ -149,19 +156,24 @@ struct FeatureViewMetadata {
   // serving key doc:
   // https://hopsworks.atlassian.net/wiki/spaces/FST/pages/173342721/
   // How+to+resolve+the+set+of+serving+key+in+get+feature+vector
+  // key: join index + feature name.Used for constructing rondb request.
   std::unordered_map<std::string, ServingKey>
-      primaryKeyMap;  // key: join index + feature name. Used for constructing rondb request.
+      primaryKeyMap;
+  // key: serving-key-prefix + fName, fName. Used for pk validation.
   std::unordered_map<std::string, bool>
-      validPrimayKeys;  // key: serving-key-prefix + fName, fName. Used for pk validation.
+      validPrimayKeys;
+  // key: serving-key-prefix + fName, value: list of feature which join on
+  // the key. Used for filling in pk value.
   std::unordered_map<std::string, std::vector<std::string>>
-    prefixJoinKeyMap; // key: serving-key-prefix + fName, value: list of feature which join on
-                      // the key. Used for filling in pk value.
+    prefixJoinKeyMap;
+  // key: fName, value: list of feature which join on the key.
+  // Used for filling in pk value.
   std::unordered_map<std::string, std::vector<std::string>>
-    joinKeyMap;// key: fName, value: list of feature which join on the key. Used for filling in
-               // pk value.
+    joinKeyMap;
+  // key: serving-key-prefix + fName, value: list of feature which join on
+  // the key. Used for filling in pk value.
   std::unordered_map<std::string, std::vector<std::string>>
-    requiredJoinKeyMap;// key: serving-key-prefix + fName, value: list of feature which join on
-                           // the key. Used for filling in pk value.
+    requiredJoinKeyMap;
   std::unordered_map<std::string, AvroDecoder>
       complexFeatures;
   // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed
@@ -169,10 +181,12 @@ struct FeatureViewMetadata {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "FeatureViewMetadata {"
-        << "\n  featureStoreName: " << featureStoreName << "\n  featureStoreId: "
-        << featureStoreId
-        << "\n  featureViewName: " << featureViewName << "\n  featureViewId: " << featureViewId
-        << "\n  featureViewVersion: " << featureViewVersion << "\n  prefixFeaturesLookup: {";
+        << "\n  featureStoreName: " << featureStoreName
+        << "\n  featureStoreId: " << featureStoreId
+        << "\n  featureViewName: " << featureViewName
+        << "\n  featureViewId: " << featureViewId
+        << "\n  featureViewVersion: " << featureViewVersion
+        << "\n  prefixFeaturesLookup: {";
 
     for (const auto &[key, value] : prefixFeaturesLookup) {
       oss << "\n    " << key << ": ";
@@ -197,7 +211,8 @@ struct FeatureViewMetadata {
     }
 
     oss << "\n  ]"
-        << "\n  numOfFeatures: " << numOfFeatures << "\n  featureIndexLookup: {";
+        << "\n  numOfFeatures: "
+        << numOfFeatures << "\n  featureIndexLookup: {";
 
     for (const auto &[key, value] : featureIndexLookup) {
       oss << "\n    " << key << ": " << value;
@@ -249,9 +264,12 @@ std::string getFeatureIndexKey(int joinIndex, int fgId, const std::string &f);
 std::string GetFeatureIndexKeyByFeature(const FeatureMetadata &feature);
 
 std::tuple<FeatureViewMetadata, RS_Status>
-newFeatureViewMetadata(const std::string &featureStoreName, int featureStoreId,
-                       const std::string &featureViewName, int featureViewId,
-                       int featureViewVersion, const std::vector<FeatureMetadata> &features,
+newFeatureViewMetadata(const std::string &featureStoreName,
+                       int featureStoreId,
+                       const std::string &featureViewName,
+                       int featureViewId,
+                       int featureViewVersion,
+                       const std::vector<FeatureMetadata> &features,
                        const std::vector<ServingKey> &servingKeys);
 
 std::string getFeatureViewCacheKey(const std::string &featureStoreName,
