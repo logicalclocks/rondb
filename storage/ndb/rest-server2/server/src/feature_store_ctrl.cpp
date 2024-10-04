@@ -47,7 +47,7 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_FS_CTRL 1
+//#define DEBUG_FS_CTRL 1
 #endif
 
 #ifdef DEBUG_FS_CTRL

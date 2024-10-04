@@ -35,7 +35,7 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_PK_CTRL 1
+//#define DEBUG_PK_CTRL 1
 #endif
 
 #ifdef DEBUG_PK_CTRL

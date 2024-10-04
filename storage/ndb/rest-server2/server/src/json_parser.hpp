@@ -60,8 +60,9 @@ class JSONParser {
   RS_Status ronsql_parse(simdjson::padded_string_view, RonSQLParams &);
   RS_Status feature_store_parse(simdjson::padded_string_view,
                                 feature_store_data_structs::FeatureStoreRequest &);
-  RS_Status batch_feature_store_parse(simdjson::padded_string_view,
-                                      feature_store_data_structs::BatchFeatureStoreRequest &);
+  RS_Status batch_feature_store_parse(
+    simdjson::padded_string_view,
+    feature_store_data_structs::BatchFeatureStoreRequest &);
 };
 
 extern JSONParser* jsonParsers;
