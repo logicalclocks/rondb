@@ -404,8 +404,7 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
     std::string_view method;
     auto methodVal = operationObj[METHOD];
     if (unlikely(methodVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
-      return CRS_Status(
-        HTTP_CODE::CLIENT_ERROR, "the Method section should be POST").status;
+      method = ""; // Ok to ignore Method
     } else if (unlikely(methodVal.error() != simdjson::SUCCESS)) {
       return handle_simdjson_error(methodVal.error(), doc, currentLocation);
     } else if (methodVal.is_null()) {
@@ -415,6 +414,10 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
       error = methodVal.get(method);
       if (unlikely(error != simdjson::SUCCESS)) {
         return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(method != POST)) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR, "the Method section should be POST").status;
       }
     }
     reqStruct.method = method;
