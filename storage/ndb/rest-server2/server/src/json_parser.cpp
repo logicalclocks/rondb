@@ -652,7 +652,7 @@ DEFINE_VALUE_PARSER(std::string, {
 })
 
 DEFINE_VALUE_PARSER(Uint16, {
-  int64_t temp_target;
+  Int64 temp_target;
   if (!parse(temp_target, value)) {
     return false;
   }
@@ -664,7 +664,7 @@ DEFINE_VALUE_PARSER(Uint16, {
 })
 
 DEFINE_VALUE_PARSER(Uint32, {
-  int64_t temp_target;
+  Int64 temp_target;
   if (!parse(temp_target, value)) {
     return false;
   }
@@ -676,7 +676,7 @@ DEFINE_VALUE_PARSER(Uint32, {
 })
 
 DEFINE_VALUE_PARSER(int, {
-  int64_t temp_target;
+  Int64 temp_target;
   if (!parse(temp_target, value)) {
     return false;
   }

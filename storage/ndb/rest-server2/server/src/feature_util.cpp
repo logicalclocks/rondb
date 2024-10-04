@@ -30,11 +30,11 @@ std::string base64_decode(const std::string &encoded_string) {
 
   const char *end_ptr = nullptr;
   int flags           = 0;  // No special flags
-  int64_t decoded_len = base64_decode(src,
-                                      src_len,
-                                      decoded_data.data(),
-                                      &end_ptr,
-                                      flags);
+  Int64 decoded_len = base64_decode(src,
+                                    src_len,
+                                    decoded_data.data(),
+                                    &end_ptr,
+                                    flags);
 
   if (decoded_len < 0) {
     throw std::runtime_error("Failed to decode base64 string.");

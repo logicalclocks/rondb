@@ -31,10 +31,10 @@
 #include <vector>
 
 struct MemoryStats {
-  int64_t allocationsCount;
-  int64_t deallocationsCount;
-  int64_t buffersCount;
-  int64_t freeBuffers;
+  Int64 allocationsCount;
+  Int64 deallocationsCount;
+  Int64 buffersCount;
+  Int64 freeBuffers;
 };
 
 class RS_BufferArrayManager {
@@ -48,7 +48,7 @@ class RS_BufferArrayManager {
       throw std::runtime_error("Buffer size must be a multiple of 4");
     }
 
-    int64_t preAllocateBuffers = globalConfigs.internal.preAllocatedBuffers;
+    Int64 preAllocateBuffers = globalConfigs.internal.preAllocatedBuffers;
     reqBuffersStats            = {preAllocateBuffers, 0, preAllocateBuffers, 0};
     respBuffersStats           = {preAllocateBuffers, 0, preAllocateBuffers, 0};
 
@@ -132,14 +132,14 @@ class RS_BufferArrayManager {
   MemoryStats get_req_buffers_stats() {
     // update the free buffers count
     std::lock_guard<std::mutex> lock(reqBufferMutex);
-    reqBuffersStats.freeBuffers = static_cast<int64_t>(reqBufferArray.size());
+    reqBuffersStats.freeBuffers = static_cast<Int64>(reqBufferArray.size());
     return reqBuffersStats;
   }
 
   MemoryStats get_resp_buffers_stats() {
     // update the free buffers count
     std::lock_guard<std::mutex> lock(respBufferMutex);
-    respBuffersStats.freeBuffers = static_cast<int64_t>(respBufferArray.size());
+    respBuffersStats.freeBuffers = static_cast<Int64>(respBufferArray.size());
     return respBuffersStats;
   }
 

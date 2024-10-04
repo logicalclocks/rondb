@@ -197,7 +197,7 @@ RS_Status process_pkread_response(void *respBuff,
     response.setOperationID(goOpID);
   }
 
-  int32_t status = (int32_t)(buf[PK_RESP_OP_STATUS_IDX]);
+  Int32 status = (Int32)(buf[PK_RESP_OP_STATUS_IDX]);
   response.setStatusCode(static_cast<drogon::HttpStatusCode>(status));
   if (status == drogon::HttpStatusCode::k200OK) {
     Uint32 colIDX = buf[PK_RESP_COLS_IDX];

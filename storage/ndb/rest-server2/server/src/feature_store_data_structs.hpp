@@ -26,6 +26,7 @@
 #include <vector>
 #include <unordered_map>
 #include <optional>
+#include <ndb_types.h>
 #include "rdrs_dal.h"
 
 namespace feature_store_data_structs {
@@ -38,9 +39,11 @@ class MetadataRequest {
     std::ostringstream oss;
     oss << "MetadataRequest {"
         << "\n  featureName: "
-        << (featureName.has_value() ? (featureName.value() ? "true" : "false") : "null")
+        << (featureName.has_value() ?
+          (featureName.value() ? "true" : "false") : "null")
         << "\n  featureType: "
-        << (featureType.has_value() ? (featureType.value() ? "true" : "false") : "null")
+        << (featureType.has_value() ?
+          (featureType.value() ? "true" : "false") : "null")
         << "\n}";
     return oss.str();
   }
@@ -55,7 +58,8 @@ class OptionsRequest {
     std::ostringstream oss;
     oss << "OptionsRequest {"
         << "\n  validatePassedFeatures: "
-        << (validatePassedFeatures.has_value() ? (validatePassedFeatures.value() ?
+        << (validatePassedFeatures.has_value() ?
+           (validatePassedFeatures.value() ?
           "true" : "false") : "null")
         << "\n  includeDetailedStatus: "
         << (includeDetailedStatus.has_value() ?
@@ -91,7 +95,8 @@ class BatchFeatureStoreRequest {
     oss << "BatchFeatureStoreRequest {"
         << "\n  featureStoreName: " << featureStoreName
         << "\n  featureViewName: " << featureViewName
-        << "\n  featureViewVersion: " << featureViewVersion << "\n  passedFeatures: {";
+        << "\n  featureViewVersion: " << featureViewVersion
+        << "\n  passedFeatures: {";
     for (const auto &passedFeature : passedFeatures) {
       oss << "\n    {";
       for (const auto &[key, value] : passedFeature) {
@@ -131,11 +136,12 @@ class FeatureStoreRequest {
   std::string featureStoreName;  // json:"featureStoreName" binding:"required"
   std::string featureViewName;   // json:"featureViewName" binding:"required"
   int featureViewVersion;        // json:"featureViewVersion" binding:"required"
-  std::unordered_map<std::string, std::vector<char>> passedFeatures;  // json:"passedFeatures"
+  // json:"passedFeatures"
+  std::unordered_map<std::string, std::vector<char>> passedFeatures;
   // json:"entries" binding:"required"
   std::unordered_map<std::string, std::vector<char>> entries;
-  MetadataRequest metadataRequest;                             // json:"metadataOptions"
-  OptionsRequest optionsRequest;                               // json:"options"
+  MetadataRequest metadataRequest; // json:"metadataOptions"
+  OptionsRequest optionsRequest;  // json:"options"
   static RS_Status
   validate_primary_key(const std::unordered_map<std::string, std::vector<char>> &entries,
                        const std::unordered_map<std::string, std::vector<char>> &features);
@@ -144,7 +150,8 @@ class FeatureStoreRequest {
     oss << "FeatureStoreRequest {"
         << "\n  featureStoreName: " << featureStoreName
         << "\n  featureViewName: " << featureViewName
-        << "\n  featureViewVersion: " << featureViewVersion << "\n  passedFeatures: {";
+        << "\n  featureViewVersion: " << featureViewVersion
+        << "\n  passedFeatures: {";
     for (const auto &[key, value] : passedFeatures) {
       oss << "\n    " << key << ": [";
       for (char c : value) {
@@ -210,7 +217,7 @@ FeatureStatus fromString(const std::string &status);
 
 class DetailedStatus {
  public:
-  int32_t httpStatus;  // json:"httpStatus"
+  Int32 httpStatus;  // json:"httpStatus"
   int featureGroupId;  // json:"featureGroupId"
 
   std::string to_string() const {
@@ -238,12 +245,11 @@ class BatchFeatureStoreResponse {
   std::vector<std::vector<std::vector<char>>> features;     // json:"features"
   std::vector<FeatureMetadata> metadata;                    // json:"metadata"
   std::vector<FeatureStatus> status;                        // json:"status"
-  std::vector<std::vector<DetailedStatus>> detailedStatus;  // json:"detailedStatus"
+  // json:"detailedStatus"
+  std::vector<std::vector<DetailedStatus>> detailedStatus;
   std::string to_string() const;
-  static RS_Status parseBatchFeatureStoreResponse(const std::string &respBody,
-                                                  BatchFeatureStoreResponse &fsResp);
+  static RS_Status parseBatchFeatureStoreResponse(
+    const std::string &respBody, BatchFeatureStoreResponse &fsResp);
 };
-
 }  // namespace feature_store_data_structs
-
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_DATA_STRUCTS_HPP_
