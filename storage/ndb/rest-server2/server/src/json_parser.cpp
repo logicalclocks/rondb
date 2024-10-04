@@ -761,91 +761,106 @@ RS_Status JSONParser::ronsql_parse(simdjson::padded_string_view reqBody,
 }
 
 RS_Status
-JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
-                                feature_store_data_structs::FeatureStoreRequest &reqStruct) {
-  const char *currentLocation = nullptr;
+JSONParser::feature_store_parse(
+  simdjson::padded_string_view reqBody,
+  feature_store_data_structs::FeatureStoreRequest &reqStruct) {
 
+  const char *currentLocation = nullptr;
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
-  if (error != simdjson::SUCCESS) {
+  if (unlikely(error != simdjson::SUCCESS)) {
     return handle_simdjson_error(error, doc, currentLocation);
   }
 
   simdjson::ondemand::object reqObject;
   error = doc.get_object().get(reqObject);
-  if (error != simdjson::SUCCESS) {
+  if (unlikely(error != simdjson::SUCCESS)) {
     return handle_simdjson_error(error, doc, currentLocation);
   }
 
   std::string_view featureStoreName;
   auto featureStoreNameVal = reqObject[FEATURE_STORE_NAME];
-  if (featureStoreNameVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_BODY,
-                      std::string(ERROR_064) + " " + std::string(FEATURE_STORE_NAME))
-        .status;
+  if (unlikely(featureStoreNameVal.error() ==
+               simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_STORE_NAME)).status;
   }
-  if (featureStoreNameVal.error() != simdjson::SUCCESS) {
+  if (unlikely(featureStoreNameVal.error() != simdjson::SUCCESS)) {
     return handle_simdjson_error(featureStoreNameVal.error(), doc, currentLocation);
   }
-  if (featureStoreNameVal.is_null()) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_BODY,
-                      std::string(ERROR_064) + " " + std::string(FEATURE_STORE_NAME))
-        .status;
+  if (unlikely(featureStoreNameVal.is_null())) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_STORE_NAME)).status;
   }
   error = featureStoreNameVal.get(featureStoreName);
-  if (error != simdjson::SUCCESS) {
+  if (unlikely(error != simdjson::SUCCESS)) {
     return handle_simdjson_error(error, doc, currentLocation);
   }
-
+  if (unlikely(featureStoreName.size() == 0)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_STORE_NAME)).status;
+  }
   reqStruct.featureStoreName = featureStoreName;
 
   std::string_view featureViewName;
   auto featureViewNameVal = reqObject[FEATURE_VIEW_NAME];
-  if (featureViewNameVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_BODY,
-                      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_NAME))
-        .status;
+  if (unlikely(featureViewNameVal.error() ==
+               simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_NAME)).status;
   }
-  if (featureViewNameVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewNameVal.error(), doc, currentLocation);
+  if (unlikely(featureViewNameVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(
+      featureViewNameVal.error(), doc, currentLocation);
   }
-  if (featureViewNameVal.is_null()) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_BODY,
-                      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_NAME))
-        .status;
+  if (unlikely(featureViewNameVal.is_null())) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_NAME)).status;
   }
   error = featureViewNameVal.get(featureViewName);
-  if (error != simdjson::SUCCESS) {
+  if (unlikely(error != simdjson::SUCCESS)) {
     return handle_simdjson_error(error, doc, currentLocation);
   }
-
+  if (unlikely(featureViewName.size() == 0)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_NAME)).status;
+  }
   reqStruct.featureViewName = featureViewName;
 
-  uint64_t featureViewVersion = 0;
+  Uint64 featureViewVersion = 0;
   auto featureViewVersionVal  = reqObject[FEATURE_VIEW_VERSION];
-  if (featureViewVersionVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_BODY,
-                      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION))
-        .status;
+  if (unlikely(featureViewVersionVal.error() ==
+               simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION)).status;
   }
-  if (featureViewVersionVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(featureViewVersionVal.error(), doc, currentLocation);
+  if (unlikely(featureViewVersionVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(
+      featureViewVersionVal.error(), doc, currentLocation);
   }
-  if (featureViewVersionVal.is_null()) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_BODY,
-                      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION))
-        .status;
+  if (unlikely(featureViewVersionVal.is_null())) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(FEATURE_VIEW_VERSION)).status;
   }
   error = featureViewVersionVal.get(featureViewVersion);
-  if (error != simdjson::SUCCESS) {
+  if (unlikely(error != simdjson::SUCCESS)) {
     return handle_simdjson_error(error, doc, currentLocation);
   }
-
   reqStruct.featureViewVersion = featureViewVersion;
 
   simdjson::ondemand::object passedFeatures;  // Optional
@@ -854,9 +869,9 @@ JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
   } else if (passedFeaturesVal.error() != simdjson::SUCCESS) {
     return handle_simdjson_error(passedFeaturesVal.error(), doc, currentLocation);
   } else {
-    if (!passedFeaturesVal.is_null()) {
+    if (likely(!passedFeaturesVal.is_null())) {
       error = passedFeaturesVal.get(passedFeatures);
-      if (error != simdjson::SUCCESS) {
+      if (unlikely(error != simdjson::SUCCESS)) {
         return handle_simdjson_error(error, doc, currentLocation);
       }
       // Map of feature name as key and feature value as value.
@@ -866,30 +881,30 @@ JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
         simdjson::ondemand::value value;
         std::vector<char> bytes;
         auto valueVal = feature.value();
-        if (valueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-          return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                            ERROR_CODE_INVALID_BODY,
-                            std::string(ERROR_064) + " " + std::string(featureName))
-              .status;
+        if (unlikely(valueVal.error() ==
+                     simdjson::error_code::NO_SUCH_FIELD)) {
+          return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+            ERROR_CODE_INVALID_BODY,
+            std::string(ERROR_064) + " " + std::string(featureName)).status;
         }
-        if (valueVal.error() != simdjson::SUCCESS) {
+        if (unlikely(valueVal.error() != simdjson::SUCCESS)) {
           return handle_simdjson_error(valueVal.error(), doc, currentLocation);
         }
-        if (valueVal.is_null()) {
-          return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                            ERROR_CODE_INVALID_BODY,
-                            std::string(ERROR_064) + " " + std::string(featureName))
-              .status;
+        if (unlikely(valueVal.is_null())) {
+          return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+            ERROR_CODE_INVALID_BODY,
+            std::string(ERROR_064) + " " + std::string(featureName)).status;
         }
         error = valueVal.get(value);
-        if (error != simdjson::SUCCESS) {
+        if (unlikely(error != simdjson::SUCCESS)) {
           return handle_simdjson_error(error, doc, currentLocation);
         }
         std::ostringstream oss;
         oss << value;
         std::string valueJson = oss.str();
-        bytes                 = std::vector<char>(valueJson.begin(), valueJson.end());
-
+        bytes = std::vector<char>(valueJson.begin(), valueJson.end());
         reqStruct.passedFeatures[std::string(featureName)] = bytes;
       }
     }
@@ -901,83 +916,86 @@ JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
   // view query. If feature groups are joint with prefix, the primary key needs to be attached with
   // prefix.
   auto entriesVal = reqObject[ENTRIES];
-  if (entriesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-    // TODO: Handle missing field error
-  } else if (entriesVal.error() != simdjson::SUCCESS) {
+  if (unlikely(entriesVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(ENTRIES)).status;
+  } else if (unlikely(entriesVal.error() != simdjson::SUCCESS)) {
     return handle_simdjson_error(entriesVal.error(), doc, currentLocation);
-  } else {
-    if (entriesVal.is_null()) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_INVALID_BODY,
-                        std::string(ERROR_064) + " " + std::string(ENTRIES))
-          .status;
+  } else if (entriesVal.is_null()) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_BODY,
+      std::string(ERROR_064) + " " + std::string(ENTRIES)).status;
+  }
+  error = entriesVal.get(entries);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+  for (auto entry : entries) {
+    std::string_view servingKey = entry.unescaped_key();
+    simdjson::ondemand::value value;
+    std::vector<char> bytes;
+    auto valueVal = entry.value();
+    if (unlikely(valueVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_BODY,
+        std::string(ERROR_064) + " " + std::string(servingKey)).status;
     }
-    error = entriesVal.get(entries);
-    if (error != simdjson::SUCCESS) {
+    if (unlikely(valueVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(valueVal.error(), doc, currentLocation);
+    }
+    if (unlikely(valueVal.is_null())) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_BODY,
+        std::string(ERROR_064) + " " + std::string(servingKey)).status;
+    }
+    error = valueVal.get(value);
+    if (unlikely(error != simdjson::SUCCESS)) {
       return handle_simdjson_error(error, doc, currentLocation);
     }
-    for (auto entry : entries) {
-      std::string_view servingKey = entry.unescaped_key();
-      simdjson::ondemand::value value;
-      std::vector<char> bytes;
-      auto valueVal = entry.value();
-      if (valueVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                          ERROR_CODE_INVALID_BODY,
-                          std::string(ERROR_064) + " " + std::string(servingKey))
-            .status;
-      }
-      if (valueVal.error() != simdjson::SUCCESS) {
-        return handle_simdjson_error(valueVal.error(), doc, currentLocation);
-      }
-      if (valueVal.is_null()) {
-        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                          ERROR_CODE_INVALID_BODY,
-                          std::string(ERROR_064) + " " + std::string(servingKey))
-            .status;
-      }
-      error = valueVal.get(value);
-      if (error != simdjson::SUCCESS) {
-        return handle_simdjson_error(error, doc, currentLocation);
-      }
-      std::ostringstream oss;
-      oss << value;
-      std::string valueJson = oss.str();
-      bytes                 = std::vector<char>(valueJson.begin(), valueJson.end());
-
-      reqStruct.entries[std::string(servingKey)] = bytes;
-    }
+    std::ostringstream oss;
+    oss << value;
+    std::string valueJson = oss.str();
+    bytes                 = std::vector<char>(valueJson.begin(), valueJson.end());
+    reqStruct.entries[std::string(servingKey)] = bytes;
   }
 
-  simdjson::ondemand::object metaDataOptions;  // Optional.
+  simdjson::ondemand::object metaDataOptions;// Optional.
   // Map of metadataoption as key and boolean as value.
   // Default metadata option is false. Metadata is returned on request.
   // Metadata options available: 1. featureName 2. featureType
   auto metaDataOptionsVal = reqObject[METADATA_OPTIONS];
   if (metaDataOptionsVal.error() == simdjson::error_code::NO_SUCH_FIELD ||
       metaDataOptionsVal.is_null()) {
-    // If the metadataOptions field is not present or is null, set the optional fields to nullopt
+    // If the metadataOptions field is not present or is null,
+    // set the optional fields to nullopt
     reqStruct.metadataRequest.featureName = std::nullopt;
     reqStruct.metadataRequest.featureType = std::nullopt;
-  } else if (metaDataOptionsVal.error() != simdjson::SUCCESS) {
-    return handle_simdjson_error(metaDataOptionsVal.error(), doc, currentLocation);
+  } else if (unlikely(metaDataOptionsVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(
+      metaDataOptionsVal.error(), doc, currentLocation);
   } else {
     // If metadataOptions field is present and not null
     error = metaDataOptionsVal.get(metaDataOptions);
-    if (error != simdjson::SUCCESS) {
+    if (unlikely(error != simdjson::SUCCESS)) {
       return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : metaDataOptions) {
       std::string_view optionKey = option.unescaped_key();
       if (optionKey == FEATURE_NAME) {
-        bool optionValue    = false;
+        bool optionValue = false;
         auto optionValueVal = option.value();
-        if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
+        if (unlikely(optionValueVal.error() != simdjson::SUCCESS)) {
+          return handle_simdjson_error(
+            optionValueVal.error(), doc, currentLocation);
         }
-        if (!optionValueVal.is_null()) {
+        if (likely(!optionValueVal.is_null())) {
           error = optionValueVal.get(optionValue);
-          if (error != simdjson::SUCCESS) {
+          if (unlikely(error != simdjson::SUCCESS)) {
             return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureName = optionValue;
@@ -985,20 +1003,27 @@ JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
           reqStruct.metadataRequest.featureName = std::nullopt;
         }
       } else if (optionKey == FEATURE_TYPE) {
-        bool optionValue    = false;
+        bool optionValue = false;
         auto optionValueVal = option.value();
-        if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
+        if (unlikely(optionValueVal.error() != simdjson::SUCCESS)) {
+          return handle_simdjson_error(
+            optionValueVal.error(), doc, currentLocation);
         }
-        if (!optionValueVal.is_null()) {
+        if (likely(!optionValueVal.is_null())) {
           error = optionValueVal.get(optionValue);
-          if (error != simdjson::SUCCESS) {
+          if (unlikely(error != simdjson::SUCCESS)) {
             return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.metadataRequest.featureType = optionValue;
         } else {
           reqStruct.metadataRequest.featureType = std::nullopt;
         }
+      } else {
+        return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_INVALID_BODY,
+          std::string(ERROR_064) + " " + std::string(optionKey) +
+          std::string(METADATA_OPTIONS)).status;
       }
     }
   }
@@ -1012,12 +1037,12 @@ JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
     // If the options field is not present or is null, set the optional fields to nullopt
     reqStruct.optionsRequest.validatePassedFeatures = std::nullopt;
     reqStruct.optionsRequest.includeDetailedStatus  = std::nullopt;
-  } else if (optionsVal.error() != simdjson::SUCCESS) {
+  } else if (unlikely(optionsVal.error() != simdjson::SUCCESS)) {
     return handle_simdjson_error(optionsVal.error(), doc, currentLocation);
   } else {
     // If options field is present and not null
     error = optionsVal.get(options);
-    if (error != simdjson::SUCCESS) {
+    if (unlikely(error != simdjson::SUCCESS)) {
       return handle_simdjson_error(error, doc, currentLocation);
     }
     for (auto option : options) {
@@ -1025,37 +1050,44 @@ JSONParser::feature_store_parse(simdjson::padded_string_view reqBody,
       if (optionKey == VALIDATE_PASSED_FEATURES) {
         bool optionValue = false;
         auto optionValueVal = option.value();
-        if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
+        if (unlikely(optionValueVal.error() != simdjson::SUCCESS)) {
+          return handle_simdjson_error(
+            optionValueVal.error(), doc, currentLocation);
         }
-        if (!optionValueVal.is_null()) {
+        if (likely(!optionValueVal.is_null())) {
           error = optionValueVal.get(optionValue);
-          if (error != simdjson::SUCCESS) {
+          if (unlikely(error != simdjson::SUCCESS)) {
             return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.validatePassedFeatures = optionValue;
         } else {
           reqStruct.optionsRequest.validatePassedFeatures = std::nullopt;
         }
-      } else if (optionKey == INCLUDE_DETAILED_STATUS) {
+      } else if (likely(optionKey == INCLUDE_DETAILED_STATUS)) {
         bool optionValue = false;
         auto optionValueVal = option.value();
-        if (optionValueVal.error() != simdjson::SUCCESS) {
-          return handle_simdjson_error(optionValueVal.error(), doc, currentLocation);
+        if (unlikely(optionValueVal.error() != simdjson::SUCCESS)) {
+          return handle_simdjson_error(
+            optionValueVal.error(), doc, currentLocation);
         }
-        if (!optionValueVal.is_null()) {
+        if (likely(!optionValueVal.is_null())) {
           error = optionValueVal.get(optionValue);
-          if (error != simdjson::SUCCESS) {
+          if (unlikely(error != simdjson::SUCCESS)) {
             return handle_simdjson_error(error, doc, currentLocation);
           }
           reqStruct.optionsRequest.includeDetailedStatus = optionValue;
         } else {
           reqStruct.optionsRequest.includeDetailedStatus = std::nullopt;
         }
+      } else {
+        return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_INVALID_BODY,
+          std::string(ERROR_064) + " " + std::string(optionKey) +
+          std::string(OPTIONS)).status;
       }
     }
   }
-
   return CRS_Status::SUCCESS.status;
 }
 

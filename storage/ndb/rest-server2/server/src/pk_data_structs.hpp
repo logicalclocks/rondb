@@ -39,15 +39,18 @@ RS_Status validate_operation_id(const std::string &);
 
 class PKReadFilter {
  public:
-  std::string_view column;
+  //std::string_view column;
+  std::string column;
   std::vector<char> value;
   RS_Status validate();
 };
 
 class PKReadReadColumn {
  public:
-  std::string_view column;
-  std::string_view returnType;
+  //std::string_view column;
+  std::string column;
+  //std::string_view returnType;
+  std::string returnType;
 };
 
 class PKReadPath {

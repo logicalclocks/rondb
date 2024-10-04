@@ -24,6 +24,9 @@
 #include "rdrs_dal.hpp"
 
 #include <iostream>
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
 
 std::string to_string(DataReturnType drt) {
   switch (drt) {
@@ -36,6 +39,7 @@ std::string to_string(DataReturnType drt) {
 
 Uint32 decode_utf8_to_unicode(const std::string_view &str, size_t &i) {
   Uint32 codepoint = 0;
+  Uint32 i_start = i;
   if ((str[i] & 0x80) == 0) {
     // 1-byte character
     codepoint = str[i];

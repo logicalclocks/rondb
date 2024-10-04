@@ -47,7 +47,7 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_FS_CTRL 1
+#define DEBUG_FS_CTRL 1
 #endif
 
 #ifdef DEBUG_FS_CTRL
@@ -442,7 +442,7 @@ GetBatchPkReadParams(
         filter.value  = entries.at(servingKey.requiredEntry);
         filters.push_back(filter);
         DEB_FS_CTRL(("Add filter on column %s, line: %u",
-                     filter.column.c_str(), __LINE__));
+                     std::string(filter.column).c_str(), __LINE__));
       } else if (entries.find(servingKey.prefix + servingKey.featureName) !=
                  entries.end()) {
         // Also Fallback and use feature name with prefix.
@@ -451,7 +451,7 @@ GetBatchPkReadParams(
         filter.value  = entries.at(servingKey.prefix + servingKey.featureName);
         filters.push_back(filter);
         DEB_FS_CTRL(("Add filter on column %s, line: %u",
-                     filter.column.c_str(), __LINE__));
+                     std::string(filter.column).c_str(), __LINE__));
       } else if (entries.find(servingKey.featureName) != entries.end()) {
         // Fallback and use the raw feature name so as to be consistent
         // with python client. Also add feature name with prefix.
@@ -460,7 +460,7 @@ GetBatchPkReadParams(
         filter.value  = entries.at(servingKey.featureName);
         filters.push_back(filter);
         DEB_FS_CTRL(("Add filter on column %s, line: %u",
-                     filter.column.c_str(), __LINE__));
+                     std::string(filter.column).c_str(), __LINE__));
       } else {
         DEB_FS_CTRL(("No filter added"));
       }
@@ -469,7 +469,7 @@ GetBatchPkReadParams(
     auto param = PKReadParams();
     param.path.db = testDb;
     param.path.table = testTable;
-    param.filters     = filters;
+    param.filters = filters;
     param.readColumns = columns;
     param.operationId = opId;
     batchReadParams.push_back(param);
@@ -655,6 +655,7 @@ void FeatureStoreCtrl::featureStore(
     // Validate
     DEB_FS_CTRL(("Validate Batch PK Read Params for Feature Store request"));
     for (auto readParam : readParams) {
+
       status = readParam.validate(false, false);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
