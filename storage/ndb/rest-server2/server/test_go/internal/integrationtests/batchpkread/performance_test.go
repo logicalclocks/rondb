@@ -25,6 +25,7 @@ import (
 	"sort"
 	"testing"
 	"time"
+	"runtime"
 
 	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs2/internal/config"
@@ -56,13 +57,13 @@ This tests can be run as follows:
 func BenchmarkSimple(b *testing.B) {
 	// Number of total requests
 	numRequests := b.N
-	const batchSize = 100
+	const batchSize = 250
 
 	/*
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
 		the gRPC server, depending on this flag.
 	*/
-	runAgainstGrpcServer := true
+	runAgainstGrpcServer := false
 
 	table := "table_1"
 	numRows := testdbs.BENCH_DB_NUM_ROWS
@@ -72,6 +73,7 @@ func BenchmarkSimple(b *testing.B) {
 
 	b.ResetTimer()
 	start := time.Now()
+	runtime.GOMAXPROCS(24)
 
 	/*
 		Assuming GOMAXPROCS is not set, a 10-core CPU

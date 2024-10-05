@@ -8,6 +8,7 @@ file(GLOB_RECURSE SRC
 	*.c
 	*.cpp
 	*.h
+	fs_cache.cpp
 )
 NDB_ADD_EXECUTABLE(${PROJECT_NAME} ${SRC} STATIC_NDBCLIENT)
 add_dependencies(${PROJECT_NAME} DROGON_IS_BUILD SIMDJSON_IS_BUILD)

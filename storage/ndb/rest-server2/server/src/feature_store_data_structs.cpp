@@ -174,8 +174,8 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(
   fsResp.status = fromString(std::string(status_view));
 
   // Parse detailedStatus
-  Uint64 featureGroupId    = 0;
-  Uint64 httpStatus        = 0;
+  uint64_t featureGroupId    = 0;
+  uint64_t httpStatus        = 0;
   auto detailed_status_array = doc["detailedStatus"];
   if (detailed_status_array.error() == simdjson::error_code::NO_SUCH_FIELD ||
       detailed_status_array.is_null()) {
@@ -299,8 +299,8 @@ BatchFeatureStoreResponse::parseBatchFeatureStoreResponse(
   }
 
   // Parse detailedStatus
-  Uint64 featureGroupId    = 0;
-  Uint64 httpStatus        = 0;
+  uint64_t featureGroupId    = 0;
+  uint64_t httpStatus        = 0;
   auto detailed_status_array = doc["detailedStatus"];
   if (detailed_status_array.error() == simdjson::error_code::NO_SUCH_FIELD ||
       detailed_status_array.is_null()) {

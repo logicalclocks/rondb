@@ -639,8 +639,8 @@ USE_SIMDJSON_PARSER(bool)
 USE_SIMDJSON_PARSER(simdjson::ondemand::array)
 USE_SIMDJSON_PARSER(simdjson::ondemand::object)
 USE_SIMDJSON_PARSER(std::string_view)
-USE_SIMDJSON_PARSER(Uint64)
-USE_SIMDJSON_PARSER(Int64)
+USE_SIMDJSON_PARSER(uint64_t)
+USE_SIMDJSON_PARSER(int64_t)
 
 DEFINE_VALUE_PARSER(std::string, {
   std::string_view temp_target;
@@ -652,7 +652,7 @@ DEFINE_VALUE_PARSER(std::string, {
 })
 
 DEFINE_VALUE_PARSER(Uint16, {
-  Int64 temp_target;
+  int64_t temp_target;
   if (!parse(temp_target, value)) {
     return false;
   }
@@ -664,7 +664,7 @@ DEFINE_VALUE_PARSER(Uint16, {
 })
 
 DEFINE_VALUE_PARSER(Uint32, {
-  Int64 temp_target;
+  int64_t temp_target;
   if (!parse(temp_target, value)) {
     return false;
   }
@@ -676,7 +676,7 @@ DEFINE_VALUE_PARSER(Uint32, {
 })
 
 DEFINE_VALUE_PARSER(int, {
-  Int64 temp_target;
+  int64_t temp_target;
   if (!parse(temp_target, value)) {
     return false;
   }
@@ -856,7 +856,7 @@ JSONParser::feature_store_parse(
   }
   reqStruct.featureViewName = featureViewName;
 
-  Uint64 featureViewVersion = 0;
+  uint64_t featureViewVersion = 0;
   auto featureViewVersionVal  = reqObject[FEATURE_VIEW_VERSION];
   if (unlikely(featureViewVersionVal.error() ==
                simdjson::error_code::NO_SUCH_FIELD)) {
@@ -1178,7 +1178,7 @@ RS_Status JSONParser::batch_feature_store_parse(
   }
   reqStruct.featureViewName = featureViewName;
 
-  Uint64 featureViewVersion = 0;
+  uint64_t featureViewVersion = 0;
   auto featureViewVersionVal  = reqObject[FEATURE_VIEW_VERSION];
   if (unlikely(featureViewVersionVal.error() ==
                simdjson::error_code::NO_SUCH_FIELD)) {

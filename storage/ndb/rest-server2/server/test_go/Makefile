@@ -41,8 +41,8 @@ TEST_PACKAGE?=./...
 # Benchmarks. Override this to run a benchmarks in different packages
 # make bench RDRS_CONFIG_FILE=`pwd`/resources/config/config_mtr.json BENCH_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/pkread BENCHMARK=Benchmark
 BENCHMARK?=Benchmark
-BENCHMARK_DURATION?=10
-BENCHMARK_PACKAGE?=hopsworks.ai/rdrs2/internal/integrationtests/pkread
+BENCHMARK_DURATION?=30
+BENCHMARK_PACKAGE?=hopsworks.ai/rdrs2/internal/integrationtests/batchpkread
 
 # code coverage 
 COVERAGE_OUTPUT_FILE?=./coverage.out
