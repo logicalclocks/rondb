@@ -44,10 +44,11 @@
 
 void start_fs_cache();
 void stop_fs_cache();
+void fs_cache_dec_ref_count(char*);
 
 class FSCacheEntry {
  public:
-  std::shared_ptr<metadata::FeatureViewMetadata> m_data;
+  metadata::FeatureViewMetadata *m_data;
   std::shared_ptr<RestErrorCode> m_errorCode;
   FSCacheEntry* m_next_cache_entry;
   FSCacheEntry* m_prev_cache_entry;
@@ -72,14 +73,15 @@ class FSCacheEntry {
   ~FSCacheEntry() {
     NdbMutex_Destroy(m_waitLock);
     NdbCondition_Destroy(m_waitCond);
+    if (m_data) delete m_data;
   }
   void decRefCount() { m_ref_count--; }
 
 };
 
-std::shared_ptr<metadata::FeatureViewMetadata>
+metadata::FeatureViewMetadata*
   fs_metadata_cache_get(const std::string&, FSCacheEntry**);
-void fs_metadata_update_cache(std::shared_ptr<metadata::FeatureViewMetadata>,
+void fs_metadata_update_cache(metadata::FeatureViewMetadata*,
                               FSCacheEntry*,
                               std::shared_ptr<RestErrorCode>);
 
@@ -99,9 +101,9 @@ class FSMetadataCache {
   /*
   Checking whether the API key can access the given databases
   */
-  std::shared_ptr<metadata::FeatureViewMetadata>
+  metadata::FeatureViewMetadata*
     get_fs_metadata(const std::string&, FSCacheEntry**);
-  void update_cache(std::shared_ptr<metadata::FeatureViewMetadata>,
+  void update_cache(metadata::FeatureViewMetadata*,
                     FSCacheEntry*,
                     std::shared_ptr<RestErrorCode>);
   void cache_entry_updater(Uint32);

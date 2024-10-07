@@ -188,7 +188,7 @@ std::unique_ptr<char[]> &JSONParser::get_buffer() {
 
 RS_Status extract_db_and_table(const std::string_view &,
                                std::string_view &,
-                               std::string_view &);
+                               std::string&);
 RS_Status handle_simdjson_error(const simdjson::error_code &,
                                 simdjson::ondemand::document &,
                                 const char *&);
@@ -1455,7 +1455,7 @@ RS_Status JSONParser::batch_feature_store_parse(
 
 RS_Status extract_db_and_table(const std::string_view &relativeUrl,
                                std::string_view &db,
-                               std::string_view &table) {
+                               std::string &table) {
   // Find the positions of the last three slashes
   size_t lastSlashPos       = relativeUrl.find_last_of('/');
   size_t secondLastSlashPos = lastSlashPos !=

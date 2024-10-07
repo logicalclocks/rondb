@@ -28,6 +28,7 @@
 #include "feature_store_error_code.hpp"
 #include "base_ctrl.hpp"
 #include "pk_data_structs.hpp"
+#include "fs_cache.hpp"
 
 #include <drogon/drogon.h>
 #include <drogon/HttpSimpleController.h>
@@ -75,7 +76,7 @@ checkRondbResponse(const BatchResponseJSON &rondbResp);
 
 std::vector<feature_store_data_structs::FeatureMetadata>
 GetFeatureMetadata(
-  const std::shared_ptr<metadata::FeatureViewMetadata> &metadata,
+  const metadata::FeatureViewMetadata *metadata,
   const feature_store_data_structs::MetadataRequest &metaRequest);
 
 std::shared_ptr<RestErrorCode>
@@ -110,4 +111,15 @@ void FillPrimaryKey(
   std::vector<std::vector<char>> &featureValues,
   const std::vector<std::string> &joinKeys, const std::vector<char> &value);
 
+class CacheEntryRefCounter {
+  public:
+  CacheEntryRefCounter(char *cache_entry) {
+    m_cache_entry = cache_entry;
+  }
+  ~CacheEntryRefCounter() {
+    if (m_cache_entry)
+      fs_cache_dec_ref_count(m_cache_entry);
+  }
+  char *m_cache_entry;
+};
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_CTRL_HPP_

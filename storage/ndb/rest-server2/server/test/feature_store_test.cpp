@@ -934,7 +934,7 @@ class MyEnvironment : public ::testing::Environment {
 };
 
 TEST_F(FeatureStoreTest, TestFeatureStoreMetaData) {
-  std::shared_ptr<metadata::FeatureViewMetadata> metadata;
+  metadata::FeatureViewMetadata *metadata;
   std::shared_ptr<RestErrorCode> errorCode;
   std::tie(metadata, errorCode) =
     metadata::GetFeatureViewMetadata(FSDB002, "sample_2", 1);
@@ -943,7 +943,7 @@ TEST_F(FeatureStoreTest, TestFeatureStoreMetaData) {
 }
 
 TEST_F(FeatureStoreTest, TestMetadata_FsNotExist) {
-  std::shared_ptr<metadata::FeatureViewMetadata> metadata;
+  metadata::FeatureViewMetadata *metadata;
   std::shared_ptr<RestErrorCode> errorCode;
   std::tie(metadata, errorCode) =
     metadata::GetFeatureViewMetadata("NA", "sample_2", 1);
@@ -954,7 +954,7 @@ TEST_F(FeatureStoreTest, TestMetadata_FsNotExist) {
 }
 
 TEST_F(FeatureStoreTest, TestMetadata_ReadDeletedFg) {
-  std::shared_ptr<metadata::FeatureViewMetadata> metadata;
+  metadata::FeatureViewMetadata *metadata;
   std::shared_ptr<RestErrorCode> errorCode;
   std::tie(metadata, errorCode) =
     metadata::GetFeatureViewMetadata(FSDB001, "test_deleted_fg", 1);
@@ -967,7 +967,7 @@ TEST_F(FeatureStoreTest, TestMetadata_ReadDeletedFg) {
 }
 
 TEST_F(FeatureStoreTest, TestMetadata_ReadDeletedJointFg) {
-  std::shared_ptr<metadata::FeatureViewMetadata> metadata;
+  metadata::FeatureViewMetadata *metadata;
   std::shared_ptr<RestErrorCode> errorCode;
   std::tie(metadata, errorCode) =
       metadata::GetFeatureViewMetadata(FSDB001, "test_deleted_joint_fg", 1);
@@ -980,7 +980,7 @@ TEST_F(FeatureStoreTest, TestMetadata_ReadDeletedJointFg) {
 }
 
 TEST_F(FeatureStoreTest, TestMetadata_FvNotExist) {
-  std::shared_ptr<metadata::FeatureViewMetadata> metadata;
+  metadata::FeatureViewMetadata *metadata;
   std::shared_ptr<RestErrorCode> errorCode;
   std::tie(metadata, errorCode) =
     metadata::GetFeatureViewMetadata(FSDB002, "NA", 1);

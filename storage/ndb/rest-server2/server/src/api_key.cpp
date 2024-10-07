@@ -36,10 +36,10 @@
 #include <util/rondb_hash.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_AUTH 1
-//#define DEBUG_AUTH_THREAD 1
-//#define DEBUG_AUTH_TIME 1
-//#define DEBUG_AUTH_DBS 1
+#define DEBUG_AUTH 1
+#define DEBUG_AUTH_THREAD 1
+#define DEBUG_AUTH_TIME 1
+#define DEBUG_AUTH_DBS 1
 #endif
 
 #ifdef DEBUG_AUTH
@@ -155,7 +155,7 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
 #ifdef DEBUG_AUTH
   DEB_AUTH(("authenticate apiKey: %s", apiKey.c_str()));
   for (const auto &db : dbs) {
-    DEB_AUTH(("validate db: %s", db.c_str()));
+    DEB_AUTH(("validate db: %s", std::string(db).c_str()));
   }
 #endif
   RS_Status status = validate_api_key_format(apiKey);
@@ -367,7 +367,7 @@ RS_Status APIKeyCache::update_record(std::vector<std::string_view> dbs,
   NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
   std::unordered_map<std::string_view, bool> dbsMap;
   for (const auto &db : dbs) {
-    DEB_AUTH_DBS(("Valid API Key with db: %s", db.c_str()));
+    DEB_AUTH_DBS(("Valid API Key with db: %s", std::string(db).c_str()));
     dbsMap[db] = true;
   }
   userDBs->userDBs = dbsMap;

@@ -263,7 +263,7 @@ std::string GetFeatureIndexKeyByFgIndexKey(const std::string &fgKey,
 std::string getFeatureIndexKey(int joinIndex, int fgId, const std::string &f);
 std::string GetFeatureIndexKeyByFeature(const FeatureMetadata &feature);
 
-std::tuple<FeatureViewMetadata, RS_Status>
+std::tuple<FeatureViewMetadata*, RS_Status>
 newFeatureViewMetadata(const std::string &featureStoreName,
                        int featureStoreId,
                        const std::string &featureViewName,
@@ -275,15 +275,16 @@ newFeatureViewMetadata(const std::string &featureStoreName,
 std::string getFeatureViewCacheKey(const std::string &featureStoreName,
                                    const std::string &featureViewName,
                                    int featureViewVersion);
-std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
+std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
 GetFeatureViewMetadata(const std::string &featureStoreName,
                        const std::string &featureViewName,
                        int featureViewVersion);
 
-std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
+std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
 FeatureViewMetadataCache_Get(const std::string &featureStoreName,
                         const std::string &featureViewName,
-                        int featureViewVersion);
+                        int featureViewVersion,
+                        char** metadata_cache_entry);
 }  // namespace metadata
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_METADATA_HPP_

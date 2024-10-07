@@ -34,10 +34,10 @@
 #include <EventLogger.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_FS 1
-//#define DEBUG_FS_THREAD 1
-//#define DEBUG_FS_TIME 1
-//#define DEBUG_FS_METADATA 1
+#define DEBUG_FS 1
+#define DEBUG_FS_THREAD 1
+#define DEBUG_FS_TIME 1
+#define DEBUG_FS_METADATA 1
 #endif
 
 #ifdef DEBUG_FS_METADATA
@@ -109,6 +109,13 @@ void stop_fs_cache() {
   }
 }
 
+void fs_cache_dec_ref_count(char *cache_entry) {
+  if (cache_entry) {
+    FSCacheEntry *cacheEntry = (FSCacheEntry*)cache_entry;
+    cacheEntry->m_ref_count--;
+  }
+}
+
 FSMetadataCache::FSMetadataCache() : m_fs_cache() {
   m_evicted = false;
   m_is_thread_running = false;
@@ -159,20 +166,20 @@ void FSMetadataCache::cleanup() {
   DEB_FS(("Cleanup finished"));
 }
 
-std::shared_ptr<metadata::FeatureViewMetadata> fs_metadata_cache_get(
+metadata::FeatureViewMetadata* fs_metadata_cache_get(
   const std::string &fs_key,
   FSCacheEntry** entry) {
   return g_fs_metadata_cache->get_fs_metadata(fs_key, entry);
 }
 
 void fs_metadata_update_cache(
-  std::shared_ptr<metadata::FeatureViewMetadata> data,
+  metadata::FeatureViewMetadata *data,
   FSCacheEntry* entry,
   std::shared_ptr<RestErrorCode> errorCode) {
   return g_fs_metadata_cache->update_cache(data, entry, errorCode);
 }
 
-std::shared_ptr<metadata::FeatureViewMetadata>
+metadata::FeatureViewMetadata*
 FSMetadataCache::get_fs_metadata(const std::string &fs_key,
                                  FSCacheEntry** entry) {
   *entry = nullptr;
@@ -199,6 +206,7 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
   auto cacheEntry = it->second;
   NdbMutex_Lock(cacheEntry->m_waitLock);
   NdbMutex_Unlock(m_rwLock[key_cache_id]);
+  cacheEntry->m_ref_count++;
   if (cacheEntry->m_state == FSCacheEntry::IS_INVALID) {
 #ifdef DEBUG_FS
     int ref_count = cacheEntry->m_ref_count;
@@ -210,11 +218,9 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
     *entry = cacheEntry;
     return nullptr;
   }
-  cacheEntry->m_ref_count++;
   while (cacheEntry->m_state == FSCacheEntry::IS_FILLING) {
     NdbCondition_Wait(cacheEntry->m_waitCond, cacheEntry->m_waitLock);
   }
-  cacheEntry->m_ref_count--;
   if (cacheEntry->m_state == FSCacheEntry::IS_INVALID) {
 #ifdef DEBUG_FS
     int ref_count = cacheEntry->m_ref_count;
@@ -235,7 +241,7 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
   }
 #endif
   *entry = cacheEntry;
-  std::shared_ptr<metadata::FeatureViewMetadata> data = cacheEntry->m_data;
+  metadata::FeatureViewMetadata *data = cacheEntry->m_data;
   NdbMutex_Lock(m_queueLock[key_cache_id]);
   cacheEntry->m_lastUsed = NdbTick_getCurrentTicks();
   remove_entry(cacheEntry, key_cache_id);
@@ -273,7 +279,7 @@ FSMetadataCache::allocate_empty_cache_entry(
 }
 
 void FSMetadataCache::update_cache(
-  std::shared_ptr<metadata::FeatureViewMetadata> data,
+  metadata::FeatureViewMetadata *data,
   FSCacheEntry* entry,
   std::shared_ptr<RestErrorCode> errorCode) {
   /**
@@ -299,7 +305,6 @@ void FSMetadataCache::update_cache(
     DEB_FS(("FS Key create CacheEntry succeeded, invalid, Line: %u", __LINE__));
     entry->m_state = FSCacheEntry::IS_INVALID;
   }
-  entry->m_ref_count--;
 #ifdef DEBUG_FS
   {
     int ref_count = entry->m_ref_count;

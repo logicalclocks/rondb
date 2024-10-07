@@ -47,7 +47,7 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_FS_CTRL 1
+#define DEBUG_FS_CTRL 1
 #endif
 
 #ifdef DEBUG_FS_CTRL
@@ -187,7 +187,7 @@ std::shared_ptr<RestErrorCode>
 
 std::vector<feature_store_data_structs::FeatureMetadata>
   GetFeatureMetadata(
-    const std::shared_ptr<metadata::FeatureViewMetadata> &metadata,
+    const metadata::FeatureViewMetadata *metadata,
     const feature_store_data_structs::MetadataRequest &metaRequest) {
   auto featureMetadataArray =
     std::vector<feature_store_data_structs::FeatureMetadata>(
@@ -411,7 +411,7 @@ GetBatchPkReadParams(
   const std::unordered_map<std::string, std::vector<char>> &entries) {
   auto batchReadParams = std::vector<PKReadParams>();
   for (const auto &fgFeature : metadata.featureGroupFeatures) {
-    std::string testDb = fgFeature.featureStoreName;
+    std::string_view testDb = fgFeature.featureStoreName;
     std::string testTable =
         fgFeature.featureGroupName + "_" +
         std::to_string(fgFeature.featureGroupVersion);
@@ -430,7 +430,7 @@ GetBatchPkReadParams(
     }
     for (const auto &servingKey : fgFeature.primaryKeyMap) {
       // Fill in value of required entry as original entry may not be required.
-      std::string pkCol = servingKey.featureName;
+      std::string_view pkCol = servingKey.featureName;
       DEB_FS_CTRL(("servingKey.featureName: %s, servingKey.requiredEntry: %s"
                    ", servingKey.prefix: %s",
                    servingKey.featureName.c_str(),
@@ -586,11 +586,16 @@ void FeatureStoreCtrl::featureStore(
     return;
   }
   // Get metadata for Feature Store request
+  char *metadata_cache_entry = nullptr;
   DEB_FS_CTRL(("Get metadata for Feature Store request"));
   auto [metadata, err] =
     metadata::FeatureViewMetadataCache_Get(reqStruct.featureStoreName,
                                            reqStruct.featureViewName,
-                                           reqStruct.featureViewVersion);
+                                           reqStruct.featureViewVersion,
+                                           &metadata_cache_entry);
+
+  CacheEntryRefCounter cache_entry_ref_counter(metadata_cache_entry);
+
   if (unlikely(err != nullptr)) {
     resp->setBody(err->Error());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -598,6 +603,13 @@ void FeatureStoreCtrl::featureStore(
     return;
   }
   DEB_FS_CTRL(("Validate PK for Feature Store request"));
+#ifdef DEBUG_FS_CTRL
+  auto feature_stores = metadata->featureStoreNames;
+  for (const auto &db : feature_stores) {
+    g_eventLogger->info("FS_STORE: ptr: %p, str: %s",
+                        db.data(), std::string(db).c_str());
+  }
+#endif
   auto err1 = ValidatePrimaryKey(reqStruct.entries, metadata->validPrimayKeys);
   if (unlikely(err1 != nullptr)) {
     resp->setBody(err1->Error());

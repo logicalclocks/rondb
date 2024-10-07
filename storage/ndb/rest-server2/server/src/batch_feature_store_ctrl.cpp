@@ -117,11 +117,16 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   // Validate
   // Complete validation is delegated to Execute()
   // check if requested fv and fs exist
+  char *metadata_cache_entry = nullptr;
   auto [metadata, err] =
     metadata::FeatureViewMetadataCache_Get(
       reqStruct.featureStoreName,
       reqStruct.featureViewName,
-      reqStruct.featureViewVersion);
+      reqStruct.featureViewVersion,
+      &metadata_cache_entry);
+
+  CacheEntryRefCounter cache_entry_ref_counter(metadata_cache_entry);
+
   if (unlikely(err != nullptr)) {
     resp->setBody(err->Error());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -129,6 +134,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     return;
   }
 
+  
   if (unlikely(reqStruct.entries.empty())) {
     resp->setBody(NO_PRIMARY_KEY_GIVEN->GetReason());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);

@@ -30,7 +30,7 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_MD_CACHE 1
+#define DEBUG_MD_CACHE 1
 #endif
 
 #ifdef DEBUG_MD_CACHE
@@ -134,7 +134,7 @@ std::string GetFeatureIndexKeyByFeature(const FeatureMetadata &feature) {
   return getFeatureIndexKey(feature.joinIndex, feature.featureGroupId, feature.name);
 }
 
-std::tuple<FeatureViewMetadata, RS_Status>
+std::tuple<FeatureViewMetadata*, RS_Status>
 newFeatureViewMetadata(const std::string &featureStoreName,
                        int featureStoreId,
                        const std::string &featureViewName,
@@ -254,7 +254,7 @@ newFeatureViewMetadata(const std::string &featureStoreName,
             GetProjectID(feature.featureStoreName);
           if (status.http_code !=
               static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-            return {FeatureViewMetadata(), status};
+            return {nullptr, status};
           }
           // TODO logger
           std::tie(newFgSchema, status) = GetFeatureGroupAvroSchema(
@@ -263,7 +263,7 @@ newFeatureViewMetadata(const std::string &featureStoreName,
               projectId);
           if (status.http_code !=
               static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-            return {FeatureViewMetadata(), status};
+            return {nullptr, status};
           }
           fgSchemaCache[feature.featureGroupId] = newFgSchema;
         }
@@ -272,12 +272,12 @@ newFeatureViewMetadata(const std::string &featureStoreName,
             feature.name);
         if (status.http_code !=
             static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-          return {FeatureViewMetadata(), status};
+          return {nullptr, status};
         }
         try {
           codec = AvroDecoder(schema);
         } catch (avro::Exception &e) {
-          return {FeatureViewMetadata(),
+          return {nullptr,
                   CRS_Status(static_cast<HTTP_CODE>(
                     drogon::HttpStatusCode::k400BadRequest),
                     "Failed to parse feature schema.").status};
@@ -303,25 +303,24 @@ newFeatureViewMetadata(const std::string &featureStoreName,
     fsNameMap[featureStoreName] = true;
   }
   auto numOfFeature = featureIndex.size();
-  auto metadata = FeatureViewMetadata();
+  FeatureViewMetadata *metadata = new FeatureViewMetadata();
 
-  metadata.featureStoreName = featureStoreName;
-  metadata.featureStoreId = featureStoreId;
-  metadata.featureViewName = featureViewName;
-  metadata.featureViewId = featureViewId;
-  metadata.featureViewVersion = featureViewVersion;
-  metadata.prefixFeaturesLookup = prefixColumns;
-  metadata.featureGroupFeatures = fgFeaturesArray;
-  metadata.numOfFeatures = numOfFeature;
-  metadata.featureIndexLookup = featureIndex;
-  metadata.featureStoreNames = fsNames;
-  metadata.primaryKeyMap = primaryKeyMap;
-  metadata.validPrimayKeys = validPrimaryKeysMap;
-  metadata.prefixJoinKeyMap = prefixJoinKeyMap;
-  metadata.requiredJoinKeyMap = requiredJoinKeyMap;
-  metadata.joinKeyMap = joinKeyMap;
-  metadata.complexFeatures = complexFeatures;
-
+  metadata->featureStoreName = featureStoreName;
+  metadata->featureStoreId = featureStoreId;
+  metadata->featureViewName = featureViewName;
+  metadata->featureViewId = featureViewId;
+  metadata->featureViewVersion = featureViewVersion;
+  metadata->prefixFeaturesLookup = prefixColumns;
+  metadata->featureGroupFeatures = fgFeaturesArray;
+  metadata->numOfFeatures = numOfFeature;
+  metadata->featureIndexLookup = featureIndex;
+  metadata->featureStoreNames = fsNames;
+  metadata->primaryKeyMap = primaryKeyMap;
+  metadata->validPrimayKeys = validPrimaryKeysMap;
+  metadata->prefixJoinKeyMap = prefixJoinKeyMap;
+  metadata->requiredJoinKeyMap = requiredJoinKeyMap;
+  metadata->joinKeyMap = joinKeyMap;
+  metadata->complexFeatures = complexFeatures;
   return {metadata, CRS_Status::SUCCESS.status};
 }
 
@@ -334,7 +333,7 @@ std::string getFeatureViewCacheKey(const std::string &featureStoreName,
   return ss.str();
 }
 
-std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
+std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
   GetFeatureViewMetadata(const std::string &featureStoreName,
                          const std::string &featureViewName,
                          int featureViewVersion) {
@@ -345,7 +344,8 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
       static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     if (std::string(status.message).find(ERROR_NOT_FOUND) !=
           std::string::npos) {
-      return {nullptr, std::make_shared<RestErrorCode>(FS_NOT_EXIST)};
+      return {nullptr,
+              std::make_shared<RestErrorCode>(FS_NOT_EXIST)};
     }
     return
       {nullptr,
@@ -360,11 +360,13 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
       static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     if (std::string(status.message).find(ERROR_NOT_FOUND) !=
           std::string::npos) {
-      return {nullptr, std::make_shared<RestErrorCode>(FV_NOT_EXIST)};
+      return {nullptr,
+              std::make_shared<RestErrorCode>(FV_NOT_EXIST)};
     }
     return
-      {nullptr, std::make_shared<RestErrorCode>(
-                  FV_READ_FAIL->NewMessage(status.message))};
+      {nullptr,
+       std::make_shared<RestErrorCode>(
+         FV_READ_FAIL->NewMessage(status.message))};
   }
   std::unordered_map<int, TrainingDatasetJoin> joinIdToJoin;
   std::vector<TrainingDatasetJoin> tdJoins;
@@ -438,7 +440,8 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
             static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
         if (std::string(status.message).find(ERROR_NOT_FOUND) !=
               std::string::npos) {
-          return {nullptr, std::make_shared<RestErrorCode>(FS_NOT_EXIST)};
+          return {nullptr,
+                  std::make_shared<RestErrorCode>(FS_NOT_EXIST)};
         }
         return {nullptr,
                 std::make_shared<RestErrorCode>(
@@ -465,7 +468,7 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
             std::make_shared<RestErrorCode>(
               FV_READ_FAIL->NewMessage("Failed to read serving keys."))};
   }
-  FeatureViewMetadata featureViewMetadata;
+  FeatureViewMetadata *featureViewMetadata;
   std::tie(featureViewMetadata, status) = newFeatureViewMetadata(
       featureStoreName,
       fsID,
@@ -480,19 +483,22 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
             std::make_shared<RestErrorCode>(
               FV_READ_FAIL->NewMessage(status.message))};
   }
-  return {std::make_shared<FeatureViewMetadata>(featureViewMetadata), nullptr};
+  return {featureViewMetadata, nullptr};
+  //return {std::make_shared<FeatureViewMetadata>(featureViewMetadata), nullptr};
 }
 
-std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
+std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
   FeatureViewMetadataCache_Get(const std::string &featureStoreName,
                                const std::string &featureViewName,
-                               int featureViewVersion) {
+                               int featureViewVersion,
+                               char **metadata_cache_entry) {
   std::string fvCacheKey =
       getFeatureViewCacheKey(featureStoreName,
                              featureViewName,
                              featureViewVersion);
   FSCacheEntry *entry = nullptr;
   auto cache_metadata = fs_metadata_cache_get(fvCacheKey, &entry);
+  *metadata_cache_entry = (char*)entry;
   if (entry == nullptr) {
     require(cache_metadata == nullptr);
     DEB_MD_CACHE(("Cached Key failed with FETCH_METADATA_FROM_CACHE_FAIL"));
@@ -504,7 +510,8 @@ std::tuple<std::shared_ptr<FeatureViewMetadata>, std::shared_ptr<RestErrorCode>>
     return {nullptr, entry->m_errorCode};
   }
   if (!cache_metadata) {
-    std::shared_ptr<FeatureViewMetadata> metadata;
+    DEB_MD_CACHE(("Failed retrieve from cache, now retrieve from RonDB"));
+    FeatureViewMetadata *metadata;
     std::shared_ptr<RestErrorCode> errorCode;
     std::tie(metadata, errorCode) =
         GetFeatureViewMetadata(featureStoreName,

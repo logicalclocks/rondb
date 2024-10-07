@@ -60,7 +60,7 @@ class PKReadPath {
   // json:"db" uri:"db"  binding:"required,min=1,max=64"
   std::string_view db;
   // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
-  std::string_view table;
+  std::string table;
 };
 
 class PKReadParams {
