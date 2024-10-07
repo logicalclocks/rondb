@@ -295,9 +295,8 @@ void FSMetadataCache::update_cache(
   entry->m_errorCode = errorCode;
   if (data != nullptr) {
 #ifdef DEBUG_FS_METADATA
-    DEB_FS_METADATA(("Key %s have metadata: \n%s",
-                     entry->m_key.c_str(),
-                     entry->m_data->to_string().c_str()));
+    DEB_FS_METADATA(("Key %s have metadata",
+                     entry->m_key.c_str()));
 #endif
     entry->m_state = FSCacheEntry::IS_VALID;
     DEB_FS(("FS Key create CacheEntry succeeded, valid, Line: %u", __LINE__));

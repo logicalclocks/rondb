@@ -287,31 +287,37 @@ newFeatureViewMetadata(const std::string &featureStoreName,
       }
     }
   }
+  FeatureViewMetadata *metadata = new FeatureViewMetadata();
+  metadata->featureStoreName = featureStoreName;
   auto fsNames = std::vector<std::string_view>();
   auto fsNameMap = std::unordered_map<std::string, bool>();
-  for (const auto &fgf : fgFeaturesArray) {
+  metadata->featureGroupFeatures = fgFeaturesArray;
+
+  for (const auto &fgf : metadata->featureGroupFeatures) {
     auto fgName = fgf.featureStoreName;
     if (!fsNameMap[fgName]) {
       const std::string_view &fsName = fgName;
+      DEB_MD_CACHE(("fsName: ptr: %p, str: %s, from: %s",
+                    fsName.data(),
+                    std::string(fsName).c_str(),
+                    fgName.c_str()));
       fsNames.push_back(fsName);
       fsNameMap[fgName] = true;
     }
   }
-  if (!fsNameMap[featureStoreName]) {
-    const auto &fsName = featureStoreName;
+
+  if (!fsNameMap[metadata->featureStoreName]) {
+    const auto &fsName = metadata->featureStoreName;
     fsNames.push_back(fsName);
-    fsNameMap[featureStoreName] = true;
+    fsNameMap[metadata->featureStoreName] = true;
   }
   auto numOfFeature = featureIndex.size();
-  FeatureViewMetadata *metadata = new FeatureViewMetadata();
 
-  metadata->featureStoreName = featureStoreName;
   metadata->featureStoreId = featureStoreId;
   metadata->featureViewName = featureViewName;
   metadata->featureViewId = featureViewId;
   metadata->featureViewVersion = featureViewVersion;
   metadata->prefixFeaturesLookup = prefixColumns;
-  metadata->featureGroupFeatures = fgFeaturesArray;
   metadata->numOfFeatures = numOfFeature;
   metadata->featureIndexLookup = featureIndex;
   metadata->featureStoreNames = fsNames;
@@ -468,6 +474,8 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
             std::make_shared<RestErrorCode>(
               FV_READ_FAIL->NewMessage("Failed to read serving keys."))};
   }
+  DEB_MD_CACHE(("Create new FeatureViewMetadata for FS: ptr: %p, str: %s",
+                featureStoreName.c_str(), featureStoreName.c_str()));
   FeatureViewMetadata *featureViewMetadata;
   std::tie(featureViewMetadata, status) = newFeatureViewMetadata(
       featureStoreName,
@@ -519,8 +527,7 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
                                featureViewVersion);
     if (errorCode) {
       DEB_MD_CACHE(("Key %s failed with error: %s",
-                    entry->m_key.c_str(),
-                    errorCode->ToString().c_str()));
+                    entry->m_key.c_str()));
       fs_metadata_update_cache(nullptr, entry, errorCode);
       return {nullptr, errorCode};
     }
