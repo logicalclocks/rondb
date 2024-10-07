@@ -287,12 +287,12 @@ newFeatureViewMetadata(const std::string &featureStoreName,
       }
     }
   }
-  auto fsNames = std::vector<std::string>();
+  auto fsNames = std::vector<std::string_view>();
   auto fsNameMap = std::unordered_map<std::string, bool>();
   for (const auto &fgf : fgFeaturesArray) {
     auto fgName = fgf.featureStoreName;
     if (!fsNameMap[fgName]) {
-      const auto &fsName = fgName;
+      const std::string_view &fsName = fgName;
       fsNames.push_back(fsName);
       fsNameMap[fgName] = true;
     }

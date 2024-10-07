@@ -84,7 +84,7 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
   ArenaAllocator aalloc;
   RonSQLExecParams params;
 
-  std::string& database = reqStruct.database;
+  std::string_view& database = reqStruct.database;
   status = ronsql_validate_database_name(database);
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
@@ -133,7 +133,7 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
     }
   }
 
-  status = ronsql_dal(database.c_str(), &params);
+  status = ronsql_dal(database.data(), &params);
 
   if (json_output) {
     out_stream << "}\n";
@@ -225,7 +225,7 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
   callback(resp);
 }
 
-RS_Status ronsql_validate_database_name(std::string& database) {
+RS_Status ronsql_validate_database_name(std::string_view& database) {
   RS_Status status = validate_db_identifier(database);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER) {

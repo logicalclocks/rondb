@@ -47,7 +47,8 @@ extern EventLogger *g_eventLogger;
 void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                         std::function<void(
                           const drogon::HttpResponsePtr &)> &&callback,
-                        const std::string &db, const std::string &table) {
+                        const std::string_view &db,
+                        const std::string_view &table) {
   auto resp = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {

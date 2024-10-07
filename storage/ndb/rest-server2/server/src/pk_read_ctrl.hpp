@@ -35,7 +35,7 @@ class PKReadCtrl : public drogon::HttpController<PKReadCtrl> {
 
   static void pkRead(const drogon::HttpRequestPtr &req,
                      std::function<void(const drogon::HttpResponsePtr &)> &&callback,
-                     const std::string &db, const std::string &table);
+                     const std::string_view &db, const std::string_view &table);
 };
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_READ_CTRL_HPP_

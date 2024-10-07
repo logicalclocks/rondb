@@ -186,9 +186,9 @@ std::unique_ptr<char[]> &JSONParser::get_buffer() {
   return buffer;
 }
 
-RS_Status extract_db_and_table(const std::string &,
-                               std::string &,
-                               std::string &);
+RS_Status extract_db_and_table(const std::string_view &,
+                               std::string_view &,
+                               std::string_view &);
 RS_Status handle_simdjson_error(const simdjson::error_code &,
                                 simdjson::ondemand::document &,
                                 const char *&);
@@ -444,7 +444,7 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
       }
     }
     RS_Status status =
-      extract_db_and_table(std::string(relativeUrl),
+      extract_db_and_table(relativeUrl,
                            reqStruct.path.db,
                            reqStruct.path.table);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
@@ -1453,28 +1453,30 @@ RS_Status JSONParser::batch_feature_store_parse(
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status extract_db_and_table(const std::string &relativeUrl,
-                               std::string &db,
-                               std::string &table) {
+RS_Status extract_db_and_table(const std::string_view &relativeUrl,
+                               std::string_view &db,
+                               std::string_view &table) {
   // Find the positions of the last three slashes
   size_t lastSlashPos       = relativeUrl.find_last_of('/');
-  size_t secondLastSlashPos = lastSlashPos != std::string::npos
+  size_t secondLastSlashPos = lastSlashPos !=
+    std::string_view::npos
     ? relativeUrl.find_last_of('/', lastSlashPos - 1)
-                                  : std::string::npos;
-  size_t thirdLastSlashPos  = secondLastSlashPos != std::string::npos
+                                  : std::string_view::npos;
+  size_t thirdLastSlashPos  = secondLastSlashPos !=
+    std::string_view::npos
     ? relativeUrl.find_last_of('/', secondLastSlashPos - 1)
-                                  : std::string::npos;
+                                  : std::string_view::npos;
 
-  if (thirdLastSlashPos != std::string::npos &&
-      secondLastSlashPos != std::string::npos) {
+  if (thirdLastSlashPos != std::string_view::npos &&
+      secondLastSlashPos != std::string_view::npos) {
     // If there are at least three slashes
-    db    = relativeUrl.substr(thirdLastSlashPos + 1,
-                               secondLastSlashPos - thirdLastSlashPos - 1);
+    db = relativeUrl.substr(thirdLastSlashPos + 1,
+                            secondLastSlashPos - thirdLastSlashPos - 1);
     table = relativeUrl.substr(secondLastSlashPos + 1,
                                lastSlashPos - secondLastSlashPos - 1);
-  } else if (secondLastSlashPos != std::string::npos) {
+  } else if (secondLastSlashPos != std::string_view::npos) {
     // If there are only two slashes
-    db    = relativeUrl.substr(0, secondLastSlashPos);
+    db = relativeUrl.substr(0, secondLastSlashPos);
     table = relativeUrl.substr(secondLastSlashPos + 1,
                                lastSlashPos - secondLastSlashPos - 1);
   } else {

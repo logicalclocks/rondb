@@ -126,12 +126,12 @@ RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
   return apiKeyCache->validate_api_key(apiKey, {params.path.db});
 }
 
-RS_Status authenticate(const std::string &apiKey, const std::string & db) {
+RS_Status authenticate(const std::string &apiKey, const std::string_view & db) {
   return apiKeyCache->validate_api_key(apiKey, {db});
 }
 
 RS_Status authenticate(const std::string &apiKey,
-                       const std::vector<std::string> &dbs) {
+                       const std::vector<std::string_view> &dbs) {
   return apiKeyCache->validate_api_key(apiKey, dbs);
 }
 
@@ -151,7 +151,7 @@ RS_Status APIKeyCache::validate_api_key_format(const std::string &apiKey) {
 }
 
 RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
-                                        const std::vector<std::string> &dbs) {
+                                        const std::vector<std::string_view> &dbs) {
 #ifdef DEBUG_AUTH
   DEB_AUTH(("authenticate apiKey: %s", apiKey.c_str()));
   for (const auto &db : dbs) {
@@ -212,7 +212,7 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
 RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
                                          bool &keyFoundInCache,
                                          bool &allowedAccess,
-                                         const std::vector<std::string> &dbs,
+                                         const std::vector<std::string_view> &dbs,
                                          Uint32 hash,
                                          bool inc_refcount_done) {
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
@@ -285,7 +285,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
       DEB_AUTH(("API Key found valid, not authorized, Line: %u, refCount: %d",
                 __LINE__, ref_count));
       return CRS_Status(HTTP_CODE::AUTH_ERROR,
-        ("API key not authorized to access " + db).c_str()).status;
+        ("API key not authorized to access " + std::string(db)).c_str()).status;
     }
   }
   // Decrement the reference count such that it can be released again
@@ -361,10 +361,11 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint32 hash) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status APIKeyCache::update_record(std::vector<std::string> dbs,
-                                     UserDBs *userDBs) {
+RS_Status APIKeyCache::update_record(std::vector<std::string_view> dbs,
+                                     UserDBs *userDBs,
+                                     char **db_ptrs) {
   NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
-  std::unordered_map<std::string, bool> dbsMap;
+  std::unordered_map<std::string_view, bool> dbsMap;
   for (const auto &db : dbs) {
     DEB_AUTH_DBS(("Valid API Key with db: %s", db.c_str()));
     dbsMap[db] = true;
@@ -374,6 +375,9 @@ RS_Status APIKeyCache::update_record(std::vector<std::string> dbs,
   assert(userDBs->m_state == UserDBs::IS_VALIDATING ||
          userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_state = UserDBs::IS_VALID;
+  if (userDBs->m_db_ptrs)
+    free(userDBs->m_db_ptrs);
+  userDBs->m_db_ptrs = (char*)db_ptrs;
   return CRS_Status::SUCCESS.status;
 }
 
@@ -407,7 +411,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
     bool fail = false;
 
     HopsworksAPIKey key;
-    std::vector<std::string> dbs;
+    std::vector<std::string_view> dbs;
     if (!m_evicted) {
       status = authenticate_user(apiKey, key);
       if (status.http_code != HTTP_CODE::SUCCESS) {
@@ -415,8 +419,9 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
       }
     }
 
+    char **db_ptrs = nullptr;
     if (!fail && !m_evicted) {
-      status = get_user_databases(key, dbs);
+      status = get_user_databases(key, dbs, &db_ptrs);
       if (status.http_code != HTTP_CODE::SUCCESS) {
         fail = true;
       }
@@ -438,7 +443,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
       } else {
         DEB_AUTH(("Valid API Key updated: %s", apiKey.c_str()));
       }
-      update_record(dbs, userDBs);
+      update_record(dbs, userDBs, db_ptrs);
     } else {
       if (first) {
         userDBs->m_lastUsed = lastUpdated;
@@ -509,6 +514,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
         m_key_cache[key_cache_id].erase(apiKey);
         NdbMutex_Unlock(m_rwLock[key_cache_id]);
         NdbMutex_Unlock(userDBs->m_waitLock);
+        delete userDBs;
         return;
       } else {
         NdbMutex_Unlock(m_rwLock[key_cache_id]);
@@ -545,8 +551,9 @@ RS_Status APIKeyCache::authenticate_user(const std::string &apiKey,
 }
 
 RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key,
-                                          std::vector<std::string> &dbs) {
-  RS_Status status = get_user_projects(key.user_id, dbs);
+                                          std::vector<std::string_view> &dbs,
+                                          char ***db_ptrs) {
+  RS_Status status = get_user_projects(key.user_id, dbs, db_ptrs);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
@@ -554,7 +561,8 @@ RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key,
 }
 
 RS_Status APIKeyCache::get_user_projects(int uid,
-                                         std::vector<std::string> &dbs) {
+                                         std::vector<std::string_view> &dbs,
+                                         char ***db_ptrs) {
   int count = 0;
   char **projects = nullptr;
   RS_Status status = find_all_projects(uid, &projects, &count);
@@ -562,13 +570,11 @@ RS_Status APIKeyCache::get_user_projects(int uid,
     return status;
   }
   for (int i = 0; i < count; i++) {
-    dbs.push_back(projects[i]);
+    char *db_str = projects[i];
+    std::string_view str(db_str, strlen(db_str));
+    dbs.push_back(str);
   }
-  // Free projects array because find_all_projects allocates memory for it
-  for (int i = 0; i < count; i++) {
-    free(projects[i]);
-  }
-  free(projects);
+  *db_ptrs = projects;
   return CRS_Status::SUCCESS.status;
 }
 

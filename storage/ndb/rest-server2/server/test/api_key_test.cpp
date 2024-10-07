@@ -152,7 +152,7 @@ TEST_F(APIKeyTest, TestAPIKey1) {
 void test_update_cache_every_n_seconds(APIKeyCache *cache,
                                        const AllConfigs &conf) {
   std::string apiKey = HOPSWORKS_TEST_API_KEY;
-  auto databases = {DB001, DB002};
+  std::vector<std::string_view> databases = {DB001, DB002};
 
   RS_Status status = cache->validate_api_key(apiKey, databases);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))

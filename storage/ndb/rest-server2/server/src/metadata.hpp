@@ -145,7 +145,7 @@ struct FeatureViewMetadata {
   // key: prefix + fName, label are excluded
   std::vector<FeatureGroupFeatures> featureGroupFeatures;
   // label are excluded
-  std::vector<std::string> featureStoreNames;
+  std::vector<std::string_view> featureStoreNames;
   // List of all feature store used by feature view
   // including shared feature store
   int numOfFeatures;

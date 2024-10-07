@@ -23,7 +23,7 @@
 class RonSQLParams {
  public:
   std::string query;
-  std::string database;
+  std::string_view database;
   std::string explainMode = "ALLOW";
   std::string outputFormat = "JSON";
   std::string operationId;

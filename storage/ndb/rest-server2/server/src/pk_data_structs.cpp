@@ -160,8 +160,8 @@ RS_Status PKReadFilter::validate() {
 PKReadPath::PKReadPath() : db(), table() {
 }
 
-PKReadPath::PKReadPath(const std::string &db,
-                       const std::string &table) : db(db), table(table) {
+PKReadPath::PKReadPath(const std::string_view &db,
+                       const std::string_view &table) : db(db), table(table) {
 }
 
 PKReadParams::PKReadParams() : path(),
@@ -174,7 +174,8 @@ PKReadParams::PKReadParams(PKReadPath &path)
     : path(path), filters(), readColumns(), operationId() {
 }
 
-PKReadParams::PKReadParams(const std::string &db, const std::string &table)
+PKReadParams::PKReadParams(const std::string_view &db,
+                           const std::string_view &table)
     : path(db, table), filters(), readColumns(), operationId() {
 }
 
@@ -209,12 +210,13 @@ RS_Status PKReadParams::validate(bool check_filter) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_EMPTY_IDENTIFIER,
-          (std::string(ERROR_049) + ": " + path.db).c_str()).status;
+          (std::string(ERROR_049) + ": " +
+          std::string(path.db)).c_str()).status;
     if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_MAX_DB, (std::string(ERROR_050) + ": " +
-          path.db).c_str()).status;
+          std::string(path.db)).c_str()).status;
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
@@ -232,12 +234,12 @@ RS_Status PKReadParams::validate(bool check_filter) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_MIN_TABLE, (std::string(ERROR_052) + ": " +
-          path.table).c_str()).status;
+          std::string(path.table)).c_str()).status;
     if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_CODE_MAX_TABLE, (std::string(ERROR_053) + ": " +
-          path.table).c_str()).status;
+          std::string(path.table)).c_str()).status;
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),

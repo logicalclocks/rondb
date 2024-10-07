@@ -56,19 +56,19 @@ class PKReadReadColumn {
 class PKReadPath {
  public:
   PKReadPath();
-  PKReadPath(const std::string &, const std::string &);
+  PKReadPath(const std::string_view &, const std::string_view &);
   // json:"db" uri:"db"  binding:"required,min=1,max=64"
-  std::string db;
+  std::string_view db;
   // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
-  std::string table;
+  std::string_view table;
 };
 
 class PKReadParams {
  public:
   PKReadParams();
-  explicit PKReadParams(const std::string &);
+  explicit PKReadParams(const std::string_view &);
   explicit PKReadParams(PKReadPath &);
-  PKReadParams(const std::string &, const std::string &);
+  PKReadParams(const std::string_view &, const std::string_view &);
   PKReadPath path;
   std::vector<PKReadFilter> filters;
   std::vector<PKReadReadColumn> readColumns;

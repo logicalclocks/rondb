@@ -18,6 +18,7 @@
  */
 
 #include "rdrs_hopsworks_dal.h"
+#include "rdrs_dal.hpp"
 #include "error_strings.h"
 #include "logger.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
@@ -510,7 +511,7 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   std::vector<HopsworksProject> project_vec;
 
   Ndb *ndb_object = nullptr;
-  status          = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -532,14 +533,26 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
     return status;
   }
 
-  *count = project_vec.size();
-  HopsworksProject dummy;
-  *projects = (char **)malloc(*count * sizeof(char *));  // freed by CGO
-
-  char **ease = *projects;
+  size_t malloc_size = 0;
+  malloc_size += (project_vec.size() * sizeof(char*));
   for (Uint32 i = 0; i < project_vec.size(); i++) {
-    ease[i] = (char *)malloc(sizeof(dummy.projectname) * sizeof(char));  // freed by CGO
-    memcpy(ease[i], project_vec[i].projectname, strlen(project_vec[i].projectname) + 1);
+    size_t name_size = (strlen(project_vec[i].projectname) + 1) * sizeof(char);
+    malloc_size += name_size;
+  }
+  *projects = (char **)malloc(malloc_size);
+  if (*projects == nullptr) {
+    return CRS_Status(HTTP_CODE::SERVER_ERROR,
+      "Failed to allocate database names in API key").status;
+  }
+  *count = project_vec.size();
+  char **ease = *projects;
+  char *str_ptr = (char*)*projects;
+  str_ptr += (project_vec.size() * sizeof(char*));
+  for (Uint32 i = 0; i < project_vec.size(); i++) {
+    ease[i] = str_ptr;
+    size_t name_size = (strlen(project_vec[i].projectname) + 1) * sizeof(char);
+    memcpy(str_ptr, project_vec[i].projectname, name_size);
+    str_ptr += name_size;
   }
   return RS_OK;
 }
