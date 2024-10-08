@@ -424,7 +424,6 @@ GetBatchPkReadParams(
           metadata.primaryKeyMap.end()) {
         PKReadReadColumn readCol;
         readCol.column = feature.name;
-        readCol.returnType = to_string(DataReturnType::DEFAULT_DRT);
         columns.push_back(readCol);
       }
     }

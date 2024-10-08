@@ -322,21 +322,24 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
         std::string_view dataReturnType;
         auto dataReturnTypeVal = readColumnObj[DATA_RETURN_TYPE];
         if (dataReturnTypeVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
-          dataReturnType = "";
         } else if (unlikely(dataReturnTypeVal.error() != simdjson::SUCCESS)) {
           return handle_simdjson_error(
             dataReturnTypeVal.error(), doc, currentLocation);
         } else {
           if (unlikely(dataReturnTypeVal.is_null())) {
-            dataReturnType = "";
           } else {
             error = dataReturnTypeVal.get(dataReturnType);
             if (unlikely(error != simdjson::SUCCESS)) {
               return handle_simdjson_error(error, doc, currentLocation);
             }
+            std::string_view check = "default";
+            if (check != dataReturnType) {
+              return CRS_Status(
+                HTTP_CODE::CLIENT_ERROR,
+                "default dataReturnType is the only supported").status;
+            }
           }
         }
-        pkReadReadColumn.returnType = dataReturnType;
         reqStruct.readColumns.emplace_back(pkReadReadColumn);
       }
     }
@@ -603,7 +606,6 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
               return handle_simdjson_error(error, doc, currentLocation);
             }
           }
-          pkReadReadColumn.returnType = dataReturnType;
           reqStruct.readColumns.emplace_back(pkReadReadColumn);
         }
       }

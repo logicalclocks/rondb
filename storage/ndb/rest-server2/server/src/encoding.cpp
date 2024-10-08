@@ -99,8 +99,9 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
       buf[rci] = head;
       rci++;
 
-      // return type
+      // return type not used for the moment
       Uint32 drt = DEFAULT_DRT;
+      /*
       if (!col.returnType.empty()) {
         drt = data_return_type(col.returnType);
         if (drt == UINT32_MAX) {
@@ -109,6 +110,7 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
             "Invalid return type").status;
         }
       }
+      */
       buf[head / ADDRESS_SIZE] = drt;
       head += ADDRESS_SIZE;
       // col name

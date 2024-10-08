@@ -193,8 +193,7 @@ std::string PKReadParams::to_string() {
   }
   ss << "], readColumns: [";
   for (auto &readColumn : readColumns) {
-    ss << "{ column: " << readColumn.column << ", returnType: "
-       << readColumn.returnType << " }, ";
+    ss << "{ column: " << readColumn.column << " }, ";
   }
   ss << "], operationId: " << operationId << " }";
   return ss.str();
